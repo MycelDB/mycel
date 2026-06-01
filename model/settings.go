@@ -1,5 +1,6 @@
 package model
 
+// SpaceSettings defines tunable limits and behavior at space scope.
 type SpaceSettings struct {
 	MaxSpaceBytes     int64
 	TargetChunkBytes  int64
