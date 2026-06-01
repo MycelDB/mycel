@@ -12,3 +12,7 @@ Go library for Knotbase graph database.
 ## API docs
 - Edge structures: `docs/api/edge.md`
 - User structures: `docs/core/user.md`
+
+## Testing
+- Run once: `make test`
+- Watch mode: `make test-watch` (requires `watchexec`)
