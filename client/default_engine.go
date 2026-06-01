@@ -18,6 +18,7 @@ var (
 	ErrNotReady           = errors.New("engine not ready")
 	ErrClosed             = errors.New("engine closed")
 	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrUnauthorized       = errors.New("unauthorized")
 )
 
 type defaultEngine struct {
@@ -147,8 +148,60 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthTok
 		Roles:    []string{"admin"},
 		OwnerIDs: []string{"owner:" + uid},
 		SpaceIDs: []string{"space:" + uid + ":default"},
-		Scopes:   []string{"graph:read", "graph:write", "admin:users"},
+		Scopes:   []string{"graph:read", "graph:write", "admin:users", "db:create"},
 	}, nil
+}
+
+func (e *defaultEngine) CreateDatabase(ctx context.Context, in CreateDatabaseInput) (DatabaseInfo, error) {
+	if err := e.Ready(ctx); err != nil {
+		return DatabaseInfo{}, err
+	}
+	if in.Name == "" {
+		return DatabaseInfo{}, fmt.Errorf("%w: database name is required", ErrInvalidConfig)
+	}
+	if in.Auth.UserID == uuid.Nil {
+		return DatabaseInfo{}, ErrUnauthorized
+	}
+	if in.Auth.EXP <= time.Now().Unix() {
+		return DatabaseInfo{}, ErrUnauthorized
+	}
+	if !contains(in.Auth.Scopes, "db:create") && !contains(in.Auth.Roles, "admin") {
+		return DatabaseInfo{}, ErrUnauthorized
+	}
+
+	ownerID := "owner:" + in.Auth.UserID.String()
+	if len(in.Auth.OwnerIDs) > 0 && in.Auth.OwnerIDs[0] != "" {
+		ownerID = in.Auth.OwnerIDs[0]
+	}
+
+	owners, err := readOwnersFile(e.dataDir)
+	if err != nil {
+		return DatabaseInfo{}, err
+	}
+	if !ownerExists(owners, ownerID) {
+		owners = append(owners, ownerRecord{OwnerID: ownerID, UserID: in.Auth.UserID.String(), Status: "active"})
+		if err := writeOwnersFile(e.dataDir, owners); err != nil {
+			return DatabaseInfo{}, err
+		}
+	}
+
+	spaces, err := readSpacesFile(e.dataDir)
+	if err != nil {
+		return DatabaseInfo{}, err
+	}
+	for _, s := range spaces {
+		if s.OwnerID == ownerID && s.Name == in.Name {
+			return DatabaseInfo{OwnerID: s.OwnerID, SpaceID: s.SpaceID, Name: s.Name}, nil
+		}
+	}
+
+	space := spaceRecord{SpaceID: "space:" + uuid.NewString(), OwnerID: ownerID, Name: in.Name, Status: "active"}
+	spaces = append(spaces, space)
+	if err := writeSpacesFile(e.dataDir, spaces); err != nil {
+		return DatabaseInfo{}, err
+	}
+
+	return DatabaseInfo{OwnerID: ownerID, SpaceID: space.SpaceID, Name: space.Name}, nil
 }
 
 func (e *defaultEngine) Close() error {
@@ -175,6 +228,19 @@ func writeInitialUsersFile(dataDir, adminUsername string) error {
 
 type passwordFile struct {
 	Passwords map[string]string `json:"passwords"`
+}
+
+type ownerRecord struct {
+	OwnerID string `json:"owner_id"`
+	UserID  string `json:"user_id"`
+	Status  string `json:"status"`
+}
+
+type spaceRecord struct {
+	SpaceID string `json:"space_id"`
+	OwnerID string `json:"owner_id"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
 }
 
 func writeInitialPasswordsFile(dataDir, adminUsername, adminPassword string) error {
@@ -215,4 +281,74 @@ func readPasswordsFile(dataDir string) (map[string]string, error) {
 		pf.Passwords = map[string]string{}
 	}
 	return pf.Passwords, nil
+}
+
+func readOwnersFile(dataDir string) ([]ownerRecord, error) {
+	path := filepath.Join(dataDir, "owners.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []ownerRecord{}, nil
+		}
+		return nil, err
+	}
+	var out []ownerRecord
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func writeOwnersFile(dataDir string, owners []ownerRecord) error {
+	path := filepath.Join(dataDir, "owners.json")
+	b, err := json.MarshalIndent(owners, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	return os.WriteFile(path, b, 0o600)
+}
+
+func readSpacesFile(dataDir string) ([]spaceRecord, error) {
+	path := filepath.Join(dataDir, "spaces.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []spaceRecord{}, nil
+		}
+		return nil, err
+	}
+	var out []spaceRecord
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func writeSpacesFile(dataDir string, spaces []spaceRecord) error {
+	path := filepath.Join(dataDir, "spaces.json")
+	b, err := json.MarshalIndent(spaces, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	return os.WriteFile(path, b, 0o600)
+}
+
+func ownerExists(owners []ownerRecord, ownerID string) bool {
+	for _, o := range owners {
+		if o.OwnerID == ownerID {
+			return true
+		}
+	}
+	return false
+}
+
+func contains(items []string, wanted string) bool {
+	for _, it := range items {
+		if it == wanted {
+			return true
+		}
+	}
+	return false
 }

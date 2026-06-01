@@ -180,3 +180,79 @@ func TestRuntimeEngine_Authenticate_InvalidPassword(t *testing.T) {
 		t.Fatalf("expected ErrInvalidCredentials, got: %v", err)
 	}
 }
+
+func TestRuntimeEngine_CreateDatabase_Success(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-create-db")
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+
+	token, err := engine.Authenticate(context.Background(), AuthInput{
+		UserRef:  identity.UserRef("admin@example.com"),
+		Password: "change-me-now",
+	})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+
+	dbInfo, err := engine.CreateDatabase(context.Background(), CreateDatabaseInput{
+		Auth: token,
+		Name: "default",
+	})
+	if err != nil {
+		t.Fatalf("expected create database success, got error: %v", err)
+	}
+	if dbInfo.OwnerID == "" || dbInfo.SpaceID == "" || dbInfo.Name != "default" {
+		t.Fatalf("unexpected db info: %#v", dbInfo)
+	}
+
+	if _, err := os.Stat(filepath.Join(dataDir, "owners.json")); err != nil {
+		t.Fatalf("expected owners.json to exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "spaces.json")); err != nil {
+		t.Fatalf("expected spaces.json to exist: %v", err)
+	}
+}
+
+func TestRuntimeEngine_CreateDatabase_UnauthorizedWithoutScope(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-create-db-no-scope")
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+
+	token, err := engine.Authenticate(context.Background(), AuthInput{
+		UserRef:  identity.UserRef("admin@example.com"),
+		Password: "change-me-now",
+	})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+	token.Roles = nil
+	token.Scopes = []string{"graph:read"}
+
+	_, err = engine.CreateDatabase(context.Background(), CreateDatabaseInput{Auth: token, Name: "default"})
+	if err == nil {
+		t.Fatal("expected unauthorized error")
+	}
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got: %v", err)
+	}
+}
