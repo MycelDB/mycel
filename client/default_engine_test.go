@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -53,26 +52,15 @@ func TestRuntimeEngine_OpenMethod(t *testing.T) {
 	}
 
 	usersPath := filepath.Join(dataDir, "users.json")
-	raw, err := os.ReadFile(usersPath)
-	if err != nil {
+	if _, err := os.Stat(usersPath); err != nil {
 		t.Fatalf("expected users.json to be created, got error: %v", err)
 	}
 
-	var users []identity.User
-	if err := json.Unmarshal(raw, &users); err != nil {
-		t.Fatalf("expected valid users.json user array, got error: %v", err)
-	}
-	if len(users) != 1 {
-		t.Fatalf("expected exactly one bootstrap user, got: %d", len(users))
-	}
-	if users[0].Ref != identity.UserRef("admin") {
-		t.Fatalf("unexpected bootstrap user ref: %s", users[0].Ref)
-	}
-	if users[0].Username == nil || *users[0].Username != "admin" {
-		t.Fatalf("unexpected bootstrap username: %#v", users[0].Username)
-	}
-	if users[0].Status != identity.UserStatusActive {
-		t.Fatalf("unexpected bootstrap status: %s", users[0].Status)
+	if _, err := engine.Authenticate(context.Background(), AuthInput{
+		UserRef:  identity.UserRef("admin"),
+		Password: "password",
+	}); err != nil {
+		t.Fatalf("expected bootstrap admin auth success, got error: %v", err)
 	}
 }
 

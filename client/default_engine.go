@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"knot_db/api"
 	"knot_db/core/identity"
+	"knot_db/core/usermgmt"
 )
 
 var (
@@ -24,8 +25,9 @@ var (
 )
 
 type defaultEngine struct {
-	state   EngineState
-	dataDir string
+	state       EngineState
+	dataDir     string
+	userManager *usermgmt.DefaultUserManager
 }
 
 // DefaultEngine opens (or creates) a local embedded KnotDB runtime.
@@ -49,6 +51,7 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		return fmt.Errorf("%w: unsupported mode %q", ErrInvalidConfig, cfg.Mode)
 	}
 
+	created := false
 	if _, err := os.Stat(cfg.DataDir); err != nil {
 		if os.IsNotExist(err) {
 			if !cfg.CreateIfMissing {
@@ -67,21 +70,45 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 				e.state = EngineStateClose
 				return mkErr
 			}
-			if writeErr := writeInitialUsersFile(cfg.DataDir, cfg.AdminUsername); writeErr != nil {
-				e.state = EngineStateClose
-				return writeErr
-			}
-			if writeErr := writeInitialPasswordsFile(cfg.DataDir, cfg.AdminUsername, cfg.AdminPassword); writeErr != nil {
-				e.state = EngineStateClose
-				return writeErr
-			}
+			created = true
 		} else {
 			e.state = EngineStateClose
 			return err
 		}
 	}
 
+	um := usermgmt.NewDefaultUserManager()
+	if err := um.Init(context.Background(), cfg.DataDir, cfg.UserStoreEncryptionKeyB64); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+
+	if created {
+		exists, err := um.ExistsByRef(context.Background(), identity.UserRef(cfg.AdminUsername))
+		if err != nil {
+			e.state = EngineStateClose
+			return err
+		}
+		if !exists {
+			status := identity.UserStatusActive
+			username := cfg.AdminUsername
+			_, err := um.Create(context.Background(), usermgmt.CreateUserInput{
+				User: identity.UserInput{
+					Ref:      identity.UserRef(cfg.AdminUsername),
+					Username: &username,
+					Status:   status,
+				},
+				Password: cfg.AdminPassword,
+			})
+			if err != nil {
+				e.state = EngineStateClose
+				return err
+			}
+		}
+	}
+
 	e.dataDir = cfg.DataDir
+	e.userManager = um
 	e.state = EngineStateReady
 	return nil
 }
@@ -110,28 +137,14 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthTok
 		return AuthToken{}, fmt.Errorf("%w: user_ref and password are required", ErrInvalidCredentials)
 	}
 
-	users, err := readUsersFile(e.dataDir)
+	user, err := e.userManager.Authenticate(ctx, in.UserRef, in.Password)
 	if err != nil {
-		return AuthToken{}, err
-	}
-	passwords, err := readPasswordsFile(e.dataDir)
-	if err != nil {
-		return AuthToken{}, err
-	}
-
-	var user *identity.User
-	for i := range users {
-		if users[i].Ref == in.UserRef && users[i].Status == identity.UserStatusActive {
-			user = &users[i]
-			break
+		if errors.Is(err, usermgmt.ErrUserNotFound) || errors.Is(err, usermgmt.ErrInvalidInput) {
+			return AuthToken{}, ErrInvalidCredentials
 		}
+		return AuthToken{}, err
 	}
-	if user == nil {
-		return AuthToken{}, ErrInvalidCredentials
-	}
-
-	storedPwd, ok := passwords[string(in.UserRef)]
-	if !ok || storedPwd != in.Password {
+	if user.Status != identity.UserStatusActive {
 		return AuthToken{}, ErrInvalidCredentials
 	}
 
@@ -254,27 +267,6 @@ func (e *defaultEngine) Close() error {
 	return nil
 }
 
-func writeInitialUsersFile(dataDir, adminUsername string) error {
-	path := filepath.Join(dataDir, "users.json")
-	username := adminUsername
-	content := []identity.User{{
-		ID:       uuid.New(),
-		Ref:      identity.UserRef(adminUsername),
-		Username: &username,
-		Status:   identity.UserStatusActive,
-	}}
-	b, err := json.MarshalIndent(content, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	return os.WriteFile(path, b, 0o600)
-}
-
-type passwordFile struct {
-	Passwords map[string]string `json:"passwords"`
-}
-
 type ownerRecord struct {
 	OwnerID string `json:"owner_id"`
 	UserID  string `json:"user_id"`
@@ -286,46 +278,6 @@ type spaceRecord struct {
 	OwnerID string `json:"owner_id"`
 	Name    string `json:"name"`
 	Status  string `json:"status"`
-}
-
-func writeInitialPasswordsFile(dataDir, adminUsername, adminPassword string) error {
-	path := filepath.Join(dataDir, "users_passwords.json")
-	content := passwordFile{Passwords: map[string]string{adminUsername: adminPassword}}
-	b, err := json.MarshalIndent(content, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	return os.WriteFile(path, b, 0o600)
-}
-
-func readUsersFile(dataDir string) ([]identity.User, error) {
-	path := filepath.Join(dataDir, "users.json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var users []identity.User
-	if err := json.Unmarshal(raw, &users); err != nil {
-		return nil, err
-	}
-	return users, nil
-}
-
-func readPasswordsFile(dataDir string) (map[string]string, error) {
-	path := filepath.Join(dataDir, "users_passwords.json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var pf passwordFile
-	if err := json.Unmarshal(raw, &pf); err != nil {
-		return nil, err
-	}
-	if pf.Passwords == nil {
-		pf.Passwords = map[string]string{}
-	}
-	return pf.Passwords, nil
 }
 
 func readOwnersFile(dataDir string) ([]ownerRecord, error) {

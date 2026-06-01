@@ -25,11 +25,12 @@ const (
 
 // EngineConfig defines startup configuration for DefaultEngine.
 type EngineConfig struct {
-	DataDir         string
-	Mode            EngineMode
-	CreateIfMissing bool
-	AdminUsername   string
-	AdminPassword   string
+	DataDir                   string
+	Mode                      EngineMode
+	CreateIfMissing           bool
+	AdminUsername             string
+	AdminPassword             string
+	UserStoreEncryptionKeyB64 string
 }
 
 // Engine represents a running KnotDB engine runtime in-process.
