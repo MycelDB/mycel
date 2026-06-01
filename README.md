@@ -15,4 +15,5 @@ Go library for Knotbase graph database.
 
 ## Testing
 - Run once: `make test`
-- Watch mode: `make test-watch` (requires `watchexec`)
+- Verbose + coverage: `make test-verbose`
+- Watch mode (verbose + coverage): `make test-watch` (requires `watchexec`)
