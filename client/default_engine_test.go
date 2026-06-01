@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -32,7 +34,7 @@ func TestRuntimeEngine_OpenMethod(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "knotdb-open")
 
-	engine := &runtimeEngine{}
+	engine := &defaultEngine{}
 	if err := engine.Open(EngineConfig{
 		DataDir:         dataDir,
 		Mode:            EngineModeStandalone,
@@ -46,13 +48,35 @@ func TestRuntimeEngine_OpenMethod(t *testing.T) {
 	if err := engine.Ready(context.Background()); err != nil {
 		t.Fatalf("expected engine ready after open, got error: %v", err)
 	}
+
+	usersPath := filepath.Join(dataDir, "users.json")
+	raw, err := os.ReadFile(usersPath)
+	if err != nil {
+		t.Fatalf("expected users.json to be created, got error: %v", err)
+	}
+
+	var uf struct {
+		Users []struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		} `json:"users"`
+	}
+	if err := json.Unmarshal(raw, &uf); err != nil {
+		t.Fatalf("expected valid users.json, got error: %v", err)
+	}
+	if len(uf.Users) != 1 {
+		t.Fatalf("expected exactly one bootstrap user, got: %d", len(uf.Users))
+	}
+	if uf.Users[0].Username != "admin" || uf.Users[0].Password != "password" {
+		t.Fatalf("unexpected bootstrap admin record: %#v", uf.Users[0])
+	}
 }
 
 func TestRuntimeEngine_OpenMethod_CreateIfMissingFalse(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "does-not-exist")
 
-	engine := &runtimeEngine{}
+	engine := &defaultEngine{}
 	err := engine.Open(EngineConfig{
 		DataDir:         dataDir,
 		Mode:            EngineModeStandalone,
@@ -70,7 +94,7 @@ func TestRuntimeEngine_OpenMethod_CreateIfMissingTrueRequiresAdminCredentials(t 
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "missing-admin-creds")
 
-	engine := &runtimeEngine{}
+	engine := &defaultEngine{}
 	err := engine.Open(EngineConfig{
 		DataDir:         dataDir,
 		Mode:            EngineModeStandalone,

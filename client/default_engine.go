@@ -2,9 +2,11 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 var (
@@ -13,28 +15,34 @@ var (
 	ErrClosed        = errors.New("engine closed")
 )
 
-type runtimeEngine struct {
+type defaultEngine struct {
 	state EngineState
+}
+
+type userRecord struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type usersFile struct {
+	Users []userRecord `json:"users"`
 }
 
 // DefaultEngine opens (or creates) a local embedded KnotDB runtime.
 func DefaultEngine(cfg EngineConfig) (Engine, error) {
-	e := &runtimeEngine{state: EngineStateClose}
+	e := &defaultEngine{state: EngineStateClose}
 	if err := e.Open(cfg); err != nil {
 		return nil, err
 	}
 	return e, nil
 }
 
-func (e *runtimeEngine) Open(cfg EngineConfig) error {
+func (e *defaultEngine) Open(cfg EngineConfig) error {
 	e.state = EngineStateOpen
 
 	if cfg.DataDir == "" {
 		e.state = EngineStateClose
 		return fmt.Errorf("%w: data_dir is required", ErrInvalidConfig)
-	}
-	if cfg.Mode == "" {
-		cfg.Mode = EngineModeStandalone
 	}
 	if cfg.Mode != EngineModeStandalone {
 		e.state = EngineStateClose
@@ -59,6 +67,10 @@ func (e *runtimeEngine) Open(cfg EngineConfig) error {
 				e.state = EngineStateClose
 				return mkErr
 			}
+			if writeErr := writeInitialUsersFile(cfg.DataDir, cfg.AdminUsername, cfg.AdminPassword); writeErr != nil {
+				e.state = EngineStateClose
+				return writeErr
+			}
 		} else {
 			e.state = EngineStateClose
 			return err
@@ -69,7 +81,7 @@ func (e *runtimeEngine) Open(cfg EngineConfig) error {
 	return nil
 }
 
-func (e *runtimeEngine) Ready(ctx context.Context) error {
+func (e *defaultEngine) Ready(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -85,7 +97,23 @@ func (e *runtimeEngine) Ready(ctx context.Context) error {
 	return nil
 }
 
-func (e *runtimeEngine) Close() error {
+func (e *defaultEngine) Close() error {
 	e.state = EngineStateClose
 	return nil
+}
+
+func writeInitialUsersFile(dataDir, adminUsername, adminPassword string) error {
+	path := filepath.Join(dataDir, "users.json")
+	content := usersFile{
+		Users: []userRecord{{
+			Username: adminUsername,
+			Password: adminPassword,
+		}},
+	}
+	b, err := json.MarshalIndent(content, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	return os.WriteFile(path, b, 0o600)
 }
