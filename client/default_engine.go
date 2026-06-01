@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"knot_db/api"
-	"knot_db/core/identity"
+	"knot_db/core/model"
 	"knot_db/core/usermgmt"
 )
 
@@ -84,17 +84,17 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 	}
 
 	if created {
-		exists, err := um.ExistsByRef(context.Background(), identity.UserRef(cfg.AdminUsername))
+		exists, err := um.ExistsByRef(context.Background(), model.UserRef(cfg.AdminUsername))
 		if err != nil {
 			e.state = EngineStateClose
 			return err
 		}
 		if !exists {
-			status := identity.UserStatusActive
+			status := model.UserStatusActive
 			username := cfg.AdminUsername
 			_, err := um.Create(context.Background(), usermgmt.CreateUserInput{
-				User: identity.UserInput{
-					Ref:      identity.UserRef(cfg.AdminUsername),
+				User: model.UserInput{
+					Ref:      model.UserRef(cfg.AdminUsername),
 					Username: &username,
 					Status:   status,
 				},
@@ -144,7 +144,7 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthTok
 		}
 		return AuthToken{}, err
 	}
-	if user.Status != identity.UserStatusActive {
+	if user.Status != model.UserStatusActive {
 		return AuthToken{}, ErrInvalidCredentials
 	}
 

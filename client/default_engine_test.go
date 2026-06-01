@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"knot_db/core/identity"
+	"knot_db/core/model"
 )
 
 func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
@@ -57,7 +57,7 @@ func TestRuntimeEngine_OpenMethod(t *testing.T) {
 	}
 
 	if _, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  identity.UserRef("admin"),
+		UserRef:  model.UserRef("admin"),
 		Password: "password",
 	}); err != nil {
 		t.Fatalf("expected bootstrap admin auth success, got error: %v", err)
@@ -116,7 +116,7 @@ func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 	}
 
 	token, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  identity.UserRef("admin@example.com"),
+		UserRef:  model.UserRef("admin@example.com"),
 		Password: "change-me-now",
 	})
 	if err != nil {
@@ -128,7 +128,7 @@ func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 	if token.Iss != "knotdb" || token.Aud != "knotdb" {
 		t.Fatalf("unexpected token issuer/audience: %s/%s", token.Iss, token.Aud)
 	}
-	if token.UserRef != identity.UserRef("admin@example.com") {
+	if token.UserRef != model.UserRef("admin@example.com") {
 		t.Fatalf("unexpected user_ref: %s", token.UserRef)
 	}
 	if token.UserID == uuid.Nil {
@@ -158,7 +158,7 @@ func TestRuntimeEngine_Authenticate_InvalidPassword(t *testing.T) {
 	}
 
 	_, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  identity.UserRef("admin@example.com"),
+		UserRef:  model.UserRef("admin@example.com"),
 		Password: "wrong-password",
 	})
 	if err == nil {
@@ -185,7 +185,7 @@ func TestRuntimeEngine_CreateDatabase_Success(t *testing.T) {
 	}
 
 	token, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  identity.UserRef("admin@example.com"),
+		UserRef:  model.UserRef("admin@example.com"),
 		Password: "change-me-now",
 	})
 	if err != nil {
@@ -227,7 +227,7 @@ func TestRuntimeEngine_CreateDatabase_UnauthorizedWithoutScope(t *testing.T) {
 	}
 
 	token, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  identity.UserRef("admin@example.com"),
+		UserRef:  model.UserRef("admin@example.com"),
 		Password: "change-me-now",
 	})
 	if err != nil {
@@ -261,7 +261,7 @@ func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
 	}
 
 	token, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  identity.UserRef("admin@example.com"),
+		UserRef:  model.UserRef("admin@example.com"),
 		Password: "change-me-now",
 	})
 	if err != nil {

@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 
-	"knot_db/core/identity"
+	"knot_db/core/model"
 )
 
 // GraphSession is a scoped interaction context for graph operations.
@@ -25,7 +25,7 @@ type Store interface {
 
 // UserStore manages user identity records used by applications.
 type UserStore interface {
-	CreateUser(ctx context.Context, in identity.UserInput) (identity.User, error)
-	GetUserByID(ctx context.Context, id identity.UserID) (identity.User, error)
-	GetUserByRef(ctx context.Context, ref identity.UserRef) (identity.User, error)
+	CreateUser(ctx context.Context, in model.UserInput) (model.User, error)
+	GetUserByID(ctx context.Context, id model.UserID) (model.User, error)
+	GetUserByRef(ctx context.Context, ref model.UserRef) (model.User, error)
 }

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"knot_db/core/identity"
+	"knot_db/core/model"
 )
 
 func TestDefaultUserManager_InitAndCreate_Plaintext(t *testing.T) {
@@ -17,16 +17,16 @@ func TestDefaultUserManager_InitAndCreate_Plaintext(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	status := identity.UserStatusActive
+	status := model.UserStatusActive
 	_, err := m.Create(context.Background(), CreateUserInput{
-		User:     identity.UserInput{Ref: identity.UserRef("Admin@Example.com"), Status: status},
+		User:     model.UserInput{Ref: model.UserRef("Admin@Example.com"), Status: status},
 		Password: "secret",
 	})
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
 
-	exists, err := m.ExistsByRef(context.Background(), identity.UserRef("admin@example.com"))
+	exists, err := m.ExistsByRef(context.Background(), model.UserRef("admin@example.com"))
 	if err != nil || !exists {
 		t.Fatalf("expected case-insensitive exists, got exists=%v err=%v", exists, err)
 	}
@@ -41,9 +41,9 @@ func TestDefaultUserManager_Init_WithWrongKeyFailsDecrypt(t *testing.T) {
 	if err := m1.Init(context.Background(), dir, keyA); err != nil {
 		t.Fatalf("init with keyA failed: %v", err)
 	}
-	status := identity.UserStatusActive
+	status := model.UserStatusActive
 	_, err := m1.Create(context.Background(), CreateUserInput{
-		User:     identity.UserInput{Ref: identity.UserRef("admin@example.com"), Status: status},
+		User:     model.UserInput{Ref: model.UserRef("admin@example.com"), Status: status},
 		Password: "secret",
 	})
 	if err != nil {

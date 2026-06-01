@@ -15,14 +15,14 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"knot_db/core/identity"
+	"knot_db/core/model"
 )
 
 const usersStoreFile = "users.json"
 
 type storedUser struct {
-	User     identity.User `json:"user"`
-	Password string        `json:"password"`
+	User     model.User `json:"user"`
+	Password string     `json:"password"`
 }
 
 type encryptedStore struct {
@@ -90,7 +90,7 @@ func (m *DefaultUserManager) Init(ctx context.Context, location string, encrypti
 	return nil
 }
 
-func (m *DefaultUserManager) ExistsByRef(ctx context.Context, ref identity.UserRef) (bool, error) {
+func (m *DefaultUserManager) ExistsByRef(ctx context.Context, ref model.UserRef) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -101,30 +101,30 @@ func (m *DefaultUserManager) ExistsByRef(ctx context.Context, ref identity.UserR
 	return ok, nil
 }
 
-func (m *DefaultUserManager) GetByRef(ctx context.Context, ref identity.UserRef) (identity.User, error) {
+func (m *DefaultUserManager) GetByRef(ctx context.Context, ref model.UserRef) (model.User, error) {
 	if err := ctx.Err(); err != nil {
-		return identity.User{}, err
+		return model.User{}, err
 	}
 	idx, ok := m.indexByRefLC[normalizeRef(ref)]
 	if !ok {
-		return identity.User{}, ErrUserNotFound
+		return model.User{}, ErrUserNotFound
 	}
 	return m.users[idx].User, nil
 }
 
-func (m *DefaultUserManager) Create(ctx context.Context, in CreateUserInput) (identity.User, error) {
+func (m *DefaultUserManager) Create(ctx context.Context, in CreateUserInput) (model.User, error) {
 	if err := ctx.Err(); err != nil {
-		return identity.User{}, err
+		return model.User{}, err
 	}
 	if strings.TrimSpace(string(in.User.Ref)) == "" {
-		return identity.User{}, fmt.Errorf("%w: user_ref is required", ErrInvalidInput)
+		return model.User{}, fmt.Errorf("%w: user_ref is required", ErrInvalidInput)
 	}
 	if strings.TrimSpace(in.Password) == "" {
-		return identity.User{}, fmt.Errorf("%w: password is required", ErrInvalidInput)
+		return model.User{}, fmt.Errorf("%w: password is required", ErrInvalidInput)
 	}
 	refLC := normalizeRef(in.User.Ref)
 	if _, exists := m.indexByRefLC[refLC]; exists {
-		return identity.User{}, ErrDuplicateUserRef
+		return model.User{}, ErrDuplicateUserRef
 	}
 
 	id := uuid.New()
@@ -133,10 +133,10 @@ func (m *DefaultUserManager) Create(ctx context.Context, in CreateUserInput) (id
 	}
 	status := in.User.Status
 	if status == "" {
-		status = identity.UserStatusPending
+		status = model.UserStatusPending
 	}
 
-	u := identity.User{
+	u := model.User{
 		ID:       id,
 		Ref:      in.User.Ref,
 		Email:    in.User.Email,
@@ -146,23 +146,23 @@ func (m *DefaultUserManager) Create(ctx context.Context, in CreateUserInput) (id
 	m.users = append(m.users, storedUser{User: u, Password: in.Password})
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
-		return identity.User{}, err
+		return model.User{}, err
 	}
 	return u, nil
 }
 
 // Authenticate checks credentials and returns a user record.
-func (m *DefaultUserManager) Authenticate(ctx context.Context, ref identity.UserRef, password string) (identity.User, error) {
+func (m *DefaultUserManager) Authenticate(ctx context.Context, ref model.UserRef, password string) (model.User, error) {
 	if err := ctx.Err(); err != nil {
-		return identity.User{}, err
+		return model.User{}, err
 	}
 	idx, ok := m.indexByRefLC[normalizeRef(ref)]
 	if !ok {
-		return identity.User{}, ErrUserNotFound
+		return model.User{}, ErrUserNotFound
 	}
 	rec := m.users[idx]
 	if rec.Password != password {
-		return identity.User{}, ErrInvalidInput
+		return model.User{}, ErrInvalidInput
 	}
 	return rec.User, nil
 }
@@ -279,6 +279,6 @@ func parseKey(keyB64 string) ([]byte, bool, error) {
 	return decoded, true, nil
 }
 
-func normalizeRef(ref identity.UserRef) string {
+func normalizeRef(ref model.UserRef) string {
 	return strings.ToLower(strings.TrimSpace(string(ref)))
 }

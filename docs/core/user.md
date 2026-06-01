@@ -1,6 +1,6 @@
 # User Structures
 
-This document describes user identity types exposed by `knot_db/core/identity`.
+This document describes user identity types exposed by `knot_db/core/model`.
 
 ## Identity model
 Each user has two identifiers:
