@@ -3,11 +3,12 @@
 Go library for Knotbase graph database.
 
 ## Layout
-- `api/`: public library API types and interfaces
+- `core/`: foundational system concepts (e.g. identity)
+- `api/`: public graph API types and interfaces
 - `model/`: shared domain/storage model types
 - `internal/`: private implementation packages
 - `docs/`: API/reference documentation
 
 ## API docs
 - Edge structures: `docs/api/edge.md`
-- User structures: `docs/api/user.md`
+- User structures: `docs/core/user.md`

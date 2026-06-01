@@ -1,4 +1,17 @@
-package api
+package identity
+
+import "github.com/google/uuid"
+
+// UserID uniquely identifies a user internally.
+//
+// UserID is an immutable UUID used as the stable system key.
+type UserID = uuid.UUID
+
+// UserRef uniquely identifies a user externally.
+//
+// UserRef is an immutable external identifier such as an email, username, or
+// identity-provider subject.
+type UserRef string
 
 // UserStatus defines lifecycle state for a user.
 type UserStatus string
@@ -10,7 +23,7 @@ const (
 	UserStatusRevoked UserStatus = "revoked"
 )
 
-// User is the public identity model used by applications integrating KnotDB.
+// User is the core identity model.
 //
 // UserID is the immutable internal key.
 // UserRef is the immutable external unique key.
