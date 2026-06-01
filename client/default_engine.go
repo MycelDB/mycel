@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 	"knot_db/core/identity"
@@ -115,14 +116,14 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthTok
 		return AuthToken{}, err
 	}
 
-	var found bool
-	for _, u := range users {
-		if u.Ref == in.UserRef && u.Status == identity.UserStatusActive {
-			found = true
+	var user *identity.User
+	for i := range users {
+		if users[i].Ref == in.UserRef && users[i].Status == identity.UserStatusActive {
+			user = &users[i]
 			break
 		}
 	}
-	if !found {
+	if user == nil {
 		return AuthToken{}, ErrInvalidCredentials
 	}
 
@@ -131,7 +132,23 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthTok
 		return AuthToken{}, ErrInvalidCredentials
 	}
 
-	return AuthToken{AccessToken: uuid.NewString()}, nil
+	now := time.Now().Unix()
+	exp := now + 3600
+	uid := user.ID.String()
+	return AuthToken{
+		Iss:      "knotdb",
+		Sub:      "user:" + uid,
+		Aud:      "knotdb",
+		JTI:      uuid.NewString(),
+		IAT:      now,
+		EXP:      exp,
+		UserID:   user.ID,
+		UserRef:  user.Ref,
+		Roles:    []string{"admin"},
+		OwnerIDs: []string{"owner:" + uid},
+		SpaceIDs: []string{"space:" + uid + ":default"},
+		Scopes:   []string{"graph:read", "graph:write", "admin:users"},
+	}, nil
 }
 
 func (e *defaultEngine) Close() error {

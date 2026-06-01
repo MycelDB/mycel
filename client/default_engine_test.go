@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
 	"knot_db/core/identity"
 )
 
@@ -133,8 +134,23 @@ func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
-	if token.AccessToken == "" {
-		t.Fatal("expected non-empty access token")
+	if token.JTI == "" {
+		t.Fatal("expected non-empty token JTI")
+	}
+	if token.Iss != "knotdb" || token.Aud != "knotdb" {
+		t.Fatalf("unexpected token issuer/audience: %s/%s", token.Iss, token.Aud)
+	}
+	if token.UserRef != identity.UserRef("admin@example.com") {
+		t.Fatalf("unexpected user_ref: %s", token.UserRef)
+	}
+	if token.UserID == uuid.Nil {
+		t.Fatal("expected non-zero user_id")
+	}
+	if token.IAT <= 0 || token.EXP <= token.IAT {
+		t.Fatalf("invalid token timestamps iat=%d exp=%d", token.IAT, token.EXP)
+	}
+	if len(token.Roles) == 0 || len(token.Scopes) == 0 {
+		t.Fatal("expected token roles and scopes")
 	}
 }
 
