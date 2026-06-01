@@ -10,6 +10,15 @@ const (
 	EngineModeStandalone EngineMode = "standalone"
 )
 
+// EngineState defines the lifecycle state of the engine runtime.
+type EngineState string
+
+const (
+	EngineStateOpen  EngineState = "open"
+	EngineStateReady EngineState = "ready"
+	EngineStateClose EngineState = "close"
+)
+
 // EngineConfig defines startup configuration for DefaultEngine.
 type EngineConfig struct {
 	DataDir         string
@@ -19,6 +28,8 @@ type EngineConfig struct {
 
 // Engine represents a running KnotDB engine runtime in-process.
 type Engine interface {
+	// Open initializes the engine runtime with the given configuration.
+	Open(cfg EngineConfig) error
 	// Ready reports whether the engine is ready to serve operations.
 	Ready(ctx context.Context) error
 	// Close releases engine resources.

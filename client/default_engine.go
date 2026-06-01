@@ -14,36 +14,51 @@ var (
 )
 
 type runtimeEngine struct {
-	ready  bool
-	closed bool
+	state EngineState
 }
 
 // DefaultEngine opens (or creates) a local embedded KnotDB runtime.
 func DefaultEngine(cfg EngineConfig) (Engine, error) {
+	e := &runtimeEngine{state: EngineStateClose}
+	if err := e.Open(cfg); err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+func (e *runtimeEngine) Open(cfg EngineConfig) error {
+	e.state = EngineStateOpen
+
 	if cfg.DataDir == "" {
-		return nil, fmt.Errorf("%w: data_dir is required", ErrInvalidConfig)
+		e.state = EngineStateClose
+		return fmt.Errorf("%w: data_dir is required", ErrInvalidConfig)
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = EngineModeStandalone
 	}
 	if cfg.Mode != EngineModeStandalone {
-		return nil, fmt.Errorf("%w: unsupported mode %q", ErrInvalidConfig, cfg.Mode)
+		e.state = EngineStateClose
+		return fmt.Errorf("%w: unsupported mode %q", ErrInvalidConfig, cfg.Mode)
 	}
 
 	if _, err := os.Stat(cfg.DataDir); err != nil {
 		if os.IsNotExist(err) {
 			if !cfg.CreateIfMissing {
-				return nil, fmt.Errorf("%w: data_dir does not exist", ErrInvalidConfig)
+				e.state = EngineStateClose
+				return fmt.Errorf("%w: data_dir does not exist", ErrInvalidConfig)
 			}
 			if mkErr := os.MkdirAll(cfg.DataDir, 0o755); mkErr != nil {
-				return nil, mkErr
+				e.state = EngineStateClose
+				return mkErr
 			}
 		} else {
-			return nil, err
+			e.state = EngineStateClose
+			return err
 		}
 	}
 
-	return &runtimeEngine{ready: true}, nil
+	e.state = EngineStateReady
+	return nil
 }
 
 func (e *runtimeEngine) Ready(ctx context.Context) error {
@@ -53,17 +68,16 @@ func (e *runtimeEngine) Ready(ctx context.Context) error {
 	default:
 	}
 
-	if e.closed {
+	if e.state == EngineStateClose {
 		return ErrClosed
 	}
-	if !e.ready {
+	if e.state != EngineStateReady {
 		return ErrNotReady
 	}
 	return nil
 }
 
 func (e *runtimeEngine) Close() error {
-	e.closed = true
-	e.ready = false
+	e.state = EngineStateClose
 	return nil
 }
