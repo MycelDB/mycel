@@ -47,6 +47,14 @@ func (e *runtimeEngine) Open(cfg EngineConfig) error {
 				e.state = EngineStateClose
 				return fmt.Errorf("%w: data_dir does not exist", ErrInvalidConfig)
 			}
+			if cfg.AdminUsername == "" {
+				e.state = EngineStateClose
+				return fmt.Errorf("%w: admin_username is required when creating a standalone database", ErrInvalidConfig)
+			}
+			if cfg.AdminPassword == "" {
+				e.state = EngineStateClose
+				return fmt.Errorf("%w: admin_password is required when creating a standalone database", ErrInvalidConfig)
+			}
 			if mkErr := os.MkdirAll(cfg.DataDir, 0o755); mkErr != nil {
 				e.state = EngineStateClose
 				return mkErr

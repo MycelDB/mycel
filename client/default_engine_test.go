@@ -15,6 +15,8 @@ func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
 		DataDir:         dataDir,
 		Mode:            EngineModeStandalone,
 		CreateIfMissing: true,
+		AdminUsername:   "admin",
+		AdminPassword:   "password",
 	})
 	if err != nil {
 		t.Fatalf("expected engine open success, got error: %v", err)
@@ -35,6 +37,8 @@ func TestRuntimeEngine_OpenMethod(t *testing.T) {
 		DataDir:         dataDir,
 		Mode:            EngineModeStandalone,
 		CreateIfMissing: true,
+		AdminUsername:   "admin",
+		AdminPassword:   "password",
 	}); err != nil {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
@@ -56,6 +60,24 @@ func TestRuntimeEngine_OpenMethod_CreateIfMissingFalse(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when CreateIfMissing is false and data dir is missing")
+	}
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestRuntimeEngine_OpenMethod_CreateIfMissingTrueRequiresAdminCredentials(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "missing-admin-creds")
+
+	engine := &runtimeEngine{}
+	err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+	})
+	if err == nil {
+		t.Fatal("expected error when CreateIfMissing is true without admin credentials")
 	}
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("expected ErrInvalidConfig, got: %v", err)

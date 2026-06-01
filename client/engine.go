@@ -24,6 +24,8 @@ type EngineConfig struct {
 	DataDir         string
 	Mode            EngineMode
 	CreateIfMissing bool
+	AdminUsername   string
+	AdminPassword   string
 }
 
 // Engine represents a running KnotDB engine runtime in-process.
