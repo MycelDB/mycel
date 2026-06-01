@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-func TestOpenEngine_StandaloneSuccess(t *testing.T) {
+func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "knotdb")
 
-	engine, err := OpenEngine(EngineConfig{
+	engine, err := DefaultEngine(EngineConfig{
 		DataDir:         dataDir,
 		Mode:            EngineModeStandalone,
 		CreateIfMissing: true,

@@ -10,7 +10,7 @@ const (
 	EngineModeStandalone EngineMode = "standalone"
 )
 
-// EngineConfig defines startup configuration for OpenEngine.
+// EngineConfig defines startup configuration for DefaultEngine.
 type EngineConfig struct {
 	DataDir         string
 	Mode            EngineMode

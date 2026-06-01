@@ -18,8 +18,8 @@ type runtimeEngine struct {
 	closed bool
 }
 
-// OpenEngine opens (or creates) a local embedded KnotDB runtime.
-func OpenEngine(cfg EngineConfig) (Engine, error) {
+// DefaultEngine opens (or creates) a local embedded KnotDB runtime.
+func DefaultEngine(cfg EngineConfig) (Engine, error) {
 	if cfg.DataDir == "" {
 		return nil, fmt.Errorf("%w: data_dir is required", ErrInvalidConfig)
 	}
