@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"knot_db/core/identity"
 )
 
 func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
@@ -55,20 +57,21 @@ func TestRuntimeEngine_OpenMethod(t *testing.T) {
 		t.Fatalf("expected users.json to be created, got error: %v", err)
 	}
 
-	var uf struct {
-		Users []struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
-		} `json:"users"`
+	var users []identity.User
+	if err := json.Unmarshal(raw, &users); err != nil {
+		t.Fatalf("expected valid users.json user array, got error: %v", err)
 	}
-	if err := json.Unmarshal(raw, &uf); err != nil {
-		t.Fatalf("expected valid users.json, got error: %v", err)
+	if len(users) != 1 {
+		t.Fatalf("expected exactly one bootstrap user, got: %d", len(users))
 	}
-	if len(uf.Users) != 1 {
-		t.Fatalf("expected exactly one bootstrap user, got: %d", len(uf.Users))
+	if users[0].Ref != identity.UserRef("admin") {
+		t.Fatalf("unexpected bootstrap user ref: %s", users[0].Ref)
 	}
-	if uf.Users[0].Username != "admin" || uf.Users[0].Password != "password" {
-		t.Fatalf("unexpected bootstrap admin record: %#v", uf.Users[0])
+	if users[0].Username == nil || *users[0].Username != "admin" {
+		t.Fatalf("unexpected bootstrap username: %#v", users[0].Username)
+	}
+	if users[0].Status != identity.UserStatusActive {
+		t.Fatalf("unexpected bootstrap status: %s", users[0].Status)
 	}
 }
 

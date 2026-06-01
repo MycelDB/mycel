@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/google/uuid"
+	"knot_db/core/identity"
 )
 
 var (
@@ -17,15 +20,6 @@ var (
 
 type defaultEngine struct {
 	state EngineState
-}
-
-type userRecord struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-type usersFile struct {
-	Users []userRecord `json:"users"`
 }
 
 // DefaultEngine opens (or creates) a local embedded KnotDB runtime.
@@ -103,13 +97,16 @@ func (e *defaultEngine) Close() error {
 }
 
 func writeInitialUsersFile(dataDir, adminUsername, adminPassword string) error {
+	_ = adminPassword // password persistence format handled separately from core user records.
+
 	path := filepath.Join(dataDir, "users.json")
-	content := usersFile{
-		Users: []userRecord{{
-			Username: adminUsername,
-			Password: adminPassword,
-		}},
-	}
+	username := adminUsername
+	content := []identity.User{{
+		ID:       uuid.New(),
+		Ref:      identity.UserRef(adminUsername),
+		Username: &username,
+		Status:   identity.UserStatusActive,
+	}}
 	b, err := json.MarshalIndent(content, "", "  ")
 	if err != nil {
 		return err
