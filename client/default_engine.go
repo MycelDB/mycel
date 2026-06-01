@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"knot_db/api"
 	"knot_db/core/identity"
 )
 
@@ -19,6 +20,7 @@ var (
 	ErrClosed             = errors.New("engine closed")
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrUnauthorized       = errors.New("unauthorized")
+	ErrNotFound           = errors.New("not found")
 )
 
 type defaultEngine struct {
@@ -202,6 +204,49 @@ func (e *defaultEngine) CreateDatabase(ctx context.Context, in CreateDatabaseInp
 	}
 
 	return DatabaseInfo{OwnerID: ownerID, SpaceID: space.SpaceID, Name: space.Name}, nil
+}
+
+func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (api.GraphSession, error) {
+	if err := e.Ready(ctx); err != nil {
+		return nil, err
+	}
+	if in.Auth.UserID == uuid.Nil || in.Auth.EXP <= time.Now().Unix() {
+		return nil, ErrUnauthorized
+	}
+	if !contains(in.Auth.Scopes, "graph:read") && !contains(in.Auth.Scopes, "graph:write") && !contains(in.Auth.Roles, "admin") {
+		return nil, ErrUnauthorized
+	}
+
+	spaceID := in.SpaceID
+	if spaceID == "" && len(in.Auth.SpaceIDs) > 0 {
+		spaceID = in.Auth.SpaceIDs[0]
+	}
+	if spaceID == "" {
+		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
+	}
+
+	spaces, err := readSpacesFile(e.dataDir)
+	if err != nil {
+		return nil, err
+	}
+	var space *spaceRecord
+	for i := range spaces {
+		if spaces[i].SpaceID == spaceID {
+			space = &spaces[i]
+			break
+		}
+	}
+	if space == nil {
+		return nil, ErrNotFound
+	}
+
+	if !contains(in.Auth.Roles, "admin") {
+		if !contains(in.Auth.SpaceIDs, spaceID) && !contains(in.Auth.OwnerIDs, space.OwnerID) {
+			return nil, ErrUnauthorized
+		}
+	}
+
+	return &defaultGraphSession{dataDir: e.dataDir, spaceID: spaceID}, nil
 }
 
 func (e *defaultEngine) Close() error {

@@ -256,3 +256,40 @@ func TestRuntimeEngine_CreateDatabase_UnauthorizedWithoutScope(t *testing.T) {
 		t.Fatalf("expected ErrUnauthorized, got: %v", err)
 	}
 }
+
+func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-open-session")
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+
+	token, err := engine.Authenticate(context.Background(), AuthInput{
+		UserRef:  identity.UserRef("admin@example.com"),
+		Password: "change-me-now",
+	})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+
+	dbInfo, err := engine.CreateDatabase(context.Background(), CreateDatabaseInput{Auth: token, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create database success, got error: %v", err)
+	}
+
+	session, err := engine.OpenSession(context.Background(), OpenSessionInput{Auth: token, SpaceID: dbInfo.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("expected close session success, got error: %v", err)
+	}
+}

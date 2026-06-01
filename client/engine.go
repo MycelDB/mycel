@@ -1,6 +1,10 @@
 package client
 
-import "context"
+import (
+	"context"
+
+	"knot_db/api"
+)
 
 // EngineMode defines runtime mode for KnotDB engine startup.
 type EngineMode string
@@ -38,6 +42,8 @@ type Engine interface {
 	Authenticate(ctx context.Context, in AuthInput) (AuthToken, error)
 	// CreateDatabase creates or returns a database (space) for an authorized user.
 	CreateDatabase(ctx context.Context, in CreateDatabaseInput) (DatabaseInfo, error)
+	// OpenSession opens a graph session for an authorized token/space scope.
+	OpenSession(ctx context.Context, in OpenSessionInput) (api.GraphSession, error)
 	// Close releases engine resources.
 	Close() error
 }
