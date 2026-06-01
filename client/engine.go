@@ -34,6 +34,8 @@ type Engine interface {
 	Open(cfg EngineConfig) error
 	// Ready reports whether the engine is ready to serve operations.
 	Ready(ctx context.Context) error
+	// Authenticate validates credentials and returns an access token.
+	Authenticate(ctx context.Context, in AuthInput) (AuthToken, error)
 	// Close releases engine resources.
 	Close() error
 }

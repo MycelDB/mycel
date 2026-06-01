@@ -19,8 +19,8 @@ func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
 		DataDir:         dataDir,
 		Mode:            EngineModeStandalone,
 		CreateIfMissing: true,
-		AdminUsername:   "admin",
-		AdminPassword:   "password",
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
 	})
 	if err != nil {
 		t.Fatalf("expected engine open success, got error: %v", err)
@@ -108,5 +108,59 @@ func TestRuntimeEngine_OpenMethod_CreateIfMissingTrueRequiresAdminCredentials(t 
 	}
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-auth")
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+
+	token, err := engine.Authenticate(context.Background(), AuthInput{
+		UserRef:  identity.UserRef("admin@example.com"),
+		Password: "change-me-now",
+	})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+	if token.AccessToken == "" {
+		t.Fatal("expected non-empty access token")
+	}
+}
+
+func TestRuntimeEngine_Authenticate_InvalidPassword(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-auth-invalid")
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+
+	_, err := engine.Authenticate(context.Background(), AuthInput{
+		UserRef:  identity.UserRef("admin@example.com"),
+		Password: "wrong-password",
+	})
+	if err == nil {
+		t.Fatal("expected invalid credentials error")
+	}
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got: %v", err)
 	}
 }
