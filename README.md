@@ -10,3 +10,4 @@ Go library for Knotbase graph database.
 
 ## API docs
 - Edge structures: `docs/api/edge.md`
+- User structures: `docs/api/user.md`

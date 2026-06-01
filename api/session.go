@@ -18,3 +18,10 @@ type GraphSession interface {
 type Store interface {
 	OpenSession(ctx context.Context, ownerID string, spaceID string) (GraphSession, error)
 }
+
+// UserStore manages user identity records used by applications.
+type UserStore interface {
+	CreateUser(ctx context.Context, in UserInput) (User, error)
+	GetUserByID(ctx context.Context, id UserID) (User, error)
+	GetUserByRef(ctx context.Context, ref UserRef) (User, error)
+}
