@@ -31,8 +31,7 @@ type encryptedStore struct {
 	CipherB64 string `json:"cipher_b64"`
 }
 
-// DefaultUserManager is a file-backed UserManager implementation.
-type DefaultUserManager struct {
+type defaultUserManager struct {
 	location     string
 	storePath    string
 	key          []byte
@@ -41,11 +40,12 @@ type DefaultUserManager struct {
 	indexByRefLC map[string]int
 }
 
-func NewDefaultUserManager() *DefaultUserManager {
-	return &DefaultUserManager{indexByRefLC: map[string]int{}}
+// NewUserManager creates the default file-backed UserManager implementation.
+func NewUserManager() UserManager {
+	return &defaultUserManager{indexByRefLC: map[string]int{}}
 }
 
-func (m *DefaultUserManager) Init(ctx context.Context, location string, encryptionKeyB64 string) error {
+func (m *defaultUserManager) Init(ctx context.Context, location string, encryptionKeyB64 string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -90,7 +90,7 @@ func (m *DefaultUserManager) Init(ctx context.Context, location string, encrypti
 	return nil
 }
 
-func (m *DefaultUserManager) ExistsByRef(ctx context.Context, ref model.UserRef) (bool, error) {
+func (m *defaultUserManager) ExistsByRef(ctx context.Context, ref model.UserRef) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -101,7 +101,7 @@ func (m *DefaultUserManager) ExistsByRef(ctx context.Context, ref model.UserRef)
 	return ok, nil
 }
 
-func (m *DefaultUserManager) GetByRef(ctx context.Context, ref model.UserRef) (model.User, error) {
+func (m *defaultUserManager) GetByRef(ctx context.Context, ref model.UserRef) (model.User, error) {
 	if err := ctx.Err(); err != nil {
 		return model.User{}, err
 	}
@@ -112,7 +112,7 @@ func (m *DefaultUserManager) GetByRef(ctx context.Context, ref model.UserRef) (m
 	return m.users[idx].User, nil
 }
 
-func (m *DefaultUserManager) Create(ctx context.Context, in CreateUserInput) (model.User, error) {
+func (m *defaultUserManager) Create(ctx context.Context, in CreateUserInput) (model.User, error) {
 	if err := ctx.Err(); err != nil {
 		return model.User{}, err
 	}
@@ -152,7 +152,7 @@ func (m *DefaultUserManager) Create(ctx context.Context, in CreateUserInput) (mo
 }
 
 // Authenticate checks credentials and returns a user record.
-func (m *DefaultUserManager) Authenticate(ctx context.Context, ref model.UserRef, password string) (model.User, error) {
+func (m *defaultUserManager) Authenticate(ctx context.Context, ref model.UserRef, password string) (model.User, error) {
 	if err := ctx.Err(); err != nil {
 		return model.User{}, err
 	}
@@ -167,14 +167,14 @@ func (m *DefaultUserManager) Authenticate(ctx context.Context, ref model.UserRef
 	return rec.User, nil
 }
 
-func (m *DefaultUserManager) rebuildIndex() {
+func (m *defaultUserManager) rebuildIndex() {
 	m.indexByRefLC = map[string]int{}
 	for i, u := range m.users {
 		m.indexByRefLC[normalizeRef(u.User.Ref)] = i
 	}
 }
 
-func (m *DefaultUserManager) persist() error {
+func (m *defaultUserManager) persist() error {
 	raw, err := m.encodeStore(m.users)
 	if err != nil {
 		return err
@@ -182,7 +182,7 @@ func (m *DefaultUserManager) persist() error {
 	return os.WriteFile(m.storePath, raw, 0o600)
 }
 
-func (m *DefaultUserManager) encodeStore(users []storedUser) ([]byte, error) {
+func (m *defaultUserManager) encodeStore(users []storedUser) ([]byte, error) {
 	plain, err := json.MarshalIndent(users, "", "  ")
 	if err != nil {
 		return nil, err
@@ -216,7 +216,7 @@ func (m *DefaultUserManager) encodeStore(users []storedUser) ([]byte, error) {
 	return append(out, '\n'), nil
 }
 
-func (m *DefaultUserManager) decodeStore(raw []byte) ([]storedUser, error) {
+func (m *defaultUserManager) decodeStore(raw []byte) ([]storedUser, error) {
 	if m.encrypted {
 		var enc encryptedStore
 		if err := json.Unmarshal(raw, &enc); err != nil {

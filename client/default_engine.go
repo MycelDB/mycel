@@ -27,7 +27,7 @@ var (
 type defaultEngine struct {
 	state       EngineState
 	dataDir     string
-	userManager *usermgmt.DefaultUserManager
+	userManager usermgmt.UserManager
 }
 
 // DefaultEngine opens (or creates) a local embedded KnotDB runtime.
@@ -77,7 +77,7 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		}
 	}
 
-	um := usermgmt.NewDefaultUserManager()
+	um := usermgmt.NewUserManager()
 	if err := um.Init(context.Background(), cfg.DataDir, cfg.UserStoreEncryptionKeyB64); err != nil {
 		e.state = EngineStateClose
 		return err

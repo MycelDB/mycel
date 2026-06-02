@@ -18,4 +18,5 @@ type UserManager interface {
 	ExistsByRef(ctx context.Context, ref model.UserRef) (bool, error)
 	GetByRef(ctx context.Context, ref model.UserRef) (model.User, error)
 	Create(ctx context.Context, in CreateUserInput) (model.User, error)
+	Authenticate(ctx context.Context, ref model.UserRef, password string) (model.User, error)
 }

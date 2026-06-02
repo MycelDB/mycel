@@ -11,7 +11,7 @@ import (
 )
 
 func TestDefaultUserManager_InitAndCreate_Plaintext(t *testing.T) {
-	m := NewDefaultUserManager()
+	m := NewUserManager()
 	dir := filepath.Join(t.TempDir(), "store")
 	if err := m.Init(context.Background(), dir, ""); err != nil {
 		t.Fatalf("init failed: %v", err)
@@ -37,7 +37,7 @@ func TestDefaultUserManager_Init_WithWrongKeyFailsDecrypt(t *testing.T) {
 	keyA := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	keyB := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
 
-	m1 := NewDefaultUserManager()
+	m1 := NewUserManager()
 	if err := m1.Init(context.Background(), dir, keyA); err != nil {
 		t.Fatalf("init with keyA failed: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestDefaultUserManager_Init_WithWrongKeyFailsDecrypt(t *testing.T) {
 		t.Fatalf("create failed: %v", err)
 	}
 
-	m2 := NewDefaultUserManager()
+	m2 := NewUserManager()
 	err = m2.Init(context.Background(), dir, keyB)
 	if err == nil {
 		t.Fatal("expected decrypt failure with wrong key")
