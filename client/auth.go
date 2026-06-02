@@ -1,6 +1,6 @@
 package client
 
-import "knot_db/core/model"
+import "knot_db/model"
 
 // AuthInput is the authentication request payload.
 type AuthInput struct {

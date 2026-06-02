@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"knot_db/core/model"
+	"knot_db/model"
 )
 
 func TestDefaultUserManager_InitAndCreate_Plaintext(t *testing.T) {

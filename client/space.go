@@ -1,5 +1,7 @@
 package client
 
+import "knot_db/model"
+
 // CreateSpaceInput defines space creation request payload.
 type CreateSpaceInput struct {
 	AccessToken AccessToken
@@ -8,7 +10,7 @@ type CreateSpaceInput struct {
 
 // SpaceInfo contains resulting space identifiers.
 type SpaceInfo struct {
-	OwnerID string `json:"owner_id"`
-	SpaceID string `json:"space_id"`
-	Name    string `json:"name"`
+	OwnerID model.UserID  `json:"owner_id"`
+	SpaceID model.SpaceID `json:"space_id"`
+	Name    string        `json:"name"`
 }

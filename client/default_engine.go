@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"knot_db/api"
-	"knot_db/core/model"
 	"knot_db/core/usermgmt"
+	"knot_db/model"
 )
 
 var (
@@ -45,8 +45,8 @@ type authClaims struct {
 	UserID   model.UserID
 	UserRef  model.UserRef
 	Roles    []string
-	OwnerIDs []string
-	SpaceIDs []string
+	OwnerIDs []model.UserID
+	SpaceIDs []model.SpaceID
 	Scopes   []string
 }
 
@@ -197,8 +197,8 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 		UserID:   user.ID,
 		UserRef:  user.Ref,
 		Roles:    []string{"admin"},
-		OwnerIDs: []string{"owner:" + uid},
-		SpaceIDs: []string{"space:" + uid + ":default"},
+		OwnerIDs: []model.UserID{user.ID},
+		SpaceIDs: []model.SpaceID{},
 		Scopes:   []string{"graph:read", "graph:write", "admin:users", "space:create"},
 	}
 
@@ -230,21 +230,7 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 		return SpaceInfo{}, ErrUnauthorized
 	}
 
-	ownerID := "owner:" + auth.UserID.String()
-	if len(auth.OwnerIDs) > 0 && auth.OwnerIDs[0] != "" {
-		ownerID = auth.OwnerIDs[0]
-	}
-
-	owners, err := readOwnersFile(e.dataDir)
-	if err != nil {
-		return SpaceInfo{}, err
-	}
-	if !ownerExists(owners, ownerID) {
-		owners = append(owners, ownerRecord{OwnerID: ownerID, UserID: auth.UserID.String(), Status: "active"})
-		if err := writeOwnersFile(e.dataDir, owners); err != nil {
-			return SpaceInfo{}, err
-		}
-	}
+	ownerID := auth.UserID
 
 	spaces, err := readSpacesFile(e.dataDir)
 	if err != nil {
@@ -252,16 +238,18 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 	}
 	for _, s := range spaces {
 		if s.OwnerID == ownerID && s.Name == in.Name {
+			e.grantSpaceToCachedClaims(in.AccessToken, s.SpaceID)
 			return SpaceInfo{OwnerID: s.OwnerID, SpaceID: s.SpaceID, Name: s.Name}, nil
 		}
 	}
 
-	space := spaceRecord{SpaceID: "space:" + uuid.NewString(), OwnerID: ownerID, Name: in.Name, Status: "active"}
+	space := spaceRecord{SpaceID: uuid.New(), OwnerID: ownerID, Name: in.Name, Status: "active"}
 	spaces = append(spaces, space)
 	if err := writeSpacesFile(e.dataDir, spaces); err != nil {
 		return SpaceInfo{}, err
 	}
 
+	e.grantSpaceToCachedClaims(in.AccessToken, space.SpaceID)
 	return SpaceInfo{OwnerID: ownerID, SpaceID: space.SpaceID, Name: space.Name}, nil
 }
 
@@ -281,10 +269,10 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (a
 	}
 
 	spaceID := in.SpaceID
-	if spaceID == "" && len(auth.SpaceIDs) > 0 {
+	if spaceID == uuid.Nil && len(auth.SpaceIDs) > 0 {
 		spaceID = auth.SpaceIDs[0]
 	}
-	if spaceID == "" {
+	if spaceID == uuid.Nil {
 		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
 	}
 
@@ -304,7 +292,7 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (a
 	}
 
 	if !contains(auth.Roles, "admin") {
-		if !contains(auth.SpaceIDs, spaceID) && !contains(auth.OwnerIDs, space.OwnerID) {
+		if !containsSpaceID(auth.SpaceIDs, spaceID) && !containsUserID(auth.OwnerIDs, space.OwnerID) {
 			return nil, ErrUnauthorized
 		}
 	}
@@ -341,43 +329,11 @@ func (e *defaultEngine) authClaimsForAccessToken(ctx context.Context, accessToke
 	return claims, nil
 }
 
-type ownerRecord struct {
-	OwnerID string `json:"owner_id"`
-	UserID  string `json:"user_id"`
-	Status  string `json:"status"`
-}
-
 type spaceRecord struct {
-	SpaceID string `json:"space_id"`
-	OwnerID string `json:"owner_id"`
-	Name    string `json:"name"`
-	Status  string `json:"status"`
-}
-
-func readOwnersFile(dataDir string) ([]ownerRecord, error) {
-	path := filepath.Join(dataDir, "owners.json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []ownerRecord{}, nil
-		}
-		return nil, err
-	}
-	var out []ownerRecord
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func writeOwnersFile(dataDir string, owners []ownerRecord) error {
-	path := filepath.Join(dataDir, "owners.json")
-	b, err := json.MarshalIndent(owners, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	return os.WriteFile(path, b, 0o600)
+	SpaceID model.SpaceID `json:"space_id"`
+	OwnerID model.UserID  `json:"owner_id"`
+	Name    string        `json:"name"`
+	Status  string        `json:"status"`
 }
 
 func readSpacesFile(dataDir string) ([]spaceRecord, error) {
@@ -406,16 +362,36 @@ func writeSpacesFile(dataDir string, spaces []spaceRecord) error {
 	return os.WriteFile(path, b, 0o600)
 }
 
-func ownerExists(owners []ownerRecord, ownerID string) bool {
-	for _, o := range owners {
-		if o.OwnerID == ownerID {
+func (e *defaultEngine) grantSpaceToCachedClaims(accessToken AccessToken, spaceID model.SpaceID) {
+	e.authMu.Lock()
+	defer e.authMu.Unlock()
+	claims, ok := e.authCache[accessToken]
+	if !ok || containsSpaceID(claims.SpaceIDs, spaceID) {
+		return
+	}
+	claims.SpaceIDs = append(claims.SpaceIDs, spaceID)
+	e.authCache[accessToken] = claims
+}
+
+func contains(items []string, wanted string) bool {
+	for _, it := range items {
+		if it == wanted {
 			return true
 		}
 	}
 	return false
 }
 
-func contains(items []string, wanted string) bool {
+func containsUserID(items []model.UserID, wanted model.UserID) bool {
+	for _, it := range items {
+		if it == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSpaceID(items []model.SpaceID, wanted model.SpaceID) bool {
 	for _, it := range items {
 		if it == wanted {
 			return true

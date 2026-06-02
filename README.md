@@ -3,7 +3,7 @@
 Go library for Knotbase graph spaces.
 
 ## Layout
-- `core/`: foundational system concepts (e.g. identity)
+- `core/`: foundational services (e.g. user management)
 - `api/`: public graph API types and interfaces
 - `model/`: shared domain/storage model types
 - `internal/`: private implementation packages

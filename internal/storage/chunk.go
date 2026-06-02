@@ -1,7 +1,9 @@
 package storage
 
+import "knot_db/model"
+
 type Chunk struct {
 	ChunkID string
-	OwnerID string
-	SpaceID string
+	OwnerID model.UserID
+	SpaceID model.SpaceID
 }

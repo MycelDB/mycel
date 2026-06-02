@@ -3,7 +3,7 @@ package usermgmt
 import (
 	"context"
 
-	"knot_db/core/model"
+	"knot_db/model"
 )
 
 // CreateUserInput is the create payload managed by UserManager.

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"knot_db/core/model"
+	"knot_db/model"
 )
 
 func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
@@ -209,12 +209,12 @@ func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected create space success, got error: %v", err)
 	}
-	if spaceInfo.OwnerID == "" || spaceInfo.SpaceID == "" || spaceInfo.Name != "default" {
+	if spaceInfo.OwnerID == uuid.Nil || spaceInfo.SpaceID == uuid.Nil || spaceInfo.Name != "default" {
 		t.Fatalf("unexpected space info: %#v", spaceInfo)
 	}
 
-	if _, err := os.Stat(filepath.Join(dataDir, "owners.json")); err != nil {
-		t.Fatalf("expected owners.json to exist: %v", err)
+	if _, err := os.Stat(filepath.Join(dataDir, "owners.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected owners.json not to exist, got: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "spaces.json")); err != nil {
 		t.Fatalf("expected spaces.json to exist: %v", err)
@@ -293,5 +293,13 @@ func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
 	}
 	if err := session.Close(); err != nil {
 		t.Fatalf("expected close session success, got error: %v", err)
+	}
+
+	defaultSession, err := engine.OpenSession(context.Background(), OpenSessionInput{AccessToken: token.AccessToken})
+	if err != nil {
+		t.Fatalf("expected open session with cached default space success, got error: %v", err)
+	}
+	if err := defaultSession.Close(); err != nil {
+		t.Fatalf("expected close default session success, got error: %v", err)
 	}
 }

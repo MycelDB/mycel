@@ -15,7 +15,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"knot_db/core/model"
+	"knot_db/model"
 )
 
 const usersStoreFile = "users.json"

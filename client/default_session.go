@@ -10,11 +10,12 @@ import (
 
 	"github.com/google/uuid"
 	"knot_db/api"
+	"knot_db/model"
 )
 
 type defaultGraphSession struct {
 	dataDir string
-	spaceID string
+	spaceID model.SpaceID
 	closed  bool
 }
 
@@ -198,7 +199,7 @@ func findNode(nodes []api.Node, id api.NodeID) (api.Node, bool) {
 	return api.Node{}, false
 }
 
-func safeID(s string) string {
+func safeID(id model.SpaceID) string {
 	repl := strings.NewReplacer(":", "_", "/", "_", "\\", "_")
-	return repl.Replace(s)
+	return repl.Replace(id.String())
 }

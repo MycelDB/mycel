@@ -1,7 +1,7 @@
 package model
 
 // Owner is the top-level storage tenant boundary.
-type Owner struct {
-	OwnerID string
-	Status  string
-}
+//
+// Owners are always users, so ownership is represented by the user's immutable
+// internal identifier.
+type Owner = UserID
