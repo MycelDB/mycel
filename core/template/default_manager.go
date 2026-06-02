@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	templatesStorePrefix = "templates_"
 	templatesStoreSuffix = ".json"
 	supportedSchema      = 1
 )
@@ -325,11 +324,11 @@ func validSemver(version string) bool {
 }
 
 func templateStorePath(location string, spaceID model.SpaceID) string {
-	return filepath.Join(location, templatesStorePrefix+spaceID.String()+templatesStoreSuffix)
+	return filepath.Join(location, spaceID.String()+templatesStoreSuffix)
 }
 
 func isTemplateStoreFile(name string) bool {
-	return strings.HasPrefix(name, templatesStorePrefix) && strings.HasSuffix(name, templatesStoreSuffix)
+	return strings.HasSuffix(name, templatesStoreSuffix)
 }
 
 func spaceKeyVersion(spaceID model.SpaceID, key string, version string) string {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -97,35 +98,35 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 				e.state = EngineStateClose
 				return fmt.Errorf("%w: admin_password is required when creating a standalone store", ErrInvalidConfig)
 			}
-			if mkErr := os.MkdirAll(cfg.DataDir, 0o755); mkErr != nil {
-				e.state = EngineStateClose
-				return mkErr
-			}
 			created = true
 		} else {
 			e.state = EngineStateClose
 			return err
 		}
 	}
+	if err := ensureStorageLayout(cfg.DataDir); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
 
 	if e.userManager == nil {
 		e.userManager = user.NewManager()
 	}
-	if err := e.userManager.Init(context.Background(), cfg.DataDir, cfg.UserStoreEncryptionKeyB64); err != nil {
+	if err := e.userManager.Init(context.Background(), metaDir(cfg.DataDir), cfg.UserStoreEncryptionKeyB64); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
 	if e.spaceManager == nil {
 		e.spaceManager = space.NewManager()
 	}
-	if err := e.spaceManager.Init(context.Background(), cfg.DataDir); err != nil {
+	if err := e.spaceManager.Init(context.Background(), metaDir(cfg.DataDir)); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
 	if e.templateManager == nil {
 		e.templateManager = coretemplate.NewManager()
 	}
-	if err := e.templateManager.Init(context.Background(), cfg.DataDir); err != nil {
+	if err := e.templateManager.Init(context.Background(), templatesDir(cfg.DataDir)); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
@@ -324,7 +325,7 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (g
 		}
 	}
 
-	return graphstore.NewSession(e.dataDir, spaceID, e.templateManager, graphstore.Errors{Closed: ErrClosed, NotFound: ErrNotFound}), nil
+	return graphstore.NewSession(graphsDir(e.dataDir), spaceID, e.templateManager, graphstore.Errors{Closed: ErrClosed, NotFound: ErrNotFound}), nil
 }
 
 func (e *defaultEngine) Close() error {
@@ -365,6 +366,27 @@ func (e *defaultEngine) grantSpaceToCachedClaims(accessToken AccessToken, spaceI
 	}
 	claims.SpaceIDs = append(claims.SpaceIDs, spaceID)
 	e.authCache[accessToken] = claims
+}
+
+func ensureStorageLayout(dataDir string) error {
+	for _, dir := range []string{dataDir, metaDir(dataDir), graphsDir(dataDir), templatesDir(dataDir)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func metaDir(dataDir string) string {
+	return filepath.Join(dataDir, "meta")
+}
+
+func graphsDir(dataDir string) string {
+	return filepath.Join(dataDir, "graphs")
+}
+
+func templatesDir(dataDir string) string {
+	return filepath.Join(metaDir(dataDir), "templates")
 }
 
 func contains(items []string, wanted string) bool {

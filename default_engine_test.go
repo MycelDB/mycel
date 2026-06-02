@@ -53,9 +53,9 @@ func TestRuntimeEngine_OpenMethod(t *testing.T) {
 		t.Fatalf("expected engine ready after open, got error: %v", err)
 	}
 
-	usersPath := filepath.Join(dataDir, "users.json")
+	usersPath := filepath.Join(dataDir, "meta", "users.json")
 	if _, err := os.Stat(usersPath); err != nil {
-		t.Fatalf("expected users.json to be created, got error: %v", err)
+		t.Fatalf("expected meta/users.json to be created, got error: %v", err)
 	}
 
 	if _, err := engine.Authenticate(context.Background(), AuthInput{
@@ -215,11 +215,11 @@ func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 		t.Fatalf("unexpected space info: %#v", spaceInfo)
 	}
 
-	if _, err := os.Stat(filepath.Join(dataDir, "owners.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected owners.json not to exist, got: %v", err)
+	if _, err := os.Stat(filepath.Join(dataDir, "meta", "owners.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected meta/owners.json not to exist, got: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dataDir, "spaces.json")); err != nil {
-		t.Fatalf("expected spaces.json to exist: %v", err)
+	if _, err := os.Stat(filepath.Join(dataDir, "meta", "spaces.json")); err != nil {
+		t.Fatalf("expected meta/spaces.json to exist: %v", err)
 	}
 }
 
@@ -316,6 +316,9 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	if got.ID != node.ID || got.Content != node.Content || got.Props["kind"] != "note" {
 		t.Fatalf("unexpected persisted node: %#v", got)
 	}
+	if _, err := os.Stat(filepath.Join(dataDir, "graphs", spaceInfo.SpaceID.String(), "nodes.json")); err != nil {
+		t.Fatalf("expected graph nodes file to exist: %v", err)
+	}
 }
 
 func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
@@ -359,6 +362,9 @@ func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
 	taskTemplate := templateByKey["task"]
 	if noteTemplate.ID == uuid.Nil || taskTemplate.ID == uuid.Nil {
 		t.Fatalf("expected note and task templates, got: %#v", templates)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "meta", "templates", spaceInfo.SpaceID.String()+".json")); err != nil {
+		t.Fatalf("expected template file to exist: %v", err)
 	}
 
 	session, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: spaceInfo.SpaceID})

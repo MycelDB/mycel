@@ -23,7 +23,7 @@ type Errors struct {
 }
 
 type session struct {
-	dataDir         string
+	graphsDir       string
 	spaceID         model.SpaceID
 	templateManager coretemplate.Manager
 	errors          Errors
@@ -31,8 +31,8 @@ type session struct {
 }
 
 // NewSession opens a file-backed graph session for a space.
-func NewSession(dataDir string, spaceID model.SpaceID, templateManager coretemplate.Manager, errs Errors) graph.Session {
-	return &session{dataDir: dataDir, spaceID: spaceID, templateManager: templateManager, errors: errs}
+func NewSession(graphsDir string, spaceID model.SpaceID, templateManager coretemplate.Manager, errs Errors) graph.Session {
+	return &session{graphsDir: graphsDir, spaceID: spaceID, templateManager: templateManager, errors: errs}
 }
 
 func (s *session) AddNode(ctx context.Context, in graph.NodeInput) (graph.Node, error) {
@@ -172,12 +172,16 @@ func (s *session) ensureOpen(ctx context.Context) error {
 	return nil
 }
 
+func (s *session) spacePath() string {
+	return filepath.Join(s.graphsDir, safeID(s.spaceID))
+}
+
 func (s *session) nodesPath() string {
-	return filepath.Join(s.dataDir, "nodes_"+safeID(s.spaceID)+".json")
+	return filepath.Join(s.spacePath(), "nodes.json")
 }
 
 func (s *session) edgesPath() string {
-	return filepath.Join(s.dataDir, "edges_"+safeID(s.spaceID)+".json")
+	return filepath.Join(s.spacePath(), "edges.json")
 }
 
 func (s *session) readNodes() ([]graph.Node, error) {
@@ -197,6 +201,9 @@ func (s *session) readNodes() ([]graph.Node, error) {
 }
 
 func (s *session) writeNodes(nodes []graph.Node) error {
+	if err := os.MkdirAll(s.spacePath(), 0o755); err != nil {
+		return err
+	}
 	b, err := json.MarshalIndent(nodes, "", "  ")
 	if err != nil {
 		return err
@@ -222,6 +229,9 @@ func (s *session) readEdges() ([]graph.Edge, error) {
 }
 
 func (s *session) writeEdges(edges []graph.Edge) error {
+	if err := os.MkdirAll(s.spacePath(), 0o755); err != nil {
+		return err
+	}
 	b, err := json.MarshalIndent(edges, "", "  ")
 	if err != nil {
 		return err

@@ -123,6 +123,3 @@ knotdb/meta/users.json
 knotdb/graphs/<space_id>/nodes.json
 ```
 
-## Current implementation note
-
-The current code may still use transitional root-level files while storage components are being refactored. New storage work should target the layout described in this document.
