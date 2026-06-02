@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"knot_db/api"
 	"knot_db/model"
 )
 
@@ -256,6 +257,63 @@ func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutScope(t *testing.T) {
 	}
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("expected ErrUnauthorized, got: %v", err)
+	}
+}
+
+func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-add-node")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+
+	token, err := engine.Authenticate(ctx, AuthInput{
+		UserRef:  model.UserRef("admin@example.com"),
+		Password: "change-me-now",
+	})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+
+	spaceInfo, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+
+	session, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: spaceInfo.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	defer session.Close()
+
+	node, err := session.AddNode(ctx, api.NodeInput{
+		Content: "Hello Knotbase",
+		Props: map[string]any{
+			"kind": "note",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected add node success, got error: %v", err)
+	}
+	if node.ID == uuid.Nil || node.Content != "Hello Knotbase" || node.Props["kind"] != "note" {
+		t.Fatalf("unexpected node: %#v", node)
+	}
+
+	got, err := session.GetNode(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("expected get node success, got error: %v", err)
+	}
+	if got.ID != node.ID || got.Content != node.Content || got.Props["kind"] != "note" {
+		t.Fatalf("unexpected persisted node: %#v", got)
 	}
 }
 
