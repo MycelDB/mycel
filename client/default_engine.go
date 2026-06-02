@@ -2,16 +2,15 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"knot_db/api"
+	"knot_db/core/spacemgmt"
 	"knot_db/core/usermgmt"
 	"knot_db/model"
 )
@@ -26,11 +25,12 @@ var (
 )
 
 type defaultEngine struct {
-	state       EngineState
-	dataDir     string
-	userManager usermgmt.UserManager
-	authMu      sync.RWMutex
-	authCache   map[AccessToken]authClaims
+	state        EngineState
+	dataDir      string
+	userManager  usermgmt.UserManager
+	spaceManager spacemgmt.SpaceManager
+	authMu       sync.RWMutex
+	authCache    map[AccessToken]authClaims
 }
 
 // authClaims is the expanded authorization context cached by access token.
@@ -52,9 +52,9 @@ type authClaims struct {
 
 // NewEngine opens (or creates) a local embedded KnotDB runtime.
 //
-// If userManager is nil, a default file-backed user manager is used.
-func NewEngine(cfg EngineConfig, userManager usermgmt.UserManager) (Engine, error) {
-	e := &defaultEngine{state: EngineStateClose, userManager: userManager, authCache: map[AccessToken]authClaims{}}
+// If userManager or spaceManager is nil, default file-backed managers are used.
+func NewEngine(cfg EngineConfig, userManager usermgmt.UserManager, spaceManager spacemgmt.SpaceManager) (Engine, error) {
+	e := &defaultEngine{state: EngineStateClose, userManager: userManager, spaceManager: spaceManager, authCache: map[AccessToken]authClaims{}}
 	if err := e.Open(cfg); err != nil {
 		return nil, err
 	}
@@ -62,9 +62,9 @@ func NewEngine(cfg EngineConfig, userManager usermgmt.UserManager) (Engine, erro
 }
 
 // DefaultEngine opens (or creates) a local embedded KnotDB runtime.
-// Deprecated: use NewEngine(cfg, userManager) instead.
+// Deprecated: use NewEngine(cfg, userManager, spaceManager) instead.
 func DefaultEngine(cfg EngineConfig) (Engine, error) {
-	return NewEngine(cfg, nil)
+	return NewEngine(cfg, nil, nil)
 }
 
 func (e *defaultEngine) Open(cfg EngineConfig) error {
@@ -109,6 +109,13 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		e.userManager = usermgmt.NewUserManager()
 	}
 	if err := e.userManager.Init(context.Background(), cfg.DataDir, cfg.UserStoreEncryptionKeyB64); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+	if e.spaceManager == nil {
+		e.spaceManager = spacemgmt.NewSpaceManager()
+	}
+	if err := e.spaceManager.Init(context.Background(), cfg.DataDir); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
@@ -230,27 +237,13 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 		return SpaceInfo{}, ErrUnauthorized
 	}
 
-	ownerID := auth.UserID
-
-	spaces, err := readSpacesFile(e.dataDir)
+	space, err := e.spaceManager.Create(ctx, spacemgmt.CreateSpaceInput{OwnerID: auth.UserID, Name: in.Name})
 	if err != nil {
-		return SpaceInfo{}, err
-	}
-	for _, s := range spaces {
-		if s.OwnerID == ownerID && s.Name == in.Name {
-			e.grantSpaceToCachedClaims(in.AccessToken, s.SpaceID)
-			return SpaceInfo{OwnerID: s.OwnerID, SpaceID: s.SpaceID, Name: s.Name}, nil
-		}
-	}
-
-	space := spaceRecord{SpaceID: uuid.New(), OwnerID: ownerID, Name: in.Name, Status: "active"}
-	spaces = append(spaces, space)
-	if err := writeSpacesFile(e.dataDir, spaces); err != nil {
 		return SpaceInfo{}, err
 	}
 
 	e.grantSpaceToCachedClaims(in.AccessToken, space.SpaceID)
-	return SpaceInfo{OwnerID: ownerID, SpaceID: space.SpaceID, Name: space.Name}, nil
+	return SpaceInfo{OwnerID: space.OwnerID, SpaceID: space.SpaceID, Name: space.Name}, nil
 }
 
 func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (api.GraphSession, error) {
@@ -276,19 +269,12 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (a
 		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
 	}
 
-	spaces, err := readSpacesFile(e.dataDir)
+	space, err := e.spaceManager.GetByID(ctx, spaceID)
 	if err != nil {
-		return nil, err
-	}
-	var space *spaceRecord
-	for i := range spaces {
-		if spaces[i].SpaceID == spaceID {
-			space = &spaces[i]
-			break
+		if errors.Is(err, spacemgmt.ErrSpaceNotFound) {
+			return nil, ErrNotFound
 		}
-	}
-	if space == nil {
-		return nil, ErrNotFound
+		return nil, err
 	}
 
 	if !contains(auth.Roles, "admin") {
@@ -327,39 +313,6 @@ func (e *defaultEngine) authClaimsForAccessToken(ctx context.Context, accessToke
 		return authClaims{}, ErrUnauthorized
 	}
 	return claims, nil
-}
-
-type spaceRecord struct {
-	SpaceID model.SpaceID `json:"space_id"`
-	OwnerID model.UserID  `json:"owner_id"`
-	Name    string        `json:"name"`
-	Status  string        `json:"status"`
-}
-
-func readSpacesFile(dataDir string) ([]spaceRecord, error) {
-	path := filepath.Join(dataDir, "spaces.json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []spaceRecord{}, nil
-		}
-		return nil, err
-	}
-	var out []spaceRecord
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func writeSpacesFile(dataDir string, spaces []spaceRecord) error {
-	path := filepath.Join(dataDir, "spaces.json")
-	b, err := json.MarshalIndent(spaces, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	return os.WriteFile(path, b, 0o600)
 }
 
 func (e *defaultEngine) grantSpaceToCachedClaims(accessToken AccessToken, spaceID model.SpaceID) {
