@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
@@ -317,6 +318,86 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	}
 }
 
+func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-template-node")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+	spaceInfo, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+
+	templates, err := engine.ImportTemplates(ctx, ImportTemplatesInput{
+		AccessToken: token.AccessToken,
+		SpaceID:     spaceInfo.SpaceID,
+		Document:    nodeTemplateDocument(),
+	})
+	if err != nil {
+		t.Fatalf("expected import templates success, got error: %v", err)
+	}
+	templateByKey := map[string]graph.Template{}
+	for _, tmpl := range templates {
+		templateByKey[tmpl.Key] = tmpl
+	}
+	noteTemplate := templateByKey["note"]
+	taskTemplate := templateByKey["task"]
+	if noteTemplate.ID == uuid.Nil || taskTemplate.ID == uuid.Nil {
+		t.Fatalf("expected note and task templates, got: %#v", templates)
+	}
+
+	session, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: spaceInfo.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	defer session.Close()
+
+	_, err = session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{}})
+	if err == nil {
+		t.Fatal("expected missing required property error")
+	}
+	_, err = session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{"title": "Parent", "secret": "x"}})
+	if err == nil {
+		t.Fatal("expected forbidden property error")
+	}
+	_, err = session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{"title": "Parent", "unknown": "x"}})
+	if err == nil {
+		t.Fatal("expected unknown property error")
+	}
+
+	parent, err := session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{"title": "Parent"}})
+	if err != nil {
+		t.Fatalf("expected parent node success, got error: %v", err)
+	}
+	child, err := session.AddNode(ctx, graph.NodeInput{TemplateID: &taskTemplate.ID, ParentID: &parent.ID, Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("expected allowed child node success, got error: %v", err)
+	}
+	if child.Props["done"] != false {
+		t.Fatalf("expected default done=false, got node: %#v", child)
+	}
+
+	_, err = session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, ParentID: &child.ID, Props: map[string]any{"title": "Nested"}})
+	if err == nil {
+		t.Fatal("expected child rejection for template that disallows children")
+	}
+}
+
 func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "knotdb-open-session")
@@ -359,5 +440,43 @@ func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
 	}
 	if err := defaultSession.Close(); err != nil {
 		t.Fatalf("expected close default session success, got error: %v", err)
+	}
+}
+
+func nodeTemplateDocument() coretemplate.ImportDocument {
+	return coretemplate.ImportDocument{
+		SchemaVersion: 1,
+		Templates: []coretemplate.TemplateImport{
+			{
+				Key:         "note",
+				Version:     "1.0.0",
+				DisplayName: "Note",
+				Properties: coretemplate.PropertyPolicyImport{
+					AllowExtra: false,
+					Allowed: []coretemplate.TemplatePropertyImport{
+						{Name: "title", Type: graph.PropertyTypeString, Required: true},
+					},
+					Forbidden: []string{"secret"},
+				},
+				Children: coretemplate.ChildPolicyImport{
+					Allowed: true,
+					AllowedTemplates: []coretemplate.TemplateRefImport{
+						{Key: "task", Version: "1.0.0"},
+					},
+				},
+			},
+			{
+				Key:         "task",
+				Version:     "1.0.0",
+				DisplayName: "Task",
+				Properties: coretemplate.PropertyPolicyImport{
+					AllowExtra: false,
+					Allowed: []coretemplate.TemplatePropertyImport{
+						{Name: "done", Type: graph.PropertyTypeBool, Default: false},
+					},
+				},
+				Children: coretemplate.ChildPolicyImport{Allowed: false},
+			},
+		},
 	}
 }

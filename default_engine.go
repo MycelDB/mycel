@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/core/space"
+	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstore"
@@ -26,12 +27,13 @@ var (
 )
 
 type defaultEngine struct {
-	state        EngineState
-	dataDir      string
-	userManager  user.Manager
-	spaceManager space.Manager
-	authMu       sync.RWMutex
-	authCache    map[AccessToken]authClaims
+	state           EngineState
+	dataDir         string
+	userManager     user.Manager
+	spaceManager    space.Manager
+	templateManager coretemplate.Manager
+	authMu          sync.RWMutex
+	authCache       map[AccessToken]authClaims
 }
 
 // authClaims is the expanded authorization context cached by access token.
@@ -53,9 +55,9 @@ type authClaims struct {
 
 // NewEngine opens (or creates) a local embedded KnotDB runtime.
 //
-// If userManager or spaceManager is nil, default file-backed managers are used.
-func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Manager) (Engine, error) {
-	e := &defaultEngine{state: EngineStateClose, userManager: userManager, spaceManager: spaceManager, authCache: map[AccessToken]authClaims{}}
+// If userManager, spaceManager, or templateManager is nil, default file-backed managers are used.
+func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Manager, templateManager coretemplate.Manager) (Engine, error) {
+	e := &defaultEngine{state: EngineStateClose, userManager: userManager, spaceManager: spaceManager, templateManager: templateManager, authCache: map[AccessToken]authClaims{}}
 	if err := e.Open(cfg); err != nil {
 		return nil, err
 	}
@@ -63,9 +65,9 @@ func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Ma
 }
 
 // DefaultEngine opens (or creates) a local embedded KnotDB runtime.
-// Deprecated: use NewEngine(cfg, userManager, spaceManager) instead.
+// Deprecated: use NewEngine(cfg, userManager, spaceManager, templateManager) instead.
 func DefaultEngine(cfg EngineConfig) (Engine, error) {
-	return NewEngine(cfg, nil, nil)
+	return NewEngine(cfg, nil, nil, nil)
 }
 
 func (e *defaultEngine) Open(cfg EngineConfig) error {
@@ -117,6 +119,13 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		e.spaceManager = space.NewManager()
 	}
 	if err := e.spaceManager.Init(context.Background(), cfg.DataDir); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+	if e.templateManager == nil {
+		e.templateManager = coretemplate.NewManager()
+	}
+	if err := e.templateManager.Init(context.Background(), cfg.DataDir); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
@@ -207,7 +216,7 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 		Roles:    []string{"admin"},
 		OwnerIDs: []model.UserID{account.ID},
 		SpaceIDs: []model.SpaceID{},
-		Scopes:   []string{"graph:read", "graph:write", "admin:users", "space:create"},
+		Scopes:   []string{"graph:read", "graph:write", "admin:users", "space:create", "template:write"},
 	}
 
 	e.authMu.Lock()
@@ -247,6 +256,37 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 	return SpaceInfo{OwnerID: space.OwnerID, SpaceID: space.SpaceID, Name: space.Name}, nil
 }
 
+func (e *defaultEngine) ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error) {
+	if err := e.Ready(ctx); err != nil {
+		return nil, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	if in.SpaceID == uuid.Nil {
+		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
+	}
+	if !contains(auth.Scopes, "template:write") && !contains(auth.Roles, "admin") {
+		return nil, ErrUnauthorized
+	}
+
+	sp, err := e.spaceManager.GetByID(ctx, in.SpaceID)
+	if err != nil {
+		if errors.Is(err, space.ErrSpaceNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if !contains(auth.Roles, "admin") {
+		if !containsSpaceID(auth.SpaceIDs, in.SpaceID) && !containsUserID(auth.OwnerIDs, sp.OwnerID) {
+			return nil, ErrUnauthorized
+		}
+	}
+
+	return e.templateManager.Import(ctx, in.SpaceID, in.Document)
+}
+
 func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (graph.Session, error) {
 	if err := e.Ready(ctx); err != nil {
 		return nil, err
@@ -284,7 +324,7 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (g
 		}
 	}
 
-	return graphstore.NewSession(e.dataDir, spaceID, graphstore.Errors{Closed: ErrClosed, NotFound: ErrNotFound}), nil
+	return graphstore.NewSession(e.dataDir, spaceID, e.templateManager, graphstore.Errors{Closed: ErrClosed, NotFound: ErrNotFound}), nil
 }
 
 func (e *defaultEngine) Close() error {

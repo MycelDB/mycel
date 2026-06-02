@@ -43,6 +43,8 @@ type Engine interface {
 	Authenticate(ctx context.Context, in AuthInput) (AuthResult, error)
 	// CreateSpace creates or returns a space for an authorized user.
 	CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error)
+	// ImportTemplates imports immutable template versions for a space.
+	ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error)
 	// OpenSession opens a graph session for an authorized token/space scope.
 	OpenSession(ctx context.Context, in OpenSessionInput) (graph.Session, error)
 	// Close releases engine resources.
