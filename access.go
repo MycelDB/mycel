@@ -4,6 +4,19 @@ import (
 	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
 
+// GrantSystemRoleInput defines a request to grant or update a user's system roles.
+type GrantSystemRoleInput struct {
+	AccessToken AccessToken
+	UserID      model.UserID
+	Roles       []model.SystemRole
+}
+
+// RevokeSystemRoleInput defines a request to revoke a user's system roles.
+type RevokeSystemRoleInput struct {
+	AccessToken AccessToken
+	UserID      model.UserID
+}
+
 // GrantSpaceAccessInput defines a request to grant or update user access for a space.
 type GrantSpaceAccessInput struct {
 	AccessToken AccessToken

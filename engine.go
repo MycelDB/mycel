@@ -46,6 +46,10 @@ type Engine interface {
 	CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error)
 	// ImportTemplates imports immutable template versions for a space.
 	ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error)
+	// GrantSystemRole grants or updates a user's system roles.
+	GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (model.SystemAccessRule, error)
+	// RevokeSystemRole revokes a user's system roles.
+	RevokeSystemRole(ctx context.Context, in RevokeSystemRoleInput) error
 	// GrantSpaceAccess grants or updates a user's access to a space.
 	GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (model.SpaceAccessRule, error)
 	// RevokeSpaceAccess revokes a user's access to a space.

@@ -15,19 +15,22 @@ import (
 const accessStoreFile = "access.json"
 
 type accessStore struct {
-	Rules []model.SpaceAccessRule `json:"rules"`
+	SystemRules []model.SystemAccessRule `json:"system_rules"`
+	SpaceRules  []model.SpaceAccessRule  `json:"space_rules"`
 }
 
 type defaultManager struct {
-	location         string
-	storePath        string
-	rules            []model.SpaceAccessRule
-	indexBySpaceUser map[string]int
+	location          string
+	storePath         string
+	systemRules       []model.SystemAccessRule
+	spaceRules        []model.SpaceAccessRule
+	indexBySystemUser map[model.UserID]int
+	indexBySpaceUser  map[string]int
 }
 
 // NewManager creates the default file-backed Manager implementation.
 func NewManager() Manager {
-	return &defaultManager{indexBySpaceUser: map[string]int{}}
+	return &defaultManager{indexBySystemUser: map[model.UserID]int{}, indexBySpaceUser: map[string]int{}}
 }
 
 func (m *defaultManager) Init(ctx context.Context, location string) error {
@@ -44,7 +47,8 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 	m.storePath = filepath.Join(location, accessStoreFile)
 	if _, err := os.Stat(m.storePath); err != nil {
 		if os.IsNotExist(err) {
-			m.rules = []model.SpaceAccessRule{}
+			m.systemRules = []model.SystemAccessRule{}
+			m.spaceRules = []model.SpaceAccessRule{}
 			m.rebuildIndex()
 			return m.persist()
 		}
@@ -58,9 +62,119 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 	if err := json.Unmarshal(raw, &store); err != nil {
 		return err
 	}
-	m.rules = store.Rules
+	m.systemRules = store.SystemRules
+	m.spaceRules = store.SpaceRules
 	m.rebuildIndex()
 	return nil
+}
+
+func (m *defaultManager) GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (model.SystemAccessRule, error) {
+	if err := ctx.Err(); err != nil {
+		return model.SystemAccessRule{}, err
+	}
+	if in.UserID == uuid.Nil {
+		return model.SystemAccessRule{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	}
+	roles, err := normalizeSystemRoles(in.Roles)
+	if err != nil {
+		return model.SystemAccessRule{}, err
+	}
+	if idx, ok := m.indexBySystemUser[in.UserID]; ok {
+		oldRule := m.systemRules[idx]
+		newRule := oldRule
+		newRule.Roles = roles
+		if hasSystemRole(oldRule.Roles, model.SystemRoleSuperuser) && !hasSystemRole(newRule.Roles, model.SystemRoleSuperuser) && m.superuserCountExcluding(in.UserID) == 0 {
+			return model.SystemAccessRule{}, ErrLastSuperuser
+		}
+		m.systemRules[idx] = newRule
+		if err := m.persist(); err != nil {
+			m.systemRules[idx] = oldRule
+			return model.SystemAccessRule{}, err
+		}
+		return cloneSystemRule(newRule), nil
+	}
+	rule := model.SystemAccessRule{ID: uuid.New(), UserID: in.UserID, Roles: roles}
+	m.systemRules = append(m.systemRules, rule)
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.systemRules = m.systemRules[:len(m.systemRules)-1]
+		m.rebuildIndex()
+		return model.SystemAccessRule{}, err
+	}
+	return cloneSystemRule(rule), nil
+}
+
+func (m *defaultManager) RevokeSystemRole(ctx context.Context, in RevokeSystemRoleInput) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if in.UserID == uuid.Nil {
+		return fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexBySystemUser[in.UserID]
+	if !ok {
+		return ErrRuleNotFound
+	}
+	rule := m.systemRules[idx]
+	if hasSystemRole(rule.Roles, model.SystemRoleSuperuser) && m.superuserCountExcluding(in.UserID) == 0 {
+		return ErrLastSuperuser
+	}
+	oldRules := append([]model.SystemAccessRule(nil), m.systemRules...)
+	m.systemRules = append(m.systemRules[:idx], m.systemRules[idx+1:]...)
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.systemRules = oldRules
+		m.rebuildIndex()
+		return err
+	}
+	return nil
+}
+
+func (m *defaultManager) SystemRolesForUser(ctx context.Context, userID model.UserID) ([]model.SystemRole, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexBySystemUser[userID]
+	if !ok {
+		return []model.SystemRole{}, nil
+	}
+	return append([]model.SystemRole(nil), m.systemRules[idx].Roles...), nil
+}
+
+func (m *defaultManager) SystemRules(ctx context.Context) ([]model.SystemAccessRule, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]model.SystemAccessRule, 0, len(m.systemRules))
+	for _, rule := range m.systemRules {
+		out = append(out, cloneSystemRule(rule))
+	}
+	return out, nil
+}
+
+func (m *defaultManager) CanSystem(ctx context.Context, userID model.UserID, permission model.SystemPermission) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if userID == uuid.Nil {
+		return false, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	}
+	if !validSystemPermission(permission) {
+		return false, fmt.Errorf("%w: invalid system permission", ErrInvalidInput)
+	}
+	roles, err := m.SystemRolesForUser(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	for _, role := range roles {
+		if model.RoleAllows(role, permission) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *defaultManager) Grant(ctx context.Context, in GrantInput) (model.SpaceAccessRule, error) {
@@ -80,29 +194,29 @@ func (m *defaultManager) Grant(ctx context.Context, in GrantInput) (model.SpaceA
 
 	key := spaceUserKey(in.SpaceID, in.UserID)
 	if idx, ok := m.indexBySpaceUser[key]; ok {
-		oldRule := m.rules[idx]
+		oldRule := m.spaceRules[idx]
 		newRule := oldRule
 		newRule.Permissions = permissions
 		if hasPermission(oldRule.Permissions, model.SpacePermissionAdmin) && !hasPermission(newRule.Permissions, model.SpacePermissionAdmin) && m.adminCountExcluding(in.SpaceID, in.UserID) == 0 {
 			return model.SpaceAccessRule{}, ErrLastAdmin
 		}
-		m.rules[idx] = newRule
+		m.spaceRules[idx] = newRule
 		if err := m.persist(); err != nil {
-			m.rules[idx] = oldRule
+			m.spaceRules[idx] = oldRule
 			return model.SpaceAccessRule{}, err
 		}
-		return newRule, nil
+		return cloneSpaceRule(newRule), nil
 	}
 
 	rule := model.SpaceAccessRule{ID: uuid.New(), SpaceID: in.SpaceID, UserID: in.UserID, Permissions: permissions}
-	m.rules = append(m.rules, rule)
+	m.spaceRules = append(m.spaceRules, rule)
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
-		m.rules = m.rules[:len(m.rules)-1]
+		m.spaceRules = m.spaceRules[:len(m.spaceRules)-1]
 		m.rebuildIndex()
 		return model.SpaceAccessRule{}, err
 	}
-	return rule, nil
+	return cloneSpaceRule(rule), nil
 }
 
 func (m *defaultManager) Revoke(ctx context.Context, in RevokeInput) error {
@@ -119,15 +233,15 @@ func (m *defaultManager) Revoke(ctx context.Context, in RevokeInput) error {
 	if !ok {
 		return ErrRuleNotFound
 	}
-	rule := m.rules[idx]
+	rule := m.spaceRules[idx]
 	if hasPermission(rule.Permissions, model.SpacePermissionAdmin) && m.adminCountExcluding(in.SpaceID, in.UserID) == 0 {
 		return ErrLastAdmin
 	}
-	oldRules := append([]model.SpaceAccessRule(nil), m.rules...)
-	m.rules = append(m.rules[:idx], m.rules[idx+1:]...)
+	oldRules := append([]model.SpaceAccessRule(nil), m.spaceRules...)
+	m.spaceRules = append(m.spaceRules[:idx], m.spaceRules[idx+1:]...)
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
-		m.rules = oldRules
+		m.spaceRules = oldRules
 		m.rebuildIndex()
 		return err
 	}
@@ -151,7 +265,7 @@ func (m *defaultManager) Can(ctx context.Context, userID model.UserID, spaceID m
 	if !ok {
 		return false, nil
 	}
-	for _, granted := range m.rules[idx].Permissions {
+	for _, granted := range m.spaceRules[idx].Permissions {
 		if model.PermissionImplies(granted, permission) {
 			return true, nil
 		}
@@ -167,23 +281,27 @@ func (m *defaultManager) RulesForSpace(ctx context.Context, spaceID model.SpaceI
 		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
 	out := []model.SpaceAccessRule{}
-	for _, rule := range m.rules {
+	for _, rule := range m.spaceRules {
 		if rule.SpaceID == spaceID {
-			out = append(out, cloneRule(rule))
+			out = append(out, cloneSpaceRule(rule))
 		}
 	}
 	return out, nil
 }
 
 func (m *defaultManager) rebuildIndex() {
+	m.indexBySystemUser = map[model.UserID]int{}
+	for i, rule := range m.systemRules {
+		m.indexBySystemUser[rule.UserID] = i
+	}
 	m.indexBySpaceUser = map[string]int{}
-	for i, rule := range m.rules {
+	for i, rule := range m.spaceRules {
 		m.indexBySpaceUser[spaceUserKey(rule.SpaceID, rule.UserID)] = i
 	}
 }
 
 func (m *defaultManager) persist() error {
-	b, err := json.MarshalIndent(accessStore{Rules: m.rules}, "", "  ")
+	b, err := json.MarshalIndent(accessStore{SystemRules: m.systemRules, SpaceRules: m.spaceRules}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -191,9 +309,22 @@ func (m *defaultManager) persist() error {
 	return os.WriteFile(m.storePath, b, 0o600)
 }
 
+func (m *defaultManager) superuserCountExcluding(excludedUserID model.UserID) int {
+	count := 0
+	for _, rule := range m.systemRules {
+		if rule.UserID == excludedUserID {
+			continue
+		}
+		if hasSystemRole(rule.Roles, model.SystemRoleSuperuser) {
+			count++
+		}
+	}
+	return count
+}
+
 func (m *defaultManager) adminCountExcluding(spaceID model.SpaceID, excludedUserID model.UserID) int {
 	count := 0
-	for _, rule := range m.rules {
+	for _, rule := range m.spaceRules {
 		if rule.SpaceID != spaceID || rule.UserID == excludedUserID {
 			continue
 		}
@@ -202,6 +333,25 @@ func (m *defaultManager) adminCountExcluding(spaceID model.SpaceID, excludedUser
 		}
 	}
 	return count
+}
+
+func normalizeSystemRoles(roles []model.SystemRole) ([]model.SystemRole, error) {
+	if len(roles) == 0 {
+		return nil, fmt.Errorf("%w: roles are required", ErrInvalidInput)
+	}
+	seen := map[model.SystemRole]struct{}{}
+	out := []model.SystemRole{}
+	for _, role := range roles {
+		if !validSystemRole(role) {
+			return nil, fmt.Errorf("%w: invalid system role %q", ErrInvalidInput, role)
+		}
+		if _, ok := seen[role]; ok {
+			continue
+		}
+		seen[role] = struct{}{}
+		out = append(out, role)
+	}
+	return out, nil
 }
 
 func normalizePermissions(permissions []model.SpacePermission) ([]model.SpacePermission, error) {
@@ -223,6 +373,24 @@ func normalizePermissions(permissions []model.SpacePermission) ([]model.SpacePer
 	return out, nil
 }
 
+func validSystemRole(role model.SystemRole) bool {
+	switch role {
+	case model.SystemRoleSuperuser, model.SystemRoleUserAdmin, model.SystemRoleOperator:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSystemPermission(permission model.SystemPermission) bool {
+	switch permission {
+	case model.SystemPermissionManageUsers, model.SystemPermissionCreateSpaces, model.SystemPermissionManageAccess, model.SystemPermissionOperateSystem:
+		return true
+	default:
+		return false
+	}
+}
+
 func validPermission(permission model.SpacePermission) bool {
 	switch permission {
 	case model.SpacePermissionRead, model.SpacePermissionWrite, model.SpacePermissionAdmin:
@@ -230,6 +398,15 @@ func validPermission(permission model.SpacePermission) bool {
 	default:
 		return false
 	}
+}
+
+func hasSystemRole(roles []model.SystemRole, wanted model.SystemRole) bool {
+	for _, role := range roles {
+		if role == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func hasPermission(permissions []model.SpacePermission, wanted model.SpacePermission) bool {
@@ -241,7 +418,12 @@ func hasPermission(permissions []model.SpacePermission, wanted model.SpacePermis
 	return false
 }
 
-func cloneRule(rule model.SpaceAccessRule) model.SpaceAccessRule {
+func cloneSystemRule(rule model.SystemAccessRule) model.SystemAccessRule {
+	rule.Roles = append([]model.SystemRole(nil), rule.Roles...)
+	return rule
+}
+
+func cloneSpaceRule(rule model.SpaceAccessRule) model.SpaceAccessRule {
 	rule.Permissions = append([]model.SpacePermission(nil), rule.Permissions...)
 	return rule
 }

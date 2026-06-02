@@ -150,8 +150,8 @@ func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 	if claims.IAT <= 0 || claims.EXP <= claims.IAT {
 		t.Fatalf("invalid claims timestamps iat=%d exp=%d", claims.IAT, claims.EXP)
 	}
-	if len(claims.Roles) == 0 || len(claims.Scopes) == 0 {
-		t.Fatal("expected claims roles and scopes")
+	if len(claims.Roles) == 0 || claims.Roles[0] != model.SystemRoleSuperuser || len(claims.Scopes) == 0 {
+		t.Fatalf("expected superuser claims roles and scopes, got roles=%v scopes=%v", claims.Roles, claims.Scopes)
 	}
 }
 
@@ -179,6 +179,51 @@ func TestRuntimeEngine_Authenticate_InvalidPassword(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got: %v", err)
+	}
+}
+
+func TestRuntimeEngine_GrantSystemRoleAndRevokeLastSuperuserFails(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-system-roles")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected admin auth success, got error: %v", err)
+	}
+	status := model.UserStatusActive
+	operator, err := engine.userManager.Create(ctx, coreuser.CreateInput{
+		User:     model.UserInput{Ref: model.UserRef("operator@example.com"), Status: status},
+		Password: "operator-password",
+	})
+	if err != nil {
+		t.Fatalf("expected create operator success, got error: %v", err)
+	}
+	if _, err := engine.GrantSystemRole(ctx, GrantSystemRoleInput{
+		AccessToken: adminToken.AccessToken,
+		UserID:      operator.ID,
+		Roles:       []model.SystemRole{model.SystemRoleOperator},
+	}); err != nil {
+		t.Fatalf("expected grant system role success, got error: %v", err)
+	}
+	roles, err := engine.accessManager.SystemRolesForUser(ctx, operator.ID)
+	if err != nil || len(roles) != 1 || roles[0] != model.SystemRoleOperator {
+		t.Fatalf("unexpected operator roles=%v err=%v", roles, err)
+	}
+	err = engine.RevokeSystemRole(ctx, RevokeSystemRoleInput{AccessToken: adminToken.AccessToken, UserID: engine.authCache[adminToken.AccessToken].UserID})
+	if err == nil {
+		t.Fatal("expected last superuser revoke error")
 	}
 }
 
@@ -227,7 +272,7 @@ func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 	}
 }
 
-func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutScope(t *testing.T) {
+func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutSystemRole(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "knotdb-create-space-no-scope")
 
@@ -242,19 +287,21 @@ func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutScope(t *testing.T) {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
 
+	status := model.UserStatusActive
+	_, err := engine.userManager.Create(context.Background(), coreuser.CreateInput{
+		User:     model.UserInput{Ref: model.UserRef("regular@example.com"), Status: status},
+		Password: "regular-password",
+	})
+	if err != nil {
+		t.Fatalf("expected create regular user success, got error: %v", err)
+	}
 	token, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  model.UserRef("admin@example.com"),
-		Password: "change-me-now",
+		UserRef:  model.UserRef("regular@example.com"),
+		Password: "regular-password",
 	})
 	if err != nil {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
-	engine.authMu.Lock()
-	claims := engine.authCache[token.AccessToken]
-	claims.Roles = nil
-	claims.Scopes = []string{"graph:read"}
-	engine.authCache[token.AccessToken] = claims
-	engine.authMu.Unlock()
 
 	_, err = engine.CreateSpace(context.Background(), CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
 	if err == nil {

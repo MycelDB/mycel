@@ -62,9 +62,9 @@ Contains:
 
 Access-control metadata.
 
-Contains per-space allow/grant rules for users.
+Contains system-role and per-space allow/grant rules for users.
 
-Access control should not be embedded only in users or spaces. Keeping it separate allows support for shared spaces, read-only grants, and admin rights. Every space must retain at least one admin rule.
+Access control should not be embedded only in users or spaces. Keeping it separate allows support for system superusers, user admins, operators, shared spaces, read-only grants, and space admin rights. The system must retain at least one superuser, and every space must retain at least one admin rule.
 
 ### `meta/templates/<space_id>.json`
 

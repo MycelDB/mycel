@@ -1,27 +1,81 @@
-# Space Access Control
+# Access Control
 
-Space access is governed by allow/grant rules stored in `meta/access.json`.
+KnotDB access control is governed by allow/grant rules stored in `meta/access.json`.
 
-Each rule grants permissions to one user for one space.
+The access file contains two classes of rules:
+
+- system rules: global roles for system administration
+- space rules: per-space permissions for graph access and space administration
 
 ```json
 {
-  "id": "rule-uuid",
-  "space_id": "space-uuid",
-  "user_id": "user-uuid",
-  "permissions": ["read"]
+  "system_rules": [
+    {
+      "id": "rule-uuid",
+      "user_id": "user-uuid",
+      "roles": ["superuser"]
+    }
+  ],
+  "space_rules": [
+    {
+      "id": "rule-uuid",
+      "space_id": "space-uuid",
+      "user_id": "user-uuid",
+      "permissions": ["read"]
+    }
+  ]
 }
 ```
 
-## Permissions
+## System roles
 
-Supported permissions:
+Supported system roles:
+
+- `superuser`
+- `user_admin`
+- `operator`
+
+### `superuser`
+
+Full system authority.
+
+A superuser can:
+
+- create spaces
+- grant and revoke system roles
+- grant and revoke space access
+- administer/read/write any space
+- import templates for any space
+- manage users when user-management APIs are exposed
+- operate the system when lifecycle APIs are exposed
+
+### `user_admin`
+
+User-management authority.
+
+A user admin can manage users when user-management APIs are exposed. This role does not automatically grant access to spaces.
+
+### `operator`
+
+System operation authority.
+
+An operator can perform system lifecycle/operation actions when those APIs are exposed. This role does not automatically grant access to spaces.
+
+## Last-superuser invariant
+
+The system must retain at least one `superuser`.
+
+Access management rejects revoking or downgrading the last superuser rule.
+
+## Space permissions
+
+Supported space permissions:
 
 - `read`
 - `write`
 - `admin`
 
-Permissions are hierarchical:
+Space permissions are hierarchical:
 
 ```text
 admin => write => read
@@ -31,7 +85,9 @@ So:
 
 - `read` allows read operations only.
 - `write` allows read and write operations.
-- `admin` allows read, write, template management, and access management.
+- `admin` allows read, write, template management, and access management for the space.
+
+`superuser` bypasses per-space rules and can administer/read/write any space.
 
 ## Space owner access
 
@@ -43,7 +99,7 @@ Ownership is not an unremovable bypass. Another admin may remove the original ow
 
 Every space must retain at least one admin user.
 
-Access management rejects revoking or downgrading a rule if doing so would leave a space with no admin rules.
+Access management rejects revoking or downgrading a space rule if doing so would leave a space with no admin rules.
 
 ## Sessions
 

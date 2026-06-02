@@ -2,6 +2,35 @@ package model
 
 import "github.com/google/uuid"
 
+// SystemRole is a global role granted to a user for system-wide administration.
+type SystemRole string
+
+const (
+	SystemRoleSuperuser SystemRole = "superuser"
+	SystemRoleUserAdmin SystemRole = "user_admin"
+	SystemRoleOperator  SystemRole = "operator"
+)
+
+// SystemPermission is a system-level capability implied by one or more system roles.
+type SystemPermission string
+
+const (
+	SystemPermissionManageUsers   SystemPermission = "users:manage"
+	SystemPermissionCreateSpaces  SystemPermission = "spaces:create"
+	SystemPermissionManageAccess  SystemPermission = "access:manage"
+	SystemPermissionOperateSystem SystemPermission = "system:operate"
+)
+
+// SystemAccessRuleID uniquely identifies a system access rule.
+type SystemAccessRuleID = uuid.UUID
+
+// SystemAccessRule grants system roles to a user.
+type SystemAccessRule struct {
+	ID     SystemAccessRuleID `json:"id"`
+	UserID UserID             `json:"user_id"`
+	Roles  []SystemRole       `json:"roles"`
+}
+
 // SpacePermission is an action granted to a user for a space.
 type SpacePermission string
 
@@ -22,7 +51,21 @@ type SpaceAccessRule struct {
 	Permissions []SpacePermission `json:"permissions"`
 }
 
-// PermissionImplies reports whether a granted permission satisfies a requested permission.
+// RoleAllows reports whether a system role satisfies a system permission.
+func RoleAllows(role SystemRole, permission SystemPermission) bool {
+	switch role {
+	case SystemRoleSuperuser:
+		return true
+	case SystemRoleUserAdmin:
+		return permission == SystemPermissionManageUsers
+	case SystemRoleOperator:
+		return permission == SystemPermissionOperateSystem
+	default:
+		return false
+	}
+}
+
+// PermissionImplies reports whether a granted space permission satisfies a requested permission.
 func PermissionImplies(granted SpacePermission, requested SpacePermission) bool {
 	if granted == requested {
 		return true

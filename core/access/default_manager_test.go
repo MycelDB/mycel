@@ -10,6 +10,44 @@ import (
 	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
 
+func TestDefaultManager_SystemRolePermissions(t *testing.T) {
+	m := newTestManager(t)
+	userID := model.UserID(uuid.New())
+
+	if _, err := m.GrantSystemRole(context.Background(), GrantSystemRoleInput{UserID: userID, Roles: []model.SystemRole{model.SystemRoleUserAdmin}}); err != nil {
+		t.Fatalf("grant system role failed: %v", err)
+	}
+	canManageUsers, err := m.CanSystem(context.Background(), userID, model.SystemPermissionManageUsers)
+	if err != nil || !canManageUsers {
+		t.Fatalf("expected user_admin to manage users, can=%v err=%v", canManageUsers, err)
+	}
+	canCreateSpaces, err := m.CanSystem(context.Background(), userID, model.SystemPermissionCreateSpaces)
+	if err != nil || canCreateSpaces {
+		t.Fatalf("expected user_admin not to create spaces, can=%v err=%v", canCreateSpaces, err)
+	}
+
+	if _, err := m.GrantSystemRole(context.Background(), GrantSystemRoleInput{UserID: userID, Roles: []model.SystemRole{model.SystemRoleSuperuser}}); err != nil {
+		t.Fatalf("grant superuser failed: %v", err)
+	}
+	canCreateSpaces, err = m.CanSystem(context.Background(), userID, model.SystemPermissionCreateSpaces)
+	if err != nil || !canCreateSpaces {
+		t.Fatalf("expected superuser to create spaces, can=%v err=%v", canCreateSpaces, err)
+	}
+}
+
+func TestDefaultManager_RevokeLastSuperuserFails(t *testing.T) {
+	m := newTestManager(t)
+	userID := model.UserID(uuid.New())
+	if _, err := m.GrantSystemRole(context.Background(), GrantSystemRoleInput{UserID: userID, Roles: []model.SystemRole{model.SystemRoleSuperuser}}); err != nil {
+		t.Fatalf("grant superuser failed: %v", err)
+	}
+
+	err := m.RevokeSystemRole(context.Background(), RevokeSystemRoleInput{UserID: userID})
+	if !errors.Is(err, ErrLastSuperuser) {
+		t.Fatalf("expected ErrLastSuperuser, got: %v", err)
+	}
+}
+
 func TestDefaultManager_PermissionHierarchy(t *testing.T) {
 	m := newTestManager(t)
 	spaceID := model.SpaceID(uuid.New())
