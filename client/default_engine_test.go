@@ -122,23 +122,33 @@ func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
-	if token.JTI == "" {
-		t.Fatal("expected non-empty token JTI")
+	if token.AccessToken == "" {
+		t.Fatal("expected non-empty access token")
 	}
-	if token.Iss != "knotdb" || token.Aud != "knotdb" {
-		t.Fatalf("unexpected token issuer/audience: %s/%s", token.Iss, token.Aud)
+
+	engine.authMu.RLock()
+	claims, ok := engine.authCache[token.AccessToken]
+	engine.authMu.RUnlock()
+	if !ok {
+		t.Fatal("expected cached auth claims")
 	}
-	if token.UserRef != model.UserRef("admin@example.com") {
-		t.Fatalf("unexpected user_ref: %s", token.UserRef)
+	if claims.JTI == "" {
+		t.Fatal("expected non-empty claims JTI")
 	}
-	if token.UserID == uuid.Nil {
+	if claims.Iss != "knotdb" || claims.Aud != "knotdb" {
+		t.Fatalf("unexpected claims issuer/audience: %s/%s", claims.Iss, claims.Aud)
+	}
+	if claims.UserRef != model.UserRef("admin@example.com") {
+		t.Fatalf("unexpected user_ref: %s", claims.UserRef)
+	}
+	if claims.UserID == uuid.Nil {
 		t.Fatal("expected non-zero user_id")
 	}
-	if token.IAT <= 0 || token.EXP <= token.IAT {
-		t.Fatalf("invalid token timestamps iat=%d exp=%d", token.IAT, token.EXP)
+	if claims.IAT <= 0 || claims.EXP <= claims.IAT {
+		t.Fatalf("invalid claims timestamps iat=%d exp=%d", claims.IAT, claims.EXP)
 	}
-	if len(token.Roles) == 0 || len(token.Scopes) == 0 {
-		t.Fatal("expected token roles and scopes")
+	if len(claims.Roles) == 0 || len(claims.Scopes) == 0 {
+		t.Fatal("expected claims roles and scopes")
 	}
 }
 
@@ -193,8 +203,8 @@ func TestRuntimeEngine_CreateDatabase_Success(t *testing.T) {
 	}
 
 	dbInfo, err := engine.CreateDatabase(context.Background(), CreateDatabaseInput{
-		Auth: token,
-		Name: "default",
+		AccessToken: token.AccessToken,
+		Name:        "default",
 	})
 	if err != nil {
 		t.Fatalf("expected create database success, got error: %v", err)
@@ -233,10 +243,14 @@ func TestRuntimeEngine_CreateDatabase_UnauthorizedWithoutScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
-	token.Roles = nil
-	token.Scopes = []string{"graph:read"}
+	engine.authMu.Lock()
+	claims := engine.authCache[token.AccessToken]
+	claims.Roles = nil
+	claims.Scopes = []string{"graph:read"}
+	engine.authCache[token.AccessToken] = claims
+	engine.authMu.Unlock()
 
-	_, err = engine.CreateDatabase(context.Background(), CreateDatabaseInput{Auth: token, Name: "default"})
+	_, err = engine.CreateDatabase(context.Background(), CreateDatabaseInput{AccessToken: token.AccessToken, Name: "default"})
 	if err == nil {
 		t.Fatal("expected unauthorized error")
 	}
@@ -268,12 +282,12 @@ func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
 
-	dbInfo, err := engine.CreateDatabase(context.Background(), CreateDatabaseInput{Auth: token, Name: "default"})
+	dbInfo, err := engine.CreateDatabase(context.Background(), CreateDatabaseInput{AccessToken: token.AccessToken, Name: "default"})
 	if err != nil {
 		t.Fatalf("expected create database success, got error: %v", err)
 	}
 
-	session, err := engine.OpenSession(context.Background(), OpenSessionInput{Auth: token, SpaceID: dbInfo.SpaceID})
+	session, err := engine.OpenSession(context.Background(), OpenSessionInput{AccessToken: token.AccessToken, SpaceID: dbInfo.SpaceID})
 	if err != nil {
 		t.Fatalf("expected open session success, got error: %v", err)
 	}

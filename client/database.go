@@ -2,8 +2,8 @@ package client
 
 // CreateDatabaseInput defines database creation request payload.
 type CreateDatabaseInput struct {
-	Auth AuthToken
-	Name string
+	AccessToken AccessToken
+	Name        string
 }
 
 // DatabaseInfo contains resulting database identifiers.

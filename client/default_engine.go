@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,13 +29,32 @@ type defaultEngine struct {
 	state       EngineState
 	dataDir     string
 	userManager usermgmt.UserManager
+	authMu      sync.RWMutex
+	authCache   map[AccessToken]authClaims
+}
+
+// authClaims is the expanded authorization context cached by access token.
+// It is intentionally unexported; external callers only receive AccessToken.
+type authClaims struct {
+	Iss      string
+	Sub      string
+	Aud      string
+	JTI      string
+	IAT      int64
+	EXP      int64
+	UserID   model.UserID
+	UserRef  model.UserRef
+	Roles    []string
+	OwnerIDs []string
+	SpaceIDs []string
+	Scopes   []string
 }
 
 // NewEngine opens (or creates) a local embedded KnotDB runtime.
 //
 // If userManager is nil, a default file-backed user manager is used.
 func NewEngine(cfg EngineConfig, userManager usermgmt.UserManager) (Engine, error) {
-	e := &defaultEngine{state: EngineStateClose, userManager: userManager}
+	e := &defaultEngine{state: EngineStateClose, userManager: userManager, authCache: map[AccessToken]authClaims{}}
 	if err := e.Open(cfg); err != nil {
 		return nil, err
 	}
@@ -119,6 +139,10 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		}
 	}
 
+	e.authMu.Lock()
+	e.authCache = map[AccessToken]authClaims{}
+	e.authMu.Unlock()
+
 	e.dataDir = cfg.DataDir
 	e.state = EngineStateReady
 	return nil
@@ -140,29 +164,30 @@ func (e *defaultEngine) Ready(ctx context.Context) error {
 	return nil
 }
 
-func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthToken, error) {
+func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthResult, error) {
 	if err := e.Ready(ctx); err != nil {
-		return AuthToken{}, err
+		return AuthResult{}, err
 	}
 	if in.UserRef == "" || in.Password == "" {
-		return AuthToken{}, fmt.Errorf("%w: user_ref and password are required", ErrInvalidCredentials)
+		return AuthResult{}, fmt.Errorf("%w: user_ref and password are required", ErrInvalidCredentials)
 	}
 
 	user, err := e.userManager.Authenticate(ctx, in.UserRef, in.Password)
 	if err != nil {
 		if errors.Is(err, usermgmt.ErrUserNotFound) || errors.Is(err, usermgmt.ErrInvalidInput) {
-			return AuthToken{}, ErrInvalidCredentials
+			return AuthResult{}, ErrInvalidCredentials
 		}
-		return AuthToken{}, err
+		return AuthResult{}, err
 	}
 	if user.Status != model.UserStatusActive {
-		return AuthToken{}, ErrInvalidCredentials
+		return AuthResult{}, ErrInvalidCredentials
 	}
 
 	now := time.Now().Unix()
 	exp := now + 3600
 	uid := user.ID.String()
-	return AuthToken{
+	accessToken := AccessToken(uuid.NewString())
+	claims := authClaims{
 		Iss:      "knotdb",
 		Sub:      "user:" + uid,
 		Aud:      "knotdb",
@@ -175,7 +200,16 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthTok
 		OwnerIDs: []string{"owner:" + uid},
 		SpaceIDs: []string{"space:" + uid + ":default"},
 		Scopes:   []string{"graph:read", "graph:write", "admin:users", "db:create"},
-	}, nil
+	}
+
+	e.authMu.Lock()
+	if e.authCache == nil {
+		e.authCache = map[AccessToken]authClaims{}
+	}
+	e.authCache[accessToken] = claims
+	e.authMu.Unlock()
+
+	return AuthResult{AccessToken: accessToken}, nil
 }
 
 func (e *defaultEngine) CreateDatabase(ctx context.Context, in CreateDatabaseInput) (DatabaseInfo, error) {
@@ -185,19 +219,20 @@ func (e *defaultEngine) CreateDatabase(ctx context.Context, in CreateDatabaseInp
 	if in.Name == "" {
 		return DatabaseInfo{}, fmt.Errorf("%w: database name is required", ErrInvalidConfig)
 	}
-	if in.Auth.UserID == uuid.Nil {
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return DatabaseInfo{}, err
+	}
+	if auth.UserID == uuid.Nil {
 		return DatabaseInfo{}, ErrUnauthorized
 	}
-	if in.Auth.EXP <= time.Now().Unix() {
-		return DatabaseInfo{}, ErrUnauthorized
-	}
-	if !contains(in.Auth.Scopes, "db:create") && !contains(in.Auth.Roles, "admin") {
+	if !contains(auth.Scopes, "db:create") && !contains(auth.Roles, "admin") {
 		return DatabaseInfo{}, ErrUnauthorized
 	}
 
-	ownerID := "owner:" + in.Auth.UserID.String()
-	if len(in.Auth.OwnerIDs) > 0 && in.Auth.OwnerIDs[0] != "" {
-		ownerID = in.Auth.OwnerIDs[0]
+	ownerID := "owner:" + auth.UserID.String()
+	if len(auth.OwnerIDs) > 0 && auth.OwnerIDs[0] != "" {
+		ownerID = auth.OwnerIDs[0]
 	}
 
 	owners, err := readOwnersFile(e.dataDir)
@@ -205,7 +240,7 @@ func (e *defaultEngine) CreateDatabase(ctx context.Context, in CreateDatabaseInp
 		return DatabaseInfo{}, err
 	}
 	if !ownerExists(owners, ownerID) {
-		owners = append(owners, ownerRecord{OwnerID: ownerID, UserID: in.Auth.UserID.String(), Status: "active"})
+		owners = append(owners, ownerRecord{OwnerID: ownerID, UserID: auth.UserID.String(), Status: "active"})
 		if err := writeOwnersFile(e.dataDir, owners); err != nil {
 			return DatabaseInfo{}, err
 		}
@@ -234,16 +269,20 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (a
 	if err := e.Ready(ctx); err != nil {
 		return nil, err
 	}
-	if in.Auth.UserID == uuid.Nil || in.Auth.EXP <= time.Now().Unix() {
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	if auth.UserID == uuid.Nil {
 		return nil, ErrUnauthorized
 	}
-	if !contains(in.Auth.Scopes, "graph:read") && !contains(in.Auth.Scopes, "graph:write") && !contains(in.Auth.Roles, "admin") {
+	if !contains(auth.Scopes, "graph:read") && !contains(auth.Scopes, "graph:write") && !contains(auth.Roles, "admin") {
 		return nil, ErrUnauthorized
 	}
 
 	spaceID := in.SpaceID
-	if spaceID == "" && len(in.Auth.SpaceIDs) > 0 {
-		spaceID = in.Auth.SpaceIDs[0]
+	if spaceID == "" && len(auth.SpaceIDs) > 0 {
+		spaceID = auth.SpaceIDs[0]
 	}
 	if spaceID == "" {
 		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
@@ -264,8 +303,8 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (a
 		return nil, ErrNotFound
 	}
 
-	if !contains(in.Auth.Roles, "admin") {
-		if !contains(in.Auth.SpaceIDs, spaceID) && !contains(in.Auth.OwnerIDs, space.OwnerID) {
+	if !contains(auth.Roles, "admin") {
+		if !contains(auth.SpaceIDs, spaceID) && !contains(auth.OwnerIDs, space.OwnerID) {
 			return nil, ErrUnauthorized
 		}
 	}
@@ -275,7 +314,31 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (a
 
 func (e *defaultEngine) Close() error {
 	e.state = EngineStateClose
+	e.authMu.Lock()
+	e.authCache = map[AccessToken]authClaims{}
+	e.authMu.Unlock()
 	return nil
+}
+
+func (e *defaultEngine) authClaimsForAccessToken(ctx context.Context, accessToken AccessToken) (authClaims, error) {
+	if err := ctx.Err(); err != nil {
+		return authClaims{}, err
+	}
+	if accessToken == "" {
+		return authClaims{}, ErrUnauthorized
+	}
+
+	e.authMu.Lock()
+	defer e.authMu.Unlock()
+	claims, ok := e.authCache[accessToken]
+	if !ok {
+		return authClaims{}, ErrUnauthorized
+	}
+	if claims.EXP <= time.Now().Unix() {
+		delete(e.authCache, accessToken)
+		return authClaims{}, ErrUnauthorized
+	}
+	return claims, nil
 }
 
 type ownerRecord struct {

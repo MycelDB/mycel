@@ -39,8 +39,8 @@ type Engine interface {
 	Open(cfg EngineConfig) error
 	// Ready reports whether the engine is ready to serve operations.
 	Ready(ctx context.Context) error
-	// Authenticate validates credentials and returns token claims.
-	Authenticate(ctx context.Context, in AuthInput) (AuthToken, error)
+	// Authenticate validates credentials and returns an external access token.
+	Authenticate(ctx context.Context, in AuthInput) (AuthResult, error)
 	// CreateDatabase creates or returns a database (space) for an authorized user.
 	CreateDatabase(ctx context.Context, in CreateDatabaseInput) (DatabaseInfo, error)
 	// OpenSession opens a graph session for an authorized token/space scope.
