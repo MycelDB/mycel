@@ -18,25 +18,36 @@ import (
 
 // Errors defines public errors returned by sessions.
 type Errors struct {
-	Closed   error
-	NotFound error
+	Closed       error
+	NotFound     error
+	Unauthorized error
+}
+
+// Permissions defines read/write capabilities for a session.
+type Permissions struct {
+	Read  bool
+	Write bool
 }
 
 type session struct {
 	graphsDir       string
 	spaceID         model.SpaceID
 	templateManager coretemplate.Manager
+	permissions     Permissions
 	errors          Errors
 	closed          bool
 }
 
 // NewSession opens a file-backed graph session for a space.
-func NewSession(graphsDir string, spaceID model.SpaceID, templateManager coretemplate.Manager, errs Errors) graph.Session {
-	return &session{graphsDir: graphsDir, spaceID: spaceID, templateManager: templateManager, errors: errs}
+func NewSession(graphsDir string, spaceID model.SpaceID, templateManager coretemplate.Manager, permissions Permissions, errs Errors) graph.Session {
+	return &session{graphsDir: graphsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs}
 }
 
 func (s *session) AddNode(ctx context.Context, in graph.NodeInput) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
+		return graph.Node{}, err
+	}
+	if err := s.ensureWrite(); err != nil {
 		return graph.Node{}, err
 	}
 	nodes, err := s.readNodes()
@@ -96,6 +107,9 @@ func (s *session) AddEdge(ctx context.Context, in graph.EdgeInput) (graph.Edge, 
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Edge{}, err
 	}
+	if err := s.ensureWrite(); err != nil {
+		return graph.Edge{}, err
+	}
 	nodes, err := s.readNodes()
 	if err != nil {
 		return graph.Edge{}, err
@@ -127,6 +141,9 @@ func (s *session) AddGraph(ctx context.Context, in graph.GraphInput) error {
 	if err := s.ensureOpen(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureWrite(); err != nil {
+		return err
+	}
 	for _, n := range in.Nodes {
 		if _, err := s.AddNode(ctx, n); err != nil {
 			return err
@@ -142,6 +159,9 @@ func (s *session) AddGraph(ctx context.Context, in graph.GraphInput) error {
 
 func (s *session) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
+		return graph.Node{}, err
+	}
+	if err := s.ensureRead(); err != nil {
 		return graph.Node{}, err
 	}
 	nodes, err := s.readNodes()
@@ -168,6 +188,20 @@ func (s *session) ensureOpen(ctx context.Context) error {
 	}
 	if s.closed {
 		return s.errors.Closed
+	}
+	return nil
+}
+
+func (s *session) ensureRead() error {
+	if !s.permissions.Read {
+		return s.errors.Unauthorized
+	}
+	return nil
+}
+
+func (s *session) ensureWrite() error {
+	if !s.permissions.Write {
+		return s.errors.Unauthorized
 	}
 	return nil
 }

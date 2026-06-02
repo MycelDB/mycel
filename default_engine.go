@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/core/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/core/space"
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
@@ -33,6 +34,7 @@ type defaultEngine struct {
 	userManager     user.Manager
 	spaceManager    space.Manager
 	templateManager coretemplate.Manager
+	accessManager   access.Manager
 	authMu          sync.RWMutex
 	authCache       map[AccessToken]authClaims
 }
@@ -56,9 +58,9 @@ type authClaims struct {
 
 // NewEngine opens (or creates) a local embedded KnotDB runtime.
 //
-// If userManager, spaceManager, or templateManager is nil, default file-backed managers are used.
-func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Manager, templateManager coretemplate.Manager) (Engine, error) {
-	e := &defaultEngine{state: EngineStateClose, userManager: userManager, spaceManager: spaceManager, templateManager: templateManager, authCache: map[AccessToken]authClaims{}}
+// If userManager, spaceManager, templateManager, or accessManager is nil, default file-backed managers are used.
+func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Manager, templateManager coretemplate.Manager, accessManager access.Manager) (Engine, error) {
+	e := &defaultEngine{state: EngineStateClose, userManager: userManager, spaceManager: spaceManager, templateManager: templateManager, accessManager: accessManager, authCache: map[AccessToken]authClaims{}}
 	if err := e.Open(cfg); err != nil {
 		return nil, err
 	}
@@ -66,9 +68,9 @@ func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Ma
 }
 
 // DefaultEngine opens (or creates) a local embedded KnotDB runtime.
-// Deprecated: use NewEngine(cfg, userManager, spaceManager, templateManager) instead.
+// Deprecated: use NewEngine(cfg, userManager, spaceManager, templateManager, accessManager) instead.
 func DefaultEngine(cfg EngineConfig) (Engine, error) {
-	return NewEngine(cfg, nil, nil, nil)
+	return NewEngine(cfg, nil, nil, nil, nil)
 }
 
 func (e *defaultEngine) Open(cfg EngineConfig) error {
@@ -127,6 +129,13 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		e.templateManager = coretemplate.NewManager()
 	}
 	if err := e.templateManager.Init(context.Background(), templatesDir(cfg.DataDir)); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+	if e.accessManager == nil {
+		e.accessManager = access.NewManager()
+	}
+	if err := e.accessManager.Init(context.Background(), metaDir(cfg.DataDir)); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
@@ -248,13 +257,20 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 		return SpaceInfo{}, ErrUnauthorized
 	}
 
-	space, err := e.spaceManager.Create(ctx, space.CreateInput{OwnerID: auth.UserID, Name: in.Name})
+	sp, err := e.spaceManager.Create(ctx, space.CreateInput{OwnerID: auth.UserID, Name: in.Name})
 	if err != nil {
 		return SpaceInfo{}, err
 	}
+	if _, err := e.accessManager.Grant(ctx, access.GrantInput{
+		SpaceID:     sp.SpaceID,
+		UserID:      auth.UserID,
+		Permissions: []model.SpacePermission{model.SpacePermissionAdmin},
+	}); err != nil {
+		return SpaceInfo{}, err
+	}
 
-	e.grantSpaceToCachedClaims(in.AccessToken, space.SpaceID)
-	return SpaceInfo{OwnerID: space.OwnerID, SpaceID: space.SpaceID, Name: space.Name}, nil
+	e.grantSpaceToCachedClaims(in.AccessToken, sp.SpaceID)
+	return SpaceInfo{OwnerID: sp.OwnerID, SpaceID: sp.SpaceID, Name: sp.Name}, nil
 }
 
 func (e *defaultEngine) ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error) {
@@ -268,24 +284,83 @@ func (e *defaultEngine) ImportTemplates(ctx context.Context, in ImportTemplatesI
 	if in.SpaceID == uuid.Nil {
 		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
 	}
-	if !contains(auth.Scopes, "template:write") && !contains(auth.Roles, "admin") {
-		return nil, ErrUnauthorized
-	}
-
-	sp, err := e.spaceManager.GetByID(ctx, in.SpaceID)
-	if err != nil {
+	if _, err := e.spaceManager.GetByID(ctx, in.SpaceID); err != nil {
 		if errors.Is(err, space.ErrSpaceNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	if !contains(auth.Roles, "admin") {
-		if !containsSpaceID(auth.SpaceIDs, in.SpaceID) && !containsUserID(auth.OwnerIDs, sp.OwnerID) {
-			return nil, ErrUnauthorized
-		}
+	canAdmin, err := e.accessManager.Can(ctx, auth.UserID, in.SpaceID, model.SpacePermissionAdmin)
+	if err != nil {
+		return nil, err
+	}
+	if !canAdmin {
+		return nil, ErrUnauthorized
 	}
 
 	return e.templateManager.Import(ctx, in.SpaceID, in.Document)
+}
+
+func (e *defaultEngine) GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (model.SpaceAccessRule, error) {
+	if err := e.Ready(ctx); err != nil {
+		return model.SpaceAccessRule{}, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return model.SpaceAccessRule{}, err
+	}
+	if err := e.ensureSpaceAdmin(ctx, auth.UserID, in.SpaceID); err != nil {
+		return model.SpaceAccessRule{}, err
+	}
+	return e.accessManager.Grant(ctx, access.GrantInput{SpaceID: in.SpaceID, UserID: in.UserID, Permissions: in.Permissions})
+}
+
+func (e *defaultEngine) RevokeSpaceAccess(ctx context.Context, in RevokeSpaceAccessInput) error {
+	if err := e.Ready(ctx); err != nil {
+		return err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return err
+	}
+	if err := e.ensureSpaceAdmin(ctx, auth.UserID, in.SpaceID); err != nil {
+		return err
+	}
+	return e.accessManager.Revoke(ctx, access.RevokeInput{SpaceID: in.SpaceID, UserID: in.UserID})
+}
+
+func (e *defaultEngine) ListSpaceAccess(ctx context.Context, in ListSpaceAccessInput) ([]model.SpaceAccessRule, error) {
+	if err := e.Ready(ctx); err != nil {
+		return nil, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.ensureSpaceAdmin(ctx, auth.UserID, in.SpaceID); err != nil {
+		return nil, err
+	}
+	return e.accessManager.RulesForSpace(ctx, in.SpaceID)
+}
+
+func (e *defaultEngine) ensureSpaceAdmin(ctx context.Context, userID model.UserID, spaceID model.SpaceID) error {
+	if spaceID == uuid.Nil {
+		return fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
+	}
+	if _, err := e.spaceManager.GetByID(ctx, spaceID); err != nil {
+		if errors.Is(err, space.ErrSpaceNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	canAdmin, err := e.accessManager.Can(ctx, userID, spaceID, model.SpacePermissionAdmin)
+	if err != nil {
+		return err
+	}
+	if !canAdmin {
+		return ErrUnauthorized
+	}
+	return nil
 }
 
 func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (graph.Session, error) {
@@ -311,21 +386,31 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (g
 		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
 	}
 
-	sp, err := e.spaceManager.GetByID(ctx, spaceID)
-	if err != nil {
+	if _, err := e.spaceManager.GetByID(ctx, spaceID); err != nil {
 		if errors.Is(err, space.ErrSpaceNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-
-	if !contains(auth.Roles, "admin") {
-		if !containsSpaceID(auth.SpaceIDs, spaceID) && !containsUserID(auth.OwnerIDs, sp.OwnerID) {
-			return nil, ErrUnauthorized
-		}
+	canRead, err := e.accessManager.Can(ctx, auth.UserID, spaceID, model.SpacePermissionRead)
+	if err != nil {
+		return nil, err
+	}
+	if !canRead {
+		return nil, ErrUnauthorized
+	}
+	canWrite, err := e.accessManager.Can(ctx, auth.UserID, spaceID, model.SpacePermissionWrite)
+	if err != nil {
+		return nil, err
 	}
 
-	return graphstore.NewSession(graphsDir(e.dataDir), spaceID, e.templateManager, graphstore.Errors{Closed: ErrClosed, NotFound: ErrNotFound}), nil
+	return graphstore.NewSession(
+		graphsDir(e.dataDir),
+		spaceID,
+		e.templateManager,
+		graphstore.Permissions{Read: canRead, Write: canWrite},
+		graphstore.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized},
+	), nil
 }
 
 func (e *defaultEngine) Close() error {

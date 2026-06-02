@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"martinbeauvais.com/mbgit/knotbase/knotdb/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
 
 // EngineMode defines runtime mode for KnotDB engine startup.
@@ -45,6 +46,12 @@ type Engine interface {
 	CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error)
 	// ImportTemplates imports immutable template versions for a space.
 	ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error)
+	// GrantSpaceAccess grants or updates a user's access to a space.
+	GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (model.SpaceAccessRule, error)
+	// RevokeSpaceAccess revokes a user's access to a space.
+	RevokeSpaceAccess(ctx context.Context, in RevokeSpaceAccessInput) error
+	// ListSpaceAccess lists access rules for a space.
+	ListSpaceAccess(ctx context.Context, in ListSpaceAccessInput) ([]model.SpaceAccessRule, error)
 	// OpenSession opens a graph session for an authorized token/space scope.
 	OpenSession(ctx context.Context, in OpenSessionInput) (graph.Session, error)
 	// Close releases engine resources.

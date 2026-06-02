@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
+	coreuser "martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
@@ -221,6 +222,9 @@ func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dataDir, "meta", "spaces.json")); err != nil {
 		t.Fatalf("expected meta/spaces.json to exist: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(dataDir, "meta", "access.json")); err != nil {
+		t.Fatalf("expected meta/access.json to exist: %v", err)
+	}
 }
 
 func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutScope(t *testing.T) {
@@ -318,6 +322,110 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "graphs", spaceInfo.SpaceID.String(), "nodes.json")); err != nil {
 		t.Fatalf("expected graph nodes file to exist: %v", err)
+	}
+}
+
+func TestRuntimeEngine_SpaceAccessReadOnlyUserCannotWrite(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-access-read-only")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected admin authenticate success, got error: %v", err)
+	}
+	spaceInfo, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: adminToken.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	adminSession, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: adminToken.AccessToken, SpaceID: spaceInfo.SpaceID})
+	if err != nil {
+		t.Fatalf("expected admin open session success, got error: %v", err)
+	}
+	node, err := adminSession.AddNode(ctx, graph.NodeInput{Content: "readable"})
+	if err != nil {
+		t.Fatalf("expected admin add node success, got error: %v", err)
+	}
+	_ = adminSession.Close()
+
+	status := model.UserStatusActive
+	reader, err := engine.userManager.Create(ctx, coreuser.CreateInput{
+		User:     model.UserInput{Ref: model.UserRef("reader@example.com"), Status: status},
+		Password: "reader-password",
+	})
+	if err != nil {
+		t.Fatalf("expected create reader success, got error: %v", err)
+	}
+	if _, err := engine.GrantSpaceAccess(ctx, GrantSpaceAccessInput{
+		AccessToken: adminToken.AccessToken,
+		SpaceID:     spaceInfo.SpaceID,
+		UserID:      reader.ID,
+		Permissions: []model.SpacePermission{model.SpacePermissionRead},
+	}); err != nil {
+		t.Fatalf("expected grant read success, got error: %v", err)
+	}
+
+	readerToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("reader@example.com"), Password: "reader-password"})
+	if err != nil {
+		t.Fatalf("expected reader authenticate success, got error: %v", err)
+	}
+	readerSession, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: readerToken.AccessToken, SpaceID: spaceInfo.SpaceID})
+	if err != nil {
+		t.Fatalf("expected reader open session success, got error: %v", err)
+	}
+	if _, err := readerSession.GetNode(ctx, node.ID); err != nil {
+		t.Fatalf("expected reader get node success, got error: %v", err)
+	}
+	if _, err := readerSession.AddNode(ctx, graph.NodeInput{Content: "should fail"}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized for reader write, got: %v", err)
+	}
+}
+
+func TestRuntimeEngine_RevokeLastSpaceAdminFails(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-access-last-admin")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin@example.com",
+		AdminPassword:   "change-me-now",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+	spaceInfo, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+
+	rules, err := engine.ListSpaceAccess(ctx, ListSpaceAccessInput{AccessToken: token.AccessToken, SpaceID: spaceInfo.SpaceID})
+	if err != nil {
+		t.Fatalf("expected list access success, got error: %v", err)
+	}
+	if len(rules) != 1 || rules[0].UserID != spaceInfo.OwnerID || rules[0].Permissions[0] != model.SpacePermissionAdmin {
+		t.Fatalf("unexpected access rules: %#v", rules)
+	}
+	err = engine.RevokeSpaceAccess(ctx, RevokeSpaceAccessInput{AccessToken: token.AccessToken, SpaceID: spaceInfo.SpaceID, UserID: spaceInfo.OwnerID})
+	if err == nil {
+		t.Fatal("expected last admin revoke error")
 	}
 }
 

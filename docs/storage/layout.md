@@ -62,9 +62,9 @@ Contains:
 
 Access-control metadata.
 
-Reserved for roles, grants, memberships, and policy records.
+Contains per-space allow/grant rules for users.
 
-Access control should not be embedded only in users or spaces. Keeping it separate allows future support for shared spaces, read-only grants, groups, and admin roles.
+Access control should not be embedded only in users or spaces. Keeping it separate allows support for shared spaces, read-only grants, and admin rights. Every space must retain at least one admin rule.
 
 ### `meta/templates/<space_id>.json`
 

@@ -5,7 +5,7 @@ Go library for Knotbase graph spaces.
 Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 
 ## Layout
-- `core/`: injectable managers for users, spaces, and templates
+- `core/`: injectable managers for users, spaces, templates, and access control
 - `graph/`: public graph types and interfaces
 - `model/`: shared domain/storage model types
 - `internal/`: private implementation packages
@@ -15,6 +15,7 @@ Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 - Edge structures: `docs/graph/edge.md`
 - Node templates: `docs/graph/template.md`
 - User structures: `docs/model/user.md`
+- Access control: `docs/model/access.md`
 - Storage layout: `docs/storage/layout.md`
 
 ## Testing
