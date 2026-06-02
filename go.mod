@@ -1,4 +1,4 @@
-module knot_db
+module martinbeauvais.com/mbgit/knotbase/knotdb
 
 go 1.23
 

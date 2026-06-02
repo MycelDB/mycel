@@ -1,17 +1,19 @@
-# knot_db
+# knotdb
 
 Go library for Knotbase graph spaces.
 
+Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
+
 ## Layout
-- `core/`: foundational services (e.g. user management)
-- `api/`: public graph API types and interfaces
+- `core/`: injectable managers for users and spaces
+- `graph/`: public graph types and interfaces
 - `model/`: shared domain/storage model types
 - `internal/`: private implementation packages
 - `docs/`: API/reference documentation
 
 ## API docs
-- Edge structures: `docs/api/edge.md`
-- User structures: `docs/core/user.md`
+- Edge structures: `docs/graph/edge.md`
+- User structures: `docs/model/user.md`
 
 ## Testing
 - Run once: `make test`
