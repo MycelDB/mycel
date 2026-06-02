@@ -30,13 +30,21 @@ type defaultEngine struct {
 	userManager usermgmt.UserManager
 }
 
-// DefaultEngine opens (or creates) a local embedded KnotDB runtime.
-func DefaultEngine(cfg EngineConfig) (Engine, error) {
-	e := &defaultEngine{state: EngineStateClose}
+// NewEngine opens (or creates) a local embedded KnotDB runtime.
+//
+// If userManager is nil, a default file-backed user manager is used.
+func NewEngine(cfg EngineConfig, userManager usermgmt.UserManager) (Engine, error) {
+	e := &defaultEngine{state: EngineStateClose, userManager: userManager}
 	if err := e.Open(cfg); err != nil {
 		return nil, err
 	}
 	return e, nil
+}
+
+// DefaultEngine opens (or creates) a local embedded KnotDB runtime.
+// Deprecated: use NewEngine(cfg, userManager) instead.
+func DefaultEngine(cfg EngineConfig) (Engine, error) {
+	return NewEngine(cfg, nil)
 }
 
 func (e *defaultEngine) Open(cfg EngineConfig) error {
@@ -77,11 +85,15 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		}
 	}
 
-	um := usermgmt.NewUserManager()
-	if err := um.Init(context.Background(), cfg.DataDir, cfg.UserStoreEncryptionKeyB64); err != nil {
+	if e.userManager == nil {
+		e.userManager = usermgmt.NewUserManager()
+	}
+	if err := e.userManager.Init(context.Background(), cfg.DataDir, cfg.UserStoreEncryptionKeyB64); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
+
+	um := e.userManager
 
 	if created {
 		exists, err := um.ExistsByRef(context.Background(), model.UserRef(cfg.AdminUsername))
@@ -108,7 +120,6 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 	}
 
 	e.dataDir = cfg.DataDir
-	e.userManager = um
 	e.state = EngineStateReady
 	return nil
 }
