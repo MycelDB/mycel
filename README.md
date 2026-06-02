@@ -15,6 +15,7 @@ Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 - Edge structures: `docs/graph/edge.md`
 - Node templates: `docs/graph/template.md`
 - User structures: `docs/model/user.md`
+- Storage layout: `docs/storage/layout.md`
 
 ## Testing
 - Run once: `make test`
