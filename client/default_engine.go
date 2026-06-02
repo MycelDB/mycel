@@ -88,11 +88,11 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 			}
 			if cfg.AdminUsername == "" {
 				e.state = EngineStateClose
-				return fmt.Errorf("%w: admin_username is required when creating a standalone database", ErrInvalidConfig)
+				return fmt.Errorf("%w: admin_username is required when creating a standalone store", ErrInvalidConfig)
 			}
 			if cfg.AdminPassword == "" {
 				e.state = EngineStateClose
-				return fmt.Errorf("%w: admin_password is required when creating a standalone database", ErrInvalidConfig)
+				return fmt.Errorf("%w: admin_password is required when creating a standalone store", ErrInvalidConfig)
 			}
 			if mkErr := os.MkdirAll(cfg.DataDir, 0o755); mkErr != nil {
 				e.state = EngineStateClose
@@ -199,7 +199,7 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 		Roles:    []string{"admin"},
 		OwnerIDs: []string{"owner:" + uid},
 		SpaceIDs: []string{"space:" + uid + ":default"},
-		Scopes:   []string{"graph:read", "graph:write", "admin:users", "db:create"},
+		Scopes:   []string{"graph:read", "graph:write", "admin:users", "space:create"},
 	}
 
 	e.authMu.Lock()
@@ -212,22 +212,22 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 	return AuthResult{AccessToken: accessToken}, nil
 }
 
-func (e *defaultEngine) CreateDatabase(ctx context.Context, in CreateDatabaseInput) (DatabaseInfo, error) {
+func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error) {
 	if err := e.Ready(ctx); err != nil {
-		return DatabaseInfo{}, err
+		return SpaceInfo{}, err
 	}
 	if in.Name == "" {
-		return DatabaseInfo{}, fmt.Errorf("%w: database name is required", ErrInvalidConfig)
+		return SpaceInfo{}, fmt.Errorf("%w: space name is required", ErrInvalidConfig)
 	}
 	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
 	if err != nil {
-		return DatabaseInfo{}, err
+		return SpaceInfo{}, err
 	}
 	if auth.UserID == uuid.Nil {
-		return DatabaseInfo{}, ErrUnauthorized
+		return SpaceInfo{}, ErrUnauthorized
 	}
-	if !contains(auth.Scopes, "db:create") && !contains(auth.Roles, "admin") {
-		return DatabaseInfo{}, ErrUnauthorized
+	if !contains(auth.Scopes, "space:create") && !contains(auth.Roles, "admin") {
+		return SpaceInfo{}, ErrUnauthorized
 	}
 
 	ownerID := "owner:" + auth.UserID.String()
@@ -237,32 +237,32 @@ func (e *defaultEngine) CreateDatabase(ctx context.Context, in CreateDatabaseInp
 
 	owners, err := readOwnersFile(e.dataDir)
 	if err != nil {
-		return DatabaseInfo{}, err
+		return SpaceInfo{}, err
 	}
 	if !ownerExists(owners, ownerID) {
 		owners = append(owners, ownerRecord{OwnerID: ownerID, UserID: auth.UserID.String(), Status: "active"})
 		if err := writeOwnersFile(e.dataDir, owners); err != nil {
-			return DatabaseInfo{}, err
+			return SpaceInfo{}, err
 		}
 	}
 
 	spaces, err := readSpacesFile(e.dataDir)
 	if err != nil {
-		return DatabaseInfo{}, err
+		return SpaceInfo{}, err
 	}
 	for _, s := range spaces {
 		if s.OwnerID == ownerID && s.Name == in.Name {
-			return DatabaseInfo{OwnerID: s.OwnerID, SpaceID: s.SpaceID, Name: s.Name}, nil
+			return SpaceInfo{OwnerID: s.OwnerID, SpaceID: s.SpaceID, Name: s.Name}, nil
 		}
 	}
 
 	space := spaceRecord{SpaceID: "space:" + uuid.NewString(), OwnerID: ownerID, Name: in.Name, Status: "active"}
 	spaces = append(spaces, space)
 	if err := writeSpacesFile(e.dataDir, spaces); err != nil {
-		return DatabaseInfo{}, err
+		return SpaceInfo{}, err
 	}
 
-	return DatabaseInfo{OwnerID: ownerID, SpaceID: space.SpaceID, Name: space.Name}, nil
+	return SpaceInfo{OwnerID: ownerID, SpaceID: space.SpaceID, Name: space.Name}, nil
 }
 
 func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (api.GraphSession, error) {

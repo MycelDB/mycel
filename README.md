@@ -1,6 +1,6 @@
 # knot_db
 
-Go library for Knotbase graph database.
+Go library for Knotbase graph spaces.
 
 ## Layout
 - `core/`: foundational system concepts (e.g. identity)

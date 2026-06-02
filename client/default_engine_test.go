@@ -179,9 +179,9 @@ func TestRuntimeEngine_Authenticate_InvalidPassword(t *testing.T) {
 	}
 }
 
-func TestRuntimeEngine_CreateDatabase_Success(t *testing.T) {
+func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-create-db")
+	dataDir := filepath.Join(tmp, "knotdb-create-space")
 
 	engine := &defaultEngine{}
 	if err := engine.Open(EngineConfig{
@@ -202,15 +202,15 @@ func TestRuntimeEngine_CreateDatabase_Success(t *testing.T) {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
 
-	dbInfo, err := engine.CreateDatabase(context.Background(), CreateDatabaseInput{
+	spaceInfo, err := engine.CreateSpace(context.Background(), CreateSpaceInput{
 		AccessToken: token.AccessToken,
 		Name:        "default",
 	})
 	if err != nil {
-		t.Fatalf("expected create database success, got error: %v", err)
+		t.Fatalf("expected create space success, got error: %v", err)
 	}
-	if dbInfo.OwnerID == "" || dbInfo.SpaceID == "" || dbInfo.Name != "default" {
-		t.Fatalf("unexpected db info: %#v", dbInfo)
+	if spaceInfo.OwnerID == "" || spaceInfo.SpaceID == "" || spaceInfo.Name != "default" {
+		t.Fatalf("unexpected space info: %#v", spaceInfo)
 	}
 
 	if _, err := os.Stat(filepath.Join(dataDir, "owners.json")); err != nil {
@@ -221,9 +221,9 @@ func TestRuntimeEngine_CreateDatabase_Success(t *testing.T) {
 	}
 }
 
-func TestRuntimeEngine_CreateDatabase_UnauthorizedWithoutScope(t *testing.T) {
+func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutScope(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-create-db-no-scope")
+	dataDir := filepath.Join(tmp, "knotdb-create-space-no-scope")
 
 	engine := &defaultEngine{}
 	if err := engine.Open(EngineConfig{
@@ -250,7 +250,7 @@ func TestRuntimeEngine_CreateDatabase_UnauthorizedWithoutScope(t *testing.T) {
 	engine.authCache[token.AccessToken] = claims
 	engine.authMu.Unlock()
 
-	_, err = engine.CreateDatabase(context.Background(), CreateDatabaseInput{AccessToken: token.AccessToken, Name: "default"})
+	_, err = engine.CreateSpace(context.Background(), CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
 	if err == nil {
 		t.Fatal("expected unauthorized error")
 	}
@@ -282,12 +282,12 @@ func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
 
-	dbInfo, err := engine.CreateDatabase(context.Background(), CreateDatabaseInput{AccessToken: token.AccessToken, Name: "default"})
+	spaceInfo, err := engine.CreateSpace(context.Background(), CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
 	if err != nil {
-		t.Fatalf("expected create database success, got error: %v", err)
+		t.Fatalf("expected create space success, got error: %v", err)
 	}
 
-	session, err := engine.OpenSession(context.Background(), OpenSessionInput{AccessToken: token.AccessToken, SpaceID: dbInfo.SpaceID})
+	session, err := engine.OpenSession(context.Background(), OpenSessionInput{AccessToken: token.AccessToken, SpaceID: spaceInfo.SpaceID})
 	if err != nil {
 		t.Fatalf("expected open session success, got error: %v", err)
 	}

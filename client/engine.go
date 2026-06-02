@@ -41,8 +41,8 @@ type Engine interface {
 	Ready(ctx context.Context) error
 	// Authenticate validates credentials and returns an external access token.
 	Authenticate(ctx context.Context, in AuthInput) (AuthResult, error)
-	// CreateDatabase creates or returns a database (space) for an authorized user.
-	CreateDatabase(ctx context.Context, in CreateDatabaseInput) (DatabaseInfo, error)
+	// CreateSpace creates or returns a space for an authorized user.
+	CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error)
 	// OpenSession opens a graph session for an authorized token/space scope.
 	OpenSession(ctx context.Context, in OpenSessionInput) (api.GraphSession, error)
 	// Close releases engine resources.
