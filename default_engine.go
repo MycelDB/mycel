@@ -459,6 +459,33 @@ func (e *defaultEngine) ImportTemplates(ctx context.Context, in ImportTemplatesI
 	return e.templateManager.Import(ctx, in.SpaceID, in.Document)
 }
 
+func (e *defaultEngine) ListTemplates(ctx context.Context, in ListTemplatesInput) ([]graph.Template, error) {
+	if err := e.Ready(ctx); err != nil {
+		return nil, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	if in.SpaceID == uuid.Nil {
+		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
+	}
+	if _, err := e.spaceManager.GetByID(ctx, in.SpaceID); err != nil {
+		if errors.Is(err, space.ErrSpaceNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	canRead, err := e.canReadSpace(ctx, auth.UserID, in.SpaceID)
+	if err != nil {
+		return nil, err
+	}
+	if !canRead {
+		return nil, ErrUnauthorized
+	}
+	return e.templateManager.ListBySpace(ctx, in.SpaceID)
+}
+
 func (e *defaultEngine) GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (model.SystemAccessRule, error) {
 	if err := e.Ready(ctx); err != nil {
 		return model.SystemAccessRule{}, err

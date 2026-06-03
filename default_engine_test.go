@@ -843,3 +843,33 @@ func TestRuntimeEngine_ListSystemAccess(t *testing.T) {
 		t.Fatalf("expected bootstrap superuser rule, got: %v", rules)
 	}
 }
+func TestRuntimeEngine_ImportAndListTemplates(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-list-templates")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	doc := coretemplate.ImportDocument{SchemaVersion: 1, Templates: []coretemplate.TemplateImport{{Key: "note", Version: "1.0.0", DisplayName: "Note", Properties: coretemplate.PropertyPolicyImport{AllowExtra: true}}}}
+	imported, err := engine.ImportTemplates(ctx, ImportTemplatesInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID, Document: doc})
+	if err != nil {
+		t.Fatalf("expected import templates success, got error: %v", err)
+	}
+	listed, err := engine.ListTemplates(ctx, ListTemplatesInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected list templates success, got error: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != imported[0].ID || listed[0].Key != "note" {
+		t.Fatalf("unexpected listed templates: %v imported=%v", listed, imported)
+	}
+}

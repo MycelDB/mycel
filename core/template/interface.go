@@ -56,6 +56,7 @@ type TemplateRefImport struct {
 type Manager interface {
 	Init(ctx context.Context, location string) error
 	Import(ctx context.Context, spaceID model.SpaceID, doc ImportDocument) ([]graph.Template, error)
+	ListBySpace(ctx context.Context, spaceID model.SpaceID) ([]graph.Template, error)
 	GetByID(ctx context.Context, id graph.TemplateID) (graph.Template, error)
 	Find(ctx context.Context, spaceID model.SpaceID, key string, version string) (graph.Template, error)
 	DeleteForSpace(ctx context.Context, spaceID model.SpaceID) error

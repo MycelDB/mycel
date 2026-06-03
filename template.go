@@ -11,3 +11,9 @@ type ImportTemplatesInput struct {
 	SpaceID     model.SpaceID
 	Document    coretemplate.ImportDocument
 }
+
+// ListTemplatesInput defines a request to list templates for a space.
+type ListTemplatesInput struct {
+	AccessToken AccessToken
+	SpaceID     model.SpaceID
+}

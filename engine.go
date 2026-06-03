@@ -56,6 +56,8 @@ type Engine interface {
 	DeleteSpace(ctx context.Context, in DeleteSpaceInput) error
 	// ImportTemplates imports immutable template versions for a space.
 	ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error)
+	// ListTemplates lists templates for a space.
+	ListTemplates(ctx context.Context, in ListTemplatesInput) ([]graph.Template, error)
 	// GrantSystemRole grants or updates a user's system roles.
 	GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (model.SystemAccessRule, error)
 	// RevokeSystemRole revokes a user's system roles.

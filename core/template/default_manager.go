@@ -132,6 +132,22 @@ func (m *defaultManager) Import(ctx context.Context, spaceID model.SpaceID, doc 
 	return out, nil
 }
 
+func (m *defaultManager) ListBySpace(ctx context.Context, spaceID model.SpaceID) ([]graph.Template, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if spaceID == uuid.Nil {
+		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	out := []graph.Template{}
+	for _, t := range m.templates {
+		if t.SpaceID == spaceID {
+			out = append(out, t.toModel())
+		}
+	}
+	return out, nil
+}
+
 func (m *defaultManager) GetByID(ctx context.Context, id graph.TemplateID) (graph.Template, error) {
 	if err := ctx.Err(); err != nil {
 		return graph.Template{}, err
