@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "templates": [
+    {
+      "key": "logseq.journal",
+      "version": "1.0.0",
+      "display_name": "Logseq Journal",
+      "description": "A daily Logseq journal page. Child nodes are journal entries/blocks for that day.",
+      "properties": {
+        "allow_extra": false,
+        "allowed": [
+          {
+            "name": "title",
+            "type": "string",
+            "required": true,
+            "description": "Human-readable journal title, for example: Jun 03, 2026."
+          },
+          {
+            "name": "journal_date",
+            "type": "date",
+            "required": true,
+            "description": "The journal date represented by this page."
+          },
+          {
+            "name": "journal_day",
+            "type": "number",
+            "required": true,
+            "description": "Logseq-style numeric day key, commonly YYYYMMDD."
+          },
+          {
+            "name": "tags",
+            "type": "array",
+            "default": [],
+            "description": "Page-level tags."
+          },
+          {
+            "name": "page_refs",
+            "type": "array",
+            "default": [],
+            "description": "Referenced pages from the journal page."
+          },
+          {
+            "name": "properties",
+            "type": "object",
+            "default": {},
+            "description": "Additional Logseq page properties."
+          }
+        ]
+      },
+      "children": {
+        "allowed": true,
+        "allowed_templates": [
+          {
+            "key": "logseq.journal_entry",
+            "version": "1.0.0"
+          }
+        ]
+      }
+    },
+    {
+      "key": "logseq.journal_entry",
+      "version": "1.0.0",
+      "display_name": "Logseq Journal Entry",
+      "description": "A Logseq journal block/entry. Entries may be nested to represent Logseq's outline hierarchy.",
+      "properties": {
+        "allow_extra": false,
+        "allowed": [
+          {
+            "name": "text",
+            "type": "string",
+            "required": true,
+            "description": "Block text/content."
+          },
+          {
+            "name": "marker",
+            "type": "string",
+            "description": "Optional Logseq task marker such as TODO, DOING, NOW, LATER, WAITING, or DONE."
+          },
+          {
+            "name": "priority",
+            "type": "string",
+            "description": "Optional priority marker, for example A, B, or C."
+          },
+          {
+            "name": "scheduled",
+            "type": "date",
+            "description": "Optional scheduled date."
+          },
+          {
+            "name": "deadline",
+            "type": "date",
+            "description": "Optional deadline date."
+          },
+          {
+            "name": "collapsed",
+            "type": "bool",
+            "default": false,
+            "description": "Whether the block is collapsed."
+          },
+          {
+            "name": "heading",
+            "type": "number",
+            "description": "Optional heading level."
+          },
+          {
+            "name": "tags",
+            "type": "array",
+            "default": [],
+            "description": "Tags attached to this entry."
+          },
+          {
+            "name": "page_refs",
+            "type": "array",
+            "default": [],
+            "description": "Page references, such as [[Project]]."
+          },
+          {
+            "name": "block_refs",
+            "type": "array",
+            "default": [],
+            "description": "Block references used by this entry."
+          },
+          {
+            "name": "properties",
+            "type": "object",
+            "default": {},
+            "description": "Additional Logseq block properties."
+          }
+        ]
+      },
+      "children": {
+        "allowed": true,
+        "allowed_templates": [
+          {
+            "key": "logseq.journal_entry",
+            "version": "1.0.0"
+          }
+        ]
+      }
+    }
+  ]
+}
