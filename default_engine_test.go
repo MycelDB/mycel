@@ -641,3 +641,129 @@ func nodeTemplateDocument() coretemplate.ImportDocument {
 		},
 	}
 }
+func TestRuntimeEngine_DeleteUserCascadesOwnedSpaces(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-delete-user-cascade")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected admin auth success, got error: %v", err)
+	}
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: model.UserInput{Ref: model.UserRef("bob@example.com"), Status: model.UserStatusActive}, Password: "bob-password"})
+	if err != nil {
+		t.Fatalf("expected create user success, got error: %v", err)
+	}
+	if _, err := engine.GrantSystemRole(ctx, GrantSystemRoleInput{AccessToken: adminToken.AccessToken, UserID: bob.ID, Roles: []model.SystemRole{model.SystemRoleSuperuser}}); err != nil {
+		t.Fatalf("expected grant superuser success, got error: %v", err)
+	}
+	bobToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("bob@example.com"), Password: "bob-password"})
+	if err != nil {
+		t.Fatalf("expected bob auth success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: bobToken.AccessToken, Name: "owned"})
+	if err != nil {
+		t.Fatalf("expected bob create space success, got error: %v", err)
+	}
+	sess, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: bobToken.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	if _, err := sess.AddNode(ctx, graph.NodeInput{Content: "will be deleted"}); err != nil {
+		t.Fatalf("expected add node success, got error: %v", err)
+	}
+	_ = sess.Close()
+
+	if err := engine.DeleteUser(ctx, DeleteUserInput{AccessToken: adminToken.AccessToken, UserID: bob.ID}); err != nil {
+		t.Fatalf("expected delete user success, got error: %v", err)
+	}
+	if _, err := engine.userManager.GetByID(ctx, bob.ID); !errors.Is(err, coreuser.ErrUserNotFound) {
+		t.Fatalf("expected user manager not found, got: %v", err)
+	}
+	if _, err := engine.spaceManager.GetByID(ctx, sp.SpaceID); err == nil {
+		t.Fatal("expected owned space to be deleted")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "graphs", sp.SpaceID.String())); !os.IsNotExist(err) {
+		t.Fatalf("expected graph directory removed, got: %v", err)
+	}
+	if _, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("bob@example.com"), Password: "bob-password"}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected deleted user authentication to fail, got: %v", err)
+	}
+}
+
+func TestRuntimeEngine_DeleteNodeRequiresRecursiveForChildren(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-delete-node-recursive")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	sess, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	parent, err := sess.AddNode(ctx, graph.NodeInput{Content: "parent"})
+	if err != nil {
+		t.Fatalf("expected add parent success, got error: %v", err)
+	}
+	child, err := sess.AddNode(ctx, graph.NodeInput{ParentID: &parent.ID, Content: "child"})
+	if err != nil {
+		t.Fatalf("expected add child success, got error: %v", err)
+	}
+	if _, err := sess.AddEdge(ctx, graph.EdgeInput{FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindContains}); err != nil {
+		t.Fatalf("expected add edge success, got error: %v", err)
+	}
+	if err := sess.DeleteNode(ctx, graph.DeleteNodeInput{ID: parent.ID}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict deleting parent without recursive, got: %v", err)
+	}
+	if err := sess.DeleteNode(ctx, graph.DeleteNodeInput{ID: parent.ID, Recursive: true}); err != nil {
+		t.Fatalf("expected recursive delete success, got error: %v", err)
+	}
+	if _, err := sess.GetNode(ctx, child.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected child to be deleted, got: %v", err)
+	}
+	_ = sess.Close()
+}
+func TestRuntimeEngine_DeleteSpaceInvalidatesOpenSession(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-delete-space-invalidates-session")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	sess, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	if err := engine.DeleteSpace(ctx, DeleteSpaceInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID}); err != nil {
+		t.Fatalf("expected delete space success, got error: %v", err)
+	}
+	if _, err := sess.AddNode(ctx, graph.NodeInput{Content: "stale write"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected stale session write to fail with ErrNotFound, got: %v", err)
+	}
+	_ = sess.Close()
+}

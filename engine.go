@@ -42,8 +42,14 @@ type Engine interface {
 	Ready(ctx context.Context) error
 	// Authenticate validates credentials and returns an external access token.
 	Authenticate(ctx context.Context, in AuthInput) (AuthResult, error)
+	// CreateUser creates a user for an authorized system user administrator.
+	CreateUser(ctx context.Context, in CreateUserInput) (model.User, error)
+	// DeleteUser hard-deletes a user and spaces owned by that user.
+	DeleteUser(ctx context.Context, in DeleteUserInput) error
 	// CreateSpace creates or returns a space for an authorized user.
 	CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error)
+	// DeleteSpace hard-deletes a space and all associated persisted constructs.
+	DeleteSpace(ctx context.Context, in DeleteSpaceInput) error
 	// ImportTemplates imports immutable template versions for a space.
 	ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error)
 	// GrantSystemRole grants or updates a user's system roles.

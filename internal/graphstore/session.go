@@ -21,6 +21,7 @@ type Errors struct {
 	Closed       error
 	NotFound     error
 	Unauthorized error
+	Conflict     error
 }
 
 // Permissions defines read/write capabilities for a session.
@@ -45,6 +46,9 @@ func NewSession(graphsDir string, spaceID model.SpaceID, templateManager coretem
 
 func (s *session) AddNode(ctx context.Context, in graph.NodeInput) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
+		return graph.Node{}, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
 		return graph.Node{}, err
 	}
 	if err := s.ensureWrite(); err != nil {
@@ -107,6 +111,9 @@ func (s *session) AddEdge(ctx context.Context, in graph.EdgeInput) (graph.Edge, 
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Edge{}, err
 	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return graph.Edge{}, err
+	}
 	if err := s.ensureWrite(); err != nil {
 		return graph.Edge{}, err
 	}
@@ -141,6 +148,9 @@ func (s *session) AddGraph(ctx context.Context, in graph.GraphInput) error {
 	if err := s.ensureOpen(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return err
+	}
 	if err := s.ensureWrite(); err != nil {
 		return err
 	}
@@ -161,6 +171,9 @@ func (s *session) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, err
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
 	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return graph.Node{}, err
+	}
 	if err := s.ensureRead(); err != nil {
 		return graph.Node{}, err
 	}
@@ -173,6 +186,78 @@ func (s *session) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, err
 		return graph.Node{}, s.errors.NotFound
 	}
 	return n, nil
+}
+
+func (s *session) DeleteNode(ctx context.Context, in graph.DeleteNodeInput) error {
+	if err := s.ensureOpen(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return err
+	}
+	if err := s.ensureWrite(); err != nil {
+		return err
+	}
+	if in.ID == uuid.Nil {
+		return fmt.Errorf("%w: node_id is required", s.errors.NotFound)
+	}
+	nodes, err := s.readNodes()
+	if err != nil {
+		return err
+	}
+	if _, ok := findNode(nodes, in.ID); !ok {
+		return s.errors.NotFound
+	}
+	deleteIDs := map[graph.NodeID]struct{}{in.ID: {}}
+	if in.Recursive {
+		changed := true
+		for changed {
+			changed = false
+			for _, n := range nodes {
+				if n.ParentID == nil {
+					continue
+				}
+				if _, parentDeleted := deleteIDs[*n.ParentID]; parentDeleted {
+					if _, already := deleteIDs[n.ID]; !already {
+						deleteIDs[n.ID] = struct{}{}
+						changed = true
+					}
+				}
+			}
+		}
+	} else {
+		for _, n := range nodes {
+			if n.ParentID != nil && *n.ParentID == in.ID {
+				if s.errors.Conflict != nil {
+					return fmt.Errorf("%w: node has child nodes", s.errors.Conflict)
+				}
+				return fmt.Errorf("node has child nodes")
+			}
+		}
+	}
+
+	remainingNodes := make([]graph.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if _, deleted := deleteIDs[n.ID]; !deleted {
+			remainingNodes = append(remainingNodes, n)
+		}
+	}
+	edges, err := s.readEdges()
+	if err != nil {
+		return err
+	}
+	remainingEdges := make([]graph.Edge, 0, len(edges))
+	for _, edge := range edges {
+		_, fromDeleted := deleteIDs[edge.FromID]
+		_, toDeleted := deleteIDs[edge.ToID]
+		if !fromDeleted && !toDeleted {
+			remainingEdges = append(remainingEdges, edge)
+		}
+	}
+	if err := s.writeNodes(remainingNodes); err != nil {
+		return err
+	}
+	return s.writeEdges(remainingEdges)
 }
 
 func (s *session) Close() error {
@@ -218,6 +303,20 @@ func (s *session) edgesPath() string {
 	return filepath.Join(s.spacePath(), "edges.json")
 }
 
+func (s *session) markerPath() string {
+	return filepath.Join(s.spacePath(), ".space")
+}
+
+func (s *session) ensureSpaceLive() error {
+	if _, err := os.Stat(s.markerPath()); err != nil {
+		if os.IsNotExist(err) {
+			return s.errors.NotFound
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *session) readNodes() ([]graph.Node, error) {
 	path := s.nodesPath()
 	raw, err := os.ReadFile(path)
@@ -235,7 +334,7 @@ func (s *session) readNodes() ([]graph.Node, error) {
 }
 
 func (s *session) writeNodes(nodes []graph.Node) error {
-	if err := os.MkdirAll(s.spacePath(), 0o755); err != nil {
+	if err := s.ensureSpaceLive(); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(nodes, "", "  ")
@@ -263,7 +362,7 @@ func (s *session) readEdges() ([]graph.Edge, error) {
 }
 
 func (s *session) writeEdges(edges []graph.Edge) error {
-	if err := os.MkdirAll(s.spacePath(), 0o755); err != nil {
+	if err := s.ensureSpaceLive(); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(edges, "", "  ")

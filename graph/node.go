@@ -24,3 +24,10 @@ type NodeInput struct {
 	Content    string
 	Props      map[string]any
 }
+
+// DeleteNodeInput is the hard-delete payload for a graph node.
+// Incident edges are removed. Child nodes require Recursive=true.
+type DeleteNodeInput struct {
+	ID        NodeID
+	Recursive bool
+}

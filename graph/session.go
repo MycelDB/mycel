@@ -15,6 +15,7 @@ type Session interface {
 	AddEdge(ctx context.Context, in EdgeInput) (Edge, error)
 	AddGraph(ctx context.Context, in GraphInput) error
 	GetNode(ctx context.Context, id NodeID) (Node, error)
+	DeleteNode(ctx context.Context, in DeleteNodeInput) error
 	Close() error
 }
 

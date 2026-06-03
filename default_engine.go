@@ -26,6 +26,7 @@ var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrUnauthorized       = errors.New("unauthorized")
 	ErrNotFound           = errors.New("not found")
+	ErrConflict           = errors.New("conflict")
 )
 
 type defaultEngine struct {
@@ -92,18 +93,29 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 				e.state = EngineStateClose
 				return fmt.Errorf("%w: data_dir does not exist", ErrInvalidConfig)
 			}
-			if cfg.AdminUsername == "" {
-				e.state = EngineStateClose
-				return fmt.Errorf("%w: admin_username is required when creating a standalone store", ErrInvalidConfig)
-			}
-			if cfg.AdminPassword == "" {
-				e.state = EngineStateClose
-				return fmt.Errorf("%w: admin_password is required when creating a standalone store", ErrInvalidConfig)
-			}
 			created = true
 		} else {
 			e.state = EngineStateClose
 			return err
+		}
+	} else if cfg.CreateIfMissing {
+		if _, err := os.Stat(filepath.Join(metaDir(cfg.DataDir), "users.json")); err != nil {
+			if os.IsNotExist(err) {
+				created = true
+			} else {
+				e.state = EngineStateClose
+				return err
+			}
+		}
+	}
+	if created {
+		if cfg.AdminUsername == "" {
+			e.state = EngineStateClose
+			return fmt.Errorf("%w: admin_username is required when creating a standalone store", ErrInvalidConfig)
+		}
+		if cfg.AdminPassword == "" {
+			e.state = EngineStateClose
+			return fmt.Errorf("%w: admin_password is required when creating a standalone store", ErrInvalidConfig)
 		}
 	}
 	if err := ensureStorageLayout(cfg.DataDir); err != nil {
@@ -257,6 +269,80 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 	return AuthResult{AccessToken: accessToken}, nil
 }
 
+func (e *defaultEngine) CreateUser(ctx context.Context, in CreateUserInput) (model.User, error) {
+	if err := e.Ready(ctx); err != nil {
+		return model.User{}, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return model.User{}, err
+	}
+	canManageUsers, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageUsers)
+	if err != nil {
+		return model.User{}, err
+	}
+	if !canManageUsers {
+		return model.User{}, ErrUnauthorized
+	}
+	created, err := e.userManager.Create(ctx, user.CreateInput{User: in.User, Password: in.Password})
+	if err != nil {
+		if errors.Is(err, user.ErrInvalidInput) {
+			return model.User{}, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		}
+		return model.User{}, err
+	}
+	return created, nil
+}
+
+func (e *defaultEngine) DeleteUser(ctx context.Context, in DeleteUserInput) error {
+	if err := e.Ready(ctx); err != nil {
+		return err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return err
+	}
+	canManageUsers, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageUsers)
+	if err != nil {
+		return err
+	}
+	if !canManageUsers {
+		return ErrUnauthorized
+	}
+	if in.UserID == uuid.Nil {
+		return fmt.Errorf("%w: user_id is required", ErrInvalidConfig)
+	}
+	if _, err := e.userManager.GetByID(ctx, in.UserID); err != nil {
+		if errors.Is(err, user.ErrUserNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if err := e.ensureNotLastSuperuser(ctx, in.UserID); err != nil {
+		return err
+	}
+	ownedSpaces, err := e.spaceManager.ListByOwner(ctx, in.UserID)
+	if err != nil {
+		return err
+	}
+	for _, sp := range ownedSpaces {
+		if err := e.deleteSpaceByID(ctx, sp.SpaceID); err != nil {
+			return err
+		}
+	}
+	if err := e.accessManager.DeleteForUser(ctx, in.UserID); err != nil {
+		return err
+	}
+	if err := e.userManager.DeleteByID(ctx, in.UserID); err != nil {
+		if errors.Is(err, user.ErrUserNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	e.purgeCachedClaimsForUser(in.UserID)
+	return nil
+}
+
 func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error) {
 	if err := e.Ready(ctx); err != nil {
 		return SpaceInfo{}, err
@@ -293,6 +379,20 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 
 	e.grantSpaceToCachedClaims(in.AccessToken, sp.SpaceID)
 	return SpaceInfo{OwnerID: sp.OwnerID, SpaceID: sp.SpaceID, Name: sp.Name}, nil
+}
+
+func (e *defaultEngine) DeleteSpace(ctx context.Context, in DeleteSpaceInput) error {
+	if err := e.Ready(ctx); err != nil {
+		return err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return err
+	}
+	if err := e.ensureSpaceAdmin(ctx, auth.UserID, in.SpaceID); err != nil {
+		return err
+	}
+	return e.deleteSpaceByID(ctx, in.SpaceID)
 }
 
 func (e *defaultEngine) ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error) {
@@ -459,12 +559,15 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (g
 		return nil, err
 	}
 
+	if err := ensureGraphSpaceDir(e.dataDir, spaceID); err != nil {
+		return nil, err
+	}
 	return graphstore.NewSession(
 		graphsDir(e.dataDir),
 		spaceID,
 		e.templateManager,
 		graphstore.Permissions{Read: canRead, Write: canWrite},
-		graphstore.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized},
+		graphstore.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized, Conflict: ErrConflict},
 	), nil
 }
 
@@ -506,6 +609,80 @@ func (e *defaultEngine) grantSpaceToCachedClaims(accessToken AccessToken, spaceI
 	}
 	claims.SpaceIDs = append(claims.SpaceIDs, spaceID)
 	e.authCache[accessToken] = claims
+}
+
+func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID model.SpaceID) error {
+	if spaceID == uuid.Nil {
+		return fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
+	}
+	if _, err := e.spaceManager.GetByID(ctx, spaceID); err != nil {
+		if errors.Is(err, space.ErrSpaceNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if err := e.templateManager.DeleteForSpace(ctx, spaceID); err != nil {
+		return err
+	}
+	if err := e.accessManager.DeleteForSpace(ctx, spaceID); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(graphsDir(e.dataDir), spaceID.String())); err != nil {
+		return err
+	}
+	if err := e.spaceManager.DeleteByID(ctx, spaceID); err != nil {
+		if errors.Is(err, space.ErrSpaceNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	e.purgeCachedSpace(spaceID)
+	return nil
+}
+
+func (e *defaultEngine) ensureNotLastSuperuser(ctx context.Context, userID model.UserID) error {
+	roles, err := e.accessManager.SystemRolesForUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !containsSystemRole(roles, model.SystemRoleSuperuser) {
+		return nil
+	}
+	rules, err := e.accessManager.SystemRules(ctx)
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		if rule.UserID != userID && containsSystemRole(rule.Roles, model.SystemRoleSuperuser) {
+			return nil
+		}
+	}
+	return access.ErrLastSuperuser
+}
+
+func (e *defaultEngine) purgeCachedClaimsForUser(userID model.UserID) {
+	e.authMu.Lock()
+	defer e.authMu.Unlock()
+	for token, claims := range e.authCache {
+		if claims.UserID == userID {
+			delete(e.authCache, token)
+		}
+	}
+}
+
+func (e *defaultEngine) purgeCachedSpace(spaceID model.SpaceID) {
+	e.authMu.Lock()
+	defer e.authMu.Unlock()
+	for token, claims := range e.authCache {
+		filtered := claims.SpaceIDs[:0]
+		for _, existing := range claims.SpaceIDs {
+			if existing != spaceID {
+				filtered = append(filtered, existing)
+			}
+		}
+		claims.SpaceIDs = filtered
+		e.authCache[token] = claims
+	}
 }
 
 func (e *defaultEngine) canReadSpace(ctx context.Context, userID model.UserID, spaceID model.SpaceID) (bool, error) {
@@ -584,6 +761,14 @@ func templatesDir(dataDir string) string {
 	return filepath.Join(metaDir(dataDir), "templates")
 }
 
+func ensureGraphSpaceDir(dataDir string, spaceID model.SpaceID) error {
+	path := filepath.Join(graphsDir(dataDir), spaceID.String())
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(path, ".space"), []byte("active\n"), 0o600)
+}
+
 func contains(items []string, wanted string) bool {
 	for _, it := range items {
 		if it == wanted {
@@ -603,6 +788,15 @@ func containsUserID(items []model.UserID, wanted model.UserID) bool {
 }
 
 func containsSpaceID(items []model.SpaceID, wanted model.SpaceID) bool {
+	for _, it := range items {
+		if it == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSystemRole(items []model.SystemRole, wanted model.SystemRole) bool {
 	for _, it := range items {
 		if it == wanted {
 			return true

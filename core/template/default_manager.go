@@ -166,6 +166,27 @@ func (m *defaultManager) Find(ctx context.Context, spaceID model.SpaceID, key st
 	return m.templates[idx].toModel(), nil
 }
 
+func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID model.SpaceID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if spaceID == uuid.Nil {
+		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	newTemplates := make([]storedTemplate, 0, len(m.templates))
+	for _, t := range m.templates {
+		if t.SpaceID != spaceID {
+			newTemplates = append(newTemplates, t)
+		}
+	}
+	m.templates = newTemplates
+	m.rebuildIndex()
+	if err := os.Remove(templateStorePath(m.location, spaceID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func (m *defaultManager) rebuildIndex() {
 	m.indexByID = map[graph.TemplateID]int{}
 	m.indexBySpaceKeyVersion = map[string]int{}

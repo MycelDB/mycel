@@ -100,6 +100,14 @@ Persisted nodes for a space.
 
 Persisted edges for a space.
 
+## Hard-delete behavior
+
+Delete operations physically remove persisted records and associated files:
+
+- deleting a user removes the user record, access rules for that user, and all spaces owned by the user
+- deleting a space removes its metadata, access rules, templates, and graph directory
+- deleting a node removes the node and incident edges; descendant nodes require recursive deletion
+
 ## ID format
 
 IDs are UUID strings unless otherwise noted.

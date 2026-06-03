@@ -40,6 +40,8 @@ type Manager interface {
 	CanSystem(ctx context.Context, userID model.UserID, permission model.SystemPermission) (bool, error)
 	Grant(ctx context.Context, in GrantInput) (model.SpaceAccessRule, error)
 	Revoke(ctx context.Context, in RevokeInput) error
+	DeleteForUser(ctx context.Context, userID model.UserID) error
+	DeleteForSpace(ctx context.Context, spaceID model.SpaceID) error
 	Can(ctx context.Context, userID model.UserID, spaceID model.SpaceID, permission model.SpacePermission) (bool, error)
 	RulesForSpace(ctx context.Context, spaceID model.SpaceID) ([]model.SpaceAccessRule, error)
 }

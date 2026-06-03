@@ -95,6 +95,22 @@ func (m *defaultManager) GetByID(ctx context.Context, id model.SpaceID) (model.S
 	return m.spaces[idx].toModel(), nil
 }
 
+func (m *defaultManager) ListByOwner(ctx context.Context, ownerID model.UserID) ([]model.Space, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if ownerID == uuid.Nil {
+		return nil, fmt.Errorf("%w: owner_id is required", ErrInvalidInput)
+	}
+	out := []model.Space{}
+	for _, s := range m.spaces {
+		if s.OwnerID == ownerID {
+			out = append(out, s.toModel())
+		}
+	}
+	return out, nil
+}
+
 func (m *defaultManager) FindByOwnerAndName(ctx context.Context, ownerID model.UserID, name string) (model.Space, error) {
 	if err := ctx.Err(); err != nil {
 		return model.Space{}, err
@@ -145,6 +161,28 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (model.Spac
 		return model.Space{}, err
 	}
 	return s.toModel(), nil
+}
+
+func (m *defaultManager) DeleteByID(ctx context.Context, id model.SpaceID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexByID[id]
+	if !ok {
+		return ErrSpaceNotFound
+	}
+	oldSpaces := append([]storedSpace(nil), m.spaces...)
+	m.spaces = append(m.spaces[:idx], m.spaces[idx+1:]...)
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.spaces = oldSpaces
+		m.rebuildIndex()
+		return err
+	}
+	return nil
 }
 
 func (m *defaultManager) rebuildIndex() {

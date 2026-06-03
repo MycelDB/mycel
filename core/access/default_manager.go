@@ -248,6 +248,69 @@ func (m *defaultManager) Revoke(ctx context.Context, in RevokeInput) error {
 	return nil
 }
 
+func (m *defaultManager) DeleteForUser(ctx context.Context, userID model.UserID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if userID == uuid.Nil {
+		return fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	}
+	if idx, ok := m.indexBySystemUser[userID]; ok {
+		rule := m.systemRules[idx]
+		if hasSystemRole(rule.Roles, model.SystemRoleSuperuser) && m.superuserCountExcluding(userID) == 0 {
+			return ErrLastSuperuser
+		}
+	}
+	oldSystemRules := append([]model.SystemAccessRule(nil), m.systemRules...)
+	oldSpaceRules := append([]model.SpaceAccessRule(nil), m.spaceRules...)
+	newSystemRules := make([]model.SystemAccessRule, 0, len(m.systemRules))
+	for _, rule := range m.systemRules {
+		if rule.UserID != userID {
+			newSystemRules = append(newSystemRules, rule)
+		}
+	}
+	newSpaceRules := make([]model.SpaceAccessRule, 0, len(m.spaceRules))
+	for _, rule := range m.spaceRules {
+		if rule.UserID != userID {
+			newSpaceRules = append(newSpaceRules, rule)
+		}
+	}
+	m.systemRules = newSystemRules
+	m.spaceRules = newSpaceRules
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.systemRules = oldSystemRules
+		m.spaceRules = oldSpaceRules
+		m.rebuildIndex()
+		return err
+	}
+	return nil
+}
+
+func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID model.SpaceID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if spaceID == uuid.Nil {
+		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	oldRules := append([]model.SpaceAccessRule(nil), m.spaceRules...)
+	newRules := make([]model.SpaceAccessRule, 0, len(m.spaceRules))
+	for _, rule := range m.spaceRules {
+		if rule.SpaceID != spaceID {
+			newRules = append(newRules, rule)
+		}
+	}
+	m.spaceRules = newRules
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.spaceRules = oldRules
+		m.rebuildIndex()
+		return err
+	}
+	return nil
+}
+
 func (m *defaultManager) Can(ctx context.Context, userID model.UserID, spaceID model.SpaceID, permission model.SpacePermission) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err

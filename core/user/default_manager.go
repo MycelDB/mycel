@@ -37,12 +37,13 @@ type defaultManager struct {
 	key          []byte
 	encrypted    bool
 	users        []storedUser
+	indexByID    map[model.UserID]int
 	indexByRefLC map[string]int
 }
 
 // NewManager creates the default file-backed Manager implementation.
 func NewManager() Manager {
-	return &defaultManager{indexByRefLC: map[string]int{}}
+	return &defaultManager{indexByID: map[model.UserID]int{}, indexByRefLC: map[string]int{}}
 }
 
 func (m *defaultManager) Init(ctx context.Context, location string, encryptionKeyB64 string) error {
@@ -112,6 +113,20 @@ func (m *defaultManager) GetByRef(ctx context.Context, ref model.UserRef) (model
 	return m.users[idx].User, nil
 }
 
+func (m *defaultManager) GetByID(ctx context.Context, id model.UserID) (model.User, error) {
+	if err := ctx.Err(); err != nil {
+		return model.User{}, err
+	}
+	if id == uuid.Nil {
+		return model.User{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexByID[id]
+	if !ok {
+		return model.User{}, ErrUserNotFound
+	}
+	return m.users[idx].User, nil
+}
+
 func (m *defaultManager) Create(ctx context.Context, in CreateInput) (model.User, error) {
 	if err := ctx.Err(); err != nil {
 		return model.User{}, err
@@ -130,6 +145,9 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (model.User
 	id := uuid.New()
 	if in.User.ID != nil {
 		id = *in.User.ID
+	}
+	if _, exists := m.indexByID[id]; exists {
+		return model.User{}, ErrDuplicateUserRef
 	}
 	status := in.User.Status
 	if status == "" {
@@ -151,6 +169,28 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (model.User
 	return u, nil
 }
 
+func (m *defaultManager) DeleteByID(ctx context.Context, id model.UserID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexByID[id]
+	if !ok {
+		return ErrUserNotFound
+	}
+	oldUsers := append([]storedUser(nil), m.users...)
+	m.users = append(m.users[:idx], m.users[idx+1:]...)
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.users = oldUsers
+		m.rebuildIndex()
+		return err
+	}
+	return nil
+}
+
 // Authenticate checks credentials and returns a user record.
 func (m *defaultManager) Authenticate(ctx context.Context, ref model.UserRef, password string) (model.User, error) {
 	if err := ctx.Err(); err != nil {
@@ -168,8 +208,10 @@ func (m *defaultManager) Authenticate(ctx context.Context, ref model.UserRef, pa
 }
 
 func (m *defaultManager) rebuildIndex() {
+	m.indexByID = map[model.UserID]int{}
 	m.indexByRefLC = map[string]int{}
 	for i, u := range m.users {
+		m.indexByID[u.User.ID] = i
 		m.indexByRefLC[normalizeRef(u.User.Ref)] = i
 	}
 }
