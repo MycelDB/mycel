@@ -294,6 +294,24 @@ func (e *defaultEngine) CreateUser(ctx context.Context, in CreateUserInput) (mod
 	return created, nil
 }
 
+func (e *defaultEngine) ListUsers(ctx context.Context, in ListUsersInput) ([]model.User, error) {
+	if err := e.Ready(ctx); err != nil {
+		return nil, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	canManageUsers, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageUsers)
+	if err != nil {
+		return nil, err
+	}
+	if !canManageUsers {
+		return nil, ErrUnauthorized
+	}
+	return e.userManager.List(ctx)
+}
+
 func (e *defaultEngine) DeleteUser(ctx context.Context, in DeleteUserInput) error {
 	if err := e.Ready(ctx); err != nil {
 		return err
@@ -379,6 +397,24 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 
 	e.grantSpaceToCachedClaims(in.AccessToken, sp.SpaceID)
 	return SpaceInfo{OwnerID: sp.OwnerID, SpaceID: sp.SpaceID, Name: sp.Name}, nil
+}
+
+func (e *defaultEngine) ListSpaces(ctx context.Context, in ListSpacesInput) ([]model.Space, error) {
+	if err := e.Ready(ctx); err != nil {
+		return nil, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	canManageAccess, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageAccess)
+	if err != nil {
+		return nil, err
+	}
+	if !canManageAccess {
+		return nil, ErrUnauthorized
+	}
+	return e.spaceManager.List(ctx)
 }
 
 func (e *defaultEngine) DeleteSpace(ctx context.Context, in DeleteSpaceInput) error {

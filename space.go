@@ -8,6 +8,11 @@ type CreateSpaceInput struct {
 	Name        string
 }
 
+// ListSpacesInput defines a space list request payload.
+type ListSpacesInput struct {
+	AccessToken AccessToken
+}
+
 // DeleteSpaceInput defines a hard-delete space request payload.
 type DeleteSpaceInput struct {
 	AccessToken AccessToken

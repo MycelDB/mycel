@@ -95,6 +95,17 @@ func (m *defaultManager) GetByID(ctx context.Context, id model.SpaceID) (model.S
 	return m.spaces[idx].toModel(), nil
 }
 
+func (m *defaultManager) List(ctx context.Context) ([]model.Space, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]model.Space, 0, len(m.spaces))
+	for _, s := range m.spaces {
+		out = append(out, s.toModel())
+	}
+	return out, nil
+}
+
 func (m *defaultManager) ListByOwner(ctx context.Context, ownerID model.UserID) ([]model.Space, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

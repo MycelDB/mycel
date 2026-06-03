@@ -44,10 +44,14 @@ type Engine interface {
 	Authenticate(ctx context.Context, in AuthInput) (AuthResult, error)
 	// CreateUser creates a user for an authorized system user administrator.
 	CreateUser(ctx context.Context, in CreateUserInput) (model.User, error)
+	// ListUsers lists users for an authorized system user administrator.
+	ListUsers(ctx context.Context, in ListUsersInput) ([]model.User, error)
 	// DeleteUser hard-deletes a user and spaces owned by that user.
 	DeleteUser(ctx context.Context, in DeleteUserInput) error
 	// CreateSpace creates or returns a space for an authorized user.
 	CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error)
+	// ListSpaces lists spaces for an authorized system access administrator.
+	ListSpaces(ctx context.Context, in ListSpacesInput) ([]model.Space, error)
 	// DeleteSpace hard-deletes a space and all associated persisted constructs.
 	DeleteSpace(ctx context.Context, in DeleteSpaceInput) error
 	// ImportTemplates imports immutable template versions for a space.

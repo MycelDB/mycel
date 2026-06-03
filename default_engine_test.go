@@ -767,3 +767,58 @@ func TestRuntimeEngine_DeleteSpaceInvalidatesOpenSession(t *testing.T) {
 	}
 	_ = sess.Close()
 }
+func TestRuntimeEngine_ListUsersAndSpaces(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-list-users-spaces")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: token.AccessToken, User: model.UserInput{Ref: model.UserRef("bob@example.com"), Status: model.UserStatusActive}, Password: "bob-password"})
+	if err != nil {
+		t.Fatalf("expected create user success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+
+	users, err := engine.ListUsers(ctx, ListUsersInput{AccessToken: token.AccessToken})
+	if err != nil {
+		t.Fatalf("expected list users success, got error: %v", err)
+	}
+	if !hasUserID(users, bob.ID) {
+		t.Fatalf("expected listed users to contain bob %s: %v", bob.ID, users)
+	}
+	spaces, err := engine.ListSpaces(ctx, ListSpacesInput{AccessToken: token.AccessToken})
+	if err != nil {
+		t.Fatalf("expected list spaces success, got error: %v", err)
+	}
+	if !hasSpaceID(spaces, sp.SpaceID) {
+		t.Fatalf("expected listed spaces to contain %s: %v", sp.SpaceID, spaces)
+	}
+}
+
+func hasUserID(users []model.User, id model.UserID) bool {
+	for _, u := range users {
+		if u.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSpaceID(spaces []model.Space, id model.SpaceID) bool {
+	for _, sp := range spaces {
+		if sp.SpaceID == id {
+			return true
+		}
+	}
+	return false
+}

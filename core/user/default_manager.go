@@ -127,6 +127,17 @@ func (m *defaultManager) GetByID(ctx context.Context, id model.UserID) (model.Us
 	return m.users[idx].User, nil
 }
 
+func (m *defaultManager) List(ctx context.Context) ([]model.User, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]model.User, 0, len(m.users))
+	for _, rec := range m.users {
+		out = append(out, rec.User)
+	}
+	return out, nil
+}
+
 func (m *defaultManager) Create(ctx context.Context, in CreateInput) (model.User, error) {
 	if err := ctx.Err(); err != nil {
 		return model.User{}, err

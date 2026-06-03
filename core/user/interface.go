@@ -18,6 +18,7 @@ type Manager interface {
 	ExistsByRef(ctx context.Context, ref model.UserRef) (bool, error)
 	GetByRef(ctx context.Context, ref model.UserRef) (model.User, error)
 	GetByID(ctx context.Context, id model.UserID) (model.User, error)
+	List(ctx context.Context) ([]model.User, error)
 	Create(ctx context.Context, in CreateInput) (model.User, error)
 	DeleteByID(ctx context.Context, id model.UserID) error
 	Authenticate(ctx context.Context, ref model.UserRef, password string) (model.User, error)
