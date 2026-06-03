@@ -17,6 +17,11 @@ type RevokeSystemRoleInput struct {
 	UserID      model.UserID
 }
 
+// ListSystemAccessInput defines a request to list system access rules.
+type ListSystemAccessInput struct {
+	AccessToken AccessToken
+}
+
 // GrantSpaceAccessInput defines a request to grant or update user access for a space.
 type GrantSpaceAccessInput struct {
 	AccessToken AccessToken

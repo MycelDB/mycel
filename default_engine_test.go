@@ -822,3 +822,24 @@ func hasSpaceID(spaces []model.Space, id model.SpaceID) bool {
 	}
 	return false
 }
+func TestRuntimeEngine_ListSystemAccess(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-list-system-access")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+	rules, err := engine.ListSystemAccess(ctx, ListSystemAccessInput{AccessToken: token.AccessToken})
+	if err != nil {
+		t.Fatalf("expected list system access success, got error: %v", err)
+	}
+	if len(rules) != 1 || !containsSystemRole(rules[0].Roles, model.SystemRoleSuperuser) {
+		t.Fatalf("expected bootstrap superuser rule, got: %v", rules)
+	}
+}

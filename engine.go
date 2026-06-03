@@ -60,6 +60,8 @@ type Engine interface {
 	GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (model.SystemAccessRule, error)
 	// RevokeSystemRole revokes a user's system roles.
 	RevokeSystemRole(ctx context.Context, in RevokeSystemRoleInput) error
+	// ListSystemAccess lists system access rules.
+	ListSystemAccess(ctx context.Context, in ListSystemAccessInput) ([]model.SystemAccessRule, error)
 	// GrantSpaceAccess grants or updates a user's access to a space.
 	GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (model.SpaceAccessRule, error)
 	// RevokeSpaceAccess revokes a user's access to a space.

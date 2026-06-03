@@ -495,6 +495,24 @@ func (e *defaultEngine) RevokeSystemRole(ctx context.Context, in RevokeSystemRol
 	return e.accessManager.RevokeSystemRole(ctx, access.RevokeSystemRoleInput{UserID: in.UserID})
 }
 
+func (e *defaultEngine) ListSystemAccess(ctx context.Context, in ListSystemAccessInput) ([]model.SystemAccessRule, error) {
+	if err := e.Ready(ctx); err != nil {
+		return nil, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	canManage, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageAccess)
+	if err != nil {
+		return nil, err
+	}
+	if !canManage {
+		return nil, ErrUnauthorized
+	}
+	return e.accessManager.SystemRules(ctx)
+}
+
 func (e *defaultEngine) GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (model.SpaceAccessRule, error) {
 	if err := e.Ready(ctx); err != nil {
 		return model.SpaceAccessRule{}, err
