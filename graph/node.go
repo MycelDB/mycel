@@ -25,6 +25,15 @@ type NodeInput struct {
 	Props      map[string]any
 }
 
+// UpdateNodeInput is the write payload used when updating an existing node.
+type UpdateNodeInput struct {
+	ID         NodeID
+	TemplateID *TemplateID
+	ParentID   *NodeID
+	Content    string
+	Props      map[string]any
+}
+
 // DeleteNodeInput is the hard-delete payload for a graph node.
 // Incident edges are removed. Child nodes require Recursive=true.
 type DeleteNodeInput struct {

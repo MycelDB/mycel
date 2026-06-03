@@ -12,6 +12,9 @@ import (
 // and transactional behavior in the implementation.
 type Session interface {
 	AddNode(ctx context.Context, in NodeInput) (Node, error)
+	ListNodes(ctx context.Context) ([]Node, error)
+	UpdateNode(ctx context.Context, in UpdateNodeInput) (Node, error)
+	UpsertNode(ctx context.Context, in NodeInput) (Node, error)
 	AddEdge(ctx context.Context, in EdgeInput) (Edge, error)
 	AddGraph(ctx context.Context, in GraphInput) error
 	GetNode(ctx context.Context, id NodeID) (Node, error)

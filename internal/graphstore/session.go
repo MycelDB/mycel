@@ -58,47 +58,98 @@ func (s *session) AddNode(ctx context.Context, in graph.NodeInput) (graph.Node, 
 	if err != nil {
 		return graph.Node{}, err
 	}
-
 	nodeID := uuid.New()
 	if in.ID != nil {
 		nodeID = *in.ID
 	}
-
-	var nodeTemplate *graph.Template
-	props := copyProps(in.Props)
-	if in.TemplateID != nil {
-		t, err := s.templateManager.GetByID(ctx, *in.TemplateID)
-		if err != nil {
-			if errors.Is(err, coretemplate.ErrTemplateNotFound) {
-				return graph.Node{}, fmt.Errorf("%w: template not found", s.errors.NotFound)
-			}
-			return graph.Node{}, err
-		}
-		if t.SpaceID != s.spaceID {
-			return graph.Node{}, fmt.Errorf("%w: template not found in space", s.errors.NotFound)
-		}
-		if err := validateProps(&props, t); err != nil {
-			return graph.Node{}, err
-		}
-		nodeTemplate = &t
+	n, err := s.buildNode(ctx, nodes, nodeID, in.TemplateID, in.ParentID, in.Content, in.Props)
+	if err != nil {
+		return graph.Node{}, err
 	}
-
-	if in.ParentID != nil {
-		parent, ok := findNode(nodes, *in.ParentID)
-		if !ok {
-			return graph.Node{}, fmt.Errorf("%w: parent node not found", s.errors.NotFound)
-		}
-		if err := s.validateChild(ctx, parent, nodeTemplate); err != nil {
-			return graph.Node{}, err
-		}
+	nodes = append(nodes, n)
+	if err := s.writeNodes(nodes); err != nil {
+		return graph.Node{}, err
 	}
+	return n, nil
+}
 
-	n := graph.Node{
-		ID:         nodeID,
-		TemplateID: in.TemplateID,
-		ParentID:   in.ParentID,
-		Content:    in.Content,
-		Props:      props,
+func (s *session) ListNodes(ctx context.Context) ([]graph.Node, error) {
+	if err := s.ensureOpen(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return nil, err
+	}
+	if err := s.ensureRead(); err != nil {
+		return nil, err
+	}
+	nodes, err := s.readNodes()
+	if err != nil {
+		return nil, err
+	}
+	return cloneNodes(nodes), nil
+}
+
+func (s *session) UpdateNode(ctx context.Context, in graph.UpdateNodeInput) (graph.Node, error) {
+	if err := s.ensureOpen(ctx); err != nil {
+		return graph.Node{}, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return graph.Node{}, err
+	}
+	if err := s.ensureWrite(); err != nil {
+		return graph.Node{}, err
+	}
+	if in.ID == uuid.Nil {
+		return graph.Node{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
+	}
+	nodes, err := s.readNodes()
+	if err != nil {
+		return graph.Node{}, err
+	}
+	idx := findNodeIndex(nodes, in.ID)
+	if idx < 0 {
+		return graph.Node{}, s.errors.NotFound
+	}
+	candidateNodes := append([]graph.Node(nil), nodes[:idx]...)
+	candidateNodes = append(candidateNodes, nodes[idx+1:]...)
+	n, err := s.buildNode(ctx, candidateNodes, in.ID, in.TemplateID, in.ParentID, in.Content, in.Props)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	if err := s.validateExistingChildren(ctx, n, candidateNodes); err != nil {
+		return graph.Node{}, err
+	}
+	nodes[idx] = n
+	if err := s.writeNodes(nodes); err != nil {
+		return graph.Node{}, err
+	}
+	return n, nil
+}
+
+func (s *session) UpsertNode(ctx context.Context, in graph.NodeInput) (graph.Node, error) {
+	if in.ID == nil {
+		return s.AddNode(ctx, in)
+	}
+	if err := s.ensureOpen(ctx); err != nil {
+		return graph.Node{}, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return graph.Node{}, err
+	}
+	if err := s.ensureWrite(); err != nil {
+		return graph.Node{}, err
+	}
+	nodes, err := s.readNodes()
+	if err != nil {
+		return graph.Node{}, err
+	}
+	if findNodeIndex(nodes, *in.ID) >= 0 {
+		return s.UpdateNode(ctx, graph.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, ParentID: in.ParentID, Content: in.Content, Props: in.Props})
+	}
+	n, err := s.buildNode(ctx, nodes, *in.ID, in.TemplateID, in.ParentID, in.Content, in.Props)
+	if err != nil {
+		return graph.Node{}, err
 	}
 	nodes = append(nodes, n)
 	if err := s.writeNodes(nodes); err != nil {
@@ -373,6 +424,69 @@ func (s *session) writeEdges(edges []graph.Edge) error {
 	return os.WriteFile(s.edgesPath(), b, 0o600)
 }
 
+func (s *session) buildNode(ctx context.Context, nodes []graph.Node, nodeID graph.NodeID, templateID *graph.TemplateID, parentID *graph.NodeID, content string, inputProps map[string]any) (graph.Node, error) {
+	if nodeID == uuid.Nil {
+		return graph.Node{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
+	}
+	var nodeTemplate *graph.Template
+	props := copyProps(inputProps)
+	if templateID != nil {
+		t, err := s.templateManager.GetByID(ctx, *templateID)
+		if err != nil {
+			if errors.Is(err, coretemplate.ErrTemplateNotFound) {
+				return graph.Node{}, fmt.Errorf("%w: template not found", s.errors.NotFound)
+			}
+			return graph.Node{}, err
+		}
+		if t.SpaceID != s.spaceID {
+			return graph.Node{}, fmt.Errorf("%w: template not found in space", s.errors.NotFound)
+		}
+		if err := validateProps(&props, t); err != nil {
+			return graph.Node{}, err
+		}
+		nodeTemplate = &t
+	}
+	if parentID != nil {
+		if *parentID == nodeID {
+			return graph.Node{}, fmt.Errorf("%w: node cannot be its own parent", coretemplate.ErrInvalidInput)
+		}
+		parent, ok := findNode(nodes, *parentID)
+		if !ok {
+			return graph.Node{}, fmt.Errorf("%w: parent node not found", s.errors.NotFound)
+		}
+		if err := s.validateChild(ctx, parent, nodeTemplate); err != nil {
+			return graph.Node{}, err
+		}
+	}
+	return graph.Node{ID: nodeID, TemplateID: templateID, ParentID: parentID, Content: content, Props: props}, nil
+}
+
+func (s *session) validateExistingChildren(ctx context.Context, parent graph.Node, nodes []graph.Node) error {
+	for _, child := range nodes {
+		if child.ParentID == nil || *child.ParentID != parent.ID {
+			continue
+		}
+		var childTemplate *graph.Template
+		if child.TemplateID != nil {
+			t, err := s.templateManager.GetByID(ctx, *child.TemplateID)
+			if err != nil {
+				if errors.Is(err, coretemplate.ErrTemplateNotFound) {
+					return fmt.Errorf("%w: child template not found", s.errors.NotFound)
+				}
+				return err
+			}
+			if t.SpaceID != s.spaceID {
+				return fmt.Errorf("%w: child template not found in space", s.errors.NotFound)
+			}
+			childTemplate = &t
+		}
+		if err := s.validateChild(ctx, parent, childTemplate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *session) validateChild(ctx context.Context, parent graph.Node, childTemplate *graph.Template) error {
 	if parent.TemplateID == nil {
 		return nil
@@ -504,12 +618,29 @@ func copyProps(in map[string]any) map[string]any {
 }
 
 func findNode(nodes []graph.Node, id graph.NodeID) (graph.Node, bool) {
-	for _, n := range nodes {
+	idx := findNodeIndex(nodes, id)
+	if idx < 0 {
+		return graph.Node{}, false
+	}
+	return nodes[idx], true
+}
+
+func findNodeIndex(nodes []graph.Node, id graph.NodeID) int {
+	for i, n := range nodes {
 		if n.ID == id {
-			return n, true
+			return i
 		}
 	}
-	return graph.Node{}, false
+	return -1
+}
+
+func cloneNodes(nodes []graph.Node) []graph.Node {
+	out := make([]graph.Node, 0, len(nodes))
+	for _, node := range nodes {
+		node.Props = copyProps(node.Props)
+		out = append(out, node)
+	}
+	return out
 }
 
 func safeID(id model.SpaceID) string {

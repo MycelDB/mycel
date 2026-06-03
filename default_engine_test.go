@@ -928,3 +928,112 @@ func TestRuntimeEngine_OpenExistingStoreWithoutCreateIfMissing(t *testing.T) {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
 }
+func TestRuntimeEngine_ListUpdateUpsertNodes(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-node-update-upsert")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	sess, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	defer sess.Close()
+
+	created, err := sess.AddNode(ctx, graph.NodeInput{Content: "original", Props: map[string]any{"n": 1}})
+	if err != nil {
+		t.Fatalf("expected add node success, got error: %v", err)
+	}
+	listed, err := sess.ListNodes(ctx)
+	if err != nil || len(listed) != 1 || listed[0].ID != created.ID {
+		t.Fatalf("unexpected list nodes result: nodes=%v err=%v", listed, err)
+	}
+	updated, err := sess.UpdateNode(ctx, graph.UpdateNodeInput{ID: created.ID, Content: "updated", Props: map[string]any{"n": 2}})
+	if err != nil {
+		t.Fatalf("expected update node success, got error: %v", err)
+	}
+	if updated.Content != "updated" || updated.Props["n"] != 2 {
+		t.Fatalf("unexpected updated node: %v", updated)
+	}
+	upserted, err := sess.UpsertNode(ctx, graph.NodeInput{ID: &created.ID, Content: "upserted"})
+	if err != nil {
+		t.Fatalf("expected upsert update success, got error: %v", err)
+	}
+	if upserted.Content != "upserted" {
+		t.Fatalf("unexpected upserted node: %v", upserted)
+	}
+	newID := graph.NodeID(uuid.New())
+	createdByUpsert, err := sess.UpsertNode(ctx, graph.NodeInput{ID: &newID, Content: "created by upsert"})
+	if err != nil {
+		t.Fatalf("expected upsert create success, got error: %v", err)
+	}
+	if createdByUpsert.ID != newID {
+		t.Fatalf("expected supplied id %s, got %s", newID, createdByUpsert.ID)
+	}
+	listed, err = sess.ListNodes(ctx)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("expected two nodes after upsert create, nodes=%v err=%v", listed, err)
+	}
+}
+
+func TestRuntimeEngine_UpdateNodeMissingAndReadOnly(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-node-update-errors")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: adminToken.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	adminSession, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: adminToken.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected admin session success, got error: %v", err)
+	}
+	missingID := graph.NodeID(uuid.New())
+	if _, err := adminSession.UpdateNode(ctx, graph.UpdateNodeInput{ID: missingID, Content: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound updating missing node, got: %v", err)
+	}
+	_ = adminSession.Close()
+
+	reader, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: model.UserInput{Ref: model.UserRef("reader@example.com"), Status: model.UserStatusActive}, Password: "reader-password"})
+	if err != nil {
+		t.Fatalf("expected create reader success, got error: %v", err)
+	}
+	if _, err := engine.GrantSpaceAccess(ctx, GrantSpaceAccessInput{AccessToken: adminToken.AccessToken, SpaceID: sp.SpaceID, UserID: reader.ID, Permissions: []model.SpacePermission{model.SpacePermissionRead}}); err != nil {
+		t.Fatalf("expected grant read success, got error: %v", err)
+	}
+	readerToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("reader@example.com"), Password: "reader-password"})
+	if err != nil {
+		t.Fatalf("expected reader auth success, got error: %v", err)
+	}
+	readerSession, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: readerToken.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected reader session success, got error: %v", err)
+	}
+	if _, err := readerSession.ListNodes(ctx); err != nil {
+		t.Fatalf("expected read-only list nodes success, got error: %v", err)
+	}
+	if _, err := readerSession.UpdateNode(ctx, graph.UpdateNodeInput{ID: missingID, Content: "unauthorized"}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized updating in read-only session, got: %v", err)
+	}
+	_ = readerSession.Close()
+}

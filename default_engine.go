@@ -418,14 +418,28 @@ func (e *defaultEngine) ListSpaces(ctx context.Context, in ListSpacesInput) ([]m
 	if err != nil {
 		return nil, err
 	}
+	spaces, err := e.spaceManager.List(ctx)
+	if err != nil {
+		return nil, err
+	}
 	canManageAccess, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageAccess)
 	if err != nil {
 		return nil, err
 	}
-	if !canManageAccess {
-		return nil, ErrUnauthorized
+	if canManageAccess {
+		return spaces, nil
 	}
-	return e.spaceManager.List(ctx)
+	accessible := []model.Space{}
+	for _, sp := range spaces {
+		canRead, err := e.canReadSpace(ctx, auth.UserID, sp.SpaceID)
+		if err != nil {
+			return nil, err
+		}
+		if canRead {
+			accessible = append(accessible, sp)
+		}
+	}
+	return accessible, nil
 }
 
 func (e *defaultEngine) DeleteSpace(ctx context.Context, in DeleteSpaceInput) error {
