@@ -873,3 +873,58 @@ func TestRuntimeEngine_ImportAndListTemplates(t *testing.T) {
 		t.Fatalf("unexpected listed templates: %v imported=%v", listed, imported)
 	}
 }
+func TestRuntimeEngine_OpenExistingStoreMissingSpacesFails(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-missing-spaces")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected initial open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+	if _, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"}); err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("expected close success, got error: %v", err)
+	}
+	spacesPath := filepath.Join(dataDir, "meta", "spaces.json")
+	if err := os.Remove(spacesPath); err != nil {
+		t.Fatalf("expected remove spaces.json success, got error: %v", err)
+	}
+
+	engine2 := &defaultEngine{}
+	err = engine2.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"})
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig for incomplete metadata store, got: %v", err)
+	}
+	if _, statErr := os.Stat(spacesPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected spaces.json not to be recreated, got stat err: %v", statErr)
+	}
+}
+
+func TestRuntimeEngine_OpenExistingStoreWithoutCreateIfMissing(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-existing-no-create")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected initial open success, got error: %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("expected close success, got error: %v", err)
+	}
+
+	engine2 := &defaultEngine{}
+	if err := engine2.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: false}); err != nil {
+		t.Fatalf("expected existing store open success without create, got error: %v", err)
+	}
+	if _, err := engine2.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"}); err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+}

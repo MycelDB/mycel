@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
 
@@ -232,7 +233,7 @@ func (m *defaultManager) persist() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.storePath, raw, 0o600)
+	return filestore.WriteFileAtomic(m.storePath, raw, 0o600)
 }
 
 func (m *defaultManager) encodeStore(users []storedUser) ([]byte, error) {

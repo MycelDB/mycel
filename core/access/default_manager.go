@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
 
@@ -369,7 +370,7 @@ func (m *defaultManager) persist() error {
 		return err
 	}
 	b = append(b, '\n')
-	return os.WriteFile(m.storePath, b, 0o600)
+	return filestore.WriteFileAtomic(m.storePath, b, 0o600)
 }
 
 func (m *defaultManager) superuserCountExcluding(excludedUserID model.UserID) int {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
 
@@ -224,7 +225,7 @@ func (m *defaultManager) persistSpace(spaceID model.SpaceID) error {
 		return err
 	}
 	b = append(b, '\n')
-	return os.WriteFile(templateStorePath(m.location, spaceID), b, 0o600)
+	return filestore.WriteFileAtomic(templateStorePath(m.location, spaceID), b, 0o600)
 }
 
 func (t storedTemplate) toModel() graph.Template {

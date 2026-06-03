@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -98,14 +99,24 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 			e.state = EngineStateClose
 			return err
 		}
-	} else if cfg.CreateIfMissing {
-		if _, err := os.Stat(filepath.Join(metaDir(cfg.DataDir), "users.json")); err != nil {
-			if os.IsNotExist(err) {
-				created = true
-			} else {
+	} else {
+		storeState, err := inspectMetadataStore(cfg.DataDir)
+		if err != nil {
+			e.state = EngineStateClose
+			return err
+		}
+		switch {
+		case storeState.complete:
+			created = false
+		case storeState.empty:
+			if !cfg.CreateIfMissing {
 				e.state = EngineStateClose
-				return err
+				return fmt.Errorf("%w: data_dir is not initialized", ErrInvalidConfig)
 			}
+			created = true
+		default:
+			e.state = EngineStateClose
+			return fmt.Errorf("%w: incomplete metadata store; missing %s", ErrInvalidConfig, strings.Join(storeState.missing, ", "))
 		}
 	}
 	if created {
@@ -819,6 +830,48 @@ func scopesForSystemRoles(roles []model.SystemRole) []string {
 		}
 	}
 	return out
+}
+
+type metadataStoreState struct {
+	complete bool
+	empty    bool
+	missing  []string
+}
+
+func inspectMetadataStore(dataDir string) (metadataStoreState, error) {
+	required := []string{
+		filepath.Join(metaDir(dataDir), "users.json"),
+		filepath.Join(metaDir(dataDir), "spaces.json"),
+		filepath.Join(metaDir(dataDir), "access.json"),
+	}
+	existing := 0
+	missing := []string{}
+	for _, path := range required {
+		exists, err := regularFileExists(path)
+		if err != nil {
+			return metadataStoreState{}, err
+		}
+		if exists {
+			existing++
+		} else {
+			missing = append(missing, path)
+		}
+	}
+	return metadataStoreState{complete: existing == len(required), empty: existing == 0, missing: missing}, nil
+}
+
+func regularFileExists(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if info.IsDir() {
+		return false, fmt.Errorf("%w: metadata path is a directory: %s", ErrInvalidConfig, path)
+	}
+	return true, nil
 }
 
 func ensureStorageLayout(dataDir string) error {

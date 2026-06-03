@@ -34,6 +34,8 @@ Each space gets its own graph directory keyed by `SpaceID`.
 
 ## Metadata files
 
+For an initialized store, `meta/users.json`, `meta/spaces.json`, and `meta/access.json` are required. If any of these files is missing while another exists, startup fails instead of recreating empty metadata and risking silent data loss.
+
 ### `meta/users.json`
 
 Authoritative user identity and credential store.
