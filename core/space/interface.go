@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 // CreateInput is the create payload managed by Manager.
@@ -11,7 +12,7 @@ type CreateInput struct {
 	OwnerID  identity.UserID
 	Name     string
 	Status   string
-	Settings identity.SpaceSettings
+	Settings space.SpaceSettings
 }
 
 // Manager manages spaces for users.

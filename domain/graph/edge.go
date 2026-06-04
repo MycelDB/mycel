@@ -1,5 +1,10 @@
 package graph
 
+import "github.com/google/uuid"
+
+// EdgeID uniquely identifies an edge in the graph.
+type EdgeID = uuid.UUID
+
 // EdgeKind represents graph-structural semantics only.
 type EdgeKind string
 

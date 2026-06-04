@@ -10,17 +10,18 @@ import (
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
 )
 
 const spacesStoreFile = "spaces.json"
 
 type storedSpace struct {
-	SpaceID  identity.SpaceID       `json:"space_id"`
-	OwnerID  identity.UserID        `json:"owner_id"`
-	Name     string                 `json:"name"`
-	Status   string                 `json:"status"`
-	Settings identity.SpaceSettings `json:"settings,omitempty"`
+	SpaceID  identity.SpaceID          `json:"space_id"`
+	OwnerID  identity.UserID           `json:"owner_id"`
+	Name     string                    `json:"name"`
+	Status   string                    `json:"status"`
+	Settings domainspace.SpaceSettings `json:"settings,omitempty"`
 }
 
 type defaultManager struct {

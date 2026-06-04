@@ -1,4 +1,4 @@
-package identity
+package space
 
 // SpaceSettings defines tunable limits and behavior at space scope.
 type SpaceSettings struct {

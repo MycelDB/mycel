@@ -1,6 +1,12 @@
 package graph
 
-import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+import (
+	"github.com/google/uuid"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+)
+
+// TemplateID uniquely identifies a template definition.
+type TemplateID = uuid.UUID
 
 // Template defines a reusable, versioned node shape scoped to a space.
 //

@@ -1,5 +1,10 @@
 package graph
 
+import "github.com/google/uuid"
+
+// NodeID uniquely identifies a node in the graph.
+type NodeID = uuid.UUID
+
 // Node is the canonical persisted graph node representation.
 //
 // Node is intentionally generic so higher-level domains (e.g. PKM) can model
