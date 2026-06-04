@@ -22,6 +22,16 @@ Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 - Access control: `docs/domain/access/access.md`
 - Storage layout: `docs/storage/layout.md`
 
+## Data directory
+
+KnotDB tools and services use `KNOTDB_DATA_DIR` as the shared default data directory when no explicit data directory is supplied.
+
+```sh
+export KNOTDB_DATA_DIR=~/knot_data
+```
+
+Explicit `EngineConfig.DataDir` values still take precedence.
+
 ## Testing
 - Run once: `make test`
 - Verbose + coverage: `make test-verbose`

@@ -79,10 +79,11 @@ func DefaultEngine(cfg EngineConfig) (Engine, error) {
 
 func (e *defaultEngine) Open(cfg EngineConfig) error {
 	e.state = EngineStateOpen
+	cfg.DataDir = ResolveDataDir(cfg.DataDir)
 
 	if cfg.DataDir == "" {
 		e.state = EngineStateClose
-		return fmt.Errorf("%w: data_dir is required", ErrInvalidConfig)
+		return fmt.Errorf("%w: data_dir is required or %s must be set", ErrInvalidConfig, EnvDataDir)
 	}
 	if cfg.Mode != EngineModeStandalone {
 		e.state = EngineStateClose
