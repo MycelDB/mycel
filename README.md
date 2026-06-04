@@ -1,6 +1,6 @@
-# knotdb
+# KnotDB
 
-Go library for Knotbase graph spaces.
+Go library for KnotDB graph spaces.
 
 Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 

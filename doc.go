@@ -1,2 +1,2 @@
-// Package knotdb exposes the embedded Knotbase graph space engine.
+// Package knotdb exposes the embedded KnotDB graph space engine.
 package knotdb
