@@ -28,6 +28,7 @@ type Errors struct {
 type Permissions struct {
 	Read  bool
 	Write bool
+	Admin bool
 }
 
 type session struct {
@@ -42,6 +43,32 @@ type session struct {
 // NewSession opens a file-backed graph session for a space.
 func NewSession(graphsDir string, spaceID domainspace.SpaceID, templateManager coretemplate.Manager, permissions Permissions, errs Errors) graph.Session {
 	return &session{graphsDir: graphsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs}
+}
+
+func (s *session) ImportTemplates(ctx context.Context, in graph.ImportTemplatesInput) ([]graph.Template, error) {
+	if err := s.ensureOpen(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return nil, err
+	}
+	if err := s.ensureAdmin(); err != nil {
+		return nil, err
+	}
+	return s.templateManager.Import(ctx, s.spaceID, in.Document)
+}
+
+func (s *session) ListTemplates(ctx context.Context) ([]graph.Template, error) {
+	if err := s.ensureOpen(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return nil, err
+	}
+	if err := s.ensureRead(); err != nil {
+		return nil, err
+	}
+	return s.templateManager.ListBySpace(ctx, s.spaceID)
 }
 
 func (s *session) AddNode(ctx context.Context, in graph.NodeInput) (graph.Node, error) {
@@ -337,6 +364,13 @@ func (s *session) ensureRead() error {
 
 func (s *session) ensureWrite() error {
 	if !s.permissions.Write {
+		return s.errors.Unauthorized
+	}
+	return nil
+}
+
+func (s *session) ensureAdmin() error {
+	if !s.permissions.Admin {
 		return s.errors.Unauthorized
 	}
 	return nil

@@ -458,61 +458,6 @@ func (e *defaultEngine) DeleteSpace(ctx context.Context, in DeleteSpaceInput) er
 	return e.deleteSpaceByID(ctx, in.SpaceID)
 }
 
-func (e *defaultEngine) ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error) {
-	if err := e.Ready(ctx); err != nil {
-		return nil, err
-	}
-	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
-	if err != nil {
-		return nil, err
-	}
-	if in.SpaceID == uuid.Nil {
-		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
-	}
-	if _, err := e.spaceManager.GetByID(ctx, in.SpaceID); err != nil {
-		if errors.Is(err, space.ErrSpaceNotFound) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	canAdmin, err := e.canAdminSpace(ctx, auth.UserID, in.SpaceID)
-	if err != nil {
-		return nil, err
-	}
-	if !canAdmin {
-		return nil, ErrUnauthorized
-	}
-
-	return e.templateManager.Import(ctx, in.SpaceID, in.Document)
-}
-
-func (e *defaultEngine) ListTemplates(ctx context.Context, in ListTemplatesInput) ([]graph.Template, error) {
-	if err := e.Ready(ctx); err != nil {
-		return nil, err
-	}
-	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
-	if err != nil {
-		return nil, err
-	}
-	if in.SpaceID == uuid.Nil {
-		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
-	}
-	if _, err := e.spaceManager.GetByID(ctx, in.SpaceID); err != nil {
-		if errors.Is(err, space.ErrSpaceNotFound) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	canRead, err := e.canReadSpace(ctx, auth.UserID, in.SpaceID)
-	if err != nil {
-		return nil, err
-	}
-	if !canRead {
-		return nil, ErrUnauthorized
-	}
-	return e.templateManager.ListBySpace(ctx, in.SpaceID)
-}
-
 func (e *defaultEngine) GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (access.SystemAccessRule, error) {
 	if err := e.Ready(ctx); err != nil {
 		return access.SystemAccessRule{}, err
@@ -666,6 +611,10 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (g
 	if err != nil {
 		return nil, err
 	}
+	canAdmin, err := e.canAdminSpace(ctx, auth.UserID, spaceID)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := ensureGraphSpaceDir(e.dataDir, spaceID); err != nil {
 		return nil, err
@@ -674,7 +623,7 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (g
 		graphsDir(e.dataDir),
 		spaceID,
 		e.templateManager,
-		graphstore.Permissions{Read: canRead, Write: canWrite},
+		graphstore.Permissions{Read: canRead, Write: canWrite, Admin: canAdmin},
 		graphstore.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized, Conflict: ErrConflict},
 	), nil
 }

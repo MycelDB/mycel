@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	coreuser "martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
@@ -503,11 +502,13 @@ func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
 		t.Fatalf("expected create space success, got error: %v", err)
 	}
 
-	templates, err := engine.ImportTemplates(ctx, ImportTemplatesInput{
-		AccessToken: token.AccessToken,
-		SpaceID:     spaceInfo.SpaceID,
-		Document:    nodeTemplateDocument(),
-	})
+	session, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: spaceInfo.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	defer session.Close()
+
+	templates, err := session.ImportTemplates(ctx, graph.ImportTemplatesInput{Document: nodeTemplateDocument()})
 	if err != nil {
 		t.Fatalf("expected import templates success, got error: %v", err)
 	}
@@ -523,12 +524,6 @@ func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dataDir, "meta", "templates", spaceInfo.SpaceID.String()+".json")); err != nil {
 		t.Fatalf("expected template file to exist: %v", err)
 	}
-
-	session, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: spaceInfo.SpaceID})
-	if err != nil {
-		t.Fatalf("expected open session success, got error: %v", err)
-	}
-	defer session.Close()
 
 	_, err = session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{}})
 	if err == nil {
@@ -606,24 +601,24 @@ func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
 	}
 }
 
-func nodeTemplateDocument() coretemplate.ImportDocument {
-	return coretemplate.ImportDocument{
+func nodeTemplateDocument() graph.ImportDocument {
+	return graph.ImportDocument{
 		SchemaVersion: 1,
-		Templates: []coretemplate.TemplateImport{
+		Templates: []graph.TemplateImport{
 			{
 				Key:         "note",
 				Version:     "1.0.0",
 				DisplayName: "Note",
-				Properties: coretemplate.PropertyPolicyImport{
+				Properties: graph.PropertyPolicyImport{
 					AllowExtra: false,
-					Allowed: []coretemplate.TemplatePropertyImport{
+					Allowed: []graph.TemplatePropertyImport{
 						{Name: "title", Type: graph.PropertyTypeString, Required: true},
 					},
 					Forbidden: []string{"secret"},
 				},
-				Children: coretemplate.ChildPolicyImport{
+				Children: graph.ChildPolicyImport{
 					Allowed: true,
-					AllowedTemplates: []coretemplate.TemplateRefImport{
+					AllowedTemplates: []graph.TemplateRefImport{
 						{Key: "task", Version: "1.0.0"},
 					},
 				},
@@ -632,13 +627,13 @@ func nodeTemplateDocument() coretemplate.ImportDocument {
 				Key:         "task",
 				Version:     "1.0.0",
 				DisplayName: "Task",
-				Properties: coretemplate.PropertyPolicyImport{
+				Properties: graph.PropertyPolicyImport{
 					AllowExtra: false,
-					Allowed: []coretemplate.TemplatePropertyImport{
+					Allowed: []graph.TemplatePropertyImport{
 						{Name: "done", Type: graph.PropertyTypeBool, Default: false},
 					},
 				},
-				Children: coretemplate.ChildPolicyImport{Allowed: false},
+				Children: graph.ChildPolicyImport{Allowed: false},
 			},
 		},
 	}
@@ -862,12 +857,17 @@ func TestRuntimeEngine_ImportAndListTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected create space success, got error: %v", err)
 	}
-	doc := coretemplate.ImportDocument{SchemaVersion: 1, Templates: []coretemplate.TemplateImport{{Key: "note", Version: "1.0.0", DisplayName: "Note", Properties: coretemplate.PropertyPolicyImport{AllowExtra: true}}}}
-	imported, err := engine.ImportTemplates(ctx, ImportTemplatesInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID, Document: doc})
+	session, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	defer session.Close()
+	doc := graph.ImportDocument{SchemaVersion: 1, Templates: []graph.TemplateImport{{Key: "note", Version: "1.0.0", DisplayName: "Note", Properties: graph.PropertyPolicyImport{AllowExtra: true}}}}
+	imported, err := session.ImportTemplates(ctx, graph.ImportTemplatesInput{Document: doc})
 	if err != nil {
 		t.Fatalf("expected import templates success, got error: %v", err)
 	}
-	listed, err := engine.ListTemplates(ctx, ListTemplatesInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID})
+	listed, err := session.ListTemplates(ctx)
 	if err != nil {
 		t.Fatalf("expected list templates success, got error: %v", err)
 	}

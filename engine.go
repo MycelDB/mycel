@@ -56,10 +56,6 @@ type Engine interface {
 	ListSpaces(ctx context.Context, in ListSpacesInput) ([]domainspace.Space, error)
 	// DeleteSpace hard-deletes a space and all associated persisted constructs.
 	DeleteSpace(ctx context.Context, in DeleteSpaceInput) error
-	// ImportTemplates imports immutable template versions for a space.
-	ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error)
-	// ListTemplates lists templates for a space.
-	ListTemplates(ctx context.Context, in ListTemplatesInput) ([]graph.Template, error)
 	// GrantSystemRole grants or updates a user's system roles.
 	GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (access.SystemAccessRule, error)
 	// RevokeSystemRole revokes a user's system roles.
