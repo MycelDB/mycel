@@ -11,13 +11,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/core/access"
+	coreaccess "martinbeauvais.com/mbgit/knotbase/knotdb/core/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/core/space"
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstore"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
 
 var (
@@ -36,7 +37,7 @@ type defaultEngine struct {
 	userManager     user.Manager
 	spaceManager    space.Manager
 	templateManager coretemplate.Manager
-	accessManager   access.Manager
+	accessManager   coreaccess.Manager
 	authMu          sync.RWMutex
 	authCache       map[AccessToken]authClaims
 }
@@ -50,18 +51,18 @@ type authClaims struct {
 	JTI      string
 	IAT      int64
 	EXP      int64
-	UserID   model.UserID
-	UserRef  model.UserRef
-	Roles    []model.SystemRole
-	OwnerIDs []model.UserID
-	SpaceIDs []model.SpaceID
+	UserID   identity.UserID
+	UserRef  identity.UserRef
+	Roles    []access.SystemRole
+	OwnerIDs []identity.UserID
+	SpaceIDs []identity.SpaceID
 	Scopes   []string
 }
 
 // NewEngine opens (or creates) a local embedded KnotDB runtime.
 //
 // If userManager, spaceManager, templateManager, or accessManager is nil, default file-backed managers are used.
-func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Manager, templateManager coretemplate.Manager, accessManager access.Manager) (Engine, error) {
+func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Manager, templateManager coretemplate.Manager, accessManager coreaccess.Manager) (Engine, error) {
 	e := &defaultEngine{state: EngineStateClose, userManager: userManager, spaceManager: spaceManager, templateManager: templateManager, accessManager: accessManager, authCache: map[AccessToken]authClaims{}}
 	if err := e.Open(cfg); err != nil {
 		return nil, err
@@ -156,7 +157,7 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		return err
 	}
 	if e.accessManager == nil {
-		e.accessManager = access.NewManager()
+		e.accessManager = coreaccess.NewManager()
 	}
 	if err := e.accessManager.Init(context.Background(), metaDir(cfg.DataDir)); err != nil {
 		e.state = EngineStateClose
@@ -166,18 +167,18 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 	um := e.userManager
 
 	if created {
-		exists, err := um.ExistsByRef(context.Background(), model.UserRef(cfg.AdminUsername))
+		exists, err := um.ExistsByRef(context.Background(), identity.UserRef(cfg.AdminUsername))
 		if err != nil {
 			e.state = EngineStateClose
 			return err
 		}
-		var admin model.User
+		var admin identity.User
 		if !exists {
-			status := model.UserStatusActive
+			status := identity.UserStatusActive
 			username := cfg.AdminUsername
 			admin, err = um.Create(context.Background(), user.CreateInput{
-				User: model.UserInput{
-					Ref:      model.UserRef(cfg.AdminUsername),
+				User: identity.UserInput{
+					Ref:      identity.UserRef(cfg.AdminUsername),
 					Username: &username,
 					Status:   status,
 				},
@@ -188,15 +189,15 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 				return err
 			}
 		} else {
-			admin, err = um.GetByRef(context.Background(), model.UserRef(cfg.AdminUsername))
+			admin, err = um.GetByRef(context.Background(), identity.UserRef(cfg.AdminUsername))
 			if err != nil {
 				e.state = EngineStateClose
 				return err
 			}
 		}
-		if _, err := e.accessManager.GrantSystemRole(context.Background(), access.GrantSystemRoleInput{
+		if _, err := e.accessManager.GrantSystemRole(context.Background(), coreaccess.GrantSystemRoleInput{
 			UserID: admin.ID,
-			Roles:  []model.SystemRole{model.SystemRoleSuperuser},
+			Roles:  []access.SystemRole{access.SystemRoleSuperuser},
 		}); err != nil {
 			e.state = EngineStateClose
 			return err
@@ -243,7 +244,7 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 		}
 		return AuthResult{}, err
 	}
-	if account.Status != model.UserStatusActive {
+	if account.Status != identity.UserStatusActive {
 		return AuthResult{}, ErrInvalidCredentials
 	}
 
@@ -265,8 +266,8 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 		UserID:   account.ID,
 		UserRef:  account.Ref,
 		Roles:    roles,
-		OwnerIDs: []model.UserID{account.ID},
-		SpaceIDs: []model.SpaceID{},
+		OwnerIDs: []identity.UserID{account.ID},
+		SpaceIDs: []identity.SpaceID{},
 		Scopes:   scopesForSystemRoles(roles),
 	}
 
@@ -280,32 +281,32 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 	return AuthResult{AccessToken: accessToken}, nil
 }
 
-func (e *defaultEngine) CreateUser(ctx context.Context, in CreateUserInput) (model.User, error) {
+func (e *defaultEngine) CreateUser(ctx context.Context, in CreateUserInput) (identity.User, error) {
 	if err := e.Ready(ctx); err != nil {
-		return model.User{}, err
+		return identity.User{}, err
 	}
 	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
 	if err != nil {
-		return model.User{}, err
+		return identity.User{}, err
 	}
-	canManageUsers, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageUsers)
+	canManageUsers, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionManageUsers)
 	if err != nil {
-		return model.User{}, err
+		return identity.User{}, err
 	}
 	if !canManageUsers {
-		return model.User{}, ErrUnauthorized
+		return identity.User{}, ErrUnauthorized
 	}
 	created, err := e.userManager.Create(ctx, user.CreateInput{User: in.User, Password: in.Password})
 	if err != nil {
 		if errors.Is(err, user.ErrInvalidInput) {
-			return model.User{}, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+			return identity.User{}, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 		}
-		return model.User{}, err
+		return identity.User{}, err
 	}
 	return created, nil
 }
 
-func (e *defaultEngine) ListUsers(ctx context.Context, in ListUsersInput) ([]model.User, error) {
+func (e *defaultEngine) ListUsers(ctx context.Context, in ListUsersInput) ([]identity.User, error) {
 	if err := e.Ready(ctx); err != nil {
 		return nil, err
 	}
@@ -313,7 +314,7 @@ func (e *defaultEngine) ListUsers(ctx context.Context, in ListUsersInput) ([]mod
 	if err != nil {
 		return nil, err
 	}
-	canManageUsers, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageUsers)
+	canManageUsers, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionManageUsers)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +332,7 @@ func (e *defaultEngine) DeleteUser(ctx context.Context, in DeleteUserInput) erro
 	if err != nil {
 		return err
 	}
-	canManageUsers, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageUsers)
+	canManageUsers, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionManageUsers)
 	if err != nil {
 		return err
 	}
@@ -386,7 +387,7 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 	if auth.UserID == uuid.Nil {
 		return SpaceInfo{}, ErrUnauthorized
 	}
-	canCreateSpace, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionCreateSpaces)
+	canCreateSpace, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionCreateSpaces)
 	if err != nil {
 		return SpaceInfo{}, err
 	}
@@ -398,10 +399,10 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 	if err != nil {
 		return SpaceInfo{}, err
 	}
-	if _, err := e.accessManager.Grant(ctx, access.GrantInput{
+	if _, err := e.accessManager.Grant(ctx, coreaccess.GrantInput{
 		SpaceID:     sp.SpaceID,
 		UserID:      auth.UserID,
-		Permissions: []model.SpacePermission{model.SpacePermissionAdmin},
+		Permissions: []access.SpacePermission{access.SpacePermissionAdmin},
 	}); err != nil {
 		return SpaceInfo{}, err
 	}
@@ -410,7 +411,7 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 	return SpaceInfo{OwnerID: sp.OwnerID, SpaceID: sp.SpaceID, Name: sp.Name}, nil
 }
 
-func (e *defaultEngine) ListSpaces(ctx context.Context, in ListSpacesInput) ([]model.Space, error) {
+func (e *defaultEngine) ListSpaces(ctx context.Context, in ListSpacesInput) ([]identity.Space, error) {
 	if err := e.Ready(ctx); err != nil {
 		return nil, err
 	}
@@ -422,14 +423,14 @@ func (e *defaultEngine) ListSpaces(ctx context.Context, in ListSpacesInput) ([]m
 	if err != nil {
 		return nil, err
 	}
-	canManageAccess, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageAccess)
+	canManageAccess, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionManageAccess)
 	if err != nil {
 		return nil, err
 	}
 	if canManageAccess {
 		return spaces, nil
 	}
-	accessible := []model.Space{}
+	accessible := []identity.Space{}
 	for _, sp := range spaces {
 		canRead, err := e.canReadSpace(ctx, auth.UserID, sp.SpaceID)
 		if err != nil {
@@ -511,22 +512,22 @@ func (e *defaultEngine) ListTemplates(ctx context.Context, in ListTemplatesInput
 	return e.templateManager.ListBySpace(ctx, in.SpaceID)
 }
 
-func (e *defaultEngine) GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (model.SystemAccessRule, error) {
+func (e *defaultEngine) GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (access.SystemAccessRule, error) {
 	if err := e.Ready(ctx); err != nil {
-		return model.SystemAccessRule{}, err
+		return access.SystemAccessRule{}, err
 	}
 	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
 	if err != nil {
-		return model.SystemAccessRule{}, err
+		return access.SystemAccessRule{}, err
 	}
-	canManage, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageAccess)
+	canManage, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionManageAccess)
 	if err != nil {
-		return model.SystemAccessRule{}, err
+		return access.SystemAccessRule{}, err
 	}
 	if !canManage {
-		return model.SystemAccessRule{}, ErrUnauthorized
+		return access.SystemAccessRule{}, ErrUnauthorized
 	}
-	return e.accessManager.GrantSystemRole(ctx, access.GrantSystemRoleInput{UserID: in.UserID, Roles: in.Roles})
+	return e.accessManager.GrantSystemRole(ctx, coreaccess.GrantSystemRoleInput{UserID: in.UserID, Roles: in.Roles})
 }
 
 func (e *defaultEngine) RevokeSystemRole(ctx context.Context, in RevokeSystemRoleInput) error {
@@ -537,17 +538,17 @@ func (e *defaultEngine) RevokeSystemRole(ctx context.Context, in RevokeSystemRol
 	if err != nil {
 		return err
 	}
-	canManage, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageAccess)
+	canManage, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionManageAccess)
 	if err != nil {
 		return err
 	}
 	if !canManage {
 		return ErrUnauthorized
 	}
-	return e.accessManager.RevokeSystemRole(ctx, access.RevokeSystemRoleInput{UserID: in.UserID})
+	return e.accessManager.RevokeSystemRole(ctx, coreaccess.RevokeSystemRoleInput{UserID: in.UserID})
 }
 
-func (e *defaultEngine) ListSystemAccess(ctx context.Context, in ListSystemAccessInput) ([]model.SystemAccessRule, error) {
+func (e *defaultEngine) ListSystemAccess(ctx context.Context, in ListSystemAccessInput) ([]access.SystemAccessRule, error) {
 	if err := e.Ready(ctx); err != nil {
 		return nil, err
 	}
@@ -555,7 +556,7 @@ func (e *defaultEngine) ListSystemAccess(ctx context.Context, in ListSystemAcces
 	if err != nil {
 		return nil, err
 	}
-	canManage, err := e.accessManager.CanSystem(ctx, auth.UserID, model.SystemPermissionManageAccess)
+	canManage, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionManageAccess)
 	if err != nil {
 		return nil, err
 	}
@@ -565,18 +566,18 @@ func (e *defaultEngine) ListSystemAccess(ctx context.Context, in ListSystemAcces
 	return e.accessManager.SystemRules(ctx)
 }
 
-func (e *defaultEngine) GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (model.SpaceAccessRule, error) {
+func (e *defaultEngine) GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (access.SpaceAccessRule, error) {
 	if err := e.Ready(ctx); err != nil {
-		return model.SpaceAccessRule{}, err
+		return access.SpaceAccessRule{}, err
 	}
 	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
 	if err != nil {
-		return model.SpaceAccessRule{}, err
+		return access.SpaceAccessRule{}, err
 	}
 	if err := e.ensureSpaceAdmin(ctx, auth.UserID, in.SpaceID); err != nil {
-		return model.SpaceAccessRule{}, err
+		return access.SpaceAccessRule{}, err
 	}
-	return e.accessManager.Grant(ctx, access.GrantInput{SpaceID: in.SpaceID, UserID: in.UserID, Permissions: in.Permissions})
+	return e.accessManager.Grant(ctx, coreaccess.GrantInput{SpaceID: in.SpaceID, UserID: in.UserID, Permissions: in.Permissions})
 }
 
 func (e *defaultEngine) RevokeSpaceAccess(ctx context.Context, in RevokeSpaceAccessInput) error {
@@ -590,10 +591,10 @@ func (e *defaultEngine) RevokeSpaceAccess(ctx context.Context, in RevokeSpaceAcc
 	if err := e.ensureSpaceAdmin(ctx, auth.UserID, in.SpaceID); err != nil {
 		return err
 	}
-	return e.accessManager.Revoke(ctx, access.RevokeInput{SpaceID: in.SpaceID, UserID: in.UserID})
+	return e.accessManager.Revoke(ctx, coreaccess.RevokeInput{SpaceID: in.SpaceID, UserID: in.UserID})
 }
 
-func (e *defaultEngine) ListSpaceAccess(ctx context.Context, in ListSpaceAccessInput) ([]model.SpaceAccessRule, error) {
+func (e *defaultEngine) ListSpaceAccess(ctx context.Context, in ListSpaceAccessInput) ([]access.SpaceAccessRule, error) {
 	if err := e.Ready(ctx); err != nil {
 		return nil, err
 	}
@@ -607,7 +608,7 @@ func (e *defaultEngine) ListSpaceAccess(ctx context.Context, in ListSpaceAccessI
 	return e.accessManager.RulesForSpace(ctx, in.SpaceID)
 }
 
-func (e *defaultEngine) ensureSpaceAdmin(ctx context.Context, userID model.UserID, spaceID model.SpaceID) error {
+func (e *defaultEngine) ensureSpaceAdmin(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID) error {
 	if spaceID == uuid.Nil {
 		return fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
 	}
@@ -706,7 +707,7 @@ func (e *defaultEngine) authClaimsForAccessToken(ctx context.Context, accessToke
 	return claims, nil
 }
 
-func (e *defaultEngine) grantSpaceToCachedClaims(accessToken AccessToken, spaceID model.SpaceID) {
+func (e *defaultEngine) grantSpaceToCachedClaims(accessToken AccessToken, spaceID identity.SpaceID) {
 	e.authMu.Lock()
 	defer e.authMu.Unlock()
 	claims, ok := e.authCache[accessToken]
@@ -717,7 +718,7 @@ func (e *defaultEngine) grantSpaceToCachedClaims(accessToken AccessToken, spaceI
 	e.authCache[accessToken] = claims
 }
 
-func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID model.SpaceID) error {
+func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID identity.SpaceID) error {
 	if spaceID == uuid.Nil {
 		return fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
 	}
@@ -746,12 +747,12 @@ func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID model.Space
 	return nil
 }
 
-func (e *defaultEngine) ensureNotLastSuperuser(ctx context.Context, userID model.UserID) error {
+func (e *defaultEngine) ensureNotLastSuperuser(ctx context.Context, userID identity.UserID) error {
 	roles, err := e.accessManager.SystemRolesForUser(ctx, userID)
 	if err != nil {
 		return err
 	}
-	if !containsSystemRole(roles, model.SystemRoleSuperuser) {
+	if !containsSystemRole(roles, access.SystemRoleSuperuser) {
 		return nil
 	}
 	rules, err := e.accessManager.SystemRules(ctx)
@@ -759,14 +760,14 @@ func (e *defaultEngine) ensureNotLastSuperuser(ctx context.Context, userID model
 		return err
 	}
 	for _, rule := range rules {
-		if rule.UserID != userID && containsSystemRole(rule.Roles, model.SystemRoleSuperuser) {
+		if rule.UserID != userID && containsSystemRole(rule.Roles, access.SystemRoleSuperuser) {
 			return nil
 		}
 	}
-	return access.ErrLastSuperuser
+	return coreaccess.ErrLastSuperuser
 }
 
-func (e *defaultEngine) purgeCachedClaimsForUser(userID model.UserID) {
+func (e *defaultEngine) purgeCachedClaimsForUser(userID identity.UserID) {
 	e.authMu.Lock()
 	defer e.authMu.Unlock()
 	for token, claims := range e.authCache {
@@ -776,7 +777,7 @@ func (e *defaultEngine) purgeCachedClaimsForUser(userID model.UserID) {
 	}
 }
 
-func (e *defaultEngine) purgeCachedSpace(spaceID model.SpaceID) {
+func (e *defaultEngine) purgeCachedSpace(spaceID identity.SpaceID) {
 	e.authMu.Lock()
 	defer e.authMu.Unlock()
 	for token, claims := range e.authCache {
@@ -791,32 +792,32 @@ func (e *defaultEngine) purgeCachedSpace(spaceID model.SpaceID) {
 	}
 }
 
-func (e *defaultEngine) canReadSpace(ctx context.Context, userID model.UserID, spaceID model.SpaceID) (bool, error) {
+func (e *defaultEngine) canReadSpace(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID) (bool, error) {
 	if canAdmin, err := e.canAdminSystem(ctx, userID); err != nil || canAdmin {
 		return canAdmin, err
 	}
-	return e.accessManager.Can(ctx, userID, spaceID, model.SpacePermissionRead)
+	return e.accessManager.Can(ctx, userID, spaceID, access.SpacePermissionRead)
 }
 
-func (e *defaultEngine) canWriteSpace(ctx context.Context, userID model.UserID, spaceID model.SpaceID) (bool, error) {
+func (e *defaultEngine) canWriteSpace(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID) (bool, error) {
 	if canAdmin, err := e.canAdminSystem(ctx, userID); err != nil || canAdmin {
 		return canAdmin, err
 	}
-	return e.accessManager.Can(ctx, userID, spaceID, model.SpacePermissionWrite)
+	return e.accessManager.Can(ctx, userID, spaceID, access.SpacePermissionWrite)
 }
 
-func (e *defaultEngine) canAdminSpace(ctx context.Context, userID model.UserID, spaceID model.SpaceID) (bool, error) {
+func (e *defaultEngine) canAdminSpace(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID) (bool, error) {
 	if canAdmin, err := e.canAdminSystem(ctx, userID); err != nil || canAdmin {
 		return canAdmin, err
 	}
-	return e.accessManager.Can(ctx, userID, spaceID, model.SpacePermissionAdmin)
+	return e.accessManager.Can(ctx, userID, spaceID, access.SpacePermissionAdmin)
 }
 
-func (e *defaultEngine) canAdminSystem(ctx context.Context, userID model.UserID) (bool, error) {
-	return e.accessManager.CanSystem(ctx, userID, model.SystemPermissionManageAccess)
+func (e *defaultEngine) canAdminSystem(ctx context.Context, userID identity.UserID) (bool, error) {
+	return e.accessManager.CanSystem(ctx, userID, access.SystemPermissionManageAccess)
 }
 
-func scopesForSystemRoles(roles []model.SystemRole) []string {
+func scopesForSystemRoles(roles []access.SystemRole) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
 	add := func(scope string) {
@@ -827,19 +828,19 @@ func scopesForSystemRoles(roles []model.SystemRole) []string {
 		out = append(out, scope)
 	}
 	for _, role := range roles {
-		if model.RoleAllows(role, model.SystemPermissionManageUsers) {
+		if access.RoleAllows(role, access.SystemPermissionManageUsers) {
 			add("admin:users")
 		}
-		if model.RoleAllows(role, model.SystemPermissionCreateSpaces) {
+		if access.RoleAllows(role, access.SystemPermissionCreateSpaces) {
 			add("space:create")
 		}
-		if model.RoleAllows(role, model.SystemPermissionManageAccess) {
+		if access.RoleAllows(role, access.SystemPermissionManageAccess) {
 			add("access:manage")
 			add("template:write")
 			add("graph:read")
 			add("graph:write")
 		}
-		if model.RoleAllows(role, model.SystemPermissionOperateSystem) {
+		if access.RoleAllows(role, access.SystemPermissionOperateSystem) {
 			add("system:operate")
 		}
 	}
@@ -909,7 +910,7 @@ func templatesDir(dataDir string) string {
 	return filepath.Join(metaDir(dataDir), "templates")
 }
 
-func ensureGraphSpaceDir(dataDir string, spaceID model.SpaceID) error {
+func ensureGraphSpaceDir(dataDir string, spaceID identity.SpaceID) error {
 	path := filepath.Join(graphsDir(dataDir), spaceID.String())
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return err
@@ -926,7 +927,7 @@ func contains(items []string, wanted string) bool {
 	return false
 }
 
-func containsUserID(items []model.UserID, wanted model.UserID) bool {
+func containsUserID(items []identity.UserID, wanted identity.UserID) bool {
 	for _, it := range items {
 		if it == wanted {
 			return true
@@ -935,7 +936,7 @@ func containsUserID(items []model.UserID, wanted model.UserID) bool {
 	return false
 }
 
-func containsSpaceID(items []model.SpaceID, wanted model.SpaceID) bool {
+func containsSpaceID(items []identity.SpaceID, wanted identity.SpaceID) bool {
 	for _, it := range items {
 		if it == wanted {
 			return true
@@ -944,7 +945,7 @@ func containsSpaceID(items []model.SpaceID, wanted model.SpaceID) bool {
 	return false
 }
 
-func containsSystemRole(items []model.SystemRole, wanted model.SystemRole) bool {
+func containsSystemRole(items []access.SystemRole, wanted access.SystemRole) bool {
 	for _, it := range items {
 		if it == wanted {
 			return true

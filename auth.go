@@ -1,10 +1,10 @@
 package knotdb
 
-import "martinbeauvais.com/mbgit/knotbase/knotdb/model"
+import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 
 // AuthInput is the authentication request payload.
 type AuthInput struct {
-	UserRef  model.UserRef
+	UserRef  identity.UserRef
 	Password string
 }
 

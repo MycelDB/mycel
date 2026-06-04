@@ -1,6 +1,6 @@
 # User Structures
 
-This document describes user identity types exposed by `martinbeauvais.com/mbgit/knotbase/knotdb/model`.
+This document describes user identity types exposed by `martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity`.
 
 ## Identity model
 Each user has two identifiers:

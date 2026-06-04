@@ -1,4 +1,4 @@
-package model
+package identity
 
 // Owner is the top-level storage tenant boundary.
 //

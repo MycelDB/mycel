@@ -7,29 +7,30 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
+	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 )
 
 func TestDefaultManager_SystemRolePermissions(t *testing.T) {
 	m := newTestManager(t)
-	userID := model.UserID(uuid.New())
+	userID := identity.UserID(uuid.New())
 
-	if _, err := m.GrantSystemRole(context.Background(), GrantSystemRoleInput{UserID: userID, Roles: []model.SystemRole{model.SystemRoleUserAdmin}}); err != nil {
+	if _, err := m.GrantSystemRole(context.Background(), GrantSystemRoleInput{UserID: userID, Roles: []domainaccess.SystemRole{domainaccess.SystemRoleUserAdmin}}); err != nil {
 		t.Fatalf("grant system role failed: %v", err)
 	}
-	canManageUsers, err := m.CanSystem(context.Background(), userID, model.SystemPermissionManageUsers)
+	canManageUsers, err := m.CanSystem(context.Background(), userID, domainaccess.SystemPermissionManageUsers)
 	if err != nil || !canManageUsers {
 		t.Fatalf("expected user_admin to manage users, can=%v err=%v", canManageUsers, err)
 	}
-	canCreateSpaces, err := m.CanSystem(context.Background(), userID, model.SystemPermissionCreateSpaces)
+	canCreateSpaces, err := m.CanSystem(context.Background(), userID, domainaccess.SystemPermissionCreateSpaces)
 	if err != nil || canCreateSpaces {
 		t.Fatalf("expected user_admin not to create spaces, can=%v err=%v", canCreateSpaces, err)
 	}
 
-	if _, err := m.GrantSystemRole(context.Background(), GrantSystemRoleInput{UserID: userID, Roles: []model.SystemRole{model.SystemRoleSuperuser}}); err != nil {
+	if _, err := m.GrantSystemRole(context.Background(), GrantSystemRoleInput{UserID: userID, Roles: []domainaccess.SystemRole{domainaccess.SystemRoleSuperuser}}); err != nil {
 		t.Fatalf("grant superuser failed: %v", err)
 	}
-	canCreateSpaces, err = m.CanSystem(context.Background(), userID, model.SystemPermissionCreateSpaces)
+	canCreateSpaces, err = m.CanSystem(context.Background(), userID, domainaccess.SystemPermissionCreateSpaces)
 	if err != nil || !canCreateSpaces {
 		t.Fatalf("expected superuser to create spaces, can=%v err=%v", canCreateSpaces, err)
 	}
@@ -37,8 +38,8 @@ func TestDefaultManager_SystemRolePermissions(t *testing.T) {
 
 func TestDefaultManager_RevokeLastSuperuserFails(t *testing.T) {
 	m := newTestManager(t)
-	userID := model.UserID(uuid.New())
-	if _, err := m.GrantSystemRole(context.Background(), GrantSystemRoleInput{UserID: userID, Roles: []model.SystemRole{model.SystemRoleSuperuser}}); err != nil {
+	userID := identity.UserID(uuid.New())
+	if _, err := m.GrantSystemRole(context.Background(), GrantSystemRoleInput{UserID: userID, Roles: []domainaccess.SystemRole{domainaccess.SystemRoleSuperuser}}); err != nil {
 		t.Fatalf("grant superuser failed: %v", err)
 	}
 
@@ -50,25 +51,25 @@ func TestDefaultManager_RevokeLastSuperuserFails(t *testing.T) {
 
 func TestDefaultManager_PermissionHierarchy(t *testing.T) {
 	m := newTestManager(t)
-	spaceID := model.SpaceID(uuid.New())
-	userID := model.UserID(uuid.New())
+	spaceID := identity.SpaceID(uuid.New())
+	userID := identity.UserID(uuid.New())
 
-	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: userID, Permissions: []model.SpacePermission{model.SpacePermissionWrite}}); err != nil {
+	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: userID, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionWrite}}); err != nil {
 		t.Fatalf("grant failed: %v", err)
 	}
-	canRead, err := m.Can(context.Background(), userID, spaceID, model.SpacePermissionRead)
+	canRead, err := m.Can(context.Background(), userID, spaceID, domainaccess.SpacePermissionRead)
 	if err != nil || !canRead {
 		t.Fatalf("expected write to imply read, can=%v err=%v", canRead, err)
 	}
-	canAdmin, err := m.Can(context.Background(), userID, spaceID, model.SpacePermissionAdmin)
+	canAdmin, err := m.Can(context.Background(), userID, spaceID, domainaccess.SpacePermissionAdmin)
 	if err != nil || canAdmin {
 		t.Fatalf("expected write not to imply admin, can=%v err=%v", canAdmin, err)
 	}
 
-	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: userID, Permissions: []model.SpacePermission{model.SpacePermissionAdmin}}); err != nil {
+	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: userID, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionAdmin}}); err != nil {
 		t.Fatalf("admin grant failed: %v", err)
 	}
-	canWrite, err := m.Can(context.Background(), userID, spaceID, model.SpacePermissionWrite)
+	canWrite, err := m.Can(context.Background(), userID, spaceID, domainaccess.SpacePermissionWrite)
 	if err != nil || !canWrite {
 		t.Fatalf("expected admin to imply write, can=%v err=%v", canWrite, err)
 	}
@@ -76,9 +77,9 @@ func TestDefaultManager_PermissionHierarchy(t *testing.T) {
 
 func TestDefaultManager_RevokeLastAdminFails(t *testing.T) {
 	m := newTestManager(t)
-	spaceID := model.SpaceID(uuid.New())
-	adminID := model.UserID(uuid.New())
-	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminID, Permissions: []model.SpacePermission{model.SpacePermissionAdmin}}); err != nil {
+	spaceID := identity.SpaceID(uuid.New())
+	adminID := identity.UserID(uuid.New())
+	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminID, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionAdmin}}); err != nil {
 		t.Fatalf("grant failed: %v", err)
 	}
 
@@ -90,20 +91,20 @@ func TestDefaultManager_RevokeLastAdminFails(t *testing.T) {
 
 func TestDefaultManager_RevokeAdminSucceedsWhenAnotherAdminRemains(t *testing.T) {
 	m := newTestManager(t)
-	spaceID := model.SpaceID(uuid.New())
-	adminA := model.UserID(uuid.New())
-	adminB := model.UserID(uuid.New())
-	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminA, Permissions: []model.SpacePermission{model.SpacePermissionAdmin}}); err != nil {
+	spaceID := identity.SpaceID(uuid.New())
+	adminA := identity.UserID(uuid.New())
+	adminB := identity.UserID(uuid.New())
+	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminA, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionAdmin}}); err != nil {
 		t.Fatalf("grant adminA failed: %v", err)
 	}
-	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminB, Permissions: []model.SpacePermission{model.SpacePermissionAdmin}}); err != nil {
+	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminB, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionAdmin}}); err != nil {
 		t.Fatalf("grant adminB failed: %v", err)
 	}
 
 	if err := m.Revoke(context.Background(), RevokeInput{SpaceID: spaceID, UserID: adminA}); err != nil {
 		t.Fatalf("expected revoke success, got: %v", err)
 	}
-	canAdmin, err := m.Can(context.Background(), adminB, spaceID, model.SpacePermissionAdmin)
+	canAdmin, err := m.Can(context.Background(), adminB, spaceID, domainaccess.SpacePermissionAdmin)
 	if err != nil || !canAdmin {
 		t.Fatalf("expected adminB to remain admin, can=%v err=%v", canAdmin, err)
 	}
@@ -111,13 +112,13 @@ func TestDefaultManager_RevokeAdminSucceedsWhenAnotherAdminRemains(t *testing.T)
 
 func TestDefaultManager_DowngradeLastAdminFails(t *testing.T) {
 	m := newTestManager(t)
-	spaceID := model.SpaceID(uuid.New())
-	adminID := model.UserID(uuid.New())
-	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminID, Permissions: []model.SpacePermission{model.SpacePermissionAdmin}}); err != nil {
+	spaceID := identity.SpaceID(uuid.New())
+	adminID := identity.UserID(uuid.New())
+	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminID, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionAdmin}}); err != nil {
 		t.Fatalf("grant failed: %v", err)
 	}
 
-	_, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminID, Permissions: []model.SpacePermission{model.SpacePermissionRead}})
+	_, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminID, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionRead}})
 	if !errors.Is(err, ErrLastAdmin) {
 		t.Fatalf("expected ErrLastAdmin, got: %v", err)
 	}

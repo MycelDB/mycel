@@ -129,7 +129,7 @@ For local filesystem storage, these paths are directories and files under the da
 For object storage, the same paths should be treated as object keys under a configured prefix, for example:
 
 ```text
-knotdb/meta/users.json
-knotdb/graphs/<space_id>/nodes.json
+<data-root>/meta/users.json
+<data-root>/graphs/<space_id>/nodes.json
 ```
 

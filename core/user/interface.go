@@ -3,23 +3,23 @@ package user
 import (
 	"context"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 )
 
 // CreateInput is the create payload managed by Manager.
 type CreateInput struct {
-	User     model.UserInput
+	User     identity.UserInput
 	Password string
 }
 
 // Manager manages users and their credentials.
 type Manager interface {
 	Init(ctx context.Context, location string, encryptionKeyB64 string) error
-	ExistsByRef(ctx context.Context, ref model.UserRef) (bool, error)
-	GetByRef(ctx context.Context, ref model.UserRef) (model.User, error)
-	GetByID(ctx context.Context, id model.UserID) (model.User, error)
-	List(ctx context.Context) ([]model.User, error)
-	Create(ctx context.Context, in CreateInput) (model.User, error)
-	DeleteByID(ctx context.Context, id model.UserID) error
-	Authenticate(ctx context.Context, ref model.UserRef, password string) (model.User, error)
+	ExistsByRef(ctx context.Context, ref identity.UserRef) (bool, error)
+	GetByRef(ctx context.Context, ref identity.UserRef) (identity.User, error)
+	GetByID(ctx context.Context, id identity.UserID) (identity.User, error)
+	List(ctx context.Context) ([]identity.User, error)
+	Create(ctx context.Context, in CreateInput) (identity.User, error)
+	DeleteByID(ctx context.Context, id identity.UserID) error
+	Authenticate(ctx context.Context, ref identity.UserRef, password string) (identity.User, error)
 }

@@ -10,8 +10,9 @@ import (
 	"github.com/google/uuid"
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	coreuser "martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 )
 
 func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
@@ -60,7 +61,7 @@ func TestRuntimeEngine_OpenMethod(t *testing.T) {
 	}
 
 	if _, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  model.UserRef("admin"),
+		UserRef:  identity.UserRef("admin"),
 		Password: "password",
 	}); err != nil {
 		t.Fatalf("expected bootstrap admin auth success, got error: %v", err)
@@ -119,7 +120,7 @@ func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 	}
 
 	token, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  model.UserRef("admin@example.com"),
+		UserRef:  identity.UserRef("admin@example.com"),
 		Password: "change-me-now",
 	})
 	if err != nil {
@@ -141,7 +142,7 @@ func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 	if claims.Iss != "knotdb" || claims.Aud != "knotdb" {
 		t.Fatalf("unexpected claims issuer/audience: %s/%s", claims.Iss, claims.Aud)
 	}
-	if claims.UserRef != model.UserRef("admin@example.com") {
+	if claims.UserRef != identity.UserRef("admin@example.com") {
 		t.Fatalf("unexpected user_ref: %s", claims.UserRef)
 	}
 	if claims.UserID == uuid.Nil {
@@ -150,7 +151,7 @@ func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 	if claims.IAT <= 0 || claims.EXP <= claims.IAT {
 		t.Fatalf("invalid claims timestamps iat=%d exp=%d", claims.IAT, claims.EXP)
 	}
-	if len(claims.Roles) == 0 || claims.Roles[0] != model.SystemRoleSuperuser || len(claims.Scopes) == 0 {
+	if len(claims.Roles) == 0 || claims.Roles[0] != access.SystemRoleSuperuser || len(claims.Scopes) == 0 {
 		t.Fatalf("expected superuser claims roles and scopes, got roles=%v scopes=%v", claims.Roles, claims.Scopes)
 	}
 }
@@ -171,7 +172,7 @@ func TestRuntimeEngine_Authenticate_InvalidPassword(t *testing.T) {
 	}
 
 	_, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  model.UserRef("admin@example.com"),
+		UserRef:  identity.UserRef("admin@example.com"),
 		Password: "wrong-password",
 	})
 	if err == nil {
@@ -198,13 +199,13 @@ func TestRuntimeEngine_GrantSystemRoleAndRevokeLastSuperuserFails(t *testing.T) 
 		t.Fatalf("expected open success, got error: %v", err)
 	}
 
-	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected admin auth success, got error: %v", err)
 	}
-	status := model.UserStatusActive
+	status := identity.UserStatusActive
 	operator, err := engine.userManager.Create(ctx, coreuser.CreateInput{
-		User:     model.UserInput{Ref: model.UserRef("operator@example.com"), Status: status},
+		User:     identity.UserInput{Ref: identity.UserRef("operator@example.com"), Status: status},
 		Password: "operator-password",
 	})
 	if err != nil {
@@ -213,12 +214,12 @@ func TestRuntimeEngine_GrantSystemRoleAndRevokeLastSuperuserFails(t *testing.T) 
 	if _, err := engine.GrantSystemRole(ctx, GrantSystemRoleInput{
 		AccessToken: adminToken.AccessToken,
 		UserID:      operator.ID,
-		Roles:       []model.SystemRole{model.SystemRoleOperator},
+		Roles:       []access.SystemRole{access.SystemRoleOperator},
 	}); err != nil {
 		t.Fatalf("expected grant system role success, got error: %v", err)
 	}
 	roles, err := engine.accessManager.SystemRolesForUser(ctx, operator.ID)
-	if err != nil || len(roles) != 1 || roles[0] != model.SystemRoleOperator {
+	if err != nil || len(roles) != 1 || roles[0] != access.SystemRoleOperator {
 		t.Fatalf("unexpected operator roles=%v err=%v", roles, err)
 	}
 	err = engine.RevokeSystemRole(ctx, RevokeSystemRoleInput{AccessToken: adminToken.AccessToken, UserID: engine.authCache[adminToken.AccessToken].UserID})
@@ -243,7 +244,7 @@ func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 	}
 
 	token, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  model.UserRef("admin@example.com"),
+		UserRef:  identity.UserRef("admin@example.com"),
 		Password: "change-me-now",
 	})
 	if err != nil {
@@ -287,16 +288,16 @@ func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutSystemRole(t *testing.T) {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
 
-	status := model.UserStatusActive
+	status := identity.UserStatusActive
 	_, err := engine.userManager.Create(context.Background(), coreuser.CreateInput{
-		User:     model.UserInput{Ref: model.UserRef("regular@example.com"), Status: status},
+		User:     identity.UserInput{Ref: identity.UserRef("regular@example.com"), Status: status},
 		Password: "regular-password",
 	})
 	if err != nil {
 		t.Fatalf("expected create regular user success, got error: %v", err)
 	}
 	token, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  model.UserRef("regular@example.com"),
+		UserRef:  identity.UserRef("regular@example.com"),
 		Password: "regular-password",
 	})
 	if err != nil {
@@ -329,7 +330,7 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	}
 
 	token, err := engine.Authenticate(ctx, AuthInput{
-		UserRef:  model.UserRef("admin@example.com"),
+		UserRef:  identity.UserRef("admin@example.com"),
 		Password: "change-me-now",
 	})
 	if err != nil {
@@ -388,7 +389,7 @@ func TestRuntimeEngine_SpaceAccessReadOnlyUserCannotWrite(t *testing.T) {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
 
-	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected admin authenticate success, got error: %v", err)
 	}
@@ -406,9 +407,9 @@ func TestRuntimeEngine_SpaceAccessReadOnlyUserCannotWrite(t *testing.T) {
 	}
 	_ = adminSession.Close()
 
-	status := model.UserStatusActive
+	status := identity.UserStatusActive
 	reader, err := engine.userManager.Create(ctx, coreuser.CreateInput{
-		User:     model.UserInput{Ref: model.UserRef("reader@example.com"), Status: status},
+		User:     identity.UserInput{Ref: identity.UserRef("reader@example.com"), Status: status},
 		Password: "reader-password",
 	})
 	if err != nil {
@@ -418,12 +419,12 @@ func TestRuntimeEngine_SpaceAccessReadOnlyUserCannotWrite(t *testing.T) {
 		AccessToken: adminToken.AccessToken,
 		SpaceID:     spaceInfo.SpaceID,
 		UserID:      reader.ID,
-		Permissions: []model.SpacePermission{model.SpacePermissionRead},
+		Permissions: []access.SpacePermission{access.SpacePermissionRead},
 	}); err != nil {
 		t.Fatalf("expected grant read success, got error: %v", err)
 	}
 
-	readerToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("reader@example.com"), Password: "reader-password"})
+	readerToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("reader@example.com"), Password: "reader-password"})
 	if err != nil {
 		t.Fatalf("expected reader authenticate success, got error: %v", err)
 	}
@@ -454,7 +455,7 @@ func TestRuntimeEngine_RevokeLastSpaceAdminFails(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
-	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
@@ -467,7 +468,7 @@ func TestRuntimeEngine_RevokeLastSpaceAdminFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected list access success, got error: %v", err)
 	}
-	if len(rules) != 1 || rules[0].UserID != spaceInfo.OwnerID || rules[0].Permissions[0] != model.SpacePermissionAdmin {
+	if len(rules) != 1 || rules[0].UserID != spaceInfo.OwnerID || rules[0].Permissions[0] != access.SpacePermissionAdmin {
 		t.Fatalf("unexpected access rules: %#v", rules)
 	}
 	err = engine.RevokeSpaceAccess(ctx, RevokeSpaceAccessInput{AccessToken: token.AccessToken, SpaceID: spaceInfo.SpaceID, UserID: spaceInfo.OwnerID})
@@ -492,7 +493,7 @@ func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
 
-	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
@@ -575,7 +576,7 @@ func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
 	}
 
 	token, err := engine.Authenticate(context.Background(), AuthInput{
-		UserRef:  model.UserRef("admin@example.com"),
+		UserRef:  identity.UserRef("admin@example.com"),
 		Password: "change-me-now",
 	})
 	if err != nil {
@@ -650,18 +651,18 @@ func TestRuntimeEngine_DeleteUserCascadesOwnedSpaces(t *testing.T) {
 	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
-	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected admin auth success, got error: %v", err)
 	}
-	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: model.UserInput{Ref: model.UserRef("bob@example.com"), Status: model.UserStatusActive}, Password: "bob-password"})
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
 	if err != nil {
 		t.Fatalf("expected create user success, got error: %v", err)
 	}
-	if _, err := engine.GrantSystemRole(ctx, GrantSystemRoleInput{AccessToken: adminToken.AccessToken, UserID: bob.ID, Roles: []model.SystemRole{model.SystemRoleSuperuser}}); err != nil {
+	if _, err := engine.GrantSystemRole(ctx, GrantSystemRoleInput{AccessToken: adminToken.AccessToken, UserID: bob.ID, Roles: []access.SystemRole{access.SystemRoleSuperuser}}); err != nil {
 		t.Fatalf("expected grant superuser success, got error: %v", err)
 	}
-	bobToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("bob@example.com"), Password: "bob-password"})
+	bobToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("bob@example.com"), Password: "bob-password"})
 	if err != nil {
 		t.Fatalf("expected bob auth success, got error: %v", err)
 	}
@@ -690,7 +691,7 @@ func TestRuntimeEngine_DeleteUserCascadesOwnedSpaces(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dataDir, "graphs", sp.SpaceID.String())); !os.IsNotExist(err) {
 		t.Fatalf("expected graph directory removed, got: %v", err)
 	}
-	if _, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("bob@example.com"), Password: "bob-password"}); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("bob@example.com"), Password: "bob-password"}); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("expected deleted user authentication to fail, got: %v", err)
 	}
 }
@@ -704,7 +705,7 @@ func TestRuntimeEngine_DeleteNodeRequiresRecursiveForChildren(t *testing.T) {
 	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
-	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
@@ -747,7 +748,7 @@ func TestRuntimeEngine_DeleteSpaceInvalidatesOpenSession(t *testing.T) {
 	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
-	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
@@ -776,11 +777,11 @@ func TestRuntimeEngine_ListUsersAndSpaces(t *testing.T) {
 	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
-	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
-	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: token.AccessToken, User: model.UserInput{Ref: model.UserRef("bob@example.com"), Status: model.UserStatusActive}, Password: "bob-password"})
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: token.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
 	if err != nil {
 		t.Fatalf("expected create user success, got error: %v", err)
 	}
@@ -805,7 +806,7 @@ func TestRuntimeEngine_ListUsersAndSpaces(t *testing.T) {
 	}
 }
 
-func hasUserID(users []model.User, id model.UserID) bool {
+func hasUserID(users []identity.User, id identity.UserID) bool {
 	for _, u := range users {
 		if u.ID == id {
 			return true
@@ -814,7 +815,7 @@ func hasUserID(users []model.User, id model.UserID) bool {
 	return false
 }
 
-func hasSpaceID(spaces []model.Space, id model.SpaceID) bool {
+func hasSpaceID(spaces []identity.Space, id identity.SpaceID) bool {
 	for _, sp := range spaces {
 		if sp.SpaceID == id {
 			return true
@@ -831,7 +832,7 @@ func TestRuntimeEngine_ListSystemAccess(t *testing.T) {
 	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
-	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
@@ -839,7 +840,7 @@ func TestRuntimeEngine_ListSystemAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected list system access success, got error: %v", err)
 	}
-	if len(rules) != 1 || !containsSystemRole(rules[0].Roles, model.SystemRoleSuperuser) {
+	if len(rules) != 1 || !containsSystemRole(rules[0].Roles, access.SystemRoleSuperuser) {
 		t.Fatalf("expected bootstrap superuser rule, got: %v", rules)
 	}
 }
@@ -852,7 +853,7 @@ func TestRuntimeEngine_ImportAndListTemplates(t *testing.T) {
 	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
-	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
@@ -882,7 +883,7 @@ func TestRuntimeEngine_OpenExistingStoreMissingSpacesFails(t *testing.T) {
 	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
 		t.Fatalf("expected initial open success, got error: %v", err)
 	}
-	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
@@ -924,7 +925,7 @@ func TestRuntimeEngine_OpenExistingStoreWithoutCreateIfMissing(t *testing.T) {
 	if err := engine2.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: false}); err != nil {
 		t.Fatalf("expected existing store open success without create, got error: %v", err)
 	}
-	if _, err := engine2.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"}); err != nil {
+	if _, err := engine2.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"}); err != nil {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
 }
@@ -937,7 +938,7 @@ func TestRuntimeEngine_ListUpdateUpsertNodes(t *testing.T) {
 	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
-	token, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
@@ -996,7 +997,7 @@ func TestRuntimeEngine_UpdateNodeMissingAndReadOnly(t *testing.T) {
 	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
 		t.Fatalf("expected open success, got error: %v", err)
 	}
-	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("admin@example.com"), Password: "change-me-now"})
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
 	if err != nil {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
@@ -1014,14 +1015,14 @@ func TestRuntimeEngine_UpdateNodeMissingAndReadOnly(t *testing.T) {
 	}
 	_ = adminSession.Close()
 
-	reader, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: model.UserInput{Ref: model.UserRef("reader@example.com"), Status: model.UserStatusActive}, Password: "reader-password"})
+	reader, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("reader@example.com"), Status: identity.UserStatusActive}, Password: "reader-password"})
 	if err != nil {
 		t.Fatalf("expected create reader success, got error: %v", err)
 	}
-	if _, err := engine.GrantSpaceAccess(ctx, GrantSpaceAccessInput{AccessToken: adminToken.AccessToken, SpaceID: sp.SpaceID, UserID: reader.ID, Permissions: []model.SpacePermission{model.SpacePermissionRead}}); err != nil {
+	if _, err := engine.GrantSpaceAccess(ctx, GrantSpaceAccessInput{AccessToken: adminToken.AccessToken, SpaceID: sp.SpaceID, UserID: reader.ID, Permissions: []access.SpacePermission{access.SpacePermissionRead}}); err != nil {
 		t.Fatalf("expected grant read success, got error: %v", err)
 	}
-	readerToken, err := engine.Authenticate(ctx, AuthInput{UserRef: model.UserRef("reader@example.com"), Password: "reader-password"})
+	readerToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("reader@example.com"), Password: "reader-password"})
 	if err != nil {
 		t.Fatalf("expected reader auth success, got error: %v", err)
 	}

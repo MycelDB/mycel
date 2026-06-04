@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 )
 
 // Errors defines public errors returned by sessions.
@@ -32,7 +32,7 @@ type Permissions struct {
 
 type session struct {
 	graphsDir       string
-	spaceID         model.SpaceID
+	spaceID         identity.SpaceID
 	templateManager coretemplate.Manager
 	permissions     Permissions
 	errors          Errors
@@ -40,7 +40,7 @@ type session struct {
 }
 
 // NewSession opens a file-backed graph session for a space.
-func NewSession(graphsDir string, spaceID model.SpaceID, templateManager coretemplate.Manager, permissions Permissions, errs Errors) graph.Session {
+func NewSession(graphsDir string, spaceID identity.SpaceID, templateManager coretemplate.Manager, permissions Permissions, errs Errors) graph.Session {
 	return &session{graphsDir: graphsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs}
 }
 
@@ -643,7 +643,7 @@ func cloneNodes(nodes []graph.Node) []graph.Node {
 	return out
 }
 
-func safeID(id model.SpaceID) string {
+func safeID(id identity.SpaceID) string {
 	repl := strings.NewReplacer(":", "_", "/", "_", "\\", "_")
 	return repl.Replace(id.String())
 }

@@ -3,8 +3,9 @@ package knotdb
 import (
 	"context"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 )
 
 // EngineMode defines runtime mode for KnotDB engine startup.
@@ -43,15 +44,15 @@ type Engine interface {
 	// Authenticate validates credentials and returns an external access token.
 	Authenticate(ctx context.Context, in AuthInput) (AuthResult, error)
 	// CreateUser creates a user for an authorized system user administrator.
-	CreateUser(ctx context.Context, in CreateUserInput) (model.User, error)
+	CreateUser(ctx context.Context, in CreateUserInput) (identity.User, error)
 	// ListUsers lists users for an authorized system user administrator.
-	ListUsers(ctx context.Context, in ListUsersInput) ([]model.User, error)
+	ListUsers(ctx context.Context, in ListUsersInput) ([]identity.User, error)
 	// DeleteUser hard-deletes a user and spaces owned by that user.
 	DeleteUser(ctx context.Context, in DeleteUserInput) error
 	// CreateSpace creates or returns a space for an authorized user.
 	CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error)
 	// ListSpaces lists spaces for an authorized system access administrator.
-	ListSpaces(ctx context.Context, in ListSpacesInput) ([]model.Space, error)
+	ListSpaces(ctx context.Context, in ListSpacesInput) ([]identity.Space, error)
 	// DeleteSpace hard-deletes a space and all associated persisted constructs.
 	DeleteSpace(ctx context.Context, in DeleteSpaceInput) error
 	// ImportTemplates imports immutable template versions for a space.
@@ -59,17 +60,17 @@ type Engine interface {
 	// ListTemplates lists templates for a space.
 	ListTemplates(ctx context.Context, in ListTemplatesInput) ([]graph.Template, error)
 	// GrantSystemRole grants or updates a user's system roles.
-	GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (model.SystemAccessRule, error)
+	GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (access.SystemAccessRule, error)
 	// RevokeSystemRole revokes a user's system roles.
 	RevokeSystemRole(ctx context.Context, in RevokeSystemRoleInput) error
 	// ListSystemAccess lists system access rules.
-	ListSystemAccess(ctx context.Context, in ListSystemAccessInput) ([]model.SystemAccessRule, error)
+	ListSystemAccess(ctx context.Context, in ListSystemAccessInput) ([]access.SystemAccessRule, error)
 	// GrantSpaceAccess grants or updates a user's access to a space.
-	GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (model.SpaceAccessRule, error)
+	GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (access.SpaceAccessRule, error)
 	// RevokeSpaceAccess revokes a user's access to a space.
 	RevokeSpaceAccess(ctx context.Context, in RevokeSpaceAccessInput) error
 	// ListSpaceAccess lists access rules for a space.
-	ListSpaceAccess(ctx context.Context, in ListSpaceAccessInput) ([]model.SpaceAccessRule, error)
+	ListSpaceAccess(ctx context.Context, in ListSpaceAccessInput) ([]access.SpaceAccessRule, error)
 	// OpenSession opens a graph session for an authorized token/space scope.
 	OpenSession(ctx context.Context, in OpenSessionInput) (graph.Session, error)
 	// Close releases engine resources.

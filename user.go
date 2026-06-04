@@ -1,11 +1,11 @@
 package knotdb
 
-import "martinbeauvais.com/mbgit/knotbase/knotdb/model"
+import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 
 // CreateUserInput defines a user creation request payload.
 type CreateUserInput struct {
 	AccessToken AccessToken
-	User        model.UserInput
+	User        identity.UserInput
 	Password    string
 }
 
@@ -19,5 +19,5 @@ type ListUsersInput struct {
 // associated with those spaces.
 type DeleteUserInput struct {
 	AccessToken AccessToken
-	UserID      model.UserID
+	UserID      identity.UserID
 }

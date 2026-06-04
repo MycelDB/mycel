@@ -9,29 +9,30 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
 
 const accessStoreFile = "access.json"
 
 type accessStore struct {
-	SystemRules []model.SystemAccessRule `json:"system_rules"`
-	SpaceRules  []model.SpaceAccessRule  `json:"space_rules"`
+	SystemRules []domainaccess.SystemAccessRule `json:"system_rules"`
+	SpaceRules  []domainaccess.SpaceAccessRule  `json:"space_rules"`
 }
 
 type defaultManager struct {
 	location          string
 	storePath         string
-	systemRules       []model.SystemAccessRule
-	spaceRules        []model.SpaceAccessRule
-	indexBySystemUser map[model.UserID]int
+	systemRules       []domainaccess.SystemAccessRule
+	spaceRules        []domainaccess.SpaceAccessRule
+	indexBySystemUser map[identity.UserID]int
 	indexBySpaceUser  map[string]int
 }
 
 // NewManager creates the default file-backed Manager implementation.
 func NewManager() Manager {
-	return &defaultManager{indexBySystemUser: map[model.UserID]int{}, indexBySpaceUser: map[string]int{}}
+	return &defaultManager{indexBySystemUser: map[identity.UserID]int{}, indexBySpaceUser: map[string]int{}}
 }
 
 func (m *defaultManager) Init(ctx context.Context, location string) error {
@@ -48,8 +49,8 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 	m.storePath = filepath.Join(location, accessStoreFile)
 	if _, err := os.Stat(m.storePath); err != nil {
 		if os.IsNotExist(err) {
-			m.systemRules = []model.SystemAccessRule{}
-			m.spaceRules = []model.SpaceAccessRule{}
+			m.systemRules = []domainaccess.SystemAccessRule{}
+			m.spaceRules = []domainaccess.SpaceAccessRule{}
 			m.rebuildIndex()
 			return m.persist()
 		}
@@ -69,38 +70,38 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 	return nil
 }
 
-func (m *defaultManager) GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (model.SystemAccessRule, error) {
+func (m *defaultManager) GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (domainaccess.SystemAccessRule, error) {
 	if err := ctx.Err(); err != nil {
-		return model.SystemAccessRule{}, err
+		return domainaccess.SystemAccessRule{}, err
 	}
 	if in.UserID == uuid.Nil {
-		return model.SystemAccessRule{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+		return domainaccess.SystemAccessRule{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
 	}
 	roles, err := normalizeSystemRoles(in.Roles)
 	if err != nil {
-		return model.SystemAccessRule{}, err
+		return domainaccess.SystemAccessRule{}, err
 	}
 	if idx, ok := m.indexBySystemUser[in.UserID]; ok {
 		oldRule := m.systemRules[idx]
 		newRule := oldRule
 		newRule.Roles = roles
-		if hasSystemRole(oldRule.Roles, model.SystemRoleSuperuser) && !hasSystemRole(newRule.Roles, model.SystemRoleSuperuser) && m.superuserCountExcluding(in.UserID) == 0 {
-			return model.SystemAccessRule{}, ErrLastSuperuser
+		if hasSystemRole(oldRule.Roles, domainaccess.SystemRoleSuperuser) && !hasSystemRole(newRule.Roles, domainaccess.SystemRoleSuperuser) && m.superuserCountExcluding(in.UserID) == 0 {
+			return domainaccess.SystemAccessRule{}, ErrLastSuperuser
 		}
 		m.systemRules[idx] = newRule
 		if err := m.persist(); err != nil {
 			m.systemRules[idx] = oldRule
-			return model.SystemAccessRule{}, err
+			return domainaccess.SystemAccessRule{}, err
 		}
 		return cloneSystemRule(newRule), nil
 	}
-	rule := model.SystemAccessRule{ID: uuid.New(), UserID: in.UserID, Roles: roles}
+	rule := domainaccess.SystemAccessRule{ID: uuid.New(), UserID: in.UserID, Roles: roles}
 	m.systemRules = append(m.systemRules, rule)
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
 		m.systemRules = m.systemRules[:len(m.systemRules)-1]
 		m.rebuildIndex()
-		return model.SystemAccessRule{}, err
+		return domainaccess.SystemAccessRule{}, err
 	}
 	return cloneSystemRule(rule), nil
 }
@@ -117,10 +118,10 @@ func (m *defaultManager) RevokeSystemRole(ctx context.Context, in RevokeSystemRo
 		return ErrRuleNotFound
 	}
 	rule := m.systemRules[idx]
-	if hasSystemRole(rule.Roles, model.SystemRoleSuperuser) && m.superuserCountExcluding(in.UserID) == 0 {
+	if hasSystemRole(rule.Roles, domainaccess.SystemRoleSuperuser) && m.superuserCountExcluding(in.UserID) == 0 {
 		return ErrLastSuperuser
 	}
-	oldRules := append([]model.SystemAccessRule(nil), m.systemRules...)
+	oldRules := append([]domainaccess.SystemAccessRule(nil), m.systemRules...)
 	m.systemRules = append(m.systemRules[:idx], m.systemRules[idx+1:]...)
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
@@ -131,7 +132,7 @@ func (m *defaultManager) RevokeSystemRole(ctx context.Context, in RevokeSystemRo
 	return nil
 }
 
-func (m *defaultManager) SystemRolesForUser(ctx context.Context, userID model.UserID) ([]model.SystemRole, error) {
+func (m *defaultManager) SystemRolesForUser(ctx context.Context, userID identity.UserID) ([]domainaccess.SystemRole, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -140,23 +141,23 @@ func (m *defaultManager) SystemRolesForUser(ctx context.Context, userID model.Us
 	}
 	idx, ok := m.indexBySystemUser[userID]
 	if !ok {
-		return []model.SystemRole{}, nil
+		return []domainaccess.SystemRole{}, nil
 	}
-	return append([]model.SystemRole(nil), m.systemRules[idx].Roles...), nil
+	return append([]domainaccess.SystemRole(nil), m.systemRules[idx].Roles...), nil
 }
 
-func (m *defaultManager) SystemRules(ctx context.Context) ([]model.SystemAccessRule, error) {
+func (m *defaultManager) SystemRules(ctx context.Context) ([]domainaccess.SystemAccessRule, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	out := make([]model.SystemAccessRule, 0, len(m.systemRules))
+	out := make([]domainaccess.SystemAccessRule, 0, len(m.systemRules))
 	for _, rule := range m.systemRules {
 		out = append(out, cloneSystemRule(rule))
 	}
 	return out, nil
 }
 
-func (m *defaultManager) CanSystem(ctx context.Context, userID model.UserID, permission model.SystemPermission) (bool, error) {
+func (m *defaultManager) CanSystem(ctx context.Context, userID identity.UserID, permission domainaccess.SystemPermission) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -171,26 +172,26 @@ func (m *defaultManager) CanSystem(ctx context.Context, userID model.UserID, per
 		return false, err
 	}
 	for _, role := range roles {
-		if model.RoleAllows(role, permission) {
+		if domainaccess.RoleAllows(role, permission) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-func (m *defaultManager) Grant(ctx context.Context, in GrantInput) (model.SpaceAccessRule, error) {
+func (m *defaultManager) Grant(ctx context.Context, in GrantInput) (domainaccess.SpaceAccessRule, error) {
 	if err := ctx.Err(); err != nil {
-		return model.SpaceAccessRule{}, err
+		return domainaccess.SpaceAccessRule{}, err
 	}
 	if in.SpaceID == uuid.Nil {
-		return model.SpaceAccessRule{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
 	if in.UserID == uuid.Nil {
-		return model.SpaceAccessRule{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
 	}
 	permissions, err := normalizePermissions(in.Permissions)
 	if err != nil {
-		return model.SpaceAccessRule{}, err
+		return domainaccess.SpaceAccessRule{}, err
 	}
 
 	key := spaceUserKey(in.SpaceID, in.UserID)
@@ -198,24 +199,24 @@ func (m *defaultManager) Grant(ctx context.Context, in GrantInput) (model.SpaceA
 		oldRule := m.spaceRules[idx]
 		newRule := oldRule
 		newRule.Permissions = permissions
-		if hasPermission(oldRule.Permissions, model.SpacePermissionAdmin) && !hasPermission(newRule.Permissions, model.SpacePermissionAdmin) && m.adminCountExcluding(in.SpaceID, in.UserID) == 0 {
-			return model.SpaceAccessRule{}, ErrLastAdmin
+		if hasPermission(oldRule.Permissions, domainaccess.SpacePermissionAdmin) && !hasPermission(newRule.Permissions, domainaccess.SpacePermissionAdmin) && m.adminCountExcluding(in.SpaceID, in.UserID) == 0 {
+			return domainaccess.SpaceAccessRule{}, ErrLastAdmin
 		}
 		m.spaceRules[idx] = newRule
 		if err := m.persist(); err != nil {
 			m.spaceRules[idx] = oldRule
-			return model.SpaceAccessRule{}, err
+			return domainaccess.SpaceAccessRule{}, err
 		}
 		return cloneSpaceRule(newRule), nil
 	}
 
-	rule := model.SpaceAccessRule{ID: uuid.New(), SpaceID: in.SpaceID, UserID: in.UserID, Permissions: permissions}
+	rule := domainaccess.SpaceAccessRule{ID: uuid.New(), SpaceID: in.SpaceID, UserID: in.UserID, Permissions: permissions}
 	m.spaceRules = append(m.spaceRules, rule)
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
 		m.spaceRules = m.spaceRules[:len(m.spaceRules)-1]
 		m.rebuildIndex()
-		return model.SpaceAccessRule{}, err
+		return domainaccess.SpaceAccessRule{}, err
 	}
 	return cloneSpaceRule(rule), nil
 }
@@ -235,10 +236,10 @@ func (m *defaultManager) Revoke(ctx context.Context, in RevokeInput) error {
 		return ErrRuleNotFound
 	}
 	rule := m.spaceRules[idx]
-	if hasPermission(rule.Permissions, model.SpacePermissionAdmin) && m.adminCountExcluding(in.SpaceID, in.UserID) == 0 {
+	if hasPermission(rule.Permissions, domainaccess.SpacePermissionAdmin) && m.adminCountExcluding(in.SpaceID, in.UserID) == 0 {
 		return ErrLastAdmin
 	}
-	oldRules := append([]model.SpaceAccessRule(nil), m.spaceRules...)
+	oldRules := append([]domainaccess.SpaceAccessRule(nil), m.spaceRules...)
 	m.spaceRules = append(m.spaceRules[:idx], m.spaceRules[idx+1:]...)
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
@@ -249,7 +250,7 @@ func (m *defaultManager) Revoke(ctx context.Context, in RevokeInput) error {
 	return nil
 }
 
-func (m *defaultManager) DeleteForUser(ctx context.Context, userID model.UserID) error {
+func (m *defaultManager) DeleteForUser(ctx context.Context, userID identity.UserID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -258,19 +259,19 @@ func (m *defaultManager) DeleteForUser(ctx context.Context, userID model.UserID)
 	}
 	if idx, ok := m.indexBySystemUser[userID]; ok {
 		rule := m.systemRules[idx]
-		if hasSystemRole(rule.Roles, model.SystemRoleSuperuser) && m.superuserCountExcluding(userID) == 0 {
+		if hasSystemRole(rule.Roles, domainaccess.SystemRoleSuperuser) && m.superuserCountExcluding(userID) == 0 {
 			return ErrLastSuperuser
 		}
 	}
-	oldSystemRules := append([]model.SystemAccessRule(nil), m.systemRules...)
-	oldSpaceRules := append([]model.SpaceAccessRule(nil), m.spaceRules...)
-	newSystemRules := make([]model.SystemAccessRule, 0, len(m.systemRules))
+	oldSystemRules := append([]domainaccess.SystemAccessRule(nil), m.systemRules...)
+	oldSpaceRules := append([]domainaccess.SpaceAccessRule(nil), m.spaceRules...)
+	newSystemRules := make([]domainaccess.SystemAccessRule, 0, len(m.systemRules))
 	for _, rule := range m.systemRules {
 		if rule.UserID != userID {
 			newSystemRules = append(newSystemRules, rule)
 		}
 	}
-	newSpaceRules := make([]model.SpaceAccessRule, 0, len(m.spaceRules))
+	newSpaceRules := make([]domainaccess.SpaceAccessRule, 0, len(m.spaceRules))
 	for _, rule := range m.spaceRules {
 		if rule.UserID != userID {
 			newSpaceRules = append(newSpaceRules, rule)
@@ -288,15 +289,15 @@ func (m *defaultManager) DeleteForUser(ctx context.Context, userID model.UserID)
 	return nil
 }
 
-func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID model.SpaceID) error {
+func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID identity.SpaceID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if spaceID == uuid.Nil {
 		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
-	oldRules := append([]model.SpaceAccessRule(nil), m.spaceRules...)
-	newRules := make([]model.SpaceAccessRule, 0, len(m.spaceRules))
+	oldRules := append([]domainaccess.SpaceAccessRule(nil), m.spaceRules...)
+	newRules := make([]domainaccess.SpaceAccessRule, 0, len(m.spaceRules))
 	for _, rule := range m.spaceRules {
 		if rule.SpaceID != spaceID {
 			newRules = append(newRules, rule)
@@ -312,7 +313,7 @@ func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID model.Space
 	return nil
 }
 
-func (m *defaultManager) Can(ctx context.Context, userID model.UserID, spaceID model.SpaceID, permission model.SpacePermission) (bool, error) {
+func (m *defaultManager) Can(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID, permission domainaccess.SpacePermission) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -330,21 +331,21 @@ func (m *defaultManager) Can(ctx context.Context, userID model.UserID, spaceID m
 		return false, nil
 	}
 	for _, granted := range m.spaceRules[idx].Permissions {
-		if model.PermissionImplies(granted, permission) {
+		if domainaccess.PermissionImplies(granted, permission) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-func (m *defaultManager) RulesForSpace(ctx context.Context, spaceID model.SpaceID) ([]model.SpaceAccessRule, error) {
+func (m *defaultManager) RulesForSpace(ctx context.Context, spaceID identity.SpaceID) ([]domainaccess.SpaceAccessRule, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if spaceID == uuid.Nil {
 		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
-	out := []model.SpaceAccessRule{}
+	out := []domainaccess.SpaceAccessRule{}
 	for _, rule := range m.spaceRules {
 		if rule.SpaceID == spaceID {
 			out = append(out, cloneSpaceRule(rule))
@@ -354,7 +355,7 @@ func (m *defaultManager) RulesForSpace(ctx context.Context, spaceID model.SpaceI
 }
 
 func (m *defaultManager) rebuildIndex() {
-	m.indexBySystemUser = map[model.UserID]int{}
+	m.indexBySystemUser = map[identity.UserID]int{}
 	for i, rule := range m.systemRules {
 		m.indexBySystemUser[rule.UserID] = i
 	}
@@ -373,38 +374,38 @@ func (m *defaultManager) persist() error {
 	return filestore.WriteFileAtomic(m.storePath, b, 0o600)
 }
 
-func (m *defaultManager) superuserCountExcluding(excludedUserID model.UserID) int {
+func (m *defaultManager) superuserCountExcluding(excludedUserID identity.UserID) int {
 	count := 0
 	for _, rule := range m.systemRules {
 		if rule.UserID == excludedUserID {
 			continue
 		}
-		if hasSystemRole(rule.Roles, model.SystemRoleSuperuser) {
+		if hasSystemRole(rule.Roles, domainaccess.SystemRoleSuperuser) {
 			count++
 		}
 	}
 	return count
 }
 
-func (m *defaultManager) adminCountExcluding(spaceID model.SpaceID, excludedUserID model.UserID) int {
+func (m *defaultManager) adminCountExcluding(spaceID identity.SpaceID, excludedUserID identity.UserID) int {
 	count := 0
 	for _, rule := range m.spaceRules {
 		if rule.SpaceID != spaceID || rule.UserID == excludedUserID {
 			continue
 		}
-		if hasPermission(rule.Permissions, model.SpacePermissionAdmin) {
+		if hasPermission(rule.Permissions, domainaccess.SpacePermissionAdmin) {
 			count++
 		}
 	}
 	return count
 }
 
-func normalizeSystemRoles(roles []model.SystemRole) ([]model.SystemRole, error) {
+func normalizeSystemRoles(roles []domainaccess.SystemRole) ([]domainaccess.SystemRole, error) {
 	if len(roles) == 0 {
 		return nil, fmt.Errorf("%w: roles are required", ErrInvalidInput)
 	}
-	seen := map[model.SystemRole]struct{}{}
-	out := []model.SystemRole{}
+	seen := map[domainaccess.SystemRole]struct{}{}
+	out := []domainaccess.SystemRole{}
 	for _, role := range roles {
 		if !validSystemRole(role) {
 			return nil, fmt.Errorf("%w: invalid system role %q", ErrInvalidInput, role)
@@ -418,12 +419,12 @@ func normalizeSystemRoles(roles []model.SystemRole) ([]model.SystemRole, error) 
 	return out, nil
 }
 
-func normalizePermissions(permissions []model.SpacePermission) ([]model.SpacePermission, error) {
+func normalizePermissions(permissions []domainaccess.SpacePermission) ([]domainaccess.SpacePermission, error) {
 	if len(permissions) == 0 {
 		return nil, fmt.Errorf("%w: permissions are required", ErrInvalidInput)
 	}
-	seen := map[model.SpacePermission]struct{}{}
-	out := []model.SpacePermission{}
+	seen := map[domainaccess.SpacePermission]struct{}{}
+	out := []domainaccess.SpacePermission{}
 	for _, permission := range permissions {
 		if !validPermission(permission) {
 			return nil, fmt.Errorf("%w: invalid permission %q", ErrInvalidInput, permission)
@@ -437,34 +438,34 @@ func normalizePermissions(permissions []model.SpacePermission) ([]model.SpacePer
 	return out, nil
 }
 
-func validSystemRole(role model.SystemRole) bool {
+func validSystemRole(role domainaccess.SystemRole) bool {
 	switch role {
-	case model.SystemRoleSuperuser, model.SystemRoleUserAdmin, model.SystemRoleOperator:
+	case domainaccess.SystemRoleSuperuser, domainaccess.SystemRoleUserAdmin, domainaccess.SystemRoleOperator:
 		return true
 	default:
 		return false
 	}
 }
 
-func validSystemPermission(permission model.SystemPermission) bool {
+func validSystemPermission(permission domainaccess.SystemPermission) bool {
 	switch permission {
-	case model.SystemPermissionManageUsers, model.SystemPermissionCreateSpaces, model.SystemPermissionManageAccess, model.SystemPermissionOperateSystem:
+	case domainaccess.SystemPermissionManageUsers, domainaccess.SystemPermissionCreateSpaces, domainaccess.SystemPermissionManageAccess, domainaccess.SystemPermissionOperateSystem:
 		return true
 	default:
 		return false
 	}
 }
 
-func validPermission(permission model.SpacePermission) bool {
+func validPermission(permission domainaccess.SpacePermission) bool {
 	switch permission {
-	case model.SpacePermissionRead, model.SpacePermissionWrite, model.SpacePermissionAdmin:
+	case domainaccess.SpacePermissionRead, domainaccess.SpacePermissionWrite, domainaccess.SpacePermissionAdmin:
 		return true
 	default:
 		return false
 	}
 }
 
-func hasSystemRole(roles []model.SystemRole, wanted model.SystemRole) bool {
+func hasSystemRole(roles []domainaccess.SystemRole, wanted domainaccess.SystemRole) bool {
 	for _, role := range roles {
 		if role == wanted {
 			return true
@@ -473,7 +474,7 @@ func hasSystemRole(roles []model.SystemRole, wanted model.SystemRole) bool {
 	return false
 }
 
-func hasPermission(permissions []model.SpacePermission, wanted model.SpacePermission) bool {
+func hasPermission(permissions []domainaccess.SpacePermission, wanted domainaccess.SpacePermission) bool {
 	for _, permission := range permissions {
 		if permission == wanted {
 			return true
@@ -482,16 +483,16 @@ func hasPermission(permissions []model.SpacePermission, wanted model.SpacePermis
 	return false
 }
 
-func cloneSystemRule(rule model.SystemAccessRule) model.SystemAccessRule {
-	rule.Roles = append([]model.SystemRole(nil), rule.Roles...)
+func cloneSystemRule(rule domainaccess.SystemAccessRule) domainaccess.SystemAccessRule {
+	rule.Roles = append([]domainaccess.SystemRole(nil), rule.Roles...)
 	return rule
 }
 
-func cloneSpaceRule(rule model.SpaceAccessRule) model.SpaceAccessRule {
-	rule.Permissions = append([]model.SpacePermission(nil), rule.Permissions...)
+func cloneSpaceRule(rule domainaccess.SpaceAccessRule) domainaccess.SpaceAccessRule {
+	rule.Permissions = append([]domainaccess.SpacePermission(nil), rule.Permissions...)
 	return rule
 }
 
-func spaceUserKey(spaceID model.SpaceID, userID model.UserID) string {
+func spaceUserKey(spaceID identity.SpaceID, userID identity.UserID) string {
 	return spaceID.String() + ":" + userID.String()
 }

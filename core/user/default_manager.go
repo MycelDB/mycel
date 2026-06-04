@@ -15,15 +15,15 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
 )
 
 const usersStoreFile = "users.json"
 
 type storedUser struct {
-	User     model.User `json:"user"`
-	Password string     `json:"password"`
+	User     identity.User `json:"user"`
+	Password string        `json:"password"`
 }
 
 type encryptedStore struct {
@@ -38,13 +38,13 @@ type defaultManager struct {
 	key          []byte
 	encrypted    bool
 	users        []storedUser
-	indexByID    map[model.UserID]int
+	indexByID    map[identity.UserID]int
 	indexByRefLC map[string]int
 }
 
 // NewManager creates the default file-backed Manager implementation.
 func NewManager() Manager {
-	return &defaultManager{indexByID: map[model.UserID]int{}, indexByRefLC: map[string]int{}}
+	return &defaultManager{indexByID: map[identity.UserID]int{}, indexByRefLC: map[string]int{}}
 }
 
 func (m *defaultManager) Init(ctx context.Context, location string, encryptionKeyB64 string) error {
@@ -92,7 +92,7 @@ func (m *defaultManager) Init(ctx context.Context, location string, encryptionKe
 	return nil
 }
 
-func (m *defaultManager) ExistsByRef(ctx context.Context, ref model.UserRef) (bool, error) {
+func (m *defaultManager) ExistsByRef(ctx context.Context, ref identity.UserRef) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -103,55 +103,55 @@ func (m *defaultManager) ExistsByRef(ctx context.Context, ref model.UserRef) (bo
 	return ok, nil
 }
 
-func (m *defaultManager) GetByRef(ctx context.Context, ref model.UserRef) (model.User, error) {
+func (m *defaultManager) GetByRef(ctx context.Context, ref identity.UserRef) (identity.User, error) {
 	if err := ctx.Err(); err != nil {
-		return model.User{}, err
+		return identity.User{}, err
 	}
 	idx, ok := m.indexByRefLC[normalizeRef(ref)]
 	if !ok {
-		return model.User{}, ErrUserNotFound
+		return identity.User{}, ErrUserNotFound
 	}
 	return m.users[idx].User, nil
 }
 
-func (m *defaultManager) GetByID(ctx context.Context, id model.UserID) (model.User, error) {
+func (m *defaultManager) GetByID(ctx context.Context, id identity.UserID) (identity.User, error) {
 	if err := ctx.Err(); err != nil {
-		return model.User{}, err
+		return identity.User{}, err
 	}
 	if id == uuid.Nil {
-		return model.User{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+		return identity.User{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
 	}
 	idx, ok := m.indexByID[id]
 	if !ok {
-		return model.User{}, ErrUserNotFound
+		return identity.User{}, ErrUserNotFound
 	}
 	return m.users[idx].User, nil
 }
 
-func (m *defaultManager) List(ctx context.Context) ([]model.User, error) {
+func (m *defaultManager) List(ctx context.Context) ([]identity.User, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	out := make([]model.User, 0, len(m.users))
+	out := make([]identity.User, 0, len(m.users))
 	for _, rec := range m.users {
 		out = append(out, rec.User)
 	}
 	return out, nil
 }
 
-func (m *defaultManager) Create(ctx context.Context, in CreateInput) (model.User, error) {
+func (m *defaultManager) Create(ctx context.Context, in CreateInput) (identity.User, error) {
 	if err := ctx.Err(); err != nil {
-		return model.User{}, err
+		return identity.User{}, err
 	}
 	if strings.TrimSpace(string(in.User.Ref)) == "" {
-		return model.User{}, fmt.Errorf("%w: user_ref is required", ErrInvalidInput)
+		return identity.User{}, fmt.Errorf("%w: user_ref is required", ErrInvalidInput)
 	}
 	if strings.TrimSpace(in.Password) == "" {
-		return model.User{}, fmt.Errorf("%w: password is required", ErrInvalidInput)
+		return identity.User{}, fmt.Errorf("%w: password is required", ErrInvalidInput)
 	}
 	refLC := normalizeRef(in.User.Ref)
 	if _, exists := m.indexByRefLC[refLC]; exists {
-		return model.User{}, ErrDuplicateUserRef
+		return identity.User{}, ErrDuplicateUserRef
 	}
 
 	id := uuid.New()
@@ -159,14 +159,14 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (model.User
 		id = *in.User.ID
 	}
 	if _, exists := m.indexByID[id]; exists {
-		return model.User{}, ErrDuplicateUserRef
+		return identity.User{}, ErrDuplicateUserRef
 	}
 	status := in.User.Status
 	if status == "" {
-		status = model.UserStatusPending
+		status = identity.UserStatusPending
 	}
 
-	u := model.User{
+	u := identity.User{
 		ID:       id,
 		Ref:      in.User.Ref,
 		Email:    in.User.Email,
@@ -176,12 +176,12 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (model.User
 	m.users = append(m.users, storedUser{User: u, Password: in.Password})
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
-		return model.User{}, err
+		return identity.User{}, err
 	}
 	return u, nil
 }
 
-func (m *defaultManager) DeleteByID(ctx context.Context, id model.UserID) error {
+func (m *defaultManager) DeleteByID(ctx context.Context, id identity.UserID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -204,23 +204,23 @@ func (m *defaultManager) DeleteByID(ctx context.Context, id model.UserID) error 
 }
 
 // Authenticate checks credentials and returns a user record.
-func (m *defaultManager) Authenticate(ctx context.Context, ref model.UserRef, password string) (model.User, error) {
+func (m *defaultManager) Authenticate(ctx context.Context, ref identity.UserRef, password string) (identity.User, error) {
 	if err := ctx.Err(); err != nil {
-		return model.User{}, err
+		return identity.User{}, err
 	}
 	idx, ok := m.indexByRefLC[normalizeRef(ref)]
 	if !ok {
-		return model.User{}, ErrUserNotFound
+		return identity.User{}, ErrUserNotFound
 	}
 	rec := m.users[idx]
 	if rec.Password != password {
-		return model.User{}, ErrInvalidInput
+		return identity.User{}, ErrInvalidInput
 	}
 	return rec.User, nil
 }
 
 func (m *defaultManager) rebuildIndex() {
-	m.indexByID = map[model.UserID]int{}
+	m.indexByID = map[identity.UserID]int{}
 	m.indexByRefLC = map[string]int{}
 	for i, u := range m.users {
 		m.indexByID[u.User.ID] = i
@@ -333,6 +333,6 @@ func parseKey(keyB64 string) ([]byte, bool, error) {
 	return decoded, true, nil
 }
 
-func normalizeRef(ref model.UserRef) string {
+func normalizeRef(ref identity.UserRef) string {
 	return strings.ToLower(strings.TrimSpace(string(ref)))
 }

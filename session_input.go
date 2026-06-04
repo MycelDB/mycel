@@ -1,9 +1,9 @@
 package knotdb
 
-import "martinbeauvais.com/mbgit/knotbase/knotdb/model"
+import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 
 // OpenSessionInput defines session-open request payload.
 type OpenSessionInput struct {
 	AccessToken AccessToken
-	SpaceID     model.SpaceID
+	SpaceID     identity.SpaceID
 }

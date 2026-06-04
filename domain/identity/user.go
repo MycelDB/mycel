@@ -1,4 +1,4 @@
-package model
+package identity
 
 // UserRef uniquely identifies a user externally.
 //

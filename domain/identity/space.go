@@ -1,4 +1,4 @@
-package model
+package identity
 
 // Space is an owner-scoped logical container for graph data.
 type Space struct {

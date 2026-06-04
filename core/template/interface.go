@@ -3,8 +3,8 @@ package template
 import (
 	"context"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 )
 
 // ImportDocument is the JSON import contract for templates.
@@ -55,9 +55,9 @@ type TemplateRefImport struct {
 // Manager manages templates for spaces.
 type Manager interface {
 	Init(ctx context.Context, location string) error
-	Import(ctx context.Context, spaceID model.SpaceID, doc ImportDocument) ([]graph.Template, error)
-	ListBySpace(ctx context.Context, spaceID model.SpaceID) ([]graph.Template, error)
+	Import(ctx context.Context, spaceID identity.SpaceID, doc ImportDocument) ([]graph.Template, error)
+	ListBySpace(ctx context.Context, spaceID identity.SpaceID) ([]graph.Template, error)
 	GetByID(ctx context.Context, id graph.TemplateID) (graph.Template, error)
-	Find(ctx context.Context, spaceID model.SpaceID, key string, version string) (graph.Template, error)
-	DeleteForSpace(ctx context.Context, spaceID model.SpaceID) error
+	Find(ctx context.Context, spaceID identity.SpaceID, key string, version string) (graph.Template, error)
+	DeleteForSpace(ctx context.Context, spaceID identity.SpaceID) error
 }

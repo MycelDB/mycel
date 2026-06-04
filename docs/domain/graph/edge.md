@@ -1,6 +1,6 @@
 # Edge Structures
 
-This document describes the graph edge structures exposed by `martinbeauvais.com/mbgit/knotbase/knotdb/graph`.
+This document describes the graph edge structures exposed by `martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph`.
 
 ## `EdgeKind`
 `EdgeKind` defines **graph-structural semantics** only (not rendering behavior).

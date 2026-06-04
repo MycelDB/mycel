@@ -1,6 +1,6 @@
 package knotdb
 
-import "martinbeauvais.com/mbgit/knotbase/knotdb/model"
+import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 
 // CreateSpaceInput defines space creation request payload.
 type CreateSpaceInput struct {
@@ -16,12 +16,12 @@ type ListSpacesInput struct {
 // DeleteSpaceInput defines a hard-delete space request payload.
 type DeleteSpaceInput struct {
 	AccessToken AccessToken
-	SpaceID     model.SpaceID
+	SpaceID     identity.SpaceID
 }
 
 // SpaceInfo contains resulting space identifiers.
 type SpaceInfo struct {
-	OwnerID model.UserID  `json:"owner_id"`
-	SpaceID model.SpaceID `json:"space_id"`
-	Name    string        `json:"name"`
+	OwnerID identity.UserID  `json:"owner_id"`
+	SpaceID identity.SpaceID `json:"space_id"`
+	Name    string           `json:"name"`
 }

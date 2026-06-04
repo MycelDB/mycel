@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/model"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 )
 
 func TestDefaultManager_InitAndCreate(t *testing.T) {
@@ -18,7 +18,7 @@ func TestDefaultManager_InitAndCreate(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	ownerID := model.UserID(uuid.New())
+	ownerID := identity.UserID(uuid.New())
 	space, err := m.Create(context.Background(), CreateInput{OwnerID: ownerID, Name: "default"})
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
@@ -42,7 +42,7 @@ func TestDefaultManager_CreateIsIdempotentByOwnerAndName(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	ownerID := model.UserID(uuid.New())
+	ownerID := identity.UserID(uuid.New())
 	first, err := m.Create(context.Background(), CreateInput{OwnerID: ownerID, Name: "default"})
 	if err != nil {
 		t.Fatalf("first create failed: %v", err)
@@ -62,7 +62,7 @@ func TestDefaultManager_GetByID_NotFound(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	_, err := m.GetByID(context.Background(), model.SpaceID(uuid.New()))
+	_, err := m.GetByID(context.Background(), identity.SpaceID(uuid.New()))
 	if !errors.Is(err, ErrSpaceNotFound) {
 		t.Fatalf("expected ErrSpaceNotFound, got: %v", err)
 	}
