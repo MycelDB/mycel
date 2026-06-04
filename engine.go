@@ -6,6 +6,7 @@ import (
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 // EngineMode defines runtime mode for KnotDB engine startup.
@@ -52,7 +53,7 @@ type Engine interface {
 	// CreateSpace creates or returns a space for an authorized user.
 	CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error)
 	// ListSpaces lists spaces for an authorized system access administrator.
-	ListSpaces(ctx context.Context, in ListSpacesInput) ([]identity.Space, error)
+	ListSpaces(ctx context.Context, in ListSpacesInput) ([]domainspace.Space, error)
 	// DeleteSpace hard-deletes a space and all associated persisted constructs.
 	DeleteSpace(ctx context.Context, in DeleteSpaceInput) error
 	// ImportTemplates imports immutable template versions for a space.

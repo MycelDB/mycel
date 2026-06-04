@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 func TestDefaultManager_ImportValidDocument(t *testing.T) {
@@ -16,7 +16,7 @@ func TestDefaultManager_ImportValidDocument(t *testing.T) {
 	if err := m.Init(context.Background(), filepath.Join(t.TempDir(), "store")); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	spaceID := identity.SpaceID(uuid.New())
+	spaceID := domainspace.SpaceID(uuid.New())
 
 	templates, err := m.Import(context.Background(), spaceID, validDocument())
 	if err != nil {
@@ -54,7 +54,7 @@ func TestDefaultManager_ImportRejectsDuplicateExistingVersion(t *testing.T) {
 	if err := m.Init(context.Background(), filepath.Join(t.TempDir(), "store")); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	spaceID := identity.SpaceID(uuid.New())
+	spaceID := domainspace.SpaceID(uuid.New())
 	if _, err := m.Import(context.Background(), spaceID, validDocument()); err != nil {
 		t.Fatalf("first import failed: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestDefaultManager_ImportRejectsInvalidSemver(t *testing.T) {
 	}
 	doc := validDocument()
 	doc.Templates[0].Version = "v1"
-	_, err := m.Import(context.Background(), identity.SpaceID(uuid.New()), doc)
+	_, err := m.Import(context.Background(), domainspace.SpaceID(uuid.New()), doc)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput, got: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestDefaultManager_ImportRejectsAllowedForbiddenOverlap(t *testing.T) {
 	}
 	doc := validDocument()
 	doc.Templates[0].Properties.Forbidden = []string{"title"}
-	_, err := m.Import(context.Background(), identity.SpaceID(uuid.New()), doc)
+	_, err := m.Import(context.Background(), domainspace.SpaceID(uuid.New()), doc)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput, got: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestDefaultManager_ImportRejectsChildRefWithoutVersion(t *testing.T) {
 	}
 	doc := validDocument()
 	doc.Templates[0].Children.AllowedTemplates[0].Version = ""
-	_, err := m.Import(context.Background(), identity.SpaceID(uuid.New()), doc)
+	_, err := m.Import(context.Background(), domainspace.SpaceID(uuid.New()), doc)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput, got: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestDefaultManager_ImportRejectsDisallowedChildrenWithRefs(t *testing.T) {
 	}
 	doc := validDocument()
 	doc.Templates[0].Children.Allowed = false
-	_, err := m.Import(context.Background(), identity.SpaceID(uuid.New()), doc)
+	_, err := m.Import(context.Background(), domainspace.SpaceID(uuid.New()), doc)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput, got: %v", err)
 	}

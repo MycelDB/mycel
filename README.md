@@ -6,8 +6,8 @@ Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 
 ## Layout
 - `core/`: injectable managers for users, spaces, templates, and access control
-- `domain/identity`: users, spaces, tenancy IDs, and ownership
-- `domain/space`: space-level configuration and metadata types
+- `domain/identity`: users, user IDs, and ownership
+- `domain/space`: spaces, space IDs, and space-level configuration types
 - `domain/access`: system roles, space permissions, and ACL rule types
 - `domain/graph`: nodes, edges, templates, graph inputs, and session API
 - `internal/`: private implementation packages
@@ -18,6 +18,7 @@ Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 - Node operations: `docs/domain/graph/node.md`
 - Node templates: `docs/domain/graph/template.md`
 - User structures: `docs/domain/identity/user.md`
+- Space structures: `docs/domain/space/space.md`
 - Access control: `docs/domain/access/access.md`
 - Storage layout: `docs/storage/layout.md`
 

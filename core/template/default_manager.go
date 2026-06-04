@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
 )
 
@@ -24,7 +24,7 @@ var semverRe = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-
 
 type storedTemplate struct {
 	ID          graph.TemplateID     `json:"id"`
-	SpaceID     identity.SpaceID     `json:"space_id"`
+	SpaceID     domainspace.SpaceID  `json:"space_id"`
 	Key         string               `json:"key"`
 	Version     string               `json:"version"`
 	DisplayName string               `json:"display_name,omitempty"`
@@ -81,7 +81,7 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 	return nil
 }
 
-func (m *defaultManager) Import(ctx context.Context, spaceID identity.SpaceID, doc ImportDocument) ([]graph.Template, error) {
+func (m *defaultManager) Import(ctx context.Context, spaceID domainspace.SpaceID, doc ImportDocument) ([]graph.Template, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -133,7 +133,7 @@ func (m *defaultManager) Import(ctx context.Context, spaceID identity.SpaceID, d
 	return out, nil
 }
 
-func (m *defaultManager) ListBySpace(ctx context.Context, spaceID identity.SpaceID) ([]graph.Template, error) {
+func (m *defaultManager) ListBySpace(ctx context.Context, spaceID domainspace.SpaceID) ([]graph.Template, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (m *defaultManager) GetByID(ctx context.Context, id graph.TemplateID) (grap
 	return m.templates[idx].toModel(), nil
 }
 
-func (m *defaultManager) Find(ctx context.Context, spaceID identity.SpaceID, key string, version string) (graph.Template, error) {
+func (m *defaultManager) Find(ctx context.Context, spaceID domainspace.SpaceID, key string, version string) (graph.Template, error) {
 	if err := ctx.Err(); err != nil {
 		return graph.Template{}, err
 	}
@@ -183,7 +183,7 @@ func (m *defaultManager) Find(ctx context.Context, spaceID identity.SpaceID, key
 	return m.templates[idx].toModel(), nil
 }
 
-func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID identity.SpaceID) error {
+func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -213,7 +213,7 @@ func (m *defaultManager) rebuildIndex() {
 	}
 }
 
-func (m *defaultManager) persistSpace(spaceID identity.SpaceID) error {
+func (m *defaultManager) persistSpace(spaceID domainspace.SpaceID) error {
 	items := []storedTemplate{}
 	for _, t := range m.templates {
 		if t.SpaceID == spaceID {
@@ -361,7 +361,7 @@ func validSemver(version string) bool {
 	return semverRe.MatchString(strings.TrimSpace(version))
 }
 
-func templateStorePath(location string, spaceID identity.SpaceID) string {
+func templateStorePath(location string, spaceID domainspace.SpaceID) string {
 	return filepath.Join(location, spaceID.String()+templatesStoreSuffix)
 }
 
@@ -369,6 +369,6 @@ func isTemplateStoreFile(name string) bool {
 	return strings.HasSuffix(name, templatesStoreSuffix)
 }
 
-func spaceKeyVersion(spaceID identity.SpaceID, key string, version string) string {
+func spaceKeyVersion(spaceID domainspace.SpaceID, key string, version string) string {
 	return spaceID.String() + ":" + strings.ToLower(strings.TrimSpace(key)) + "@" + strings.TrimSpace(version)
 }

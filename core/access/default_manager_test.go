@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 func TestDefaultManager_SystemRolePermissions(t *testing.T) {
@@ -51,7 +52,7 @@ func TestDefaultManager_RevokeLastSuperuserFails(t *testing.T) {
 
 func TestDefaultManager_PermissionHierarchy(t *testing.T) {
 	m := newTestManager(t)
-	spaceID := identity.SpaceID(uuid.New())
+	spaceID := domainspace.SpaceID(uuid.New())
 	userID := identity.UserID(uuid.New())
 
 	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: userID, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionWrite}}); err != nil {
@@ -77,7 +78,7 @@ func TestDefaultManager_PermissionHierarchy(t *testing.T) {
 
 func TestDefaultManager_RevokeLastAdminFails(t *testing.T) {
 	m := newTestManager(t)
-	spaceID := identity.SpaceID(uuid.New())
+	spaceID := domainspace.SpaceID(uuid.New())
 	adminID := identity.UserID(uuid.New())
 	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminID, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionAdmin}}); err != nil {
 		t.Fatalf("grant failed: %v", err)
@@ -91,7 +92,7 @@ func TestDefaultManager_RevokeLastAdminFails(t *testing.T) {
 
 func TestDefaultManager_RevokeAdminSucceedsWhenAnotherAdminRemains(t *testing.T) {
 	m := newTestManager(t)
-	spaceID := identity.SpaceID(uuid.New())
+	spaceID := domainspace.SpaceID(uuid.New())
 	adminA := identity.UserID(uuid.New())
 	adminB := identity.UserID(uuid.New())
 	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminA, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionAdmin}}); err != nil {
@@ -112,7 +113,7 @@ func TestDefaultManager_RevokeAdminSucceedsWhenAnotherAdminRemains(t *testing.T)
 
 func TestDefaultManager_DowngradeLastAdminFails(t *testing.T) {
 	m := newTestManager(t)
-	spaceID := identity.SpaceID(uuid.New())
+	spaceID := domainspace.SpaceID(uuid.New())
 	adminID := identity.UserID(uuid.New())
 	if _, err := m.Grant(context.Background(), GrantInput{SpaceID: spaceID, UserID: adminID, Permissions: []domainaccess.SpacePermission{domainaccess.SpacePermissionAdmin}}); err != nil {
 		t.Fatalf("grant failed: %v", err)

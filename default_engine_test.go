@@ -13,6 +13,7 @@ import (
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
@@ -815,7 +816,7 @@ func hasUserID(users []identity.User, id identity.UserID) bool {
 	return false
 }
 
-func hasSpaceID(spaces []identity.Space, id identity.SpaceID) bool {
+func hasSpaceID(spaces []domainspace.Space, id domainspace.SpaceID) bool {
 	for _, sp := range spaces {
 		if sp.SpaceID == id {
 			return true

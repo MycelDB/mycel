@@ -3,6 +3,7 @@ package access
 import (
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 // SystemRole is a global role granted to a user for system-wide administration.
@@ -48,10 +49,10 @@ type SpaceAccessRuleID = uuid.UUID
 
 // SpaceAccessRule grants permissions to a user for a space.
 type SpaceAccessRule struct {
-	ID          SpaceAccessRuleID `json:"id"`
-	SpaceID     identity.SpaceID  `json:"space_id"`
-	UserID      identity.UserID   `json:"user_id"`
-	Permissions []SpacePermission `json:"permissions"`
+	ID          SpaceAccessRuleID   `json:"id"`
+	SpaceID     domainspace.SpaceID `json:"space_id"`
+	UserID      identity.UserID     `json:"user_id"`
+	Permissions []SpacePermission   `json:"permissions"`
 }
 
 // RoleAllows reports whether a system role satisfies a system permission.

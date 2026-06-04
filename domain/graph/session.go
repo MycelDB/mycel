@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 // Session is a scoped interaction context for graph operations.
@@ -24,5 +25,5 @@ type Session interface {
 
 // Store opens graph sessions for a given owner/space scope.
 type Store interface {
-	OpenSession(ctx context.Context, ownerID identity.UserID, spaceID identity.SpaceID) (Session, error)
+	OpenSession(ctx context.Context, ownerID identity.UserID, spaceID domainspace.SpaceID) (Session, error)
 }

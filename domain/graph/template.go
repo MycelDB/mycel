@@ -2,7 +2,7 @@ package graph
 
 import (
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 // TemplateID uniquely identifies a template definition.
@@ -13,15 +13,15 @@ type TemplateID = uuid.UUID
 // Templates provide a schema-like contract for node props and direct child
 // relationships. Nodes refer to templates by TemplateID.
 type Template struct {
-	ID          TemplateID       `json:"id"`
-	SpaceID     identity.SpaceID `json:"space_id"`
-	Key         string           `json:"key"`
-	Version     string           `json:"version"`
-	DisplayName string           `json:"display_name,omitempty"`
-	Description string           `json:"description,omitempty"`
-	System      bool             `json:"system,omitempty"`
-	Properties  PropertyPolicy   `json:"properties"`
-	Children    ChildPolicy      `json:"children"`
+	ID          TemplateID          `json:"id"`
+	SpaceID     domainspace.SpaceID `json:"space_id"`
+	Key         string              `json:"key"`
+	Version     string              `json:"version"`
+	DisplayName string              `json:"display_name,omitempty"`
+	Description string              `json:"description,omitempty"`
+	System      bool                `json:"system,omitempty"`
+	Properties  PropertyPolicy      `json:"properties"`
+	Children    ChildPolicy         `json:"children"`
 }
 
 // PropertyPolicy defines allowed and forbidden node properties for a template.

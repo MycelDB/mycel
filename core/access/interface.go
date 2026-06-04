@@ -5,6 +5,7 @@ import (
 
 	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 // GrantSystemRoleInput is the grant/update payload for system roles.
@@ -20,14 +21,14 @@ type RevokeSystemRoleInput struct {
 
 // GrantInput is the grant/update payload managed by Manager.
 type GrantInput struct {
-	SpaceID     identity.SpaceID
+	SpaceID     domainspace.SpaceID
 	UserID      identity.UserID
 	Permissions []domainaccess.SpacePermission
 }
 
 // RevokeInput is the revoke payload managed by Manager.
 type RevokeInput struct {
-	SpaceID identity.SpaceID
+	SpaceID domainspace.SpaceID
 	UserID  identity.UserID
 }
 
@@ -42,7 +43,7 @@ type Manager interface {
 	Grant(ctx context.Context, in GrantInput) (domainaccess.SpaceAccessRule, error)
 	Revoke(ctx context.Context, in RevokeInput) error
 	DeleteForUser(ctx context.Context, userID identity.UserID) error
-	DeleteForSpace(ctx context.Context, spaceID identity.SpaceID) error
-	Can(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID, permission domainaccess.SpacePermission) (bool, error)
-	RulesForSpace(ctx context.Context, spaceID identity.SpaceID) ([]domainaccess.SpaceAccessRule, error)
+	DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error
+	Can(ctx context.Context, userID identity.UserID, spaceID domainspace.SpaceID, permission domainaccess.SpacePermission) (bool, error)
+	RulesForSpace(ctx context.Context, spaceID domainspace.SpaceID) ([]domainaccess.SpaceAccessRule, error)
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 func TestDefaultManager_InitAndCreate(t *testing.T) {
@@ -62,7 +63,7 @@ func TestDefaultManager_GetByID_NotFound(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	_, err := m.GetByID(context.Background(), identity.SpaceID(uuid.New()))
+	_, err := m.GetByID(context.Background(), domainspace.SpaceID(uuid.New()))
 	if !errors.Is(err, ErrSpaceNotFound) {
 		t.Fatalf("expected ErrSpaceNotFound, got: %v", err)
 	}

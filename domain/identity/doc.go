@@ -1,3 +1,3 @@
-// Package identity defines KnotDB identity and tenancy domain types, including
-// users, spaces, IDs, and ownership.
+// Package identity defines KnotDB user identity domain types, including users,
+// user IDs, user references, and ownership.
 package identity

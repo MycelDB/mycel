@@ -3,6 +3,7 @@ package knotdb
 import (
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 )
 
 // GrantSystemRoleInput defines a request to grant or update a user's system roles.
@@ -26,7 +27,7 @@ type ListSystemAccessInput struct {
 // GrantSpaceAccessInput defines a request to grant or update user access for a space.
 type GrantSpaceAccessInput struct {
 	AccessToken AccessToken
-	SpaceID     identity.SpaceID
+	SpaceID     domainspace.SpaceID
 	UserID      identity.UserID
 	Permissions []access.SpacePermission
 }
@@ -34,12 +35,12 @@ type GrantSpaceAccessInput struct {
 // RevokeSpaceAccessInput defines a request to revoke user access for a space.
 type RevokeSpaceAccessInput struct {
 	AccessToken AccessToken
-	SpaceID     identity.SpaceID
+	SpaceID     domainspace.SpaceID
 	UserID      identity.UserID
 }
 
 // ListSpaceAccessInput defines a request to list access rules for a space.
 type ListSpaceAccessInput struct {
 	AccessToken AccessToken
-	SpaceID     identity.SpaceID
+	SpaceID     domainspace.SpaceID
 }

@@ -18,6 +18,7 @@ import (
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstore"
 )
 
@@ -55,7 +56,7 @@ type authClaims struct {
 	UserRef  identity.UserRef
 	Roles    []access.SystemRole
 	OwnerIDs []identity.UserID
-	SpaceIDs []identity.SpaceID
+	SpaceIDs []domainspace.SpaceID
 	Scopes   []string
 }
 
@@ -267,7 +268,7 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 		UserRef:  account.Ref,
 		Roles:    roles,
 		OwnerIDs: []identity.UserID{account.ID},
-		SpaceIDs: []identity.SpaceID{},
+		SpaceIDs: []domainspace.SpaceID{},
 		Scopes:   scopesForSystemRoles(roles),
 	}
 
@@ -411,7 +412,7 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 	return SpaceInfo{OwnerID: sp.OwnerID, SpaceID: sp.SpaceID, Name: sp.Name}, nil
 }
 
-func (e *defaultEngine) ListSpaces(ctx context.Context, in ListSpacesInput) ([]identity.Space, error) {
+func (e *defaultEngine) ListSpaces(ctx context.Context, in ListSpacesInput) ([]domainspace.Space, error) {
 	if err := e.Ready(ctx); err != nil {
 		return nil, err
 	}
@@ -430,7 +431,7 @@ func (e *defaultEngine) ListSpaces(ctx context.Context, in ListSpacesInput) ([]i
 	if canManageAccess {
 		return spaces, nil
 	}
-	accessible := []identity.Space{}
+	accessible := []domainspace.Space{}
 	for _, sp := range spaces {
 		canRead, err := e.canReadSpace(ctx, auth.UserID, sp.SpaceID)
 		if err != nil {
@@ -608,7 +609,7 @@ func (e *defaultEngine) ListSpaceAccess(ctx context.Context, in ListSpaceAccessI
 	return e.accessManager.RulesForSpace(ctx, in.SpaceID)
 }
 
-func (e *defaultEngine) ensureSpaceAdmin(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID) error {
+func (e *defaultEngine) ensureSpaceAdmin(ctx context.Context, userID identity.UserID, spaceID domainspace.SpaceID) error {
 	if spaceID == uuid.Nil {
 		return fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
 	}
@@ -707,7 +708,7 @@ func (e *defaultEngine) authClaimsForAccessToken(ctx context.Context, accessToke
 	return claims, nil
 }
 
-func (e *defaultEngine) grantSpaceToCachedClaims(accessToken AccessToken, spaceID identity.SpaceID) {
+func (e *defaultEngine) grantSpaceToCachedClaims(accessToken AccessToken, spaceID domainspace.SpaceID) {
 	e.authMu.Lock()
 	defer e.authMu.Unlock()
 	claims, ok := e.authCache[accessToken]
@@ -718,7 +719,7 @@ func (e *defaultEngine) grantSpaceToCachedClaims(accessToken AccessToken, spaceI
 	e.authCache[accessToken] = claims
 }
 
-func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID identity.SpaceID) error {
+func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID domainspace.SpaceID) error {
 	if spaceID == uuid.Nil {
 		return fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
 	}
@@ -777,7 +778,7 @@ func (e *defaultEngine) purgeCachedClaimsForUser(userID identity.UserID) {
 	}
 }
 
-func (e *defaultEngine) purgeCachedSpace(spaceID identity.SpaceID) {
+func (e *defaultEngine) purgeCachedSpace(spaceID domainspace.SpaceID) {
 	e.authMu.Lock()
 	defer e.authMu.Unlock()
 	for token, claims := range e.authCache {
@@ -792,21 +793,21 @@ func (e *defaultEngine) purgeCachedSpace(spaceID identity.SpaceID) {
 	}
 }
 
-func (e *defaultEngine) canReadSpace(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID) (bool, error) {
+func (e *defaultEngine) canReadSpace(ctx context.Context, userID identity.UserID, spaceID domainspace.SpaceID) (bool, error) {
 	if canAdmin, err := e.canAdminSystem(ctx, userID); err != nil || canAdmin {
 		return canAdmin, err
 	}
 	return e.accessManager.Can(ctx, userID, spaceID, access.SpacePermissionRead)
 }
 
-func (e *defaultEngine) canWriteSpace(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID) (bool, error) {
+func (e *defaultEngine) canWriteSpace(ctx context.Context, userID identity.UserID, spaceID domainspace.SpaceID) (bool, error) {
 	if canAdmin, err := e.canAdminSystem(ctx, userID); err != nil || canAdmin {
 		return canAdmin, err
 	}
 	return e.accessManager.Can(ctx, userID, spaceID, access.SpacePermissionWrite)
 }
 
-func (e *defaultEngine) canAdminSpace(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID) (bool, error) {
+func (e *defaultEngine) canAdminSpace(ctx context.Context, userID identity.UserID, spaceID domainspace.SpaceID) (bool, error) {
 	if canAdmin, err := e.canAdminSystem(ctx, userID); err != nil || canAdmin {
 		return canAdmin, err
 	}
@@ -910,7 +911,7 @@ func templatesDir(dataDir string) string {
 	return filepath.Join(metaDir(dataDir), "templates")
 }
 
-func ensureGraphSpaceDir(dataDir string, spaceID identity.SpaceID) error {
+func ensureGraphSpaceDir(dataDir string, spaceID domainspace.SpaceID) error {
 	path := filepath.Join(graphsDir(dataDir), spaceID.String())
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return err
@@ -936,7 +937,7 @@ func containsUserID(items []identity.UserID, wanted identity.UserID) bool {
 	return false
 }
 
-func containsSpaceID(items []identity.SpaceID, wanted identity.SpaceID) bool {
+func containsSpaceID(items []domainspace.SpaceID, wanted domainspace.SpaceID) bool {
 	for _, it := range items {
 		if it == wanted {
 			return true

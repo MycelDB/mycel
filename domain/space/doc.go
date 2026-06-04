@@ -1,3 +1,3 @@
-// Package space defines KnotDB space-level domain configuration and metadata
-// types that are not identity, access-control, or graph structures.
+// Package space defines KnotDB space tenancy, metadata, and configuration
+// domain types.
 package space

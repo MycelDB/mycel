@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
 )
 
@@ -289,7 +290,7 @@ func (m *defaultManager) DeleteForUser(ctx context.Context, userID identity.User
 	return nil
 }
 
-func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID identity.SpaceID) error {
+func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -313,7 +314,7 @@ func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID identity.Sp
 	return nil
 }
 
-func (m *defaultManager) Can(ctx context.Context, userID identity.UserID, spaceID identity.SpaceID, permission domainaccess.SpacePermission) (bool, error) {
+func (m *defaultManager) Can(ctx context.Context, userID identity.UserID, spaceID domainspace.SpaceID, permission domainaccess.SpacePermission) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -338,7 +339,7 @@ func (m *defaultManager) Can(ctx context.Context, userID identity.UserID, spaceI
 	return false, nil
 }
 
-func (m *defaultManager) RulesForSpace(ctx context.Context, spaceID identity.SpaceID) ([]domainaccess.SpaceAccessRule, error) {
+func (m *defaultManager) RulesForSpace(ctx context.Context, spaceID domainspace.SpaceID) ([]domainaccess.SpaceAccessRule, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -387,7 +388,7 @@ func (m *defaultManager) superuserCountExcluding(excludedUserID identity.UserID)
 	return count
 }
 
-func (m *defaultManager) adminCountExcluding(spaceID identity.SpaceID, excludedUserID identity.UserID) int {
+func (m *defaultManager) adminCountExcluding(spaceID domainspace.SpaceID, excludedUserID identity.UserID) int {
 	count := 0
 	for _, rule := range m.spaceRules {
 		if rule.SpaceID != spaceID || rule.UserID == excludedUserID {
@@ -493,6 +494,6 @@ func cloneSpaceRule(rule domainaccess.SpaceAccessRule) domainaccess.SpaceAccessR
 	return rule
 }
 
-func spaceUserKey(spaceID identity.SpaceID, userID identity.UserID) string {
+func spaceUserKey(spaceID domainspace.SpaceID, userID identity.UserID) string {
 	return spaceID.String() + ":" + userID.String()
 }
