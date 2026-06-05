@@ -5,6 +5,8 @@ Go library for KnotDB graph spaces.
 Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 
 ## Layout
+- `engine/`: public engine API, constructor, lifecycle, auth, and system/space management
+- `engine/internal/`: default engine implementation
 - `core/`: injectable managers for users, spaces, templates, and access control
 - `domain/identity`: users, user IDs, and ownership
 - `domain/space`: spaces, space IDs, and space-level configuration types
@@ -30,7 +32,7 @@ KnotDB tools and services use `KNOTDB_DATA_DIR` as the shared default data direc
 export KNOTDB_DATA_DIR=~/knot_data
 ```
 
-Explicit `EngineConfig.DataDir` values still take precedence.
+Explicit `engine.EngineConfig.DataDir` values still take precedence.
 
 ## Testing
 - Run once: `make test`

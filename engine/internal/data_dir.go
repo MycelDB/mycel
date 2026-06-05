@@ -1,4 +1,4 @@
-package knotdb
+package internal
 
 import (
 	"os"

@@ -1,4 +1,4 @@
-package knotdb
+package internal
 
 import (
 	"context"
@@ -63,7 +63,7 @@ type authClaims struct {
 // NewEngine opens (or creates) a local embedded KnotDB runtime.
 //
 // If userManager, spaceManager, templateManager, or accessManager is nil, default file-backed managers are used.
-func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Manager, templateManager coretemplate.Manager, accessManager coreaccess.Manager) (Engine, error) {
+func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Manager, templateManager coretemplate.Manager, accessManager coreaccess.Manager) (*defaultEngine, error) {
 	e := &defaultEngine{state: EngineStateClose, userManager: userManager, spaceManager: spaceManager, templateManager: templateManager, accessManager: accessManager, authCache: map[AccessToken]authClaims{}}
 	if err := e.Open(cfg); err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Ma
 
 // DefaultEngine opens (or creates) a local embedded KnotDB runtime.
 // Deprecated: use NewEngine(cfg, userManager, spaceManager, templateManager, accessManager) instead.
-func DefaultEngine(cfg EngineConfig) (Engine, error) {
+func DefaultEngine(cfg EngineConfig) (*defaultEngine, error) {
 	return NewEngine(cfg, nil, nil, nil, nil)
 }
 

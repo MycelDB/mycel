@@ -1,4 +1,4 @@
-package knotdb
+package internal
 
 import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 

@@ -1,4 +1,4 @@
-package knotdb
+package internal
 
 import domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 
