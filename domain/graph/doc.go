@@ -1,3 +1,3 @@
-// Package graph defines KnotDB graph domain types, including nodes, edges,
-// templates, graph inputs, and the graph session API.
+// Package graph defines pure KnotDB graph domain types, including nodes,
+// edges, templates, and template policies.
 package graph

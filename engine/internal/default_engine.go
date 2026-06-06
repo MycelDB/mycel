@@ -16,10 +16,10 @@ import (
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstore"
+	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
 var (
@@ -575,7 +575,7 @@ func (e *defaultEngine) ensureSpaceAdmin(ctx context.Context, userID identity.Us
 	return nil
 }
 
-func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (graph.Session, error) {
+func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (domainsession.Session, error) {
 	if err := e.Ready(ctx); err != nil {
 		return nil, err
 	}

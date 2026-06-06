@@ -1,4 +1,6 @@
-package graph
+package session
+
+import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 
 // ImportDocument is the JSON import contract for templates.
 type ImportDocument struct {
@@ -26,11 +28,11 @@ type PropertyPolicyImport struct {
 
 // TemplatePropertyImport defines an imported allowed property.
 type TemplatePropertyImport struct {
-	Name        string       `json:"name"`
-	Type        PropertyType `json:"type"`
-	Required    bool         `json:"required,omitempty"`
-	Default     any          `json:"default,omitempty"`
-	Description string       `json:"description,omitempty"`
+	Name        string             `json:"name"`
+	Type        graph.PropertyType `json:"type"`
+	Required    bool               `json:"required,omitempty"`
+	Default     any                `json:"default,omitempty"`
+	Description string             `json:"description,omitempty"`
 }
 
 // ChildPolicyImport defines imported direct-child constraints.

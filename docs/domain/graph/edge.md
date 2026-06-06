@@ -21,12 +21,12 @@ Canonical persisted edge model.
 | `Kind` | `EdgeKind` | Structural relationship semantics. |
 | `Props` | `map[string]any` | Optional edge metadata/extensions. |
 
-## `EdgeInput`
-Write payload used when creating/upserting an edge.
+## Edge operations
+Write payloads for edge operations live in `martinbeauvais.com/mbgit/knotbase/knotdb/session`, for example `session.AddEdgeInput`.
 
 | Field | Type | Required | Description |
 |---|---|---:|---|
-| `ID` | `*EdgeID` | No | Optional caller-provided edge ID. |
+| `ID` | `*graph.EdgeID` | No | Optional caller-provided edge ID. |
 | `FromID` | `NodeID` | Yes | Source node ID. |
 | `ToID` | `NodeID` | Yes | Target node ID. |
 | `Kind` | `EdgeKind` | Yes | Structural relationship kind. |

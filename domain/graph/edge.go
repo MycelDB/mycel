@@ -25,12 +25,3 @@ type Edge struct {
 	Kind   EdgeKind
 	Props  map[string]any
 }
-
-// EdgeInput is the write payload used when creating or upserting an edge.
-type EdgeInput struct {
-	ID     *EdgeID
-	FromID NodeID
-	ToID   NodeID
-	Kind   EdgeKind
-	Props  map[string]any
-}

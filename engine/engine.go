@@ -9,10 +9,10 @@ import (
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
 	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	engineinternal "martinbeauvais.com/mbgit/knotbase/knotdb/engine/internal"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
 type EngineMode = engineinternal.EngineMode
@@ -75,7 +75,7 @@ type Engine interface {
 	GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (domainaccess.SpaceAccessRule, error)
 	RevokeSpaceAccess(ctx context.Context, in RevokeSpaceAccessInput) error
 	ListSpaceAccess(ctx context.Context, in ListSpaceAccessInput) ([]domainaccess.SpaceAccessRule, error)
-	OpenSession(ctx context.Context, in OpenSessionInput) (graph.Session, error)
+	OpenSession(ctx context.Context, in OpenSessionInput) (session.Session, error)
 	Close() error
 }
 

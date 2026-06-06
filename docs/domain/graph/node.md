@@ -1,15 +1,15 @@
 # Node Operations
 
-Graph nodes are accessed through a space-scoped `graph.Session`.
+Graph nodes are pure domain records in `domain/graph`. Node operations are accessed through a space-scoped `session.Session`.
 
 ## Operations
 
-- `AddNode(ctx, NodeInput)`: creates a new node. Requires write access.
+- `AddNode(ctx, session.AddNodeInput)`: creates a new node. Requires write access.
 - `ListNodes(ctx)`: lists all nodes in the session space. Requires read access.
 - `GetNode(ctx, NodeID)`: reads one node by ID. Requires read access.
-- `UpdateNode(ctx, UpdateNodeInput)`: updates an existing node by ID. Requires write access and returns `ErrNotFound` when the node does not exist.
-- `UpsertNode(ctx, NodeInput)`: updates a node when `ID` exists, otherwise creates it. A nil `ID` creates a new node with a generated ID. Requires write access.
-- `DeleteNode(ctx, DeleteNodeInput)`: hard-deletes a node and incident edges. Child nodes require `Recursive=true`. Requires write access.
+- `UpdateNode(ctx, session.UpdateNodeInput)`: updates an existing node by ID. Requires write access and returns `ErrNotFound` when the node does not exist.
+- `UpsertNode(ctx, session.UpsertNodeInput)`: updates a node when `ID` exists, otherwise creates it. A nil `ID` creates a new node with a generated ID. Requires write access.
+- `DeleteNode(ctx, session.DeleteNodeInput)`: hard-deletes a node and incident edges. Child nodes require `Recursive=true`. Requires write access.
 
 ## Validation
 

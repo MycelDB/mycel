@@ -13,6 +13,7 @@ import (
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
 func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
@@ -348,7 +349,7 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	}
 	defer session.Close()
 
-	node, err := session.AddNode(ctx, graph.NodeInput{
+	node, err := session.AddNode(ctx, domainsession.AddNodeInput{
 		Content: "Hello Knotbase",
 		Props: map[string]any{
 			"kind": "note",
@@ -401,7 +402,7 @@ func TestRuntimeEngine_SpaceAccessReadOnlyUserCannotWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected admin open session success, got error: %v", err)
 	}
-	node, err := adminSession.AddNode(ctx, graph.NodeInput{Content: "readable"})
+	node, err := adminSession.AddNode(ctx, domainsession.AddNodeInput{Content: "readable"})
 	if err != nil {
 		t.Fatalf("expected admin add node success, got error: %v", err)
 	}
@@ -435,7 +436,7 @@ func TestRuntimeEngine_SpaceAccessReadOnlyUserCannotWrite(t *testing.T) {
 	if _, err := readerSession.GetNode(ctx, node.ID); err != nil {
 		t.Fatalf("expected reader get node success, got error: %v", err)
 	}
-	if _, err := readerSession.AddNode(ctx, graph.NodeInput{Content: "should fail"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := readerSession.AddNode(ctx, domainsession.AddNodeInput{Content: "should fail"}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("expected ErrUnauthorized for reader write, got: %v", err)
 	}
 }
@@ -508,7 +509,7 @@ func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
 	}
 	defer session.Close()
 
-	templates, err := session.ImportTemplates(ctx, graph.ImportTemplatesInput{Document: nodeTemplateDocument()})
+	templates, err := session.ImportTemplates(ctx, domainsession.ImportTemplatesInput{Document: nodeTemplateDocument()})
 	if err != nil {
 		t.Fatalf("expected import templates success, got error: %v", err)
 	}
@@ -525,24 +526,24 @@ func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
 		t.Fatalf("expected template file to exist: %v", err)
 	}
 
-	_, err = session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{}})
+	_, err = session.AddNode(ctx, domainsession.AddNodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{}})
 	if err == nil {
 		t.Fatal("expected missing required property error")
 	}
-	_, err = session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{"title": "Parent", "secret": "x"}})
+	_, err = session.AddNode(ctx, domainsession.AddNodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{"title": "Parent", "secret": "x"}})
 	if err == nil {
 		t.Fatal("expected forbidden property error")
 	}
-	_, err = session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{"title": "Parent", "unknown": "x"}})
+	_, err = session.AddNode(ctx, domainsession.AddNodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{"title": "Parent", "unknown": "x"}})
 	if err == nil {
 		t.Fatal("expected unknown property error")
 	}
 
-	parent, err := session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{"title": "Parent"}})
+	parent, err := session.AddNode(ctx, domainsession.AddNodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{"title": "Parent"}})
 	if err != nil {
 		t.Fatalf("expected parent node success, got error: %v", err)
 	}
-	child, err := session.AddNode(ctx, graph.NodeInput{TemplateID: &taskTemplate.ID, ParentID: &parent.ID, Props: map[string]any{}})
+	child, err := session.AddNode(ctx, domainsession.AddNodeInput{TemplateID: &taskTemplate.ID, ParentID: &parent.ID, Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("expected allowed child node success, got error: %v", err)
 	}
@@ -550,7 +551,7 @@ func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
 		t.Fatalf("expected default done=false, got node: %#v", child)
 	}
 
-	_, err = session.AddNode(ctx, graph.NodeInput{TemplateID: &noteTemplate.ID, ParentID: &child.ID, Props: map[string]any{"title": "Nested"}})
+	_, err = session.AddNode(ctx, domainsession.AddNodeInput{TemplateID: &noteTemplate.ID, ParentID: &child.ID, Props: map[string]any{"title": "Nested"}})
 	if err == nil {
 		t.Fatal("expected child rejection for template that disallows children")
 	}
@@ -601,24 +602,24 @@ func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
 	}
 }
 
-func nodeTemplateDocument() graph.ImportDocument {
-	return graph.ImportDocument{
+func nodeTemplateDocument() domainsession.ImportDocument {
+	return domainsession.ImportDocument{
 		SchemaVersion: 1,
-		Templates: []graph.TemplateImport{
+		Templates: []domainsession.TemplateImport{
 			{
 				Key:         "note",
 				Version:     "1.0.0",
 				DisplayName: "Note",
-				Properties: graph.PropertyPolicyImport{
+				Properties: domainsession.PropertyPolicyImport{
 					AllowExtra: false,
-					Allowed: []graph.TemplatePropertyImport{
+					Allowed: []domainsession.TemplatePropertyImport{
 						{Name: "title", Type: graph.PropertyTypeString, Required: true},
 					},
 					Forbidden: []string{"secret"},
 				},
-				Children: graph.ChildPolicyImport{
+				Children: domainsession.ChildPolicyImport{
 					Allowed: true,
-					AllowedTemplates: []graph.TemplateRefImport{
+					AllowedTemplates: []domainsession.TemplateRefImport{
 						{Key: "task", Version: "1.0.0"},
 					},
 				},
@@ -627,13 +628,13 @@ func nodeTemplateDocument() graph.ImportDocument {
 				Key:         "task",
 				Version:     "1.0.0",
 				DisplayName: "Task",
-				Properties: graph.PropertyPolicyImport{
+				Properties: domainsession.PropertyPolicyImport{
 					AllowExtra: false,
-					Allowed: []graph.TemplatePropertyImport{
+					Allowed: []domainsession.TemplatePropertyImport{
 						{Name: "done", Type: graph.PropertyTypeBool, Default: false},
 					},
 				},
-				Children: graph.ChildPolicyImport{Allowed: false},
+				Children: domainsession.ChildPolicyImport{Allowed: false},
 			},
 		},
 	}
@@ -670,7 +671,7 @@ func TestRuntimeEngine_DeleteUserCascadesOwnedSpaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected open session success, got error: %v", err)
 	}
-	if _, err := sess.AddNode(ctx, graph.NodeInput{Content: "will be deleted"}); err != nil {
+	if _, err := sess.AddNode(ctx, domainsession.AddNodeInput{Content: "will be deleted"}); err != nil {
 		t.Fatalf("expected add node success, got error: %v", err)
 	}
 	_ = sess.Close()
@@ -713,21 +714,21 @@ func TestRuntimeEngine_DeleteNodeRequiresRecursiveForChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected open session success, got error: %v", err)
 	}
-	parent, err := sess.AddNode(ctx, graph.NodeInput{Content: "parent"})
+	parent, err := sess.AddNode(ctx, domainsession.AddNodeInput{Content: "parent"})
 	if err != nil {
 		t.Fatalf("expected add parent success, got error: %v", err)
 	}
-	child, err := sess.AddNode(ctx, graph.NodeInput{ParentID: &parent.ID, Content: "child"})
+	child, err := sess.AddNode(ctx, domainsession.AddNodeInput{ParentID: &parent.ID, Content: "child"})
 	if err != nil {
 		t.Fatalf("expected add child success, got error: %v", err)
 	}
-	if _, err := sess.AddEdge(ctx, graph.EdgeInput{FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindContains}); err != nil {
+	if _, err := sess.AddEdge(ctx, domainsession.AddEdgeInput{FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindContains}); err != nil {
 		t.Fatalf("expected add edge success, got error: %v", err)
 	}
-	if err := sess.DeleteNode(ctx, graph.DeleteNodeInput{ID: parent.ID}); !errors.Is(err, ErrConflict) {
+	if err := sess.DeleteNode(ctx, domainsession.DeleteNodeInput{ID: parent.ID}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected ErrConflict deleting parent without recursive, got: %v", err)
 	}
-	if err := sess.DeleteNode(ctx, graph.DeleteNodeInput{ID: parent.ID, Recursive: true}); err != nil {
+	if err := sess.DeleteNode(ctx, domainsession.DeleteNodeInput{ID: parent.ID, Recursive: true}); err != nil {
 		t.Fatalf("expected recursive delete success, got error: %v", err)
 	}
 	if _, err := sess.GetNode(ctx, child.ID); !errors.Is(err, ErrNotFound) {
@@ -759,7 +760,7 @@ func TestRuntimeEngine_DeleteSpaceInvalidatesOpenSession(t *testing.T) {
 	if err := engine.DeleteSpace(ctx, DeleteSpaceInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID}); err != nil {
 		t.Fatalf("expected delete space success, got error: %v", err)
 	}
-	if _, err := sess.AddNode(ctx, graph.NodeInput{Content: "stale write"}); !errors.Is(err, ErrNotFound) {
+	if _, err := sess.AddNode(ctx, domainsession.AddNodeInput{Content: "stale write"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected stale session write to fail with ErrNotFound, got: %v", err)
 	}
 	_ = sess.Close()
@@ -862,8 +863,8 @@ func TestRuntimeEngine_ImportAndListTemplates(t *testing.T) {
 		t.Fatalf("expected open session success, got error: %v", err)
 	}
 	defer session.Close()
-	doc := graph.ImportDocument{SchemaVersion: 1, Templates: []graph.TemplateImport{{Key: "note", Version: "1.0.0", DisplayName: "Note", Properties: graph.PropertyPolicyImport{AllowExtra: true}}}}
-	imported, err := session.ImportTemplates(ctx, graph.ImportTemplatesInput{Document: doc})
+	doc := domainsession.ImportDocument{SchemaVersion: 1, Templates: []domainsession.TemplateImport{{Key: "note", Version: "1.0.0", DisplayName: "Note", Properties: domainsession.PropertyPolicyImport{AllowExtra: true}}}}
+	imported, err := session.ImportTemplates(ctx, domainsession.ImportTemplatesInput{Document: doc})
 	if err != nil {
 		t.Fatalf("expected import templates success, got error: %v", err)
 	}
@@ -953,7 +954,7 @@ func TestRuntimeEngine_ListUpdateUpsertNodes(t *testing.T) {
 	}
 	defer sess.Close()
 
-	created, err := sess.AddNode(ctx, graph.NodeInput{Content: "original", Props: map[string]any{"n": 1}})
+	created, err := sess.AddNode(ctx, domainsession.AddNodeInput{Content: "original", Props: map[string]any{"n": 1}})
 	if err != nil {
 		t.Fatalf("expected add node success, got error: %v", err)
 	}
@@ -961,14 +962,14 @@ func TestRuntimeEngine_ListUpdateUpsertNodes(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].ID != created.ID {
 		t.Fatalf("unexpected list nodes result: nodes=%v err=%v", listed, err)
 	}
-	updated, err := sess.UpdateNode(ctx, graph.UpdateNodeInput{ID: created.ID, Content: "updated", Props: map[string]any{"n": 2}})
+	updated, err := sess.UpdateNode(ctx, domainsession.UpdateNodeInput{ID: created.ID, Content: "updated", Props: map[string]any{"n": 2}})
 	if err != nil {
 		t.Fatalf("expected update node success, got error: %v", err)
 	}
 	if updated.Content != "updated" || updated.Props["n"] != 2 {
 		t.Fatalf("unexpected updated node: %v", updated)
 	}
-	upserted, err := sess.UpsertNode(ctx, graph.NodeInput{ID: &created.ID, Content: "upserted"})
+	upserted, err := sess.UpsertNode(ctx, domainsession.UpsertNodeInput{ID: &created.ID, Content: "upserted"})
 	if err != nil {
 		t.Fatalf("expected upsert update success, got error: %v", err)
 	}
@@ -976,7 +977,7 @@ func TestRuntimeEngine_ListUpdateUpsertNodes(t *testing.T) {
 		t.Fatalf("unexpected upserted node: %v", upserted)
 	}
 	newID := graph.NodeID(uuid.New())
-	createdByUpsert, err := sess.UpsertNode(ctx, graph.NodeInput{ID: &newID, Content: "created by upsert"})
+	createdByUpsert, err := sess.UpsertNode(ctx, domainsession.UpsertNodeInput{ID: &newID, Content: "created by upsert"})
 	if err != nil {
 		t.Fatalf("expected upsert create success, got error: %v", err)
 	}
@@ -1011,7 +1012,7 @@ func TestRuntimeEngine_UpdateNodeMissingAndReadOnly(t *testing.T) {
 		t.Fatalf("expected admin session success, got error: %v", err)
 	}
 	missingID := graph.NodeID(uuid.New())
-	if _, err := adminSession.UpdateNode(ctx, graph.UpdateNodeInput{ID: missingID, Content: "missing"}); !errors.Is(err, ErrNotFound) {
+	if _, err := adminSession.UpdateNode(ctx, domainsession.UpdateNodeInput{ID: missingID, Content: "missing"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound updating missing node, got: %v", err)
 	}
 	_ = adminSession.Close()
@@ -1034,7 +1035,7 @@ func TestRuntimeEngine_UpdateNodeMissingAndReadOnly(t *testing.T) {
 	if _, err := readerSession.ListNodes(ctx); err != nil {
 		t.Fatalf("expected read-only list nodes success, got error: %v", err)
 	}
-	if _, err := readerSession.UpdateNode(ctx, graph.UpdateNodeInput{ID: missingID, Content: "unauthorized"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := readerSession.UpdateNode(ctx, domainsession.UpdateNodeInput{ID: missingID, Content: "unauthorized"}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("expected ErrUnauthorized updating in read-only session, got: %v", err)
 	}
 	_ = readerSession.Close()

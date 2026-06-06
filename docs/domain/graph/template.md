@@ -4,9 +4,9 @@ Node templates are per-space, immutable, semver-versioned contracts for node pro
 
 Nodes reference templates by `TemplateID`. Import JSON identifies template versions by `key` + `version`; the system assigns `TemplateID` during import.
 
-Templates are space-scoped and are managed through a space-scoped `graph.Session`:
+Templates are space-scoped and are managed through a space-scoped `session.Session`:
 
-- `ImportTemplates(ctx, graph.ImportTemplatesInput)`: imports immutable template versions. Requires space admin access.
+- `ImportTemplates(ctx, session.ImportTemplatesInput)`: imports immutable template versions. Requires space admin access.
 - `ListTemplates(ctx)`: lists templates in the session's space. Requires read access.
 
 ## Import document

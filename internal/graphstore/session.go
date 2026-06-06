@@ -14,6 +14,7 @@ import (
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
 // Errors defines public errors returned by sessions.
@@ -41,11 +42,11 @@ type session struct {
 }
 
 // NewSession opens a file-backed graph session for a space.
-func NewSession(graphsDir string, spaceID domainspace.SpaceID, templateManager coretemplate.Manager, permissions Permissions, errs Errors) graph.Session {
+func NewSession(graphsDir string, spaceID domainspace.SpaceID, templateManager coretemplate.Manager, permissions Permissions, errs Errors) domainsession.Session {
 	return &session{graphsDir: graphsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs}
 }
 
-func (s *session) ImportTemplates(ctx context.Context, in graph.ImportTemplatesInput) ([]graph.Template, error) {
+func (s *session) ImportTemplates(ctx context.Context, in domainsession.ImportTemplatesInput) ([]graph.Template, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return nil, err
 	}
@@ -71,7 +72,7 @@ func (s *session) ListTemplates(ctx context.Context) ([]graph.Template, error) {
 	return s.templateManager.ListBySpace(ctx, s.spaceID)
 }
 
-func (s *session) AddNode(ctx context.Context, in graph.NodeInput) (graph.Node, error) {
+func (s *session) AddNode(ctx context.Context, in domainsession.AddNodeInput) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
 	}
@@ -117,7 +118,7 @@ func (s *session) ListNodes(ctx context.Context) ([]graph.Node, error) {
 	return cloneNodes(nodes), nil
 }
 
-func (s *session) UpdateNode(ctx context.Context, in graph.UpdateNodeInput) (graph.Node, error) {
+func (s *session) UpdateNode(ctx context.Context, in domainsession.UpdateNodeInput) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
 	}
@@ -154,9 +155,9 @@ func (s *session) UpdateNode(ctx context.Context, in graph.UpdateNodeInput) (gra
 	return n, nil
 }
 
-func (s *session) UpsertNode(ctx context.Context, in graph.NodeInput) (graph.Node, error) {
+func (s *session) UpsertNode(ctx context.Context, in domainsession.UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
-		return s.AddNode(ctx, in)
+		return s.AddNode(ctx, domainsession.AddNodeInput{TemplateID: in.TemplateID, ParentID: in.ParentID, Content: in.Content, Props: in.Props})
 	}
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
@@ -172,7 +173,7 @@ func (s *session) UpsertNode(ctx context.Context, in graph.NodeInput) (graph.Nod
 		return graph.Node{}, err
 	}
 	if findNodeIndex(nodes, *in.ID) >= 0 {
-		return s.UpdateNode(ctx, graph.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, ParentID: in.ParentID, Content: in.Content, Props: in.Props})
+		return s.UpdateNode(ctx, domainsession.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, ParentID: in.ParentID, Content: in.Content, Props: in.Props})
 	}
 	n, err := s.buildNode(ctx, nodes, *in.ID, in.TemplateID, in.ParentID, in.Content, in.Props)
 	if err != nil {
@@ -185,7 +186,7 @@ func (s *session) UpsertNode(ctx context.Context, in graph.NodeInput) (graph.Nod
 	return n, nil
 }
 
-func (s *session) AddEdge(ctx context.Context, in graph.EdgeInput) (graph.Edge, error) {
+func (s *session) AddEdge(ctx context.Context, in domainsession.AddEdgeInput) (graph.Edge, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Edge{}, err
 	}
@@ -222,7 +223,7 @@ func (s *session) AddEdge(ctx context.Context, in graph.EdgeInput) (graph.Edge, 
 	return e, nil
 }
 
-func (s *session) AddGraph(ctx context.Context, in graph.GraphInput) error {
+func (s *session) AddGraph(ctx context.Context, in domainsession.AddGraphInput) error {
 	if err := s.ensureOpen(ctx); err != nil {
 		return err
 	}
@@ -266,7 +267,7 @@ func (s *session) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, err
 	return n, nil
 }
 
-func (s *session) DeleteNode(ctx context.Context, in graph.DeleteNodeInput) error {
+func (s *session) DeleteNode(ctx context.Context, in domainsession.DeleteNodeInput) error {
 	if err := s.ensureOpen(ctx); err != nil {
 		return err
 	}
