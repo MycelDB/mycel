@@ -1,4 +1,4 @@
-package sessionstore
+package session
 
 import (
 	"context"
@@ -14,39 +14,19 @@ import (
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
-// Errors defines public errors returned by sessions.
-type Errors struct {
-	Closed       error
-	NotFound     error
-	Unauthorized error
-	Conflict     error
-}
-
-// Permissions defines read/write capabilities for a session.
-type Permissions struct {
-	Read  bool
-	Write bool
-	Admin bool
-}
-
-type session struct {
+// FileSession is the default file-backed Session implementation.
+type FileSession struct {
 	graphsDir       string
 	spaceID         domainspace.SpaceID
-	templateManager coretemplate.Manager
+	templateManager TemplateManager
 	permissions     Permissions
 	errors          Errors
 	closed          bool
 }
 
-// NewSession opens a file-backed graph session for a space.
-func NewSession(graphsDir string, spaceID domainspace.SpaceID, templateManager coretemplate.Manager, permissions Permissions, errs Errors) domainsession.Session {
-	return &session{graphsDir: graphsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs}
-}
-
-func (s *session) ImportTemplates(ctx context.Context, in domainsession.ImportTemplatesInput) ([]graph.Template, error) {
+func (s *FileSession) ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return nil, err
 	}
@@ -59,7 +39,7 @@ func (s *session) ImportTemplates(ctx context.Context, in domainsession.ImportTe
 	return s.templateManager.Import(ctx, s.spaceID, in.Document)
 }
 
-func (s *session) ListTemplates(ctx context.Context) ([]graph.Template, error) {
+func (s *FileSession) ListTemplates(ctx context.Context) ([]graph.Template, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return nil, err
 	}
@@ -72,7 +52,7 @@ func (s *session) ListTemplates(ctx context.Context) ([]graph.Template, error) {
 	return s.templateManager.ListBySpace(ctx, s.spaceID)
 }
 
-func (s *session) AddNode(ctx context.Context, in domainsession.AddNodeInput) (graph.Node, error) {
+func (s *FileSession) AddNode(ctx context.Context, in AddNodeInput) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
 	}
@@ -101,7 +81,7 @@ func (s *session) AddNode(ctx context.Context, in domainsession.AddNodeInput) (g
 	return n, nil
 }
 
-func (s *session) ListNodes(ctx context.Context) ([]graph.Node, error) {
+func (s *FileSession) ListNodes(ctx context.Context) ([]graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return nil, err
 	}
@@ -118,7 +98,7 @@ func (s *session) ListNodes(ctx context.Context) ([]graph.Node, error) {
 	return cloneNodes(nodes), nil
 }
 
-func (s *session) UpdateNode(ctx context.Context, in domainsession.UpdateNodeInput) (graph.Node, error) {
+func (s *FileSession) UpdateNode(ctx context.Context, in UpdateNodeInput) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
 	}
@@ -155,9 +135,9 @@ func (s *session) UpdateNode(ctx context.Context, in domainsession.UpdateNodeInp
 	return n, nil
 }
 
-func (s *session) UpsertNode(ctx context.Context, in domainsession.UpsertNodeInput) (graph.Node, error) {
+func (s *FileSession) UpsertNode(ctx context.Context, in UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
-		return s.AddNode(ctx, domainsession.AddNodeInput{TemplateID: in.TemplateID, ParentID: in.ParentID, Content: in.Content, Props: in.Props})
+		return s.AddNode(ctx, AddNodeInput{TemplateID: in.TemplateID, ParentID: in.ParentID, Content: in.Content, Props: in.Props})
 	}
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
@@ -173,7 +153,7 @@ func (s *session) UpsertNode(ctx context.Context, in domainsession.UpsertNodeInp
 		return graph.Node{}, err
 	}
 	if findNodeIndex(nodes, *in.ID) >= 0 {
-		return s.UpdateNode(ctx, domainsession.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, ParentID: in.ParentID, Content: in.Content, Props: in.Props})
+		return s.UpdateNode(ctx, UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, ParentID: in.ParentID, Content: in.Content, Props: in.Props})
 	}
 	n, err := s.buildNode(ctx, nodes, *in.ID, in.TemplateID, in.ParentID, in.Content, in.Props)
 	if err != nil {
@@ -186,7 +166,7 @@ func (s *session) UpsertNode(ctx context.Context, in domainsession.UpsertNodeInp
 	return n, nil
 }
 
-func (s *session) AddEdge(ctx context.Context, in domainsession.AddEdgeInput) (graph.Edge, error) {
+func (s *FileSession) AddEdge(ctx context.Context, in AddEdgeInput) (graph.Edge, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Edge{}, err
 	}
@@ -223,7 +203,7 @@ func (s *session) AddEdge(ctx context.Context, in domainsession.AddEdgeInput) (g
 	return e, nil
 }
 
-func (s *session) AddGraph(ctx context.Context, in domainsession.AddGraphInput) error {
+func (s *FileSession) AddGraph(ctx context.Context, in AddGraphInput) error {
 	if err := s.ensureOpen(ctx); err != nil {
 		return err
 	}
@@ -246,7 +226,7 @@ func (s *session) AddGraph(ctx context.Context, in domainsession.AddGraphInput) 
 	return nil
 }
 
-func (s *session) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error) {
+func (s *FileSession) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
 	}
@@ -267,7 +247,7 @@ func (s *session) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, err
 	return n, nil
 }
 
-func (s *session) DeleteNode(ctx context.Context, in domainsession.DeleteNodeInput) error {
+func (s *FileSession) DeleteNode(ctx context.Context, in DeleteNodeInput) error {
 	if err := s.ensureOpen(ctx); err != nil {
 		return err
 	}
@@ -339,12 +319,12 @@ func (s *session) DeleteNode(ctx context.Context, in domainsession.DeleteNodeInp
 	return s.writeEdges(remainingEdges)
 }
 
-func (s *session) Close() error {
+func (s *FileSession) Close() error {
 	s.closed = true
 	return nil
 }
 
-func (s *session) ensureOpen(ctx context.Context) error {
+func (s *FileSession) ensureOpen(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -356,44 +336,44 @@ func (s *session) ensureOpen(ctx context.Context) error {
 	return nil
 }
 
-func (s *session) ensureRead() error {
+func (s *FileSession) ensureRead() error {
 	if !s.permissions.Read {
 		return s.errors.Unauthorized
 	}
 	return nil
 }
 
-func (s *session) ensureWrite() error {
+func (s *FileSession) ensureWrite() error {
 	if !s.permissions.Write {
 		return s.errors.Unauthorized
 	}
 	return nil
 }
 
-func (s *session) ensureAdmin() error {
+func (s *FileSession) ensureAdmin() error {
 	if !s.permissions.Admin {
 		return s.errors.Unauthorized
 	}
 	return nil
 }
 
-func (s *session) spacePath() string {
+func (s *FileSession) spacePath() string {
 	return filepath.Join(s.graphsDir, safeID(s.spaceID))
 }
 
-func (s *session) nodesPath() string {
+func (s *FileSession) nodesPath() string {
 	return filepath.Join(s.spacePath(), "nodes.json")
 }
 
-func (s *session) edgesPath() string {
+func (s *FileSession) edgesPath() string {
 	return filepath.Join(s.spacePath(), "edges.json")
 }
 
-func (s *session) markerPath() string {
+func (s *FileSession) markerPath() string {
 	return filepath.Join(s.spacePath(), ".space")
 }
 
-func (s *session) ensureSpaceLive() error {
+func (s *FileSession) ensureSpaceLive() error {
 	if _, err := os.Stat(s.markerPath()); err != nil {
 		if os.IsNotExist(err) {
 			return s.errors.NotFound
@@ -403,7 +383,7 @@ func (s *session) ensureSpaceLive() error {
 	return nil
 }
 
-func (s *session) readNodes() ([]graph.Node, error) {
+func (s *FileSession) readNodes() ([]graph.Node, error) {
 	path := s.nodesPath()
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -419,7 +399,7 @@ func (s *session) readNodes() ([]graph.Node, error) {
 	return out, nil
 }
 
-func (s *session) writeNodes(nodes []graph.Node) error {
+func (s *FileSession) writeNodes(nodes []graph.Node) error {
 	if err := s.ensureSpaceLive(); err != nil {
 		return err
 	}
@@ -431,7 +411,7 @@ func (s *session) writeNodes(nodes []graph.Node) error {
 	return os.WriteFile(s.nodesPath(), b, 0o600)
 }
 
-func (s *session) readEdges() ([]graph.Edge, error) {
+func (s *FileSession) readEdges() ([]graph.Edge, error) {
 	path := s.edgesPath()
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -447,7 +427,7 @@ func (s *session) readEdges() ([]graph.Edge, error) {
 	return out, nil
 }
 
-func (s *session) writeEdges(edges []graph.Edge) error {
+func (s *FileSession) writeEdges(edges []graph.Edge) error {
 	if err := s.ensureSpaceLive(); err != nil {
 		return err
 	}
@@ -459,7 +439,7 @@ func (s *session) writeEdges(edges []graph.Edge) error {
 	return os.WriteFile(s.edgesPath(), b, 0o600)
 }
 
-func (s *session) buildNode(ctx context.Context, nodes []graph.Node, nodeID graph.NodeID, templateID *graph.TemplateID, parentID *graph.NodeID, content string, inputProps map[string]any) (graph.Node, error) {
+func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID graph.NodeID, templateID *graph.TemplateID, parentID *graph.NodeID, content string, inputProps map[string]any) (graph.Node, error) {
 	if nodeID == uuid.Nil {
 		return graph.Node{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
 	}
@@ -496,7 +476,7 @@ func (s *session) buildNode(ctx context.Context, nodes []graph.Node, nodeID grap
 	return graph.Node{ID: nodeID, TemplateID: templateID, ParentID: parentID, Content: content, Props: props}, nil
 }
 
-func (s *session) validateExistingChildren(ctx context.Context, parent graph.Node, nodes []graph.Node) error {
+func (s *FileSession) validateExistingChildren(ctx context.Context, parent graph.Node, nodes []graph.Node) error {
 	for _, child := range nodes {
 		if child.ParentID == nil || *child.ParentID != parent.ID {
 			continue
@@ -522,7 +502,7 @@ func (s *session) validateExistingChildren(ctx context.Context, parent graph.Nod
 	return nil
 }
 
-func (s *session) validateChild(ctx context.Context, parent graph.Node, childTemplate *graph.Template) error {
+func (s *FileSession) validateChild(ctx context.Context, parent graph.Node, childTemplate *graph.Template) error {
 	if parent.TemplateID == nil {
 		return nil
 	}

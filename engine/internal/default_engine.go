@@ -18,7 +18,6 @@ import (
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/sessionstore"
 	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
@@ -620,12 +619,12 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (d
 	if err := ensureGraphSpaceDir(e.dataDir, spaceID); err != nil {
 		return nil, err
 	}
-	return sessionstore.NewSession(
+	return domainsession.NewSession(
 		graphsDir(e.dataDir),
 		spaceID,
 		e.templateManager,
-		sessionstore.Permissions{Read: canRead, Write: canWrite, Admin: canAdmin},
-		sessionstore.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized, Conflict: ErrConflict},
+		domainsession.Permissions{Read: canRead, Write: canWrite, Admin: canAdmin},
+		domainsession.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized, Conflict: ErrConflict},
 	), nil
 }
 
