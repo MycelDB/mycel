@@ -12,13 +12,15 @@ Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 - `domain/space`: spaces, space IDs, and space-level configuration types
 - `domain/access`: system roles, space permissions, and ACL rule types
 - `domain/graph`: pure graph domain types for nodes, edges, templates, and template policies
-- `session`: scoped graph-space operation API for nodes, edges, templates, and future queries/transactions
+- `session`: scoped graph-space operation API for nodes, edges, templates, queries, and future transactions
+- `query`: programmatic GQL-style query builder
 - `internal/`: private implementation packages
 - `docs/`: API/reference documentation
 
 ## API docs
 - Edge structures: `docs/domain/graph/edge.md`
 - Session API: `docs/session/session.md`
+- Programmatic queries: `docs/query/gql-mapping.md`
 - Node operations: `docs/domain/graph/node.md`
 - Node templates: `docs/domain/graph/template.md`
 - User structures: `docs/domain/identity/user.md`

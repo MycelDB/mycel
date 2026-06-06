@@ -14,6 +14,7 @@ import (
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
 )
 
 // FileSession is the default file-backed Session implementation.
@@ -25,6 +26,9 @@ type FileSession struct {
 	errors          Errors
 	closed          bool
 }
+
+// Query starts a programmatic graph query over this session.
+func (s *FileSession) Query() *query.Builder { return query.NewBuilder(s) }
 
 func (s *FileSession) ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error) {
 	if err := s.ensureOpen(ctx); err != nil {

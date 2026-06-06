@@ -5,6 +5,7 @@ import (
 
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
 )
 
 // Session is a scoped interaction context for graph-space operations.
@@ -40,6 +41,7 @@ func NewSession(graphsDir string, spaceID domainspace.SpaceID, templateManager T
 }
 
 type Session interface {
+	Query() *query.Builder
 	ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error)
 	ListTemplates(ctx context.Context) ([]graph.Template, error)
 	AddNode(ctx context.Context, in AddNodeInput) (graph.Node, error)
