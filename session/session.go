@@ -49,6 +49,7 @@ type Session interface {
 	UpdateNode(ctx context.Context, in UpdateNodeInput) (graph.Node, error)
 	UpsertNode(ctx context.Context, in UpsertNodeInput) (graph.Node, error)
 	AddEdge(ctx context.Context, in AddEdgeInput) (graph.Edge, error)
+	ListEdges(ctx context.Context) ([]graph.Edge, error)
 	AddGraph(ctx context.Context, in AddGraphInput) error
 	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
 	DeleteNode(ctx context.Context, in DeleteNodeInput) error

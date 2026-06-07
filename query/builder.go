@@ -11,6 +11,7 @@ import (
 // Executor supplies data to the in-memory query engine.
 type Executor interface {
 	ListNodes(ctx context.Context) ([]graph.Node, error)
+	ListEdges(ctx context.Context) ([]graph.Edge, error)
 	ListTemplates(ctx context.Context) ([]graph.Template, error)
 }
 
@@ -80,28 +81,25 @@ func (b *Builder) Execute(ctx context.Context) (*ResultSet, error) {
 	if err != nil {
 		return nil, err
 	}
+	edges, err := b.executor.ListEdges(ctx)
+	if err != nil {
+		return nil, err
+	}
 	templates, err := b.executor.ListTemplates(ctx)
 	if err != nil {
 		return nil, err
 	}
-	state := executionState{
-		templateByID:     map[graph.TemplateID]graph.Template{},
-		childrenByParent: map[graph.NodeID][]graph.Node{},
-	}
-	for _, tmpl := range templates {
-		state.templateByID[tmpl.ID] = tmpl
-	}
-	for _, n := range nodes {
-		if n.ParentID != nil {
-			state.childrenByParent[*n.ParentID] = append(state.childrenByParent[*n.ParentID], n)
-		}
-	}
+	state := newExecutionState(nodes, edges, templates)
 	rows := []executionRow{}
 	for _, n := range nodes {
 		if !state.nodeMatches(n, *b.pattern.start) {
 			continue
 		}
-		row := executionRow{bindings: map[string][]graph.Node{b.pattern.start.alias: []graph.Node{n}}}
+		row := executionRow{
+			bindings:      map[string][]graph.Node{b.pattern.start.alias: []graph.Node{n}},
+			parentByChild: map[graph.NodeID]graph.NodeID{},
+			orderByChild:  map[graph.NodeID]any{},
+		}
 		if err := state.applySteps(&row, n, b.pattern.steps); err != nil {
 			return nil, err
 		}
@@ -153,13 +151,54 @@ func (b *Builder) Execute(ctx context.Context) (*ResultSet, error) {
 	return result, nil
 }
 
+type containsChild struct {
+	node  graph.Node
+	edge  graph.Edge
+	order any
+}
+
 type executionState struct {
 	templateByID     map[graph.TemplateID]graph.Template
-	childrenByParent map[graph.NodeID][]graph.Node
+	nodeByID         map[graph.NodeID]graph.Node
+	childrenByParent map[graph.NodeID][]containsChild
+}
+
+func newExecutionState(nodes []graph.Node, edges []graph.Edge, templates []graph.Template) executionState {
+	state := executionState{
+		templateByID:     map[graph.TemplateID]graph.Template{},
+		nodeByID:         map[graph.NodeID]graph.Node{},
+		childrenByParent: map[graph.NodeID][]containsChild{},
+	}
+	for _, tmpl := range templates {
+		state.templateByID[tmpl.ID] = tmpl
+	}
+	for _, n := range nodes {
+		state.nodeByID[n.ID] = n
+	}
+	for _, edge := range edges {
+		if edge.Kind != graph.EdgeKindContains {
+			continue
+		}
+		child, ok := state.nodeByID[edge.ToID]
+		if !ok {
+			continue
+		}
+		state.childrenByParent[edge.FromID] = append(state.childrenByParent[edge.FromID], containsChild{node: child, edge: edge})
+	}
+	for parentID := range state.childrenByParent {
+		parent, ok := state.nodeByID[parentID]
+		if !ok {
+			continue
+		}
+		state.sortChildren(parent, state.childrenByParent[parentID])
+	}
+	return state
 }
 
 type executionRow struct {
-	bindings map[string][]graph.Node
+	bindings      map[string][]graph.Node
+	parentByChild map[graph.NodeID]graph.NodeID
+	orderByChild  map[graph.NodeID]any
 }
 
 func (r executionRow) evalRow() evalRow {
@@ -182,7 +221,7 @@ func (s executionState) applySteps(row *executionRow, start graph.Node, steps []
 		}
 		next := []graph.Node{}
 		for _, n := range current {
-			matches := s.traverseContains(n, step.depth, step.target)
+			matches := s.traverseContains(row, n, step.depth, step.target)
 			next = append(next, matches...)
 		}
 		row.bindings[step.target.alias] = dedupeNodes(next)
@@ -191,7 +230,7 @@ func (s executionState) applySteps(row *executionRow, start graph.Node, steps []
 	return nil
 }
 
-func (s executionState) traverseContains(start graph.Node, depth DepthSpec, target nodePattern) []graph.Node {
+func (s executionState) traverseContains(row *executionRow, start graph.Node, depth DepthSpec, target nodePattern) []graph.Node {
 	minDepth := depth.Min
 	maxDepth := depth.Max
 	if minDepth < 0 {
@@ -208,10 +247,12 @@ func (s executionState) traverseContains(start graph.Node, depth DepthSpec, targ
 			if maxDepth != Unbounded && childDepth > maxDepth {
 				continue
 			}
-			if childDepth >= minDepth && s.nodeMatches(child, target) {
-				out = append(out, child)
+			row.parentByChild[child.node.ID] = parent.ID
+			row.orderByChild[child.node.ID] = s.edgeOrderForParent(parent, child.edge)
+			if childDepth >= minDepth && s.nodeMatches(child.node, target) {
+				out = append(out, child.node)
 			}
-			visit(child, childDepth)
+			visit(child.node, childDepth)
 		}
 	}
 	visit(start, 0)
@@ -227,6 +268,38 @@ func (s executionState) nodeMatches(node graph.Node, pattern nodePattern) bool {
 	}
 	tmpl, ok := s.templateByID[*node.TemplateID]
 	return ok && tmpl.Key == pattern.templateKey
+}
+
+func (s executionState) sortChildren(parent graph.Node, children []containsChild) {
+	if parent.TemplateID == nil {
+		return
+	}
+	tmpl, ok := s.templateByID[*parent.TemplateID]
+	if !ok || tmpl.Children.Order == nil || tmpl.Children.Order.Mode != graph.ChildOrderModeEdgeProperty {
+		return
+	}
+	desc := tmpl.Children.Order.Direction == graph.SortDirectionDesc
+	sort.SliceStable(children, func(i, j int) bool {
+		cmp, err := compareValues(children[i].edge.Props[tmpl.Children.Order.Property], children[j].edge.Props[tmpl.Children.Order.Property])
+		if err != nil || cmp == 0 {
+			return false
+		}
+		if desc {
+			return cmp > 0
+		}
+		return cmp < 0
+	})
+}
+
+func (s executionState) edgeOrderForParent(parent graph.Node, edge graph.Edge) any {
+	if parent.TemplateID == nil {
+		return nil
+	}
+	tmpl, ok := s.templateByID[*parent.TemplateID]
+	if !ok || tmpl.Children.Order == nil || tmpl.Children.Order.Mode != graph.ChildOrderModeEdgeProperty {
+		return nil
+	}
+	return edge.Props[tmpl.Children.Order.Property]
 }
 
 func dedupeNodes(nodes []graph.Node) []graph.Node {

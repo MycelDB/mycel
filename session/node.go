@@ -9,7 +9,6 @@ import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 type AddNodeInput struct {
 	ID         *graph.NodeID
 	TemplateID *graph.TemplateID
-	ParentID   *graph.NodeID
 	Content    string
 	Props      map[string]any
 }
@@ -18,7 +17,6 @@ type AddNodeInput struct {
 type UpsertNodeInput struct {
 	ID         *graph.NodeID
 	TemplateID *graph.TemplateID
-	ParentID   *graph.NodeID
 	Content    string
 	Props      map[string]any
 }
@@ -27,13 +25,12 @@ type UpsertNodeInput struct {
 type UpdateNodeInput struct {
 	ID         graph.NodeID
 	TemplateID *graph.TemplateID
-	ParentID   *graph.NodeID
 	Content    string
 	Props      map[string]any
 }
 
 // DeleteNodeInput is the hard-delete payload for a graph node.
-// Incident edges are removed. Child nodes require Recursive=true.
+// Incident edges are removed. Outgoing contains descendants require Recursive=true.
 type DeleteNodeInput struct {
 	ID        graph.NodeID
 	Recursive bool

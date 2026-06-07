@@ -19,7 +19,7 @@ Canonical persisted edge model.
 | `FromID` | `NodeID` | Source node ID. |
 | `ToID` | `NodeID` | Target node ID. |
 | `Kind` | `EdgeKind` | Structural relationship semantics. |
-| `Props` | `map[string]any` | Optional edge metadata/extensions. |
+| `Props` | `map[string]any` | Optional edge metadata/extensions, such as `order` on `contains` edges. |
 
 ## Edge operations
 Write payloads for edge operations live in `martinbeauvais.com/mbgit/knotbase/knotdb/session`, for example `session.AddEdgeInput`.
@@ -33,5 +33,6 @@ Write payloads for edge operations live in `martinbeauvais.com/mbgit/knotbase/kn
 | `Props` | `map[string]any` | No | Optional metadata/extensions. |
 
 ## Notes
+- `contains` edges are the canonical hierarchy mechanism. Ordered hierarchies can store sibling order on the edge, e.g. `Props["order"]`.
 - Domain/UI behaviors (embed rendering, aliases, visual style) should not be encoded as edge kinds.
 - Such concerns should live in higher-level application logic or optional edge properties interpreted by that layer.

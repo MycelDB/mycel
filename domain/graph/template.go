@@ -52,10 +52,38 @@ const (
 	PropertyTypeDate   PropertyType = "date"
 )
 
+// SortDirection defines ascending or descending order.
+type SortDirection string
+
+const (
+	// SortDirectionAsc sorts in ascending order.
+	SortDirectionAsc SortDirection = "asc"
+	// SortDirectionDesc sorts in descending order.
+	SortDirectionDesc SortDirection = "desc"
+)
+
+// ChildOrderMode defines how child ordering is represented.
+type ChildOrderMode string
+
+const (
+	// ChildOrderModeNone means no explicit child ordering policy is defined.
+	ChildOrderModeNone ChildOrderMode = "none"
+	// ChildOrderModeEdgeProperty orders children by a property on contains edges.
+	ChildOrderModeEdgeProperty ChildOrderMode = "edge_property"
+)
+
+// ChildOrderPolicy defines how direct children should be ordered.
+type ChildOrderPolicy struct {
+	Mode      ChildOrderMode `json:"mode"`
+	Property  string         `json:"property,omitempty"`
+	Direction SortDirection  `json:"direction,omitempty"`
+}
+
 // ChildPolicy defines direct child-node constraints for a template.
 type ChildPolicy struct {
-	Allowed          bool          `json:"allowed"`
-	AllowedTemplates []TemplateRef `json:"allowed_templates,omitempty"`
+	Allowed          bool              `json:"allowed"`
+	AllowedTemplates []TemplateRef     `json:"allowed_templates,omitempty"`
+	Order            *ChildOrderPolicy `json:"order,omitempty"`
 }
 
 // TemplateRef identifies a required child template by key and semver version.

@@ -17,6 +17,9 @@ type TemplatePropertyImport = coretemplate.TemplatePropertyImport
 // ChildPolicyImport defines imported direct-child constraints.
 type ChildPolicyImport = coretemplate.ChildPolicyImport
 
+// ChildOrderPolicyImport defines imported child ordering constraints.
+type ChildOrderPolicyImport = coretemplate.ChildOrderPolicyImport
+
 // TemplateRefImport identifies an imported child-template reference.
 type TemplateRefImport = coretemplate.TemplateRefImport
 

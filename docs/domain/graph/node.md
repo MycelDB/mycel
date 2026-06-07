@@ -17,12 +17,12 @@ Create, update, and upsert all apply the same validation:
 
 - referenced templates must exist in the current space
 - properties must satisfy the selected template's property policy
-- parent nodes must exist
-- direct child template rules are enforced
-- a node cannot be its own parent
+- direct node templates must exist in the current space
+- direct child template rules are enforced when creating `contains` edges
+- hierarchy is represented by `graph.EdgeKindContains` edges, not by node parent fields
 
 ## Update and upsert semantics
 
-`UpdateNode` replaces the mutable node fields (`TemplateID`, `ParentID`, `Content`, and `Props`) for the target ID.
+`UpdateNode` replaces the mutable node fields (`TemplateID`, `Content`, and `Props`) for the target ID.
 
 `UpsertNode` uses the same replacement behavior when the supplied `ID` already exists. When the supplied `ID` does not exist, it creates a node with that ID. When `ID` is nil, it behaves like `AddNode` and generates a new ID.

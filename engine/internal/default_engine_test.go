@@ -543,15 +543,22 @@ func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected parent node success, got error: %v", err)
 	}
-	child, err := session.AddNode(ctx, domainsession.AddNodeInput{TemplateID: &taskTemplate.ID, ParentID: &parent.ID, Props: map[string]any{}})
+	child, err := session.AddNode(ctx, domainsession.AddNodeInput{TemplateID: &taskTemplate.ID, Props: map[string]any{}})
 	if err != nil {
-		t.Fatalf("expected allowed child node success, got error: %v", err)
+		t.Fatalf("expected child node success, got error: %v", err)
+	}
+	if _, err := session.AddEdge(ctx, domainsession.AddEdgeInput{FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindContains}); err != nil {
+		t.Fatalf("expected allowed contains edge success, got error: %v", err)
 	}
 	if child.Props["done"] != false {
 		t.Fatalf("expected default done=false, got node: %#v", child)
 	}
 
-	_, err = session.AddNode(ctx, domainsession.AddNodeInput{TemplateID: &noteTemplate.ID, ParentID: &child.ID, Props: map[string]any{"title": "Nested"}})
+	nested, err := session.AddNode(ctx, domainsession.AddNodeInput{TemplateID: &noteTemplate.ID, Props: map[string]any{"title": "Nested"}})
+	if err != nil {
+		t.Fatalf("expected nested node creation before edge validation, got error: %v", err)
+	}
+	_, err = session.AddEdge(ctx, domainsession.AddEdgeInput{FromID: child.ID, ToID: nested.ID, Kind: graph.EdgeKindContains})
 	if err == nil {
 		t.Fatal("expected child rejection for template that disallows children")
 	}
@@ -718,7 +725,7 @@ func TestRuntimeEngine_DeleteNodeRequiresRecursiveForChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected add parent success, got error: %v", err)
 	}
-	child, err := sess.AddNode(ctx, domainsession.AddNodeInput{ParentID: &parent.ID, Content: "child"})
+	child, err := sess.AddNode(ctx, domainsession.AddNodeInput{Content: "child"})
 	if err != nil {
 		t.Fatalf("expected add child success, got error: %v", err)
 	}

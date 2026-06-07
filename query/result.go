@@ -1,6 +1,10 @@
 package query
 
-import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+import (
+	"sort"
+
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+)
 
 // ResultSet contains query result rows.
 type ResultSet struct {
@@ -32,7 +36,7 @@ func (r Row) Tree(name string) ([]TreeNode, bool) {
 	return tree, ok
 }
 
-// TreeNode is a nested node projection preserving parent/child structure.
+// TreeNode is a nested node projection preserving contains-edge structure.
 type TreeNode struct {
 	Node     graph.Node
 	Children []TreeNode
@@ -85,10 +89,10 @@ func (t TreeReturn) As(name string) TreeReturn {
 
 func (t TreeReturn) alias() string { return t.out }
 func (t TreeReturn) project(row executionRow) (any, error) {
-	return buildForest(row.bindings[t.name]), nil
+	return buildForest(row.bindings[t.name], row.parentByChild, row.orderByChild), nil
 }
 
-func buildForest(nodes []graph.Node) []TreeNode {
+func buildForest(nodes []graph.Node, parentByChild map[graph.NodeID]graph.NodeID, orderByChild map[graph.NodeID]any) []TreeNode {
 	if len(nodes) == 0 {
 		return nil
 	}
@@ -99,13 +103,17 @@ func buildForest(nodes []graph.Node) []TreeNode {
 	}
 	roots := []graph.Node{}
 	for _, n := range nodes {
-		if n.ParentID != nil {
-			if _, ok := byID[*n.ParentID]; ok {
-				children[*n.ParentID] = append(children[*n.ParentID], n)
+		if parentID, ok := parentByChild[n.ID]; ok {
+			if _, parentMatched := byID[parentID]; parentMatched {
+				children[parentID] = append(children[parentID], n)
 				continue
 			}
 		}
 		roots = append(roots, n)
+	}
+	sortNodesByOrder(roots, orderByChild)
+	for parentID := range children {
+		sortNodesByOrder(children[parentID], orderByChild)
 	}
 	var build func(graph.Node) TreeNode
 	build = func(n graph.Node) TreeNode {
@@ -120,4 +128,14 @@ func buildForest(nodes []graph.Node) []TreeNode {
 		forest = append(forest, build(root))
 	}
 	return forest
+}
+
+func sortNodesByOrder(nodes []graph.Node, orderByChild map[graph.NodeID]any) {
+	sort.SliceStable(nodes, func(i, j int) bool {
+		cmp, err := compareValues(orderByChild[nodes[i].ID], orderByChild[nodes[j].ID])
+		if err != nil || cmp == 0 {
+			return false
+		}
+		return cmp < 0
+	})
 }

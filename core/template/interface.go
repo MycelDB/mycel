@@ -42,8 +42,16 @@ type TemplatePropertyImport struct {
 
 // ChildPolicyImport defines imported direct-child constraints.
 type ChildPolicyImport struct {
-	Allowed          bool                `json:"allowed"`
-	AllowedTemplates []TemplateRefImport `json:"allowed_templates,omitempty"`
+	Allowed          bool                    `json:"allowed"`
+	AllowedTemplates []TemplateRefImport     `json:"allowed_templates,omitempty"`
+	Order            *ChildOrderPolicyImport `json:"order,omitempty"`
+}
+
+// ChildOrderPolicyImport defines imported child ordering constraints.
+type ChildOrderPolicyImport struct {
+	Mode      graph.ChildOrderMode `json:"mode"`
+	Property  string               `json:"property,omitempty"`
+	Direction graph.SortDirection  `json:"direction,omitempty"`
 }
 
 // TemplateRefImport identifies an imported child-template reference.

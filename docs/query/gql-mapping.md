@@ -7,7 +7,7 @@ KnotDB exposes a Go query builder in `martinbeauvais.com/mbgit/knotbase/knotdb/q
 - `Return(...)`
 - `OrderBy(...)`
 
-The first implementation runs in memory over the current session's nodes and templates.
+The first implementation runs in memory over the current session's nodes, edges, and templates.
 
 ## Last seven calendar days of journals
 
@@ -36,8 +36,8 @@ rows, err := sess.Query().
     Execute(ctx)
 ```
 
-This returns one row per matching journal node, newest to oldest. `q.Tree("entry")` returns the matched journal-entry descendants as a nested forest, preserving `ParentID` hierarchy and excluding descendants that did not match the `entry` node pattern.
+This returns one row per matching journal node, newest to oldest. `q.Tree("entry")` returns the matched journal-entry descendants as a nested forest, preserving `graph.EdgeKindContains` hierarchy and excluding descendants that did not match the `entry` node pattern.
 
 ## Current traversal behavior
 
-`Out("contains", ...)` currently traverses `Node.ParentID` relationships in memory. Explicit `graph.EdgeKindContains` traversal is not included in this initial implementation.
+`Out("contains", ...)` traverses explicit `graph.EdgeKindContains` edges. Sibling ordering is taken from the parent template's child order policy when it specifies an edge property, such as `order`.

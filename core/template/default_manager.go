@@ -303,6 +303,14 @@ func validateChildPolicy(policy ChildPolicyImport) error {
 	if !policy.Allowed && len(policy.AllowedTemplates) > 0 {
 		return fmt.Errorf("%w: allowed_templates requires children.allowed=true", ErrInvalidInput)
 	}
+	if !policy.Allowed && policy.Order != nil {
+		return fmt.Errorf("%w: order requires children.allowed=true", ErrInvalidInput)
+	}
+	if policy.Order != nil {
+		if err := validateChildOrderPolicy(*policy.Order); err != nil {
+			return err
+		}
+	}
 	seen := map[string]struct{}{}
 	for _, ref := range policy.AllowedTemplates {
 		key := strings.TrimSpace(ref.Key)
@@ -320,6 +328,27 @@ func validateChildPolicy(policy ChildPolicyImport) error {
 		seen[kv] = struct{}{}
 	}
 	return nil
+}
+
+func validateChildOrderPolicy(policy ChildOrderPolicyImport) error {
+	switch policy.Mode {
+	case graph.ChildOrderModeEdgeProperty:
+		if strings.TrimSpace(policy.Property) == "" {
+			return fmt.Errorf("%w: child order property is required", ErrInvalidInput)
+		}
+	case graph.ChildOrderModeNone, "":
+		return fmt.Errorf("%w: unsupported child order mode %q", ErrInvalidInput, policy.Mode)
+	default:
+		return fmt.Errorf("%w: unsupported child order mode %q", ErrInvalidInput, policy.Mode)
+	}
+	switch policy.Direction {
+	case graph.SortDirectionAsc, graph.SortDirectionDesc:
+		return nil
+	case "":
+		return fmt.Errorf("%w: child order direction is required", ErrInvalidInput)
+	default:
+		return fmt.Errorf("%w: unsupported child order direction %q", ErrInvalidInput, policy.Direction)
+	}
 }
 
 func toPropertyPolicy(in PropertyPolicyImport) graph.PropertyPolicy {
@@ -345,7 +374,11 @@ func toChildPolicy(in ChildPolicyImport) graph.ChildPolicy {
 	for _, ref := range in.AllowedTemplates {
 		refs = append(refs, graph.TemplateRef{Key: strings.TrimSpace(ref.Key), Version: strings.TrimSpace(ref.Version)})
 	}
-	return graph.ChildPolicy{Allowed: in.Allowed, AllowedTemplates: refs}
+	var order *graph.ChildOrderPolicy
+	if in.Order != nil {
+		order = &graph.ChildOrderPolicy{Mode: in.Order.Mode, Property: strings.TrimSpace(in.Order.Property), Direction: in.Order.Direction}
+	}
+	return graph.ChildPolicy{Allowed: in.Allowed, AllowedTemplates: refs, Order: order}
 }
 
 func validPropertyType(t graph.PropertyType) bool {

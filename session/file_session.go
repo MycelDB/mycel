@@ -74,7 +74,7 @@ func (s *FileSession) AddNode(ctx context.Context, in AddNodeInput) (graph.Node,
 	if in.ID != nil {
 		nodeID = *in.ID
 	}
-	n, err := s.buildNode(ctx, nodes, nodeID, in.TemplateID, in.ParentID, in.Content, in.Props)
+	n, err := s.buildNode(ctx, nodes, nodeID, in.TemplateID, in.Content, in.Props)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -123,13 +123,17 @@ func (s *FileSession) UpdateNode(ctx context.Context, in UpdateNodeInput) (graph
 	if idx < 0 {
 		return graph.Node{}, s.errors.NotFound
 	}
-	candidateNodes := append([]graph.Node(nil), nodes[:idx]...)
-	candidateNodes = append(candidateNodes, nodes[idx+1:]...)
-	n, err := s.buildNode(ctx, candidateNodes, in.ID, in.TemplateID, in.ParentID, in.Content, in.Props)
+	n, err := s.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, in.Props)
 	if err != nil {
 		return graph.Node{}, err
 	}
-	if err := s.validateExistingChildren(ctx, n, candidateNodes); err != nil {
+	candidateNodes := append([]graph.Node(nil), nodes...)
+	candidateNodes[idx] = n
+	edges, err := s.readEdges()
+	if err != nil {
+		return graph.Node{}, err
+	}
+	if err := s.validateIncidentContains(ctx, n, candidateNodes, edges); err != nil {
 		return graph.Node{}, err
 	}
 	nodes[idx] = n
@@ -141,7 +145,7 @@ func (s *FileSession) UpdateNode(ctx context.Context, in UpdateNodeInput) (graph
 
 func (s *FileSession) UpsertNode(ctx context.Context, in UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
-		return s.AddNode(ctx, AddNodeInput{TemplateID: in.TemplateID, ParentID: in.ParentID, Content: in.Content, Props: in.Props})
+		return s.AddNode(ctx, AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
 	}
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
@@ -157,9 +161,9 @@ func (s *FileSession) UpsertNode(ctx context.Context, in UpsertNodeInput) (graph
 		return graph.Node{}, err
 	}
 	if findNodeIndex(nodes, *in.ID) >= 0 {
-		return s.UpdateNode(ctx, UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, ParentID: in.ParentID, Content: in.Content, Props: in.Props})
+		return s.UpdateNode(ctx, UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
 	}
-	n, err := s.buildNode(ctx, nodes, *in.ID, in.TemplateID, in.ParentID, in.Content, in.Props)
+	n, err := s.buildNode(ctx, nodes, *in.ID, in.TemplateID, in.Content, in.Props)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -184,10 +188,12 @@ func (s *FileSession) AddEdge(ctx context.Context, in AddEdgeInput) (graph.Edge,
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	if _, ok := findNode(nodes, in.FromID); !ok {
+	from, ok := findNode(nodes, in.FromID)
+	if !ok {
 		return graph.Edge{}, fmt.Errorf("%w: from node not found", s.errors.NotFound)
 	}
-	if _, ok := findNode(nodes, in.ToID); !ok {
+	to, ok := findNode(nodes, in.ToID)
+	if !ok {
 		return graph.Edge{}, fmt.Errorf("%w: to node not found", s.errors.NotFound)
 	}
 
@@ -195,16 +201,36 @@ func (s *FileSession) AddEdge(ctx context.Context, in AddEdgeInput) (graph.Edge,
 	if err != nil {
 		return graph.Edge{}, err
 	}
+	if err := s.validateNewEdge(ctx, from, to, in.Kind, edges); err != nil {
+		return graph.Edge{}, err
+	}
 	edgeID := uuid.New()
 	if in.ID != nil {
 		edgeID = *in.ID
 	}
-	e := graph.Edge{ID: edgeID, FromID: in.FromID, ToID: in.ToID, Kind: in.Kind, Props: in.Props}
+	e := graph.Edge{ID: edgeID, FromID: in.FromID, ToID: in.ToID, Kind: in.Kind, Props: copyProps(in.Props)}
 	edges = append(edges, e)
 	if err := s.writeEdges(edges); err != nil {
 		return graph.Edge{}, err
 	}
 	return e, nil
+}
+
+func (s *FileSession) ListEdges(ctx context.Context) ([]graph.Edge, error) {
+	if err := s.ensureOpen(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return nil, err
+	}
+	if err := s.ensureRead(); err != nil {
+		return nil, err
+	}
+	edges, err := s.readEdges()
+	if err != nil {
+		return nil, err
+	}
+	return cloneEdges(edges), nil
 }
 
 func (s *FileSession) AddGraph(ctx context.Context, in AddGraphInput) error {
@@ -271,26 +297,30 @@ func (s *FileSession) DeleteNode(ctx context.Context, in DeleteNodeInput) error 
 	if _, ok := findNode(nodes, in.ID); !ok {
 		return s.errors.NotFound
 	}
+	edges, err := s.readEdges()
+	if err != nil {
+		return err
+	}
 	deleteIDs := map[graph.NodeID]struct{}{in.ID: {}}
 	if in.Recursive {
 		changed := true
 		for changed {
 			changed = false
-			for _, n := range nodes {
-				if n.ParentID == nil {
+			for _, edge := range edges {
+				if edge.Kind != graph.EdgeKindContains {
 					continue
 				}
-				if _, parentDeleted := deleteIDs[*n.ParentID]; parentDeleted {
-					if _, already := deleteIDs[n.ID]; !already {
-						deleteIDs[n.ID] = struct{}{}
+				if _, parentDeleted := deleteIDs[edge.FromID]; parentDeleted {
+					if _, already := deleteIDs[edge.ToID]; !already {
+						deleteIDs[edge.ToID] = struct{}{}
 						changed = true
 					}
 				}
 			}
 		}
 	} else {
-		for _, n := range nodes {
-			if n.ParentID != nil && *n.ParentID == in.ID {
+		for _, edge := range edges {
+			if edge.Kind == graph.EdgeKindContains && edge.FromID == in.ID {
 				if s.errors.Conflict != nil {
 					return fmt.Errorf("%w: node has child nodes", s.errors.Conflict)
 				}
@@ -304,10 +334,6 @@ func (s *FileSession) DeleteNode(ctx context.Context, in DeleteNodeInput) error 
 		if _, deleted := deleteIDs[n.ID]; !deleted {
 			remainingNodes = append(remainingNodes, n)
 		}
-	}
-	edges, err := s.readEdges()
-	if err != nil {
-		return err
 	}
 	remainingEdges := make([]graph.Edge, 0, len(edges))
 	for _, edge := range edges {
@@ -443,11 +469,10 @@ func (s *FileSession) writeEdges(edges []graph.Edge) error {
 	return os.WriteFile(s.edgesPath(), b, 0o600)
 }
 
-func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID graph.NodeID, templateID *graph.TemplateID, parentID *graph.NodeID, content string, inputProps map[string]any) (graph.Node, error) {
+func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID graph.NodeID, templateID *graph.TemplateID, content string, inputProps map[string]any) (graph.Node, error) {
 	if nodeID == uuid.Nil {
 		return graph.Node{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
 	}
-	var nodeTemplate *graph.Template
 	props := copyProps(inputProps)
 	if templateID != nil {
 		t, err := s.templateManager.GetByID(ctx, *templateID)
@@ -463,47 +488,105 @@ func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID 
 		if err := validateProps(&props, t); err != nil {
 			return graph.Node{}, err
 		}
-		nodeTemplate = &t
 	}
-	if parentID != nil {
-		if *parentID == nodeID {
-			return graph.Node{}, fmt.Errorf("%w: node cannot be its own parent", coretemplate.ErrInvalidInput)
-		}
-		parent, ok := findNode(nodes, *parentID)
-		if !ok {
-			return graph.Node{}, fmt.Errorf("%w: parent node not found", s.errors.NotFound)
-		}
-		if err := s.validateChild(ctx, parent, nodeTemplate); err != nil {
-			return graph.Node{}, err
-		}
-	}
-	return graph.Node{ID: nodeID, TemplateID: templateID, ParentID: parentID, Content: content, Props: props}, nil
+	return graph.Node{ID: nodeID, TemplateID: templateID, Content: content, Props: props}, nil
 }
 
-func (s *FileSession) validateExistingChildren(ctx context.Context, parent graph.Node, nodes []graph.Node) error {
-	for _, child := range nodes {
-		if child.ParentID == nil || *child.ParentID != parent.ID {
+func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to graph.Node, kind graph.EdgeKind, edges []graph.Edge) error {
+	if kind != graph.EdgeKindContains {
+		return nil
+	}
+	if from.ID == to.ID {
+		return fmt.Errorf("%w: contains edge cannot target itself", coretemplate.ErrInvalidInput)
+	}
+	for _, edge := range edges {
+		if edge.Kind == graph.EdgeKindContains && edge.ToID == to.ID {
+			return fmt.Errorf("%w: node already has a contains parent", coretemplate.ErrInvalidInput)
+		}
+	}
+	if containsPath(edges, to.ID, from.ID) {
+		return fmt.Errorf("%w: contains edge would create a cycle", coretemplate.ErrInvalidInput)
+	}
+	childTemplate, err := s.nodeTemplate(ctx, to, "child")
+	if err != nil {
+		return err
+	}
+	return s.validateChild(ctx, from, childTemplate)
+}
+
+func (s *FileSession) validateIncidentContains(ctx context.Context, node graph.Node, nodes []graph.Node, edges []graph.Edge) error {
+	for _, edge := range edges {
+		if edge.Kind != graph.EdgeKindContains {
 			continue
 		}
-		var childTemplate *graph.Template
-		if child.TemplateID != nil {
-			t, err := s.templateManager.GetByID(ctx, *child.TemplateID)
+		if edge.FromID == node.ID {
+			child, ok := findNode(nodes, edge.ToID)
+			if !ok {
+				continue
+			}
+			childTemplate, err := s.nodeTemplate(ctx, child, "child")
 			if err != nil {
-				if errors.Is(err, coretemplate.ErrTemplateNotFound) {
-					return fmt.Errorf("%w: child template not found", s.errors.NotFound)
-				}
 				return err
 			}
-			if t.SpaceID != s.spaceID {
-				return fmt.Errorf("%w: child template not found in space", s.errors.NotFound)
+			if err := s.validateChild(ctx, node, childTemplate); err != nil {
+				return err
 			}
-			childTemplate = &t
 		}
-		if err := s.validateChild(ctx, parent, childTemplate); err != nil {
-			return err
+		if edge.ToID == node.ID {
+			parent, ok := findNode(nodes, edge.FromID)
+			if !ok {
+				continue
+			}
+			childTemplate, err := s.nodeTemplate(ctx, node, "child")
+			if err != nil {
+				return err
+			}
+			if err := s.validateChild(ctx, parent, childTemplate); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func (s *FileSession) nodeTemplate(ctx context.Context, node graph.Node, label string) (*graph.Template, error) {
+	if node.TemplateID == nil {
+		return nil, nil
+	}
+	t, err := s.templateManager.GetByID(ctx, *node.TemplateID)
+	if err != nil {
+		if errors.Is(err, coretemplate.ErrTemplateNotFound) {
+			return nil, fmt.Errorf("%w: %s template not found", s.errors.NotFound, label)
+		}
+		return nil, err
+	}
+	if t.SpaceID != s.spaceID {
+		return nil, fmt.Errorf("%w: %s template not found in space", s.errors.NotFound, label)
+	}
+	return &t, nil
+}
+
+func containsPath(edges []graph.Edge, from graph.NodeID, target graph.NodeID) bool {
+	visited := map[graph.NodeID]struct{}{}
+	var visit func(graph.NodeID) bool
+	visit = func(id graph.NodeID) bool {
+		if id == target {
+			return true
+		}
+		if _, ok := visited[id]; ok {
+			return false
+		}
+		visited[id] = struct{}{}
+		for _, edge := range edges {
+			if edge.Kind == graph.EdgeKindContains && edge.FromID == id {
+				if visit(edge.ToID) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return visit(from)
 }
 
 func (s *FileSession) validateChild(ctx context.Context, parent graph.Node, childTemplate *graph.Template) error {
@@ -658,6 +741,15 @@ func cloneNodes(nodes []graph.Node) []graph.Node {
 	for _, node := range nodes {
 		node.Props = copyProps(node.Props)
 		out = append(out, node)
+	}
+	return out
+}
+
+func cloneEdges(edges []graph.Edge) []graph.Edge {
+	out := make([]graph.Edge, 0, len(edges))
+	for _, edge := range edges {
+		edge.Props = copyProps(edge.Props)
+		out = append(out, edge)
 	}
 	return out
 }

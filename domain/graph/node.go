@@ -9,11 +9,11 @@ type NodeID = uuid.UUID
 //
 // Node is intentionally generic so higher-level domains (e.g. PKM) can model
 // pages, blocks, journals, and tasks via template and properties.
-// TemplateID is optional; nodes may exist without a template.
+// TemplateID is optional; nodes may exist without a template. Hierarchy is
+// represented by contains edges rather than a parent field.
 type Node struct {
 	ID         NodeID
 	TemplateID *TemplateID
-	ParentID   *NodeID
 	Content    string
 	Props      map[string]any
 }

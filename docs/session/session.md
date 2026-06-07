@@ -10,7 +10,7 @@ A session owns operation-level APIs for space-local data:
 
 - template import/list
 - node create/read/list/update/upsert/delete
-- edge creation and graph batch writes
+- edge creation/listing and graph batch writes
 - GQL-style in-memory query execution through `Session.Query()`
 - future transactions
 
