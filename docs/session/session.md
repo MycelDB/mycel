@@ -11,12 +11,28 @@ A session owns operation-level APIs for space-local data:
 - template import/list
 - node create/read/list/update/upsert/delete
 - edge creation/listing and graph batch writes
+- batched graph mutation through `ApplyGraph` for importer-style workloads
 - GQL-style in-memory query execution through `Session.Query()`
 - future transactions
 
-The session package contains operation input structures such as `AddNodeInput`, `UpdateNodeInput`, `AddEdgeInput`, and `ImportTemplatesInput`. Pure graph records such as `graph.Node`, `graph.Edge`, and `graph.Template` remain in `domain/graph`.
+The session package contains operation input structures such as `AddNodeInput`, `UpdateNodeInput`, `AddEdgeInput`, `ApplyGraphInput`, and `ImportTemplatesInput`. Pure graph records such as `graph.Node`, `graph.Edge`, and `graph.Template` remain in `domain/graph`.
 
 See `docs/query/gql-mapping.md` for the programmatic query builder.
+
+## Batch mutations
+
+Use `ApplyGraph` to add or replace larger graph fragments efficiently. It reads the current nodes and edges once, applies recursive deletes, validates added nodes and edges in memory, and writes the updated node/edge files once.
+
+```go
+result, err := sess.ApplyGraph(ctx, session.ApplyGraphInput{
+    DeleteNodes: []session.DeleteNodeInput{{ID: oldRootID, Recursive: true}},
+    AddNodes:    nodes,
+    AddEdges:    edges,
+    Atomic:      true,
+})
+```
+
+When `AddEdges` reference newly-added nodes, provide explicit node IDs in `AddNodes`.
 
 ## Lifecycle
 

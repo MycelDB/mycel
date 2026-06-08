@@ -234,26 +234,102 @@ func (s *FileSession) ListEdges(ctx context.Context) ([]graph.Edge, error) {
 }
 
 func (s *FileSession) AddGraph(ctx context.Context, in AddGraphInput) error {
+	_, err := s.ApplyGraph(ctx, ApplyGraphInput{AddNodes: in.Nodes, AddEdges: in.Edges, Atomic: in.Atomic})
+	return err
+}
+
+func (s *FileSession) ApplyGraph(ctx context.Context, in ApplyGraphInput) (ApplyGraphResult, error) {
 	if err := s.ensureOpen(ctx); err != nil {
-		return err
+		return ApplyGraphResult{}, err
 	}
 	if err := s.ensureSpaceLive(); err != nil {
-		return err
+		return ApplyGraphResult{}, err
 	}
 	if err := s.ensureWrite(); err != nil {
-		return err
+		return ApplyGraphResult{}, err
 	}
-	for _, n := range in.Nodes {
-		if _, err := s.AddNode(ctx, n); err != nil {
-			return err
+	nodes, err := s.readNodes()
+	if err != nil {
+		return ApplyGraphResult{}, err
+	}
+	edges, err := s.readEdges()
+	if err != nil {
+		return ApplyGraphResult{}, err
+	}
+
+	candidateNodes := cloneNodes(nodes)
+	candidateEdges := cloneEdges(edges)
+	result := ApplyGraphResult{}
+
+	for _, del := range in.DeleteNodes {
+		deletedIDs, newNodes, newEdges, err := s.applyDeleteNode(candidateNodes, candidateEdges, del)
+		if err != nil {
+			return ApplyGraphResult{}, err
 		}
+		candidateNodes = newNodes
+		candidateEdges = newEdges
+		result.DeletedNodeIDs = append(result.DeletedNodeIDs, deletedIDs...)
 	}
-	for _, e := range in.Edges {
-		if _, err := s.AddEdge(ctx, e); err != nil {
-			return err
+
+	nodeIndex := indexNodes(candidateNodes)
+	for _, add := range in.AddNodes {
+		nodeID := uuid.New()
+		if add.ID != nil {
+			nodeID = *add.ID
 		}
+		if nodeID == uuid.Nil {
+			return ApplyGraphResult{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
+		}
+		if _, exists := nodeIndex[nodeID]; exists {
+			return ApplyGraphResult{}, fmt.Errorf("%w: duplicate node_id %s", coretemplate.ErrInvalidInput, nodeID)
+		}
+		node, err := s.buildNode(ctx, candidateNodes, nodeID, add.TemplateID, add.Content, add.Props)
+		if err != nil {
+			return ApplyGraphResult{}, err
+		}
+		candidateNodes = append(candidateNodes, node)
+		nodeIndex[node.ID] = len(candidateNodes) - 1
+		result.AddedNodes = append(result.AddedNodes, node)
 	}
-	return nil
+
+	edgeIndex := indexEdges(candidateEdges)
+	for _, add := range in.AddEdges {
+		edgeID := uuid.New()
+		if add.ID != nil {
+			edgeID = *add.ID
+		}
+		if edgeID == uuid.Nil {
+			return ApplyGraphResult{}, fmt.Errorf("%w: edge_id is required", s.errors.NotFound)
+		}
+		if _, exists := edgeIndex[edgeID]; exists {
+			return ApplyGraphResult{}, fmt.Errorf("%w: duplicate edge_id %s", coretemplate.ErrInvalidInput, edgeID)
+		}
+		fromIdx, ok := nodeIndex[add.FromID]
+		if !ok {
+			return ApplyGraphResult{}, fmt.Errorf("%w: from node not found", s.errors.NotFound)
+		}
+		toIdx, ok := nodeIndex[add.ToID]
+		if !ok {
+			return ApplyGraphResult{}, fmt.Errorf("%w: to node not found", s.errors.NotFound)
+		}
+		from := candidateNodes[fromIdx]
+		to := candidateNodes[toIdx]
+		if err := s.validateNewEdge(ctx, from, to, add.Kind, candidateEdges); err != nil {
+			return ApplyGraphResult{}, err
+		}
+		edge := graph.Edge{ID: edgeID, FromID: add.FromID, ToID: add.ToID, Kind: add.Kind, Props: copyProps(add.Props)}
+		candidateEdges = append(candidateEdges, edge)
+		edgeIndex[edge.ID] = len(candidateEdges) - 1
+		result.AddedEdges = append(result.AddedEdges, edge)
+	}
+
+	if err := s.writeNodes(candidateNodes); err != nil {
+		return ApplyGraphResult{}, err
+	}
+	if err := s.writeEdges(candidateEdges); err != nil {
+		return ApplyGraphResult{}, err
+	}
+	return result, nil
 }
 
 func (s *FileSession) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error) {
@@ -347,6 +423,61 @@ func (s *FileSession) DeleteNode(ctx context.Context, in DeleteNodeInput) error 
 		return err
 	}
 	return s.writeEdges(remainingEdges)
+}
+
+func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in DeleteNodeInput) ([]graph.NodeID, []graph.Node, []graph.Edge, error) {
+	if in.ID == uuid.Nil {
+		return nil, nil, nil, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
+	}
+	if _, ok := findNode(nodes, in.ID); !ok {
+		return nil, nil, nil, s.errors.NotFound
+	}
+	deleteIDs := map[graph.NodeID]struct{}{in.ID: {}}
+	if in.Recursive {
+		changed := true
+		for changed {
+			changed = false
+			for _, edge := range edges {
+				if edge.Kind != graph.EdgeKindContains {
+					continue
+				}
+				if _, parentDeleted := deleteIDs[edge.FromID]; parentDeleted {
+					if _, already := deleteIDs[edge.ToID]; !already {
+						deleteIDs[edge.ToID] = struct{}{}
+						changed = true
+					}
+				}
+			}
+		}
+	} else {
+		for _, edge := range edges {
+			if edge.Kind == graph.EdgeKindContains && edge.FromID == in.ID {
+				if s.errors.Conflict != nil {
+					return nil, nil, nil, fmt.Errorf("%w: node has child nodes", s.errors.Conflict)
+				}
+				return nil, nil, nil, fmt.Errorf("node has child nodes")
+			}
+		}
+	}
+
+	deleted := make([]graph.NodeID, 0, len(deleteIDs))
+	remainingNodes := make([]graph.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if _, isDeleted := deleteIDs[n.ID]; isDeleted {
+			deleted = append(deleted, n.ID)
+			continue
+		}
+		remainingNodes = append(remainingNodes, n)
+	}
+	remainingEdges := make([]graph.Edge, 0, len(edges))
+	for _, edge := range edges {
+		_, fromDeleted := deleteIDs[edge.FromID]
+		_, toDeleted := deleteIDs[edge.ToID]
+		if !fromDeleted && !toDeleted {
+			remainingEdges = append(remainingEdges, edge)
+		}
+	}
+	return deleted, remainingNodes, remainingEdges, nil
 }
 
 func (s *FileSession) Close() error {
@@ -725,6 +856,22 @@ func findNode(nodes []graph.Node, id graph.NodeID) (graph.Node, bool) {
 		return graph.Node{}, false
 	}
 	return nodes[idx], true
+}
+
+func indexNodes(nodes []graph.Node) map[graph.NodeID]int {
+	out := make(map[graph.NodeID]int, len(nodes))
+	for i, node := range nodes {
+		out[node.ID] = i
+	}
+	return out
+}
+
+func indexEdges(edges []graph.Edge) map[graph.EdgeID]int {
+	out := make(map[graph.EdgeID]int, len(edges))
+	for i, edge := range edges {
+		out[edge.ID] = i
+	}
+	return out
 }
 
 func findNodeIndex(nodes []graph.Node, id graph.NodeID) int {

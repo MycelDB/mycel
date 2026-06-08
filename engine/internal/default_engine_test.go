@@ -1047,3 +1047,85 @@ func TestRuntimeEngine_UpdateNodeMissingAndReadOnly(t *testing.T) {
 	}
 	_ = readerSession.Close()
 }
+
+func TestRuntimeEngine_ApplyGraphBatchMutations(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-apply-graph")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	sess, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	defer sess.Close()
+
+	rootID := graph.NodeID(uuid.New())
+	childAID := graph.NodeID(uuid.New())
+	childBID := graph.NodeID(uuid.New())
+	grandchildID := graph.NodeID(uuid.New())
+	res, err := sess.ApplyGraph(ctx, domainsession.ApplyGraphInput{
+		AddNodes: []domainsession.AddNodeInput{
+			{ID: &rootID, Content: "root"},
+			{ID: &childAID, Content: "child A"},
+			{ID: &childBID, Content: "child B"},
+			{ID: &grandchildID, Content: "grandchild"},
+		},
+		AddEdges: []domainsession.AddEdgeInput{
+			{FromID: rootID, ToID: childBID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 1}},
+			{FromID: rootID, ToID: childAID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 0}},
+			{FromID: childAID, ToID: grandchildID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 0}},
+		},
+		Atomic: true,
+	})
+	if err != nil {
+		t.Fatalf("expected apply graph success, got error: %v", err)
+	}
+	if len(res.AddedNodes) != 4 || len(res.AddedEdges) != 3 {
+		t.Fatalf("unexpected apply result: %+v", res)
+	}
+	edges, err := sess.ListEdges(ctx)
+	if err != nil {
+		t.Fatalf("expected list edges success, got error: %v", err)
+	}
+	if len(edges) != 3 {
+		t.Fatalf("expected 3 edges, got %d", len(edges))
+	}
+
+	if _, err := sess.ApplyGraph(ctx, domainsession.ApplyGraphInput{AddNodes: []domainsession.AddNodeInput{{ID: &rootID, Content: "duplicate"}}}); err == nil {
+		t.Fatal("expected duplicate node id error")
+	}
+	missingID := graph.NodeID(uuid.New())
+	if _, err := sess.ApplyGraph(ctx, domainsession.ApplyGraphInput{AddEdges: []domainsession.AddEdgeInput{{FromID: rootID, ToID: missingID, Kind: graph.EdgeKindContains}}}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for missing edge endpoint, got: %v", err)
+	}
+	if _, err := sess.ApplyGraph(ctx, domainsession.ApplyGraphInput{AddEdges: []domainsession.AddEdgeInput{{FromID: childBID, ToID: childAID, Kind: graph.EdgeKindContains}}}); err == nil {
+		t.Fatal("expected duplicate contains parent error")
+	}
+
+	res, err = sess.ApplyGraph(ctx, domainsession.ApplyGraphInput{DeleteNodes: []domainsession.DeleteNodeInput{{ID: rootID, Recursive: true}}, Atomic: true})
+	if err != nil {
+		t.Fatalf("expected recursive delete success, got error: %v", err)
+	}
+	if len(res.DeletedNodeIDs) != 4 {
+		t.Fatalf("expected 4 deleted nodes, got %+v", res.DeletedNodeIDs)
+	}
+	nodes, err := sess.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("expected list nodes success, got error: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("expected all nodes deleted, got %v", nodes)
+	}
+}
