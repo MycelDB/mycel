@@ -12,6 +12,7 @@ A session owns operation-level APIs for space-local data:
 - node create/read/list/update/upsert/delete
 - edge creation/listing and graph batch writes
 - batched graph mutation through `ApplyGraph` for importer-style workloads
+- hierarchy mutation through `MoveSubtree` and `ReorderChildren`
 - GQL-style in-memory query execution through `Session.Query()`
 - future transactions
 
@@ -33,6 +34,31 @@ result, err := sess.ApplyGraph(ctx, session.ApplyGraphInput{
 ```
 
 When `AddEdges` reference newly-added nodes, provide explicit node IDs in `AddNodes`.
+
+## Hierarchy mutations
+
+Hierarchy is represented by `graph.EdgeKindContains` edges. Nodes do not store parent IDs. A subtree move rewires the moved node's incoming `contains` edge; descendants remain attached to the moved node and move with it.
+
+```go
+edge, err := sess.MoveSubtree(ctx, session.MoveSubtreeInput{
+    NodeID:      entryID,
+    NewParentID: newParentID,
+    Order:       nil, // append to the end
+})
+```
+
+`MoveSubtree` preserves the existing `contains` edge ID and non-order properties when a parent edge already exists. Moving a root node under a parent is allowed. Moving to root is not yet supported. Invalid moves are rejected when they would create cycles, move a node under itself, violate template child policy, or use a negative order.
+
+Sibling order lives on the parent-child `contains` edge as `Props["order"]`. Use `ReorderChildren` to replace the complete direct child order for a parent:
+
+```go
+edges, err := sess.ReorderChildren(ctx, session.ReorderChildrenInput{
+    ParentID: parentID,
+    ChildIDs: []graph.NodeID{childC, childA, childB},
+})
+```
+
+`ReorderChildren` requires `ChildIDs` to contain exactly the current direct children: no missing, extra, or duplicate IDs. It normalizes orders to contiguous integers starting at `0` and preserves all non-order edge properties.
 
 ## Lifecycle
 

@@ -52,6 +52,8 @@ type Session interface {
 	ListEdges(ctx context.Context) ([]graph.Edge, error)
 	AddGraph(ctx context.Context, in AddGraphInput) error
 	ApplyGraph(ctx context.Context, in ApplyGraphInput) (ApplyGraphResult, error)
+	MoveSubtree(ctx context.Context, in MoveSubtreeInput) (graph.Edge, error)
+	ReorderChildren(ctx context.Context, in ReorderChildrenInput) ([]graph.Edge, error)
 	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
 	DeleteNode(ctx context.Context, in DeleteNodeInput) error
 	Close() error

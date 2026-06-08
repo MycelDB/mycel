@@ -32,7 +32,21 @@ Write payloads for edge operations live in `martinbeauvais.com/mbgit/knotbase/kn
 | `Kind` | `EdgeKind` | Yes | Structural relationship kind. |
 | `Props` | `map[string]any` | No | Optional metadata/extensions. |
 
+## Hierarchy and order
+- `contains` edges are the canonical hierarchy mechanism.
+- A parent-child relationship is represented as:
+  - `parent --contains--> child`
+- Moving a subtree rewires the child node's incoming `contains` edge. Descendant edges remain unchanged.
+- Ordered hierarchies store sibling order on the `contains` edge:
+
+```json
+{
+  "order": 0
+}
+```
+
+- Session hierarchy mutation APIs normalize `order` to contiguous integer values starting at `0`.
+
 ## Notes
-- `contains` edges are the canonical hierarchy mechanism. Ordered hierarchies can store sibling order on the edge, e.g. `Props["order"]`.
 - Domain/UI behaviors (embed rendering, aliases, visual style) should not be encoded as edge kinds.
 - Such concerns should live in higher-level application logic or optional edge properties interpreted by that layer.
