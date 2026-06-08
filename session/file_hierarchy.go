@@ -53,6 +53,7 @@ func (s *FileSession) MoveSubtree(ctx context.Context, in MoveSubtreeInput) (gra
 	if err != nil {
 		return graph.Edge{}, err
 	}
+	originalEdges := cloneEdges(edges)
 	oldParentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
 	if len(oldParentIndexes) > 1 {
 		return graph.Edge{}, fmt.Errorf("%w: node has multiple contains parents", coretemplate.ErrInvalidInput)
@@ -80,7 +81,7 @@ func (s *FileSession) MoveSubtree(ctx context.Context, in MoveSubtreeInput) (gra
 			if err != nil {
 				return graph.Edge{}, err
 			}
-			if err := s.writeEdges(edges); err != nil {
+			if err := s.commitGraph(ctx, nil, changedEdges(originalEdges, edges), nil, nil); err != nil {
 				return graph.Edge{}, err
 			}
 			return updated, nil
@@ -91,7 +92,11 @@ func (s *FileSession) MoveSubtree(ctx context.Context, in MoveSubtreeInput) (gra
 		edges[oldParentIndexes[0]].Kind = graph.EdgeKindContains
 		edges[oldParentIndexes[0]].Props = copyProps(edges[oldParentIndexes[0]].Props)
 	} else {
-		edges = append(edges, graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: in.NewParentID, ToID: in.NodeID, Kind: graph.EdgeKindContains, Props: map[string]any{}})
+		edgeID, err := newGraphUUID()
+		if err != nil {
+			return graph.Edge{}, err
+		}
+		edges = append(edges, graph.Edge{ID: graph.EdgeID(edgeID), FromID: in.NewParentID, ToID: in.NodeID, Kind: graph.EdgeKindContains, Props: map[string]any{}})
 	}
 
 	if oldParentID != uuid.Nil {
@@ -101,7 +106,7 @@ func (s *FileSession) MoveSubtree(ctx context.Context, in MoveSubtreeInput) (gra
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	if err := s.writeEdges(edges); err != nil {
+	if err := s.commitGraph(ctx, nil, changedEdges(originalEdges, edges), nil, nil); err != nil {
 		return graph.Edge{}, err
 	}
 	return updated, nil
@@ -134,6 +139,7 @@ func (s *FileSession) ReorderChildren(ctx context.Context, in ReorderChildrenInp
 	if err != nil {
 		return nil, err
 	}
+	originalEdges := cloneEdges(edges)
 	childEdgeByID, err := validateCompleteChildOrder(edges, in.ParentID, in.ChildIDs)
 	if err != nil {
 		return nil, err
@@ -146,7 +152,7 @@ func (s *FileSession) ReorderChildren(ctx context.Context, in ReorderChildrenInp
 		edges[edgeIndex].Props["order"] = order
 		updated = append(updated, cloneEdge(edges[edgeIndex]))
 	}
-	if err := s.writeEdges(edges); err != nil {
+	if err := s.commitGraph(ctx, nil, changedEdges(originalEdges, edges), nil, nil); err != nil {
 		return nil, err
 	}
 	return updated, nil

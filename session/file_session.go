@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
 )
 
@@ -24,6 +26,7 @@ type FileSession struct {
 	templateManager TemplateManager
 	permissions     Permissions
 	errors          Errors
+	store           *graphstorage.LocalStore
 	closed          bool
 }
 
@@ -70,7 +73,10 @@ func (s *FileSession) AddNode(ctx context.Context, in AddNodeInput) (graph.Node,
 	if err != nil {
 		return graph.Node{}, err
 	}
-	nodeID := uuid.New()
+	nodeID, err := newGraphUUID()
+	if err != nil {
+		return graph.Node{}, err
+	}
 	if in.ID != nil {
 		nodeID = *in.ID
 	}
@@ -78,8 +84,7 @@ func (s *FileSession) AddNode(ctx context.Context, in AddNodeInput) (graph.Node,
 	if err != nil {
 		return graph.Node{}, err
 	}
-	nodes = append(nodes, n)
-	if err := s.writeNodes(nodes); err != nil {
+	if err := s.commitGraph(ctx, []graph.Node{n}, nil, nil, nil); err != nil {
 		return graph.Node{}, err
 	}
 	return n, nil
@@ -136,8 +141,7 @@ func (s *FileSession) UpdateNode(ctx context.Context, in UpdateNodeInput) (graph
 	if err := s.validateIncidentContains(ctx, n, candidateNodes, edges); err != nil {
 		return graph.Node{}, err
 	}
-	nodes[idx] = n
-	if err := s.writeNodes(nodes); err != nil {
+	if err := s.commitGraph(ctx, []graph.Node{n}, nil, nil, nil); err != nil {
 		return graph.Node{}, err
 	}
 	return n, nil
@@ -167,8 +171,7 @@ func (s *FileSession) UpsertNode(ctx context.Context, in UpsertNodeInput) (graph
 	if err != nil {
 		return graph.Node{}, err
 	}
-	nodes = append(nodes, n)
-	if err := s.writeNodes(nodes); err != nil {
+	if err := s.commitGraph(ctx, []graph.Node{n}, nil, nil, nil); err != nil {
 		return graph.Node{}, err
 	}
 	return n, nil
@@ -204,13 +207,15 @@ func (s *FileSession) AddEdge(ctx context.Context, in AddEdgeInput) (graph.Edge,
 	if err := s.validateNewEdge(ctx, from, to, in.Kind, edges); err != nil {
 		return graph.Edge{}, err
 	}
-	edgeID := uuid.New()
+	edgeID, err := newGraphUUID()
+	if err != nil {
+		return graph.Edge{}, err
+	}
 	if in.ID != nil {
 		edgeID = *in.ID
 	}
 	e := graph.Edge{ID: edgeID, FromID: in.FromID, ToID: in.ToID, Kind: in.Kind, Props: copyProps(in.Props)}
-	edges = append(edges, e)
-	if err := s.writeEdges(edges); err != nil {
+	if err := s.commitGraph(ctx, nil, []graph.Edge{e}, nil, nil); err != nil {
 		return graph.Edge{}, err
 	}
 	return e, nil
@@ -273,7 +278,10 @@ func (s *FileSession) ApplyGraph(ctx context.Context, in ApplyGraphInput) (Apply
 
 	nodeIndex := indexNodes(candidateNodes)
 	for _, add := range in.AddNodes {
-		nodeID := uuid.New()
+		nodeID, err := newGraphUUID()
+		if err != nil {
+			return ApplyGraphResult{}, err
+		}
 		if add.ID != nil {
 			nodeID = *add.ID
 		}
@@ -294,7 +302,10 @@ func (s *FileSession) ApplyGraph(ctx context.Context, in ApplyGraphInput) (Apply
 
 	edgeIndex := indexEdges(candidateEdges)
 	for _, add := range in.AddEdges {
-		edgeID := uuid.New()
+		edgeID, err := newGraphUUID()
+		if err != nil {
+			return ApplyGraphResult{}, err
+		}
 		if add.ID != nil {
 			edgeID = *add.ID
 		}
@@ -323,10 +334,8 @@ func (s *FileSession) ApplyGraph(ctx context.Context, in ApplyGraphInput) (Apply
 		result.AddedEdges = append(result.AddedEdges, edge)
 	}
 
-	if err := s.writeNodes(candidateNodes); err != nil {
-		return ApplyGraphResult{}, err
-	}
-	if err := s.writeEdges(candidateEdges); err != nil {
+	deletedEdgeIDs := deletedEdges(edges, candidateEdges)
+	if err := s.commitGraph(ctx, result.AddedNodes, result.AddedEdges, result.DeletedNodeIDs, deletedEdgeIDs); err != nil {
 		return ApplyGraphResult{}, err
 	}
 	return result, nil
@@ -419,10 +428,8 @@ func (s *FileSession) DeleteNode(ctx context.Context, in DeleteNodeInput) error 
 			remainingEdges = append(remainingEdges, edge)
 		}
 	}
-	if err := s.writeNodes(remainingNodes); err != nil {
-		return err
-	}
-	return s.writeEdges(remainingEdges)
+	deletedEdges := deletedEdges(edges, remainingEdges)
+	return s.commitGraph(ctx, nil, nil, mapKeys(deleteIDs), deletedEdges)
 }
 
 func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in DeleteNodeInput) ([]graph.NodeID, []graph.Node, []graph.Edge, error) {
@@ -482,6 +489,9 @@ func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in
 
 func (s *FileSession) Close() error {
 	s.closed = true
+	if s.store != nil {
+		return s.store.Close()
+	}
 	return nil
 }
 
@@ -522,14 +532,6 @@ func (s *FileSession) spacePath() string {
 	return filepath.Join(s.graphsDir, safeID(s.spaceID))
 }
 
-func (s *FileSession) nodesPath() string {
-	return filepath.Join(s.spacePath(), "nodes.json")
-}
-
-func (s *FileSession) edgesPath() string {
-	return filepath.Join(s.spacePath(), "edges.json")
-}
-
 func (s *FileSession) markerPath() string {
 	return filepath.Join(s.spacePath(), ".space")
 }
@@ -544,60 +546,68 @@ func (s *FileSession) ensureSpaceLive() error {
 	return nil
 }
 
-func (s *FileSession) readNodes() ([]graph.Node, error) {
-	path := s.nodesPath()
-	raw, err := os.ReadFile(path)
+func (s *FileSession) graphStore() (*graphstorage.LocalStore, error) {
+	if s.store != nil {
+		return s.store, nil
+	}
+	store, err := graphstorage.Open(context.Background(), s.spacePath())
 	if err != nil {
-		if os.IsNotExist(err) {
-			return []graph.Node{}, nil
-		}
 		return nil, err
 	}
-	var out []graph.Node
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	s.store = store
+	return s.store, nil
 }
 
-func (s *FileSession) writeNodes(nodes []graph.Node) error {
-	if err := s.ensureSpaceLive(); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(nodes, "", "  ")
+func (s *FileSession) readNodes() ([]graph.Node, error) {
+	store, err := s.graphStore()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	b = append(b, '\n')
-	return os.WriteFile(s.nodesPath(), b, 0o600)
+	return store.ListNodes(context.Background())
 }
 
 func (s *FileSession) readEdges() ([]graph.Edge, error) {
-	path := s.edgesPath()
-	raw, err := os.ReadFile(path)
+	store, err := s.graphStore()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return []graph.Edge{}, nil
-		}
 		return nil, err
 	}
-	var out []graph.Edge
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return store.ListEdges(context.Background())
 }
 
-func (s *FileSession) writeEdges(edges []graph.Edge) error {
-	if err := s.ensureSpaceLive(); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(edges, "", "  ")
+func (s *FileSession) commitGraph(ctx context.Context, putNodes []graph.Node, putEdges []graph.Edge, deleteNodes []graph.NodeID, deleteEdges []graph.EdgeID) error {
+	store, err := s.graphStore()
 	if err != nil {
 		return err
 	}
-	b = append(b, '\n')
-	return os.WriteFile(s.edgesPath(), b, 0o600)
+	txn, err := store.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	for _, node := range putNodes {
+		if err := txn.PutNode(node); err != nil {
+			_ = txn.Rollback()
+			return err
+		}
+	}
+	for _, edge := range putEdges {
+		if err := txn.PutEdge(edge); err != nil {
+			_ = txn.Rollback()
+			return err
+		}
+	}
+	for _, id := range deleteEdges {
+		if err := txn.DeleteEdge(id); err != nil {
+			_ = txn.Rollback()
+			return err
+		}
+	}
+	for _, id := range deleteNodes {
+		if err := txn.DeleteNode(id); err != nil {
+			_ = txn.Rollback()
+			return err
+		}
+	}
+	return txn.Commit()
 }
 
 func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID graph.NodeID, templateID *graph.TemplateID, content string, inputProps map[string]any) (graph.Node, error) {
@@ -846,6 +856,51 @@ func copyProps(in map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+func newGraphUUID() (uuid.UUID, error) {
+	return graphstorage.NewUUIDv7()
+}
+
+func changedEdges(original []graph.Edge, candidate []graph.Edge) []graph.Edge {
+	byID := map[graph.EdgeID]graph.Edge{}
+	for _, edge := range original {
+		byID[edge.ID] = edge
+	}
+	out := []graph.Edge{}
+	for _, edge := range candidate {
+		old, ok := byID[edge.ID]
+		if !ok || !edgesEqual(old, edge) {
+			out = append(out, edge)
+		}
+	}
+	return out
+}
+
+func edgesEqual(left graph.Edge, right graph.Edge) bool {
+	return left.ID == right.ID && left.FromID == right.FromID && left.ToID == right.ToID && left.Kind == right.Kind && reflect.DeepEqual(left.Props, right.Props)
+}
+
+func deletedEdges(original []graph.Edge, remaining []graph.Edge) []graph.EdgeID {
+	live := map[graph.EdgeID]struct{}{}
+	for _, edge := range remaining {
+		live[edge.ID] = struct{}{}
+	}
+	out := []graph.EdgeID{}
+	for _, edge := range original {
+		if _, ok := live[edge.ID]; !ok {
+			out = append(out, edge.ID)
+		}
+	}
+	return out
+}
+
+func mapKeys(m map[graph.NodeID]struct{}) []graph.NodeID {
+	out := make([]graph.NodeID, 0, len(m))
+	for id := range m {
+		out = append(out, id)
 	}
 	return out
 }

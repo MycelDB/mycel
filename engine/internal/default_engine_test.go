@@ -361,6 +361,9 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	if node.ID == uuid.Nil || node.Content != "Hello Knotbase" || node.Props["kind"] != "note" {
 		t.Fatalf("unexpected node: %#v", node)
 	}
+	if node.ID.Version() != 7 {
+		t.Fatalf("expected generated node ID to be UUIDv7, got version %d", node.ID.Version())
+	}
 
 	got, err := session.GetNode(ctx, node.ID)
 	if err != nil {
@@ -369,8 +372,11 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	if got.ID != node.ID || got.Content != node.Content || got.Props["kind"] != "note" {
 		t.Fatalf("unexpected persisted node: %#v", got)
 	}
-	if _, err := os.Stat(filepath.Join(dataDir, "graphs", spaceInfo.SpaceID.String(), "nodes.json")); err != nil {
-		t.Fatalf("expected graph nodes file to exist: %v", err)
+	if _, err := os.Stat(filepath.Join(dataDir, "graphs", spaceInfo.SpaceID.String(), "manifest.knot")); err != nil {
+		t.Fatalf("expected graph manifest to exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "graphs", spaceInfo.SpaceID.String(), "segments", "nodes-000001.kseg")); err != nil {
+		t.Fatalf("expected graph node segment to exist: %v", err)
 	}
 }
 

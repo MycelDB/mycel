@@ -1,6 +1,6 @@
 # Storage Layout
 
-KnotDB stores data under a single data root. The root is split into metadata and graph data so the same logical layout can be used by local filesystem storage or object storage backends such as SeaweedFS.
+KnotDB stores data under a single data root. Metadata remains JSON-backed for now, while per-space graph data uses a custom append-only binary segment store.
 
 ```text
 <data-root>/
@@ -14,107 +14,75 @@ KnotDB stores data under a single data root. The root is split into metadata and
 
   graphs/
     <space_id>/
-      nodes.json
-      edges.json
+      .space
+      manifest.knot
+      segments/
+        txns-000001.kseg
+        nodes-000001.kseg
+        edges-000001.kseg
 ```
-
-## Top-level directories
-
-### `meta/`
-
-`meta/` contains system metadata required to authenticate users, define spaces, enforce access, and validate graph data.
-
-Metadata should remain logically separate from graph payload data even when both are stored in the same physical backend.
-
-### `graphs/`
-
-`graphs/` contains the actual graph payload for each space.
-
-Each space gets its own graph directory keyed by `SpaceID`.
 
 ## Metadata files
 
 For an initialized store, `meta/users.json`, `meta/spaces.json`, and `meta/access.json` are required. If any of these files is missing while another exists, startup fails instead of recreating empty metadata and risking silent data loss.
 
-### `meta/users.json`
+`meta/templates/<space_id>.json` contains immutable template versions for a space.
 
-Authoritative user identity and credential store.
+## Graph storage
 
-Contains:
+Each graph space has a `manifest.knot` file and binary segment files.
 
-- internal user ID
-- external user ref
-- optional email/username
-- user status
-- credential material or credential references
+The manifest is a small table of contents for the graph store. It records:
 
-### `meta/spaces.json`
+- storage format version
+- active transaction segment
+- active node segment
+- active edge segment
+- the ordered segment lists to scan when rebuilding indexes
 
-Authoritative space definition store.
+The manifest is not an index. On open, KnotDB scans committed transaction records and rebuilds in-memory indexes from the segment files. During that scan, the graph store is in a `rebuilding_index` state.
 
-Contains:
+## Segment files
 
-- space ID
-- owner user ID
-- space name
-- space status
-- space settings
+Graph records are append-only binary records:
 
-### `meta/access.json`
+- transaction begin
+- transaction commit
+- node put
+- node tombstone
+- edge put
+- edge tombstone
 
-Access-control metadata.
+Every mutation is written inside a transaction. Recovery applies only records belonging to committed transactions; uncommitted records are ignored.
 
-Contains system-role and per-space allow/grant rules for users.
+Node and edge payloads use KnotDB's binary graph codec, not JSON. UUIDs are stored as 16-byte values. New generated node and edge IDs use UUIDv7.
 
-Access control should not be embedded only in users or spaces. Keeping it separate allows support for system superusers, user admins, operators, shared spaces, read-only grants, and space admin rights. The system must retain at least one superuser, and every space must retain at least one admin rule.
+## Indexes
 
-### `meta/templates/<space_id>.json`
+Indexes are rebuilt in memory from committed segment records. Current indexes include:
 
-Per-space node template definitions.
+- node ID to node record
+- edge ID to edge record
+- node template ID to node IDs
+- contains parent to ordered child edges
+- contains child to parent edge
+- simple `journal_day` property index
 
-Contains immutable template versions for a space, including:
+Persisted index snapshots and compaction are intentionally deferred.
 
-- template ID
-- key
-- semver version
-- property policy
-- direct child-node policy
+## Delete behavior
 
-### `meta/system.json`
+Graph deletes append tombstones:
 
-System/storage metadata.
+- deleting a node writes a node tombstone
+- deleting a node also writes tombstones for incident affected edges
+- recursive deletes write tombstones for the subtree and affected edges
 
-Reserved for:
-
-- storage schema version
-- created timestamp
-- engine version
-- migration state
-- backend metadata
-
-## Graph files
-
-### `graphs/<space_id>/nodes.json`
-
-Persisted nodes for a space.
-
-### `graphs/<space_id>/edges.json`
-
-Persisted edges for a space.
-
-## Hard-delete behavior
-
-Delete operations physically remove persisted records and associated files:
-
-- deleting a user removes the user record, access rules for that user, and all spaces owned by the user
-- deleting a space removes its metadata, access rules, templates, and graph directory
-- deleting a node removes the node and incident edges; descendant nodes require recursive deletion
+Metadata deletes still remove metadata files/records as documented by their managers.
 
 ## ID format
 
-IDs are UUID strings unless otherwise noted.
-
-Current key IDs:
+Public IDs remain UUIDs:
 
 - `UserID`
 - `SpaceID`
@@ -122,14 +90,4 @@ Current key IDs:
 - `NodeID`
 - `EdgeID`
 
-## Backend mapping
-
-For local filesystem storage, these paths are directories and files under the data root.
-
-For object storage, the same paths should be treated as object keys under a configured prefix, for example:
-
-```text
-<data-root>/meta/users.json
-<data-root>/graphs/<space_id>/nodes.json
-```
-
+Graph node and edge IDs generated by KnotDB use UUIDv7.
