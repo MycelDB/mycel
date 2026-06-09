@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
@@ -38,6 +39,32 @@ func (m hierarchyTemplateManager) GetByID(ctx context.Context, id graph.Template
 		return graph.Template{}, coretemplate.ErrTemplateNotFound
 	}
 	return tmpl, nil
+}
+
+func TestFileSessionNodeTimestamps(t *testing.T) {
+	ctx := context.Background()
+	sess, tmplID := newHierarchyTestSession(t)
+	node, err := sess.AddNode(ctx, AddNodeInput{TemplateID: &tmplID, Content: "created"})
+	if err != nil {
+		t.Fatalf("add node failed: %v", err)
+	}
+	if node.CreatedAt.IsZero() || node.UpdatedAt.IsZero() {
+		t.Fatalf("expected create timestamps, got %+v", node)
+	}
+	if !node.CreatedAt.Equal(node.UpdatedAt) {
+		t.Fatalf("expected created and updated to match on create, got created_at=%s updated_at=%s", node.CreatedAt, node.UpdatedAt)
+	}
+	time.Sleep(time.Millisecond)
+	updated, err := sess.UpdateNode(ctx, UpdateNodeInput{ID: node.ID, TemplateID: node.TemplateID, Content: "updated", Props: node.Props})
+	if err != nil {
+		t.Fatalf("update node failed: %v", err)
+	}
+	if !updated.CreatedAt.Equal(node.CreatedAt) {
+		t.Fatalf("expected created_at preserved, got %s want %s", updated.CreatedAt, node.CreatedAt)
+	}
+	if !updated.UpdatedAt.After(node.UpdatedAt) {
+		t.Fatalf("expected updated_at to advance, got %s after %s", updated.UpdatedAt, node.UpdatedAt)
+	}
 }
 
 func TestFileSessionMoveSubtreeMovesWholeSubtreeAndPreservesEdge(t *testing.T) {

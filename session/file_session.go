@@ -84,6 +84,9 @@ func (s *FileSession) AddNode(ctx context.Context, in AddNodeInput) (graph.Node,
 	if err != nil {
 		return graph.Node{}, err
 	}
+	now := time.Now().UTC()
+	n.CreatedAt = now
+	n.UpdatedAt = now
 	if err := s.commitGraph(ctx, []graph.Node{n}, nil, nil, nil); err != nil {
 		return graph.Node{}, err
 	}
@@ -132,6 +135,11 @@ func (s *FileSession) UpdateNode(ctx context.Context, in UpdateNodeInput) (graph
 	if err != nil {
 		return graph.Node{}, err
 	}
+	n.CreatedAt = nodes[idx].CreatedAt
+	if n.CreatedAt.IsZero() {
+		n.CreatedAt = time.Now().UTC()
+	}
+	n.UpdatedAt = time.Now().UTC()
 	candidateNodes := append([]graph.Node(nil), nodes...)
 	candidateNodes[idx] = n
 	edges, err := s.readEdges()
@@ -171,6 +179,9 @@ func (s *FileSession) UpsertNode(ctx context.Context, in UpsertNodeInput) (graph
 	if err != nil {
 		return graph.Node{}, err
 	}
+	now := time.Now().UTC()
+	n.CreatedAt = now
+	n.UpdatedAt = now
 	if err := s.commitGraph(ctx, []graph.Node{n}, nil, nil, nil); err != nil {
 		return graph.Node{}, err
 	}
@@ -295,6 +306,9 @@ func (s *FileSession) ApplyGraph(ctx context.Context, in ApplyGraphInput) (Apply
 		if err != nil {
 			return ApplyGraphResult{}, err
 		}
+		now := time.Now().UTC()
+		node.CreatedAt = now
+		node.UpdatedAt = now
 		candidateNodes = append(candidateNodes, node)
 		nodeIndex[node.ID] = len(candidateNodes) - 1
 		result.AddedNodes = append(result.AddedNodes, node)

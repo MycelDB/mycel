@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
@@ -31,6 +32,8 @@ func encodeNode(node graph.Node) ([]byte, error) {
 		writeUUID(&b, *node.TemplateID)
 	}
 	writeString(&b, node.Content)
+	writeTime(&b, node.CreatedAt)
+	writeTime(&b, node.UpdatedAt)
 	if err := writeMap(&b, node.Props); err != nil {
 		return nil, err
 	}
@@ -60,11 +63,19 @@ func decodeNode(payload []byte) (graph.Node, error) {
 	if err != nil {
 		return graph.Node{}, err
 	}
+	createdAt, err := readTime(r)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	updatedAt, err := readTime(r)
+	if err != nil {
+		return graph.Node{}, err
+	}
 	props, err := readMap(r)
 	if err != nil {
 		return graph.Node{}, err
 	}
-	return graph.Node{ID: graph.NodeID(id), TemplateID: templateID, Content: content, Props: props}, nil
+	return graph.Node{ID: graph.NodeID(id), TemplateID: templateID, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }
 
 func encodeEdge(edge graph.Edge) ([]byte, error) {
@@ -110,6 +121,21 @@ func readUUID(r *bytes.Reader) (uuid.UUID, error) {
 	_, err := r.Read(id[:])
 	return id, err
 }
+func writeTime(b *bytes.Buffer, t time.Time) {
+	binary.Write(b, binary.BigEndian, t.UnixNano())
+}
+
+func readTime(r *bytes.Reader) (time.Time, error) {
+	var nanos int64
+	if err := binary.Read(r, binary.BigEndian, &nanos); err != nil {
+		return time.Time{}, err
+	}
+	if nanos == 0 {
+		return time.Time{}, nil
+	}
+	return time.Unix(0, nanos).UTC(), nil
+}
+
 func writeString(b *bytes.Buffer, s string) {
 	binary.Write(b, binary.BigEndian, uint32(len(s)))
 	b.WriteString(s)

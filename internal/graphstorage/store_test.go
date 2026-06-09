@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
@@ -18,7 +19,9 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 		t.Fatalf("open failed: %v", err)
 	}
 	tmpl := graph.TemplateID(uuid.New())
-	parent := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "parent", Props: map[string]any{"journal_day": 20260102}}
+	createdAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Hour)
+	parent := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "parent", Props: map[string]any{"journal_day": 20260102}, CreatedAt: createdAt, UpdatedAt: updatedAt}
 	child := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "child", Props: map[string]any{}}
 	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 0}}
 	tx, err := store.Begin(ctx)
@@ -49,6 +52,9 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	got, err := store.GetNode(ctx, parent.ID)
 	if err != nil || got.Content != "parent" {
 		t.Fatalf("unexpected node=%+v err=%v", got, err)
+	}
+	if !got.CreatedAt.Equal(createdAt) || !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("timestamps did not round trip: got created_at=%s updated_at=%s", got.CreatedAt, got.UpdatedAt)
 	}
 	children, err := store.Children(ctx, parent.ID)
 	if err != nil || len(children) != 1 || children[0].ToID != child.ID {

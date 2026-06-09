@@ -1,6 +1,10 @@
 package graph
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // NodeID uniquely identifies a node in the graph.
 type NodeID = uuid.UUID
@@ -16,4 +20,6 @@ type Node struct {
 	TemplateID *TemplateID
 	Content    string
 	Props      map[string]any
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
