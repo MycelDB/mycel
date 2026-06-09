@@ -20,6 +20,8 @@ const (
 	valueFloat
 	valueArray
 	valueMap
+
+	maxEncodedMapEntries = 1_000_000
 )
 
 func encodeNode(node graph.Node) ([]byte, error) {
@@ -41,41 +43,80 @@ func encodeNode(node graph.Node) ([]byte, error) {
 }
 
 func decodeNode(payload []byte) (graph.Node, error) {
-	r := bytes.NewReader(payload)
-	id, err := readUUID(r)
+	id, templateID, content, r, err := decodeNodePrefix(payload)
 	if err != nil {
 		return graph.Node{}, err
 	}
-	hasTemplate, err := r.ReadByte()
+
+	propsOffset := len(payload) - r.Len()
+	if r.Len() >= 20 && plausibleUnixNanos(peekInt64(payload[propsOffset:])) {
+		createdAt, err := readTime(r)
+		if err != nil {
+			return graph.Node{}, err
+		}
+		updatedAt, err := readTime(r)
+		if err != nil {
+			return graph.Node{}, err
+		}
+		props, err := readMap(r)
+		if err == nil && r.Len() == 0 {
+			return graph.Node{ID: graph.NodeID(id), TemplateID: templateID, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+		}
+	}
+
+	// Legacy node records did not carry timestamps. Keep decoding them so stores
+	// written before timestamp support can still be opened and re-imported.
+	r = bytes.NewReader(payload[propsOffset:])
+	props, err := readMap(r)
 	if err != nil {
 		return graph.Node{}, err
+	}
+	if r.Len() != 0 {
+		return graph.Node{}, fmt.Errorf("%w: trailing node payload bytes", ErrUnsupported)
+	}
+	return graph.Node{ID: graph.NodeID(id), TemplateID: templateID, Content: content, Props: props}, nil
+}
+
+func decodeNodePrefix(payload []byte) (uuid.UUID, *graph.TemplateID, string, *bytes.Reader, error) {
+	r := bytes.NewReader(payload)
+	id, err := readUUID(r)
+	if err != nil {
+		return uuid.Nil, nil, "", nil, err
+	}
+	hasTemplate, err := r.ReadByte()
+	if err != nil {
+		return uuid.Nil, nil, "", nil, err
 	}
 	var templateID *graph.TemplateID
 	if hasTemplate == 1 {
 		tid, err := readUUID(r)
 		if err != nil {
-			return graph.Node{}, err
+			return uuid.Nil, nil, "", nil, err
 		}
 		gtid := graph.TemplateID(tid)
 		templateID = &gtid
 	}
 	content, err := readString(r)
 	if err != nil {
-		return graph.Node{}, err
+		return uuid.Nil, nil, "", nil, err
 	}
-	createdAt, err := readTime(r)
-	if err != nil {
-		return graph.Node{}, err
+	return id, templateID, content, r, nil
+}
+
+func peekInt64(payload []byte) int64 {
+	if len(payload) < 8 {
+		return 0
 	}
-	updatedAt, err := readTime(r)
-	if err != nil {
-		return graph.Node{}, err
+	return int64(binary.BigEndian.Uint64(payload[:8]))
+}
+
+func plausibleUnixNanos(nanos int64) bool {
+	if nanos == 0 {
+		return true
 	}
-	props, err := readMap(r)
-	if err != nil {
-		return graph.Node{}, err
-	}
-	return graph.Node{ID: graph.NodeID(id), TemplateID: templateID, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+	min := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
+	max := time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
+	return nanos >= min && nanos <= max
 }
 
 func encodeEdge(edge graph.Edge) ([]byte, error) {
@@ -122,6 +163,10 @@ func readUUID(r *bytes.Reader) (uuid.UUID, error) {
 	return id, err
 }
 func writeTime(b *bytes.Buffer, t time.Time) {
+	if t.IsZero() {
+		binary.Write(b, binary.BigEndian, int64(0))
+		return
+	}
 	binary.Write(b, binary.BigEndian, t.UnixNano())
 }
 
@@ -172,6 +217,9 @@ func readMap(r *bytes.Reader) (map[string]any, error) {
 	var n uint32
 	if err := binary.Read(r, binary.BigEndian, &n); err != nil {
 		return nil, err
+	}
+	if n > maxEncodedMapEntries {
+		return nil, fmt.Errorf("%w: encoded map has too many entries: %d", ErrUnsupported, n)
 	}
 	out := make(map[string]any, n)
 	for i := uint32(0); i < n; i++ {
