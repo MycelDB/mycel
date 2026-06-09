@@ -47,6 +47,30 @@ Write payloads for edge operations live in `martinbeauvais.com/mbgit/knotbase/kn
 
 - Session hierarchy mutation APIs normalize `order` to contiguous integer values starting at `0`.
 
+## References
+
+`references` edges represent graph-native cross-node links. PKM importers use these for Logseq page and block references:
+
+```text
+entry --references--> page
+entry --references--> referenced block
+```
+
+Typical reference edge properties:
+
+```json
+{
+  "ref_type": "page",
+  "source": "logseq",
+  "raw": "[[Pages/Sieve]]",
+  "target": "Pages/Sieve",
+  "normalized_target": "pages/sieve",
+  "count": 1
+}
+```
+
+For block references, `ref_type` is `block` and `target` stores the source block UUID. Backlinks are derived by finding incoming `references` edges for a node.
+
 ## Notes
 - Domain/UI behaviors (embed rendering, aliases, visual style) should not be encoded as edge kinds.
 - Such concerns should live in higher-level application logic or optional edge properties interpreted by that layer.
