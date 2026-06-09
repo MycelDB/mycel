@@ -1,10 +1,12 @@
 # KnotDB
 
-Go library for KnotDB graph spaces.
+Go library and CLI for KnotDB graph spaces.
 
 Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 
 ## Layout
+- `cmd/knotdb/`: CLI entrypoint binary
+- `internal/cli/`: CLI command implementation (not importable by library consumers)
 - `engine/`: public engine API, constructor, lifecycle, auth, and system/space management
 - `engine/internal/`: default engine implementation
 - `core/`: injectable managers for users, spaces, templates, and access control
@@ -27,6 +29,18 @@ Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 - Space structures: `docs/domain/space/space.md`
 - Access control: `docs/domain/access/access.md`
 - Storage layout: `docs/storage/layout.md`
+- CLI usage: `docs/cli.md`
+
+## CLI
+
+Build and run the operator CLI from the module root:
+
+```sh
+make build
+bin/knotdb --help
+```
+
+See `docs/cli.md` for command reference.
 
 ## Data directory
 
