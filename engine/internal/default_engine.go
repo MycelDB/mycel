@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	coreaccess "martinbeauvais.com/mbgit/knotbase/knotdb/core/access"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/core/space"
-	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/store/acl"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/store/spaces"
+	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/store/user"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
@@ -35,9 +35,9 @@ type defaultEngine struct {
 	state           EngineState
 	dataDir         string
 	userManager     user.Manager
-	spaceManager    space.Manager
-	templateManager coretemplate.Manager
-	accessManager   coreaccess.Manager
+	spaceManager    spaces.Manager
+	templateManager storetemplate.Manager
+	accessManager   acl.Manager
 	authMu          sync.RWMutex
 	authCache       map[AccessToken]authClaims
 }
@@ -62,7 +62,7 @@ type authClaims struct {
 // NewEngine opens (or creates) a local embedded KnotDB runtime.
 //
 // If userManager, spaceManager, templateManager, or accessManager is nil, default file-backed managers are used.
-func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Manager, templateManager coretemplate.Manager, accessManager coreaccess.Manager) (*defaultEngine, error) {
+func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager spaces.Manager, templateManager storetemplate.Manager, accessManager acl.Manager) (*defaultEngine, error) {
 	e := &defaultEngine{state: EngineStateClose, userManager: userManager, spaceManager: spaceManager, templateManager: templateManager, accessManager: accessManager, authCache: map[AccessToken]authClaims{}}
 	if err := e.Open(cfg); err != nil {
 		return nil, err
@@ -144,21 +144,21 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		return err
 	}
 	if e.spaceManager == nil {
-		e.spaceManager = space.NewManager()
+		e.spaceManager = spaces.NewManager()
 	}
 	if err := e.spaceManager.Init(context.Background(), metaDir(cfg.DataDir)); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
 	if e.templateManager == nil {
-		e.templateManager = coretemplate.NewManager()
+		e.templateManager = storetemplate.NewManager()
 	}
 	if err := e.templateManager.Init(context.Background(), templatesDir(cfg.DataDir)); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
 	if e.accessManager == nil {
-		e.accessManager = coreaccess.NewManager()
+		e.accessManager = acl.NewManager()
 	}
 	if err := e.accessManager.Init(context.Background(), metaDir(cfg.DataDir)); err != nil {
 		e.state = EngineStateClose
@@ -196,7 +196,7 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 				return err
 			}
 		}
-		if _, err := e.accessManager.GrantSystemRole(context.Background(), coreaccess.GrantSystemRoleInput{
+		if _, err := e.accessManager.GrantSystemRole(context.Background(), acl.GrantSystemRoleInput{
 			UserID: admin.ID,
 			Roles:  []access.SystemRole{access.SystemRoleSuperuser},
 		}); err != nil {
@@ -396,11 +396,11 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 		return SpaceInfo{}, ErrUnauthorized
 	}
 
-	sp, err := e.spaceManager.Create(ctx, space.CreateInput{OwnerID: auth.UserID, Name: in.Name})
+	sp, err := e.spaceManager.Create(ctx, spaces.CreateInput{OwnerID: auth.UserID, Name: in.Name})
 	if err != nil {
 		return SpaceInfo{}, err
 	}
-	if _, err := e.accessManager.Grant(ctx, coreaccess.GrantInput{
+	if _, err := e.accessManager.Grant(ctx, acl.GrantInput{
 		SpaceID:     sp.SpaceID,
 		UserID:      auth.UserID,
 		Permissions: []access.SpacePermission{access.SpacePermissionAdmin},
@@ -473,7 +473,7 @@ func (e *defaultEngine) GrantSystemRole(ctx context.Context, in GrantSystemRoleI
 	if !canManage {
 		return access.SystemAccessRule{}, ErrUnauthorized
 	}
-	return e.accessManager.GrantSystemRole(ctx, coreaccess.GrantSystemRoleInput{UserID: in.UserID, Roles: in.Roles})
+	return e.accessManager.GrantSystemRole(ctx, acl.GrantSystemRoleInput{UserID: in.UserID, Roles: in.Roles})
 }
 
 func (e *defaultEngine) RevokeSystemRole(ctx context.Context, in RevokeSystemRoleInput) error {
@@ -491,7 +491,7 @@ func (e *defaultEngine) RevokeSystemRole(ctx context.Context, in RevokeSystemRol
 	if !canManage {
 		return ErrUnauthorized
 	}
-	return e.accessManager.RevokeSystemRole(ctx, coreaccess.RevokeSystemRoleInput{UserID: in.UserID})
+	return e.accessManager.RevokeSystemRole(ctx, acl.RevokeSystemRoleInput{UserID: in.UserID})
 }
 
 func (e *defaultEngine) ListSystemAccess(ctx context.Context, in ListSystemAccessInput) ([]access.SystemAccessRule, error) {
@@ -523,7 +523,7 @@ func (e *defaultEngine) GrantSpaceAccess(ctx context.Context, in GrantSpaceAcces
 	if err := e.ensureSpaceAdmin(ctx, auth.UserID, in.SpaceID); err != nil {
 		return access.SpaceAccessRule{}, err
 	}
-	return e.accessManager.Grant(ctx, coreaccess.GrantInput{SpaceID: in.SpaceID, UserID: in.UserID, Permissions: in.Permissions})
+	return e.accessManager.Grant(ctx, acl.GrantInput{SpaceID: in.SpaceID, UserID: in.UserID, Permissions: in.Permissions})
 }
 
 func (e *defaultEngine) RevokeSpaceAccess(ctx context.Context, in RevokeSpaceAccessInput) error {
@@ -537,7 +537,7 @@ func (e *defaultEngine) RevokeSpaceAccess(ctx context.Context, in RevokeSpaceAcc
 	if err := e.ensureSpaceAdmin(ctx, auth.UserID, in.SpaceID); err != nil {
 		return err
 	}
-	return e.accessManager.Revoke(ctx, coreaccess.RevokeInput{SpaceID: in.SpaceID, UserID: in.UserID})
+	return e.accessManager.Revoke(ctx, acl.RevokeInput{SpaceID: in.SpaceID, UserID: in.UserID})
 }
 
 func (e *defaultEngine) ListSpaceAccess(ctx context.Context, in ListSpaceAccessInput) ([]access.SpaceAccessRule, error) {
@@ -559,7 +559,7 @@ func (e *defaultEngine) ensureSpaceAdmin(ctx context.Context, userID identity.Us
 		return fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
 	}
 	if _, err := e.spaceManager.GetByID(ctx, spaceID); err != nil {
-		if errors.Is(err, space.ErrSpaceNotFound) {
+		if errors.Is(err, spaces.ErrSpaceNotFound) {
 			return ErrNotFound
 		}
 		return err
@@ -595,7 +595,7 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (d
 	}
 
 	if _, err := e.spaceManager.GetByID(ctx, spaceID); err != nil {
-		if errors.Is(err, space.ErrSpaceNotFound) {
+		if errors.Is(err, spaces.ErrSpaceNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -673,7 +673,7 @@ func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID domainspace
 		return fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
 	}
 	if _, err := e.spaceManager.GetByID(ctx, spaceID); err != nil {
-		if errors.Is(err, space.ErrSpaceNotFound) {
+		if errors.Is(err, spaces.ErrSpaceNotFound) {
 			return ErrNotFound
 		}
 		return err
@@ -688,7 +688,7 @@ func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID domainspace
 		return err
 	}
 	if err := e.spaceManager.DeleteByID(ctx, spaceID); err != nil {
-		if errors.Is(err, space.ErrSpaceNotFound) {
+		if errors.Is(err, spaces.ErrSpaceNotFound) {
 			return ErrNotFound
 		}
 		return err
@@ -714,7 +714,7 @@ func (e *defaultEngine) ensureNotLastSuperuser(ctx context.Context, userID ident
 			return nil
 		}
 	}
-	return coreaccess.ErrLastSuperuser
+	return acl.ErrLastSuperuser
 }
 
 func (e *defaultEngine) purgeCachedClaimsForUser(userID identity.UserID) {

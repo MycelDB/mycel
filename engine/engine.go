@@ -4,10 +4,10 @@ package engine
 import (
 	"context"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/core/access"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/core/space"
-	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/store/acl"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/store/spaces"
+	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/store/user"
 	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
@@ -80,7 +80,7 @@ type Engine interface {
 }
 
 // NewEngine opens (or creates) a local embedded KnotDB runtime.
-func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager space.Manager, templateManager coretemplate.Manager, accessManager access.Manager) (Engine, error) {
+func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager spaces.Manager, templateManager storetemplate.Manager, accessManager acl.Manager) (Engine, error) {
 	return engineinternal.NewEngine(cfg, userManager, spaceManager, templateManager, accessManager)
 }
 

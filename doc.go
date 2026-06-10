@@ -1,3 +1,4 @@
-// Package knotdb is the KnotDB module root. Use the engine, domain, and core
-// subpackages for the public engine API, domain types, and storage managers.
+// Package knotdb is the KnotDB module root. Use the engine, domain, session,
+// and store subpackages for the public engine API, domain types, graph session
+// API, and storage managers.
 package knotdb

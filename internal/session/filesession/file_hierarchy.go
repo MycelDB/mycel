@@ -1,4 +1,4 @@
-package session
+package filesession
 
 import (
 	"context"
@@ -7,13 +7,14 @@ import (
 	"sort"
 
 	"github.com/google/uuid"
-	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
+	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 )
 
 // MoveSubtree rewires the incoming contains edge for a node so the node and
 // all of its descendants are contained by a new parent.
-func (s *FileSession) MoveSubtree(ctx context.Context, in MoveSubtreeInput) (graph.Edge, error) {
+func (s *FileSession) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInput) (graph.Edge, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Edge{}, err
 	}
@@ -30,7 +31,7 @@ func (s *FileSession) MoveSubtree(ctx context.Context, in MoveSubtreeInput) (gra
 		return graph.Edge{}, fmt.Errorf("%w: new_parent_id is required", s.errors.NotFound)
 	}
 	if in.Order != nil && *in.Order < 0 {
-		return graph.Edge{}, fmt.Errorf("%w: order must be non-negative", coretemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: order must be non-negative", storetemplate.ErrInvalidInput)
 	}
 
 	nodes, err := s.readNodes()
@@ -46,7 +47,7 @@ func (s *FileSession) MoveSubtree(ctx context.Context, in MoveSubtreeInput) (gra
 		return graph.Edge{}, fmt.Errorf("%w: new parent not found", s.errors.NotFound)
 	}
 	if in.NodeID == in.NewParentID {
-		return graph.Edge{}, fmt.Errorf("%w: cannot move a node under itself", coretemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: cannot move a node under itself", storetemplate.ErrInvalidInput)
 	}
 
 	edges, err := s.readEdges()
@@ -56,10 +57,10 @@ func (s *FileSession) MoveSubtree(ctx context.Context, in MoveSubtreeInput) (gra
 	originalEdges := cloneEdges(edges)
 	oldParentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
 	if len(oldParentIndexes) > 1 {
-		return graph.Edge{}, fmt.Errorf("%w: node has multiple contains parents", coretemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: node has multiple contains parents", storetemplate.ErrInvalidInput)
 	}
 	if containsPath(edges, in.NodeID, in.NewParentID) {
-		return graph.Edge{}, fmt.Errorf("%w: move would create a contains cycle", coretemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: move would create a contains cycle", storetemplate.ErrInvalidInput)
 	}
 	childTemplate, err := s.nodeTemplate(ctx, node, "child")
 	if err != nil {
@@ -114,7 +115,7 @@ func (s *FileSession) MoveSubtree(ctx context.Context, in MoveSubtreeInput) (gra
 
 // ReorderChildren rewrites contains edge order properties for all direct
 // children of a parent. The caller must provide the complete child list.
-func (s *FileSession) ReorderChildren(ctx context.Context, in ReorderChildrenInput) ([]graph.Edge, error) {
+func (s *FileSession) ReorderChildren(ctx context.Context, in sessionapi.ReorderChildrenInput) ([]graph.Edge, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return nil, err
 	}
@@ -243,7 +244,7 @@ func setChildPosition(edges []graph.Edge, parentID graph.NodeID, childID graph.N
 		}
 	}
 	if currentPos < 0 {
-		return graph.Edge{}, fmt.Errorf("%w: child is not contained by parent", coretemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: child is not contained by parent", storetemplate.ErrInvalidInput)
 	}
 	movedIndex := indexes[currentPos]
 	indexes = append(indexes[:currentPos], indexes[currentPos+1:]...)
@@ -266,24 +267,24 @@ func validateCompleteChildOrder(edges []graph.Edge, parentID graph.NodeID, child
 	for _, edgeIndex := range orderedContainsEdgeIndexes(edges, parentID) {
 		childID := edges[edgeIndex].ToID
 		if _, exists := childEdgeByID[childID]; exists {
-			return nil, fmt.Errorf("%w: duplicate contains child %s", coretemplate.ErrInvalidInput, childID)
+			return nil, fmt.Errorf("%w: duplicate contains child %s", storetemplate.ErrInvalidInput, childID)
 		}
 		childEdgeByID[childID] = edgeIndex
 	}
 	if len(childIDs) != len(childEdgeByID) {
-		return nil, fmt.Errorf("%w: child_ids must include exactly all children", coretemplate.ErrInvalidInput)
+		return nil, fmt.Errorf("%w: child_ids must include exactly all children", storetemplate.ErrInvalidInput)
 	}
 	seen := map[graph.NodeID]struct{}{}
 	for _, childID := range childIDs {
 		if childID == uuid.Nil {
-			return nil, fmt.Errorf("%w: child_id is required", coretemplate.ErrInvalidInput)
+			return nil, fmt.Errorf("%w: child_id is required", storetemplate.ErrInvalidInput)
 		}
 		if _, duplicate := seen[childID]; duplicate {
-			return nil, fmt.Errorf("%w: duplicate child_id %s", coretemplate.ErrInvalidInput, childID)
+			return nil, fmt.Errorf("%w: duplicate child_id %s", storetemplate.ErrInvalidInput, childID)
 		}
 		seen[childID] = struct{}{}
 		if _, ok := childEdgeByID[childID]; !ok {
-			return nil, fmt.Errorf("%w: child_id %s is not contained by parent", coretemplate.ErrInvalidInput, childID)
+			return nil, fmt.Errorf("%w: child_id %s is not contained by parent", storetemplate.ErrInvalidInput, childID)
 		}
 	}
 	return childEdgeByID, nil

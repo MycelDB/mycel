@@ -1,4 +1,4 @@
-package session
+package filesession
 
 import (
 	"context"
@@ -12,20 +12,26 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
+	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
+	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 )
+
+// New opens the default file-backed session implementation.
+func New(graphsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs}
+}
 
 // FileSession is the default file-backed Session implementation.
 type FileSession struct {
 	graphsDir       string
 	spaceID         domainspace.SpaceID
-	templateManager TemplateManager
-	permissions     Permissions
-	errors          Errors
+	templateManager storetemplate.Manager
+	permissions     sessionapi.Permissions
+	errors          sessionapi.Errors
 	store           *graphstorage.LocalStore
 	closed          bool
 }
@@ -33,7 +39,7 @@ type FileSession struct {
 // Query starts a programmatic graph query over this session.
 func (s *FileSession) Query() *query.Builder { return query.NewBuilder(s) }
 
-func (s *FileSession) ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error) {
+func (s *FileSession) ImportTemplates(ctx context.Context, in sessionapi.ImportTemplatesInput) ([]graph.Template, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return nil, err
 	}
@@ -59,7 +65,7 @@ func (s *FileSession) ListTemplates(ctx context.Context) ([]graph.Template, erro
 	return s.templateManager.ListBySpace(ctx, s.spaceID)
 }
 
-func (s *FileSession) AddNode(ctx context.Context, in AddNodeInput) (graph.Node, error) {
+func (s *FileSession) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
 	}
@@ -110,7 +116,7 @@ func (s *FileSession) ListNodes(ctx context.Context) ([]graph.Node, error) {
 	return cloneNodes(nodes), nil
 }
 
-func (s *FileSession) UpdateNode(ctx context.Context, in UpdateNodeInput) (graph.Node, error) {
+func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeInput) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
 	}
@@ -155,9 +161,9 @@ func (s *FileSession) UpdateNode(ctx context.Context, in UpdateNodeInput) (graph
 	return n, nil
 }
 
-func (s *FileSession) UpsertNode(ctx context.Context, in UpsertNodeInput) (graph.Node, error) {
+func (s *FileSession) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
-		return s.AddNode(ctx, AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+		return s.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
 	}
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
@@ -173,7 +179,7 @@ func (s *FileSession) UpsertNode(ctx context.Context, in UpsertNodeInput) (graph
 		return graph.Node{}, err
 	}
 	if findNodeIndex(nodes, *in.ID) >= 0 {
-		return s.UpdateNode(ctx, UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+		return s.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
 	}
 	n, err := s.buildNode(ctx, nodes, *in.ID, in.TemplateID, in.Content, in.Props)
 	if err != nil {
@@ -188,7 +194,7 @@ func (s *FileSession) UpsertNode(ctx context.Context, in UpsertNodeInput) (graph
 	return n, nil
 }
 
-func (s *FileSession) AddEdge(ctx context.Context, in AddEdgeInput) (graph.Edge, error) {
+func (s *FileSession) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (graph.Edge, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Edge{}, err
 	}
@@ -249,38 +255,38 @@ func (s *FileSession) ListEdges(ctx context.Context) ([]graph.Edge, error) {
 	return cloneEdges(edges), nil
 }
 
-func (s *FileSession) AddGraph(ctx context.Context, in AddGraphInput) error {
-	_, err := s.ApplyGraph(ctx, ApplyGraphInput{AddNodes: in.Nodes, AddEdges: in.Edges, Atomic: in.Atomic})
+func (s *FileSession) AddGraph(ctx context.Context, in sessionapi.AddGraphInput) error {
+	_, err := s.ApplyGraph(ctx, sessionapi.ApplyGraphInput{AddNodes: in.Nodes, AddEdges: in.Edges, Atomic: in.Atomic})
 	return err
 }
 
-func (s *FileSession) ApplyGraph(ctx context.Context, in ApplyGraphInput) (ApplyGraphResult, error) {
+func (s *FileSession) ApplyGraph(ctx context.Context, in sessionapi.ApplyGraphInput) (sessionapi.ApplyGraphResult, error) {
 	if err := s.ensureOpen(ctx); err != nil {
-		return ApplyGraphResult{}, err
+		return sessionapi.ApplyGraphResult{}, err
 	}
 	if err := s.ensureSpaceLive(); err != nil {
-		return ApplyGraphResult{}, err
+		return sessionapi.ApplyGraphResult{}, err
 	}
 	if err := s.ensureWrite(); err != nil {
-		return ApplyGraphResult{}, err
+		return sessionapi.ApplyGraphResult{}, err
 	}
 	nodes, err := s.readNodes()
 	if err != nil {
-		return ApplyGraphResult{}, err
+		return sessionapi.ApplyGraphResult{}, err
 	}
 	edges, err := s.readEdges()
 	if err != nil {
-		return ApplyGraphResult{}, err
+		return sessionapi.ApplyGraphResult{}, err
 	}
 
 	candidateNodes := cloneNodes(nodes)
 	candidateEdges := cloneEdges(edges)
-	result := ApplyGraphResult{}
+	result := sessionapi.ApplyGraphResult{}
 
 	for _, del := range in.DeleteNodes {
 		deletedIDs, newNodes, newEdges, err := s.applyDeleteNode(candidateNodes, candidateEdges, del)
 		if err != nil {
-			return ApplyGraphResult{}, err
+			return sessionapi.ApplyGraphResult{}, err
 		}
 		candidateNodes = newNodes
 		candidateEdges = newEdges
@@ -291,20 +297,20 @@ func (s *FileSession) ApplyGraph(ctx context.Context, in ApplyGraphInput) (Apply
 	for _, add := range in.AddNodes {
 		nodeID, err := newGraphUUID()
 		if err != nil {
-			return ApplyGraphResult{}, err
+			return sessionapi.ApplyGraphResult{}, err
 		}
 		if add.ID != nil {
 			nodeID = *add.ID
 		}
 		if nodeID == uuid.Nil {
-			return ApplyGraphResult{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
+			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
 		}
 		if _, exists := nodeIndex[nodeID]; exists {
-			return ApplyGraphResult{}, fmt.Errorf("%w: duplicate node_id %s", coretemplate.ErrInvalidInput, nodeID)
+			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: duplicate node_id %s", storetemplate.ErrInvalidInput, nodeID)
 		}
 		node, err := s.buildNode(ctx, candidateNodes, nodeID, add.TemplateID, add.Content, add.Props)
 		if err != nil {
-			return ApplyGraphResult{}, err
+			return sessionapi.ApplyGraphResult{}, err
 		}
 		now := time.Now().UTC()
 		node.CreatedAt = now
@@ -318,29 +324,29 @@ func (s *FileSession) ApplyGraph(ctx context.Context, in ApplyGraphInput) (Apply
 	for _, add := range in.AddEdges {
 		edgeID, err := newGraphUUID()
 		if err != nil {
-			return ApplyGraphResult{}, err
+			return sessionapi.ApplyGraphResult{}, err
 		}
 		if add.ID != nil {
 			edgeID = *add.ID
 		}
 		if edgeID == uuid.Nil {
-			return ApplyGraphResult{}, fmt.Errorf("%w: edge_id is required", s.errors.NotFound)
+			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: edge_id is required", s.errors.NotFound)
 		}
 		if _, exists := edgeIndex[edgeID]; exists {
-			return ApplyGraphResult{}, fmt.Errorf("%w: duplicate edge_id %s", coretemplate.ErrInvalidInput, edgeID)
+			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: duplicate edge_id %s", storetemplate.ErrInvalidInput, edgeID)
 		}
 		fromIdx, ok := nodeIndex[add.FromID]
 		if !ok {
-			return ApplyGraphResult{}, fmt.Errorf("%w: from node not found", s.errors.NotFound)
+			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: from node not found", s.errors.NotFound)
 		}
 		toIdx, ok := nodeIndex[add.ToID]
 		if !ok {
-			return ApplyGraphResult{}, fmt.Errorf("%w: to node not found", s.errors.NotFound)
+			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: to node not found", s.errors.NotFound)
 		}
 		from := candidateNodes[fromIdx]
 		to := candidateNodes[toIdx]
 		if err := s.validateNewEdge(ctx, from, to, add.Kind, candidateEdges); err != nil {
-			return ApplyGraphResult{}, err
+			return sessionapi.ApplyGraphResult{}, err
 		}
 		edge := graph.Edge{ID: edgeID, FromID: add.FromID, ToID: add.ToID, Kind: add.Kind, Props: copyProps(add.Props)}
 		candidateEdges = append(candidateEdges, edge)
@@ -350,7 +356,7 @@ func (s *FileSession) ApplyGraph(ctx context.Context, in ApplyGraphInput) (Apply
 
 	deletedEdgeIDs := deletedEdges(edges, candidateEdges)
 	if err := s.commitGraph(ctx, result.AddedNodes, result.AddedEdges, result.DeletedNodeIDs, deletedEdgeIDs); err != nil {
-		return ApplyGraphResult{}, err
+		return sessionapi.ApplyGraphResult{}, err
 	}
 	return result, nil
 }
@@ -376,7 +382,7 @@ func (s *FileSession) GetNode(ctx context.Context, id graph.NodeID) (graph.Node,
 	return n, nil
 }
 
-func (s *FileSession) DeleteNode(ctx context.Context, in DeleteNodeInput) error {
+func (s *FileSession) DeleteNode(ctx context.Context, in sessionapi.DeleteNodeInput) error {
 	if err := s.ensureOpen(ctx); err != nil {
 		return err
 	}
@@ -446,7 +452,7 @@ func (s *FileSession) DeleteNode(ctx context.Context, in DeleteNodeInput) error 
 	return s.commitGraph(ctx, nil, nil, mapKeys(deleteIDs), deletedEdges)
 }
 
-func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in DeleteNodeInput) ([]graph.NodeID, []graph.Node, []graph.Edge, error) {
+func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in sessionapi.DeleteNodeInput) ([]graph.NodeID, []graph.Node, []graph.Edge, error) {
 	if in.ID == uuid.Nil {
 		return nil, nil, nil, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
 	}
@@ -632,7 +638,7 @@ func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID 
 	if templateID != nil {
 		t, err := s.templateManager.GetByID(ctx, *templateID)
 		if err != nil {
-			if errors.Is(err, coretemplate.ErrTemplateNotFound) {
+			if errors.Is(err, storetemplate.ErrTemplateNotFound) {
 				return graph.Node{}, fmt.Errorf("%w: template not found", s.errors.NotFound)
 			}
 			return graph.Node{}, err
@@ -652,15 +658,15 @@ func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to g
 		return nil
 	}
 	if from.ID == to.ID {
-		return fmt.Errorf("%w: contains edge cannot target itself", coretemplate.ErrInvalidInput)
+		return fmt.Errorf("%w: contains edge cannot target itself", storetemplate.ErrInvalidInput)
 	}
 	for _, edge := range edges {
 		if edge.Kind == graph.EdgeKindContains && edge.ToID == to.ID {
-			return fmt.Errorf("%w: node already has a contains parent", coretemplate.ErrInvalidInput)
+			return fmt.Errorf("%w: node already has a contains parent", storetemplate.ErrInvalidInput)
 		}
 	}
 	if containsPath(edges, to.ID, from.ID) {
-		return fmt.Errorf("%w: contains edge would create a cycle", coretemplate.ErrInvalidInput)
+		return fmt.Errorf("%w: contains edge would create a cycle", storetemplate.ErrInvalidInput)
 	}
 	childTemplate, err := s.nodeTemplate(ctx, to, "child")
 	if err != nil {
@@ -710,7 +716,7 @@ func (s *FileSession) nodeTemplate(ctx context.Context, node graph.Node, label s
 	}
 	t, err := s.templateManager.GetByID(ctx, *node.TemplateID)
 	if err != nil {
-		if errors.Is(err, coretemplate.ErrTemplateNotFound) {
+		if errors.Is(err, storetemplate.ErrTemplateNotFound) {
 			return nil, fmt.Errorf("%w: %s template not found", s.errors.NotFound, label)
 		}
 		return nil, err
@@ -750,7 +756,7 @@ func (s *FileSession) validateChild(ctx context.Context, parent graph.Node, chil
 	}
 	parentTemplate, err := s.templateManager.GetByID(ctx, *parent.TemplateID)
 	if err != nil {
-		if errors.Is(err, coretemplate.ErrTemplateNotFound) {
+		if errors.Is(err, storetemplate.ErrTemplateNotFound) {
 			return fmt.Errorf("%w: parent template not found", s.errors.NotFound)
 		}
 		return err
@@ -759,20 +765,20 @@ func (s *FileSession) validateChild(ctx context.Context, parent graph.Node, chil
 		return fmt.Errorf("%w: parent template not found in space", s.errors.NotFound)
 	}
 	if !parentTemplate.Children.Allowed {
-		return fmt.Errorf("%w: parent template does not allow children", coretemplate.ErrInvalidInput)
+		return fmt.Errorf("%w: parent template does not allow children", storetemplate.ErrInvalidInput)
 	}
 	if len(parentTemplate.Children.AllowedTemplates) == 0 {
 		return nil
 	}
 	if childTemplate == nil {
-		return fmt.Errorf("%w: child template is required", coretemplate.ErrInvalidInput)
+		return fmt.Errorf("%w: child template is required", storetemplate.ErrInvalidInput)
 	}
 	for _, ref := range parentTemplate.Children.AllowedTemplates {
 		if ref.Key == childTemplate.Key && ref.Version == childTemplate.Version {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: child template %s@%s is not allowed", coretemplate.ErrInvalidInput, childTemplate.Key, childTemplate.Version)
+	return fmt.Errorf("%w: child template %s@%s is not allowed", storetemplate.ErrInvalidInput, childTemplate.Key, childTemplate.Version)
 }
 
 func validateProps(props *map[string]any, tmpl graph.Template) error {
@@ -788,14 +794,14 @@ func validateProps(props *map[string]any, tmpl graph.Template) error {
 	}
 	for _, name := range tmpl.Properties.Forbidden {
 		if _, ok := (*props)[name]; ok {
-			return fmt.Errorf("%w: property %q is forbidden", coretemplate.ErrInvalidInput, name)
+			return fmt.Errorf("%w: property %q is forbidden", storetemplate.ErrInvalidInput, name)
 		}
 	}
 	for name, value := range *props {
 		prop, ok := allowed[name]
 		if !ok {
 			if !tmpl.Properties.AllowExtra {
-				return fmt.Errorf("%w: property %q is not allowed", coretemplate.ErrInvalidInput, name)
+				return fmt.Errorf("%w: property %q is not allowed", storetemplate.ErrInvalidInput, name)
 			}
 			continue
 		}
@@ -809,7 +815,7 @@ func validateProps(props *map[string]any, tmpl graph.Template) error {
 		}
 		value, ok := (*props)[prop.Name]
 		if !ok || value == nil {
-			return fmt.Errorf("%w: required property %q is missing", coretemplate.ErrInvalidInput, prop.Name)
+			return fmt.Errorf("%w: required property %q is missing", storetemplate.ErrInvalidInput, prop.Name)
 		}
 	}
 	return nil
@@ -817,7 +823,7 @@ func validateProps(props *map[string]any, tmpl graph.Template) error {
 
 func validatePropertyValue(prop graph.TemplateProperty, value any) error {
 	if value == nil {
-		return fmt.Errorf("%w: property %q cannot be null", coretemplate.ErrInvalidInput, prop.Name)
+		return fmt.Errorf("%w: property %q cannot be null", storetemplate.ErrInvalidInput, prop.Name)
 	}
 	valid := false
 	switch prop.Type {
@@ -834,10 +840,10 @@ func validatePropertyValue(prop graph.TemplateProperty, value any) error {
 	case graph.PropertyTypeDate:
 		valid = isDate(value)
 	default:
-		return fmt.Errorf("%w: unsupported property type %q", coretemplate.ErrInvalidInput, prop.Type)
+		return fmt.Errorf("%w: unsupported property type %q", storetemplate.ErrInvalidInput, prop.Type)
 	}
 	if !valid {
-		return fmt.Errorf("%w: property %q must be %s", coretemplate.ErrInvalidInput, prop.Name, prop.Type)
+		return fmt.Errorf("%w: property %q must be %s", storetemplate.ErrInvalidInput, prop.Name, prop.Type)
 	}
 	return nil
 }

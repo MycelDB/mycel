@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	coreuser "martinbeauvais.com/mbgit/knotbase/knotdb/core/user"
+	storeuser "martinbeauvais.com/mbgit/knotbase/knotdb/store/user"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
@@ -205,7 +205,7 @@ func TestRuntimeEngine_GrantSystemRoleAndRevokeLastSuperuserFails(t *testing.T) 
 		t.Fatalf("expected admin auth success, got error: %v", err)
 	}
 	status := identity.UserStatusActive
-	operator, err := engine.userManager.Create(ctx, coreuser.CreateInput{
+	operator, err := engine.userManager.Create(ctx, storeuser.CreateInput{
 		User:     identity.UserInput{Ref: identity.UserRef("operator@example.com"), Status: status},
 		Password: "operator-password",
 	})
@@ -290,7 +290,7 @@ func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutSystemRole(t *testing.T) {
 	}
 
 	status := identity.UserStatusActive
-	_, err := engine.userManager.Create(context.Background(), coreuser.CreateInput{
+	_, err := engine.userManager.Create(context.Background(), storeuser.CreateInput{
 		User:     identity.UserInput{Ref: identity.UserRef("regular@example.com"), Status: status},
 		Password: "regular-password",
 	})
@@ -415,7 +415,7 @@ func TestRuntimeEngine_SpaceAccessReadOnlyUserCannotWrite(t *testing.T) {
 	_ = adminSession.Close()
 
 	status := identity.UserStatusActive
-	reader, err := engine.userManager.Create(ctx, coreuser.CreateInput{
+	reader, err := engine.userManager.Create(ctx, storeuser.CreateInput{
 		User:     identity.UserInput{Ref: identity.UserRef("reader@example.com"), Status: status},
 		Password: "reader-password",
 	})
@@ -692,7 +692,7 @@ func TestRuntimeEngine_DeleteUserCascadesOwnedSpaces(t *testing.T) {
 	if err := engine.DeleteUser(ctx, DeleteUserInput{AccessToken: adminToken.AccessToken, UserID: bob.ID}); err != nil {
 		t.Fatalf("expected delete user success, got error: %v", err)
 	}
-	if _, err := engine.userManager.GetByID(ctx, bob.ID); !errors.Is(err, coreuser.ErrUserNotFound) {
+	if _, err := engine.userManager.GetByID(ctx, bob.ID); !errors.Is(err, storeuser.ErrUserNotFound) {
 		t.Fatalf("expected user manager not found, got: %v", err)
 	}
 	if _, err := engine.spaceManager.GetByID(ctx, sp.SpaceID); err == nil {

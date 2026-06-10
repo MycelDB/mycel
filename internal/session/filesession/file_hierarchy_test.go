@@ -1,4 +1,4 @@
-package session
+package filesession
 
 import (
 	"context"
@@ -9,17 +9,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	coretemplate "martinbeauvais.com/mbgit/knotbase/knotdb/core/template"
+	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	q "martinbeauvais.com/mbgit/knotbase/knotdb/query"
+	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
 )
 
 type hierarchyTemplateManager struct {
 	templates map[graph.TemplateID]graph.Template
 }
 
-func (m hierarchyTemplateManager) Import(ctx context.Context, spaceID domainspace.SpaceID, doc ImportDocument) ([]graph.Template, error) {
+func (m hierarchyTemplateManager) Import(ctx context.Context, spaceID domainspace.SpaceID, doc storetemplate.ImportDocument) ([]graph.Template, error) {
 	return nil, nil
 }
 
@@ -36,15 +37,30 @@ func (m hierarchyTemplateManager) ListBySpace(ctx context.Context, spaceID domai
 func (m hierarchyTemplateManager) GetByID(ctx context.Context, id graph.TemplateID) (graph.Template, error) {
 	tmpl, ok := m.templates[id]
 	if !ok {
-		return graph.Template{}, coretemplate.ErrTemplateNotFound
+		return graph.Template{}, storetemplate.ErrTemplateNotFound
 	}
 	return tmpl, nil
+}
+
+func (m hierarchyTemplateManager) Init(ctx context.Context, location string) error { return nil }
+
+func (m hierarchyTemplateManager) Find(ctx context.Context, spaceID domainspace.SpaceID, key string, version string) (graph.Template, error) {
+	for _, tmpl := range m.templates {
+		if tmpl.SpaceID == spaceID && tmpl.Key == key && tmpl.Version == version {
+			return tmpl, nil
+		}
+	}
+	return graph.Template{}, storetemplate.ErrTemplateNotFound
+}
+
+func (m hierarchyTemplateManager) DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error {
+	return nil
 }
 
 func TestFileSessionNodeTimestamps(t *testing.T) {
 	ctx := context.Background()
 	sess, tmplID := newHierarchyTestSession(t)
-	node, err := sess.AddNode(ctx, AddNodeInput{TemplateID: &tmplID, Content: "created"})
+	node, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "created"})
 	if err != nil {
 		t.Fatalf("add node failed: %v", err)
 	}
@@ -55,7 +71,7 @@ func TestFileSessionNodeTimestamps(t *testing.T) {
 		t.Fatalf("expected created and updated to match on create, got created_at=%s updated_at=%s", node.CreatedAt, node.UpdatedAt)
 	}
 	time.Sleep(time.Millisecond)
-	updated, err := sess.UpdateNode(ctx, UpdateNodeInput{ID: node.ID, TemplateID: node.TemplateID, Content: "updated", Props: node.Props})
+	updated, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: node.ID, TemplateID: node.TemplateID, Content: "updated", Props: node.Props})
 	if err != nil {
 		t.Fatalf("update node failed: %v", err)
 	}
@@ -72,8 +88,8 @@ func TestFileSessionMoveSubtreeMovesWholeSubtreeAndPreservesEdge(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	rootID, aID, bID, cID, dID, eID := nodeID(), nodeID(), nodeID(), nodeID(), nodeID(), nodeID()
 	bEdgeID := graph.EdgeID(uuid.New())
-	if _, err := sess.ApplyGraph(ctx, ApplyGraphInput{
-		AddNodes: []AddNodeInput{
+	if _, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
+		AddNodes: []sessionapi.AddNodeInput{
 			{ID: &rootID, TemplateID: &tmplID, Content: "root"},
 			{ID: &aID, TemplateID: &tmplID, Content: "A"},
 			{ID: &bID, TemplateID: &tmplID, Content: "B"},
@@ -81,7 +97,7 @@ func TestFileSessionMoveSubtreeMovesWholeSubtreeAndPreservesEdge(t *testing.T) {
 			{ID: &dID, TemplateID: &tmplID, Content: "D"},
 			{ID: &eID, TemplateID: &tmplID, Content: "E"},
 		},
-		AddEdges: []AddEdgeInput{
+		AddEdges: []sessionapi.AddEdgeInput{
 			containsInput(rootID, aID, 0),
 			containsInput(rootID, cID, 1),
 			{ID: &bEdgeID, FromID: aID, ToID: bID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 0, "source": "test"}},
@@ -92,7 +108,7 @@ func TestFileSessionMoveSubtreeMovesWholeSubtreeAndPreservesEdge(t *testing.T) {
 		t.Fatalf("build graph failed: %v", err)
 	}
 
-	moved, err := sess.MoveSubtree(ctx, MoveSubtreeInput{NodeID: bID, NewParentID: cID})
+	moved, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: bID, NewParentID: cID})
 	if err != nil {
 		t.Fatalf("move subtree failed: %v", err)
 	}
@@ -111,8 +127,8 @@ func TestFileSessionMoveSubtreeInsertsAtExplicitOrderAndNormalizes(t *testing.T)
 	ctx := context.Background()
 	sess, tmplID := newHierarchyTestSession(t)
 	rootID, aID, bID, cID, dID, eID := nodeID(), nodeID(), nodeID(), nodeID(), nodeID(), nodeID()
-	if _, err := sess.ApplyGraph(ctx, ApplyGraphInput{
-		AddNodes: []AddNodeInput{
+	if _, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
+		AddNodes: []sessionapi.AddNodeInput{
 			{ID: &rootID, TemplateID: &tmplID, Content: "root"},
 			{ID: &aID, TemplateID: &tmplID, Content: "A"},
 			{ID: &bID, TemplateID: &tmplID, Content: "B"},
@@ -120,7 +136,7 @@ func TestFileSessionMoveSubtreeInsertsAtExplicitOrderAndNormalizes(t *testing.T)
 			{ID: &dID, TemplateID: &tmplID, Content: "D"},
 			{ID: &eID, TemplateID: &tmplID, Content: "E"},
 		},
-		AddEdges: []AddEdgeInput{
+		AddEdges: []sessionapi.AddEdgeInput{
 			containsInput(rootID, aID, 0),
 			containsInput(rootID, cID, 1),
 			containsInput(aID, bID, 0),
@@ -132,7 +148,7 @@ func TestFileSessionMoveSubtreeInsertsAtExplicitOrderAndNormalizes(t *testing.T)
 	}
 
 	order := 0
-	if _, err := sess.MoveSubtree(ctx, MoveSubtreeInput{NodeID: dID, NewParentID: cID, Order: &order}); err != nil {
+	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: dID, NewParentID: cID, Order: &order}); err != nil {
 		t.Fatalf("move subtree failed: %v", err)
 	}
 	assertChildren(t, sess, aID, bID)
@@ -143,14 +159,14 @@ func TestFileSessionMoveSubtreeWithinSameParentReorders(t *testing.T) {
 	ctx := context.Background()
 	sess, tmplID := newHierarchyTestSession(t)
 	rootID, aID, bID, cID := nodeID(), nodeID(), nodeID(), nodeID()
-	if _, err := sess.ApplyGraph(ctx, ApplyGraphInput{
-		AddNodes: []AddNodeInput{{ID: &rootID, TemplateID: &tmplID}, {ID: &aID, TemplateID: &tmplID}, {ID: &bID, TemplateID: &tmplID}, {ID: &cID, TemplateID: &tmplID}},
-		AddEdges: []AddEdgeInput{containsInput(rootID, aID, 0), containsInput(rootID, bID, 1), containsInput(rootID, cID, 2)},
+	if _, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
+		AddNodes: []sessionapi.AddNodeInput{{ID: &rootID, TemplateID: &tmplID}, {ID: &aID, TemplateID: &tmplID}, {ID: &bID, TemplateID: &tmplID}, {ID: &cID, TemplateID: &tmplID}},
+		AddEdges: []sessionapi.AddEdgeInput{containsInput(rootID, aID, 0), containsInput(rootID, bID, 1), containsInput(rootID, cID, 2)},
 	}); err != nil {
 		t.Fatalf("build graph failed: %v", err)
 	}
 	order := 0
-	if _, err := sess.MoveSubtree(ctx, MoveSubtreeInput{NodeID: cID, NewParentID: rootID, Order: &order}); err != nil {
+	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: cID, NewParentID: rootID, Order: &order}); err != nil {
 		t.Fatalf("same-parent move failed: %v", err)
 	}
 	assertChildren(t, sess, rootID, cID, aID, bID)
@@ -160,10 +176,10 @@ func TestFileSessionMoveRootNodeUnderParent(t *testing.T) {
 	ctx := context.Background()
 	sess, tmplID := newHierarchyTestSession(t)
 	parentID, rootID := nodeID(), nodeID()
-	if _, err := sess.ApplyGraph(ctx, ApplyGraphInput{AddNodes: []AddNodeInput{{ID: &parentID, TemplateID: &tmplID}, {ID: &rootID, TemplateID: &tmplID}}}); err != nil {
+	if _, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{AddNodes: []sessionapi.AddNodeInput{{ID: &parentID, TemplateID: &tmplID}, {ID: &rootID, TemplateID: &tmplID}}}); err != nil {
 		t.Fatalf("build graph failed: %v", err)
 	}
-	moved, err := sess.MoveSubtree(ctx, MoveSubtreeInput{NodeID: rootID, NewParentID: parentID})
+	moved, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: rootID, NewParentID: parentID})
 	if err != nil {
 		t.Fatalf("move root failed: %v", err)
 	}
@@ -177,27 +193,27 @@ func TestFileSessionMoveSubtreeRejectsInvalidMoves(t *testing.T) {
 	ctx := context.Background()
 	sess, tmplID := newHierarchyTestSession(t)
 	rootID, aID, bID := nodeID(), nodeID(), nodeID()
-	if _, err := sess.ApplyGraph(ctx, ApplyGraphInput{
-		AddNodes: []AddNodeInput{{ID: &rootID, TemplateID: &tmplID}, {ID: &aID, TemplateID: &tmplID}, {ID: &bID, TemplateID: &tmplID}},
-		AddEdges: []AddEdgeInput{containsInput(rootID, aID, 0), containsInput(aID, bID, 0)},
+	if _, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
+		AddNodes: []sessionapi.AddNodeInput{{ID: &rootID, TemplateID: &tmplID}, {ID: &aID, TemplateID: &tmplID}, {ID: &bID, TemplateID: &tmplID}},
+		AddEdges: []sessionapi.AddEdgeInput{containsInput(rootID, aID, 0), containsInput(aID, bID, 0)},
 	}); err != nil {
 		t.Fatalf("build graph failed: %v", err)
 	}
-	if _, err := sess.MoveSubtree(ctx, MoveSubtreeInput{NodeID: aID, NewParentID: bID}); !errors.Is(err, coretemplate.ErrInvalidInput) {
+	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: aID, NewParentID: bID}); !errors.Is(err, storetemplate.ErrInvalidInput) {
 		t.Fatalf("expected cycle move invalid input, got %v", err)
 	}
-	if _, err := sess.MoveSubtree(ctx, MoveSubtreeInput{NodeID: aID, NewParentID: aID}); !errors.Is(err, coretemplate.ErrInvalidInput) {
+	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: aID, NewParentID: aID}); !errors.Is(err, storetemplate.ErrInvalidInput) {
 		t.Fatalf("expected self move invalid input, got %v", err)
 	}
 	missingID := nodeID()
-	if _, err := sess.MoveSubtree(ctx, MoveSubtreeInput{NodeID: missingID, NewParentID: rootID}); err == nil {
+	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: missingID, NewParentID: rootID}); err == nil {
 		t.Fatal("expected missing moved node error")
 	}
-	if _, err := sess.MoveSubtree(ctx, MoveSubtreeInput{NodeID: aID, NewParentID: missingID}); err == nil {
+	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: aID, NewParentID: missingID}); err == nil {
 		t.Fatal("expected missing new parent error")
 	}
 	badOrder := -1
-	if _, err := sess.MoveSubtree(ctx, MoveSubtreeInput{NodeID: aID, NewParentID: rootID, Order: &badOrder}); !errors.Is(err, coretemplate.ErrInvalidInput) {
+	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: aID, NewParentID: rootID, Order: &badOrder}); !errors.Is(err, storetemplate.ErrInvalidInput) {
 		t.Fatalf("expected negative order invalid input, got %v", err)
 	}
 }
@@ -215,15 +231,15 @@ func TestFileSessionMoveSubtreeValidatesChildTemplatePolicy(t *testing.T) {
 		allowedTemplateID:   {ID: allowedTemplateID, SpaceID: spaceID, Key: "allowed", Version: "1", Children: graph.ChildPolicy{Allowed: true}},
 		forbiddenTemplateID: {ID: forbiddenTemplateID, SpaceID: spaceID, Key: "forbidden", Version: "1", Children: graph.ChildPolicy{Allowed: true}},
 	}}
-	sess := NewSession(graphsDir, spaceID, manager, Permissions{Read: true, Write: true, Admin: true}, Errors{NotFound: errors.New("not found")})
+	sess := New(graphsDir, spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{NotFound: errors.New("not found")})
 	parentID, oldParentID, childID := nodeID(), nodeID(), nodeID()
-	if _, err := sess.ApplyGraph(ctx, ApplyGraphInput{
-		AddNodes: []AddNodeInput{{ID: &parentID, TemplateID: &parentTemplateID}, {ID: &oldParentID, TemplateID: &allowedTemplateID}, {ID: &childID, TemplateID: &forbiddenTemplateID}},
-		AddEdges: []AddEdgeInput{containsInput(oldParentID, childID, 0)},
+	if _, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
+		AddNodes: []sessionapi.AddNodeInput{{ID: &parentID, TemplateID: &parentTemplateID}, {ID: &oldParentID, TemplateID: &allowedTemplateID}, {ID: &childID, TemplateID: &forbiddenTemplateID}},
+		AddEdges: []sessionapi.AddEdgeInput{containsInput(oldParentID, childID, 0)},
 	}); err != nil {
 		t.Fatalf("build graph failed: %v", err)
 	}
-	if _, err := sess.MoveSubtree(ctx, MoveSubtreeInput{NodeID: childID, NewParentID: parentID}); !errors.Is(err, coretemplate.ErrInvalidInput) {
+	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: childID, NewParentID: parentID}); !errors.Is(err, storetemplate.ErrInvalidInput) {
 		t.Fatalf("expected template policy invalid input, got %v", err)
 	}
 }
@@ -232,18 +248,18 @@ func TestFileSessionReorderChildrenRequiresCompleteListAndQueryUsesOrder(t *test
 	ctx := context.Background()
 	sess, tmplID := newHierarchyTestSession(t)
 	rootID, aID, bID, cID := nodeID(), nodeID(), nodeID(), nodeID()
-	if _, err := sess.ApplyGraph(ctx, ApplyGraphInput{
-		AddNodes: []AddNodeInput{
+	if _, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
+		AddNodes: []sessionapi.AddNodeInput{
 			{ID: &rootID, TemplateID: &tmplID, Content: "root"},
 			{ID: &aID, TemplateID: &tmplID, Content: "A"},
 			{ID: &bID, TemplateID: &tmplID, Content: "B"},
 			{ID: &cID, TemplateID: &tmplID, Content: "C"},
 		},
-		AddEdges: []AddEdgeInput{containsInput(rootID, aID, 0), containsInput(rootID, bID, 1), containsInput(rootID, cID, 2)},
+		AddEdges: []sessionapi.AddEdgeInput{containsInput(rootID, aID, 0), containsInput(rootID, bID, 1), containsInput(rootID, cID, 2)},
 	}); err != nil {
 		t.Fatalf("build graph failed: %v", err)
 	}
-	updated, err := sess.ReorderChildren(ctx, ReorderChildrenInput{ParentID: rootID, ChildIDs: []graph.NodeID{cID, aID, bID}})
+	updated, err := sess.ReorderChildren(ctx, sessionapi.ReorderChildrenInput{ParentID: rootID, ChildIDs: []graph.NodeID{cID, aID, bID}})
 	if err != nil {
 		t.Fatalf("reorder failed: %v", err)
 	}
@@ -268,23 +284,23 @@ func TestFileSessionReorderChildrenRequiresCompleteListAndQueryUsesOrder(t *test
 		t.Fatalf("expected query tree to reflect reordered children, got %#v", children)
 	}
 
-	if _, err := sess.ReorderChildren(ctx, ReorderChildrenInput{ParentID: rootID, ChildIDs: []graph.NodeID{cID, aID}}); !errors.Is(err, coretemplate.ErrInvalidInput) {
+	if _, err := sess.ReorderChildren(ctx, sessionapi.ReorderChildrenInput{ParentID: rootID, ChildIDs: []graph.NodeID{cID, aID}}); !errors.Is(err, storetemplate.ErrInvalidInput) {
 		t.Fatalf("expected missing child invalid input, got %v", err)
 	}
-	if _, err := sess.ReorderChildren(ctx, ReorderChildrenInput{ParentID: rootID, ChildIDs: []graph.NodeID{cID, aID, aID}}); !errors.Is(err, coretemplate.ErrInvalidInput) {
+	if _, err := sess.ReorderChildren(ctx, sessionapi.ReorderChildrenInput{ParentID: rootID, ChildIDs: []graph.NodeID{cID, aID, aID}}); !errors.Is(err, storetemplate.ErrInvalidInput) {
 		t.Fatalf("expected duplicate child invalid input, got %v", err)
 	}
 	extraID := nodeID()
-	if _, err := sess.ReorderChildren(ctx, ReorderChildrenInput{ParentID: rootID, ChildIDs: []graph.NodeID{cID, aID, extraID}}); !errors.Is(err, coretemplate.ErrInvalidInput) {
+	if _, err := sess.ReorderChildren(ctx, sessionapi.ReorderChildrenInput{ParentID: rootID, ChildIDs: []graph.NodeID{cID, aID, extraID}}); !errors.Is(err, storetemplate.ErrInvalidInput) {
 		t.Fatalf("expected extra child invalid input, got %v", err)
 	}
 	missingParentID := nodeID()
-	if _, err := sess.ReorderChildren(ctx, ReorderChildrenInput{ParentID: missingParentID, ChildIDs: nil}); err == nil {
+	if _, err := sess.ReorderChildren(ctx, sessionapi.ReorderChildrenInput{ParentID: missingParentID, ChildIDs: nil}); err == nil {
 		t.Fatal("expected missing parent error")
 	}
 }
 
-func newHierarchyTestSession(t *testing.T) (Session, graph.TemplateID) {
+func newHierarchyTestSession(t *testing.T) (sessionapi.Session, graph.TemplateID) {
 	t.Helper()
 	spaceID := domainspace.SpaceID(uuid.New())
 	graphsDir := t.TempDir()
@@ -293,7 +309,7 @@ func newHierarchyTestSession(t *testing.T) (Session, graph.TemplateID) {
 	manager := hierarchyTemplateManager{templates: map[graph.TemplateID]graph.Template{
 		tmplID: {ID: tmplID, SpaceID: spaceID, Key: "entry", Version: "1", Children: graph.ChildPolicy{Allowed: true, Order: &graph.ChildOrderPolicy{Mode: graph.ChildOrderModeEdgeProperty, Property: "order", Direction: graph.SortDirectionAsc}}, Properties: graph.PropertyPolicy{AllowExtra: true}},
 	}}
-	return NewSession(graphsDir, spaceID, manager, Permissions{Read: true, Write: true, Admin: true}, Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}), tmplID
+	return New(graphsDir, spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}), tmplID
 }
 
 func prepareSpaceDir(t *testing.T, graphsDir string, spaceID domainspace.SpaceID) {
@@ -309,11 +325,11 @@ func prepareSpaceDir(t *testing.T, graphsDir string, spaceID domainspace.SpaceID
 
 func nodeID() graph.NodeID { return graph.NodeID(uuid.New()) }
 
-func containsInput(fromID, toID graph.NodeID, order int) AddEdgeInput {
-	return AddEdgeInput{FromID: fromID, ToID: toID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": order}}
+func containsInput(fromID, toID graph.NodeID, order int) sessionapi.AddEdgeInput {
+	return sessionapi.AddEdgeInput{FromID: fromID, ToID: toID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": order}}
 }
 
-func assertChildren(t *testing.T, sess Session, parentID graph.NodeID, expected ...graph.NodeID) {
+func assertChildren(t *testing.T, sess sessionapi.Session, parentID graph.NodeID, expected ...graph.NodeID) {
 	t.Helper()
 	edges, err := sess.ListEdges(context.Background())
 	if err != nil {

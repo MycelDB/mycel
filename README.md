@@ -5,21 +5,31 @@ Go library and CLI for KnotDB graph spaces.
 Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
 
 ## Layout
-- `cmd/knotdb/`: CLI entrypoint binary
-- `internal/cli/`: CLI command implementation (not importable by library consumers)
-- `engine/`: public engine API, constructor, lifecycle, auth, and system/space management
-- `engine/internal/`: default engine implementation
-- `core/`: injectable managers for users, spaces, templates, and access control
+
+See [`docs/architecture.md`](docs/architecture.md) for a navigation guide, import conventions, and layer diagram.
+
+**Public API (safe for embedders):**
+- `engine/`: engine API, constructor, lifecycle, auth, and system/space management
+- `session/`: scoped graph-space operations (nodes, edges, templates, queries)
 - `domain/identity`: users, user IDs, and ownership
 - `domain/space`: spaces, space IDs, and space-level configuration types
 - `domain/access`: system roles, space permissions, and ACL rule types
 - `domain/graph`: pure graph domain types for nodes, edges, templates, and template policies
-- `session`: scoped graph-space operation API for nodes, edges, templates, queries, and future transactions
-- `query`: programmatic GQL-style query builder
-- `internal/`: private implementation packages
+- `query/`: programmatic GQL-style query builder
+- `store/`: injectable persistence interfaces (for tests or custom backends)
+
+**Internal (do not import from applications):**
+- `engine/internal/`: default engine implementation
+- `internal/session/filesession/`: file-backed session implementation
+- `internal/graphstorage/`, `internal/filestore/`: low-level persistence
+- `internal/cli/`: CLI command implementation
+- `cmd/knotdb/`: CLI entrypoint binary
+
+**Documentation:**
 - `docs/`: API/reference documentation
 
 ## API docs
+- Architecture and navigation: `docs/architecture.md`
 - Edge structures: `docs/domain/graph/edge.md`
 - Session API: `docs/session/session.md`
 - Programmatic queries: `docs/query/gql-mapping.md`
