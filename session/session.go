@@ -20,6 +20,9 @@ type (
 	TemplateRefImport      = sessionapi.TemplateRefImport
 	ImportTemplatesInput   = sessionapi.ImportTemplatesInput
 	AddNodeInput           = sessionapi.AddNodeInput
+	AddBlobNodeInput       = sessionapi.AddBlobNodeInput
+	GetBlobInput           = sessionapi.GetBlobInput
+	GetBlobResult          = sessionapi.GetBlobResult
 	UpsertNodeInput        = sessionapi.UpsertNodeInput
 	UpdateNodeInput        = sessionapi.UpdateNodeInput
 	DeleteNodeInput        = sessionapi.DeleteNodeInput
@@ -33,8 +36,10 @@ type (
 
 // NewSession opens a file-backed graph session for a space.
 //
+// blobsDir is the root directory for per-space content-addressed blob stores.
+//
 // Most callers should use engine.Engine.OpenSession so engine-level auth,
 // access checks, and lifecycle validation are applied before construction.
-func NewSession(graphsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions Permissions, errs Errors) Session {
-	return filesession.New(graphsDir, spaceID, templateManager, permissions, errs)
+func NewSession(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions Permissions, errs Errors) Session {
+	return filesession.New(graphsDir, blobsDir, spaceID, templateManager, permissions, errs)
 }

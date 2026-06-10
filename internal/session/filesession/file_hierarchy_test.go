@@ -231,7 +231,7 @@ func TestFileSessionMoveSubtreeValidatesChildTemplatePolicy(t *testing.T) {
 		allowedTemplateID:   {ID: allowedTemplateID, SpaceID: spaceID, Key: "allowed", Version: "1", Children: graph.ChildPolicy{Allowed: true}},
 		forbiddenTemplateID: {ID: forbiddenTemplateID, SpaceID: spaceID, Key: "forbidden", Version: "1", Children: graph.ChildPolicy{Allowed: true}},
 	}}
-	sess := New(graphsDir, spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{NotFound: errors.New("not found")})
+	sess := New(graphsDir, t.TempDir(), spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{NotFound: errors.New("not found")})
 	parentID, oldParentID, childID := nodeID(), nodeID(), nodeID()
 	if _, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
 		AddNodes: []sessionapi.AddNodeInput{{ID: &parentID, TemplateID: &parentTemplateID}, {ID: &oldParentID, TemplateID: &allowedTemplateID}, {ID: &childID, TemplateID: &forbiddenTemplateID}},
@@ -309,7 +309,7 @@ func newHierarchyTestSession(t *testing.T) (sessionapi.Session, graph.TemplateID
 	manager := hierarchyTemplateManager{templates: map[graph.TemplateID]graph.Template{
 		tmplID: {ID: tmplID, SpaceID: spaceID, Key: "entry", Version: "1", Children: graph.ChildPolicy{Allowed: true, Order: &graph.ChildOrderPolicy{Mode: graph.ChildOrderModeEdgeProperty, Property: "order", Direction: graph.SortDirectionAsc}}, Properties: graph.PropertyPolicy{AllowExtra: true}},
 	}}
-	return New(graphsDir, spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}), tmplID
+	return New(graphsDir, t.TempDir(), spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}), tmplID
 }
 
 func prepareSpaceDir(t *testing.T, graphsDir string, spaceID domainspace.SpaceID) {

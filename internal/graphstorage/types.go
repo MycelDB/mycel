@@ -85,6 +85,7 @@ type Store interface {
 	Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge, error)
 	NodesByTemplate(ctx context.Context, templateID graph.TemplateID) ([]graph.NodeID, error)
 	JournalNodesByDayRange(ctx context.Context, from, to int) ([]graph.NodeID, error)
+	BlobRefCount(ctx context.Context, id graph.BlobID) (int, error)
 }
 
 type Txn interface {

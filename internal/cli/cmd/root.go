@@ -32,7 +32,7 @@ func NewRootCommand(a *app.App, repl bool) *cobra.Command {
 	root.PersistentFlags().StringVarP(&a.Password, "password", "p", a.Password, "password for non-REPL authentication")
 	root.PersistentFlags().StringVar(&a.Output, "output", app.DefaultOutput(a.Output), "output format: text or json")
 
-	root.AddCommand(NewInitCommand(a), NewAddCommand(a), NewDeleteCommand(a), NewListCommand(a), NewACLCommand(a), NewReplCommand(a))
+	root.AddCommand(NewInitCommand(a), NewAddCommand(a), NewGetCommand(a), NewDeleteCommand(a), NewListCommand(a), NewACLCommand(a), NewReplCommand(a))
 	if repl {
 		root.Use = ""
 	}

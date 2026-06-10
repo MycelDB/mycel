@@ -39,6 +39,7 @@ type LocalStore struct {
 	containsChildren map[graph.NodeID][]graph.EdgeID
 	containsParent   map[graph.NodeID]graph.EdgeID
 	journalDay       map[int]map[graph.NodeID]struct{}
+	blobRefs         map[graph.BlobID]map[graph.NodeID]struct{}
 }
 
 func Open(ctx context.Context, spacePath string) (*LocalStore, error) {
@@ -167,6 +168,7 @@ func (s *LocalStore) resetIndexes() {
 	s.containsChildren = map[graph.NodeID][]graph.EdgeID{}
 	s.containsParent = map[graph.NodeID]graph.EdgeID{}
 	s.journalDay = map[int]map[graph.NodeID]struct{}{}
+	s.blobRefs = map[graph.BlobID]map[graph.NodeID]struct{}{}
 }
 func (s *LocalStore) Close() error {
 	s.mu.Lock()
@@ -283,6 +285,13 @@ func (s *LocalStore) NodesByTemplate(ctx context.Context, tid graph.TemplateID) 
 	}
 	return out, ctx.Err()
 }
+// BlobRefCount returns the number of live nodes referencing a blob.
+func (s *LocalStore) BlobRefCount(ctx context.Context, id graph.BlobID) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.blobRefs[id]), ctx.Err()
+}
+
 func (s *LocalStore) JournalNodesByDayRange(ctx context.Context, from, to int) ([]graph.NodeID, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -309,6 +318,9 @@ func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
 	if day, ok := numberPropInt(n.Props["journal_day"]); ok {
 		ensureNodeSet(s.journalDay, day)[n.ID] = struct{}{}
 	}
+	if n.BlobRef != nil {
+		ensureNodeSet(s.blobRefs, *n.BlobRef)[n.ID] = struct{}{}
+	}
 }
 func (s *LocalStore) applyNodeDelete(id graph.NodeID, loc RecordLocation) {
 	if old, ok := s.nodeRecords[id]; ok {
@@ -323,6 +335,12 @@ func (s *LocalStore) removeNodeIndexes(n graph.Node) {
 	}
 	if day, ok := numberPropInt(n.Props["journal_day"]); ok {
 		delete(s.journalDay[day], n.ID)
+	}
+	if n.BlobRef != nil {
+		delete(s.blobRefs[*n.BlobRef], n.ID)
+		if len(s.blobRefs[*n.BlobRef]) == 0 {
+			delete(s.blobRefs, *n.BlobRef)
+		}
 	}
 }
 func (s *LocalStore) applyEdgePut(e graph.Edge, loc RecordLocation) {

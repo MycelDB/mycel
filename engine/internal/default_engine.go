@@ -621,6 +621,7 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (d
 	}
 	return domainsession.NewSession(
 		graphsDir(e.dataDir),
+		blobsDir(e.dataDir),
 		spaceID,
 		e.templateManager,
 		domainsession.Permissions{Read: canRead, Write: canWrite, Admin: canAdmin},
@@ -685,6 +686,9 @@ func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID domainspace
 		return err
 	}
 	if err := os.RemoveAll(filepath.Join(graphsDir(e.dataDir), spaceID.String())); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(blobsDir(e.dataDir), spaceID.String())); err != nil {
 		return err
 	}
 	if err := e.spaceManager.DeleteByID(ctx, spaceID); err != nil {
@@ -840,7 +844,7 @@ func regularFileExists(path string) (bool, error) {
 }
 
 func ensureStorageLayout(dataDir string) error {
-	for _, dir := range []string{dataDir, metaDir(dataDir), graphsDir(dataDir), templatesDir(dataDir)} {
+	for _, dir := range []string{dataDir, metaDir(dataDir), graphsDir(dataDir), blobsDir(dataDir), templatesDir(dataDir)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -854,6 +858,10 @@ func metaDir(dataDir string) string {
 
 func graphsDir(dataDir string) string {
 	return filepath.Join(dataDir, "graphs")
+}
+
+func blobsDir(dataDir string) string {
+	return filepath.Join(dataDir, "blobs")
 }
 
 func templatesDir(dataDir string) string {

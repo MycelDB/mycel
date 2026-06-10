@@ -1,8 +1,10 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -749,6 +751,61 @@ func TestRuntimeEngine_DeleteNodeRequiresRecursiveForChildren(t *testing.T) {
 	}
 	_ = sess.Close()
 }
+func TestRuntimeEngine_BlobNodeLifecycleAndDeleteSpaceCleansBlobs(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "knotdb-blob-lifecycle")
+	ctx := context.Background()
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected auth success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	sess, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected open session success, got error: %v", err)
+	}
+	content := []byte("%PDF-1.7 fake pdf content")
+	node, err := sess.AddBlobNode(ctx, domainsession.AddBlobNodeInput{Reader: bytes.NewReader(content), OriginalFilename: "doc.pdf"})
+	if err != nil {
+		t.Fatalf("expected add blob node success, got error: %v", err)
+	}
+	if node.BlobRef == nil {
+		t.Fatal("expected blob ref on node")
+	}
+	res, err := sess.GetBlob(ctx, domainsession.GetBlobInput{NodeID: node.ID})
+	if err != nil {
+		t.Fatalf("expected get blob success, got error: %v", err)
+	}
+	got, err := io.ReadAll(res.Reader)
+	res.Reader.Close()
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("blob content mismatch: err=%v", err)
+	}
+	if res.Meta.MimeType != "application/pdf" {
+		t.Fatalf("expected sniffed application/pdf, got %q", res.Meta.MimeType)
+	}
+	spaceBlobsDir := filepath.Join(dataDir, "blobs", sp.SpaceID.String())
+	if _, err := os.Stat(spaceBlobsDir); err != nil {
+		t.Fatalf("expected space blobs dir to exist: %v", err)
+	}
+	_ = sess.Close()
+
+	if err := engine.DeleteSpace(ctx, DeleteSpaceInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID}); err != nil {
+		t.Fatalf("expected delete space success, got error: %v", err)
+	}
+	if _, err := os.Stat(spaceBlobsDir); !os.IsNotExist(err) {
+		t.Fatalf("expected space blobs dir removed, got: %v", err)
+	}
+}
+
 func TestRuntimeEngine_DeleteSpaceInvalidatesOpenSession(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "knotdb-delete-space-invalidates-session")

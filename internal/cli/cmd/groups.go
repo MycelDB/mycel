@@ -7,8 +7,14 @@ import (
 
 func NewAddCommand(a *app.App) *cobra.Command {
 	add := &cobra.Command{Use: "add", Short: "Add/create resources"}
-	add.AddCommand(NewAddUserCommand(a), NewAddACLCommand(a), NewAddSpaceCommand(a), NewAddNodeCommand(a), NewAddTemplateCommand(a))
+	add.AddCommand(NewAddUserCommand(a), NewAddACLCommand(a), NewAddSpaceCommand(a), NewAddNodeCommand(a), NewAddBlobCommand(a), NewAddTemplateCommand(a))
 	return add
+}
+
+func NewGetCommand(a *app.App) *cobra.Command {
+	get := &cobra.Command{Use: "get", Short: "Get/download resources"}
+	get.AddCommand(NewGetBlobCommand(a))
+	return get
 }
 
 func NewDeleteCommand(a *app.App) *cobra.Command {

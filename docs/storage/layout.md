@@ -20,6 +20,12 @@ KnotDB stores data under a single data root. Metadata remains JSON-backed for no
         txns-000001.kseg
         nodes-000001.kseg
         edges-000001.kseg
+
+  blobs/
+    <space_id>/
+      objects/
+        <aa>/<sha256-hex>
+      tmp/
 ```
 
 ## Metadata files
@@ -57,6 +63,18 @@ Every mutation is written inside a transaction. Recovery applies only records be
 
 Node and edge payloads use KnotDB's binary graph codec, not JSON. UUIDs are stored as 16-byte values. New generated node and edge IDs use UUIDv7.
 
+## Blob storage
+
+Each space may have a content-addressed blob store under `blobs/<space_id>/`, kept at the top level (separate from `graphs/`) so heavy binary data can be backed up or tiered independently of graph structure.
+
+Blob files are immutable and named by the lowercase hex SHA-256 digest of their content, stored under `objects/` with a two-character fan-out directory. Identical content is stored once (dedup). Writes stream through `tmp/` and are renamed into `objects/` after fsync, so a visible object is always complete.
+
+Nodes reference blobs through the optional `BlobRef` field in the node record (appended after the props map in the binary codec; older records without the field still decode). A node has inline text `Content` or a `BlobRef`, never both: blob nodes keep `Content` empty, and text about a blob (caption, alt text) lives in props or annotation children. Blob metadata (`mime_type`, `size_bytes`, `original_filename`, `declared_mime_type`, `caption`, `alt_text`) lives in node props, validated by the system `blob` template by default.
+
+A blob file is deleted when the last live node referencing it is removed. Orphans left by crashes (blob written, node never committed) are reclaimed by a best-effort sweep when the blob store is next opened. There is no persisted blob index; the blob-to-node mapping is rebuilt in memory from committed node records.
+
+Deleting a space removes both `graphs/<space_id>/` and `blobs/<space_id>/`.
+
 ## Indexes
 
 Indexes are rebuilt in memory from committed segment records. Current indexes include:
@@ -67,6 +85,7 @@ Indexes are rebuilt in memory from committed segment records. Current indexes in
 - contains parent to ordered child edges
 - contains child to parent edge
 - simple `journal_day` property index
+- blob ID to referencing node IDs (for blob refcounting and orphan sweep)
 
 Persisted index snapshots and compaction are intentionally deferred.
 

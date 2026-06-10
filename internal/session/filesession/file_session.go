@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/blobstorage"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
 	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
@@ -21,18 +22,20 @@ import (
 )
 
 // New opens the default file-backed session implementation.
-func New(graphsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs}
+func New(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs}
 }
 
 // FileSession is the default file-backed Session implementation.
 type FileSession struct {
 	graphsDir       string
+	blobsDir        string
 	spaceID         domainspace.SpaceID
 	templateManager storetemplate.Manager
 	permissions     sessionapi.Permissions
 	errors          sessionapi.Errors
 	store           *graphstorage.LocalStore
+	blobs           *blobstorage.Store
 	closed          bool
 }
 
@@ -137,10 +140,17 @@ func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeIn
 	if idx < 0 {
 		return graph.Node{}, s.errors.NotFound
 	}
+	// A node has inline text content or blob content, never both.
+	if nodes[idx].BlobRef != nil && in.Content != "" {
+		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", storetemplate.ErrInvalidInput)
+	}
 	n, err := s.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, in.Props)
 	if err != nil {
 		return graph.Node{}, err
 	}
+	// Updates never touch the blob reference; replacing blob content is a
+	// separate (future) operation.
+	n.BlobRef = nodes[idx].BlobRef
 	n.CreatedAt = nodes[idx].CreatedAt
 	if n.CreatedAt.IsZero() {
 		n.CreatedAt = time.Now().UTC()
@@ -599,6 +609,7 @@ func (s *FileSession) commitGraph(ctx context.Context, putNodes []graph.Node, pu
 	if err != nil {
 		return err
 	}
+	releasedBlobs := s.blobRefsOfNodes(ctx, store, deleteNodes)
 	txn, err := store.Begin(ctx)
 	if err != nil {
 		return err
@@ -627,7 +638,50 @@ func (s *FileSession) commitGraph(ctx context.Context, putNodes []graph.Node, pu
 			return err
 		}
 	}
-	return txn.Commit()
+	if err := txn.Commit(); err != nil {
+		return err
+	}
+	s.releaseUnreferencedBlobs(ctx, store, releasedBlobs)
+	return nil
+}
+
+// blobRefsOfNodes collects the blob IDs referenced by nodes about to be
+// deleted, so unreferenced blob files can be released after commit.
+func (s *FileSession) blobRefsOfNodes(ctx context.Context, store *graphstorage.LocalStore, nodeIDs []graph.NodeID) map[graph.BlobID]struct{} {
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	out := map[graph.BlobID]struct{}{}
+	for _, id := range nodeIDs {
+		n, err := store.GetNode(ctx, id)
+		if err != nil {
+			continue
+		}
+		if n.BlobRef != nil {
+			out[*n.BlobRef] = struct{}{}
+		}
+	}
+	return out
+}
+
+// releaseUnreferencedBlobs deletes blob files whose last referencing node was
+// just removed. Removal is best-effort: leftovers are reclaimed by the orphan
+// sweep when the blob store is next opened.
+func (s *FileSession) releaseUnreferencedBlobs(ctx context.Context, store *graphstorage.LocalStore, candidates map[graph.BlobID]struct{}) {
+	if len(candidates) == 0 {
+		return
+	}
+	blobs, err := s.blobStore()
+	if err != nil {
+		return
+	}
+	for id := range candidates {
+		count, err := store.BlobRefCount(ctx, id)
+		if err != nil || count > 0 {
+			continue
+		}
+		_ = blobs.Delete(ctx, id)
+	}
 }
 
 func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID graph.NodeID, templateID *graph.TemplateID, content string, inputProps map[string]any) (graph.Node, error) {

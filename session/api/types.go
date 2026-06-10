@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io"
 
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
@@ -79,6 +80,37 @@ type DeleteNodeInput struct {
 	Recursive bool
 }
 
+// AddBlobNodeInput creates a node whose binary content is streamed into the
+// space's content-addressed blob store, in a single call.
+//
+// Blob nodes have no inline Content: a node holds text content or blob
+// content, never both. Text about the blob (caption, alt text, ...) belongs
+// in Props or annotation children.
+//
+// If TemplateID is nil the system blob template is used so every blob node
+// gets baseline metadata validation. The blob metadata props (mime_type,
+// size_bytes, original_filename, declared_mime_type) are auto-populated.
+type AddBlobNodeInput struct {
+	ID               *graph.NodeID
+	TemplateID       *graph.TemplateID
+	Reader           io.Reader // required; streamed, never fully buffered
+	DeclaredMimeType string    // optional; the sniffed type is authoritative
+	OriginalFilename string    // optional
+	Props            map[string]any
+}
+
+// GetBlobInput identifies the node whose blob should be opened for reading.
+type GetBlobInput struct {
+	NodeID graph.NodeID
+}
+
+// GetBlobResult carries the blob stream and its metadata.
+// Reader must be closed by the caller.
+type GetBlobResult struct {
+	Reader io.ReadCloser
+	Meta   graph.BlobMeta
+}
+
 // AddEdgeInput is the write payload used when creating an edge.
 type AddEdgeInput struct {
 	ID     *graph.EdgeID
@@ -129,6 +161,8 @@ type Session interface {
 	ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error)
 	ListTemplates(ctx context.Context) ([]graph.Template, error)
 	AddNode(ctx context.Context, in AddNodeInput) (graph.Node, error)
+	AddBlobNode(ctx context.Context, in AddBlobNodeInput) (graph.Node, error)
+	GetBlob(ctx context.Context, in GetBlobInput) (GetBlobResult, error)
 	ListNodes(ctx context.Context) ([]graph.Node, error)
 	UpdateNode(ctx context.Context, in UpdateNodeInput) (graph.Node, error)
 	UpsertNode(ctx context.Context, in UpsertNodeInput) (graph.Node, error)

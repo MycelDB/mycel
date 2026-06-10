@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"time"
@@ -39,7 +40,54 @@ func encodeNode(node graph.Node) ([]byte, error) {
 	if err := writeMap(&b, node.Props); err != nil {
 		return nil, err
 	}
+	// BlobRef is appended after props so records written before blob support
+	// (which simply end at the props map) keep decoding.
+	if err := writeBlobRef(&b, node.BlobRef); err != nil {
+		return nil, err
+	}
 	return b.Bytes(), nil
+}
+
+func writeBlobRef(b *bytes.Buffer, ref *graph.BlobID) error {
+	if ref == nil {
+		b.WriteByte(0)
+		return nil
+	}
+	raw, err := (*ref).Bytes()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnsupported, err)
+	}
+	b.WriteByte(1)
+	b.Write(raw)
+	return nil
+}
+
+// readBlobRef decodes a trailing optional blob reference. Records written
+// before blob support end right after the props map; those decode as nil.
+func readBlobRef(r *bytes.Reader) (*graph.BlobID, error) {
+	if r.Len() == 0 {
+		return nil, nil
+	}
+	flag, err := r.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	switch flag {
+	case 0:
+		return nil, nil
+	case 1:
+		raw := make([]byte, 32)
+		if _, err := io.ReadFull(r, raw); err != nil {
+			return nil, err
+		}
+		id, err := graph.BlobIDFromBytes(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidRecord, err)
+		}
+		return &id, nil
+	default:
+		return nil, fmt.Errorf("%w: invalid blob ref flag %d", ErrInvalidRecord, flag)
+	}
 }
 
 func decodeNode(payload []byte) (graph.Node, error) {
@@ -59,8 +107,11 @@ func decodeNode(payload []byte) (graph.Node, error) {
 			return graph.Node{}, err
 		}
 		props, err := readMap(r)
-		if err == nil && r.Len() == 0 {
-			return graph.Node{ID: graph.NodeID(id), TemplateID: templateID, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+		if err == nil {
+			blobRef, blobErr := readBlobRef(r)
+			if blobErr == nil && r.Len() == 0 {
+				return graph.Node{ID: graph.NodeID(id), TemplateID: templateID, BlobRef: blobRef, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+			}
 		}
 	}
 
