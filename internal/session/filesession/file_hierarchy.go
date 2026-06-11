@@ -12,6 +12,8 @@ import (
 	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 )
 
+const childOrderStep = 1024
+
 // MoveSubtree rewires the incoming contains edge for a node so the node and
 // all of its descendants are contained by a new parent.
 func (s *FileSession) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInput) (graph.Edge, error) {
@@ -150,7 +152,7 @@ func (s *FileSession) ReorderChildren(ctx context.Context, in sessionapi.Reorder
 	for order, childID := range in.ChildIDs {
 		edgeIndex := childEdgeByID[childID]
 		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = order
+		edges[edgeIndex].Props["order"] = order * childOrderStep
 		updated = append(updated, cloneEdge(edges[edgeIndex]))
 	}
 	if err := s.commitGraph(ctx, nil, changedEdges(originalEdges, edges), nil, nil); err != nil {
@@ -230,8 +232,30 @@ func edgeOrderNumber(edge graph.Edge) (float64, bool) {
 func normalizeChildrenOrder(edges []graph.Edge, parentID graph.NodeID) {
 	for order, edgeIndex := range orderedContainsEdgeIndexes(edges, parentID) {
 		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = order
+		edges[edgeIndex].Props["order"] = order * childOrderStep
 	}
+}
+
+func childIDsInOrder(edges []graph.Edge, parentID graph.NodeID) []graph.NodeID {
+	indexes := orderedContainsEdgeIndexes(edges, parentID)
+	out := make([]graph.NodeID, 0, len(indexes))
+	for _, edgeIndex := range indexes {
+		out = append(out, edges[edgeIndex].ToID)
+	}
+	return out
+}
+
+func setCompleteChildOrder(edges []graph.Edge, parentID graph.NodeID, childIDs []graph.NodeID) error {
+	childEdgeByID, err := validateCompleteChildOrder(edges, parentID, childIDs)
+	if err != nil {
+		return err
+	}
+	for order, childID := range childIDs {
+		edgeIndex := childEdgeByID[childID]
+		ensureEdgeProps(&edges[edgeIndex])
+		edges[edgeIndex].Props["order"] = order * childOrderStep
+	}
+	return nil
 }
 
 func setChildPosition(edges []graph.Edge, parentID graph.NodeID, childID graph.NodeID, order *int) (graph.Edge, error) {
@@ -257,7 +281,7 @@ func setChildPosition(edges []graph.Edge, parentID graph.NodeID, childID graph.N
 	indexes[target] = movedIndex
 	for pos, edgeIndex := range indexes {
 		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = pos
+		edges[edgeIndex].Props["order"] = pos * childOrderStep
 	}
 	return cloneEdge(edges[movedIndex]), nil
 }

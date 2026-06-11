@@ -11,14 +11,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
+	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/store/acl"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/store/spaces"
 	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/store/user"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
 var (
@@ -40,6 +41,8 @@ type defaultEngine struct {
 	accessManager   acl.Manager
 	authMu          sync.RWMutex
 	authCache       map[AccessToken]authClaims
+	storeMu         sync.Mutex
+	storeCache      map[domainspace.SpaceID]*graphstorage.LocalStore
 }
 
 // authClaims is the expanded authorization context cached by access token.
@@ -63,7 +66,7 @@ type authClaims struct {
 //
 // If userManager, spaceManager, templateManager, or accessManager is nil, default file-backed managers are used.
 func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager spaces.Manager, templateManager storetemplate.Manager, accessManager acl.Manager) (*defaultEngine, error) {
-	e := &defaultEngine{state: EngineStateClose, userManager: userManager, spaceManager: spaceManager, templateManager: templateManager, accessManager: accessManager, authCache: map[AccessToken]authClaims{}}
+	e := &defaultEngine{state: EngineStateClose, userManager: userManager, spaceManager: spaceManager, templateManager: templateManager, accessManager: accessManager, authCache: map[AccessToken]authClaims{}, storeCache: map[domainspace.SpaceID]*graphstorage.LocalStore{}}
 	if err := e.Open(cfg); err != nil {
 		return nil, err
 	}
@@ -619,13 +622,18 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (d
 	if err := ensureGraphSpaceDir(e.dataDir, spaceID); err != nil {
 		return nil, err
 	}
-	return domainsession.NewSession(
+	store, err := e.graphStore(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	return domainsession.NewSessionWithStore(
 		graphsDir(e.dataDir),
 		blobsDir(e.dataDir),
 		spaceID,
 		e.templateManager,
 		domainsession.Permissions{Read: canRead, Write: canWrite, Admin: canAdmin},
 		domainsession.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized, Conflict: ErrConflict},
+		store,
 	), nil
 }
 
@@ -634,7 +642,36 @@ func (e *defaultEngine) Close() error {
 	e.authMu.Lock()
 	e.authCache = map[AccessToken]authClaims{}
 	e.authMu.Unlock()
-	return nil
+	e.storeMu.Lock()
+	defer e.storeMu.Unlock()
+	var err error
+	for spaceID, store := range e.storeCache {
+		if closeErr := store.Close(); err == nil {
+			err = closeErr
+		}
+		delete(e.storeCache, spaceID)
+	}
+	return err
+}
+
+func (e *defaultEngine) graphStore(ctx context.Context, spaceID domainspace.SpaceID) (*graphstorage.LocalStore, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	e.storeMu.Lock()
+	defer e.storeMu.Unlock()
+	if store, ok := e.storeCache[spaceID]; ok {
+		return store, nil
+	}
+	if e.storeCache == nil {
+		e.storeCache = map[domainspace.SpaceID]*graphstorage.LocalStore{}
+	}
+	store, err := graphstorage.Open(ctx, filepath.Join(graphsDir(e.dataDir), spaceID.String()))
+	if err != nil {
+		return nil, err
+	}
+	e.storeCache[spaceID] = store
+	return store, nil
 }
 
 func (e *defaultEngine) authClaimsForAccessToken(ctx context.Context, accessToken AccessToken) (authClaims, error) {
@@ -685,6 +722,7 @@ func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID domainspace
 	if err := e.accessManager.DeleteForSpace(ctx, spaceID); err != nil {
 		return err
 	}
+	e.closeCachedStore(spaceID)
 	if err := os.RemoveAll(filepath.Join(graphsDir(e.dataDir), spaceID.String())); err != nil {
 		return err
 	}
@@ -699,6 +737,15 @@ func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID domainspace
 	}
 	e.purgeCachedSpace(spaceID)
 	return nil
+}
+
+func (e *defaultEngine) closeCachedStore(spaceID domainspace.SpaceID) {
+	e.storeMu.Lock()
+	defer e.storeMu.Unlock()
+	if store, ok := e.storeCache[spaceID]; ok {
+		_ = store.Close()
+		delete(e.storeCache, spaceID)
+	}
 }
 
 func (e *defaultEngine) ensureNotLastSuperuser(ctx context.Context, userID identity.UserID) error {

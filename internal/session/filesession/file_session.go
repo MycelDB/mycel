@@ -23,7 +23,12 @@ import (
 
 // New opens the default file-backed session implementation.
 func New(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true}
+}
+
+// NewWithStore opens a session that borrows an engine-owned graph store.
+func NewWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, store: store}
 }
 
 // FileSession is the default file-backed Session implementation.
@@ -36,6 +41,7 @@ type FileSession struct {
 	errors          sessionapi.Errors
 	store           *graphstorage.LocalStore
 	blobs           *blobstorage.Store
+	closeStore      bool
 	closed          bool
 }
 
@@ -171,6 +177,121 @@ func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeIn
 	return n, nil
 }
 
+func (s *FileSession) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.UpdateNodeAndCreateSiblingInput) (sessionapi.UpdateNodeAndCreateSiblingResult, error) {
+	if err := s.ensureOpen(ctx); err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	if err := s.ensureWrite(); err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	if in.NodeID == uuid.Nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
+	}
+
+	nodes, err := s.readNodes()
+	if err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	idx := findNodeIndex(nodes, in.NodeID)
+	if idx < 0 {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, s.errors.NotFound
+	}
+	edges, err := s.readEdges()
+	if err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	parentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
+	if len(parentIndexes) == 0 {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, fmt.Errorf("%w: cannot insert a sibling for a root node", storetemplate.ErrInvalidInput)
+	}
+	if len(parentIndexes) > 1 {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, fmt.Errorf("%w: node has multiple contains parents", storetemplate.ErrInvalidInput)
+	}
+	parentID := edges[parentIndexes[0]].FromID
+
+	updated, err := s.buildNode(ctx, nodes, in.NodeID, nodes[idx].TemplateID, in.Content, in.Props)
+	if err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	updated.BlobRef = nodes[idx].BlobRef
+	updated.CreatedAt = nodes[idx].CreatedAt
+	if updated.CreatedAt.IsZero() {
+		updated.CreatedAt = time.Now().UTC()
+	}
+	updated.UpdatedAt = time.Now().UTC()
+
+	candidateNodes := append([]graph.Node(nil), nodes...)
+	candidateNodes[idx] = updated
+	siblingID, err := newGraphUUID()
+	if err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	if in.SiblingID != nil {
+		siblingID = *in.SiblingID
+	}
+	sibling, err := s.buildNode(ctx, candidateNodes, siblingID, in.SiblingTemplateID, in.SiblingContent, in.SiblingProps)
+	if err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	now := time.Now().UTC()
+	sibling.CreatedAt = now
+	sibling.UpdatedAt = now
+	candidateNodes = append(candidateNodes, sibling)
+
+	childEdgeIndexes := orderedContainsEdgeIndexes(edges, parentID)
+	currentOrder := -1
+	previousOrder := 0.0
+	for i, edgeIndex := range childEdgeIndexes {
+		if edges[edgeIndex].ToID == in.NodeID {
+			currentOrder = i
+			if value, ok := edgeOrderNumber(edges[edgeIndex]); ok {
+				previousOrder = value
+			} else {
+				previousOrder = float64(i * childOrderStep)
+			}
+			break
+		}
+	}
+	if currentOrder < 0 {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, fmt.Errorf("%w: node is not contained by parent", storetemplate.ErrInvalidInput)
+	}
+	insertOrder := currentOrder + 1
+	createdOrder := previousOrder + childOrderStep
+	if insertOrder < len(childEdgeIndexes) {
+		nextOrder, ok := edgeOrderNumber(edges[childEdgeIndexes[insertOrder]])
+		if !ok {
+			nextOrder = float64(insertOrder * childOrderStep)
+		}
+		if nextOrder > previousOrder {
+			createdOrder = previousOrder + (nextOrder-previousOrder)/2
+		}
+	}
+	edgeID, err := newGraphUUID()
+	if err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	createdEdge := graph.Edge{ID: graph.EdgeID(edgeID), FromID: parentID, ToID: sibling.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": createdOrder}}
+	candidateEdges := append(cloneEdges(edges), createdEdge)
+	createdEdge = candidateEdges[len(candidateEdges)-1]
+	if err := s.validateIncidentContains(ctx, updated, candidateNodes, candidateEdges); err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	parent, ok := findNode(candidateNodes, parentID)
+	if !ok {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, fmt.Errorf("%w: parent not found", s.errors.NotFound)
+	}
+	if err := s.validateNewEdge(ctx, parent, sibling, graph.EdgeKindContains, edges); err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	if err := s.commitGraph(ctx, []graph.Node{updated, sibling}, changedEdges(edges, candidateEdges), nil, nil); err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	return sessionapi.UpdateNodeAndCreateSiblingResult{UpdatedNode: updated, CreatedNode: sibling, CreatedEdge: createdEdge, SiblingOrder: insertOrder}, nil
+}
+
 func (s *FileSession) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
 		return s.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
@@ -263,6 +384,40 @@ func (s *FileSession) ListEdges(ctx context.Context) ([]graph.Edge, error) {
 		return nil, err
 	}
 	return cloneEdges(edges), nil
+}
+
+func (s *FileSession) Children(ctx context.Context, parentID graph.NodeID) ([]graph.Edge, error) {
+	if err := s.ensureOpen(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return nil, err
+	}
+	if err := s.ensureRead(); err != nil {
+		return nil, err
+	}
+	store, err := s.graphStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.Children(ctx, parentID)
+}
+
+func (s *FileSession) Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge, error) {
+	if err := s.ensureOpen(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return nil, err
+	}
+	if err := s.ensureRead(); err != nil {
+		return nil, err
+	}
+	store, err := s.graphStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.Parent(ctx, childID)
 }
 
 func (s *FileSession) AddGraph(ctx context.Context, in sessionapi.AddGraphInput) error {
@@ -381,13 +536,16 @@ func (s *FileSession) GetNode(ctx context.Context, id graph.NodeID) (graph.Node,
 	if err := s.ensureRead(); err != nil {
 		return graph.Node{}, err
 	}
-	nodes, err := s.readNodes()
+	store, err := s.graphStore()
 	if err != nil {
 		return graph.Node{}, err
 	}
-	n, ok := findNode(nodes, id)
-	if !ok {
-		return graph.Node{}, s.errors.NotFound
+	n, err := store.GetNode(ctx, id)
+	if err != nil {
+		if errors.Is(err, graphstorage.ErrNotFound) {
+			return graph.Node{}, s.errors.NotFound
+		}
+		return graph.Node{}, err
 	}
 	return n, nil
 }
@@ -519,7 +677,7 @@ func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in
 
 func (s *FileSession) Close() error {
 	s.closed = true
-	if s.store != nil {
+	if s.store != nil && s.closeStore {
 		return s.store.Close()
 	}
 	return nil

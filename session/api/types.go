@@ -74,6 +74,26 @@ type UpdateNodeInput struct {
 	Props      map[string]any
 }
 
+// UpdateNodeAndCreateSiblingInput updates an existing node and inserts a new
+// sibling immediately after it in one logical mutation.
+type UpdateNodeAndCreateSiblingInput struct {
+	NodeID            graph.NodeID
+	Content           string
+	Props             map[string]any
+	SiblingID         *graph.NodeID
+	SiblingTemplateID *graph.TemplateID
+	SiblingContent    string
+	SiblingProps      map[string]any
+}
+
+// UpdateNodeAndCreateSiblingResult returns both nodes and the created contains edge.
+type UpdateNodeAndCreateSiblingResult struct {
+	UpdatedNode  graph.Node
+	CreatedNode  graph.Node
+	CreatedEdge  graph.Edge
+	SiblingOrder int
+}
+
 // DeleteNodeInput is the hard-delete payload for a graph node.
 type DeleteNodeInput struct {
 	ID        graph.NodeID
@@ -165,9 +185,12 @@ type Session interface {
 	GetBlob(ctx context.Context, in GetBlobInput) (GetBlobResult, error)
 	ListNodes(ctx context.Context) ([]graph.Node, error)
 	UpdateNode(ctx context.Context, in UpdateNodeInput) (graph.Node, error)
+	UpdateNodeAndCreateSibling(ctx context.Context, in UpdateNodeAndCreateSiblingInput) (UpdateNodeAndCreateSiblingResult, error)
 	UpsertNode(ctx context.Context, in UpsertNodeInput) (graph.Node, error)
 	AddEdge(ctx context.Context, in AddEdgeInput) (graph.Edge, error)
 	ListEdges(ctx context.Context) ([]graph.Edge, error)
+	Children(ctx context.Context, parentID graph.NodeID) ([]graph.Edge, error)
+	Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge, error)
 	AddGraph(ctx context.Context, in AddGraphInput) error
 	ApplyGraph(ctx context.Context, in ApplyGraphInput) (ApplyGraphResult, error)
 	MoveSubtree(ctx context.Context, in MoveSubtreeInput) (graph.Edge, error)

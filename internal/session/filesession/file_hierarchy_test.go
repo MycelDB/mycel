@@ -5,15 +5,16 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	q "martinbeauvais.com/mbgit/knotbase/knotdb/query"
 	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
+	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 )
 
 type hierarchyTemplateManager struct {
@@ -115,8 +116,8 @@ func TestFileSessionMoveSubtreeMovesWholeSubtreeAndPreservesEdge(t *testing.T) {
 	if moved.ID != bEdgeID || moved.FromID != cID || moved.ToID != bID {
 		t.Fatalf("expected moved edge id/from/to to be preserved and updated, got %+v", moved)
 	}
-	if moved.Props["source"] != "test" || moved.Props["order"] != 1 {
-		t.Fatalf("expected moved edge props to preserve source and append order=1, got %+v", moved.Props)
+	if moved.Props["source"] != "test" || moved.Props["order"] != childOrderStep {
+		t.Fatalf("expected moved edge props to preserve source and append sparse order, got %+v", moved.Props)
 	}
 	assertChildren(t, sess, aID)
 	assertChildren(t, sess, cID, eID, bID)
@@ -263,7 +264,7 @@ func TestFileSessionReorderChildrenRequiresCompleteListAndQueryUsesOrder(t *test
 	if err != nil {
 		t.Fatalf("reorder failed: %v", err)
 	}
-	if len(updated) != 3 || updated[0].ToID != cID || updated[0].Props["order"] != 0 || updated[2].ToID != bID || updated[2].Props["order"] != 2 {
+	if len(updated) != 3 || updated[0].ToID != cID || updated[0].Props["order"] != 0 || updated[2].ToID != bID || updated[2].Props["order"] != 2*childOrderStep {
 		t.Fatalf("unexpected updated edges: %+v", updated)
 	}
 	assertChildren(t, sess, rootID, cID, aID, bID)
@@ -300,6 +301,32 @@ func TestFileSessionReorderChildrenRequiresCompleteListAndQueryUsesOrder(t *test
 	}
 }
 
+func BenchmarkUpdateNodeAndCreateSibling(b *testing.B) {
+	ctx := context.Background()
+	sess, tmplID := newHierarchyBenchmarkSession(b)
+	rootID, entryID := nodeID(), nodeID()
+	if _, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
+		AddNodes: []sessionapi.AddNodeInput{{ID: &rootID, TemplateID: &tmplID}, {ID: &entryID, TemplateID: &tmplID, Content: "entry"}},
+		AddEdges: []sessionapi.AddEdgeInput{containsInput(rootID, entryID, 0)},
+		Atomic:   true,
+	}); err != nil {
+		b.Fatalf("build graph failed: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := sess.UpdateNodeAndCreateSibling(ctx, sessionapi.UpdateNodeAndCreateSiblingInput{
+			NodeID:            entryID,
+			Content:           "updated",
+			Props:             map[string]any{},
+			SiblingTemplateID: &tmplID,
+			SiblingProps:      map[string]any{},
+		}); err != nil {
+			b.Fatalf("update/create sibling failed: %v", err)
+		}
+	}
+}
+
 func newHierarchyTestSession(t *testing.T) (sessionapi.Session, graph.TemplateID) {
 	t.Helper()
 	spaceID := domainspace.SpaceID(uuid.New())
@@ -310,6 +337,26 @@ func newHierarchyTestSession(t *testing.T) (sessionapi.Session, graph.TemplateID
 		tmplID: {ID: tmplID, SpaceID: spaceID, Key: "entry", Version: "1", Children: graph.ChildPolicy{Allowed: true, Order: &graph.ChildOrderPolicy{Mode: graph.ChildOrderModeEdgeProperty, Property: "order", Direction: graph.SortDirectionAsc}}, Properties: graph.PropertyPolicy{AllowExtra: true}},
 	}}
 	return New(graphsDir, t.TempDir(), spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}), tmplID
+}
+
+func newHierarchyBenchmarkSession(b *testing.B) (sessionapi.Session, graph.TemplateID) {
+	b.Helper()
+	spaceID := domainspace.SpaceID(uuid.New())
+	graphsDir := b.TempDir()
+	spacePath := filepath.Join(graphsDir, safeID(spaceID))
+	if err := os.MkdirAll(spacePath, 0o700); err != nil {
+		b.Fatalf("create space dir failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(spacePath, ".space"), []byte(""), 0o600); err != nil {
+		b.Fatalf("create marker failed: %v", err)
+	}
+	tmplID := graph.TemplateID(uuid.New())
+	manager := hierarchyTemplateManager{templates: map[graph.TemplateID]graph.Template{
+		tmplID: {ID: tmplID, SpaceID: spaceID, Key: "entry", Version: "1", Children: graph.ChildPolicy{Allowed: true, Order: &graph.ChildOrderPolicy{Mode: graph.ChildOrderModeEdgeProperty, Property: "order", Direction: graph.SortDirectionAsc}}, Properties: graph.PropertyPolicy{AllowExtra: true}},
+	}}
+	sess := New(graphsDir, b.TempDir(), spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")})
+	b.Cleanup(func() { _ = sess.Close() })
+	return sess, tmplID
 }
 
 func prepareSpaceDir(t *testing.T, graphsDir string, spaceID domainspace.SpaceID) {
@@ -344,17 +391,21 @@ func assertChildren(t *testing.T, sess sessionapi.Session, parentID graph.NodeID
 	if len(childEdges) != len(expected) {
 		t.Fatalf("expected %d children for %s, got %d: %+v", len(expected), parentID, len(childEdges), childEdges)
 	}
-	for _, edge := range childEdges {
+	sort.SliceStable(childEdges, func(i, j int) bool {
+		left, _ := edgeOrderNumber(childEdges[i])
+		right, _ := edgeOrderNumber(childEdges[j])
+		return left < right
+	})
+	for index, edge := range childEdges {
 		orderValue, ok := edgeOrderNumber(edge)
 		if !ok {
 			t.Fatalf("expected numeric order prop on edge %+v", edge)
 		}
-		order := int(orderValue)
-		if orderValue != float64(order) || order < 0 || order >= len(expected) {
+		if orderValue < 0 {
 			t.Fatalf("order out of range on edge %+v", edge)
 		}
-		if edge.ToID != expected[order] {
-			t.Fatalf("expected child at order %d to be %s, got edge %+v", order, expected[order], edge)
+		if edge.ToID != expected[index] {
+			t.Fatalf("expected child at index %d to be %s, got edge %+v", index, expected[index], edge)
 		}
 	}
 }
