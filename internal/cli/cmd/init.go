@@ -21,13 +21,12 @@ func NewInitCommand(a *app.App) *cobra.Command {
 			if strings.TrimSpace(a.UserRef) == "" || strings.TrimSpace(a.Password) == "" {
 				return fmt.Errorf("--username/-u and --password/-p are required")
 			}
-			eng, err := knotengine.NewEngine(knotengine.EngineConfig{
-				DataDir:         a.DataDir,
-				Mode:            knotengine.EngineModeStandalone,
-				CreateIfMissing: true,
-				AdminUsername:   a.UserRef,
-				AdminPassword:   a.Password,
-			}, nil, nil, nil, nil)
+			engineCfg := a.Config.EngineConfig()
+			engineCfg.DataDir = a.DataDir
+			engineCfg.CreateIfMissing = true
+			engineCfg.AdminUsername = a.UserRef
+			engineCfg.AdminPassword = a.Password
+			eng, err := knotengine.NewEngine(engineCfg, nil, nil, nil, nil)
 			if err != nil {
 				return err
 			}

@@ -35,6 +35,9 @@ var (
 type defaultEngine struct {
 	state           EngineState
 	dataDir         string
+	accessTokenTTL  time.Duration
+	blobLimits      domainsession.BlobLimits
+	blobStaleTmpAge time.Duration
 	userManager     user.Manager
 	spaceManager    spaces.Manager
 	templateManager storetemplate.Manager
@@ -138,6 +141,12 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		e.state = EngineStateClose
 		return err
 	}
+	e.accessTokenTTL = cfg.AccessTokenTTL
+	if e.accessTokenTTL <= 0 {
+		e.accessTokenTTL = time.Hour
+	}
+	e.blobLimits = cfg.BlobLimits
+	e.blobStaleTmpAge = cfg.BlobStaleTmpAge
 
 	if e.userManager == nil {
 		e.userManager = user.NewManager()
@@ -253,7 +262,7 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 	}
 
 	now := time.Now().Unix()
-	exp := now + 3600
+	exp := now + int64(e.accessTokenTTL.Seconds())
 	uid := account.ID.String()
 	accessToken := AccessToken(uuid.NewString())
 	roles, err := e.accessManager.SystemRolesForUser(ctx, account.ID)
@@ -626,7 +635,7 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (d
 	if err != nil {
 		return nil, err
 	}
-	return domainsession.NewSessionWithStore(
+	return domainsession.NewSessionWithStoreConfig(
 		graphsDir(e.dataDir),
 		blobsDir(e.dataDir),
 		spaceID,
@@ -634,6 +643,7 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (d
 		domainsession.Permissions{Read: canRead, Write: canWrite, Admin: canAdmin},
 		domainsession.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized, Conflict: ErrConflict},
 		store,
+		domainsession.Config{BlobLimits: e.blobLimits, BlobStaleTmpAge: e.blobStaleTmpAge},
 	), nil
 }
 

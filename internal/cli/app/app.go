@@ -12,18 +12,30 @@ import (
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
+	knotconfig "martinbeauvais.com/mbgit/knotbase/knotdb/internal/config"
 	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
 // App holds process/REPL state shared by commands.
 type App struct {
-	DataDir        string
-	UserRef        string
-	Password       string
-	Output         string
-	Engine         knotengine.Engine
-	Token          knotengine.AccessToken
-	CurrentSpaceID *domainspace.SpaceID
+	DataDir                   string
+	ConfigFile                string
+	UserRef                   string
+	Password                  string
+	Output                    string
+	UserStoreEncryptionKeyB64 string
+	AuthTokenTTL              string
+	BlobStaleTmpAge           string
+	BlobMaxSizeBytes          int64
+	BlobMaxImageBytes         int64
+	BlobMaxPDFBytes           int64
+	BlobMaxAudioBytes         int64
+	BlobMaxVideoBytes         int64
+	BlobMaxOtherBytes         int64
+	Engine                    knotengine.Engine
+	Token                     knotengine.AccessToken
+	CurrentSpaceID            *domainspace.SpaceID
+	Config                    knotconfig.Config
 }
 
 func DefaultOutput(v string) string {
@@ -37,18 +49,24 @@ func (a *App) EnsureEngine(ctx context.Context) error {
 	if a.Engine != nil {
 		return nil
 	}
-	a.DataDir = knotengine.ResolveDataDir(a.DataDir)
+	if strings.TrimSpace(a.Config.DataDir) == "" {
+		cfg, err := knotconfig.Load(knotconfig.Options{ConfigFile: a.ConfigFile})
+		if err != nil {
+			return err
+		}
+		a.Config = cfg
+	}
+	a.DataDir = knotengine.ResolveDataDir(firstNonEmpty(a.DataDir, a.Config.DataDir))
 	if strings.TrimSpace(a.DataDir) == "" {
 		return fmt.Errorf("--data-dir/-d is required or %s must be set", knotengine.EnvDataDir)
 	}
 	if strings.TrimSpace(a.UserRef) == "" || strings.TrimSpace(a.Password) == "" {
 		return fmt.Errorf("--username/-u and --password/-p are required outside a logged-in REPL")
 	}
-	eng, err := knotengine.NewEngine(knotengine.EngineConfig{
-		DataDir:         a.DataDir,
-		Mode:            knotengine.EngineModeStandalone,
-		CreateIfMissing: false,
-	}, nil, nil, nil, nil)
+	engineCfg := a.Config.EngineConfig()
+	engineCfg.DataDir = a.DataDir
+	engineCfg.CreateIfMissing = false
+	eng, err := knotengine.NewEngine(engineCfg, nil, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -143,4 +161,13 @@ func ParseUUID[T ~[16]byte](s string) (T, error) {
 		return zero, err
 	}
 	return T(id), nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

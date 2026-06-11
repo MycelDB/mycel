@@ -1,5 +1,11 @@
 package internal
 
+import (
+	"time"
+
+	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
+)
+
 // EngineMode defines runtime mode for KnotDB engine startup.
 type EngineMode string
 
@@ -25,4 +31,9 @@ type EngineConfig struct {
 	AdminUsername             string
 	AdminPassword             string
 	UserStoreEncryptionKeyB64 string
+	AccessTokenTTL            time.Duration
+	BlobLimits                sessionapi.BlobLimits
+	BlobStaleTmpAge           time.Duration
 }
+
+type BlobLimits = sessionapi.BlobLimits

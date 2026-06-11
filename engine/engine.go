@@ -4,15 +4,15 @@ package engine
 import (
 	"context"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/store/acl"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/store/spaces"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/store/user"
 	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	engineinternal "martinbeauvais.com/mbgit/knotbase/knotdb/engine/internal"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/session"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/store/acl"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/store/spaces"
+	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/store/user"
 )
 
 type EngineMode = engineinternal.EngineMode
@@ -28,6 +28,7 @@ const (
 )
 
 type EngineConfig = engineinternal.EngineConfig
+type BlobLimits = engineinternal.BlobLimits
 type AccessToken = engineinternal.AccessToken
 type AuthInput = engineinternal.AuthInput
 type AuthResult = engineinternal.AuthResult

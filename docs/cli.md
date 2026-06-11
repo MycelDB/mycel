@@ -26,6 +26,34 @@ Set the shared KnotDB data directory, or pass `-d/--data-dir` on each command:
 export KNOTDB_DATA_DIR=~/knot_data
 ```
 
+## Configuration
+
+KnotDB CLI configuration precedence is: built-in defaults, optional YAML file, environment variables, then command-line flags.
+
+Use `--config` or `KNOTDB_CONFIG` to load a YAML file:
+
+```yaml
+data_dir: ~/knot_data
+output: text
+security:
+  user_store_encryption_key_b64: ""
+auth:
+  access_token_ttl: 1h
+storage:
+  blobs:
+    stale_tmp_age: 1h
+    max_size_bytes: -1
+    max_image_bytes: -1
+    max_pdf_bytes: -1
+    max_audio_bytes: -1
+    max_video_bytes: -1
+    max_other_bytes: -1
+    mime_type_limits:
+      application/zip: 0
+```
+
+Blob upload limits use `-1` for unlimited. Exact MIME overrides can use `0` to disallow that MIME type. The existing `KNOTDB_DATA_DIR` environment variable remains supported, and additional environment aliases include `KNOTDB_AUTH_ACCESS_TOKEN_TTL`, `KNOTDB_USER_STORE_ENCRYPTION_KEY_B64`, and `KNOTDB_STORAGE_BLOBS_MAX_*_BYTES`.
+
 Initialize a data directory once before running normal commands:
 
 ```sh

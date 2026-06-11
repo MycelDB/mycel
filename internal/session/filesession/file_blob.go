@@ -86,7 +86,11 @@ func (s *FileSession) AddBlobNode(ctx context.Context, in sessionapi.AddBlobNode
 	}
 	head = head[:n]
 	mimeType := normalizeMimeType(http.DetectContentType(head))
-	blobID, size, err := blobs.Put(ctx, io.MultiReader(bytes.NewReader(head), in.Reader))
+	blobReader, err := s.limitedBlobReader(io.MultiReader(bytes.NewReader(head), in.Reader), mimeType)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	blobID, size, err := blobs.Put(ctx, blobReader)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -193,7 +197,7 @@ func (s *FileSession) blobStore() (*blobstorage.Store, error) {
 	if s.blobs != nil {
 		return s.blobs, nil
 	}
-	blobs, err := blobstorage.Open(s.blobPath())
+	blobs, err := blobstorage.OpenWithConfig(s.blobPath(), blobstorage.Config{StaleTmpAge: s.blobStaleTmpAge})
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +294,80 @@ func normalizeMimeType(detected string) string {
 	if idx := strings.Index(detected, ";"); idx >= 0 {
 		detected = detected[:idx]
 	}
-	return strings.TrimSpace(detected)
+	return strings.ToLower(strings.TrimSpace(detected))
+}
+
+func (s *FileSession) limitedBlobReader(r io.Reader, mimeType string) (io.Reader, error) {
+	limit, disallowed := effectiveBlobLimit(s.blobLimits, mimeType)
+	if disallowed {
+		return nil, fmt.Errorf("%w: %s", sessionapi.ErrBlobTypeDisallowed, mimeType)
+	}
+	if limit < 0 {
+		return r, nil
+	}
+	return &blobLimitReader{r: r, remaining: limit}, nil
+}
+
+func effectiveBlobLimit(limits sessionapi.BlobLimits, mimeType string) (int64, bool) {
+	if isZeroBlobLimits(limits) {
+		return -1, false
+	}
+	mimeType = normalizeMimeType(mimeType)
+	limit := limits.MaxOtherBytes
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		limit = limits.MaxImageBytes
+	case mimeType == "application/pdf":
+		limit = limits.MaxPDFBytes
+	case strings.HasPrefix(mimeType, "audio/"):
+		limit = limits.MaxAudioBytes
+	case strings.HasPrefix(mimeType, "video/"):
+		limit = limits.MaxVideoBytes
+	}
+	if limits.MimeTypeLimits != nil {
+		if exact, ok := limits.MimeTypeLimits[mimeType]; ok {
+			limit = exact
+		}
+	}
+	if limit == 0 {
+		return 0, true
+	}
+	if limits.MaxSizeBytes > 0 && (limit < 0 || limit > limits.MaxSizeBytes) {
+		limit = limits.MaxSizeBytes
+	}
+	return limit, false
+}
+
+func isZeroBlobLimits(limits sessionapi.BlobLimits) bool {
+	return limits.MaxSizeBytes == 0 &&
+		limits.MaxImageBytes == 0 &&
+		limits.MaxPDFBytes == 0 &&
+		limits.MaxAudioBytes == 0 &&
+		limits.MaxVideoBytes == 0 &&
+		limits.MaxOtherBytes == 0 &&
+		len(limits.MimeTypeLimits) == 0
+}
+
+type blobLimitReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (r *blobLimitReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		var probe [1]byte
+		n, err := r.r.Read(probe[:])
+		if n > 0 {
+			return 0, sessionapi.ErrBlobTooLarge
+		}
+		return 0, err
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.r.Read(p)
+	r.remaining -= int64(n)
+	return n, err
 }
 
 func stringProp(props map[string]any, key string) string {

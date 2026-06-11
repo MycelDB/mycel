@@ -272,7 +272,100 @@ func TestAddBlobNodeRequiresReaderAndWriteAccess(t *testing.T) {
 	}
 }
 
+func TestAddBlobNodeRejectsPDFOverConfiguredLimit(t *testing.T) {
+	ctx := context.Background()
+	pdf := append([]byte("%PDF-1.7\n"), bytes.Repeat([]byte("x"), 32)...)
+	sess, fs := newBlobTestSessionWithConfig(t, Config{BlobLimits: sessionapi.BlobLimits{
+		MaxSizeBytes:  -1,
+		MaxImageBytes: -1,
+		MaxPDFBytes:   8,
+		MaxAudioBytes: -1,
+		MaxVideoBytes: -1,
+		MaxOtherBytes: -1,
+	}})
+
+	if _, err := sess.AddBlobNode(ctx, sessionapi.AddBlobNodeInput{Reader: bytes.NewReader(pdf)}); !errors.Is(err, sessionapi.ErrBlobTooLarge) {
+		t.Fatalf("expected ErrBlobTooLarge, got %v", err)
+	}
+	nodes, err := fs.readNodes()
+	if err != nil {
+		t.Fatalf("read nodes failed: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("expected no committed blob node, got %d nodes", len(nodes))
+	}
+	if fs.blobs != nil {
+		ids, err := fs.blobs.List(ctx)
+		if err != nil {
+			t.Fatalf("list blobs failed: %v", err)
+		}
+		if len(ids) != 0 {
+			t.Fatalf("expected no reachable blob objects, got %d", len(ids))
+		}
+	}
+}
+
+func TestAddBlobNodeUsesMimeOverrideAndGlobalCap(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		limits sessionapi.BlobLimits
+	}{
+		{
+			name: "exact MIME override",
+			limits: sessionapi.BlobLimits{
+				MaxSizeBytes:   -1,
+				MaxImageBytes:  1024,
+				MaxPDFBytes:    -1,
+				MaxAudioBytes:  -1,
+				MaxVideoBytes:  -1,
+				MaxOtherBytes:  -1,
+				MimeTypeLimits: map[string]int64{"image/png": int64(len(pngHeader) - 1)},
+			},
+		},
+		{
+			name: "global cap",
+			limits: sessionapi.BlobLimits{
+				MaxSizeBytes:   int64(len(pngHeader) - 1),
+				MaxImageBytes:  1024,
+				MaxPDFBytes:    -1,
+				MaxAudioBytes:  -1,
+				MaxVideoBytes:  -1,
+				MaxOtherBytes:  -1,
+				MimeTypeLimits: map[string]int64{"image/png": 1024},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess, _ := newBlobTestSessionWithConfig(t, Config{BlobLimits: tc.limits})
+			if _, err := sess.AddBlobNode(ctx, sessionapi.AddBlobNodeInput{Reader: bytes.NewReader(pngHeader)}); !errors.Is(err, sessionapi.ErrBlobTooLarge) {
+				t.Fatalf("expected ErrBlobTooLarge, got %v", err)
+			}
+		})
+	}
+}
+
+func TestAddBlobNodeRejectsDisallowedMimeType(t *testing.T) {
+	ctx := context.Background()
+	sess, _ := newBlobTestSessionWithConfig(t, Config{BlobLimits: sessionapi.BlobLimits{
+		MaxSizeBytes:   -1,
+		MaxImageBytes:  -1,
+		MaxPDFBytes:    -1,
+		MaxAudioBytes:  -1,
+		MaxVideoBytes:  -1,
+		MaxOtherBytes:  -1,
+		MimeTypeLimits: map[string]int64{"image/png": 0},
+	}})
+	if _, err := sess.AddBlobNode(ctx, sessionapi.AddBlobNodeInput{Reader: bytes.NewReader(pngHeader)}); !errors.Is(err, sessionapi.ErrBlobTypeDisallowed) {
+		t.Fatalf("expected ErrBlobTypeDisallowed, got %v", err)
+	}
+}
+
 func newBlobTestSession(t *testing.T) (sessionapi.Session, *FileSession) {
+	return newBlobTestSessionWithConfig(t, Config{})
+}
+
+func newBlobTestSessionWithConfig(t *testing.T, cfg Config) (sessionapi.Session, *FileSession) {
 	t.Helper()
 	spaceID := domainspace.SpaceID(uuid.New())
 	graphsDir := t.TempDir()
@@ -282,7 +375,7 @@ func newBlobTestSession(t *testing.T) (sessionapi.Session, *FileSession) {
 	if err := manager.Init(context.Background(), t.TempDir()); err != nil {
 		t.Fatalf("init template manager failed: %v", err)
 	}
-	sess := New(graphsDir, blobsDir, spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")})
+	sess := NewConfig(graphsDir, blobsDir, spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}, cfg)
 	return sess, sess.(*FileSession)
 }
 

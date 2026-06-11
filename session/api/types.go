@@ -2,12 +2,34 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
 	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 )
+
+var (
+	// ErrBlobTooLarge is returned when a streamed blob exceeds the configured
+	// upload limit for its detected MIME type.
+	ErrBlobTooLarge = errors.New("blob exceeds configured size limit")
+	// ErrBlobTypeDisallowed is returned when the configured blob policy sets
+	// the effective limit for a MIME type to zero bytes.
+	ErrBlobTypeDisallowed = errors.New("blob MIME type is disallowed")
+)
+
+// BlobLimits defines upload-size limits for blob nodes. A zero-value policy
+// preserves the historical behavior and does not limit uploads.
+type BlobLimits struct {
+	MaxSizeBytes   int64
+	MaxImageBytes  int64
+	MaxPDFBytes    int64
+	MaxAudioBytes  int64
+	MaxVideoBytes  int64
+	MaxOtherBytes  int64
+	MimeTypeLimits map[string]int64
+}
 
 // Errors defines public errors returned by sessions.
 type Errors struct {

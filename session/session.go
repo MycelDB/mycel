@@ -1,6 +1,8 @@
 package session
 
 import (
+	"time"
+
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/session/filesession"
@@ -35,7 +37,19 @@ type (
 	ApplyGraphResult                 = sessionapi.ApplyGraphResult
 	MoveSubtreeInput                 = sessionapi.MoveSubtreeInput
 	ReorderChildrenInput             = sessionapi.ReorderChildrenInput
+	BlobLimits                       = sessionapi.BlobLimits
 )
+
+var (
+	ErrBlobTooLarge       = sessionapi.ErrBlobTooLarge
+	ErrBlobTypeDisallowed = sessionapi.ErrBlobTypeDisallowed
+)
+
+// Config carries runtime session knobs supplied by the engine.
+type Config struct {
+	BlobLimits      BlobLimits
+	BlobStaleTmpAge time.Duration
+}
 
 // NewSession opens a file-backed graph session for a space.
 //
@@ -50,4 +64,12 @@ func NewSession(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, 
 // NewSessionWithStore opens a file-backed session over an engine-owned graph store.
 func NewSessionWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions Permissions, errs Errors, store *graphstorage.LocalStore) Session {
 	return filesession.NewWithStore(graphsDir, blobsDir, spaceID, templateManager, permissions, errs, store)
+}
+
+// NewSessionWithStoreConfig opens a file-backed session over an engine-owned graph store.
+func NewSessionWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions Permissions, errs Errors, store *graphstorage.LocalStore, cfg Config) Session {
+	return filesession.NewWithStoreConfig(graphsDir, blobsDir, spaceID, templateManager, permissions, errs, store, filesession.Config{
+		BlobLimits:      cfg.BlobLimits,
+		BlobStaleTmpAge: cfg.BlobStaleTmpAge,
+	})
 }

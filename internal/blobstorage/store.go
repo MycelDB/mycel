@@ -34,13 +34,24 @@ const (
 	staleTmpAge = time.Hour
 )
 
+// Config carries runtime knobs for a blob store.
+type Config struct {
+	StaleTmpAge time.Duration
+}
+
 // Store is a content-addressed blob store rooted at a per-space directory.
 type Store struct {
-	path string
+	path        string
+	staleTmpAge time.Duration
 }
 
 // Open initializes (creating if needed) the blob store layout at path.
 func Open(path string) (*Store, error) {
+	return OpenWithConfig(path, Config{})
+}
+
+// OpenWithConfig initializes (creating if needed) the blob store layout at path.
+func OpenWithConfig(path string, cfg Config) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("%w: path is required", ErrInvalidInput)
 	}
@@ -49,7 +60,11 @@ func Open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	return &Store{path: path}, nil
+	staleAge := cfg.StaleTmpAge
+	if staleAge <= 0 {
+		staleAge = staleTmpAge
+	}
+	return &Store{path: path, staleTmpAge: staleAge}, nil
 }
 
 // Put streams r into the store and returns the content address and size.
@@ -235,7 +250,7 @@ func (s *Store) SweepTmp(ctx context.Context) error {
 		}
 		return err
 	}
-	cutoff := time.Now().Add(-staleTmpAge)
+	cutoff := time.Now().Add(-s.staleTmpAge)
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
