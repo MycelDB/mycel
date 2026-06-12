@@ -294,6 +294,24 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 	return AuthResult{AccessToken: accessToken}, nil
 }
 
+func (e *defaultEngine) CurrentUser(ctx context.Context, in CurrentUserInput) (identity.User, error) {
+	if err := e.Ready(ctx); err != nil {
+		return identity.User{}, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return identity.User{}, err
+	}
+	account, err := e.userManager.GetByID(ctx, auth.UserID)
+	if err != nil {
+		if errors.Is(err, user.ErrUserNotFound) {
+			return identity.User{}, ErrNotFound
+		}
+		return identity.User{}, err
+	}
+	return account, nil
+}
+
 func (e *defaultEngine) CreateUser(ctx context.Context, in CreateUserInput) (identity.User, error) {
 	if err := e.Ready(ctx); err != nil {
 		return identity.User{}, err

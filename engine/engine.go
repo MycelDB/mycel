@@ -32,6 +32,7 @@ type BlobLimits = engineinternal.BlobLimits
 type AccessToken = engineinternal.AccessToken
 type AuthInput = engineinternal.AuthInput
 type AuthResult = engineinternal.AuthResult
+type CurrentUserInput = engineinternal.CurrentUserInput
 type CreateUserInput = engineinternal.CreateUserInput
 type ListUsersInput = engineinternal.ListUsersInput
 type DeleteUserInput = engineinternal.DeleteUserInput
@@ -64,6 +65,7 @@ type Engine interface {
 	Open(cfg EngineConfig) error
 	Ready(ctx context.Context) error
 	Authenticate(ctx context.Context, in AuthInput) (AuthResult, error)
+	CurrentUser(ctx context.Context, in CurrentUserInput) (identity.User, error)
 	CreateUser(ctx context.Context, in CreateUserInput) (identity.User, error)
 	ListUsers(ctx context.Context, in ListUsersInput) ([]identity.User, error)
 	DeleteUser(ctx context.Context, in DeleteUserInput) error

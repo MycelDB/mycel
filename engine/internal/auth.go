@@ -15,3 +15,8 @@ type AccessToken string
 type AuthResult struct {
 	AccessToken AccessToken `json:"access_token"`
 }
+
+// CurrentUserInput identifies the bearer token whose authenticated user should be returned.
+type CurrentUserInput struct {
+	AccessToken AccessToken
+}
