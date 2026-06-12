@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
@@ -35,6 +36,7 @@ type storedTemplate struct {
 }
 
 type defaultManager struct {
+	mu                     sync.RWMutex
 	location               string
 	templates              []storedTemplate
 	indexByID              map[graph.TemplateID]int
@@ -50,6 +52,8 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if strings.TrimSpace(location) == "" {
 		return fmt.Errorf("%w: location is required", ErrInvalidInput)
 	}
@@ -91,6 +95,9 @@ func (m *defaultManager) Import(ctx context.Context, spaceID domainspace.SpaceID
 	if err := validateImportDocument(doc); err != nil {
 		return nil, err
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	seen := map[string]struct{}{}
 	for _, in := range doc.Templates {
@@ -140,6 +147,8 @@ func (m *defaultManager) ListBySpace(ctx context.Context, spaceID domainspace.Sp
 	if spaceID == uuid.Nil {
 		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	out := []graph.Template{}
 	for _, t := range m.templates {
 		if t.SpaceID == spaceID {
@@ -156,6 +165,8 @@ func (m *defaultManager) GetByID(ctx context.Context, id graph.TemplateID) (grap
 	if id == uuid.Nil {
 		return graph.Template{}, fmt.Errorf("%w: template_id is required", ErrInvalidInput)
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	idx, ok := m.indexByID[id]
 	if !ok {
 		return graph.Template{}, ErrTemplateNotFound
@@ -176,6 +187,8 @@ func (m *defaultManager) Find(ctx context.Context, spaceID domainspace.SpaceID, 
 	if !validSemver(version) {
 		return graph.Template{}, fmt.Errorf("%w: version must be semver", ErrInvalidInput)
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	idx, ok := m.indexBySpaceKeyVersion[spaceKeyVersion(spaceID, key, version)]
 	if !ok {
 		return graph.Template{}, ErrTemplateNotFound
@@ -190,6 +203,8 @@ func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID domainspace
 	if spaceID == uuid.Nil {
 		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	newTemplates := make([]storedTemplate, 0, len(m.templates))
 	for _, t := range m.templates {
 		if t.SpaceID != spaceID {

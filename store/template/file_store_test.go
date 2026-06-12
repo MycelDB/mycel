@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -113,6 +114,42 @@ func TestDefaultManager_ImportRejectsDisallowedChildrenWithRefs(t *testing.T) {
 	_, err := m.Import(context.Background(), domainspace.SpaceID(uuid.New()), doc)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput, got: %v", err)
+	}
+}
+
+func TestDefaultManager_ConcurrentImportAndReadAreSafe(t *testing.T) {
+	m := NewManager()
+	if err := m.Init(context.Background(), filepath.Join(t.TempDir(), "store")); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	const workers = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			spaceID := domainspace.SpaceID(uuid.New())
+			created, err := m.Import(context.Background(), spaceID, validDocument())
+			if err != nil {
+				errs <- err
+				return
+			}
+			if _, err := m.ListBySpace(context.Background(), spaceID); err != nil {
+				errs <- err
+				return
+			}
+			if _, err := m.GetByID(context.Background(), created[0].ID); err != nil {
+				errs <- err
+				return
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent operation failed: %v", err)
 	}
 }
 
