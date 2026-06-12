@@ -1,0 +1,51 @@
+{
+  "providers": [
+    {
+      "id": "openai",
+      "display_name": "OpenAI",
+      "protocol": "openai_embeddings",
+      "default_endpoint": "https://api.openai.com/v1",
+      "auth_style": "bearer",
+      "models": [
+        {
+          "id": "openai/text-embedding-3-small",
+          "provider_id": "openai",
+          "model": "text-embedding-3-small",
+          "display_name": "text-embedding-3-small",
+          "dimensions": 1536,
+          "modalities": ["text"],
+          "max_input_chars": 32000,
+          "default": true
+        },
+        {
+          "id": "openai/text-embedding-3-large",
+          "provider_id": "openai",
+          "model": "text-embedding-3-large",
+          "display_name": "text-embedding-3-large",
+          "dimensions": 3072,
+          "modalities": ["text"],
+          "max_input_chars": 32000
+        }
+      ]
+    },
+    {
+      "id": "ollama",
+      "display_name": "Ollama",
+      "protocol": "ollama_embed",
+      "default_endpoint": "http://localhost:11434",
+      "auth_style": "none",
+      "models": [
+        {
+          "id": "ollama/nomic-embed-text",
+          "provider_id": "ollama",
+          "model": "nomic-embed-text",
+          "display_name": "nomic-embed-text",
+          "dimensions": 768,
+          "modalities": ["text"],
+          "max_input_chars": 32000,
+          "default": true
+        }
+      ]
+    }
+  ]
+}

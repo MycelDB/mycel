@@ -5,6 +5,7 @@ import (
 	"context"
 
 	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
+	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	engineinternal "martinbeauvais.com/mbgit/knotbase/knotdb/engine/internal"
@@ -47,6 +48,15 @@ type GrantSpaceAccessInput = engineinternal.GrantSpaceAccessInput
 type RevokeSpaceAccessInput = engineinternal.RevokeSpaceAccessInput
 type ListSpaceAccessInput = engineinternal.ListSpaceAccessInput
 type OpenSessionInput = engineinternal.OpenSessionInput
+type EmbeddingCatalogInput = engineinternal.EmbeddingCatalogInput
+type ListEmbeddingKeysInput = engineinternal.ListEmbeddingKeysInput
+type AddEmbeddingKeyInput = engineinternal.AddEmbeddingKeyInput
+type UpdateEmbeddingKeyInput = engineinternal.UpdateEmbeddingKeyInput
+type DeleteEmbeddingKeyInput = engineinternal.DeleteEmbeddingKeyInput
+type ListEmbeddingProfilesInput = engineinternal.ListEmbeddingProfilesInput
+type AddEmbeddingProfileInput = engineinternal.AddEmbeddingProfileInput
+type UpdateEmbeddingProfileInput = engineinternal.UpdateEmbeddingProfileInput
+type DeleteEmbeddingProfileInput = engineinternal.DeleteEmbeddingProfileInput
 
 const EnvDataDir = engineinternal.EnvDataDir
 
@@ -78,6 +88,15 @@ type Engine interface {
 	GrantSpaceAccess(ctx context.Context, in GrantSpaceAccessInput) (domainaccess.SpaceAccessRule, error)
 	RevokeSpaceAccess(ctx context.Context, in RevokeSpaceAccessInput) error
 	ListSpaceAccess(ctx context.Context, in ListSpaceAccessInput) ([]domainaccess.SpaceAccessRule, error)
+	EmbeddingCatalog(ctx context.Context, in EmbeddingCatalogInput) (domainembedding.Catalog, error)
+	ListEmbeddingKeys(ctx context.Context, in ListEmbeddingKeysInput) ([]domainembedding.ProviderKey, error)
+	AddEmbeddingKey(ctx context.Context, in AddEmbeddingKeyInput) (domainembedding.ProviderKey, error)
+	UpdateEmbeddingKey(ctx context.Context, in UpdateEmbeddingKeyInput) (domainembedding.ProviderKey, error)
+	DeleteEmbeddingKey(ctx context.Context, in DeleteEmbeddingKeyInput) error
+	ListEmbeddingProfiles(ctx context.Context, in ListEmbeddingProfilesInput) ([]domainembedding.Profile, error)
+	AddEmbeddingProfile(ctx context.Context, in AddEmbeddingProfileInput) (domainembedding.Profile, error)
+	UpdateEmbeddingProfile(ctx context.Context, in UpdateEmbeddingProfileInput) (domainembedding.Profile, error)
+	DeleteEmbeddingProfile(ctx context.Context, in DeleteEmbeddingProfileInput) error
 	OpenSession(ctx context.Context, in OpenSessionInput) (session.Session, error)
 	Close() error
 }

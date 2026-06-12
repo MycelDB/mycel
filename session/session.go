@@ -3,10 +3,12 @@ package session
 import (
 	"time"
 
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/session/filesession"
 	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
+	storeembedding "martinbeauvais.com/mbgit/knotbase/knotdb/store/embedding"
 	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 )
 
@@ -37,6 +39,10 @@ type (
 	ApplyGraphResult                 = sessionapi.ApplyGraphResult
 	MoveSubtreeInput                 = sessionapi.MoveSubtreeInput
 	ReorderChildrenInput             = sessionapi.ReorderChildrenInput
+	GenerateNodeEmbeddingInput       = sessionapi.GenerateNodeEmbeddingInput
+	GenerateNodeEmbeddingsInput      = sessionapi.GenerateNodeEmbeddingsInput
+	ListNodeEmbeddingsInput          = sessionapi.ListNodeEmbeddingsInput
+	SemanticSearchInput              = sessionapi.SemanticSearchInput
 	BlobLimits                       = sessionapi.BlobLimits
 )
 
@@ -47,8 +53,10 @@ var (
 
 // Config carries runtime session knobs supplied by the engine.
 type Config struct {
-	BlobLimits      BlobLimits
-	BlobStaleTmpAge time.Duration
+	BlobLimits       BlobLimits
+	BlobStaleTmpAge  time.Duration
+	CurrentUserID    identity.UserID
+	EmbeddingManager storeembedding.Manager
 }
 
 // NewSession opens a file-backed graph session for a space.
@@ -69,7 +77,9 @@ func NewSessionWithStore(graphsDir string, blobsDir string, spaceID domainspace.
 // NewSessionWithStoreConfig opens a file-backed session over an engine-owned graph store.
 func NewSessionWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions Permissions, errs Errors, store *graphstorage.LocalStore, cfg Config) Session {
 	return filesession.NewWithStoreConfig(graphsDir, blobsDir, spaceID, templateManager, permissions, errs, store, filesession.Config{
-		BlobLimits:      cfg.BlobLimits,
-		BlobStaleTmpAge: cfg.BlobStaleTmpAge,
+		BlobLimits:       cfg.BlobLimits,
+		BlobStaleTmpAge:  cfg.BlobStaleTmpAge,
+		CurrentUserID:    cfg.CurrentUserID,
+		EmbeddingManager: cfg.EmbeddingManager,
 	})
 }

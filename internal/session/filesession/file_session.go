@@ -13,18 +13,22 @@ import (
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
 	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/blobstorage"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
 	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
+	storeembedding "martinbeauvais.com/mbgit/knotbase/knotdb/store/embedding"
 	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 )
 
 // Config carries runtime knobs for the file-backed session implementation.
 type Config struct {
-	BlobLimits      sessionapi.BlobLimits
-	BlobStaleTmpAge time.Duration
+	BlobLimits       sessionapi.BlobLimits
+	BlobStaleTmpAge  time.Duration
+	CurrentUserID    identity.UserID
+	EmbeddingManager storeembedding.Manager
 }
 
 // New opens the default file-backed session implementation.
@@ -39,28 +43,30 @@ func NewWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID
 
 // NewWithStoreConfig opens a session that borrows an engine-owned graph store.
 func NewWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager}
 }
 
 // NewConfig opens the default file-backed session implementation.
 func NewConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager}
 }
 
 // FileSession is the default file-backed Session implementation.
 type FileSession struct {
-	graphsDir       string
-	blobsDir        string
-	spaceID         domainspace.SpaceID
-	templateManager storetemplate.Manager
-	permissions     sessionapi.Permissions
-	errors          sessionapi.Errors
-	store           *graphstorage.LocalStore
-	blobs           *blobstorage.Store
-	blobLimits      sessionapi.BlobLimits
-	blobStaleTmpAge time.Duration
-	closeStore      bool
-	closed          bool
+	graphsDir        string
+	blobsDir         string
+	spaceID          domainspace.SpaceID
+	templateManager  storetemplate.Manager
+	permissions      sessionapi.Permissions
+	errors           sessionapi.Errors
+	store            *graphstorage.LocalStore
+	blobs            *blobstorage.Store
+	blobLimits       sessionapi.BlobLimits
+	blobStaleTmpAge  time.Duration
+	currentUserID    identity.UserID
+	embeddingManager storeembedding.Manager
+	closeStore       bool
+	closed           bool
 }
 
 // Query starts a programmatic graph query over this session.

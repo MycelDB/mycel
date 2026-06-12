@@ -21,6 +21,7 @@ flowchart TB
     engineInternal[engine/internal]
     internalSession[internal/session/filesession]
     graphstorage[internal/graphstorage]
+    embeddingInternal[internal/embedding + internal/embeddingstore]
     cliInternal[internal/cli]
   end
 
@@ -29,7 +30,9 @@ flowchart TB
   engineInternal --> sessionPkg
   sessionPkg --> internalSession
   internalSession --> graphstorage
+  internalSession --> embeddingInternal
   internalSession --> storePkg
+  engineInternal --> embeddingInternal
   cmdKnotdb[cmd/knotdb] --> cliInternal --> enginePkg
 ```
 
@@ -39,7 +42,7 @@ flowchart TB
 |--------|---------|
 | `engine` | Engine lifecycle, auth, users, spaces, ACL, open session |
 | `session` | Graph operations inside a space (nodes, edges, templates, queries) |
-| `domain/identity`, `domain/space`, `domain/access`, `domain/graph` | Pure data types |
+| `domain/identity`, `domain/space`, `domain/access`, `domain/graph`, `domain/embedding` | Pure data types |
 | `query` | Programmatic graph query builder |
 | `store/*` | Injectable persistence interfaces (for tests or custom backends) |
 | `engine/internal`, `internal/*` | **Do not import** from applications |
@@ -55,8 +58,8 @@ Typical embedders (`knot_pkm_*`) import only `engine`, `session`, and `domain/*`
 | **Engine request types** (`CreateUserInput`, `OpenSessionInput`, …) | `engine/internal/types.go` (re-exported in `engine/engine.go`) |
 | **Graph session method signature** | `session/api/types.go` → `Session` interface (re-exported from `session/session.go`) |
 | **Session request types** (`AddNodeInput`, `ApplyGraphInput`, …) | `session/api/types.go` |
-| **Pure data structs** (`User`, `Node`, `Space`, ACL rules) | `domain/identity`, `domain/space`, `domain/access`, `domain/graph` |
-| **Store interfaces** (`Manager`) | `store/user`, `store/spaces`, `store/acl`, `store/template` → `interface.go` |
+| **Pure data structs** (`User`, `Node`, `Space`, ACL rules, embedding records) | `domain/identity`, `domain/space`, `domain/access`, `domain/graph`, `domain/embedding` |
+| **Store interfaces** (`Manager`) | `store/user`, `store/spaces`, `store/acl`, `store/template`, `store/embedding` → `interface.go` |
 | **Store request types** (`CreateInput`, …) | Same `store/*/interface.go` files |
 | **Default file-backed session impl** | `internal/session/filesession/` |
 | **Low-level graph segment I/O** | `internal/graphstorage/types.go` |
@@ -72,6 +75,7 @@ Store packages use names that do not collide with `domain/*`:
 | `store/spaces` | `spaces` | `domain/space` |
 | `store/acl` | `acl` | `domain/access` |
 | `store/template` | `template` | `domain/graph` (template types) |
+| `store/embedding` | `embedding` | `domain/embedding` |
 
 Recommended aliases when both domain and store appear in one file:
 
@@ -144,6 +148,7 @@ Interfaces are defined next to their primary consumer, not in a single global fi
 | `store/spaces.Manager` | `store/spaces/interface.go` |
 | `store/acl.Manager` | `store/acl/interface.go` |
 | `store/template.Manager` | `store/template/interface.go` |
+| `store/embedding.Manager` | `store/embedding/interface.go` |
 | `graphstorage.Store` | `internal/graphstorage/types.go` |
 | `query.Executor` | `query/builder.go` |
 
@@ -156,6 +161,8 @@ knot_db/knot_db/
 │   ├── cli/              CLI commands (private)
 │   ├── session/filesession/  File-backed Session implementation
 │   ├── graphstorage/     Segment graph persistence
+│   ├── embedding/        Embedding catalog, source assembly, providers
+│   ├── embeddingstore/   Space-scoped vector persistence/search
 │   └── filestore/        Atomic file writes
 ├── engine/
 │   ├── engine.go         Public Engine API
@@ -167,11 +174,13 @@ knot_db/knot_db/
 │   ├── identity/         Users, UserID, Owner
 │   ├── space/            Space, SpaceID, settings
 │   ├── access/           Roles, permissions, ACL rules
+│   ├── embedding/        Embedding catalog/profile/record/search types
 │   └── graph/            Node, Edge, Template
 ├── store/
 │   ├── user/             User/credential persistence
 │   ├── spaces/           Space metadata persistence
 │   ├── acl/              ACL persistence
+│   ├── embedding/        Embedding keys/profile metadata persistence
 │   └── template/         Template persistence
 ├── query/                Query builder
 └── docs/                 Reference documentation

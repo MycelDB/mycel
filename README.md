@@ -15,6 +15,7 @@ See [`docs/architecture.md`](docs/architecture.md) for a navigation guide, impor
 - `domain/space`: spaces, space IDs, and space-level configuration types
 - `domain/access`: system roles, space permissions, and ACL rule types
 - `domain/graph`: pure graph domain types for nodes, edges, templates, and template policies
+- `domain/embedding`: pure embedding metadata, record, and semantic-search result types
 - `query/`: programmatic GQL-style query builder
 - `store/`: injectable persistence interfaces (for tests or custom backends)
 
@@ -40,6 +41,7 @@ See [`docs/architecture.md`](docs/architecture.md) for a navigation guide, impor
 - Access control: `docs/domain/access/access.md`
 - Storage layout: `docs/storage/layout.md`
 - CLI usage: `docs/cli.md`
+- Embeddings MVP: `docs/embeddings.md`
 
 ## CLI
 

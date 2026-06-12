@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 
+	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
 	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
@@ -197,6 +198,50 @@ type ReorderChildrenInput struct {
 	ChildIDs []graph.NodeID
 }
 
+// GenerateNodeEmbeddingInput manually creates or refreshes an embedding for one node.
+type GenerateNodeEmbeddingInput struct {
+	NodeID            graph.NodeID
+	ProfileID         *domainembedding.ProfileID
+	ProviderID        string
+	ModelID           string
+	ProviderKeyID     *domainembedding.ProviderKeyID
+	SourceMode        domainembedding.SourceMode
+	IncludeProps      []string
+	MaxDepth          *int
+	MinimumTextLength int
+	Force             bool
+}
+
+// GenerateNodeEmbeddingsInput manually creates or refreshes embeddings for multiple nodes.
+type GenerateNodeEmbeddingsInput struct {
+	NodeIDs           []graph.NodeID
+	ProfileID         *domainembedding.ProfileID
+	ProviderID        string
+	ModelID           string
+	ProviderKeyID     *domainembedding.ProviderKeyID
+	SourceMode        domainembedding.SourceMode
+	IncludeProps      []string
+	MaxDepth          *int
+	MinimumTextLength int
+	Force             bool
+}
+
+// ListNodeEmbeddingsInput lists embeddings associated with a graph node.
+type ListNodeEmbeddingsInput struct {
+	NodeID graph.NodeID
+}
+
+// SemanticSearchInput embeds query text and searches generated node embeddings.
+type SemanticSearchInput struct {
+	Text          string
+	ProfileID     *domainembedding.ProfileID
+	ProviderID    string
+	ModelID       string
+	ProviderKeyID *domainembedding.ProviderKeyID
+	Limit         int
+	MinScore      float64
+}
+
 // Session is a scoped interaction context for graph-space operations.
 type Session interface {
 	Query() *query.Builder
@@ -217,6 +262,10 @@ type Session interface {
 	ApplyGraph(ctx context.Context, in ApplyGraphInput) (ApplyGraphResult, error)
 	MoveSubtree(ctx context.Context, in MoveSubtreeInput) (graph.Edge, error)
 	ReorderChildren(ctx context.Context, in ReorderChildrenInput) ([]graph.Edge, error)
+	GenerateNodeEmbedding(ctx context.Context, in GenerateNodeEmbeddingInput) (domainembedding.EmbeddingRecord, error)
+	GenerateNodeEmbeddings(ctx context.Context, in GenerateNodeEmbeddingsInput) ([]domainembedding.EmbeddingRecord, error)
+	ListNodeEmbeddings(ctx context.Context, in ListNodeEmbeddingsInput) ([]domainembedding.EmbeddingRecord, error)
+	SemanticSearch(ctx context.Context, in SemanticSearchInput) ([]domainembedding.SemanticSearchResult, error)
 	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
 	DeleteNode(ctx context.Context, in DeleteNodeInput) error
 	Close() error

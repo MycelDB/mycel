@@ -17,6 +17,7 @@ import (
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
 	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/store/acl"
+	storeembedding "martinbeauvais.com/mbgit/knotbase/knotdb/store/embedding"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/store/spaces"
 	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/store/user"
@@ -33,19 +34,20 @@ var (
 )
 
 type defaultEngine struct {
-	state           EngineState
-	dataDir         string
-	accessTokenTTL  time.Duration
-	blobLimits      domainsession.BlobLimits
-	blobStaleTmpAge time.Duration
-	userManager     user.Manager
-	spaceManager    spaces.Manager
-	templateManager storetemplate.Manager
-	accessManager   acl.Manager
-	authMu          sync.RWMutex
-	authCache       map[AccessToken]authClaims
-	storeMu         sync.Mutex
-	storeCache      map[domainspace.SpaceID]*graphstorage.LocalStore
+	state            EngineState
+	dataDir          string
+	accessTokenTTL   time.Duration
+	blobLimits       domainsession.BlobLimits
+	blobStaleTmpAge  time.Duration
+	userManager      user.Manager
+	spaceManager     spaces.Manager
+	templateManager  storetemplate.Manager
+	embeddingManager storeembedding.Manager
+	accessManager    acl.Manager
+	authMu           sync.RWMutex
+	authCache        map[AccessToken]authClaims
+	storeMu          sync.Mutex
+	storeCache       map[domainspace.SpaceID]*graphstorage.LocalStore
 }
 
 // authClaims is the expanded authorization context cached by access token.
@@ -173,6 +175,13 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		e.accessManager = acl.NewManager()
 	}
 	if err := e.accessManager.Init(context.Background(), metaDir(cfg.DataDir)); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+	if e.embeddingManager == nil {
+		e.embeddingManager = storeembedding.NewManager()
+	}
+	if err := e.embeddingManager.Init(context.Background(), filepath.Join(metaDir(cfg.DataDir), "embedding"), cfg.UserStoreEncryptionKeyB64); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
@@ -661,7 +670,7 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (d
 		domainsession.Permissions{Read: canRead, Write: canWrite, Admin: canAdmin},
 		domainsession.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized, Conflict: ErrConflict},
 		store,
-		domainsession.Config{BlobLimits: e.blobLimits, BlobStaleTmpAge: e.blobStaleTmpAge},
+		domainsession.Config{BlobLimits: e.blobLimits, BlobStaleTmpAge: e.blobStaleTmpAge, CurrentUserID: auth.UserID, EmbeddingManager: e.embeddingManager},
 	), nil
 }
 
