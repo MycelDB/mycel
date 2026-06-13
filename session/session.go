@@ -33,6 +33,7 @@ type (
 	UpdateNodeAndCreateSiblingInput  = sessionapi.UpdateNodeAndCreateSiblingInput
 	UpdateNodeAndCreateSiblingResult = sessionapi.UpdateNodeAndCreateSiblingResult
 	DeleteNodeInput                  = sessionapi.DeleteNodeInput
+	DeleteEdgeInput                  = sessionapi.DeleteEdgeInput
 	AddEdgeInput                     = sessionapi.AddEdgeInput
 	AddGraphInput                    = sessionapi.AddGraphInput
 	ApplyGraphInput                  = sessionapi.ApplyGraphInput

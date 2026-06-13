@@ -171,8 +171,13 @@ type AddGraphInput struct {
 }
 
 // ApplyGraphInput batches graph mutations for a single read/validate/write cycle.
+type DeleteEdgeInput struct {
+	ID graph.EdgeID
+}
+
 type ApplyGraphInput struct {
 	DeleteNodes []DeleteNodeInput
+	DeleteEdges []DeleteEdgeInput
 	AddNodes    []AddNodeInput
 	AddEdges    []AddEdgeInput
 	Atomic      bool
@@ -181,6 +186,7 @@ type ApplyGraphInput struct {
 // ApplyGraphResult describes mutations applied by ApplyGraph.
 type ApplyGraphResult struct {
 	DeletedNodeIDs []graph.NodeID
+	DeletedEdgeIDs []graph.EdgeID
 	AddedNodes     []graph.Node
 	AddedEdges     []graph.Edge
 }

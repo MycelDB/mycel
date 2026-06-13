@@ -482,6 +482,20 @@ func (s *FileSession) ApplyGraph(ctx context.Context, in sessionapi.ApplyGraphIn
 		result.DeletedNodeIDs = append(result.DeletedNodeIDs, deletedIDs...)
 	}
 
+	edgeIndex := indexEdges(candidateEdges)
+	for _, del := range in.DeleteEdges {
+		if del.ID == uuid.Nil {
+			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: edge_id is required", s.errors.NotFound)
+		}
+		idx, ok := edgeIndex[del.ID]
+		if !ok {
+			return sessionapi.ApplyGraphResult{}, s.errors.NotFound
+		}
+		candidateEdges = append(candidateEdges[:idx], candidateEdges[idx+1:]...)
+		edgeIndex = indexEdges(candidateEdges)
+		result.DeletedEdgeIDs = append(result.DeletedEdgeIDs, del.ID)
+	}
+
 	nodeIndex := indexNodes(candidateNodes)
 	for _, add := range in.AddNodes {
 		nodeID, err := newGraphUUID()
@@ -509,7 +523,7 @@ func (s *FileSession) ApplyGraph(ctx context.Context, in sessionapi.ApplyGraphIn
 		result.AddedNodes = append(result.AddedNodes, node)
 	}
 
-	edgeIndex := indexEdges(candidateEdges)
+	edgeIndex = indexEdges(candidateEdges)
 	for _, add := range in.AddEdges {
 		edgeID, err := newGraphUUID()
 		if err != nil {
