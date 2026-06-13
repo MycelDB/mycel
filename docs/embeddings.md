@@ -72,6 +72,30 @@ knotdb embeddings generate \
   -u USER -p PASSWORD
 ```
 
+Backfill embeddings for selected nodes:
+
+```sh
+knotdb embeddings generate \
+  --space-id SPACE_ID \
+  --profile PROFILE_ID \
+  --template-key logseq.page \
+  --limit 500 \
+  -u USER -p PASSWORD
+```
+
+Or select by content substring:
+
+```sh
+knotdb embeddings generate \
+  --space-id SPACE_ID \
+  --profile PROFILE_ID \
+  --contains "project notes" \
+  --limit 100 \
+  -u USER -p PASSWORD
+```
+
+Batch generation requires at least one selector: `--node`, `--template-key`, or `--contains`. Existing current embeddings are skipped unless `--force` is set. Use `--continue-on-error` to keep processing when one selected node fails.
+
 Regenerate even if the source hash has not changed:
 
 ```sh

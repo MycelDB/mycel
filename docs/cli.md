@@ -169,6 +169,31 @@ knotdb -d ./data -u admin -p change-me node delete --space-id <space_id> <node_i
 
 Deleting a node removes the node and incident edges. If the node has descendants, pass `--recursive`.
 
+### Embeddings
+
+Create a profile, generate one node embedding, or backfill a selected set of nodes:
+
+```sh
+knotdb -d ./data -u admin -p change-me embeddings profiles add \
+  --name pages \
+  --provider openai \
+  --model openai/text-embedding-3-small \
+  --source subtree
+
+knotdb -d ./data -u admin -p change-me embeddings generate \
+  --space-id <space_id> \
+  --node <node_id> \
+  --profile <profile_id>
+
+knotdb -d ./data -u admin -p change-me embeddings generate \
+  --space-id <space_id> \
+  --profile <profile_id> \
+  --template-key logseq.page \
+  --limit 500
+```
+
+Batch generation requires `--node`, `--template-key`, or `--contains`. It skips current embeddings by source hash unless `--force` is set.
+
 ## JSON output
 
 Add `--output json` to any command to emit JSON.

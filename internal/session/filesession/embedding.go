@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	internalembedding "martinbeauvais.com/mbgit/knotbase/knotdb/internal/embedding"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/embedding/catalog"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/embedding/provider"
@@ -36,53 +37,8 @@ func (s *FileSession) GenerateNodeEmbedding(ctx context.Context, in sessionapi.G
 	if err := s.ensureWrite(); err != nil {
 		return domainembedding.EmbeddingRecord{}, err
 	}
-	if in.NodeID == uuid.Nil {
-		return domainembedding.EmbeddingRecord{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
-	}
-	cfg, err := s.resolveEmbeddingConfig(ctx, in.ProfileID, in.ProviderID, in.ModelID, in.ProviderKeyID, in.SourceMode, in.IncludeProps, in.MaxDepth, in.MinimumTextLength)
-	if err != nil {
-		return domainembedding.EmbeddingRecord{}, err
-	}
-	nodes, err := s.readNodes()
-	if err != nil {
-		return domainembedding.EmbeddingRecord{}, err
-	}
-	idx := findNodeIndex(nodes, in.NodeID)
-	if idx < 0 {
-		return domainembedding.EmbeddingRecord{}, s.errors.NotFound
-	}
-	edges, err := s.readEdges()
-	if err != nil {
-		return domainembedding.EmbeddingRecord{}, err
-	}
-	source := internalembedding.AssembleSource(internalembedding.SourceInput{Root: nodes[idx], Nodes: nodes, Edges: edges, Mode: cfg.Mode, IncludeProps: cfg.Props, MaxDepth: cfg.MaxDepth})
-	if len(strings.TrimSpace(source.Text)) < cfg.MinLength {
-		return domainembedding.EmbeddingRecord{}, fmt.Errorf("embedding source text is shorter than minimum length %d", cfg.MinLength)
-	}
-	store, err := embeddingstore.Open(s.graphsDir, s.spaceID)
-	if err != nil {
-		return domainembedding.EmbeddingRecord{}, err
-	}
-	var profileID *domainembedding.ProfileID
-	if cfg.Profile != nil {
-		id := cfg.Profile.ID
-		profileID = &id
-	}
-	if !in.Force {
-		existing, err := store.Existing(ctx, in.NodeID, profileID, cfg.Provider.ID, cfg.Model.ID, cfg.Mode, source.Hash)
-		if err != nil {
-			return domainembedding.EmbeddingRecord{}, err
-		}
-		if existing != nil {
-			return *existing, nil
-		}
-	}
-	out, err := (provider.HTTPClient{}).Embed(ctx, provider.EmbedInput{Provider: cfg.Provider, Model: cfg.Model, APIKey: cfg.APIKey, Text: source.Text})
-	if err != nil {
-		return domainembedding.EmbeddingRecord{}, err
-	}
-	rec := domainembedding.EmbeddingRecord{SpaceID: s.spaceID, NodeID: in.NodeID, ProfileID: profileID, ProviderID: cfg.Provider.ID, ModelID: cfg.Model.ID, SourceMode: cfg.Mode, SourceHash: source.Hash, Dimensions: len(out.Vector), Vector: out.Vector}
-	return store.Append(ctx, rec)
+	rec, _, err := s.generateNodeEmbedding(ctx, in)
+	return rec, err
 }
 
 func (s *FileSession) GenerateNodeEmbeddings(ctx context.Context, in sessionapi.GenerateNodeEmbeddingsInput) ([]domainembedding.EmbeddingRecord, error) {
@@ -95,6 +51,42 @@ func (s *FileSession) GenerateNodeEmbeddings(ctx context.Context, in sessionapi.
 		out = append(out, rec)
 	}
 	return out, nil
+}
+
+func (s *FileSession) GenerateNodeEmbeddingBatch(ctx context.Context, in sessionapi.GenerateNodeEmbeddingBatchInput) (sessionapi.GenerateNodeEmbeddingBatchResult, error) {
+	if err := s.ensureOpen(ctx); err != nil {
+		return sessionapi.GenerateNodeEmbeddingBatchResult{}, err
+	}
+	if err := s.ensureSpaceLive(); err != nil {
+		return sessionapi.GenerateNodeEmbeddingBatchResult{}, err
+	}
+	if err := s.ensureWrite(); err != nil {
+		return sessionapi.GenerateNodeEmbeddingBatchResult{}, err
+	}
+	selected, err := s.selectEmbeddingBatchNodes(ctx, in)
+	if err != nil {
+		return sessionapi.GenerateNodeEmbeddingBatchResult{}, err
+	}
+	result := sessionapi.GenerateNodeEmbeddingBatchResult{SelectedCount: len(selected), Records: []domainembedding.EmbeddingRecord{}, Skipped: []sessionapi.EmbeddingBatchSkipped{}, Failures: []sessionapi.EmbeddingBatchFailure{}}
+	for _, nodeID := range selected {
+		rec, generated, err := s.generateNodeEmbedding(ctx, sessionapi.GenerateNodeEmbeddingInput{NodeID: nodeID, ProfileID: in.ProfileID, ProviderID: in.ProviderID, ModelID: in.ModelID, ProviderKeyID: in.ProviderKeyID, SourceMode: in.SourceMode, IncludeProps: in.IncludeProps, MaxDepth: in.MaxDepth, MinimumTextLength: in.MinimumTextLength, Force: in.Force})
+		if err != nil {
+			result.FailedCount++
+			result.Failures = append(result.Failures, sessionapi.EmbeddingBatchFailure{NodeID: nodeID, Error: err.Error()})
+			if !in.ContinueOnError {
+				return result, err
+			}
+			continue
+		}
+		result.Records = append(result.Records, rec)
+		if generated {
+			result.GeneratedCount++
+		} else {
+			result.SkippedCount++
+			result.Skipped = append(result.Skipped, sessionapi.EmbeddingBatchSkipped{NodeID: nodeID, Reason: "current embedding already exists"})
+		}
+	}
+	return result, nil
 }
 
 func (s *FileSession) ListNodeEmbeddings(ctx context.Context, in sessionapi.ListNodeEmbeddingsInput) ([]domainembedding.EmbeddingRecord, error) {
@@ -143,6 +135,124 @@ func (s *FileSession) SemanticSearch(ctx context.Context, in sessionapi.Semantic
 		return nil, err
 	}
 	return store.Search(ctx, out.Vector, cfg.Provider.ID, cfg.Model.ID, in.Limit, in.MinScore)
+}
+
+func (s *FileSession) generateNodeEmbedding(ctx context.Context, in sessionapi.GenerateNodeEmbeddingInput) (domainembedding.EmbeddingRecord, bool, error) {
+	if in.NodeID == uuid.Nil {
+		return domainembedding.EmbeddingRecord{}, false, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
+	}
+	cfg, err := s.resolveEmbeddingConfig(ctx, in.ProfileID, in.ProviderID, in.ModelID, in.ProviderKeyID, in.SourceMode, in.IncludeProps, in.MaxDepth, in.MinimumTextLength)
+	if err != nil {
+		return domainembedding.EmbeddingRecord{}, false, err
+	}
+	nodes, err := s.readNodes()
+	if err != nil {
+		return domainembedding.EmbeddingRecord{}, false, err
+	}
+	idx := findNodeIndex(nodes, in.NodeID)
+	if idx < 0 {
+		return domainembedding.EmbeddingRecord{}, false, s.errors.NotFound
+	}
+	edges, err := s.readEdges()
+	if err != nil {
+		return domainembedding.EmbeddingRecord{}, false, err
+	}
+	source := internalembedding.AssembleSource(internalembedding.SourceInput{Root: nodes[idx], Nodes: nodes, Edges: edges, Mode: cfg.Mode, IncludeProps: cfg.Props, MaxDepth: cfg.MaxDepth})
+	if len(strings.TrimSpace(source.Text)) < cfg.MinLength {
+		return domainembedding.EmbeddingRecord{}, false, fmt.Errorf("embedding source text is shorter than minimum length %d", cfg.MinLength)
+	}
+	store, err := embeddingstore.Open(s.graphsDir, s.spaceID)
+	if err != nil {
+		return domainembedding.EmbeddingRecord{}, false, err
+	}
+	var profileID *domainembedding.ProfileID
+	if cfg.Profile != nil {
+		id := cfg.Profile.ID
+		profileID = &id
+	}
+	if !in.Force {
+		existing, err := store.Existing(ctx, in.NodeID, profileID, cfg.Provider.ID, cfg.Model.ID, cfg.Mode, source.Hash)
+		if err != nil {
+			return domainembedding.EmbeddingRecord{}, false, err
+		}
+		if existing != nil {
+			return *existing, false, nil
+		}
+	}
+	out, err := (provider.HTTPClient{}).Embed(ctx, provider.EmbedInput{Provider: cfg.Provider, Model: cfg.Model, APIKey: cfg.APIKey, Text: source.Text})
+	if err != nil {
+		return domainembedding.EmbeddingRecord{}, false, err
+	}
+	rec := domainembedding.EmbeddingRecord{SpaceID: s.spaceID, NodeID: in.NodeID, ProfileID: profileID, ProviderID: cfg.Provider.ID, ModelID: cfg.Model.ID, SourceMode: cfg.Mode, SourceHash: source.Hash, Dimensions: len(out.Vector), Vector: out.Vector}
+	stored, err := store.Append(ctx, rec)
+	return stored, err == nil, err
+}
+
+func (s *FileSession) selectEmbeddingBatchNodes(ctx context.Context, in sessionapi.GenerateNodeEmbeddingBatchInput) ([]graph.NodeID, error) {
+	seen := map[graph.NodeID]struct{}{}
+	selected := []graph.NodeID{}
+	add := func(id graph.NodeID) {
+		if id == uuid.Nil {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		selected = append(selected, id)
+	}
+	for _, id := range in.NodeIDs {
+		add(id)
+	}
+	if len(selected) > 0 {
+		return selected, nil
+	}
+	if len(in.TemplateKeys) == 0 && strings.TrimSpace(in.Contains) == "" {
+		return nil, fmt.Errorf("at least one selector is required: --node, --template-key, or --contains")
+	}
+	nodes, err := s.readNodes()
+	if err != nil {
+		return nil, err
+	}
+	templateKeys := map[string]struct{}{}
+	for _, key := range in.TemplateKeys {
+		if trimmed := strings.TrimSpace(key); trimmed != "" {
+			templateKeys[trimmed] = struct{}{}
+		}
+	}
+	templateKeyByID := map[graph.TemplateID]string{}
+	if len(templateKeys) > 0 {
+		templates, err := s.templateManager.ListBySpace(ctx, s.spaceID)
+		if err != nil {
+			return nil, err
+		}
+		for _, tmpl := range templates {
+			templateKeyByID[tmpl.ID] = tmpl.Key
+		}
+	}
+	needle := strings.ToLower(strings.TrimSpace(in.Contains))
+	for _, node := range nodes {
+		if len(templateKeys) > 0 {
+			if node.TemplateID == nil {
+				continue
+			}
+			key, ok := templateKeyByID[*node.TemplateID]
+			if !ok {
+				continue
+			}
+			if _, wanted := templateKeys[key]; !wanted {
+				continue
+			}
+		}
+		if needle != "" && !strings.Contains(strings.ToLower(node.Content), needle) {
+			continue
+		}
+		add(node.ID)
+		if in.Limit > 0 && len(selected) >= in.Limit {
+			break
+		}
+	}
+	return selected, nil
 }
 
 func (s *FileSession) resolveEmbeddingConfig(ctx context.Context, profileID *domainembedding.ProfileID, providerID, modelID string, keyID *domainembedding.ProviderKeyID, mode domainembedding.SourceMode, props []string, maxDepth *int, minLength int) (resolvedEmbeddingConfig, error) {

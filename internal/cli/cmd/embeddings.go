@@ -184,10 +184,10 @@ func newEmbeddingProfilesDeleteCommand(a *app.App) *cobra.Command {
 }
 
 func newEmbeddingGenerateCommand(a *app.App) *cobra.Command {
-	var spaceIDText, profileIDText, providerID, modelID, source, keyIDText string
-	var nodeIDTexts, includeProps []string
-	var force bool
-	var maxDepth, minimumTextLength int
+	var spaceIDText, profileIDText, providerID, modelID, source, keyIDText, contains string
+	var nodeIDTexts, includeProps, templateKeys []string
+	var force, continueOnError bool
+	var maxDepth, minimumTextLength, limit int
 	cmd := &cobra.Command{Use: "generate", Short: "Generate embeddings for selected nodes", RunE: func(cmd *cobra.Command, args []string) error {
 		spaceID, err := a.ResolveSpaceID(spaceIDText)
 		if err != nil {
@@ -221,9 +221,6 @@ func newEmbeddingGenerateCommand(a *app.App) *cobra.Command {
 			}
 			nodeIDs = append(nodeIDs, id)
 		}
-		if len(nodeIDs) == 0 {
-			return fmt.Errorf("at least one --node is required")
-		}
 		tok, err := a.AccessToken(cmd.Context())
 		if err != nil {
 			return err
@@ -233,18 +230,25 @@ func newEmbeddingGenerateCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer sess.Close()
-		recs, err := sess.GenerateNodeEmbeddings(cmd.Context(), domainsession.GenerateNodeEmbeddingsInput{NodeIDs: nodeIDs, ProfileID: profileID, ProviderID: providerID, ModelID: modelID, ProviderKeyID: keyID, SourceMode: domainembedding.SourceMode(source), IncludeProps: includeProps, MaxDepth: maxDepthPtr, MinimumTextLength: minimumTextLength, Force: force})
+		result, err := sess.GenerateNodeEmbeddingBatch(cmd.Context(), domainsession.GenerateNodeEmbeddingBatchInput{NodeIDs: nodeIDs, TemplateKeys: templateKeys, Contains: contains, Limit: limit, ProfileID: profileID, ProviderID: providerID, ModelID: modelID, ProviderKeyID: keyID, SourceMode: domainembedding.SourceMode(source), IncludeProps: includeProps, MaxDepth: maxDepthPtr, MinimumTextLength: minimumTextLength, Force: force, ContinueOnError: continueOnError})
 		if err != nil {
 			return err
 		}
 		var b strings.Builder
-		for _, r := range recs {
+		fmt.Fprintf(&b, "selected=%d generated=%d skipped=%d failed=%d\n", result.SelectedCount, result.GeneratedCount, result.SkippedCount, result.FailedCount)
+		for _, r := range result.Records {
 			fmt.Fprintf(&b, "%s\tnode=%s\tmodel=%s\tsource=%s\n", r.ID, r.NodeID, r.ModelID, r.SourceMode)
 		}
-		return a.Print(recs, b.String())
+		for _, failure := range result.Failures {
+			fmt.Fprintf(&b, "failed\tnode=%s\terror=%s\n", failure.NodeID, failure.Error)
+		}
+		return a.Print(result, b.String())
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
 	cmd.Flags().StringSliceVar(&nodeIDTexts, "node", nil, "node ID to embed (repeatable or comma-separated)")
+	cmd.Flags().StringSliceVar(&templateKeys, "template-key", nil, "template key selector for batch/backfill generation")
+	cmd.Flags().StringVar(&contains, "contains", "", "case-insensitive content substring selector for batch/backfill generation")
+	cmd.Flags().IntVar(&limit, "limit", 100, "maximum selected nodes for batch/backfill generation (0 for all selected)")
 	cmd.Flags().StringVar(&profileIDText, "profile", "", "embedding profile ID")
 	cmd.Flags().StringVar(&providerID, "provider", "", "embedding provider ID override")
 	cmd.Flags().StringVar(&modelID, "model", "", "embedding model ID override")
@@ -254,6 +258,7 @@ func newEmbeddingGenerateCommand(a *app.App) *cobra.Command {
 	cmd.Flags().IntVar(&maxDepth, "max-depth", 0, "maximum subtree depth")
 	cmd.Flags().IntVar(&minimumTextLength, "minimum-text-length", 0, "minimum source text length")
 	cmd.Flags().BoolVar(&force, "force", false, "regenerate even if source hash already exists")
+	cmd.Flags().BoolVar(&continueOnError, "continue-on-error", false, "continue batch/backfill generation when one node fails")
 	return cmd
 }
 

@@ -41,6 +41,10 @@ type (
 	ReorderChildrenInput             = sessionapi.ReorderChildrenInput
 	GenerateNodeEmbeddingInput       = sessionapi.GenerateNodeEmbeddingInput
 	GenerateNodeEmbeddingsInput      = sessionapi.GenerateNodeEmbeddingsInput
+	GenerateNodeEmbeddingBatchInput  = sessionapi.GenerateNodeEmbeddingBatchInput
+	GenerateNodeEmbeddingBatchResult = sessionapi.GenerateNodeEmbeddingBatchResult
+	EmbeddingBatchSkipped            = sessionapi.EmbeddingBatchSkipped
+	EmbeddingBatchFailure            = sessionapi.EmbeddingBatchFailure
 	ListNodeEmbeddingsInput          = sessionapi.ListNodeEmbeddingsInput
 	SemanticSearchInput              = sessionapi.SemanticSearchInput
 	BlobLimits                       = sessionapi.BlobLimits
