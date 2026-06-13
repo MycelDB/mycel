@@ -86,13 +86,13 @@ knotdb> exit
 Set a default working space for space-specific commands:
 
 ```text
-knotdb> set_space <space_id>
+knotdb> space set <space_id>
 knotdb> node add --content "hello"
 knotdb> template list
-knotdb> unset_space
+knotdb> space unset
 ```
 
-`login`, `logout`, `set_space`, and `unset_space` are REPL-only commands.
+`login` and `logout` are REPL-only commands. `space set` and `space unset` are useful in the REPL because they update the current in-memory CLI session.
 
 ## Commands
 

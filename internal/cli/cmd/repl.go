@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
 )
@@ -30,7 +29,7 @@ func NewReplCommand(a *app.App) *cobra.Command {
 }
 
 func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error {
-	fmt.Fprintln(out, "knotdb REPL. Use login <username> <password>, set_space <space_id>, unset_space, help, or exit.")
+	fmt.Fprintln(out, "knotdb REPL. Use login <username> <password>, space set <space_id>, space unset, help, or exit.")
 	scanner := bufio.NewScanner(in)
 	for {
 		fmt.Fprint(out, "knotdb> ")
@@ -78,23 +77,11 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 			a.CurrentSpaceID = nil
 			fmt.Fprintln(out, "logged out")
 		case "set_space":
-			if len(args) != 2 {
-				fmt.Fprintln(out, "usage: set_space SPACE_ID")
-				continue
-			}
-			spaceID, err := app.ParseUUID[domainspace.SpaceID](args[1])
-			if err != nil {
-				fmt.Fprintln(out, "error:", err)
-				continue
-			}
-			if err := a.SetCurrentSpace(ctx, spaceID); err != nil {
-				fmt.Fprintln(out, "error:", err)
-				continue
-			}
-			fmt.Fprintf(out, "space set: %s\n", spaceID)
+			fmt.Fprintln(out, "usage: space set SPACE_ID")
+			continue
 		case "unset_space":
-			a.CurrentSpaceID = nil
-			fmt.Fprintln(out, "space unset")
+			fmt.Fprintln(out, "usage: space unset")
+			continue
 		case "help":
 			root := NewRootCommand(a, true)
 			root.SetOut(out)

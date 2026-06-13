@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
 	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
 )
@@ -58,6 +59,35 @@ func NewDeleteSpaceCommand(a *app.App) *cobra.Command {
 				return err
 			}
 			return a.Print(map[string]any{"deleted_space_id": id}, fmt.Sprintf("space deleted: %s\n", id))
+		},
+	}
+}
+
+func NewSetSpaceCommand(a *app.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "set SPACE_ID",
+		Short: "Set the current REPL space",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := app.ParseUUID[domainspace.SpaceID](args[0])
+			if err != nil {
+				return err
+			}
+			if err := a.SetCurrentSpace(cmd.Context(), id); err != nil {
+				return err
+			}
+			return a.Print(map[string]any{"current_space_id": id}, fmt.Sprintf("space set: %s\n", id))
+		},
+	}
+}
+
+func NewUnsetSpaceCommand(a *app.App) *cobra.Command {
+	return &cobra.Command{
+		Use:   "unset",
+		Short: "Clear the current REPL space",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a.CurrentSpaceID = nil
+			return a.Print(map[string]any{"current_space_id": nil}, "space unset\n")
 		},
 	}
 }

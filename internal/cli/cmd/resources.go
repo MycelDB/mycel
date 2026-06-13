@@ -33,7 +33,7 @@ func NewSpaceCommand(a *app.App) *cobra.Command {
 	del := NewDeleteSpaceCommand(a)
 	del.Use = "delete [SPACE_ID]"
 	del.Aliases = []string{"del", "remove", "rm"}
-	cmd.AddCommand(add, list, del)
+	cmd.AddCommand(add, list, NewSetSpaceCommand(a), NewUnsetSpaceCommand(a), del)
 	return cmd
 }
 
