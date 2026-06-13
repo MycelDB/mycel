@@ -13,10 +13,13 @@ Embedding configuration is system metadata:
 Generated vectors are space-scoped derived data stored outside `Node.Props` under the graph space directory:
 
 ```text
-graphs/<space_id>/embeddings/embeddings.jsonl
+graphs/<space_id>/embeddings/
+  manifest.kemb
+  segments/
+    embeddings-000001.kvec
 ```
 
-The initial vector index is rebuilt from this append-only JSONL file and searched with brute-force cosine similarity. ANN indexes, compaction, background jobs, and automatic mutation triggers are intentionally deferred.
+The segment file is append-only binary storage. Fixed record fields are stored in little-endian binary, variable metadata is stored as compact JSON bytes, and vectors are persisted as `float32` values. The initial vector index is rebuilt from this binary segment and searched with brute-force cosine similarity. ANN indexes, compaction, background jobs, and automatic mutation triggers are intentionally deferred.
 
 ## Source modes
 
