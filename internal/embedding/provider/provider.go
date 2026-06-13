@@ -82,34 +82,50 @@ func (c HTTPClient) embedOpenAI(ctx context.Context, in EmbedInput) (EmbedOutput
 }
 
 func (c HTTPClient) embedOllama(ctx context.Context, in EmbedInput) (EmbedOutput, error) {
-	endpoint := strings.TrimRight(in.Provider.DefaultEndpoint, "/") + "/api/embed"
-	body := map[string]any{"model": in.Model.Model, "input": in.Text}
+	out, status, err := c.postOllamaEmbed(ctx, strings.TrimRight(in.Provider.DefaultEndpoint, "/")+"/api/embed", map[string]any{"model": in.Model.Model, "input": in.Text})
+	if err == nil {
+		return out, nil
+	}
+	// Older Ollama releases expose /api/embeddings with a "prompt" field.
+	// Fall back on 404 so local installations can be used without catalog churn.
+	if status == http.StatusNotFound {
+		return c.postOllamaEmbedLegacy(ctx, in)
+	}
+	return EmbedOutput{}, err
+}
+
+func (c HTTPClient) postOllamaEmbedLegacy(ctx context.Context, in EmbedInput) (EmbedOutput, error) {
+	out, _, err := c.postOllamaEmbed(ctx, strings.TrimRight(in.Provider.DefaultEndpoint, "/")+"/api/embeddings", map[string]any{"model": in.Model.Model, "prompt": in.Text})
+	return out, err
+}
+
+func (c HTTPClient) postOllamaEmbed(ctx context.Context, endpoint string, body map[string]any) (EmbedOutput, int, error) {
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
-		return EmbedOutput{}, err
+		return EmbedOutput{}, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	res, err := c.httpClient().Do(req)
 	if err != nil {
-		return EmbedOutput{}, err
+		return EmbedOutput{}, 0, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return EmbedOutput{}, fmt.Errorf("embedding provider returned %s", res.Status)
+		return EmbedOutput{}, res.StatusCode, fmt.Errorf("embedding provider returned %s", res.Status)
 	}
 	var decoded struct {
 		Embeddings [][]float64 `json:"embeddings"`
 		Embedding  []float64   `json:"embedding"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
-		return EmbedOutput{}, err
+		return EmbedOutput{}, res.StatusCode, err
 	}
 	if len(decoded.Embeddings) > 0 && len(decoded.Embeddings[0]) > 0 {
-		return EmbedOutput{Vector: decoded.Embeddings[0]}, nil
+		return EmbedOutput{Vector: decoded.Embeddings[0]}, res.StatusCode, nil
 	}
 	if len(decoded.Embedding) > 0 {
-		return EmbedOutput{Vector: decoded.Embedding}, nil
+		return EmbedOutput{Vector: decoded.Embedding}, res.StatusCode, nil
 	}
-	return EmbedOutput{}, fmt.Errorf("embedding provider returned empty vector")
+	return EmbedOutput{}, res.StatusCode, fmt.Errorf("embedding provider returned empty vector")
 }

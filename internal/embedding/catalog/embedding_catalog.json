@@ -44,6 +44,24 @@
           "modalities": ["text"],
           "max_input_chars": 32000,
           "default": true
+        },
+        {
+          "id": "ollama/qwen3:8b",
+          "provider_id": "ollama",
+          "model": "qwen3:8b",
+          "display_name": "qwen3:8b",
+          "dimensions": 4096,
+          "modalities": ["text"],
+          "max_input_chars": 32000
+        },
+        {
+          "id": "ollama/llama3.1:8b",
+          "provider_id": "ollama",
+          "model": "llama3.1:8b",
+          "display_name": "llama3.1:8b",
+          "dimensions": 4096,
+          "modalities": ["text"],
+          "max_input_chars": 32000
         }
       ]
     }
