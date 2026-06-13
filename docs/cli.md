@@ -162,6 +162,8 @@ knotdb -d ./data -u admin -p change-me template list --space-id <space_id>
 
 ```sh
 knotdb -d ./data -u admin -p change-me node add --space-id <space_id> --content "hello" --props-json '{"tag":"demo"}'
+knotdb -d ./data -u admin -p change-me node list --space-id <space_id> --contains hello --limit 20
+knotdb -d ./data -u admin -p change-me node get --space-id <space_id> <node_id>
 knotdb -d ./data -u admin -p change-me node delete --space-id <space_id> <node_id>
 ```
 

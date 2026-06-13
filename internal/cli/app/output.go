@@ -44,6 +44,17 @@ func RenderTemplatesTable(templates []graph.Template) {
 	t.Render()
 }
 
+func RenderNodesTable(nodes []graph.Node) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleDefault)
+	t.AppendHeader(table.Row{"Node ID", "Template ID", "Content"})
+	for _, node := range nodes {
+		t.AppendRow(table.Row{node.ID, templateIDValue(node.TemplateID), previewValue(node.Content, 100)})
+	}
+	t.Render()
+}
+
 func RenderSystemAccessTable(rules []access.SystemAccessRule) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
@@ -71,6 +82,22 @@ func stringPtrValue(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func templateIDValue(value *graph.TemplateID) string {
+	if value == nil {
+		return ""
+	}
+	return value.String()
+}
+
+func previewValue(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if limit <= 0 || len([]rune(value)) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:limit]) + "…"
 }
 
 func joinSystemRoles(roles []access.SystemRole) string {

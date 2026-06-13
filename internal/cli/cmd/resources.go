@@ -45,7 +45,12 @@ func NewNodeCommand(a *app.App) *cobra.Command {
 	del := NewDeleteNodeCommand(a)
 	del.Use = "delete NODE_ID"
 	del.Aliases = []string{"del", "remove", "rm"}
-	cmd.AddCommand(add, del)
+	get := NewGetNodeCommand(a)
+	get.Use = "get NODE_ID"
+	list := NewListNodesCommand(a)
+	list.Use = "list"
+	list.Aliases = []string{"ls"}
+	cmd.AddCommand(add, get, list, del)
 	return cmd
 }
 

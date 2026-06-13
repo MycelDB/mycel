@@ -2,12 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
-	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
+	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
 func NewAddNodeCommand(a *app.App) *cobra.Command {
@@ -71,6 +72,89 @@ func NewAddNodeCommand(a *app.App) *cobra.Command {
 	return cmd
 }
 
+func NewGetNodeCommand(a *app.App) *cobra.Command {
+	var spaceIDText string
+	cmd := &cobra.Command{
+		Use:   "get NODE_ID",
+		Short: "Get a node by ID",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			spaceID, err := a.ResolveSpaceID(spaceIDText)
+			if err != nil {
+				return err
+			}
+			nodeID, err := app.ParseUUID[graph.NodeID](args[0])
+			if err != nil {
+				return err
+			}
+			tok, err := a.AccessToken(cmd.Context())
+			if err != nil {
+				return err
+			}
+			sess, err := a.Engine.OpenSession(cmd.Context(), knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			if err != nil {
+				return err
+			}
+			defer sess.Close()
+			node, err := sess.GetNode(cmd.Context(), nodeID)
+			if err != nil {
+				return err
+			}
+			return a.Print(node, fmt.Sprintf("%s\t%s\n", node.ID, previewText(node.Content, 120)))
+		},
+	}
+	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	return cmd
+}
+
+func NewListNodesCommand(a *app.App) *cobra.Command {
+	var spaceIDText, contains string
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List nodes in a space",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			spaceID, err := a.ResolveSpaceID(spaceIDText)
+			if err != nil {
+				return err
+			}
+			tok, err := a.AccessToken(cmd.Context())
+			if err != nil {
+				return err
+			}
+			sess, err := a.Engine.OpenSession(cmd.Context(), knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			if err != nil {
+				return err
+			}
+			defer sess.Close()
+			nodes, err := sess.ListNodes(cmd.Context())
+			if err != nil {
+				return err
+			}
+			needle := strings.ToLower(strings.TrimSpace(contains))
+			filtered := make([]graph.Node, 0, len(nodes))
+			for _, node := range nodes {
+				if needle != "" && !strings.Contains(strings.ToLower(node.Content), needle) {
+					continue
+				}
+				filtered = append(filtered, node)
+				if limit > 0 && len(filtered) >= limit {
+					break
+				}
+			}
+			if a.Output == "json" {
+				return a.Print(filtered, "")
+			}
+			app.RenderNodesTable(filtered)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&contains, "contains", "", "case-insensitive content substring filter")
+	cmd.Flags().IntVar(&limit, "limit", 50, "maximum nodes to display (0 for all)")
+	return cmd
+}
+
 func NewDeleteNodeCommand(a *app.App) *cobra.Command {
 	var spaceIDText string
 	var recursive bool
@@ -105,4 +189,13 @@ func NewDeleteNodeCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
 	cmd.Flags().BoolVar(&recursive, "recursive", false, "also delete descendant nodes")
 	return cmd
+}
+
+func previewText(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if limit <= 0 || len([]rune(value)) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:limit]) + "…"
 }
