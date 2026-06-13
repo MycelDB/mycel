@@ -65,7 +65,7 @@ knotdb -d ./data -u admin -p change-me init
 All other non-REPL commands require an initialized data directory and credentials:
 
 ```sh
-knotdb -d ./data -u admin -p change-me add space demo
+knotdb -d ./data -u admin -p change-me space add demo
 ```
 
 ## REPL
@@ -78,7 +78,7 @@ Inside the REPL, use `login` and `logout`:
 
 ```text
 knotdb> login admin change-me
-knotdb> add space demo
+knotdb> space add demo
 knotdb> logout
 knotdb> exit
 ```
@@ -87,8 +87,8 @@ Set a default working space for space-specific commands:
 
 ```text
 knotdb> set_space <space_id>
-knotdb> add node --content "hello"
-knotdb> list templates
+knotdb> node add --content "hello"
+knotdb> template list
 knotdb> unset_space
 ```
 
@@ -99,9 +99,9 @@ knotdb> unset_space
 ### Users
 
 ```sh
-knotdb -d ./data -u admin -p change-me add user --ref bob --new-password secret
-knotdb -d ./data -u admin -p change-me list users
-knotdb -d ./data -u admin -p change-me delete user <user_id>
+knotdb -d ./data -u admin -p change-me user add --ref bob --new-password secret
+knotdb -d ./data -u admin -p change-me user list
+knotdb -d ./data -u admin -p change-me user delete <user_id>
 ```
 
 Deleting a user is a hard delete and also deletes spaces owned by that user and all associated constructs.
@@ -111,26 +111,14 @@ Deleting a user is a hard delete and also deletes spaces owned by that user and 
 System ACL:
 
 ```sh
-knotdb -d ./data -u admin -p change-me add acl --user-id <user_id> --role user_admin
-knotdb -d ./data -u admin -p change-me delete acl --user-id <user_id> --system
-knotdb -d ./data -u admin -p change-me list acl --system
+knotdb -d ./data -u admin -p change-me acl grant system --user-id <user_id> --role user_admin
+knotdb -d ./data -u admin -p change-me acl revoke system --user-id <user_id>
+knotdb -d ./data -u admin -p change-me acl list system
 ```
 
 Space ACL:
 
 ```sh
-knotdb -d ./data -u admin -p change-me add acl --space-id <space_id> --user-id <user_id> --permission read
-knotdb -d ./data -u admin -p change-me delete acl --space-id <space_id> --user-id <user_id>
-knotdb -d ./data -u admin -p change-me list acl --space-id <space_id>
-```
-
-Explicit ACL command aliases are also available:
-
-```sh
-knotdb -d ./data -u admin -p change-me acl grant system --user-id <user_id> --role user_admin
-knotdb -d ./data -u admin -p change-me acl revoke system --user-id <user_id>
-knotdb -d ./data -u admin -p change-me acl list system
-
 knotdb -d ./data -u admin -p change-me acl grant space --space-id <space_id> --user-id <user_id> --permission read
 knotdb -d ./data -u admin -p change-me acl revoke space --space-id <space_id> --user-id <user_id>
 knotdb -d ./data -u admin -p change-me acl list space --space-id <space_id>
@@ -143,9 +131,9 @@ Permissions: `read`, `write`, `admin`.
 ### Spaces
 
 ```sh
-knotdb -d ./data -u admin -p change-me add space demo
-knotdb -d ./data -u admin -p change-me list spaces
-knotdb -d ./data -u admin -p change-me delete space <space_id>
+knotdb -d ./data -u admin -p change-me space add demo
+knotdb -d ./data -u admin -p change-me space list
+knotdb -d ./data -u admin -p change-me space delete <space_id>
 ```
 
 Deleting a space is a hard delete and removes metadata, ACLs, templates, and graph files associated with the space.
@@ -155,26 +143,26 @@ Deleting a space is a hard delete and removes metadata, ACLs, templates, and gra
 Import templates from a JSON file:
 
 ```sh
-knotdb -d ./data -u admin -p change-me add template --space-id <space_id> --file templates.json
+knotdb -d ./data -u admin -p change-me template import --space-id <space_id> --file templates.json
 ```
 
 Import templates from stdin:
 
 ```sh
-cat templates.json | knotdb -d ./data -u admin -p change-me add template --space-id <space_id> --file -
+cat templates.json | knotdb -d ./data -u admin -p change-me template import --space-id <space_id> --file -
 ```
 
 List templates for a space:
 
 ```sh
-knotdb -d ./data -u admin -p change-me list templates --space-id <space_id>
+knotdb -d ./data -u admin -p change-me template list --space-id <space_id>
 ```
 
 ### Nodes
 
 ```sh
-knotdb -d ./data -u admin -p change-me add node --space-id <space_id> --content "hello" --props-json '{"tag":"demo"}'
-knotdb -d ./data -u admin -p change-me delete node --space-id <space_id> <node_id>
+knotdb -d ./data -u admin -p change-me node add --space-id <space_id> --content "hello" --props-json '{"tag":"demo"}'
+knotdb -d ./data -u admin -p change-me node delete --space-id <space_id> <node_id>
 ```
 
 Deleting a node removes the node and incident edges. If the node has descendants, pass `--recursive`.
