@@ -3,13 +3,37 @@ package filesession
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
+	"github.com/google/uuid"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
 	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
+	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
 )
 
-// Begin starts a session transaction. Phase 1 exposes the public API only; the
-// file-backed transaction overlay and durable commit implementation are planned
-// for later phases.
+type txOverlay struct {
+	addedNodes   map[graph.NodeID]graph.Node
+	updatedNodes map[graph.NodeID]graph.Node
+	deletedNodes map[graph.NodeID]struct{}
+
+	addedEdges   map[graph.EdgeID]graph.Edge
+	updatedEdges map[graph.EdgeID]graph.Edge
+	deletedEdges map[graph.EdgeID]struct{}
+}
+
+type fileTx struct {
+	session  *FileSession
+	options  sessionapi.TxOptions
+	overlay  txOverlay
+	closed   bool
+	baseRead bool
+}
+
+// Begin starts a session transaction backed by an in-memory overlay. Phase 2
+// supports transaction-visible reads and staged writes, but Commit still returns
+// ErrTransactionsUnsupported until durable transaction commit is implemented.
 func (s *FileSession) Begin(ctx context.Context, opts sessionapi.TxOptions) (sessionapi.Tx, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return nil, err
@@ -24,11 +48,12 @@ func (s *FileSession) Begin(ctx context.Context, opts sessionapi.TxOptions) (ses
 	} else if err := s.ensureWrite(); err != nil {
 		return nil, err
 	}
-	return nil, sessionapi.ErrTransactionsUnsupported
+	return &fileTx{session: s, options: opts, overlay: newTxOverlay()}, nil
 }
 
-// Tx runs fn inside a session transaction. Until Begin is implemented, this
-// returns ErrTransactionsUnsupported and does not invoke fn.
+// Tx runs fn inside a session transaction. Until durable commit is implemented,
+// successful callbacks return ErrTransactionsUnsupported from Commit. Callback
+// errors still rollback the staged overlay and are returned unchanged.
 func (s *FileSession) Tx(ctx context.Context, opts sessionapi.TxOptions, fn func(sessionapi.Tx) error) error {
 	tx, err := s.Begin(ctx, opts)
 	if err != nil {
@@ -43,4 +68,404 @@ func (s *FileSession) Tx(ctx context.Context, opts sessionapi.TxOptions, fn func
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func newTxOverlay() txOverlay {
+	return txOverlay{
+		addedNodes:   map[graph.NodeID]graph.Node{},
+		updatedNodes: map[graph.NodeID]graph.Node{},
+		deletedNodes: map[graph.NodeID]struct{}{},
+		addedEdges:   map[graph.EdgeID]graph.Edge{},
+		updatedEdges: map[graph.EdgeID]graph.Edge{},
+		deletedEdges: map[graph.EdgeID]struct{}{},
+	}
+}
+
+func (tx *fileTx) Query() *query.Builder { return query.NewBuilder(tx) }
+
+func (tx *fileTx) ListTemplates(ctx context.Context) ([]graph.Template, error) {
+	if err := tx.ensureOpen(ctx); err != nil {
+		return nil, err
+	}
+	return tx.session.ListTemplates(ctx)
+}
+
+func (tx *fileTx) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (graph.Node, error) {
+	if err := tx.ensureWritable(ctx); err != nil {
+		return graph.Node{}, err
+	}
+	nodes, err := tx.ListNodes(ctx)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	nodeID, err := newGraphUUID()
+	if err != nil {
+		return graph.Node{}, err
+	}
+	if in.ID != nil {
+		nodeID = *in.ID
+	}
+	if findNodeIndex(nodes, nodeID) >= 0 {
+		return graph.Node{}, fmt.Errorf("%w: node already exists", storetemplate.ErrInvalidInput)
+	}
+	n, err := tx.session.buildNode(ctx, nodes, nodeID, in.TemplateID, in.Content, in.Props)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	now := time.Now().UTC()
+	n.CreatedAt = now
+	n.UpdatedAt = now
+	delete(tx.overlay.deletedNodes, n.ID)
+	tx.overlay.addedNodes[n.ID] = n
+	return cloneNode(n), nil
+}
+
+func (tx *fileTx) ListNodes(ctx context.Context) ([]graph.Node, error) {
+	if err := tx.ensureOpen(ctx); err != nil {
+		return nil, err
+	}
+	if err := tx.session.ensureRead(); err != nil {
+		return nil, err
+	}
+	base, err := tx.session.readNodes()
+	if err != nil {
+		return nil, err
+	}
+	return tx.mergedNodes(base), nil
+}
+
+func (tx *fileTx) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeInput) (graph.Node, error) {
+	if err := tx.ensureWritable(ctx); err != nil {
+		return graph.Node{}, err
+	}
+	if in.ID == uuid.Nil {
+		return graph.Node{}, fmt.Errorf("%w: node_id is required", tx.session.errors.NotFound)
+	}
+	nodes, err := tx.ListNodes(ctx)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	idx := findNodeIndex(nodes, in.ID)
+	if idx < 0 {
+		return graph.Node{}, tx.session.errors.NotFound
+	}
+	if nodes[idx].BlobRef != nil && in.Content != "" {
+		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", storetemplate.ErrInvalidInput)
+	}
+	n, err := tx.session.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, in.Props)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	n.BlobRef = nodes[idx].BlobRef
+	n.CreatedAt = nodes[idx].CreatedAt
+	if n.CreatedAt.IsZero() {
+		n.CreatedAt = time.Now().UTC()
+	}
+	n.UpdatedAt = time.Now().UTC()
+	candidateNodes := cloneNodes(nodes)
+	candidateNodes[idx] = n
+	edges, err := tx.ListEdges(ctx)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	if err := tx.session.validateIncidentContains(ctx, n, candidateNodes, edges); err != nil {
+		return graph.Node{}, err
+	}
+	if _, ok := tx.overlay.addedNodes[n.ID]; ok {
+		tx.overlay.addedNodes[n.ID] = n
+	} else {
+		tx.overlay.updatedNodes[n.ID] = n
+	}
+	return cloneNode(n), nil
+}
+
+func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.UpdateNodeAndCreateSiblingInput) (sessionapi.UpdateNodeAndCreateSiblingResult, error) {
+	return sessionapi.UpdateNodeAndCreateSiblingResult{}, sessionapi.ErrTransactionsUnsupported
+}
+
+func (tx *fileTx) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
+	if in.ID == nil {
+		return tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+	}
+	if _, err := tx.GetNode(ctx, *in.ID); err == nil {
+		return tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+	}
+	return tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+}
+
+func (tx *fileTx) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (graph.Edge, error) {
+	if err := tx.ensureWritable(ctx); err != nil {
+		return graph.Edge{}, err
+	}
+	nodes, err := tx.ListNodes(ctx)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	from, ok := findNode(nodes, in.FromID)
+	if !ok {
+		return graph.Edge{}, fmt.Errorf("%w: from node not found", tx.session.errors.NotFound)
+	}
+	to, ok := findNode(nodes, in.ToID)
+	if !ok {
+		return graph.Edge{}, fmt.Errorf("%w: to node not found", tx.session.errors.NotFound)
+	}
+	edges, err := tx.ListEdges(ctx)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	if err := tx.session.validateNewEdge(ctx, from, to, in.Kind, edges); err != nil {
+		return graph.Edge{}, err
+	}
+	edgeID, err := newGraphUUID()
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	if in.ID != nil {
+		edgeID = *in.ID
+	}
+	if findEdgeIndex(edges, edgeID) >= 0 {
+		return graph.Edge{}, fmt.Errorf("%w: edge already exists", storetemplate.ErrInvalidInput)
+	}
+	e := graph.Edge{ID: edgeID, FromID: in.FromID, ToID: in.ToID, Kind: in.Kind, Props: copyProps(in.Props)}
+	delete(tx.overlay.deletedEdges, e.ID)
+	tx.overlay.addedEdges[e.ID] = e
+	return cloneEdge(e), nil
+}
+
+func (tx *fileTx) ListEdges(ctx context.Context) ([]graph.Edge, error) {
+	if err := tx.ensureOpen(ctx); err != nil {
+		return nil, err
+	}
+	if err := tx.session.ensureRead(); err != nil {
+		return nil, err
+	}
+	base, err := tx.session.readEdges()
+	if err != nil {
+		return nil, err
+	}
+	return tx.mergedEdges(base), nil
+}
+
+func (tx *fileTx) Children(ctx context.Context, parentID graph.NodeID) ([]graph.Edge, error) {
+	edges, err := tx.ListEdges(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []graph.Edge{}
+	for _, edge := range edges {
+		if edge.Kind == graph.EdgeKindContains && edge.FromID == parentID {
+			out = append(out, edge)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		left, leftOK := edgeOrderNumber(out[i])
+		right, rightOK := edgeOrderNumber(out[j])
+		if leftOK && rightOK && left != right {
+			return left < right
+		}
+		if leftOK != rightOK {
+			return leftOK
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	return cloneEdges(out), nil
+}
+
+func (tx *fileTx) Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge, error) {
+	edges, err := tx.ListEdges(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, edge := range edges {
+		if edge.Kind == graph.EdgeKindContains && edge.ToID == childID {
+			cloned := cloneEdge(edge)
+			return &cloned, nil
+		}
+	}
+	return nil, nil
+}
+
+func (tx *fileTx) AddGraph(ctx context.Context, in sessionapi.AddGraphInput) error {
+	_, err := tx.ApplyGraph(ctx, sessionapi.ApplyGraphInput{AddNodes: in.Nodes, AddEdges: in.Edges, Atomic: in.Atomic})
+	return err
+}
+
+func (tx *fileTx) ApplyGraph(ctx context.Context, in sessionapi.ApplyGraphInput) (sessionapi.ApplyGraphResult, error) {
+	return sessionapi.ApplyGraphResult{}, sessionapi.ErrTransactionsUnsupported
+}
+
+func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInput) (graph.Edge, error) {
+	return graph.Edge{}, sessionapi.ErrTransactionsUnsupported
+}
+
+func (tx *fileTx) ReorderChildren(ctx context.Context, in sessionapi.ReorderChildrenInput) ([]graph.Edge, error) {
+	return nil, sessionapi.ErrTransactionsUnsupported
+}
+
+func (tx *fileTx) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error) {
+	if err := tx.ensureOpen(ctx); err != nil {
+		return graph.Node{}, err
+	}
+	nodes, err := tx.ListNodes(ctx)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	if node, ok := findNode(nodes, id); ok {
+		return cloneNode(node), nil
+	}
+	return graph.Node{}, tx.session.errors.NotFound
+}
+
+func (tx *fileTx) DeleteNode(ctx context.Context, in sessionapi.DeleteNodeInput) error {
+	return sessionapi.ErrTransactionsUnsupported
+}
+
+func (tx *fileTx) DeleteEdge(ctx context.Context, in sessionapi.DeleteEdgeInput) error {
+	if err := tx.ensureWritable(ctx); err != nil {
+		return err
+	}
+	if in.ID == uuid.Nil {
+		return fmt.Errorf("%w: edge_id is required", tx.session.errors.NotFound)
+	}
+	edges, err := tx.ListEdges(ctx)
+	if err != nil {
+		return err
+	}
+	if findEdgeIndex(edges, in.ID) < 0 {
+		return tx.session.errors.NotFound
+	}
+	delete(tx.overlay.addedEdges, in.ID)
+	delete(tx.overlay.updatedEdges, in.ID)
+	tx.overlay.deletedEdges[in.ID] = struct{}{}
+	return nil
+}
+
+func (tx *fileTx) Commit(ctx context.Context) error {
+	if err := tx.ensureOpen(ctx); err != nil {
+		return err
+	}
+	tx.closed = true
+	return sessionapi.ErrTransactionsUnsupported
+}
+
+func (tx *fileTx) Rollback(ctx context.Context) error {
+	if err := tx.ensureOpen(ctx); err != nil {
+		return err
+	}
+	tx.overlay = newTxOverlay()
+	tx.closed = true
+	return nil
+}
+
+func (tx *fileTx) ensureOpen(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if tx.closed {
+		return sessionapi.ErrTransactionClosed
+	}
+	return tx.session.ensureOpen(ctx)
+}
+
+func (tx *fileTx) ensureWritable(ctx context.Context) error {
+	if err := tx.ensureOpen(ctx); err != nil {
+		return err
+	}
+	if tx.options.ReadOnly {
+		return sessionapi.ErrReadOnlyTransaction
+	}
+	return tx.session.ensureWrite()
+}
+
+func (tx *fileTx) mergedNodes(base []graph.Node) []graph.Node {
+	out := make([]graph.Node, 0, len(base)+len(tx.overlay.addedNodes))
+	seen := map[graph.NodeID]struct{}{}
+	for _, node := range base {
+		if _, deleted := tx.overlay.deletedNodes[node.ID]; deleted {
+			continue
+		}
+		if updated, ok := tx.overlay.updatedNodes[node.ID]; ok {
+			out = append(out, cloneNode(updated))
+		} else {
+			out = append(out, cloneNode(node))
+		}
+		seen[node.ID] = struct{}{}
+	}
+	for _, node := range tx.overlay.addedNodes {
+		if _, deleted := tx.overlay.deletedNodes[node.ID]; deleted {
+			continue
+		}
+		if _, ok := seen[node.ID]; ok {
+			continue
+		}
+		out = append(out, cloneNode(node))
+	}
+	return out
+}
+
+func (tx *fileTx) mergedEdges(base []graph.Edge) []graph.Edge {
+	liveNodes := map[graph.NodeID]struct{}{}
+	nodes, _ := tx.mergedNodesNoErr()
+	for _, node := range nodes {
+		liveNodes[node.ID] = struct{}{}
+	}
+	out := make([]graph.Edge, 0, len(base)+len(tx.overlay.addedEdges))
+	seen := map[graph.EdgeID]struct{}{}
+	for _, edge := range base {
+		if _, deleted := tx.overlay.deletedEdges[edge.ID]; deleted {
+			continue
+		}
+		if !edgeEndpointsLive(edge, liveNodes) {
+			continue
+		}
+		if updated, ok := tx.overlay.updatedEdges[edge.ID]; ok {
+			out = append(out, cloneEdge(updated))
+		} else {
+			out = append(out, cloneEdge(edge))
+		}
+		seen[edge.ID] = struct{}{}
+	}
+	for _, edge := range tx.overlay.addedEdges {
+		if _, deleted := tx.overlay.deletedEdges[edge.ID]; deleted {
+			continue
+		}
+		if _, ok := seen[edge.ID]; ok {
+			continue
+		}
+		if !edgeEndpointsLive(edge, liveNodes) {
+			continue
+		}
+		out = append(out, cloneEdge(edge))
+	}
+	return out
+}
+
+func (tx *fileTx) mergedNodesNoErr() ([]graph.Node, error) {
+	base, err := tx.session.readNodes()
+	if err != nil {
+		return nil, err
+	}
+	return tx.mergedNodes(base), nil
+}
+
+func edgeEndpointsLive(edge graph.Edge, liveNodes map[graph.NodeID]struct{}) bool {
+	_, fromOK := liveNodes[edge.FromID]
+	_, toOK := liveNodes[edge.ToID]
+	return fromOK && toOK
+}
+
+func findEdgeIndex(edges []graph.Edge, id graph.EdgeID) int {
+	for i, edge := range edges {
+		if edge.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func cloneNode(node graph.Node) graph.Node {
+	node.Props = copyProps(node.Props)
+	return node
 }
