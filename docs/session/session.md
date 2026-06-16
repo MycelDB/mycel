@@ -14,7 +14,7 @@ A session owns operation-level APIs for space-local data:
 - batched graph mutation through `ApplyGraph` for importer-style workloads
 - hierarchy mutation through `MoveSubtree` and `ReorderChildren`
 - GQL-style in-memory query execution through `Session.Query()`
-- future transactions
+- planned transaction support; see `docs/transactions.md`
 
 The session package contains operation input structures such as `AddNodeInput`, `UpdateNodeInput`, `AddEdgeInput`, `ApplyGraphInput`, and `ImportTemplatesInput`. Pure graph records such as `graph.Node`, `graph.Edge`, and `graph.Template` remain in `domain/graph`.
 
