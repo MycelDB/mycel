@@ -378,3 +378,113 @@ func TestFileSessionTransactionPhase4ApplyGraphRestoresOverlayOnError(t *testing
 		t.Fatalf("overlay should be restored after failed apply graph")
 	}
 }
+
+func TestFileSessionTransactionPhase5QueryHidesStagedDeletes(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	node, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "delete me", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add node failed: %v", err)
+	}
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	if err := tx.DeleteNode(ctx, sessionapi.DeleteNodeInput{ID: node.ID}); err != nil {
+		t.Fatalf("delete node failed: %v", err)
+	}
+	rows, err := tx.Query().
+		Match(query.Pattern().Node("n", query.Template("entry"))).
+		Return(query.Var("n")).
+		Execute(ctx)
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(rows.Rows) != 0 {
+		t.Fatalf("expected tx query to hide staged delete, got %d rows", len(rows.Rows))
+	}
+	baseRows, err := sess.Query().
+		Match(query.Pattern().Node("n", query.Template("entry"))).
+		Return(query.Var("n")).
+		Execute(ctx)
+	if err != nil {
+		t.Fatalf("base query failed: %v", err)
+	}
+	if len(baseRows.Rows) != 1 {
+		t.Fatalf("expected base query to still see node, got %d rows", len(baseRows.Rows))
+	}
+}
+
+func TestFileSessionTransactionPhase5QuerySeesMovedHierarchy(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	other, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "other", Props: map[string]any{}})
+	child, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Props: map[string]any{}})
+	_, _ = sess.AddEdge(ctx, containsInput(root.ID, child.ID, 0))
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	if _, err := tx.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: child.ID, NewParentID: other.ID}); err != nil {
+		t.Fatalf("move failed: %v", err)
+	}
+	rows, err := tx.Query().
+		Match(query.Pattern().Node("parent", query.Template("entry")).Out("contains", query.Depth(1, 1)).Node("child", query.Template("entry"))).
+		Return(query.Var("parent"), query.Var("child")).
+		Execute(ctx)
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	matched := false
+	for _, row := range rows.Rows {
+		parentNode, parentOK := row.Node("parent")
+		childNode, childOK := row.Node("child")
+		if parentOK && childOK && parentNode.ID == other.ID && childNode.ID == child.ID {
+			matched = true
+		}
+		if parentOK && childOK && parentNode.ID == root.ID && childNode.ID == child.ID {
+			t.Fatalf("query still saw child under old parent")
+		}
+	}
+	if !matched {
+		t.Fatalf("query did not see child under new parent: %+v", rows.Rows)
+	}
+}
+
+func TestFileSessionTransactionPhase5QueryTreeUsesStagedOrder(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	a, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "a", Props: map[string]any{}})
+	b, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "b", Props: map[string]any{}})
+	c, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "c", Props: map[string]any{}})
+	_, _ = sess.AddEdge(ctx, containsInput(root.ID, a.ID, 0))
+	_, _ = sess.AddEdge(ctx, containsInput(root.ID, b.ID, 1))
+	_, _ = sess.AddEdge(ctx, containsInput(root.ID, c.ID, 2))
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	if _, err := tx.ReorderChildren(ctx, sessionapi.ReorderChildrenInput{ParentID: root.ID, ChildIDs: []graph.NodeID{c.ID, a.ID, b.ID}}); err != nil {
+		t.Fatalf("reorder failed: %v", err)
+	}
+	rows, err := tx.Query().
+		Match(query.Pattern().Node("root", query.Template("entry")).Out("contains", query.Depth(1, query.Unbounded)).Node("entry", query.Template("entry"))).
+		Return(query.Tree("entry").As("entries")).
+		Execute(ctx)
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	for _, row := range rows.Rows {
+		tree, ok := row.Tree("entries")
+		if !ok || len(tree) != 3 {
+			continue
+		}
+		if tree[0].Node.ID != c.ID || tree[1].Node.ID != a.ID || tree[2].Node.ID != b.ID {
+			t.Fatalf("query tree did not use staged order: %+v", tree)
+		}
+		return
+	}
+	t.Fatalf("did not find root query row with three entries")
+}
