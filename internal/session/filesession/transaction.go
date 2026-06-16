@@ -24,16 +24,13 @@ type txOverlay struct {
 }
 
 type fileTx struct {
-	session  *FileSession
-	options  sessionapi.TxOptions
-	overlay  txOverlay
-	closed   bool
-	baseRead bool
+	session *FileSession
+	options sessionapi.TxOptions
+	overlay txOverlay
+	closed  bool
 }
 
-// Begin starts a session transaction backed by an in-memory overlay. Phase 2
-// supports transaction-visible reads and staged writes, but Commit still returns
-// ErrTransactionsUnsupported until durable transaction commit is implemented.
+// Begin starts a session transaction backed by an in-memory overlay.
 func (s *FileSession) Begin(ctx context.Context, opts sessionapi.TxOptions) (sessionapi.Tx, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return nil, err
@@ -51,9 +48,8 @@ func (s *FileSession) Begin(ctx context.Context, opts sessionapi.TxOptions) (ses
 	return &fileTx{session: s, options: opts, overlay: newTxOverlay()}, nil
 }
 
-// Tx runs fn inside a session transaction. Until durable commit is implemented,
-// successful callbacks return ErrTransactionsUnsupported from Commit. Callback
-// errors still rollback the staged overlay and are returned unchanged.
+// Tx runs fn inside a session transaction. Callback errors rollback the staged
+// overlay and are returned unchanged; nil callback errors commit the overlay.
 func (s *FileSession) Tx(ctx context.Context, opts sessionapi.TxOptions, fn func(sessionapi.Tx) error) error {
 	tx, err := s.Begin(ctx, opts)
 	if err != nil {
@@ -79,6 +75,49 @@ func newTxOverlay() txOverlay {
 		updatedEdges: map[graph.EdgeID]graph.Edge{},
 		deletedEdges: map[graph.EdgeID]struct{}{},
 	}
+}
+
+func (o txOverlay) empty() bool {
+	return len(o.addedNodes) == 0 && len(o.updatedNodes) == 0 && len(o.deletedNodes) == 0 && len(o.addedEdges) == 0 && len(o.updatedEdges) == 0 && len(o.deletedEdges) == 0
+}
+
+func (o txOverlay) delta() ([]graph.Node, []graph.Edge, []graph.NodeID, []graph.EdgeID) {
+	putNodes := make([]graph.Node, 0, len(o.addedNodes)+len(o.updatedNodes))
+	for _, node := range o.addedNodes {
+		putNodes = append(putNodes, cloneNode(node))
+	}
+	for id, node := range o.updatedNodes {
+		if _, added := o.addedNodes[id]; added {
+			continue
+		}
+		putNodes = append(putNodes, cloneNode(node))
+	}
+	sort.Slice(putNodes, func(i, j int) bool { return putNodes[i].ID.String() < putNodes[j].ID.String() })
+
+	putEdges := make([]graph.Edge, 0, len(o.addedEdges)+len(o.updatedEdges))
+	for _, edge := range o.addedEdges {
+		putEdges = append(putEdges, cloneEdge(edge))
+	}
+	for id, edge := range o.updatedEdges {
+		if _, added := o.addedEdges[id]; added {
+			continue
+		}
+		putEdges = append(putEdges, cloneEdge(edge))
+	}
+	sort.Slice(putEdges, func(i, j int) bool { return putEdges[i].ID.String() < putEdges[j].ID.String() })
+
+	deleteNodes := make([]graph.NodeID, 0, len(o.deletedNodes))
+	for id := range o.deletedNodes {
+		deleteNodes = append(deleteNodes, id)
+	}
+	sort.Slice(deleteNodes, func(i, j int) bool { return deleteNodes[i].String() < deleteNodes[j].String() })
+
+	deleteEdges := make([]graph.EdgeID, 0, len(o.deletedEdges))
+	for id := range o.deletedEdges {
+		deleteEdges = append(deleteEdges, id)
+	}
+	sort.Slice(deleteEdges, func(i, j int) bool { return deleteEdges[i].String() < deleteEdges[j].String() })
+	return putNodes, putEdges, deleteNodes, deleteEdges
 }
 
 func (tx *fileTx) Query() *query.Builder { return query.NewBuilder(tx) }
@@ -317,7 +356,40 @@ func (tx *fileTx) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, err
 }
 
 func (tx *fileTx) DeleteNode(ctx context.Context, in sessionapi.DeleteNodeInput) error {
-	return sessionapi.ErrTransactionsUnsupported
+	if err := tx.ensureWritable(ctx); err != nil {
+		return err
+	}
+	nodes, err := tx.ListNodes(ctx)
+	if err != nil {
+		return err
+	}
+	edges, err := tx.ListEdges(ctx)
+	if err != nil {
+		return err
+	}
+	deleteIDs, _, remainingEdges, err := tx.session.applyDeleteNode(nodes, edges, in)
+	if err != nil {
+		return err
+	}
+	for _, id := range deleteIDs {
+		if _, added := tx.overlay.addedNodes[id]; added {
+			delete(tx.overlay.addedNodes, id)
+			delete(tx.overlay.updatedNodes, id)
+		} else {
+			delete(tx.overlay.updatedNodes, id)
+			tx.overlay.deletedNodes[id] = struct{}{}
+		}
+	}
+	for _, id := range deletedEdges(edges, remainingEdges) {
+		if _, added := tx.overlay.addedEdges[id]; added {
+			delete(tx.overlay.addedEdges, id)
+			delete(tx.overlay.updatedEdges, id)
+		} else {
+			delete(tx.overlay.updatedEdges, id)
+			tx.overlay.deletedEdges[id] = struct{}{}
+		}
+	}
+	return nil
 }
 
 func (tx *fileTx) DeleteEdge(ctx context.Context, in sessionapi.DeleteEdgeInput) error {
@@ -334,7 +406,11 @@ func (tx *fileTx) DeleteEdge(ctx context.Context, in sessionapi.DeleteEdgeInput)
 	if findEdgeIndex(edges, in.ID) < 0 {
 		return tx.session.errors.NotFound
 	}
-	delete(tx.overlay.addedEdges, in.ID)
+	if _, added := tx.overlay.addedEdges[in.ID]; added {
+		delete(tx.overlay.addedEdges, in.ID)
+		delete(tx.overlay.updatedEdges, in.ID)
+		return nil
+	}
 	delete(tx.overlay.updatedEdges, in.ID)
 	tx.overlay.deletedEdges[in.ID] = struct{}{}
 	return nil
@@ -344,8 +420,29 @@ func (tx *fileTx) Commit(ctx context.Context) error {
 	if err := tx.ensureOpen(ctx); err != nil {
 		return err
 	}
+	if tx.options.ReadOnly || tx.overlay.empty() {
+		tx.closed = true
+		return nil
+	}
+	baseNodes, err := tx.session.readNodes()
+	if err != nil {
+		return err
+	}
+	baseEdges, err := tx.session.readEdges()
+	if err != nil {
+		return err
+	}
+	finalNodes := tx.mergedNodes(baseNodes)
+	finalEdges := tx.mergedEdges(baseEdges)
+	if err := tx.validateFinalGraph(ctx, finalNodes, finalEdges); err != nil {
+		return err
+	}
+	putNodes, putEdges, deleteNodes, deleteEdges := tx.overlay.delta()
+	if err := tx.session.commitGraph(ctx, putNodes, putEdges, deleteNodes, deleteEdges); err != nil {
+		return err
+	}
 	tx.closed = true
-	return sessionapi.ErrTransactionsUnsupported
+	return nil
 }
 
 func (tx *fileTx) Rollback(ctx context.Context) error {
@@ -377,6 +474,50 @@ func (tx *fileTx) ensureWritable(ctx context.Context) error {
 		return sessionapi.ErrReadOnlyTransaction
 	}
 	return tx.session.ensureWrite()
+}
+
+func (tx *fileTx) validateFinalGraph(ctx context.Context, nodes []graph.Node, edges []graph.Edge) error {
+	nodeByID := make(map[graph.NodeID]graph.Node, len(nodes))
+	for _, node := range nodes {
+		if _, exists := nodeByID[node.ID]; exists {
+			return fmt.Errorf("%w: duplicate node %s", storetemplate.ErrInvalidInput, node.ID)
+		}
+		nodeByID[node.ID] = node
+	}
+	edgeByID := make(map[graph.EdgeID]struct{}, len(edges))
+	containsParent := map[graph.NodeID]graph.EdgeID{}
+	for _, edge := range edges {
+		if _, exists := edgeByID[edge.ID]; exists {
+			return fmt.Errorf("%w: duplicate edge %s", storetemplate.ErrInvalidInput, edge.ID)
+		}
+		edgeByID[edge.ID] = struct{}{}
+		from, fromOK := nodeByID[edge.FromID]
+		to, toOK := nodeByID[edge.ToID]
+		if !fromOK || !toOK {
+			return fmt.Errorf("%w: edge endpoint not found", tx.session.errors.NotFound)
+		}
+		if edge.Kind != graph.EdgeKindContains {
+			continue
+		}
+		if edge.FromID == edge.ToID {
+			return fmt.Errorf("%w: contains edge cannot target itself", storetemplate.ErrInvalidInput)
+		}
+		if existing, ok := containsParent[edge.ToID]; ok && existing != edge.ID {
+			return fmt.Errorf("%w: node already has a contains parent", storetemplate.ErrInvalidInput)
+		}
+		containsParent[edge.ToID] = edge.ID
+		if containsPath(edges, edge.ToID, edge.FromID) {
+			return fmt.Errorf("%w: contains edge would create a cycle", storetemplate.ErrInvalidInput)
+		}
+		childTemplate, err := tx.session.nodeTemplate(ctx, to, "child")
+		if err != nil {
+			return err
+		}
+		if err := tx.session.validateChild(ctx, from, childTemplate); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (tx *fileTx) mergedNodes(base []graph.Node) []graph.Node {
