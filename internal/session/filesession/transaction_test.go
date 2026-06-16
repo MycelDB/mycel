@@ -488,3 +488,86 @@ func TestFileSessionTransactionPhase5QueryTreeUsesStagedOrder(t *testing.T) {
 	}
 	t.Fatalf("did not find root query row with three entries")
 }
+
+func TestFileSessionPhase6UpdateNodeAndCreateSiblingIsTransactional(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add root failed: %v", err)
+	}
+	first, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "first", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add first failed: %v", err)
+	}
+	if _, err := sess.AddEdge(ctx, containsInput(root.ID, first.ID, 0)); err != nil {
+		t.Fatalf("add edge failed: %v", err)
+	}
+	result, err := sess.UpdateNodeAndCreateSibling(ctx, sessionapi.UpdateNodeAndCreateSiblingInput{NodeID: first.ID, Content: "updated", Props: map[string]any{}, SiblingTemplateID: &tmplID, SiblingContent: "second", SiblingProps: map[string]any{}})
+	if err != nil {
+		t.Fatalf("update/create sibling failed: %v", err)
+	}
+	updated, err := sess.GetNode(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("get updated failed: %v", err)
+	}
+	if updated.Content != "updated" || result.CreatedNode.Content != "second" {
+		t.Fatalf("unexpected result updated=%+v result=%+v", updated, result)
+	}
+	children, err := sess.Children(ctx, root.ID)
+	if err != nil {
+		t.Fatalf("children failed: %v", err)
+	}
+	if len(children) != 2 || children[0].ToID != first.ID || children[1].ToID != result.CreatedNode.ID {
+		t.Fatalf("unexpected child order: %+v", children)
+	}
+}
+
+func TestFileSessionPhase6TransactionUpdateNodeAndCreateSiblingRollback(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	first, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "first", Props: map[string]any{}})
+	_, _ = sess.AddEdge(ctx, containsInput(root.ID, first.ID, 0))
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	result, err := tx.UpdateNodeAndCreateSibling(ctx, sessionapi.UpdateNodeAndCreateSiblingInput{NodeID: first.ID, Content: "updated", Props: map[string]any{}, SiblingTemplateID: &tmplID, SiblingContent: "second", SiblingProps: map[string]any{}})
+	if err != nil {
+		t.Fatalf("update/create sibling failed: %v", err)
+	}
+	if _, err := tx.GetNode(ctx, result.CreatedNode.ID); err != nil {
+		t.Fatalf("tx should see created sibling: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+	persisted, err := sess.GetNode(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("get first failed: %v", err)
+	}
+	if persisted.Content != "first" {
+		t.Fatalf("rollback should restore original content, got %+v", persisted)
+	}
+	if _, err := sess.GetNode(ctx, result.CreatedNode.ID); err == nil {
+		t.Fatalf("rollback should not persist sibling")
+	}
+}
+
+func TestFileSessionPhase6ApplyGraphFailureDoesNotPersistPartialNode(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	rootID := nodeID()
+	missingID := nodeID()
+	_, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
+		AddNodes: []sessionapi.AddNodeInput{{ID: &rootID, TemplateID: &tmplID, Content: "root", Props: map[string]any{}}},
+		AddEdges: []sessionapi.AddEdgeInput{containsInput(rootID, missingID, 0)},
+	})
+	if err == nil {
+		t.Fatalf("expected apply graph failure")
+	}
+	if _, err := sess.GetNode(ctx, rootID); err == nil {
+		t.Fatalf("failed apply graph should not persist partial node")
+	}
+}

@@ -242,7 +242,78 @@ func (tx *fileTx) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeInput)
 }
 
 func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.UpdateNodeAndCreateSiblingInput) (sessionapi.UpdateNodeAndCreateSiblingResult, error) {
-	return sessionapi.UpdateNodeAndCreateSiblingResult{}, sessionapi.ErrTransactionsUnsupported
+	if err := tx.ensureWritable(ctx); err != nil {
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	snapshot := tx.overlay.clone()
+	fail := func(err error) (sessionapi.UpdateNodeAndCreateSiblingResult, error) {
+		tx.overlay = snapshot
+		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
+	}
+	if in.NodeID == uuid.Nil {
+		return fail(fmt.Errorf("%w: node_id is required", tx.session.errors.NotFound))
+	}
+	nodes, err := tx.ListNodes(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	idx := findNodeIndex(nodes, in.NodeID)
+	if idx < 0 {
+		return fail(tx.session.errors.NotFound)
+	}
+	edges, err := tx.ListEdges(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	parentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
+	if len(parentIndexes) == 0 {
+		return fail(fmt.Errorf("%w: cannot insert a sibling for a root node", storetemplate.ErrInvalidInput))
+	}
+	if len(parentIndexes) > 1 {
+		return fail(fmt.Errorf("%w: node has multiple contains parents", storetemplate.ErrInvalidInput))
+	}
+	parentID := edges[parentIndexes[0]].FromID
+	childEdgeIndexes := orderedContainsEdgeIndexes(edges, parentID)
+	currentOrder := -1
+	previousOrder := 0.0
+	for i, edgeIndex := range childEdgeIndexes {
+		if edges[edgeIndex].ToID == in.NodeID {
+			currentOrder = i
+			if value, ok := edgeOrderNumber(edges[edgeIndex]); ok {
+				previousOrder = value
+			} else {
+				previousOrder = float64(i * childOrderStep)
+			}
+			break
+		}
+	}
+	if currentOrder < 0 {
+		return fail(fmt.Errorf("%w: node is not contained by parent", storetemplate.ErrInvalidInput))
+	}
+	insertOrder := currentOrder + 1
+	createdOrder := previousOrder + childOrderStep
+	if insertOrder < len(childEdgeIndexes) {
+		nextOrder, ok := edgeOrderNumber(edges[childEdgeIndexes[insertOrder]])
+		if !ok {
+			nextOrder = float64(insertOrder * childOrderStep)
+		}
+		if nextOrder > previousOrder {
+			createdOrder = previousOrder + (nextOrder-previousOrder)/2
+		}
+	}
+	updated, err := tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: in.NodeID, TemplateID: nodes[idx].TemplateID, Content: in.Content, Props: in.Props})
+	if err != nil {
+		return fail(err)
+	}
+	sibling, err := tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.SiblingID, TemplateID: in.SiblingTemplateID, Content: in.SiblingContent, Props: in.SiblingProps})
+	if err != nil {
+		return fail(err)
+	}
+	createdEdge, err := tx.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: parentID, ToID: sibling.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": createdOrder}})
+	if err != nil {
+		return fail(err)
+	}
+	return sessionapi.UpdateNodeAndCreateSiblingResult{UpdatedNode: updated, CreatedNode: sibling, CreatedEdge: createdEdge, SiblingOrder: insertOrder}, nil
 }
 
 func (tx *fileTx) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
