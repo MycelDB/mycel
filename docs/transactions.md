@@ -1,74 +1,44 @@
 # Transactions
 
-This document is the Phase 0 design proposal for KnotDB transaction support. It describes the intended public API, execution model, consistency rules, and implementation phases. It does not describe behavior that is implemented yet.
+KnotDB supports session-scoped transactions in the public `session` package. A transaction stages graph and blob mutations in a session-local overlay, provides read-your-writes behavior, validates the final graph, and commits the staged graph delta as one durable storage transaction.
 
-## Goals
+Transactions are scoped to one opened session and therefore to one space.
 
-Transactions should make compound graph mutations safe and reviewable as one atomic unit.
+## Public API
 
-Primary goals:
-
-- stage multiple reads and writes under one session-local transaction
-- provide read-your-writes behavior inside the transaction
-- commit all staged writes durably as one graph transaction
-- rollback by discarding staged writes before durable storage is touched
-- validate the final merged graph before commit
-- prevent partially-applied compound operations from reaching storage
-- support transaction-local queries
-
-Representative operations that should eventually be transaction-backed:
-
-- create page, move children, and replace a block with a page reference
-- update node content and replace its graph-native reference edges
-- append a journal entry and sync references
-- create/update a task and sync references
-- importer graph batches
-- hierarchy moves and reorders
-
-## Non-goals for the initial implementation
-
-The first implementation should not include:
-
-- nested transactions
-- multi-space transactions
-- distributed transactions
-- long-running durable transaction handles
-- MVCC with multiple concurrent writers
-- automatic conflict retries
-- GQL mutation syntax
-
-These may be considered later once the single-space embedded transaction model is stable.
-
-## Public API sketch
-
-Transactions belong in the public `session` package because they operate within one authenticated space session.
-
-A callback-style API is the preferred high-level entry point:
+Use the callback helper for most code:
 
 ```go
 err := sess.Tx(ctx, session.TxOptions{}, func(tx session.Tx) error {
-    node, err := tx.AddNode(ctx, session.AddNodeInput{...})
+    node, err := tx.AddNode(ctx, session.AddNodeInput{
+        TemplateID: templateID,
+        Content:    "Project Apollo",
+        Props:      map[string]any{},
+    })
     if err != nil {
         return err
     }
 
-    if _, err := tx.AddEdge(ctx, session.AddEdgeInput{...}); err != nil {
-        return err
-    }
-
-    _ = node
-    return nil // commit
+    _, err = tx.AddEdge(ctx, session.AddEdgeInput{
+        FromID: parentID,
+        ToID:   node.ID,
+        Kind:   graph.EdgeKindContains,
+        Props:  map[string]any{"order": 0},
+    })
+    return err
 })
 ```
 
-A manual API should also be available for callers that need explicit control:
+If the callback returns an error, the transaction rolls back and that error is returned. If the callback returns nil, KnotDB commits the transaction.
+
+Manual transaction control is also available:
 
 ```go
 tx, err := sess.Begin(ctx, session.TxOptions{})
 if err != nil {
     return err
 }
-defer tx.Rollback(ctx)
+defer tx.Rollback(ctx) // returns ErrTransactionClosed after a successful commit
 
 if _, err := tx.UpdateNode(ctx, session.UpdateNodeInput{...}); err != nil {
     return err
@@ -77,197 +47,165 @@ if _, err := tx.UpdateNode(ctx, session.UpdateNodeInput{...}); err != nil {
 return tx.Commit(ctx)
 ```
 
-Proposed types:
+`TxOptions` currently supports:
 
 ```go
 type TxOptions struct {
     ReadOnly bool
 }
-
-type Tx interface {
-    // Read operations.
-    GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
-    ListNodes(ctx context.Context) ([]graph.Node, error)
-    ListEdges(ctx context.Context) ([]graph.Edge, error)
-    ListTemplates(ctx context.Context) ([]graph.Template, error)
-    Children(ctx context.Context, parentID graph.NodeID) ([]graph.Edge, error)
-    Query() *query.Builder
-
-    // Write operations.
-    AddNode(ctx context.Context, in AddNodeInput) (graph.Node, error)
-    UpdateNode(ctx context.Context, in UpdateNodeInput) (graph.Node, error)
-    AddEdge(ctx context.Context, in AddEdgeInput) (graph.Edge, error)
-    DeleteEdge(ctx context.Context, in DeleteEdgeInput) error
-    DeleteNode(ctx context.Context, in DeleteNodeInput) error
-    MoveSubtree(ctx context.Context, in MoveSubtreeInput) (graph.Edge, error)
-    ReorderChildren(ctx context.Context, in ReorderChildrenInput) ([]graph.Edge, error)
-    ApplyGraph(ctx context.Context, in ApplyGraphInput) (ApplyGraphResult, error)
-
-    Commit(ctx context.Context) error
-    Rollback(ctx context.Context) error
-}
-
-type Session interface {
-    Begin(ctx context.Context, opts TxOptions) (Tx, error)
-    Tx(ctx context.Context, opts TxOptions, fn func(Tx) error) error
-}
 ```
 
-The exact type factoring can be refined during Phase 1. For example, `Tx` may embed smaller read/write interfaces instead of repeating method signatures.
+Read-only transactions can read and query but reject writes with `session.ErrReadOnlyTransaction`.
 
-## Transaction model
+## Supported transaction operations
 
-A transaction should be implemented as a session-local overlay on top of the committed base graph.
+`session.Tx` supports the graph operations needed by existing session workflows:
 
-```text
-committed base graph
-        +
-transaction overlay
-        =
-transaction-visible graph
-```
+- `ListTemplates`
+- `ListNodes`, `GetNode`
+- `ListEdges`, `Children`, `Parent`
+- `AddNode`, `AddBlobNode`, `UpsertNode`, `UpdateNode`
+- `UpdateNodeAndCreateSibling`
+- `AddEdge`, `DeleteEdge`
+- `DeleteNode`
+- `AddGraph`, `ApplyGraph`
+- `MoveSubtree`, `ReorderChildren`
+- `Query`
+- `Commit`, `Rollback`
 
-The overlay records staged changes:
-
-```go
-type txOverlay struct {
-    addedNodes   map[graph.NodeID]graph.Node
-    updatedNodes map[graph.NodeID]graph.Node
-    deletedNodes map[graph.NodeID]struct{}
-
-    addedEdges   map[graph.EdgeID]graph.Edge
-    updatedEdges map[graph.EdgeID]graph.Edge
-    deletedEdges map[graph.EdgeID]struct{}
-}
-```
-
-Reads inside the transaction must merge the base graph with the overlay. Durable graph storage remains unchanged until commit.
+Embedding generation/search and blob reads remain session-level operations, not transaction operations.
 
 ## Read-your-writes
 
-Every transaction read must observe earlier writes in the same transaction.
-
-Examples:
+Transaction reads see previous writes staged in the same transaction:
 
 ```go
-created, _ := tx.AddNode(ctx, input)
-same, _ := tx.GetNode(ctx, created.ID) // must return created
-```
-
-```go
-tx.MoveSubtree(ctx, session.MoveSubtreeInput{NodeID: childID, NewParentID: pageID})
-children, _ := tx.Children(ctx, pageID) // must include childID
-```
-
-`tx.Query()` should execute against the same transaction-visible graph.
-
-## Commit lifecycle
-
-Commit should follow one authoritative path:
-
-```text
-1. reject if transaction is already closed
-2. reject writes in read-only transactions
-3. acquire the per-space writer lock
-4. check base revision/conflicts when revision support exists
-5. merge base graph + overlay into a final candidate graph
-6. validate final candidate graph and permissions
-7. convert overlay to a canonical durable graph delta
-8. append/write the durable graph transaction
-9. advance manifest/revision only after durable writes succeed
-10. mark transaction closed
-11. release writer lock
-```
-
-If any step before durable commit fails, the overlay is discarded or left uncommitted and durable graph state must remain unchanged.
-
-## Rollback lifecycle
-
-Rollback should discard staged state and close the transaction:
-
-```go
-func (tx *fileTx) Rollback(ctx context.Context) error {
-    tx.overlay = nil
-    tx.closed = true
-    return nil
+created, err := tx.AddNode(ctx, input)
+if err != nil {
+    return err
 }
+
+same, err := tx.GetNode(ctx, created.ID) // returns created
 ```
 
-Rollback should be idempotent only if we explicitly choose that contract. The initial design should prefer returning a clear `ErrTransactionClosed` for double commit/rollback so caller mistakes are visible.
+Hierarchy reads also see staged moves/reorders:
 
-Blob-created temporary files will require extra cleanup in a later blob-aware phase.
+```go
+_, err := tx.MoveSubtree(ctx, session.MoveSubtreeInput{
+    NodeID:      childID,
+    NewParentID: pageID,
+})
+if err != nil {
+    return err
+}
 
-## Isolation and concurrency
-
-The initial implementation should use simple embedded/local semantics:
-
-- one writer commits per space at a time
-- readers may continue reading committed state
-- transactions see their own overlay
-- transactions do not see uncommitted writes from other transactions
-
-A transaction should capture the base graph revision when it begins. Once revision support is wired into transactions, commit should fail with `ErrConflict` if the base revision changed before commit.
-
-Initial conflict behavior:
-
-```text
-fail fast; do not automatically retry
+children, err := tx.Children(ctx, pageID) // includes childID
 ```
 
-Automatic retries can be added later as an option.
+The base session does not see transaction-local writes until commit.
 
-## Validation rules
+## Transaction-local queries
 
-A transaction may stage temporarily inconsistent intermediate states, but commit must reject an invalid final state.
+A transaction implements the query executor interface. `tx.Query()` runs against the transaction-visible graph:
 
-### Node and template invariants
+```go
+rows, err := tx.Query().
+    Match(
+        query.Pattern().
+            Node("page", query.Template("logseq.page")).
+            Out("contains", query.Depth(1, query.Unbounded)).
+            Node("entry", query.Template("logseq.page_entry")),
+    ).
+    Return(query.Var("page"), query.Tree("entry").As("entries")).
+    Execute(ctx)
+```
 
-- every node references an existing template unless template-less nodes are explicitly allowed
-- node props satisfy template property policy
-- required props are present
-- disallowed props are rejected
-- immutable fields are not changed illegally
-- node nature/template is not changed after creation unless explicitly supported
+Queries see staged nodes and edges, hide staged deletes, and use staged hierarchy ordering.
 
-### Edge invariants
+## Commit behavior
 
-- every edge endpoint references an existing non-deleted node
-- edge kind is valid
-- edge props satisfy edge/template rules where applicable
-- uniqueness constraints are enforced where required
+Commit performs these steps:
 
-### `contains` hierarchy invariants
+1. reject a closed transaction
+2. for read-only or empty transactions, close with no graph write
+3. merge committed graph state with the transaction overlay
+4. validate the final merged graph
+5. promote staged blobs that are referenced by staged graph nodes
+6. write the graph delta as one storage transaction, checking the base revision
+7. clean up staged blobs that were rolled back or no longer referenced
+8. close the transaction
 
-For `graph.EdgeKindContains`:
+If commit fails before the graph transaction is durable, no graph changes are applied. If a staged blob had to be promoted before a graph commit that later fails, KnotDB removes it when no committed graph node references it.
 
-- a child has at most one contains parent
-- no cycles exist
-- a move cannot place a node under itself or under one of its descendants
-- parent template allows the child template
-- sibling order is valid and normalized
-- root/page/journal containment rules are respected
+## Rollback behavior
 
-### Reference invariants
+Rollback discards staged graph changes and staged blob temporary files, then closes the transaction.
 
-For `graph.EdgeKindReferences`:
+Using a transaction after `Commit` or `Rollback` returns `session.ErrTransactionClosed`.
 
-- source and target nodes exist
-- stale reference edges are removed when source content changes
-- unresolved references remain node props, not broken edges
-- reference edge props such as `raw`, `target`, `normalized_target`, and `ref_type` remain valid
+## Conflict detection
 
-### Blob invariants
+KnotDB uses an optimistic graph revision check:
 
-Blob transaction support is deferred, but the intended final rules are:
+- each transaction captures the current graph revision when it begins
+- each durable graph commit advances the in-memory revision
+- a write transaction commit fails if the graph revision changed since begin
 
-- blob file data is written to a temporary location first
-- commit promotes temporary blobs only after graph commit succeeds
-- rollback removes transaction temporary blobs
-- background cleanup removes stale temporary blobs after crashes
+This prevents stale transactions from committing against assumptions that may no longer hold.
+
+Conflict behavior is fail-fast; KnotDB does not automatically retry transactions. Callers should reopen a transaction and retry their work if appropriate.
+
+When the file session maps a storage conflict through its configured errors, callers usually see the session conflict error supplied by the engine/session setup.
+
+## Final graph validation
+
+A transaction may stage multiple operations, but commit validates the final merged graph before durable write.
+
+Validation includes:
+
+- unique live node IDs
+- unique live edge IDs
+- all edge endpoints exist and are not deleted
+- `contains` edges do not target themselves
+- each child has at most one live `contains` parent
+- `contains` edges do not create cycles
+- parent templates allow contained child templates
+- node property validation on node creation/update
+
+Operation-level checks still run when staging writes, but final validation is authoritative.
+
+## Hierarchy operations
+
+Hierarchy is graph-native and represented with `graph.EdgeKindContains`. Transactions support:
+
+```go
+tx.MoveSubtree(ctx, session.MoveSubtreeInput{...})
+tx.ReorderChildren(ctx, session.ReorderChildrenInput{...})
+```
+
+`MoveSubtree` stages the incoming `contains` edge rewrite for the moved node. Descendants remain attached to the moved node. `ReorderChildren` stages normalized order values on direct child `contains` edges.
+
+Existing session methods (`sess.MoveSubtree`, `sess.ReorderChildren`, `sess.ApplyGraph`, `sess.DeleteNode`, and `sess.UpdateNodeAndCreateSibling`) are implemented internally through transactions so each operation follows the same commit/rollback path.
+
+## Blob transactions
+
+`tx.AddBlobNode` stages blob content and a blob node together.
+
+For new content:
+
+1. content is streamed to `blobs/<space_id>/tmp/`
+2. the transaction stores a staged blob reference in memory
+3. commit promotes the blob into `objects/` before writing the graph transaction
+4. rollback removes the temporary file
+5. failed graph commit removes a promoted blob if no committed node references it
+
+For duplicate content, staging detects that the object already exists and does not delete it on rollback or failed commit.
+
+Non-transactional `sess.AddBlobNode` uses the same stage/promote path internally.
 
 ## Durable storage interaction
 
-The graph segment store already records graph mutations with transaction records:
+The low-level graph store is append-only and transaction-record based:
 
 ```text
 graphs/<space_id>/
@@ -278,166 +216,78 @@ graphs/<space_id>/
     edges-000001.kseg
 ```
 
-A public/session transaction commit should become one durable graph transaction record containing the staged delta:
+A session transaction commit is converted into one graph storage transaction:
 
 ```text
-txn:
-  id
-  base_revision
-  timestamp
-  added_nodes
-  updated_nodes
-  deleted_nodes
-  added_edges
-  updated_edges
-  deleted_edges
+transaction begin
+node puts / node tombstones
+edge puts / edge tombstones
+transaction commit
 ```
 
-Recovery must continue applying only committed durable transactions. Uncommitted segment records must remain ignored.
+Recovery applies only records associated with committed transaction IDs. Uncommitted records are ignored during index rebuild.
 
-## Query interaction
+The graph revision is currently an in-memory counter rebuilt from committed transaction records on store open.
 
-A transaction should implement `query.Executor`, so this should work:
+## Limitations
+
+Current transaction limitations:
+
+- single-space only
+- no nested transactions
+- no multi-space or distributed transactions
+- no automatic conflict retry
+- no long-running persisted transaction handles
+- no MVCC snapshot isolation for multiple concurrent writers
+- no transaction-local template import
+- blob reads are not transaction-local; `GetBlob` reads committed blobs by node ID
+- conflict detection is revision-granular, not field- or node-granular
+
+## Example: update content and references atomically
+
+Reference sync can run inside the same transaction as a node update:
 
 ```go
 err := sess.Tx(ctx, session.TxOptions{}, func(tx session.Tx) error {
-    if _, err := tx.AddNode(ctx, input); err != nil {
-        return err
-    }
-
-    rows, err := tx.Query().
-        Match(...).
-        Where(...).
-        Return(...).
-        Execute(ctx)
+    node, err := tx.GetNode(ctx, nodeID)
     if err != nil {
         return err
     }
 
-    _ = rows
+    node, err = tx.UpdateNode(ctx, session.UpdateNodeInput{
+        ID:         node.ID,
+        TemplateID: node.TemplateID,
+        Content:    "See [[Project Apollo]]",
+        Props:      node.Props,
+    })
+    if err != nil {
+        return err
+    }
+
+    // Application-level code can now replace reference edges using tx.ApplyGraph.
     return nil
 })
 ```
 
-The query should see transaction-local writes and hides transaction-local deletes.
+## Example: create a blob node transactionally
 
-## Error categories
+```go
+err := sess.Tx(ctx, session.TxOptions{}, func(tx session.Tx) error {
+    blobNode, err := tx.AddBlobNode(ctx, session.AddBlobNodeInput{
+        Reader:           file,
+        OriginalFilename: "diagram.png",
+        Props:            map[string]any{"caption": "Architecture diagram"},
+    })
+    if err != nil {
+        return err
+    }
 
-The implementation should introduce or reuse clear errors for transaction behavior:
-
-- `ErrTransactionClosed`
-- `ErrReadOnlyTransaction`
-- `ErrConflict`
-- `ErrValidation`
-- `ErrInvalidTemplate`
-- `ErrInvalidHierarchy`
-- `ErrCycle`
-- `ErrMissingNode`
-- `ErrPermissionDenied`
-
-Exact package placement should be decided in Phase 1.
-
-## Implementation phases
-
-### Phase 1: public API types and stubs
-
-Add transaction types to the public `session` package and file-session stubs. No real transaction behavior yet.
-
-Review focus:
-
-- API names
-- interface shape
-- callback vs manual transaction semantics
-- error naming
-
-### Phase 2: transaction overlay read model
-
-Implement in-memory overlay state and transaction-visible read methods.
-
-Review focus:
-
-- overlay merge correctness
-- read-your-writes behavior
-- rollback semantics before durable commit exists
-
-### Phase 3: atomic commit for simple graph deltas
-
-Commit staged node/edge add/update/delete as one durable graph transaction.
-
-Review focus:
-
-- no partial writes
-- validation before commit
-- single-writer lock strategy
-- transaction close/error behavior
-
-### Phase 4: hierarchy operations
-
-Add `MoveSubtree`, `ReorderChildren`, recursive/non-recursive `DeleteNode`, and `ApplyGraph` to transactions.
-
-Review focus:
-
-- contains-edge invariants
-- order normalization
-- child template policy validation
-- cycle detection
-
-### Phase 5: transactional query
-
-Make `tx.Query()` run against the transaction-visible graph.
-
-Review focus:
-
-- transaction as `query.Executor`
-- query sees staged writes and hides staged deletes
-- performance of merged graph views
-
-### Phase 6: refactor compound session operations
-
-Refactor existing multi-step session operations to use transactions internally.
-
-Review focus:
-
-- behavior compatibility
-- failure atomicity
-- no regressions in existing tests
-
-### Phase 7: refactor PKM/server compound operations
-
-Once the public session transaction API is stable, PKM server operations can use it for compound graph mutations.
-
-Review focus:
-
-- reference sync atomicity
-- task/journal/page operations are all-or-nothing
-- turn-block-into-page has no partial states
-
-### Phase 8: conflict detection and revisions
-
-Capture base revision at transaction begin and fail commit if the base graph changed before commit.
-
-Review focus:
-
-- revision source
-- conflict error semantics
-- retry left out or added as explicit option
-
-### Phase 9: blob-aware transactions
-
-Stage blob writes in temporary storage and promote/delete on commit/rollback.
-
-Review focus:
-
-- blob file atomicity
-- temp cleanup
-- graph/blob consistency
-
-### Phase 10: docs and examples
-
-Update public session, storage, and architecture documentation with the implemented behavior.
-
-Review focus:
-
-- public contract clarity
-- limitations documented
-- examples compile and match actual behavior
+    _, err = tx.AddEdge(ctx, session.AddEdgeInput{
+        FromID: parentID,
+        ToID:   blobNode.ID,
+        Kind:   graph.EdgeKindContains,
+        Props:  map[string]any{"order": 10},
+    })
+    return err
+})
+```

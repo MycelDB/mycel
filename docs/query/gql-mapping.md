@@ -7,7 +7,7 @@ KnotDB exposes a Go query builder in `martinbeauvais.com/mbgit/knotbase/knotdb/q
 - `Return(...)`
 - `OrderBy(...)`
 
-The first implementation runs in memory over the current session's nodes, edges, and templates.
+The implementation runs in memory over the current session's or transaction's nodes, edges, and templates. Use `tx.Query()` inside a transaction when the query must see staged writes or hide staged deletes.
 
 ## Last seven calendar days of journals
 
