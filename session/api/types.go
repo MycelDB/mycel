@@ -18,6 +18,13 @@ var (
 	// ErrBlobTypeDisallowed is returned when the configured blob policy sets
 	// the effective limit for a MIME type to zero bytes.
 	ErrBlobTypeDisallowed = errors.New("blob MIME type is disallowed")
+	// ErrTransactionsUnsupported is returned by Phase 1 transaction stubs until
+	// the file-backed transaction implementation is introduced.
+	ErrTransactionsUnsupported = errors.New("transactions are not implemented")
+	// ErrTransactionClosed is returned when a transaction is used after commit or rollback.
+	ErrTransactionClosed = errors.New("transaction is closed")
+	// ErrReadOnlyTransaction is returned when a write is attempted in a read-only transaction.
+	ErrReadOnlyTransaction = errors.New("transaction is read-only")
 )
 
 // BlobLimits defines upload-size limits for blob nodes. A zero-value policy
@@ -289,8 +296,44 @@ type SemanticSearchInput struct {
 	MinScore      float64
 }
 
+// TxOptions configures a session transaction.
+type TxOptions struct {
+	// ReadOnly declares that the transaction will not stage writes. The initial
+	// implementation may use this to skip write permission checks and conflict
+	// checks for read-only work.
+	ReadOnly bool
+}
+
+// Tx is a session-scoped graph transaction. Phase 1 exposes the public shape;
+// file-backed sessions return ErrTransactionsUnsupported until the staged
+// overlay and durable commit implementation land in later phases.
+type Tx interface {
+	Query() *query.Builder
+	ListTemplates(ctx context.Context) ([]graph.Template, error)
+	AddNode(ctx context.Context, in AddNodeInput) (graph.Node, error)
+	ListNodes(ctx context.Context) ([]graph.Node, error)
+	UpdateNode(ctx context.Context, in UpdateNodeInput) (graph.Node, error)
+	UpdateNodeAndCreateSibling(ctx context.Context, in UpdateNodeAndCreateSiblingInput) (UpdateNodeAndCreateSiblingResult, error)
+	UpsertNode(ctx context.Context, in UpsertNodeInput) (graph.Node, error)
+	AddEdge(ctx context.Context, in AddEdgeInput) (graph.Edge, error)
+	ListEdges(ctx context.Context) ([]graph.Edge, error)
+	Children(ctx context.Context, parentID graph.NodeID) ([]graph.Edge, error)
+	Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge, error)
+	AddGraph(ctx context.Context, in AddGraphInput) error
+	ApplyGraph(ctx context.Context, in ApplyGraphInput) (ApplyGraphResult, error)
+	MoveSubtree(ctx context.Context, in MoveSubtreeInput) (graph.Edge, error)
+	ReorderChildren(ctx context.Context, in ReorderChildrenInput) ([]graph.Edge, error)
+	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
+	DeleteNode(ctx context.Context, in DeleteNodeInput) error
+	DeleteEdge(ctx context.Context, in DeleteEdgeInput) error
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
+}
+
 // Session is a scoped interaction context for graph-space operations.
 type Session interface {
+	Begin(ctx context.Context, opts TxOptions) (Tx, error)
+	Tx(ctx context.Context, opts TxOptions, fn func(Tx) error) error
 	Query() *query.Builder
 	ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error)
 	ListTemplates(ctx context.Context) ([]graph.Template, error)

@@ -14,6 +14,8 @@ import (
 
 type (
 	Session                          = sessionapi.Session
+	Tx                               = sessionapi.Tx
+	TxOptions                        = sessionapi.TxOptions
 	Errors                           = sessionapi.Errors
 	Permissions                      = sessionapi.Permissions
 	ImportDocument                   = sessionapi.ImportDocument
@@ -52,8 +54,11 @@ type (
 )
 
 var (
-	ErrBlobTooLarge       = sessionapi.ErrBlobTooLarge
-	ErrBlobTypeDisallowed = sessionapi.ErrBlobTypeDisallowed
+	ErrBlobTooLarge            = sessionapi.ErrBlobTooLarge
+	ErrBlobTypeDisallowed      = sessionapi.ErrBlobTypeDisallowed
+	ErrTransactionsUnsupported = sessionapi.ErrTransactionsUnsupported
+	ErrTransactionClosed       = sessionapi.ErrTransactionClosed
+	ErrReadOnlyTransaction     = sessionapi.ErrReadOnlyTransaction
 )
 
 // Config carries runtime session knobs supplied by the engine.
