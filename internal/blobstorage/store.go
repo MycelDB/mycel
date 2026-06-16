@@ -67,18 +67,46 @@ func OpenWithConfig(path string, cfg Config) (*Store, error) {
 	return &Store{path: path, staleTmpAge: staleAge}, nil
 }
 
+// StagedBlob is a prepared blob write. New content remains in tmp until
+// Promote is called; deduplicated existing content has no tmp file.
+type StagedBlob struct {
+	ID        graph.BlobID
+	SizeBytes int64
+	tmpPath   string
+	existing  bool
+}
+
+// Existing reports whether this staged blob refers to content that was already
+// present before Stage was called.
+func (b StagedBlob) Existing() bool { return b.existing }
+
 // Put streams r into the store and returns the content address and size.
 // Content already present is deduplicated.
 func (s *Store) Put(ctx context.Context, r io.Reader) (graph.BlobID, int64, error) {
-	if err := ctx.Err(); err != nil {
+	staged, err := s.Stage(ctx, r)
+	if err != nil {
 		return "", 0, err
 	}
+	if err := s.Promote(ctx, staged); err != nil {
+		_ = s.Discard(ctx, staged)
+		return "", 0, err
+	}
+	return staged.ID, staged.SizeBytes, nil
+}
+
+// Stage streams r into a temporary file and returns its content address without
+// making new content visible in objects/. If the same content already exists,
+// the temporary file is discarded and Promote becomes a no-op.
+func (s *Store) Stage(ctx context.Context, r io.Reader) (StagedBlob, error) {
+	if err := ctx.Err(); err != nil {
+		return StagedBlob{}, err
+	}
 	if r == nil {
-		return "", 0, fmt.Errorf("%w: reader is required", ErrInvalidInput)
+		return StagedBlob{}, fmt.Errorf("%w: reader is required", ErrInvalidInput)
 	}
 	tmp, err := os.CreateTemp(filepath.Join(s.path, tmpDirName), "put-*.blob")
 	if err != nil {
-		return "", 0, err
+		return StagedBlob{}, err
 	}
 	tmpPath := tmp.Name()
 	cleanup := func() {
@@ -90,44 +118,77 @@ func (s *Store) Put(ctx context.Context, r io.Reader) (graph.BlobID, int64, erro
 	size, err := io.Copy(io.MultiWriter(tmp, hasher), r)
 	if err != nil {
 		cleanup()
-		return "", 0, err
+		return StagedBlob{}, err
 	}
 	if err := tmp.Sync(); err != nil {
 		cleanup()
-		return "", 0, err
+		return StagedBlob{}, err
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
-		return "", 0, err
+		return StagedBlob{}, err
 	}
 
 	id, err := graph.BlobIDFromBytes(hasher.Sum(nil))
 	if err != nil {
 		os.Remove(tmpPath)
-		return "", 0, err
+		return StagedBlob{}, err
 	}
 	objPath, err := s.objectPath(id)
 	if err != nil {
 		os.Remove(tmpPath)
-		return "", 0, err
+		return StagedBlob{}, err
 	}
 	if _, err := os.Stat(objPath); err == nil {
-		// Dedup: identical content already stored.
 		os.Remove(tmpPath)
-		return id, size, nil
+		return StagedBlob{ID: id, SizeBytes: size, existing: true}, nil
 	} else if !os.IsNotExist(err) {
 		os.Remove(tmpPath)
-		return "", 0, err
+		return StagedBlob{}, err
+	}
+	return StagedBlob{ID: id, SizeBytes: size, tmpPath: tmpPath}, nil
+}
+
+// Promote makes a staged blob visible in objects/. It is safe to call for
+// deduplicated existing content.
+func (s *Store) Promote(ctx context.Context, staged StagedBlob) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if staged.ID == "" {
+		return fmt.Errorf("%w: staged blob id is required", ErrInvalidInput)
+	}
+	if staged.existing || staged.tmpPath == "" {
+		return nil
+	}
+	objPath, err := s.objectPath(staged.ID)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(objPath); err == nil {
+		return os.Remove(staged.tmpPath)
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(objPath), 0o700); err != nil {
-		os.Remove(tmpPath)
-		return "", 0, err
+		return err
 	}
-	if err := os.Rename(tmpPath, objPath); err != nil {
-		os.Remove(tmpPath)
-		return "", 0, err
+	return os.Rename(staged.tmpPath, objPath)
+}
+
+// Discard removes staged temporary content. It does not remove deduplicated
+// existing objects.
+func (s *Store) Discard(ctx context.Context, staged StagedBlob) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return id, size, nil
+	if staged.existing || staged.tmpPath == "" {
+		return nil
+	}
+	if err := os.Remove(staged.tmpPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // Open returns a streaming reader over the blob's content.

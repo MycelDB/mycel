@@ -311,6 +311,7 @@ type Tx interface {
 	Query() *query.Builder
 	ListTemplates(ctx context.Context) ([]graph.Template, error)
 	AddNode(ctx context.Context, in AddNodeInput) (graph.Node, error)
+	AddBlobNode(ctx context.Context, in AddBlobNodeInput) (graph.Node, error)
 	ListNodes(ctx context.Context) ([]graph.Node, error)
 	UpdateNode(ctx context.Context, in UpdateNodeInput) (graph.Node, error)
 	UpdateNodeAndCreateSibling(ctx context.Context, in UpdateNodeAndCreateSiblingInput) (UpdateNodeAndCreateSiblingResult, error)

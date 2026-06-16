@@ -385,3 +385,103 @@ func newSessionLike(t *testing.T, fs *FileSession) sessionapi.Session {
 	t.Helper()
 	return New(fs.graphsDir, fs.blobsDir, fs.spaceID, fs.templateManager, fs.permissions, fs.errors)
 }
+
+func TestTransactionAddBlobNodeCommit(t *testing.T) {
+	ctx := context.Background()
+	sess, fs := newBlobTestSession(t)
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	node, err := tx.AddBlobNode(ctx, sessionapi.AddBlobNodeInput{Reader: bytes.NewReader(pngHeader), OriginalFilename: "img.png"})
+	if err != nil {
+		t.Fatalf("tx add blob failed: %v", err)
+	}
+	if node.BlobRef == nil {
+		t.Fatalf("expected blob ref")
+	}
+	exists, err := fs.blobs.Exists(ctx, *node.BlobRef)
+	if err != nil {
+		t.Fatalf("exists before commit failed: %v", err)
+	}
+	if exists {
+		t.Fatalf("new staged blob should not be visible before commit")
+	}
+	if _, err := tx.GetNode(ctx, node.ID); err != nil {
+		t.Fatalf("tx should see staged blob node: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit failed: %v", err)
+	}
+	exists, err = fs.blobs.Exists(ctx, *node.BlobRef)
+	if err != nil || !exists {
+		t.Fatalf("expected blob visible after commit exists=%v err=%v", exists, err)
+	}
+	res, err := sess.GetBlob(ctx, sessionapi.GetBlobInput{NodeID: node.ID})
+	if err != nil {
+		t.Fatalf("get blob failed: %v", err)
+	}
+	defer res.Reader.Close()
+	data, _ := io.ReadAll(res.Reader)
+	if !bytes.Equal(data, pngHeader) {
+		t.Fatalf("blob data mismatch: %v", data)
+	}
+}
+
+func TestTransactionAddBlobNodeRollbackDiscardsStagedBlob(t *testing.T) {
+	ctx := context.Background()
+	sess, fs := newBlobTestSession(t)
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	node, err := tx.AddBlobNode(ctx, sessionapi.AddBlobNodeInput{Reader: bytes.NewReader(pngHeader)})
+	if err != nil {
+		t.Fatalf("tx add blob failed: %v", err)
+	}
+	if node.BlobRef == nil {
+		t.Fatalf("expected blob ref")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+	if _, err := sess.GetNode(ctx, node.ID); err == nil {
+		t.Fatalf("rollback should not persist blob node")
+	}
+	exists, err := fs.blobs.Exists(ctx, *node.BlobRef)
+	if err != nil {
+		t.Fatalf("exists failed: %v", err)
+	}
+	if exists {
+		t.Fatalf("rollback should discard staged blob object")
+	}
+}
+
+func TestTransactionAddBlobNodeConflictCleansPromotedBlob(t *testing.T) {
+	ctx := context.Background()
+	sess, fs := newBlobTestSession(t)
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	node, err := tx.AddBlobNode(ctx, sessionapi.AddBlobNodeInput{Reader: bytes.NewReader([]byte("unique-conflict-blob"))})
+	if err != nil {
+		t.Fatalf("tx add blob failed: %v", err)
+	}
+	if _, err := sess.AddNode(ctx, sessionapi.AddNodeInput{Content: "advance revision", Props: map[string]any{}}); err != nil {
+		t.Fatalf("advance revision failed: %v", err)
+	}
+	if err := tx.Commit(ctx); err == nil {
+		t.Fatalf("expected conflict")
+	}
+	if node.BlobRef == nil {
+		t.Fatalf("expected blob ref")
+	}
+	exists, err := fs.blobs.Exists(ctx, *node.BlobRef)
+	if err != nil {
+		t.Fatalf("exists failed: %v", err)
+	}
+	if exists {
+		t.Fatalf("conflicted commit should clean promoted unreferenced blob")
+	}
+}

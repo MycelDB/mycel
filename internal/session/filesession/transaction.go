@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/blobstorage"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
 	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
 	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
@@ -23,10 +24,18 @@ type txOverlay struct {
 	deletedEdges map[graph.EdgeID]struct{}
 }
 
+type txStagedBlob struct {
+	staged   blobstorage.StagedBlob
+	blobID   graph.BlobID
+	nodeID   graph.NodeID
+	existing bool
+}
+
 type fileTx struct {
 	session      *FileSession
 	options      sessionapi.TxOptions
 	overlay      txOverlay
+	stagedBlobs  []txStagedBlob
 	baseRevision uint64
 	closed       bool
 }
@@ -185,6 +194,30 @@ func (tx *fileTx) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (grap
 	delete(tx.overlay.deletedNodes, n.ID)
 	tx.overlay.addedNodes[n.ID] = n
 	return cloneNode(n), nil
+}
+
+func (tx *fileTx) AddBlobNode(ctx context.Context, in sessionapi.AddBlobNodeInput) (graph.Node, error) {
+	if err := tx.ensureWritable(ctx); err != nil {
+		return graph.Node{}, err
+	}
+	nodes, err := tx.ListNodes(ctx)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	node, staged, err := tx.session.stageBlobNode(ctx, in, nodes)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	if findNodeIndex(nodes, node.ID) >= 0 {
+		blobs, blobErr := tx.session.blobStore()
+		if blobErr == nil {
+			_ = blobs.Discard(ctx, staged)
+		}
+		return graph.Node{}, fmt.Errorf("%w: node already exists", storetemplate.ErrInvalidInput)
+	}
+	tx.overlay.addedNodes[node.ID] = node
+	tx.stagedBlobs = append(tx.stagedBlobs, txStagedBlob{staged: staged, blobID: staged.ID, nodeID: node.ID, existing: staged.Existing()})
+	return cloneNode(node), nil
 }
 
 func (tx *fileTx) ListNodes(ctx context.Context) ([]graph.Node, error) {
@@ -719,9 +752,15 @@ func (tx *fileTx) Commit(ctx context.Context) error {
 		return err
 	}
 	putNodes, putEdges, deleteNodes, deleteEdges := tx.overlay.delta()
-	if err := tx.session.commitGraphAtRevision(ctx, putNodes, putEdges, deleteNodes, deleteEdges, &tx.baseRevision); err != nil {
+	promoted, err := tx.promoteReferencedStagedBlobs(ctx, putNodes)
+	if err != nil {
 		return err
 	}
+	if err := tx.session.commitGraphAtRevision(ctx, putNodes, putEdges, deleteNodes, deleteEdges, &tx.baseRevision); err != nil {
+		tx.cleanupPromotedStagedBlobs(ctx, promoted)
+		return err
+	}
+	tx.discardUnreferencedStagedBlobs(ctx, putNodes)
 	tx.closed = true
 	return nil
 }
@@ -730,9 +769,88 @@ func (tx *fileTx) Rollback(ctx context.Context) error {
 	if err := tx.ensureOpen(ctx); err != nil {
 		return err
 	}
+	tx.discardAllStagedBlobs(ctx)
 	tx.overlay = newTxOverlay()
+	tx.stagedBlobs = nil
 	tx.closed = true
 	return nil
+}
+
+func (tx *fileTx) promoteReferencedStagedBlobs(ctx context.Context, putNodes []graph.Node) ([]txStagedBlob, error) {
+	blobs, err := tx.session.blobStore()
+	if err != nil {
+		return nil, err
+	}
+	referenced := blobRefsInNodes(putNodes)
+	promoted := []txStagedBlob{}
+	for _, staged := range tx.stagedBlobs {
+		if _, ok := referenced[staged.blobID]; !ok {
+			continue
+		}
+		if err := blobs.Promote(ctx, staged.staged); err != nil {
+			tx.cleanupPromotedStagedBlobs(ctx, promoted)
+			return nil, err
+		}
+		promoted = append(promoted, staged)
+	}
+	return promoted, nil
+}
+
+func (tx *fileTx) cleanupPromotedStagedBlobs(ctx context.Context, promoted []txStagedBlob) {
+	blobs, err := tx.session.blobStore()
+	if err != nil {
+		return
+	}
+	for _, staged := range promoted {
+		if staged.existing || tx.session.blobHasCommittedRef(ctx, staged.blobID) {
+			continue
+		}
+		_ = blobs.Delete(ctx, staged.blobID)
+	}
+	tx.discardAllStagedBlobs(ctx)
+}
+
+func (tx *fileTx) discardUnreferencedStagedBlobs(ctx context.Context, putNodes []graph.Node) {
+	referenced := blobRefsInNodes(putNodes)
+	blobs, err := tx.session.blobStore()
+	if err != nil {
+		return
+	}
+	for _, staged := range tx.stagedBlobs {
+		if _, ok := referenced[staged.blobID]; ok {
+			continue
+		}
+		_ = blobs.Discard(ctx, staged.staged)
+	}
+}
+
+func (tx *fileTx) discardAllStagedBlobs(ctx context.Context) {
+	blobs, err := tx.session.blobStore()
+	if err != nil {
+		return
+	}
+	for _, staged := range tx.stagedBlobs {
+		_ = blobs.Discard(ctx, staged.staged)
+	}
+}
+
+func blobRefsInNodes(nodes []graph.Node) map[graph.BlobID]struct{} {
+	out := map[graph.BlobID]struct{}{}
+	for _, node := range nodes {
+		if node.BlobRef != nil {
+			out[*node.BlobRef] = struct{}{}
+		}
+	}
+	return out
+}
+
+func (s *FileSession) blobHasCommittedRef(ctx context.Context, id graph.BlobID) bool {
+	store, err := s.graphStore()
+	if err != nil {
+		return false
+	}
+	count, err := store.BlobRefCount(ctx, id)
+	return err == nil && count > 0
 }
 
 func (tx *fileTx) ensureOpen(ctx context.Context) error {
