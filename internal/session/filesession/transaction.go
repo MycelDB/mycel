@@ -81,6 +81,29 @@ func (o txOverlay) empty() bool {
 	return len(o.addedNodes) == 0 && len(o.updatedNodes) == 0 && len(o.deletedNodes) == 0 && len(o.addedEdges) == 0 && len(o.updatedEdges) == 0 && len(o.deletedEdges) == 0
 }
 
+func (o txOverlay) clone() txOverlay {
+	out := newTxOverlay()
+	for id, node := range o.addedNodes {
+		out.addedNodes[id] = cloneNode(node)
+	}
+	for id, node := range o.updatedNodes {
+		out.updatedNodes[id] = cloneNode(node)
+	}
+	for id := range o.deletedNodes {
+		out.deletedNodes[id] = struct{}{}
+	}
+	for id, edge := range o.addedEdges {
+		out.addedEdges[id] = cloneEdge(edge)
+	}
+	for id, edge := range o.updatedEdges {
+		out.updatedEdges[id] = cloneEdge(edge)
+	}
+	for id := range o.deletedEdges {
+		out.deletedEdges[id] = struct{}{}
+	}
+	return out
+}
+
 func (o txOverlay) delta() ([]graph.Node, []graph.Edge, []graph.NodeID, []graph.EdgeID) {
 	putNodes := make([]graph.Node, 0, len(o.addedNodes)+len(o.updatedNodes))
 	for _, node := range o.addedNodes {
@@ -330,15 +353,179 @@ func (tx *fileTx) AddGraph(ctx context.Context, in sessionapi.AddGraphInput) err
 }
 
 func (tx *fileTx) ApplyGraph(ctx context.Context, in sessionapi.ApplyGraphInput) (sessionapi.ApplyGraphResult, error) {
-	return sessionapi.ApplyGraphResult{}, sessionapi.ErrTransactionsUnsupported
+	if err := tx.ensureWritable(ctx); err != nil {
+		return sessionapi.ApplyGraphResult{}, err
+	}
+	snapshot := tx.overlay.clone()
+	result := sessionapi.ApplyGraphResult{}
+	fail := func(err error) (sessionapi.ApplyGraphResult, error) {
+		tx.overlay = snapshot
+		return sessionapi.ApplyGraphResult{}, err
+	}
+	for _, del := range in.DeleteNodes {
+		nodesBefore, err := tx.ListNodes(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		edgesBefore, err := tx.ListEdges(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		deletedIDs, _, remainingEdges, err := tx.session.applyDeleteNode(nodesBefore, edgesBefore, del)
+		if err != nil {
+			return fail(err)
+		}
+		if err := tx.DeleteNode(ctx, del); err != nil {
+			return fail(err)
+		}
+		result.DeletedNodeIDs = append(result.DeletedNodeIDs, deletedIDs...)
+		result.DeletedEdgeIDs = append(result.DeletedEdgeIDs, deletedEdges(edgesBefore, remainingEdges)...)
+	}
+	for _, del := range in.DeleteEdges {
+		if err := tx.DeleteEdge(ctx, del); err != nil {
+			return fail(err)
+		}
+		result.DeletedEdgeIDs = append(result.DeletedEdgeIDs, del.ID)
+	}
+	for _, add := range in.AddNodes {
+		node, err := tx.AddNode(ctx, add)
+		if err != nil {
+			return fail(err)
+		}
+		result.AddedNodes = append(result.AddedNodes, node)
+	}
+	for _, add := range in.AddEdges {
+		edge, err := tx.AddEdge(ctx, add)
+		if err != nil {
+			return fail(err)
+		}
+		result.AddedEdges = append(result.AddedEdges, edge)
+	}
+	return result, nil
 }
 
 func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInput) (graph.Edge, error) {
-	return graph.Edge{}, sessionapi.ErrTransactionsUnsupported
+	if err := tx.ensureWritable(ctx); err != nil {
+		return graph.Edge{}, err
+	}
+	if in.NodeID == uuid.Nil {
+		return graph.Edge{}, fmt.Errorf("%w: node_id is required", tx.session.errors.NotFound)
+	}
+	if in.NewParentID == uuid.Nil {
+		return graph.Edge{}, fmt.Errorf("%w: new_parent_id is required", tx.session.errors.NotFound)
+	}
+	if in.Order != nil && *in.Order < 0 {
+		return graph.Edge{}, fmt.Errorf("%w: order must be non-negative", storetemplate.ErrInvalidInput)
+	}
+	nodes, err := tx.ListNodes(ctx)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	node, ok := findNode(nodes, in.NodeID)
+	if !ok {
+		return graph.Edge{}, fmt.Errorf("%w: node not found", tx.session.errors.NotFound)
+	}
+	newParent, ok := findNode(nodes, in.NewParentID)
+	if !ok {
+		return graph.Edge{}, fmt.Errorf("%w: new parent not found", tx.session.errors.NotFound)
+	}
+	if in.NodeID == in.NewParentID {
+		return graph.Edge{}, fmt.Errorf("%w: cannot move a node under itself", storetemplate.ErrInvalidInput)
+	}
+	edges, err := tx.ListEdges(ctx)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	originalEdges := cloneEdges(edges)
+	oldParentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
+	if len(oldParentIndexes) > 1 {
+		return graph.Edge{}, fmt.Errorf("%w: node has multiple contains parents", storetemplate.ErrInvalidInput)
+	}
+	if containsPath(edges, in.NodeID, in.NewParentID) {
+		return graph.Edge{}, fmt.Errorf("%w: move would create a contains cycle", storetemplate.ErrInvalidInput)
+	}
+	childTemplate, err := tx.session.nodeTemplate(ctx, node, "child")
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	if err := tx.session.validateChild(ctx, newParent, childTemplate); err != nil {
+		return graph.Edge{}, err
+	}
+	oldParentID := graph.NodeID(uuid.Nil)
+	if len(oldParentIndexes) == 1 {
+		oldEdge := edges[oldParentIndexes[0]]
+		oldParentID = oldEdge.FromID
+		if oldParentID == in.NewParentID {
+			if in.Order == nil {
+				return cloneEdge(oldEdge), nil
+			}
+			updated, err := setChildPosition(edges, in.NewParentID, in.NodeID, in.Order)
+			if err != nil {
+				return graph.Edge{}, err
+			}
+			for _, edge := range changedEdges(originalEdges, edges) {
+				tx.stageEdgePut(edge)
+			}
+			return updated, nil
+		}
+		edges[oldParentIndexes[0]].FromID = in.NewParentID
+		edges[oldParentIndexes[0]].ToID = in.NodeID
+		edges[oldParentIndexes[0]].Kind = graph.EdgeKindContains
+		edges[oldParentIndexes[0]].Props = copyProps(edges[oldParentIndexes[0]].Props)
+	} else {
+		edgeID, err := newGraphUUID()
+		if err != nil {
+			return graph.Edge{}, err
+		}
+		edges = append(edges, graph.Edge{ID: graph.EdgeID(edgeID), FromID: in.NewParentID, ToID: in.NodeID, Kind: graph.EdgeKindContains, Props: map[string]any{}})
+	}
+	if oldParentID != uuid.Nil {
+		normalizeChildrenOrder(edges, oldParentID)
+	}
+	updated, err := setChildPosition(edges, in.NewParentID, in.NodeID, in.Order)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	for _, edge := range changedEdges(originalEdges, edges) {
+		tx.stageEdgePut(edge)
+	}
+	return updated, nil
 }
 
 func (tx *fileTx) ReorderChildren(ctx context.Context, in sessionapi.ReorderChildrenInput) ([]graph.Edge, error) {
-	return nil, sessionapi.ErrTransactionsUnsupported
+	if err := tx.ensureWritable(ctx); err != nil {
+		return nil, err
+	}
+	if in.ParentID == uuid.Nil {
+		return nil, fmt.Errorf("%w: parent_id is required", tx.session.errors.NotFound)
+	}
+	nodes, err := tx.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := findNode(nodes, in.ParentID); !ok {
+		return nil, fmt.Errorf("%w: parent not found", tx.session.errors.NotFound)
+	}
+	edges, err := tx.ListEdges(ctx)
+	if err != nil {
+		return nil, err
+	}
+	originalEdges := cloneEdges(edges)
+	childEdgeByID, err := validateCompleteChildOrder(edges, in.ParentID, in.ChildIDs)
+	if err != nil {
+		return nil, err
+	}
+	updated := make([]graph.Edge, 0, len(in.ChildIDs))
+	for order, childID := range in.ChildIDs {
+		edgeIndex := childEdgeByID[childID]
+		ensureEdgeProps(&edges[edgeIndex])
+		edges[edgeIndex].Props["order"] = order * childOrderStep
+		updated = append(updated, cloneEdge(edges[edgeIndex]))
+	}
+	for _, edge := range changedEdges(originalEdges, edges) {
+		tx.stageEdgePut(edge)
+	}
+	return updated, nil
 }
 
 func (tx *fileTx) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error) {
@@ -414,6 +601,24 @@ func (tx *fileTx) DeleteEdge(ctx context.Context, in sessionapi.DeleteEdgeInput)
 	delete(tx.overlay.updatedEdges, in.ID)
 	tx.overlay.deletedEdges[in.ID] = struct{}{}
 	return nil
+}
+
+func (tx *fileTx) stageEdgePut(edge graph.Edge) {
+	delete(tx.overlay.deletedEdges, edge.ID)
+	if _, added := tx.overlay.addedEdges[edge.ID]; added || !tx.edgeExistsInBase(edge.ID) {
+		tx.overlay.addedEdges[edge.ID] = cloneEdge(edge)
+		delete(tx.overlay.updatedEdges, edge.ID)
+		return
+	}
+	tx.overlay.updatedEdges[edge.ID] = cloneEdge(edge)
+}
+
+func (tx *fileTx) edgeExistsInBase(id graph.EdgeID) bool {
+	edges, err := tx.session.readEdges()
+	if err != nil {
+		return false
+	}
+	return findEdgeIndex(edges, id) >= 0
 }
 
 func (tx *fileTx) Commit(ctx context.Context) error {

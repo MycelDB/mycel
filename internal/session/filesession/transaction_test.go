@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
 	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
 	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
 )
@@ -240,5 +241,140 @@ func TestFileSessionTransactionPhase2QuerySeesStagedNodes(t *testing.T) {
 	}
 	if len(rows.Rows) != 1 {
 		t.Fatalf("expected query to see staged node, got %d rows", len(rows.Rows))
+	}
+}
+
+func TestFileSessionTransactionPhase4MoveSubtreeCommitAndRollback(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add root failed: %v", err)
+	}
+	other, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "other", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add other failed: %v", err)
+	}
+	child, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add child failed: %v", err)
+	}
+	if _, err := sess.AddEdge(ctx, containsInput(root.ID, child.ID, 0)); err != nil {
+		t.Fatalf("add edge failed: %v", err)
+	}
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	if _, err := tx.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: child.ID, NewParentID: other.ID}); err != nil {
+		t.Fatalf("move in tx failed: %v", err)
+	}
+	if children, _ := tx.Children(ctx, other.ID); len(children) != 1 || children[0].ToID != child.ID {
+		t.Fatalf("tx should see moved child, got %+v", children)
+	}
+	if children, _ := sess.Children(ctx, other.ID); len(children) != 0 {
+		t.Fatalf("base should not see uncommitted move, got %+v", children)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+	if children, _ := sess.Children(ctx, root.ID); len(children) != 1 || children[0].ToID != child.ID {
+		t.Fatalf("rollback should preserve original parent, got %+v", children)
+	}
+
+	tx, err = sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin 2 failed: %v", err)
+	}
+	if _, err := tx.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: child.ID, NewParentID: other.ID}); err != nil {
+		t.Fatalf("move 2 failed: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit failed: %v", err)
+	}
+	if children, _ := sess.Children(ctx, other.ID); len(children) != 1 || children[0].ToID != child.ID {
+		t.Fatalf("commit should persist moved child, got %+v", children)
+	}
+}
+
+func TestFileSessionTransactionPhase4ReorderChildrenCommit(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	a, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "a", Props: map[string]any{}})
+	b, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "b", Props: map[string]any{}})
+	c, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "c", Props: map[string]any{}})
+	_, _ = sess.AddEdge(ctx, containsInput(root.ID, a.ID, 0))
+	_, _ = sess.AddEdge(ctx, containsInput(root.ID, b.ID, 1))
+	_, _ = sess.AddEdge(ctx, containsInput(root.ID, c.ID, 2))
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	if _, err := tx.ReorderChildren(ctx, sessionapi.ReorderChildrenInput{ParentID: root.ID, ChildIDs: []graph.NodeID{c.ID, a.ID, b.ID}}); err != nil {
+		t.Fatalf("reorder failed: %v", err)
+	}
+	children, _ := tx.Children(ctx, root.ID)
+	if got := []graph.NodeID{children[0].ToID, children[1].ToID, children[2].ToID}; got[0] != c.ID || got[1] != a.ID || got[2] != b.ID {
+		t.Fatalf("unexpected tx order: %+v", got)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit failed: %v", err)
+	}
+	children, _ = sess.Children(ctx, root.ID)
+	if got := []graph.NodeID{children[0].ToID, children[1].ToID, children[2].ToID}; got[0] != c.ID || got[1] != a.ID || got[2] != b.ID {
+		t.Fatalf("unexpected committed order: %+v", got)
+	}
+}
+
+func TestFileSessionTransactionPhase4ApplyGraphStagesAndCommits(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	rootID := nodeID()
+	childID := nodeID()
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	result, err := tx.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
+		AddNodes: []sessionapi.AddNodeInput{
+			{ID: &rootID, TemplateID: &tmplID, Content: "root", Props: map[string]any{}},
+			{ID: &childID, TemplateID: &tmplID, Content: "child", Props: map[string]any{}},
+		},
+		AddEdges: []sessionapi.AddEdgeInput{containsInput(rootID, childID, 0)},
+	})
+	if err != nil {
+		t.Fatalf("apply graph failed: %v", err)
+	}
+	if len(result.AddedNodes) != 2 || len(result.AddedEdges) != 1 {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+	if children, _ := tx.Children(ctx, rootID); len(children) != 1 || children[0].ToID != childID {
+		t.Fatalf("tx should see apply graph child, got %+v", children)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit failed: %v", err)
+	}
+	if children, _ := sess.Children(ctx, rootID); len(children) != 1 || children[0].ToID != childID {
+		t.Fatalf("base should see committed apply graph, got %+v", children)
+	}
+}
+
+func TestFileSessionTransactionPhase4ApplyGraphRestoresOverlayOnError(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	rootID := nodeID()
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	if _, err := tx.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
+		AddNodes: []sessionapi.AddNodeInput{{ID: &rootID, TemplateID: &tmplID, Content: "root", Props: map[string]any{}}},
+		AddEdges: []sessionapi.AddEdgeInput{containsInput(rootID, nodeID(), 0)},
+	}); err == nil {
+		t.Fatalf("expected apply graph failure")
+	}
+	if _, err := tx.GetNode(ctx, rootID); err == nil {
+		t.Fatalf("overlay should be restored after failed apply graph")
 	}
 }
