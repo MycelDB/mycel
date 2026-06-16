@@ -40,6 +40,7 @@ type LocalStore struct {
 	containsParent   map[graph.NodeID]graph.EdgeID
 	journalDay       map[int]map[graph.NodeID]struct{}
 	blobRefs         map[graph.BlobID]map[graph.NodeID]struct{}
+	revision         uint64
 }
 
 func Open(ctx context.Context, spacePath string) (*LocalStore, error) {
@@ -51,6 +52,11 @@ func Open(ctx context.Context, spacePath string) (*LocalStore, error) {
 	return s, nil
 }
 func (s *LocalStore) State() StoreState { s.mu.RLock(); defer s.mu.RUnlock(); return s.state }
+
+// Revision returns the current in-memory committed graph revision. It advances
+// once per committed storage transaction and is used for optimistic transaction
+// conflict detection.
+func (s *LocalStore) Revision() uint64 { s.mu.RLock(); defer s.mu.RUnlock(); return s.revision }
 
 func (s *LocalStore) open(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Join(s.path, "segments"), 0o700); err != nil {
@@ -103,12 +109,16 @@ func (s *LocalStore) loadManifest() (manifest, error) {
 func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 	s.resetIndexes()
 	committed := map[uuid.UUID]struct{}{}
+	s.revision = 0
 	for _, seg := range s.manifest.TxnSegments {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindTxn, func(r scannedRecord) error {
 			if r.header.kind == RecordKindTxnCommit {
+				if _, exists := committed[r.header.txnID]; !exists {
+					s.revision++
+				}
 				committed[r.header.txnID] = struct{}{}
 			}
 			return nil
@@ -285,6 +295,7 @@ func (s *LocalStore) NodesByTemplate(ctx context.Context, tid graph.TemplateID) 
 	}
 	return out, ctx.Err()
 }
+
 // BlobRefCount returns the number of live nodes referencing a blob.
 func (s *LocalStore) BlobRefCount(ctx context.Context, id graph.BlobID) (int, error) {
 	s.mu.RLock()

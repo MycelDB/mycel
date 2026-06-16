@@ -527,6 +527,10 @@ func (s *FileSession) readEdges() ([]graph.Edge, error) {
 }
 
 func (s *FileSession) commitGraph(ctx context.Context, putNodes []graph.Node, putEdges []graph.Edge, deleteNodes []graph.NodeID, deleteEdges []graph.EdgeID) error {
+	return s.commitGraphAtRevision(ctx, putNodes, putEdges, deleteNodes, deleteEdges, nil)
+}
+
+func (s *FileSession) commitGraphAtRevision(ctx context.Context, putNodes []graph.Node, putEdges []graph.Edge, deleteNodes []graph.NodeID, deleteEdges []graph.EdgeID, expectedRevision *uint64) error {
 	store, err := s.graphStore()
 	if err != nil {
 		return err
@@ -535,6 +539,9 @@ func (s *FileSession) commitGraph(ctx context.Context, putNodes []graph.Node, pu
 	txn, err := store.Begin(ctx)
 	if err != nil {
 		return err
+	}
+	if expectedRevision != nil {
+		txn.ExpectRevision(*expectedRevision)
 	}
 	for _, node := range putNodes {
 		if err := txn.PutNode(node); err != nil {
@@ -561,6 +568,9 @@ func (s *FileSession) commitGraph(ctx context.Context, putNodes []graph.Node, pu
 		}
 	}
 	if err := txn.Commit(); err != nil {
+		if errors.Is(err, graphstorage.ErrConflict) && s.errors.Conflict != nil {
+			return s.errors.Conflict
+		}
 		return err
 	}
 	s.releaseUnreferencedBlobs(ctx, store, releasedBlobs)

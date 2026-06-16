@@ -3,6 +3,7 @@ package filesession
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
@@ -569,5 +570,52 @@ func TestFileSessionPhase6ApplyGraphFailureDoesNotPersistPartialNode(t *testing.
 	}
 	if _, err := sess.GetNode(ctx, rootID); err == nil {
 		t.Fatalf("failed apply graph should not persist partial node")
+	}
+}
+
+func TestFileSessionTransactionPhase8ConflictOnStaleCommit(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	tx1, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx1 failed: %v", err)
+	}
+	tx2, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx2 failed: %v", err)
+	}
+	if _, err := tx1.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "tx1", Props: map[string]any{}}); err != nil {
+		t.Fatalf("tx1 add failed: %v", err)
+	}
+	if _, err := tx2.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "tx2", Props: map[string]any{}}); err != nil {
+		t.Fatalf("tx2 add failed: %v", err)
+	}
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("tx1 commit failed: %v", err)
+	}
+	if err := tx2.Commit(ctx); err == nil || !strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("expected stale tx2 commit conflict, got %v", err)
+	}
+}
+
+func TestFileSessionTransactionPhase8ReadOnlyCommitDoesNotConflict(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
+	readOnly, err := sess.Begin(ctx, sessionapi.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("begin read-only failed: %v", err)
+	}
+	writer, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin writer failed: %v", err)
+	}
+	if _, err := writer.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "writer", Props: map[string]any{}}); err != nil {
+		t.Fatalf("writer add failed: %v", err)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatalf("writer commit failed: %v", err)
+	}
+	if err := readOnly.Commit(ctx); err != nil {
+		t.Fatalf("read-only commit should not conflict, got %v", err)
 	}
 }

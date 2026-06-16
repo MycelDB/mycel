@@ -24,10 +24,11 @@ type txOverlay struct {
 }
 
 type fileTx struct {
-	session *FileSession
-	options sessionapi.TxOptions
-	overlay txOverlay
-	closed  bool
+	session      *FileSession
+	options      sessionapi.TxOptions
+	overlay      txOverlay
+	baseRevision uint64
+	closed       bool
 }
 
 // Begin starts a session transaction backed by an in-memory overlay.
@@ -45,7 +46,11 @@ func (s *FileSession) Begin(ctx context.Context, opts sessionapi.TxOptions) (ses
 	} else if err := s.ensureWrite(); err != nil {
 		return nil, err
 	}
-	return &fileTx{session: s, options: opts, overlay: newTxOverlay()}, nil
+	store, err := s.graphStore()
+	if err != nil {
+		return nil, err
+	}
+	return &fileTx{session: s, options: opts, overlay: newTxOverlay(), baseRevision: store.Revision()}, nil
 }
 
 // Tx runs fn inside a session transaction. Callback errors rollback the staged
@@ -714,7 +719,7 @@ func (tx *fileTx) Commit(ctx context.Context) error {
 		return err
 	}
 	putNodes, putEdges, deleteNodes, deleteEdges := tx.overlay.delta()
-	if err := tx.session.commitGraph(ctx, putNodes, putEdges, deleteNodes, deleteEdges); err != nil {
+	if err := tx.session.commitGraphAtRevision(ctx, putNodes, putEdges, deleteNodes, deleteEdges, &tx.baseRevision); err != nil {
 		return err
 	}
 	tx.closed = true
