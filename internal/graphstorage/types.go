@@ -14,6 +14,7 @@ var (
 	ErrInvalidRecord = errors.New("graph storage: invalid record")
 	ErrUnsupported   = errors.New("graph storage: unsupported value")
 	ErrTxnClosed     = errors.New("graph storage: transaction closed")
+	ErrConflict      = errors.New("graph storage: revision conflict")
 )
 
 type StoreState string
@@ -75,6 +76,7 @@ type ContainsChild struct {
 
 type Store interface {
 	State() StoreState
+	Revision() uint64
 	Close() error
 	Begin(ctx context.Context) (Txn, error)
 	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
@@ -89,6 +91,7 @@ type Store interface {
 }
 
 type Txn interface {
+	ExpectRevision(revision uint64)
 	PutNode(node graph.Node) error
 	DeleteNode(id graph.NodeID) error
 	PutEdge(edge graph.Edge) error

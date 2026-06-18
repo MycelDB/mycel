@@ -202,118 +202,13 @@ func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeIn
 }
 
 func (s *FileSession) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.UpdateNodeAndCreateSiblingInput) (sessionapi.UpdateNodeAndCreateSiblingResult, error) {
-	if err := s.ensureOpen(ctx); err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	if err := s.ensureSpaceLive(); err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	if err := s.ensureWrite(); err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	if in.NodeID == uuid.Nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
-	}
-
-	nodes, err := s.readNodes()
-	if err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	idx := findNodeIndex(nodes, in.NodeID)
-	if idx < 0 {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, s.errors.NotFound
-	}
-	edges, err := s.readEdges()
-	if err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	parentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
-	if len(parentIndexes) == 0 {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, fmt.Errorf("%w: cannot insert a sibling for a root node", storetemplate.ErrInvalidInput)
-	}
-	if len(parentIndexes) > 1 {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, fmt.Errorf("%w: node has multiple contains parents", storetemplate.ErrInvalidInput)
-	}
-	parentID := edges[parentIndexes[0]].FromID
-
-	updated, err := s.buildNode(ctx, nodes, in.NodeID, nodes[idx].TemplateID, in.Content, in.Props)
-	if err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	updated.BlobRef = nodes[idx].BlobRef
-	updated.CreatedAt = nodes[idx].CreatedAt
-	if updated.CreatedAt.IsZero() {
-		updated.CreatedAt = time.Now().UTC()
-	}
-	updated.UpdatedAt = time.Now().UTC()
-
-	candidateNodes := append([]graph.Node(nil), nodes...)
-	candidateNodes[idx] = updated
-	siblingID, err := newGraphUUID()
-	if err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	if in.SiblingID != nil {
-		siblingID = *in.SiblingID
-	}
-	sibling, err := s.buildNode(ctx, candidateNodes, siblingID, in.SiblingTemplateID, in.SiblingContent, in.SiblingProps)
-	if err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	now := time.Now().UTC()
-	sibling.CreatedAt = now
-	sibling.UpdatedAt = now
-	candidateNodes = append(candidateNodes, sibling)
-
-	childEdgeIndexes := orderedContainsEdgeIndexes(edges, parentID)
-	currentOrder := -1
-	previousOrder := 0.0
-	for i, edgeIndex := range childEdgeIndexes {
-		if edges[edgeIndex].ToID == in.NodeID {
-			currentOrder = i
-			if value, ok := edgeOrderNumber(edges[edgeIndex]); ok {
-				previousOrder = value
-			} else {
-				previousOrder = float64(i * childOrderStep)
-			}
-			break
-		}
-	}
-	if currentOrder < 0 {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, fmt.Errorf("%w: node is not contained by parent", storetemplate.ErrInvalidInput)
-	}
-	insertOrder := currentOrder + 1
-	createdOrder := previousOrder + childOrderStep
-	if insertOrder < len(childEdgeIndexes) {
-		nextOrder, ok := edgeOrderNumber(edges[childEdgeIndexes[insertOrder]])
-		if !ok {
-			nextOrder = float64(insertOrder * childOrderStep)
-		}
-		if nextOrder > previousOrder {
-			createdOrder = previousOrder + (nextOrder-previousOrder)/2
-		}
-	}
-	edgeID, err := newGraphUUID()
-	if err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	createdEdge := graph.Edge{ID: graph.EdgeID(edgeID), FromID: parentID, ToID: sibling.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": createdOrder}}
-	candidateEdges := append(cloneEdges(edges), createdEdge)
-	createdEdge = candidateEdges[len(candidateEdges)-1]
-	if err := s.validateIncidentContains(ctx, updated, candidateNodes, candidateEdges); err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	parent, ok := findNode(candidateNodes, parentID)
-	if !ok {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, fmt.Errorf("%w: parent not found", s.errors.NotFound)
-	}
-	if err := s.validateNewEdge(ctx, parent, sibling, graph.EdgeKindContains, edges); err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	if err := s.commitGraph(ctx, []graph.Node{updated, sibling}, changedEdges(edges, candidateEdges), nil, nil); err != nil {
-		return sessionapi.UpdateNodeAndCreateSiblingResult{}, err
-	}
-	return sessionapi.UpdateNodeAndCreateSiblingResult{UpdatedNode: updated, CreatedNode: sibling, CreatedEdge: createdEdge, SiblingOrder: insertOrder}, nil
+	var out sessionapi.UpdateNodeAndCreateSiblingResult
+	err := s.Tx(ctx, sessionapi.TxOptions{}, func(tx sessionapi.Tx) error {
+		var err error
+		out, err = tx.UpdateNodeAndCreateSibling(ctx, in)
+		return err
+	})
+	return out, err
 }
 
 func (s *FileSession) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
@@ -450,118 +345,13 @@ func (s *FileSession) AddGraph(ctx context.Context, in sessionapi.AddGraphInput)
 }
 
 func (s *FileSession) ApplyGraph(ctx context.Context, in sessionapi.ApplyGraphInput) (sessionapi.ApplyGraphResult, error) {
-	if err := s.ensureOpen(ctx); err != nil {
-		return sessionapi.ApplyGraphResult{}, err
-	}
-	if err := s.ensureSpaceLive(); err != nil {
-		return sessionapi.ApplyGraphResult{}, err
-	}
-	if err := s.ensureWrite(); err != nil {
-		return sessionapi.ApplyGraphResult{}, err
-	}
-	nodes, err := s.readNodes()
-	if err != nil {
-		return sessionapi.ApplyGraphResult{}, err
-	}
-	edges, err := s.readEdges()
-	if err != nil {
-		return sessionapi.ApplyGraphResult{}, err
-	}
-
-	candidateNodes := cloneNodes(nodes)
-	candidateEdges := cloneEdges(edges)
-	result := sessionapi.ApplyGraphResult{}
-
-	for _, del := range in.DeleteNodes {
-		deletedIDs, newNodes, newEdges, err := s.applyDeleteNode(candidateNodes, candidateEdges, del)
-		if err != nil {
-			return sessionapi.ApplyGraphResult{}, err
-		}
-		candidateNodes = newNodes
-		candidateEdges = newEdges
-		result.DeletedNodeIDs = append(result.DeletedNodeIDs, deletedIDs...)
-	}
-
-	edgeIndex := indexEdges(candidateEdges)
-	for _, del := range in.DeleteEdges {
-		if del.ID == uuid.Nil {
-			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: edge_id is required", s.errors.NotFound)
-		}
-		idx, ok := edgeIndex[del.ID]
-		if !ok {
-			return sessionapi.ApplyGraphResult{}, s.errors.NotFound
-		}
-		candidateEdges = append(candidateEdges[:idx], candidateEdges[idx+1:]...)
-		edgeIndex = indexEdges(candidateEdges)
-		result.DeletedEdgeIDs = append(result.DeletedEdgeIDs, del.ID)
-	}
-
-	nodeIndex := indexNodes(candidateNodes)
-	for _, add := range in.AddNodes {
-		nodeID, err := newGraphUUID()
-		if err != nil {
-			return sessionapi.ApplyGraphResult{}, err
-		}
-		if add.ID != nil {
-			nodeID = *add.ID
-		}
-		if nodeID == uuid.Nil {
-			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
-		}
-		if _, exists := nodeIndex[nodeID]; exists {
-			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: duplicate node_id %s", storetemplate.ErrInvalidInput, nodeID)
-		}
-		node, err := s.buildNode(ctx, candidateNodes, nodeID, add.TemplateID, add.Content, add.Props)
-		if err != nil {
-			return sessionapi.ApplyGraphResult{}, err
-		}
-		now := time.Now().UTC()
-		node.CreatedAt = now
-		node.UpdatedAt = now
-		candidateNodes = append(candidateNodes, node)
-		nodeIndex[node.ID] = len(candidateNodes) - 1
-		result.AddedNodes = append(result.AddedNodes, node)
-	}
-
-	edgeIndex = indexEdges(candidateEdges)
-	for _, add := range in.AddEdges {
-		edgeID, err := newGraphUUID()
-		if err != nil {
-			return sessionapi.ApplyGraphResult{}, err
-		}
-		if add.ID != nil {
-			edgeID = *add.ID
-		}
-		if edgeID == uuid.Nil {
-			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: edge_id is required", s.errors.NotFound)
-		}
-		if _, exists := edgeIndex[edgeID]; exists {
-			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: duplicate edge_id %s", storetemplate.ErrInvalidInput, edgeID)
-		}
-		fromIdx, ok := nodeIndex[add.FromID]
-		if !ok {
-			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: from node not found", s.errors.NotFound)
-		}
-		toIdx, ok := nodeIndex[add.ToID]
-		if !ok {
-			return sessionapi.ApplyGraphResult{}, fmt.Errorf("%w: to node not found", s.errors.NotFound)
-		}
-		from := candidateNodes[fromIdx]
-		to := candidateNodes[toIdx]
-		if err := s.validateNewEdge(ctx, from, to, add.Kind, candidateEdges); err != nil {
-			return sessionapi.ApplyGraphResult{}, err
-		}
-		edge := graph.Edge{ID: edgeID, FromID: add.FromID, ToID: add.ToID, Kind: add.Kind, Props: copyProps(add.Props)}
-		candidateEdges = append(candidateEdges, edge)
-		edgeIndex[edge.ID] = len(candidateEdges) - 1
-		result.AddedEdges = append(result.AddedEdges, edge)
-	}
-
-	deletedEdgeIDs := deletedEdges(edges, candidateEdges)
-	if err := s.commitGraph(ctx, result.AddedNodes, result.AddedEdges, result.DeletedNodeIDs, deletedEdgeIDs); err != nil {
-		return sessionapi.ApplyGraphResult{}, err
-	}
-	return result, nil
+	var out sessionapi.ApplyGraphResult
+	err := s.Tx(ctx, sessionapi.TxOptions{}, func(tx sessionapi.Tx) error {
+		var err error
+		out, err = tx.ApplyGraph(ctx, in)
+		return err
+	})
+	return out, err
 }
 
 func (s *FileSession) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error) {
@@ -589,73 +379,9 @@ func (s *FileSession) GetNode(ctx context.Context, id graph.NodeID) (graph.Node,
 }
 
 func (s *FileSession) DeleteNode(ctx context.Context, in sessionapi.DeleteNodeInput) error {
-	if err := s.ensureOpen(ctx); err != nil {
-		return err
-	}
-	if err := s.ensureSpaceLive(); err != nil {
-		return err
-	}
-	if err := s.ensureWrite(); err != nil {
-		return err
-	}
-	if in.ID == uuid.Nil {
-		return fmt.Errorf("%w: node_id is required", s.errors.NotFound)
-	}
-	nodes, err := s.readNodes()
-	if err != nil {
-		return err
-	}
-	if _, ok := findNode(nodes, in.ID); !ok {
-		return s.errors.NotFound
-	}
-	edges, err := s.readEdges()
-	if err != nil {
-		return err
-	}
-	deleteIDs := map[graph.NodeID]struct{}{in.ID: {}}
-	if in.Recursive {
-		changed := true
-		for changed {
-			changed = false
-			for _, edge := range edges {
-				if edge.Kind != graph.EdgeKindContains {
-					continue
-				}
-				if _, parentDeleted := deleteIDs[edge.FromID]; parentDeleted {
-					if _, already := deleteIDs[edge.ToID]; !already {
-						deleteIDs[edge.ToID] = struct{}{}
-						changed = true
-					}
-				}
-			}
-		}
-	} else {
-		for _, edge := range edges {
-			if edge.Kind == graph.EdgeKindContains && edge.FromID == in.ID {
-				if s.errors.Conflict != nil {
-					return fmt.Errorf("%w: node has child nodes", s.errors.Conflict)
-				}
-				return fmt.Errorf("node has child nodes")
-			}
-		}
-	}
-
-	remainingNodes := make([]graph.Node, 0, len(nodes))
-	for _, n := range nodes {
-		if _, deleted := deleteIDs[n.ID]; !deleted {
-			remainingNodes = append(remainingNodes, n)
-		}
-	}
-	remainingEdges := make([]graph.Edge, 0, len(edges))
-	for _, edge := range edges {
-		_, fromDeleted := deleteIDs[edge.FromID]
-		_, toDeleted := deleteIDs[edge.ToID]
-		if !fromDeleted && !toDeleted {
-			remainingEdges = append(remainingEdges, edge)
-		}
-	}
-	deletedEdges := deletedEdges(edges, remainingEdges)
-	return s.commitGraph(ctx, nil, nil, mapKeys(deleteIDs), deletedEdges)
+	return s.Tx(ctx, sessionapi.TxOptions{}, func(tx sessionapi.Tx) error {
+		return tx.DeleteNode(ctx, in)
+	})
 }
 
 func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in sessionapi.DeleteNodeInput) ([]graph.NodeID, []graph.Node, []graph.Edge, error) {
@@ -801,6 +527,10 @@ func (s *FileSession) readEdges() ([]graph.Edge, error) {
 }
 
 func (s *FileSession) commitGraph(ctx context.Context, putNodes []graph.Node, putEdges []graph.Edge, deleteNodes []graph.NodeID, deleteEdges []graph.EdgeID) error {
+	return s.commitGraphAtRevision(ctx, putNodes, putEdges, deleteNodes, deleteEdges, nil)
+}
+
+func (s *FileSession) commitGraphAtRevision(ctx context.Context, putNodes []graph.Node, putEdges []graph.Edge, deleteNodes []graph.NodeID, deleteEdges []graph.EdgeID, expectedRevision *uint64) error {
 	store, err := s.graphStore()
 	if err != nil {
 		return err
@@ -809,6 +539,9 @@ func (s *FileSession) commitGraph(ctx context.Context, putNodes []graph.Node, pu
 	txn, err := store.Begin(ctx)
 	if err != nil {
 		return err
+	}
+	if expectedRevision != nil {
+		txn.ExpectRevision(*expectedRevision)
 	}
 	for _, node := range putNodes {
 		if err := txn.PutNode(node); err != nil {
@@ -835,6 +568,9 @@ func (s *FileSession) commitGraph(ctx context.Context, putNodes []graph.Node, pu
 		}
 	}
 	if err := txn.Commit(); err != nil {
+		if errors.Is(err, graphstorage.ErrConflict) && s.errors.Conflict != nil {
+			return s.errors.Conflict
+		}
 		return err
 	}
 	s.releaseUnreferencedBlobs(ctx, store, releasedBlobs)

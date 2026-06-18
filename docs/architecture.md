@@ -56,8 +56,8 @@ Typical embedders (`knot_pkm_*`) import only `engine`, `session`, and `domain/*`
 |---------|-----------|
 | **Engine method signature** | `engine/engine.go` → `Engine` interface |
 | **Engine request types** (`CreateUserInput`, `OpenSessionInput`, …) | `engine/internal/types.go` (re-exported in `engine/engine.go`) |
-| **Graph session method signature** | `session/api/types.go` → `Session` interface (re-exported from `session/session.go`) |
-| **Session request types** (`AddNodeInput`, `ApplyGraphInput`, …) | `session/api/types.go` |
+| **Graph session method signature** | `session/api/types.go` → `Session` and `Tx` interfaces (re-exported from `session/session.go`) |
+| **Session request types** (`AddNodeInput`, `ApplyGraphInput`, `TxOptions`, …) | `session/api/types.go` |
 | **Pure data structs** (`User`, `Node`, `Space`, ACL rules, embedding records) | `domain/identity`, `domain/space`, `domain/access`, `domain/graph`, `domain/embedding` |
 | **Store interfaces** (`Manager`) | `store/user`, `store/spaces`, `store/acl`, `store/template`, `store/embedding` → `interface.go` |
 | **Store request types** (`CreateInput`, …) | Same `store/*/interface.go` files |
@@ -130,7 +130,8 @@ flowchart LR
 engine.NewEngine(cfg, nil, nil, nil, nil)
   → Authenticate(ctx, AuthInput{...})
   → OpenSession(ctx, OpenSessionInput{AccessToken, SpaceID})
-  → session.AddNode(ctx, AddNodeInput{...})
+  → session.Tx(ctx, TxOptions{}, func(tx session.Tx) error { ... })
+  → tx.AddNode(ctx, AddNodeInput{...})
   → domain/graph.Node
 ```
 
@@ -143,7 +144,7 @@ Interfaces are defined next to their primary consumer, not in a single global fi
 | Interface | File |
 |-----------|------|
 | `engine.Engine` | `engine/engine.go` |
-| `session.Session` | `session/api/types.go` |
+| `session.Session`, `session.Tx` | `session/api/types.go` |
 | `store/user.Manager` | `store/user/interface.go` |
 | `store/spaces.Manager` | `store/spaces/interface.go` |
 | `store/acl.Manager` | `store/acl/interface.go` |
@@ -191,7 +192,7 @@ knot_db/knot_db/
 | Task | Start file |
 |------|------------|
 | Add a public engine method | `engine/engine.go`, then `engine/internal/` |
-| Add a graph session method | `session/api/types.go`, then `internal/session/filesession/` |
+| Add a graph session or transaction method | `session/api/types.go`, then `internal/session/filesession/` |
 | Add a domain type | appropriate `domain/*/` package |
 | Change meta JSON persistence | `store/*/file_store.go` |
 | Change graph file persistence | `internal/graphstorage/` |

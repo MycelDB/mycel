@@ -46,7 +46,7 @@ The manifest is a small table of contents for the graph store. It records:
 - active edge segment
 - the ordered segment lists to scan when rebuilding indexes
 
-The manifest is not an index. On open, KnotDB scans committed transaction records and rebuilds in-memory indexes from the segment files. During that scan, the graph store is in a `rebuilding_index` state.
+The manifest is not an index. On open, KnotDB scans committed transaction records and rebuilds in-memory indexes from the segment files. During that scan, the graph store is in a `rebuilding_index` state. The graph store also rebuilds an in-memory revision counter from committed transaction records; session transactions use that revision for optimistic conflict detection.
 
 ## Segment files
 
@@ -59,7 +59,7 @@ Graph records are append-only binary records:
 - edge put
 - edge tombstone
 
-Every mutation is written inside a transaction. Recovery applies only records belonging to committed transactions; uncommitted records are ignored.
+Every graph mutation is written inside a storage transaction. Recovery applies only records belonging to committed transactions; uncommitted records are ignored. Session-level transactions stage graph changes in memory and then write one storage transaction at commit.
 
 Node and edge payloads use KnotDB's binary graph codec, not JSON. UUIDs are stored as 16-byte values. New generated node and edge IDs use UUIDv7.
 
@@ -69,9 +69,11 @@ Each space may have a content-addressed blob store under `blobs/<space_id>/`, ke
 
 Blob files are immutable and named by the lowercase hex SHA-256 digest of their content, stored under `objects/` with a two-character fan-out directory. Identical content is stored once (dedup). Writes stream through `tmp/` and are renamed into `objects/` after fsync, so a visible object is always complete.
 
+Transactional blob writes stage new content under `tmp/` until commit. On transaction commit, referenced staged blobs are promoted into `objects/` before the graph transaction is written; rollback removes staged temporary files. If graph commit fails after promotion, KnotDB removes promoted staged blobs that no committed node references.
+
 Nodes reference blobs through the optional `BlobRef` field in the node record (appended after the props map in the binary codec; older records without the field still decode). A node has inline text `Content` or a `BlobRef`, never both: blob nodes keep `Content` empty, and text about a blob (caption, alt text) lives in props or annotation children. Blob metadata (`mime_type`, `size_bytes`, `original_filename`, `declared_mime_type`, `caption`, `alt_text`) lives in node props, validated by the system `blob` template by default.
 
-A blob file is deleted when the last live node referencing it is removed. Orphans left by crashes (blob written, node never committed) are reclaimed by a best-effort sweep when the blob store is next opened. There is no persisted blob index; the blob-to-node mapping is rebuilt in memory from committed node records.
+A blob file is deleted when the last live node referencing it is removed. Orphans left by crashes (blob written or promoted, node never committed) are reclaimed by a best-effort sweep when the blob store is next opened. There is no persisted blob index; the blob-to-node mapping is rebuilt in memory from committed node records.
 
 Deleting a space removes both `graphs/<space_id>/` and `blobs/<space_id>/`.
 

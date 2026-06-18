@@ -6,13 +6,21 @@ import (
 )
 
 type localTxn struct {
-	store       *LocalStore
-	id          uuid.UUID
-	nodePuts    []graph.Node
-	nodeDeletes []graph.NodeID
-	edgePuts    []graph.Edge
-	edgeDeletes []graph.EdgeID
-	closed      bool
+	store            *LocalStore
+	id               uuid.UUID
+	nodePuts         []graph.Node
+	nodeDeletes      []graph.NodeID
+	edgePuts         []graph.Edge
+	edgeDeletes      []graph.EdgeID
+	expectedRevision *uint64
+	closed           bool
+}
+
+func (t *localTxn) ExpectRevision(revision uint64) {
+	if t.closed {
+		return
+	}
+	t.expectedRevision = &revision
 }
 
 func (t *localTxn) PutNode(node graph.Node) error {
@@ -53,6 +61,9 @@ func (t *localTxn) Commit() error {
 	defer t.store.mu.Unlock()
 	if err := t.store.ensureReady(); err != nil {
 		return err
+	}
+	if t.expectedRevision != nil && t.store.revision != *t.expectedRevision {
+		return ErrConflict
 	}
 	zero := uuid.Nil
 	if _, err := t.store.txns.appendRecord(RecordKindTxnBegin, t.id, zero, nil); err != nil {
@@ -122,6 +133,7 @@ func (t *localTxn) Commit() error {
 	for i, id := range t.edgeDeletes {
 		t.store.applyEdgeDelete(id, edgeDelLocs[i])
 	}
+	t.store.revision++
 	t.closed = true
 	return nil
 }

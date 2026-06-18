@@ -59,78 +59,89 @@ func (s *FileSession) AddBlobNode(ctx context.Context, in sessionapi.AddBlobNode
 	if err := s.ensureWrite(); err != nil {
 		return graph.Node{}, err
 	}
-	if in.Reader == nil {
-		return graph.Node{}, fmt.Errorf("%w: reader is required", storetemplate.ErrInvalidInput)
+	nodes, err := s.readNodes()
+	if err != nil {
+		return graph.Node{}, err
 	}
-
-	templateID := in.TemplateID
-	if templateID == nil {
-		id, err := s.ensureSystemBlobTemplate(ctx)
-		if err != nil {
-			return graph.Node{}, err
-		}
-		templateID = &id
+	node, staged, err := s.stageBlobNode(ctx, in, nodes)
+	if err != nil {
+		return graph.Node{}, err
 	}
-
 	blobs, err := s.blobStore()
 	if err != nil {
 		return graph.Node{}, err
 	}
+	if err := blobs.Promote(ctx, staged); err != nil {
+		_ = blobs.Discard(ctx, staged)
+		return graph.Node{}, err
+	}
+	if err := s.commitGraph(ctx, []graph.Node{node}, nil, nil, nil); err != nil {
+		if !staged.Existing() && !s.blobHasCommittedRef(ctx, *node.BlobRef) {
+			_ = blobs.Delete(ctx, *node.BlobRef)
+		}
+		return graph.Node{}, err
+	}
+	return node, nil
+}
 
-	// Sniff the MIME type from the leading bytes, then stream head + rest
-	// into the blob store without buffering the full content.
+func (s *FileSession) stageBlobNode(ctx context.Context, in sessionapi.AddBlobNodeInput, nodes []graph.Node) (graph.Node, blobstorage.StagedBlob, error) {
+	if in.Reader == nil {
+		return graph.Node{}, blobstorage.StagedBlob{}, fmt.Errorf("%w: reader is required", storetemplate.ErrInvalidInput)
+	}
+	templateID := in.TemplateID
+	if templateID == nil {
+		id, err := s.ensureSystemBlobTemplate(ctx)
+		if err != nil {
+			return graph.Node{}, blobstorage.StagedBlob{}, err
+		}
+		templateID = &id
+	}
+	blobs, err := s.blobStore()
+	if err != nil {
+		return graph.Node{}, blobstorage.StagedBlob{}, err
+	}
 	head := make([]byte, sniffLen)
 	n, err := io.ReadFull(in.Reader, head)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return graph.Node{}, err
+		return graph.Node{}, blobstorage.StagedBlob{}, err
 	}
 	head = head[:n]
 	mimeType := normalizeMimeType(http.DetectContentType(head))
 	blobReader, err := s.limitedBlobReader(io.MultiReader(bytes.NewReader(head), in.Reader), mimeType)
 	if err != nil {
-		return graph.Node{}, err
+		return graph.Node{}, blobstorage.StagedBlob{}, err
 	}
-	blobID, size, err := blobs.Put(ctx, blobReader)
+	staged, err := blobs.Stage(ctx, blobReader)
 	if err != nil {
-		return graph.Node{}, err
-	}
-
-	nodes, err := s.readNodes()
-	if err != nil {
-		return graph.Node{}, err
+		return graph.Node{}, blobstorage.StagedBlob{}, err
 	}
 	nodeID, err := newGraphUUID()
 	if err != nil {
-		return graph.Node{}, err
+		_ = blobs.Discard(ctx, staged)
+		return graph.Node{}, blobstorage.StagedBlob{}, err
 	}
 	if in.ID != nil {
 		nodeID = *in.ID
 	}
-
 	props := copyProps(in.Props)
 	props[PropMimeType] = mimeType
-	props[PropSizeBytes] = size
+	props[PropSizeBytes] = staged.SizeBytes
 	if in.DeclaredMimeType != "" {
 		props[PropDeclaredMimeType] = in.DeclaredMimeType
 	}
 	if in.OriginalFilename != "" {
 		props[PropOriginalFilename] = filepath.Base(in.OriginalFilename)
 	}
-
-	// Blob nodes never carry inline Content; text about the blob belongs in
-	// props (caption, alt_text, ...) or annotation children.
 	node, err := s.buildNode(ctx, nodes, nodeID, templateID, "", props)
 	if err != nil {
-		return graph.Node{}, err
+		_ = blobs.Discard(ctx, staged)
+		return graph.Node{}, blobstorage.StagedBlob{}, err
 	}
-	node.BlobRef = &blobID
+	node.BlobRef = &staged.ID
 	now := time.Now().UTC()
 	node.CreatedAt = now
 	node.UpdatedAt = now
-	if err := s.commitGraph(ctx, []graph.Node{node}, nil, nil, nil); err != nil {
-		return graph.Node{}, err
-	}
-	return node, nil
+	return node, staged, nil
 }
 
 // GetBlob opens the blob attached to a node for streaming reads.

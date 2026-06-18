@@ -17,148 +17,23 @@ const childOrderStep = 1024
 // MoveSubtree rewires the incoming contains edge for a node so the node and
 // all of its descendants are contained by a new parent.
 func (s *FileSession) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInput) (graph.Edge, error) {
-	if err := s.ensureOpen(ctx); err != nil {
-		return graph.Edge{}, err
-	}
-	if err := s.ensureSpaceLive(); err != nil {
-		return graph.Edge{}, err
-	}
-	if err := s.ensureWrite(); err != nil {
-		return graph.Edge{}, err
-	}
-	if in.NodeID == uuid.Nil {
-		return graph.Edge{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
-	}
-	if in.NewParentID == uuid.Nil {
-		return graph.Edge{}, fmt.Errorf("%w: new_parent_id is required", s.errors.NotFound)
-	}
-	if in.Order != nil && *in.Order < 0 {
-		return graph.Edge{}, fmt.Errorf("%w: order must be non-negative", storetemplate.ErrInvalidInput)
-	}
-
-	nodes, err := s.readNodes()
-	if err != nil {
-		return graph.Edge{}, err
-	}
-	node, ok := findNode(nodes, in.NodeID)
-	if !ok {
-		return graph.Edge{}, fmt.Errorf("%w: node not found", s.errors.NotFound)
-	}
-	newParent, ok := findNode(nodes, in.NewParentID)
-	if !ok {
-		return graph.Edge{}, fmt.Errorf("%w: new parent not found", s.errors.NotFound)
-	}
-	if in.NodeID == in.NewParentID {
-		return graph.Edge{}, fmt.Errorf("%w: cannot move a node under itself", storetemplate.ErrInvalidInput)
-	}
-
-	edges, err := s.readEdges()
-	if err != nil {
-		return graph.Edge{}, err
-	}
-	originalEdges := cloneEdges(edges)
-	oldParentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
-	if len(oldParentIndexes) > 1 {
-		return graph.Edge{}, fmt.Errorf("%w: node has multiple contains parents", storetemplate.ErrInvalidInput)
-	}
-	if containsPath(edges, in.NodeID, in.NewParentID) {
-		return graph.Edge{}, fmt.Errorf("%w: move would create a contains cycle", storetemplate.ErrInvalidInput)
-	}
-	childTemplate, err := s.nodeTemplate(ctx, node, "child")
-	if err != nil {
-		return graph.Edge{}, err
-	}
-	if err := s.validateChild(ctx, newParent, childTemplate); err != nil {
-		return graph.Edge{}, err
-	}
-
-	oldParentID := graph.NodeID(uuid.Nil)
-	if len(oldParentIndexes) == 1 {
-		oldEdge := edges[oldParentIndexes[0]]
-		oldParentID = oldEdge.FromID
-		if oldParentID == in.NewParentID {
-			if in.Order == nil {
-				return cloneEdge(oldEdge), nil
-			}
-			updated, err := setChildPosition(edges, in.NewParentID, in.NodeID, in.Order)
-			if err != nil {
-				return graph.Edge{}, err
-			}
-			if err := s.commitGraph(ctx, nil, changedEdges(originalEdges, edges), nil, nil); err != nil {
-				return graph.Edge{}, err
-			}
-			return updated, nil
-		}
-
-		edges[oldParentIndexes[0]].FromID = in.NewParentID
-		edges[oldParentIndexes[0]].ToID = in.NodeID
-		edges[oldParentIndexes[0]].Kind = graph.EdgeKindContains
-		edges[oldParentIndexes[0]].Props = copyProps(edges[oldParentIndexes[0]].Props)
-	} else {
-		edgeID, err := newGraphUUID()
-		if err != nil {
-			return graph.Edge{}, err
-		}
-		edges = append(edges, graph.Edge{ID: graph.EdgeID(edgeID), FromID: in.NewParentID, ToID: in.NodeID, Kind: graph.EdgeKindContains, Props: map[string]any{}})
-	}
-
-	if oldParentID != uuid.Nil {
-		normalizeChildrenOrder(edges, oldParentID)
-	}
-	updated, err := setChildPosition(edges, in.NewParentID, in.NodeID, in.Order)
-	if err != nil {
-		return graph.Edge{}, err
-	}
-	if err := s.commitGraph(ctx, nil, changedEdges(originalEdges, edges), nil, nil); err != nil {
-		return graph.Edge{}, err
-	}
-	return updated, nil
+	var out graph.Edge
+	err := s.Tx(ctx, sessionapi.TxOptions{}, func(tx sessionapi.Tx) error {
+		var err error
+		out, err = tx.MoveSubtree(ctx, in)
+		return err
+	})
+	return out, err
 }
 
-// ReorderChildren rewrites contains edge order properties for all direct
-// children of a parent. The caller must provide the complete child list.
 func (s *FileSession) ReorderChildren(ctx context.Context, in sessionapi.ReorderChildrenInput) ([]graph.Edge, error) {
-	if err := s.ensureOpen(ctx); err != nil {
-		return nil, err
-	}
-	if err := s.ensureSpaceLive(); err != nil {
-		return nil, err
-	}
-	if err := s.ensureWrite(); err != nil {
-		return nil, err
-	}
-	if in.ParentID == uuid.Nil {
-		return nil, fmt.Errorf("%w: parent_id is required", s.errors.NotFound)
-	}
-
-	nodes, err := s.readNodes()
-	if err != nil {
-		return nil, err
-	}
-	if _, ok := findNode(nodes, in.ParentID); !ok {
-		return nil, fmt.Errorf("%w: parent not found", s.errors.NotFound)
-	}
-	edges, err := s.readEdges()
-	if err != nil {
-		return nil, err
-	}
-	originalEdges := cloneEdges(edges)
-	childEdgeByID, err := validateCompleteChildOrder(edges, in.ParentID, in.ChildIDs)
-	if err != nil {
-		return nil, err
-	}
-
-	updated := make([]graph.Edge, 0, len(in.ChildIDs))
-	for order, childID := range in.ChildIDs {
-		edgeIndex := childEdgeByID[childID]
-		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = order * childOrderStep
-		updated = append(updated, cloneEdge(edges[edgeIndex]))
-	}
-	if err := s.commitGraph(ctx, nil, changedEdges(originalEdges, edges), nil, nil); err != nil {
-		return nil, err
-	}
-	return updated, nil
+	var out []graph.Edge
+	err := s.Tx(ctx, sessionapi.TxOptions{}, func(tx sessionapi.Tx) error {
+		var err error
+		out, err = tx.ReorderChildren(ctx, in)
+		return err
+	})
+	return out, err
 }
 
 func containsParentEdgeIndexes(edges []graph.Edge, childID graph.NodeID) []int {

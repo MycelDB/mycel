@@ -128,3 +128,73 @@ func TestScanSegmentRejectsCorruptCRC(t *testing.T) {
 		t.Fatal("expected crc error")
 	}
 }
+
+func TestLocalStoreRevisionAndConflict(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer store.Close()
+	if got := store.Revision(); got != 0 {
+		t.Fatalf("initial revision = %d, want 0", got)
+	}
+	tx1, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx1 failed: %v", err)
+	}
+	tx1.ExpectRevision(store.Revision())
+	node1 := graph.Node{ID: graph.NodeID(uuid.New()), Content: "one", Props: map[string]any{}}
+	if err := tx1.PutNode(node1); err != nil {
+		t.Fatalf("put node1 failed: %v", err)
+	}
+	if err := tx1.Commit(); err != nil {
+		t.Fatalf("commit tx1 failed: %v", err)
+	}
+	if got := store.Revision(); got != 1 {
+		t.Fatalf("revision after tx1 = %d, want 1", got)
+	}
+	tx2, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx2 failed: %v", err)
+	}
+	tx2.ExpectRevision(0)
+	if err := tx2.PutNode(graph.Node{ID: graph.NodeID(uuid.New()), Content: "two", Props: map[string]any{}}); err != nil {
+		t.Fatalf("put node2 failed: %v", err)
+	}
+	if err := tx2.Commit(); err != ErrConflict {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+}
+
+func TestLocalStoreRevisionRebuildsFromCommittedTransactions(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		tx, err := store.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin %d failed: %v", i, err)
+		}
+		if err := tx.PutNode(graph.Node{ID: graph.NodeID(uuid.New()), Content: "node", Props: map[string]any{}}); err != nil {
+			t.Fatalf("put %d failed: %v", i, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit %d failed: %v", i, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	if got := store.Revision(); got != 2 {
+		t.Fatalf("rebuilt revision = %d, want 2", got)
+	}
+}
