@@ -767,7 +767,9 @@ func (s *FileSession) validateChild(ctx context.Context, parent graph.Node, chil
 	// Application extension nodes are app-level primitives that may be inserted into
 	// existing imported Logseq outlines whose templates predate the extension.
 	// Keep normal template allow-list validation strict for all other cases.
-	if strings.HasPrefix(childTemplate.Key, "app.") && strings.HasPrefix(parentTemplate.Key, "logseq.") {
+	// Legacy pkm.* templates are accepted so existing pre-Mycel data can still be
+	// edited before/mid migration.
+	if (strings.HasPrefix(childTemplate.Key, "app.") || strings.HasPrefix(childTemplate.Key, "pkm.")) && strings.HasPrefix(parentTemplate.Key, "logseq.") {
 		return nil
 	}
 	return fmt.Errorf("%w: child template %s@%s is not allowed", storetemplate.ErrInvalidInput, childTemplate.Key, childTemplate.Version)
