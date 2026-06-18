@@ -1,6 +1,6 @@
 # Programmatic GQL-style queries
 
-KnotDB exposes a Go query builder in `martinbeauvais.com/mbgit/knotbase/knotdb/query`. The builder maps to GQL-style clauses:
+MycelDB exposes a Go query builder in `github.com/myceldb/mycel/query`. The builder maps to GQL-style clauses:
 
 - `Match(...)`
 - `Where(...)`
@@ -12,7 +12,7 @@ The implementation runs in memory over the current session's or transaction's no
 ## Last seven calendar days of journals
 
 ```go
-import q "martinbeauvais.com/mbgit/knotbase/knotdb/query"
+import q "github.com/myceldb/mycel/query"
 
 rows, err := sess.Query().
     Match(

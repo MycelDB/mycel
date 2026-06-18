@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"github.com/myceldb/mycel/domain/graph"
 )
 
 const dateLayout = "2006-01-02"

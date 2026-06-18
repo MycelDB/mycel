@@ -3,11 +3,11 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/myceldb/mycel/domain/access"
+	"github.com/myceldb/mycel/domain/identity"
+	mycelengine "github.com/myceldb/mycel/engine"
+	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/spf13/cobra"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
 )
 
 func NewACLCommand(a *app.App) *cobra.Command {
@@ -41,7 +41,7 @@ func NewACLGrantSystemCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		rule, err := a.Engine.GrantSystemRole(cmd.Context(), knotengine.GrantSystemRoleInput{AccessToken: tok, UserID: userID, Roles: parsed})
+		rule, err := a.Engine.GrantSystemRole(cmd.Context(), mycelengine.GrantSystemRoleInput{AccessToken: tok, UserID: userID, Roles: parsed})
 		if err != nil {
 			return err
 		}
@@ -75,7 +75,7 @@ func NewACLGrantSpaceCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		rule, err := a.Engine.GrantSpaceAccess(cmd.Context(), knotengine.GrantSpaceAccessInput{AccessToken: tok, SpaceID: spaceID, UserID: userID, Permissions: parsed})
+		rule, err := a.Engine.GrantSpaceAccess(cmd.Context(), mycelengine.GrantSpaceAccessInput{AccessToken: tok, SpaceID: spaceID, UserID: userID, Permissions: parsed})
 		if err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ func NewACLRevokeSystemCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if err := a.Engine.RevokeSystemRole(cmd.Context(), knotengine.RevokeSystemRoleInput{AccessToken: tok, UserID: userID}); err != nil {
+		if err := a.Engine.RevokeSystemRole(cmd.Context(), mycelengine.RevokeSystemRoleInput{AccessToken: tok, UserID: userID}); err != nil {
 			return err
 		}
 		return a.Print(map[string]any{"revoked_system_acl_user_id": userID}, fmt.Sprintf("system acl revoked: user=%s\n", userID))
@@ -134,7 +134,7 @@ func NewACLRevokeSpaceCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if err := a.Engine.RevokeSpaceAccess(cmd.Context(), knotengine.RevokeSpaceAccessInput{AccessToken: tok, SpaceID: spaceID, UserID: userID}); err != nil {
+		if err := a.Engine.RevokeSpaceAccess(cmd.Context(), mycelengine.RevokeSpaceAccessInput{AccessToken: tok, SpaceID: spaceID, UserID: userID}); err != nil {
 			return err
 		}
 		return a.Print(map[string]any{"revoked_space_acl_space_id": spaceID, "user_id": userID}, fmt.Sprintf("space acl revoked: space=%s user=%s\n", spaceID, userID))
@@ -156,7 +156,7 @@ func NewACLListSystemCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		rules, err := a.Engine.ListSystemAccess(cmd.Context(), knotengine.ListSystemAccessInput{AccessToken: tok})
+		rules, err := a.Engine.ListSystemAccess(cmd.Context(), mycelengine.ListSystemAccessInput{AccessToken: tok})
 		if err != nil {
 			return err
 		}
@@ -179,7 +179,7 @@ func NewACLListSpaceCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		rules, err := a.Engine.ListSpaceAccess(cmd.Context(), knotengine.ListSpaceAccessInput{AccessToken: tok, SpaceID: spaceID})
+		rules, err := a.Engine.ListSpaceAccess(cmd.Context(), mycelengine.ListSpaceAccessInput{AccessToken: tok, SpaceID: spaceID})
 		if err != nil {
 			return err
 		}
@@ -213,7 +213,7 @@ func NewAddACLCommand(a *app.App) *cobra.Command {
 			for _, role := range roles {
 				parsed = append(parsed, access.SystemRole(role))
 			}
-			rule, err := a.Engine.GrantSystemRole(cmd.Context(), knotengine.GrantSystemRoleInput{AccessToken: tok, UserID: userID, Roles: parsed})
+			rule, err := a.Engine.GrantSystemRole(cmd.Context(), mycelengine.GrantSystemRoleInput{AccessToken: tok, UserID: userID, Roles: parsed})
 			if err != nil {
 				return err
 			}
@@ -230,7 +230,7 @@ func NewAddACLCommand(a *app.App) *cobra.Command {
 		for _, permission := range permissions {
 			parsed = append(parsed, access.SpacePermission(permission))
 		}
-		rule, err := a.Engine.GrantSpaceAccess(cmd.Context(), knotengine.GrantSpaceAccessInput{AccessToken: tok, SpaceID: spaceID, UserID: userID, Permissions: parsed})
+		rule, err := a.Engine.GrantSpaceAccess(cmd.Context(), mycelengine.GrantSpaceAccessInput{AccessToken: tok, SpaceID: spaceID, UserID: userID, Permissions: parsed})
 		if err != nil {
 			return err
 		}
@@ -259,7 +259,7 @@ func NewDeleteACLCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		if systemACL {
-			if err := a.Engine.RevokeSystemRole(cmd.Context(), knotengine.RevokeSystemRoleInput{AccessToken: tok, UserID: userID}); err != nil {
+			if err := a.Engine.RevokeSystemRole(cmd.Context(), mycelengine.RevokeSystemRoleInput{AccessToken: tok, UserID: userID}); err != nil {
 				return err
 			}
 			return a.Print(map[string]any{"deleted_system_acl_user_id": userID}, fmt.Sprintf("system acl deleted: %s\n", userID))
@@ -268,7 +268,7 @@ func NewDeleteACLCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if err := a.Engine.RevokeSpaceAccess(cmd.Context(), knotengine.RevokeSpaceAccessInput{AccessToken: tok, SpaceID: spaceID, UserID: userID}); err != nil {
+		if err := a.Engine.RevokeSpaceAccess(cmd.Context(), mycelengine.RevokeSpaceAccessInput{AccessToken: tok, SpaceID: spaceID, UserID: userID}); err != nil {
 			return err
 		}
 		return a.Print(map[string]any{"deleted_space_acl_space_id": spaceID, "user_id": userID}, fmt.Sprintf("space acl deleted: space=%s user=%s\n", spaceID, userID))
@@ -288,7 +288,7 @@ func NewListACLCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		if systemACL {
-			rules, err := a.Engine.ListSystemAccess(cmd.Context(), knotengine.ListSystemAccessInput{AccessToken: tok})
+			rules, err := a.Engine.ListSystemAccess(cmd.Context(), mycelengine.ListSystemAccessInput{AccessToken: tok})
 			if err != nil {
 				return err
 			}
@@ -302,7 +302,7 @@ func NewListACLCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		rules, err := a.Engine.ListSpaceAccess(cmd.Context(), knotengine.ListSpaceAccessInput{AccessToken: tok, SpaceID: spaceID})
+		rules, err := a.Engine.ListSpaceAccess(cmd.Context(), mycelengine.ListSpaceAccessInput{AccessToken: tok, SpaceID: spaceID})
 		if err != nil {
 			return err
 		}

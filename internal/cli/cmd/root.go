@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
+	mycelengine "github.com/myceldb/mycel/engine"
+	"github.com/myceldb/mycel/internal/cli/app"
+	mycelconfig "github.com/myceldb/mycel/internal/config"
 	"github.com/spf13/cobra"
-	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
-	knotconfig "martinbeauvais.com/mbgit/knotbase/knotdb/internal/config"
 )
 
 func Execute() error {
@@ -22,18 +22,18 @@ func Execute() error {
 
 func NewRootCommand(a *app.App, repl bool) *cobra.Command {
 	root := &cobra.Command{
-		Use:           "knotdb",
-		Short:         "KnotDB embedded engine CLI",
+		Use:           "mycel",
+		Short:         "MycelDB embedded engine CLI",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := knotconfig.Load(knotconfig.Options{ConfigFile: a.ConfigFile, Flags: cmd.Flags()})
+			cfg, err := mycelconfig.Load(mycelconfig.Options{ConfigFile: a.ConfigFile, Flags: cmd.Flags()})
 			if err != nil {
 				return err
 			}
 			a.Config = cfg
 			if cfg.DataDir != "" {
-				a.DataDir = knotengine.ResolveDataDir(cfg.DataDir)
+				a.DataDir = mycelengine.ResolveDataDir(cfg.DataDir)
 			}
 			if cfg.Output != "" {
 				a.Output = app.DefaultOutput(cfg.Output)
@@ -42,9 +42,9 @@ func NewRootCommand(a *app.App, repl bool) *cobra.Command {
 			return nil
 		},
 	}
-	a.DataDir = knotengine.ResolveDataDir(a.DataDir)
-	root.PersistentFlags().StringVar(&a.ConfigFile, "config", a.ConfigFile, "optional KnotDB config file (defaults to KNOTDB_CONFIG)")
-	root.PersistentFlags().StringVarP(&a.DataDir, "data-dir", "d", a.DataDir, "KnotDB data directory (defaults to KNOTDB_DATA_DIR)")
+	a.DataDir = mycelengine.ResolveDataDir(a.DataDir)
+	root.PersistentFlags().StringVar(&a.ConfigFile, "config", a.ConfigFile, "optional MycelDB config file (defaults to MYCELDB_CONFIG)")
+	root.PersistentFlags().StringVarP(&a.DataDir, "data-dir", "d", a.DataDir, "MycelDB data directory (defaults to MYCELDB_DATA_DIR)")
 	root.PersistentFlags().StringVarP(&a.UserRef, "username", "u", a.UserRef, "username/user_ref for non-REPL authentication")
 	root.PersistentFlags().StringVarP(&a.Password, "password", "p", a.Password, "password for non-REPL authentication")
 	root.PersistentFlags().StringVar(&a.Output, "output", app.DefaultOutput(a.Output), "output format: text or json")

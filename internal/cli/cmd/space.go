@@ -3,10 +3,10 @@ package cmd
 import (
 	"fmt"
 
+	domainspace "github.com/myceldb/mycel/domain/space"
+	mycelengine "github.com/myceldb/mycel/engine"
+	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/spf13/cobra"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
 )
 
 func NewAddSpaceCommand(a *app.App) *cobra.Command {
@@ -26,7 +26,7 @@ func NewAddSpaceCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sp, err := a.Engine.CreateSpace(cmd.Context(), knotengine.CreateSpaceInput{AccessToken: tok, Name: name})
+			sp, err := a.Engine.CreateSpace(cmd.Context(), mycelengine.CreateSpaceInput{AccessToken: tok, Name: name})
 			if err != nil {
 				return err
 			}
@@ -55,7 +55,7 @@ func NewDeleteSpaceCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := a.Engine.DeleteSpace(cmd.Context(), knotengine.DeleteSpaceInput{AccessToken: tok, SpaceID: id}); err != nil {
+			if err := a.Engine.DeleteSpace(cmd.Context(), mycelengine.DeleteSpaceInput{AccessToken: tok, SpaceID: id}); err != nil {
 				return err
 			}
 			return a.Print(map[string]any{"deleted_space_id": id}, fmt.Sprintf("space deleted: %s\n", id))
@@ -101,7 +101,7 @@ func NewListSpacesCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			spaces, err := a.Engine.ListSpaces(cmd.Context(), knotengine.ListSpacesInput{AccessToken: tok})
+			spaces, err := a.Engine.ListSpaces(cmd.Context(), mycelengine.ListSpacesInput{AccessToken: tok})
 			if err != nil {
 				return err
 			}

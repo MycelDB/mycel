@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	"github.com/myceldb/mycel/domain/identity"
+	"github.com/myceldb/mycel/internal/filestore"
 )
 
 const storeFile = "embeddings.json"
@@ -477,7 +477,7 @@ func parseOrDeriveKey(keyB64, location string) ([]byte, error) {
 		}
 		return decoded, nil
 	}
-	sum := sha256.Sum256([]byte("knotdb-embedding-secret-v1:" + filepath.Clean(location)))
+	sum := sha256.Sum256([]byte("mycel-embedding-secret-v1:" + filepath.Clean(location)))
 	return sum[:], nil
 }
 func requireOwner(ctx context.Context, ownerID identity.UserID) error {

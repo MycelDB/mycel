@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	"github.com/myceldb/mycel/domain/graph"
+	domainspace "github.com/myceldb/mycel/domain/space"
 )
 
 func TestDefaultManager_ImportValidDocument(t *testing.T) {

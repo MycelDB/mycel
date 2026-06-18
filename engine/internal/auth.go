@@ -1,6 +1,6 @@
 package internal
 
-import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+import "github.com/myceldb/mycel/domain/identity"
 
 // AuthInput is the authentication request payload.
 type AuthInput struct {

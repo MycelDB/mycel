@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	"github.com/myceldb/mycel/domain/identity"
 )
 
 func TestDefaultManager_InitAndCreate_Plaintext(t *testing.T) {

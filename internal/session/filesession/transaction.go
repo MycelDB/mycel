@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/blobstorage"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
-	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	"github.com/myceldb/mycel/domain/graph"
+	"github.com/myceldb/mycel/internal/blobstorage"
+	"github.com/myceldb/mycel/query"
+	sessionapi "github.com/myceldb/mycel/session/api"
+	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
 type txOverlay struct {

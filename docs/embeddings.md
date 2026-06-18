@@ -1,6 +1,6 @@
-# KnotDB embeddings MVP
+# MycelDB embeddings MVP
 
-KnotDB includes a manual embeddings subsystem for generating derived vectors from graph nodes and searching them semantically.
+MycelDB includes a manual embeddings subsystem for generating derived vectors from graph nodes and searching them semantically.
 
 ## Architecture
 
@@ -35,14 +35,14 @@ Sibling order comes from the `contains` edge `Props["order"]` value. The assembl
 List the embedding catalog:
 
 ```sh
-knotdb embeddings catalog -u USER -p PASSWORD
+mycel embeddings catalog -u USER -p PASSWORD
 ```
 
 Add a provider key:
 
 ```sh
 export OPENAI_API_KEY=...
-knotdb embeddings keys add \
+mycel embeddings keys add \
   --provider openai \
   --name personal \
   --api-key-env OPENAI_API_KEY \
@@ -53,8 +53,8 @@ knotdb embeddings keys add \
 Add a profile:
 
 ```sh
-knotdb embeddings profiles add \
-  --name pkm-page-default \
+mycel embeddings profiles add \
+  --name page-default \
   --provider openai \
   --model openai/text-embedding-3-small \
   --source subtree \
@@ -65,7 +65,7 @@ knotdb embeddings profiles add \
 Generate an embedding for a node:
 
 ```sh
-knotdb embeddings generate \
+mycel embeddings generate \
   --space-id SPACE_ID \
   --node NODE_ID \
   --profile PROFILE_ID \
@@ -75,7 +75,7 @@ knotdb embeddings generate \
 Backfill embeddings for selected nodes:
 
 ```sh
-knotdb embeddings generate \
+mycel embeddings generate \
   --space-id SPACE_ID \
   --profile PROFILE_ID \
   --template-key logseq.page \
@@ -86,7 +86,7 @@ knotdb embeddings generate \
 Or select by content substring:
 
 ```sh
-knotdb embeddings generate \
+mycel embeddings generate \
   --space-id SPACE_ID \
   --profile PROFILE_ID \
   --contains "project notes" \
@@ -99,7 +99,7 @@ Batch generation requires at least one selector: `--node`, `--template-key`, or 
 Regenerate even if the source hash has not changed:
 
 ```sh
-knotdb embeddings generate \
+mycel embeddings generate \
   --space-id SPACE_ID \
   --node NODE_ID \
   --profile PROFILE_ID \
@@ -110,7 +110,7 @@ knotdb embeddings generate \
 Search:
 
 ```sh
-knotdb embeddings search \
+mycel embeddings search \
   --space-id SPACE_ID \
   --profile PROFILE_ID \
   --text "notes about graph storage" \
@@ -120,4 +120,4 @@ knotdb embeddings search \
 
 ## Deferred work
 
-The MVP does not include automatic triggers, durable job queues, chunking, blob text extraction, ANN indexes, or PKM UI integration.
+The MVP does not include automatic triggers, durable job queues, chunking, blob text extraction, ANN indexes, or application UI integration.

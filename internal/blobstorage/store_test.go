@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"github.com/myceldb/mycel/domain/graph"
 )
 
 func TestPutOpenRoundTrip(t *testing.T) {

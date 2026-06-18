@@ -9,10 +9,10 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
+	domainaccess "github.com/myceldb/mycel/domain/access"
+	"github.com/myceldb/mycel/domain/identity"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/filestore"
 )
 
 const accessStoreFile = "access.json"

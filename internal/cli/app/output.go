@@ -5,10 +5,10 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	"github.com/myceldb/mycel/domain/access"
+	"github.com/myceldb/mycel/domain/graph"
+	"github.com/myceldb/mycel/domain/identity"
+	domainspace "github.com/myceldb/mycel/domain/space"
 )
 
 func RenderUsersTable(users []identity.User) {

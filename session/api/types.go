@@ -5,10 +5,10 @@ import (
 	"errors"
 	"io"
 
-	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	"github.com/myceldb/mycel/domain/graph"
+	"github.com/myceldb/mycel/query"
+	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
 var (

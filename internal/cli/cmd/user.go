@@ -3,10 +3,10 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/myceldb/mycel/domain/identity"
+	mycelengine "github.com/myceldb/mycel/engine"
+	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/spf13/cobra"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
 )
 
 func NewAddUserCommand(a *app.App) *cobra.Command {
@@ -29,7 +29,7 @@ func NewAddUserCommand(a *app.App) *cobra.Command {
 			if username != "" {
 				in.Username = &username
 			}
-			u, err := a.Engine.CreateUser(cmd.Context(), knotengine.CreateUserInput{AccessToken: tok, User: in, Password: newPassword})
+			u, err := a.Engine.CreateUser(cmd.Context(), mycelengine.CreateUserInput{AccessToken: tok, User: in, Password: newPassword})
 			if err != nil {
 				return err
 			}
@@ -58,7 +58,7 @@ func NewDeleteUserCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := a.Engine.DeleteUser(cmd.Context(), knotengine.DeleteUserInput{AccessToken: tok, UserID: id}); err != nil {
+			if err := a.Engine.DeleteUser(cmd.Context(), mycelengine.DeleteUserInput{AccessToken: tok, UserID: id}); err != nil {
 				return err
 			}
 			return a.Print(map[string]any{"deleted_user_id": id}, fmt.Sprintf("user deleted: %s\n", id))
@@ -75,7 +75,7 @@ func NewListUsersCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			users, err := a.Engine.ListUsers(cmd.Context(), knotengine.ListUsersInput{AccessToken: tok})
+			users, err := a.Engine.ListUsers(cmd.Context(), mycelengine.ListUsersInput{AccessToken: tok})
 			if err != nil {
 				return err
 			}

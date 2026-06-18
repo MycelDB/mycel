@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	q "martinbeauvais.com/mbgit/knotbase/knotdb/query"
+	"github.com/myceldb/mycel/domain/graph"
+	q "github.com/myceldb/mycel/query"
 )
 
 type fakeExecutor struct {

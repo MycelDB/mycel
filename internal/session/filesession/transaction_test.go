@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
-	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
+	"github.com/myceldb/mycel/domain/graph"
+	"github.com/myceldb/mycel/query"
+	sessionapi "github.com/myceldb/mycel/session/api"
 )
 
 func TestFileSessionTransactionPhase2ReadYourWrites(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv(EnvConfig, "")
-	t.Setenv("KNOTDB_DATA_DIR", "")
+	t.Setenv("MYCELDB_DATA_DIR", "")
 
 	cfg, err := Load(Options{})
 	if err != nil {
@@ -27,9 +27,9 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadPrecedenceFileEnvFlags(t *testing.T) {
 	t.Setenv(EnvConfig, "")
-	t.Setenv("KNOTDB_DATA_DIR", "/from-env")
-	t.Setenv("KNOTDB_AUTH_ACCESS_TOKEN_TTL", "45m")
-	configPath := filepath.Join(t.TempDir(), "knotdb.yaml")
+	t.Setenv("MYCELDB_DATA_DIR", "/from-env")
+	t.Setenv("MYCELDB_AUTH_ACCESS_TOKEN_TTL", "45m")
+	configPath := filepath.Join(t.TempDir(), "mycel.yaml")
 	if err := os.WriteFile(configPath, []byte(`
 data_dir: /from-file
 output: json

@@ -3,8 +3,8 @@ package spaces
 import (
 	"context"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	"github.com/myceldb/mycel/domain/identity"
+	domainspace "github.com/myceldb/mycel/domain/space"
 )
 
 // CreateInput is the create payload managed by Manager.

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	"github.com/myceldb/mycel/domain/identity"
 )
 
 func TestProviderKeySecretsAreEncryptedAndRedacted(t *testing.T) {

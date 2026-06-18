@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"github.com/myceldb/mycel/domain/graph"
 )
 
 type manifest struct {
@@ -88,7 +88,7 @@ func (s *LocalStore) open(ctx context.Context) error {
 }
 
 func (s *LocalStore) loadManifest() (manifest, error) {
-	path := filepath.Join(s.path, "manifest.knot")
+	path := filepath.Join(s.path, "manifest.mycel")
 	raw, err := os.ReadFile(path)
 	if err == nil {
 		var m manifest

@@ -1,6 +1,6 @@
 # Transactions
 
-KnotDB supports session-scoped transactions in the public `session` package. A transaction stages graph and blob mutations in a session-local overlay, provides read-your-writes behavior, validates the final graph, and commits the staged graph delta as one durable storage transaction.
+MycelDB supports session-scoped transactions in the public `session` package. A transaction stages graph and blob mutations in a session-local overlay, provides read-your-writes behavior, validates the final graph, and commits the staged graph delta as one durable storage transaction.
 
 Transactions are scoped to one opened session and therefore to one space.
 
@@ -29,7 +29,7 @@ err := sess.Tx(ctx, session.TxOptions{}, func(tx session.Tx) error {
 })
 ```
 
-If the callback returns an error, the transaction rolls back and that error is returned. If the callback returns nil, KnotDB commits the transaction.
+If the callback returns an error, the transaction rolls back and that error is returned. If the callback returns nil, MycelDB commits the transaction.
 
 Manual transaction control is also available:
 
@@ -135,7 +135,7 @@ Commit performs these steps:
 7. clean up staged blobs that were rolled back or no longer referenced
 8. close the transaction
 
-If commit fails before the graph transaction is durable, no graph changes are applied. If a staged blob had to be promoted before a graph commit that later fails, KnotDB removes it when no committed graph node references it.
+If commit fails before the graph transaction is durable, no graph changes are applied. If a staged blob had to be promoted before a graph commit that later fails, MycelDB removes it when no committed graph node references it.
 
 ## Rollback behavior
 
@@ -145,7 +145,7 @@ Using a transaction after `Commit` or `Rollback` returns `session.ErrTransaction
 
 ## Conflict detection
 
-KnotDB uses an optimistic graph revision check:
+MycelDB uses an optimistic graph revision check:
 
 - each transaction captures the current graph revision when it begins
 - each durable graph commit advances the in-memory revision
@@ -153,7 +153,7 @@ KnotDB uses an optimistic graph revision check:
 
 This prevents stale transactions from committing against assumptions that may no longer hold.
 
-Conflict behavior is fail-fast; KnotDB does not automatically retry transactions. Callers should reopen a transaction and retry their work if appropriate.
+Conflict behavior is fail-fast; MycelDB does not automatically retry transactions. Callers should reopen a transaction and retry their work if appropriate.
 
 When the file session maps a storage conflict through its configured errors, callers usually see the session conflict error supplied by the engine/session setup.
 
@@ -209,7 +209,7 @@ The low-level graph store is append-only and transaction-record based:
 
 ```text
 graphs/<space_id>/
-  manifest.knot
+  manifest.mycel
   segments/
     txns-000001.kseg
     nodes-000001.kseg

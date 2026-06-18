@@ -3,8 +3,8 @@ package template
 import (
 	"context"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	"github.com/myceldb/mycel/domain/graph"
+	domainspace "github.com/myceldb/mycel/domain/space"
 )
 
 // ImportDocument is the JSON import contract for templates.

@@ -3,8 +3,8 @@ package embedding
 import (
 	"context"
 
-	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	"github.com/myceldb/mycel/domain/identity"
 )
 
 type AddKeyInput struct {

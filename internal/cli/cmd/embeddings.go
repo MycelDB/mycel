@@ -5,16 +5,16 @@ import (
 	"os"
 	"strings"
 
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	"github.com/myceldb/mycel/domain/graph"
+	mycelengine "github.com/myceldb/mycel/engine"
+	"github.com/myceldb/mycel/internal/cli/app"
+	domainsession "github.com/myceldb/mycel/session"
 	"github.com/spf13/cobra"
-	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
-	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
 func NewEmbeddingsCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "embeddings", Short: "Manage and use KnotDB embeddings"}
+	cmd := &cobra.Command{Use: "embeddings", Short: "Manage and use MycelDB embeddings"}
 	cmd.AddCommand(newEmbeddingsCatalogCommand(a), newEmbeddingKeysCommand(a), newEmbeddingProfilesCommand(a), newEmbeddingGenerateCommand(a), newEmbeddingSearchCommand(a))
 	return cmd
 }
@@ -25,7 +25,7 @@ func newEmbeddingsCatalogCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		cat, err := a.Engine.EmbeddingCatalog(cmd.Context(), knotengine.EmbeddingCatalogInput{AccessToken: tok})
+		cat, err := a.Engine.EmbeddingCatalog(cmd.Context(), mycelengine.EmbeddingCatalogInput{AccessToken: tok})
 		if err != nil {
 			return err
 		}
@@ -52,7 +52,7 @@ func newEmbeddingKeysListCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		keys, err := a.Engine.ListEmbeddingKeys(cmd.Context(), knotengine.ListEmbeddingKeysInput{AccessToken: tok})
+		keys, err := a.Engine.ListEmbeddingKeys(cmd.Context(), mycelengine.ListEmbeddingKeysInput{AccessToken: tok})
 		if err != nil {
 			return err
 		}
@@ -75,7 +75,7 @@ func newEmbeddingKeysAddCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		key, err := a.Engine.AddEmbeddingKey(cmd.Context(), knotengine.AddEmbeddingKeyInput{AccessToken: tok, ProviderID: providerID, Name: name, APIKey: apiKey, IsDefault: isDefault, Disabled: disabled})
+		key, err := a.Engine.AddEmbeddingKey(cmd.Context(), mycelengine.AddEmbeddingKeyInput{AccessToken: tok, ProviderID: providerID, Name: name, APIKey: apiKey, IsDefault: isDefault, Disabled: disabled})
 		if err != nil {
 			return err
 		}
@@ -102,7 +102,7 @@ func newEmbeddingKeysDeleteCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if err := a.Engine.DeleteEmbeddingKey(cmd.Context(), knotengine.DeleteEmbeddingKeyInput{AccessToken: tok, ID: id}); err != nil {
+		if err := a.Engine.DeleteEmbeddingKey(cmd.Context(), mycelengine.DeleteEmbeddingKeyInput{AccessToken: tok, ID: id}); err != nil {
 			return err
 		}
 		return a.Print(map[string]any{"deleted_key_id": id}, fmt.Sprintf("embedding key deleted: %s\n", id))
@@ -121,7 +121,7 @@ func newEmbeddingProfilesListCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		profiles, err := a.Engine.ListEmbeddingProfiles(cmd.Context(), knotengine.ListEmbeddingProfilesInput{AccessToken: tok})
+		profiles, err := a.Engine.ListEmbeddingProfiles(cmd.Context(), mycelengine.ListEmbeddingProfilesInput{AccessToken: tok})
 		if err != nil {
 			return err
 		}
@@ -147,7 +147,7 @@ func newEmbeddingProfilesAddCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		p, err := a.Engine.AddEmbeddingProfile(cmd.Context(), knotengine.AddEmbeddingProfileInput{AccessToken: tok, Name: name, ProviderID: providerID, ModelID: modelID, SourceMode: domainembedding.SourceMode(source), IncludeProps: includeProps, MaxDepth: maxDepthPtr, MinimumTextLength: minimumTextLength})
+		p, err := a.Engine.AddEmbeddingProfile(cmd.Context(), mycelengine.AddEmbeddingProfileInput{AccessToken: tok, Name: name, ProviderID: providerID, ModelID: modelID, SourceMode: domainembedding.SourceMode(source), IncludeProps: includeProps, MaxDepth: maxDepthPtr, MinimumTextLength: minimumTextLength})
 		if err != nil {
 			return err
 		}
@@ -176,7 +176,7 @@ func newEmbeddingProfilesDeleteCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if err := a.Engine.DeleteEmbeddingProfile(cmd.Context(), knotengine.DeleteEmbeddingProfileInput{AccessToken: tok, ID: id}); err != nil {
+		if err := a.Engine.DeleteEmbeddingProfile(cmd.Context(), mycelengine.DeleteEmbeddingProfileInput{AccessToken: tok, ID: id}); err != nil {
 			return err
 		}
 		return a.Print(map[string]any{"deleted_profile_id": id}, fmt.Sprintf("embedding profile deleted: %s\n", id))
@@ -225,7 +225,7 @@ func newEmbeddingGenerateCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		sess, err := a.Engine.OpenSession(cmd.Context(), knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+		sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
 		if err != nil {
 			return err
 		}
@@ -291,7 +291,7 @@ func newEmbeddingSearchCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		sess, err := a.Engine.OpenSession(cmd.Context(), knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+		sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
 		if err != nil {
 			return err
 		}

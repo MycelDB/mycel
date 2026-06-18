@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	q "martinbeauvais.com/mbgit/knotbase/knotdb/query"
-	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	"github.com/myceldb/mycel/domain/graph"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	q "github.com/myceldb/mycel/query"
+	sessionapi "github.com/myceldb/mycel/session/api"
+	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
 type hierarchyTemplateManager struct {

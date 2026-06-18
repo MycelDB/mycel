@@ -2,8 +2,8 @@ package access
 
 import (
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	"github.com/myceldb/mycel/domain/identity"
+	domainspace "github.com/myceldb/mycel/domain/space"
 )
 
 // SystemRole is a global role granted to a user for system-wide administration.

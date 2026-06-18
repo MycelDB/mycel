@@ -3,7 +3,7 @@ package user
 import (
 	"context"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	"github.com/myceldb/mycel/domain/identity"
 )
 
 // CreateInput is the create payload managed by Manager.

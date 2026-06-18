@@ -1,19 +1,19 @@
-// Package engine exposes the public KnotDB engine API and constructor.
+// Package engine exposes the public MycelDB engine API and constructor.
 package engine
 
 import (
 	"context"
 
-	domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
-	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	engineinternal "martinbeauvais.com/mbgit/knotbase/knotdb/engine/internal"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/session"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/store/acl"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/store/spaces"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/store/user"
+	domainaccess "github.com/myceldb/mycel/domain/access"
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	"github.com/myceldb/mycel/domain/identity"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	engineinternal "github.com/myceldb/mycel/engine/internal"
+	"github.com/myceldb/mycel/session"
+	"github.com/myceldb/mycel/store/acl"
+	"github.com/myceldb/mycel/store/spaces"
+	storetemplate "github.com/myceldb/mycel/store/template"
+	"github.com/myceldb/mycel/store/user"
 )
 
 type EngineMode = engineinternal.EngineMode
@@ -70,7 +70,7 @@ var (
 	ErrConflict           = engineinternal.ErrConflict
 )
 
-// Engine represents a running KnotDB engine runtime in-process.
+// Engine represents a running MycelDB engine runtime in-process.
 type Engine interface {
 	Open(cfg EngineConfig) error
 	Ready(ctx context.Context) error
@@ -101,11 +101,11 @@ type Engine interface {
 	Close() error
 }
 
-// NewEngine opens (or creates) a local embedded KnotDB runtime.
+// NewEngine opens (or creates) a local embedded MycelDB runtime.
 func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager spaces.Manager, templateManager storetemplate.Manager, accessManager acl.Manager) (Engine, error) {
 	return engineinternal.NewEngine(cfg, userManager, spaceManager, templateManager, accessManager)
 }
 
 // ResolveDataDir returns the explicit data directory when non-empty, otherwise
-// the value of KNOTDB_DATA_DIR. A leading ~/ is expanded for convenience.
+// the value of MYCELDB_DATA_DIR. A leading ~/ is expanded for convenience.
 func ResolveDataDir(explicit string) string { return engineinternal.ResolveDataDir(explicit) }

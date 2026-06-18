@@ -1,6 +1,6 @@
 package internal
 
-import domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+import domainspace "github.com/myceldb/mycel/domain/space"
 
 // OpenSessionInput defines session-open request payload.
 type OpenSessionInput struct {

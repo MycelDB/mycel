@@ -10,17 +10,17 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	storeuser "martinbeauvais.com/mbgit/knotbase/knotdb/store/user"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
+	"github.com/myceldb/mycel/domain/access"
+	"github.com/myceldb/mycel/domain/graph"
+	"github.com/myceldb/mycel/domain/identity"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	domainsession "github.com/myceldb/mycel/session"
+	storeuser "github.com/myceldb/mycel/store/user"
 )
 
 func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb")
+	dataDir := filepath.Join(tmp, "mycel")
 
 	engine, err := DefaultEngine(EngineConfig{
 		DataDir:         dataDir,
@@ -41,7 +41,7 @@ func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
 
 func TestRuntimeEngine_OpenMethod(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-open")
+	dataDir := filepath.Join(tmp, "mycel-open")
 
 	engine := &defaultEngine{}
 	if err := engine.Open(EngineConfig{
@@ -109,7 +109,7 @@ func TestRuntimeEngine_OpenMethod_CreateIfMissingTrueRequiresAdminCredentials(t 
 
 func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-auth")
+	dataDir := filepath.Join(tmp, "mycel-auth")
 
 	engine := &defaultEngine{}
 	if err := engine.Open(EngineConfig{
@@ -142,7 +142,7 @@ func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 	if claims.JTI == "" {
 		t.Fatal("expected non-empty claims JTI")
 	}
-	if claims.Iss != "knotdb" || claims.Aud != "knotdb" {
+	if claims.Iss != "mycel" || claims.Aud != "mycel" {
 		t.Fatalf("unexpected claims issuer/audience: %s/%s", claims.Iss, claims.Aud)
 	}
 	if claims.UserRef != identity.UserRef("admin@example.com") {
@@ -161,7 +161,7 @@ func TestRuntimeEngine_Authenticate_Success(t *testing.T) {
 
 func TestRuntimeEngine_Authenticate_InvalidPassword(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-auth-invalid")
+	dataDir := filepath.Join(tmp, "mycel-auth-invalid")
 
 	engine := &defaultEngine{}
 	if err := engine.Open(EngineConfig{
@@ -188,7 +188,7 @@ func TestRuntimeEngine_Authenticate_InvalidPassword(t *testing.T) {
 
 func TestRuntimeEngine_GrantSystemRoleAndRevokeLastSuperuserFails(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-system-roles")
+	dataDir := filepath.Join(tmp, "mycel-system-roles")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -233,7 +233,7 @@ func TestRuntimeEngine_GrantSystemRoleAndRevokeLastSuperuserFails(t *testing.T) 
 
 func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-create-space")
+	dataDir := filepath.Join(tmp, "mycel-create-space")
 
 	engine := &defaultEngine{}
 	if err := engine.Open(EngineConfig{
@@ -278,7 +278,7 @@ func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 
 func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutSystemRole(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-create-space-no-scope")
+	dataDir := filepath.Join(tmp, "mycel-create-space-no-scope")
 
 	engine := &defaultEngine{}
 	if err := engine.Open(EngineConfig{
@@ -318,7 +318,7 @@ func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutSystemRole(t *testing.T) {
 
 func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-add-node")
+	dataDir := filepath.Join(tmp, "mycel-add-node")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -352,7 +352,7 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	defer session.Close()
 
 	node, err := session.AddNode(ctx, domainsession.AddNodeInput{
-		Content: "Hello Knotbase",
+		Content: "Hello MycelDB",
 		Props: map[string]any{
 			"kind": "note",
 		},
@@ -360,7 +360,7 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected add node success, got error: %v", err)
 	}
-	if node.ID == uuid.Nil || node.Content != "Hello Knotbase" || node.Props["kind"] != "note" {
+	if node.ID == uuid.Nil || node.Content != "Hello MycelDB" || node.Props["kind"] != "note" {
 		t.Fatalf("unexpected node: %#v", node)
 	}
 	if node.ID.Version() != 7 {
@@ -374,7 +374,7 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 	if got.ID != node.ID || got.Content != node.Content || got.Props["kind"] != "note" {
 		t.Fatalf("unexpected persisted node: %#v", got)
 	}
-	if _, err := os.Stat(filepath.Join(dataDir, "graphs", spaceInfo.SpaceID.String(), "manifest.knot")); err != nil {
+	if _, err := os.Stat(filepath.Join(dataDir, "graphs", spaceInfo.SpaceID.String(), "manifest.mycel")); err != nil {
 		t.Fatalf("expected graph manifest to exist: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "graphs", spaceInfo.SpaceID.String(), "segments", "nodes-000001.kseg")); err != nil {
@@ -384,7 +384,7 @@ func TestRuntimeEngine_AddNodeToNewSpace(t *testing.T) {
 
 func TestRuntimeEngine_SpaceAccessReadOnlyUserCannotWrite(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-access-read-only")
+	dataDir := filepath.Join(tmp, "mycel-access-read-only")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -451,7 +451,7 @@ func TestRuntimeEngine_SpaceAccessReadOnlyUserCannotWrite(t *testing.T) {
 
 func TestRuntimeEngine_RevokeLastSpaceAdminFails(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-access-last-admin")
+	dataDir := filepath.Join(tmp, "mycel-access-last-admin")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -488,7 +488,7 @@ func TestRuntimeEngine_RevokeLastSpaceAdminFails(t *testing.T) {
 
 func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-template-node")
+	dataDir := filepath.Join(tmp, "mycel-template-node")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -574,7 +574,7 @@ func TestRuntimeEngine_ImportTemplatesAndValidateNode(t *testing.T) {
 
 func TestRuntimeEngine_OpenSession_Success(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-open-session")
+	dataDir := filepath.Join(tmp, "mycel-open-session")
 
 	engine := &defaultEngine{}
 	if err := engine.Open(EngineConfig{
@@ -656,7 +656,7 @@ func nodeTemplateDocument() domainsession.ImportDocument {
 }
 func TestRuntimeEngine_DeleteUserCascadesOwnedSpaces(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-delete-user-cascade")
+	dataDir := filepath.Join(tmp, "mycel-delete-user-cascade")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -710,7 +710,7 @@ func TestRuntimeEngine_DeleteUserCascadesOwnedSpaces(t *testing.T) {
 
 func TestRuntimeEngine_DeleteNodeRequiresRecursiveForChildren(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-delete-node-recursive")
+	dataDir := filepath.Join(tmp, "mycel-delete-node-recursive")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -753,7 +753,7 @@ func TestRuntimeEngine_DeleteNodeRequiresRecursiveForChildren(t *testing.T) {
 }
 func TestRuntimeEngine_BlobNodeLifecycleAndDeleteSpaceCleansBlobs(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-blob-lifecycle")
+	dataDir := filepath.Join(tmp, "mycel-blob-lifecycle")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -808,7 +808,7 @@ func TestRuntimeEngine_BlobNodeLifecycleAndDeleteSpaceCleansBlobs(t *testing.T) 
 
 func TestRuntimeEngine_DeleteSpaceInvalidatesOpenSession(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-delete-space-invalidates-session")
+	dataDir := filepath.Join(tmp, "mycel-delete-space-invalidates-session")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -837,7 +837,7 @@ func TestRuntimeEngine_DeleteSpaceInvalidatesOpenSession(t *testing.T) {
 }
 func TestRuntimeEngine_ListUsersAndSpaces(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-list-users-spaces")
+	dataDir := filepath.Join(tmp, "mycel-list-users-spaces")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -892,7 +892,7 @@ func hasSpaceID(spaces []domainspace.Space, id domainspace.SpaceID) bool {
 }
 func TestRuntimeEngine_ListSystemAccess(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-list-system-access")
+	dataDir := filepath.Join(tmp, "mycel-list-system-access")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -913,7 +913,7 @@ func TestRuntimeEngine_ListSystemAccess(t *testing.T) {
 }
 func TestRuntimeEngine_ImportAndListTemplates(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-list-templates")
+	dataDir := filepath.Join(tmp, "mycel-list-templates")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -948,7 +948,7 @@ func TestRuntimeEngine_ImportAndListTemplates(t *testing.T) {
 }
 func TestRuntimeEngine_OpenExistingStoreMissingSpacesFails(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-missing-spaces")
+	dataDir := filepath.Join(tmp, "mycel-missing-spaces")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -982,7 +982,7 @@ func TestRuntimeEngine_OpenExistingStoreMissingSpacesFails(t *testing.T) {
 
 func TestRuntimeEngine_OpenExistingStoreWithoutCreateIfMissing(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-existing-no-create")
+	dataDir := filepath.Join(tmp, "mycel-existing-no-create")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -1003,7 +1003,7 @@ func TestRuntimeEngine_OpenExistingStoreWithoutCreateIfMissing(t *testing.T) {
 }
 func TestRuntimeEngine_ListUpdateUpsertNodes(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-node-update-upsert")
+	dataDir := filepath.Join(tmp, "mycel-node-update-upsert")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -1062,7 +1062,7 @@ func TestRuntimeEngine_ListUpdateUpsertNodes(t *testing.T) {
 
 func TestRuntimeEngine_UpdateNodeMissingAndReadOnly(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-node-update-errors")
+	dataDir := filepath.Join(tmp, "mycel-node-update-errors")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}
@@ -1113,7 +1113,7 @@ func TestRuntimeEngine_UpdateNodeMissingAndReadOnly(t *testing.T) {
 
 func TestRuntimeEngine_ApplyGraphBatchMutations(t *testing.T) {
 	tmp := t.TempDir()
-	dataDir := filepath.Join(tmp, "knotdb-apply-graph")
+	dataDir := filepath.Join(tmp, "mycel-apply-graph")
 	ctx := context.Background()
 
 	engine := &defaultEngine{}

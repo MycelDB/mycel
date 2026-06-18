@@ -15,8 +15,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
+	"github.com/myceldb/mycel/domain/identity"
+	"github.com/myceldb/mycel/internal/filestore"
 )
 
 const usersStoreFile = "users.json"
@@ -67,7 +67,7 @@ func (m *defaultManager) Init(ctx context.Context, location string, encryptionKe
 	m.key = key
 	m.encrypted = encrypted
 	if !encrypted {
-		log.Printf("[knotdb/user] warning: no encryption key provided; user store is plaintext")
+		log.Printf("[mycel/user] warning: no encryption key provided; user store is plaintext")
 	}
 
 	if _, err := os.Stat(m.storePath); err != nil {
@@ -259,7 +259,7 @@ func (m *defaultManager) encodeStore(users []storedUser) ([]byte, error) {
 	}
 	ciphertext := gcm.Seal(nil, nonce, plain, nil)
 	enc := encryptedStore{
-		Format:    "knotdb-usermgmt-v1",
+		Format:    "mycel-usermgmt-v1",
 		NonceB64:  base64.StdEncoding.EncodeToString(nonce),
 		CipherB64: base64.StdEncoding.EncodeToString(ciphertext),
 	}
@@ -276,7 +276,7 @@ func (m *defaultManager) decodeStore(raw []byte) ([]storedUser, error) {
 		if err := json.Unmarshal(raw, &enc); err != nil {
 			return nil, fmt.Errorf("%w: invalid encrypted store format", ErrDecryptFailed)
 		}
-		if enc.Format != "knotdb-usermgmt-v1" {
+		if enc.Format != "mycel-usermgmt-v1" {
 			return nil, fmt.Errorf("%w: unsupported encrypted store format", ErrDecryptFailed)
 		}
 		nonce, err := base64.StdEncoding.DecodeString(enc.NonceB64)
@@ -308,7 +308,7 @@ func (m *defaultManager) decodeStore(raw []byte) ([]storedUser, error) {
 
 	// plaintext mode: tolerate existing encrypted store but return explicit decrypt error
 	var maybeEnc encryptedStore
-	if err := json.Unmarshal(raw, &maybeEnc); err == nil && maybeEnc.Format == "knotdb-usermgmt-v1" {
+	if err := json.Unmarshal(raw, &maybeEnc); err == nil && maybeEnc.Format == "mycel-usermgmt-v1" {
 		return nil, ErrDecryptFailed
 	}
 	var users []storedUser

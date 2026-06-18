@@ -1,6 +1,6 @@
 # Graph Segment Store
 
-KnotDB graph data is stored in local binary segment files under each space directory.
+MycelDB graph data is stored in local binary segment files under each space directory.
 
 ## Goals
 
@@ -14,14 +14,14 @@ KnotDB graph data is stored in local binary segment files under each space direc
 
 ```text
 graphs/<space_id>/
-  manifest.knot
+  manifest.mycel
   segments/
     txns-000001.kseg
     nodes-000001.kseg
     edges-000001.kseg
 ```
 
-`manifest.knot` records the active segment files and the segment lists used for index rebuilds.
+`manifest.mycel` records the active segment files and the segment lists used for index rebuilds.
 
 ## Records
 

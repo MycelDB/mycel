@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/myceldb/mycel/domain/graph"
+	mycelengine "github.com/myceldb/mycel/engine"
+	"github.com/myceldb/mycel/internal/cli/app"
+	domainsession "github.com/myceldb/mycel/session"
 	"github.com/spf13/cobra"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
-	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
 )
 
 func NewAddNodeCommand(a *app.App) *cobra.Command {
@@ -46,7 +46,7 @@ func NewAddNodeCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := a.Engine.OpenSession(cmd.Context(), knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
 			if err != nil {
 				return err
 			}
@@ -91,7 +91,7 @@ func NewGetNodeCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := a.Engine.OpenSession(cmd.Context(), knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
 			if err != nil {
 				return err
 			}
@@ -122,7 +122,7 @@ func NewListNodesCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := a.Engine.OpenSession(cmd.Context(), knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
 			if err != nil {
 				return err
 			}
@@ -175,7 +175,7 @@ func NewDeleteNodeCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := a.Engine.OpenSession(cmd.Context(), knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
 			if err != nil {
 				return err
 			}

@@ -11,16 +11,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
-	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/store/acl"
-	storeembedding "martinbeauvais.com/mbgit/knotbase/knotdb/store/embedding"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/store/spaces"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/store/user"
+	"github.com/myceldb/mycel/domain/access"
+	"github.com/myceldb/mycel/domain/identity"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/graphstorage"
+	domainsession "github.com/myceldb/mycel/session"
+	"github.com/myceldb/mycel/store/acl"
+	storeembedding "github.com/myceldb/mycel/store/embedding"
+	"github.com/myceldb/mycel/store/spaces"
+	storetemplate "github.com/myceldb/mycel/store/template"
+	"github.com/myceldb/mycel/store/user"
 )
 
 var (
@@ -67,7 +67,7 @@ type authClaims struct {
 	Scopes   []string
 }
 
-// NewEngine opens (or creates) a local embedded KnotDB runtime.
+// NewEngine opens (or creates) a local embedded MycelDB runtime.
 //
 // If userManager, spaceManager, templateManager, or accessManager is nil, default file-backed managers are used.
 func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager spaces.Manager, templateManager storetemplate.Manager, accessManager acl.Manager) (*defaultEngine, error) {
@@ -78,7 +78,7 @@ func NewEngine(cfg EngineConfig, userManager user.Manager, spaceManager spaces.M
 	return e, nil
 }
 
-// DefaultEngine opens (or creates) a local embedded KnotDB runtime.
+// DefaultEngine opens (or creates) a local embedded MycelDB runtime.
 // Deprecated: use NewEngine(cfg, userManager, spaceManager, templateManager, accessManager) instead.
 func DefaultEngine(cfg EngineConfig) (*defaultEngine, error) {
 	return NewEngine(cfg, nil, nil, nil, nil)
@@ -279,9 +279,9 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 		return AuthResult{}, err
 	}
 	claims := authClaims{
-		Iss:      "knotdb",
+		Iss:      "mycel",
 		Sub:      "user:" + uid,
-		Aud:      "knotdb",
+		Aud:      "mycel",
 		JTI:      uuid.NewString(),
 		IAT:      now,
 		EXP:      exp,

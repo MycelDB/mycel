@@ -13,7 +13,7 @@ Graph nodes are pure domain records in `domain/graph`. Node operations are acces
 
 ## Timestamps
 
-`graph.Node` includes `CreatedAt` and `UpdatedAt` timestamps. Session create paths set both timestamps. Session update/upsert paths preserve `CreatedAt` and advance `UpdatedAt`. These timestamps are persisted in the binary graph store and are used by PKM views for last-modified sorting.
+`graph.Node` includes `CreatedAt` and `UpdatedAt` timestamps. Session create paths set both timestamps. Session update/upsert paths preserve `CreatedAt` and advance `UpdatedAt`. These timestamps are persisted in the binary graph store and are available to application views for last-modified sorting.
 
 ## Validation
 

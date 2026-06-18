@@ -2,7 +2,7 @@ package graphstorage
 
 import (
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"github.com/myceldb/mycel/domain/graph"
 )
 
 type localTxn struct {

@@ -1,6 +1,6 @@
-# KnotDB CLI
+# MycelDB CLI
 
-`knotdb` is a Cobra-based command-line client for the embedded KnotDB engine.
+`mycel` is a Cobra-based command-line client for the embedded MycelDB engine.
 
 It supports:
 
@@ -10,30 +10,30 @@ It supports:
 Build from the module root:
 
 ```sh
-cd knot_db/knot_db
+cd mycel
 make build
 ```
 
 Or run without installing:
 
 ```sh
-go run ./cmd/knotdb --help
+go run ./cmd/mycel --help
 ```
 
-Set the shared KnotDB data directory, or pass `-d/--data-dir` on each command:
+Set the shared MycelDB data directory, or pass `-d/--data-dir` on each command:
 
 ```sh
-export KNOTDB_DATA_DIR=~/knot_data
+export MYCELDB_DATA_DIR=~/mycel_data
 ```
 
 ## Configuration
 
-KnotDB CLI configuration precedence is: built-in defaults, optional YAML file, environment variables, then command-line flags.
+MycelDB CLI configuration precedence is: built-in defaults, optional YAML file, environment variables, then command-line flags.
 
-Use `--config` or `KNOTDB_CONFIG` to load a YAML file:
+Use `--config` or `MYCELDB_CONFIG` to load a YAML file:
 
 ```yaml
-data_dir: ~/knot_data
+data_dir: ~/mycel_data
 output: text
 security:
   user_store_encryption_key_b64: ""
@@ -52,12 +52,12 @@ storage:
       application/zip: 0
 ```
 
-Blob upload limits use `-1` for unlimited. Exact MIME overrides can use `0` to disallow that MIME type. The existing `KNOTDB_DATA_DIR` environment variable remains supported, and additional environment aliases include `KNOTDB_AUTH_ACCESS_TOKEN_TTL`, `KNOTDB_USER_STORE_ENCRYPTION_KEY_B64`, and `KNOTDB_STORAGE_BLOBS_MAX_*_BYTES`.
+Blob upload limits use `-1` for unlimited. Exact MIME overrides can use `0` to disallow that MIME type. Environment aliases include `MYCELDB_DATA_DIR`, `MYCELDB_AUTH_ACCESS_TOKEN_TTL`, `MYCELDB_USER_STORE_ENCRYPTION_KEY_B64`, and `MYCELDB_STORAGE_BLOBS_MAX_*_BYTES`.
 
 Initialize a data directory once before running normal commands:
 
 ```sh
-knotdb -d ./data -u admin -p change-me init
+mycel -d ./data -u admin -p change-me init
 ```
 
 `init` bootstraps the store using the supplied `-u/-p` credentials as the initial superuser.
@@ -65,31 +65,31 @@ knotdb -d ./data -u admin -p change-me init
 All other non-REPL commands require an initialized data directory and credentials:
 
 ```sh
-knotdb -d ./data -u admin -p change-me space add demo
+mycel -d ./data -u admin -p change-me space add demo
 ```
 
 ## REPL
 
 ```sh
-knotdb -d ./data repl
+mycel -d ./data repl
 ```
 
 Inside the REPL, use `login` and `logout`:
 
 ```text
-knotdb> login admin change-me
-knotdb> space add demo
-knotdb> logout
-knotdb> exit
+mycel> login admin change-me
+mycel> space add demo
+mycel> logout
+mycel> exit
 ```
 
 Set a default working space for space-specific commands:
 
 ```text
-knotdb> space set <space_id>
-knotdb> node add --content "hello"
-knotdb> template list
-knotdb> space unset
+mycel> space set <space_id>
+mycel> node add --content "hello"
+mycel> template list
+mycel> space unset
 ```
 
 `login` and `logout` are REPL-only commands. `space set` and `space unset` are useful in the REPL because they update the current in-memory CLI session.
@@ -99,9 +99,9 @@ knotdb> space unset
 ### Users
 
 ```sh
-knotdb -d ./data -u admin -p change-me user add --ref bob --new-password secret
-knotdb -d ./data -u admin -p change-me user list
-knotdb -d ./data -u admin -p change-me user delete <user_id>
+mycel -d ./data -u admin -p change-me user add --ref bob --new-password secret
+mycel -d ./data -u admin -p change-me user list
+mycel -d ./data -u admin -p change-me user delete <user_id>
 ```
 
 Deleting a user is a hard delete and also deletes spaces owned by that user and all associated constructs.
@@ -111,17 +111,17 @@ Deleting a user is a hard delete and also deletes spaces owned by that user and 
 System ACL:
 
 ```sh
-knotdb -d ./data -u admin -p change-me acl grant system --user-id <user_id> --role user_admin
-knotdb -d ./data -u admin -p change-me acl revoke system --user-id <user_id>
-knotdb -d ./data -u admin -p change-me acl list system
+mycel -d ./data -u admin -p change-me acl grant system --user-id <user_id> --role user_admin
+mycel -d ./data -u admin -p change-me acl revoke system --user-id <user_id>
+mycel -d ./data -u admin -p change-me acl list system
 ```
 
 Space ACL:
 
 ```sh
-knotdb -d ./data -u admin -p change-me acl grant space --space-id <space_id> --user-id <user_id> --permission read
-knotdb -d ./data -u admin -p change-me acl revoke space --space-id <space_id> --user-id <user_id>
-knotdb -d ./data -u admin -p change-me acl list space --space-id <space_id>
+mycel -d ./data -u admin -p change-me acl grant space --space-id <space_id> --user-id <user_id> --permission read
+mycel -d ./data -u admin -p change-me acl revoke space --space-id <space_id> --user-id <user_id>
+mycel -d ./data -u admin -p change-me acl list space --space-id <space_id>
 ```
 
 Roles: `superuser`, `user_admin`, `operator`.
@@ -131,9 +131,9 @@ Permissions: `read`, `write`, `admin`.
 ### Spaces
 
 ```sh
-knotdb -d ./data -u admin -p change-me space add demo
-knotdb -d ./data -u admin -p change-me space list
-knotdb -d ./data -u admin -p change-me space delete <space_id>
+mycel -d ./data -u admin -p change-me space add demo
+mycel -d ./data -u admin -p change-me space list
+mycel -d ./data -u admin -p change-me space delete <space_id>
 ```
 
 Deleting a space is a hard delete and removes metadata, ACLs, templates, and graph files associated with the space.
@@ -143,28 +143,28 @@ Deleting a space is a hard delete and removes metadata, ACLs, templates, and gra
 Import templates from a JSON file:
 
 ```sh
-knotdb -d ./data -u admin -p change-me template import --space-id <space_id> --file templates.json
+mycel -d ./data -u admin -p change-me template import --space-id <space_id> --file templates.json
 ```
 
 Import templates from stdin:
 
 ```sh
-cat templates.json | knotdb -d ./data -u admin -p change-me template import --space-id <space_id> --file -
+cat templates.json | mycel -d ./data -u admin -p change-me template import --space-id <space_id> --file -
 ```
 
 List templates for a space:
 
 ```sh
-knotdb -d ./data -u admin -p change-me template list --space-id <space_id>
+mycel -d ./data -u admin -p change-me template list --space-id <space_id>
 ```
 
 ### Nodes
 
 ```sh
-knotdb -d ./data -u admin -p change-me node add --space-id <space_id> --content "hello" --props-json '{"tag":"demo"}'
-knotdb -d ./data -u admin -p change-me node list --space-id <space_id> --contains hello --limit 20
-knotdb -d ./data -u admin -p change-me node get --space-id <space_id> <node_id>
-knotdb -d ./data -u admin -p change-me node delete --space-id <space_id> <node_id>
+mycel -d ./data -u admin -p change-me node add --space-id <space_id> --content "hello" --props-json '{"tag":"demo"}'
+mycel -d ./data -u admin -p change-me node list --space-id <space_id> --contains hello --limit 20
+mycel -d ./data -u admin -p change-me node get --space-id <space_id> <node_id>
+mycel -d ./data -u admin -p change-me node delete --space-id <space_id> <node_id>
 ```
 
 Deleting a node removes the node and incident edges. If the node has descendants, pass `--recursive`.
@@ -174,18 +174,18 @@ Deleting a node removes the node and incident edges. If the node has descendants
 Create a profile, generate one node embedding, or backfill a selected set of nodes:
 
 ```sh
-knotdb -d ./data -u admin -p change-me embeddings profiles add \
+mycel -d ./data -u admin -p change-me embeddings profiles add \
   --name pages \
   --provider openai \
   --model openai/text-embedding-3-small \
   --source subtree
 
-knotdb -d ./data -u admin -p change-me embeddings generate \
+mycel -d ./data -u admin -p change-me embeddings generate \
   --space-id <space_id> \
   --node <node_id> \
   --profile <profile_id>
 
-knotdb -d ./data -u admin -p change-me embeddings generate \
+mycel -d ./data -u admin -p change-me embeddings generate \
   --space-id <space_id> \
   --profile <profile_id> \
   --template-key logseq.page \

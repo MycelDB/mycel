@@ -1,6 +1,6 @@
 # Edge Structures
 
-This document describes the graph edge structures exposed by `martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph`.
+This document describes the graph edge structures exposed by `github.com/myceldb/mycel/domain/graph`.
 
 ## `EdgeKind`
 `EdgeKind` defines **graph-structural semantics** only (not rendering behavior).
@@ -22,7 +22,7 @@ Canonical persisted edge model.
 | `Props` | `map[string]any` | Optional edge metadata/extensions, such as `order` on `contains` edges. |
 
 ## Edge operations
-Write payloads for edge operations live in `martinbeauvais.com/mbgit/knotbase/knotdb/session`, for example `session.AddEdgeInput`.
+Write payloads for edge operations live in `github.com/myceldb/mycel/session`, for example `session.AddEdgeInput`.
 
 | Field | Type | Required | Description |
 |---|---|---:|---|
@@ -49,7 +49,7 @@ Write payloads for edge operations live in `martinbeauvais.com/mbgit/knotbase/kn
 
 ## References
 
-`references` edges represent graph-native cross-node links. PKM importers use these for Logseq page and block references:
+`references` edges represent graph-native cross-node links. Importers can use these for page and block references:
 
 ```text
 entry --references--> page

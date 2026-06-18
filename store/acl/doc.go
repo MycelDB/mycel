@@ -1,2 +1,2 @@
-// Package acl provides standalone space access control for KnotDB.
+// Package acl provides standalone space access control for MycelDB.
 package acl

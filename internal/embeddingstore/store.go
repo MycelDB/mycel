@@ -14,16 +14,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	"github.com/myceldb/mycel/domain/graph"
+	domainspace "github.com/myceldb/mycel/domain/space"
 )
 
 const (
 	manifestFile     = "manifest.kemb"
 	segmentDir       = "segments"
 	activeSegment    = "embeddings-000001.kvec"
-	manifestFormat   = "knotdb-embeddings-v1"
+	manifestFormat   = "mycel-embeddings-v1"
 	segmentMagic     = "KEMBSEG1"
 	recordMagic      = uint32(0x4b524543) // KREC
 	segmentVersion   = uint16(1)

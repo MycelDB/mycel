@@ -1,6 +1,6 @@
 package internal
 
-import "martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+import "github.com/myceldb/mycel/domain/identity"
 
 // CreateUserInput defines a user creation request payload.
 type CreateUserInput struct {

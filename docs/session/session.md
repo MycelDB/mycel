@@ -1,8 +1,8 @@
 # Sessions
 
-A KnotDB session is a scoped interaction with one space. It is opened by `engine.Engine.OpenSession` and carries the authenticated user's read, write, and admin permissions for that space.
+A MycelDB session is a scoped interaction with one space. It is opened by `engine.Engine.OpenSession` and carries the authenticated user's read, write, and admin permissions for that space.
 
-The public session API lives in `martinbeauvais.com/mbgit/knotbase/knotdb/session`.
+The public session API lives in `github.com/myceldb/mycel/session`.
 
 ## Responsibilities
 

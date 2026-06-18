@@ -6,12 +6,12 @@ import (
 	"strings"
 )
 
-// EnvDataDir is the environment variable used by KnotDB tools and services to
-// locate the KnotDB data directory when no explicit data directory is supplied.
-const EnvDataDir = "KNOTDB_DATA_DIR"
+// EnvDataDir is the environment variable used by MycelDB tools and services to
+// locate the MycelDB data directory when no explicit data directory is supplied.
+const EnvDataDir = "MYCELDB_DATA_DIR"
 
 // ResolveDataDir returns the explicit data directory when non-empty, otherwise
-// the value of KNOTDB_DATA_DIR. A leading ~/ is expanded for convenience.
+// the value of MYCELDB_DATA_DIR. A leading ~/ is expanded for convenience.
 func ResolveDataDir(explicit string) string {
 	dataDir := strings.TrimSpace(explicit)
 	if dataDir == "" {

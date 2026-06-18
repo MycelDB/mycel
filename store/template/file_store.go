@@ -11,9 +11,9 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/filestore"
+	"github.com/myceldb/mycel/domain/graph"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/filestore"
 )
 
 const (

@@ -1,6 +1,6 @@
 # User Structures
 
-This document describes user identity types exposed by `martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity`.
+This document describes user identity types exposed by `github.com/myceldb/mycel/domain/identity`.
 
 ## Identity model
 Each user has two identifiers:

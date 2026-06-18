@@ -1,8 +1,8 @@
-# KnotDB
+# MycelDB
 
-Go library and CLI for KnotDB graph spaces.
+Go library and CLI for MycelDB graph spaces.
 
-Module path: `martinbeauvais.com/mbgit/knotbase/knotdb`.
+Module path: `github.com/myceldb/mycel`.
 
 ## Layout
 
@@ -24,7 +24,7 @@ See [`docs/architecture.md`](docs/architecture.md) for a navigation guide, impor
 - `internal/session/filesession/`: file-backed session implementation
 - `internal/graphstorage/`, `internal/filestore/`: low-level persistence
 - `internal/cli/`: CLI command implementation
-- `cmd/knotdb/`: CLI entrypoint binary
+- `cmd/mycel/`: CLI entrypoint binary
 
 **Documentation:**
 - `docs/`: API/reference documentation
@@ -49,17 +49,17 @@ Build and run the operator CLI from the module root:
 
 ```sh
 make build
-bin/knotdb --help
+bin/mycel --help
 ```
 
 See `docs/cli.md` for command reference.
 
 ## Data directory
 
-KnotDB tools and services use `KNOTDB_DATA_DIR` as the shared default data directory when no explicit data directory is supplied.
+MycelDB tools and services use `MYCELDB_DATA_DIR` as the shared default data directory when no explicit data directory is supplied.
 
 ```sh
-export KNOTDB_DATA_DIR=~/knot_data
+export MYCELDB_DATA_DIR=~/mycel_data
 ```
 
 Explicit `engine.EngineConfig.DataDir` values still take precedence.

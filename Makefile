@@ -1,6 +1,6 @@
 .PHONY: test test-verbose test-watch build run-cli
 
-BINARY ?= knotdb
+BINARY ?= mycel
 
 test:
 	go test ./...
@@ -14,7 +14,7 @@ test-watch:
 	watchexec -e go -- "go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
 
 build:
-	go build -o bin/$(BINARY) ./cmd/knotdb
+	go build -o bin/$(BINARY) ./cmd/mycel
 
 run-cli:
-	go run ./cmd/knotdb
+	go run ./cmd/mycel

@@ -3,10 +3,10 @@ package cmd
 import (
 	"fmt"
 
+	mycelengine "github.com/myceldb/mycel/engine"
+	"github.com/myceldb/mycel/internal/cli/app"
+	domainsession "github.com/myceldb/mycel/session"
 	"github.com/spf13/cobra"
-	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
-	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
 )
 
 func NewAddTemplateCommand(a *app.App) *cobra.Command {
@@ -30,7 +30,7 @@ func NewAddTemplateCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := a.Engine.OpenSession(cmd.Context(), knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
 			if err != nil {
 				return err
 			}
@@ -65,7 +65,7 @@ func NewListTemplatesCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := a.Engine.OpenSession(cmd.Context(), knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
 			if err != nil {
 				return err
 			}

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
 )
 
 //go:embed embedding_catalog.json

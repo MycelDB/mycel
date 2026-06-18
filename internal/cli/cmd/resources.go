@@ -1,8 +1,8 @@
 package cmd
 
 import (
+	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/spf13/cobra"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
 )
 
 func NewUserCommand(a *app.App) *cobra.Command {

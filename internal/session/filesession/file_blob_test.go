@@ -8,10 +8,10 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	"github.com/myceldb/mycel/domain/graph"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	sessionapi "github.com/myceldb/mycel/session/api"
+	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
 // pngHeader is a minimal payload http.DetectContentType sniffs as image/png.

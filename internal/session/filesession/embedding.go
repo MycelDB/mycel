@@ -6,13 +6,13 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	internalembedding "martinbeauvais.com/mbgit/knotbase/knotdb/internal/embedding"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/embedding/catalog"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/embedding/provider"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/embeddingstore"
-	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	"github.com/myceldb/mycel/domain/graph"
+	internalembedding "github.com/myceldb/mycel/internal/embedding"
+	"github.com/myceldb/mycel/internal/embedding/catalog"
+	"github.com/myceldb/mycel/internal/embedding/provider"
+	"github.com/myceldb/mycel/internal/embeddingstore"
+	sessionapi "github.com/myceldb/mycel/session/api"
 )
 
 type resolvedEmbeddingConfig struct {

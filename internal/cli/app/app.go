@@ -9,11 +9,11 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
-	knotconfig "martinbeauvais.com/mbgit/knotbase/knotdb/internal/config"
-	domainsession "martinbeauvais.com/mbgit/knotbase/knotdb/session"
+	"github.com/myceldb/mycel/domain/identity"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	mycelengine "github.com/myceldb/mycel/engine"
+	mycelconfig "github.com/myceldb/mycel/internal/config"
+	domainsession "github.com/myceldb/mycel/session"
 )
 
 // App holds process/REPL state shared by commands.
@@ -32,10 +32,10 @@ type App struct {
 	BlobMaxAudioBytes         int64
 	BlobMaxVideoBytes         int64
 	BlobMaxOtherBytes         int64
-	Engine                    knotengine.Engine
-	Token                     knotengine.AccessToken
+	Engine                    mycelengine.Engine
+	Token                     mycelengine.AccessToken
 	CurrentSpaceID            *domainspace.SpaceID
-	Config                    knotconfig.Config
+	Config                    mycelconfig.Config
 }
 
 func DefaultOutput(v string) string {
@@ -50,15 +50,15 @@ func (a *App) EnsureEngine(ctx context.Context) error {
 		return nil
 	}
 	if strings.TrimSpace(a.Config.DataDir) == "" {
-		cfg, err := knotconfig.Load(knotconfig.Options{ConfigFile: a.ConfigFile})
+		cfg, err := mycelconfig.Load(mycelconfig.Options{ConfigFile: a.ConfigFile})
 		if err != nil {
 			return err
 		}
 		a.Config = cfg
 	}
-	a.DataDir = knotengine.ResolveDataDir(firstNonEmpty(a.DataDir, a.Config.DataDir))
+	a.DataDir = mycelengine.ResolveDataDir(firstNonEmpty(a.DataDir, a.Config.DataDir))
 	if strings.TrimSpace(a.DataDir) == "" {
-		return fmt.Errorf("--data-dir/-d is required or %s must be set", knotengine.EnvDataDir)
+		return fmt.Errorf("--data-dir/-d is required or %s must be set", mycelengine.EnvDataDir)
 	}
 	if strings.TrimSpace(a.UserRef) == "" || strings.TrimSpace(a.Password) == "" {
 		return fmt.Errorf("--username/-u and --password/-p are required outside a logged-in REPL")
@@ -66,7 +66,7 @@ func (a *App) EnsureEngine(ctx context.Context) error {
 	engineCfg := a.Config.EngineConfig()
 	engineCfg.DataDir = a.DataDir
 	engineCfg.CreateIfMissing = false
-	eng, err := knotengine.NewEngine(engineCfg, nil, nil, nil, nil)
+	eng, err := mycelengine.NewEngine(engineCfg, nil, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -74,14 +74,14 @@ func (a *App) EnsureEngine(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) AccessToken(ctx context.Context) (knotengine.AccessToken, error) {
+func (a *App) AccessToken(ctx context.Context) (mycelengine.AccessToken, error) {
 	if a.Token != "" {
 		return a.Token, nil
 	}
 	if err := a.EnsureEngine(ctx); err != nil {
 		return "", err
 	}
-	res, err := a.Engine.Authenticate(ctx, knotengine.AuthInput{UserRef: identity.UserRef(a.UserRef), Password: a.Password})
+	res, err := a.Engine.Authenticate(ctx, mycelengine.AuthInput{UserRef: identity.UserRef(a.UserRef), Password: a.Password})
 	if err != nil {
 		return "", err
 	}
@@ -103,7 +103,7 @@ func (a *App) SetCurrentSpace(ctx context.Context, spaceID domainspace.SpaceID) 
 	if err != nil {
 		return err
 	}
-	sess, err := a.Engine.OpenSession(ctx, knotengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+	sess, err := a.Engine.OpenSession(ctx, mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
 	if err != nil {
 		return err
 	}

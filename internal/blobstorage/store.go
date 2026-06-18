@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"github.com/myceldb/mycel/domain/graph"
 )
 
 var (

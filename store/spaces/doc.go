@@ -1,2 +1,2 @@
-// Package spaces provides standalone space management for KnotDB.
+// Package spaces provides standalone space management for MycelDB.
 package spaces

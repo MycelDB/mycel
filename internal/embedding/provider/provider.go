@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
 )
 
 type EmbedInput struct {

@@ -2,7 +2,7 @@ package graph
 
 import (
 	"github.com/google/uuid"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
+	domainspace "github.com/myceldb/mycel/domain/space"
 )
 
 // TemplateID uniquely identifies a template definition.

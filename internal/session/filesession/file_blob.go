@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/blobstorage"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
-	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	"github.com/myceldb/mycel/domain/graph"
+	"github.com/myceldb/mycel/internal/blobstorage"
+	"github.com/myceldb/mycel/internal/graphstorage"
+	sessionapi "github.com/myceldb/mycel/session/api"
+	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
 // System blob template identity. It is the fallback template applied by

@@ -1,4 +1,4 @@
-module martinbeauvais.com/mbgit/knotbase/knotdb
+module github.com/myceldb/mycel
 
 go 1.23.0
 

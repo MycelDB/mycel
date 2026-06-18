@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/cmd"
+	"github.com/myceldb/mycel/internal/cli/cmd"
 )
 
 func main() {

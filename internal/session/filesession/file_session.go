@@ -12,15 +12,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/blobstorage"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/query"
-	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
-	storeembedding "martinbeauvais.com/mbgit/knotbase/knotdb/store/embedding"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	"github.com/myceldb/mycel/domain/graph"
+	"github.com/myceldb/mycel/domain/identity"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/blobstorage"
+	"github.com/myceldb/mycel/internal/graphstorage"
+	"github.com/myceldb/mycel/query"
+	sessionapi "github.com/myceldb/mycel/session/api"
+	storeembedding "github.com/myceldb/mycel/store/embedding"
+	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
 // Config carries runtime knobs for the file-backed session implementation.
@@ -764,10 +764,10 @@ func (s *FileSession) validateChild(ctx context.Context, parent graph.Node, chil
 			return nil
 		}
 	}
-	// PKM extension nodes are app-level primitives that may be inserted into
+	// Application extension nodes are app-level primitives that may be inserted into
 	// existing imported Logseq outlines whose templates predate the extension.
 	// Keep normal template allow-list validation strict for all other cases.
-	if strings.HasPrefix(childTemplate.Key, "pkm.") && strings.HasPrefix(parentTemplate.Key, "logseq.") {
+	if strings.HasPrefix(childTemplate.Key, "app.") && strings.HasPrefix(parentTemplate.Key, "logseq.") {
 		return nil
 	}
 	return fmt.Errorf("%w: child template %s@%s is not allowed", storetemplate.ErrInvalidInput, childTemplate.Key, childTemplate.Version)

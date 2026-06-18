@@ -11,11 +11,11 @@ import (
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
+	mycelengine "github.com/myceldb/mycel/engine"
 	"github.com/spf13/pflag"
-	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
 )
 
-const EnvConfig = "KNOTDB_CONFIG"
+const EnvConfig = "MYCELDB_CONFIG"
 
 type Options struct {
 	ConfigFile string
@@ -32,7 +32,7 @@ type Config struct {
 	UserStoreEncryptionKeyB64 string
 	AccessTokenTTL            time.Duration
 	BlobStaleTmpAge           time.Duration
-	BlobLimits                knotengine.BlobLimits
+	BlobLimits                mycelengine.BlobLimits
 }
 
 func Load(opts Options) (Config, error) {
@@ -51,7 +51,7 @@ func Load(opts Options) (Config, error) {
 			return Config{}, err
 		}
 	}
-	if err := k.Load(env.Provider("KNOTDB_", ".", envKey), nil); err != nil {
+	if err := k.Load(env.Provider("MYCELDB_", ".", envKey), nil); err != nil {
 		return Config{}, err
 	}
 	applyEnvAliases(k)
@@ -67,7 +67,7 @@ func Load(opts Options) (Config, error) {
 		UserStoreEncryptionKeyB64: strings.TrimSpace(k.String("security.user_store_encryption_key_b64")),
 		AccessTokenTTL:            k.Duration("auth.access_token_ttl"),
 		BlobStaleTmpAge:           k.Duration("storage.blobs.stale_tmp_age"),
-		BlobLimits: knotengine.BlobLimits{
+		BlobLimits: mycelengine.BlobLimits{
 			MaxSizeBytes:   k.Int64("storage.blobs.max_size_bytes"),
 			MaxImageBytes:  k.Int64("storage.blobs.max_image_bytes"),
 			MaxPDFBytes:    k.Int64("storage.blobs.max_pdf_bytes"),
@@ -83,10 +83,10 @@ func Load(opts Options) (Config, error) {
 	return cfg, nil
 }
 
-func (c Config) EngineConfig() knotengine.EngineConfig {
-	return knotengine.EngineConfig{
+func (c Config) EngineConfig() mycelengine.EngineConfig {
+	return mycelengine.EngineConfig{
 		DataDir:                   c.DataDir,
-		Mode:                      knotengine.EngineModeStandalone,
+		Mode:                      mycelengine.EngineModeStandalone,
 		CreateIfMissing:           c.CreateIfMissing,
 		AdminUsername:             c.AdminUsername,
 		AdminPassword:             c.AdminPassword,
@@ -131,7 +131,7 @@ func defaults() map[string]any {
 }
 
 func envKey(key string) string {
-	key = strings.TrimPrefix(key, "KNOTDB_")
+	key = strings.TrimPrefix(key, "MYCELDB_")
 	key = strings.ToLower(key)
 	key = strings.ReplaceAll(key, "__", ".")
 	return key
@@ -139,16 +139,16 @@ func envKey(key string) string {
 
 func applyEnvAliases(k *koanf.Koanf) {
 	aliases := map[string]string{
-		"KNOTDB_DATA_DIR":                      "data_dir",
-		"KNOTDB_USER_STORE_ENCRYPTION_KEY_B64": "security.user_store_encryption_key_b64",
-		"KNOTDB_AUTH_ACCESS_TOKEN_TTL":         "auth.access_token_ttl",
-		"KNOTDB_STORAGE_BLOBS_STALE_TMP_AGE":   "storage.blobs.stale_tmp_age",
-		"KNOTDB_STORAGE_BLOBS_MAX_SIZE_BYTES":  "storage.blobs.max_size_bytes",
-		"KNOTDB_STORAGE_BLOBS_MAX_IMAGE_BYTES": "storage.blobs.max_image_bytes",
-		"KNOTDB_STORAGE_BLOBS_MAX_PDF_BYTES":   "storage.blobs.max_pdf_bytes",
-		"KNOTDB_STORAGE_BLOBS_MAX_AUDIO_BYTES": "storage.blobs.max_audio_bytes",
-		"KNOTDB_STORAGE_BLOBS_MAX_VIDEO_BYTES": "storage.blobs.max_video_bytes",
-		"KNOTDB_STORAGE_BLOBS_MAX_OTHER_BYTES": "storage.blobs.max_other_bytes",
+		"MYCELDB_DATA_DIR":                      "data_dir",
+		"MYCELDB_USER_STORE_ENCRYPTION_KEY_B64": "security.user_store_encryption_key_b64",
+		"MYCELDB_AUTH_ACCESS_TOKEN_TTL":         "auth.access_token_ttl",
+		"MYCELDB_STORAGE_BLOBS_STALE_TMP_AGE":   "storage.blobs.stale_tmp_age",
+		"MYCELDB_STORAGE_BLOBS_MAX_SIZE_BYTES":  "storage.blobs.max_size_bytes",
+		"MYCELDB_STORAGE_BLOBS_MAX_IMAGE_BYTES": "storage.blobs.max_image_bytes",
+		"MYCELDB_STORAGE_BLOBS_MAX_PDF_BYTES":   "storage.blobs.max_pdf_bytes",
+		"MYCELDB_STORAGE_BLOBS_MAX_AUDIO_BYTES": "storage.blobs.max_audio_bytes",
+		"MYCELDB_STORAGE_BLOBS_MAX_VIDEO_BYTES": "storage.blobs.max_video_bytes",
+		"MYCELDB_STORAGE_BLOBS_MAX_OTHER_BYTES": "storage.blobs.max_other_bytes",
 	}
 	for envName, key := range aliases {
 		if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
@@ -183,7 +183,7 @@ func applyFlagOverrides(k *koanf.Koanf, flags *pflag.FlagSet) {
 	}
 }
 
-func validateBlobLimits(limits knotengine.BlobLimits) error {
+func validateBlobLimits(limits mycelengine.BlobLimits) error {
 	values := map[string]int64{
 		"storage.blobs.max_size_bytes":  limits.MaxSizeBytes,
 		"storage.blobs.max_image_bytes": limits.MaxImageBytes,

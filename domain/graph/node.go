@@ -11,7 +11,7 @@ type NodeID = uuid.UUID
 
 // Node is the canonical persisted graph node representation.
 //
-// Node is intentionally generic so higher-level domains (e.g. PKM) can model
+// Node is intentionally generic so higher-level domains (e.g. knowledge management) can model
 // pages, blocks, journals, and tasks via template and properties.
 // TemplateID is optional; nodes may exist without a template. Hierarchy is
 // represented by contains edges rather than a parent field.

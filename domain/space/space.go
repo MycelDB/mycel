@@ -2,7 +2,7 @@ package space
 
 import (
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
+	"github.com/myceldb/mycel/domain/identity"
 )
 
 // SpaceID uniquely identifies a space.

@@ -9,16 +9,16 @@ import (
 	"os"
 	"strings"
 
+	"github.com/myceldb/mycel/domain/identity"
+	mycelengine "github.com/myceldb/mycel/engine"
+	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/spf13/cobra"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	knotengine "martinbeauvais.com/mbgit/knotbase/knotdb/engine"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/cli/app"
 )
 
 func NewReplCommand(a *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "repl",
-		Short: "Start an interactive KnotDB REPL",
+		Short: "Start an interactive MycelDB REPL",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(a.DataDir) == "" {
 				return fmt.Errorf("--data-dir/-d is required")
@@ -29,10 +29,10 @@ func NewReplCommand(a *app.App) *cobra.Command {
 }
 
 func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error {
-	fmt.Fprintln(out, "knotdb REPL. Use login <username> <password>, space set <space_id>, space unset, help, or exit.")
+	fmt.Fprintln(out, "mycel REPL. Use login <username> <password>, space set <space_id>, space unset, help, or exit.")
 	scanner := bufio.NewScanner(in)
 	for {
-		fmt.Fprint(out, "knotdb> ")
+		fmt.Fprint(out, "mycel> ")
 		if !scanner.Scan() {
 			break
 		}
@@ -63,7 +63,7 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 				fmt.Fprintln(out, "error:", err)
 				continue
 			}
-			res, err := a.Engine.Authenticate(ctx, knotengine.AuthInput{UserRef: identity.UserRef(a.UserRef), Password: a.Password})
+			res, err := a.Engine.Authenticate(ctx, mycelengine.AuthInput{UserRef: identity.UserRef(a.UserRef), Password: a.Password})
 			if err != nil {
 				fmt.Fprintln(out, "error:", err)
 				continue

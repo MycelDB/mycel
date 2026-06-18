@@ -3,13 +3,13 @@ package session
 import (
 	"time"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/identity"
-	domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/graphstorage"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/session/filesession"
-	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
-	storeembedding "martinbeauvais.com/mbgit/knotbase/knotdb/store/embedding"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	"github.com/myceldb/mycel/domain/identity"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/graphstorage"
+	"github.com/myceldb/mycel/internal/session/filesession"
+	sessionapi "github.com/myceldb/mycel/session/api"
+	storeembedding "github.com/myceldb/mycel/store/embedding"
+	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
 type (

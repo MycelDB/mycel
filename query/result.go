@@ -3,7 +3,7 @@ package query
 import (
 	"sort"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"github.com/myceldb/mycel/domain/graph"
 )
 
 // ResultSet contains query result rows.

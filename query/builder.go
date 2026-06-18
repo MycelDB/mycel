@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
+	"github.com/myceldb/mycel/domain/graph"
 )
 
 // Executor supplies data to the in-memory query engine.

@@ -1,6 +1,6 @@
-# KnotDB architecture
+# MycelDB architecture
 
-This document explains how the KnotDB module is organized, where to find types and interfaces, and how request payloads flow between layers.
+This document explains how the MycelDB module is organized, where to find types and interfaces, and how request payloads flow between layers.
 
 ## Layer overview
 
@@ -33,7 +33,7 @@ flowchart TB
   internalSession --> embeddingInternal
   internalSession --> storePkg
   engineInternal --> embeddingInternal
-  cmdKnotdb[cmd/knotdb] --> cliInternal --> enginePkg
+  cmdMycel[cmd/mycel] --> cliInternal --> enginePkg
 ```
 
 ### Public vs internal packages
@@ -46,9 +46,9 @@ flowchart TB
 | `query` | Programmatic graph query builder |
 | `store/*` | Injectable persistence interfaces (for tests or custom backends) |
 | `engine/internal`, `internal/*` | **Do not import** from applications |
-| `cmd/knotdb`, `internal/cli` | CLI binary only |
+| `cmd/mycel`, `internal/cli` | CLI binary only |
 
-Typical embedders (`knot_pkm_*`) import only `engine`, `session`, and `domain/*`.
+Typical MycelDB applications import only `engine`, `session`, and `domain/*`.
 
 ## Where to find things
 
@@ -81,11 +81,11 @@ Recommended aliases when both domain and store appear in one file:
 
 ```go
 import (
-    domainaccess "martinbeauvais.com/mbgit/knotbase/knotdb/domain/access"
-    domainspace "martinbeauvais.com/mbgit/knotbase/knotdb/domain/space"
-    "martinbeauvais.com/mbgit/knotbase/knotdb/store/acl"
-    "martinbeauvais.com/mbgit/knotbase/knotdb/store/spaces"
-    storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+    domainaccess "github.com/myceldb/mycel/domain/access"
+    domainspace "github.com/myceldb/mycel/domain/space"
+    "github.com/myceldb/mycel/store/acl"
+    "github.com/myceldb/mycel/store/spaces"
+    storetemplate "github.com/myceldb/mycel/store/template"
 )
 ```
 
@@ -135,7 +135,7 @@ engine.NewEngine(cfg, nil, nil, nil, nil)
   → domain/graph.Node
 ```
 
-See `knot_pkm_server/internal/server/server.go` for a real integration.
+Downstream applications should follow this flow when embedding MycelDB directly.
 
 ## Interface placement
 
@@ -156,8 +156,8 @@ Interfaces are defined next to their primary consumer, not in a single global fi
 ## Directory map
 
 ```
-knot_db/knot_db/
-├── cmd/knotdb/           CLI entrypoint
+mycel/
+├── cmd/mycel/           CLI entrypoint
 ├── internal/
 │   ├── cli/              CLI commands (private)
 │   ├── session/filesession/  File-backed Session implementation

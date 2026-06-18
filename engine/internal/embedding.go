@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	domainembedding "martinbeauvais.com/mbgit/knotbase/knotdb/domain/embedding"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/internal/embedding/catalog"
-	storeembedding "martinbeauvais.com/mbgit/knotbase/knotdb/store/embedding"
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	"github.com/myceldb/mycel/internal/embedding/catalog"
+	storeembedding "github.com/myceldb/mycel/store/embedding"
 )
 
 type EmbeddingCatalogInput struct{ AccessToken AccessToken }

@@ -1,6 +1,6 @@
 # Spaces
 
-Space domain types are exposed by `martinbeauvais.com/mbgit/knotbase/knotdb/domain/space`.
+Space domain types are exposed by `github.com/myceldb/mycel/domain/space`.
 
 `SpaceID` is the immutable UUID identifier for a space.
 

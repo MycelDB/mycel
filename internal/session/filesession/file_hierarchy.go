@@ -7,9 +7,9 @@ import (
 	"sort"
 
 	"github.com/google/uuid"
-	"martinbeauvais.com/mbgit/knotbase/knotdb/domain/graph"
-	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
-	storetemplate "martinbeauvais.com/mbgit/knotbase/knotdb/store/template"
+	"github.com/myceldb/mycel/domain/graph"
+	sessionapi "github.com/myceldb/mycel/session/api"
+	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
 const childOrderStep = 1024

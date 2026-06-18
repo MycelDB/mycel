@@ -3,14 +3,14 @@ package internal
 import (
 	"time"
 
-	sessionapi "martinbeauvais.com/mbgit/knotbase/knotdb/session/api"
+	sessionapi "github.com/myceldb/mycel/session/api"
 )
 
-// EngineMode defines runtime mode for KnotDB engine startup.
+// EngineMode defines runtime mode for MycelDB engine startup.
 type EngineMode string
 
 const (
-	// EngineModeStandalone starts KnotDB as a standalone embedded engine.
+	// EngineModeStandalone starts MycelDB as a standalone embedded engine.
 	EngineModeStandalone EngineMode = "standalone"
 )
 

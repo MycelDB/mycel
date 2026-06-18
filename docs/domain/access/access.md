@@ -1,6 +1,6 @@
 # Access Control
 
-KnotDB access control is governed by allow/grant rules stored in `meta/access.json`.
+MycelDB access control is governed by allow/grant rules stored in `meta/access.json`.
 
 The access file contains two classes of rules:
 
