@@ -296,6 +296,53 @@ type SemanticSearchInput struct {
 	MinScore      float64
 }
 
+// TagMatchMode controls how multi-tag metadata queries combine requested tags.
+type TagMatchMode string
+
+const (
+	// TagMatchAny matches nodes containing at least one requested tag.
+	TagMatchAny TagMatchMode = "any"
+	// TagMatchAll matches nodes containing every requested tag.
+	TagMatchAll TagMatchMode = "all"
+)
+
+// TagSummary describes one indexed node tag and its node count.
+type TagSummary struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
+// FindNodesByTagInput selects nodes by indexed tags.
+type FindNodesByTagInput struct {
+	Tags  []string
+	Match TagMatchMode
+	Limit int
+}
+
+// PropertyOperator controls custom property metadata queries.
+type PropertyOperator string
+
+const (
+	// PropertyOperatorExists matches nodes with a property name regardless of value.
+	PropertyOperatorExists PropertyOperator = "exists"
+	// PropertyOperatorEqual matches nodes with a property name and exact scalar value.
+	PropertyOperatorEqual PropertyOperator = "eq"
+)
+
+// PropertySummary describes one indexed custom property name and its node count.
+type PropertySummary struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// FindNodesByPropertyInput selects nodes by indexed custom properties.
+type FindNodesByPropertyInput struct {
+	Name     string
+	Operator PropertyOperator
+	Value    any
+	Limit    int
+}
+
 // TxOptions configures a session transaction.
 type TxOptions struct {
 	// ReadOnly declares that the transaction will not stage writes. The initial
@@ -332,6 +379,11 @@ type Tx interface {
 }
 
 // Session is a scoped interaction context for graph-space operations.
+//
+// Metadata index queries (tags and custom properties) operate over committed
+// graph state. Transaction-scoped read-your-writes metadata queries are not
+// currently exposed; transaction effects become visible to these methods after
+// Commit and remain invisible after Rollback.
 type Session interface {
 	Begin(ctx context.Context, opts TxOptions) (Tx, error)
 	Tx(ctx context.Context, opts TxOptions, fn func(Tx) error) error
@@ -358,6 +410,10 @@ type Session interface {
 	GenerateNodeEmbeddingBatch(ctx context.Context, in GenerateNodeEmbeddingBatchInput) (GenerateNodeEmbeddingBatchResult, error)
 	ListNodeEmbeddings(ctx context.Context, in ListNodeEmbeddingsInput) ([]domainembedding.EmbeddingRecord, error)
 	SemanticSearch(ctx context.Context, in SemanticSearchInput) ([]domainembedding.SemanticSearchResult, error)
+	ListTags(ctx context.Context) ([]TagSummary, error)
+	FindNodesByTag(ctx context.Context, in FindNodesByTagInput) ([]graph.Node, error)
+	ListPropertyNames(ctx context.Context) ([]PropertySummary, error)
+	FindNodesByProperty(ctx context.Context, in FindNodesByPropertyInput) ([]graph.Node, error)
 	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
 	DeleteNode(ctx context.Context, in DeleteNodeInput) error
 	Close() error

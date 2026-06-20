@@ -50,6 +50,12 @@ type (
 	EmbeddingBatchFailure            = sessionapi.EmbeddingBatchFailure
 	ListNodeEmbeddingsInput          = sessionapi.ListNodeEmbeddingsInput
 	SemanticSearchInput              = sessionapi.SemanticSearchInput
+	TagMatchMode                     = sessionapi.TagMatchMode
+	TagSummary                       = sessionapi.TagSummary
+	FindNodesByTagInput              = sessionapi.FindNodesByTagInput
+	PropertyOperator                 = sessionapi.PropertyOperator
+	PropertySummary                  = sessionapi.PropertySummary
+	FindNodesByPropertyInput         = sessionapi.FindNodesByPropertyInput
 	BlobLimits                       = sessionapi.BlobLimits
 )
 
@@ -59,6 +65,10 @@ var (
 	ErrTransactionsUnsupported = sessionapi.ErrTransactionsUnsupported
 	ErrTransactionClosed       = sessionapi.ErrTransactionClosed
 	ErrReadOnlyTransaction     = sessionapi.ErrReadOnlyTransaction
+	TagMatchAny                = sessionapi.TagMatchAny
+	TagMatchAll                = sessionapi.TagMatchAll
+	PropertyOperatorExists     = sessionapi.PropertyOperatorExists
+	PropertyOperatorEqual      = sessionapi.PropertyOperatorEqual
 )
 
 // Config carries runtime session knobs supplied by the engine.

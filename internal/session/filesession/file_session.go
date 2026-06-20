@@ -830,7 +830,7 @@ func validatePropertyValue(prop graph.TemplateProperty, value any) error {
 	case graph.PropertyTypeObject:
 		_, valid = value.(map[string]any)
 	case graph.PropertyTypeArray:
-		_, valid = value.([]any)
+		valid = isArray(value)
 	case graph.PropertyTypeDate:
 		valid = isDate(value)
 	default:
@@ -840,6 +840,14 @@ func validatePropertyValue(prop graph.TemplateProperty, value any) error {
 		return fmt.Errorf("%w: property %q must be %s", storetemplate.ErrInvalidInput, prop.Name, prop.Type)
 	}
 	return nil
+}
+
+func isArray(value any) bool {
+	if value == nil {
+		return false
+	}
+	kind := reflect.TypeOf(value).Kind()
+	return kind == reflect.Array || kind == reflect.Slice
 }
 
 func isNumber(value any) bool {

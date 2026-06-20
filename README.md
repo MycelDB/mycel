@@ -42,6 +42,7 @@ See [`docs/architecture.md`](docs/architecture.md) for a navigation guide, impor
 - Storage layout: `docs/storage/layout.md`
 - CLI usage: `docs/cli.md`
 - Embeddings MVP: `docs/embeddings.md`
+- Custom metadata indexing: `docs/metadata.md`
 
 ## CLI
 
