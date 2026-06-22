@@ -435,20 +435,72 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 		return SpaceInfo{}, ErrUnauthorized
 	}
 
-	sp, err := e.spaceManager.Create(ctx, spaces.CreateInput{OwnerID: auth.UserID, Name: in.Name})
+	ownerID, err := e.resolveCreateSpaceOwner(ctx, auth.UserID, in)
+	if err != nil {
+		return SpaceInfo{}, err
+	}
+	if ownerID != auth.UserID {
+		canManageAccess, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionManageAccess)
+		if err != nil {
+			return SpaceInfo{}, err
+		}
+		if !canManageAccess {
+			return SpaceInfo{}, ErrUnauthorized
+		}
+	}
+
+	sp, err := e.spaceManager.Create(ctx, spaces.CreateInput{OwnerID: ownerID, Name: in.Name})
 	if err != nil {
 		return SpaceInfo{}, err
 	}
 	if _, err := e.accessManager.Grant(ctx, acl.GrantInput{
 		SpaceID:     sp.SpaceID,
-		UserID:      auth.UserID,
+		UserID:      ownerID,
 		Permissions: []access.SpacePermission{access.SpacePermissionAdmin},
 	}); err != nil {
 		return SpaceInfo{}, err
 	}
 
-	e.grantSpaceToCachedClaims(in.AccessToken, sp.SpaceID)
+	if ownerID == auth.UserID {
+		e.grantSpaceToCachedClaims(in.AccessToken, sp.SpaceID)
+	}
 	return SpaceInfo{OwnerID: sp.OwnerID, SpaceID: sp.SpaceID, Name: sp.Name}, nil
+}
+
+func (e *defaultEngine) resolveCreateSpaceOwner(ctx context.Context, authenticatedUserID identity.UserID, in CreateSpaceInput) (identity.UserID, error) {
+	if in.OwnerUserID != nil && *in.OwnerUserID != uuid.Nil && in.OwnerRef != "" {
+		owner, err := e.userManager.GetByRef(ctx, in.OwnerRef)
+		if err != nil {
+			if errors.Is(err, user.ErrUserNotFound) {
+				return uuid.Nil, ErrNotFound
+			}
+			return uuid.Nil, err
+		}
+		if owner.ID != *in.OwnerUserID {
+			return uuid.Nil, fmt.Errorf("%w: owner_user_id and owner_ref refer to different users", ErrInvalidConfig)
+		}
+		return owner.ID, nil
+	}
+	if in.OwnerUserID != nil && *in.OwnerUserID != uuid.Nil {
+		if _, err := e.userManager.GetByID(ctx, *in.OwnerUserID); err != nil {
+			if errors.Is(err, user.ErrUserNotFound) {
+				return uuid.Nil, ErrNotFound
+			}
+			return uuid.Nil, err
+		}
+		return *in.OwnerUserID, nil
+	}
+	if in.OwnerRef != "" {
+		owner, err := e.userManager.GetByRef(ctx, in.OwnerRef)
+		if err != nil {
+			if errors.Is(err, user.ErrUserNotFound) {
+				return uuid.Nil, ErrNotFound
+			}
+			return uuid.Nil, err
+		}
+		return owner.ID, nil
+	}
+	return authenticatedUserID, nil
 }
 
 func (e *defaultEngine) ListSpaces(ctx context.Context, in ListSpacesInput) ([]domainspace.Space, error) {

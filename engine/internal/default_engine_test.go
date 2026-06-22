@@ -276,6 +276,107 @@ func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 	}
 }
 
+func TestRuntimeEngine_CreateSpaceForOwnerUserID(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "mycel-create-space-for-owner")
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
+	if err != nil {
+		t.Fatalf("expected create user success, got error: %v", err)
+	}
+
+	spaceInfo, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: adminToken.AccessToken, Name: "Personal PKM", OwnerUserID: &bob.ID})
+	if err != nil {
+		t.Fatalf("expected create space for owner success, got error: %v", err)
+	}
+	if spaceInfo.OwnerID != bob.ID {
+		t.Fatalf("expected owner %s, got %s", bob.ID, spaceInfo.OwnerID)
+	}
+
+	bobToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("bob@example.com"), Password: "bob-password"})
+	if err != nil {
+		t.Fatalf("expected bob auth success, got error: %v", err)
+	}
+	bobSpaces, err := engine.ListSpaces(ctx, ListSpacesInput{AccessToken: bobToken.AccessToken})
+	if err != nil {
+		t.Fatalf("expected bob list spaces success, got error: %v", err)
+	}
+	if len(bobSpaces) != 1 || bobSpaces[0].SpaceID != spaceInfo.SpaceID || bobSpaces[0].OwnerID != bob.ID {
+		t.Fatalf("expected bob to access owned space, got %+v", bobSpaces)
+	}
+}
+
+func TestRuntimeEngine_CreateSpaceForOwnerRef(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "mycel-create-space-for-owner-ref")
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
+	if err != nil {
+		t.Fatalf("expected create user success, got error: %v", err)
+	}
+
+	spaceInfo, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: adminToken.AccessToken, Name: "Personal PKM", OwnerRef: identity.UserRef("bob@example.com")})
+	if err != nil {
+		t.Fatalf("expected create space for owner ref success, got error: %v", err)
+	}
+	if spaceInfo.OwnerID != bob.ID {
+		t.Fatalf("expected owner %s, got %s", bob.ID, spaceInfo.OwnerID)
+	}
+}
+
+func TestRuntimeEngine_CreateSpaceForDifferentOwnerRequiresManageAccess(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "mycel-create-space-for-owner-unauthorized")
+
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	adminToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+	operator, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("operator@example.com"), Status: identity.UserStatusActive}, Password: "operator-password"})
+	if err != nil {
+		t.Fatalf("expected create operator success, got error: %v", err)
+	}
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
+	if err != nil {
+		t.Fatalf("expected create bob success, got error: %v", err)
+	}
+	if _, err := engine.GrantSystemRole(ctx, GrantSystemRoleInput{AccessToken: adminToken.AccessToken, UserID: operator.ID, Roles: []access.SystemRole{access.SystemRoleOperator}}); err != nil {
+		t.Fatalf("expected grant operator success, got error: %v", err)
+	}
+	operatorToken, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("operator@example.com"), Password: "operator-password"})
+	if err != nil {
+		t.Fatalf("expected operator auth success, got error: %v", err)
+	}
+
+	_, err = engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: operatorToken.AccessToken, Name: "Personal PKM", OwnerUserID: &bob.ID})
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
+	}
+}
+
 func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutSystemRole(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "mycel-create-space-no-scope")

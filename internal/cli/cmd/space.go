@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
 	mycelengine "github.com/myceldb/mycel/engine"
 	"github.com/myceldb/mycel/internal/cli/app"
@@ -10,7 +11,7 @@ import (
 )
 
 func NewAddSpaceCommand(a *app.App) *cobra.Command {
-	var name string
+	var name, ownerUserIDText, ownerRefText string
 	cmd := &cobra.Command{
 		Use:   "space [NAME]",
 		Short: "Add a space",
@@ -26,7 +27,15 @@ func NewAddSpaceCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sp, err := a.Engine.CreateSpace(cmd.Context(), mycelengine.CreateSpaceInput{AccessToken: tok, Name: name})
+			in := mycelengine.CreateSpaceInput{AccessToken: tok, Name: name, OwnerRef: identity.UserRef(ownerRefText)}
+			if ownerUserIDText != "" {
+				ownerID, err := app.ParseUUID[identity.UserID](ownerUserIDText)
+				if err != nil {
+					return err
+				}
+				in.OwnerUserID = &ownerID
+			}
+			sp, err := a.Engine.CreateSpace(cmd.Context(), in)
 			if err != nil {
 				return err
 			}
@@ -34,6 +43,8 @@ func NewAddSpaceCommand(a *app.App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "space name")
+	cmd.Flags().StringVar(&ownerUserIDText, "owner-user-id", "", "target owner user ID (requires system access management permission when different from caller)")
+	cmd.Flags().StringVar(&ownerRefText, "owner-ref", "", "target owner user_ref (requires system access management permission when different from caller)")
 	return cmd
 }
 

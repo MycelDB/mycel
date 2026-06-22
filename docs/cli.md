@@ -132,6 +132,8 @@ Permissions: `read`, `write`, `admin`.
 
 ```sh
 mycel -d ./data -u admin -p change-me space add demo
+mycel -d ./data -u admin -p change-me space add "Personal PKM" --owner-ref bob
+mycel -d ./data -u admin -p change-me space add "Personal PKM" --owner-user-id <user_id>
 mycel -d ./data -u admin -p change-me space list
 mycel -d ./data -u admin -p change-me space delete <space_id>
 ```

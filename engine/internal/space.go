@@ -9,6 +9,12 @@ import (
 type CreateSpaceInput struct {
 	AccessToken AccessToken
 	Name        string
+	// OwnerUserID optionally creates the space for another user. When set to a
+	// user other than the authenticated caller, the caller must be allowed to
+	// manage system access. The owner is granted admin access to the new space.
+	OwnerUserID *identity.UserID
+	// OwnerRef is an alternative lookup key for OwnerUserID.
+	OwnerRef identity.UserRef
 }
 
 // ListSpacesInput defines a space list request payload.
