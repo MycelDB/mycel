@@ -194,7 +194,10 @@ func (s *Store) Search(ctx context.Context, query []float64, providerID, modelID
 		if r.ProviderID != providerID || r.ModelID != modelID || len(r.Vector) != len(query) {
 			continue
 		}
-		key := fmt.Sprintf("%s/%s/%s/%s", r.NodeID, profileText(r.ProfileID), r.SourceMode, r.SourceHash)
+		// Keep only the newest embedding for each logical node/profile/source mode.
+		// Older records with previous source hashes are retained on disk for append-only
+		// durability, but they must not remain searchable after a node is re-embedded.
+		key := fmt.Sprintf("%s/%s/%s", r.NodeID, profileText(r.ProfileID), r.SourceMode)
 		if existing, ok := latest[key]; !ok || r.CreatedAt.After(existing.CreatedAt) {
 			latest[key] = r
 		}
