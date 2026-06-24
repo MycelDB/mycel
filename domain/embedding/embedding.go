@@ -85,6 +85,7 @@ type Profile struct {
 type EmbeddingRecord struct {
 	ID         RecordID            `json:"id"`
 	SpaceID    domainspace.SpaceID `json:"space_id"`
+	DomainID   graph.DomainID      `json:"domain_id"`
 	NodeID     graph.NodeID        `json:"node_id"`
 	ProfileID  *ProfileID          `json:"profile_id,omitempty"`
 	ProviderID string              `json:"provider_id"`
@@ -98,12 +99,13 @@ type EmbeddingRecord struct {
 
 // SemanticSearchResult is a primitive vector search hit.
 type SemanticSearchResult struct {
-	NodeID     graph.NodeID `json:"node_id"`
-	Score      float64      `json:"score"`
-	RecordID   RecordID     `json:"record_id"`
-	ProfileID  *ProfileID   `json:"profile_id,omitempty"`
-	ProviderID string       `json:"provider_id"`
-	ModelID    string       `json:"model_id"`
-	SourceMode SourceMode   `json:"source_mode"`
-	SourceHash string       `json:"source_hash"`
+	NodeID     graph.NodeID   `json:"node_id"`
+	DomainID   graph.DomainID `json:"domain_id"`
+	Score      float64        `json:"score"`
+	RecordID   RecordID       `json:"record_id"`
+	ProfileID  *ProfileID     `json:"profile_id,omitempty"`
+	ProviderID string         `json:"provider_id"`
+	ModelID    string         `json:"model_id"`
+	SourceMode SourceMode     `json:"source_mode"`
+	SourceHash string         `json:"source_hash"`
 }

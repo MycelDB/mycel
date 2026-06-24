@@ -184,7 +184,7 @@ func newEmbeddingProfilesDeleteCommand(a *app.App) *cobra.Command {
 }
 
 func newEmbeddingGenerateCommand(a *app.App) *cobra.Command {
-	var spaceIDText, profileIDText, providerID, modelID, source, keyIDText, contains string
+	var spaceIDText, domainKey, profileIDText, providerID, modelID, source, keyIDText, contains string
 	var nodeIDTexts, includeProps, templateKeys []string
 	var force, continueOnError bool
 	var maxDepth, minimumTextLength, limit int
@@ -225,7 +225,7 @@ func newEmbeddingGenerateCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+		sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID, DomainKey: domainKey})
 		if err != nil {
 			return err
 		}
@@ -245,6 +245,7 @@ func newEmbeddingGenerateCommand(a *app.App) *cobra.Command {
 		return a.Print(result, b.String())
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainKey, "domain", "", "domain key (defaults to the space default domain)")
 	cmd.Flags().StringSliceVar(&nodeIDTexts, "node", nil, "node ID to embed (repeatable or comma-separated)")
 	cmd.Flags().StringSliceVar(&templateKeys, "template-key", nil, "template key selector for batch/backfill generation")
 	cmd.Flags().StringVar(&contains, "contains", "", "case-insensitive content substring selector for batch/backfill generation")
@@ -263,7 +264,7 @@ func newEmbeddingGenerateCommand(a *app.App) *cobra.Command {
 }
 
 func newEmbeddingSearchCommand(a *app.App) *cobra.Command {
-	var spaceIDText, profileIDText, providerID, modelID, keyIDText, text string
+	var spaceIDText, domainKey, profileIDText, providerID, modelID, keyIDText, text string
 	var limit int
 	var minScore float64
 	cmd := &cobra.Command{Use: "search", Short: "Semantic search over generated embeddings", RunE: func(cmd *cobra.Command, args []string) error {
@@ -291,7 +292,7 @@ func newEmbeddingSearchCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+		sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID, DomainKey: domainKey})
 		if err != nil {
 			return err
 		}
@@ -307,6 +308,7 @@ func newEmbeddingSearchCommand(a *app.App) *cobra.Command {
 		return a.Print(results, b.String())
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainKey, "domain", "", "domain key (defaults to the space default domain)")
 	cmd.Flags().StringVar(&text, "text", "", "query text")
 	cmd.Flags().StringVar(&profileIDText, "profile", "", "embedding profile ID")
 	cmd.Flags().StringVar(&providerID, "provider", "", "embedding provider ID override")

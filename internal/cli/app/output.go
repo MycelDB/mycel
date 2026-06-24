@@ -33,6 +33,17 @@ func RenderSpacesTable(spaces []domainspace.Space) {
 	t.Render()
 }
 
+func RenderDomainsTable(domains []graph.Domain) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleDefault)
+	t.AppendHeader(table.Row{"Domain ID", "Space ID", "Key", "Name", "Default"})
+	for _, d := range domains {
+		t.AppendRow(table.Row{d.ID, d.SpaceID, d.Key, d.Name, d.Default})
+	}
+	t.Render()
+}
+
 func RenderTemplatesTable(templates []graph.Template) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)

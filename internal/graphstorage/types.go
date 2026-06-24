@@ -55,6 +55,7 @@ type RecordLocation struct {
 type NodeMeta struct {
 	ID         graph.NodeID
 	TemplateID *graph.TemplateID
+	DomainID   graph.DomainID
 	Deleted    bool
 	Location   RecordLocation
 }
@@ -81,11 +82,13 @@ type Store interface {
 	Begin(ctx context.Context) (Txn, error)
 	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
 	ListNodes(ctx context.Context) ([]graph.Node, error)
+	ListNodesByDomain(ctx context.Context, domainID graph.DomainID) ([]graph.Node, error)
 	GetEdge(ctx context.Context, id graph.EdgeID) (graph.Edge, error)
 	ListEdges(ctx context.Context) ([]graph.Edge, error)
 	Children(ctx context.Context, parentID graph.NodeID) ([]graph.Edge, error)
 	Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge, error)
 	NodesByTemplate(ctx context.Context, templateID graph.TemplateID) ([]graph.NodeID, error)
+	NodesByDomain(ctx context.Context, domainID graph.DomainID) ([]graph.NodeID, error)
 	JournalNodesByDayRange(ctx context.Context, from, to int) ([]graph.NodeID, error)
 	BlobRefCount(ctx context.Context, id graph.BlobID) (int, error)
 }
