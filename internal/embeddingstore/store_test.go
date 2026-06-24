@@ -31,7 +31,7 @@ func TestStoreAppendReopenAndSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := reopened.Search(ctx, []float64{1, 0}, "test", "m", 10, 0)
+	results, err := reopened.Search(ctx, []float64{1, 0}, uuid.Nil, "test", "m", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestSearchUsesLatestRecordPerNodeProfileAndSourceMode(t *testing.T) {
 	if _, err := store.Append(ctx, domainembedding.EmbeddingRecord{NodeID: nodeID, ProviderID: "p", ModelID: "m", SourceMode: domainembedding.SourceModeSubtree, SourceHash: "new", Vector: []float64{0, 1}, CreatedAt: newTime}); err != nil {
 		t.Fatal(err)
 	}
-	results, err := store.Search(ctx, []float64{1, 0}, "p", "m", 10, 0)
+	results, err := store.Search(ctx, []float64{1, 0}, uuid.Nil, "p", "m", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +64,29 @@ func TestSearchUsesLatestRecordPerNodeProfileAndSourceMode(t *testing.T) {
 	}
 	if results[0].SourceHash != "new" {
 		t.Fatalf("expected latest source hash, got %#v", results[0])
+	}
+}
+
+func TestSearchFiltersByDomain(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(t.TempDir(), domainspace.SpaceID(uuid.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	domainA := graph.DomainID(uuid.New())
+	domainB := graph.DomainID(uuid.New())
+	if _, err := store.Append(ctx, domainembedding.EmbeddingRecord{DomainID: domainA, NodeID: graph.NodeID(uuid.New()), ProviderID: "p", ModelID: "m", SourceMode: domainembedding.SourceModeSelf, SourceHash: "a", Vector: []float64{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(ctx, domainembedding.EmbeddingRecord{DomainID: domainB, NodeID: graph.NodeID(uuid.New()), ProviderID: "p", ModelID: "m", SourceMode: domainembedding.SourceModeSelf, SourceHash: "b", Vector: []float64{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := store.Search(ctx, []float64{1, 0}, domainA, "p", "m", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].DomainID != domainA {
+		t.Fatalf("expected only domain A result, got %#v", results)
 	}
 }
 

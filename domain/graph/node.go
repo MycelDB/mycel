@@ -21,6 +21,7 @@ type NodeID = uuid.UUID
 // a blob belong in Props (e.g. caption, alt_text) or annotation children.
 type Node struct {
 	ID         NodeID
+	DomainID   DomainID
 	TemplateID *TemplateID
 	BlobRef    *BlobID
 	Content    string

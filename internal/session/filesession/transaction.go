@@ -257,6 +257,7 @@ func (tx *fileTx) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeInput)
 		return graph.Node{}, err
 	}
 	n.BlobRef = nodes[idx].BlobRef
+	n.DomainID = nodes[idx].DomainID
 	n.CreatedAt = nodes[idx].CreatedAt
 	if n.CreatedAt.IsZero() {
 		n.CreatedAt = time.Now().UTC()
@@ -540,6 +541,9 @@ func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInpu
 	}
 	if in.NodeID == in.NewParentID {
 		return graph.Edge{}, fmt.Errorf("%w: cannot move a node under itself", storetemplate.ErrInvalidInput)
+	}
+	if node.DomainID != uuid.Nil && newParent.DomainID != uuid.Nil && node.DomainID != newParent.DomainID {
+		return graph.Edge{}, fmt.Errorf("%w: contains edges cannot cross domains", storetemplate.ErrInvalidInput)
 	}
 	edges, err := tx.ListEdges(ctx)
 	if err != nil {

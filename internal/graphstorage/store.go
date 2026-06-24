@@ -36,6 +36,7 @@ type LocalStore struct {
 	nodeMeta         map[graph.NodeID]NodeMeta
 	edgeMeta         map[graph.EdgeID]EdgeMeta
 	nodesByTemplate  map[graph.TemplateID]map[graph.NodeID]struct{}
+	nodesByDomain    map[graph.DomainID]map[graph.NodeID]struct{}
 	containsChildren map[graph.NodeID][]graph.EdgeID
 	containsParent   map[graph.NodeID]graph.EdgeID
 	journalDay       map[int]map[graph.NodeID]struct{}
@@ -175,6 +176,7 @@ func (s *LocalStore) resetIndexes() {
 	s.nodeMeta = map[graph.NodeID]NodeMeta{}
 	s.edgeMeta = map[graph.EdgeID]EdgeMeta{}
 	s.nodesByTemplate = map[graph.TemplateID]map[graph.NodeID]struct{}{}
+	s.nodesByDomain = map[graph.DomainID]map[graph.NodeID]struct{}{}
 	s.containsChildren = map[graph.NodeID][]graph.EdgeID{}
 	s.containsParent = map[graph.NodeID]graph.EdgeID{}
 	s.journalDay = map[int]map[graph.NodeID]struct{}{}
@@ -244,6 +246,20 @@ func (s *LocalStore) ListNodes(ctx context.Context) ([]graph.Node, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
 	return out, ctx.Err()
 }
+func (s *LocalStore) ListNodesByDomain(ctx context.Context, domainID graph.DomainID) ([]graph.Node, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	set := s.nodesByDomain[domainID]
+	out := make([]graph.Node, 0, len(set))
+	for id := range set {
+		if n, ok := s.nodeRecords[id]; ok {
+			out = append(out, cloneNode(n))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
+	return out, ctx.Err()
+}
+
 func (s *LocalStore) GetEdge(ctx context.Context, id graph.EdgeID) (graph.Edge, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -296,6 +312,17 @@ func (s *LocalStore) NodesByTemplate(ctx context.Context, tid graph.TemplateID) 
 	return out, ctx.Err()
 }
 
+func (s *LocalStore) NodesByDomain(ctx context.Context, domainID graph.DomainID) ([]graph.NodeID, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	set := s.nodesByDomain[domainID]
+	out := make([]graph.NodeID, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	return out, ctx.Err()
+}
+
 // BlobRefCount returns the number of live nodes referencing a blob.
 func (s *LocalStore) BlobRefCount(ctx context.Context, id graph.BlobID) (int, error) {
 	s.mu.RLock()
@@ -322,7 +349,10 @@ func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
 		s.removeNodeIndexes(old)
 	}
 	s.nodeRecords[n.ID] = cloneNode(n)
-	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, TemplateID: n.TemplateID, Location: loc}
+	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, TemplateID: n.TemplateID, DomainID: n.DomainID, Location: loc}
+	if n.DomainID != uuid.Nil {
+		ensureNodeSet(s.nodesByDomain, n.DomainID)[n.ID] = struct{}{}
+	}
 	if n.TemplateID != nil {
 		ensureNodeSet(s.nodesByTemplate, *n.TemplateID)[n.ID] = struct{}{}
 	}
@@ -341,6 +371,12 @@ func (s *LocalStore) applyNodeDelete(id graph.NodeID, loc RecordLocation) {
 	s.nodeMeta[id] = NodeMeta{ID: id, Deleted: true, Location: loc}
 }
 func (s *LocalStore) removeNodeIndexes(n graph.Node) {
+	if n.DomainID != uuid.Nil {
+		delete(s.nodesByDomain[n.DomainID], n.ID)
+		if len(s.nodesByDomain[n.DomainID]) == 0 {
+			delete(s.nodesByDomain, n.DomainID)
+		}
+	}
 	if n.TemplateID != nil {
 		delete(s.nodesByTemplate[*n.TemplateID], n.ID)
 	}

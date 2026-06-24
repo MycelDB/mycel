@@ -58,7 +58,7 @@ func NewRootCommand(a *app.App, repl bool) *cobra.Command {
 	root.PersistentFlags().Int64Var(&a.BlobMaxVideoBytes, "blob-max-video-bytes", a.BlobMaxVideoBytes, "video blob upload cap in bytes")
 	root.PersistentFlags().Int64Var(&a.BlobMaxOtherBytes, "blob-max-other-bytes", a.BlobMaxOtherBytes, "uncategorized blob upload cap in bytes")
 
-	root.AddCommand(NewInitCommand(a), NewUserCommand(a), NewSpaceCommand(a), NewNodeCommand(a), NewBlobCommand(a), NewTemplateCommand(a), NewACLCommand(a), NewEmbeddingsCommand(a), NewReplCommand(a))
+	root.AddCommand(NewInitCommand(a), NewUserCommand(a), NewSpaceCommand(a), NewDomainCommand(a), NewNodeCommand(a), NewBlobCommand(a), NewTemplateCommand(a), NewACLCommand(a), NewEmbeddingsCommand(a), NewReplCommand(a))
 	if repl {
 		root.Use = ""
 	}

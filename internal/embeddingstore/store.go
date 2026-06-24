@@ -45,6 +45,7 @@ type manifest struct {
 }
 
 type recordMetadata struct {
+	DomainID   graph.DomainID             `json:"domain_id,omitempty"`
 	ProviderID string                     `json:"provider_id"`
 	ModelID    string                     `json:"model_id"`
 	SourceMode domainembedding.SourceMode `json:"source_mode"`
@@ -54,6 +55,7 @@ type recordMetadata struct {
 type storedRecord struct {
 	ID         domainembedding.RecordID
 	SpaceID    domainspace.SpaceID
+	DomainID   graph.DomainID
 	NodeID     graph.NodeID
 	ProfileID  *domainembedding.ProfileID
 	ProviderID string
@@ -178,7 +180,7 @@ func (s *Store) Existing(ctx context.Context, nodeID graph.NodeID, profileID *do
 	return &out, nil
 }
 
-func (s *Store) Search(ctx context.Context, query []float64, providerID, modelID string, limit int, minScore float64) ([]domainembedding.SemanticSearchResult, error) {
+func (s *Store) Search(ctx context.Context, query []float64, domainID graph.DomainID, providerID, modelID string, limit int, minScore float64) ([]domainembedding.SemanticSearchResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -194,10 +196,13 @@ func (s *Store) Search(ctx context.Context, query []float64, providerID, modelID
 		if r.ProviderID != providerID || r.ModelID != modelID || len(r.Vector) != len(query) {
 			continue
 		}
+		if domainID != uuid.Nil && r.DomainID != domainID {
+			continue
+		}
 		// Keep only the newest embedding for each logical node/profile/source mode.
 		// Older records with previous source hashes are retained on disk for append-only
 		// durability, but they must not remain searchable after a node is re-embedded.
-		key := fmt.Sprintf("%s/%s/%s", r.NodeID, profileText(r.ProfileID), r.SourceMode)
+		key := fmt.Sprintf("%s/%s/%s/%s", r.DomainID, r.NodeID, profileText(r.ProfileID), r.SourceMode)
 		if existing, ok := latest[key]; !ok || r.CreatedAt.After(existing.CreatedAt) {
 			latest[key] = r
 		}
@@ -208,7 +213,7 @@ func (s *Store) Search(ctx context.Context, query []float64, providerID, modelID
 		if score < minScore {
 			continue
 		}
-		out = append(out, domainembedding.SemanticSearchResult{NodeID: r.NodeID, Score: score, RecordID: r.ID, ProfileID: r.ProfileID, ProviderID: r.ProviderID, ModelID: r.ModelID, SourceMode: r.SourceMode, SourceHash: r.SourceHash})
+		out = append(out, domainembedding.SemanticSearchResult{NodeID: r.NodeID, DomainID: r.DomainID, Score: score, RecordID: r.ID, ProfileID: r.ProfileID, ProviderID: r.ProviderID, ModelID: r.ModelID, SourceMode: r.SourceMode, SourceHash: r.SourceHash})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Score == out[j].Score {
@@ -248,7 +253,7 @@ func (s *Store) readAll() ([]storedRecord, error) {
 }
 
 func appendRecord(path string, rec domainembedding.EmbeddingRecord) error {
-	meta, err := json.Marshal(recordMetadata{ProviderID: rec.ProviderID, ModelID: rec.ModelID, SourceMode: rec.SourceMode, SourceHash: rec.SourceHash})
+	meta, err := json.Marshal(recordMetadata{DomainID: rec.DomainID, ProviderID: rec.ProviderID, ModelID: rec.ModelID, SourceMode: rec.SourceMode, SourceHash: rec.SourceHash})
 	if err != nil {
 		return err
 	}
@@ -380,6 +385,7 @@ func readRecord(r io.Reader) (storedRecord, error) {
 	if err := json.Unmarshal(meta, &md); err != nil {
 		return storedRecord{}, err
 	}
+	rec.DomainID = md.DomainID
 	rec.ProviderID = md.ProviderID
 	rec.ModelID = md.ModelID
 	rec.SourceMode = md.SourceMode
@@ -486,7 +492,7 @@ func decodeVector32(raw []byte) []float64 {
 }
 
 func (r storedRecord) toModel() domainembedding.EmbeddingRecord {
-	return domainembedding.EmbeddingRecord{ID: r.ID, SpaceID: r.SpaceID, NodeID: r.NodeID, ProfileID: r.ProfileID, ProviderID: r.ProviderID, ModelID: r.ModelID, SourceMode: r.SourceMode, SourceHash: r.SourceHash, Dimensions: r.Dimensions, Vector: r.Vector, CreatedAt: r.CreatedAt}
+	return domainembedding.EmbeddingRecord{ID: r.ID, SpaceID: r.SpaceID, DomainID: r.DomainID, NodeID: r.NodeID, ProfileID: r.ProfileID, ProviderID: r.ProviderID, ModelID: r.ModelID, SourceMode: r.SourceMode, SourceHash: r.SourceHash, Dimensions: r.Dimensions, Vector: r.Vector, CreatedAt: r.CreatedAt}
 }
 
 func cosine(a, b []float64) float64 {

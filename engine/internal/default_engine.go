@@ -12,11 +12,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/access"
+	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/graphstorage"
 	domainsession "github.com/myceldb/mycel/session"
 	"github.com/myceldb/mycel/store/acl"
+	storedomains "github.com/myceldb/mycel/store/domains"
 	storeembedding "github.com/myceldb/mycel/store/embedding"
 	"github.com/myceldb/mycel/store/spaces"
 	storetemplate "github.com/myceldb/mycel/store/template"
@@ -41,6 +44,7 @@ type defaultEngine struct {
 	blobStaleTmpAge  time.Duration
 	userManager      user.Manager
 	spaceManager     spaces.Manager
+	domainManager    storedomains.Manager
 	templateManager  storetemplate.Manager
 	embeddingManager storeembedding.Manager
 	accessManager    acl.Manager
@@ -164,6 +168,13 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		e.state = EngineStateClose
 		return err
 	}
+	if e.domainManager == nil {
+		e.domainManager = storedomains.NewManager()
+	}
+	if err := e.domainManager.Init(context.Background(), metaDir(cfg.DataDir)); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
 	if e.templateManager == nil {
 		e.templateManager = storetemplate.NewManager()
 	}
@@ -226,12 +237,30 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		}
 	}
 
+	if err := e.ensureDefaultDomains(context.Background()); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+
 	e.authMu.Lock()
 	e.authCache = map[AccessToken]authClaims{}
 	e.authMu.Unlock()
 
 	e.dataDir = cfg.DataDir
 	e.state = EngineStateReady
+	return nil
+}
+
+func (e *defaultEngine) ensureDefaultDomains(ctx context.Context) error {
+	spaces, err := e.spaceManager.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, sp := range spaces {
+		if _, err := e.domainManager.EnsureDefault(ctx, sp.SpaceID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -453,6 +482,10 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 	if err != nil {
 		return SpaceInfo{}, err
 	}
+	defaultDomain, err := e.domainManager.EnsureDefault(ctx, sp.SpaceID)
+	if err != nil {
+		return SpaceInfo{}, err
+	}
 	if _, err := e.accessManager.Grant(ctx, acl.GrantInput{
 		SpaceID:     sp.SpaceID,
 		UserID:      ownerID,
@@ -464,7 +497,7 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 	if ownerID == auth.UserID {
 		e.grantSpaceToCachedClaims(in.AccessToken, sp.SpaceID)
 	}
-	return SpaceInfo{OwnerID: sp.OwnerID, SpaceID: sp.SpaceID, Name: sp.Name}, nil
+	return SpaceInfo{OwnerID: sp.OwnerID, SpaceID: sp.SpaceID, Name: sp.Name, DefaultDomainID: defaultDomain.ID}, nil
 }
 
 func (e *defaultEngine) resolveCreateSpaceOwner(ctx context.Context, authenticatedUserID identity.UserID, in CreateSpaceInput) (identity.UserID, error) {
@@ -533,6 +566,103 @@ func (e *defaultEngine) ListSpaces(ctx context.Context, in ListSpacesInput) ([]d
 		}
 	}
 	return accessible, nil
+}
+
+func (e *defaultEngine) CreateDomain(ctx context.Context, in CreateDomainInput) (graph.Domain, error) {
+	if err := e.Ready(ctx); err != nil {
+		return graph.Domain{}, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	if err := e.ensureSpaceAdmin(ctx, auth.UserID, in.SpaceID); err != nil {
+		return graph.Domain{}, err
+	}
+	return e.domainManager.Create(ctx, storedomains.CreateInput{SpaceID: in.SpaceID, Key: in.Key, Name: in.Name, Description: in.Description, Default: in.Default})
+}
+
+func (e *defaultEngine) ListDomains(ctx context.Context, in ListDomainsInput) ([]graph.Domain, error) {
+	if err := e.Ready(ctx); err != nil {
+		return nil, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	if in.SpaceID == uuid.Nil {
+		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
+	}
+	canRead, err := e.canReadSpace(ctx, auth.UserID, in.SpaceID)
+	if err != nil {
+		return nil, err
+	}
+	if !canRead {
+		return nil, ErrUnauthorized
+	}
+	return e.domainManager.ListBySpace(ctx, in.SpaceID)
+}
+
+func (e *defaultEngine) GetDomain(ctx context.Context, in GetDomainInput) (graph.Domain, error) {
+	if err := e.Ready(ctx); err != nil {
+		return graph.Domain{}, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	domain, err := e.resolveDomain(ctx, in.SpaceID, in.DomainID, in.Key)
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	canRead, err := e.canReadSpace(ctx, auth.UserID, domain.SpaceID)
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	if !canRead {
+		return graph.Domain{}, ErrUnauthorized
+	}
+	return domain, nil
+}
+
+func (e *defaultEngine) SetDomainEmbeddingPolicy(ctx context.Context, in SetDomainEmbeddingPolicyInput) (domainembedding.DomainEmbeddingPolicy, error) {
+	if err := e.Ready(ctx); err != nil {
+		return domainembedding.DomainEmbeddingPolicy{}, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return domainembedding.DomainEmbeddingPolicy{}, err
+	}
+	if err := e.ensureSpaceAdmin(ctx, auth.UserID, in.Policy.SpaceID); err != nil {
+		return domainembedding.DomainEmbeddingPolicy{}, err
+	}
+	return e.domainManager.SetEmbeddingPolicy(ctx, in.Policy)
+}
+
+func (e *defaultEngine) GetDomainEmbeddingPolicy(ctx context.Context, in GetDomainEmbeddingPolicyInput) (domainembedding.DomainEmbeddingPolicy, error) {
+	if err := e.Ready(ctx); err != nil {
+		return domainembedding.DomainEmbeddingPolicy{}, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return domainembedding.DomainEmbeddingPolicy{}, err
+	}
+	domain, err := e.resolveDomain(ctx, in.SpaceID, in.DomainID, in.Key)
+	if err != nil {
+		return domainembedding.DomainEmbeddingPolicy{}, err
+	}
+	canRead, err := e.canReadSpace(ctx, auth.UserID, domain.SpaceID)
+	if err != nil {
+		return domainembedding.DomainEmbeddingPolicy{}, err
+	}
+	if !canRead {
+		return domainembedding.DomainEmbeddingPolicy{}, ErrUnauthorized
+	}
+	policy, err := e.domainManager.GetEmbeddingPolicy(ctx, domain.SpaceID, domain.ID)
+	if errors.Is(err, storedomains.ErrDomainNotFound) {
+		return domainembedding.DomainEmbeddingPolicy{}, ErrNotFound
+	}
+	return policy, err
 }
 
 func (e *defaultEngine) DeleteSpace(ctx context.Context, in DeleteSpaceInput) error {
@@ -706,6 +836,10 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (d
 	if err != nil {
 		return nil, err
 	}
+	domain, err := e.resolveDomain(ctx, spaceID, nilDomainID(in.DomainID), in.DomainKey)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := ensureGraphSpaceDir(e.dataDir, spaceID); err != nil {
 		return nil, err
@@ -722,8 +856,43 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (d
 		domainsession.Permissions{Read: canRead, Write: canWrite, Admin: canAdmin},
 		domainsession.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized, Conflict: ErrConflict},
 		store,
-		domainsession.Config{BlobLimits: e.blobLimits, BlobStaleTmpAge: e.blobStaleTmpAge, CurrentUserID: auth.UserID, EmbeddingManager: e.embeddingManager},
+		domainsession.Config{BlobLimits: e.blobLimits, BlobStaleTmpAge: e.blobStaleTmpAge, CurrentUserID: auth.UserID, EmbeddingManager: e.embeddingManager, DomainID: domain.ID},
 	), nil
+}
+
+func nilDomainID(id *graph.DomainID) graph.DomainID {
+	if id == nil {
+		return uuid.Nil
+	}
+	return *id
+}
+
+func (e *defaultEngine) resolveDomain(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID, key string) (graph.Domain, error) {
+	var d graph.Domain
+	var err error
+	if domainID != uuid.Nil {
+		d, err = e.domainManager.GetByID(ctx, domainID)
+	} else if strings.TrimSpace(key) != "" {
+		if spaceID == uuid.Nil {
+			return graph.Domain{}, fmt.Errorf("%w: space_id is required when resolving domain by key", ErrInvalidConfig)
+		}
+		d, err = e.domainManager.FindBySpaceAndKey(ctx, spaceID, key)
+	} else {
+		if spaceID == uuid.Nil {
+			return graph.Domain{}, fmt.Errorf("%w: space_id is required", ErrInvalidConfig)
+		}
+		d, err = e.domainManager.GetDefault(ctx, spaceID)
+	}
+	if err != nil {
+		if errors.Is(err, storedomains.ErrDomainNotFound) {
+			return graph.Domain{}, ErrNotFound
+		}
+		return graph.Domain{}, err
+	}
+	if spaceID != uuid.Nil && d.SpaceID != spaceID {
+		return graph.Domain{}, fmt.Errorf("%w: domain does not belong to space", ErrInvalidConfig)
+	}
+	return d, nil
 }
 
 func (e *defaultEngine) Close() error {
@@ -806,6 +975,9 @@ func (e *defaultEngine) deleteSpaceByID(ctx context.Context, spaceID domainspace
 		return err
 	}
 	if err := e.templateManager.DeleteForSpace(ctx, spaceID); err != nil {
+		return err
+	}
+	if err := e.domainManager.DeleteForSpace(ctx, spaceID); err != nil {
 		return err
 	}
 	if err := e.accessManager.DeleteForSpace(ctx, spaceID); err != nil {

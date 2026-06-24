@@ -29,6 +29,7 @@ type Config struct {
 	BlobStaleTmpAge  time.Duration
 	CurrentUserID    identity.UserID
 	EmbeddingManager storeembedding.Manager
+	DomainID         graph.DomainID
 }
 
 // New opens the default file-backed session implementation.
@@ -43,12 +44,12 @@ func NewWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID
 
 // NewWithStoreConfig opens a session that borrows an engine-owned graph store.
 func NewWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager}
 }
 
 // NewConfig opens the default file-backed session implementation.
 func NewConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager}
 }
 
 // FileSession is the default file-backed Session implementation.
@@ -56,6 +57,7 @@ type FileSession struct {
 	graphsDir        string
 	blobsDir         string
 	spaceID          domainspace.SpaceID
+	domainID         graph.DomainID
 	templateManager  storetemplate.Manager
 	permissions      sessionapi.Permissions
 	errors           sessionapi.Errors
@@ -178,9 +180,10 @@ func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeIn
 	if err != nil {
 		return graph.Node{}, err
 	}
-	// Updates never touch the blob reference; replacing blob content is a
-	// separate (future) operation.
+	// Updates never touch the blob reference or domain; replacing blob content or
+	// moving domains are separate operations.
 	n.BlobRef = nodes[idx].BlobRef
+	n.DomainID = nodes[idx].DomainID
 	n.CreatedAt = nodes[idx].CreatedAt
 	if n.CreatedAt.IsZero() {
 		n.CreatedAt = time.Now().UTC()
@@ -375,6 +378,9 @@ func (s *FileSession) GetNode(ctx context.Context, id graph.NodeID) (graph.Node,
 		}
 		return graph.Node{}, err
 	}
+	if s.domainID != uuid.Nil && n.DomainID != s.domainID {
+		return graph.Node{}, s.errors.NotFound
+	}
 	return n, nil
 }
 
@@ -515,6 +521,17 @@ func (s *FileSession) readNodes() ([]graph.Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.domainID == uuid.Nil {
+		return store.ListNodes(context.Background())
+	}
+	return store.ListNodesByDomain(context.Background(), s.domainID)
+}
+
+func (s *FileSession) readAllNodes() ([]graph.Node, error) {
+	store, err := s.graphStore()
+	if err != nil {
+		return nil, err
+	}
 	return store.ListNodes(context.Background())
 }
 
@@ -636,7 +653,7 @@ func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID 
 			return graph.Node{}, err
 		}
 	}
-	return graph.Node{ID: nodeID, TemplateID: templateID, Content: content, Props: props}, nil
+	return graph.Node{ID: nodeID, DomainID: s.domainID, TemplateID: templateID, Content: content, Props: props}, nil
 }
 
 func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to graph.Node, kind graph.EdgeKind, edges []graph.Edge) error {
@@ -645,6 +662,9 @@ func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to g
 	}
 	if from.ID == to.ID {
 		return fmt.Errorf("%w: contains edge cannot target itself", storetemplate.ErrInvalidInput)
+	}
+	if from.DomainID != uuid.Nil && to.DomainID != uuid.Nil && from.DomainID != to.DomainID {
+		return fmt.Errorf("%w: contains edges cannot cross domains", storetemplate.ErrInvalidInput)
 	}
 	for _, edge := range edges {
 		if edge.Kind == graph.EdgeKindContains && edge.ToID == to.ID {

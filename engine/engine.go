@@ -6,6 +6,7 @@ import (
 
 	domainaccess "github.com/myceldb/mycel/domain/access"
 	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
 	engineinternal "github.com/myceldb/mycel/engine/internal"
@@ -41,6 +42,11 @@ type CreateSpaceInput = engineinternal.CreateSpaceInput
 type ListSpacesInput = engineinternal.ListSpacesInput
 type DeleteSpaceInput = engineinternal.DeleteSpaceInput
 type SpaceInfo = engineinternal.SpaceInfo
+type CreateDomainInput = engineinternal.CreateDomainInput
+type ListDomainsInput = engineinternal.ListDomainsInput
+type GetDomainInput = engineinternal.GetDomainInput
+type SetDomainEmbeddingPolicyInput = engineinternal.SetDomainEmbeddingPolicyInput
+type GetDomainEmbeddingPolicyInput = engineinternal.GetDomainEmbeddingPolicyInput
 type GrantSystemRoleInput = engineinternal.GrantSystemRoleInput
 type RevokeSystemRoleInput = engineinternal.RevokeSystemRoleInput
 type ListSystemAccessInput = engineinternal.ListSystemAccessInput
@@ -82,6 +88,11 @@ type Engine interface {
 	CreateSpace(ctx context.Context, in CreateSpaceInput) (SpaceInfo, error)
 	ListSpaces(ctx context.Context, in ListSpacesInput) ([]domainspace.Space, error)
 	DeleteSpace(ctx context.Context, in DeleteSpaceInput) error
+	CreateDomain(ctx context.Context, in CreateDomainInput) (graph.Domain, error)
+	ListDomains(ctx context.Context, in ListDomainsInput) ([]graph.Domain, error)
+	GetDomain(ctx context.Context, in GetDomainInput) (graph.Domain, error)
+	SetDomainEmbeddingPolicy(ctx context.Context, in SetDomainEmbeddingPolicyInput) (domainembedding.DomainEmbeddingPolicy, error)
+	GetDomainEmbeddingPolicy(ctx context.Context, in GetDomainEmbeddingPolicyInput) (domainembedding.DomainEmbeddingPolicy, error)
 	GrantSystemRole(ctx context.Context, in GrantSystemRoleInput) (domainaccess.SystemAccessRule, error)
 	RevokeSystemRole(ctx context.Context, in RevokeSystemRoleInput) error
 	ListSystemAccess(ctx context.Context, in ListSystemAccessInput) ([]domainaccess.SystemAccessRule, error)

@@ -261,8 +261,15 @@ func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected create space success, got error: %v", err)
 	}
-	if spaceInfo.OwnerID == uuid.Nil || spaceInfo.SpaceID == uuid.Nil || spaceInfo.Name != "default" {
+	if spaceInfo.OwnerID == uuid.Nil || spaceInfo.SpaceID == uuid.Nil || spaceInfo.DefaultDomainID == uuid.Nil || spaceInfo.Name != "default" {
 		t.Fatalf("unexpected space info: %#v", spaceInfo)
+	}
+	domains, err := engine.ListDomains(context.Background(), ListDomainsInput{AccessToken: token.AccessToken, SpaceID: spaceInfo.SpaceID})
+	if err != nil {
+		t.Fatalf("expected list domains success, got error: %v", err)
+	}
+	if len(domains) != 1 || domains[0].ID != spaceInfo.DefaultDomainID || !domains[0].Default || domains[0].Key != graph.DefaultDomainKey {
+		t.Fatalf("unexpected default domains: %#v", domains)
 	}
 
 	if _, err := os.Stat(filepath.Join(dataDir, "meta", "owners.json")); !os.IsNotExist(err) {
@@ -273,6 +280,62 @@ func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "meta", "access.json")); err != nil {
 		t.Fatalf("expected meta/access.json to exist: %v", err)
+	}
+}
+
+func TestRuntimeEngine_OpenSessionScopesNodesToDomain(t *testing.T) {
+	ctx := context.Background()
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: filepath.Join(t.TempDir(), "mycel-domain-session"), Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "default"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	project, err := engine.CreateDomain(ctx, CreateDomainInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID, Key: "project-acme", Name: "Project ACME"})
+	if err != nil {
+		t.Fatalf("expected create domain success, got error: %v", err)
+	}
+	defaultSession, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID})
+	if err != nil {
+		t.Fatalf("expected default session success, got error: %v", err)
+	}
+	defaultNode, err := defaultSession.AddNode(ctx, domainsession.AddNodeInput{Content: "default node"})
+	if err != nil {
+		t.Fatalf("expected add default node success, got error: %v", err)
+	}
+	if defaultNode.DomainID != sp.DefaultDomainID {
+		t.Fatalf("expected default domain %s, got %s", sp.DefaultDomainID, defaultNode.DomainID)
+	}
+	projectSession, err := engine.OpenSession(ctx, OpenSessionInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID, DomainKey: "project-acme"})
+	if err != nil {
+		t.Fatalf("expected project session success, got error: %v", err)
+	}
+	projectNode, err := projectSession.AddNode(ctx, domainsession.AddNodeInput{Content: "project node"})
+	if err != nil {
+		t.Fatalf("expected add project node success, got error: %v", err)
+	}
+	if projectNode.DomainID != project.ID {
+		t.Fatalf("expected project domain %s, got %s", project.ID, projectNode.DomainID)
+	}
+	defaultNodes, err := defaultSession.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("expected list default nodes success, got error: %v", err)
+	}
+	if len(defaultNodes) != 1 || defaultNodes[0].ID != defaultNode.ID {
+		t.Fatalf("expected default session to see only default node, got %#v", defaultNodes)
+	}
+	projectNodes, err := projectSession.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("expected list project nodes success, got error: %v", err)
+	}
+	if len(projectNodes) != 1 || projectNodes[0].ID != projectNode.ID {
+		t.Fatalf("expected project session to see only project node, got %#v", projectNodes)
 	}
 }
 

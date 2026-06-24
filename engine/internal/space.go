@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
 )
@@ -30,7 +31,8 @@ type DeleteSpaceInput struct {
 
 // SpaceInfo is returned after creating or resolving a space.
 type SpaceInfo struct {
-	OwnerID identity.UserID     `json:"owner_id"`
-	SpaceID domainspace.SpaceID `json:"space_id"`
-	Name    string              `json:"name"`
+	OwnerID         identity.UserID     `json:"owner_id"`
+	SpaceID         domainspace.SpaceID `json:"space_id"`
+	Name            string              `json:"name"`
+	DefaultDomainID graph.DomainID      `json:"default_domain_id"`
 }

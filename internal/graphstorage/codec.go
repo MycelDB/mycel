@@ -45,6 +45,7 @@ func encodeNode(node graph.Node) ([]byte, error) {
 	if err := writeBlobRef(&b, node.BlobRef); err != nil {
 		return nil, err
 	}
+	writeUUID(&b, node.DomainID)
 	return b.Bytes(), nil
 }
 
@@ -90,6 +91,20 @@ func readBlobRef(r *bytes.Reader) (*graph.BlobID, error) {
 	}
 }
 
+func readDomainID(r *bytes.Reader) (graph.DomainID, error) {
+	if r.Len() == 0 {
+		return uuid.Nil, nil
+	}
+	if r.Len() < 16 {
+		return uuid.Nil, fmt.Errorf("%w: invalid domain id tail", ErrInvalidRecord)
+	}
+	id, err := readUUID(r)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return graph.DomainID(id), nil
+}
+
 func decodeNode(payload []byte) (graph.Node, error) {
 	id, templateID, content, r, err := decodeNodePrefix(payload)
 	if err != nil {
@@ -109,8 +124,9 @@ func decodeNode(payload []byte) (graph.Node, error) {
 		props, err := readMap(r)
 		if err == nil {
 			blobRef, blobErr := readBlobRef(r)
-			if blobErr == nil && r.Len() == 0 {
-				return graph.Node{ID: graph.NodeID(id), TemplateID: templateID, BlobRef: blobRef, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+			domainID, domainErr := readDomainID(r)
+			if blobErr == nil && domainErr == nil && r.Len() == 0 {
+				return graph.Node{ID: graph.NodeID(id), DomainID: domainID, TemplateID: templateID, BlobRef: blobRef, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 			}
 		}
 	}

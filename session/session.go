@@ -3,6 +3,7 @@ package session
 import (
 	"time"
 
+	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/graphstorage"
@@ -77,6 +78,7 @@ type Config struct {
 	BlobStaleTmpAge  time.Duration
 	CurrentUserID    identity.UserID
 	EmbeddingManager storeembedding.Manager
+	DomainID         graph.DomainID
 }
 
 // NewSession opens a file-backed graph session for a space.
@@ -101,5 +103,6 @@ func NewSessionWithStoreConfig(graphsDir string, blobsDir string, spaceID domain
 		BlobStaleTmpAge:  cfg.BlobStaleTmpAge,
 		CurrentUserID:    cfg.CurrentUserID,
 		EmbeddingManager: cfg.EmbeddingManager,
+		DomainID:         cfg.DomainID,
 	})
 }

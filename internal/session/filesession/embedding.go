@@ -134,7 +134,7 @@ func (s *FileSession) SemanticSearch(ctx context.Context, in sessionapi.Semantic
 	if err != nil {
 		return nil, err
 	}
-	return store.Search(ctx, out.Vector, cfg.Provider.ID, cfg.Model.ID, in.Limit, in.MinScore)
+	return store.Search(ctx, out.Vector, s.domainID, cfg.Provider.ID, cfg.Model.ID, in.Limit, in.MinScore)
 }
 
 func (s *FileSession) generateNodeEmbedding(ctx context.Context, in sessionapi.GenerateNodeEmbeddingInput) (domainembedding.EmbeddingRecord, bool, error) {
@@ -183,7 +183,7 @@ func (s *FileSession) generateNodeEmbedding(ctx context.Context, in sessionapi.G
 	if err != nil {
 		return domainembedding.EmbeddingRecord{}, false, err
 	}
-	rec := domainembedding.EmbeddingRecord{SpaceID: s.spaceID, NodeID: in.NodeID, ProfileID: profileID, ProviderID: cfg.Provider.ID, ModelID: cfg.Model.ID, SourceMode: cfg.Mode, SourceHash: source.Hash, Dimensions: len(out.Vector), Vector: out.Vector}
+	rec := domainembedding.EmbeddingRecord{SpaceID: s.spaceID, DomainID: nodes[idx].DomainID, NodeID: in.NodeID, ProfileID: profileID, ProviderID: cfg.Provider.ID, ModelID: cfg.Model.ID, SourceMode: cfg.Mode, SourceHash: source.Hash, Dimensions: len(out.Vector), Vector: out.Vector}
 	stored, err := store.Append(ctx, rec)
 	return stored, err == nil, err
 }

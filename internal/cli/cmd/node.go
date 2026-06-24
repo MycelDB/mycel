@@ -12,7 +12,7 @@ import (
 )
 
 func NewAddNodeCommand(a *app.App) *cobra.Command {
-	var spaceIDText, content, propsJSON, templateIDText, parentIDText string
+	var spaceIDText, domainKey, content, propsJSON, templateIDText, parentIDText string
 	var order int
 	cmd := &cobra.Command{
 		Use:   "node",
@@ -46,7 +46,7 @@ func NewAddNodeCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID, DomainKey: domainKey})
 			if err != nil {
 				return err
 			}
@@ -64,6 +64,7 @@ func NewAddNodeCommand(a *app.App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainKey, "domain", "", "domain key (defaults to the space default domain)")
 	cmd.Flags().StringVar(&content, "content", "", "node content")
 	cmd.Flags().StringVar(&propsJSON, "props-json", "", "node properties as JSON object")
 	cmd.Flags().StringVar(&templateIDText, "template-id", "", "template ID")
@@ -73,7 +74,7 @@ func NewAddNodeCommand(a *app.App) *cobra.Command {
 }
 
 func NewGetNodeCommand(a *app.App) *cobra.Command {
-	var spaceIDText string
+	var spaceIDText, domainKey string
 	cmd := &cobra.Command{
 		Use:   "get NODE_ID",
 		Short: "Get a node by ID",
@@ -91,7 +92,7 @@ func NewGetNodeCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID, DomainKey: domainKey})
 			if err != nil {
 				return err
 			}
@@ -104,11 +105,12 @@ func NewGetNodeCommand(a *app.App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainKey, "domain", "", "domain key (defaults to the space default domain)")
 	return cmd
 }
 
 func NewListNodesCommand(a *app.App) *cobra.Command {
-	var spaceIDText, contains string
+	var spaceIDText, domainKey, contains string
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -122,7 +124,7 @@ func NewListNodesCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID, DomainKey: domainKey})
 			if err != nil {
 				return err
 			}
@@ -150,13 +152,14 @@ func NewListNodesCommand(a *app.App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainKey, "domain", "", "domain key (defaults to the space default domain)")
 	cmd.Flags().StringVar(&contains, "contains", "", "case-insensitive content substring filter")
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum nodes to display (0 for all)")
 	return cmd
 }
 
 func NewDeleteNodeCommand(a *app.App) *cobra.Command {
-	var spaceIDText string
+	var spaceIDText, domainKey string
 	var recursive bool
 	cmd := &cobra.Command{
 		Use:   "node NODE_ID",
@@ -175,7 +178,7 @@ func NewDeleteNodeCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+			sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID, DomainKey: domainKey})
 			if err != nil {
 				return err
 			}
@@ -187,6 +190,7 @@ func NewDeleteNodeCommand(a *app.App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainKey, "domain", "", "domain key (defaults to the space default domain)")
 	cmd.Flags().BoolVar(&recursive, "recursive", false, "also delete descendant nodes")
 	return cmd
 }
