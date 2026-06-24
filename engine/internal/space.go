@@ -16,6 +16,11 @@ type CreateSpaceInput struct {
 	OwnerUserID *identity.UserID
 	// OwnerRef is an alternative lookup key for OwnerUserID.
 	OwnerRef identity.UserRef
+	// DefaultDomainKey optionally chooses the key for the space's initial domain.
+	// When omitted, graph.DefaultDomainKey is used.
+	DefaultDomainKey string
+	// DefaultDomainName optionally chooses the display name for the initial domain.
+	DefaultDomainName string
 }
 
 // ListSpacesInput defines a space list request payload.

@@ -482,7 +482,16 @@ func (e *defaultEngine) CreateSpace(ctx context.Context, in CreateSpaceInput) (S
 	if err != nil {
 		return SpaceInfo{}, err
 	}
-	defaultDomain, err := e.domainManager.EnsureDefault(ctx, sp.SpaceID)
+	var defaultDomain graph.Domain
+	if strings.TrimSpace(in.DefaultDomainKey) != "" {
+		name := in.DefaultDomainName
+		if strings.TrimSpace(name) == "" {
+			name = in.DefaultDomainKey
+		}
+		defaultDomain, err = e.domainManager.Create(ctx, storedomains.CreateInput{SpaceID: sp.SpaceID, Key: in.DefaultDomainKey, Name: name, Default: true})
+	} else {
+		defaultDomain, err = e.domainManager.EnsureDefault(ctx, sp.SpaceID)
+	}
 	if err != nil {
 		return SpaceInfo{}, err
 	}

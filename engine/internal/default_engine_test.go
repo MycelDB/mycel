@@ -283,6 +283,29 @@ func TestRuntimeEngine_CreateSpace_Success(t *testing.T) {
 	}
 }
 
+func TestRuntimeEngine_CreateSpaceCanChooseDefaultDomain(t *testing.T) {
+	ctx := context.Background()
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: filepath.Join(t.TempDir(), "mycel-custom-default-domain"), Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	token, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected authenticate success, got error: %v", err)
+	}
+	sp, err := engine.CreateSpace(ctx, CreateSpaceInput{AccessToken: token.AccessToken, Name: "Personal PKM", DefaultDomainKey: "personal-pkm", DefaultDomainName: "Personal PKM"})
+	if err != nil {
+		t.Fatalf("expected create space success, got error: %v", err)
+	}
+	domain, err := engine.GetDomain(ctx, GetDomainInput{AccessToken: token.AccessToken, SpaceID: sp.SpaceID, Key: "personal-pkm"})
+	if err != nil {
+		t.Fatalf("expected get custom default domain success, got error: %v", err)
+	}
+	if domain.ID != sp.DefaultDomainID || !domain.Default || domain.Key != "personal-pkm" {
+		t.Fatalf("unexpected custom default domain: %#v", domain)
+	}
+}
+
 func TestRuntimeEngine_OpenSessionScopesNodesToDomain(t *testing.T) {
 	ctx := context.Background()
 	engine := &defaultEngine{}
