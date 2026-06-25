@@ -339,7 +339,7 @@ Stores model metadata.
 Fields:
 
 - `connector_types`: connector enum values that can execute this model shape.
-- `vector_space_key`: compatibility key; vectors from different vector spaces must not be compared directly.
+- `vector_space_key`: opaque authoritative compatibility key. Vectors with the same key are directly comparable; vectors with different keys are not directly comparable. Mycel validates it as a non-empty string for embedding models and does not parse provider/version/dimensions from it initially.
 - `dimensions`: required for embedded vector store validation.
 
 ### `meta/inference/model_endpoint_capabilities.json`
@@ -375,7 +375,7 @@ Connector compatibility alone is not enough; an enabled capability record is req
 
 Capabilities are global and trusted as provisioned. Mycel should not automatically probe endpoints to verify them during startup or planning.
 
-Capabilities must not override dimensions or vector-space identity. If dimensions, vector space, or model behavior differs, define a separate `InferenceModel`.
+Capabilities must not override dimensions or vector-space identity. If dimensions, vector space, model revision, or model behavior differs, define a separate `InferenceModel` with its own `vector_space_key`.
 
 ### `meta/inference/vector_stores.json`
 

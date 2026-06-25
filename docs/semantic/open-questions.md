@@ -2,25 +2,7 @@
 
 This document tracks design points that remain unclear or need explicit decisions before implementation.
 
-## 1. Model Identity and Vector Space Compatibility
-
-`vector_space_key` is the proposed compatibility key.
-
-Still to decide:
-
-- Is `vector_space_key` sufficient to declare vector comparability?
-- Should provider/model/version/dimensions be part of a canonical vector-space identity?
-- How are model revisions represented when a vendor changes a model behind the same public name?
-- Should a model change create a new semantic index version automatically?
-
-Resolved related decision:
-
-- `ModelEndpointCapability` is required for every endpoint/model/operation use.
-- Capability records are global under `meta/inference/`.
-- Mycel trusts provisioned capabilities and does not automatically probe endpoints.
-- Endpoint-specific dimension/vector-space differences should be modeled as separate `InferenceModel` records, not capability overrides.
-
-## 2. Semantic Index Source Selection
+## 1. Semantic Index Source Selection
 
 Source policies currently include selectors such as templates, tags, properties, and source mode.
 
@@ -32,7 +14,7 @@ Still to decide:
 - Can source policies exclude subtrees or tags?
 - How do blob text extraction, transcripts, and derived sources fit?
 
-## 3. Dirty Queue Transactionality
+## 2. Dirty Queue Transactionality
 
 Graph writes should not synchronously generate embeddings, but dirty work must not be lost.
 
@@ -43,7 +25,7 @@ Still to decide:
 - Should dirty work be JSON-rewritten initially or append-only from the start?
 - How are concurrent edits coalesced safely?
 
-## 4. Inference Policy Defaults
+## 3. Inference Policy Defaults
 
 Policies can restrict processing by endpoint privacy/network class.
 
@@ -55,7 +37,7 @@ Still to decide:
 - Are policies inherited only through containment edges?
 - What happens when a node moves into or out of a restricted subtree?
 
-## 5. Credential Grant Defaults
+## 4. Credential Grant Defaults
 
 Credentials are principal-owned; grants are space-owned.
 
@@ -66,7 +48,7 @@ Still to decide:
 - Can system/org credentials process user-owned content by default?
 - How should shared spaces decide whose credential pays for embedding refresh and query embeddings?
 
-## 6. Query Embedding Credential Resolution
+## 5. Query Embedding Credential Resolution
 
 Content embeddings and query embeddings may use the same endpoint/model but not necessarily the same credential.
 
@@ -77,7 +59,7 @@ Still to decide:
 - Should query credential use be audited separately from content embedding records?
 - What happens if an index exists but the current querying user cannot resolve a credential?
 
-## 7. Deletion, Privacy, and Revocation
+## 6. Deletion, Privacy, and Revocation
 
 Policy and credential changes can invalidate existing derived vectors.
 
@@ -89,18 +71,21 @@ Still to decide:
 - Are embeddings treated as derived personal data for export/delete?
 - Do policy changes enqueue cleanup jobs?
 
-## 8. Semantic Index Versioning
+## 7. Semantic Index Versioning
 
 Index definitions may change over time.
+
+Resolved related decision:
+
+- A material model or endpoint/model binding change should be handled by creating a new semantic index, backfilling it, switching queries/application defaults explicitly, and retiring the old index later. Mycel should not automatically mutate/version semantic indexes because a model changed.
 
 Still to decide:
 
 - Does changing source policy mutate the same index or create `v2`?
-- Does changing model/endpoint always create a new index?
 - Should stable aliases point to versioned indexes?
 - How are old index versions retired or compacted?
 
-## 9. Minimal Implementation Slice
+## 8. Minimal Implementation Slice
 
 A reasonable first implementation might include:
 

@@ -2,7 +2,7 @@
 
 A semantic query may target one semantic index or many semantic indexes.
 
-If selected indexes use incompatible vector spaces, Mycel must generate multiple query embeddings and merge results.
+If selected indexes use different `vector_space_key` values, Mycel must generate multiple query embeddings and merge results. `vector_space_key` is an opaque authoritative string: equal keys are directly comparable, different keys are not directly comparable.
 
 ## Planning Direction
 
@@ -25,7 +25,7 @@ Mycel should:
 1. resolve requested space/domain/index/content scope
 2. find semantic indexes covering that scope and purpose
 3. evaluate inference policies and remove disallowed content/index/model endpoint combinations
-4. group remaining indexes by compatible vector space/endpoint/model
+4. group remaining indexes by `vector_space_key` and compatible endpoint/model requirements
 5. resolve a compatible credential grant for each required query-embedding model endpoint call
 6. generate one query embedding per compatible vector-space group
 7. search each vector store/index
@@ -96,7 +96,7 @@ index tasks-azure skipped because no credential grant was available
 
 ## Score Merging
 
-Cosine scores from incompatible vector spaces should not be compared blindly.
+Cosine scores from different `vector_space_key` groups should not be compared blindly.
 
 Options:
 

@@ -117,7 +117,20 @@ metadata
 created_at / updated_at
 ```
 
-Embeddings from incompatible `vector_space_key` values must not be compared directly.
+`vector_space_key` is an opaque string and is authoritative for embedding comparability:
+
+```text
+same vector_space_key      => vectors are directly comparable
+different vector_space_key => vectors are not directly comparable
+```
+
+Mycel should validate only that `vector_space_key` is non-empty for embedding models. It should not parse provider, version, or dimensions out of the key initially.
+
+Each `InferenceModel` owns exactly one `vector_space_key`. Capabilities must not override it.
+
+If dimensions, vector-space behavior, or model behavior differs, create a separate `InferenceModel` with its own `vector_space_key`.
+
+If a vendor changes a model behind the same public model name and the change is material, represent that as a new `InferenceModel`. Mycel should not silently reinterpret old embeddings as belonging to the new model.
 
 ## Model Endpoint Capability
 
@@ -151,6 +164,21 @@ created_at / updated_at
 `model_name_override` supports cases where the logical model key differs from the name that must be sent to a particular endpoint, while still producing the same model/vector space.
 
 Capabilities must not override dimensions or vector-space identity. If dimensions, vector space, or model behavior differs, define a separate `InferenceModel`.
+
+## Semantic Index Model Changes
+
+Model changes should not automatically mutate or version existing semantic indexes.
+
+When a model changes materially:
+
+1. provision a new `InferenceModel`
+2. provision a new `ModelEndpointCapability`
+3. create a new semantic index using the new model
+4. backfill the new semantic index
+5. switch queries/application defaults to the new index when ready
+6. retire the old semantic index explicitly
+
+This avoids mixing incompatible vector spaces and keeps migration/audit behavior explicit.
 
 ## Vector Store Type
 
