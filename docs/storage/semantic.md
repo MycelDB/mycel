@@ -1,9 +1,9 @@
-# Advanced Embeddings Storage Layout
+# Semantic and Embedding Storage
 
 Status: design draft  
 Related design: [`../advanced_embeddings.md`](../advanced_embeddings.md)
 
-This document describes how advanced embedding/inference support maps onto Mycel's file-backed storage model.
+This document describes current embedding storage and the proposed advanced semantic/inference storage layout.
 
 The advanced embedding model introduces provisioned inference definitions, credentials, credential grants, inference policies, semantic indexes, dirty maintenance work, policy decisions, and append-only vector records.
 

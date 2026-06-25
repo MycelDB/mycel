@@ -558,7 +558,7 @@ Search should ignore stale records by choosing the latest logical record for a n
 
 ## File-Backed Storage Layout
 
-The detailed file-backed storage layout for advanced embeddings is documented in [`docs/storage/advanced-embeddings.md`](storage/advanced-embeddings.md).
+The detailed file-backed storage layout for advanced embeddings is documented in [`docs/storage/semantic.md`](storage/semantic.md).
 
 That storage document defines:
 

@@ -1,6 +1,16 @@
 # Storage Layout
 
-MycelDB stores data under a single data root. Metadata remains JSON-backed for now, while per-space graph data uses a custom append-only binary segment store.
+MycelDB stores all file-backed data under a single data root.
+
+This document is the root map for the storage directory. Detailed file formats and responsibilities are documented in the sibling storage documents:
+
+- [meta.md](meta.md): global metadata, users, spaces, ACL, domains, templates, inference definitions, credentials, grants, and policies
+- [graphs.md](graphs.md): per-space graph storage, graph manifests, graph segment files, recovery, and graph indexes
+- [blobs.md](blobs.md): content-addressed blob storage and blob lifecycle
+- [semantic.md](semantic.md): semantic indexes, dirty queues, policy decisions, and append-only vector records
+- [segment-store.md](segment-store.md): current graph segment store details
+
+## Directory Tree
 
 ```text
 <data-root>/
@@ -8,9 +18,30 @@ MycelDB stores data under a single data root. Metadata remains JSON-backed for n
     users.json
     spaces.json
     access.json
+    domains.json
     system.json
+
     templates/
       <space_id>.json
+
+    embedding/                         # current embedding metadata
+      embeddings.json
+
+    inference/                         # proposed advanced inference definitions
+      packages.json
+      runtimes.json
+      models.json
+      vector_stores.json
+
+    secrets/                           # proposed encrypted secret records or external secret refs
+      secrets.json
+
+    credentials/                       # proposed credential metadata and grants
+      credentials.json
+      grants.json
+
+    policies/                          # proposed content/inference policies
+      inference_policies.json
 
   graphs/
     <space_id>/
@@ -21,100 +52,102 @@ MycelDB stores data under a single data root. Metadata remains JSON-backed for n
         nodes-000001.kseg
         edges-000001.kseg
 
+      embeddings/                      # current append-only embedding vector store
+        manifest.kemb
+        segments/
+          embeddings-000001.kvec
+
+      semantic/                        # proposed advanced semantic index storage
+        indexes.json
+        index_state.json
+        dirty_queue.json
+        policy_decisions.json
+
+        indexes/
+          <semantic_index_id>/
+            manifest.ksem
+            records/
+              embeddings-000001.kvec
+            external_refs.json
+
   blobs/
     <space_id>/
       objects/
-        <aa>/<sha256-hex>
+        <aa>/
+          <sha256-hex>
       tmp/
 ```
 
-## Metadata files
+## Top-Level Responsibilities
 
-For an initialized store, `meta/users.json`, `meta/spaces.json`, and `meta/access.json` are required. If any of these files is missing while another exists, startup fails instead of recreating empty metadata and risking silent data loss.
+### `meta/`
 
-`meta/templates/<space_id>.json` contains immutable template versions for a space.
+Stores global and cross-space metadata. Most files are JSON-backed today.
 
-## Graph storage
+Examples:
 
-Each graph space has a `manifest.mycel` file and binary segment files.
+- users and password material
+- space metadata
+- ACL rules
+- domain metadata
+- graph template definitions
+- current embedding provider keys/profiles
+- proposed inference/runtime/model/vector-store definitions
+- proposed credentials, grants, and policies
 
-The manifest is a small table of contents for the graph store. It records:
+See [meta.md](meta.md).
 
-- storage format version
-- active transaction segment
-- active node segment
-- active edge segment
-- the ordered segment lists to scan when rebuilding indexes
+### `graphs/`
 
-The manifest is not an index. On open, MycelDB scans committed transaction records and rebuilds in-memory indexes from the segment files. During that scan, the graph store is in a `rebuilding_index` state. The graph store also rebuilds an in-memory revision counter from committed transaction records; session transactions use that revision for optimistic conflict detection.
+Stores per-space graph data.
 
-## Segment files
+Current graph records are append-only binary records in `.kseg` segment files. On open, Mycel scans committed transaction records and rebuilds in-memory indexes.
 
-Graph records are append-only binary records:
+Current embeddings are also stored under each graph space in append-only `.kvec` segment files.
 
-- transaction begin
-- transaction commit
-- node put
-- node tombstone
-- edge put
-- edge tombstone
+The proposed advanced semantic system stores per-space semantic index definitions and per-index vector records under `graphs/<space_id>/semantic/`.
 
-Every graph mutation is written inside a storage transaction. Recovery applies only records belonging to committed transactions; uncommitted records are ignored. Session-level transactions stage graph changes in memory and then write one storage transaction at commit.
+See [graphs.md](graphs.md) and [semantic.md](semantic.md).
 
-Node and edge payloads use MycelDB's binary graph codec, not JSON. UUIDs are stored as 16-byte values. New generated node and edge IDs use UUIDv7.
+### `blobs/`
 
-## Blob storage
+Stores immutable content-addressed blob payloads by space.
 
-Each space may have a content-addressed blob store under `blobs/<space_id>/`, kept at the top level (separate from `graphs/`) so heavy binary data can be backed up or tiered independently of graph structure.
+Blob files are separated from graph structure so large binary data can be backed up, tiered, or restored independently from graph metadata.
 
-Blob files are immutable and named by the lowercase hex SHA-256 digest of their content, stored under `objects/` with a two-character fan-out directory. Identical content is stored once (dedup). Writes stream through `tmp/` and are renamed into `objects/` after fsync, so a visible object is always complete.
+See [blobs.md](blobs.md).
 
-Transactional blob writes stage new content under `tmp/` until commit. On transaction commit, referenced staged blobs are promoted into `objects/` before the graph transaction is written; rollback removes staged temporary files. If graph commit fails after promotion, MycelDB removes promoted staged blobs that no committed node references.
+## Storage Guarantees
 
-Nodes reference blobs through the optional `BlobRef` field in the node record (appended after the props map in the binary codec; older records without the field still decode). A node has inline text `Content` or a `BlobRef`, never both: blob nodes keep `Content` empty, and text about a blob (caption, alt text) lives in props or annotation children. Blob metadata (`mime_type`, `size_bytes`, `original_filename`, `declared_mime_type`, `caption`, `alt_text`) lives in node props, validated by the system `blob` template by default.
+- Metadata files are JSON-backed and rewritten atomically by the file-store helpers.
+- Graph mutations are append-only and transaction-scoped.
+- Uncommitted graph records are ignored during recovery.
+- Blob objects are immutable and content-addressed.
+- Current and proposed vector records are append-only; stale vector records are ignored logically until compaction.
+- Persisted indexes are intentionally deferred; runtime indexes are rebuilt from authoritative files.
 
-A blob file is deleted when the last live node referencing it is removed. Orphans left by crashes (blob written or promoted, node never committed) are reclaimed by a best-effort sweep when the blob store is next opened. There is no persisted blob index; the blob-to-node mapping is rebuilt in memory from committed node records.
+## Delete Behavior
 
-Deleting a space removes both `graphs/<space_id>/` and `blobs/<space_id>/`.
+Deleting a space removes the owning graph and blob directories:
 
-## Embedding and Semantic Storage
+```text
+graphs/<space_id>/
+blobs/<space_id>/
+```
 
-Current embedding storage uses `meta/embedding/embeddings.json` for provider keys/profiles and `graphs/<space_id>/embeddings/segments/*.kvec` for append-only vector records.
+Metadata records for the space, templates, domains, ACL rules, semantic indexes, credentials/grants, and policy references must also be removed or tombstoned by their owning managers.
 
-The advanced embedding storage proposal, including JSON structures and `.kvec` block layouts, is documented in [advanced-embeddings.md](advanced-embeddings.md).
-
-## Indexes
-
-Indexes are rebuilt in memory from committed segment records. Current indexes include:
-
-- node ID to node record
-- edge ID to edge record
-- node template ID to node IDs
-- contains parent to ordered child edges
-- contains child to parent edge
-- simple `journal_day` property index
-- blob ID to referencing node IDs (for blob refcounting and orphan sweep)
-
-Persisted index snapshots and compaction are intentionally deferred.
-
-## Delete behavior
-
-Graph deletes append tombstones:
-
-- deleting a node writes a node tombstone
-- deleting a node also writes tombstones for incident affected edges
-- recursive deletes write tombstones for the subtree and affected edges
-
-Metadata deletes still remove metadata files/records as documented by their managers.
-
-## ID format
+## ID Format
 
 Public IDs remain UUIDs:
 
 - `UserID`
 - `SpaceID`
+- `DomainID`
 - `TemplateID`
 - `NodeID`
 - `EdgeID`
+- `BlobID`
+- semantic/inference resource IDs
 
 Graph node and edge IDs generated by MycelDB use UUIDv7.
