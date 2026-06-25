@@ -125,6 +125,16 @@ A capability states that one model endpoint can serve one inference model for on
 
 Connector compatibility is not enough. A model endpoint using the `ollama` connector does not necessarily have every Ollama model installed, and an `openai-compatible` endpoint may expose a private model catalog.
 
+Capability records are required. A semantic index binding is valid only when an enabled capability exists for:
+
+```text
+model_endpoint_id + model_id + operation
+```
+
+Capabilities are global under `meta/inference/` because they describe technical availability between global endpoint and model definitions. Spaces do not override capabilities; spaces control use through semantic indexes, credential grants, and inference policies.
+
+Mycel trusts provisioned capability definitions. It should not automatically probe endpoints during startup or planning. Optional verification commands can be added later.
+
 Conceptual fields:
 
 ```text
@@ -134,12 +144,13 @@ model_id
 operation
 enabled
 model_name_override
-dimensions_override
 metadata
 created_at / updated_at
 ```
 
-`model_name_override` supports cases where the logical model key differs from the name that must be sent to a particular endpoint.
+`model_name_override` supports cases where the logical model key differs from the name that must be sent to a particular endpoint, while still producing the same model/vector space.
+
+Capabilities must not override dimensions or vector-space identity. If dimensions, vector space, or model behavior differs, define a separate `InferenceModel`.
 
 ## Vector Store Type
 

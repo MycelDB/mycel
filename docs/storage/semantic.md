@@ -356,7 +356,6 @@ Stores endpoint/model capability mappings.
       "operation": "embeddings",
       "enabled": true,
       "model_name_override": "text-embedding-3-small",
-      "dimensions_override": 1536,
       "metadata": {},
       "created_at": "RFC3339 timestamp",
       "updated_at": "RFC3339 timestamp"
@@ -370,10 +369,13 @@ Fields:
 - `model_endpoint_id`: endpoint instance that can serve the model.
 - `model_id`: model metadata record.
 - `operation`: operation supported by this endpoint/model pair.
-- `model_name_override`: optional name to send to this endpoint instead of the model default.
-- `dimensions_override`: optional endpoint-specific dimension value.
+- `model_name_override`: optional name to send to this endpoint instead of the model default, while still producing the same model/vector space.
 
-Connector compatibility alone is not enough; a capability record confirms that one specific endpoint can serve one specific model for one operation.
+Connector compatibility alone is not enough; an enabled capability record is required to confirm that one specific endpoint can serve one specific model for one operation.
+
+Capabilities are global and trusted as provisioned. Mycel should not automatically probe endpoints to verify them during startup or planning.
+
+Capabilities must not override dimensions or vector-space identity. If dimensions, vector space, or model behavior differs, define a separate `InferenceModel`.
 
 ### `meta/inference/vector_stores.json`
 

@@ -97,7 +97,7 @@ mycel template import logseq-journal.json
 
 ### 4. Verify endpoint/model capability
 
-Before an index can use a model endpoint and model, a capability must exist:
+Before an index can use a model endpoint and model, an enabled global capability must exist:
 
 ```sh
 mycel inference capability add \
@@ -106,7 +106,7 @@ mycel inference capability add \
   --operation embeddings
 ```
 
-Packages may create this automatically for standard model endpoints.
+Packages may create this automatically for standard model endpoints. Mycel trusts provisioned capabilities; it should not probe endpoints automatically. If a capability is missing or disabled, a semantic index binding using that endpoint/model/operation is invalid or inactive.
 
 ### 5. Add user credential
 
