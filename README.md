@@ -41,7 +41,8 @@ See [`docs/architecture.md`](docs/architecture.md) for a navigation guide, impor
 - Access control: `docs/domain/access/access.md`
 - Storage layout: `docs/storage/layout.md`
 - CLI usage: `docs/cli.md`
-- Embeddings MVP: `docs/embeddings.md`
+- Semantic indexing and embeddings: `docs/semantic/README.md`
+- Embeddings MVP: `docs/semantic/current-mvp.md`
 - Custom metadata indexing: `docs/metadata.md`
 
 ## CLI

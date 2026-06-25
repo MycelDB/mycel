@@ -1,7 +1,7 @@
 # Semantic and Embedding Storage
 
 Status: design draft  
-Related design: [`../advanced_embeddings.md`](../advanced_embeddings.md)
+Related design: [`../semantic/README.md`](../semantic/README.md)
 
 This document describes current embedding storage and the proposed advanced semantic/inference storage layout.
 

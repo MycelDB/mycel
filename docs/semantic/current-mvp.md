@@ -1,4 +1,4 @@
-# MycelDB embeddings MVP
+# Current Embeddings MVP
 
 MycelDB includes a manual embeddings subsystem for generating derived vectors from graph nodes and searching them semantically.
 
@@ -10,16 +10,9 @@ Embedding configuration is system metadata:
 - user-owned encrypted provider API keys
 - user-owned embedding profiles
 
-Generated vectors are space-scoped derived data stored outside `Node.Props` under the graph space directory:
+Generated vectors are space-scoped derived data stored outside `Node.Props` under the graph space directory. Storage details are documented in [../storage/semantic.md](../storage/semantic.md).
 
-```text
-graphs/<space_id>/embeddings/
-  manifest.kemb
-  segments/
-    embeddings-000001.kvec
-```
-
-The segment file is append-only binary storage. Fixed record fields are stored in little-endian binary, variable metadata is stored as compact JSON bytes, and vectors are persisted as `float32` values. The initial vector index is rebuilt from this binary segment and searched with brute-force cosine similarity. ANN indexes, compaction, background jobs, and automatic mutation triggers are intentionally deferred.
+The current vector index is rebuilt from append-only `.kvec` segments and searched with brute-force cosine similarity. ANN indexes, compaction, background jobs, and automatic mutation triggers are intentionally deferred.
 
 ## Source modes
 
