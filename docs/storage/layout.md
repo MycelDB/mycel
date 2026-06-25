@@ -77,6 +77,12 @@ A blob file is deleted when the last live node referencing it is removed. Orphan
 
 Deleting a space removes both `graphs/<space_id>/` and `blobs/<space_id>/`.
 
+## Embedding and Semantic Storage
+
+Current embedding storage uses `meta/embedding/embeddings.json` for provider keys/profiles and `graphs/<space_id>/embeddings/segments/*.kvec` for append-only vector records.
+
+The advanced embedding storage proposal, including JSON structures and `.kvec` block layouts, is documented in [advanced-embeddings.md](advanced-embeddings.md).
+
 ## Indexes
 
 Indexes are rebuilt in memory from committed segment records. Current indexes include:
