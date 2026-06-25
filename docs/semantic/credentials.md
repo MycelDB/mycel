@@ -48,6 +48,8 @@ Secret values should be stored separately in an encrypted secret store or extern
 
 Credential ownership alone is not enough. Mycel also needs to know where a credential is authorized to be used.
 
+Credential grants are owned by the space whose content they authorize for processing. Credential metadata may be global/principal-owned, but grants should live under the owning space's semantic storage so space export/delete/provisioning includes its processing authorization rules.
+
 A credential grant is an atomic statement:
 
 ```text
@@ -81,7 +83,7 @@ expires_at
 Scope fields:
 
 ```text
-space_id
+space_id              # implied by owning space storage; retained for validation if present
 domain_id
 semantic_index_id
 node_id

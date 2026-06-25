@@ -33,12 +33,8 @@ meta/
   secrets/            # proposed advanced secret store
     secrets.json
 
-  credentials/        # proposed advanced credential metadata/grants
+  credentials/        # proposed advanced credential metadata; grants are space-owned
     credentials.json
-    grants.json
-
-  policies/           # proposed advanced inference/content policies
-    inference_policies.json
 ```
 
 ## Required Metadata Files
@@ -281,8 +277,6 @@ meta/inference/models.json
 meta/inference/vector_stores.json
 meta/secrets/secrets.json
 meta/credentials/credentials.json
-meta/credentials/grants.json
-meta/policies/inference_policies.json
 ```
 
 These stores are global/deployment-level or cross-space metadata:
@@ -293,8 +287,8 @@ These stores are global/deployment-level or cross-space metadata:
 - vector stores define embedded or external vector backends
 - secrets store encrypted payloads or external secret references
 - credentials bind principals to runtime auth material
-- grants authorize credentials for processing scopes
-- policies restrict whether graph content may be processed by inference runtimes
+
+Credential grants and inference/content policies are space-owned because they govern processing of content in a specific space. They are stored under `graphs/<space_id>/semantic/`; see [semantic.md](semantic.md).
 
 ## Atomic Writes and Recovery
 

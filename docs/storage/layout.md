@@ -4,7 +4,7 @@ MycelDB stores all file-backed data under a single data root.
 
 This document is the root map for the storage directory. Detailed file formats and responsibilities are documented in the sibling storage documents:
 
-- [meta.md](meta.md): global metadata, users, spaces, ACL, domains, templates, inference definitions, credentials, grants, and policies
+- [meta.md](meta.md): global metadata, users, spaces, ACL, domains, templates, inference definitions, credentials, and secrets
 - [graphs.md](graphs.md): per-space graph storage, graph manifests, graph segment files, recovery, and graph indexes
 - [blobs.md](blobs.md): content-addressed blob storage and blob lifecycle
 - [semantic.md](semantic.md): semantic indexes, dirty queues, policy decisions, and append-only vector records
@@ -36,12 +36,8 @@ This document is the root map for the storage directory. Detailed file formats a
     secrets/                           # proposed encrypted secret records or external secret refs
       secrets.json
 
-    credentials/                       # proposed credential metadata and grants
+    credentials/                       # proposed credential metadata; grants are space-owned
       credentials.json
-      grants.json
-
-    policies/                          # proposed content/inference policies
-      inference_policies.json
 
   graphs/
     <space_id>/
@@ -59,6 +55,8 @@ This document is the root map for the storage directory. Detailed file formats a
 
       semantic/                        # proposed advanced semantic index storage
         indexes.json
+        credential_grants.json
+        inference_policies.json
         index_state.json
         dirty_queue.json
         policy_decisions.json
@@ -93,7 +91,7 @@ Examples:
 - graph template definitions
 - current embedding provider keys/profiles
 - proposed inference/runtime/model/vector-store definitions
-- proposed credentials, grants, and policies
+- proposed credentials and secrets
 
 See [meta.md](meta.md).
 
@@ -135,7 +133,7 @@ graphs/<space_id>/
 blobs/<space_id>/
 ```
 
-Metadata records for the space, templates, domains, ACL rules, semantic indexes, credentials/grants, and policy references must also be removed or tombstoned by their owning managers.
+Metadata records for the space, templates, domains, ACL rules, semantic indexes, space-owned credential grants, and space-owned policy references must also be removed or tombstoned by their owning managers.
 
 ## ID Format
 

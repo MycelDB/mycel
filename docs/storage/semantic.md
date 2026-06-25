@@ -10,9 +10,9 @@ The advanced embedding model introduces provisioned inference definitions, crede
 ## Storage Principles
 
 - Keep graph mutations fast; never call an inference runtime synchronously in the graph write path.
-- Store global/deployment definitions under `meta/`.
+- Store global/deployment definitions and principal-owned credentials under `meta/`.
 - Store graph content in existing append-only graph segments under `graphs/<space_id>/segments/`.
-- Store semantic index definitions and operational state under the owning space.
+- Store semantic index definitions, credential grants, inference policies, and operational state under the owning space.
 - Store embedded vector records in append-only `.kvec` files.
 - Preserve enough provenance to audit which runtime, model, credential grant, and policy decision produced or skipped an embedding.
 - Keep JSON metadata simple initially; move to append-only metadata logs or per-record files later only if needed.
@@ -201,7 +201,7 @@ Although the domain model exposes vectors as `[]float64`, the current file forma
 
 ## Proposed Advanced Layout
 
-The advanced model should separate inference definitions, credentials, grants, policies, semantic indexes, dirty work, and vector records.
+The advanced model should separate global inference definitions/credentials from space-owned grants, policies, semantic indexes, dirty work, and vector records.
 
 Proposed layout:
 
@@ -217,9 +217,6 @@ Proposed layout:
       secrets.json
     credentials/
       credentials.json
-      grants.json
-    policies/
-      inference_policies.json
 
   graphs/
     <space_id>/
@@ -231,6 +228,8 @@ Proposed layout:
 
       semantic/
         indexes.json
+        credential_grants.json
+        inference_policies.json
         index_state.json
         dirty_queue.json
         policy_decisions.json
@@ -429,9 +428,13 @@ Fields:
 - `secret_ref`: reference to `meta/secrets/secrets.json` or an external secret manager.
 - `is_default`: default only within the credential owner/runtime resolution scope.
 
-### `meta/credentials/grants.json`
+## Proposed Per-Space JSON Structures
 
-Stores credential grants.
+Space-owned semantic governance lives under `graphs/<space_id>/semantic/`. This includes credential grants and inference policies because they govern processing of content in the owning space.
+
+### `graphs/<space_id>/semantic/credential_grants.json`
+
+Stores credential grants for one owning space.
 
 A grant authorizes one credential for one processing scope.
 
@@ -464,13 +467,14 @@ A grant authorizes one credential for one processing scope.
 Rules:
 
 - `credential_id` is required.
-- `scope` may be broad, such as a space, or narrow, such as a subtree.
+- The owning space is implied by the file location; `scope.space_id` may be retained for validation but should match the owning directory.
+- `scope` may be broad, such as a domain, or narrow, such as a subtree.
 - `runtime_id` and `model_id` are optional constraints but recommended.
 - Resolution chooses the most specific compatible grant and errors on ambiguous same-specificity grants unless priority/default breaks the tie.
 
-### `meta/policies/inference_policies.json`
+### `graphs/<space_id>/semantic/inference_policies.json`
 
-Stores content-processing policies.
+Stores content-processing policies for one owning space.
 
 ```json
 {
@@ -501,11 +505,11 @@ Stores content-processing policies.
 
 Rules:
 
+- The owning space is implied by the file location; `scope.space_id` may be retained for validation but should match the owning directory.
 - Policies are scope references; they are not embedded directly into graph node records.
 - Deny/restrict policies must be evaluated before credential grants.
 - Node/subtree policies override broader domain/space allowances.
 
-## Proposed Per-Space JSON Structures
 
 ### `graphs/<space_id>/semantic/indexes.json`
 
@@ -554,7 +558,7 @@ Stores semantic index definitions for a space.
 Notes:
 
 - The binding intentionally does not include a credential/API key.
-- Credentials are resolved through `meta/credentials/grants.json` when a runtime call is needed.
+- Credentials are resolved from global credential metadata and space-owned grants in `graphs/<space_id>/semantic/credential_grants.json` when a runtime call is needed.
 
 ### `graphs/<space_id>/semantic/index_state.json`
 
@@ -795,10 +799,10 @@ If a block is created under a parent whose effective policy recommends embedding
 
 1. The graph mutation is committed to `graphs/<space_id>/segments/*.kseg`.
 2. Mycel resolves applicable semantic indexes from `graphs/<space_id>/semantic/indexes.json`.
-3. Mycel evaluates inherited policies from `meta/policies/inference_policies.json`.
+3. Mycel evaluates inherited policies from `graphs/<space_id>/semantic/inference_policies.json`.
 4. Mycel writes or coalesces dirty work in `graphs/<space_id>/semantic/dirty_queue.json`.
 5. A background maintainer later processes dirty work.
-6. The maintainer resolves credentials from `meta/credentials/credentials.json` and `meta/credentials/grants.json`.
+6. The maintainer resolves credential metadata from `meta/credentials/credentials.json` and authorization grants from `graphs/<space_id>/semantic/credential_grants.json`.
 7. Generated records are appended to the semantic index vector store.
 8. State is updated in `graphs/<space_id>/semantic/index_state.json`.
 

@@ -28,8 +28,8 @@ The CLI/operator provisions:
 - model definitions
 - vector store backends
 - credentials
-- credential grants
-- inference/content policies
+- space-owned credential grants
+- space-owned inference/content policies
 - semantic indexes
 - backfill/maintenance jobs
 
@@ -62,6 +62,8 @@ The user or operator provisions authority and policy:
 - allowed providers/runtimes
 - credential grants
 - local-only or no-inference subtrees
+
+Credential grants and inference/content policies belong to the owning space. For a system like Knot PKM, provisioning a `Personal PKM` space should also provision that space's semantic indexes, grants, and policies.
 
 ## Example Provisioning Flow
 

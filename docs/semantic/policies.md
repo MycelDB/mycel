@@ -13,6 +13,8 @@ A credential grant may allow an OpenAI key in a space, while a node-level policy
 
 ## Policy Scopes
 
+Inference policies are owned by the space whose content they govern. They should be provisioned with the space and stored with the space's semantic metadata.
+
 Policies can be attached to:
 
 ```text
@@ -26,7 +28,7 @@ subtree rooted at a node
 Scope fields:
 
 ```text
-space_id
+space_id              # implied by owning space storage; retained for validation if present
 domain_id
 semantic_index_id
 node_id

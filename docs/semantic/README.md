@@ -46,10 +46,10 @@ Mycel library:
   schemas, stores, validation, policy checks, query planning, runtime execution contracts
 
 Mycel CLI/operator:
-  inference packages, runtimes, models, vector stores, credentials, grants, policies
+  inference packages, runtimes, models, vector stores, credentials, space-owned grants, space-owned policies
 
 Application using Mycel:
-  graph templates, domains, semantic indexes, source policies, refresh behavior
+  graph templates, domains, semantic indexes, source policies, refresh behavior, space provisioning defaults
 
 User/organization/deployment:
   credentials, runtime authorization, privacy constraints, local/third-party policy
