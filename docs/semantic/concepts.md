@@ -310,19 +310,57 @@ The semantic index binding intentionally does not include an API key. Credential
 
 ## Source Policy
 
-Selects graph content and defines the text extraction mode.
+Selects source roots and defines how text is extracted from each root.
+
+A source policy has two main parts:
+
+```text
+root_query   # which nodes become source roots
+extraction   # how text is assembled from each root
+```
+
+### Root Query
+
+`root_query` is a query-like expression. It replaces ambiguous flat selector semantics such as "are tags ANDed or ORed?" with explicit boolean structure.
+
+Example:
+
+```yaml
+root_query:
+  and:
+    - template_key:
+        in: [logseq.journal, logseq.page]
+    - not:
+        tag:
+          has: archived
+```
+
+The root query selects source root candidates. Any node matching `root_query` can be a source root, but effective roots do not nest for a single semantic index.
+
+If a candidate root is contained within another candidate root for the same semantic index, the ancestor root wins and the descendant is not a separate effective root. This keeps source roots non-overlapping and avoids duplicate subtree embeddings.
+
+### Extraction
+
+`extraction` defines how source text is assembled from each effective root.
 
 Conceptual fields:
 
 ```text
-template_keys
-tags
-property_selectors
-source_mode            # self, subtree, custom
-max_depth
+mode                   # self, subtree, custom
+edge_kind              # usually contains
+max_depth              # 0 can mean unlimited by convention
+include_root
+include_node_content
 include_props
+derived_sources        # blob_text, transcript, ocr, caption; explicit and deferred from MVP
 minimum_text_length
 ```
+
+For `self`, only the root node content and selected props are included.
+
+For `subtree`, traversal starts at the effective root and follows containment descendants. If traversal enters a descendant subtree whose effective inference policy disallows the semantic index's endpoint/model, analysis of that subtree stops and its content is not included.
+
+Inference policies override source extraction. Source policy describes desired extraction; policy decides what is allowed.
 
 ## Embedding Record
 

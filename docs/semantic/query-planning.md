@@ -83,14 +83,14 @@ Policy may exclude part of the graph or entire indexes.
 
 Examples:
 
-- a `local_only` subtree is excluded from third-party indexes
-- a `no_inference` subtree is excluded from all semantic indexes
+- traversal stops at a `local_only` subtree for third-party indexes
+- traversal stops at a `no_inference` subtree for all semantic indexes
 - a query may return partial results with warnings for skipped content/indexes
 
 Warnings should be explicit:
 
 ```text
-private subtree skipped for openai-notes due to local_only policy
+private subtree excluded from openai-notes extraction due to local_only policy
 index tasks-azure skipped because no credential grant was available
 ```
 

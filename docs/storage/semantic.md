@@ -567,15 +567,32 @@ Stores semantic index definitions for a space.
       "purpose": "semantic_search|chat_rag|task_search|autocomplete",
       "enabled": true,
       "source_policy": {
-        "template_keys": ["logseq.journal", "logseq.page"],
-        "tags": ["public"],
-        "property_selectors": {
-          "kind": "note"
+        "root_query": {
+          "and": [
+            {
+              "template_key": {
+                "in": ["logseq.journal", "logseq.page"]
+              }
+            },
+            {
+              "not": {
+                "tag": {
+                  "has": "archived"
+                }
+              }
+            }
+          ]
         },
-        "source_mode": "self|subtree|custom",
-        "max_depth": 0,
-        "include_props": ["title", "tags"],
-        "minimum_text_length": 1
+        "extraction": {
+          "mode": "self|subtree|custom",
+          "edge_kind": "contains",
+          "max_depth": 0,
+          "include_root": true,
+          "include_node_content": true,
+          "include_props": ["title", "tags"],
+          "derived_sources": [],
+          "minimum_text_length": 1
+        }
       },
       "binding": {
         "model_endpoint_id": "uuid-or-endpoint-key",
@@ -599,6 +616,9 @@ Notes:
 
 - The binding intentionally does not include a credential/API key.
 - Credentials are resolved from global credential metadata and space-owned grants in `graphs/<space_id>/semantic/credential_grants.json` when a model endpoint call is needed.
+- `root_query` selects candidate source roots. Effective source roots do not nest; when a candidate is contained by another candidate for the same index, the ancestor root wins.
+- `extraction` controls text assembly. For subtree extraction, traversal stops at descendant subtrees whose effective inference policy disallows the index endpoint/model.
+- `derived_sources` is explicit and can include future sources such as `blob_text`, `transcript`, `ocr`, or `caption`; derived source extraction is deferred from the MVP.
 
 ### `graphs/<space_id>/semantic/index_state.json`
 
@@ -659,8 +679,9 @@ Stores semantic-index maintenance work.
 Rules:
 
 - Work should coalesce by `semantic_index_id + target_node_id`.
-- For `self` indexes, `target_node_id` is usually the changed node.
-- For `subtree` indexes, `target_node_id` is usually the semantic root selected by the index.
+- For `self` extraction, `target_node_id` is the changed node only when it is an effective source root.
+- For `subtree` extraction, `target_node_id` is the containing effective source root selected by the index.
+- Effective source roots do not nest, so at most one dirty item is needed for a changed node per semantic index.
 
 ### `graphs/<space_id>/semantic/policy_decisions.json`
 

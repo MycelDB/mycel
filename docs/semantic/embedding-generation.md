@@ -58,21 +58,13 @@ If a block is created under a parent whose effective policy recommends embedding
 
 ## Dirty Target Selection
 
-The dirty target depends on source policy.
+The dirty target depends on the semantic index source policy.
 
-### `self` index
+### Effective source roots
 
-The changed node is usually the target:
+A semantic index uses `source_policy.root_query` to select candidate source roots. Effective source roots do not nest: if a candidate root is contained within another candidate root for the same semantic index, the ancestor root wins and the descendant is not a separate effective root.
 
-```text
-target_node_id = changed_node_id
-```
-
-### `subtree` index
-
-The target is usually the nearest semantic root selected by the index.
-
-Examples:
+Examples of source roots:
 
 ```text
 logseq.journal
@@ -81,7 +73,28 @@ project root
 folder root
 ```
 
-The semantic index should define how roots are selected. Application-specific systems such as Knot PKM may choose journal/page roots.
+### `self` extraction
+
+For `self` extraction, the changed node is dirty only if it is an effective source root:
+
+```text
+target_node_id = changed_node_id, if changed node is an effective root
+```
+
+### `subtree` extraction
+
+For `subtree` extraction, a changed descendant dirties its containing effective source root.
+
+Algorithm:
+
+```text
+1. walk from changed node up containment ancestors
+2. find the containing effective source root for the semantic index
+3. mark that root dirty
+4. if no effective source root contains the changed node, do not create dirty work for that index
+```
+
+Because roots do not nest, there is at most one containing effective source root per semantic index.
 
 ## Dirty Work Item
 
@@ -118,7 +131,7 @@ A semantic index maintainer processes dirty work by:
 2. re-evaluating policy
 3. resolving endpoint/model/vector-store binding
 4. resolving credential grant
-5. extracting source text
+5. extracting source text, stopping traversal at subtrees whose effective policy disallows this endpoint/model
 6. computing source hash
 7. skipping if a current record already exists for the same source hash
 8. generating the embedding
@@ -131,13 +144,15 @@ Policy must be evaluated again during maintenance because policies or graph stru
 
 Backfill is bulk dirty work creation plus maintenance.
 
-Examples of backfill selectors:
+Backfill should evaluate the semantic index `root_query`, compute the non-nesting effective source root set, and enqueue those roots.
+
+Examples of backfill selectors or filters:
 
 ```text
 semantic index
 node IDs
-template keys
-tag/property selectors
+root_query
+template/tag/property query predicates
 content substring
 full domain
 ```

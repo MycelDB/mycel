@@ -114,7 +114,7 @@ Rules:
 - `no_inference` excludes content from all inference operations
 - `local_only` excludes third-party and enterprise-private remote model endpoints unless they are classified as local
 - node/subtree policies override broader domain/space allowances
-- semantic index source selection must skip nodes disallowed by effective policy
+- semantic index extraction must stop at nodes/subtrees disallowed by effective policy for the index endpoint/model
 - a semantic query over a broad scope may partially search allowed indexes and return warnings for skipped indexes/content
 
 ## Example
@@ -130,7 +130,7 @@ node policy marks a subtree local_only
 Result:
 
 ```text
-OpenAI semantic indexes must skip that subtree.
+OpenAI semantic indexes must stop traversal at that subtree and exclude its contents from extraction.
 A local semantic index may include it if its endpoint/model/vector store satisfy policy.
 ```
 
