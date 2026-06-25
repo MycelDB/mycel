@@ -29,8 +29,9 @@ This document is the root map for the storage directory. Detailed file formats a
 
     inference/                         # proposed advanced inference definitions
       packages.json
-      runtimes.json
+      model_endpoints.json
       models.json
+      model_endpoint_capabilities.json
       vector_stores.json
 
     secrets/                           # proposed encrypted secret records or external secret refs
@@ -90,7 +91,7 @@ Examples:
 - domain metadata
 - graph template definitions
 - current embedding provider keys/profiles
-- proposed inference/runtime/model/vector-store definitions
+- proposed inference/model-endpoint/model/capability/vector-store definitions
 - proposed credentials and secrets
 
 See [meta.md](meta.md).
@@ -122,7 +123,7 @@ See [blobs.md](blobs.md).
 - Uncommitted graph records are ignored during recovery.
 - Blob objects are immutable and content-addressed.
 - Current and proposed vector records are append-only; stale vector records are ignored logically until compaction.
-- Persisted indexes are intentionally deferred; runtime indexes are rebuilt from authoritative files.
+- Persisted indexes are intentionally deferred; in-memory indexes are rebuilt from authoritative files.
 
 ## Delete Behavior
 

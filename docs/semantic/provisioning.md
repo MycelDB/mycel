@@ -17,15 +17,16 @@ Mycel owns:
 - policy checks
 - query planning contracts
 
-Mycel should not silently create provider-specific runtime/model definitions for every installation.
+Mycel should not silently create provider-specific endpoint/model definitions for every installation.
 
 ### Mycel CLI / Operator
 
 The CLI/operator provisions:
 
 - inference packages
-- runtime definitions
+- model endpoint definitions
 - model definitions
+- model endpoint capabilities
 - vector store backends
 - credentials
 - space-owned credential grants
@@ -57,9 +58,9 @@ app.task
 The user or operator provisions authority and policy:
 
 - API keys
-- local/private runtime endpoints
+- local/private model endpoints
 - privacy constraints
-- allowed providers/runtimes
+- allowed providers/model endpoints
 - credential grants
 - local-only or no-inference subtrees
 
@@ -82,7 +83,9 @@ mycel inference package apply standard-openai.yaml
 mycel inference package apply local-ollama.yaml
 ```
 
-These packages create runtime/model/vector-store definitions. They must not contain secrets.
+These packages create model endpoint, model, model endpoint capability, and vector-store definitions. They must not contain secrets.
+
+`mycel init` should create and enable the built-in `mycel-file` vector store instance, so external vector stores only need provisioning when an installation wants Qdrant, pgvector, Pinecone, or another backend.
 
 ### 3. Create user, space, domain, and templates
 
@@ -92,17 +95,30 @@ mycel space add "Personal PKM" --owner martin --default-domain personal-pkm
 mycel template import logseq-journal.json
 ```
 
-### 4. Add user credential
+### 4. Verify endpoint/model capability
+
+Before an index can use a model endpoint and model, a capability must exist:
+
+```sh
+mycel inference capability add \
+  --model-endpoint openai-public \
+  --model openai/text-embedding-3-small \
+  --operation embeddings
+```
+
+Packages may create this automatically for standard model endpoints.
+
+### 5. Add user credential
 
 ```sh
 OPENAI_API_KEY=sk-... mycel inference credential add martin-openai \
-  --runtime openai-public \
+  --model-endpoint openai-public \
   --owner-user martin \
   --auth api-key \
   --api-key-env OPENAI_API_KEY
 ```
 
-### 5. Create semantic index
+### 6. Create semantic index
 
 ```sh
 mycel semantic index add notes-search \
@@ -112,14 +128,14 @@ mycel semantic index add notes-search \
   --template-key logseq.journal \
   --template-key logseq.page \
   --source subtree \
-  --runtime openai-public \
+  --model-endpoint openai-public \
   --model openai/text-embedding-3-small \
   --vector-store mycel-file
 ```
 
-The semantic index binding describes runtime/model/vector-store infrastructure. It does not contain a credential/API key.
+The semantic index binding describes endpoint/model/vector-store infrastructure. It does not contain a credential/API key.
 
-### 6. Grant credential use
+### 7. Grant credential use
 
 ```sh
 mycel inference credential grant martin-openai \
@@ -129,7 +145,7 @@ mycel inference credential grant martin-openai \
   --operation embeddings
 ```
 
-### 7. Optionally add content policy
+### 8. Optionally add content policy
 
 Block a private subtree from all inference processing:
 
@@ -154,7 +170,7 @@ mycel inference policy restrict \
   --local-only
 ```
 
-### 8. Backfill index
+### 9. Backfill index
 
 ```sh
 mycel semantic index backfill notes-search \
@@ -162,9 +178,9 @@ mycel semantic index backfill notes-search \
   --domain personal-pkm
 ```
 
-Backfill evaluates inference policy before each embedding and resolves a compatible credential grant before each runtime call.
+Backfill evaluates inference policy before each embedding and resolves a compatible credential grant before each model endpoint call.
 
-### 9. Search
+### 10. Search
 
 ```sh
 mycel semantic search \
@@ -181,10 +197,11 @@ Provisioning commands should be safe to repeat where possible.
 Recommended behavior:
 
 - packages apply by name/version/checksum
-- runtimes/models/vector stores upsert by key
+- model endpoints/models/vector stores upsert by key
+- model endpoint capabilities upsert by `model_endpoint + model + operation`
 - semantic indexes upsert by `space_id + domain_id + key`
 - credentials may require explicit update to replace secrets
-- grants upsert by `credential + scope + operations + runtime/model constraints`
+- grants upsert by `credential + scope + operations + endpoint/model constraints`
 - policies upsert by explicit policy ID or deterministic scope/effect key
 
 ## Current MVP Equivalent

@@ -10,7 +10,7 @@ That storage document defines:
 
 - current embedding metadata files
 - current `.kvec` append-only block structure
-- proposed inference/runtime/model/vector-store JSON structures
+- proposed inference/model-endpoint/model/capability/vector-store JSON structures
 - proposed credential, grant, and policy JSON structures
 - proposed semantic index, index state, dirty queue, and policy decision JSON structures
 - proposed per-index `.kvec` vector record structure

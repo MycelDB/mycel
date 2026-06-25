@@ -9,12 +9,12 @@ The advanced embedding model introduces provisioned inference definitions, crede
 
 ## Storage Principles
 
-- Keep graph mutations fast; never call an inference runtime synchronously in the graph write path.
+- Keep graph mutations fast; never call a model endpoint synchronously in the graph write path.
 - Store global/deployment definitions and principal-owned credentials under `meta/`.
 - Store graph content in existing append-only graph segments under `graphs/<space_id>/segments/`.
 - Store semantic index definitions, credential grants, inference policies, and operational state under the owning space.
 - Store embedded vector records in append-only `.kvec` files.
-- Preserve enough provenance to audit which runtime, model, credential grant, and policy decision produced or skipped an embedding.
+- Preserve enough provenance to audit which model endpoint, model, credential grant, and policy decision produced or skipped an embedding.
 - Keep JSON metadata simple initially; move to append-only metadata logs or per-record files later only if needed.
 
 ## Current Relevant Layout
@@ -105,7 +105,7 @@ Notes:
 
 - `keys` are user-owned provider API keys.
 - `api_key_ciphertext` is encrypted by the embedding metadata manager when an encryption key is configured.
-- `profiles` combine provider/model/source-selection concerns. The advanced model replaces this with semantic indexes, runtimes, models, credentials, and policies.
+- `profiles` combine provider/model/source-selection concerns. The advanced model replaces this with semantic indexes, model endpoints, models, credentials, and policies.
 
 ### `graphs/<space_id>/embeddings/manifest.kemb`
 
@@ -210,8 +210,9 @@ Proposed layout:
   meta/
     inference/
       packages.json
-      runtimes.json
+      model_endpoints.json
       models.json
+      model_endpoint_capabilities.json
       vector_stores.json
     secrets/
       secrets.json
@@ -260,8 +261,9 @@ Tracks installed inference definition packages.
       "installed_at": "RFC3339 timestamp",
       "installed_by": "principal-ref",
       "definition_counts": {
-        "runtimes": 1,
+        "model_endpoints": 1,
         "models": 2,
+        "model_endpoint_capabilities": 2,
         "vector_stores": 0,
         "semantic_index_templates": 0
       }
@@ -276,19 +278,19 @@ Fields:
 - `checksum`: content checksum used for audit/reinstall checks.
 - `definition_counts`: summary only; actual definitions live in their own files.
 
-### `meta/inference/runtimes.json`
+### `meta/inference/model_endpoints.json`
 
-Stores provisioned inference runtimes.
+Stores provisioned model endpoints.
 
 ```json
 {
-  "runtimes": [
+  "model_endpoints": [
     {
       "id": "uuid",
       "key": "openai-public",
       "name": "OpenAI Public API",
       "connector_type": "openai-compatible",
-      "endpoint": "https://api.openai.com/v1",
+      "endpoint_url": "https://api.openai.com/v1",
       "network_class": "external_https",
       "privacy_class": "third_party",
       "auth_modes": ["api_key"],
@@ -305,7 +307,7 @@ Stores provisioned inference runtimes.
 Fields:
 
 - `connector_type`: static code-backed connector enum. Initial values: `openai-compatible`, `anthropic`, `ollama`, `azure-openai`, `bedrock`, `custom-http`, `local-process`.
-- `endpoint`: service URL or local endpoint.
+- `endpoint_url`: service URL or local endpoint.
 - `network_class`: e.g. `local`, `private_network`, `external_https`.
 - `privacy_class`: e.g. `local_only`, `enterprise_private`, `third_party`.
 - `operations`: supported operation types.
@@ -340,6 +342,39 @@ Fields:
 - `vector_space_key`: compatibility key; vectors from different vector spaces must not be compared directly.
 - `dimensions`: required for embedded vector store validation.
 
+### `meta/inference/model_endpoint_capabilities.json`
+
+Stores endpoint/model capability mappings.
+
+```json
+{
+  "capabilities": [
+    {
+      "id": "uuid",
+      "model_endpoint_id": "uuid-or-endpoint-key",
+      "model_id": "uuid-or-model-key",
+      "operation": "embeddings",
+      "enabled": true,
+      "model_name_override": "text-embedding-3-small",
+      "dimensions_override": 1536,
+      "metadata": {},
+      "created_at": "RFC3339 timestamp",
+      "updated_at": "RFC3339 timestamp"
+    }
+  ]
+}
+```
+
+Fields:
+
+- `model_endpoint_id`: endpoint instance that can serve the model.
+- `model_id`: model metadata record.
+- `operation`: operation supported by this endpoint/model pair.
+- `model_name_override`: optional name to send to this endpoint instead of the model default.
+- `dimensions_override`: optional endpoint-specific dimension value.
+
+Connector compatibility alone is not enough; a capability record confirms that one specific endpoint can serve one specific model for one operation.
+
 ### `meta/inference/vector_stores.json`
 
 Stores configured vector-store backends.
@@ -364,8 +399,10 @@ Stores configured vector-store backends.
 
 Fields:
 
-- `type`: backend implementation family, such as `mycel-file`, `qdrant`, `pgvector`, `pinecone`, or `custom-http`.
+- `type`: `VectorStoreType` enum value. Initial values: `mycel-file`, `qdrant`, `pgvector`, `pinecone`, `weaviate`, `chroma`, `custom-http`.
 - `config`: backend-specific non-secret configuration. Secret material belongs in the secret store.
+
+`mycel-file` is built in and should be created/enabled by `mycel init` as the default local vector store instance.
 
 ### `meta/secrets/secrets.json`
 
@@ -408,7 +445,7 @@ Stores credential metadata.
       "id": "uuid",
       "key": "martin-openai",
       "name": "Martin OpenAI",
-      "runtime_id": "uuid-or-runtime-key",
+      "model_endpoint_id": "uuid-or-endpoint-key",
       "owner_type": "user",
       "owner_id": "user-uuid",
       "auth_type": "api_key",
@@ -425,9 +462,9 @@ Stores credential metadata.
 
 Fields:
 
-- `runtime_id`: runtime this credential can authenticate to.
+- `model_endpoint_id`: model endpoint this credential can authenticate to.
 - `secret_ref`: reference to `meta/secrets/secrets.json` or an external secret manager.
-- `is_default`: default only within the credential owner/runtime resolution scope.
+- `is_default`: default only within the credential owner/model endpoint resolution scope.
 
 ## Proposed Per-Space JSON Structures
 
@@ -453,7 +490,7 @@ A grant authorizes one credential for one processing scope.
         "include_descendants": true
       },
       "operations": ["embeddings"],
-      "runtime_id": "uuid-or-runtime-key",
+      "model_endpoint_id": "uuid-or-endpoint-key",
       "model_id": "uuid-or-model-key",
       "priority": 0,
       "is_default": true,
@@ -470,7 +507,7 @@ Rules:
 - `credential_id` is required.
 - The owning space is implied by the file location; `scope.space_id` may be retained for validation but should match the owning directory.
 - `scope` may be broad, such as a domain, or narrow, such as a subtree.
-- `runtime_id` and `model_id` are optional constraints but recommended.
+- `model_endpoint_id` and `model_id` are optional constraints but recommended.
 - Resolution chooses the most specific compatible grant and errors on ambiguous same-specificity grants unless priority/default breaks the tie.
 
 ### `graphs/<space_id>/semantic/inference_policies.json`
@@ -494,7 +531,7 @@ Stores content-processing policies for one owning space.
       "no_inference": false,
       "allowed_privacy_classes": ["local_only", "enterprise_private"],
       "disallow_third_party": true,
-      "require_local_runtime": true,
+      "require_local_endpoint": true,
       "reason": "Private journal subtree",
       "created_by": "principal-ref",
       "created_at": "RFC3339 timestamp",
@@ -539,7 +576,7 @@ Stores semantic index definitions for a space.
         "minimum_text_length": 1
       },
       "binding": {
-        "runtime_id": "uuid-or-runtime-key",
+        "model_endpoint_id": "uuid-or-endpoint-key",
         "model_id": "uuid-or-model-key",
         "vector_store_id": "uuid-or-vector-store-key"
       },
@@ -559,7 +596,7 @@ Stores semantic index definitions for a space.
 Notes:
 
 - The binding intentionally does not include a credential/API key.
-- Credentials are resolved from global credential metadata and space-owned grants in `graphs/<space_id>/semantic/credential_grants.json` when a runtime call is needed.
+- Credentials are resolved from global credential metadata and space-owned grants in `graphs/<space_id>/semantic/credential_grants.json` when a model endpoint call is needed.
 
 ### `graphs/<space_id>/semantic/index_state.json`
 
@@ -570,7 +607,7 @@ Stores operational state for each semantic index.
   "states": [
     {
       "semantic_index_id": "uuid",
-      "state": "created|inactive_missing_runtime|inactive_missing_credentials|active|backfilling|degraded|disabled|failed|retired",
+      "state": "created|inactive_missing_model_endpoint|inactive_missing_credentials|active|backfilling|degraded|disabled|failed|retired",
       "last_backfill_at": "RFC3339 timestamp",
       "last_refresh_at": "RFC3339 timestamp",
       "last_error": "error text",
@@ -640,11 +677,11 @@ Stores persisted policy decisions for audit/debug flows.
         "include_descendants": false
       },
       "operation": "embeddings",
-      "runtime_id": "uuid-or-runtime-key",
+      "model_endpoint_id": "uuid-or-endpoint-key",
       "model_id": "uuid-or-model-key",
       "allowed": false,
       "matched_policy_ids": ["policy-uuid"],
-      "reason": "subtree requires local runtime",
+      "reason": "subtree requires local model endpoint",
       "created_at": "RFC3339 timestamp"
     }
   ]
@@ -694,7 +731,7 @@ Stores references when vectors live in an external vector store.
       "source_hash": "sha256:...",
       "vector_store_id": "uuid-or-vector-store-key",
       "external_vector_id": "qdrant-point-id",
-      "runtime_id": "uuid-or-runtime-key",
+      "model_endpoint_id": "uuid-or-endpoint-key",
       "model_id": "uuid-or-model-key",
       "vector_space_key": "openai/text-embedding-3-small",
       "created_at": "RFC3339 timestamp"
@@ -750,7 +787,7 @@ Fixed header:
 | domain_id | 16 UUID bytes | Owning graph domain. |
 | semantic_index_id | 16 UUID bytes | Semantic index that produced the record. |
 | node_id | 16 UUID bytes | Embedded graph node. |
-| runtime_id | 16 UUID bytes or nil | Runtime used to generate the vector. |
+| model_endpoint_id | 16 UUID bytes or nil | Model endpoint used to generate the vector. |
 | model_id | 16 UUID bytes or nil | Model metadata ID. |
 | vector_store_id | 16 UUID bytes or nil | Vector store backend ID. |
 | credential_id | 16 UUID bytes or nil | Credential used, if any. |
@@ -770,7 +807,7 @@ Recommended metadata JSON payload:
   "source_hash": "sha256:...",
   "vector_space_key": "openai/text-embedding-3-small",
   "external_vector_id": "optional-external-id",
-  "runtime_key": "openai-public",
+  "model_endpoint_key": "openai-public",
   "model_key": "openai/text-embedding-3-small",
   "vector_store_key": "mycel-file"
 }
@@ -811,11 +848,11 @@ This keeps graph writes fast and durable while making semantic maintenance resum
 
 ## Recovery and In-Memory Indexes
 
-On startup, Mycel can rebuild semantic runtime state from:
+On startup, Mycel can rebuild semantic state from:
 
-- global runtime/model/vector-store definitions
-- credentials and grants
-- inference policies
+- global model endpoint/model/capability/vector-store definitions
+- credential metadata and space-owned grants
+- space-owned inference policies
 - semantic index definitions
 - dirty queue records
 - policy decision records
@@ -823,9 +860,10 @@ On startup, Mycel can rebuild semantic runtime state from:
 
 Recommended in-memory indexes:
 
-- runtime by ID/key
+- model endpoint by ID/key
 - model by ID/key/vector-space key
-- credential by owner/runtime/status
+- model endpoint capability by endpoint/model/operation
+- credential by owner/model endpoint/status
 - grant by space/domain/index/node scope
 - policy by space/domain/index/node scope
 - semantic index by space/domain/key/purpose

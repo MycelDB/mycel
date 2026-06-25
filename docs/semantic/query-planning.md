@@ -11,12 +11,12 @@ query scope
   -> applicable semantic indexes
   -> policy filtering
   -> compatible vector-space groups
-  -> credential resolution for runtime calls
+  -> credential resolution for model endpoint calls
   -> vector searches
   -> merge/rank
 ```
 
-Credential grants do not define the search space. They only authorize runtime calls required by selected indexes.
+Credential grants do not define the search space. They only authorize model endpoint calls required by selected indexes.
 
 ## Planner Steps
 
@@ -24,9 +24,9 @@ Mycel should:
 
 1. resolve requested space/domain/index/content scope
 2. find semantic indexes covering that scope and purpose
-3. evaluate inference policies and remove disallowed content/index/runtime combinations
-4. group remaining indexes by compatible vector space/runtime/model
-5. resolve a compatible credential grant for each required query-embedding runtime call
+3. evaluate inference policies and remove disallowed content/index/model endpoint combinations
+4. group remaining indexes by compatible vector space/endpoint/model
+5. resolve a compatible credential grant for each required query-embedding model endpoint call
 6. generate one query embedding per compatible vector-space group
 7. search each vector store/index
 8. merge and rank results
@@ -36,10 +36,10 @@ Returned provenance should include:
 
 ```text
 semantic_index_id
-runtime_id
+model_endpoint_id
 model_id
 vector_store_id
-credential_grant_id, if a runtime call was required
+credential_grant_id, if a model endpoint call was required
 policy_decision_id, when applicable
 record_id
 node_id
@@ -53,17 +53,17 @@ A domain may contain:
 ```text
 notes-openai:
   model: text-embedding-3-small
-  runtime: openai-public
+  model_endpoint: openai-public
   source: journals/pages
 
 private-notes-local:
   model: nomic-embed-text
-  runtime: local-ollama
+  model_endpoint: local-ollama
   source: private-tagged journals
 
 tasks-azure:
   model: azure-embedding-v2
-  runtime: azure-openai
+  model_endpoint: azure-openai
   source: app.task
 ```
 
@@ -109,7 +109,7 @@ The MVP can start with conservative grouping or simple score normalization, but 
 
 ## Missing Credentials
 
-If a query requires a runtime call but no credential grant resolves:
+If a query requires a model endpoint call but no credential grant resolves:
 
 - skip the affected index/group
 - return a warning

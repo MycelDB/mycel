@@ -1,10 +1,10 @@
 # Credentials and Credential Grants
 
-Credentials authorize Mycel to call provisioned inference runtimes. Credential grants authorize where a credential may be used.
+Credentials authorize Mycel to call provisioned model endpoints. Credential grants authorize where a credential may be used.
 
 ## Inference Credential
 
-An inference credential stores authorization material for one runtime.
+An inference credential stores authorization material for one model endpoint.
 
 Examples:
 
@@ -12,7 +12,7 @@ Examples:
 - Martin's work OpenAI key
 - an organization Azure OpenAI key
 - a system credential for an enterprise-private gateway
-- a local runtime token
+- a local model endpoint token
 
 Possible owner principal types:
 
@@ -23,7 +23,7 @@ organization/tenant
 system/deployment
 ```
 
-A user can own many credentials, including multiple credentials for the same runtime.
+A user can own many credentials, including multiple credentials for the same model endpoint.
 
 Conceptual fields:
 
@@ -31,7 +31,7 @@ Conceptual fields:
 id
 key
 name
-runtime_id
+model_endpoint_id
 owner_type
 owner_id
 auth_type              # api_key, bearer_token, none, service_account
@@ -42,7 +42,7 @@ created_at / updated_at
 last_used_at
 ```
 
-Secret values should be stored separately in an encrypted secret store or external secret manager. Runtime definitions and semantic indexes must never contain raw secret values.
+Secret values should be stored separately in an encrypted secret store or external secret manager. Model endpoint definitions and semantic indexes must never contain raw secret values.
 
 ## Credential Grant
 
@@ -71,7 +71,7 @@ id
 credential_id
 scope                  # space/domain/semantic-index/node/subtree
 operations             # embeddings, chat, rerank, summarize
-runtime_id             # optional but recommended constraint
+model_endpoint_id      # optional but recommended constraint
 model_id               # optional constraint
 priority
 is_default
@@ -94,16 +94,16 @@ include_descendants
 
 A semantic query is planned over semantic indexes and vector spaces, not over credential grants.
 
-Credential resolution happens after Mycel determines that it needs to call a runtime, for example to:
+Credential resolution happens after Mycel determines that it needs to call a model endpoint, for example to:
 
 - generate content embeddings during backfill/refresh
 - generate query embeddings for a selected vector space
-- call a chat/rerank/summarization runtime
+- call a model endpoint for chat, rerank, or summarization
 
 The planning direction is:
 
 ```text
-query scope -> semantic indexes -> vector spaces -> runtime calls -> credential resolution
+query scope -> semantic indexes -> vector spaces -> model endpoint calls -> credential resolution
 ```
 
 not:
@@ -114,12 +114,12 @@ query scope -> credential grants -> indexes
 
 ## Grant Resolution
 
-When a runtime call requires a credential, Mycel resolves applicable grants using:
+When a model endpoint call requires a credential, Mycel resolves applicable grants using:
 
 ```text
 processing scope
 operation
-runtime
+model endpoint
 model
 credential status
 principal access
@@ -131,13 +131,13 @@ Recommended specificity order:
 2. semantic index grant
 3. domain grant
 4. space grant
-5. owner default credential for the runtime
-6. organization/system default credential for the runtime
+5. owner default credential for the model endpoint
+6. organization/system default credential for the model endpoint
 
 Rules:
 
 - the grant operation must match the requested operation
-- runtime/model constraints must match when present
+- endpoint/model constraints must match when present
 - expired, revoked, disabled, or inaccessible credentials are ignored
 - the most specific compatible grant wins
 - same-specificity conflicts should error unless exactly one grant is default or has highest priority
@@ -163,7 +163,7 @@ scope:
   domain: personal-pkm
 operations:
   - embeddings
-runtime: openai-public
+model_endpoint: openai-public
 model: openai/text-embedding-3-small
 ```
 
@@ -177,7 +177,7 @@ scope:
 operations:
   - embeddings
   - chat
-runtime: local-ollama
+model_endpoint: local-ollama
 ```
 
 ## Audit Requirements
@@ -187,7 +187,7 @@ Embedding records and durable query/maintenance logs should retain provenance:
 ```text
 credential_id
 credential_grant_id
-runtime_id
+model_endpoint_id
 model_id
 semantic_index_id
 policy_decision_id, when applicable

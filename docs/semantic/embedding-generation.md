@@ -2,7 +2,7 @@
 
 Embedding generation turns selected graph content into derived vector records.
 
-The write path should not call inference runtimes synchronously. Graph writes commit first; semantic maintenance work is marked dirty and processed asynchronously.
+The write path should not call model endpoints synchronously. Graph writes commit first; semantic maintenance work is marked dirty and processed asynchronously.
 
 ## Current MVP Source Modes
 
@@ -38,7 +38,7 @@ node create/update/delete/move
   -> coalesce dirty work
   -> background maintainer processes work
   -> resolve credential grant
-  -> call runtime
+  -> call model endpoint
   -> append embedding record
   -> update index state
 ```
@@ -50,7 +50,7 @@ If a block is created under a parent whose effective policy recommends embedding
 1. commit the graph mutation
 2. resolve semantic indexes covering the node or its semantic root
 3. evaluate inherited policies from space/domain/index/ancestor/subtree scopes
-4. skip indexes whose runtime/model violates policy
+4. skip indexes whose endpoint/model violates policy
 5. compute the dirty target node
 6. write or coalesce dirty work
 7. return from the graph write
@@ -108,7 +108,7 @@ Dirty work should coalesce by:
 semantic_index_id + target_node_id
 ```
 
-This prevents repeated edits to one subtree from generating excessive runtime calls.
+This prevents repeated edits to one subtree from generating excessive model endpoint calls.
 
 ## Maintainer Processing
 
@@ -116,7 +116,7 @@ A semantic index maintainer processes dirty work by:
 
 1. loading the current target node/subtree
 2. re-evaluating policy
-3. resolving runtime/model/vector-store binding
+3. resolving endpoint/model/vector-store binding
 4. resolving credential grant
 5. extracting source text
 6. computing source hash
@@ -146,7 +146,7 @@ Backfill should still respect:
 
 - inference policies
 - credential grant resolution
-- runtime/model compatibility
+- endpoint/model compatibility
 - source hashing and stale-record rules
 - rate limits and retry policy
 

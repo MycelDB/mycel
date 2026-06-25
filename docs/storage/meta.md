@@ -26,8 +26,9 @@ meta/
 
   inference/          # proposed advanced inference definitions
     packages.json
-    runtimes.json
+    model_endpoints.json
     models.json
+    model_endpoint_capabilities.json
     vector_stores.json
 
   secrets/            # proposed advanced secret store
@@ -264,7 +265,7 @@ Notes:
 
 - Provider keys are user-owned.
 - API keys are encrypted when an encryption key is configured.
-- Profiles are a current low-level abstraction. The advanced semantic design replaces them with inference runtimes, models, semantic indexes, credentials, grants, and policies.
+- Profiles are a current low-level abstraction. The advanced semantic design replaces them with model endpoints, models, semantic indexes, credentials, grants, and policies.
 
 ## Proposed Advanced Inference Metadata
 
@@ -272,8 +273,9 @@ Advanced inference metadata is described in detail in [semantic.md](semantic.md)
 
 ```text
 meta/inference/packages.json
-meta/inference/runtimes.json
+meta/inference/model_endpoints.json
 meta/inference/models.json
+meta/inference/model_endpoint_capabilities.json
 meta/inference/vector_stores.json
 meta/secrets/secrets.json
 meta/credentials/credentials.json
@@ -281,12 +283,13 @@ meta/credentials/credentials.json
 
 These stores are global/deployment-level or cross-space metadata:
 
-- inference packages define installable bundles of runtime/model/vector-store definitions
-- runtimes define callable AI execution backends
+- inference packages define installable bundles of model-endpoint/model/capability/vector-store definitions
+- model endpoints define callable AI service endpoints
 - models define vector-space/model metadata
+- model endpoint capabilities define which endpoint can serve which model for which operation
 - vector stores define embedded or external vector backends
 - secrets store encrypted payloads or external secret references
-- credentials bind principals to runtime auth material
+- credentials bind principals to model endpoint auth material
 
 Credential grants and inference/content policies are space-owned because they govern processing of content in a specific space. They are stored under `graphs/<space_id>/semantic/`; see [semantic.md](semantic.md).
 
