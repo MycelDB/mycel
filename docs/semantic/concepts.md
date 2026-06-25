@@ -43,13 +43,49 @@ Examples:
 
 A runtime is not a model, credential, semantic index, or vector store.
 
-Conceptual fields:
+## Connector Type
+
+`ConnectorType` is the static, code-backed adapter/protocol family Mycel uses to call an inference runtime.
+
+It answers:
+
+> Which connector implementation should Mycel use for requests, auth shape, response parsing, errors, and operation semantics?
+
+Conceptual enum:
+
+```go
+type ConnectorType string
+
+const (
+    ConnectorOpenAICompatible ConnectorType = "openai-compatible"
+    ConnectorAnthropic        ConnectorType = "anthropic"
+    ConnectorOllama           ConnectorType = "ollama"
+    ConnectorAzureOpenAI      ConnectorType = "azure-openai"
+    ConnectorBedrock          ConnectorType = "bedrock"
+    ConnectorCustomHTTP       ConnectorType = "custom-http"
+    ConnectorLocalProcess     ConnectorType = "local-process"
+)
+```
+
+Connector types are known by the platform because each one requires connector code. Runtime instances are provisioned data that reference one connector type.
+
+For example, OpenRouter can usually be modeled as:
+
+```text
+connector_type = openai-compatible
+runtime key    = openrouter
+endpoint       = https://openrouter.ai/api/v1
+```
+
+unless OpenRouter-specific behavior becomes large enough to justify a dedicated `openrouter` connector type.
+
+Conceptual runtime fields:
 
 ```text
 id
 key
 name
-type                  # openai-compatible, ollama, custom-http, local-process
+connector_type        # ConnectorType enum value
 endpoint
 network_class         # local, private_network, external_https
 privacy_class         # local_only, enterprise_private, third_party
@@ -73,7 +109,7 @@ id
 key                   # e.g. openai/text-embedding-3-small
 operation             # embeddings, chat, rerank
 model_name            # provider/runtime model name
-runtime_types
+connector_types       # compatible ConnectorType values
 dimensions
 modality              # text, image, audio, multimodal
 vector_space_key

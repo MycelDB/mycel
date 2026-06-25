@@ -287,7 +287,7 @@ Stores provisioned inference runtimes.
       "id": "uuid",
       "key": "openai-public",
       "name": "OpenAI Public API",
-      "type": "openai-compatible",
+      "connector_type": "openai-compatible",
       "endpoint": "https://api.openai.com/v1",
       "network_class": "external_https",
       "privacy_class": "third_party",
@@ -304,7 +304,7 @@ Stores provisioned inference runtimes.
 
 Fields:
 
-- `type`: connector implementation family.
+- `connector_type`: static code-backed connector enum. Initial values: `openai-compatible`, `anthropic`, `ollama`, `azure-openai`, `bedrock`, `custom-http`, `local-process`.
 - `endpoint`: service URL or local endpoint.
 - `network_class`: e.g. `local`, `private_network`, `external_https`.
 - `privacy_class`: e.g. `local_only`, `enterprise_private`, `third_party`.
@@ -322,7 +322,7 @@ Stores model metadata.
       "key": "openai/text-embedding-3-small",
       "operation": "embeddings",
       "model_name": "text-embedding-3-small",
-      "runtime_types": ["openai-compatible"],
+      "connector_types": ["openai-compatible"],
       "dimensions": 1536,
       "modality": "text",
       "vector_space_key": "openai/text-embedding-3-small",
@@ -336,6 +336,7 @@ Stores model metadata.
 
 Fields:
 
+- `connector_types`: connector enum values that can execute this model shape.
 - `vector_space_key`: compatibility key; vectors from different vector spaces must not be compared directly.
 - `dimensions`: required for embedded vector store validation.
 
