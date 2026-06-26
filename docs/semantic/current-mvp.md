@@ -23,93 +23,17 @@ Manual generation supports two source modes:
 
 Sibling order comes from the `contains` edge `Props["order"]` value. The assembled source text is hashed; generation skips an existing matching embedding unless `--force` is provided.
 
-## CLI examples
+## CLI commands
 
-List the embedding catalog:
+Current MVP embedding command syntax is documented in the CLI command reference:
 
-```sh
-mycel embeddings catalog -u USER -p PASSWORD
-```
-
-Add a provider key:
-
-```sh
-export OPENAI_API_KEY=...
-mycel embeddings keys add \
-  --provider openai \
-  --name personal \
-  --api-key-env OPENAI_API_KEY \
-  --default \
-  -u USER -p PASSWORD
-```
-
-Add a profile:
-
-```sh
-mycel embeddings profiles add \
-  --name page-default \
-  --provider openai \
-  --model openai/text-embedding-3-small \
-  --source subtree \
-  --include-prop title \
-  -u USER -p PASSWORD
-```
-
-Generate an embedding for a node:
-
-```sh
-mycel embeddings generate \
-  --space-id SPACE_ID \
-  --node NODE_ID \
-  --profile PROFILE_ID \
-  -u USER -p PASSWORD
-```
-
-Backfill embeddings for selected nodes:
-
-```sh
-mycel embeddings generate \
-  --space-id SPACE_ID \
-  --profile PROFILE_ID \
-  --template-key logseq.page \
-  --limit 500 \
-  -u USER -p PASSWORD
-```
-
-Or select by content substring:
-
-```sh
-mycel embeddings generate \
-  --space-id SPACE_ID \
-  --profile PROFILE_ID \
-  --contains "project notes" \
-  --limit 100 \
-  -u USER -p PASSWORD
-```
+- [embeddings catalog](../cli/commands/embeddings-catalog.md)
+- [embeddings keys add](../cli/commands/embeddings-keys-add.md)
+- [embeddings profiles add](../cli/commands/embeddings-profiles-add.md)
+- [embeddings generate](../cli/commands/embeddings-generate.md)
+- [embeddings search](../cli/commands/embeddings-search.md)
 
 Batch generation requires at least one selector: `--node`, `--template-key`, or `--contains`. Existing current embeddings are skipped unless `--force` is set. Use `--continue-on-error` to keep processing when one selected node fails.
-
-Regenerate even if the source hash has not changed:
-
-```sh
-mycel embeddings generate \
-  --space-id SPACE_ID \
-  --node NODE_ID \
-  --profile PROFILE_ID \
-  --force \
-  -u USER -p PASSWORD
-```
-
-Search:
-
-```sh
-mycel embeddings search \
-  --space-id SPACE_ID \
-  --profile PROFILE_ID \
-  --text "notes about graph storage" \
-  --limit 10 \
-  -u USER -p PASSWORD
-```
 
 ## Deferred work
 

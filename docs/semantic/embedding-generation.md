@@ -291,7 +291,7 @@ If a semantic index supports multiple source selectors for the same node, includ
 
 ## Current MVP CLI
 
-Current manual generation commands are documented in [current-mvp.md](current-mvp.md).
+Current manual generation behavior is documented in [current-mvp.md](current-mvp.md). Command syntax lives in [embeddings generate](../cli/commands/embeddings-generate.md).
 
 ## Storage
 

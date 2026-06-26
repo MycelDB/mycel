@@ -2,7 +2,7 @@
 
 This directory documents Mycel's semantic indexing and embedding architecture.
 
-Semantic support is broader than vector generation. It covers how graph content is selected, which model endpoints/models are allowed, which credentials may be used, how embeddings are refreshed, how semantic queries are planned, and where derived vector records are stored.
+Semantic support is broader than vector generation. It covers how graph content is selected, which model endpoints/models are allowed, which credentials may be used, how embeddings are refreshed, how semantic queries are planned, where derived vector records are stored, and how model endpoint usage is accounted for.
 
 ## Documents
 
@@ -13,6 +13,7 @@ Semantic support is broader than vector generation. It covers how graph content 
 - [policies.md](policies.md): inference/content policies and policy resolution
 - [embedding-generation.md](embedding-generation.md): source extraction, dirty work, backfill, and refresh flow
 - [query-planning.md](query-planning.md): multi-index and multi-vector-space semantic query planning
+- [accounting.md](accounting.md): append-only inference usage accounting, token reporting, indexes, rollups, and CLI reporting
 - [storage.md](storage.md): semantic storage pointers; detailed filesystem structures live in `docs/storage/semantic.md`
 - [open-questions.md](open-questions.md): unresolved design decisions to settle before implementation
 
@@ -38,6 +39,7 @@ CredentialGrant
 InferencePolicy
 SemanticIndex
 EmbeddingRecord
+InferenceUsageEvent
 ```
 
 The key architectural change is that applications should provision and query semantic indexes, not raw embedding profiles.

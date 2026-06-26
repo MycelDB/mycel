@@ -39,6 +39,17 @@ meta/
 
   semantic_events/    # proposed global semantic config event log
     semantic-config-000001.ksem
+
+  accounting/         # proposed append-only inference usage ledger
+    manifest.json
+    inference-usage-000001.kusage
+    indexes/
+      by_principal/<principal_id>/YYYY-MM.kidx
+      by_space/<space_id>/YYYY-MM.kidx
+      by_domain/<domain_id>/YYYY-MM.kidx
+      by_node/<node_id>/YYYY-MM.kidx
+    rollups/
+      principal-monthly.json
 ```
 
 ## Required Metadata Files
@@ -297,6 +308,8 @@ These stores are global/deployment-level or cross-space metadata:
 Credential grants and inference/content policies are space-owned because they govern processing of content in a specific space. They are stored under `graphs/<space_id>/semantic/`; see [semantic.md](semantic.md).
 
 Global semantic configuration events are operational append-only events under `meta/semantic_events/`. They notify semantic analyzers about changes such as model endpoint capabilities, model definitions, vector stores, credential revocations, and scoped space-owned semantic configuration changes.
+
+Inference usage accounting events are append-only operational records under `meta/accounting/`. They are not graph data. The authoritative ledger is `inference-usage-*.kusage`; user/space/domain/node indexes and rollups are derived and rebuildable. See [../semantic/accounting.md](../semantic/accounting.md).
 
 ## Atomic Writes and Recovery
 

@@ -6,6 +6,13 @@ Low-level semantic and embedding storage is documented in:
 docs/storage/semantic.md
 ```
 
+Inference accounting ledger paths are documented in:
+
+```text
+docs/storage/layout.md
+docs/storage/meta.md
+```
+
 That storage document defines:
 
 - current embedding metadata files
@@ -16,5 +23,6 @@ That storage document defines:
 - proposed per-index `.kvec` vector record and tombstone/delete structure
 - external vector deletion/verification status
 - recovery and compaction behavior
+- accounting ledger location and derived index/rollup locations
 
 This `docs/semantic/` directory should focus on architecture and behavior. It should not duplicate filesystem/block-format details from `docs/storage/semantic.md`.

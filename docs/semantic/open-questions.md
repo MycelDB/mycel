@@ -49,6 +49,16 @@ This document tracks design points that remain unclear or need explicit decision
 - Background embedding backfill/refresh requires `allow_background_use = true` or equivalent grant semantics.
 - Shared-space credential selection and billing are deferred because shared spaces are not in the current scope.
 
+## Resolved Inference Accounting Decisions
+
+- Every model endpoint call made by Mycel must be accounted for.
+- Accounting records are not graph data because graph data is mutable.
+- The authoritative usage store is an append-only ledger under `meta/accounting/inference-usage-*.kusage`.
+- Usage events record operation, time, actor/effective/on-behalf-of principals, space/domain/node context when available, model endpoint/model, credential/grant, status, and token counts.
+- Token count source must be explicit: `provider_reported`, `estimated`, or `unavailable`.
+- Accounting indexes by principal, space, domain, node, endpoint/model, operation, credential grant, and time are derived and rebuildable.
+- CLI reporting must support usage summaries and raw event inspection by time period, user, space, domain, and node.
+
 ## Resolved Query Embedding Credential Decisions
 
 - Query embeddings do not need to use the same credential grant that generated index records.

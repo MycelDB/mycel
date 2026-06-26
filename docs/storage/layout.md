@@ -4,7 +4,7 @@ MycelDB stores all file-backed data under a single data root.
 
 This document is the root map for the storage directory. Detailed file formats and responsibilities are documented in the sibling storage documents:
 
-- [meta.md](meta.md): global metadata, users, spaces, ACL, domains, templates, inference definitions, credentials, and secrets
+- [meta.md](meta.md): global metadata, users, spaces, ACL, domains, templates, inference definitions, credentials, secrets, and accounting
 - [graphs.md](graphs.md): per-space graph storage, graph manifests, graph segment files, recovery, and graph indexes
 - [blobs.md](blobs.md): content-addressed blob storage and blob lifecycle
 - [semantic.md](semantic.md): semantic indexes, graph/config event logs, dirty queues, policy decisions, and append-only vector records
@@ -42,6 +42,17 @@ This document is the root map for the storage directory. Detailed file formats a
 
     semantic_events/                   # proposed global semantic config event log
       semantic-config-000001.ksem
+
+    accounting/                        # proposed append-only inference usage ledger and derived indexes
+      manifest.json
+      inference-usage-000001.kusage
+      indexes/
+        by_principal/<principal_id>/YYYY-MM.kidx
+        by_space/<space_id>/YYYY-MM.kidx
+        by_domain/<domain_id>/YYYY-MM.kidx
+        by_node/<node_id>/YYYY-MM.kidx
+      rollups/
+        principal-monthly.json
 
   graphs/
     <space_id>/
@@ -99,6 +110,7 @@ Examples:
 - current embedding provider keys/profiles
 - proposed inference/model-endpoint/model/capability/vector-store definitions
 - proposed credentials and secrets
+- proposed append-only inference usage accounting ledger, indexes, and rollups
 
 See [meta.md](meta.md).
 
