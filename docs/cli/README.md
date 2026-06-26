@@ -34,6 +34,8 @@ Use `--config` or `MYCELDB_CONFIG` to load a YAML file.
 
 Blob upload limits use `-1` for unlimited. Exact MIME overrides can use `0` to disallow that MIME type. Environment aliases include `MYCELDB_DATA_DIR`, `MYCELDB_AUTH_ACCESS_TOKEN_TTL`, `MYCELDB_USER_STORE_ENCRYPTION_KEY_B64`, and `MYCELDB_STORAGE_BLOBS_MAX_*_BYTES`.
 
+Phase 0 advanced semantic implementation work is gated by `semantic.advanced_enabled`, `MYCELDB_SEMANTIC_ADVANCED_ENABLED`, or `--semantic-advanced-enabled`. The flag defaults to `false` and is intentionally no-op until later phases introduce gated implementation paths.
+
 ## Authentication
 
 Initialize a data directory once before running normal commands. See [init](commands/init.md).

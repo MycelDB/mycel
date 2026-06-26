@@ -119,7 +119,16 @@ Playwright tests are required for any user-visible UI behavior change.
 
 ## Phase 0: Baseline, Feature Flags, and CI Safety
 
+Status: complete in initial form.
+
 Goal: create a safe implementation lane without changing runtime behavior.
+
+Phase 0 introduced no-op configuration gates for future advanced semantic paths:
+
+- Mycel: `semantic.advanced_enabled`, `MYCELDB_SEMANTIC_ADVANCED_ENABLED`, `--semantic-advanced-enabled`, default `false`.
+- Knot PKM server: `semantic.mode`, `KNOT_PKM_SEMANTIC_MODE`, `--semantic-mode`, default `mvp`; `advanced` is reserved for later phases.
+
+Current runtime behavior remains unchanged.
 
 ### Mycel deliverables
 

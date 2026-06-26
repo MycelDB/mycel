@@ -34,6 +34,7 @@ type EngineConfig struct {
 	AccessTokenTTL            time.Duration
 	BlobLimits                sessionapi.BlobLimits
 	BlobStaleTmpAge           time.Duration
+	AdvancedSemanticEnabled   bool
 }
 
 type BlobLimits = sessionapi.BlobLimits
