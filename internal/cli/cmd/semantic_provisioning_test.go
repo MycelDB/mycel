@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/myceldb/mycel/domain/access"
 	"github.com/myceldb/mycel/domain/identity"
 	mycelengine "github.com/myceldb/mycel/engine"
 	"github.com/myceldb/mycel/internal/cli/app"
@@ -30,8 +31,15 @@ func TestSemanticProvisioningCLI(t *testing.T) {
 	if _, err := eng.CreateDomain(ctx, mycelengine.CreateDomainInput{AccessToken: auth.AccessToken, SpaceID: space.SpaceID, Key: "personal-pkm", Name: "Personal PKM"}); err != nil {
 		t.Fatalf("create domain failed: %v", err)
 	}
-	if _, err := eng.CreateUser(ctx, mycelengine.CreateUserInput{AccessToken: auth.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob")}, Password: "pass"}); err != nil {
+	bob, err := eng.CreateUser(ctx, mycelengine.CreateUserInput{AccessToken: auth.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob"), Status: identity.UserStatusActive}, Password: "pass"})
+	if err != nil {
 		t.Fatalf("create bob failed: %v", err)
+	}
+	if _, err := eng.CreateUser(ctx, mycelengine.CreateUserInput{AccessToken: auth.AccessToken, User: identity.UserInput{Ref: identity.UserRef("charlie"), Status: identity.UserStatusActive}, Password: "pass"}); err != nil {
+		t.Fatalf("create charlie failed: %v", err)
+	}
+	if _, err := eng.GrantSpaceAccess(ctx, mycelengine.GrantSpaceAccessInput{AccessToken: auth.AccessToken, SpaceID: space.SpaceID, UserID: bob.ID, Permissions: []access.SpacePermission{access.SpacePermissionAdmin}}); err != nil {
+		t.Fatalf("grant bob space admin failed: %v", err)
 	}
 	_ = eng.Close()
 
@@ -67,7 +75,8 @@ model_endpoint_capabilities:
 
 	expectMycelCommandError(t, "-d", dataDir, "-u", "bob", "-p", "pass", "inference", "package", "apply", pkgPath)
 	runMycelCommand(t, "-d", dataDir, "-u", "admin", "-p", "pass", "inference", "package", "apply", pkgPath)
-	expectMycelCommandError(t, "-d", dataDir, "-u", "bob", "-p", "pass", "semantic", "index", "add", "bob-search", "--space-id", space.SpaceID.String(), "--domain", "personal-pkm", "--template-key", "logseq.page", "--source", "subtree", "--model-endpoint", "openai-public", "--model", "openai/text-embedding-3-small")
+	runMycelCommand(t, "-d", dataDir, "-u", "bob", "-p", "pass", "semantic", "index", "add", "bob-search", "--space-id", space.SpaceID.String(), "--domain", "personal-pkm", "--template-key", "logseq.page", "--source", "subtree", "--model-endpoint", "openai-public", "--model", "openai/text-embedding-3-small")
+	expectMycelCommandError(t, "-d", dataDir, "-u", "charlie", "-p", "pass", "semantic", "index", "add", "charlie-search", "--space-id", space.SpaceID.String(), "--domain", "personal-pkm", "--template-key", "logseq.page", "--source", "subtree", "--model-endpoint", "openai-public", "--model", "openai/text-embedding-3-small")
 	runMycelCommand(t, "-d", dataDir, "-u", "admin", "-p", "pass", "semantic", "index", "add", "notes-search", "--space-id", space.SpaceID.String(), "--domain", "personal-pkm", "--template-key", "logseq.page", "--source", "subtree", "--model-endpoint", "openai-public", "--model", "openai/text-embedding-3-small")
 	expectMycelCommandError(t, "-d", dataDir, "-u", "admin", "-p", "pass", "inference", "credential", "add", "bad-inline", "--model-endpoint", "openai-public", "--owner-user", "martin", "--api-key", "sk-test-secret")
 	runMycelCommand(t, "-d", dataDir, "-u", "admin", "-p", "pass", "inference", "credential", "add", "martin-openai", "--model-endpoint", "openai-public", "--owner-user", "martin", "--external-ref", "vault://test/openai")

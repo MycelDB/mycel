@@ -32,11 +32,7 @@ type semanticConfigEvent struct {
 }
 
 func authenticatedSemanticGlobalManager(ctx context.Context, a *app.App) (storesemantic.GlobalManager, error) {
-	tok, err := a.AccessToken(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := a.Engine.ListSystemAccess(ctx, mycelengine.ListSystemAccessInput{AccessToken: tok}); err != nil {
+	if _, err := a.AccessToken(ctx); err != nil {
 		return nil, err
 	}
 	mgr := storesemantic.NewGlobalManager()
@@ -44,6 +40,17 @@ func authenticatedSemanticGlobalManager(ctx context.Context, a *app.App) (stores
 		return nil, err
 	}
 	return mgr, nil
+}
+
+func authorizedSemanticGlobalManager(ctx context.Context, a *app.App) (storesemantic.GlobalManager, error) {
+	tok, err := a.AccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := a.Engine.ListSystemAccess(ctx, mycelengine.ListSystemAccessInput{AccessToken: tok}); err != nil {
+		return nil, err
+	}
+	return authenticatedSemanticGlobalManager(ctx, a)
 }
 
 func authenticatedSemanticSpaceManager(ctx context.Context, a *app.App, spaceID domainspace.SpaceID) (storesemantic.SpaceManager, error) {
