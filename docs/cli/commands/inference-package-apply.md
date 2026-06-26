@@ -1,6 +1,6 @@
 # `mycel inference package apply`
 
-Target advanced command that applies inference package definitions.
+Command that applies inference package definitions.
 
 ## Example
 
@@ -16,3 +16,5 @@ mycel inference package apply standard-openai.yaml
 - vector store definitions
 
 Packages must not contain secrets.
+
+Requires system access management privileges because package application mutates global inference metadata.

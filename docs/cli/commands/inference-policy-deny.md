@@ -1,6 +1,6 @@
 # `mycel inference policy deny`
 
-Target advanced command that creates an inference policy denying processing.
+Command that creates an inference policy denying processing.
 
 ## Example
 
@@ -10,4 +10,4 @@ mycel inference policy deny --space-id <space_id> --domain personal-pkm --node <
 
 ## Notes
 
-Deny always wins over allow.
+Deny always wins over allow. Requires admin access to the target space because policies are space-owned processing rules.

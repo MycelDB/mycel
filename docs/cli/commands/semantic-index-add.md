@@ -1,6 +1,6 @@
 # `mycel semantic index add`
 
-Target advanced command that creates a semantic index definition.
+Command that creates a semantic index definition.
 
 ## Example
 
@@ -11,3 +11,5 @@ mycel semantic index add notes-search --space-id <space_id> --domain personal-pk
 ## Notes
 
 The semantic index binding does not contain credentials. Endpoint calls require credential grants and inference policy approval.
+
+Requires admin access to the target space because semantic indexes are space-owned semantic metadata.

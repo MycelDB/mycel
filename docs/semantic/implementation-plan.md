@@ -230,7 +230,23 @@ Knot PKM tests:
 
 ## Phase 2: Provisioning CLI, Packages, Secrets, Credentials, Grants, and Policies
 
+Status: implemented in Mycel for initial provisioning commands and semantic config event logging.
+
 Goal: make semantic resources provisionable, still without relying on them for existing search.
+
+Initial Mycel implementation added:
+
+- `mycel inference package apply`
+- `mycel inference capability add`
+- `mycel inference credential add`
+- `mycel inference credential grant`
+- `mycel inference policy allow|deny|restrict`
+- `mycel semantic index add`
+- semantic config event appends under `meta/semantic_events/semantic-config-000001.ksem`
+- CLI authorization gates: global inference metadata requires system access management privileges; space-owned indexes/grants/policies require target-space admin access
+- focused CLI tests proving package apply, index creation, credential storage, grant creation, policy creation, config event logging, unauthorized rejection, and inline-secret key requirements
+
+Existing MVP embeddings/search behavior remains unchanged.
 
 ### Mycel deliverables
 

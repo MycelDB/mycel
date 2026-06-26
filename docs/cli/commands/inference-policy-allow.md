@@ -1,6 +1,6 @@
 # `mycel inference policy allow`
 
-Target advanced command that creates an inference policy allowing processing within explicit constraints.
+Command that creates an inference policy allowing processing within explicit constraints.
 
 ## Example
 
@@ -10,4 +10,4 @@ mycel inference policy allow --space-id <space_id> --domain personal-pkm --opera
 
 ## Notes
 
-No inference is allowed unless an applicable policy explicitly allows it.
+No inference is allowed unless an applicable policy explicitly allows it. Requires admin access to the target space because policies are space-owned processing rules.
