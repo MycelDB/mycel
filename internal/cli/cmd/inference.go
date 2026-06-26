@@ -48,7 +48,7 @@ func newInferencePackageCommand(a *app.App) *cobra.Command {
 
 func newInferencePackageApplyCommand(a *app.App) *cobra.Command {
 	return &cobra.Command{Use: "apply FILE", Short: "Apply inference definitions from a YAML or JSON package", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		mgr, err := authenticatedSemanticGlobalManager(cmd.Context(), a)
+		mgr, err := authorizedSemanticGlobalManager(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -118,7 +118,7 @@ func newInferenceCapabilityAddCommand(a *app.App) *cobra.Command {
 	var endpointRef, modelRef, operation, modelNameOverride string
 	var disabled bool
 	cmd := &cobra.Command{Use: "add", Short: "Provision a model endpoint capability", RunE: func(cmd *cobra.Command, args []string) error {
-		mgr, err := authenticatedSemanticGlobalManager(cmd.Context(), a)
+		mgr, err := authorizedSemanticGlobalManager(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -159,7 +159,7 @@ func newInferenceCredentialAddCommand(a *app.App) *cobra.Command {
 	var endpointRef, ownerUser, ownerType, ownerID, authType, apiKey, apiKeyEnv, externalRef, name string
 	var isDefault bool
 	cmd := &cobra.Command{Use: "add KEY", Short: "Add an inference credential", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		mgr, err := authenticatedSemanticGlobalManager(cmd.Context(), a)
+		mgr, err := authorizedSemanticGlobalManager(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
