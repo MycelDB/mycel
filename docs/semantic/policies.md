@@ -11,6 +11,14 @@ InferencePolicy = authorization/restriction for content to be processed
 
 A credential grant may allow an OpenAI key in a space, while a node-level policy may still forbid sending a private subtree to any third-party model endpoint. The content policy must win.
 
+Default behavior is deny:
+
+```text
+no applicable inference policy => no inference is allowed
+```
+
+Applications/operators must provision an explicit space-owned baseline policy when they create/configure a space. A semantic index plus credential grant is not sufficient; policy must explicitly allow processing.
+
 ## Policy Scopes
 
 Inference policies are owned by the space whose content they govern. They should be provisioned with the space and stored with the space's semantic metadata.
@@ -110,10 +118,15 @@ Recommended order:
 
 Rules:
 
+- no applicable inference policy means deny/no inference
 - deny beats allow
+- at least one applicable allow/restrict policy must match the operation for processing to proceed
+- multiple restrict policies combine by intersection / most restrictive result
+- `allowed_privacy_classes` sets are intersected across applicable allow/restrict policies
+- restrictive booleans such as `disallow_third_party` and `require_local_endpoint` are combined with OR semantics; if any applicable policy requires them, the effective policy requires them
 - `no_inference` excludes content from all inference operations
 - `local_only` excludes third-party and enterprise-private remote model endpoints unless they are classified as local
-- node/subtree policies override broader domain/space allowances
+- node/subtree policies override broader domain/space allowances by narrowing the effective policy; they cannot loosen inherited restrictions
 - semantic index extraction must stop at nodes/subtrees disallowed by effective policy for the index endpoint/model
 - a semantic query over a broad scope may partially search allowed indexes and return warnings for skipped indexes/content
 
@@ -123,13 +136,17 @@ Given:
 
 ```text
 space grant allows OpenAI
-space policy allows third-party embeddings
+space policy allows embeddings for local_only + enterprise_private + third_party
+domain policy restricts embeddings to local_only + enterprise_private
 node policy marks a subtree local_only
 ```
 
-Result:
+Effective result for that subtree:
 
 ```text
+allowed_privacy_classes = local_only
+require_local_endpoint = true, if set by node policy
+third_party endpoints are disallowed
 OpenAI semantic indexes must stop traversal at that subtree and exclude its contents from extraction.
 A local semantic index may include it if its endpoint/model/vector store satisfy policy.
 ```

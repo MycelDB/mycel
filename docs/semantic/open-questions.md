@@ -24,14 +24,21 @@ This document tracks design points that remain unclear or need explicit decision
 - Multi-process writer support is deferred.
 - Raw graph dirty events and semantic config events use event logs rather than JSON rewrite.
 
-## 1. Inference Policy Defaults
+## Resolved Inference Policy Decisions
+
+- No applicable inference policy means no inference is allowed.
+- Applications/operators must provision an explicit space-owned baseline policy when creating/configuring a space.
+- A semantic index plus credential grant is not sufficient; policy must explicitly allow processing.
+- Multiple restrict policies combine by intersection / most restrictive result.
+- `allowed_privacy_classes` sets are intersected across applicable allow/restrict policies.
+- Restrictive booleans such as `disallow_third_party` and `require_local_endpoint` combine with OR semantics.
+
+## 1. Inference Policy Remaining Questions
 
 Policies can restrict processing by endpoint privacy/network class.
 
 Still to decide:
 
-- What is the default policy for a new space: allow third-party, local-only, or no inference until configured?
-- How do multiple `restrict` policies combine?
 - How do explicit `allow` policies interact with inherited `deny` policies?
 - Are policies inherited only through containment edges?
 - What happens when a node moves into or out of a restricted subtree?

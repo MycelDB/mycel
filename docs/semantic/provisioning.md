@@ -66,6 +66,8 @@ The user or operator provisions authority and policy:
 
 Credential grants and inference/content policies belong to the owning space. For a system like Knot PKM, provisioning a `Personal PKM` space should also provision that space's semantic indexes, grants, and policies.
 
+Because Mycel's fallback is no inference when no applicable policy exists, application space provisioning should include an explicit baseline inference policy for the intended privacy posture.
+
 ## Example Provisioning Flow
 
 ### 1. Initialize Mycel
