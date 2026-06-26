@@ -1,6 +1,6 @@
 # `mycel accounting usage summarize`
 
-Summarizes model endpoint token usage for a time period.
+Summarizes model endpoint token usage for a time period. Requires system access management privileges.
 
 ## Examples
 
@@ -14,8 +14,8 @@ mycel accounting usage summarize --from 2026-06-01 --to 2026-06-30 --node <node_
 
 ```text
 --user <user-id-or-ref>
---space <space-id-or-key>
---domain <domain-id-or-key>
+--space <space-id-or-name>
+--domain <domain-id-or-key>  # domain key lookup requires --space
 --node <node-id>
 --semantic-index <index-id-or-key>
 --operation content_embedding|query_embedding|chat|summarize|rerank|classify

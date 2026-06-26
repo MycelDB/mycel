@@ -27,7 +27,7 @@ func NewRootCommand(a *app.App, repl bool) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := mycelconfig.Load(mycelconfig.Options{ConfigFile: a.ConfigFile, Flags: cmd.Flags()})
+			cfg, err := mycelconfig.Load(mycelconfig.Options{ConfigFile: a.ConfigFile, Flags: cmd.Root().PersistentFlags()})
 			if err != nil {
 				return err
 			}
@@ -60,7 +60,7 @@ func NewRootCommand(a *app.App, repl bool) *cobra.Command {
 	root.PersistentFlags().Int64Var(&a.BlobMaxOtherBytes, "blob-max-other-bytes", a.BlobMaxOtherBytes, "uncategorized blob upload cap in bytes")
 	root.PersistentFlags().BoolVar(&a.AdvancedSemanticEnabled, "semantic-advanced-enabled", a.AdvancedSemanticEnabled, "enable advanced semantic implementation paths as they are introduced")
 
-	root.AddCommand(NewInitCommand(a), NewUserCommand(a), NewSpaceCommand(a), NewDomainCommand(a), NewNodeCommand(a), NewBlobCommand(a), NewTemplateCommand(a), NewACLCommand(a), NewEmbeddingsCommand(a), NewInferenceCommand(a), NewSemanticCommand(a), NewReplCommand(a))
+	root.AddCommand(NewInitCommand(a), NewUserCommand(a), NewSpaceCommand(a), NewDomainCommand(a), NewNodeCommand(a), NewBlobCommand(a), NewTemplateCommand(a), NewACLCommand(a), NewEmbeddingsCommand(a), NewInferenceCommand(a), NewSemanticCommand(a), NewAccountingCommand(a), NewReplCommand(a))
 	if repl {
 		root.Use = ""
 	}

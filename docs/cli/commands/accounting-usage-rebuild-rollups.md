@@ -1,6 +1,6 @@
 # `mycel accounting usage rebuild-rollups`
 
-Rebuilds accounting rollups from the authoritative usage ledger.
+Rebuilds accounting rollups from the authoritative usage ledger. Requires system access management privileges.
 
 ## Example
 

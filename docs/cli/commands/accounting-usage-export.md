@@ -1,6 +1,6 @@
 # `mycel accounting usage export`
 
-Exports inference usage events or summaries.
+Exports inference usage events. Requires system access management privileges.
 
 ## Examples
 

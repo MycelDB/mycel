@@ -1,6 +1,6 @@
 # `mycel accounting usage rebuild-indexes`
 
-Rebuilds derived accounting indexes from the authoritative usage ledger.
+Rebuilds derived accounting indexes from the authoritative usage ledger. Requires system access management privileges.
 
 ## Example
 

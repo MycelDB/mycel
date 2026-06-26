@@ -303,7 +303,21 @@ Knot PKM tests:
 
 ## Phase 3: Accounting Ledger Foundation
 
+Status: implemented in Mycel for the append-only ledger store, derived index/rollup rebuilds, and CLI usage reporting.
+
 Goal: record all new semantic model endpoint calls in an append-only ledger before those calls become common.
+
+Initial Mycel implementation added:
+
+- `store/accounting` append-only `InferenceUsageEvent` ledger support under `meta/accounting/`
+- `manifest.json`, `inference-usage-000001.kusag`, `indexes/`, and `rollups/` initialization
+- event append/list/summarize APIs
+- derived index rebuild by principal, space, domain, node, operation, model endpoint, model, and credential grant
+- monthly rollup rebuilds for principal, space, domain, and endpoint
+- `mycel accounting usage summarize|events|export|rebuild-indexes|rebuild-rollups`
+- tests for append/reload, failed-call accounting, summaries, CSV export, index rebuilds, rollup rebuilds, and CLI authorization
+
+Existing semantic provisioning and MVP embedding/search behavior remains unchanged.
 
 ### Mycel deliverables
 

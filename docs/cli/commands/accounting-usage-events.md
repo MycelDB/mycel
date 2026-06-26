@@ -1,6 +1,6 @@
 # `mycel accounting usage events`
 
-Lists raw inference usage events from the accounting ledger for audit/debug workflows.
+Lists raw inference usage events from the accounting ledger for audit/debug workflows. Requires system access management privileges.
 
 ## Example
 

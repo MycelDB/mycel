@@ -23,6 +23,8 @@ meta/accounting/
 
 The ledger is authoritative. Secondary indexes and rollups are derived and rebuildable.
 
+Phase 3 implements the local file-backed ledger foundation with one active segment, `inference-usage-000001.kusag`, plus rebuildable JSON index and rollup files. Segment rotation and automatic model-call instrumentation are later-phase work.
+
 ## Usage Event
 
 Every successful or failed model endpoint call should append one `InferenceUsageEvent`.
@@ -164,7 +166,7 @@ unavailable_token_count
 
 ## CLI Reporting
 
-Accounting reports are exposed through CLI commands under `mycel accounting usage`.
+Accounting reports are exposed through CLI commands under `mycel accounting usage`. These commands require system access management privileges because they expose global operational usage records.
 
 See:
 

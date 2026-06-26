@@ -309,7 +309,7 @@ Credential grants and inference/content policies are space-owned because they go
 
 Global semantic configuration events are operational append-only events under `meta/semantic_events/`. They notify semantic analyzers about changes such as model endpoint capabilities, model definitions, vector stores, credential revocations, and scoped space-owned semantic configuration changes.
 
-Inference usage accounting events are append-only operational records under `meta/accounting/`. They are not graph data. The authoritative ledger is `inference-usage-*.kusag`; user/space/domain/node indexes and rollups are derived and rebuildable. See [../semantic/accounting.md](../semantic/accounting.md).
+Inference usage accounting events are append-only operational records under `meta/accounting/`. They are not graph data. The authoritative ledger is `inference-usage-*.kusag`; user/space/domain/node indexes and rollups are derived and rebuildable. Phase 3 implements the local ledger foundation, explicit rebuild commands, and CLI reports. See [../semantic/accounting.md](../semantic/accounting.md).
 
 ## Atomic Writes and Recovery
 
