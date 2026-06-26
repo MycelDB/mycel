@@ -336,8 +336,13 @@ type AdvancedEmbeddingRecord struct {
 	CredentialGrantID         CredentialGrantID         `json:"credential_grant_id,omitempty"`
 	PolicyDecisionID          PolicyDecisionID          `json:"policy_decision_id,omitempty"`
 	VectorStoreID             VectorStoreID             `json:"vector_store_id"`
+	VectorSpaceKey            string                    `json:"vector_space_key,omitempty"`
+	SourceMode                string                    `json:"source_mode,omitempty"`
 	Dimensions                int                       `json:"dimensions"`
 	Vector                    []float64                 `json:"-"`
+	Tombstone                 bool                      `json:"tombstone,omitempty"`
+	DeleteTargetRecordID      AdvancedEmbeddingRecordID `json:"delete_target_record_id,omitempty"`
+	DeleteReason              string                    `json:"delete_reason,omitempty"`
 	CreatedAt                 time.Time                 `json:"created_at"`
 }
 

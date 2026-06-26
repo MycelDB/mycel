@@ -23,7 +23,7 @@ meta/accounting/
 
 The ledger is authoritative. Secondary indexes and rollups are derived and rebuildable.
 
-Phase 3 implements the local file-backed ledger foundation with one active segment, `inference-usage-000001.kusag`, plus rebuildable JSON index and rollup files. Segment rotation and automatic model-call instrumentation are later-phase work.
+Phase 3 implements the local file-backed ledger foundation with one active segment, `inference-usage-000001.kusag`, plus rebuildable JSON index and rollup files. Phase 4 instruments the initial semantic connector service so OpenAI-compatible embedding endpoint calls append success/failure events. Segment rotation and broader model-call instrumentation are later-phase work.
 
 ## Usage Event
 

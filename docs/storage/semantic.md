@@ -1,6 +1,6 @@
 # Semantic and Embedding Storage
 
-Status: design draft with Phase 1 resource/store foundation implemented
+Status: design draft with Phase 1 resource/store foundation, Phase 3 accounting ledger, and Phase 4 connector/`mycel-file` vector backend foundations implemented
 Related design: [`../semantic/README.md`](../semantic/README.md)
 
 This document describes current embedding storage and the proposed advanced semantic/inference storage layout.
@@ -203,7 +203,7 @@ Although the domain model exposes vectors as `[]float64`, the current file forma
 
 The advanced model should separate global inference definitions/credentials from space-owned grants, policies, semantic indexes, dirty work, and vector records.
 
-Phase 1 implemented the additive JSON store foundation for the global inference/secret/credential files and the space-owned `indexes.json`, `credential_grants.json`, and `inference_policies.json` files. Dirty queues, policy decision storage, per-index vector records, and external vector references remain later-phase work.
+Phase 1 implemented the additive JSON store foundation for the global inference/secret/credential files and the space-owned `indexes.json`, `credential_grants.json`, and `inference_policies.json` files. Phase 4 implemented the initial local per-index `mycel-file` vector records and tombstones. Dirty queues, policy decision storage, and external vector references remain later-phase work.
 
 Proposed layout:
 
@@ -914,13 +914,13 @@ The segment remains append-only. Regeneration appends a new record; stale record
 
 ### Segment Header
 
-Use a versioned segment header. It may reuse the current `KEMBSEG1` magic for compatibility or introduce a new semantic-specific magic.
+Use a versioned segment header. Phase 4 uses semantic-specific `KEMBSEG2` records for the built-in `mycel-file` backend.
 
-Recommended header:
+Header:
 
 | Field | Encoding | Description |
 | --- | --- | --- |
-| magic | ASCII bytes, e.g. `KEMBSEG2` | Identifies advanced embedding vector segment. |
+| magic | ASCII bytes `KEMBSEG2` | Identifies advanced embedding vector segment. |
 | version | uint16 little-endian | Format version. |
 | flags | uint16 little-endian | Reserved. |
 

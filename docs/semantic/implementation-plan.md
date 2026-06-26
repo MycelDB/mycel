@@ -374,7 +374,22 @@ Knot PKM tests:
 
 ## Phase 4: Connector Abstraction and `mycel-file` Vector Backend
 
+Status: implemented in Mycel for the initial connector runtime, OpenAI-compatible embedding calls, credential secret resolution, accounting emission, and built-in `mycel-file` semantic vector backend. Higher-level semantic backfill/query planning remains Phase 5/6 work.
+
 Goal: create the execution/storage interfaces needed by semantic indexes.
+
+Initial Mycel implementation added:
+
+- `internal/semantic/connectors` connector interface and embedding execution service
+- OpenAI-compatible embedding connector with endpoint/model/capability validation
+- credential status checks and inline encrypted / `env:` external secret resolution
+- success and provider-failure accounting events for connector calls
+- `internal/semantic/vectorstore` backend interface
+- built-in `mycel-file` vector backend under `graphs/<space_id>/semantic/indexes/<semantic_index_id>/records/`
+- advanced `KEMBSEG2` `.kvec` records with semantic index/model endpoint/model/grant/policy provenance
+- append-only tombstone/delete records that are immediately excluded from search
+
+Current MVP embedding profile refresh/search remains unchanged.
 
 ### Mycel deliverables
 
