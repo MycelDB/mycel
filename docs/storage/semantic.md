@@ -1,6 +1,6 @@
 # Semantic and Embedding Storage
 
-Status: design draft  
+Status: design draft with Phase 1 resource/store foundation implemented
 Related design: [`../semantic/README.md`](../semantic/README.md)
 
 This document describes current embedding storage and the proposed advanced semantic/inference storage layout.
@@ -202,6 +202,8 @@ Although the domain model exposes vectors as `[]float64`, the current file forma
 ## Proposed Advanced Layout
 
 The advanced model should separate global inference definitions/credentials from space-owned grants, policies, semantic indexes, dirty work, and vector records.
+
+Phase 1 implemented the additive JSON store foundation for the global inference/secret/credential files and the space-owned `indexes.json`, `credential_grants.json`, and `inference_policies.json` files. Dirty queues, policy decision storage, per-index vector records, and external vector references remain later-phase work.
 
 Proposed layout:
 

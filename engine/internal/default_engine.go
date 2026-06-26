@@ -21,6 +21,7 @@ import (
 	"github.com/myceldb/mycel/store/acl"
 	storedomains "github.com/myceldb/mycel/store/domains"
 	storeembedding "github.com/myceldb/mycel/store/embedding"
+	storesemantic "github.com/myceldb/mycel/store/semantic"
 	"github.com/myceldb/mycel/store/spaces"
 	storetemplate "github.com/myceldb/mycel/store/template"
 	"github.com/myceldb/mycel/store/user"
@@ -47,6 +48,7 @@ type defaultEngine struct {
 	domainManager    storedomains.Manager
 	templateManager  storetemplate.Manager
 	embeddingManager storeembedding.Manager
+	semanticManager  storesemantic.GlobalManager
 	accessManager    acl.Manager
 	authMu           sync.RWMutex
 	authCache        map[AccessToken]authClaims
@@ -193,6 +195,17 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		e.embeddingManager = storeembedding.NewManager()
 	}
 	if err := e.embeddingManager.Init(context.Background(), filepath.Join(metaDir(cfg.DataDir), "embedding"), cfg.UserStoreEncryptionKeyB64); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+	if e.semanticManager == nil {
+		e.semanticManager = storesemantic.NewGlobalManager()
+	}
+	if err := e.semanticManager.Init(context.Background(), metaDir(cfg.DataDir)); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+	if _, err := e.semanticManager.EnsureDefaultVectorStore(context.Background()); err != nil {
 		e.state = EngineStateClose
 		return err
 	}

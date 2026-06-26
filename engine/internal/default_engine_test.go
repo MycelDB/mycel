@@ -39,6 +39,37 @@ func TestDefaultEngine_StandaloneSuccess(t *testing.T) {
 	}
 }
 
+func TestDefaultEngine_InitializesDefaultSemanticVectorStore(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "mycel")
+	engine, err := DefaultEngine(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"})
+	if err != nil {
+		t.Fatalf("expected engine open success, got error: %v", err)
+	}
+	_ = engine.Close()
+
+	vectorStoresPath := filepath.Join(metaDir(dataDir), "inference", "vector_stores.json")
+	raw, err := os.ReadFile(vectorStoresPath)
+	if err != nil {
+		t.Fatalf("read vector stores failed: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"key": "mycel-file"`)) || !bytes.Contains(raw, []byte(`"type": "mycel-file"`)) {
+		t.Fatalf("expected mycel-file default vector store in %s: %s", vectorStoresPath, string(raw))
+	}
+
+	engine2, err := DefaultEngine(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: false})
+	if err != nil {
+		t.Fatalf("expected existing engine open success, got error: %v", err)
+	}
+	_ = engine2.Close()
+	rawAfter, err := os.ReadFile(vectorStoresPath)
+	if err != nil {
+		t.Fatalf("read vector stores after reopen failed: %v", err)
+	}
+	if bytes.Count(rawAfter, []byte(`"key": "mycel-file"`)) != 1 {
+		t.Fatalf("expected mycel-file default vector store to be idempotent: %s", string(rawAfter))
+	}
+}
+
 func TestRuntimeEngine_OpenMethod(t *testing.T) {
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "mycel-open")

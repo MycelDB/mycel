@@ -155,7 +155,19 @@ Current runtime behavior remains unchanged.
 
 ## Phase 1: Additive Semantic Resource Model and Stores
 
+Status: resource model and JSON store foundation implemented in Mycel; Knot PKM dependency integration remains a later compatibility step unless needed by a pushed PKM phase.
+
 Goal: introduce the new resource model without changing embedding behavior.
+
+Initial Mycel implementation added:
+
+- additive `domain/semantic` resource types for model endpoints, models, capabilities, vector stores, secrets, credentials, grants, policies, semantic indexes, advanced embedding provenance, and inference usage events
+- file-backed global semantic/inference metadata stores under `meta/inference/`, `meta/secrets/`, and `meta/credentials/`
+- file-backed space-owned semantic metadata stores for `indexes.json`, `credential_grants.json`, and `inference_policies.json`
+- idempotent `mycel-file` vector store provisioning during engine initialization
+- unit tests for store creation, validation, persistence/reload, and space-scope rejection
+
+The existing embedding-profile behavior remains unchanged.
 
 ### Mycel deliverables
 

@@ -16,6 +16,7 @@ See [`docs/architecture.md`](docs/architecture.md) for a navigation guide, impor
 - `domain/access`: system roles, space permissions, and ACL rule types
 - `domain/graph`: pure graph domain types for nodes, edges, templates, and template policies
 - `domain/embedding`: pure embedding metadata, record, and semantic-search result types
+- `domain/semantic`: advanced semantic/inference resource metadata types
 - `query/`: programmatic GQL-style query builder
 - `store/`: injectable persistence interfaces (for tests or custom backends)
 
