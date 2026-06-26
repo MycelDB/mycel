@@ -48,12 +48,14 @@ Secret values should be stored separately in an encrypted secret store or extern
 
 Credential ownership alone is not enough. Mycel also needs to know where a credential is authorized to be used.
 
+Every model endpoint call requires an explicit credential grant. A user default credential, organization default credential, or system/deployment credential must not be used for content processing unless a space-owned grant authorizes that use.
+
 Credential grants are owned by the space whose content they authorize for processing. Credential metadata may be global/principal-owned, but grants should live under the owning space's semantic storage so space export/delete/provisioning includes its processing authorization rules.
 
 A credential grant is an atomic statement:
 
 ```text
-This one credential may be used for these operation(s) in this processing scope.
+This one credential may be used for these operation(s) in this processing scope, optionally including background semantic maintenance.
 ```
 
 The cardinality should be:
@@ -75,6 +77,7 @@ model_endpoint_id      # optional but recommended constraint
 model_id               # optional constraint
 priority
 is_default
+allow_background_use
 granted_by
 created_at
 expires_at
@@ -131,17 +134,19 @@ Recommended specificity order:
 2. semantic index grant
 3. domain grant
 4. space grant
-5. owner default credential for the model endpoint
-6. organization/system default credential for the model endpoint
+
+Default credentials may help user interfaces suggest a credential, but they are not implicit grants and are not fallback authorization.
 
 Rules:
 
+- every endpoint call requires an explicit grant
 - the grant operation must match the requested operation
 - endpoint/model constraints must match when present
 - expired, revoked, disabled, or inaccessible credentials are ignored
 - the most specific compatible grant wins
 - same-specificity conflicts should error unless exactly one grant is default or has highest priority
 - credential grants never override inference/content policy restrictions
+- organization/system credentials do not process user-owned content by default; they require explicit grants like any other credential
 
 Resolution should return both:
 
@@ -151,6 +156,22 @@ selected grant
 ```
 
 so embedding/query records can be audited.
+
+## Interactive and Background Use
+
+Interactive endpoint calls use the authenticated session principal when resolving grants. The session proves the caller identity; the grant determines whether a credential may be used for the requested operation and processing scope.
+
+Background semantic maintenance has no live user session, so it must use a stored grant that explicitly permits background use. For example, when a user adds an OpenAI credential for a personal PKM space, the application may create a space-owned grant that authorizes semantic maintenance to use that credential for a specific domain or semantic index.
+
+Rules:
+
+- background embedding backfill/refresh must use an explicit credential grant
+- `allow_background_use` must be true for offline semantic maintenance
+- the grant scope should be as narrow as practical, such as a domain or semantic index
+- revoking the grant or credential stops future background endpoint calls
+- background workers must record `credential_id`, `credential_grant_id`, and effective operation/scope provenance
+
+This avoids implicit user impersonation while still allowing semantic maintenance to run after the user logs out.
 
 ## Examples
 
@@ -165,7 +186,10 @@ operations:
   - embeddings
 model_endpoint: openai-public
 model: openai/text-embedding-3-small
+allow_background_use: true
 ```
+
+This permits both interactive embedding calls and offline semantic maintenance within the grant scope.
 
 Node/subtree grant:
 

@@ -217,7 +217,7 @@ A semantic index maintainer processes dirty work by:
 1. loading the current target node/subtree
 2. re-evaluating policy
 3. resolving endpoint/model/vector-store binding
-4. resolving credential grant
+4. resolving an explicit credential grant with background use permission
 5. extracting source text, stopping traversal at subtrees whose effective policy disallows this endpoint/model
 6. computing source hash
 7. skipping if a current record already exists for the same source hash
@@ -226,6 +226,8 @@ A semantic index maintainer processes dirty work by:
 10. marking dirty work complete or failed
 
 Policy must be evaluated again during maintenance because policies or graph structure may have changed since the dirty item was created.
+
+Background maintenance does not require a live user session, but it must not implicitly impersonate the user or use default credentials. It must use a stored space-owned credential grant that permits the requested operation and explicitly allows background semantic maintenance.
 
 ## Backfill
 

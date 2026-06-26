@@ -144,10 +144,27 @@ mycel inference credential grant martin-openai \
   --space-id <space-id> \
   --domain personal-pkm \
   --semantic-index notes-search \
-  --operation embeddings
+  --operation embeddings \
+  --allow-background-use
 ```
 
-### 8. Optionally add content policy
+The explicit grant is required for every endpoint call. `--allow-background-use` permits offline semantic maintenance, such as backfill and dirty refresh, to use this credential within the grant scope without requiring a live user session.
+
+### 8. Add baseline content policy
+
+No inference is allowed unless an applicable policy explicitly allows it. Space provisioning should create a baseline policy matching the intended privacy posture.
+
+Example broad personal-space allow policy:
+
+```sh
+mycel inference policy allow \
+  --space-id <space-id> \
+  --domain personal-pkm \
+  --operation embeddings \
+  --privacy-class local_only \
+  --privacy-class enterprise_private \
+  --privacy-class third_party
+```
 
 Block a private subtree from all inference processing:
 

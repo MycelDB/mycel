@@ -502,6 +502,7 @@ A grant authorizes one credential for one processing scope.
       "model_id": "uuid-or-model-key",
       "priority": 0,
       "is_default": true,
+      "allow_background_use": true,
       "granted_by": "principal-ref",
       "created_at": "RFC3339 timestamp",
       "expires_at": "RFC3339 timestamp"
@@ -516,6 +517,9 @@ Rules:
 - The owning space is implied by the file location; `scope.space_id` may be retained for validation but should match the owning directory.
 - `scope` may be broad, such as a domain, or narrow, such as a subtree.
 - `model_endpoint_id` and `model_id` are optional constraints but recommended.
+- Every endpoint call requires an explicit grant; default credentials are not implicit grants.
+- User, organization, and system/deployment credentials all require explicit space-owned grants before they can process content.
+- `allow_background_use` must be true for offline semantic maintenance such as backfill and dirty refresh.
 - Resolution chooses the most specific compatible grant and errors on ambiguous same-specificity grants unless priority/default breaks the tie.
 
 ### `graphs/<space_id>/semantic/inference_policies.json`

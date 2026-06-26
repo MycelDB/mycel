@@ -37,18 +37,19 @@ This document tracks design points that remain unclear or need explicit decision
 - Non-containment edges such as references, backlinks, tags, mentions, and embeds do not imply policy inheritance.
 - When a node moves into or out of a restricted subtree, the graph write records the move and semantic dirty event; the semantic analyzer/maintainer later decides refresh, skip, tombstone, or deletion behavior.
 
-## 1. Credential Grant Defaults
+## Resolved Credential Grant Decisions
 
-Credentials are principal-owned; grants are space-owned.
+- Every model endpoint call requires an explicit credential grant.
+- User default credentials are UI/provisioning conveniences only; they are not implicit grants.
+- A user's default credential cannot be used in their own personal space without an explicit grant.
+- Organization/system/deployment credentials cannot process user-owned content by default.
+- Organization/system/deployment credentials require explicit space-owned grants like any other credential.
+- Interactive endpoint calls use the authenticated session principal when resolving grants.
+- Background semantic maintenance must use a stored explicit grant and does not require a live user session.
+- Background embedding backfill/refresh requires `allow_background_use = true` or equivalent grant semantics.
+- Shared-space credential selection and billing are deferred because shared spaces are not in the current scope.
 
-Still to decide:
-
-- Is a credential grant required for every endpoint call?
-- Can a user's default credential be used in their own personal space without an explicit grant?
-- Can system/org credentials process user-owned content by default?
-- How should shared spaces decide whose credential pays for embedding refresh and query embeddings?
-
-## 3. Query Embedding Credential Resolution
+## 1. Query Embedding Credential Resolution
 
 Content embeddings and query embeddings may use the same endpoint/model but not necessarily the same credential.
 
@@ -59,7 +60,7 @@ Still to decide:
 - Should query credential use be audited separately from content embedding records?
 - What happens if an index exists but the current querying user cannot resolve a credential?
 
-## 4. Deletion, Privacy, and Revocation
+## 2. Deletion, Privacy, and Revocation
 
 Policy and credential changes can invalidate existing derived vectors.
 
@@ -71,7 +72,7 @@ Still to decide:
 - Are embeddings treated as derived personal data for export/delete?
 - Do policy changes enqueue cleanup jobs?
 
-## 5. Semantic Index Versioning
+## 3. Semantic Index Versioning
 
 Index definitions may change over time.
 
@@ -85,7 +86,7 @@ Still to decide:
 - Should stable aliases point to versioned indexes?
 - How are old index versions retired or compacted?
 
-## 6. Minimal Implementation Slice
+## 4. Minimal Implementation Slice
 
 A reasonable first implementation might include:
 
