@@ -834,6 +834,8 @@ Notes:
 - This store can be bounded or compacted.
 - Not every transient query decision must be persisted forever.
 - Decisions that produce embedding records or skip durable backfill work should be inspectable.
+- Query embedding credential use should be audited separately from content embedding records because queries may use a different compatible grant and may not create durable vector records.
+- Detailed accounting, billing, quota, and cost allocation are future layers over query/endpoint-call audit events.
 
 ### `graphs/<space_id>/semantic/indexes/<semantic_index_id>/manifest.ksem`
 

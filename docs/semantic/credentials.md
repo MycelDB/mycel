@@ -206,9 +206,10 @@ model_endpoint: local-ollama
 
 ## Audit Requirements
 
-Embedding records and durable query/maintenance logs should retain provenance:
+Content embedding records and durable maintenance logs should retain provenance:
 
 ```text
+operation
 credential_id
 credential_grant_id
 model_endpoint_id
@@ -217,9 +218,28 @@ semantic_index_id
 policy_decision_id, when applicable
 ```
 
+Query embedding credential use should be audited separately from content embedding records because query embeddings are often transient and may use a different compatible grant than the grant that generated the indexed content.
+
+Query audit records should retain provenance/debug facts such as:
+
+```text
+operation = query_embedding
+session_principal_id
+credential_id
+credential_grant_id
+model_endpoint_id
+model_id
+semantic_index_id or vector_space_key
+policy_decision_id, when applicable
+timestamp
+```
+
+Detailed accounting, billing, quota, and cost allocation can build on these audit events later.
+
 This lets operators answer:
 
-- which credential generated this embedding?
+- which credential generated this embedding or query embedding?
 - which grant authorized it?
 - which content scopes use this credential?
 - what must be refreshed or disabled if a credential is revoked?
+- why was a semantic index skipped for a query?

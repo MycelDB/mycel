@@ -26,7 +26,7 @@ Mycel should:
 2. find semantic indexes covering that scope and purpose
 3. evaluate inference policies and remove disallowed content/index/model endpoint combinations
 4. group remaining indexes by `vector_space_key` and compatible endpoint/model requirements
-5. resolve a compatible credential grant for each required query-embedding model endpoint call
+5. resolve a compatible explicit credential grant for each required query-embedding model endpoint call
 6. generate one query embedding per compatible vector-space group
 7. search each vector store/index
 8. merge and rank results
@@ -45,6 +45,10 @@ record_id
 node_id
 score
 ```
+
+Query embeddings do not need to use the same credential grant that generated the index records. Any compatible explicit grant may be used for the query embedding call, as long as the endpoint/model/capability and `vector_space_key` requirements match the selected vector-space group and policy allows the operation.
+
+Query credential use should be audited separately from content embedding records. Initial audit records should capture provenance/debug facts such as session principal, credential ID, credential grant ID, model endpoint, model, semantic index or vector-space group, operation, and timestamp. Detailed accounting, billing, quota, and cost allocation can build on this later.
 
 ## Multi-Index Example
 
@@ -109,10 +113,12 @@ The MVP can start with conservative grouping or simple score normalization, but 
 
 ## Missing Credentials
 
-If a query requires a model endpoint call but no credential grant resolves:
+If a query requires a model endpoint call but no compatible credential grant resolves for the current querying user/session:
 
-- skip the affected index/group
-- return a warning
+- skip the affected index/group for that request
+- return no semantic results from that index/group
+- return a warning when the API supports warnings
+- record diagnostics through the logging/audit system once available
 - do not silently fall back to an unauthorized credential
 
 Example:

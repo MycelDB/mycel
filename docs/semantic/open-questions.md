@@ -49,18 +49,17 @@ This document tracks design points that remain unclear or need explicit decision
 - Background embedding backfill/refresh requires `allow_background_use = true` or equivalent grant semantics.
 - Shared-space credential selection and billing are deferred because shared spaces are not in the current scope.
 
-## 1. Query Embedding Credential Resolution
+## Resolved Query Embedding Credential Decisions
 
-Content embeddings and query embeddings may use the same endpoint/model but not necessarily the same credential.
+- Query embeddings do not need to use the same credential grant that generated index records.
+- Any compatible explicit grant may be used for query embedding.
+- Compatible means the grant, credential, endpoint, model, operation, policy, and vector-space requirements all match the query embedding call.
+- Query credential use should be audited separately from content embedding records.
+- Query audit should record provenance/debug facts first; detailed accounting, billing, quotas, and cost allocation can build on this later.
+- If an index exists but the current querying user cannot resolve a compatible query credential grant, that index/group is not searched for that request.
+- Missing-query-credential diagnostics should be reported through warnings/logging once the logging system exists.
 
-Still to decide:
-
-- Must query embeddings use the same credential grant that generated the index records?
-- Can any compatible grant be used for query embedding?
-- Should query credential use be audited separately from content embedding records?
-- What happens if an index exists but the current querying user cannot resolve a credential?
-
-## 2. Deletion, Privacy, and Revocation
+## 1. Deletion, Privacy, and Revocation
 
 Policy and credential changes can invalidate existing derived vectors.
 
@@ -72,7 +71,7 @@ Still to decide:
 - Are embeddings treated as derived personal data for export/delete?
 - Do policy changes enqueue cleanup jobs?
 
-## 3. Semantic Index Versioning
+## 2. Semantic Index Versioning
 
 Index definitions may change over time.
 
@@ -86,7 +85,7 @@ Still to decide:
 - Should stable aliases point to versioned indexes?
 - How are old index versions retired or compacted?
 
-## 4. Minimal Implementation Slice
+## 3. Minimal Implementation Slice
 
 A reasonable first implementation might include:
 
