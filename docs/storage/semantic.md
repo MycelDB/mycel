@@ -1,6 +1,6 @@
 # Semantic and Embedding Storage
 
-Status: design draft with Phase 1 resource/store foundation, Phase 3 accounting ledger, and Phase 4 connector/`mycel-file` vector backend foundations implemented
+Status: design draft with Phase 1 resource/store foundation, Phase 3 accounting ledger, Phase 4 connector/`mycel-file` vector backend foundations, and Phase 5 initial semantic index backfill implemented
 Related design: [`../semantic/README.md`](../semantic/README.md)
 
 This document describes current embedding storage and the proposed advanced semantic/inference storage layout.
@@ -203,7 +203,7 @@ Although the domain model exposes vectors as `[]float64`, the current file forma
 
 The advanced model should separate global inference definitions/credentials from space-owned grants, policies, semantic indexes, dirty work, and vector records.
 
-Phase 1 implemented the additive JSON store foundation for the global inference/secret/credential files and the space-owned `indexes.json`, `credential_grants.json`, and `inference_policies.json` files. Phase 4 implemented the initial local per-index `mycel-file` vector records and tombstones. Dirty queues, policy decision storage, and external vector references remain later-phase work.
+Phase 1 implemented the additive JSON store foundation for the global inference/secret/credential files and the space-owned `indexes.json`, `credential_grants.json`, and `inference_policies.json` files. Phase 4 implemented the initial local per-index `mycel-file` vector records and tombstones. Phase 5 added synchronous CLI backfill that writes advanced records into those per-index vector segments. Dirty queues, policy decision storage, and external vector references remain later-phase work.
 
 Proposed layout:
 
@@ -937,7 +937,7 @@ Fixed header:
 | Field | Encoding | Description |
 | --- | --- | --- |
 | magic | uint32 little-endian, e.g. `KREC` | Record marker. |
-| version | uint16 little-endian | Record format version. |
+| version | uint16 little-endian | Record format version. Phase 5 writes v3 records and can read initial Phase 4 v2 records that did not persist `model_endpoint_capability_id`. |
 | flags | uint16 little-endian | Flags such as tombstone/external-ref/no-inline-vector. |
 | record_id | 16 UUID bytes | Embedding record ID. |
 | space_id | 16 UUID bytes | Owning space. |
@@ -946,6 +946,7 @@ Fixed header:
 | node_id | 16 UUID bytes | Embedded graph node. |
 | model_endpoint_id | 16 UUID bytes or nil | Model endpoint used to generate the vector. |
 | model_id | 16 UUID bytes or nil | Model metadata ID. |
+| model_endpoint_capability_id | 16 UUID bytes or nil | Provisioned endpoint/model/operation capability used. |
 | vector_store_id | 16 UUID bytes or nil | Vector store backend ID. |
 | credential_id | 16 UUID bytes or nil | Credential used, if any. |
 | credential_grant_id | 16 UUID bytes or nil | Grant authorizing use, if any. |

@@ -59,6 +59,10 @@ type Backend interface {
 	VerifyDeleted(ctx context.Context, in VerifyDeletedInput) (bool, error)
 }
 
+type RecordLister interface {
+	ListRecords(ctx context.Context, spaceID domainspace.SpaceID, semanticIndexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error)
+}
+
 func newID() uuid.UUID {
 	id, err := uuid.NewV7()
 	if err != nil {

@@ -4,7 +4,7 @@ Embedding generation turns selected graph content into derived vector records.
 
 The write path should not call model endpoints synchronously. Graph writes commit first and transactionally append lightweight graph dirty events. Semantic analysis and embedding refresh happen asynchronously.
 
-Phase 4 adds the low-level execution pieces used by later workers: an OpenAI-compatible embedding connector, credential secret resolution, per-call accounting, and the built-in `mycel-file` vector backend. The current MVP embedding refresh path remains separate until semantic backfill/query phases are enabled.
+Phase 4 adds the low-level execution pieces used by later workers: an OpenAI-compatible embedding connector, credential secret resolution, per-call accounting, and the built-in `mycel-file` vector backend. Phase 5 adds synchronous CLI semantic-index backfill using those pieces. The current MVP embedding refresh path remains separate and unchanged until semantic search/query phases are enabled.
 
 ## Current MVP Source Modes
 
@@ -43,9 +43,10 @@ semantic analyzer, per semantic index
   -> evaluate source policies and inference policies
   -> coalesce semantic dirty work
 
-embedding worker
-  -> process semantic dirty work
+embedding worker or Phase 5 CLI backfill
+  -> process semantic dirty work or selected source roots
   -> resolve endpoint/model/vector-store binding
+  -> resolve inference policy
   -> resolve credential grant
   -> extract source text
   -> call model endpoint

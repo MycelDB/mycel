@@ -246,9 +246,13 @@ func newInferenceCredentialGrantCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		indexID, err := resolveSemanticIndexID(cmd.Context(), spaceMgr, indexRef)
-		if err != nil {
-			return err
+		var indexID domainsemantic.SemanticIndexID
+		if strings.TrimSpace(indexRef) != "" {
+			index, err := resolveSemanticIndexForDomain(cmd.Context(), spaceMgr, indexRef, domainID)
+			if err != nil {
+				return err
+			}
+			indexID = index.ID
 		}
 		scope, err := semanticScope(spaceID, domainID, indexID, nodeText, includeDescendants)
 		if err != nil {
@@ -320,9 +324,13 @@ func newInferencePolicyEffectCommand(a *app.App, effect domainsemantic.PolicyEff
 		if err != nil {
 			return err
 		}
-		indexID, err := resolveSemanticIndexID(cmd.Context(), spaceMgr, indexRef)
-		if err != nil {
-			return err
+		var indexID domainsemantic.SemanticIndexID
+		if strings.TrimSpace(indexRef) != "" {
+			index, err := resolveSemanticIndexForDomain(cmd.Context(), spaceMgr, indexRef, domainID)
+			if err != nil {
+				return err
+			}
+			indexID = index.ID
 		}
 		scope, err := semanticScope(spaceID, domainID, indexID, nodeText, includeDescendants)
 		if err != nil {

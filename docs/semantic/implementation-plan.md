@@ -435,7 +435,25 @@ Knot PKM tests:
 
 ## Phase 5: Semantic Index Backfill and Current-MVP Bridge
 
+Status: implemented in Mycel for initial semantic index backfill through the OpenAI-compatible connector and built-in `mycel-file` vector backend. MVP embedding profiles continue to run side-by-side and remain unchanged.
+
 Goal: make semantic indexes usable while preserving existing embedding profiles.
+
+Initial Mycel implementation added:
+
+- `internal/semantic/backfill` runner for enabled semantic indexes
+- source root selection by explicit node IDs and semantic index `source_policy.template_keys`
+- non-nesting effective root filtering for containment trees
+- `self` and `subtree` source extraction using the current MVP source assembler
+- source hashing and skip when the current hash is already stored
+- policy preflight with default-deny behavior and basic allow/deny/restrict privacy checks
+- background credential grant resolution requiring `allow_background_use = true`
+- connector execution and accounting through the Phase 4 connector service
+- advanced embedding record writes/search skips through the `mycel-file` backend
+- CLI command: `mycel semantic index backfill`
+- tests covering backfill generation, subtree extraction, skip-current behavior, missing policy/grant failures, explicit roots, CLI provisioning/backfill, accounting emission, and vector record creation
+
+Root-query parsing, full node/subtree policy inheritance, and query planning remain Phase 6/7 work.
 
 ### Mycel deliverables
 

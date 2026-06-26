@@ -27,7 +27,7 @@ const (
 	segmentMagic   = "KEMBSEG2"
 	recordMagic    = uint32(0x4b524543)
 	segmentVersion = uint16(2)
-	recordVersion  = uint16(2)
+	recordVersion  = uint16(3)
 	flagTombstone  = uint16(1)
 )
 
@@ -104,6 +104,13 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	}
 	_ = b.touchManifest(rec.SpaceID, rec.SemanticIndexID)
 	return rec, nil
+}
+
+func (b MycelFileBackend) ListRecords(ctx context.Context, spaceID uuid.UUID, semanticIndexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return b.readAll(spaceID, semanticIndexID)
 }
 
 func (b MycelFileBackend) Search(ctx context.Context, in SearchInput) ([]SearchResult, error) {
@@ -273,6 +280,7 @@ func appendRecord(path string, rec domainsemantic.AdvancedEmbeddingRecord) error
 		func() error { _, err := f.Write(rec.NodeID[:]); return err },
 		func() error { _, err := f.Write(rec.ModelEndpointID[:]); return err },
 		func() error { _, err := f.Write(rec.ModelID[:]); return err },
+		func() error { _, err := f.Write(rec.ModelEndpointCapabilityID[:]); return err },
 		func() error { _, err := f.Write(rec.VectorStoreID[:]); return err },
 		func() error { _, err := f.Write(rec.CredentialID[:]); return err },
 		func() error { _, err := f.Write(rec.CredentialGrantID[:]); return err },
@@ -304,14 +312,25 @@ func readRecord(r io.Reader) (domainsemantic.AdvancedEmbeddingRecord, error) {
 	if err := binary.Read(r, binary.LittleEndian, &version); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
-	if version != recordVersion {
+	if version != 2 && version != recordVersion {
 		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("unsupported semantic vector record version %d", version)
 	}
 	if err := binary.Read(r, binary.LittleEndian, &flags); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
 	var rec domainsemantic.AdvancedEmbeddingRecord
-	for _, dst := range [][]byte{rec.ID[:], rec.SpaceID[:], rec.DomainID[:], rec.SemanticIndexID[:], rec.NodeID[:], rec.ModelEndpointID[:], rec.ModelID[:], rec.VectorStoreID[:], rec.CredentialID[:], rec.CredentialGrantID[:], rec.PolicyDecisionID[:]} {
+	common := [][]byte{rec.ID[:], rec.SpaceID[:], rec.DomainID[:], rec.SemanticIndexID[:], rec.NodeID[:], rec.ModelEndpointID[:], rec.ModelID[:]}
+	for _, dst := range common {
+		if _, err := io.ReadFull(r, dst); err != nil {
+			return domainsemantic.AdvancedEmbeddingRecord{}, err
+		}
+	}
+	if version >= 3 {
+		if _, err := io.ReadFull(r, rec.ModelEndpointCapabilityID[:]); err != nil {
+			return domainsemantic.AdvancedEmbeddingRecord{}, err
+		}
+	}
+	for _, dst := range [][]byte{rec.VectorStoreID[:], rec.CredentialID[:], rec.CredentialGrantID[:], rec.PolicyDecisionID[:]} {
 		if _, err := io.ReadFull(r, dst); err != nil {
 			return domainsemantic.AdvancedEmbeddingRecord{}, err
 		}
@@ -371,6 +390,19 @@ func ensureManifest(dir string, indexID domainsemantic.SemanticIndexID, vectorSt
 	}
 	path := filepath.Join(dir, manifestFile)
 	if _, err := os.Stat(path); err == nil {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var m indexManifest
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return err
+		}
+		if m.VectorStoreID == uuid.Nil && vectorStoreID != uuid.Nil {
+			m.VectorStoreID = vectorStoreID
+			m.UpdatedAt = time.Now().UTC()
+			return persistJSON(path, m)
+		}
 		return nil
 	} else if !os.IsNotExist(err) {
 		return err
