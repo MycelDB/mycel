@@ -381,6 +381,20 @@ For `subtree`, traversal starts at the effective root and follows containment de
 
 Inference policies override source extraction. Source policy describes desired extraction; policy decides what is allowed.
 
+### Source Policy Changes
+
+Full semantic index versioning is deferred. For the MVP, changing a semantic index source policy mutates the same `SemanticIndex` and requires cleanup plus backfill for that index.
+
+The invariant is:
+
+```text
+records generated under the previous source policy must not remain searchable after the source-policy change is processed
+```
+
+A source-policy change should produce a semantic index change event. The per-index analyzer detects the change using `source_policy_hash` or equivalent index-definition hashing, enqueues cleanup/delete work for old records, and then enqueues backfill work for the new source policy.
+
+Future production-friendly migrations may instead create a new semantic index, backfill it, switch query defaults or aliases, and retire the old index.
+
 ## Embedding Record
 
 A derived vector record produced for a node/source under a semantic index.

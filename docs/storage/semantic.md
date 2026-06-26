@@ -669,7 +669,7 @@ Fields:
 
 - `dirty_count`: pending work count for the index.
 - `record_count`: last known logical or physical record count, depending on implementation.
-- `source_policy_hash`: detects index definition changes requiring re-evaluation/backfill.
+- `source_policy_hash`: detects index definition changes requiring cleanup and backfill. For the MVP, changing source policy mutates the same semantic index; old records generated under the previous source policy must not remain searchable after the change is processed.
 - `graph_dirty_checkpoint_revision`: latest graph dirty revision analyzed by this semantic index.
 - `semantic_config_checkpoint`: latest global semantic config event offset analyzed by this semantic index.
 
@@ -800,8 +800,10 @@ Rules:
 - Work should coalesce by `semantic_index_id + target_node_id`; this is the semantic dirty work idempotency key.
 - Dirty work can represent refresh/regeneration, backfill, delete/tombstone, or cleanup.
 - Policy changes and credential revocations enqueue cleanup work.
+- Source-policy changes enqueue cleanup plus backfill work for the same semantic index in the MVP.
 - If content becomes `no_inference`, affected embeddings must be deleted and must not remain searchable.
 - If a credential is revoked, embeddings generated with that credential must be deleted or tombstoned and must not remain searchable.
+- If source policy changes, records generated under the previous source policy must be deleted or tombstoned and must not remain searchable.
 - For `self` extraction, `target_node_id` is the changed node only when it is an effective source root.
 - For `subtree` extraction, `target_node_id` is the containing effective source root selected by the index.
 - Effective source roots do not nest, so at most one dirty item is needed for a changed node per semantic index.

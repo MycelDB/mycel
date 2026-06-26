@@ -72,19 +72,24 @@ This document tracks design points that remain unclear or need explicit decision
 - External deletion verification is backend-specific; Mycel records requested deletion and verification status when the backend supports verification.
 - Embeddings as derived personal data for export/delete is deferred until the export/delete architecture is designed.
 
-## 1. Semantic Index Versioning
-
-Index definitions may change over time.
-
-Resolved related decision:
+## Resolved Semantic Index Change Decisions
 
 - A material model or endpoint/model binding change should be handled by creating a new semantic index, backfilling it, switching queries/application defaults explicitly, and retiring the old index later. Mycel should not automatically mutate/version semantic indexes because a model changed.
+- Full semantic index versioning is deferred.
+- For the MVP, changing a semantic index source policy mutates the same semantic index.
+- Source policy changes require cleanup plus backfill for that semantic index.
+- Records generated under the previous source policy must not remain searchable after the source-policy change is processed.
+- The semantic analyzer should detect source-policy changes using `source_policy_hash` or equivalent index-definition hashing.
 
-Still to decide:
+## 1. Deferred Semantic Index Versioning Questions
 
-- Does changing source policy mutate the same index or create `v2`?
+Index definitions may change over time. Future production-friendly migrations may create a new index, backfill it, switch query defaults or aliases, and retire the old index.
+
+Still to decide later:
+
 - Should stable aliases point to versioned indexes?
 - How are old index versions retired or compacted?
+- What zero-downtime migration flow should production applications use for source-policy changes?
 
 ## 2. Minimal Implementation Slice
 

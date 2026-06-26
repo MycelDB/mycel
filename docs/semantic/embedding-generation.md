@@ -211,7 +211,9 @@ That is the preferred dirty-work idempotency key. Multiple raw graph events can 
 
 This prevents repeated edits to one subtree from generating excessive model endpoint calls or redundant cleanup work.
 
-Policy changes and credential revocations enqueue semantic cleanup work. If content becomes `no_inference`, existing embeddings for that content must be deleted. If a credential is revoked, embeddings generated with that credential must not remain searchable.
+Policy changes, credential revocations, and source-policy changes enqueue semantic maintenance work. If content becomes `no_inference`, existing embeddings for that content must be deleted. If a credential is revoked, embeddings generated with that credential must not remain searchable.
+
+For the MVP, source-policy changes mutate the same semantic index and require cleanup plus backfill. Records generated under the previous source policy must not remain searchable after the change is processed.
 
 ## Maintainer Processing
 
@@ -243,6 +245,8 @@ Background maintenance does not require a live user session, but it must not imp
 ## Backfill
 
 Backfill is bulk dirty work creation plus maintenance.
+
+A source-policy change triggers index cleanup followed by backfill for the same semantic index in the MVP. This avoids mixing records whose source text was assembled under different source policies without requiring full index versioning yet.
 
 Backfill should evaluate the semantic index `root_query`, compute the non-nesting effective source root set, and enqueue those roots.
 
