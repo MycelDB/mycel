@@ -59,19 +59,20 @@ This document tracks design points that remain unclear or need explicit decision
 - If an index exists but the current querying user cannot resolve a compatible query credential grant, that index/group is not searched for that request.
 - Missing-query-credential diagnostics should be reported through warnings/logging once the logging system exists.
 
-## 1. Deletion, Privacy, and Revocation
+## Resolved Deletion, Privacy, and Revocation Decisions
 
-Policy and credential changes can invalidate existing derived vectors.
+- If content becomes `no_inference`, existing embeddings for that content must be deleted.
+- For append-only local storage, deletion is represented immediately by a tombstone/delete record; physical removal happens later during compaction.
+- Deleted/tombstoned embeddings must not remain searchable.
+- If a credential is revoked, embeddings generated with that credential must not remain searchable.
+- Credential revocation enqueues semantic cleanup work for affected records/indexes.
+- Policy changes enqueue semantic cleanup work.
+- Cleanup work may delete/tombstone records, skip newly disallowed content, or refresh/regenerate newly allowed content.
+- External vector records are deleted through a vector-store backend plugin interface.
+- External deletion verification is backend-specific; Mycel records requested deletion and verification status when the backend supports verification.
+- Embeddings as derived personal data for export/delete is deferred until the export/delete architecture is designed.
 
-Still to decide:
-
-- If content becomes `no_inference`, are existing embeddings tombstoned, deleted, or only hidden from search?
-- If a credential is revoked, do embeddings generated with it remain searchable?
-- How are external vector records deleted and verified?
-- Are embeddings treated as derived personal data for export/delete?
-- Do policy changes enqueue cleanup jobs?
-
-## 2. Semantic Index Versioning
+## 1. Semantic Index Versioning
 
 Index definitions may change over time.
 
@@ -85,7 +86,7 @@ Still to decide:
 - Should stable aliases point to versioned indexes?
 - How are old index versions retired or compacted?
 
-## 3. Minimal Implementation Slice
+## 2. Minimal Implementation Slice
 
 A reasonable first implementation might include:
 

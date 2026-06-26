@@ -228,6 +228,25 @@ enabled
 created_at / updated_at
 ```
 
+Vector-store backends should implement a plugin-style interface for storage, search, deletion, and deletion verification. Exact Go API shape can evolve, but the semantic contract should include:
+
+```go
+type VectorStoreBackend interface {
+    Upsert(ctx context.Context, records []VectorRecord) error
+    Search(ctx context.Context, query VectorQuery) (VectorSearchResult, error)
+    Delete(ctx context.Context, refs []VectorRecordRef) (VectorDeleteResult, error)
+    VerifyDeleted(ctx context.Context, refs []VectorRecordRef) (VectorDeleteVerificationResult, error)
+}
+```
+
+Rules:
+
+- Mycel-owned `mycel-file` deletion is represented by local tombstone/delete records and later physical compaction.
+- External vector store deletion is performed by the configured backend connector.
+- Deletion verification is backend-specific; some backends may not support strong verification.
+- Mycel should record requested deletion and verification status so operators can inspect cleanup progress.
+- Concrete external connectors can be implemented later after this interface contract is stable.
+
 ## Inference Credential
 
 Authorization material for one provisioned model endpoint.

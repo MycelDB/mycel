@@ -192,7 +192,8 @@ space_id
 domain_id
 target_node_id
 source_node_id
-reason                  # node_created, node_updated, node_deleted, node_moved, policy_changed, index_changed, manual_backfill
+reason                  # node_created, node_updated, node_deleted, node_moved, policy_changed, credential_revoked, index_changed, manual_backfill
+action                  # refresh, delete, cleanup, backfill
 status                  # pending, running, complete, failed, cancelled
 earliest_run_at
 attempts
@@ -200,7 +201,7 @@ last_error
 created_at / updated_at
 ```
 
-Semantic dirty work is planned embedding work produced by analysis. It should coalesce by:
+Semantic dirty work is planned semantic-index maintenance work produced by analysis. It may refresh/regenerate embeddings, delete/tombstone embeddings, clean up invalid records, or backfill an index. It should coalesce by:
 
 ```text
 semantic_index_id + target_node_id
@@ -208,11 +209,13 @@ semantic_index_id + target_node_id
 
 That is the preferred dirty-work idempotency key. Multiple raw graph events can update the same coalesced dirty item by adding reasons/source transaction ranges and by moving `earliest_run_at` according to debounce policy.
 
-This prevents repeated edits to one subtree from generating excessive model endpoint calls.
+This prevents repeated edits to one subtree from generating excessive model endpoint calls or redundant cleanup work.
+
+Policy changes and credential revocations enqueue semantic cleanup work. If content becomes `no_inference`, existing embeddings for that content must be deleted. If a credential is revoked, embeddings generated with that credential must not remain searchable.
 
 ## Maintainer Processing
 
-A semantic index maintainer processes dirty work by:
+A semantic index maintainer processes refresh/backfill work by:
 
 1. loading the current target node/subtree
 2. re-evaluating policy
@@ -225,7 +228,15 @@ A semantic index maintainer processes dirty work by:
 9. appending or externalizing the vector record
 10. marking dirty work complete or failed
 
-Policy must be evaluated again during maintenance because policies or graph structure may have changed since the dirty item was created.
+A semantic index maintainer processes delete/cleanup work by:
+
+1. identifying affected embedding records by semantic index, node/source identity, policy decision, credential, or grant
+2. appending local tombstone/delete records or requesting external vector deletion through the vector-store backend
+3. marking affected records non-searchable immediately after successful logical deletion
+4. recording external deletion/verification status when applicable
+5. marking cleanup work complete or failed
+
+Policy must be evaluated again during maintenance because policies or graph structure may have changed since the dirty item was created. Cleanup is not optional for newly disallowed content: `no_inference` and credential revocation require affected embeddings to stop being searchable.
 
 Background maintenance does not require a live user session, but it must not implicitly impersonate the user or use default credentials. It must use a stored space-owned credential grant that permits the requested operation and explicitly allows background semantic maintenance.
 

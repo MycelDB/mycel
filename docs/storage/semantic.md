@@ -782,7 +782,8 @@ Stores coalesced semantic-index maintenance work produced by semantic analysis.
       "source_txn_ids": ["uuid"],
       "first_graph_revision": 120,
       "last_graph_revision": 123,
-      "reason": "node_created|node_updated|node_deleted|node_moved|policy_changed|index_changed|credential_grant_changed|model_capability_changed|manual_backfill",
+      "reason": "node_created|node_updated|node_deleted|node_moved|policy_changed|credential_revoked|index_changed|credential_grant_changed|model_capability_changed|manual_backfill",
+      "action": "refresh|delete|cleanup|backfill",
       "status": "pending|running|complete|failed|cancelled",
       "earliest_run_at": "RFC3339 timestamp",
       "attempts": 0,
@@ -797,6 +798,10 @@ Stores coalesced semantic-index maintenance work produced by semantic analysis.
 Rules:
 
 - Work should coalesce by `semantic_index_id + target_node_id`; this is the semantic dirty work idempotency key.
+- Dirty work can represent refresh/regeneration, backfill, delete/tombstone, or cleanup.
+- Policy changes and credential revocations enqueue cleanup work.
+- If content becomes `no_inference`, affected embeddings must be deleted and must not remain searchable.
+- If a credential is revoked, embeddings generated with that credential must be deleted or tombstoned and must not remain searchable.
 - For `self` extraction, `target_node_id` is the changed node only when it is an effective source root.
 - For `subtree` extraction, `target_node_id` is the containing effective source root selected by the index.
 - Effective source roots do not nest, so at most one dirty item is needed for a changed node per semantic index.
@@ -874,6 +879,9 @@ Stores references when vectors live in an external vector store.
       "source_hash": "sha256:...",
       "vector_store_id": "uuid-or-vector-store-key",
       "external_vector_id": "qdrant-point-id",
+      "delete_status": "active|delete_requested|deleted|delete_failed|verification_unknown|verified_deleted",
+      "delete_requested_at": "RFC3339 timestamp",
+      "delete_verified_at": "RFC3339 timestamp",
       "model_endpoint_id": "uuid-or-endpoint-key",
       "model_id": "uuid-or-model-key",
       "vector_space_key": "openai/text-embedding-3-small",
@@ -887,6 +895,8 @@ Rules:
 
 - Used only when Mycel does not own the local vector payload.
 - External deletion/compaction requires coordination with the external backend.
+- External records that become disallowed by policy or credential revocation must be deleted through the vector-store backend connector.
+- Deletion verification is backend-specific; Mycel records requested deletion and verification status when available.
 
 ## Proposed Advanced `.kvec` Block Structure
 
@@ -896,7 +906,7 @@ For embedded vector storage, each semantic index should own append-only vector s
 graphs/<space_id>/semantic/indexes/<semantic_index_id>/records/embeddings-000001.kvec
 ```
 
-The segment remains append-only. Regeneration appends a new record; stale records are ignored logically until compaction.
+The segment remains append-only. Regeneration appends a new record; stale records are ignored logically until compaction. Deletion appends a tombstone/delete record; the affected logical embedding must stop being searchable immediately after the tombstone is applied, while physical removal happens later during compaction.
 
 ### Segment Header
 
@@ -950,6 +960,8 @@ Recommended metadata JSON payload:
   "source_hash": "sha256:...",
   "vector_space_key": "openai/text-embedding-3-small",
   "external_vector_id": "optional-external-id",
+  "delete_target_record_id": "optional-record-id-for-tombstone",
+  "delete_reason": "policy_no_inference|credential_revoked|node_deleted|index_retired|manual_delete",
   "model_endpoint_key": "openai-public",
   "model_key": "openai/text-embedding-3-small",
   "vector_store_key": "mycel-file"
@@ -962,7 +974,7 @@ Vector payload:
 dimensions * float32 little-endian
 ```
 
-For external vector stores, `vector_len` may be `0`, and `external_vector_id`/`external_refs.json` identifies the external record.
+For external vector stores, `vector_len` may be `0`, and `external_vector_id`/`external_refs.json` identifies the external record. For tombstone/delete records, `vector_len` should be `0`, flags should mark the record as a tombstone, and metadata should identify the deleted logical record/source and deletion reason.
 
 ### Logical Freshness Key
 
@@ -1021,11 +1033,12 @@ Recommended in-memory indexes:
 Initial implementation can defer compaction. Later compaction should address:
 
 - stale vector records superseded by newer source hashes
+- local vector records covered by tombstone/delete records
 - completed dirty queue entries
 - expired policy decisions
 - deleted/revoked credentials and grants
 - deleted nodes/subtrees
 - semantic indexes that have been retired
-- external vector store tombstones
+- external vector store delete records and verification status
 
 Compaction should preserve audit requirements where configured.

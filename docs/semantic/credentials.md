@@ -169,9 +169,16 @@ Rules:
 - `allow_background_use` must be true for offline semantic maintenance
 - the grant scope should be as narrow as practical, such as a domain or semantic index
 - revoking the grant or credential stops future background endpoint calls
+- revoking a credential enqueues semantic cleanup work for embeddings generated with that credential
 - background workers must record `credential_id`, `credential_grant_id`, and effective operation/scope provenance
 
 This avoids implicit user impersonation while still allowing semantic maintenance to run after the user logs out.
+
+## Credential Revocation
+
+If a credential is revoked, embeddings generated with that credential must not remain searchable. Revocation should enqueue semantic cleanup work for affected records and indexes.
+
+For Mycel-owned local vector storage, cleanup appends tombstone/delete records and later physical compaction removes obsolete vector payloads. For external vector stores, cleanup requests deletion through the configured vector-store backend connector and records deletion/verification status when supported.
 
 ## Examples
 

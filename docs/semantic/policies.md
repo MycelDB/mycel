@@ -138,6 +138,10 @@ When a node moves into or out of a restricted subtree, the graph write should no
 
 The semantic analyzer/maintainer later evaluates policy and source roots for the old and new locations. It may dirty the old containing source root, dirty the new containing source root, refresh moved content, skip newly restricted content, tombstone records, or delete derived vectors according to the effective policy and cleanup rules.
 
+## Policy Changes and Cleanup
+
+Policy changes enqueue semantic cleanup work. If content becomes `no_inference`, existing embeddings for that content must be deleted and must not remain searchable. In local append-only storage, deletion is represented by tombstone/delete records immediately and physical removal happens later during compaction. For external vector stores, deletion is requested through the configured vector-store backend connector.
+
 ## Example
 
 Given:
