@@ -14,6 +14,7 @@ Semantic support is broader than vector generation. It covers how graph content 
 - [embedding-generation.md](embedding-generation.md): source extraction, dirty work, backfill, and refresh flow
 - [query-planning.md](query-planning.md): multi-index and multi-vector-space semantic query planning
 - [accounting.md](accounting.md): append-only inference usage accounting, token reporting, indexes, rollups, and CLI reporting
+- [implementation-plan.md](implementation-plan.md): phased Mycel + Knot PKM implementation plan with test and push gates
 - [storage.md](storage.md): semantic storage pointers; detailed filesystem structures live in `docs/storage/semantic.md`
 - [open-questions.md](open-questions.md): unresolved design decisions to settle before implementation
 
