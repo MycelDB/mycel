@@ -1,6 +1,6 @@
 # Semantic and Embedding Storage
 
-Status: design draft with Phase 1 resource/store foundation, Phase 3 accounting ledger, Phase 4 connector/`mycel-file` vector backend foundations, and Phase 5 initial semantic index backfill implemented
+Status: design draft with Phase 1 resource/store foundation, Phase 3 accounting ledger, Phase 4 connector/`mycel-file` vector backend foundations, Phase 5 initial semantic index backfill, Phase 6 search planner, and Phase 7 initial dirty-event/analyzer/worker foundation implemented
 Related design: [`../semantic/README.md`](../semantic/README.md)
 
 This document describes current embedding storage and the proposed advanced semantic/inference storage layout.
@@ -203,7 +203,7 @@ Although the domain model exposes vectors as `[]float64`, the current file forma
 
 The advanced model should separate global inference definitions/credentials from space-owned grants, policies, semantic indexes, dirty work, and vector records.
 
-Phase 1 implemented the additive JSON store foundation for the global inference/secret/credential files and the space-owned `indexes.json`, `credential_grants.json`, and `inference_policies.json` files. Phase 4 implemented the initial local per-index `mycel-file` vector records and tombstones. Phase 5 added synchronous CLI backfill that writes advanced records into those per-index vector segments. Dirty queues, policy decision storage, and external vector references remain later-phase work.
+Phase 1 implemented the additive JSON store foundation for the global inference/secret/credential files and the space-owned `indexes.json`, `credential_grants.json`, and `inference_policies.json` files. Phase 4 implemented the initial local per-index `mycel-file` vector records and tombstones. Phase 5 added synchronous CLI backfill that writes advanced records into those per-index vector segments. Phase 7 added the initial graph dirty event log, dirty queue, index state, and policy decision stores plus explicit analyzer/worker primitives. External vector references and automatic background daemon behavior remain later-phase work.
 
 Proposed layout:
 

@@ -24,6 +24,8 @@ type (
 	PolicyDecisionID          = uuid.UUID
 	AdvancedEmbeddingRecordID = uuid.UUID
 	InferenceUsageEventID     = uuid.UUID
+	GraphDirtyEventID         = uuid.UUID
+	SemanticDirtyWorkItemID   = uuid.UUID
 )
 
 // ConnectorType is the static, code-backed adapter/protocol family used to call a model endpoint.
@@ -344,6 +346,100 @@ type AdvancedEmbeddingRecord struct {
 	DeleteTargetRecordID      AdvancedEmbeddingRecordID `json:"delete_target_record_id,omitempty"`
 	DeleteReason              string                    `json:"delete_reason,omitempty"`
 	CreatedAt                 time.Time                 `json:"created_at"`
+}
+
+type GraphDirtyEdgeChange struct {
+	EdgeID graph.EdgeID   `json:"edge_id"`
+	Kind   graph.EdgeKind `json:"kind,omitempty"`
+	Change string         `json:"change"`
+	FromID graph.NodeID   `json:"from_id,omitempty"`
+	ToID   graph.NodeID   `json:"to_id,omitempty"`
+}
+
+// GraphDirtyEvent records one raw graph transaction that may affect semantic indexes.
+type GraphDirtyEvent struct {
+	ID                GraphDirtyEventID               `json:"id"`
+	TxnID             uuid.UUID                       `json:"txn_id"`
+	GraphRevision     uint64                          `json:"graph_revision"`
+	SpaceID           domainspace.SpaceID             `json:"space_id"`
+	DomainIDs         []graph.DomainID                `json:"domain_ids,omitempty"`
+	CreatedNodeIDs    []graph.NodeID                  `json:"created_node_ids,omitempty"`
+	UpdatedNodeIDs    []graph.NodeID                  `json:"updated_node_ids,omitempty"`
+	DeletedNodeIDs    []graph.NodeID                  `json:"deleted_node_ids,omitempty"`
+	ChangedEdges      []GraphDirtyEdgeChange          `json:"changed_edges,omitempty"`
+	OldParentByNodeID map[graph.NodeID]graph.NodeID   `json:"old_parent_by_node_id,omitempty"`
+	NewParentByNodeID map[graph.NodeID]graph.NodeID   `json:"new_parent_by_node_id,omitempty"`
+	OldDomainByNodeID map[graph.NodeID]graph.DomainID `json:"old_domain_by_node_id,omitempty"`
+	NewDomainByNodeID map[graph.NodeID]graph.DomainID `json:"new_domain_by_node_id,omitempty"`
+	CommittedAt       time.Time                       `json:"committed_at"`
+}
+
+type SemanticDirtyWorkAction string
+
+const (
+	SemanticDirtyWorkActionRefresh  SemanticDirtyWorkAction = "refresh"
+	SemanticDirtyWorkActionDelete   SemanticDirtyWorkAction = "delete"
+	SemanticDirtyWorkActionCleanup  SemanticDirtyWorkAction = "cleanup"
+	SemanticDirtyWorkActionBackfill SemanticDirtyWorkAction = "backfill"
+)
+
+type SemanticDirtyWorkStatus string
+
+const (
+	SemanticDirtyWorkStatusPending   SemanticDirtyWorkStatus = "pending"
+	SemanticDirtyWorkStatusRunning   SemanticDirtyWorkStatus = "running"
+	SemanticDirtyWorkStatusComplete  SemanticDirtyWorkStatus = "complete"
+	SemanticDirtyWorkStatusFailed    SemanticDirtyWorkStatus = "failed"
+	SemanticDirtyWorkStatusCancelled SemanticDirtyWorkStatus = "cancelled"
+)
+
+// SemanticDirtyWorkItem is coalesced semantic maintenance work for one index/source root.
+type SemanticDirtyWorkItem struct {
+	ID                 SemanticDirtyWorkItemID `json:"id"`
+	SemanticIndexID    SemanticIndexID         `json:"semantic_index_id"`
+	SpaceID            domainspace.SpaceID     `json:"space_id"`
+	DomainID           graph.DomainID          `json:"domain_id,omitempty"`
+	TargetNodeID       graph.NodeID            `json:"target_node_id"`
+	SourceNodeID       graph.NodeID            `json:"source_node_id,omitempty"`
+	SourceTxnIDs       []uuid.UUID             `json:"source_txn_ids,omitempty"`
+	FirstGraphRevision uint64                  `json:"first_graph_revision,omitempty"`
+	LastGraphRevision  uint64                  `json:"last_graph_revision,omitempty"`
+	Reason             string                  `json:"reason"`
+	Action             SemanticDirtyWorkAction `json:"action"`
+	Status             SemanticDirtyWorkStatus `json:"status"`
+	EarliestRunAt      *time.Time              `json:"earliest_run_at,omitempty"`
+	Attempts           int                     `json:"attempts,omitempty"`
+	LastError          string                  `json:"last_error,omitempty"`
+	CreatedAt          time.Time               `json:"created_at"`
+	UpdatedAt          time.Time               `json:"updated_at"`
+}
+
+type SemanticIndexState struct {
+	SemanticIndexID                  SemanticIndexID `json:"semantic_index_id"`
+	State                            string          `json:"state"`
+	LastBackfillAt                   *time.Time      `json:"last_backfill_at,omitempty"`
+	LastRefreshAt                    *time.Time      `json:"last_refresh_at,omitempty"`
+	LastError                        string          `json:"last_error,omitempty"`
+	DirtyCount                       int             `json:"dirty_count,omitempty"`
+	RecordCount                      int             `json:"record_count,omitempty"`
+	SkippedPolicyCount               int             `json:"skipped_policy_count,omitempty"`
+	CredentialResolutionFailureCount int             `json:"credential_resolution_failure_count,omitempty"`
+	SourcePolicyHash                 string          `json:"source_policy_hash,omitempty"`
+	GraphDirtyCheckpointRevision     uint64          `json:"graph_dirty_checkpoint_revision,omitempty"`
+	SemanticConfigCheckpoint         string          `json:"semantic_config_checkpoint,omitempty"`
+	UpdatedAt                        time.Time       `json:"updated_at"`
+}
+
+type PolicyDecision struct {
+	ID               PolicyDecisionID    `json:"id"`
+	Scope            ProcessingScope     `json:"scope"`
+	Operation        Operation           `json:"operation"`
+	ModelEndpointID  ModelEndpointID     `json:"model_endpoint_id,omitempty"`
+	ModelID          InferenceModelID    `json:"model_id,omitempty"`
+	Allowed          bool                `json:"allowed"`
+	MatchedPolicyIDs []InferencePolicyID `json:"matched_policy_ids,omitempty"`
+	Reason           string              `json:"reason,omitempty"`
+	CreatedAt        time.Time           `json:"created_at"`
 }
 
 // InferenceUsageEvent is the authoritative accounting event for a model endpoint call.

@@ -41,7 +41,7 @@ func newEmbeddingsCatalogCommand(a *app.App) *cobra.Command {
 }
 
 func newEmbeddingKeysCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "keys", Short: "Manage embedding provider API keys"}
+	cmd := &cobra.Command{Use: "keys", Short: "Manage legacy embedding provider API keys", Deprecated: "use inference credential commands for semantic indexes"}
 	cmd.AddCommand(newEmbeddingKeysListCommand(a), newEmbeddingKeysAddCommand(a), newEmbeddingKeysDeleteCommand(a))
 	return cmd
 }
@@ -110,7 +110,7 @@ func newEmbeddingKeysDeleteCommand(a *app.App) *cobra.Command {
 }
 
 func newEmbeddingProfilesCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "profiles", Short: "Manage embedding profiles"}
+	cmd := &cobra.Command{Use: "profiles", Short: "Manage legacy embedding profiles", Deprecated: "use semantic indexes; migrate with `semantic migrate legacy-embeddings`"}
 	cmd.AddCommand(newEmbeddingProfilesListCommand(a), newEmbeddingProfilesAddCommand(a), newEmbeddingProfilesDeleteCommand(a))
 	return cmd
 }
@@ -188,7 +188,7 @@ func newEmbeddingGenerateCommand(a *app.App) *cobra.Command {
 	var nodeIDTexts, includeProps, templateKeys []string
 	var force, continueOnError bool
 	var maxDepth, minimumTextLength, limit int
-	cmd := &cobra.Command{Use: "generate", Short: "Generate embeddings for selected nodes", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "generate", Short: "Generate legacy embedding-profile records for selected nodes", Deprecated: "use semantic index backfill or semantic maintenance process", RunE: func(cmd *cobra.Command, args []string) error {
 		spaceID, err := a.ResolveSpaceID(spaceIDText)
 		if err != nil {
 			return err
@@ -267,7 +267,7 @@ func newEmbeddingSearchCommand(a *app.App) *cobra.Command {
 	var spaceIDText, domainKey, profileIDText, providerID, modelID, keyIDText, text string
 	var limit int
 	var minScore float64
-	cmd := &cobra.Command{Use: "search", Short: "Semantic search over generated embeddings", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "search", Short: "Search legacy embedding-profile records", Deprecated: "use semantic search", RunE: func(cmd *cobra.Command, args []string) error {
 		spaceID, err := a.ResolveSpaceID(spaceIDText)
 		if err != nil {
 			return err

@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
 	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	mycelengine "github.com/myceldb/mycel/engine"
 	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/myceldb/mycel/internal/semantic/backfill"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
+	"github.com/myceldb/mycel/internal/semantic/maintenance"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	storeaccounting "github.com/myceldb/mycel/store/accounting"
@@ -22,7 +24,7 @@ func NewSemanticCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "semantic", Short: "Manage semantic indexes and search"}
 	index := &cobra.Command{Use: "index", Short: "Manage semantic indexes"}
 	index.AddCommand(newSemanticIndexAddCommand(a), newSemanticIndexBackfillCommand(a))
-	cmd.AddCommand(index, newSemanticSearchCommand(a))
+	cmd.AddCommand(index, newSemanticSearchCommand(a), newSemanticMaintenanceCommand(a), newSemanticMigrateCommand(a))
 	return cmd
 }
 
@@ -89,6 +91,93 @@ func newSemanticSearchCommand(a *app.App) *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 10, "maximum merged results")
 	cmd.Flags().Float64Var(&minScore, "min-score", 0, "minimum cosine score")
 	_ = cmd.MarkFlagRequired("text")
+	return cmd
+}
+
+func newSemanticMaintenanceCommand(a *app.App) *cobra.Command {
+	cmd := &cobra.Command{Use: "maintenance", Short: "Run semantic maintenance primitives"}
+	cmd.AddCommand(newSemanticMaintenanceAnalyzeCommand(a), newSemanticMaintenanceProcessCommand(a))
+	return cmd
+}
+
+func newSemanticMaintenanceAnalyzeCommand(a *app.App) *cobra.Command {
+	var spaceIDText, indexRef string
+	var limit int
+	cmd := &cobra.Command{Use: "analyze", Short: "Analyze graph dirty events into semantic dirty work", RunE: func(cmd *cobra.Command, args []string) error {
+		spaceID, err := a.ResolveSpaceID(spaceIDText)
+		if err != nil {
+			return err
+		}
+		spaceMgr, err := authenticatedSemanticSpaceManager(cmd.Context(), a, spaceID)
+		if err != nil {
+			return err
+		}
+		var indexID domainsemantic.SemanticIndexID
+		if strings.TrimSpace(indexRef) != "" {
+			indexes, err := spaceMgr.ListSemanticIndexes(cmd.Context())
+			if err != nil {
+				return err
+			}
+			for _, index := range indexes {
+				if index.ID.String() == indexRef || normalizeCLIKey(index.Key) == normalizeCLIKey(indexRef) {
+					indexID = index.ID
+					break
+				}
+			}
+			if indexID == uuid.Nil {
+				return fmt.Errorf("semantic index %q not found", indexRef)
+			}
+		}
+		result, err := (maintenance.Analyzer{SpaceManager: spaceMgr}).AnalyzeOnce(cmd.Context(), maintenance.AnalyzeInput{SemanticIndexID: indexID, Limit: limit})
+		if err != nil {
+			return err
+		}
+		return a.Print(result, fmt.Sprintf("processed_events=%d enqueued_items=%d\n", result.ProcessedEvents, result.EnqueuedItems))
+	}}
+	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&indexRef, "index", "", "optional semantic index key or ID")
+	cmd.Flags().IntVar(&limit, "limit", 0, "maximum events to process")
+	return cmd
+}
+
+func newSemanticMaintenanceProcessCommand(a *app.App) *cobra.Command {
+	var spaceIDText string
+	var limit int
+	cmd := &cobra.Command{Use: "process", Short: "Process pending semantic dirty work", RunE: func(cmd *cobra.Command, args []string) error {
+		spaceID, err := a.ResolveSpaceID(spaceIDText)
+		if err != nil {
+			return err
+		}
+		tok, err := a.AccessToken(cmd.Context())
+		if err != nil {
+			return err
+		}
+		spaceMgr, err := authenticatedSemanticSpaceManager(cmd.Context(), a, spaceID)
+		if err != nil {
+			return err
+		}
+		globalMgr, err := authenticatedSemanticGlobalManager(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		sess, err := a.Engine.OpenSession(cmd.Context(), mycelengine.OpenSessionInput{AccessToken: tok, SpaceID: spaceID})
+		if err != nil {
+			return err
+		}
+		defer sess.Close()
+		acct := storeaccounting.NewManager()
+		if err := acct.Init(cmd.Context(), filepath.Join(a.DataDir, "meta", "accounting")); err != nil {
+			return err
+		}
+		runner := backfill.Runner{Session: sess, GlobalManager: globalMgr, SpaceManager: spaceMgr, Connector: connectors.Service{GlobalManager: globalMgr, Accounting: acct, SecretKeyB64: a.UserStoreEncryptionKeyB64}, VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(a.DataDir, "graphs")}}
+		result, err := (maintenance.Worker{SpaceManager: spaceMgr, Backfill: runner}).ProcessOnce(cmd.Context(), limit)
+		if err != nil {
+			return err
+		}
+		return a.Print(result, fmt.Sprintf("processed=%d completed=%d failed=%d\n", result.Processed, result.Completed, result.Failed))
+	}}
+	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().IntVar(&limit, "limit", 1, "maximum work items to process")
 	return cmd
 }
 

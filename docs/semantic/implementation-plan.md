@@ -584,7 +584,24 @@ Knot PKM tests:
 
 ## Phase 7: Dirty Events, Analyzer, Workers, Cleanup, and Revocation
 
+Status: implemented in Mycel for the initial gated graph-dirty event log, semantic operational stores, explicit analyzer, explicit worker, and local tombstone/delete hook foundation. Automatic background workers and Knot PKM semantic-mode replacement of the server debounce path remain follow-up integration work.
+
 Goal: move refresh work out of PKM server debounce logic and into Mycel semantic maintenance.
+
+Initial Mycel implementation added:
+
+- domain types for graph dirty events, dirty work, index state, and policy decisions
+- `graphs/<space_id>/semantic/events/graph-dirty-000001.ksem` JSONL event log
+- one graph dirty event per graph transaction when `semantic.advanced_enabled=true`
+- commit hook integration before graph transaction commit marker sync
+- raw event idempotency by `txn_id`
+- store APIs for graph dirty events, dirty queue, index state, and policy decisions
+- explicit `internal/semantic/maintenance.Analyzer` that consumes graph dirty events, updates per-index checkpoints, and coalesces dirty work by `semantic_index_id + target_node_id`
+- explicit `internal/semantic/maintenance.Worker` that processes pending refresh/backfill items through the Phase 5 backfill runner and appends local delete/cleanup tombstones through the vector backend
+- CLI commands: `mycel semantic maintenance analyze` and `mycel semantic maintenance process`
+- tests for default-off dirty events, advanced-mode graph dirty events, idempotent event append, analyzer checkpoints, and dirty queue coalescing
+
+The current MVP embedding refresh/search path remains unchanged by default.
 
 ### Mycel deliverables
 
@@ -645,6 +662,8 @@ Knot PKM tests:
 
 ## Phase 8: Knot PKM UX, Settings, and Accounting Visibility
 
+Status: initial server/search/chat integration implemented. Mycel now exposes a public session-level `AdvancedSemanticSearch` API for PKM consumers. Knot PKM server enables Mycel advanced semantics when `semantic.mode=advanced`, uses semantic indexes for `/api/search/semantic` and chat `search_notes`, returns planner warnings/groups in search responses, and disables the legacy PKM-owned MVP embedding refresh scheduler in advanced mode. Full settings/accounting UI surfaces remain follow-up work.
+
 Goal: expose semantic provisioning, search/chat behavior, and accounting in the application where useful.
 
 ### Mycel deliverables
@@ -692,6 +711,8 @@ Mycel:
 - Push Knot PKM server/importer/client UI commits to GitLab.
 
 ## Phase 9: Migration, Deprecation, and Final Cutover
+
+Status: initial migration/cutover implementation started. Mycel now includes `mycel semantic migrate legacy-embeddings` to map current-user MVP OpenAI-compatible embedding keys/profiles into semantic resources, preserving source-policy settings and reusing matching grants/policies on repeated runs. Legacy embedding key/profile/generate/search CLI paths are marked deprecated while remaining functional compatibility wrappers. Knot PKM now defaults to `semantic.mode=advanced`, routes search/chat through semantic indexes, and disables PKM-owned MVP embedding refresh in advanced mode. Local fake-PKM utilities provision/backfill semantic resources by default. The k3s overlay is intentionally pinned to `semantic.mode=mvp` until its per-user provisioning job is upgraded for semantic resources. Remaining work includes broader provider migration coverage, optional full UI/accounting surfaces, CI/release cleanup of local `replace` directives, and final production cutover validation.
 
 Goal: complete the refactor, remove legacy assumptions, and leave both systems on semantic indexes.
 

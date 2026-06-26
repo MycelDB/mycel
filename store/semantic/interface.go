@@ -36,6 +36,14 @@ type SpaceManager interface {
 	ListCredentialGrants(ctx context.Context) ([]domainsemantic.CredentialGrant, error)
 	UpsertInferencePolicy(ctx context.Context, policy domainsemantic.InferencePolicy) (domainsemantic.InferencePolicy, error)
 	ListInferencePolicies(ctx context.Context) ([]domainsemantic.InferencePolicy, error)
+	AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error)
+	ListGraphDirtyEvents(ctx context.Context) ([]domainsemantic.GraphDirtyEvent, error)
+	UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error)
+	ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error)
+	UpsertIndexState(ctx context.Context, state domainsemantic.SemanticIndexState) (domainsemantic.SemanticIndexState, error)
+	ListIndexStates(ctx context.Context) ([]domainsemantic.SemanticIndexState, error)
+	UpsertPolicyDecision(ctx context.Context, decision domainsemantic.PolicyDecision) (domainsemantic.PolicyDecision, error)
+	ListPolicyDecisions(ctx context.Context) ([]domainsemantic.PolicyDecision, error)
 }
 
 func NewGlobalManager() GlobalManager { return &globalManager{} }

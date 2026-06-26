@@ -216,6 +216,14 @@ func findCredential(ctx context.Context, mgr storesemantic.GlobalManager, id dom
 
 func resolveExternalSecret(ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
+	if strings.HasPrefix(ref, "env://") {
+		name := strings.TrimSpace(strings.TrimPrefix(ref, "env://"))
+		value := os.Getenv(name)
+		if value == "" {
+			return "", fmt.Errorf("environment secret %s is not set", name)
+		}
+		return value, nil
+	}
 	if strings.HasPrefix(ref, "env:") {
 		name := strings.TrimSpace(strings.TrimPrefix(ref, "env:"))
 		if name == "" {

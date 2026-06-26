@@ -31,6 +31,11 @@ const (
 	semanticIndexesFileName   = "indexes.json"
 	credentialGrantsFileName  = "credential_grants.json"
 	inferencePoliciesFileName = "inference_policies.json"
+	dirtyQueueFileName        = "dirty_queue.json"
+	indexStateFileName        = "index_state.json"
+	policyDecisionsFileName   = "policy_decisions.json"
+	graphDirtyEventsDirName   = "events"
+	graphDirtyEventsFileName  = "graph-dirty-000001.ksem"
 	defaultVectorStoreKey     = "mycel-file"
 	defaultVectorStoreName    = "Mycel embedded file vector store"
 )
@@ -73,6 +78,18 @@ type credentialGrantsState struct {
 
 type inferencePoliciesState struct {
 	Policies []domainsemantic.InferencePolicy `json:"policies"`
+}
+
+type dirtyQueueState struct {
+	Items []domainsemantic.SemanticDirtyWorkItem `json:"items"`
+}
+
+type indexStatesState struct {
+	States []domainsemantic.SemanticIndexState `json:"states"`
+}
+
+type policyDecisionsState struct {
+	Decisions []domainsemantic.PolicyDecision `json:"decisions"`
 }
 
 type globalManager struct {
@@ -428,12 +445,15 @@ func (m *globalManager) path(name string) string {
 func (m *globalManager) persistLocked(path string, v any) error { return persistJSON(path, v) }
 
 type spaceManager struct {
-	mu       sync.RWMutex
-	location string
-	spaceID  domainspace.SpaceID
-	indexes  semanticIndexesState
-	grants   credentialGrantsState
-	policies inferencePoliciesState
+	mu              sync.RWMutex
+	location        string
+	spaceID         domainspace.SpaceID
+	indexes         semanticIndexesState
+	grants          credentialGrantsState
+	policies        inferencePoliciesState
+	dirtyQueue      dirtyQueueState
+	indexStates     indexStatesState
+	policyDecisions policyDecisionsState
 }
 
 func (m *spaceManager) Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error {
@@ -459,7 +479,19 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	if err := loadJSON(m.path(credentialGrantsFileName), &m.grants, credentialGrantsState{Grants: []domainsemantic.CredentialGrant{}}); err != nil {
 		return err
 	}
-	return loadJSON(m.path(inferencePoliciesFileName), &m.policies, inferencePoliciesState{Policies: []domainsemantic.InferencePolicy{}})
+	if err := loadJSON(m.path(inferencePoliciesFileName), &m.policies, inferencePoliciesState{Policies: []domainsemantic.InferencePolicy{}}); err != nil {
+		return err
+	}
+	if err := loadJSON(m.path(dirtyQueueFileName), &m.dirtyQueue, dirtyQueueState{Items: []domainsemantic.SemanticDirtyWorkItem{}}); err != nil {
+		return err
+	}
+	if err := loadJSON(m.path(indexStateFileName), &m.indexStates, indexStatesState{States: []domainsemantic.SemanticIndexState{}}); err != nil {
+		return err
+	}
+	if err := loadJSON(m.path(policyDecisionsFileName), &m.policyDecisions, policyDecisionsState{Decisions: []domainsemantic.PolicyDecision{}}); err != nil {
+		return err
+	}
+	return os.MkdirAll(filepath.Join(location, graphDirtyEventsDirName), 0o755)
 }
 
 func (m *spaceManager) UpsertSemanticIndex(ctx context.Context, index domainsemantic.SemanticIndex) (domainsemantic.SemanticIndex, error) {
@@ -563,7 +595,207 @@ func (m *spaceManager) ListInferencePolicies(ctx context.Context) ([]domainseman
 	return append([]domainsemantic.InferencePolicy(nil), m.policies.Policies...), nil
 }
 
+func (m *spaceManager) AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return domainsemantic.GraphDirtyEvent{}, err
+	}
+	if event.TxnID == uuid.Nil || event.SpaceID != m.spaceID {
+		return domainsemantic.GraphDirtyEvent{}, fmt.Errorf("%w: txn_id and matching space_id are required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing, err := readGraphDirtyEvents(m.graphDirtyEventsPath())
+	if err != nil {
+		return domainsemantic.GraphDirtyEvent{}, err
+	}
+	for _, e := range existing {
+		if e.TxnID == event.TxnID {
+			return e, nil
+		}
+	}
+	if event.ID == uuid.Nil {
+		event.ID = newID()
+	}
+	if event.CommittedAt.IsZero() {
+		event.CommittedAt = time.Now().UTC()
+	}
+	if err := os.MkdirAll(filepath.Dir(m.graphDirtyEventsPath()), 0o755); err != nil {
+		return domainsemantic.GraphDirtyEvent{}, err
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return domainsemantic.GraphDirtyEvent{}, err
+	}
+	f, err := os.OpenFile(m.graphDirtyEventsPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return domainsemantic.GraphDirtyEvent{}, err
+	}
+	defer f.Close()
+	if _, err := f.Write(append(raw, '\n')); err != nil {
+		return domainsemantic.GraphDirtyEvent{}, err
+	}
+	return event, f.Sync()
+}
+
+func (m *spaceManager) ListGraphDirtyEvents(ctx context.Context) ([]domainsemantic.GraphDirtyEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return readGraphDirtyEvents(m.graphDirtyEventsPath())
+}
+
+func (m *spaceManager) UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error) {
+	if err := ctx.Err(); err != nil {
+		return domainsemantic.SemanticDirtyWorkItem{}, err
+	}
+	if item.SemanticIndexID == uuid.Nil || item.SpaceID != m.spaceID || item.TargetNodeID == uuid.Nil {
+		return domainsemantic.SemanticDirtyWorkItem{}, fmt.Errorf("%w: semantic_index_id, matching space_id, and target_node_id are required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	if item.ID == uuid.Nil {
+		item.ID = newID()
+	}
+	if item.Status == "" {
+		item.Status = domainsemantic.SemanticDirtyWorkStatusPending
+	}
+	if item.Action == "" {
+		item.Action = domainsemantic.SemanticDirtyWorkActionRefresh
+	}
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = now
+	}
+	item.UpdatedAt = now
+	for i, existing := range m.dirtyQueue.Items {
+		if existing.SemanticIndexID == item.SemanticIndexID && existing.TargetNodeID == item.TargetNodeID {
+			item.ID = existing.ID
+			item.CreatedAt = existing.CreatedAt
+			if existing.FirstGraphRevision != 0 && (item.FirstGraphRevision == 0 || existing.FirstGraphRevision < item.FirstGraphRevision) {
+				item.FirstGraphRevision = existing.FirstGraphRevision
+			}
+			item.SourceTxnIDs = mergeTxnIDs(existing.SourceTxnIDs, item.SourceTxnIDs)
+			m.dirtyQueue.Items[i] = item
+			return item, persistJSON(m.path(dirtyQueueFileName), m.dirtyQueue)
+		}
+	}
+	m.dirtyQueue.Items = append(m.dirtyQueue.Items, item)
+	return item, persistJSON(m.path(dirtyQueueFileName), m.dirtyQueue)
+}
+
+func (m *spaceManager) ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]domainsemantic.SemanticDirtyWorkItem(nil), m.dirtyQueue.Items...), nil
+}
+
+func (m *spaceManager) UpsertIndexState(ctx context.Context, state domainsemantic.SemanticIndexState) (domainsemantic.SemanticIndexState, error) {
+	if err := ctx.Err(); err != nil {
+		return domainsemantic.SemanticIndexState{}, err
+	}
+	if state.SemanticIndexID == uuid.Nil {
+		return domainsemantic.SemanticIndexState{}, fmt.Errorf("%w: semantic_index_id is required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = time.Now().UTC()
+	}
+	for i, existing := range m.indexStates.States {
+		if existing.SemanticIndexID == state.SemanticIndexID {
+			m.indexStates.States[i] = state
+			return state, persistJSON(m.path(indexStateFileName), m.indexStates)
+		}
+	}
+	m.indexStates.States = append(m.indexStates.States, state)
+	return state, persistJSON(m.path(indexStateFileName), m.indexStates)
+}
+
+func (m *spaceManager) ListIndexStates(ctx context.Context) ([]domainsemantic.SemanticIndexState, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]domainsemantic.SemanticIndexState(nil), m.indexStates.States...), nil
+}
+
+func (m *spaceManager) UpsertPolicyDecision(ctx context.Context, decision domainsemantic.PolicyDecision) (domainsemantic.PolicyDecision, error) {
+	if err := ctx.Err(); err != nil {
+		return domainsemantic.PolicyDecision{}, err
+	}
+	if decision.ID == uuid.Nil {
+		decision.ID = newID()
+	}
+	if decision.CreatedAt.IsZero() {
+		decision.CreatedAt = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, existing := range m.policyDecisions.Decisions {
+		if existing.ID == decision.ID {
+			m.policyDecisions.Decisions[i] = decision
+			return decision, persistJSON(m.path(policyDecisionsFileName), m.policyDecisions)
+		}
+	}
+	m.policyDecisions.Decisions = append(m.policyDecisions.Decisions, decision)
+	return decision, persistJSON(m.path(policyDecisionsFileName), m.policyDecisions)
+}
+
+func (m *spaceManager) ListPolicyDecisions(ctx context.Context) ([]domainsemantic.PolicyDecision, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]domainsemantic.PolicyDecision(nil), m.policyDecisions.Decisions...), nil
+}
+
+func (m *spaceManager) graphDirtyEventsPath() string {
+	return filepath.Join(m.location, graphDirtyEventsDirName, graphDirtyEventsFileName)
+}
+
 func (m *spaceManager) path(name string) string { return filepath.Join(m.location, name) }
+
+func readGraphDirtyEvents(path string) ([]domainsemantic.GraphDirtyEvent, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []domainsemantic.GraphDirtyEvent{}, nil
+		}
+		return nil, err
+	}
+	out := []domainsemantic.GraphDirtyEvent{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event domainsemantic.GraphDirtyEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+func mergeTxnIDs(a, b []uuid.UUID) []uuid.UUID {
+	seen := map[uuid.UUID]bool{}
+	out := []uuid.UUID{}
+	for _, id := range append(append([]uuid.UUID{}, a...), b...) {
+		if id == uuid.Nil || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
 
 func loadJSON[T any](path string, target *T, empty T) error {
 	if _, err := os.Stat(path); err != nil {

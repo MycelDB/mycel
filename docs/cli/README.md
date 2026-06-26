@@ -92,7 +92,9 @@ Target advanced semantic/inference commands:
 - [semantic index add](commands/semantic-index-add.md)
 - [semantic index backfill](commands/semantic-index-backfill.md)
 - [semantic search](commands/semantic-search.md)
-
+- [semantic maintenance analyze](commands/semantic-maintenance-analyze.md)
+- [semantic maintenance process](commands/semantic-maintenance-process.md)
+- [semantic migrate legacy embeddings](commands/semantic-migrate-legacy-embeddings.md)
 Accounting commands:
 
 - [accounting usage summarize](commands/accounting-usage-summarize.md)

@@ -7,6 +7,7 @@ import (
 
 	domainembedding "github.com/myceldb/mycel/domain/embedding"
 	"github.com/myceldb/mycel/domain/graph"
+	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	"github.com/myceldb/mycel/query"
 	storetemplate "github.com/myceldb/mycel/store/template"
 )
@@ -296,6 +297,46 @@ type SemanticSearchInput struct {
 	MinScore      float64
 }
 
+// AdvancedSemanticSearchInput searches advanced semantic indexes instead of MVP embedding profiles.
+type AdvancedSemanticSearchInput struct {
+	Text             string
+	SemanticIndexIDs []domainsemantic.SemanticIndexID
+	Limit            int
+	MinScore         float64
+}
+
+// AdvancedSemanticSearchResult describes one advanced semantic-index match.
+type AdvancedSemanticSearchResult struct {
+	SemanticIndexID   domainsemantic.SemanticIndexID
+	NodeID            graph.NodeID
+	RecordID          domainsemantic.AdvancedEmbeddingRecordID
+	Score             float64
+	ModelEndpointID   domainsemantic.ModelEndpointID
+	ModelID           domainsemantic.InferenceModelID
+	VectorStoreID     domainsemantic.VectorStoreID
+	CredentialGrantID domainsemantic.CredentialGrantID
+	VectorSpaceKey    string
+	SourceHash        string
+	SourceMode        string
+}
+
+// AdvancedSemanticSearchGroup summarizes an internally compatible vector-space search group.
+type AdvancedSemanticSearchGroup struct {
+	VectorSpaceKey    string
+	ModelEndpointID   domainsemantic.ModelEndpointID
+	ModelID           domainsemantic.InferenceModelID
+	CredentialGrantID domainsemantic.CredentialGrantID
+	SemanticIndexIDs  []domainsemantic.SemanticIndexID
+	ResultCount       int
+}
+
+// AdvancedSemanticSearchOutput includes matches and planner warnings.
+type AdvancedSemanticSearchOutput struct {
+	Results  []AdvancedSemanticSearchResult
+	Warnings []string
+	Groups   []AdvancedSemanticSearchGroup
+}
+
 // TagMatchMode controls how multi-tag metadata queries combine requested tags.
 type TagMatchMode string
 
@@ -410,6 +451,7 @@ type Session interface {
 	GenerateNodeEmbeddingBatch(ctx context.Context, in GenerateNodeEmbeddingBatchInput) (GenerateNodeEmbeddingBatchResult, error)
 	ListNodeEmbeddings(ctx context.Context, in ListNodeEmbeddingsInput) ([]domainembedding.EmbeddingRecord, error)
 	SemanticSearch(ctx context.Context, in SemanticSearchInput) ([]domainembedding.SemanticSearchResult, error)
+	AdvancedSemanticSearch(ctx context.Context, in AdvancedSemanticSearchInput) (AdvancedSemanticSearchOutput, error)
 	ListTags(ctx context.Context) ([]TagSummary, error)
 	FindNodesByTag(ctx context.Context, in FindNodesByTagInput) ([]graph.Node, error)
 	ListPropertyNames(ctx context.Context) ([]PropertySummary, error)

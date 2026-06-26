@@ -117,6 +117,87 @@ model_endpoint_capabilities:
 	}
 }
 
+func TestSemanticMigrateLegacyEmbeddingsCLI(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel")
+	secretKeyB64 := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+	eng, err := mycelengine.NewEngine(mycelengine.EngineConfig{DataDir: dataDir, Mode: mycelengine.EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin", AdminPassword: "pass", UserStoreEncryptionKeyB64: secretKeyB64}, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("init engine failed: %v", err)
+	}
+	auth, err := eng.Authenticate(ctx, mycelengine.AuthInput{UserRef: identity.UserRef("admin"), Password: "pass"})
+	if err != nil {
+		t.Fatalf("auth failed: %v", err)
+	}
+	space, err := eng.CreateSpace(ctx, mycelengine.CreateSpaceInput{AccessToken: auth.AccessToken, Name: "Personal PKM"})
+	if err != nil {
+		t.Fatalf("create space failed: %v", err)
+	}
+	if _, err := eng.CreateDomain(ctx, mycelengine.CreateDomainInput{AccessToken: auth.AccessToken, SpaceID: space.SpaceID, Key: "personal-pkm", Name: "Personal PKM"}); err != nil {
+		t.Fatalf("create domain failed: %v", err)
+	}
+	_ = eng.Close()
+
+	baseArgs := []string{"-d", dataDir, "-u", "admin", "-p", "pass", "--user-store-encryption-key-b64", secretKeyB64}
+	runMycelCommand(t, append(baseArgs, "embeddings", "keys", "add", "--provider", "openai", "--name", "OpenAI personal", "--api-key", "sk-test-secret", "--default")...)
+	runMycelCommand(t, append(baseArgs, "embeddings", "profiles", "add", "--provider", "openai", "--model", "openai/text-embedding-3-small", "--name", "basic", "--source", "subtree", "--minimum-text-length", "7")...)
+	runMycelCommand(t, append(baseArgs, "semantic", "migrate", "legacy-embeddings", "--space-id", space.SpaceID.String(), "--domain", "personal-pkm")...)
+	runMycelCommand(t, append(baseArgs, "semantic", "migrate", "legacy-embeddings", "--space-id", space.SpaceID.String(), "--domain", "personal-pkm")...)
+
+	indexesRaw, err := os.ReadFile(filepath.Join(dataDir, "graphs", space.SpaceID.String(), "semantic", "indexes.json"))
+	if err != nil {
+		t.Fatalf("read indexes failed: %v", err)
+	}
+	if !strings.Contains(string(indexesRaw), "legacy-basic-search") || !strings.Contains(string(indexesRaw), "\"minimum_text_length\": 7") {
+		t.Fatalf("expected migrated semantic index and minimum text length in %s", string(indexesRaw))
+	}
+	if strings.Count(string(indexesRaw), "legacy-basic-search") != 1 {
+		t.Fatalf("expected migration to be idempotent for indexes, got %s", string(indexesRaw))
+	}
+	grantsRaw, err := os.ReadFile(filepath.Join(dataDir, "graphs", space.SpaceID.String(), "semantic", "credential_grants.json"))
+	if err != nil {
+		t.Fatalf("read grants failed: %v", err)
+	}
+	if strings.Count(string(grantsRaw), "credential_id") != 1 {
+		t.Fatalf("expected migration to reuse matching grant, got %s", string(grantsRaw))
+	}
+	policiesRaw, err := os.ReadFile(filepath.Join(dataDir, "graphs", space.SpaceID.String(), "semantic", "inference_policies.json"))
+	if err != nil {
+		t.Fatalf("read policies failed: %v", err)
+	}
+	if strings.Count(string(policiesRaw), "allowed_privacy_classes") != 1 {
+		t.Fatalf("expected migration to reuse matching policy, got %s", string(policiesRaw))
+	}
+	modelsRaw, err := os.ReadFile(filepath.Join(dataDir, "meta", "inference", "models.json"))
+	if err != nil {
+		t.Fatalf("read models failed: %v", err)
+	}
+	if !strings.Contains(string(modelsRaw), "openai/text-embedding-3-small") {
+		t.Fatalf("expected migrated semantic model in %s", string(modelsRaw))
+	}
+	credentialsRaw, err := os.ReadFile(filepath.Join(dataDir, "meta", "credentials", "credentials.json"))
+	if err != nil {
+		t.Fatalf("read credentials failed: %v", err)
+	}
+	if !strings.Contains(string(credentialsRaw), "legacy-embedding-key") {
+		t.Fatalf("expected migrated credential in %s", string(credentialsRaw))
+	}
+	secretsRaw, err := os.ReadFile(filepath.Join(dataDir, "meta", "secrets", "secrets.json"))
+	if err != nil {
+		t.Fatalf("read secrets failed: %v", err)
+	}
+	if strings.Contains(string(secretsRaw), "sk-test-secret") {
+		t.Fatalf("semantic secret store contains plaintext API key: %s", string(secretsRaw))
+	}
+	eventsRaw, err := os.ReadFile(filepath.Join(dataDir, "meta", "semantic_events", "semantic-config-000001.ksem"))
+	if err != nil {
+		t.Fatalf("read semantic events failed: %v", err)
+	}
+	if !strings.Contains(string(eventsRaw), "legacy_embedding_profile_migrated") {
+		t.Fatalf("expected migration event in %s", string(eventsRaw))
+	}
+}
+
 func runMycelCommand(t *testing.T, args ...string) {
 	t.Helper()
 	a := &app.App{}
