@@ -23,6 +23,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.BlobLimits.MaxSizeBytes != -1 || cfg.BlobLimits.MaxPDFBytes != -1 {
 		t.Fatalf("expected unlimited blob defaults, got %+v", cfg.BlobLimits)
 	}
+	if cfg.AdvancedSemanticEnabled {
+		t.Fatal("advanced semantic support must default to disabled during phase 0")
+	}
 }
 
 func TestLoadPrecedenceFileEnvFlags(t *testing.T) {
@@ -49,6 +52,7 @@ storage:
 		"--data-dir", "/from-flag",
 		"--auth-token-ttl", "15m",
 		"--blob-max-pdf-bytes", "50",
+		"--semantic-advanced-enabled",
 	)
 
 	cfg, err := Load(Options{Flags: flags})
@@ -66,6 +70,9 @@ storage:
 	}
 	if cfg.BlobLimits.MaxPDFBytes != 50 || cfg.BlobLimits.MimeTypeLimits["application/pdf"] != 60 {
 		t.Fatalf("unexpected blob limits: %+v", cfg.BlobLimits)
+	}
+	if !cfg.AdvancedSemanticEnabled {
+		t.Fatal("expected semantic advanced flag override")
 	}
 }
 
@@ -94,6 +101,7 @@ func testFlags(t *testing.T, args ...string) *pflag.FlagSet {
 	flags.Int64("blob-max-audio-bytes", 0, "")
 	flags.Int64("blob-max-video-bytes", 0, "")
 	flags.Int64("blob-max-other-bytes", 0, "")
+	flags.Bool("semantic-advanced-enabled", false, "")
 	if err := flags.Parse(args); err != nil {
 		t.Fatalf("parse flags failed: %v", err)
 	}

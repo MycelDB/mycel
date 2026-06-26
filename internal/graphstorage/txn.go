@@ -13,6 +13,7 @@ type localTxn struct {
 	edgePuts         []graph.Edge
 	edgeDeletes      []graph.EdgeID
 	expectedRevision *uint64
+	commitHook       CommitHook
 	closed           bool
 }
 
@@ -21,6 +22,13 @@ func (t *localTxn) ExpectRevision(revision uint64) {
 		return
 	}
 	t.expectedRevision = &revision
+}
+
+func (t *localTxn) SetCommitHook(hook CommitHook) {
+	if t.closed {
+		return
+	}
+	t.commitHook = hook
 }
 
 func (t *localTxn) PutNode(node graph.Node) error {
@@ -114,6 +122,11 @@ func (t *localTxn) Commit() error {
 	}
 	if err := t.store.edges.sync(); err != nil {
 		return err
+	}
+	if t.commitHook != nil {
+		if err := t.commitHook(CommitInfo{TxnID: t.id, NextRevision: t.store.revision + 1}); err != nil {
+			return err
+		}
 	}
 	if _, err := t.store.txns.appendRecord(RecordKindTxnCommit, t.id, zero, nil); err != nil {
 		return err

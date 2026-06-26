@@ -33,6 +33,7 @@ type Config struct {
 	AccessTokenTTL            time.Duration
 	BlobStaleTmpAge           time.Duration
 	BlobLimits                mycelengine.BlobLimits
+	AdvancedSemanticEnabled   bool
 }
 
 func Load(opts Options) (Config, error) {
@@ -76,6 +77,7 @@ func Load(opts Options) (Config, error) {
 			MaxOtherBytes:  k.Int64("storage.blobs.max_other_bytes"),
 			MimeTypeLimits: normalizeMimeLimits(int64Map(k.Get("storage.blobs.mime_type_limits"))),
 		},
+		AdvancedSemanticEnabled: k.Bool("semantic.advanced_enabled"),
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -94,6 +96,7 @@ func (c Config) EngineConfig() mycelengine.EngineConfig {
 		AccessTokenTTL:            c.AccessTokenTTL,
 		BlobLimits:                c.BlobLimits,
 		BlobStaleTmpAge:           c.BlobStaleTmpAge,
+		AdvancedSemanticEnabled:   c.AdvancedSemanticEnabled,
 	}
 }
 
@@ -127,6 +130,7 @@ func defaults() map[string]any {
 		"storage.blobs.max_video_bytes":          int64(-1),
 		"storage.blobs.max_other_bytes":          int64(-1),
 		"storage.blobs.mime_type_limits":         map[string]int64{},
+		"semantic.advanced_enabled":              false,
 	}
 }
 
@@ -149,6 +153,7 @@ func applyEnvAliases(k *koanf.Koanf) {
 		"MYCELDB_STORAGE_BLOBS_MAX_AUDIO_BYTES": "storage.blobs.max_audio_bytes",
 		"MYCELDB_STORAGE_BLOBS_MAX_VIDEO_BYTES": "storage.blobs.max_video_bytes",
 		"MYCELDB_STORAGE_BLOBS_MAX_OTHER_BYTES": "storage.blobs.max_other_bytes",
+		"MYCELDB_SEMANTIC_ADVANCED_ENABLED":     "semantic.advanced_enabled",
 	}
 	for envName, key := range aliases {
 		if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
@@ -175,6 +180,7 @@ func applyFlagOverrides(k *koanf.Koanf, flags *pflag.FlagSet) {
 		"blob-max-audio-bytes":          "storage.blobs.max_audio_bytes",
 		"blob-max-video-bytes":          "storage.blobs.max_video_bytes",
 		"blob-max-other-bytes":          "storage.blobs.max_other_bytes",
+		"semantic-advanced-enabled":     "semantic.advanced_enabled",
 	}
 	for flagName, key := range flagMap {
 		if f := flags.Lookup(flagName); f != nil && f.Changed {

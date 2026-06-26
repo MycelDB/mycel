@@ -16,6 +16,7 @@ See [`docs/architecture.md`](docs/architecture.md) for a navigation guide, impor
 - `domain/access`: system roles, space permissions, and ACL rule types
 - `domain/graph`: pure graph domain types for nodes, edges, templates, and template policies
 - `domain/embedding`: pure embedding metadata, record, and semantic-search result types
+- `domain/semantic`: advanced semantic/inference resource metadata types
 - `query/`: programmatic GQL-style query builder
 - `store/`: injectable persistence interfaces (for tests or custom backends)
 
@@ -40,8 +41,9 @@ See [`docs/architecture.md`](docs/architecture.md) for a navigation guide, impor
 - Space structures: `docs/domain/space/space.md`
 - Access control: `docs/domain/access/access.md`
 - Storage layout: `docs/storage/layout.md`
-- CLI usage: `docs/cli.md`
-- Embeddings MVP: `docs/embeddings.md`
+- CLI usage: `docs/cli/README.md`
+- Semantic indexing and embeddings: `docs/semantic/README.md`
+- Embeddings MVP: `docs/semantic/current-mvp.md`
 - Custom metadata indexing: `docs/metadata.md`
 
 ## CLI
@@ -53,7 +55,7 @@ make build
 bin/mycel --help
 ```
 
-See `docs/cli.md` for command reference.
+See `docs/cli/README.md` for command reference.
 
 ## Data directory
 

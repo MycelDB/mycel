@@ -32,6 +32,7 @@ type App struct {
 	BlobMaxAudioBytes         int64
 	BlobMaxVideoBytes         int64
 	BlobMaxOtherBytes         int64
+	AdvancedSemanticEnabled   bool
 	Engine                    mycelengine.Engine
 	Token                     mycelengine.AccessToken
 	CurrentSpaceID            *domainspace.SpaceID

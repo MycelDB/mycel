@@ -18,9 +18,11 @@ import (
 	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/graphstorage"
 	domainsession "github.com/myceldb/mycel/session"
+	storeaccounting "github.com/myceldb/mycel/store/accounting"
 	"github.com/myceldb/mycel/store/acl"
 	storedomains "github.com/myceldb/mycel/store/domains"
 	storeembedding "github.com/myceldb/mycel/store/embedding"
+	storesemantic "github.com/myceldb/mycel/store/semantic"
 	"github.com/myceldb/mycel/store/spaces"
 	storetemplate "github.com/myceldb/mycel/store/template"
 	"github.com/myceldb/mycel/store/user"
@@ -37,21 +39,25 @@ var (
 )
 
 type defaultEngine struct {
-	state            EngineState
-	dataDir          string
-	accessTokenTTL   time.Duration
-	blobLimits       domainsession.BlobLimits
-	blobStaleTmpAge  time.Duration
-	userManager      user.Manager
-	spaceManager     spaces.Manager
-	domainManager    storedomains.Manager
-	templateManager  storetemplate.Manager
-	embeddingManager storeembedding.Manager
-	accessManager    acl.Manager
-	authMu           sync.RWMutex
-	authCache        map[AccessToken]authClaims
-	storeMu          sync.Mutex
-	storeCache       map[domainspace.SpaceID]*graphstorage.LocalStore
+	state                     EngineState
+	dataDir                   string
+	accessTokenTTL            time.Duration
+	blobLimits                domainsession.BlobLimits
+	blobStaleTmpAge           time.Duration
+	advancedSemanticEnabled   bool
+	userStoreEncryptionKeyB64 string
+	userManager               user.Manager
+	spaceManager              spaces.Manager
+	domainManager             storedomains.Manager
+	templateManager           storetemplate.Manager
+	embeddingManager          storeembedding.Manager
+	semanticManager           storesemantic.GlobalManager
+	accountingManager         storeaccounting.Manager
+	accessManager             acl.Manager
+	authMu                    sync.RWMutex
+	authCache                 map[AccessToken]authClaims
+	storeMu                   sync.Mutex
+	storeCache                map[domainspace.SpaceID]*graphstorage.LocalStore
 }
 
 // authClaims is the expanded authorization context cached by access token.
@@ -153,6 +159,8 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 	}
 	e.blobLimits = cfg.BlobLimits
 	e.blobStaleTmpAge = cfg.BlobStaleTmpAge
+	e.advancedSemanticEnabled = cfg.AdvancedSemanticEnabled
+	e.userStoreEncryptionKeyB64 = cfg.UserStoreEncryptionKeyB64
 
 	if e.userManager == nil {
 		e.userManager = user.NewManager()
@@ -193,6 +201,24 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		e.embeddingManager = storeembedding.NewManager()
 	}
 	if err := e.embeddingManager.Init(context.Background(), filepath.Join(metaDir(cfg.DataDir), "embedding"), cfg.UserStoreEncryptionKeyB64); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+	if e.semanticManager == nil {
+		e.semanticManager = storesemantic.NewGlobalManager()
+	}
+	if err := e.semanticManager.Init(context.Background(), metaDir(cfg.DataDir)); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+	if _, err := e.semanticManager.EnsureDefaultVectorStore(context.Background()); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+	if e.accountingManager == nil {
+		e.accountingManager = storeaccounting.NewManager()
+	}
+	if err := e.accountingManager.Init(context.Background(), filepath.Join(metaDir(cfg.DataDir), "accounting")); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
@@ -865,7 +891,7 @@ func (e *defaultEngine) OpenSession(ctx context.Context, in OpenSessionInput) (d
 		domainsession.Permissions{Read: canRead, Write: canWrite, Admin: canAdmin},
 		domainsession.Errors{Closed: ErrClosed, NotFound: ErrNotFound, Unauthorized: ErrUnauthorized, Conflict: ErrConflict},
 		store,
-		domainsession.Config{BlobLimits: e.blobLimits, BlobStaleTmpAge: e.blobStaleTmpAge, CurrentUserID: auth.UserID, EmbeddingManager: e.embeddingManager, DomainID: domain.ID},
+		domainsession.Config{BlobLimits: e.blobLimits, BlobStaleTmpAge: e.blobStaleTmpAge, CurrentUserID: auth.UserID, EmbeddingManager: e.embeddingManager, SemanticManager: e.semanticManager, AccountingManager: e.accountingManager, UserStoreEncryptionKeyB64: e.userStoreEncryptionKeyB64, DomainID: domain.ID, AdvancedSemanticEnabled: e.advancedSemanticEnabled},
 	), nil
 }
 

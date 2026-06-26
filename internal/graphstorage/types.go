@@ -93,8 +93,16 @@ type Store interface {
 	BlobRefCount(ctx context.Context, id graph.BlobID) (int, error)
 }
 
+type CommitInfo struct {
+	TxnID        uuid.UUID
+	NextRevision uint64
+}
+
+type CommitHook func(CommitInfo) error
+
 type Txn interface {
 	ExpectRevision(revision uint64)
+	SetCommitHook(hook CommitHook)
 	PutNode(node graph.Node) error
 	DeleteNode(id graph.NodeID) error
 	PutEdge(edge graph.Edge) error
