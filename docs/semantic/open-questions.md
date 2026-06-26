@@ -32,18 +32,12 @@ This document tracks design points that remain unclear or need explicit decision
 - Multiple restrict policies combine by intersection / most restrictive result.
 - `allowed_privacy_classes` sets are intersected across applicable allow/restrict policies.
 - Restrictive booleans such as `disallow_third_party` and `require_local_endpoint` combine with OR semantics.
+- Deny always wins over allow, including inherited deny policies and more-specific allow policies.
+- Inference policies inherit only through containment edges.
+- Non-containment edges such as references, backlinks, tags, mentions, and embeds do not imply policy inheritance.
+- When a node moves into or out of a restricted subtree, the graph write records the move and semantic dirty event; the semantic analyzer/maintainer later decides refresh, skip, tombstone, or deletion behavior.
 
-## 1. Inference Policy Remaining Questions
-
-Policies can restrict processing by endpoint privacy/network class.
-
-Still to decide:
-
-- How do explicit `allow` policies interact with inherited `deny` policies?
-- Are policies inherited only through containment edges?
-- What happens when a node moves into or out of a restricted subtree?
-
-## 2. Credential Grant Defaults
+## 1. Credential Grant Defaults
 
 Credentials are principal-owned; grants are space-owned.
 

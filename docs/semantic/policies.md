@@ -110,7 +110,7 @@ Policy resolution happens before credential resolution and before any model endp
 Recommended order:
 
 1. resolve the graph content scope being processed
-2. collect policies inherited from space, domain, semantic index, node ancestors, and explicit subtree policies
+2. collect policies inherited from space, domain, semantic index, containment ancestors, and explicit subtree policies
 3. apply the most restrictive effective policy
 4. remove semantic indexes/model endpoints/models that violate the policy
 5. resolve credential grants only for remaining allowed model endpoint calls
@@ -119,16 +119,24 @@ Recommended order:
 Rules:
 
 - no applicable inference policy means deny/no inference
-- deny beats allow
+- deny beats allow, including inherited deny policies and more-specific allow policies
 - at least one applicable allow/restrict policy must match the operation for processing to proceed
 - multiple restrict policies combine by intersection / most restrictive result
 - `allowed_privacy_classes` sets are intersected across applicable allow/restrict policies
 - restrictive booleans such as `disallow_third_party` and `require_local_endpoint` are combined with OR semantics; if any applicable policy requires them, the effective policy requires them
 - `no_inference` excludes content from all inference operations
 - `local_only` excludes third-party and enterprise-private remote model endpoints unless they are classified as local
+- policies inherit only through containment edges
+- non-containment edges such as references, backlinks, tags, mentions, and embeds do not imply policy inheritance
 - node/subtree policies override broader domain/space allowances by narrowing the effective policy; they cannot loosen inherited restrictions
 - semantic index extraction must stop at nodes/subtrees disallowed by effective policy for the index endpoint/model
 - a semantic query over a broad scope may partially search allowed indexes and return warnings for skipped indexes/content
+
+## Containment Moves
+
+When a node moves into or out of a restricted subtree, the graph write should not synchronously decide embedding cleanup or regeneration. The graph transaction records the move and appends a raw dirty event with old/new containment context.
+
+The semantic analyzer/maintainer later evaluates policy and source roots for the old and new locations. It may dirty the old containing source root, dirty the new containing source root, refresh moved content, skip newly restricted content, tombstone records, or delete derived vectors according to the effective policy and cleanup rules.
 
 ## Example
 

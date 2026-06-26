@@ -554,12 +554,16 @@ Rules:
 - The owning space is implied by the file location; `scope.space_id` may be retained for validation but should match the owning directory.
 - Policies are scope references; they are not embedded directly into graph node records.
 - Deny/restrict policies must be evaluated before credential grants.
+- Deny always wins over allow, including inherited deny policies and more-specific allow policies.
 - No applicable inference policy means no inference is allowed.
 - At least one applicable allow/restrict policy must match the operation for processing to proceed.
 - Multiple restrict policies combine by intersection / most restrictive result.
 - `allowed_privacy_classes` sets are intersected across applicable allow/restrict policies.
 - Restrictive booleans such as `disallow_third_party` and `require_local_endpoint` are combined with OR semantics.
+- Policies inherit only through containment edges.
+- Non-containment edges such as references, backlinks, tags, mentions, and embeds do not imply policy inheritance.
 - Node/subtree policies override broader domain/space allowances by narrowing the effective policy; they cannot loosen inherited restrictions.
+- When nodes move into or out of restricted subtrees, graph commits record old/new containment context and semantic analysis later decides refresh, skip, tombstone, or deletion behavior.
 
 
 ### `graphs/<space_id>/semantic/indexes.json`
