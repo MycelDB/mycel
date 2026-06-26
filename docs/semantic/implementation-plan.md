@@ -508,7 +508,25 @@ Knot PKM tests:
 
 ## Phase 6: Policy and Grant Enforcement, Query Planning, and Semantic Search
 
+Status: implemented in Mycel for the initial semantic search planner and CLI over `mycel-file` semantic indexes. Knot PKM semantic search integration remains the next application-level step.
+
 Goal: replace raw profile thinking with semantic-index query planning.
+
+Initial Mycel implementation added:
+
+- `internal/semantic/search` planner
+- `mycel semantic search`
+- domain-aware semantic index selection by key or ID
+- enabled endpoint/model/capability validation
+- default-deny policy filtering with allow/deny/restrict privacy checks
+- explicit interactive credential grant resolution for query embedding calls
+- grouping by vector space plus endpoint/model binding
+- one query embedding call per compatible group with accounting reason `semantic_query`
+- `mycel-file` vector search with provenance in results
+- warnings for skipped indexes/groups due to policy, missing grant, missing binding, or search errors
+- tests for planner filtering/warnings, shared vector-space grouping, CLI search, query accounting, and backfill/search compatibility
+
+Full containment policy inheritance, node/subtree grant specificity, and Knot PKM server integration remain follow-up work.
 
 ### Mycel deliverables
 

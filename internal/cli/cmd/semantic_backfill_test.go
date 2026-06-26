@@ -118,6 +118,10 @@ model_endpoint_capabilities:
 	if providerCalls != 1 {
 		t.Fatalf("expected second backfill to skip current hash, got %d calls", providerCalls)
 	}
+	runMycelCommand(t, "-d", dataDir, "-u", "admin", "-p", "pass", "semantic", "search", "--space-id", space.SpaceID.String(), "--domain", "personal-pkm", "--index", "notes-search", "--text", "root child", "--limit", "5")
+	if providerCalls != 2 {
+		t.Fatalf("expected semantic search query embedding call, got %d calls", providerCalls)
+	}
 	if _, err := os.Stat(filepath.Join(dataDir, "graphs", space.SpaceID.String(), "semantic", "indexes")); err != nil {
 		t.Fatalf("expected semantic vector index directory: %v", err)
 	}
@@ -125,7 +129,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("read accounting ledger failed: %v", err)
 	}
-	if !strings.Contains(string(usageRaw), "req-cli") || !strings.Contains(string(usageRaw), "semantic_backfill") {
+	if !strings.Contains(string(usageRaw), "req-cli") || !strings.Contains(string(usageRaw), "semantic_backfill") || !strings.Contains(string(usageRaw), "semantic_query") {
 		t.Fatalf("expected backfill accounting event, got %s", string(usageRaw))
 	}
 	var line map[string]any

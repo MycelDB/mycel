@@ -2,6 +2,8 @@
 
 A semantic query may target one semantic index or many semantic indexes.
 
+Phase 6 implements the initial Mycel planner and `mycel semantic search` command for enabled semantic indexes backed by `mycel-file`. It performs endpoint/model/capability/vector-store validation, default-deny policy filtering, explicit query credential grant resolution, grouped query embedding calls, vector search, result provenance, and warnings for skipped indexes/groups. Initial grouping is conservative: indexes share one query embedding only when vector space, endpoint/model binding, and selected credential grant are the same.
+
 If selected indexes use different `vector_space_key` values, Mycel must generate multiple query embeddings and merge results. `vector_space_key` is an opaque authoritative string: equal keys are directly comparable, different keys are not directly comparable.
 
 ## Planning Direction
@@ -109,7 +111,7 @@ Options:
 - perform lexical/vector hybrid reranking
 - call a reranker model over candidate result text
 
-The MVP can start with conservative grouping or simple score normalization, but the architecture should not assume one universal vector space.
+The MVP starts with conservative grouping. The Phase 6 planner only sorts/truncates globally inside a single compatible group; when multiple groups are present, it preserves grouped results instead of dropping results from one vector space based on raw scores from another.
 
 ## Missing Credentials
 

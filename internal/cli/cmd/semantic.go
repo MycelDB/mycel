@@ -12,6 +12,7 @@ import (
 	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/myceldb/mycel/internal/semantic/backfill"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
+	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	storeaccounting "github.com/myceldb/mycel/store/accounting"
 	"github.com/spf13/cobra"
@@ -21,7 +22,73 @@ func NewSemanticCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "semantic", Short: "Manage semantic indexes and search"}
 	index := &cobra.Command{Use: "index", Short: "Manage semantic indexes"}
 	index.AddCommand(newSemanticIndexAddCommand(a), newSemanticIndexBackfillCommand(a))
-	cmd.AddCommand(index)
+	cmd.AddCommand(index, newSemanticSearchCommand(a))
+	return cmd
+}
+
+func newSemanticSearchCommand(a *app.App) *cobra.Command {
+	var spaceIDText, domainRef, text string
+	var indexRefs []string
+	var limit int
+	var minScore float64
+	cmd := &cobra.Command{Use: "search", Short: "Search semantic indexes", RunE: func(cmd *cobra.Command, args []string) error {
+		spaceID, err := a.ResolveSpaceID(spaceIDText)
+		if err != nil {
+			return err
+		}
+		tok, err := a.AccessToken(cmd.Context())
+		if err != nil {
+			return err
+		}
+		currentUser, err := a.Engine.CurrentUser(cmd.Context(), mycelengine.CurrentUserInput{AccessToken: tok})
+		if err != nil {
+			return err
+		}
+		domainID, err := resolveDomainID(cmd.Context(), a, tok, spaceID, domainRef)
+		if err != nil {
+			return err
+		}
+		globalMgr, err := authenticatedSemanticGlobalManager(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		spaceMgr, err := authenticatedSemanticSpaceManager(cmd.Context(), a, spaceID)
+		if err != nil {
+			return err
+		}
+		indexIDs := []domainsemantic.SemanticIndexID{}
+		for _, ref := range indexRefs {
+			index, err := resolveSemanticIndexForDomain(cmd.Context(), spaceMgr, ref, domainID)
+			if err != nil {
+				return err
+			}
+			indexIDs = append(indexIDs, index.ID)
+		}
+		acct := storeaccounting.NewManager()
+		if err := acct.Init(cmd.Context(), filepath.Join(a.DataDir, "meta", "accounting")); err != nil {
+			return err
+		}
+		planner := semanticsearch.Planner{GlobalManager: globalMgr, SpaceManager: spaceMgr, Connector: connectors.Service{GlobalManager: globalMgr, Accounting: acct, SecretKeyB64: a.UserStoreEncryptionKeyB64, ActorPrincipalID: currentUser.ID}, VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(a.DataDir, "graphs")}}
+		result, err := planner.Search(cmd.Context(), semanticsearch.Input{SpaceID: spaceID, DomainID: domainID, SemanticIndexIDs: indexIDs, Text: text, Limit: limit, MinScore: minScore, ActorPrincipalID: currentUser.ID})
+		if err != nil {
+			return err
+		}
+		var b strings.Builder
+		for _, warning := range result.Warnings {
+			fmt.Fprintf(&b, "warning\t%s\n", warning)
+		}
+		for _, r := range result.Results {
+			fmt.Fprintf(&b, "%.4f\tnode=%s\tindex=%s\tmodel=%s\n", r.Score, r.NodeID, r.SemanticIndexID, r.ModelID)
+		}
+		return a.Print(result, b.String())
+	}}
+	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainRef, "domain", "", "domain key or ID")
+	cmd.Flags().StringVar(&text, "text", "", "query text")
+	cmd.Flags().StringSliceVar(&indexRefs, "index", nil, "semantic index key or ID to search")
+	cmd.Flags().IntVar(&limit, "limit", 10, "maximum merged results")
+	cmd.Flags().Float64Var(&minScore, "min-score", 0, "minimum cosine score")
+	_ = cmd.MarkFlagRequired("text")
 	return cmd
 }
 
