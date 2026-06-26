@@ -10,4 +10,4 @@ mycel accounting usage events --from 2026-06-01 --to 2026-06-30 --user martin --
 
 ## Notes
 
-Events come from the append-only ledger under `meta/accounting/inference-usage-*.kusage`.
+Events come from the append-only ledger under `meta/accounting/inference-usage-*.kusag`.

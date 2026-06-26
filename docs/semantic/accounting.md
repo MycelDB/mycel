@@ -17,8 +17,8 @@ Recommended storage path:
 ```text
 meta/accounting/
   manifest.json
-  inference-usage-000001.kusage
-  inference-usage-000002.kusage
+  inference-usage-000001.kusag
+  inference-usage-000002.kusag
 ```
 
 The ledger is authoritative. Secondary indexes and rollups are derived and rebuildable.
@@ -132,7 +132,7 @@ meta/accounting/indexes/
   by_credential_grant/<credential_grant_id>/YYYY-MM.kidx
 ```
 
-Index entries point to ledger segment offsets. If indexes are missing or corrupt, Mycel can rebuild them by scanning `inference-usage-*.kusage`.
+Index entries point to ledger segment offsets. If indexes are missing or corrupt, Mycel can rebuild them by scanning `inference-usage-*.kusag`.
 
 ## Rollups
 

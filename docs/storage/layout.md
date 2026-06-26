@@ -45,7 +45,7 @@ This document is the root map for the storage directory. Detailed file formats a
 
     accounting/                        # proposed append-only inference usage ledger and derived indexes
       manifest.json
-      inference-usage-000001.kusage
+      inference-usage-000001.kusag
       indexes/
         by_principal/<principal_id>/YYYY-MM.kidx
         by_space/<space_id>/YYYY-MM.kidx

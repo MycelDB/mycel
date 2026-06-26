@@ -53,7 +53,7 @@ This document tracks design points that remain unclear or need explicit decision
 
 - Every model endpoint call made by Mycel must be accounted for.
 - Accounting records are not graph data because graph data is mutable.
-- The authoritative usage store is an append-only ledger under `meta/accounting/inference-usage-*.kusage`.
+- The authoritative usage store is an append-only ledger under `meta/accounting/inference-usage-*.kusag`.
 - Usage events record operation, time, actor/effective/on-behalf-of principals, space/domain/node context when available, model endpoint/model, credential/grant, status, and token counts.
 - Token count source must be explicit: `provider_reported`, `estimated`, or `unavailable`.
 - Accounting indexes by principal, space, domain, node, endpoint/model, operation, credential grant, and time are derived and rebuildable.
