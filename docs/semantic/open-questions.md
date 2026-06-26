@@ -11,18 +11,20 @@ This document tracks design points that remain unclear or need explicit decision
 - If traversal reaches a subtree whose effective inference policy disallows the index endpoint/model, analysis of that subtree stops.
 - Blob text, transcripts, OCR, captions, and other derived sources should be explicit `derived_sources`; implementation can be deferred from the MVP.
 
-## 1. Dirty Queue Transactionality
+## Resolved Dirty Event Decisions
 
-Graph writes should not synchronously generate embeddings, but dirty work must not be lost.
+- Graph transactions append one raw graph dirty event per transaction.
+- Raw graph dirty events include node and edge changes.
+- Move/delete events include old parent/domain context so old roots can be dirtied after commit.
+- Raw graph dirty events are retained through append-only event logs and per-index checkpoints.
+- Raw graph dirty event idempotency uses `txn_id`.
+- Coalesced semantic dirty work idempotency uses `semantic_index_id + target_node_id`.
+- Semantic configuration changes enqueue events, including index, policy, grant, model endpoint, model, endpoint capability, vector store, and credential revocation changes.
+- Semantic analysis is per semantic index, with independent checkpoints.
+- Multi-process writer support is deferred.
+- Raw graph dirty events and semantic config events use event logs rather than JSON rewrite.
 
-Still to decide:
-
-- Is dirty marking part of the same durable commit unit as the graph write?
-- If graph commit succeeds but dirty marking fails, is there a reconciliation scan?
-- Should dirty work be JSON-rewritten initially or append-only from the start?
-- How are concurrent edits coalesced safely?
-
-## 2. Inference Policy Defaults
+## 1. Inference Policy Defaults
 
 Policies can restrict processing by endpoint privacy/network class.
 
@@ -34,7 +36,7 @@ Still to decide:
 - Are policies inherited only through containment edges?
 - What happens when a node moves into or out of a restricted subtree?
 
-## 3. Credential Grant Defaults
+## 2. Credential Grant Defaults
 
 Credentials are principal-owned; grants are space-owned.
 
@@ -45,7 +47,7 @@ Still to decide:
 - Can system/org credentials process user-owned content by default?
 - How should shared spaces decide whose credential pays for embedding refresh and query embeddings?
 
-## 4. Query Embedding Credential Resolution
+## 3. Query Embedding Credential Resolution
 
 Content embeddings and query embeddings may use the same endpoint/model but not necessarily the same credential.
 
@@ -56,7 +58,7 @@ Still to decide:
 - Should query credential use be audited separately from content embedding records?
 - What happens if an index exists but the current querying user cannot resolve a credential?
 
-## 5. Deletion, Privacy, and Revocation
+## 4. Deletion, Privacy, and Revocation
 
 Policy and credential changes can invalidate existing derived vectors.
 
@@ -68,7 +70,7 @@ Still to decide:
 - Are embeddings treated as derived personal data for export/delete?
 - Do policy changes enqueue cleanup jobs?
 
-## 6. Semantic Index Versioning
+## 5. Semantic Index Versioning
 
 Index definitions may change over time.
 
@@ -82,7 +84,7 @@ Still to decide:
 - Should stable aliases point to versioned indexes?
 - How are old index versions retired or compacted?
 
-## 7. Minimal Implementation Slice
+## 6. Minimal Implementation Slice
 
 A reasonable first implementation might include:
 
@@ -95,8 +97,11 @@ InferenceCredential
 space-owned CredentialGrant
 space-owned InferencePolicy
 SemanticIndex
+transactional graph dirty event log
+semantic config event log
+per-index semantic analyzer checkpoints
+coalesced semantic dirty queue
 manual backfill
-basic dirty queue
 single/multiple index search over mycel-file
 ```
 
@@ -111,4 +116,5 @@ persistent policy-decision retention controls
 full compaction
 explicit endpoint verification commands
 automatic endpoint probing
+multi-process writer coordination
 ```

@@ -12,7 +12,7 @@ That storage document defines:
 - current `.kvec` append-only block structure
 - proposed inference/model-endpoint/model/capability/vector-store JSON structures
 - proposed credential, grant, and policy JSON structures
-- proposed semantic index, index state, dirty queue, and policy decision JSON structures
+- proposed semantic index, index state, dirty queue, graph dirty event, semantic config event, and policy decision structures
 - proposed per-index `.kvec` vector record structure
 - recovery and compaction behavior
 

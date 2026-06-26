@@ -219,6 +219,9 @@ Proposed layout:
     credentials/
       credentials.json
 
+    semantic_events/
+      semantic-config-000001.ksem
+
   graphs/
     <space_id>/
       manifest.mycel
@@ -234,6 +237,9 @@ Proposed layout:
         index_state.json
         dirty_queue.json
         policy_decisions.json
+
+        events/
+          graph-dirty-000001.ksem
 
         indexes/
           <semantic_index_id>/
@@ -638,6 +644,8 @@ Stores operational state for each semantic index.
       "skipped_policy_count": 3,
       "credential_resolution_failure_count": 1,
       "source_policy_hash": "sha256:...",
+      "graph_dirty_checkpoint_revision": 123,
+      "semantic_config_checkpoint": "semantic-config-000001.ksem:12345",
       "updated_at": "RFC3339 timestamp"
     }
   ]
@@ -649,10 +657,104 @@ Fields:
 - `dirty_count`: pending work count for the index.
 - `record_count`: last known logical or physical record count, depending on implementation.
 - `source_policy_hash`: detects index definition changes requiring re-evaluation/backfill.
+- `graph_dirty_checkpoint_revision`: latest graph dirty revision analyzed by this semantic index.
+- `semantic_config_checkpoint`: latest global semantic config event offset analyzed by this semantic index.
+
+### `meta/semantic_events/semantic-config-*.ksem`
+
+Stores append-only semantic configuration events.
+
+These events are global event classes with scoped payloads. Global inference changes may affect many spaces; space-owned changes carry the owning `space_id`.
+
+Examples:
+
+```text
+semantic_index_changed
+inference_policy_changed
+credential_grant_changed
+model_endpoint_changed
+model_changed
+model_endpoint_capability_changed
+vector_store_changed
+credential_revoked
+```
+
+Conceptual event payload:
+
+```json
+{
+  "id": "uuid",
+  "event_kind": "model_endpoint_capability_changed",
+  "scope": {
+    "space_id": "uuid",
+    "domain_id": "uuid",
+    "semantic_index_id": "uuid"
+  },
+  "resource_id": "uuid-or-key",
+  "created_at": "RFC3339 timestamp"
+}
+```
+
+Semantic index analyzers consume this log from per-index checkpoints.
+
+### `graphs/<space_id>/semantic/events/graph-dirty-*.ksem`
+
+Stores append-only raw graph dirty events transactionally associated with graph commits.
+
+Decision:
+
+```text
+one event per graph transaction
+```
+
+Conceptual event payload:
+
+```json
+{
+  "id": "uuid",
+  "txn_id": "uuid",
+  "graph_revision": 123,
+  "space_id": "uuid",
+  "domain_ids": ["uuid"],
+  "created_node_ids": ["uuid"],
+  "updated_node_ids": ["uuid"],
+  "deleted_node_ids": ["uuid"],
+  "changed_edges": [
+    {
+      "edge_id": "uuid",
+      "kind": "contains",
+      "change": "added|removed|updated|reordered",
+      "from_id": "uuid",
+      "to_id": "uuid"
+    }
+  ],
+  "old_parent_by_node_id": {
+    "node-uuid": "old-parent-uuid"
+  },
+  "new_parent_by_node_id": {
+    "node-uuid": "new-parent-uuid"
+  },
+  "old_domain_by_node_id": {
+    "node-uuid": "old-domain-uuid"
+  },
+  "new_domain_by_node_id": {
+    "node-uuid": "new-domain-uuid"
+  },
+  "committed_at": "RFC3339 timestamp"
+}
+```
+
+Rules:
+
+- Raw graph dirty event uniqueness is `txn_id`.
+- Edge changes are included because containment moves/reorders can affect subtree extraction.
+- Old parent/domain context is included so analyzers can dirty old roots after moves/deletes.
+- Semantic analyzers consume these events per semantic index.
+- Reprocessing the same event must be idempotent.
 
 ### `graphs/<space_id>/semantic/dirty_queue.json`
 
-Stores semantic-index maintenance work.
+Stores coalesced semantic-index maintenance work produced by semantic analysis.
 
 ```json
 {
@@ -664,7 +766,10 @@ Stores semantic-index maintenance work.
       "domain_id": "uuid",
       "target_node_id": "uuid",
       "source_node_id": "uuid",
-      "reason": "node_created|node_updated|node_deleted|node_moved|policy_changed|index_changed|manual_backfill",
+      "source_txn_ids": ["uuid"],
+      "first_graph_revision": 120,
+      "last_graph_revision": 123,
+      "reason": "node_created|node_updated|node_deleted|node_moved|policy_changed|index_changed|credential_grant_changed|model_capability_changed|manual_backfill",
       "status": "pending|running|complete|failed|cancelled",
       "earliest_run_at": "RFC3339 timestamp",
       "attempts": 0,
@@ -678,7 +783,7 @@ Stores semantic-index maintenance work.
 
 Rules:
 
-- Work should coalesce by `semantic_index_id + target_node_id`.
+- Work should coalesce by `semantic_index_id + target_node_id`; this is the semantic dirty work idempotency key.
 - For `self` extraction, `target_node_id` is the changed node only when it is an effective source root.
 - For `subtree` extraction, `target_node_id` is the containing effective source root selected by the index.
 - Effective source roots do not nest, so at most one dirty item is needed for a changed node per semantic index.
@@ -859,15 +964,18 @@ If future indexes allow multiple source policies per node within one semantic in
 If a block is created under a parent whose effective policy recommends embeddings:
 
 1. The graph mutation is committed to `graphs/<space_id>/segments/*.kseg`.
-2. Mycel resolves applicable semantic indexes from `graphs/<space_id>/semantic/indexes.json`.
-3. Mycel evaluates inherited policies from `graphs/<space_id>/semantic/inference_policies.json`.
-4. Mycel writes or coalesces dirty work in `graphs/<space_id>/semantic/dirty_queue.json`.
-5. A background maintainer later processes dirty work.
-6. The maintainer resolves credential metadata from `meta/credentials/credentials.json` and authorization grants from `graphs/<space_id>/semantic/credential_grants.json`.
-7. Generated records are appended to the semantic index vector store.
-8. State is updated in `graphs/<space_id>/semantic/index_state.json`.
+2. The same graph transaction appends one raw graph dirty event to `graphs/<space_id>/semantic/events/graph-dirty-*.ksem`.
+3. The graph write returns without resolving semantic indexes, policies, credentials, or endpoints.
+4. Each semantic index analyzer consumes the raw graph dirty event from its own checkpoint.
+5. The analyzer resolves applicable source roots from `graphs/<space_id>/semantic/indexes.json`.
+6. The analyzer evaluates inherited policies from `graphs/<space_id>/semantic/inference_policies.json`.
+7. The analyzer writes or coalesces semantic dirty work in `graphs/<space_id>/semantic/dirty_queue.json`.
+8. A background maintainer later processes dirty work.
+9. The maintainer resolves credential metadata from `meta/credentials/credentials.json` and authorization grants from `graphs/<space_id>/semantic/credential_grants.json`.
+10. Generated records are appended to the semantic index vector store.
+11. State and checkpoints are updated in `graphs/<space_id>/semantic/index_state.json`.
 
-This keeps graph writes fast and durable while making semantic maintenance resumable after process restarts.
+This keeps graph writes fast and durable while making semantic maintenance resumable and replayable after process restarts.
 
 ## Recovery and In-Memory Indexes
 

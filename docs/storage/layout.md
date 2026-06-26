@@ -7,7 +7,7 @@ This document is the root map for the storage directory. Detailed file formats a
 - [meta.md](meta.md): global metadata, users, spaces, ACL, domains, templates, inference definitions, credentials, and secrets
 - [graphs.md](graphs.md): per-space graph storage, graph manifests, graph segment files, recovery, and graph indexes
 - [blobs.md](blobs.md): content-addressed blob storage and blob lifecycle
-- [semantic.md](semantic.md): semantic indexes, dirty queues, policy decisions, and append-only vector records
+- [semantic.md](semantic.md): semantic indexes, graph/config event logs, dirty queues, policy decisions, and append-only vector records
 - [segment-store.md](segment-store.md): current graph segment store details
 
 ## Directory Tree
@@ -40,6 +40,9 @@ This document is the root map for the storage directory. Detailed file formats a
     credentials/                       # proposed credential metadata; grants are space-owned
       credentials.json
 
+    semantic_events/                   # proposed global semantic config event log
+      semantic-config-000001.ksem
+
   graphs/
     <space_id>/
       .space
@@ -61,6 +64,9 @@ This document is the root map for the storage directory. Detailed file formats a
         index_state.json
         dirty_queue.json
         policy_decisions.json
+
+        events/
+          graph-dirty-000001.ksem
 
         indexes/
           <semantic_index_id>/

@@ -2,7 +2,7 @@
 
 Embedding generation turns selected graph content into derived vector records.
 
-The write path should not call model endpoints synchronously. Graph writes commit first; semantic maintenance work is marked dirty and processed asynchronously.
+The write path should not call model endpoints synchronously. Graph writes commit first and transactionally append lightweight graph dirty events. Semantic analysis and embedding refresh happen asynchronously.
 
 ## Current MVP Source Modes
 
@@ -27,34 +27,44 @@ The assembled source text is hashed. Generation skips an existing matching embed
 
 ## Advanced Generation Flow
 
-When graph content changes:
+When graph content changes, the graph transaction does not resolve semantic indexes, policies, credentials, or model endpoints. It only records what changed.
 
 ```text
-node create/update/delete/move
+graph transaction
   -> commit graph mutation
-  -> resolve affected semantic indexes
-  -> evaluate inference policies
-  -> identify embedding target node(s)
-  -> coalesce dirty work
-  -> background maintainer processes work
+  -> append one raw graph dirty event for the transaction
+  -> return to caller
+
+semantic analyzer, per semantic index
+  -> consume raw graph dirty events
+  -> resolve affected source roots
+  -> evaluate source policies and inference policies
+  -> coalesce semantic dirty work
+
+embedding worker
+  -> process semantic dirty work
+  -> resolve endpoint/model/vector-store binding
   -> resolve credential grant
+  -> extract source text
   -> call model endpoint
   -> append embedding record
   -> update index state
 ```
+
+This keeps graph commits fast while making semantic maintenance transactional and replayable.
 
 ## Node Creation Example
 
 If a block is created under a parent whose effective policy recommends embeddings:
 
 1. commit the graph mutation
-2. resolve semantic indexes covering the node or its semantic root
-3. evaluate inherited policies from space/domain/index/ancestor/subtree scopes
-4. skip indexes whose endpoint/model violates policy
-5. compute the dirty target node
-6. write or coalesce dirty work
-7. return from the graph write
-8. background refresh later generates embeddings
+2. append a raw graph dirty event for the transaction, including the created node ID and containment context
+3. return from the graph write
+4. each semantic index analyzer consumes the event from its own checkpoint
+5. the analyzer computes whether the changed node affects an effective source root for that index
+6. the analyzer evaluates source policy and inference policy
+7. the analyzer writes or coalesces semantic dirty work
+8. the embedding worker later generates embeddings
 
 ## Dirty Target Selection
 
@@ -96,7 +106,82 @@ Algorithm:
 
 Because roots do not nest, there is at most one containing effective source root per semantic index.
 
-## Dirty Work Item
+## Transactional Graph Dirty Event
+
+The raw graph dirty event log is the transactionally coupled part of semantic maintenance.
+
+Decision:
+
+```text
+one raw graph dirty event per graph transaction
+```
+
+The event contains arrays of changed graph identities and enough old/new containment context for semantic analysis after the commit.
+
+Conceptual fields:
+
+```text
+id
+txn_id
+graph_revision
+space_id
+domain_ids
+created_node_ids
+updated_node_ids
+deleted_node_ids
+changed_edges              # includes containment edge adds/removes/reorders
+old_parent_by_node_id
+new_parent_by_node_id
+old_domain_by_node_id
+new_domain_by_node_id
+committed_at
+```
+
+Edge changes must be logged because containment moves/reorders can change subtree extraction even when node content is unchanged.
+
+For moves/deletes, old state is required. For example, moving a node from one journal to another may dirty both the old containing root and the new containing root. After a delete, the analyzer may not be able to recover old ancestry unless it was captured in the event.
+
+Raw graph dirty event idempotency key:
+
+```text
+txn_id
+```
+
+A raw event can be analyzed repeatedly without changing the final result.
+
+## Semantic Config Events
+
+Graph dirty events cover graph mutations only. Semantic configuration changes must also enqueue events.
+
+Examples:
+
+```text
+semantic_index_changed
+inference_policy_changed
+credential_grant_changed
+model_endpoint_changed
+model_changed
+model_endpoint_capability_changed
+vector_store_changed
+credential_revoked
+```
+
+These are global event classes with scoped payloads. Global inference changes may affect many spaces; space-owned changes such as index, grant, or policy changes carry the owning `space_id`.
+
+Semantic analyzers must consume both graph dirty events and semantic config events.
+
+## Per-Index Analysis
+
+Semantic analysis is per index. Each semantic index keeps its own checkpoints over the raw graph dirty event log and semantic config event log.
+
+This allows:
+
+- newly created indexes to backfill or analyze from their own starting point
+- disabled indexes to pause without blocking other indexes
+- failed indexes to retry independently
+- index-specific source policies to be evaluated independently
+
+## Semantic Dirty Work Item
 
 Conceptual fields:
 
@@ -115,11 +200,13 @@ last_error
 created_at / updated_at
 ```
 
-Dirty work should coalesce by:
+Semantic dirty work is planned embedding work produced by analysis. It should coalesce by:
 
 ```text
 semantic_index_id + target_node_id
 ```
+
+That is the preferred dirty-work idempotency key. Multiple raw graph events can update the same coalesced dirty item by adding reasons/source transaction ranges and by moving `earliest_run_at` according to debounce policy.
 
 This prevents repeated edits to one subtree from generating excessive model endpoint calls.
 

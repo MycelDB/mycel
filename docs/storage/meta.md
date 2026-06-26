@@ -36,6 +36,9 @@ meta/
 
   credentials/        # proposed advanced credential metadata; grants are space-owned
     credentials.json
+
+  semantic_events/    # proposed global semantic config event log
+    semantic-config-000001.ksem
 ```
 
 ## Required Metadata Files
@@ -292,6 +295,8 @@ These stores are global/deployment-level or cross-space metadata:
 - credentials bind principals to model endpoint auth material
 
 Credential grants and inference/content policies are space-owned because they govern processing of content in a specific space. They are stored under `graphs/<space_id>/semantic/`; see [semantic.md](semantic.md).
+
+Global semantic configuration events are operational append-only events under `meta/semantic_events/`. They notify semantic analyzers about changes such as model endpoint capabilities, model definitions, vector stores, credential revocations, and scoped space-owned semantic configuration changes.
 
 ## Atomic Writes and Recovery
 
