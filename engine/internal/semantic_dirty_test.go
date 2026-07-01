@@ -112,6 +112,30 @@ func TestRuntimeEngineAdvancedSemanticSearchEmptyWhenNoIndexes(t *testing.T) {
 	}
 }
 
+func TestRuntimeEngineRunSemanticMaintenanceNoop(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	eng, err := NewEngine(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin", AdminPassword: "pass", AdvancedSemanticEnabled: true}, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("engine init failed: %v", err)
+	}
+	auth, err := eng.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin"), Password: "pass"})
+	if err != nil {
+		t.Fatalf("auth failed: %v", err)
+	}
+	space, err := eng.CreateSpace(ctx, CreateSpaceInput{AccessToken: auth.AccessToken, Name: "Semantic"})
+	if err != nil {
+		t.Fatalf("create space failed: %v", err)
+	}
+	result, err := eng.RunSemanticMaintenance(ctx, RunSemanticMaintenanceInput{AccessToken: auth.AccessToken, SpaceID: space.SpaceID})
+	if err != nil {
+		t.Fatalf("semantic maintenance failed: %v", err)
+	}
+	if result.ProcessedEvents != 0 || result.EnqueuedItems != 0 || result.ProcessedItems != 0 || result.CompletedItems != 0 || result.FailedItems != 0 {
+		t.Fatalf("expected no-op maintenance result, got %+v", result)
+	}
+}
+
 func TestRuntimeEngineSemanticDirtyDisabledByDefault(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()

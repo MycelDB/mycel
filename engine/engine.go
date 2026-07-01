@@ -77,6 +77,8 @@ type ListEmbeddingProfilesInput = engineinternal.ListEmbeddingProfilesInput
 type AddEmbeddingProfileInput = engineinternal.AddEmbeddingProfileInput
 type UpdateEmbeddingProfileInput = engineinternal.UpdateEmbeddingProfileInput
 type DeleteEmbeddingProfileInput = engineinternal.DeleteEmbeddingProfileInput
+type RunSemanticMaintenanceInput = engineinternal.RunSemanticMaintenanceInput
+type RunSemanticMaintenanceResult = engineinternal.RunSemanticMaintenanceResult
 
 const (
 	RefreshSessionStatusActive  = engineinternal.RefreshSessionStatusActive
@@ -134,6 +136,7 @@ type Engine interface {
 	AddEmbeddingProfile(ctx context.Context, in AddEmbeddingProfileInput) (domainembedding.Profile, error)
 	UpdateEmbeddingProfile(ctx context.Context, in UpdateEmbeddingProfileInput) (domainembedding.Profile, error)
 	DeleteEmbeddingProfile(ctx context.Context, in DeleteEmbeddingProfileInput) error
+	RunSemanticMaintenance(ctx context.Context, in RunSemanticMaintenanceInput) (RunSemanticMaintenanceResult, error)
 	OpenSession(ctx context.Context, in OpenSessionInput) (session.Session, error)
 	Close() error
 }

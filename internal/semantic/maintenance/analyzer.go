@@ -227,7 +227,11 @@ func (w Worker) ProcessOnce(ctx context.Context, limit int) (WorkerResult, error
 			return result, err
 		}
 		if item.Action == domainsemantic.SemanticDirtyWorkActionRefresh || item.Action == domainsemantic.SemanticDirtyWorkActionBackfill {
-			_, err = w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticIndexID: item.SemanticIndexID, NodeIDs: []graph.NodeID{item.TargetNodeID}, Force: true, ContinueOnError: true})
+			nodeIDs := []graph.NodeID{item.TargetNodeID}
+			if item.Action == domainsemantic.SemanticDirtyWorkActionBackfill && graph.NodeID(item.SemanticIndexID) == item.TargetNodeID {
+				nodeIDs = nil
+			}
+			_, err = w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: true, ContinueOnError: true})
 		} else if item.Action == domainsemantic.SemanticDirtyWorkActionDelete || item.Action == domainsemantic.SemanticDirtyWorkActionCleanup {
 			err = w.deleteVector(ctx, item)
 		} else {
