@@ -137,6 +137,41 @@ engine.NewEngine(cfg, nil, nil, nil, nil)
 
 Downstream applications should follow this flow when embedding MycelDB directly.
 
+## Authentication and session architecture
+
+MycelDB currently provides short-lived access tokens through `engine.Authenticate`.
+
+Current characteristics:
+
+- Access tokens are opaque `engine.AccessToken` values.
+- Token claims are kept in the engine's in-memory auth cache.
+- Tokens expire according to `auth.access_token_ttl` / `MYCELDB_AUTH_ACCESS_TOKEN_TTL`.
+- Tokens are not sliding; using a token does not extend its expiry.
+- Engine restart clears the in-memory auth cache, so previously issued tokens become invalid.
+- Mycel does not currently provide durable browser refresh sessions, refresh-token rotation, token introspection, or privileged user-token minting.
+
+Applications embedding MycelDB should treat Mycel access tokens as short-lived engine credentials. Product-level browser sessions can be owned by the application layer. For example, Knot PKM can store hashed refresh-session records in its own protected system graph and mint new short-lived Mycel access tokens by re-authenticating through application-owned credentials.
+
+Potential future MycelDB auth/session primitives, if needed by applications, should be added explicitly to the public `engine.Engine` API and backed by dedicated persistence stores:
+
+- durable refresh/session records that survive engine restart
+- refresh-token rotation and reuse detection
+- token expiry/introspection metadata
+- revocation of individual sessions or token families
+- privileged service-role user-token minting or impersonation with strict audit trails
+
+If MycelDB owns any of these primitives in the future, the implementation should update:
+
+| Area | Expected change |
+|------|-----------------|
+| Public API | Add methods/types in `engine/engine.go` |
+| Engine internals | Implement auth/session lifecycle in `engine/internal` |
+| Persistence | Add or extend `store/*` managers for durable auth/session records |
+| CLI | Add admin/session commands under `internal/cli/cmd` if operator-facing |
+| Docs | Update this architecture document and auth/config references |
+
+Until then, Mycel access-token TTL should remain configurable, and applications that need long-lived UX should layer refresh sessions above Mycel rather than storing long-lived Mycel access tokens in browser-readable storage.
+
 ## Interface placement
 
 Interfaces are defined next to their primary consumer, not in a single global file:
