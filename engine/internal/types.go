@@ -38,6 +38,7 @@ type EngineConfig struct {
 	RefreshTokenBytes         int
 	BlobLimits                sessionapi.BlobLimits
 	BlobStaleTmpAge           time.Duration
+	AdvancedSemanticEnabled   bool
 }
 
 type BlobLimits = sessionapi.BlobLimits

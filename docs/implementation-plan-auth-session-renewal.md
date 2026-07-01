@@ -5,7 +5,7 @@ Status: complete. Phases 1 through 10 are implemented on the `session_renewal` b
 Related docs:
 
 - `docs/architecture.md` — current auth/session architecture and package boundaries.
-- `docs/cli.md` — CLI configuration and auth-session commands.
+- `docs/cli/README.md` — CLI configuration and auth-session commands.
 - `docs/auth-session-migration.md` — adoption and migration guidance.
 - Knot PKM server `docs/design/session-renewal-auth.md` — app-owned refresh-session design.
 
@@ -285,7 +285,7 @@ Acceptance:
 - Add refresh-session config fields.
 - Add env aliases.
 - Add validation tests.
-- Update `docs/cli.md` and architecture docs.
+- Update `docs/cli/README.md` and architecture docs.
 
 Acceptance:
 

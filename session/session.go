@@ -9,7 +9,9 @@ import (
 	"github.com/myceldb/mycel/internal/graphstorage"
 	"github.com/myceldb/mycel/internal/session/filesession"
 	sessionapi "github.com/myceldb/mycel/session/api"
+	storeaccounting "github.com/myceldb/mycel/store/accounting"
 	storeembedding "github.com/myceldb/mycel/store/embedding"
+	storesemantic "github.com/myceldb/mycel/store/semantic"
 	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
@@ -51,6 +53,10 @@ type (
 	EmbeddingBatchFailure            = sessionapi.EmbeddingBatchFailure
 	ListNodeEmbeddingsInput          = sessionapi.ListNodeEmbeddingsInput
 	SemanticSearchInput              = sessionapi.SemanticSearchInput
+	AdvancedSemanticSearchInput      = sessionapi.AdvancedSemanticSearchInput
+	AdvancedSemanticSearchResult     = sessionapi.AdvancedSemanticSearchResult
+	AdvancedSemanticSearchGroup      = sessionapi.AdvancedSemanticSearchGroup
+	AdvancedSemanticSearchOutput     = sessionapi.AdvancedSemanticSearchOutput
 	TagMatchMode                     = sessionapi.TagMatchMode
 	TagSummary                       = sessionapi.TagSummary
 	FindNodesByTagInput              = sessionapi.FindNodesByTagInput
@@ -74,11 +80,15 @@ var (
 
 // Config carries runtime session knobs supplied by the engine.
 type Config struct {
-	BlobLimits       BlobLimits
-	BlobStaleTmpAge  time.Duration
-	CurrentUserID    identity.UserID
-	EmbeddingManager storeembedding.Manager
-	DomainID         graph.DomainID
+	BlobLimits                BlobLimits
+	BlobStaleTmpAge           time.Duration
+	CurrentUserID             identity.UserID
+	EmbeddingManager          storeembedding.Manager
+	SemanticManager           storesemantic.GlobalManager
+	AccountingManager         storeaccounting.Manager
+	UserStoreEncryptionKeyB64 string
+	DomainID                  graph.DomainID
+	AdvancedSemanticEnabled   bool
 }
 
 // NewSession opens a file-backed graph session for a space.
@@ -99,10 +109,14 @@ func NewSessionWithStore(graphsDir string, blobsDir string, spaceID domainspace.
 // NewSessionWithStoreConfig opens a file-backed session over an engine-owned graph store.
 func NewSessionWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions Permissions, errs Errors, store *graphstorage.LocalStore, cfg Config) Session {
 	return filesession.NewWithStoreConfig(graphsDir, blobsDir, spaceID, templateManager, permissions, errs, store, filesession.Config{
-		BlobLimits:       cfg.BlobLimits,
-		BlobStaleTmpAge:  cfg.BlobStaleTmpAge,
-		CurrentUserID:    cfg.CurrentUserID,
-		EmbeddingManager: cfg.EmbeddingManager,
-		DomainID:         cfg.DomainID,
+		BlobLimits:                cfg.BlobLimits,
+		BlobStaleTmpAge:           cfg.BlobStaleTmpAge,
+		CurrentUserID:             cfg.CurrentUserID,
+		EmbeddingManager:          cfg.EmbeddingManager,
+		SemanticManager:           cfg.SemanticManager,
+		AccountingManager:         cfg.AccountingManager,
+		UserStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64,
+		DomainID:                  cfg.DomainID,
+		AdvancedSemanticEnabled:   cfg.AdvancedSemanticEnabled,
 	})
 }
