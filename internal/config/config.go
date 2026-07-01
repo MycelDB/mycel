@@ -31,6 +31,10 @@ type Config struct {
 	AdminPassword             string
 	UserStoreEncryptionKeyB64 string
 	AccessTokenTTL            time.Duration
+	RefreshIdleTTL            time.Duration
+	RefreshAbsoluteTTL        time.Duration
+	RefreshAuditRetentionTTL  time.Duration
+	RefreshTokenBytes         int
 	BlobStaleTmpAge           time.Duration
 	BlobLimits                mycelengine.BlobLimits
 }
@@ -66,6 +70,10 @@ func Load(opts Options) (Config, error) {
 		AdminPassword:             k.String("admin_password"),
 		UserStoreEncryptionKeyB64: strings.TrimSpace(k.String("security.user_store_encryption_key_b64")),
 		AccessTokenTTL:            k.Duration("auth.access_token_ttl"),
+		RefreshIdleTTL:            k.Duration("auth.refresh_idle_ttl"),
+		RefreshAbsoluteTTL:        k.Duration("auth.refresh_absolute_ttl"),
+		RefreshAuditRetentionTTL:  k.Duration("auth.refresh_audit_retention_ttl"),
+		RefreshTokenBytes:         k.Int("auth.refresh_token_bytes"),
 		BlobStaleTmpAge:           k.Duration("storage.blobs.stale_tmp_age"),
 		BlobLimits: mycelengine.BlobLimits{
 			MaxSizeBytes:   k.Int64("storage.blobs.max_size_bytes"),
@@ -92,6 +100,10 @@ func (c Config) EngineConfig() mycelengine.EngineConfig {
 		AdminPassword:             c.AdminPassword,
 		UserStoreEncryptionKeyB64: c.UserStoreEncryptionKeyB64,
 		AccessTokenTTL:            c.AccessTokenTTL,
+		RefreshIdleTTL:            c.RefreshIdleTTL,
+		RefreshAbsoluteTTL:        c.RefreshAbsoluteTTL,
+		RefreshAuditRetentionTTL:  c.RefreshAuditRetentionTTL,
+		RefreshTokenBytes:         c.RefreshTokenBytes,
 		BlobLimits:                c.BlobLimits,
 		BlobStaleTmpAge:           c.BlobStaleTmpAge,
 	}
@@ -103,6 +115,21 @@ func (c Config) Validate() error {
 	}
 	if c.AccessTokenTTL <= 0 {
 		return fmt.Errorf("auth.access_token_ttl must be positive")
+	}
+	if c.RefreshIdleTTL <= 0 {
+		return fmt.Errorf("auth.refresh_idle_ttl must be positive")
+	}
+	if c.RefreshAbsoluteTTL <= 0 {
+		return fmt.Errorf("auth.refresh_absolute_ttl must be positive")
+	}
+	if c.RefreshAbsoluteTTL < c.RefreshIdleTTL {
+		return fmt.Errorf("auth.refresh_absolute_ttl must be greater than or equal to auth.refresh_idle_ttl")
+	}
+	if c.RefreshAuditRetentionTTL <= 0 {
+		return fmt.Errorf("auth.refresh_audit_retention_ttl must be positive")
+	}
+	if c.RefreshTokenBytes < 32 {
+		return fmt.Errorf("auth.refresh_token_bytes must be at least 32")
 	}
 	if c.BlobStaleTmpAge <= 0 {
 		return fmt.Errorf("storage.blobs.stale_tmp_age must be positive")
@@ -119,6 +146,10 @@ func defaults() map[string]any {
 		"admin_password":                         "",
 		"security.user_store_encryption_key_b64": "",
 		"auth.access_token_ttl":                  "1h",
+		"auth.refresh_idle_ttl":                  "720h",
+		"auth.refresh_absolute_ttl":              "2160h",
+		"auth.refresh_audit_retention_ttl":       "720h",
+		"auth.refresh_token_bytes":               32,
 		"storage.blobs.stale_tmp_age":            "1h",
 		"storage.blobs.max_size_bytes":           int64(-1),
 		"storage.blobs.max_image_bytes":          int64(-1),
@@ -139,16 +170,20 @@ func envKey(key string) string {
 
 func applyEnvAliases(k *koanf.Koanf) {
 	aliases := map[string]string{
-		"MYCELDB_DATA_DIR":                      "data_dir",
-		"MYCELDB_USER_STORE_ENCRYPTION_KEY_B64": "security.user_store_encryption_key_b64",
-		"MYCELDB_AUTH_ACCESS_TOKEN_TTL":         "auth.access_token_ttl",
-		"MYCELDB_STORAGE_BLOBS_STALE_TMP_AGE":   "storage.blobs.stale_tmp_age",
-		"MYCELDB_STORAGE_BLOBS_MAX_SIZE_BYTES":  "storage.blobs.max_size_bytes",
-		"MYCELDB_STORAGE_BLOBS_MAX_IMAGE_BYTES": "storage.blobs.max_image_bytes",
-		"MYCELDB_STORAGE_BLOBS_MAX_PDF_BYTES":   "storage.blobs.max_pdf_bytes",
-		"MYCELDB_STORAGE_BLOBS_MAX_AUDIO_BYTES": "storage.blobs.max_audio_bytes",
-		"MYCELDB_STORAGE_BLOBS_MAX_VIDEO_BYTES": "storage.blobs.max_video_bytes",
-		"MYCELDB_STORAGE_BLOBS_MAX_OTHER_BYTES": "storage.blobs.max_other_bytes",
+		"MYCELDB_DATA_DIR":                         "data_dir",
+		"MYCELDB_USER_STORE_ENCRYPTION_KEY_B64":    "security.user_store_encryption_key_b64",
+		"MYCELDB_AUTH_ACCESS_TOKEN_TTL":            "auth.access_token_ttl",
+		"MYCELDB_AUTH_REFRESH_IDLE_TTL":            "auth.refresh_idle_ttl",
+		"MYCELDB_AUTH_REFRESH_ABSOLUTE_TTL":        "auth.refresh_absolute_ttl",
+		"MYCELDB_AUTH_REFRESH_AUDIT_RETENTION_TTL": "auth.refresh_audit_retention_ttl",
+		"MYCELDB_AUTH_REFRESH_TOKEN_BYTES":         "auth.refresh_token_bytes",
+		"MYCELDB_STORAGE_BLOBS_STALE_TMP_AGE":      "storage.blobs.stale_tmp_age",
+		"MYCELDB_STORAGE_BLOBS_MAX_SIZE_BYTES":     "storage.blobs.max_size_bytes",
+		"MYCELDB_STORAGE_BLOBS_MAX_IMAGE_BYTES":    "storage.blobs.max_image_bytes",
+		"MYCELDB_STORAGE_BLOBS_MAX_PDF_BYTES":      "storage.blobs.max_pdf_bytes",
+		"MYCELDB_STORAGE_BLOBS_MAX_AUDIO_BYTES":    "storage.blobs.max_audio_bytes",
+		"MYCELDB_STORAGE_BLOBS_MAX_VIDEO_BYTES":    "storage.blobs.max_video_bytes",
+		"MYCELDB_STORAGE_BLOBS_MAX_OTHER_BYTES":    "storage.blobs.max_other_bytes",
 	}
 	for envName, key := range aliases {
 		if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
@@ -162,19 +197,23 @@ func applyFlagOverrides(k *koanf.Koanf, flags *pflag.FlagSet) {
 		return
 	}
 	flagMap := map[string]string{
-		"data-dir":                      "data_dir",
-		"output":                        "output",
-		"username":                      "admin_username",
-		"password":                      "admin_password",
-		"user-store-encryption-key-b64": "security.user_store_encryption_key_b64",
-		"auth-token-ttl":                "auth.access_token_ttl",
-		"blob-stale-tmp-age":            "storage.blobs.stale_tmp_age",
-		"blob-max-size-bytes":           "storage.blobs.max_size_bytes",
-		"blob-max-image-bytes":          "storage.blobs.max_image_bytes",
-		"blob-max-pdf-bytes":            "storage.blobs.max_pdf_bytes",
-		"blob-max-audio-bytes":          "storage.blobs.max_audio_bytes",
-		"blob-max-video-bytes":          "storage.blobs.max_video_bytes",
-		"blob-max-other-bytes":          "storage.blobs.max_other_bytes",
+		"data-dir":                         "data_dir",
+		"output":                           "output",
+		"username":                         "admin_username",
+		"password":                         "admin_password",
+		"user-store-encryption-key-b64":    "security.user_store_encryption_key_b64",
+		"auth-token-ttl":                   "auth.access_token_ttl",
+		"auth-refresh-idle-ttl":            "auth.refresh_idle_ttl",
+		"auth-refresh-absolute-ttl":        "auth.refresh_absolute_ttl",
+		"auth-refresh-audit-retention-ttl": "auth.refresh_audit_retention_ttl",
+		"auth-refresh-token-bytes":         "auth.refresh_token_bytes",
+		"blob-stale-tmp-age":               "storage.blobs.stale_tmp_age",
+		"blob-max-size-bytes":              "storage.blobs.max_size_bytes",
+		"blob-max-image-bytes":             "storage.blobs.max_image_bytes",
+		"blob-max-pdf-bytes":               "storage.blobs.max_pdf_bytes",
+		"blob-max-audio-bytes":             "storage.blobs.max_audio_bytes",
+		"blob-max-video-bytes":             "storage.blobs.max_video_bytes",
+		"blob-max-other-bytes":             "storage.blobs.max_other_bytes",
 	}
 	for flagName, key := range flagMap {
 		if f := flags.Lookup(flagName); f != nil && f.Changed {

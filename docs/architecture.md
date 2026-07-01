@@ -154,6 +154,8 @@ Applications embedding MycelDB should treat Mycel access tokens as short-lived e
 
 If MycelDB later needs to own durable refresh sessions directly, see [Auth session renewal implementation plan](implementation-plan-auth-session-renewal.md).
 
+The `session_renewal` branch includes early durable refresh-session building blocks: `domain/auth`, `store/session`, and refresh-session configuration keys under `auth.refresh_*`. These are not yet wired into public login/refresh APIs.
+
 Potential future MycelDB auth/session primitives, if needed by applications, should be added explicitly to the public `engine.Engine` API and backed by dedicated persistence stores:
 
 - durable refresh/session records that survive engine restart

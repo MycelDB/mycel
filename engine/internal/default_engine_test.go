@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/access"
@@ -68,6 +69,42 @@ func TestRuntimeEngine_OpenMethod(t *testing.T) {
 		Password: "password",
 	}); err != nil {
 		t.Fatalf("expected bootstrap admin auth success, got error: %v", err)
+	}
+}
+
+func TestRuntimeEngine_OpenMethod_RefreshConfigDefaultsAndValidation(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "mycel-refresh-config")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin",
+		AdminPassword:   "password",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	if engine.refreshIdleTTL != 30*24*time.Hour || engine.refreshAbsoluteTTL != 90*24*time.Hour || engine.refreshAuditRetentionTTL != 30*24*time.Hour || engine.refreshTokenBytes != 32 {
+		t.Fatalf("unexpected refresh defaults: idle=%s absolute=%s audit=%s bytes=%d", engine.refreshIdleTTL, engine.refreshAbsoluteTTL, engine.refreshAuditRetentionTTL, engine.refreshTokenBytes)
+	}
+	_ = engine.Close()
+
+	invalidEngine := &defaultEngine{}
+	err := invalidEngine.Open(EngineConfig{
+		DataDir:            filepath.Join(t.TempDir(), "mycel-invalid-refresh-config"),
+		Mode:               EngineModeStandalone,
+		CreateIfMissing:    true,
+		AdminUsername:      "admin",
+		AdminPassword:      "password",
+		RefreshIdleTTL:     2 * time.Hour,
+		RefreshAbsoluteTTL: 1 * time.Hour,
+		RefreshTokenBytes:  32,
+	})
+	if err == nil {
+		t.Fatal("expected invalid refresh TTL config error")
+	}
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
 	}
 }
 

@@ -37,21 +37,25 @@ var (
 )
 
 type defaultEngine struct {
-	state            EngineState
-	dataDir          string
-	accessTokenTTL   time.Duration
-	blobLimits       domainsession.BlobLimits
-	blobStaleTmpAge  time.Duration
-	userManager      user.Manager
-	spaceManager     spaces.Manager
-	domainManager    storedomains.Manager
-	templateManager  storetemplate.Manager
-	embeddingManager storeembedding.Manager
-	accessManager    acl.Manager
-	authMu           sync.RWMutex
-	authCache        map[AccessToken]authClaims
-	storeMu          sync.Mutex
-	storeCache       map[domainspace.SpaceID]*graphstorage.LocalStore
+	state                    EngineState
+	dataDir                  string
+	accessTokenTTL           time.Duration
+	refreshIdleTTL           time.Duration
+	refreshAbsoluteTTL       time.Duration
+	refreshAuditRetentionTTL time.Duration
+	refreshTokenBytes        int
+	blobLimits               domainsession.BlobLimits
+	blobStaleTmpAge          time.Duration
+	userManager              user.Manager
+	spaceManager             spaces.Manager
+	domainManager            storedomains.Manager
+	templateManager          storetemplate.Manager
+	embeddingManager         storeembedding.Manager
+	accessManager            acl.Manager
+	authMu                   sync.RWMutex
+	authCache                map[AccessToken]authClaims
+	storeMu                  sync.Mutex
+	storeCache               map[domainspace.SpaceID]*graphstorage.LocalStore
 }
 
 // authClaims is the expanded authorization context cached by access token.
@@ -150,6 +154,30 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 	e.accessTokenTTL = cfg.AccessTokenTTL
 	if e.accessTokenTTL <= 0 {
 		e.accessTokenTTL = time.Hour
+	}
+	e.refreshIdleTTL = cfg.RefreshIdleTTL
+	if e.refreshIdleTTL <= 0 {
+		e.refreshIdleTTL = 30 * 24 * time.Hour
+	}
+	e.refreshAbsoluteTTL = cfg.RefreshAbsoluteTTL
+	if e.refreshAbsoluteTTL <= 0 {
+		e.refreshAbsoluteTTL = 90 * 24 * time.Hour
+	}
+	if e.refreshAbsoluteTTL < e.refreshIdleTTL {
+		e.state = EngineStateClose
+		return fmt.Errorf("%w: refresh_absolute_ttl must be greater than or equal to refresh_idle_ttl", ErrInvalidConfig)
+	}
+	e.refreshAuditRetentionTTL = cfg.RefreshAuditRetentionTTL
+	if e.refreshAuditRetentionTTL <= 0 {
+		e.refreshAuditRetentionTTL = 30 * 24 * time.Hour
+	}
+	e.refreshTokenBytes = cfg.RefreshTokenBytes
+	if e.refreshTokenBytes == 0 {
+		e.refreshTokenBytes = 32
+	}
+	if e.refreshTokenBytes < 32 {
+		e.state = EngineStateClose
+		return fmt.Errorf("%w: refresh_token_bytes must be at least 32", ErrInvalidConfig)
 	}
 	e.blobLimits = cfg.BlobLimits
 	e.blobStaleTmpAge = cfg.BlobStaleTmpAge

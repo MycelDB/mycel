@@ -39,6 +39,10 @@ security:
   user_store_encryption_key_b64: ""
 auth:
   access_token_ttl: 1h
+  refresh_idle_ttl: 720h
+  refresh_absolute_ttl: 2160h
+  refresh_audit_retention_ttl: 720h
+  refresh_token_bytes: 32
 storage:
   blobs:
     stale_tmp_age: 1h
@@ -52,7 +56,17 @@ storage:
       application/zip: 0
 ```
 
-Blob upload limits use `-1` for unlimited. Exact MIME overrides can use `0` to disallow that MIME type. Environment aliases include `MYCELDB_DATA_DIR`, `MYCELDB_AUTH_ACCESS_TOKEN_TTL`, `MYCELDB_USER_STORE_ENCRYPTION_KEY_B64`, and `MYCELDB_STORAGE_BLOBS_MAX_*_BYTES`.
+Blob upload limits use `-1` for unlimited. Exact MIME overrides can use `0` to disallow that MIME type.
+
+Auth TTL environment aliases include:
+
+- `MYCELDB_AUTH_ACCESS_TOKEN_TTL`
+- `MYCELDB_AUTH_REFRESH_IDLE_TTL`
+- `MYCELDB_AUTH_REFRESH_ABSOLUTE_TTL`
+- `MYCELDB_AUTH_REFRESH_AUDIT_RETENTION_TTL`
+- `MYCELDB_AUTH_REFRESH_TOKEN_BYTES`
+
+Other common environment aliases include `MYCELDB_DATA_DIR`, `MYCELDB_USER_STORE_ENCRYPTION_KEY_B64`, and `MYCELDB_STORAGE_BLOBS_MAX_*_BYTES`.
 
 Initialize a data directory once before running normal commands:
 
