@@ -9,6 +9,7 @@ import (
 	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
+	mycelengine "github.com/myceldb/mycel/engine"
 )
 
 func RenderUsersTable(users []identity.User) {
@@ -84,6 +85,17 @@ func RenderSpaceAccessTable(rules []access.SpaceAccessRule) {
 	t.AppendHeader(table.Row{"Rule ID", "Space ID", "User ID", "Permissions"})
 	for _, rule := range rules {
 		t.AppendRow(table.Row{rule.ID, rule.SpaceID, rule.UserID, joinSpacePermissions(rule.Permissions)})
+	}
+	t.Render()
+}
+
+func RenderRefreshSessionsTable(sessions []mycelengine.RefreshSessionInfo) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleDefault)
+	t.AppendHeader(table.Row{"Session ID", "User Ref", "Status", "Client", "Last Used", "Idle Expires", "Absolute Expires", "Revoked"})
+	for _, session := range sessions {
+		t.AppendRow(table.Row{session.ID, session.UserRef, session.Status, session.Metadata.ClientName, session.LastUsedAt, session.IdleExpiresAt, session.AbsoluteExpiresAt, session.RevokedAt})
 	}
 	t.Render()
 }

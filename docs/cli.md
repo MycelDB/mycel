@@ -82,6 +82,36 @@ All other non-REPL commands require an initialized data directory and credential
 mycel -d ./data -u admin -p change-me space add demo
 ```
 
+## Auth sessions
+
+Durable refresh-session commands operate on Mycel-owned refresh sessions created by `engine.Engine.LoginSession`. They never print refresh tokens or refresh-token hashes.
+
+List sessions for the authenticated user:
+
+```sh
+mycel -d ./data -u admin -p change-me auth session list
+```
+
+Revoke one session owned by the authenticated user:
+
+```sh
+mycel -d ./data -u admin -p change-me auth session revoke <session_id> --reason "lost device"
+```
+
+Revoke all other sessions while keeping the specified current session:
+
+```sh
+mycel -d ./data -u admin -p change-me auth session revoke-other --current-session-id <session_id>
+```
+
+Run cleanup/redaction for expired or old revoked refresh sessions. The authenticated user must have system operation permission:
+
+```sh
+mycel -d ./data -u admin -p change-me auth session cleanup
+```
+
+Use `--output json` on these commands for machine-readable output.
+
 ## REPL
 
 ```sh
