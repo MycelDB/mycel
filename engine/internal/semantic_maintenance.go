@@ -20,15 +20,20 @@ type RunSemanticMaintenanceInput struct {
 	SpaceID      domainspace.SpaceID
 	AnalyzeLimit int
 	ProcessLimit int
+	BackfillAll  bool
 }
 
 // RunSemanticMaintenanceResult summarizes a semantic maintenance pass.
 type RunSemanticMaintenanceResult struct {
-	ProcessedEvents int
-	EnqueuedItems   int
-	ProcessedItems  int
-	CompletedItems  int
-	FailedItems     int
+	ProcessedEvents   int
+	EnqueuedItems     int
+	ProcessedItems    int
+	CompletedItems    int
+	FailedItems       int
+	BackfilledIndexes int
+	BackfilledRecords int
+	BackfillSkipped   int
+	BackfillFailures  int
 }
 
 // RunSemanticMaintenance performs one graph-dirty analysis pass followed by one
@@ -76,5 +81,25 @@ func (e *defaultEngine) RunSemanticMaintenance(ctx context.Context, in RunSemant
 	if err != nil {
 		return RunSemanticMaintenanceResult{}, err
 	}
-	return RunSemanticMaintenanceResult{ProcessedEvents: analyze.ProcessedEvents, EnqueuedItems: analyze.EnqueuedItems, ProcessedItems: processed.Processed, CompletedItems: processed.Completed, FailedItems: processed.Failed}, nil
+	result := RunSemanticMaintenanceResult{ProcessedEvents: analyze.ProcessedEvents, EnqueuedItems: analyze.EnqueuedItems, ProcessedItems: processed.Processed, CompletedItems: processed.Completed, FailedItems: processed.Failed}
+	if in.BackfillAll {
+		indexes, err := spaceMgr.ListSemanticIndexes(ctx)
+		if err != nil {
+			return RunSemanticMaintenanceResult{}, err
+		}
+		for _, index := range indexes {
+			if !index.Enabled {
+				continue
+			}
+			backfilled, err := runner.Run(ctx, backfill.Input{SpaceID: in.SpaceID, SemanticIndexID: index.ID, Force: false, ContinueOnError: true})
+			if err != nil {
+				return RunSemanticMaintenanceResult{}, err
+			}
+			result.BackfilledIndexes++
+			result.BackfilledRecords += backfilled.GeneratedCount
+			result.BackfillSkipped += backfilled.SkippedCount
+			result.BackfillFailures += backfilled.FailedCount
+		}
+	}
+	return result, nil
 }
