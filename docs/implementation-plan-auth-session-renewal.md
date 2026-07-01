@@ -1,6 +1,6 @@
 # Auth session renewal implementation plan
 
-Status: in progress. Phases 1 and 2 are implemented on the `session_renewal` branch. This plan documents how MycelDB could add native durable auth/session renewal primitives if applications need Mycel-owned long-lived sessions. Knot PKM currently implements browser-session renewal at the application layer; see its `session_renewal` work for the immediate product implementation.
+Status: in progress. Phases 1 through 3 are implemented on the `session_renewal` branch. This plan documents how MycelDB could add native durable auth/session renewal primitives if applications need Mycel-owned long-lived sessions. Knot PKM currently implements browser-session renewal at the application layer; see its `session_renewal` work for the immediate product implementation.
 
 Related docs:
 
@@ -286,7 +286,7 @@ Acceptance:
 - Defaults preserve existing behavior for users who only call `Authenticate`.
 - Invalid TTL/token-byte config is rejected.
 
-### Phase 3: token generation and hashing helpers
+### Phase 3: token generation and hashing helpers — complete
 
 - Add cryptographically secure refresh-token generation.
 - Add hash helpers with algorithm prefixes.

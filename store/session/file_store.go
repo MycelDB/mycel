@@ -304,6 +304,9 @@ func validateSession(rec domainauth.RefreshSession, creating bool) error {
 	if strings.TrimSpace(rec.RefreshTokenHash) == "" && (creating || rec.RedactedAt.IsZero()) {
 		return fmt.Errorf("%w: refresh token hash is required", ErrInvalidInput)
 	}
+	if rec.RefreshTokenHash != "" && !domainauth.IsRefreshTokenHash(rec.RefreshTokenHash) {
+		return fmt.Errorf("%w: refresh token hash must use a supported algorithm prefix", ErrInvalidInput)
+	}
 	if rec.Status == domainauth.RefreshSessionStatusRevoked && rec.RevokedAt.IsZero() {
 		return fmt.Errorf("%w: revoked_at is required for revoked sessions", ErrInvalidInput)
 	}

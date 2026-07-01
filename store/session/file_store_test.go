@@ -22,7 +22,8 @@ func TestDefaultManager_InitCreateAndReload(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), "sha256:first"))
+	firstHash := testRefreshTokenHash(t, "first")
+	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), firstHash))
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestDefaultManager_InitCreateAndReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after reload failed: %v", err)
 	}
-	if got.ID != created.ID || got.RefreshTokenHash != "sha256:first" || got.UserID != created.UserID {
+	if got.ID != created.ID || got.RefreshTokenHash != firstHash || got.UserID != created.UserID {
 		t.Fatalf("unexpected reloaded session: %#v", got)
 	}
 }
@@ -57,18 +58,21 @@ func TestDefaultManager_FindByTokenHashAndListByUser(t *testing.T) {
 	m := initializedManager(t)
 	userID := identity.UserID(uuid.New())
 	otherUserID := identity.UserID(uuid.New())
-	first, err := m.Create(ctx, validRefreshSession(userID, "sha256:first"))
+	firstHash := testRefreshTokenHash(t, "first")
+	secondHash := testRefreshTokenHash(t, "second")
+	thirdHash := testRefreshTokenHash(t, "third")
+	first, err := m.Create(ctx, validRefreshSession(userID, firstHash))
 	if err != nil {
 		t.Fatalf("create first failed: %v", err)
 	}
-	if _, err := m.Create(ctx, validRefreshSession(userID, "sha256:second")); err != nil {
+	if _, err := m.Create(ctx, validRefreshSession(userID, secondHash)); err != nil {
 		t.Fatalf("create second failed: %v", err)
 	}
-	if _, err := m.Create(ctx, validRefreshSession(otherUserID, "sha256:third")); err != nil {
+	if _, err := m.Create(ctx, validRefreshSession(otherUserID, thirdHash)); err != nil {
 		t.Fatalf("create third failed: %v", err)
 	}
 
-	found, err := m.FindByTokenHash(ctx, " sha256:first ")
+	found, err := m.FindByTokenHash(ctx, " "+firstHash+" ")
 	if err != nil {
 		t.Fatalf("find by token hash failed: %v", err)
 	}
@@ -88,10 +92,11 @@ func TestDefaultManager_DuplicateTokenHashRejected(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
 	userID := identity.UserID(uuid.New())
-	if _, err := m.Create(ctx, validRefreshSession(userID, "sha256:duplicate")); err != nil {
+	duplicateHash := testRefreshTokenHash(t, "duplicate")
+	if _, err := m.Create(ctx, validRefreshSession(userID, duplicateHash)); err != nil {
 		t.Fatalf("create first failed: %v", err)
 	}
-	_, err := m.Create(ctx, validRefreshSession(userID, "sha256:duplicate"))
+	_, err := m.Create(ctx, validRefreshSession(userID, duplicateHash))
 	if !errors.Is(err, ErrDuplicateTokenHash) {
 		t.Fatalf("expected ErrDuplicateTokenHash, got %v", err)
 	}
@@ -100,25 +105,27 @@ func TestDefaultManager_DuplicateTokenHashRejected(t *testing.T) {
 func TestDefaultManager_UpdateRotatesTokenHash(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
-	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), "sha256:old"))
+	oldHash := testRefreshTokenHash(t, "old")
+	newHash := testRefreshTokenHash(t, "new")
+	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), oldHash))
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
 
-	created.RefreshTokenHash = "sha256:new"
+	created.RefreshTokenHash = newHash
 	created.RotationCounter++
 	created.LastUsedAt = created.LastUsedAt.Add(time.Minute)
 	updated, err := m.Update(ctx, created)
 	if err != nil {
 		t.Fatalf("update failed: %v", err)
 	}
-	if updated.RotationCounter != 1 || updated.RefreshTokenHash != "sha256:new" {
+	if updated.RotationCounter != 1 || updated.RefreshTokenHash != newHash {
 		t.Fatalf("unexpected updated session: %#v", updated)
 	}
-	if _, err := m.FindByTokenHash(ctx, "sha256:old"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := m.FindByTokenHash(ctx, oldHash); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("expected old token hash to be removed from index, got %v", err)
 	}
-	found, err := m.FindByTokenHash(ctx, "sha256:new")
+	found, err := m.FindByTokenHash(ctx, newHash)
 	if err != nil {
 		t.Fatalf("new token hash not indexed: %v", err)
 	}
@@ -130,7 +137,7 @@ func TestDefaultManager_UpdateRotatesTokenHash(t *testing.T) {
 func TestDefaultManager_RevokeByID(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
-	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), "sha256:revoke"))
+	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), testRefreshTokenHash(t, "revoke")))
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -158,7 +165,10 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 	now := time.Now().UTC()
 	cutoff := now.Add(-24 * time.Hour)
 
-	revokedOld := validRefreshSession(userID, "sha256:revoked-old")
+	revokedOldHash := testRefreshTokenHash(t, "revoked-old")
+	expiredOldHash := testRefreshTokenHash(t, "expired-old")
+	activeRecentHash := testRefreshTokenHash(t, "active-recent")
+	revokedOld := validRefreshSession(userID, revokedOldHash)
 	revokedOld.Status = domainauth.RefreshSessionStatusRevoked
 	revokedOld.RevokedAt = cutoff.Add(-time.Hour)
 	revokedOld.RevokedReason = "logout"
@@ -167,7 +177,7 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 		t.Fatalf("create revoked old failed: %v", err)
 	}
 
-	expiredOld := validRefreshSession(userID, "sha256:expired-old")
+	expiredOld := validRefreshSession(userID, expiredOldHash)
 	expiredOld.IdleExpiresAt = cutoff.Add(-time.Hour)
 	expiredOld.AbsoluteExpiresAt = cutoff.Add(-30 * time.Minute)
 	expiredOld, err = m.Create(ctx, expiredOld)
@@ -175,7 +185,7 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 		t.Fatalf("create expired old failed: %v", err)
 	}
 
-	activeRecent := validRefreshSession(userID, "sha256:active-recent")
+	activeRecent := validRefreshSession(userID, activeRecentHash)
 	activeRecent.IdleExpiresAt = now.Add(time.Hour)
 	activeRecent.AbsoluteExpiresAt = now.Add(2 * time.Hour)
 	activeRecent, err = m.Create(ctx, activeRecent)
@@ -190,13 +200,13 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("expected 2 redacted sessions, got %d", count)
 	}
-	if _, err := m.FindByTokenHash(ctx, "sha256:revoked-old"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := m.FindByTokenHash(ctx, revokedOldHash); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("expected revoked-old hash to be removed from index, got %v", err)
 	}
-	if _, err := m.FindByTokenHash(ctx, "sha256:expired-old"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := m.FindByTokenHash(ctx, expiredOldHash); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("expected expired-old hash to be removed from index, got %v", err)
 	}
-	if _, err := m.FindByTokenHash(ctx, "sha256:active-recent"); err != nil {
+	if _, err := m.FindByTokenHash(ctx, activeRecentHash); err != nil {
 		t.Fatalf("expected active-recent hash to remain indexed: %v", err)
 	}
 
@@ -231,6 +241,46 @@ func TestDefaultManager_ValidationRejectsPlainMissingTokenHash(t *testing.T) {
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput for missing refresh token hash, got %v", err)
 	}
+
+	token, err := domainauth.NewRefreshToken(32)
+	if err != nil {
+		t.Fatalf("new refresh token failed: %v", err)
+	}
+	rec = validRefreshSession(identity.UserID(uuid.New()), string(token))
+	_, err = m.Create(ctx, rec)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for plaintext refresh token, got %v", err)
+	}
+}
+
+func TestDefaultManager_PersistsHashWithoutPlaintextRefreshToken(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "store")
+	m := NewManager()
+	if err := m.Init(ctx, dir); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	token, err := domainauth.NewRefreshToken(32)
+	if err != nil {
+		t.Fatalf("new refresh token failed: %v", err)
+	}
+	hash, err := domainauth.HashRefreshToken(token)
+	if err != nil {
+		t.Fatalf("hash refresh token failed: %v", err)
+	}
+	if _, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), hash)); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, refreshSessionsStoreFile))
+	if err != nil {
+		t.Fatalf("read store failed: %v", err)
+	}
+	if strings.Contains(string(raw), string(token)) {
+		t.Fatalf("store must not contain plaintext refresh token")
+	}
+	if !strings.Contains(string(raw), hash) {
+		t.Fatalf("store should contain refresh token hash")
+	}
 }
 
 func initializedManager(t *testing.T) Manager {
@@ -240,6 +290,15 @@ func initializedManager(t *testing.T) Manager {
 		t.Fatalf("init failed: %v", err)
 	}
 	return m
+}
+
+func testRefreshTokenHash(t *testing.T, label string) string {
+	t.Helper()
+	hash, err := domainauth.HashRefreshToken(domainauth.RefreshToken("test-refresh-token-" + label))
+	if err != nil {
+		t.Fatalf("hash refresh token failed: %v", err)
+	}
+	return hash
 }
 
 func validRefreshSession(userID identity.UserID, tokenHash string) domainauth.RefreshSession {
