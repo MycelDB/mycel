@@ -110,6 +110,69 @@ func TestRuntimeEngine_OpenMethod_RefreshConfigDefaultsAndValidation(t *testing.
 	}
 }
 
+func TestRuntimeEngine_Authenticate_RemainsStatelessForRefreshSessions(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-authenticate-compat")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	res, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("authenticate failed: %v", err)
+	}
+	if res.AccessToken == "" {
+		t.Fatal("expected access token")
+	}
+	admin, err := engine.userManager.GetByRef(ctx, identity.UserRef("admin@example.com"))
+	if err != nil {
+		t.Fatalf("get admin failed: %v", err)
+	}
+	sessions, err := engine.refreshSessionManager.ListByUser(ctx, admin.ID)
+	if err != nil {
+		t.Fatalf("list sessions failed: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("Authenticate must not create refresh sessions, got %#v", sessions)
+	}
+	events, err := engine.refreshSessionManager.ListAuditEvents(ctx, &admin.ID)
+	if err != nil {
+		t.Fatalf("list audit events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("Authenticate must not create session audit events, got %#v", events)
+	}
+}
+
+func TestRuntimeEngine_OpenExistingStoreWithoutRefreshSessions(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-legacy-no-refresh-store")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("close engine failed: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(dataDir, "meta", "sessions")); err != nil {
+		t.Fatalf("remove session store failed: %v", err)
+	}
+
+	reopened := &defaultEngine{}
+	if err := reopened.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: false}); err != nil {
+		t.Fatalf("expected legacy store reopen success, got error: %v", err)
+	}
+	defer reopened.Close()
+	if _, err := reopened.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"}); err != nil {
+		t.Fatalf("expected authenticate success after legacy reopen, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "meta", "sessions", "refresh_sessions.json")); err != nil {
+		t.Fatalf("expected refresh session store initialized on reopen: %v", err)
+	}
+}
+
 func TestRuntimeEngine_LoginSession_CreatesRefreshSession(t *testing.T) {
 	ctx := context.Background()
 	dataDir := filepath.Join(t.TempDir(), "mycel-login-session")

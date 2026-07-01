@@ -1,16 +1,17 @@
 # Auth session renewal implementation plan
 
-Status: in progress. Phases 1 through 9 are implemented on the `session_renewal` branch. This plan documents how MycelDB could add native durable auth/session renewal primitives if applications need Mycel-owned long-lived sessions. Knot PKM currently implements browser-session renewal at the application layer; see its `session_renewal` work for the immediate product implementation.
+Status: complete. Phases 1 through 10 are implemented on the `session_renewal` branch. This plan documents how MycelDB can provide native durable auth/session renewal primitives for applications that need Mycel-owned long-lived sessions. Knot PKM currently implements browser-session renewal at the application layer; see its `session_renewal` work for the immediate product implementation.
 
 Related docs:
 
 - `docs/architecture.md` — current auth/session architecture and package boundaries.
-- `docs/cli.md` — current auth token TTL configuration.
+- `docs/cli.md` — CLI configuration and auth-session commands.
+- `docs/auth-session-migration.md` — adoption and migration guidance.
 - Knot PKM server `docs/design/session-renewal-auth.md` — app-owned refresh-session design.
 
 ## Current state
 
-MycelDB currently provides short-lived access tokens via `engine.Authenticate`.
+MycelDB provides short-lived access tokens via `engine.Authenticate` and opt-in durable refresh sessions via `engine.LoginSession` / `engine.RefreshSession`.
 
 Important properties:
 
@@ -19,13 +20,18 @@ Important properties:
 - Access tokens expire according to `auth.access_token_ttl` / `MYCELDB_AUTH_ACCESS_TOKEN_TTL`.
 - Access tokens are not sliding.
 - Engine restart clears issued access tokens.
-- MycelDB does not yet provide durable refresh sessions, refresh-token rotation, session listing/revocation, token introspection, or service-role token minting.
+- `engine.Authenticate` remains unchanged and creates no durable refresh-session records.
+- Durable refresh-session records survive engine restart.
+- Refresh tokens are rotated on every successful refresh.
+- Only refresh-token hashes are persisted.
+- Reuse of a consumed refresh token revokes the token family.
+- Session listing/revocation, cleanup/redaction, audit events, and `mycel auth session` CLI commands are available.
 
-Knot PKM now owns browser refresh sessions itself. It stores hashed refresh tokens in its protected system graph and re-authenticates Mycel users with PKM-owned credentials to obtain fresh short-lived Mycel access tokens.
+Knot PKM currently owns browser refresh sessions itself. It stores hashed refresh tokens in its protected system graph and re-authenticates Mycel users with PKM-owned credentials to obtain fresh short-lived Mycel access tokens. It can remain app-owned or migrate later using `docs/auth-session-migration.md`.
 
 ## Goals
 
-If MycelDB adds native session renewal, it should:
+Native MycelDB session renewal should:
 
 - Keep Mycel access tokens short-lived.
 - Add durable refresh/session records that survive engine restart.
@@ -34,7 +40,7 @@ If MycelDB adds native session renewal, it should:
 - Detect old-token reuse and revoke the token family.
 - Support individual session revocation and all-other-session revocation.
 - Support session listing with coarse metadata only.
-- Provide token introspection/expiry metadata for clients and embedding applications.
+- Return access-token expiry metadata from session login/refresh calls.
 - Provide audit events for auth/session lifecycle.
 - Preserve clear package boundaries and public API stability.
 
@@ -385,7 +391,7 @@ Acceptance:
 - CLI can inspect and revoke sessions without exposing token material.
 - CLI docs updated.
 
-### Phase 10: migration and compatibility
+### Phase 10: migration and compatibility — complete
 
 - Existing users and apps using `Authenticate` continue to work unchanged.
 - New session APIs are opt-in.

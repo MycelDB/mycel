@@ -139,30 +139,34 @@ Downstream applications should follow this flow when embedding MycelDB directly.
 
 ## Authentication and session architecture
 
-MycelDB currently provides short-lived access tokens through `engine.Authenticate`.
+MycelDB provides short-lived access tokens through `engine.Authenticate` and opt-in durable refresh sessions through `engine.LoginSession` / `engine.RefreshSession`.
 
-Current characteristics:
+Access-token characteristics:
 
 - Access tokens are opaque `engine.AccessToken` values.
 - Token claims are kept in the engine's in-memory auth cache.
 - Tokens expire according to `auth.access_token_ttl` / `MYCELDB_AUTH_ACCESS_TOKEN_TTL`.
 - Tokens are not sliding; using a token does not extend its expiry.
-- Engine restart clears the in-memory auth cache, so previously issued tokens become invalid.
-- Mycel does not currently provide durable browser refresh sessions, refresh-token rotation, token introspection, or privileged user-token minting.
+- Engine restart clears the in-memory auth cache, so previously issued access tokens become invalid.
 
-Applications embedding MycelDB should treat Mycel access tokens as short-lived engine credentials. Product-level browser sessions can be owned by the application layer. For example, Knot PKM can store hashed refresh-session records in its own protected system graph and mint new short-lived Mycel access tokens by re-authenticating through application-owned credentials.
+Refresh-session characteristics on the `session_renewal` branch:
 
-If MycelDB later needs to own durable refresh sessions directly, see [Auth session renewal implementation plan](implementation-plan-auth-session-renewal.md).
+- `engine.Authenticate` remains unchanged and does not create durable sessions.
+- `engine.LoginSession` creates a durable refresh session and returns the plaintext refresh token once.
+- `engine.RefreshSession` validates and rotates refresh tokens while minting new short-lived access tokens.
+- Refresh-token plaintext is never persisted; only algorithm-prefixed hashes are stored in `store/session`.
+- Old refresh-token reuse is detected through consumed-token hashes and revokes the token family.
+- User-scoped session listing/revocation, operator-authorized cleanup/redaction, and `mycel auth session` CLI commands are available.
 
-The `session_renewal` branch includes durable refresh-session building blocks: `domain/auth`, refresh-token generation/hash helpers, `store/session`, refresh-session configuration keys under `auth.refresh_*`, `engine.Engine.LoginSession` for creating durable refresh sessions, `engine.Engine.RefreshSession` for refresh-token rotation and new access-token minting, user-scoped session listing/revocation APIs, operator-authorized cleanup/redaction, and `mycel auth session` CLI commands. Old refresh-token reuse is detected through consumed-token hashes and revokes the token family.
+Applications embedding MycelDB should continue to treat access tokens as short-lived engine credentials. Product-level browser cookie policy remains an application concern.
+
+For the implementation roadmap, see [Auth session renewal implementation plan](implementation-plan-auth-session-renewal.md). For adoption guidance, see [Auth session renewal migration and compatibility](auth-session-migration.md).
 
 Potential future MycelDB auth/session primitives, if needed by applications, should be added explicitly to the public `engine.Engine` API and backed by dedicated persistence stores:
 
-- durable refresh/session records that survive engine restart
-- refresh-token rotation and reuse detection
 - token expiry/introspection metadata
-- revocation of individual sessions or token families
 - privileged service-role user-token minting or impersonation with strict audit trails
+- external identity-provider integrations
 
 If MycelDB owns any of these primitives in the future, the implementation should update:
 
@@ -174,7 +178,7 @@ If MycelDB owns any of these primitives in the future, the implementation should
 | CLI | Add admin/session commands under `internal/cli/cmd` if operator-facing |
 | Docs | Update this architecture document and auth/config references |
 
-Until then, Mycel access-token TTL should remain configurable, and applications that need long-lived UX should layer refresh sessions above Mycel rather than storing long-lived Mycel access tokens in browser-readable storage.
+Mycel access-token TTL should remain configurable, and applications should not store long-lived Mycel access tokens in browser-readable storage.
 
 ## Interface placement
 
