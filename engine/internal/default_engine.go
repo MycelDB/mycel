@@ -391,6 +391,12 @@ func (e *defaultEngine) RefreshSession(ctx context.Context, in RefreshSessionInp
 	rec, err := e.refreshSessionManager.FindByTokenHash(ctx, refreshTokenHash)
 	if err != nil {
 		if errors.Is(err, storesession.ErrSessionNotFound) {
+			if consumed, reuseErr := e.refreshSessionManager.FindByConsumedTokenHash(ctx, refreshTokenHash); reuseErr == nil {
+				if err := e.handleRefreshTokenReuse(ctx, consumed); err != nil {
+					return RefreshSessionResult{}, err
+				}
+				return RefreshSessionResult{}, ErrInvalidCredentials
+			}
 			_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", Message: "invalid refresh token"})
 			return RefreshSessionResult{}, ErrInvalidCredentials
 		}
@@ -432,7 +438,9 @@ func (e *defaultEngine) RefreshSession(ctx context.Context, in RefreshSessionInp
 	if err != nil {
 		return RefreshSessionResult{}, err
 	}
+	oldRefreshTokenHash := rec.RefreshTokenHash
 	rec.RefreshTokenHash = newRefreshTokenHash
+	rec.ConsumedRefreshTokenHashes = append(rec.ConsumedRefreshTokenHashes, oldRefreshTokenHash)
 	rec.RotationCounter++
 	rec.LastUsedAt = now
 	rec.IdleExpiresAt = now.Add(e.refreshIdleTTL)
@@ -455,6 +463,19 @@ func (e *defaultEngine) RefreshSession(ctx context.Context, in RefreshSessionInp
 		RefreshToken:         newRefreshToken,
 		RefreshSession:       refreshSessionInfo(updated),
 	}, nil
+}
+
+func (e *defaultEngine) handleRefreshTokenReuse(ctx context.Context, rec domainauth.RefreshSession) error {
+	now := time.Now().UTC()
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_reuse_detected", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "consumed refresh token reused"})
+	count, err := e.refreshSessionManager.RevokeFamily(ctx, rec.TokenFamilyID, now, "refresh token reuse detected")
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.session_family_revoked", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "refresh token family revoked after reuse detection"})
+	}
+	return nil
 }
 
 func refreshSessionRefreshable(rec domainauth.RefreshSession, now time.Time) bool {

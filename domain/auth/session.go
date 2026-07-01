@@ -40,21 +40,22 @@ type RefreshSessionMetadata struct {
 // RefreshTokenHash stores only a cryptographic hash of the refresh token. The
 // plaintext refresh token must never be persisted.
 type RefreshSession struct {
-	ID                RefreshSessionID       `json:"id"`
-	UserID            identity.UserID        `json:"user_id"`
-	UserRef           identity.UserRef       `json:"user_ref"`
-	Status            RefreshSessionStatus   `json:"status"`
-	TokenFamilyID     TokenFamilyID          `json:"token_family_id"`
-	RefreshTokenHash  string                 `json:"refresh_token_hash,omitempty"`
-	RotationCounter   int                    `json:"rotation_counter"`
-	CreatedAt         time.Time              `json:"created_at"`
-	LastUsedAt        time.Time              `json:"last_used_at"`
-	IdleExpiresAt     time.Time              `json:"idle_expires_at"`
-	AbsoluteExpiresAt time.Time              `json:"absolute_expires_at"`
-	RevokedAt         time.Time              `json:"revoked_at,omitempty"`
-	RevokedReason     string                 `json:"revoked_reason,omitempty"`
-	RedactedAt        time.Time              `json:"redacted_at,omitempty"`
-	Metadata          RefreshSessionMetadata `json:"metadata,omitempty"`
+	ID                         RefreshSessionID       `json:"id"`
+	UserID                     identity.UserID        `json:"user_id"`
+	UserRef                    identity.UserRef       `json:"user_ref"`
+	Status                     RefreshSessionStatus   `json:"status"`
+	TokenFamilyID              TokenFamilyID          `json:"token_family_id"`
+	RefreshTokenHash           string                 `json:"refresh_token_hash,omitempty"`
+	ConsumedRefreshTokenHashes []string               `json:"consumed_refresh_token_hashes,omitempty"`
+	RotationCounter            int                    `json:"rotation_counter"`
+	CreatedAt                  time.Time              `json:"created_at"`
+	LastUsedAt                 time.Time              `json:"last_used_at"`
+	IdleExpiresAt              time.Time              `json:"idle_expires_at"`
+	AbsoluteExpiresAt          time.Time              `json:"absolute_expires_at"`
+	RevokedAt                  time.Time              `json:"revoked_at,omitempty"`
+	RevokedReason              string                 `json:"revoked_reason,omitempty"`
+	RedactedAt                 time.Time              `json:"redacted_at,omitempty"`
+	Metadata                   RefreshSessionMetadata `json:"metadata,omitempty"`
 }
 
 // AuthAuditEvent is a non-sensitive auth/session lifecycle audit record.

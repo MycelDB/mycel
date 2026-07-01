@@ -134,6 +134,81 @@ func TestDefaultManager_UpdateRotatesTokenHash(t *testing.T) {
 	}
 }
 
+func TestDefaultManager_ConsumedTokenHashLookup(t *testing.T) {
+	ctx := context.Background()
+	m := initializedManager(t)
+	oldHash := testRefreshTokenHash(t, "consumed-old")
+	newHash := testRefreshTokenHash(t, "consumed-new")
+	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), oldHash))
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	created.RefreshTokenHash = newHash
+	created.ConsumedRefreshTokenHashes = append(created.ConsumedRefreshTokenHashes, oldHash)
+	if _, err := m.Update(ctx, created); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+	found, err := m.FindByConsumedTokenHash(ctx, oldHash)
+	if err != nil {
+		t.Fatalf("find consumed hash failed: %v", err)
+	}
+	if found.ID != created.ID {
+		t.Fatalf("expected consumed hash session %s, got %s", created.ID, found.ID)
+	}
+	if _, err := m.FindByConsumedTokenHash(ctx, newHash); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("active hash must not be indexed as consumed, got %v", err)
+	}
+}
+
+func TestDefaultManager_RevokeFamily(t *testing.T) {
+	ctx := context.Background()
+	m := initializedManager(t)
+	familyID := domainauth.TokenFamilyID(uuid.NewString())
+	first := validRefreshSession(identity.UserID(uuid.New()), testRefreshTokenHash(t, "family-first"))
+	first.TokenFamilyID = familyID
+	first, err := m.Create(ctx, first)
+	if err != nil {
+		t.Fatalf("create first failed: %v", err)
+	}
+	second := validRefreshSession(first.UserID, testRefreshTokenHash(t, "family-second"))
+	second.TokenFamilyID = familyID
+	second, err = m.Create(ctx, second)
+	if err != nil {
+		t.Fatalf("create second failed: %v", err)
+	}
+	other := validRefreshSession(first.UserID, testRefreshTokenHash(t, "family-other"))
+	other.TokenFamilyID = domainauth.TokenFamilyID(uuid.NewString())
+	other, err = m.Create(ctx, other)
+	if err != nil {
+		t.Fatalf("create other failed: %v", err)
+	}
+
+	revokedAt := time.Now().UTC().Add(-time.Minute)
+	count, err := m.RevokeFamily(ctx, familyID, revokedAt, "reuse")
+	if err != nil {
+		t.Fatalf("revoke family failed: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 revoked sessions, got %d", count)
+	}
+	for _, id := range []domainauth.RefreshSessionID{first.ID, second.ID} {
+		got, err := m.GetByID(ctx, id)
+		if err != nil {
+			t.Fatalf("get revoked session failed: %v", err)
+		}
+		if got.Status != domainauth.RefreshSessionStatusRevoked || got.RevokedReason != "reuse" || !got.RevokedAt.Equal(revokedAt) {
+			t.Fatalf("unexpected revoked session: %#v", got)
+		}
+	}
+	gotOther, err := m.GetByID(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("get other failed: %v", err)
+	}
+	if gotOther.Status != domainauth.RefreshSessionStatusActive {
+		t.Fatalf("expected other session active, got %#v", gotOther)
+	}
+}
+
 func TestDefaultManager_RevokeByID(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
@@ -168,7 +243,9 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 	revokedOldHash := testRefreshTokenHash(t, "revoked-old")
 	expiredOldHash := testRefreshTokenHash(t, "expired-old")
 	activeRecentHash := testRefreshTokenHash(t, "active-recent")
+	revokedOldConsumedHash := testRefreshTokenHash(t, "revoked-old-consumed")
 	revokedOld := validRefreshSession(userID, revokedOldHash)
+	revokedOld.ConsumedRefreshTokenHashes = []string{revokedOldConsumedHash}
 	revokedOld.Status = domainauth.RefreshSessionStatusRevoked
 	revokedOld.RevokedAt = cutoff.Add(-time.Hour)
 	revokedOld.RevokedReason = "logout"
@@ -203,6 +280,9 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 	if _, err := m.FindByTokenHash(ctx, revokedOldHash); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("expected revoked-old hash to be removed from index, got %v", err)
 	}
+	if _, err := m.FindByConsumedTokenHash(ctx, revokedOldConsumedHash); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expected revoked-old consumed hash to be removed from index, got %v", err)
+	}
 	if _, err := m.FindByTokenHash(ctx, expiredOldHash); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("expected expired-old hash to be removed from index, got %v", err)
 	}
@@ -214,7 +294,7 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get revoked redacted failed: %v", err)
 	}
-	if gotRevoked.RefreshTokenHash != "" || gotRevoked.RedactedAt.IsZero() || gotRevoked.Status != domainauth.RefreshSessionStatusRevoked {
+	if gotRevoked.RefreshTokenHash != "" || len(gotRevoked.ConsumedRefreshTokenHashes) != 0 || gotRevoked.RedactedAt.IsZero() || gotRevoked.Status != domainauth.RefreshSessionStatusRevoked {
 		t.Fatalf("unexpected revoked redaction: %#v", gotRevoked)
 	}
 	gotExpired, err := m.GetByID(ctx, expiredOld.ID)

@@ -1,6 +1,6 @@
 # Auth session renewal implementation plan
 
-Status: in progress. Phases 1 through 5 are implemented on the `session_renewal` branch. This plan documents how MycelDB could add native durable auth/session renewal primitives if applications need Mycel-owned long-lived sessions. Knot PKM currently implements browser-session renewal at the application layer; see its `session_renewal` work for the immediate product implementation.
+Status: in progress. Phases 1 through 6 are implemented on the `session_renewal` branch. This plan documents how MycelDB could add native durable auth/session renewal primitives if applications need Mycel-owned long-lived sessions. Knot PKM currently implements browser-session renewal at the application layer; see its `session_renewal` work for the immediate product implementation.
 
 Related docs:
 
@@ -329,7 +329,7 @@ Acceptance:
 - Old refresh token cannot be reused.
 - Engine restart does not invalidate durable refresh session.
 
-### Phase 6: reuse detection and family revocation
+### Phase 6: reuse detection and family revocation — complete
 
 - If a refresh token is unrecognized after a previous rotation, treat as reuse where enough metadata exists.
 - Revoke token family on reuse detection.

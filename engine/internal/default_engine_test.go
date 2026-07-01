@@ -246,6 +246,49 @@ func TestRuntimeEngine_RefreshSession_RotatesTokenAndMintsAccessToken(t *testing
 	}
 }
 
+func TestRuntimeEngine_RefreshSession_ReuseRevokesFamily(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-refresh-session-reuse")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	login, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("login session failed: %v", err)
+	}
+	rotated, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: login.RefreshToken})
+	if err != nil {
+		t.Fatalf("refresh session failed: %v", err)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: login.RefreshToken}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected old refresh token reuse to fail, got %v", err)
+	}
+	stored, err := engine.refreshSessionManager.GetByID(ctx, login.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get reused session failed: %v", err)
+	}
+	if stored.Status != domainauth.RefreshSessionStatusRevoked || stored.RevokedReason != "refresh token reuse detected" {
+		t.Fatalf("expected reuse to revoke family, got %#v", stored)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: rotated.RefreshToken}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected current refresh token to fail after family revocation, got %v", err)
+	}
+	admin, err := engine.userManager.GetByRef(ctx, identity.UserRef("admin@example.com"))
+	if err != nil {
+		t.Fatalf("get admin failed: %v", err)
+	}
+	events, err := engine.refreshSessionManager.ListAuditEvents(ctx, &admin.ID)
+	if err != nil {
+		t.Fatalf("list audit events failed: %v", err)
+	}
+	if !auditEventTypesContain(events, "auth.refresh_reuse_detected", "auth.session_family_revoked") {
+		t.Fatalf("expected reuse/family revocation audit events, got %#v", events)
+	}
+}
+
 func TestRuntimeEngine_RefreshSession_SurvivesEngineRestart(t *testing.T) {
 	ctx := context.Background()
 	dataDir := filepath.Join(t.TempDir(), "mycel-refresh-session-restart")
@@ -1648,4 +1691,15 @@ func TestRuntimeEngine_ApplyGraphBatchMutations(t *testing.T) {
 	if len(nodes) != 0 {
 		t.Fatalf("expected all nodes deleted, got %v", nodes)
 	}
+}
+
+func auditEventTypesContain(events []domainauth.AuthAuditEvent, want ...string) bool {
+	remaining := map[string]struct{}{}
+	for _, eventType := range want {
+		remaining[eventType] = struct{}{}
+	}
+	for _, event := range events {
+		delete(remaining, event.Type)
+	}
+	return len(remaining) == 0
 }

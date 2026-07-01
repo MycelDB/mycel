@@ -23,17 +23,18 @@ type storedState struct {
 }
 
 type defaultManager struct {
-	location         string
-	storePath        string
-	sessions         []domainauth.RefreshSession
-	auditEvents      []domainauth.AuthAuditEvent
-	indexByID        map[domainauth.RefreshSessionID]int
-	indexByTokenHash map[string]int
+	location                 string
+	storePath                string
+	sessions                 []domainauth.RefreshSession
+	auditEvents              []domainauth.AuthAuditEvent
+	indexByID                map[domainauth.RefreshSessionID]int
+	indexByTokenHash         map[string]int
+	indexByConsumedTokenHash map[string]int
 }
 
 // NewManager creates the default file-backed Manager implementation.
 func NewManager() Manager {
-	return &defaultManager{indexByID: map[domainauth.RefreshSessionID]int{}, indexByTokenHash: map[string]int{}}
+	return &defaultManager{indexByID: map[domainauth.RefreshSessionID]int{}, indexByTokenHash: map[string]int{}, indexByConsumedTokenHash: map[string]int{}}
 }
 
 func (m *defaultManager) Init(ctx context.Context, location string) error {
@@ -154,6 +155,21 @@ func (m *defaultManager) FindByTokenHash(ctx context.Context, hash string) (doma
 	return m.sessions[idx], nil
 }
 
+func (m *defaultManager) FindByConsumedTokenHash(ctx context.Context, hash string) (domainauth.RefreshSession, error) {
+	if err := ctx.Err(); err != nil {
+		return domainauth.RefreshSession{}, err
+	}
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return domainauth.RefreshSession{}, fmt.Errorf("%w: refresh token hash is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexByConsumedTokenHash[hash]
+	if !ok {
+		return domainauth.RefreshSession{}, ErrSessionNotFound
+	}
+	return m.sessions[idx], nil
+}
+
 func (m *defaultManager) ListByUser(ctx context.Context, userID identity.UserID) ([]domainauth.RefreshSession, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -187,6 +203,14 @@ func (m *defaultManager) Update(ctx context.Context, rec domainauth.RefreshSessi
 	}
 	if rec.RefreshTokenHash != "" {
 		if existingIdx, exists := m.indexByTokenHash[rec.RefreshTokenHash]; exists && existingIdx != idx {
+			return domainauth.RefreshSession{}, ErrDuplicateTokenHash
+		}
+		if existingIdx, exists := m.indexByConsumedTokenHash[rec.RefreshTokenHash]; exists && existingIdx != idx {
+			return domainauth.RefreshSession{}, ErrDuplicateTokenHash
+		}
+	}
+	for _, hash := range rec.ConsumedRefreshTokenHashes {
+		if existingIdx, exists := m.indexByTokenHash[hash]; exists && existingIdx != idx {
 			return domainauth.RefreshSession{}, ErrDuplicateTokenHash
 		}
 	}
@@ -233,6 +257,42 @@ func (m *defaultManager) RevokeByID(ctx context.Context, id domainauth.RefreshSe
 	return rec, nil
 }
 
+func (m *defaultManager) RevokeFamily(ctx context.Context, familyID domainauth.TokenFamilyID, revokedAt time.Time, reason string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	familyID = domainauth.TokenFamilyID(strings.TrimSpace(string(familyID)))
+	if familyID == "" {
+		return 0, fmt.Errorf("%w: token_family_id is required", ErrInvalidInput)
+	}
+	if revokedAt.IsZero() {
+		revokedAt = time.Now().UTC()
+	} else {
+		revokedAt = revokedAt.UTC()
+	}
+	oldSessions := append([]domainauth.RefreshSession(nil), m.sessions...)
+	changed := 0
+	for i := range m.sessions {
+		if m.sessions[i].TokenFamilyID != familyID || m.sessions[i].Status == domainauth.RefreshSessionStatusRevoked {
+			continue
+		}
+		m.sessions[i].Status = domainauth.RefreshSessionStatusRevoked
+		m.sessions[i].RevokedAt = revokedAt
+		m.sessions[i].RevokedReason = strings.TrimSpace(reason)
+		changed++
+	}
+	if changed == 0 {
+		return 0, nil
+	}
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.sessions = oldSessions
+		m.rebuildIndex()
+		return 0, err
+	}
+	return changed, nil
+}
+
 func (m *defaultManager) DeleteExpiredRedacted(ctx context.Context, cutoff time.Time) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -245,7 +305,7 @@ func (m *defaultManager) DeleteExpiredRedacted(ctx context.Context, cutoff time.
 	changed := 0
 	oldSessions := append([]domainauth.RefreshSession(nil), m.sessions...)
 	for i := range m.sessions {
-		if m.sessions[i].RefreshTokenHash == "" {
+		if m.sessions[i].RefreshTokenHash == "" && len(m.sessions[i].ConsumedRefreshTokenHashes) == 0 {
 			continue
 		}
 		if shouldRedact(m.sessions[i], cutoff) {
@@ -253,6 +313,7 @@ func (m *defaultManager) DeleteExpiredRedacted(ctx context.Context, cutoff time.
 				m.sessions[i].Status = domainauth.RefreshSessionStatusExpired
 			}
 			m.sessions[i].RefreshTokenHash = ""
+			m.sessions[i].ConsumedRefreshTokenHashes = nil
 			m.sessions[i].RedactedAt = now
 			changed++
 		}
@@ -317,10 +378,16 @@ func (m *defaultManager) ListAuditEvents(ctx context.Context, userID *identity.U
 func (m *defaultManager) rebuildIndex() {
 	m.indexByID = map[domainauth.RefreshSessionID]int{}
 	m.indexByTokenHash = map[string]int{}
+	m.indexByConsumedTokenHash = map[string]int{}
 	for i, rec := range m.sessions {
 		m.indexByID[rec.ID] = i
 		if rec.RefreshTokenHash != "" {
 			m.indexByTokenHash[rec.RefreshTokenHash] = i
+		}
+		for _, hash := range rec.ConsumedRefreshTokenHashes {
+			if hash != "" {
+				m.indexByConsumedTokenHash[hash] = i
+			}
 		}
 	}
 }
@@ -375,6 +442,19 @@ func validateSession(rec domainauth.RefreshSession, creating bool) error {
 	if rec.RefreshTokenHash != "" && !domainauth.IsRefreshTokenHash(rec.RefreshTokenHash) {
 		return fmt.Errorf("%w: refresh token hash must use a supported algorithm prefix", ErrInvalidInput)
 	}
+	seenConsumed := map[string]struct{}{}
+	for _, hash := range rec.ConsumedRefreshTokenHashes {
+		if !domainauth.IsRefreshTokenHash(hash) {
+			return fmt.Errorf("%w: consumed refresh token hash must use a supported algorithm prefix", ErrInvalidInput)
+		}
+		if rec.RefreshTokenHash != "" && hash == rec.RefreshTokenHash {
+			return fmt.Errorf("%w: consumed refresh token hash must not match active hash", ErrInvalidInput)
+		}
+		if _, exists := seenConsumed[hash]; exists {
+			return fmt.Errorf("%w: duplicate consumed refresh token hash", ErrInvalidInput)
+		}
+		seenConsumed[hash] = struct{}{}
+	}
 	if rec.Status == domainauth.RefreshSessionStatusRevoked && rec.RevokedAt.IsZero() {
 		return fmt.Errorf("%w: revoked_at is required for revoked sessions", ErrInvalidInput)
 	}
@@ -393,6 +473,22 @@ func normalizeSession(rec domainauth.RefreshSession) domainauth.RefreshSession {
 	rec.UserRef = identity.UserRef(strings.TrimSpace(string(rec.UserRef)))
 	rec.TokenFamilyID = domainauth.TokenFamilyID(strings.TrimSpace(string(rec.TokenFamilyID)))
 	rec.RefreshTokenHash = strings.TrimSpace(rec.RefreshTokenHash)
+	if len(rec.ConsumedRefreshTokenHashes) > 0 {
+		consumed := make([]string, 0, len(rec.ConsumedRefreshTokenHashes))
+		seen := map[string]struct{}{}
+		for _, hash := range rec.ConsumedRefreshTokenHashes {
+			hash = strings.TrimSpace(hash)
+			if hash == "" {
+				continue
+			}
+			if _, exists := seen[hash]; exists {
+				continue
+			}
+			seen[hash] = struct{}{}
+			consumed = append(consumed, hash)
+		}
+		rec.ConsumedRefreshTokenHashes = consumed
+	}
 	rec.RevokedReason = strings.TrimSpace(rec.RevokedReason)
 	rec.Metadata.UserAgentHash = strings.TrimSpace(rec.Metadata.UserAgentHash)
 	rec.Metadata.IPPrefixHash = strings.TrimSpace(rec.Metadata.IPPrefixHash)
