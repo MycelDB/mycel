@@ -85,6 +85,25 @@ type RefreshSessionResult struct {
 	RefreshSession       RefreshSessionInfo `json:"refresh_session"`
 }
 
+// ListRefreshSessionsInput lists durable refresh sessions for the access-token user.
+type ListRefreshSessionsInput struct {
+	AccessToken AccessToken
+}
+
+// RevokeRefreshSessionInput revokes one refresh session owned by the access-token user.
+type RevokeRefreshSessionInput struct {
+	AccessToken AccessToken
+	SessionID   RefreshSessionID
+	Reason      string
+}
+
+// RevokeOtherRefreshSessionsInput revokes all refresh sessions owned by the access-token user except CurrentSessionID.
+type RevokeOtherRefreshSessionsInput struct {
+	AccessToken      AccessToken
+	CurrentSessionID RefreshSessionID
+	Reason           string
+}
+
 // CurrentUserInput identifies the bearer token whose authenticated user should be returned.
 type CurrentUserInput struct {
 	AccessToken AccessToken

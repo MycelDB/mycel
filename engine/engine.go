@@ -43,6 +43,9 @@ type LoginSessionInput = engineinternal.LoginSessionInput
 type LoginSessionResult = engineinternal.LoginSessionResult
 type RefreshSessionInput = engineinternal.RefreshSessionInput
 type RefreshSessionResult = engineinternal.RefreshSessionResult
+type ListRefreshSessionsInput = engineinternal.ListRefreshSessionsInput
+type RevokeRefreshSessionInput = engineinternal.RevokeRefreshSessionInput
+type RevokeOtherRefreshSessionsInput = engineinternal.RevokeOtherRefreshSessionsInput
 type CurrentUserInput = engineinternal.CurrentUserInput
 type CreateUserInput = engineinternal.CreateUserInput
 type ListUsersInput = engineinternal.ListUsersInput
@@ -98,6 +101,9 @@ type Engine interface {
 	Authenticate(ctx context.Context, in AuthInput) (AuthResult, error)
 	LoginSession(ctx context.Context, in LoginSessionInput) (LoginSessionResult, error)
 	RefreshSession(ctx context.Context, in RefreshSessionInput) (RefreshSessionResult, error)
+	ListRefreshSessions(ctx context.Context, in ListRefreshSessionsInput) ([]RefreshSessionInfo, error)
+	RevokeRefreshSession(ctx context.Context, in RevokeRefreshSessionInput) error
+	RevokeOtherRefreshSessions(ctx context.Context, in RevokeOtherRefreshSessionsInput) (int, error)
 	CurrentUser(ctx context.Context, in CurrentUserInput) (identity.User, error)
 	CreateUser(ctx context.Context, in CreateUserInput) (identity.User, error)
 	ListUsers(ctx context.Context, in ListUsersInput) ([]identity.User, error)

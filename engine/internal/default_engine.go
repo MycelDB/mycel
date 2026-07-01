@@ -465,6 +465,101 @@ func (e *defaultEngine) RefreshSession(ctx context.Context, in RefreshSessionInp
 	}, nil
 }
 
+func (e *defaultEngine) ListRefreshSessions(ctx context.Context, in ListRefreshSessionsInput) ([]RefreshSessionInfo, error) {
+	if err := e.Ready(ctx); err != nil {
+		return nil, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	records, err := e.refreshSessionManager.ListByUser(ctx, auth.UserID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RefreshSessionInfo, 0, len(records))
+	for _, rec := range records {
+		out = append(out, refreshSessionInfo(rec))
+	}
+	return out, nil
+}
+
+func (e *defaultEngine) RevokeRefreshSession(ctx context.Context, in RevokeRefreshSessionInput) error {
+	if err := e.Ready(ctx); err != nil {
+		return err
+	}
+	if in.SessionID == uuid.Nil {
+		return fmt.Errorf("%w: session_id is required", ErrInvalidConfig)
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return err
+	}
+	rec, err := e.refreshSessionManager.GetByID(ctx, in.SessionID)
+	if err != nil {
+		if errors.Is(err, storesession.ErrSessionNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if rec.UserID != auth.UserID {
+		return ErrUnauthorized
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		reason = "revoked by user"
+	}
+	revoked, err := e.refreshSessionManager.RevokeByID(ctx, in.SessionID, time.Now().UTC(), reason)
+	if err != nil {
+		return err
+	}
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.session_revoked", UserID: &auth.UserID, UserRef: auth.UserRef, SessionID: &revoked.ID, Message: reason})
+	return nil
+}
+
+func (e *defaultEngine) RevokeOtherRefreshSessions(ctx context.Context, in RevokeOtherRefreshSessionsInput) (int, error) {
+	if err := e.Ready(ctx); err != nil {
+		return 0, err
+	}
+	if in.CurrentSessionID == uuid.Nil {
+		return 0, fmt.Errorf("%w: current_session_id is required", ErrInvalidConfig)
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return 0, err
+	}
+	current, err := e.refreshSessionManager.GetByID(ctx, in.CurrentSessionID)
+	if err != nil {
+		if errors.Is(err, storesession.ErrSessionNotFound) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	if current.UserID != auth.UserID {
+		return 0, ErrUnauthorized
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		reason = "revoked other sessions"
+	}
+	records, err := e.refreshSessionManager.ListByUser(ctx, auth.UserID)
+	if err != nil {
+		return 0, err
+	}
+	revokedCount := 0
+	for _, rec := range records {
+		if rec.ID == in.CurrentSessionID || rec.Status == domainauth.RefreshSessionStatusRevoked {
+			continue
+		}
+		if _, err := e.refreshSessionManager.RevokeByID(ctx, rec.ID, time.Now().UTC(), reason); err != nil {
+			return revokedCount, err
+		}
+		revokedCount++
+	}
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.session_revoked", UserID: &auth.UserID, UserRef: auth.UserRef, SessionID: &in.CurrentSessionID, Message: reason})
+	return revokedCount, nil
+}
+
 func (e *defaultEngine) handleRefreshTokenReuse(ctx context.Context, rec domainauth.RefreshSession) error {
 	now := time.Now().UTC()
 	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_reuse_detected", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "consumed refresh token reused"})
