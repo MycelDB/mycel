@@ -41,6 +41,8 @@ type RefreshSessionMetadata = engineinternal.RefreshSessionMetadata
 type RefreshSessionInfo = engineinternal.RefreshSessionInfo
 type LoginSessionInput = engineinternal.LoginSessionInput
 type LoginSessionResult = engineinternal.LoginSessionResult
+type RefreshSessionInput = engineinternal.RefreshSessionInput
+type RefreshSessionResult = engineinternal.RefreshSessionResult
 type CurrentUserInput = engineinternal.CurrentUserInput
 type CreateUserInput = engineinternal.CreateUserInput
 type ListUsersInput = engineinternal.ListUsersInput
@@ -95,6 +97,7 @@ type Engine interface {
 	Ready(ctx context.Context) error
 	Authenticate(ctx context.Context, in AuthInput) (AuthResult, error)
 	LoginSession(ctx context.Context, in LoginSessionInput) (LoginSessionResult, error)
+	RefreshSession(ctx context.Context, in RefreshSessionInput) (RefreshSessionResult, error)
 	CurrentUser(ctx context.Context, in CurrentUserInput) (identity.User, error)
 	CreateUser(ctx context.Context, in CreateUserInput) (identity.User, error)
 	ListUsers(ctx context.Context, in ListUsersInput) ([]identity.User, error)

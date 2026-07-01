@@ -71,6 +71,20 @@ type LoginSessionResult struct {
 	RefreshSession       RefreshSessionInfo `json:"refresh_session"`
 }
 
+// RefreshSessionInput rotates a valid durable refresh session and mints a new access token.
+type RefreshSessionInput struct {
+	RefreshToken RefreshToken
+	Metadata     RefreshSessionMetadata
+}
+
+// RefreshSessionResult contains a new short-lived access token and rotated refresh token.
+type RefreshSessionResult struct {
+	AccessToken          AccessToken        `json:"access_token"`
+	AccessTokenExpiresAt time.Time          `json:"access_token_expires_at"`
+	RefreshToken         RefreshToken       `json:"refresh_token"`
+	RefreshSession       RefreshSessionInfo `json:"refresh_session"`
+}
+
 // CurrentUserInput identifies the bearer token whose authenticated user should be returned.
 type CurrentUserInput struct {
 	AccessToken AccessToken

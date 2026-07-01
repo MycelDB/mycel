@@ -379,6 +379,92 @@ func (e *defaultEngine) LoginSession(ctx context.Context, in LoginSessionInput) 
 	}, nil
 }
 
+func (e *defaultEngine) RefreshSession(ctx context.Context, in RefreshSessionInput) (RefreshSessionResult, error) {
+	if err := e.Ready(ctx); err != nil {
+		return RefreshSessionResult{}, err
+	}
+	refreshTokenHash, err := domainauth.HashRefreshToken(in.RefreshToken)
+	if err != nil {
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", Message: "invalid refresh token"})
+		return RefreshSessionResult{}, ErrInvalidCredentials
+	}
+	rec, err := e.refreshSessionManager.FindByTokenHash(ctx, refreshTokenHash)
+	if err != nil {
+		if errors.Is(err, storesession.ErrSessionNotFound) {
+			_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", Message: "invalid refresh token"})
+			return RefreshSessionResult{}, ErrInvalidCredentials
+		}
+		return RefreshSessionResult{}, err
+	}
+	if !domainauth.VerifyRefreshTokenHash(in.RefreshToken, rec.RefreshTokenHash) {
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "invalid refresh token"})
+		return RefreshSessionResult{}, ErrInvalidCredentials
+	}
+	now := time.Now().UTC()
+	if !refreshSessionRefreshable(rec, now) {
+		if rec.Status == domainauth.RefreshSessionStatusActive && refreshSessionExpired(rec, now) {
+			rec.Status = domainauth.RefreshSessionStatusExpired
+			if updated, updateErr := e.refreshSessionManager.Update(ctx, rec); updateErr == nil {
+				rec = updated
+			}
+		}
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "refresh session expired or revoked"})
+		return RefreshSessionResult{}, ErrInvalidCredentials
+	}
+	account, err := e.userManager.GetByID(ctx, rec.UserID)
+	if err != nil {
+		if errors.Is(err, user.ErrUserNotFound) {
+			_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "refresh session user not found"})
+			return RefreshSessionResult{}, ErrInvalidCredentials
+		}
+		return RefreshSessionResult{}, err
+	}
+	if account.Status != identity.UserStatusActive {
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "refresh session user inactive"})
+		return RefreshSessionResult{}, ErrInvalidCredentials
+	}
+
+	newRefreshToken, err := domainauth.NewRefreshToken(e.refreshTokenBytes)
+	if err != nil {
+		return RefreshSessionResult{}, err
+	}
+	newRefreshTokenHash, err := domainauth.HashRefreshToken(newRefreshToken)
+	if err != nil {
+		return RefreshSessionResult{}, err
+	}
+	rec.RefreshTokenHash = newRefreshTokenHash
+	rec.RotationCounter++
+	rec.LastUsedAt = now
+	rec.IdleExpiresAt = now.Add(e.refreshIdleTTL)
+	if rec.IdleExpiresAt.After(rec.AbsoluteExpiresAt) {
+		rec.IdleExpiresAt = rec.AbsoluteExpiresAt
+	}
+	rec.Metadata = in.Metadata
+	updated, err := e.refreshSessionManager.Update(ctx, rec)
+	if err != nil {
+		return RefreshSessionResult{}, err
+	}
+	accessToken, accessTokenExpiresAt, err := e.mintAccessToken(ctx, account)
+	if err != nil {
+		return RefreshSessionResult{}, err
+	}
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_success", UserID: &account.ID, UserRef: account.Ref, SessionID: &updated.ID, Message: "refresh session rotated"})
+	return RefreshSessionResult{
+		AccessToken:          accessToken,
+		AccessTokenExpiresAt: accessTokenExpiresAt,
+		RefreshToken:         newRefreshToken,
+		RefreshSession:       refreshSessionInfo(updated),
+	}, nil
+}
+
+func refreshSessionRefreshable(rec domainauth.RefreshSession, now time.Time) bool {
+	return rec.Status == domainauth.RefreshSessionStatusActive && !refreshSessionExpired(rec, now)
+}
+
+func refreshSessionExpired(rec domainauth.RefreshSession, now time.Time) bool {
+	return !rec.IdleExpiresAt.After(now) || !rec.AbsoluteExpiresAt.After(now)
+}
+
 func (e *defaultEngine) authenticateAccount(ctx context.Context, ref identity.UserRef, password string) (identity.User, error) {
 	if ref == "" || password == "" {
 		return identity.User{}, fmt.Errorf("%w: user_ref and password are required", ErrInvalidCredentials)
