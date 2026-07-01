@@ -7,11 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/access"
+	domainauth "github.com/myceldb/mycel/domain/auth"
 	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
@@ -105,6 +107,110 @@ func TestRuntimeEngine_OpenMethod_RefreshConfigDefaultsAndValidation(t *testing.
 	}
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestRuntimeEngine_LoginSession_CreatesRefreshSession(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-login-session")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:            dataDir,
+		Mode:               EngineModeStandalone,
+		CreateIfMissing:    true,
+		AdminUsername:      "admin@example.com",
+		AdminPassword:      "change-me-now",
+		AccessTokenTTL:     2 * time.Minute,
+		RefreshIdleTTL:     24 * time.Hour,
+		RefreshAbsoluteTTL: 48 * time.Hour,
+		RefreshTokenBytes:  32,
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	res, err := engine.LoginSession(ctx, LoginSessionInput{
+		UserRef:  identity.UserRef("admin@example.com"),
+		Password: "change-me-now",
+		Metadata: RefreshSessionMetadata{ClientName: "test-client", UserAgentHash: "sha256:user-agent"},
+	})
+	if err != nil {
+		t.Fatalf("login session failed: %v", err)
+	}
+	if res.AccessToken == "" || res.RefreshToken == "" {
+		t.Fatalf("expected access and refresh tokens, got %#v", res)
+	}
+	if !res.AccessTokenExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("expected future access token expiry, got %s", res.AccessTokenExpiresAt)
+	}
+	if res.RefreshSession.ID == uuid.Nil || res.RefreshSession.Status != RefreshSessionStatusActive || res.RefreshSession.Metadata.ClientName != "test-client" {
+		t.Fatalf("unexpected refresh session info: %#v", res.RefreshSession)
+	}
+
+	current, err := engine.CurrentUser(ctx, CurrentUserInput{AccessToken: res.AccessToken})
+	if err != nil {
+		t.Fatalf("current user with login-session access token failed: %v", err)
+	}
+	if current.Ref != identity.UserRef("admin@example.com") {
+		t.Fatalf("unexpected current user: %#v", current)
+	}
+
+	sessions, err := engine.refreshSessionManager.ListByUser(ctx, current.ID)
+	if err != nil {
+		t.Fatalf("list refresh sessions failed: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected one refresh session, got %d", len(sessions))
+	}
+	stored := sessions[0]
+	if stored.ID != res.RefreshSession.ID {
+		t.Fatalf("expected stored session %s, got %s", res.RefreshSession.ID, stored.ID)
+	}
+	if stored.RefreshTokenHash == "" || strings.Contains(stored.RefreshTokenHash, string(res.RefreshToken)) {
+		t.Fatalf("expected stored hash without plaintext token, got %q", stored.RefreshTokenHash)
+	}
+	if !domainauth.VerifyRefreshTokenHash(res.RefreshToken, stored.RefreshTokenHash) {
+		t.Fatal("expected refresh token to verify against stored hash")
+	}
+	events, err := engine.refreshSessionManager.ListAuditEvents(ctx, &current.ID)
+	if err != nil {
+		t.Fatalf("list audit events failed: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != "auth.login_success" || events[0].SessionID == nil || *events[0].SessionID != res.RefreshSession.ID {
+		t.Fatalf("unexpected audit events: %#v", events)
+	}
+}
+
+func TestRuntimeEngine_LoginSession_InvalidCredentialsAudited(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-login-session-invalid")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	_, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "wrong"})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+	admin, err := engine.userManager.GetByRef(ctx, identity.UserRef("admin@example.com"))
+	if err != nil {
+		t.Fatalf("get admin failed: %v", err)
+	}
+	sessions, err := engine.refreshSessionManager.ListByUser(ctx, admin.ID)
+	if err != nil {
+		t.Fatalf("list sessions failed: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("expected no refresh sessions for failed login, got %d", len(sessions))
+	}
+	events, err := engine.refreshSessionManager.ListAuditEvents(ctx, nil)
+	if err != nil {
+		t.Fatalf("list audit events failed: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != "auth.login_failure" || events[0].Message != "invalid credentials" {
+		t.Fatalf("unexpected audit events: %#v", events)
 	}
 }
 

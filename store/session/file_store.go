@@ -17,10 +17,16 @@ import (
 
 const refreshSessionsStoreFile = "refresh_sessions.json"
 
+type storedState struct {
+	RefreshSessions []domainauth.RefreshSession `json:"refresh_sessions"`
+	AuditEvents     []domainauth.AuthAuditEvent `json:"audit_events,omitempty"`
+}
+
 type defaultManager struct {
 	location         string
 	storePath        string
 	sessions         []domainauth.RefreshSession
+	auditEvents      []domainauth.AuthAuditEvent
 	indexByID        map[domainauth.RefreshSessionID]int
 	indexByTokenHash map[string]int
 }
@@ -46,6 +52,7 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 	if _, err := os.Stat(m.storePath); err != nil {
 		if os.IsNotExist(err) {
 			m.sessions = []domainauth.RefreshSession{}
+			m.auditEvents = []domainauth.AuthAuditEvent{}
 			m.rebuildIndex()
 			return m.persist()
 		}
@@ -56,11 +63,23 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 	if err != nil {
 		return err
 	}
-	var sessions []domainauth.RefreshSession
-	if err := json.Unmarshal(raw, &sessions); err != nil {
-		return err
+	var state storedState
+	if err := json.Unmarshal(raw, &state); err != nil || state.RefreshSessions == nil {
+		// Older development snapshots stored the refresh-session array directly.
+		var sessions []domainauth.RefreshSession
+		if arrErr := json.Unmarshal(raw, &sessions); arrErr != nil {
+			if err != nil {
+				return err
+			}
+			return arrErr
+		}
+		state.RefreshSessions = sessions
 	}
-	m.sessions = normalizeSessions(sessions)
+	m.sessions = normalizeSessions(state.RefreshSessions)
+	m.auditEvents = state.AuditEvents
+	if m.auditEvents == nil {
+		m.auditEvents = []domainauth.AuthAuditEvent{}
+	}
 	m.rebuildIndex()
 	return nil
 }
@@ -250,6 +269,51 @@ func (m *defaultManager) DeleteExpiredRedacted(ctx context.Context, cutoff time.
 	return changed, nil
 }
 
+func (m *defaultManager) RecordAuditEvent(ctx context.Context, event domainauth.AuthAuditEvent) (domainauth.AuthAuditEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return domainauth.AuthAuditEvent{}, err
+	}
+	event.Type = strings.TrimSpace(event.Type)
+	if event.Type == "" {
+		return domainauth.AuthAuditEvent{}, fmt.Errorf("%w: audit event type is required", ErrInvalidInput)
+	}
+	event.Message = strings.TrimSpace(event.Message)
+	if event.ID == uuid.Nil {
+		event.ID = uuid.New()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	} else {
+		event.CreatedAt = event.CreatedAt.UTC()
+	}
+	oldEvents := append([]domainauth.AuthAuditEvent(nil), m.auditEvents...)
+	m.auditEvents = append(m.auditEvents, event)
+	if err := m.persist(); err != nil {
+		m.auditEvents = oldEvents
+		return domainauth.AuthAuditEvent{}, err
+	}
+	return event, nil
+}
+
+func (m *defaultManager) ListAuditEvents(ctx context.Context, userID *identity.UserID) ([]domainauth.AuthAuditEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if userID != nil && *userID == uuid.Nil {
+		return nil, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	}
+	out := []domainauth.AuthAuditEvent{}
+	for _, event := range m.auditEvents {
+		if userID != nil {
+			if event.UserID == nil || *event.UserID != *userID {
+				continue
+			}
+		}
+		out = append(out, event)
+	}
+	return out, nil
+}
+
 func (m *defaultManager) rebuildIndex() {
 	m.indexByID = map[domainauth.RefreshSessionID]int{}
 	m.indexByTokenHash = map[string]int{}
@@ -262,7 +326,11 @@ func (m *defaultManager) rebuildIndex() {
 }
 
 func (m *defaultManager) persist() error {
-	b, err := json.MarshalIndent(m.sessions, "", "  ")
+	state := storedState{RefreshSessions: m.sessions, AuditEvents: m.auditEvents}
+	if state.AuditEvents == nil {
+		state.AuditEvents = []domainauth.AuthAuditEvent{}
+	}
+	b, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}

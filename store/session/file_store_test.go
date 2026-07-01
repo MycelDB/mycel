@@ -253,6 +253,37 @@ func TestDefaultManager_ValidationRejectsPlainMissingTokenHash(t *testing.T) {
 	}
 }
 
+func TestDefaultManager_RecordAndListAuditEvents(t *testing.T) {
+	ctx := context.Background()
+	m := initializedManager(t)
+	userID := identity.UserID(uuid.New())
+	otherUserID := identity.UserID(uuid.New())
+	event, err := m.RecordAuditEvent(ctx, domainauth.AuthAuditEvent{Type: " auth.login_success ", UserID: &userID, UserRef: identity.UserRef("user@example.test"), Message: " login ok "})
+	if err != nil {
+		t.Fatalf("record audit event failed: %v", err)
+	}
+	if event.ID == uuid.Nil || event.Type != "auth.login_success" || event.Message != "login ok" || event.CreatedAt.IsZero() {
+		t.Fatalf("unexpected audit event: %#v", event)
+	}
+	if _, err := m.RecordAuditEvent(ctx, domainauth.AuthAuditEvent{Type: "auth.login_failure", UserID: &otherUserID}); err != nil {
+		t.Fatalf("record other audit event failed: %v", err)
+	}
+	listed, err := m.ListAuditEvents(ctx, &userID)
+	if err != nil {
+		t.Fatalf("list audit events failed: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != event.ID {
+		t.Fatalf("expected one matching audit event, got %#v", listed)
+	}
+	all, err := m.ListAuditEvents(ctx, nil)
+	if err != nil {
+		t.Fatalf("list all audit events failed: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected two audit events, got %d", len(all))
+	}
+}
+
 func TestDefaultManager_PersistsHashWithoutPlaintextRefreshToken(t *testing.T) {
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "store")

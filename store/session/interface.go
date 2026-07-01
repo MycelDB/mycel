@@ -18,4 +18,6 @@ type Manager interface {
 	Update(ctx context.Context, rec domainauth.RefreshSession) (domainauth.RefreshSession, error)
 	RevokeByID(ctx context.Context, id domainauth.RefreshSessionID, revokedAt time.Time, reason string) (domainauth.RefreshSession, error)
 	DeleteExpiredRedacted(ctx context.Context, cutoff time.Time) (int, error)
+	RecordAuditEvent(ctx context.Context, event domainauth.AuthAuditEvent) (domainauth.AuthAuditEvent, error)
+	ListAuditEvents(ctx context.Context, userID *identity.UserID) ([]domainauth.AuthAuditEvent, error)
 }
