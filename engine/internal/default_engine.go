@@ -337,6 +337,7 @@ func (e *defaultEngine) LoginSession(ctx context.Context, in LoginSessionInput) 
 	if err := e.Ready(ctx); err != nil {
 		return LoginSessionResult{}, err
 	}
+	_, _ = e.cleanupRefreshSessions(context.Background())
 	account, err := e.authenticateAccount(ctx, in.UserRef, in.Password)
 	if err != nil {
 		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.login_failure", UserRef: in.UserRef, Message: "invalid credentials"})
@@ -383,6 +384,7 @@ func (e *defaultEngine) RefreshSession(ctx context.Context, in RefreshSessionInp
 	if err := e.Ready(ctx); err != nil {
 		return RefreshSessionResult{}, err
 	}
+	_, _ = e.cleanupRefreshSessions(context.Background())
 	refreshTokenHash, err := domainauth.HashRefreshToken(in.RefreshToken)
 	if err != nil {
 		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", Message: "invalid refresh token"})
@@ -558,6 +560,37 @@ func (e *defaultEngine) RevokeOtherRefreshSessions(ctx context.Context, in Revok
 	}
 	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.session_revoked", UserID: &auth.UserID, UserRef: auth.UserRef, SessionID: &in.CurrentSessionID, Message: reason})
 	return revokedCount, nil
+}
+
+func (e *defaultEngine) CleanupRefreshSessions(ctx context.Context, in CleanupRefreshSessionsInput) (CleanupRefreshSessionsResult, error) {
+	if err := e.Ready(ctx); err != nil {
+		return CleanupRefreshSessionsResult{}, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return CleanupRefreshSessionsResult{}, err
+	}
+	canOperate, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionOperateSystem)
+	if err != nil {
+		return CleanupRefreshSessionsResult{}, err
+	}
+	if !canOperate {
+		return CleanupRefreshSessionsResult{}, ErrUnauthorized
+	}
+	changed, err := e.cleanupRefreshSessions(ctx)
+	if err != nil {
+		return CleanupRefreshSessionsResult{}, err
+	}
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.session_cleanup", UserID: &auth.UserID, UserRef: auth.UserRef, Message: fmt.Sprintf("cleaned %d refresh sessions", changed)})
+	return CleanupRefreshSessionsResult{ChangedCount: changed}, nil
+}
+
+func (e *defaultEngine) cleanupRefreshSessions(ctx context.Context) (int, error) {
+	if e.refreshSessionManager == nil {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().Add(-e.refreshAuditRetentionTTL)
+	return e.refreshSessionManager.DeleteExpiredRedacted(ctx, cutoff)
 }
 
 func (e *defaultEngine) handleRefreshTokenReuse(ctx context.Context, rec domainauth.RefreshSession) error {

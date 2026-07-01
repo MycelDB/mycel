@@ -104,6 +104,16 @@ type RevokeOtherRefreshSessionsInput struct {
 	Reason           string
 }
 
+// CleanupRefreshSessionsInput runs refresh-session cleanup/redaction. The access-token user must have system operation permission.
+type CleanupRefreshSessionsInput struct {
+	AccessToken AccessToken
+}
+
+// CleanupRefreshSessionsResult reports refresh-session records changed by cleanup.
+type CleanupRefreshSessionsResult struct {
+	ChangedCount int `json:"changed_count"`
+}
+
 // CurrentUserInput identifies the bearer token whose authenticated user should be returned.
 type CurrentUserInput struct {
 	AccessToken AccessToken

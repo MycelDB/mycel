@@ -333,6 +333,43 @@ func TestDefaultManager_ValidationRejectsPlainMissingTokenHash(t *testing.T) {
 	}
 }
 
+func TestDefaultManager_DeleteExpiredRedactedMarksRecentExpiredWithoutRedacting(t *testing.T) {
+	ctx := context.Background()
+	m := initializedManager(t)
+	now := time.Now().UTC()
+	cutoff := now.Add(-24 * time.Hour)
+	recentExpiredHash := testRefreshTokenHash(t, "recent-expired")
+	recentExpired := validRefreshSession(identity.UserID(uuid.New()), recentExpiredHash)
+	recentExpired.IdleExpiresAt = now.Add(-time.Hour)
+	recentExpired.AbsoluteExpiresAt = now.Add(time.Hour)
+	recentExpired, err := m.Create(ctx, recentExpired)
+	if err != nil {
+		t.Fatalf("create recent expired failed: %v", err)
+	}
+
+	count, err := m.DeleteExpiredRedacted(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one changed session, got %d", count)
+	}
+	got, err := m.GetByID(ctx, recentExpired.ID)
+	if err != nil {
+		t.Fatalf("get recent expired failed: %v", err)
+	}
+	if got.Status != domainauth.RefreshSessionStatusExpired || got.RefreshTokenHash != recentExpiredHash || !got.RedactedAt.IsZero() {
+		t.Fatalf("expected recent expired session marked but not redacted, got %#v", got)
+	}
+	count, err = m.DeleteExpiredRedacted(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("second cleanup failed: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected idempotent cleanup to change 0 sessions, got %d", count)
+	}
+}
+
 func TestDefaultManager_RecordAndListAuditEvents(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)

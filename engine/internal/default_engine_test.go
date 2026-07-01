@@ -426,6 +426,122 @@ func TestRuntimeEngine_RefreshSessionManagement_UserScoped(t *testing.T) {
 	}
 }
 
+func TestRuntimeEngine_CleanupRefreshSessions_RedactsAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-cleanup-sessions")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:                  dataDir,
+		Mode:                     EngineModeStandalone,
+		CreateIfMissing:          true,
+		AdminUsername:            "admin@example.com",
+		AdminPassword:            "change-me-now",
+		RefreshAuditRetentionTTL: time.Hour,
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	adminLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("admin login session failed: %v", err)
+	}
+	oldRevoked, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("old revoked login session failed: %v", err)
+	}
+	stored, err := engine.refreshSessionManager.GetByID(ctx, oldRevoked.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get old revoked failed: %v", err)
+	}
+	stored.Status = domainauth.RefreshSessionStatusRevoked
+	stored.RevokedAt = time.Now().UTC().Add(-2 * time.Hour)
+	stored.RevokedReason = "old logout"
+	if _, err := engine.refreshSessionManager.Update(ctx, stored); err != nil {
+		t.Fatalf("prepare old revoked failed: %v", err)
+	}
+
+	cleanup, err := engine.CleanupRefreshSessions(ctx, CleanupRefreshSessionsInput{AccessToken: adminLogin.AccessToken})
+	if err != nil {
+		t.Fatalf("cleanup refresh sessions failed: %v", err)
+	}
+	if cleanup.ChangedCount != 1 {
+		t.Fatalf("expected one changed session, got %d", cleanup.ChangedCount)
+	}
+	cleaned, err := engine.refreshSessionManager.GetByID(ctx, oldRevoked.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get cleaned session failed: %v", err)
+	}
+	if cleaned.RefreshTokenHash != "" || cleaned.RedactedAt.IsZero() {
+		t.Fatalf("expected old revoked session redacted, got %#v", cleaned)
+	}
+	cleanup, err = engine.CleanupRefreshSessions(ctx, CleanupRefreshSessionsInput{AccessToken: adminLogin.AccessToken})
+	if err != nil {
+		t.Fatalf("second cleanup refresh sessions failed: %v", err)
+	}
+	if cleanup.ChangedCount != 0 {
+		t.Fatalf("expected idempotent cleanup count 0, got %d", cleanup.ChangedCount)
+	}
+}
+
+func TestRuntimeEngine_CleanupRefreshSessions_RequiresOperatePermission(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-cleanup-authz")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+	adminLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("admin login session failed: %v", err)
+	}
+	if _, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminLogin.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"}); err != nil {
+		t.Fatalf("create bob failed: %v", err)
+	}
+	bobLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("bob@example.com"), Password: "bob-password"})
+	if err != nil {
+		t.Fatalf("bob login session failed: %v", err)
+	}
+	if _, err := engine.CleanupRefreshSessions(ctx, CleanupRefreshSessionsInput{AccessToken: bobLogin.AccessToken}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected cleanup unauthorized for bob, got %v", err)
+	}
+}
+
+func TestRuntimeEngine_LoginSessionRunsOpportunisticCleanup(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-login-cleanup")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now", RefreshAuditRetentionTTL: time.Hour}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+	oldLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("old login session failed: %v", err)
+	}
+	stored, err := engine.refreshSessionManager.GetByID(ctx, oldLogin.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get old session failed: %v", err)
+	}
+	stored.Status = domainauth.RefreshSessionStatusRevoked
+	stored.RevokedAt = time.Now().UTC().Add(-2 * time.Hour)
+	stored.RevokedReason = "old logout"
+	if _, err := engine.refreshSessionManager.Update(ctx, stored); err != nil {
+		t.Fatalf("prepare old session failed: %v", err)
+	}
+	if _, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"}); err != nil {
+		t.Fatalf("new login session failed: %v", err)
+	}
+	cleaned, err := engine.refreshSessionManager.GetByID(ctx, oldLogin.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get cleaned session failed: %v", err)
+	}
+	if cleaned.RefreshTokenHash != "" || cleaned.RedactedAt.IsZero() {
+		t.Fatalf("expected opportunistic cleanup to redact old session, got %#v", cleaned)
+	}
+}
+
 func TestRuntimeEngine_RefreshSession_SurvivesEngineRestart(t *testing.T) {
 	ctx := context.Background()
 	dataDir := filepath.Join(t.TempDir(), "mycel-refresh-session-restart")

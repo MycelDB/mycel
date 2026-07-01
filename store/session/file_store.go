@@ -305,16 +305,18 @@ func (m *defaultManager) DeleteExpiredRedacted(ctx context.Context, cutoff time.
 	changed := 0
 	oldSessions := append([]domainauth.RefreshSession(nil), m.sessions...)
 	for i := range m.sessions {
-		if m.sessions[i].RefreshTokenHash == "" && len(m.sessions[i].ConsumedRefreshTokenHashes) == 0 {
-			continue
+		sessionChanged := false
+		if m.sessions[i].Status == domainauth.RefreshSessionStatusActive && sessionExpired(m.sessions[i], now) {
+			m.sessions[i].Status = domainauth.RefreshSessionStatusExpired
+			sessionChanged = true
 		}
-		if shouldRedact(m.sessions[i], cutoff) {
-			if m.sessions[i].Status == domainauth.RefreshSessionStatusActive {
-				m.sessions[i].Status = domainauth.RefreshSessionStatusExpired
-			}
+		if shouldRedact(m.sessions[i], cutoff) && (m.sessions[i].RefreshTokenHash != "" || len(m.sessions[i].ConsumedRefreshTokenHashes) > 0) {
 			m.sessions[i].RefreshTokenHash = ""
 			m.sessions[i].ConsumedRefreshTokenHashes = nil
 			m.sessions[i].RedactedAt = now
+			sessionChanged = true
+		}
+		if sessionChanged {
 			changed++
 		}
 	}
@@ -500,6 +502,11 @@ func normalizeSession(rec domainauth.RefreshSession) domainauth.RefreshSession {
 	rec.RevokedAt = rec.RevokedAt.UTC()
 	rec.RedactedAt = rec.RedactedAt.UTC()
 	return rec
+}
+
+func sessionExpired(rec domainauth.RefreshSession, now time.Time) bool {
+	terminal := terminalExpiry(rec)
+	return !terminal.IsZero() && !terminal.After(now)
 }
 
 func shouldRedact(rec domainauth.RefreshSession, cutoff time.Time) bool {
