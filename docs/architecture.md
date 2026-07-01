@@ -152,6 +152,8 @@ Current characteristics:
 
 Applications embedding MycelDB should treat Mycel access tokens as short-lived engine credentials. Product-level browser sessions can be owned by the application layer. For example, Knot PKM can store hashed refresh-session records in its own protected system graph and mint new short-lived Mycel access tokens by re-authenticating through application-owned credentials.
 
+If MycelDB later needs to own durable refresh sessions directly, see [Auth session renewal implementation plan](implementation-plan-auth-session-renewal.md).
+
 Potential future MycelDB auth/session primitives, if needed by applications, should be added explicitly to the public `engine.Engine` API and backed by dedicated persistence stores:
 
 - durable refresh/session records that survive engine restart
