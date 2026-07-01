@@ -32,7 +32,11 @@ MycelDB CLI configuration precedence is: built-in defaults, optional YAML file, 
 
 Use `--config` or `MYCELDB_CONFIG` to load a YAML file.
 
-Blob upload limits use `-1` for unlimited. Exact MIME overrides can use `0` to disallow that MIME type. Environment aliases include `MYCELDB_DATA_DIR`, `MYCELDB_AUTH_ACCESS_TOKEN_TTL`, `MYCELDB_USER_STORE_ENCRYPTION_KEY_B64`, and `MYCELDB_STORAGE_BLOBS_MAX_*_BYTES`.
+Blob upload limits use `-1` for unlimited. Exact MIME overrides can use `0` to disallow that MIME type.
+
+Auth/session environment aliases include `MYCELDB_AUTH_ACCESS_TOKEN_TTL`, `MYCELDB_AUTH_REFRESH_IDLE_TTL`, `MYCELDB_AUTH_REFRESH_ABSOLUTE_TTL`, `MYCELDB_AUTH_REFRESH_AUDIT_RETENTION_TTL`, and `MYCELDB_AUTH_REFRESH_TOKEN_BYTES`.
+
+Other common environment aliases include `MYCELDB_DATA_DIR`, `MYCELDB_USER_STORE_ENCRYPTION_KEY_B64`, and `MYCELDB_STORAGE_BLOBS_MAX_*_BYTES`.
 
 Phase 0 advanced semantic implementation work is gated by `semantic.advanced_enabled`, `MYCELDB_SEMANTIC_ADVANCED_ENABLED`, or `--semantic-advanced-enabled`. The flag defaults to `false` and is intentionally no-op until later phases introduce gated implementation paths.
 
@@ -60,6 +64,10 @@ Core commands:
 - [acl grant](commands/acl-grant.md)
 - [acl revoke](commands/acl-revoke.md)
 - [acl list](commands/acl-list.md)
+- [auth session list](commands/auth-session-list.md)
+- [auth session revoke](commands/auth-session-revoke.md)
+- [auth session revoke-other](commands/auth-session-revoke-other.md)
+- [auth session cleanup](commands/auth-session-cleanup.md)
 - [space add](commands/space-add.md)
 - [space list](commands/space-list.md)
 - [space delete](commands/space-delete.md)

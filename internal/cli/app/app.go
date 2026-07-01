@@ -18,25 +18,29 @@ import (
 
 // App holds process/REPL state shared by commands.
 type App struct {
-	DataDir                   string
-	ConfigFile                string
-	UserRef                   string
-	Password                  string
-	Output                    string
-	UserStoreEncryptionKeyB64 string
-	AuthTokenTTL              string
-	BlobStaleTmpAge           string
-	BlobMaxSizeBytes          int64
-	BlobMaxImageBytes         int64
-	BlobMaxPDFBytes           int64
-	BlobMaxAudioBytes         int64
-	BlobMaxVideoBytes         int64
-	BlobMaxOtherBytes         int64
-	AdvancedSemanticEnabled   bool
-	Engine                    mycelengine.Engine
-	Token                     mycelengine.AccessToken
-	CurrentSpaceID            *domainspace.SpaceID
-	Config                    mycelconfig.Config
+	DataDir                      string
+	ConfigFile                   string
+	UserRef                      string
+	Password                     string
+	Output                       string
+	UserStoreEncryptionKeyB64    string
+	AuthTokenTTL                 string
+	AuthRefreshIdleTTL           string
+	AuthRefreshAbsoluteTTL       string
+	AuthRefreshAuditRetentionTTL string
+	AuthRefreshTokenBytes        int
+	BlobStaleTmpAge              string
+	BlobMaxSizeBytes             int64
+	BlobMaxImageBytes            int64
+	BlobMaxPDFBytes              int64
+	BlobMaxAudioBytes            int64
+	BlobMaxVideoBytes            int64
+	BlobMaxOtherBytes            int64
+	AdvancedSemanticEnabled      bool
+	Engine                       mycelengine.Engine
+	Token                        mycelengine.AccessToken
+	CurrentSpaceID               *domainspace.SpaceID
+	Config                       mycelconfig.Config
 }
 
 func DefaultOutput(v string) string {

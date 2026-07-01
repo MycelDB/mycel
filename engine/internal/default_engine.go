@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/access"
+	domainauth "github.com/myceldb/mycel/domain/auth"
 	domainembedding "github.com/myceldb/mycel/domain/embedding"
 	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
@@ -23,6 +24,7 @@ import (
 	storedomains "github.com/myceldb/mycel/store/domains"
 	storeembedding "github.com/myceldb/mycel/store/embedding"
 	storesemantic "github.com/myceldb/mycel/store/semantic"
+	storesession "github.com/myceldb/mycel/store/session"
 	"github.com/myceldb/mycel/store/spaces"
 	storetemplate "github.com/myceldb/mycel/store/template"
 	"github.com/myceldb/mycel/store/user"
@@ -42,6 +44,10 @@ type defaultEngine struct {
 	state                     EngineState
 	dataDir                   string
 	accessTokenTTL            time.Duration
+	refreshIdleTTL            time.Duration
+	refreshAbsoluteTTL        time.Duration
+	refreshAuditRetentionTTL  time.Duration
+	refreshTokenBytes         int
 	blobLimits                domainsession.BlobLimits
 	blobStaleTmpAge           time.Duration
 	advancedSemanticEnabled   bool
@@ -53,6 +59,7 @@ type defaultEngine struct {
 	embeddingManager          storeembedding.Manager
 	semanticManager           storesemantic.GlobalManager
 	accountingManager         storeaccounting.Manager
+	refreshSessionManager     storesession.Manager
 	accessManager             acl.Manager
 	authMu                    sync.RWMutex
 	authCache                 map[AccessToken]authClaims
@@ -157,6 +164,30 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 	if e.accessTokenTTL <= 0 {
 		e.accessTokenTTL = time.Hour
 	}
+	e.refreshIdleTTL = cfg.RefreshIdleTTL
+	if e.refreshIdleTTL <= 0 {
+		e.refreshIdleTTL = 30 * 24 * time.Hour
+	}
+	e.refreshAbsoluteTTL = cfg.RefreshAbsoluteTTL
+	if e.refreshAbsoluteTTL <= 0 {
+		e.refreshAbsoluteTTL = 90 * 24 * time.Hour
+	}
+	if e.refreshAbsoluteTTL < e.refreshIdleTTL {
+		e.state = EngineStateClose
+		return fmt.Errorf("%w: refresh_absolute_ttl must be greater than or equal to refresh_idle_ttl", ErrInvalidConfig)
+	}
+	e.refreshAuditRetentionTTL = cfg.RefreshAuditRetentionTTL
+	if e.refreshAuditRetentionTTL <= 0 {
+		e.refreshAuditRetentionTTL = 30 * 24 * time.Hour
+	}
+	e.refreshTokenBytes = cfg.RefreshTokenBytes
+	if e.refreshTokenBytes == 0 {
+		e.refreshTokenBytes = 32
+	}
+	if e.refreshTokenBytes < 32 {
+		e.state = EngineStateClose
+		return fmt.Errorf("%w: refresh_token_bytes must be at least 32", ErrInvalidConfig)
+	}
 	e.blobLimits = cfg.BlobLimits
 	e.blobStaleTmpAge = cfg.BlobStaleTmpAge
 	e.advancedSemanticEnabled = cfg.AdvancedSemanticEnabled
@@ -219,6 +250,13 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		e.accountingManager = storeaccounting.NewManager()
 	}
 	if err := e.accountingManager.Init(context.Background(), filepath.Join(metaDir(cfg.DataDir), "accounting")); err != nil {
+		e.state = EngineStateClose
+		return err
+	}
+	if e.refreshSessionManager == nil {
+		e.refreshSessionManager = storesession.NewManager()
+	}
+	if err := e.refreshSessionManager.Init(context.Background(), filepath.Join(metaDir(cfg.DataDir), "sessions")); err != nil {
 		e.state = EngineStateClose
 		return err
 	}
@@ -310,36 +348,331 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 	if err := e.Ready(ctx); err != nil {
 		return AuthResult{}, err
 	}
-	if in.UserRef == "" || in.Password == "" {
-		return AuthResult{}, fmt.Errorf("%w: user_ref and password are required", ErrInvalidCredentials)
-	}
-
-	account, err := e.userManager.Authenticate(ctx, in.UserRef, in.Password)
+	account, err := e.authenticateAccount(ctx, in.UserRef, in.Password)
 	if err != nil {
-		if errors.Is(err, user.ErrUserNotFound) || errors.Is(err, user.ErrInvalidInput) {
-			return AuthResult{}, ErrInvalidCredentials
-		}
 		return AuthResult{}, err
 	}
-	if account.Status != identity.UserStatusActive {
-		return AuthResult{}, ErrInvalidCredentials
+	accessToken, _, err := e.mintAccessToken(ctx, account)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	return AuthResult{AccessToken: accessToken}, nil
+}
+
+func (e *defaultEngine) LoginSession(ctx context.Context, in LoginSessionInput) (LoginSessionResult, error) {
+	if err := e.Ready(ctx); err != nil {
+		return LoginSessionResult{}, err
+	}
+	_, _ = e.cleanupRefreshSessions(context.Background())
+	account, err := e.authenticateAccount(ctx, in.UserRef, in.Password)
+	if err != nil {
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.login_failure", UserRef: in.UserRef, Message: "invalid credentials"})
+		return LoginSessionResult{}, err
 	}
 
-	now := time.Now().Unix()
-	exp := now + int64(e.accessTokenTTL.Seconds())
+	refreshToken, err := domainauth.NewRefreshToken(e.refreshTokenBytes)
+	if err != nil {
+		return LoginSessionResult{}, err
+	}
+	refreshTokenHash, err := domainauth.HashRefreshToken(refreshToken)
+	if err != nil {
+		return LoginSessionResult{}, err
+	}
+	now := time.Now().UTC()
+	rec, err := e.refreshSessionManager.Create(ctx, domainauth.RefreshSession{
+		UserID:            account.ID,
+		UserRef:           account.Ref,
+		Status:            domainauth.RefreshSessionStatusActive,
+		RefreshTokenHash:  refreshTokenHash,
+		CreatedAt:         now,
+		LastUsedAt:        now,
+		IdleExpiresAt:     now.Add(e.refreshIdleTTL),
+		AbsoluteExpiresAt: now.Add(e.refreshAbsoluteTTL),
+		Metadata:          in.Metadata,
+	})
+	if err != nil {
+		return LoginSessionResult{}, err
+	}
+	accessToken, accessTokenExpiresAt, err := e.mintAccessToken(ctx, account)
+	if err != nil {
+		return LoginSessionResult{}, err
+	}
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.login_success", UserID: &account.ID, UserRef: account.Ref, SessionID: &rec.ID, Message: "login session created"})
+	return LoginSessionResult{
+		AccessToken:          accessToken,
+		AccessTokenExpiresAt: accessTokenExpiresAt,
+		RefreshToken:         refreshToken,
+		RefreshSession:       refreshSessionInfo(rec),
+	}, nil
+}
+
+func (e *defaultEngine) RefreshSession(ctx context.Context, in RefreshSessionInput) (RefreshSessionResult, error) {
+	if err := e.Ready(ctx); err != nil {
+		return RefreshSessionResult{}, err
+	}
+	_, _ = e.cleanupRefreshSessions(context.Background())
+	refreshTokenHash, err := domainauth.HashRefreshToken(in.RefreshToken)
+	if err != nil {
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", Message: "invalid refresh token"})
+		return RefreshSessionResult{}, ErrInvalidCredentials
+	}
+	rec, err := e.refreshSessionManager.FindByTokenHash(ctx, refreshTokenHash)
+	if err != nil {
+		if errors.Is(err, storesession.ErrSessionNotFound) {
+			if consumed, reuseErr := e.refreshSessionManager.FindByConsumedTokenHash(ctx, refreshTokenHash); reuseErr == nil {
+				if err := e.handleRefreshTokenReuse(ctx, consumed); err != nil {
+					return RefreshSessionResult{}, err
+				}
+				return RefreshSessionResult{}, ErrInvalidCredentials
+			}
+			_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", Message: "invalid refresh token"})
+			return RefreshSessionResult{}, ErrInvalidCredentials
+		}
+		return RefreshSessionResult{}, err
+	}
+	if !domainauth.VerifyRefreshTokenHash(in.RefreshToken, rec.RefreshTokenHash) {
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "invalid refresh token"})
+		return RefreshSessionResult{}, ErrInvalidCredentials
+	}
+	now := time.Now().UTC()
+	if !refreshSessionRefreshable(rec, now) {
+		if rec.Status == domainauth.RefreshSessionStatusActive && refreshSessionExpired(rec, now) {
+			rec.Status = domainauth.RefreshSessionStatusExpired
+			if updated, updateErr := e.refreshSessionManager.Update(ctx, rec); updateErr == nil {
+				rec = updated
+			}
+		}
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "refresh session expired or revoked"})
+		return RefreshSessionResult{}, ErrInvalidCredentials
+	}
+	account, err := e.userManager.GetByID(ctx, rec.UserID)
+	if err != nil {
+		if errors.Is(err, user.ErrUserNotFound) {
+			_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "refresh session user not found"})
+			return RefreshSessionResult{}, ErrInvalidCredentials
+		}
+		return RefreshSessionResult{}, err
+	}
+	if account.Status != identity.UserStatusActive {
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_failure", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "refresh session user inactive"})
+		return RefreshSessionResult{}, ErrInvalidCredentials
+	}
+
+	newRefreshToken, err := domainauth.NewRefreshToken(e.refreshTokenBytes)
+	if err != nil {
+		return RefreshSessionResult{}, err
+	}
+	newRefreshTokenHash, err := domainauth.HashRefreshToken(newRefreshToken)
+	if err != nil {
+		return RefreshSessionResult{}, err
+	}
+	oldRefreshTokenHash := rec.RefreshTokenHash
+	rec.RefreshTokenHash = newRefreshTokenHash
+	rec.ConsumedRefreshTokenHashes = append(rec.ConsumedRefreshTokenHashes, oldRefreshTokenHash)
+	rec.RotationCounter++
+	rec.LastUsedAt = now
+	rec.IdleExpiresAt = now.Add(e.refreshIdleTTL)
+	if rec.IdleExpiresAt.After(rec.AbsoluteExpiresAt) {
+		rec.IdleExpiresAt = rec.AbsoluteExpiresAt
+	}
+	rec.Metadata = in.Metadata
+	updated, err := e.refreshSessionManager.Update(ctx, rec)
+	if err != nil {
+		return RefreshSessionResult{}, err
+	}
+	accessToken, accessTokenExpiresAt, err := e.mintAccessToken(ctx, account)
+	if err != nil {
+		return RefreshSessionResult{}, err
+	}
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_success", UserID: &account.ID, UserRef: account.Ref, SessionID: &updated.ID, Message: "refresh session rotated"})
+	return RefreshSessionResult{
+		AccessToken:          accessToken,
+		AccessTokenExpiresAt: accessTokenExpiresAt,
+		RefreshToken:         newRefreshToken,
+		RefreshSession:       refreshSessionInfo(updated),
+	}, nil
+}
+
+func (e *defaultEngine) ListRefreshSessions(ctx context.Context, in ListRefreshSessionsInput) ([]RefreshSessionInfo, error) {
+	if err := e.Ready(ctx); err != nil {
+		return nil, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	records, err := e.refreshSessionManager.ListByUser(ctx, auth.UserID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RefreshSessionInfo, 0, len(records))
+	for _, rec := range records {
+		out = append(out, refreshSessionInfo(rec))
+	}
+	return out, nil
+}
+
+func (e *defaultEngine) RevokeRefreshSession(ctx context.Context, in RevokeRefreshSessionInput) error {
+	if err := e.Ready(ctx); err != nil {
+		return err
+	}
+	if in.SessionID == uuid.Nil {
+		return fmt.Errorf("%w: session_id is required", ErrInvalidConfig)
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return err
+	}
+	rec, err := e.refreshSessionManager.GetByID(ctx, in.SessionID)
+	if err != nil {
+		if errors.Is(err, storesession.ErrSessionNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if rec.UserID != auth.UserID {
+		return ErrUnauthorized
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		reason = "revoked by user"
+	}
+	revoked, err := e.refreshSessionManager.RevokeByID(ctx, in.SessionID, time.Now().UTC(), reason)
+	if err != nil {
+		return err
+	}
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.session_revoked", UserID: &auth.UserID, UserRef: auth.UserRef, SessionID: &revoked.ID, Message: reason})
+	return nil
+}
+
+func (e *defaultEngine) RevokeOtherRefreshSessions(ctx context.Context, in RevokeOtherRefreshSessionsInput) (int, error) {
+	if err := e.Ready(ctx); err != nil {
+		return 0, err
+	}
+	if in.CurrentSessionID == uuid.Nil {
+		return 0, fmt.Errorf("%w: current_session_id is required", ErrInvalidConfig)
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return 0, err
+	}
+	current, err := e.refreshSessionManager.GetByID(ctx, in.CurrentSessionID)
+	if err != nil {
+		if errors.Is(err, storesession.ErrSessionNotFound) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	if current.UserID != auth.UserID {
+		return 0, ErrUnauthorized
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		reason = "revoked other sessions"
+	}
+	records, err := e.refreshSessionManager.ListByUser(ctx, auth.UserID)
+	if err != nil {
+		return 0, err
+	}
+	revokedCount := 0
+	for _, rec := range records {
+		if rec.ID == in.CurrentSessionID || rec.Status == domainauth.RefreshSessionStatusRevoked {
+			continue
+		}
+		if _, err := e.refreshSessionManager.RevokeByID(ctx, rec.ID, time.Now().UTC(), reason); err != nil {
+			return revokedCount, err
+		}
+		revokedCount++
+	}
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.session_revoked", UserID: &auth.UserID, UserRef: auth.UserRef, SessionID: &in.CurrentSessionID, Message: reason})
+	return revokedCount, nil
+}
+
+func (e *defaultEngine) CleanupRefreshSessions(ctx context.Context, in CleanupRefreshSessionsInput) (CleanupRefreshSessionsResult, error) {
+	if err := e.Ready(ctx); err != nil {
+		return CleanupRefreshSessionsResult{}, err
+	}
+	auth, err := e.authClaimsForAccessToken(ctx, in.AccessToken)
+	if err != nil {
+		return CleanupRefreshSessionsResult{}, err
+	}
+	canOperate, err := e.accessManager.CanSystem(ctx, auth.UserID, access.SystemPermissionOperateSystem)
+	if err != nil {
+		return CleanupRefreshSessionsResult{}, err
+	}
+	if !canOperate {
+		return CleanupRefreshSessionsResult{}, ErrUnauthorized
+	}
+	changed, err := e.cleanupRefreshSessions(ctx)
+	if err != nil {
+		return CleanupRefreshSessionsResult{}, err
+	}
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.session_cleanup", UserID: &auth.UserID, UserRef: auth.UserRef, Message: fmt.Sprintf("cleaned %d refresh sessions", changed)})
+	return CleanupRefreshSessionsResult{ChangedCount: changed}, nil
+}
+
+func (e *defaultEngine) cleanupRefreshSessions(ctx context.Context) (int, error) {
+	if e.refreshSessionManager == nil {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().Add(-e.refreshAuditRetentionTTL)
+	return e.refreshSessionManager.DeleteExpiredRedacted(ctx, cutoff)
+}
+
+func (e *defaultEngine) handleRefreshTokenReuse(ctx context.Context, rec domainauth.RefreshSession) error {
+	now := time.Now().UTC()
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_reuse_detected", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "consumed refresh token reused"})
+	count, err := e.refreshSessionManager.RevokeFamily(ctx, rec.TokenFamilyID, now, "refresh token reuse detected")
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.session_family_revoked", UserID: &rec.UserID, UserRef: rec.UserRef, SessionID: &rec.ID, Message: "refresh token family revoked after reuse detection"})
+	}
+	return nil
+}
+
+func refreshSessionRefreshable(rec domainauth.RefreshSession, now time.Time) bool {
+	return rec.Status == domainauth.RefreshSessionStatusActive && !refreshSessionExpired(rec, now)
+}
+
+func refreshSessionExpired(rec domainauth.RefreshSession, now time.Time) bool {
+	return !rec.IdleExpiresAt.After(now) || !rec.AbsoluteExpiresAt.After(now)
+}
+
+func (e *defaultEngine) authenticateAccount(ctx context.Context, ref identity.UserRef, password string) (identity.User, error) {
+	if ref == "" || password == "" {
+		return identity.User{}, fmt.Errorf("%w: user_ref and password are required", ErrInvalidCredentials)
+	}
+	account, err := e.userManager.Authenticate(ctx, ref, password)
+	if err != nil {
+		if errors.Is(err, user.ErrUserNotFound) || errors.Is(err, user.ErrInvalidInput) {
+			return identity.User{}, ErrInvalidCredentials
+		}
+		return identity.User{}, err
+	}
+	if account.Status != identity.UserStatusActive {
+		return identity.User{}, ErrInvalidCredentials
+	}
+	return account, nil
+}
+
+func (e *defaultEngine) mintAccessToken(ctx context.Context, account identity.User) (AccessToken, time.Time, error) {
+	now := time.Now().UTC()
+	expiresAt := now.Add(e.accessTokenTTL)
 	uid := account.ID.String()
 	accessToken := AccessToken(uuid.NewString())
 	roles, err := e.accessManager.SystemRolesForUser(ctx, account.ID)
 	if err != nil {
-		return AuthResult{}, err
+		return "", time.Time{}, err
 	}
 	claims := authClaims{
 		Iss:      "mycel",
 		Sub:      "user:" + uid,
 		Aud:      "mycel",
 		JTI:      uuid.NewString(),
-		IAT:      now,
-		EXP:      exp,
+		IAT:      now.Unix(),
+		EXP:      expiresAt.Unix(),
 		UserID:   account.ID,
 		UserRef:  account.Ref,
 		Roles:    roles,
@@ -354,8 +687,33 @@ func (e *defaultEngine) Authenticate(ctx context.Context, in AuthInput) (AuthRes
 	}
 	e.authCache[accessToken] = claims
 	e.authMu.Unlock()
+	return accessToken, expiresAt, nil
+}
 
-	return AuthResult{AccessToken: accessToken}, nil
+func (e *defaultEngine) recordAuthAuditEvent(ctx context.Context, event domainauth.AuthAuditEvent) error {
+	if e.refreshSessionManager == nil {
+		return nil
+	}
+	_, err := e.refreshSessionManager.RecordAuditEvent(ctx, event)
+	return err
+}
+
+func refreshSessionInfo(rec domainauth.RefreshSession) RefreshSessionInfo {
+	return RefreshSessionInfo{
+		ID:                rec.ID,
+		UserID:            rec.UserID,
+		UserRef:           rec.UserRef,
+		Status:            rec.Status,
+		TokenFamilyID:     string(rec.TokenFamilyID),
+		RotationCounter:   rec.RotationCounter,
+		CreatedAt:         rec.CreatedAt,
+		LastUsedAt:        rec.LastUsedAt,
+		IdleExpiresAt:     rec.IdleExpiresAt,
+		AbsoluteExpiresAt: rec.AbsoluteExpiresAt,
+		RevokedAt:         rec.RevokedAt,
+		RevokedReason:     rec.RevokedReason,
+		Metadata:          rec.Metadata,
+	}
 }
 
 func (e *defaultEngine) CurrentUser(ctx context.Context, in CurrentUserInput) (identity.User, error) {

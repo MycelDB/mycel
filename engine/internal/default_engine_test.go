@@ -7,10 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/access"
+	domainauth "github.com/myceldb/mycel/domain/auth"
 	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
@@ -99,6 +102,632 @@ func TestRuntimeEngine_OpenMethod(t *testing.T) {
 		Password: "password",
 	}); err != nil {
 		t.Fatalf("expected bootstrap admin auth success, got error: %v", err)
+	}
+}
+
+func TestRuntimeEngine_OpenMethod_RefreshConfigDefaultsAndValidation(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "mycel-refresh-config")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:         dataDir,
+		Mode:            EngineModeStandalone,
+		CreateIfMissing: true,
+		AdminUsername:   "admin",
+		AdminPassword:   "password",
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	if engine.refreshIdleTTL != 30*24*time.Hour || engine.refreshAbsoluteTTL != 90*24*time.Hour || engine.refreshAuditRetentionTTL != 30*24*time.Hour || engine.refreshTokenBytes != 32 {
+		t.Fatalf("unexpected refresh defaults: idle=%s absolute=%s audit=%s bytes=%d", engine.refreshIdleTTL, engine.refreshAbsoluteTTL, engine.refreshAuditRetentionTTL, engine.refreshTokenBytes)
+	}
+	_ = engine.Close()
+
+	invalidEngine := &defaultEngine{}
+	err := invalidEngine.Open(EngineConfig{
+		DataDir:            filepath.Join(t.TempDir(), "mycel-invalid-refresh-config"),
+		Mode:               EngineModeStandalone,
+		CreateIfMissing:    true,
+		AdminUsername:      "admin",
+		AdminPassword:      "password",
+		RefreshIdleTTL:     2 * time.Hour,
+		RefreshAbsoluteTTL: 1 * time.Hour,
+		RefreshTokenBytes:  32,
+	})
+	if err == nil {
+		t.Fatal("expected invalid refresh TTL config error")
+	}
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestRuntimeEngine_Authenticate_RemainsStatelessForRefreshSessions(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-authenticate-compat")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	res, err := engine.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("authenticate failed: %v", err)
+	}
+	if res.AccessToken == "" {
+		t.Fatal("expected access token")
+	}
+	admin, err := engine.userManager.GetByRef(ctx, identity.UserRef("admin@example.com"))
+	if err != nil {
+		t.Fatalf("get admin failed: %v", err)
+	}
+	sessions, err := engine.refreshSessionManager.ListByUser(ctx, admin.ID)
+	if err != nil {
+		t.Fatalf("list sessions failed: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("Authenticate must not create refresh sessions, got %#v", sessions)
+	}
+	events, err := engine.refreshSessionManager.ListAuditEvents(ctx, &admin.ID)
+	if err != nil {
+		t.Fatalf("list audit events failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("Authenticate must not create session audit events, got %#v", events)
+	}
+}
+
+func TestRuntimeEngine_OpenExistingStoreWithoutRefreshSessions(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-legacy-no-refresh-store")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("close engine failed: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(dataDir, "meta", "sessions")); err != nil {
+		t.Fatalf("remove session store failed: %v", err)
+	}
+
+	reopened := &defaultEngine{}
+	if err := reopened.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: false}); err != nil {
+		t.Fatalf("expected legacy store reopen success, got error: %v", err)
+	}
+	defer reopened.Close()
+	if _, err := reopened.Authenticate(ctx, AuthInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"}); err != nil {
+		t.Fatalf("expected authenticate success after legacy reopen, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "meta", "sessions", "refresh_sessions.json")); err != nil {
+		t.Fatalf("expected refresh session store initialized on reopen: %v", err)
+	}
+}
+
+func TestRuntimeEngine_LoginSession_CreatesRefreshSession(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-login-session")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:            dataDir,
+		Mode:               EngineModeStandalone,
+		CreateIfMissing:    true,
+		AdminUsername:      "admin@example.com",
+		AdminPassword:      "change-me-now",
+		AccessTokenTTL:     2 * time.Minute,
+		RefreshIdleTTL:     24 * time.Hour,
+		RefreshAbsoluteTTL: 48 * time.Hour,
+		RefreshTokenBytes:  32,
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	res, err := engine.LoginSession(ctx, LoginSessionInput{
+		UserRef:  identity.UserRef("admin@example.com"),
+		Password: "change-me-now",
+		Metadata: RefreshSessionMetadata{ClientName: "test-client", UserAgentHash: "sha256:user-agent"},
+	})
+	if err != nil {
+		t.Fatalf("login session failed: %v", err)
+	}
+	if res.AccessToken == "" || res.RefreshToken == "" {
+		t.Fatalf("expected access and refresh tokens, got %#v", res)
+	}
+	if !res.AccessTokenExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("expected future access token expiry, got %s", res.AccessTokenExpiresAt)
+	}
+	if res.RefreshSession.ID == uuid.Nil || res.RefreshSession.Status != RefreshSessionStatusActive || res.RefreshSession.Metadata.ClientName != "test-client" {
+		t.Fatalf("unexpected refresh session info: %#v", res.RefreshSession)
+	}
+
+	current, err := engine.CurrentUser(ctx, CurrentUserInput{AccessToken: res.AccessToken})
+	if err != nil {
+		t.Fatalf("current user with login-session access token failed: %v", err)
+	}
+	if current.Ref != identity.UserRef("admin@example.com") {
+		t.Fatalf("unexpected current user: %#v", current)
+	}
+
+	sessions, err := engine.refreshSessionManager.ListByUser(ctx, current.ID)
+	if err != nil {
+		t.Fatalf("list refresh sessions failed: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected one refresh session, got %d", len(sessions))
+	}
+	stored := sessions[0]
+	if stored.ID != res.RefreshSession.ID {
+		t.Fatalf("expected stored session %s, got %s", res.RefreshSession.ID, stored.ID)
+	}
+	if stored.RefreshTokenHash == "" || strings.Contains(stored.RefreshTokenHash, string(res.RefreshToken)) {
+		t.Fatalf("expected stored hash without plaintext token, got %q", stored.RefreshTokenHash)
+	}
+	if !domainauth.VerifyRefreshTokenHash(res.RefreshToken, stored.RefreshTokenHash) {
+		t.Fatal("expected refresh token to verify against stored hash")
+	}
+	events, err := engine.refreshSessionManager.ListAuditEvents(ctx, &current.ID)
+	if err != nil {
+		t.Fatalf("list audit events failed: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != "auth.login_success" || events[0].SessionID == nil || *events[0].SessionID != res.RefreshSession.ID {
+		t.Fatalf("unexpected audit events: %#v", events)
+	}
+}
+
+func TestRuntimeEngine_RefreshSession_RotatesTokenAndMintsAccessToken(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-refresh-session")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:            dataDir,
+		Mode:               EngineModeStandalone,
+		CreateIfMissing:    true,
+		AdminUsername:      "admin@example.com",
+		AdminPassword:      "change-me-now",
+		AccessTokenTTL:     2 * time.Minute,
+		RefreshIdleTTL:     24 * time.Hour,
+		RefreshAbsoluteTTL: 48 * time.Hour,
+		RefreshTokenBytes:  32,
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	login, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("login session failed: %v", err)
+	}
+	refreshed, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: login.RefreshToken, Metadata: RefreshSessionMetadata{ClientName: "rotated-client"}})
+	if err != nil {
+		t.Fatalf("refresh session failed: %v", err)
+	}
+	if refreshed.AccessToken == "" || refreshed.AccessToken == login.AccessToken {
+		t.Fatalf("expected new non-empty access token, got %q", refreshed.AccessToken)
+	}
+	if refreshed.RefreshToken == "" || refreshed.RefreshToken == login.RefreshToken {
+		t.Fatalf("expected rotated refresh token")
+	}
+	if refreshed.RefreshSession.ID != login.RefreshSession.ID || refreshed.RefreshSession.RotationCounter != 1 || refreshed.RefreshSession.Metadata.ClientName != "rotated-client" {
+		t.Fatalf("unexpected refreshed session: %#v", refreshed.RefreshSession)
+	}
+	current, err := engine.CurrentUser(ctx, CurrentUserInput{AccessToken: refreshed.AccessToken})
+	if err != nil {
+		t.Fatalf("current user with refreshed access token failed: %v", err)
+	}
+	if current.Ref != identity.UserRef("admin@example.com") {
+		t.Fatalf("unexpected current user: %#v", current)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: login.RefreshToken}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected old refresh token to fail, got %v", err)
+	}
+	stored, err := engine.refreshSessionManager.GetByID(ctx, login.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get refreshed session failed: %v", err)
+	}
+	if !domainauth.VerifyRefreshTokenHash(refreshed.RefreshToken, stored.RefreshTokenHash) {
+		t.Fatal("expected rotated refresh token to verify against stored hash")
+	}
+	if domainauth.VerifyRefreshTokenHash(login.RefreshToken, stored.RefreshTokenHash) {
+		t.Fatal("old refresh token must not verify after rotation")
+	}
+	events, err := engine.refreshSessionManager.ListAuditEvents(ctx, &current.ID)
+	if err != nil {
+		t.Fatalf("list audit events failed: %v", err)
+	}
+	if len(events) < 2 || events[0].Type != "auth.login_success" || events[1].Type != "auth.refresh_success" {
+		t.Fatalf("unexpected audit events: %#v", events)
+	}
+}
+
+func TestRuntimeEngine_RefreshSession_ReuseRevokesFamily(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-refresh-session-reuse")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	login, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("login session failed: %v", err)
+	}
+	rotated, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: login.RefreshToken})
+	if err != nil {
+		t.Fatalf("refresh session failed: %v", err)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: login.RefreshToken}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected old refresh token reuse to fail, got %v", err)
+	}
+	stored, err := engine.refreshSessionManager.GetByID(ctx, login.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get reused session failed: %v", err)
+	}
+	if stored.Status != domainauth.RefreshSessionStatusRevoked || stored.RevokedReason != "refresh token reuse detected" {
+		t.Fatalf("expected reuse to revoke family, got %#v", stored)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: rotated.RefreshToken}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected current refresh token to fail after family revocation, got %v", err)
+	}
+	admin, err := engine.userManager.GetByRef(ctx, identity.UserRef("admin@example.com"))
+	if err != nil {
+		t.Fatalf("get admin failed: %v", err)
+	}
+	events, err := engine.refreshSessionManager.ListAuditEvents(ctx, &admin.ID)
+	if err != nil {
+		t.Fatalf("list audit events failed: %v", err)
+	}
+	if !auditEventTypesContain(events, "auth.refresh_reuse_detected", "auth.session_family_revoked") {
+		t.Fatalf("expected reuse/family revocation audit events, got %#v", events)
+	}
+}
+
+func TestRuntimeEngine_ListAndRevokeRefreshSessions(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-list-revoke-sessions")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	first, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now", Metadata: RefreshSessionMetadata{ClientName: "first"}})
+	if err != nil {
+		t.Fatalf("first login session failed: %v", err)
+	}
+	second, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now", Metadata: RefreshSessionMetadata{ClientName: "second"}})
+	if err != nil {
+		t.Fatalf("second login session failed: %v", err)
+	}
+
+	listed, err := engine.ListRefreshSessions(ctx, ListRefreshSessionsInput{AccessToken: second.AccessToken})
+	if err != nil {
+		t.Fatalf("list refresh sessions failed: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("expected 2 sessions, got %#v", listed)
+	}
+	if listed[0].Metadata.ClientName == "" || listed[0].TokenFamilyID == "" {
+		t.Fatalf("expected non-sensitive session metadata, got %#v", listed[0])
+	}
+
+	if err := engine.RevokeRefreshSession(ctx, RevokeRefreshSessionInput{AccessToken: second.AccessToken, SessionID: first.RefreshSession.ID, Reason: "test revoke"}); err != nil {
+		t.Fatalf("revoke refresh session failed: %v", err)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: first.RefreshToken}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected revoked session refresh to fail, got %v", err)
+	}
+	refreshedSecond, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: second.RefreshToken})
+	if err != nil {
+		t.Fatalf("expected second session to remain refreshable: %v", err)
+	}
+	if refreshedSecond.RefreshSession.ID != second.RefreshSession.ID {
+		t.Fatalf("expected second session id, got %#v", refreshedSecond.RefreshSession)
+	}
+	storedFirst, err := engine.refreshSessionManager.GetByID(ctx, first.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get revoked session failed: %v", err)
+	}
+	if storedFirst.Status != domainauth.RefreshSessionStatusRevoked || storedFirst.RevokedReason != "test revoke" {
+		t.Fatalf("unexpected revoked session: %#v", storedFirst)
+	}
+}
+
+func TestRuntimeEngine_RevokeOtherRefreshSessions(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-revoke-other-sessions")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	first, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("first login session failed: %v", err)
+	}
+	second, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("second login session failed: %v", err)
+	}
+	current, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("current login session failed: %v", err)
+	}
+
+	count, err := engine.RevokeOtherRefreshSessions(ctx, RevokeOtherRefreshSessionsInput{AccessToken: current.AccessToken, CurrentSessionID: current.RefreshSession.ID, Reason: "keep current"})
+	if err != nil {
+		t.Fatalf("revoke other sessions failed: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 revoked sessions, got %d", count)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: first.RefreshToken}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected first session revoked, got %v", err)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: second.RefreshToken}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected second session revoked, got %v", err)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: current.RefreshToken}); err != nil {
+		t.Fatalf("expected current session to remain refreshable: %v", err)
+	}
+}
+
+func TestRuntimeEngine_RefreshSessionManagement_UserScoped(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-session-management-user-scoped")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	adminLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("admin login session failed: %v", err)
+	}
+	if _, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminLogin.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"}); err != nil {
+		t.Fatalf("create bob failed: %v", err)
+	}
+	bobLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("bob@example.com"), Password: "bob-password"})
+	if err != nil {
+		t.Fatalf("bob login session failed: %v", err)
+	}
+
+	adminSessions, err := engine.ListRefreshSessions(ctx, ListRefreshSessionsInput{AccessToken: adminLogin.AccessToken})
+	if err != nil {
+		t.Fatalf("list admin sessions failed: %v", err)
+	}
+	if len(adminSessions) != 1 || adminSessions[0].ID != adminLogin.RefreshSession.ID {
+		t.Fatalf("expected only admin session, got %#v", adminSessions)
+	}
+	bobSessions, err := engine.ListRefreshSessions(ctx, ListRefreshSessionsInput{AccessToken: bobLogin.AccessToken})
+	if err != nil {
+		t.Fatalf("list bob sessions failed: %v", err)
+	}
+	if len(bobSessions) != 1 || bobSessions[0].ID != bobLogin.RefreshSession.ID {
+		t.Fatalf("expected only bob session, got %#v", bobSessions)
+	}
+	if err := engine.RevokeRefreshSession(ctx, RevokeRefreshSessionInput{AccessToken: adminLogin.AccessToken, SessionID: bobLogin.RefreshSession.ID}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected admin not to revoke bob session despite superuser role, got %v", err)
+	}
+	if _, err := engine.RevokeOtherRefreshSessions(ctx, RevokeOtherRefreshSessionsInput{AccessToken: adminLogin.AccessToken, CurrentSessionID: bobLogin.RefreshSession.ID}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected admin not to revoke other sessions around bob current session, got %v", err)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: bobLogin.RefreshToken}); err != nil {
+		t.Fatalf("expected bob session to remain refreshable: %v", err)
+	}
+}
+
+func TestRuntimeEngine_CleanupRefreshSessions_RedactsAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-cleanup-sessions")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{
+		DataDir:                  dataDir,
+		Mode:                     EngineModeStandalone,
+		CreateIfMissing:          true,
+		AdminUsername:            "admin@example.com",
+		AdminPassword:            "change-me-now",
+		RefreshAuditRetentionTTL: time.Hour,
+	}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	adminLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("admin login session failed: %v", err)
+	}
+	oldRevoked, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("old revoked login session failed: %v", err)
+	}
+	stored, err := engine.refreshSessionManager.GetByID(ctx, oldRevoked.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get old revoked failed: %v", err)
+	}
+	stored.Status = domainauth.RefreshSessionStatusRevoked
+	stored.RevokedAt = time.Now().UTC().Add(-2 * time.Hour)
+	stored.RevokedReason = "old logout"
+	if _, err := engine.refreshSessionManager.Update(ctx, stored); err != nil {
+		t.Fatalf("prepare old revoked failed: %v", err)
+	}
+
+	cleanup, err := engine.CleanupRefreshSessions(ctx, CleanupRefreshSessionsInput{AccessToken: adminLogin.AccessToken})
+	if err != nil {
+		t.Fatalf("cleanup refresh sessions failed: %v", err)
+	}
+	if cleanup.ChangedCount != 1 {
+		t.Fatalf("expected one changed session, got %d", cleanup.ChangedCount)
+	}
+	cleaned, err := engine.refreshSessionManager.GetByID(ctx, oldRevoked.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get cleaned session failed: %v", err)
+	}
+	if cleaned.RefreshTokenHash != "" || cleaned.RedactedAt.IsZero() {
+		t.Fatalf("expected old revoked session redacted, got %#v", cleaned)
+	}
+	cleanup, err = engine.CleanupRefreshSessions(ctx, CleanupRefreshSessionsInput{AccessToken: adminLogin.AccessToken})
+	if err != nil {
+		t.Fatalf("second cleanup refresh sessions failed: %v", err)
+	}
+	if cleanup.ChangedCount != 0 {
+		t.Fatalf("expected idempotent cleanup count 0, got %d", cleanup.ChangedCount)
+	}
+}
+
+func TestRuntimeEngine_CleanupRefreshSessions_RequiresOperatePermission(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-cleanup-authz")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+	adminLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("admin login session failed: %v", err)
+	}
+	if _, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminLogin.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"}); err != nil {
+		t.Fatalf("create bob failed: %v", err)
+	}
+	bobLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("bob@example.com"), Password: "bob-password"})
+	if err != nil {
+		t.Fatalf("bob login session failed: %v", err)
+	}
+	if _, err := engine.CleanupRefreshSessions(ctx, CleanupRefreshSessionsInput{AccessToken: bobLogin.AccessToken}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected cleanup unauthorized for bob, got %v", err)
+	}
+}
+
+func TestRuntimeEngine_LoginSessionRunsOpportunisticCleanup(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-login-cleanup")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now", RefreshAuditRetentionTTL: time.Hour}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+	oldLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("old login session failed: %v", err)
+	}
+	stored, err := engine.refreshSessionManager.GetByID(ctx, oldLogin.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get old session failed: %v", err)
+	}
+	stored.Status = domainauth.RefreshSessionStatusRevoked
+	stored.RevokedAt = time.Now().UTC().Add(-2 * time.Hour)
+	stored.RevokedReason = "old logout"
+	if _, err := engine.refreshSessionManager.Update(ctx, stored); err != nil {
+		t.Fatalf("prepare old session failed: %v", err)
+	}
+	if _, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"}); err != nil {
+		t.Fatalf("new login session failed: %v", err)
+	}
+	cleaned, err := engine.refreshSessionManager.GetByID(ctx, oldLogin.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get cleaned session failed: %v", err)
+	}
+	if cleaned.RefreshTokenHash != "" || cleaned.RedactedAt.IsZero() {
+		t.Fatalf("expected opportunistic cleanup to redact old session, got %#v", cleaned)
+	}
+}
+
+func TestRuntimeEngine_RefreshSession_SurvivesEngineRestart(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-refresh-session-restart")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	login, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("login session failed: %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("close engine failed: %v", err)
+	}
+
+	reopened := &defaultEngine{}
+	if err := reopened.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: false}); err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer reopened.Close()
+	refreshed, err := reopened.RefreshSession(ctx, RefreshSessionInput{RefreshToken: login.RefreshToken})
+	if err != nil {
+		t.Fatalf("refresh after reopen failed: %v", err)
+	}
+	if refreshed.AccessToken == "" || refreshed.RefreshToken == "" || refreshed.RefreshSession.ID != login.RefreshSession.ID {
+		t.Fatalf("unexpected refresh after reopen: %#v", refreshed)
+	}
+}
+
+func TestRuntimeEngine_RefreshSession_ExpiredSessionFails(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-refresh-session-expired")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+	login, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "change-me-now"})
+	if err != nil {
+		t.Fatalf("login session failed: %v", err)
+	}
+	stored, err := engine.refreshSessionManager.GetByID(ctx, login.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get session failed: %v", err)
+	}
+	stored.IdleExpiresAt = time.Now().UTC().Add(-time.Minute)
+	stored.AbsoluteExpiresAt = time.Now().UTC().Add(time.Hour)
+	if _, err := engine.refreshSessionManager.Update(ctx, stored); err != nil {
+		t.Fatalf("expire session failed: %v", err)
+	}
+	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: login.RefreshToken}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected expired refresh session to fail, got %v", err)
+	}
+	stored, err = engine.refreshSessionManager.GetByID(ctx, login.RefreshSession.ID)
+	if err != nil {
+		t.Fatalf("get expired session failed: %v", err)
+	}
+	if stored.Status != domainauth.RefreshSessionStatusExpired {
+		t.Fatalf("expected session marked expired, got %#v", stored)
+	}
+}
+
+func TestRuntimeEngine_LoginSession_InvalidCredentialsAudited(t *testing.T) {
+	ctx := context.Background()
+	dataDir := filepath.Join(t.TempDir(), "mycel-login-session-invalid")
+	engine := &defaultEngine{}
+	if err := engine.Open(EngineConfig{DataDir: dataDir, Mode: EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now"}); err != nil {
+		t.Fatalf("expected open success, got error: %v", err)
+	}
+	defer engine.Close()
+
+	_, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("admin@example.com"), Password: "wrong"})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+	admin, err := engine.userManager.GetByRef(ctx, identity.UserRef("admin@example.com"))
+	if err != nil {
+		t.Fatalf("get admin failed: %v", err)
+	}
+	sessions, err := engine.refreshSessionManager.ListByUser(ctx, admin.ID)
+	if err != nil {
+		t.Fatalf("list sessions failed: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("expected no refresh sessions for failed login, got %d", len(sessions))
+	}
+	events, err := engine.refreshSessionManager.ListAuditEvents(ctx, nil)
+	if err != nil {
+		t.Fatalf("list audit events failed: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != "auth.login_failure" || events[0].Message != "invalid credentials" {
+		t.Fatalf("unexpected audit events: %#v", events)
 	}
 }
 
@@ -1409,4 +2038,15 @@ func TestRuntimeEngine_ApplyGraphBatchMutations(t *testing.T) {
 	if len(nodes) != 0 {
 		t.Fatalf("expected all nodes deleted, got %v", nodes)
 	}
+}
+
+func auditEventTypesContain(events []domainauth.AuthAuditEvent, want ...string) bool {
+	remaining := map[string]struct{}{}
+	for _, eventType := range want {
+		remaining[eventType] = struct{}{}
+	}
+	for _, event := range events {
+		delete(remaining, event.Type)
+	}
+	return len(remaining) == 0
 }

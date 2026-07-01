@@ -34,6 +34,20 @@ type BlobLimits = engineinternal.BlobLimits
 type AccessToken = engineinternal.AccessToken
 type AuthInput = engineinternal.AuthInput
 type AuthResult = engineinternal.AuthResult
+type RefreshToken = engineinternal.RefreshToken
+type RefreshSessionID = engineinternal.RefreshSessionID
+type RefreshSessionStatus = engineinternal.RefreshSessionStatus
+type RefreshSessionMetadata = engineinternal.RefreshSessionMetadata
+type RefreshSessionInfo = engineinternal.RefreshSessionInfo
+type LoginSessionInput = engineinternal.LoginSessionInput
+type LoginSessionResult = engineinternal.LoginSessionResult
+type RefreshSessionInput = engineinternal.RefreshSessionInput
+type RefreshSessionResult = engineinternal.RefreshSessionResult
+type ListRefreshSessionsInput = engineinternal.ListRefreshSessionsInput
+type RevokeRefreshSessionInput = engineinternal.RevokeRefreshSessionInput
+type RevokeOtherRefreshSessionsInput = engineinternal.RevokeOtherRefreshSessionsInput
+type CleanupRefreshSessionsInput = engineinternal.CleanupRefreshSessionsInput
+type CleanupRefreshSessionsResult = engineinternal.CleanupRefreshSessionsResult
 type CurrentUserInput = engineinternal.CurrentUserInput
 type CreateUserInput = engineinternal.CreateUserInput
 type ListUsersInput = engineinternal.ListUsersInput
@@ -64,6 +78,12 @@ type AddEmbeddingProfileInput = engineinternal.AddEmbeddingProfileInput
 type UpdateEmbeddingProfileInput = engineinternal.UpdateEmbeddingProfileInput
 type DeleteEmbeddingProfileInput = engineinternal.DeleteEmbeddingProfileInput
 
+const (
+	RefreshSessionStatusActive  = engineinternal.RefreshSessionStatusActive
+	RefreshSessionStatusRevoked = engineinternal.RefreshSessionStatusRevoked
+	RefreshSessionStatusExpired = engineinternal.RefreshSessionStatusExpired
+)
+
 const EnvDataDir = engineinternal.EnvDataDir
 
 var (
@@ -81,6 +101,12 @@ type Engine interface {
 	Open(cfg EngineConfig) error
 	Ready(ctx context.Context) error
 	Authenticate(ctx context.Context, in AuthInput) (AuthResult, error)
+	LoginSession(ctx context.Context, in LoginSessionInput) (LoginSessionResult, error)
+	RefreshSession(ctx context.Context, in RefreshSessionInput) (RefreshSessionResult, error)
+	ListRefreshSessions(ctx context.Context, in ListRefreshSessionsInput) ([]RefreshSessionInfo, error)
+	RevokeRefreshSession(ctx context.Context, in RevokeRefreshSessionInput) error
+	RevokeOtherRefreshSessions(ctx context.Context, in RevokeOtherRefreshSessionsInput) (int, error)
+	CleanupRefreshSessions(ctx context.Context, in CleanupRefreshSessionsInput) (CleanupRefreshSessionsResult, error)
 	CurrentUser(ctx context.Context, in CurrentUserInput) (identity.User, error)
 	CreateUser(ctx context.Context, in CreateUserInput) (identity.User, error)
 	ListUsers(ctx context.Context, in ListUsersInput) ([]identity.User, error)

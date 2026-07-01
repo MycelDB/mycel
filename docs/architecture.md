@@ -137,6 +137,49 @@ engine.NewEngine(cfg, nil, nil, nil, nil)
 
 Downstream applications should follow this flow when embedding MycelDB directly.
 
+## Authentication and session architecture
+
+MycelDB provides short-lived access tokens through `engine.Authenticate` and opt-in durable refresh sessions through `engine.LoginSession` / `engine.RefreshSession`.
+
+Access-token characteristics:
+
+- Access tokens are opaque `engine.AccessToken` values.
+- Token claims are kept in the engine's in-memory auth cache.
+- Tokens expire according to `auth.access_token_ttl` / `MYCELDB_AUTH_ACCESS_TOKEN_TTL`.
+- Tokens are not sliding; using a token does not extend its expiry.
+- Engine restart clears the in-memory auth cache, so previously issued access tokens become invalid.
+
+Refresh-session characteristics on the `session_renewal` branch:
+
+- `engine.Authenticate` remains unchanged and does not create durable sessions.
+- `engine.LoginSession` creates a durable refresh session and returns the plaintext refresh token once.
+- `engine.RefreshSession` validates and rotates refresh tokens while minting new short-lived access tokens.
+- Refresh-token plaintext is never persisted; only algorithm-prefixed hashes are stored in `store/session`.
+- Old refresh-token reuse is detected through consumed-token hashes and revokes the token family.
+- User-scoped session listing/revocation, operator-authorized cleanup/redaction, and `mycel auth session` CLI commands are available.
+
+Applications embedding MycelDB should continue to treat access tokens as short-lived engine credentials. Product-level browser cookie policy remains an application concern.
+
+For the implementation roadmap, see [Auth session renewal implementation plan](implementation-plan-auth-session-renewal.md). For adoption guidance, see [Auth session renewal migration and compatibility](auth-session-migration.md).
+
+Potential future MycelDB auth/session primitives, if needed by applications, should be added explicitly to the public `engine.Engine` API and backed by dedicated persistence stores:
+
+- token expiry/introspection metadata
+- privileged service-role user-token minting or impersonation with strict audit trails
+- external identity-provider integrations
+
+If MycelDB owns any of these primitives in the future, the implementation should update:
+
+| Area | Expected change |
+|------|-----------------|
+| Public API | Add methods/types in `engine/engine.go` |
+| Engine internals | Implement auth/session lifecycle in `engine/internal` |
+| Persistence | Add or extend `store/*` managers for durable auth/session records |
+| CLI | Add admin/session commands under `internal/cli/cmd` if operator-facing |
+| Docs | Update this architecture document and auth/config references |
+
+Mycel access-token TTL should remain configurable, and applications should not store long-lived Mycel access tokens in browser-readable storage.
+
 ## Interface placement
 
 Interfaces are defined next to their primary consumer, not in a single global file:

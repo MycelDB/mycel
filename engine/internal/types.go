@@ -32,6 +32,10 @@ type EngineConfig struct {
 	AdminPassword             string
 	UserStoreEncryptionKeyB64 string
 	AccessTokenTTL            time.Duration
+	RefreshIdleTTL            time.Duration
+	RefreshAbsoluteTTL        time.Duration
+	RefreshAuditRetentionTTL  time.Duration
+	RefreshTokenBytes         int
 	BlobLimits                sessionapi.BlobLimits
 	BlobStaleTmpAge           time.Duration
 	AdvancedSemanticEnabled   bool
