@@ -71,6 +71,7 @@ The response should include:
 - owner principal
 - archived state
 - timestamps
+- template usage policy
 - caller roles, if any
 - caller effective capabilities
 
@@ -129,12 +130,42 @@ message Space {
   SpaceState state = 4;
   google.protobuf.Timestamp create_time = 5;
   google.protobuf.Timestamp update_time = 6;
-  repeated SpaceRole caller_roles = 7;
-  repeated Capability effective_capabilities = 8;
+  EffectiveAccess caller_access = 7;
+  SpaceTemplateUsage template_usage = 8;
 }
 ```
 
 A `SpaceSummary` may initially be identical to `Space`. If later space detail grows, `SpaceSummary` can remain a smaller listing representation.
+
+## Template usage policy
+
+Template usage is a space-level policy selected when the space is created.
+
+Space creation is an Admin API operation. Client `SpaceService` exposes the selected policy as space metadata so clients and connectors can apply the correct template behavior.
+
+Supported policies:
+
+```protobuf
+enum SpaceTemplateUsage {
+  SPACE_TEMPLATE_USAGE_UNSPECIFIED = 0;
+  SPACE_TEMPLATE_USAGE_OPTIONAL = 1;
+  SPACE_TEMPLATE_USAGE_MANDATORY = 2;
+}
+```
+
+### Optional template usage
+
+Nodes may omit `template_id`.
+
+When deleting a template, `TemplateService.DeleteTemplate` may allow explicit detach behavior that clears `template_id` from active nodes referencing the deleted template.
+
+### Mandatory template usage
+
+Nodes must have `template_id`.
+
+Template deletion is blocked while active nodes reference the template. Referencing objects must first be migrated to another template or deleted/archived.
+
+If archived nodes reference a template, the template should be archived rather than hard-deleted so archived data remains readable/interpretable.
 
 ## Space identity and ownership
 

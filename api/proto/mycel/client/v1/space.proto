@@ -54,10 +54,27 @@ message Space {
   // Access currently effective for the authenticated caller. This is advisory
   // for client UI; the daemon still enforces authorization on each request.
   mycel.common.v1.EffectiveAccess caller_access = 7;
+
+  // Template usage policy selected when the space is created. Space creation is
+  // an Admin API operation.
+  SpaceTemplateUsage template_usage = 8;
 }
 
 enum SpaceState {
   SPACE_STATE_UNSPECIFIED = 0;
   SPACE_STATE_ACTIVE = 1;
   SPACE_STATE_ARCHIVED = 2;
+}
+
+enum SpaceTemplateUsage {
+  SPACE_TEMPLATE_USAGE_UNSPECIFIED = 0;
+
+  // Nodes may omit template_id. Deleting a template may detach references from
+  // active nodes when explicitly requested.
+  SPACE_TEMPLATE_USAGE_OPTIONAL = 1;
+
+  // Nodes must have template_id. Template deletion is blocked until referencing
+  // nodes are migrated, deleted, or archived; archived nodes require the
+  // template to be archived rather than hard-deleted.
+  SPACE_TEMPLATE_USAGE_MANDATORY = 2;
 }

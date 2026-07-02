@@ -1,0 +1,211 @@
+syntax = "proto3";
+
+package mycel.client.v1;
+
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/myceldb/mycel/gen/go/mycel/client/v1;clientv1";
+
+// TemplateService manages client-visible graph templates scoped to a space.
+// Templates define reusable, versioned node shapes. Nodes reference templates by
+// template_id.
+service TemplateService {
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+  rpc GetTemplate(GetTemplateRequest) returns (GetTemplateResponse);
+  rpc FindTemplate(FindTemplateRequest) returns (FindTemplateResponse);
+  rpc CreateTemplate(CreateTemplateRequest) returns (CreateTemplateResponse);
+  rpc UpdateTemplate(UpdateTemplateRequest) returns (UpdateTemplateResponse);
+  rpc ArchiveTemplate(ArchiveTemplateRequest) returns (ArchiveTemplateResponse);
+  rpc DeleteTemplate(DeleteTemplateRequest) returns (DeleteTemplateResponse);
+  rpc ImportTemplates(ImportTemplatesRequest) returns (ImportTemplatesResponse);
+}
+
+message ListTemplatesRequest {
+  string space_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+
+  // Include system templates when true. This flag only takes effect for callers
+  // with admin/system visibility.
+  bool include_system = 4;
+
+  // Include archived templates when true. Active templates are returned by
+  // default.
+  bool include_archived = 5;
+}
+
+message ListTemplatesResponse {
+  repeated Template templates = 1;
+  string next_page_token = 2;
+}
+
+message GetTemplateRequest {
+  string space_id = 1;
+  string template_id = 2;
+}
+
+message GetTemplateResponse {
+  Template template = 1;
+}
+
+message FindTemplateRequest {
+  string space_id = 1;
+  string key = 2;
+  string version = 3;
+}
+
+message FindTemplateResponse {
+  Template template = 1;
+}
+
+message CreateTemplateRequest {
+  string space_id = 1;
+  TemplateDefinition template = 2;
+}
+
+message CreateTemplateResponse {
+  Template template = 1;
+}
+
+message UpdateTemplateRequest {
+  string space_id = 1;
+  string template_id = 2;
+  Template template = 3;
+
+  // Mutable paths are limited to display metadata such as "display_name" and
+  // "description". Policy changes should create a new template version.
+  google.protobuf.FieldMask update_mask = 4;
+}
+
+message UpdateTemplateResponse {
+  Template template = 1;
+}
+
+message ArchiveTemplateRequest {
+  string space_id = 1;
+  string template_id = 2;
+}
+
+message ArchiveTemplateResponse {
+  Template template = 1;
+}
+
+message DeleteTemplateRequest {
+  string space_id = 1;
+  string template_id = 2;
+  TemplateDeleteMode mode = 3;
+}
+
+message DeleteTemplateResponse {
+  string deleted_template_id = 1;
+
+  // Node ids whose template_id was cleared when mode is
+  // TEMPLATE_DELETE_MODE_DETACH_REFERENCES.
+  repeated string detached_node_ids = 2;
+}
+
+message ImportTemplatesRequest {
+  string space_id = 1;
+  repeated TemplateDefinition templates = 2;
+}
+
+message ImportTemplatesResponse {
+  repeated Template templates = 1;
+}
+
+// Template is the client-visible graph template representation.
+message Template {
+  string template_id = 1;
+  string space_id = 2;
+  string key = 3;
+  string version = 4;
+  string display_name = 5;
+  string description = 6;
+  bool system = 7;
+  TemplateState state = 8;
+  PropertyPolicy properties = 9;
+  ChildPolicy children = 10;
+}
+
+// TemplateDefinition is the payload used to create/import a template.
+message TemplateDefinition {
+  string key = 1;
+  string version = 2;
+  string display_name = 3;
+  string description = 4;
+  bool system = 5;
+  PropertyPolicy properties = 6;
+  ChildPolicy children = 7;
+}
+
+message PropertyPolicy {
+  bool allow_extra = 1;
+  repeated TemplateProperty allowed = 2;
+  repeated string forbidden = 3;
+}
+
+message TemplateProperty {
+  string name = 1;
+  PropertyType type = 2;
+  bool required = 3;
+  google.protobuf.Value default_value = 4;
+  string description = 5;
+}
+
+enum PropertyType {
+  PROPERTY_TYPE_UNSPECIFIED = 0;
+  PROPERTY_TYPE_STRING = 1;
+  PROPERTY_TYPE_NUMBER = 2;
+  PROPERTY_TYPE_BOOL = 3;
+  PROPERTY_TYPE_OBJECT = 4;
+  PROPERTY_TYPE_ARRAY = 5;
+  PROPERTY_TYPE_DATE = 6;
+}
+
+message ChildPolicy {
+  bool allowed = 1;
+  repeated TemplateRef allowed_templates = 2;
+  optional ChildOrderPolicy order = 3;
+}
+
+message TemplateRef {
+  string key = 1;
+  string version = 2;
+}
+
+message ChildOrderPolicy {
+  ChildOrderMode mode = 1;
+  string property = 2;
+  TemplateSortDirection direction = 3;
+}
+
+enum ChildOrderMode {
+  CHILD_ORDER_MODE_UNSPECIFIED = 0;
+  CHILD_ORDER_MODE_NONE = 1;
+  CHILD_ORDER_MODE_EDGE_PROPERTY = 2;
+}
+
+enum TemplateSortDirection {
+  TEMPLATE_SORT_DIRECTION_UNSPECIFIED = 0;
+  TEMPLATE_SORT_DIRECTION_ASC = 1;
+  TEMPLATE_SORT_DIRECTION_DESC = 2;
+}
+
+enum TemplateState {
+  TEMPLATE_STATE_UNSPECIFIED = 0;
+  TEMPLATE_STATE_ACTIVE = 1;
+  TEMPLATE_STATE_ARCHIVED = 2;
+}
+
+enum TemplateDeleteMode {
+  TEMPLATE_DELETE_MODE_UNSPECIFIED = 0;
+
+  // Delete only when no active or archived nodes reference the template.
+  TEMPLATE_DELETE_MODE_REQUIRE_UNUSED = 1;
+
+  // Allowed only when the space template usage policy is optional. Clears
+  // template_id from referencing active nodes. Hard delete is still rejected if
+  // archived nodes reference the template.
+  TEMPLATE_DELETE_MODE_DETACH_REFERENCES = 2;
+}
