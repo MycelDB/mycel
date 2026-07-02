@@ -5,6 +5,7 @@ package mycel.client.v1;
 import "google/protobuf/field_mask.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
+import "mycel/client/v1/blob.proto";
 
 option go_package = "github.com/myceldb/mycel/gen/go/mycel/client/v1;clientv1";
 
@@ -15,6 +16,7 @@ service GraphService {
   rpc GetNode(GetNodeRequest) returns (GetNodeResponse);
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
   rpc CreateNode(CreateNodeRequest) returns (CreateNodeResponse);
+  rpc CreateBlobNode(stream CreateBlobNodeRequest) returns (CreateBlobNodeResponse);
   rpc UpdateNode(UpdateNodeRequest) returns (UpdateNodeResponse);
   rpc UpsertNode(UpsertNodeRequest) returns (UpsertNodeResponse);
   rpc DeleteNode(DeleteNodeRequest) returns (DeleteNodeResponse);
@@ -60,6 +62,29 @@ message CreateNodeRequest {
 
 message CreateNodeResponse {
   Node node = 1;
+}
+
+message CreateBlobNodeRequest {
+  oneof part {
+    CreateBlobNodeMetadata metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+message CreateBlobNodeMetadata {
+  string transaction_id = 1;
+
+  // Optional client-supplied node id. If omitted, the daemon allocates one.
+  optional string node_id = 2;
+  optional string template_id = 3;
+  string declared_mime_type = 4;
+  string original_filename = 5;
+  google.protobuf.Struct props = 6;
+}
+
+message CreateBlobNodeResponse {
+  Node node = 1;
+  Blob blob = 2;
 }
 
 message UpdateNodeRequest {

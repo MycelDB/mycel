@@ -15,6 +15,7 @@ This document depends on:
 ```text
 docs/design/access-control.md
 docs/design/api/session-transaction.md
+docs/design/api/blob.md
 ```
 
 ## Purpose
@@ -77,6 +78,7 @@ Well-known edge kinds:
 
 - get/list nodes
 - create/update/upsert/delete nodes
+- create blob-backed nodes with streamed content
 - get/list edges
 - create/update/delete edges
 - parent/children helpers for `contains` hierarchy
@@ -103,6 +105,7 @@ service GraphService {
   rpc GetNode(GetNodeRequest) returns (GetNodeResponse);
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
   rpc CreateNode(CreateNodeRequest) returns (CreateNodeResponse);
+  rpc CreateBlobNode(stream CreateBlobNodeRequest) returns (CreateBlobNodeResponse);
   rpc UpdateNode(UpdateNodeRequest) returns (UpdateNodeResponse);
   rpc UpsertNode(UpsertNodeRequest) returns (UpsertNodeResponse);
   rpc DeleteNode(DeleteNodeRequest) returns (DeleteNodeResponse);
@@ -173,6 +176,27 @@ Canonical metadata prop keys:
 
 - `tags`
 - `properties`
+
+## Blob-backed node creation
+
+`CreateBlobNode` belongs to `GraphService` because it creates graph state inside a transaction.
+
+`CreateBlobNode`:
+
+- streams binary content
+- stores raw blob content
+- creates a node referencing the stored blob
+- enforces graph/template rules
+- auto-populates blob metadata props where appropriate
+
+It requires:
+
+```text
+graph.write
+blob.write
+```
+
+Raw blob upload/download/get/delete remains in `BlobService`.
 
 ## Edge model
 
@@ -254,6 +278,7 @@ Suggested capability mapping:
 | --- | --- |
 | Get/List nodes/edges | `graph.read` |
 | Create/update/upsert nodes/edges | `graph.write` |
+| Create blob-backed node | `graph.write` and `blob.write` |
 | Delete nodes/edges | `graph.delete` |
 | List children/get parent | `graph.read` |
 | Move subtree/reorder children | `graph.write` |
