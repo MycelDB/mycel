@@ -1,0 +1,199 @@
+syntax = "proto3";
+
+package mycel.client.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/myceldb/mycel/gen/go/mycel/client/v1;clientv1";
+
+// SessionService manages daemon-owned graph sessions. A session is a
+// space/domain-scoped working context used for caching, resource pinning, and
+// repeated transactions.
+service SessionService {
+  // OpenSession opens a daemon-owned working context for one space/domain.
+  rpc OpenSession(OpenSessionRequest) returns (OpenSessionResponse);
+
+  // GetSession returns the current state of an open or recently closed session.
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+
+  // HeartbeatSession extends or refreshes the session lifetime. Transactions do
+  // not have independent heartbeats and expire no later than their parent
+  // session.
+  rpc HeartbeatSession(HeartbeatSessionRequest) returns (HeartbeatSessionResponse);
+
+  // CloseSession closes a session, releases resources, closes open read
+  // transactions, and rolls back open write transactions.
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+}
+
+// TransactionService manages atomic graph/query transactions inside a session.
+// Graph and query operations target transaction_id, not session_id.
+service TransactionService {
+  // BeginTransaction starts a read-only or read-write transaction inside an
+  // open session.
+  rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse);
+
+  // GetTransaction returns transaction state and revision metadata.
+  rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
+
+  // CommitTransaction commits a read-write transaction and advances the domain
+  // revision.
+  rpc CommitTransaction(CommitTransactionRequest) returns (CommitTransactionResponse);
+
+  // RollbackTransaction discards pending mutations in a read-write transaction.
+  rpc RollbackTransaction(RollbackTransactionRequest) returns (RollbackTransactionResponse);
+
+  // CloseTransaction releases transaction resources. Closing a read-write
+  // transaction with uncommitted mutations rolls it back.
+  rpc CloseTransaction(CloseTransactionRequest) returns (CloseTransactionResponse);
+}
+
+message OpenSessionRequest {
+  string space_id = 1;
+  string domain_id = 2;
+
+  // Optional client-requested idle timeout. The daemon may cap or ignore this
+  // value according to policy.
+  google.protobuf.Duration requested_idle_timeout = 3;
+}
+
+message OpenSessionResponse {
+  GraphSession session = 1;
+}
+
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+message GetSessionResponse {
+  GraphSession session = 1;
+}
+
+message HeartbeatSessionRequest {
+  string session_id = 1;
+
+  // Optional client-requested extension. The daemon may cap or ignore this
+  // value according to policy.
+  google.protobuf.Duration requested_extension = 2;
+}
+
+message HeartbeatSessionResponse {
+  GraphSession session = 1;
+}
+
+message CloseSessionRequest {
+  string session_id = 1;
+}
+
+message CloseSessionResponse {
+  GraphSession session = 1;
+}
+
+message BeginTransactionRequest {
+  string session_id = 1;
+  TransactionMode mode = 2;
+}
+
+message BeginTransactionResponse {
+  GraphTransaction transaction = 1;
+}
+
+message GetTransactionRequest {
+  string transaction_id = 1;
+}
+
+message GetTransactionResponse {
+  GraphTransaction transaction = 1;
+}
+
+message CommitTransactionRequest {
+  string transaction_id = 1;
+}
+
+message CommitTransactionResponse {
+  TransactionCommit commit = 1;
+}
+
+message RollbackTransactionRequest {
+  string transaction_id = 1;
+}
+
+message RollbackTransactionResponse {
+  GraphTransaction transaction = 1;
+}
+
+message CloseTransactionRequest {
+  string transaction_id = 1;
+}
+
+message CloseTransactionResponse {
+  GraphTransaction transaction = 1;
+}
+
+// GraphSession is a daemon-local working context for one space/domain.
+message GraphSession {
+  string session_id = 1;
+  string space_id = 2;
+  string domain_id = 3;
+  SessionState state = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp last_seen_time = 6;
+  google.protobuf.Timestamp expire_time = 7;
+}
+
+// GraphTransaction is an atomic read or write unit inside a GraphSession.
+message GraphTransaction {
+  string transaction_id = 1;
+  string session_id = 2;
+  string space_id = 3;
+  string domain_id = 4;
+  TransactionMode mode = 5;
+  TransactionState state = 6;
+
+  // Domain revision from which the transaction began. The daemon is
+  // authoritative for this value. Connectors track it for consistency, retry,
+  // and cache validation.
+  int64 base_revision = 7;
+
+  google.protobuf.Timestamp create_time = 8;
+  google.protobuf.Timestamp last_seen_time = 9;
+  google.protobuf.Timestamp expire_time = 10;
+}
+
+// TransactionCommit describes a committed read-write transaction. It is the
+// natural unit for audit records and future replication/oplog streams.
+message TransactionCommit {
+  string commit_id = 1;
+  string transaction_id = 2;
+  string session_id = 3;
+  string space_id = 4;
+  string domain_id = 5;
+  int64 base_revision = 6;
+  int64 committed_revision = 7;
+  int32 operation_count = 8;
+  google.protobuf.Timestamp commit_time = 9;
+}
+
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  SESSION_STATE_ACTIVE = 1;
+  SESSION_STATE_CLOSED = 2;
+  SESSION_STATE_EXPIRED = 3;
+}
+
+enum TransactionMode {
+  TRANSACTION_MODE_UNSPECIFIED = 0;
+  TRANSACTION_MODE_READ_ONLY = 1;
+  TRANSACTION_MODE_READ_WRITE = 2;
+}
+
+enum TransactionState {
+  TRANSACTION_STATE_UNSPECIFIED = 0;
+  TRANSACTION_STATE_ACTIVE = 1;
+  TRANSACTION_STATE_COMMITTED = 2;
+  TRANSACTION_STATE_ROLLED_BACK = 3;
+  TRANSACTION_STATE_CLOSED = 4;
+  TRANSACTION_STATE_EXPIRED = 5;
+  TRANSACTION_STATE_ABORTED = 6;
+}
