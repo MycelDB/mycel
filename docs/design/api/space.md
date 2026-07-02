@@ -4,6 +4,12 @@
 
 Draft design for the daemon-oriented Client Space API on the `refactor_daemon` branch.
 
+The protobuf source of truth is:
+
+```text
+api/proto/mycel/client/v1/space.proto
+```
+
 This document depends on the cross-cutting access-control model in:
 
 ```text

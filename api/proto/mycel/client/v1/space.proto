@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package mycel.client.v1;
+
+import "google/protobuf/timestamp.proto";
+import "mycel/common/v1/access.proto";
+
+option go_package = "github.com/myceldb/mycel/gen/go/mycel/client/v1;clientv1";
+
+// SpaceService lets authenticated clients discover and inspect spaces visible
+// to them. Space creation, archival, deletion, and system-owned space
+// management belong to the Admin API.
+service SpaceService {
+  // ListSpaces lists spaces visible to the authenticated caller.
+  rpc ListSpaces(ListSpacesRequest) returns (ListSpacesResponse);
+
+  // GetSpace returns one visible space by id.
+  rpc GetSpace(GetSpaceRequest) returns (GetSpaceResponse);
+}
+
+message ListSpacesRequest {
+  // Maximum number of spaces to return. The daemon may cap this value.
+  int32 page_size = 1;
+
+  // Opaque continuation token returned by a previous list call.
+  string page_token = 2;
+
+  // Include archived spaces when true. Active spaces are returned by default.
+  bool include_archived = 3;
+}
+
+message ListSpacesResponse {
+  repeated Space spaces = 1;
+  string next_page_token = 2;
+}
+
+message GetSpaceRequest {
+  string space_id = 1;
+}
+
+message GetSpaceResponse {
+  Space space = 1;
+}
+
+// Space is the client-visible representation of a Mycel space.
+message Space {
+  string space_id = 1;
+  string name = 2;
+  mycel.common.v1.Principal owner = 3;
+  SpaceState state = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp update_time = 6;
+
+  // Access currently effective for the authenticated caller. This is advisory
+  // for client UI; the daemon still enforces authorization on each request.
+  mycel.common.v1.EffectiveAccess caller_access = 7;
+}
+
+enum SpaceState {
+  SPACE_STATE_UNSPECIFIED = 0;
+  SPACE_STATE_ACTIVE = 1;
+  SPACE_STATE_ARCHIVED = 2;
+}

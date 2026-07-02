@@ -6,6 +6,12 @@ Draft design for the daemon-oriented Mycel access-control model on the `refactor
 
 This document defines cross-cutting authorization concepts used by the Client API, Admin API, daemon runtime, and future mesh replication. Service-specific API documents should reference this document rather than redefining rights and roles independently.
 
+The protobuf source of truth for shared access-control types is:
+
+```text
+api/proto/mycel/common/v1/access.proto
+```
+
 ## Summary
 
 Mycel authorization is capability-based. Roles are built-in convenience bundles of capabilities for v1. The daemon enforces effective capabilities, not role names.
