@@ -78,6 +78,9 @@ message Expr {
   oneof expr {
     BetweenExpr between = 1;
     AndExpr and = 2;
+    HasTagExpr has_tag = 3;
+    PropertyExistsExpr property_exists = 4;
+    PropertyEqualsExpr property_equals = 5;
   }
 }
 
@@ -89,6 +92,28 @@ message BetweenExpr {
 
 message AndExpr {
   repeated Expr exprs = 1;
+}
+
+// HasTagExpr matches nodes whose canonical metadata tags include tag. The daemon
+// applies Mycel tag normalization rules before evaluating the predicate.
+message HasTagExpr {
+  string alias = 1;
+  string tag = 2;
+}
+
+// PropertyExistsExpr matches nodes whose canonical custom metadata properties
+// contain name. The daemon applies Mycel property-name normalization rules.
+message PropertyExistsExpr {
+  string alias = 1;
+  string name = 2;
+}
+
+// PropertyEqualsExpr matches nodes whose canonical custom metadata property name
+// equals value. Supported values are string, number, and boolean.
+message PropertyEqualsExpr {
+  string alias = 1;
+  string name = 2;
+  google.protobuf.Value value = 3;
 }
 
 message ValueExpr {

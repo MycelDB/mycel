@@ -51,6 +51,8 @@ The existing Go query builder supports:
 `QueryService` includes:
 
 - read-only structured graph pattern queries
+- graph traversal predicates
+- metadata tag/property predicates composable with graph traversal
 - node and tree result projections
 - property/scalar filtering
 - ordering
@@ -60,12 +62,12 @@ The existing Go query builder supports:
 
 - graph mutation
 - semantic search
-- metadata index-specific search APIs
+- metadata catalog discovery such as listing all known tags/property names
 - blob operations
 - template management
 - raw query-string execution
 
-Semantic search and metadata index operations belong to separate services.
+Semantic search belongs to `SemanticService`. Metadata catalog discovery belongs to `MetadataCatalogService`. Metadata filtering/search belongs in `QueryService` so graph relationships and metadata predicates can be composed in one query.
 
 ## Service definition
 
@@ -173,7 +175,7 @@ min_depth <= traversal depth <= max_depth
 
 ## Expressions
 
-The v1 expression model should support current builder functionality:
+The v1 expression model should support current builder functionality plus explicit metadata predicates:
 
 - property reference
 - literal scalar value
@@ -182,6 +184,9 @@ The v1 expression model should support current builder functionality:
 - date minus days
 - between
 - and
+- has tag
+- property exists
+- property equals
 
 The wire model can use recursive oneof expressions.
 
@@ -190,6 +195,16 @@ Property references identify values by:
 ```text
 alias + property name
 ```
+
+Explicit metadata predicates identify canonical metadata by:
+
+```text
+alias + tag
+alias + property name
+alias + property name + scalar value
+```
+
+The daemon applies Mycel metadata normalization rules for tags and custom property names before evaluating metadata predicates. These explicit predicates exist because tags and custom properties have canonical normalization/indexing semantics that are not captured by a generic property reference alone.
 
 ## Return projections
 
