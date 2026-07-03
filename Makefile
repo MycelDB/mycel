@@ -1,11 +1,13 @@
+SHELL := /bin/sh
+
 .PHONY: test test-verbose test-watch build build-cli build-daemon run-cli run-daemon start stop generate-proto
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
-MYCELD_DATA_DIR ?= $(HOME)/mycel_data
-MYCELD_GRPC_ADDR ?= 127.0.0.1:9091
-MYCELD_PID_FILE ?= $(MYCELD_DATA_DIR)/myceld.pid
-MYCELD_STDOUT_LOG ?= $(MYCELD_DATA_DIR)/log/myceld.stdout.log
+MYCELD_DATA_DIR = $(HOME)/mycel_data
+MYCELD_GRPC_ADDR = 127.0.0.1:9091
+MYCELD_PID_FILE = $(MYCELD_DATA_DIR)/myceld.pid
+MYCELD_STDOUT_LOG = $(MYCELD_DATA_DIR)/log/myceld.stdout.log
 
 generate-proto:
 	go run github.com/bufbuild/buf/cmd/buf@v1.50.1 generate
