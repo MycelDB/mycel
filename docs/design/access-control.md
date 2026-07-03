@@ -69,7 +69,10 @@ Initial v1 assumptions:
 ### v1 principal types
 
 - `user`
+- `operator`
 - `system`
+
+`operator` identifies a system admin/operator principal. Operators are distinct from standard users and are managed through Admin Operator APIs.
 
 ### Future principal types
 
@@ -102,6 +105,7 @@ Admin capabilities authorize control-plane operations. They can be system-level 
 Examples:
 
 - create a user
+- create/manage an operator
 - create a space
 - archive a space
 - delete an archived space
@@ -195,6 +199,15 @@ Capability names are design-level names. Final protobuf/API enum names may use u
 | `space.create` | Create a new space. System-level admin capability. |
 
 Space creation is admin-only in v1.
+
+### Operator capabilities
+
+| Capability | Meaning |
+| --- | --- |
+| `operator.create` | Create a system admin/operator. |
+| `operator.manage` | Manage existing operators, including state, roles, capabilities, passwords, and sessions. |
+
+Operators are distinct from standard users. Operator roles are admin/control-plane role bundles and are not the same as space roles.
 
 Space destruction is admin-only in v1 and uses a two-step lifecycle:
 

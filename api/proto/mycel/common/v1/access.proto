@@ -8,8 +8,8 @@ option go_package = "github.com/myceldb/mycel/gen/go/mycel/common/v1;commonv1";
 
 // Principal identifies an actor that can own resources or receive access.
 //
-// Initial v1 principal types are user and system. Apps/service accounts are
-// represented as users for the initial daemon API.
+// Initial v1 principal types are user, operator, and system. Apps/service
+// accounts are represented as users for the initial daemon API.
 message Principal {
   PrincipalType type = 1;
   string id = 2;
@@ -23,6 +23,7 @@ enum PrincipalType {
   PRINCIPAL_TYPE_UNSPECIFIED = 0;
   PRINCIPAL_TYPE_USER = 1;
   PRINCIPAL_TYPE_SYSTEM = 2;
+  PRINCIPAL_TYPE_OPERATOR = 3;
 }
 
 // Capability is the unit the daemon enforces for authorization decisions.
@@ -69,8 +70,10 @@ enum Capability {
   // Admin capabilities.
   CAPABILITY_USER_CREATE = 140;
   CAPABILITY_USER_MANAGE = 141;
-  CAPABILITY_DAEMON_CONFIGURE = 142;
-  CAPABILITY_MESH_MANAGE = 143;
+  CAPABILITY_OPERATOR_CREATE = 142;
+  CAPABILITY_OPERATOR_MANAGE = 143;
+  CAPABILITY_DAEMON_CONFIGURE = 144;
+  CAPABILITY_MESH_MANAGE = 145;
 
   // System capabilities used by daemon/system internals.
   CAPABILITY_SYSTEM_COMPACT_SPACE = 160;
