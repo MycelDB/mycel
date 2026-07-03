@@ -1,11 +1,12 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
+
+	"github.com/myceldb/mycel/internal/daemon/app"
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "myceld daemon placeholder: daemon runtime is not implemented yet")
-	os.Exit(2)
+	os.Exit(app.Run(context.Background()))
 }

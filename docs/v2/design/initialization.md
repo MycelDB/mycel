@@ -47,8 +47,8 @@ Initial environment variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `MYCELD_DATA_DIR` | Root data directory for the daemon. |
-| `MYCELD_MODE` | Daemon mode. Current relevant value: `standalone`. |
+| `MYCELD_DATA_DIR` | Root data directory for the daemon. Defaults to `~/.mycel` when unset. |
+| `MYCELD_MODE` | Daemon mode. Current relevant values: `standalone`, `mesh`. |
 | `MYCELD_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `MYCELD_LOG_FORMAT` | Log format: `text` or `json`. |
 
@@ -56,7 +56,13 @@ The environment variable list is expected to change as the daemon design evolves
 
 ## Data directory layout
 
-On startup, the daemon ensures that the configured data directory exists.
+On startup, the daemon resolves `MYCELD_DATA_DIR`. If it is unset, the daemon defaults to:
+
+```text
+~/.mycel
+```
+
+The daemon then ensures that the resolved data directory exists.
 
 Within the data directory, the current initialization design creates the following structure when missing:
 
@@ -101,19 +107,65 @@ When the default standalone admin is created, the generated username and passwor
 
 The plaintext generated password is logged only for this bootstrap event and should not be stored as plaintext.
 
+## Module initialization contract
+
+After resolving the data directory and configuring logging, the daemon invokes each registered module's `Init` method.
+
+The top-level daemon runtime knows that modules exist, but it should not hardcode module internals. Module-specific filesystem layout, stores, and bootstrap behavior belong inside each module.
+
+Conceptual module interface:
+
+```go
+type Module interface {
+    Name() string
+    Init(context.Context, *Runtime) InitResult
+}
+```
+
+Conceptual initialization result:
+
+```text
+ok
+```
+
+or:
+
+```text
+error {
+  module: string
+  type: string
+  message: string
+  abort: bool
+}
+```
+
+The `type` field is a string category, not an enum. Modules may define their own issue type strings. Recommended common strings include:
+
+```text
+filesystem
+config
+security
+store
+network
+dependency
+unknown
+```
+
+If `abort` is true, daemon startup stops. If `abort` is false, the daemon logs the issue and continues initializing remaining modules.
+
 ## Admin management module initialization
 
-During daemon initialization, the admin management module runs its initialization routine.
+The current registered module is the admin management module.
 
-The module checks:
+Its `Init` method checks:
 
 1. whether `<data>/admins/` exists
 2. whether the admin store exists
 3. whether standalone bootstrap behavior applies
 
-If `<data>/admins/` does not exist, it is created.
+If `<data>/admins/` does not exist, the module creates it.
 
-If the admin store does not exist, it is created.
+If the admin store does not exist, the module creates it.
 
 If the daemon is running in `standalone` mode and the admin store was missing or contains no admins, the module creates a default admin account:
 
@@ -145,34 +197,49 @@ Future Admin API documents may define richer operator/admin lifecycle operations
 ```mermaid
 flowchart TD
   A[myceld starts] --> B[Load initialization config]
-  B --> C[Resolve MYCELD_DATA_DIR]
-  C --> D{Data directory exists?}
-  D -- No --> E[Create data directory]
-  D -- Yes --> F[Use existing data directory]
-  E --> G[Ensure log directory]
-  F --> G
+  B --> C{MYCELD_DATA_DIR set?}
+  C -- Yes --> D[Use configured data dir]
+  C -- No --> E[Use default ~/.mycel]
+  D --> F[Ensure data dir exists]
+  E --> F
+  F --> G[Ensure log directory exists]
   G --> H[Configure logger]
   H --> I[Log daemon startup]
-  I --> J[Initialize admin management module]
-  J --> K{admins directory exists?}
-  K -- No --> L[Create admins directory]
-  K -- Yes --> M[Use existing admins directory]
-  L --> N{admin store exists?}
-  M --> N
-  N -- No --> O[Create admin store]
-  N -- Yes --> P[Open admin store]
-  O --> Q{standalone mode and no admins?}
-  P --> Q
-  Q -- Yes --> R[Generate default admin password]
-  R --> S[Hash password and persist admin]
-  S --> T[Log bootstrap admin credentials]
-  Q -- No --> U[Skip default admin creation]
-  T --> V[Initialization complete]
-  U --> V
-  V --> W[Daemon waits until shutdown]
-  W --> X[Log shutdown begins]
-  X --> Y[Stop initialized modules]
-  Y --> Z[Log shutdown complete]
+  I --> J[Build registered module list]
+  J --> K[Invoke module.Init]
+  K --> L{Init result ok?}
+  L -- Yes --> M{More modules?}
+  L -- No --> N{abort?}
+  N -- Yes --> O[Log issue and abort startup]
+  N -- No --> P[Log issue and continue]
+  P --> M
+  M -- Yes --> K
+  M -- No --> Q[Initialization complete]
+  Q --> R[Daemon waits until shutdown]
+  R --> S[Log shutdown begins]
+  S --> T[Stop initialized modules]
+  T --> U[Log shutdown complete]
+```
+
+The current admin management module's `Init` method internally follows this narrower flow:
+
+```mermaid
+flowchart TD
+  A[Admin module Init] --> B{admins directory exists?}
+  B -- No --> C[Create admins directory]
+  B -- Yes --> D[Use existing admins directory]
+  C --> E{admin store exists?}
+  D --> E
+  E -- No --> F[Create admin store]
+  E -- Yes --> G[Open admin store]
+  F --> H{standalone mode and no admins?}
+  G --> H
+  H -- Yes --> I[Generate default admin password]
+  I --> J[Hash password and persist admin]
+  J --> K[Log bootstrap admin credentials]
+  H -- No --> L[Skip default admin creation]
+  K --> M[Return ok]
+  L --> M
 ```
 
 ## Idempotency
@@ -198,6 +265,7 @@ Expected behavior on repeated startup:
 
 Unit tests for the initialization design should cover:
 
+- unset `MYCELD_DATA_DIR` defaults to `~/.mycel`
 - missing data directory is created
 - missing log directory is created
 - missing admins directory is created
@@ -208,6 +276,7 @@ Unit tests for the initialization design should cover:
 - repeated initialization does not recreate default admin
 - list admins returns the persisted admin records
 - non-standalone mode does not create the default admin unless explicitly designed later
+- module init errors include message, string type, and abort/continue behavior
 
 ## Current limitations
 
