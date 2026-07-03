@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
-	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func NewAdminCommand(a *app.App) *cobra.Command {
@@ -25,34 +27,36 @@ func NewListAdminsCommand(a *app.App) *cobra.Command {
 		Use:   "admins",
 		Short: "List daemon admins",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dataDir, err := resolveDaemonDataDir(a)
+			addr, err := resolveDaemonAddr(a)
 			if err != nil {
 				return err
 			}
-			lister, err := daemonadmin.OpenLister(dataDir)
+			conn, err := grpc.DialContext(cmd.Context(), addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 			if err != nil {
-				return fmt.Errorf("open daemon admin store at %s: %w", dataDir, err)
+				return fmt.Errorf("dial myceld gRPC at %s: %w", addr, err)
 			}
-			admins, err := lister.ListAdmins(cmd.Context())
+			defer conn.Close()
+			client := adminv1.NewAdminOperatorServiceClient(conn)
+			res, err := client.ListOperators(cmd.Context(), &adminv1.ListOperatorsRequest{})
 			if err != nil {
-				return err
+				return fmt.Errorf("list daemon admins via %s: %w", addr, err)
 			}
 			if a.Output == "json" {
-				return a.Print(admins, "")
+				return a.Print(res.GetOperators(), "")
 			}
-			app.RenderDaemonAdminsTable(admins)
+			app.RenderDaemonOperatorsTable(res.GetOperators())
 			return nil
 		},
 	}
 }
 
-func resolveDaemonDataDir(a *app.App) (string, error) {
-	if strings.TrimSpace(a.DataDir) != "" {
-		return a.DataDir, nil
+func resolveDaemonAddr(a *app.App) (string, error) {
+	if strings.TrimSpace(a.DaemonAddr) != "" {
+		return strings.TrimSpace(a.DaemonAddr), nil
 	}
 	cfg, err := daemonconfig.LoadFromEnv()
 	if err != nil {
 		return "", err
 	}
-	return cfg.DataDir, nil
+	return cfg.GRPCAddr, nil
 }

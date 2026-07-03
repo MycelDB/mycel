@@ -63,6 +63,7 @@ func NewRootCommand(a *app.App, repl bool) *cobra.Command {
 	root.PersistentFlags().Int64Var(&a.BlobMaxVideoBytes, "blob-max-video-bytes", a.BlobMaxVideoBytes, "video blob upload cap in bytes")
 	root.PersistentFlags().Int64Var(&a.BlobMaxOtherBytes, "blob-max-other-bytes", a.BlobMaxOtherBytes, "uncategorized blob upload cap in bytes")
 	root.PersistentFlags().BoolVar(&a.AdvancedSemanticEnabled, "semantic-advanced-enabled", a.AdvancedSemanticEnabled, "enable advanced semantic implementation paths as they are introduced")
+	root.PersistentFlags().StringVar(&a.DaemonAddr, "daemon-addr", a.DaemonAddr, "myceld gRPC address (defaults to MYCELD_GRPC_ADDR or 127.0.0.1:9091)")
 
 	root.AddCommand(NewInitCommand(a), NewAdminCommand(a), NewUserCommand(a), NewSpaceCommand(a), NewDomainCommand(a), NewNodeCommand(a), NewBlobCommand(a), NewTemplateCommand(a), NewACLCommand(a), NewAuthCommand(a), NewEmbeddingsCommand(a), NewInferenceCommand(a), NewSemanticCommand(a), NewAccountingCommand(a), NewReplCommand(a))
 	if repl {

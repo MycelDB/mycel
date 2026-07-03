@@ -19,6 +19,7 @@ The current initialization design covers:
 - admin store creation when missing
 - default standalone admin creation when no admin store exists
 - list admins operation
+- gRPC listener startup for initial Admin API operations
 - startup/shutdown log messages
 
 Out of scope for this document:
@@ -51,6 +52,7 @@ Initial environment variables:
 | `MYCELD_MODE` | Daemon mode. Current relevant values: `standalone`, `mesh`. |
 | `MYCELD_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `MYCELD_LOG_FORMAT` | Log format: `text` or `json`. |
+| `MYCELD_GRPC_ADDR` | gRPC listener address. Defaults to `127.0.0.1:9091`. |
 
 The environment variable list is expected to change as the daemon design evolves. This document only covers the variables needed by the current initialization design.
 
@@ -180,13 +182,17 @@ The module logs the generated username and plaintext password once for bootstrap
 
 If the admin store already exists and contains at least one admin, the module does not recreate the default admin.
 
-## List admins operation
+## List admins/operators operation
 
-The current admin management behavior includes a list admins operation.
+The current admin management behavior includes a read-only list operation.
 
-The operation returns the known admins from the admin store.
+Internally, the admin module exposes safe `AdminSummary` values that omit password hashes. Externally, the daemon exposes those summaries through:
 
-The list operation is read-only and does not create, update, disable, delete, or grant privileges.
+```text
+mycel.admin.v1.AdminOperatorService.ListOperators
+```
+
+The operation returns known daemon admins as v2 Admin API `Operator` records. The list operation is read-only and does not create, update, disable, delete, or grant privileges.
 
 The current design does not define additional admin operations in this initialization document.
 
@@ -215,10 +221,12 @@ flowchart TD
   P --> M
   M -- Yes --> K
   M -- No --> Q[Initialization complete]
-  Q --> R[Daemon waits until shutdown]
-  R --> S[Log shutdown begins]
-  S --> T[Stop initialized modules]
-  T --> U[Log shutdown complete]
+  Q --> R[Start gRPC server]
+  R --> S[Daemon waits until shutdown]
+  S --> T[Log shutdown begins]
+  T --> U[Stop gRPC server]
+  U --> V[Stop initialized modules]
+  V --> W[Log shutdown complete]
 ```
 
 The current admin management module's `Init` method internally follows this narrower flow:
@@ -274,7 +282,8 @@ Unit tests for the initialization design should cover:
 - generated admin password is logged during bootstrap
 - plaintext password is not stored in the admin store
 - repeated initialization does not recreate default admin
-- list admins returns the persisted admin records
+- list admins returns safe summaries without password hashes
+- gRPC `ListOperators` maps admin summaries to operator records
 - non-standalone mode does not create the default admin unless explicitly designed later
 - module init errors include message, string type, and abort/continue behavior
 

@@ -11,6 +11,7 @@ const (
 	DefaultMode      = "standalone"
 	DefaultLogLevel  = "info"
 	DefaultLogFormat = "text"
+	DefaultGRPCAddr  = "127.0.0.1:9091"
 )
 
 type Config struct {
@@ -18,6 +19,7 @@ type Config struct {
 	Mode      string
 	LogLevel  string
 	LogFormat string
+	GRPCAddr  string
 }
 
 func LoadFromEnv() (Config, error) {
@@ -34,6 +36,7 @@ func LoadFromEnv() (Config, error) {
 		Mode:      valueOrDefault(os.Getenv("MYCELD_MODE"), DefaultMode),
 		LogLevel:  valueOrDefault(os.Getenv("MYCELD_LOG_LEVEL"), DefaultLogLevel),
 		LogFormat: valueOrDefault(os.Getenv("MYCELD_LOG_FORMAT"), DefaultLogFormat),
+		GRPCAddr:  valueOrDefault(os.Getenv("MYCELD_GRPC_ADDR"), DefaultGRPCAddr),
 	}
 	return cfg, cfg.Validate()
 }
@@ -64,6 +67,9 @@ func (c Config) Validate() error {
 	case "text", "json":
 	default:
 		return fmt.Errorf("MYCELD_LOG_FORMAT must be text or json")
+	}
+	if strings.TrimSpace(c.GRPCAddr) == "" {
+		return fmt.Errorf("MYCELD_GRPC_ADDR must not be empty")
 	}
 	return nil
 }

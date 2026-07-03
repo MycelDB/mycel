@@ -1,7 +1,10 @@
-.PHONY: test test-verbose test-watch build build-cli build-daemon run-cli run-daemon
+.PHONY: test test-verbose test-watch build build-cli build-daemon run-cli run-daemon generate-proto
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
+
+generate-proto:
+	go run github.com/bufbuild/buf/cmd/buf@v1.50.1 generate
 
 test:
 	go test ./...

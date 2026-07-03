@@ -14,6 +14,7 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/logging"
 	"github.com/myceldb/mycel/internal/daemon/modules/admin"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	"github.com/myceldb/mycel/internal/daemon/server"
 )
 
 const LogFilename = "myceld.log"
@@ -38,8 +39,21 @@ func Run(ctx context.Context) int {
 	}
 	defer func() { _ = initialized.Close() }()
 
-	initialized.Runtime.Logger.Info("daemon ready")
+	serverCtx, stopServer := context.WithCancel(ctx)
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: initialized.AdminModule, Logger: initialized.Runtime.Logger})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
+		return 1
+	}
+	defer stopServer()
+
+	initialized.Runtime.Logger.Info("daemon ready", "grpc_addr", grpcServer.Addr())
 	waitForShutdown(ctx, initialized.Runtime.Logger)
+	stopServer()
+	if err := <-grpcErrCh; err != nil {
+		initialized.Runtime.Logger.Error("grpc server stopped with error", "error", err)
+		return 1
+	}
 	initialized.Runtime.Logger.Info("daemon shutdown complete")
 	return 0
 }

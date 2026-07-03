@@ -10,16 +10,16 @@ import (
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
 	mycelengine "github.com/myceldb/mycel/engine"
-	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
+	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
 )
 
-func RenderDaemonAdminsTable(admins []daemonadmin.AdminSummary) {
+func RenderDaemonOperatorsTable(operators []*adminv1.Operator) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"Admin ID", "Username", "Created At"})
-	for _, admin := range admins {
-		t.AppendRow(table.Row{admin.ID, admin.Username, admin.CreatedAt})
+	t.AppendHeader(table.Row{"Operator ID", "Username", "State", "Created At"})
+	for _, operator := range operators {
+		t.AppendRow(table.Row{operator.GetOperatorId(), operator.GetUsername(), operator.GetState().String(), operator.GetCreateTime().AsTime()})
 	}
 	t.Render()
 }

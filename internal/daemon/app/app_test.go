@@ -12,7 +12,7 @@ import (
 
 func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "mycel-data")
-	cfg := config.Config{DataDir: dataDir, Mode: "mesh", LogLevel: "debug", LogFormat: "text"}
+	cfg := config.Config{DataDir: dataDir, Mode: "mesh", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"}
 
 	initialized, err := Initialize(context.Background(), cfg)
 	if err != nil {
@@ -36,7 +36,7 @@ func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 
 func TestRunLogsStartupAndShutdown(t *testing.T) {
 	dataDir := t.TempDir()
-	cfg := config.Config{DataDir: dataDir, Mode: "mesh", LogLevel: "debug", LogFormat: "text"}
+	cfg := config.Config{DataDir: dataDir, Mode: "mesh", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"}
 	initialized, err := Initialize(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Initialize() error = %v", err)
