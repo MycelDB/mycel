@@ -54,6 +54,9 @@ func TestModuleInitStandaloneCreatesDefaultAdminAndLogsCredentials(t *testing.T)
 	if !strings.Contains(logContent, "username=admin") {
 		t.Fatalf("expected admin username in log, got:\n%s", logContent)
 	}
+	if !strings.Contains(logContent, "change this password immediately") || !strings.Contains(logContent, "change_password_required=true") {
+		t.Fatalf("expected change-password warning in log, got:\n%s", logContent)
+	}
 	password := extractLoggedPassword(t, logContent)
 	if password == "" {
 		t.Fatalf("expected logged password, got:\n%s", logContent)

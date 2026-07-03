@@ -107,7 +107,7 @@ Expected log events include:
 - shutdown begins
 - shutdown complete
 
-When the default standalone admin is created, the generated username and password are logged so that an operator can retrieve them from the daemon log file.
+When the default standalone admin is created, the generated username and password are logged so that an operator can retrieve them from the daemon log file. The log message must explicitly instruct the operator to change the generated password immediately.
 
 The plaintext generated password is logged only for this bootstrap event and should not be stored as plaintext.
 
@@ -180,7 +180,7 @@ password: randomly generated
 
 The module persists the admin account with a password hash, not the plaintext password.
 
-The module logs the generated username and plaintext password once for bootstrap access.
+The module logs the generated username and plaintext password once for bootstrap access and explicitly tells the operator to change the generated password immediately.
 
 If the admin store already exists and contains at least one admin, the module does not recreate the default admin.
 
@@ -285,6 +285,7 @@ Unit tests for the initialization design should cover:
 - missing admin store is created
 - standalone initialization creates default `admin` when no admins exist
 - generated admin password is logged during bootstrap
+- bootstrap log includes an explicit change-password warning
 - plaintext password is not stored in the admin store
 - repeated initialization does not recreate default admin
 - list admins returns safe summaries without password hashes

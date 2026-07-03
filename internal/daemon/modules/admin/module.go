@@ -68,7 +68,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 			}
 			return daemonruntime.Abort(ModuleName, "store", "failed to create default admin", err)
 		}
-		rt.Logger.Warn("default standalone admin created", "username", admin.Username, "password", password)
+		rt.Logger.Warn("default standalone admin created; change this password immediately", "username", admin.Username, "password", password, "change_password_required", true)
 	}
 	return daemonruntime.OK(ModuleName)
 }
