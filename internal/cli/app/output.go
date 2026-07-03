@@ -10,7 +10,19 @@ import (
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
 	mycelengine "github.com/myceldb/mycel/engine"
+	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
 )
+
+func RenderDaemonAdminsTable(admins []daemonadmin.AdminSummary) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleDefault)
+	t.AppendHeader(table.Row{"Admin ID", "Username", "Created At"})
+	for _, admin := range admins {
+		t.AppendRow(table.Row{admin.ID, admin.Username, admin.CreatedAt})
+	}
+	t.Render()
+}
 
 func RenderUsersTable(users []identity.User) {
 	t := table.NewWriter()

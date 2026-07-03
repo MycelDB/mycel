@@ -15,6 +15,7 @@ import (
 const StoreFilename = "admins.json"
 
 var ErrDuplicateAdmin = errors.New("admin already exists")
+var ErrStoreNotFound = errors.New("admin store not found")
 
 type Store interface {
 	List(context.Context) ([]Admin, error)
@@ -42,6 +43,17 @@ func OpenStore(dir string) (*FileStore, bool, error) {
 		return nil, false, err
 	}
 	return store, true, nil
+}
+
+func OpenExistingStore(dir string) (*FileStore, error) {
+	path := filepath.Join(dir, StoreFilename)
+	if _, err := os.Stat(path); err == nil {
+		return &FileStore{path: path}, nil
+	} else if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrStoreNotFound
+	} else {
+		return nil, fmt.Errorf("stat admin store: %w", err)
+	}
 }
 
 func (s *FileStore) List(ctx context.Context) ([]Admin, error) {

@@ -20,6 +20,14 @@ type Module struct {
 
 func NewModule() *Module { return &Module{} }
 
+func OpenLister(dataDir string) (*Module, error) {
+	store, err := OpenExistingStore(filepath.Join(dataDir, "admins"))
+	if err != nil {
+		return nil, err
+	}
+	return &Module{store: store}, nil
+}
+
 func (m *Module) Name() string { return ModuleName }
 
 func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonruntime.InitResult {
