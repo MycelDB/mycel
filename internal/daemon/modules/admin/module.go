@@ -62,11 +62,23 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	return daemonruntime.OK(ModuleName)
 }
 
-func (m *Module) ListAdmins(ctx context.Context) ([]Admin, error) {
+func (m *Module) ListAdmins(ctx context.Context) ([]AdminSummary, error) {
 	if m.store == nil {
 		return nil, fmt.Errorf("admin module is not initialized")
 	}
-	return m.store.List(ctx)
+	admins, err := m.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]AdminSummary, 0, len(admins))
+	for _, admin := range admins {
+		summaries = append(summaries, AdminSummary{
+			ID:        admin.ID,
+			Username:  admin.Username,
+			CreatedAt: admin.CreatedAt,
+		})
+	}
+	return summaries, nil
 }
 
 func ensureDir(path string, perm os.FileMode) (bool, error) {

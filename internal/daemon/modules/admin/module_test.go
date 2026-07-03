@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -19,15 +20,24 @@ func TestModuleInitStandaloneCreatesDefaultAdminAndLogsCredentials(t *testing.T)
 	var logs bytes.Buffer
 	module := initModule(t, dataDir, "standalone", &logs)
 
-	admins, err := module.ListAdmins(context.Background())
+	summaries, err := module.ListAdmins(context.Background())
 	if err != nil {
 		t.Fatalf("ListAdmins() error = %v", err)
 	}
-	if len(admins) != 1 {
-		t.Fatalf("expected 1 admin, got %d", len(admins))
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 admin summary, got %d", len(summaries))
 	}
-	if admins[0].Username != "admin" {
-		t.Fatalf("expected default admin username, got %q", admins[0].Username)
+	if summaries[0].Username != "admin" {
+		t.Fatalf("expected default admin username, got %q", summaries[0].Username)
+	}
+	if summaries[0].ID == "" || summaries[0].CreatedAt.IsZero() {
+		t.Fatalf("expected admin summary identity and timestamp, got %+v", summaries[0])
+	}
+	assertAdminSummaryDoesNotExposePasswordHash(t)
+
+	admins := listPersistedAdmins(t, module)
+	if len(admins) != 1 {
+		t.Fatalf("expected 1 persisted admin, got %d", len(admins))
 	}
 	if admins[0].PasswordHash == "" || strings.Contains(admins[0].PasswordHash, "admin") {
 		t.Fatalf("expected non-empty password hash without plaintext username, got %q", admins[0].PasswordHash)
@@ -101,6 +111,22 @@ func TestModuleInitMeshDoesNotCreateDefaultAdmin(t *testing.T) {
 	logContent := logs.String()
 	if strings.Contains(logContent, "default standalone admin created") {
 		t.Fatalf("did not expect standalone admin log in mesh mode, got:\n%s", logContent)
+	}
+}
+
+func listPersistedAdmins(t *testing.T, module *Module) []Admin {
+	t.Helper()
+	admins, err := module.store.List(context.Background())
+	if err != nil {
+		t.Fatalf("store.List() error = %v", err)
+	}
+	return admins
+}
+
+func assertAdminSummaryDoesNotExposePasswordHash(t *testing.T) {
+	t.Helper()
+	if _, ok := reflect.TypeOf(AdminSummary{}).FieldByName("PasswordHash"); ok {
+		t.Fatalf("AdminSummary must not expose PasswordHash")
 	}
 }
 
