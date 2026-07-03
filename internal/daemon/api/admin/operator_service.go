@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
+	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -27,6 +28,9 @@ func NewOperatorService(lister daemonadmin.AdminLister) *OperatorService {
 }
 
 func (s *OperatorService) ListOperators(ctx context.Context, req *adminv1.ListOperatorsRequest) (*adminv1.ListOperatorsResponse, error) {
+	if _, ok := daemonauth.PrincipalFromContext(ctx); !ok {
+		return nil, status.Error(codes.Unauthenticated, "operator authentication is required")
+	}
 	if s.lister == nil {
 		return nil, status.Error(codes.FailedPrecondition, "admin lister is not configured")
 	}

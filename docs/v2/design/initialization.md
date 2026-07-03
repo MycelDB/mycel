@@ -186,13 +186,14 @@ If the admin store already exists and contains at least one admin, the module do
 
 The current admin management behavior includes a read-only list operation.
 
-Internally, the admin module exposes safe `AdminSummary` values that omit password hashes. Externally, the daemon exposes those summaries through:
+Internally, the admin module exposes safe `AdminSummary` values that omit password hashes. Externally, authenticated clients access those summaries through:
 
 ```text
+mycel.admin.v1.AdminAuthService.LoginOperator
 mycel.admin.v1.AdminOperatorService.ListOperators
 ```
 
-The operation returns known daemon admins as v2 Admin API `Operator` records. The list operation is read-only and does not create, update, disable, delete, or grant privileges.
+`LoginOperator` verifies an operator username/password and returns a short-lived bearer token. `ListOperators` requires that token in gRPC metadata. The list operation returns known daemon admins as v2 Admin API `Operator` records. The list operation is read-only and does not create, update, disable, delete, or grant privileges.
 
 The current design does not define additional admin operations in this initialization document.
 
@@ -283,7 +284,9 @@ Unit tests for the initialization design should cover:
 - plaintext password is not stored in the admin store
 - repeated initialization does not recreate default admin
 - list admins returns safe summaries without password hashes
-- gRPC `ListOperators` maps admin summaries to operator records
+- gRPC `LoginOperator` authenticates the bootstrap admin with the logged one-time password
+- unauthenticated gRPC `ListOperators` fails
+- authenticated gRPC `ListOperators` maps admin summaries to operator records
 - non-standalone mode does not create the default admin unless explicitly designed later
 - module init errors include message, string type, and abort/continue behavior
 

@@ -16,6 +16,12 @@ mycel admin list
 
 The command talks to the daemon gRPC API. During the migration from embedded/library workflows to daemon-first workflows, this command name remains stable while implementation details move behind gRPC.
 
+The command must authenticate as a daemon operator before listing administrators:
+
+```sh
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin list
+```
+
 ## API surface
 
 The daemon implements the existing protobuf service:
@@ -39,6 +45,8 @@ The initial store does not yet track display name, email, disabled state, delete
 
 Password hashes are never returned by this API.
 
+`ListOperators` is protected by gRPC bearer-token authentication. Anonymous calls return `Unauthenticated`.
+
 ## Transport
 
 The daemon listens on a configurable gRPC address:
@@ -48,6 +56,12 @@ The daemon listens on a configurable gRPC address:
 | `MYCELD_GRPC_ADDR` | `127.0.0.1:9091` | Address for the daemon gRPC listener. |
 
 The default is loopback-only because daemon admin authentication/authorization has not been implemented yet.
+
+The CLI first calls `AdminAuthService.LoginOperator`, then calls `ListOperators` with gRPC metadata:
+
+```text
+authorization: Bearer <access-token>
+```
 
 The CLI resolves the daemon address from:
 
@@ -67,10 +81,11 @@ The CLI resolves the daemon address from:
 
 ## Current limitations
 
-- No daemon admin auth/authz yet.
+- Initial daemon admin auth exists, but transport security is not complete.
 - Loopback-only default is a safety constraint, not a complete security boundary.
 - Only `ListOperators` is implemented; other `AdminOperatorService` methods return unimplemented.
 - TLS/mTLS is not configured yet.
+- Explicit role/capability authorization is not yet persisted; current authenticated bootstrap admins are treated as active operators.
 - The direct store-backed admin module remains the source of truth until richer operator storage is designed.
 
 ## Validation expectations
@@ -81,5 +96,6 @@ Tests cover:
 - pagination and invalid page tokens
 - no password/hash leakage
 - gRPC server registration
-- CLI `mycel admin list` using gRPC
+- anonymous gRPC list calls fail with `Unauthenticated`
+- CLI `mycel admin list` using login plus authenticated gRPC
 - CLI daemon address resolution via `--daemon-addr` and `MYCELD_GRPC_ADDR`

@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -63,6 +64,33 @@ func TestModuleInitStandaloneCreatesDefaultAdminAndLogsCredentials(t *testing.T)
 	storeContent := readFile(t, filepath.Join(dataDir, "admins", StoreFilename))
 	if strings.Contains(storeContent, password) {
 		t.Fatalf("admin store contains plaintext password %q", password)
+	}
+}
+
+func TestModuleAuthenticateOperator(t *testing.T) {
+	dataDir := t.TempDir()
+	var logs bytes.Buffer
+	module := initModule(t, dataDir, "standalone", &logs)
+	password := extractLoggedPassword(t, logs.String())
+
+	admin, err := module.AuthenticateOperator(context.Background(), "admin", password)
+	if err != nil {
+		t.Fatalf("AuthenticateOperator() error = %v", err)
+	}
+	if admin.Username != "admin" || admin.ID == "" || admin.CreatedAt.IsZero() {
+		t.Fatalf("unexpected authenticated admin: %+v", admin)
+	}
+}
+
+func TestModuleAuthenticateOperatorRejectsInvalidCredentials(t *testing.T) {
+	dataDir := t.TempDir()
+	var logs bytes.Buffer
+	module := initModule(t, dataDir, "standalone", &logs)
+	if _, err := module.AuthenticateOperator(context.Background(), "admin", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials for bad password, got %v", err)
+	}
+	if _, err := module.AuthenticateOperator(context.Background(), "missing", extractLoggedPassword(t, logs.String())); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials for missing user, got %v", err)
 	}
 }
 

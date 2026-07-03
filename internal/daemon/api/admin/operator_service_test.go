@@ -7,6 +7,7 @@ import (
 	"time"
 
 	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
+	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -25,7 +26,7 @@ func TestListOperatorsMapsAdminSummaries(t *testing.T) {
 	createdAt := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	svc := NewOperatorService(fakeAdminLister{admins: []daemonadmin.AdminSummary{{ID: "admin-1", Username: "admin", CreatedAt: createdAt}}})
 
-	res, err := svc.ListOperators(context.Background(), &adminv1.ListOperatorsRequest{})
+	res, err := svc.ListOperators(authenticatedContext(), &adminv1.ListOperatorsRequest{})
 	if err != nil {
 		t.Fatalf("ListOperators() error = %v", err)
 	}
@@ -47,20 +48,28 @@ func TestListOperatorsMapsAdminSummaries(t *testing.T) {
 	}
 }
 
+func TestListOperatorsRequiresAuthentication(t *testing.T) {
+	svc := NewOperatorService(fakeAdminLister{})
+	_, err := svc.ListOperators(context.Background(), &adminv1.ListOperatorsRequest{})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %v", err)
+	}
+}
+
 func TestListOperatorsPaginates(t *testing.T) {
 	svc := NewOperatorService(fakeAdminLister{admins: []daemonadmin.AdminSummary{
 		{ID: "1", Username: "a", CreatedAt: time.Now()},
 		{ID: "2", Username: "b", CreatedAt: time.Now()},
 		{ID: "3", Username: "c", CreatedAt: time.Now()},
 	}})
-	first, err := svc.ListOperators(context.Background(), &adminv1.ListOperatorsRequest{PageSize: 2})
+	first, err := svc.ListOperators(authenticatedContext(), &adminv1.ListOperatorsRequest{PageSize: 2})
 	if err != nil {
 		t.Fatalf("first ListOperators() error = %v", err)
 	}
 	if len(first.GetOperators()) != 2 || first.GetNextPageToken() != "2" {
 		t.Fatalf("unexpected first page: %#v", first)
 	}
-	second, err := svc.ListOperators(context.Background(), &adminv1.ListOperatorsRequest{PageSize: 2, PageToken: first.GetNextPageToken()})
+	second, err := svc.ListOperators(authenticatedContext(), &adminv1.ListOperatorsRequest{PageSize: 2, PageToken: first.GetNextPageToken()})
 	if err != nil {
 		t.Fatalf("second ListOperators() error = %v", err)
 	}
@@ -71,8 +80,12 @@ func TestListOperatorsPaginates(t *testing.T) {
 
 func TestListOperatorsRejectsInvalidPageToken(t *testing.T) {
 	svc := NewOperatorService(fakeAdminLister{})
-	_, err := svc.ListOperators(context.Background(), &adminv1.ListOperatorsRequest{PageToken: "bad"})
+	_, err := svc.ListOperators(authenticatedContext(), &adminv1.ListOperatorsRequest{PageToken: "bad"})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
+}
+
+func authenticatedContext() context.Context {
+	return daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{OperatorID: "op-1", Username: "admin"})
 }

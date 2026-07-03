@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 func NewAdminCommand(a *app.App) *cobra.Command {
@@ -27,6 +28,9 @@ func NewListAdminsCommand(a *app.App) *cobra.Command {
 		Use:   "admins",
 		Short: "List daemon admins",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(a.UserRef) == "" || strings.TrimSpace(a.Password) == "" {
+				return fmt.Errorf("--username/-u and --password/-p are required for admin commands")
+			}
 			addr, err := resolveDaemonAddr(a)
 			if err != nil {
 				return err
@@ -36,8 +40,14 @@ func NewListAdminsCommand(a *app.App) *cobra.Command {
 				return fmt.Errorf("dial myceld gRPC at %s: %w", addr, err)
 			}
 			defer conn.Close()
+			authClient := adminv1.NewAdminAuthServiceClient(conn)
+			login, err := authClient.LoginOperator(cmd.Context(), &adminv1.LoginOperatorRequest{Username: a.UserRef, Password: a.Password, Client: &adminv1.OperatorClientInfo{Name: "mycel-cli", Platform: "cli"}})
+			if err != nil {
+				return fmt.Errorf("login daemon operator via %s: %w", addr, err)
+			}
 			client := adminv1.NewAdminOperatorServiceClient(conn)
-			res, err := client.ListOperators(cmd.Context(), &adminv1.ListOperatorsRequest{})
+			authCtx := metadata.AppendToOutgoingContext(cmd.Context(), "authorization", "Bearer "+login.GetAccessToken())
+			res, err := client.ListOperators(authCtx, &adminv1.ListOperatorsRequest{})
 			if err != nil {
 				return fmt.Errorf("list daemon admins via %s: %w", addr, err)
 			}

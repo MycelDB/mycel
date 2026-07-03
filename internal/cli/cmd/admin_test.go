@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -15,10 +17,10 @@ import (
 )
 
 func TestAdminListCommandJSONUsesGRPC(t *testing.T) {
-	_, addr, cleanup := startDaemonAdminGRPC(t)
+	_, addr, password, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
 
-	out, err := runCLI(t, "--daemon-addr", addr, "--output", "json", "admin", "list")
+	out, err := runCLI(t, "--daemon-addr", addr, "--username", "admin", "--password", password, "--output", "json", "admin", "list")
 	if err != nil {
 		t.Fatalf("admin list failed: %v\n%s", err, out)
 	}
@@ -37,12 +39,33 @@ func TestAdminListCommandJSONUsesGRPC(t *testing.T) {
 	}
 }
 
+func TestAdminListCommandRequiresCredentials(t *testing.T) {
+	_, addr, _, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	out, err := runCLI(t, "--daemon-addr", addr, "--output", "json", "admin", "list")
+	if err == nil {
+		t.Fatalf("expected admin list to require credentials, got output %s", out)
+	}
+	if !strings.Contains(err.Error(), "--username/-u and --password/-p") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAdminListCommandRejectsBadPassword(t *testing.T) {
+	_, addr, _, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	out, err := runCLI(t, "--daemon-addr", addr, "--username", "admin", "--password", "wrong", "--output", "json", "admin", "list")
+	if err == nil {
+		t.Fatalf("expected admin list to reject bad password, got output %s", out)
+	}
+}
+
 func TestAdminListCommandUsesMyceldGRPCAddr(t *testing.T) {
-	_, addr, cleanup := startDaemonAdminGRPC(t)
+	_, addr, password, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
 	t.Setenv("MYCELD_GRPC_ADDR", addr)
 
-	out, err := runCLI(t, "--output", "json", "admin", "list")
+	out, err := runCLI(t, "--username", "admin", "--password", password, "--output", "json", "admin", "list")
 	if err != nil {
 		t.Fatalf("admin list failed: %v\n%s", err, out)
 	}
@@ -52,21 +75,22 @@ func TestAdminListCommandUsesMyceldGRPCAddr(t *testing.T) {
 }
 
 func TestAdminListCommandFailsWhenDaemonUnavailable(t *testing.T) {
-	out, err := runCLI(t, "--daemon-addr", "127.0.0.1:1", "--output", "json", "admin", "list")
+	out, err := runCLI(t, "--daemon-addr", "127.0.0.1:1", "--username", "admin", "--password", "pass", "--output", "json", "admin", "list")
 	if err == nil {
 		t.Fatalf("expected admin list to fail when daemon is unavailable, got output %s", out)
 	}
 }
 
-func startDaemonAdminGRPC(t *testing.T) (string, string, func()) {
+func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "myceld")
 	initialized, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatalf("initialize daemon admin store failed: %v", err)
 	}
+	password := bootstrapPasswordFromLog(t, initialized.LogPath)
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: initialized.AdminModule, Logger: initialized.Runtime.Logger})
+	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: initialized.AdminModule, AdminAuthenticator: initialized.AdminModule, Logger: initialized.Runtime.Logger})
 	if err != nil {
 		_ = initialized.Close()
 		t.Fatalf("start grpc server failed: %v", err)
@@ -85,5 +109,19 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, func()) {
 			t.Fatalf("close daemon init failed: %v", err)
 		}
 	}
-	return dataDir, srv.Addr(), cleanup
+	return dataDir, srv.Addr(), password, cleanup
+}
+
+func bootstrapPasswordFromLog(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read bootstrap log: %v", err)
+	}
+	re := regexp.MustCompile(`password=([^\s]+)`)
+	match := re.FindStringSubmatch(string(data))
+	if len(match) != 2 {
+		t.Fatalf("bootstrap password not found in log:\n%s", data)
+	}
+	return strings.Trim(match[1], `"`)
 }

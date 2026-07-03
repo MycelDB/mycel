@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +14,8 @@ import (
 )
 
 const ModuleName = "admin_management"
+
+var ErrInvalidCredentials = errors.New("invalid operator credentials")
 
 type Module struct {
 	store Store
@@ -70,6 +73,25 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	return daemonruntime.OK(ModuleName)
 }
 
+func (m *Module) AuthenticateOperator(ctx context.Context, username string, password string) (AdminSummary, error) {
+	if m.store == nil {
+		return AdminSummary{}, fmt.Errorf("admin module is not initialized")
+	}
+	admins, err := m.store.List(ctx)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	for _, admin := range admins {
+		if strings.EqualFold(admin.Username, username) {
+			if err := VerifyPassword(admin.PasswordHash, password); err != nil {
+				return AdminSummary{}, ErrInvalidCredentials
+			}
+			return admin.toSummary(), nil
+		}
+	}
+	return AdminSummary{}, ErrInvalidCredentials
+}
+
 func (m *Module) ListAdmins(ctx context.Context) ([]AdminSummary, error) {
 	if m.store == nil {
 		return nil, fmt.Errorf("admin module is not initialized")
@@ -80,11 +102,7 @@ func (m *Module) ListAdmins(ctx context.Context) ([]AdminSummary, error) {
 	}
 	summaries := make([]AdminSummary, 0, len(admins))
 	for _, admin := range admins {
-		summaries = append(summaries, AdminSummary{
-			ID:        admin.ID,
-			Username:  admin.Username,
-			CreatedAt: admin.CreatedAt,
-		})
+		summaries = append(summaries, admin.toSummary())
 	}
 	return summaries, nil
 }

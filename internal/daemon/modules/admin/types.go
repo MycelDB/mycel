@@ -18,6 +18,14 @@ type AdminSummary struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+func (a Admin) toSummary() AdminSummary {
+	return AdminSummary{ID: a.ID, Username: a.Username, CreatedAt: a.CreatedAt}
+}
+
 type AdminLister interface {
 	ListAdmins(ctx context.Context) ([]AdminSummary, error)
+}
+
+type OperatorAuthenticator interface {
+	AuthenticateOperator(ctx context.Context, username string, password string) (AdminSummary, error)
 }

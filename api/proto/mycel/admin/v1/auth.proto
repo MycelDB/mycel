@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package mycel.admin.v1;
+
+import "google/protobuf/timestamp.proto";
+import "mycel/admin/v1/operator.proto";
+
+option go_package = "github.com/myceldb/mycel/gen/go/mycel/admin/v1;adminv1";
+
+// AdminAuthService authenticates daemon operators/admins and issues short-lived
+// access tokens for protected Admin API calls.
+service AdminAuthService {
+  rpc LoginOperator(LoginOperatorRequest) returns (LoginOperatorResponse);
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+}
+
+message LoginOperatorRequest {
+  string username = 1;
+  string password = 2;
+  OperatorClientInfo client = 3;
+}
+
+message LoginOperatorResponse {
+  string access_token = 1;
+  google.protobuf.Timestamp access_token_expire_time = 2;
+  Operator operator = 3;
+}
+
+message WhoAmIRequest {}
+
+message WhoAmIResponse {
+  Operator operator = 1;
+}
