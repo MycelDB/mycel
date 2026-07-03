@@ -43,6 +43,7 @@ func TestRunLogsStartupAndShutdown(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	initialized.Runtime.Logger.Info("daemon ready")
+	logRuntimeConfiguration(initialized.Runtime.Logger, cfg, initialized.LogPath, "127.0.0.1:12345")
 	cancel()
 	waitForShutdown(ctx, initialized.Runtime.Logger)
 	initialized.Runtime.Logger.Info("daemon shutdown complete")
@@ -51,7 +52,7 @@ func TestRunLogsStartupAndShutdown(t *testing.T) {
 	}
 
 	logContent := readFile(t, filepath.Join(dataDir, "log", LogFilename))
-	for _, want := range []string{"daemon startup begins", "daemon ready", "daemon shutdown begins", "daemon shutdown complete"} {
+	for _, want := range []string{"daemon startup begins", "daemon ready", "daemon runtime configuration", "data_dir=" + dataDir, "mode=mesh", "grpc_addr=127.0.0.1:12345", "log_path=" + filepath.Join(dataDir, "log", LogFilename), "log_level=debug", "log_format=text", "daemon shutdown begins", "daemon shutdown complete"} {
 		if !strings.Contains(logContent, want) {
 			t.Fatalf("expected log %q, got:\n%s", want, logContent)
 		}

@@ -48,6 +48,7 @@ func Run(ctx context.Context) int {
 	defer stopServer()
 
 	initialized.Runtime.Logger.Info("daemon ready", "grpc_addr", grpcServer.Addr())
+	logRuntimeConfiguration(initialized.Runtime.Logger, cfg, initialized.LogPath, grpcServer.Addr())
 	waitForShutdown(ctx, initialized.Runtime.Logger)
 	stopServer()
 	if err := <-grpcErrCh; err != nil {
@@ -89,6 +90,17 @@ func Initialize(ctx context.Context, cfg config.Config) (*Initialized, error) {
 	}
 	logger.Info("daemon initialization complete")
 	return &Initialized{Runtime: rt, AdminModule: adminModule, LogPath: logPath, Close: configuredLogger.Close}, nil
+}
+
+func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath string, grpcAddr string) {
+	logger.Info("daemon runtime configuration",
+		"data_dir", cfg.DataDir,
+		"mode", cfg.Mode,
+		"grpc_addr", grpcAddr,
+		"log_path", logPath,
+		"log_level", cfg.LogLevel,
+		"log_format", cfg.LogFormat,
+	)
 }
 
 func waitForShutdown(ctx context.Context, logger *slog.Logger) {

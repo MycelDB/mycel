@@ -102,6 +102,8 @@ Expected log events include:
 - admin store created or already exists
 - default standalone admin created, if applicable
 - daemon initialization complete
+- daemon ready
+- daemon runtime configuration, including data directory, mode, gRPC address, log path, log level, and log format
 - shutdown begins
 - shutdown complete
 
@@ -223,11 +225,13 @@ flowchart TD
   M -- Yes --> K
   M -- No --> Q[Initialization complete]
   Q --> R[Start gRPC server]
-  R --> S[Daemon waits until shutdown]
-  S --> T[Log shutdown begins]
-  T --> U[Stop gRPC server]
-  U --> V[Stop initialized modules]
-  V --> W[Log shutdown complete]
+  R --> S[Log daemon ready]
+  S --> T[Log daemon runtime configuration]
+  T --> U[Daemon waits until shutdown]
+  U --> V[Log shutdown begins]
+  V --> W[Stop gRPC server]
+  W --> X[Stop initialized modules]
+  X --> Y[Log shutdown complete]
 ```
 
 The current admin management module's `Init` method internally follows this narrower flow:
@@ -287,6 +291,7 @@ Unit tests for the initialization design should cover:
 - gRPC `LoginOperator` authenticates the bootstrap admin with the logged one-time password
 - unauthenticated gRPC `ListOperators` fails
 - authenticated gRPC `ListOperators` maps admin summaries to operator records
+- daemon ready is followed by a runtime-configuration log entry with data directory, mode, gRPC address, log path, log level, and log format
 - non-standalone mode does not create the default admin unless explicitly designed later
 - module init errors include message, string type, and abort/continue behavior
 
