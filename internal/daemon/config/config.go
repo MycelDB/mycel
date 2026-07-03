@@ -46,7 +46,7 @@ func DefaultDataDir() (string, error) {
 	if err != nil || strings.TrimSpace(home) == "" {
 		return "", fmt.Errorf("could not resolve home directory for default MYCELD_DATA_DIR")
 	}
-	return filepath.Join(home, ".mycel"), nil
+	return filepath.Join(home, "mycel_data"), nil
 }
 
 func (c Config) Validate() error {

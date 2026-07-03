@@ -48,7 +48,7 @@ Initial environment variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `MYCELD_DATA_DIR` | Root data directory for the daemon. Defaults to `~/.mycel` when unset. |
+| `MYCELD_DATA_DIR` | Root data directory for the daemon. Defaults to `~/mycel_data` when unset. |
 | `MYCELD_MODE` | Daemon mode. Current relevant values: `standalone`, `mesh`. |
 | `MYCELD_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `MYCELD_LOG_FORMAT` | Log format: `text` or `json`. |
@@ -61,7 +61,7 @@ The environment variable list is expected to change as the daemon design evolves
 On startup, the daemon resolves `MYCELD_DATA_DIR`. If it is unset, the daemon defaults to:
 
 ```text
-~/.mycel
+~/mycel_data
 ```
 
 The daemon then ensures that the resolved data directory exists.
@@ -208,7 +208,7 @@ flowchart TD
   A[myceld starts] --> B[Load initialization config]
   B --> C{MYCELD_DATA_DIR set?}
   C -- Yes --> D[Use configured data dir]
-  C -- No --> E[Use default ~/.mycel]
+  C -- No --> E[Use default ~/mycel_data]
   D --> F[Ensure data dir exists]
   E --> F
   F --> G[Ensure log directory exists]
@@ -278,7 +278,7 @@ Expected behavior on repeated startup:
 
 Unit tests for the initialization design should cover:
 
-- unset `MYCELD_DATA_DIR` defaults to `~/.mycel`
+- unset `MYCELD_DATA_DIR` defaults to `~/mycel_data`
 - missing data directory is created
 - missing log directory is created
 - missing admins directory is created

@@ -16,8 +16,8 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
-	if filepath.Base(cfg.DataDir) != ".mycel" {
-		t.Fatalf("expected default data dir to end in .mycel, got %q", cfg.DataDir)
+	if filepath.Base(cfg.DataDir) != "mycel_data" {
+		t.Fatalf("expected default data dir to end in mycel_data, got %q", cfg.DataDir)
 	}
 	if cfg.Mode != DefaultMode || cfg.LogLevel != DefaultLogLevel || cfg.LogFormat != DefaultLogFormat || cfg.GRPCAddr != DefaultGRPCAddr {
 		t.Fatalf("unexpected defaults: %+v", cfg)

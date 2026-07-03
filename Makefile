@@ -2,7 +2,7 @@
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
-MYCELD_DATA_DIR ?= $(HOME)/.mycel
+MYCELD_DATA_DIR ?= $(HOME)/mycel_data
 MYCELD_GRPC_ADDR ?= 127.0.0.1:9091
 MYCELD_PID_FILE ?= $(MYCELD_DATA_DIR)/myceld.pid
 MYCELD_STDOUT_LOG ?= $(MYCELD_DATA_DIR)/log/myceld.stdout.log
