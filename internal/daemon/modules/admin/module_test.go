@@ -85,6 +85,34 @@ func TestModuleAuthenticateOperator(t *testing.T) {
 	}
 }
 
+func TestModuleSetOperatorPassword(t *testing.T) {
+	dataDir := t.TempDir()
+	var logs bytes.Buffer
+	module := initModule(t, dataDir, "standalone", &logs)
+	oldPassword := extractLoggedPassword(t, logs.String())
+	admin, err := module.AuthenticateOperator(context.Background(), "admin", oldPassword)
+	if err != nil {
+		t.Fatalf("AuthenticateOperator() error = %v", err)
+	}
+	updated, err := module.SetOperatorPassword(context.Background(), admin.ID, "new-password")
+	if err != nil {
+		t.Fatalf("SetOperatorPassword() error = %v", err)
+	}
+	if updated.ID != admin.ID || updated.Username != "admin" {
+		t.Fatalf("unexpected updated admin: %+v", updated)
+	}
+	if _, err := module.AuthenticateOperator(context.Background(), "admin", oldPassword); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected old password to fail, got %v", err)
+	}
+	if _, err := module.AuthenticateOperator(context.Background(), "admin", "new-password"); err != nil {
+		t.Fatalf("expected new password to authenticate: %v", err)
+	}
+	storeContent := readFile(t, filepath.Join(dataDir, "admins", StoreFilename))
+	if strings.Contains(storeContent, "new-password") || strings.Contains(storeContent, oldPassword) {
+		t.Fatalf("admin store contains plaintext password material: %s", storeContent)
+	}
+}
+
 func TestModuleAuthenticateOperatorRejectsInvalidCredentials(t *testing.T) {
 	dataDir := t.TempDir()
 	var logs bytes.Buffer

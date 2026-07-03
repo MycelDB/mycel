@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -20,11 +21,12 @@ const (
 
 type OperatorService struct {
 	adminv1.UnimplementedAdminOperatorServiceServer
-	lister daemonadmin.AdminLister
+	lister          daemonadmin.AdminLister
+	passwordManager daemonadmin.OperatorPasswordManager
 }
 
-func NewOperatorService(lister daemonadmin.AdminLister) *OperatorService {
-	return &OperatorService{lister: lister}
+func NewOperatorService(lister daemonadmin.AdminLister, passwordManager daemonadmin.OperatorPasswordManager) *OperatorService {
+	return &OperatorService{lister: lister, passwordManager: passwordManager}
 }
 
 func (s *OperatorService) ListOperators(ctx context.Context, req *adminv1.ListOperatorsRequest) (*adminv1.ListOperatorsResponse, error) {
@@ -66,6 +68,34 @@ func (s *OperatorService) ListOperators(ctx context.Context, req *adminv1.ListOp
 		nextToken = strconv.Itoa(end)
 	}
 	return &adminv1.ListOperatorsResponse{Operators: operators, NextPageToken: nextToken}, nil
+}
+
+func (s *OperatorService) SetOperatorPassword(ctx context.Context, req *adminv1.SetOperatorPasswordRequest) (*adminv1.SetOperatorPasswordResponse, error) {
+	principal, ok := daemonauth.PrincipalFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "operator authentication is required")
+	}
+	if s.passwordManager == nil {
+		return nil, status.Error(codes.FailedPrecondition, "operator password manager is not configured")
+	}
+	operatorID := req.GetOperatorId()
+	if operatorID == "" {
+		operatorID = principal.OperatorID
+	}
+	if operatorID != principal.OperatorID {
+		return nil, status.Error(codes.PermissionDenied, "operators can only change their own password")
+	}
+	if req.GetPassword() == "" {
+		return nil, status.Error(codes.InvalidArgument, "password must not be empty")
+	}
+	admin, err := s.passwordManager.SetOperatorPassword(ctx, operatorID, req.GetPassword())
+	if err != nil {
+		if errors.Is(err, daemonadmin.ErrAdminNotFound) {
+			return nil, status.Error(codes.NotFound, "operator not found")
+		}
+		return nil, status.Errorf(codes.Internal, "set operator password: %v", err)
+	}
+	return &adminv1.SetOperatorPasswordResponse{Operator: mapAdminSummary(admin)}, nil
 }
 
 func mapAdminSummary(admin daemonadmin.AdminSummary) *adminv1.Operator {

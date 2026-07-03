@@ -31,13 +31,21 @@ func (f fakeAdminAuthenticator) AuthenticateOperator(context.Context, string, st
 	return f.admin, nil
 }
 
+type fakePasswordManager struct {
+	admin daemonadmin.AdminSummary
+}
+
+func (f fakePasswordManager) SetOperatorPassword(context.Context, string, string) (daemonadmin.AdminSummary, error) {
+	return f.admin, nil
+}
+
 func TestServerRegistersProtectedAdminOperatorService(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	createdAt := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	admin := daemonadmin.AdminSummary{ID: "admin-1", Username: "admin", CreatedAt: createdAt}
 	tokens := daemonauth.NewTokenManager([]byte("01234567890123456789012345678901"), time.Minute)
-	srv, errCh, err := Start(ctx, Config{Addr: "127.0.0.1:0", AdminLister: fakeAdminLister{admins: []daemonadmin.AdminSummary{admin}}, AdminAuthenticator: fakeAdminAuthenticator{admin: admin}, TokenManager: tokens})
+	srv, errCh, err := Start(ctx, Config{Addr: "127.0.0.1:0", AdminLister: fakeAdminLister{admins: []daemonadmin.AdminSummary{admin}}, AdminAuthenticator: fakeAdminAuthenticator{admin: admin}, PasswordManager: fakePasswordManager{admin: admin}, TokenManager: tokens})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}

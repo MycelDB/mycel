@@ -16,10 +16,12 @@ const StoreFilename = "admins.json"
 
 var ErrDuplicateAdmin = errors.New("admin already exists")
 var ErrStoreNotFound = errors.New("admin store not found")
+var ErrAdminNotFound = errors.New("admin not found")
 
 type Store interface {
 	List(context.Context) ([]Admin, error)
 	Create(context.Context, Admin) error
+	UpdatePasswordHash(ctx context.Context, adminID string, passwordHash string) (Admin, error)
 }
 
 type FileStore struct {
@@ -88,6 +90,26 @@ func (s *FileStore) Create(ctx context.Context, admin Admin) error {
 	}
 	doc.Admins = append(doc.Admins, admin)
 	return s.write(doc)
+}
+
+func (s *FileStore) UpdatePasswordHash(ctx context.Context, adminID string, passwordHash string) (Admin, error) {
+	if err := ctx.Err(); err != nil {
+		return Admin{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, err := s.read()
+	if err != nil {
+		return Admin{}, err
+	}
+	for i := range doc.Admins {
+		if doc.Admins[i].ID == adminID {
+			doc.Admins[i].PasswordHash = passwordHash
+			updated := doc.Admins[i]
+			return updated, s.write(doc)
+		}
+	}
+	return Admin{}, ErrAdminNotFound
 }
 
 func (s *FileStore) read() (storeDocument, error) {

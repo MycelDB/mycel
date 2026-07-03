@@ -40,7 +40,7 @@ func Run(ctx context.Context) int {
 	defer func() { _ = initialized.Close() }()
 
 	serverCtx, stopServer := context.WithCancel(ctx)
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: initialized.AdminModule, AdminAuthenticator: initialized.AdminModule, Logger: initialized.Runtime.Logger})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: initialized.AdminModule, AdminAuthenticator: initialized.AdminModule, PasswordManager: initialized.AdminModule, Logger: initialized.Runtime.Logger})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1

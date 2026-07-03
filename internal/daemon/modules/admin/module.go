@@ -92,6 +92,27 @@ func (m *Module) AuthenticateOperator(ctx context.Context, username string, pass
 	return AdminSummary{}, ErrInvalidCredentials
 }
 
+func (m *Module) SetOperatorPassword(ctx context.Context, operatorID string, password string) (AdminSummary, error) {
+	if m.store == nil {
+		return AdminSummary{}, fmt.Errorf("admin module is not initialized")
+	}
+	if strings.TrimSpace(operatorID) == "" {
+		return AdminSummary{}, ErrAdminNotFound
+	}
+	if password == "" {
+		return AdminSummary{}, fmt.Errorf("password must not be empty")
+	}
+	hash, err := HashPassword(password)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	admin, err := m.store.UpdatePasswordHash(ctx, operatorID, hash)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	return admin.toSummary(), nil
+}
+
 func (m *Module) ListAdmins(ctx context.Context) ([]AdminSummary, error) {
 	if m.store == nil {
 		return nil, fmt.Errorf("admin module is not initialized")

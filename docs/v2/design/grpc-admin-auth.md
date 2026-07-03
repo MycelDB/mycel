@@ -45,7 +45,7 @@ mycel.admin.v1.AdminAuthService.LoginOperator
 mycel.admin.v1.AdminAuthService.WhoAmI
 ```
 
-`LoginOperator` is public. `WhoAmI` and Admin API operations such as `AdminOperatorService.ListOperators` require a bearer token.
+`LoginOperator` is public. `WhoAmI` and Admin API operations such as `AdminOperatorService.ListOperators` and `AdminOperatorService.SetOperatorPassword` require a bearer token.
 
 ## Token model
 
@@ -77,11 +77,25 @@ Future hardening can add:
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin list
 ```
 
-The CLI flow is:
+An authenticated operator can change their own password:
+
+```sh
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<current-password>' admin password set --new-password '<new-password>'
+```
+
+The initial implementation intentionally restricts `SetOperatorPassword` to the authenticated operator's own ID. Attempts to change another operator's password return `PermissionDenied`. Broader operator-management semantics should wait for persisted roles/capabilities.
+
+The CLI list flow is:
 
 1. call `AdminAuthService.LoginOperator`
 2. receive access token
 3. call `AdminOperatorService.ListOperators` with `authorization: Bearer <token>` metadata
+
+The CLI password-change flow is:
+
+1. call `AdminAuthService.LoginOperator` with the current password
+2. call `AdminAuthService.WhoAmI` with the access token
+3. call `AdminOperatorService.SetOperatorPassword` for that operator ID with the new password
 
 The command rejects missing `--username/-u` or `--password/-p`.
 
@@ -109,3 +123,5 @@ Tests cover:
 - gRPC server rejecting anonymous `ListOperators`
 - CLI requiring credentials and rejecting bad passwords
 - CLI login plus authenticated admin listing over gRPC
+- self-service admin password change over gRPC
+- old password rejection and new password acceptance after a password change

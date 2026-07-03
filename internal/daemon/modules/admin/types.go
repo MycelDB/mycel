@@ -29,3 +29,7 @@ type AdminLister interface {
 type OperatorAuthenticator interface {
 	AuthenticateOperator(ctx context.Context, username string, password string) (AdminSummary, error)
 }
+
+type OperatorPasswordManager interface {
+	SetOperatorPassword(ctx context.Context, operatorID string, password string) (AdminSummary, error)
+}

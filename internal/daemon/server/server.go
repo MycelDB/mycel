@@ -18,6 +18,7 @@ type Config struct {
 	Addr               string
 	AdminLister        daemonadmin.AdminLister
 	AdminAuthenticator daemonadmin.OperatorAuthenticator
+	PasswordManager    daemonadmin.OperatorPasswordManager
 	TokenManager       *daemonauth.TokenManager
 	Logger             *slog.Logger
 }
@@ -38,6 +39,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if cfg.AdminAuthenticator == nil {
 		return nil, fmt.Errorf("admin authenticator is required")
 	}
+	if cfg.PasswordManager == nil {
+		return nil, fmt.Errorf("operator password manager is required")
+	}
 	if cfg.TokenManager == nil {
 		var err error
 		cfg.TokenManager, err = daemonauth.NewRandomTokenManager(daemonauth.DefaultAccessTokenTTL)
@@ -53,7 +57,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	serverOptions := append([]grpc.ServerOption{grpc.ChainUnaryInterceptor(cfg.TokenManager.UnaryInterceptor(publicMethods))}, opts...)
 	grpcServer := grpc.NewServer(serverOptions...)
 	adminv1.RegisterAdminAuthServiceServer(grpcServer, adminapi.NewAuthService(cfg.AdminAuthenticator, cfg.TokenManager))
-	adminv1.RegisterAdminOperatorServiceServer(grpcServer, adminapi.NewOperatorService(cfg.AdminLister))
+	adminv1.RegisterAdminOperatorServiceServer(grpcServer, adminapi.NewOperatorService(cfg.AdminLister, cfg.PasswordManager))
 	return &Server{grpcServer: grpcServer, listener: listener, logger: cfg.Logger}, nil
 }
 

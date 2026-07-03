@@ -39,6 +39,41 @@ func TestAdminListCommandJSONUsesGRPC(t *testing.T) {
 	}
 }
 
+func TestAdminPasswordSetCommandChangesPassword(t *testing.T) {
+	_, addr, password, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+
+	out, err := runCLI(t, "--daemon-addr", addr, "--username", "admin", "--password", password, "admin", "password", "set", "--new-password", "new-cli-password")
+	if err != nil {
+		t.Fatalf("admin password set failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "admin password changed: admin") {
+		t.Fatalf("unexpected password set output: %s", out)
+	}
+	if out, err := runCLI(t, "--daemon-addr", addr, "--username", "admin", "--password", password, "--output", "json", "admin", "list"); err == nil {
+		t.Fatalf("expected old password to fail after password change, got output %s", out)
+	}
+	out, err = runCLI(t, "--daemon-addr", addr, "--username", "admin", "--password", "new-cli-password", "--output", "json", "admin", "list")
+	if err != nil {
+		t.Fatalf("expected new password to work: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "admin") {
+		t.Fatalf("expected admin in output, got %s", out)
+	}
+}
+
+func TestAdminPasswordSetCommandRequiresNewPassword(t *testing.T) {
+	_, addr, password, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	out, err := runCLI(t, "--daemon-addr", addr, "--username", "admin", "--password", password, "admin", "password", "set")
+	if err == nil {
+		t.Fatalf("expected password set to require new password, got output %s", out)
+	}
+	if !strings.Contains(err.Error(), "--new-password is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestAdminListCommandRequiresCredentials(t *testing.T) {
 	_, addr, _, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
@@ -90,7 +125,7 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	}
 	password := bootstrapPasswordFromLog(t, initialized.LogPath)
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: initialized.AdminModule, AdminAuthenticator: initialized.AdminModule, Logger: initialized.Runtime.Logger})
+	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: initialized.AdminModule, AdminAuthenticator: initialized.AdminModule, PasswordManager: initialized.AdminModule, Logger: initialized.Runtime.Logger})
 	if err != nil {
 		_ = initialized.Close()
 		t.Fatalf("start grpc server failed: %v", err)
