@@ -14,11 +14,14 @@ func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "mycel-data")
 	cfg := config.Config{DataDir: dataDir, Mode: "mesh", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"}
 
-	initialized, err := Initialize(context.Background(), cfg)
+	rt, err := Initialize(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	if err := initialized.Close(); err != nil {
+	if _, ok := rt.Modules["admin"]; !ok {
+		t.Fatalf("expected admin module to be registered, got modules: %#v", rt.Modules)
+	}
+	if err := rt.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 
@@ -26,7 +29,7 @@ func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 	assertDir(t, filepath.Join(dataDir, "log"))
 	assertFile(t, filepath.Join(dataDir, "log", LogFilename))
 
-	logContent := readFile(t, initialized.LogPath)
+	logContent := readFile(t, rt.LogPath)
 	for _, want := range []string{"daemon startup begins", "data directory ready", "log directory ready", "initializing module", "daemon initialization complete"} {
 		if !strings.Contains(logContent, want) {
 			t.Fatalf("expected log %q, got:\n%s", want, logContent)
@@ -37,17 +40,17 @@ func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 func TestRunLogsStartupAndShutdown(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := config.Config{DataDir: dataDir, Mode: "mesh", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"}
-	initialized, err := Initialize(context.Background(), cfg)
+	rt, err := Initialize(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	initialized.Runtime.Logger.Info("daemon ready")
-	logRuntimeConfiguration(initialized.Runtime.Logger, cfg, initialized.LogPath, "127.0.0.1:12345")
+	rt.Logger.Info("daemon ready")
+	logRuntimeConfiguration(rt.Logger, cfg, rt.LogPath, "127.0.0.1:12345")
 	cancel()
-	waitForShutdown(ctx, initialized.Runtime.Logger)
-	initialized.Runtime.Logger.Info("daemon shutdown complete")
-	if err := initialized.Close(); err != nil {
+	waitForShutdown(ctx, rt.Logger)
+	rt.Logger.Info("daemon shutdown complete")
+	if err := rt.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 

@@ -111,6 +111,36 @@ When the default standalone admin is created, the generated username and passwor
 
 The plaintext generated password is logged only for this bootstrap event and should not be stored as plaintext.
 
+## Runtime composition
+
+After resolving the data directory and configuring logging, initialization creates the daemon `Runtime` as the live daemon container.
+
+The runtime owns:
+
+- daemon config
+- shared logger
+- log path and close/cleanup hook
+- initialized module registry
+
+Modules are registered by name in a map:
+
+```go
+type Runtime struct {
+    Config  config.Config
+    Logger  *slog.Logger
+    Modules map[string]Module
+    LogPath string
+}
+```
+
+The admin module is registered under:
+
+```text
+admin
+```
+
+The module map avoids hardcoded concrete module fields on the runtime while still making initialized modules discoverable by the daemon app, gRPC adapters, tests, and future module integrations.
+
 ## Module initialization contract
 
 After resolving the data directory and configuring logging, the daemon invokes each registered module's `Init` method.
@@ -214,24 +244,25 @@ flowchart TD
   F --> G[Ensure log directory exists]
   G --> H[Configure logger]
   H --> I[Log daemon startup]
-  I --> J[Build registered module list]
-  J --> K[Invoke module.Init]
-  K --> L{Init result ok?}
-  L -- Yes --> M{More modules?}
-  L -- No --> N{abort?}
-  N -- Yes --> O[Log issue and abort startup]
-  N -- No --> P[Log issue and continue]
-  P --> M
-  M -- Yes --> K
-  M -- No --> Q[Initialization complete]
-  Q --> R[Start gRPC server]
-  R --> S[Log daemon ready]
-  S --> T[Log daemon runtime configuration]
-  T --> U[Daemon waits until shutdown]
-  U --> V[Log shutdown begins]
-  V --> W[Stop gRPC server]
-  W --> X[Stop initialized modules]
-  X --> Y[Log shutdown complete]
+  I --> J[Create runtime with module registry]
+  J --> K[Build registered module list]
+  K --> L[Register module by name and invoke module.Init]
+  L --> M{Init result ok?}
+  M -- Yes --> N{More modules?}
+  M -- No --> O{abort?}
+  O -- Yes --> P[Log issue and abort startup]
+  O -- No --> Q[Log issue and continue]
+  Q --> N
+  N -- Yes --> L
+  N -- No --> R[Initialization complete]
+  R --> S[Start gRPC server]
+  S --> T[Log daemon ready]
+  T --> U[Log daemon runtime configuration]
+  U --> V[Daemon waits until shutdown]
+  V --> W[Log shutdown begins]
+  W --> X[Stop gRPC server]
+  X --> Y[Stop initialized modules]
+  Y --> Z[Log shutdown complete]
 ```
 
 The current admin management module's `Init` method internally follows this narrower flow:
@@ -294,6 +325,7 @@ Unit tests for the initialization design should cover:
 - authenticated gRPC `ListOperators` maps admin summaries to operator records
 - daemon ready is followed by a runtime-configuration log entry with data directory, mode, gRPC address, log path, log level, and log format
 - non-standalone mode does not create the default admin unless explicitly designed later
+- runtime registers initialized modules by name
 - module init errors include message, string type, and abort/continue behavior
 
 ## Current limitations

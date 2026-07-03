@@ -13,7 +13,7 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 )
 
-const ModuleName = "admin_management"
+const ModuleName = "admin"
 
 var ErrInvalidCredentials = errors.New("invalid operator credentials")
 

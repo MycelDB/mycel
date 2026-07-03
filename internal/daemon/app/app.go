@@ -19,47 +19,45 @@ import (
 
 const LogFilename = "myceld.log"
 
-type Initialized struct {
-	Runtime     *daemonruntime.Runtime
-	AdminModule *admin.Module
-	LogPath     string
-	Close       func() error
-}
-
 func Run(ctx context.Context) int {
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld config error: %v\n", err)
 		return 2
 	}
-	initialized, err := Initialize(ctx, cfg)
+	rt, err := Initialize(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: %v\n", err)
 		return 1
 	}
-	defer func() { _ = initialized.Close() }()
+	defer func() { _ = rt.Close() }()
 
+	adminModule, ok := daemonruntime.ModuleAs[*admin.Module](rt, admin.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: admin module is not registered\n")
+		return 1
+	}
 	serverCtx, stopServer := context.WithCancel(ctx)
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: initialized.AdminModule, AdminAuthenticator: initialized.AdminModule, PasswordManager: initialized.AdminModule, Logger: initialized.Runtime.Logger})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminModule, AdminAuthenticator: adminModule, PasswordManager: adminModule, Logger: rt.Logger})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
 	}
 	defer stopServer()
 
-	initialized.Runtime.Logger.Info("daemon ready", "grpc_addr", grpcServer.Addr())
-	logRuntimeConfiguration(initialized.Runtime.Logger, cfg, initialized.LogPath, grpcServer.Addr())
-	waitForShutdown(ctx, initialized.Runtime.Logger)
+	rt.Logger.Info("daemon ready", "grpc_addr", grpcServer.Addr())
+	logRuntimeConfiguration(rt.Logger, cfg, rt.LogPath, grpcServer.Addr())
+	waitForShutdown(ctx, rt.Logger)
 	stopServer()
 	if err := <-grpcErrCh; err != nil {
-		initialized.Runtime.Logger.Error("grpc server stopped with error", "error", err)
+		rt.Logger.Error("grpc server stopped with error", "error", err)
 		return 1
 	}
-	initialized.Runtime.Logger.Info("daemon shutdown complete")
+	rt.Logger.Info("daemon shutdown complete")
 	return 0
 }
 
-func Initialize(ctx context.Context, cfg config.Config) (*Initialized, error) {
+func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -82,14 +80,14 @@ func Initialize(ctx context.Context, cfg config.Config) (*Initialized, error) {
 	logger.Info("data directory ready", "path", cfg.DataDir, "created", dataDirCreated)
 	logger.Info("log directory ready", "path", logDir, "created", logDirCreated)
 
-	rt := &daemonruntime.Runtime{Config: cfg, Logger: logger}
+	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
 	adminModule := admin.NewModule()
 	if err := rt.InitModules(ctx, []daemonruntime.Module{adminModule}); err != nil {
-		_ = configuredLogger.Close()
+		_ = rt.Close()
 		return nil, err
 	}
 	logger.Info("daemon initialization complete")
-	return &Initialized{Runtime: rt, AdminModule: adminModule, LogPath: logPath, Close: configuredLogger.Close}, nil
+	return rt, nil
 }
 
 func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath string, grpcAddr string) {

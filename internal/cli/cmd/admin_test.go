@@ -13,6 +13,8 @@ import (
 	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
 	daemonapp "github.com/myceldb/mycel/internal/daemon/app"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
+	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
+	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
 )
 
@@ -119,15 +121,19 @@ func TestAdminListCommandFailsWhenDaemonUnavailable(t *testing.T) {
 func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "myceld")
-	initialized, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"})
+	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatalf("initialize daemon admin store failed: %v", err)
 	}
-	password := bootstrapPasswordFromLog(t, initialized.LogPath)
+	adminModule, ok := daemonruntime.ModuleAs[*daemonadmin.Module](rt, daemonadmin.ModuleName)
+	if !ok {
+		t.Fatal("admin module was not registered")
+	}
+	password := bootstrapPasswordFromLog(t, rt.LogPath)
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: initialized.AdminModule, AdminAuthenticator: initialized.AdminModule, PasswordManager: initialized.AdminModule, Logger: initialized.Runtime.Logger})
+	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: adminModule, AdminAuthenticator: adminModule, PasswordManager: adminModule, Logger: rt.Logger})
 	if err != nil {
-		_ = initialized.Close()
+		_ = rt.Close()
 		t.Fatalf("start grpc server failed: %v", err)
 	}
 	cleanup := func() {
@@ -140,7 +146,7 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for grpc server shutdown")
 		}
-		if err := initialized.Close(); err != nil {
+		if err := rt.Close(); err != nil {
 			t.Fatalf("close daemon init failed: %v", err)
 		}
 	}
