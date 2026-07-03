@@ -37,19 +37,23 @@ run-daemon:
 
 start: build-daemon
 	@mkdir -p "$(MYCELD_DATA_DIR)/log"
-	@if [ -f "$(MYCELD_PID_FILE)" ] && kill -0 "$$(cat "$(MYCELD_PID_FILE)")" 2>/dev/null; then \
-		echo "myceld is already running with PID $$(cat "$(MYCELD_PID_FILE)")"; \
-		exit 1; \
+	@if [ -f "$(MYCELD_PID_FILE)" ]; then \
+		pid=$$(cat "$(MYCELD_PID_FILE)"); \
+		if kill -0 "$$pid" 2>/dev/null; then \
+			echo "myceld is already running with PID $$pid"; \
+			exit 1; \
+		fi; \
 	fi
 	@rm -f "$(MYCELD_PID_FILE)"
 	@MYCELD_DATA_DIR="$(MYCELD_DATA_DIR)" MYCELD_GRPC_ADDR="$(MYCELD_GRPC_ADDR)" nohup bin/$(DAEMON_BINARY) > "$(MYCELD_STDOUT_LOG)" 2>&1 & echo $$! > "$(MYCELD_PID_FILE)"
 	@sleep 0.2
-	@if ! kill -0 "$$(cat "$(MYCELD_PID_FILE)")" 2>/dev/null; then \
+	@pid=$$(cat "$(MYCELD_PID_FILE)"); \
+	if ! kill -0 "$$pid" 2>/dev/null; then \
 		echo "myceld failed to start; see $(MYCELD_STDOUT_LOG)"; \
 		rm -f "$(MYCELD_PID_FILE)"; \
 		exit 1; \
-	fi
-	@echo "myceld started with PID $$(cat "$(MYCELD_PID_FILE)")"
+	fi; \
+	echo "myceld started with PID $$pid"
 	@echo "data dir: $(MYCELD_DATA_DIR)"
 	@echo "gRPC addr: $(MYCELD_GRPC_ADDR)"
 	@echo "stdout log: $(MYCELD_STDOUT_LOG)"
@@ -60,7 +64,7 @@ stop:
 		echo "myceld is not running (missing PID file $(MYCELD_PID_FILE))"; \
 		exit 0; \
 	fi
-	@pid="$$(cat "$(MYCELD_PID_FILE)")"; \
+	@pid=$$(cat "$(MYCELD_PID_FILE)"); \
 	if ! kill -0 "$$pid" 2>/dev/null; then \
 		echo "removing stale PID file for $$pid"; \
 		rm -f "$(MYCELD_PID_FILE)"; \
