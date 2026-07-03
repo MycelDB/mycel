@@ -1,0 +1,193 @@
+syntax = "proto3";
+
+package mycel.admin.v1;
+
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/myceldb/mycel/gen/go/mycel/admin/v1;adminv1";
+
+// AdminUserService manages standard users. System admins/operators are a
+// separate principal type and are not created through this service.
+service AdminUserService {
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc FindUser(FindUserRequest) returns (FindUserResponse);
+
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse);
+
+  rpc DisableUser(DisableUserRequest) returns (DisableUserResponse);
+  rpc EnableUser(EnableUserRequest) returns (EnableUserResponse);
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+
+  rpc SetUserPassword(SetUserPasswordRequest) returns (SetUserPasswordResponse);
+
+  rpc ListUserSessions(ListUserSessionsRequest) returns (ListUserSessionsResponse);
+  rpc RevokeUserSession(RevokeUserSessionRequest) returns (RevokeUserSessionResponse);
+  rpc RevokeUserSessions(RevokeUserSessionsRequest) returns (RevokeUserSessionsResponse);
+}
+
+message ListUsersRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  bool include_disabled = 3;
+  bool include_deleted = 4;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+  string next_page_token = 2;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetUserResponse {
+  User user = 1;
+}
+
+message FindUserRequest {
+  oneof lookup {
+    string username = 1;
+    string email = 2;
+  }
+}
+
+message FindUserResponse {
+  User user = 1;
+}
+
+message CreateUserRequest {
+  string username = 1;
+  string display_name = 2;
+  string email = 3;
+
+  // Optional initial password. Password plaintext is never returned and must be
+  // hashed by the daemon before storage.
+  optional string password = 4;
+
+  // When true, the user is created disabled and cannot log in until enabled.
+  bool disabled = 5;
+}
+
+message CreateUserResponse {
+  User user = 1;
+}
+
+message UpdateUserRequest {
+  User user = 1;
+
+  // Mutable paths are limited to "display_name" and "email" in v1. Username is
+  // immutable in v1.
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+message UpdateUserResponse {
+  User user = 1;
+}
+
+message DisableUserRequest {
+  string user_id = 1;
+  string reason = 2;
+  bool revoke_sessions = 3;
+}
+
+message DisableUserResponse {
+  User user = 1;
+}
+
+message EnableUserRequest {
+  string user_id = 1;
+}
+
+message EnableUserResponse {
+  User user = 1;
+}
+
+message DeleteUserRequest {
+  string user_id = 1;
+  bool revoke_sessions = 2;
+}
+
+message DeleteUserResponse {
+  User user = 1;
+}
+
+message SetUserPasswordRequest {
+  string user_id = 1;
+  string password = 2;
+  bool revoke_sessions = 3;
+}
+
+message SetUserPasswordResponse {
+  User user = 1;
+}
+
+message ListUserSessionsRequest {
+  string user_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+  bool include_inactive = 4;
+}
+
+message ListUserSessionsResponse {
+  repeated AdminAuthSessionSummary sessions = 1;
+  string next_page_token = 2;
+}
+
+message RevokeUserSessionRequest {
+  string user_id = 1;
+  string auth_session_id = 2;
+}
+
+message RevokeUserSessionResponse {}
+
+message RevokeUserSessionsRequest {
+  string user_id = 1;
+}
+
+message RevokeUserSessionsResponse {
+  int32 revoked_count = 1;
+}
+
+message User {
+  string user_id = 1;
+  string username = 2;
+  string display_name = 3;
+  string email = 4;
+  UserState state = 5;
+  google.protobuf.Timestamp create_time = 6;
+  google.protobuf.Timestamp update_time = 7;
+}
+
+enum UserState {
+  USER_STATE_UNSPECIFIED = 0;
+  USER_STATE_ACTIVE = 1;
+  USER_STATE_DISABLED = 2;
+  USER_STATE_DELETED = 3;
+}
+
+message AdminAuthSessionSummary {
+  string auth_session_id = 1;
+  google.protobuf.Timestamp create_time = 2;
+  google.protobuf.Timestamp last_seen_time = 3;
+  google.protobuf.Timestamp expire_time = 4;
+  AdminAuthSessionState state = 5;
+  AdminClientInfo client = 6;
+}
+
+enum AdminAuthSessionState {
+  ADMIN_AUTH_SESSION_STATE_UNSPECIFIED = 0;
+  ADMIN_AUTH_SESSION_STATE_ACTIVE = 1;
+  ADMIN_AUTH_SESSION_STATE_EXPIRED = 2;
+  ADMIN_AUTH_SESSION_STATE_REVOKED = 3;
+}
+
+message AdminClientInfo {
+  string name = 1;
+  string version = 2;
+  string platform = 3;
+  string device_label = 4;
+}
