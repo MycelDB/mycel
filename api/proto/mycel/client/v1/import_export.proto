@@ -1,0 +1,178 @@
+syntax = "proto3";
+
+package mycel.client.v1;
+
+import "google/protobuf/timestamp.proto";
+import "mycel/client/v1/graph.proto";
+import "mycel/client/v1/template.proto";
+
+option go_package = "github.com/myceldb/mycel/gen/go/mycel/client/v1;clientv1";
+
+// ImportExportService provides client/application data portability for a domain.
+// It is distinct from admin backup/restore. Format-specific importers such as
+// Logseq importers convert source data into Mycel-native import streams before
+// calling this service.
+service ImportExportService {
+  // ExportDomain streams graph/domain data from a transaction snapshot.
+  rpc ExportDomain(ExportDomainRequest) returns (stream ExportDomainResponse);
+
+  // ImportDomain streams Mycel-native records into a read-write transaction.
+  rpc ImportDomain(stream ImportDomainRequest) returns (ImportDomainResponse);
+}
+
+message ExportDomainRequest {
+  // Readable transaction id. The transaction determines space/domain and
+  // snapshot consistency.
+  string transaction_id = 1;
+  DomainExportFormat format = 2;
+  DomainExportOptions options = 3;
+}
+
+message ExportDomainResponse {
+  oneof part {
+    DomainExportManifest manifest = 1;
+
+    // Structured records are used by DOMAIN_EXPORT_FORMAT_MYCEL_STREAM.
+    ImportExportRecord record = 2;
+
+    // Raw chunks are used by JSON/NDJSON formats or other encoded payloads.
+    bytes chunk = 3;
+  }
+}
+
+message ImportDomainRequest {
+  oneof part {
+    ImportDomainMetadata metadata = 1;
+
+    // Structured records are used by DOMAIN_IMPORT_FORMAT_MYCEL_STREAM.
+    ImportExportRecord record = 2;
+
+    // Raw chunks are used by JSON/NDJSON formats or other encoded payloads.
+    bytes chunk = 3;
+  }
+}
+
+message ImportDomainResponse {
+  ImportSummary summary = 1;
+}
+
+message ImportDomainMetadata {
+  // Read-write transaction id. The transaction determines target space/domain.
+  string transaction_id = 1;
+  DomainImportFormat format = 2;
+  DomainImportMode mode = 3;
+  DomainImportOptions options = 4;
+
+  // Optional source labels for diagnostics/audit, for example "logseq".
+  string source_system = 5;
+  string source_label = 6;
+}
+
+message DomainExportOptions {
+  bool include_templates = 1;
+  bool include_blobs = 2;
+
+  // Semantic index configuration/content is not exported by the Client API in
+  // v1. This field is reserved as an explicit, currently unsupported request
+  // flag so clients can receive a clear error if they ask for it.
+  bool include_semantic_indexes = 3;
+}
+
+message DomainImportOptions {
+  bool include_templates = 1;
+  bool include_blobs = 2;
+
+  // Preserve client-supplied ids where valid. If false, the daemon may allocate
+  // new ids and return counts only.
+  bool preserve_ids = 3;
+
+  // Validate the stream and report what would be imported without mutating the
+  // transaction.
+  bool dry_run = 4;
+}
+
+message DomainExportManifest {
+  DomainExportFormat format = 1;
+  string space_id = 2;
+  string domain_id = 3;
+  int64 base_revision = 4;
+  google.protobuf.Timestamp export_time = 5;
+  DomainExportOptions options = 6;
+}
+
+message ImportSummary {
+  int64 templates_imported = 1;
+  int64 nodes_imported = 2;
+  int64 edges_imported = 3;
+  int64 blobs_imported = 4;
+  int64 nodes_updated = 5;
+  int64 edges_updated = 6;
+  bool dry_run = 7;
+  repeated string warnings = 8;
+}
+
+// ImportExportRecord is the structured Mycel-native import/export record. It is
+// generic enough for application importers such as the Logseq importer to map
+// external data to Mycel graph, template, and blob records without making the
+// daemon understand source-specific formats.
+message ImportExportRecord {
+  // Optional stable external identity used by importers for upsert/re-import
+  // workflows. For example, the Logseq importer can map a page/block id to a
+  // stable Mycel node.
+  ImportIdentity identity = 1;
+
+  oneof record {
+    TemplateDefinition template = 2;
+    Node node = 3;
+    Edge edge = 4;
+    BlobImportMetadata blob_metadata = 5;
+    BlobImportChunk blob_chunk = 6;
+  }
+}
+
+message ImportIdentity {
+  string source_system = 1;
+  string source_id = 2;
+}
+
+message BlobImportMetadata {
+  // Import-local id used to associate subsequent chunks and blob-backed nodes.
+  string import_blob_id = 1;
+  string declared_mime_type = 2;
+  string original_filename = 3;
+  string digest = 4;
+  int64 size_bytes = 5;
+}
+
+message BlobImportChunk {
+  string import_blob_id = 1;
+  bytes chunk = 2;
+}
+
+enum DomainExportFormat {
+  DOMAIN_EXPORT_FORMAT_UNSPECIFIED = 0;
+  DOMAIN_EXPORT_FORMAT_MYCEL_STREAM = 1;
+  DOMAIN_EXPORT_FORMAT_MYCEL_JSON = 2;
+  DOMAIN_EXPORT_FORMAT_MYCEL_NDJSON = 3;
+}
+
+enum DomainImportFormat {
+  DOMAIN_IMPORT_FORMAT_UNSPECIFIED = 0;
+  DOMAIN_IMPORT_FORMAT_MYCEL_STREAM = 1;
+  DOMAIN_IMPORT_FORMAT_MYCEL_JSON = 2;
+  DOMAIN_IMPORT_FORMAT_MYCEL_NDJSON = 3;
+}
+
+enum DomainImportMode {
+  DOMAIN_IMPORT_MODE_UNSPECIFIED = 0;
+
+  // Create new records and fail on duplicate ids/import identities.
+  DOMAIN_IMPORT_MODE_APPEND = 1;
+
+  // Create or update records by supplied ids/import identities.
+  DOMAIN_IMPORT_MODE_UPSERT = 2;
+
+  // Clear the domain then import the stream. This is destructive and requires
+  // delete capabilities in addition to write capabilities.
+  DOMAIN_IMPORT_MODE_REPLACE_DOMAIN = 3;
+}
