@@ -13,11 +13,11 @@ api/proto/mycel/client/v1/import_export.proto
 This document depends on:
 
 ```text
-docs/design/access-control.md
-docs/design/api/session-transaction.md
-docs/design/api/graph.md
-docs/design/api/blob.md
-docs/design/api/template.md
+docs/v2/design/access-control.md
+docs/v2/design/api/session-transaction.md
+docs/v2/design/api/graph.md
+docs/v2/design/api/blob.md
+docs/v2/design/api/template.md
 ```
 
 ## Purpose
@@ -260,7 +260,7 @@ template.read
 Template policy and lifecycle rules are defined in:
 
 ```text
-docs/design/api/template.md
+docs/v2/design/api/template.md
 ```
 
 ## Semantic indexes

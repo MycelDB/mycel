@@ -13,8 +13,8 @@ api/proto/mycel/admin/v1/operator.proto
 This document depends on:
 
 ```text
-docs/design/access-control.md
-docs/design/admin/user.md
+docs/v2/design/access-control.md
+docs/v2/design/admin/user.md
 ```
 
 ## Purpose

@@ -13,7 +13,7 @@ api/proto/mycel/client/v1/domain.proto
 This document depends on the cross-cutting access-control model in:
 
 ```text
-docs/design/access-control.md
+docs/v2/design/access-control.md
 ```
 
 ## Purpose

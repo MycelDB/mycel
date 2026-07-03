@@ -13,9 +13,9 @@ api/proto/mycel/client/v1/query.proto
 This document depends on:
 
 ```text
-docs/design/access-control.md
-docs/design/api/session-transaction.md
-docs/design/api/graph.md
+docs/v2/design/access-control.md
+docs/v2/design/api/session-transaction.md
+docs/v2/design/api/graph.md
 ```
 
 ## Purpose

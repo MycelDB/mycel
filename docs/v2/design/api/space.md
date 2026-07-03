@@ -13,7 +13,7 @@ api/proto/mycel/client/v1/space.proto
 This document depends on the cross-cutting access-control model in:
 
 ```text
-docs/design/access-control.md
+docs/v2/design/access-control.md
 ```
 
 ## Purpose
@@ -223,7 +223,7 @@ Examples of capabilities that may appear:
 - `query.run`
 - `semantic.search`
 
-The source of truth for capabilities is `docs/design/access-control.md`.
+The source of truth for capabilities is `docs/v2/design/access-control.md`.
 
 ## Roles
 

@@ -13,8 +13,8 @@ api/proto/mycel/client/v1/blob.proto
 This document depends on:
 
 ```text
-docs/design/access-control.md
-docs/design/api/graph.md
+docs/v2/design/access-control.md
+docs/v2/design/api/graph.md
 ```
 
 ## Purpose
@@ -187,7 +187,7 @@ blob.write
 See:
 
 ```text
-docs/design/api/graph.md
+docs/v2/design/api/graph.md
 ```
 
 ## Browser/Connect-Web considerations

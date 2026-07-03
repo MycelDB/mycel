@@ -13,9 +13,9 @@ api/proto/mycel/client/v1/template.proto
 This document depends on:
 
 ```text
-docs/design/access-control.md
-docs/design/api/space.md
-docs/design/api/graph.md
+docs/v2/design/access-control.md
+docs/v2/design/api/space.md
+docs/v2/design/api/graph.md
 ```
 
 ## Purpose
