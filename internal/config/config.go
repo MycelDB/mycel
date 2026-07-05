@@ -4,18 +4,15 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/confmap"
-	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
-	mycelengine "github.com/myceldb/mycel/engine"
 	"github.com/spf13/pflag"
 )
 
-const EnvConfig = "MYCELDB_CONFIG"
+const EnvConfig = "MYCEL_CONFIG"
 
 type Options struct {
 	ConfigFile string
@@ -23,21 +20,17 @@ type Options struct {
 }
 
 type Config struct {
-	ConfigFile                string
-	DataDir                   string
-	Output                    string
-	CreateIfMissing           bool
-	AdminUsername             string
-	AdminPassword             string
-	UserStoreEncryptionKeyB64 string
-	AccessTokenTTL            time.Duration
-	RefreshIdleTTL            time.Duration
-	RefreshAbsoluteTTL        time.Duration
-	RefreshAuditRetentionTTL  time.Duration
-	RefreshTokenBytes         int
-	BlobStaleTmpAge           time.Duration
-	BlobLimits                mycelengine.BlobLimits
-	AdvancedSemanticEnabled   bool
+	ConfigFile                  string
+	Output                      string
+	Username                    string
+	Password                    string
+	DaemonAddr                  string
+	DaemonTLS                   bool
+	DaemonTLSCAFile             string
+	DaemonTLSServerName         string
+	DaemonTLSInsecureSkipVerify bool
+	DaemonTLSClientCertFile     string
+	DaemonTLSClientKeyFile      string
 }
 
 func Load(opts Options) (Config, error) {
@@ -56,36 +49,21 @@ func Load(opts Options) (Config, error) {
 			return Config{}, err
 		}
 	}
-	if err := k.Load(env.Provider("MYCELDB_", ".", envKey), nil); err != nil {
-		return Config{}, err
-	}
-	applyEnvAliases(k)
+	applyEnvOverrides(k)
 	applyFlagOverrides(k, opts.Flags)
 
 	cfg := Config{
-		ConfigFile:                configFile,
-		DataDir:                   strings.TrimSpace(k.String("data_dir")),
-		Output:                    strings.TrimSpace(k.String("output")),
-		CreateIfMissing:           k.Bool("create_if_missing"),
-		AdminUsername:             strings.TrimSpace(k.String("admin_username")),
-		AdminPassword:             k.String("admin_password"),
-		UserStoreEncryptionKeyB64: strings.TrimSpace(k.String("security.user_store_encryption_key_b64")),
-		AccessTokenTTL:            k.Duration("auth.access_token_ttl"),
-		RefreshIdleTTL:            k.Duration("auth.refresh_idle_ttl"),
-		RefreshAbsoluteTTL:        k.Duration("auth.refresh_absolute_ttl"),
-		RefreshAuditRetentionTTL:  k.Duration("auth.refresh_audit_retention_ttl"),
-		RefreshTokenBytes:         k.Int("auth.refresh_token_bytes"),
-		BlobStaleTmpAge:           k.Duration("storage.blobs.stale_tmp_age"),
-		BlobLimits: mycelengine.BlobLimits{
-			MaxSizeBytes:   k.Int64("storage.blobs.max_size_bytes"),
-			MaxImageBytes:  k.Int64("storage.blobs.max_image_bytes"),
-			MaxPDFBytes:    k.Int64("storage.blobs.max_pdf_bytes"),
-			MaxAudioBytes:  k.Int64("storage.blobs.max_audio_bytes"),
-			MaxVideoBytes:  k.Int64("storage.blobs.max_video_bytes"),
-			MaxOtherBytes:  k.Int64("storage.blobs.max_other_bytes"),
-			MimeTypeLimits: normalizeMimeLimits(int64Map(k.Get("storage.blobs.mime_type_limits"))),
-		},
-		AdvancedSemanticEnabled: k.Bool("semantic.advanced_enabled"),
+		ConfigFile:                  configFile,
+		Output:                      strings.TrimSpace(k.String("output")),
+		Username:                    strings.TrimSpace(k.String("username")),
+		Password:                    k.String("password"),
+		DaemonAddr:                  strings.TrimSpace(k.String("daemon.addr")),
+		DaemonTLS:                   k.Bool("daemon.tls"),
+		DaemonTLSCAFile:             strings.TrimSpace(k.String("daemon.tls_ca")),
+		DaemonTLSServerName:         strings.TrimSpace(k.String("daemon.tls_server_name")),
+		DaemonTLSInsecureSkipVerify: k.Bool("daemon.tls_insecure_skip_verify"),
+		DaemonTLSClientCertFile:     strings.TrimSpace(k.String("daemon.tls_client_cert")),
+		DaemonTLSClientKeyFile:      strings.TrimSpace(k.String("daemon.tls_client_key")),
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -93,102 +71,43 @@ func Load(opts Options) (Config, error) {
 	return cfg, nil
 }
 
-func (c Config) EngineConfig() mycelengine.EngineConfig {
-	return mycelengine.EngineConfig{
-		DataDir:                   c.DataDir,
-		Mode:                      mycelengine.EngineModeStandalone,
-		CreateIfMissing:           c.CreateIfMissing,
-		AdminUsername:             c.AdminUsername,
-		AdminPassword:             c.AdminPassword,
-		UserStoreEncryptionKeyB64: c.UserStoreEncryptionKeyB64,
-		AccessTokenTTL:            c.AccessTokenTTL,
-		RefreshIdleTTL:            c.RefreshIdleTTL,
-		RefreshAbsoluteTTL:        c.RefreshAbsoluteTTL,
-		RefreshAuditRetentionTTL:  c.RefreshAuditRetentionTTL,
-		RefreshTokenBytes:         c.RefreshTokenBytes,
-		BlobLimits:                c.BlobLimits,
-		BlobStaleTmpAge:           c.BlobStaleTmpAge,
-		AdvancedSemanticEnabled:   c.AdvancedSemanticEnabled,
-	}
-}
-
 func (c Config) Validate() error {
 	if c.Output != "" && c.Output != "text" && c.Output != "json" {
 		return fmt.Errorf("invalid output %q: expected text or json", c.Output)
 	}
-	if c.AccessTokenTTL <= 0 {
-		return fmt.Errorf("auth.access_token_ttl must be positive")
+	if (c.DaemonTLSClientCertFile == "") != (c.DaemonTLSClientKeyFile == "") {
+		return fmt.Errorf("daemon TLS client cert and key must be set together")
 	}
-	if c.RefreshIdleTTL <= 0 {
-		return fmt.Errorf("auth.refresh_idle_ttl must be positive")
-	}
-	if c.RefreshAbsoluteTTL <= 0 {
-		return fmt.Errorf("auth.refresh_absolute_ttl must be positive")
-	}
-	if c.RefreshAbsoluteTTL < c.RefreshIdleTTL {
-		return fmt.Errorf("auth.refresh_absolute_ttl must be greater than or equal to auth.refresh_idle_ttl")
-	}
-	if c.RefreshAuditRetentionTTL <= 0 {
-		return fmt.Errorf("auth.refresh_audit_retention_ttl must be positive")
-	}
-	if c.RefreshTokenBytes < 32 {
-		return fmt.Errorf("auth.refresh_token_bytes must be at least 32")
-	}
-	if c.BlobStaleTmpAge <= 0 {
-		return fmt.Errorf("storage.blobs.stale_tmp_age must be positive")
-	}
-	return validateBlobLimits(c.BlobLimits)
+	return nil
 }
 
 func defaults() map[string]any {
 	return map[string]any{
-		"data_dir":                               "",
-		"output":                                 "text",
-		"create_if_missing":                      false,
-		"admin_username":                         "",
-		"admin_password":                         "",
-		"security.user_store_encryption_key_b64": "",
-		"auth.access_token_ttl":                  "1h",
-		"auth.refresh_idle_ttl":                  "720h",
-		"auth.refresh_absolute_ttl":              "2160h",
-		"auth.refresh_audit_retention_ttl":       "720h",
-		"auth.refresh_token_bytes":               32,
-		"storage.blobs.stale_tmp_age":            "1h",
-		"storage.blobs.max_size_bytes":           int64(-1),
-		"storage.blobs.max_image_bytes":          int64(-1),
-		"storage.blobs.max_pdf_bytes":            int64(-1),
-		"storage.blobs.max_audio_bytes":          int64(-1),
-		"storage.blobs.max_video_bytes":          int64(-1),
-		"storage.blobs.max_other_bytes":          int64(-1),
-		"storage.blobs.mime_type_limits":         map[string]int64{},
-		"semantic.advanced_enabled":              false,
+		"output":                          "text",
+		"username":                        "",
+		"password":                        "",
+		"daemon.addr":                     "",
+		"daemon.tls":                      false,
+		"daemon.tls_ca":                   "",
+		"daemon.tls_server_name":          "",
+		"daemon.tls_insecure_skip_verify": false,
+		"daemon.tls_client_cert":          "",
+		"daemon.tls_client_key":           "",
 	}
 }
 
-func envKey(key string) string {
-	key = strings.TrimPrefix(key, "MYCELDB_")
-	key = strings.ToLower(key)
-	key = strings.ReplaceAll(key, "__", ".")
-	return key
-}
-
-func applyEnvAliases(k *koanf.Koanf) {
+func applyEnvOverrides(k *koanf.Koanf) {
 	aliases := map[string]string{
-		"MYCELDB_DATA_DIR":                         "data_dir",
-		"MYCELDB_USER_STORE_ENCRYPTION_KEY_B64":    "security.user_store_encryption_key_b64",
-		"MYCELDB_AUTH_ACCESS_TOKEN_TTL":            "auth.access_token_ttl",
-		"MYCELDB_AUTH_REFRESH_IDLE_TTL":            "auth.refresh_idle_ttl",
-		"MYCELDB_AUTH_REFRESH_ABSOLUTE_TTL":        "auth.refresh_absolute_ttl",
-		"MYCELDB_AUTH_REFRESH_AUDIT_RETENTION_TTL": "auth.refresh_audit_retention_ttl",
-		"MYCELDB_AUTH_REFRESH_TOKEN_BYTES":         "auth.refresh_token_bytes",
-		"MYCELDB_STORAGE_BLOBS_STALE_TMP_AGE":      "storage.blobs.stale_tmp_age",
-		"MYCELDB_STORAGE_BLOBS_MAX_SIZE_BYTES":     "storage.blobs.max_size_bytes",
-		"MYCELDB_STORAGE_BLOBS_MAX_IMAGE_BYTES":    "storage.blobs.max_image_bytes",
-		"MYCELDB_STORAGE_BLOBS_MAX_PDF_BYTES":      "storage.blobs.max_pdf_bytes",
-		"MYCELDB_STORAGE_BLOBS_MAX_AUDIO_BYTES":    "storage.blobs.max_audio_bytes",
-		"MYCELDB_STORAGE_BLOBS_MAX_VIDEO_BYTES":    "storage.blobs.max_video_bytes",
-		"MYCELDB_STORAGE_BLOBS_MAX_OTHER_BYTES":    "storage.blobs.max_other_bytes",
-		"MYCELDB_SEMANTIC_ADVANCED_ENABLED":        "semantic.advanced_enabled",
+		"MYCEL_OUTPUT":                    "output",
+		"MYCEL_USERNAME":                  "username",
+		"MYCEL_PASSWORD":                  "password",
+		"MYCELD_GRPC_ADDR":                "daemon.addr",
+		"MYCELD_TLS":                      "daemon.tls",
+		"MYCELD_TLS_CA_FILE":              "daemon.tls_ca",
+		"MYCELD_TLS_SERVER_NAME":          "daemon.tls_server_name",
+		"MYCELD_TLS_INSECURE_SKIP_VERIFY": "daemon.tls_insecure_skip_verify",
+		"MYCELD_TLS_CLIENT_CERT_FILE":     "daemon.tls_client_cert",
+		"MYCELD_TLS_CLIENT_KEY_FILE":      "daemon.tls_client_key",
 	}
 	for envName, key := range aliases {
 		if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
@@ -202,99 +121,22 @@ func applyFlagOverrides(k *koanf.Koanf, flags *pflag.FlagSet) {
 		return
 	}
 	flagMap := map[string]string{
-		"data-dir":                         "data_dir",
-		"output":                           "output",
-		"username":                         "admin_username",
-		"password":                         "admin_password",
-		"user-store-encryption-key-b64":    "security.user_store_encryption_key_b64",
-		"auth-token-ttl":                   "auth.access_token_ttl",
-		"auth-refresh-idle-ttl":            "auth.refresh_idle_ttl",
-		"auth-refresh-absolute-ttl":        "auth.refresh_absolute_ttl",
-		"auth-refresh-audit-retention-ttl": "auth.refresh_audit_retention_ttl",
-		"auth-refresh-token-bytes":         "auth.refresh_token_bytes",
-		"blob-stale-tmp-age":               "storage.blobs.stale_tmp_age",
-		"blob-max-size-bytes":              "storage.blobs.max_size_bytes",
-		"blob-max-image-bytes":             "storage.blobs.max_image_bytes",
-		"blob-max-pdf-bytes":               "storage.blobs.max_pdf_bytes",
-		"blob-max-audio-bytes":             "storage.blobs.max_audio_bytes",
-		"blob-max-video-bytes":             "storage.blobs.max_video_bytes",
-		"blob-max-other-bytes":             "storage.blobs.max_other_bytes",
-		"semantic-advanced-enabled":        "semantic.advanced_enabled",
+		"output":                          "output",
+		"username":                        "username",
+		"password":                        "password",
+		"daemon-addr":                     "daemon.addr",
+		"daemon-tls":                      "daemon.tls",
+		"daemon-tls-ca":                   "daemon.tls_ca",
+		"daemon-tls-server-name":          "daemon.tls_server_name",
+		"daemon-tls-insecure-skip-verify": "daemon.tls_insecure_skip_verify",
+		"daemon-tls-client-cert":          "daemon.tls_client_cert",
+		"daemon-tls-client-key":           "daemon.tls_client_key",
 	}
 	for flagName, key := range flagMap {
 		if f := flags.Lookup(flagName); f != nil && f.Changed {
 			_ = k.Set(key, f.Value.String())
 		}
 	}
-}
-
-func validateBlobLimits(limits mycelengine.BlobLimits) error {
-	values := map[string]int64{
-		"storage.blobs.max_size_bytes":  limits.MaxSizeBytes,
-		"storage.blobs.max_image_bytes": limits.MaxImageBytes,
-		"storage.blobs.max_pdf_bytes":   limits.MaxPDFBytes,
-		"storage.blobs.max_audio_bytes": limits.MaxAudioBytes,
-		"storage.blobs.max_video_bytes": limits.MaxVideoBytes,
-		"storage.blobs.max_other_bytes": limits.MaxOtherBytes,
-	}
-	for key, value := range values {
-		if value < -1 {
-			return fmt.Errorf("%s must be -1, 0, or a positive byte count", key)
-		}
-		if limits.MaxSizeBytes > 0 && value > limits.MaxSizeBytes {
-			return fmt.Errorf("%s must not exceed storage.blobs.max_size_bytes", key)
-		}
-	}
-	for mimeType, value := range limits.MimeTypeLimits {
-		if strings.TrimSpace(mimeType) == "" {
-			return fmt.Errorf("storage.blobs.mime_type_limits contains an empty MIME type")
-		}
-		if value < -1 {
-			return fmt.Errorf("storage.blobs.mime_type_limits[%s] must be -1, 0, or a positive byte count", mimeType)
-		}
-		if limits.MaxSizeBytes > 0 && value > limits.MaxSizeBytes {
-			return fmt.Errorf("storage.blobs.mime_type_limits[%s] must not exceed storage.blobs.max_size_bytes", mimeType)
-		}
-	}
-	return nil
-}
-
-func normalizeMimeLimits(in map[string]int64) map[string]int64 {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]int64, len(in))
-	for key, value := range in {
-		out[strings.ToLower(strings.TrimSpace(key))] = value
-	}
-	return out
-}
-
-func int64Map(raw any) map[string]int64 {
-	out := map[string]int64{}
-	switch values := raw.(type) {
-	case map[string]int64:
-		for key, value := range values {
-			out[key] = value
-		}
-	case map[string]any:
-		for key, value := range values {
-			switch typed := value.(type) {
-			case int:
-				out[key] = int64(typed)
-			case int64:
-				out[key] = typed
-			case float64:
-				out[key] = int64(typed)
-			case string:
-				var parsed int64
-				if _, err := fmt.Sscan(strings.TrimSpace(typed), &parsed); err == nil {
-					out[key] = parsed
-				}
-			}
-		}
-	}
-	return out
 }
 
 func firstNonEmpty(values ...string) string {

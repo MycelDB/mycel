@@ -6,7 +6,7 @@ import (
 	"github.com/myceldb/mycel/domain/graph"
 	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
-	domainsession "github.com/myceldb/mycel/session"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -249,7 +249,7 @@ func NewDeleteTemplateCommand(a *app.App) *cobra.Command {
 	return cmd
 }
 
-func templateDefinitionsFromDocument(doc domainsession.ImportDocument) ([]*clientv1.TemplateDefinition, error) {
+func templateDefinitionsFromDocument(doc sessionapi.ImportDocument) ([]*clientv1.TemplateDefinition, error) {
 	out := make([]*clientv1.TemplateDefinition, 0, len(doc.Templates))
 	for _, tmpl := range doc.Templates {
 		out = append(out, templateDefinitionFromImport(tmpl))
@@ -257,11 +257,11 @@ func templateDefinitionsFromDocument(doc domainsession.ImportDocument) ([]*clien
 	return out, nil
 }
 
-func templateDefinitionFromImport(t domainsession.TemplateImport) *clientv1.TemplateDefinition {
+func templateDefinitionFromImport(t sessionapi.TemplateImport) *clientv1.TemplateDefinition {
 	return &clientv1.TemplateDefinition{Key: t.Key, Version: t.Version, DisplayName: t.DisplayName, Description: t.Description, System: t.System, Properties: propertyPolicyDefinitionFromImport(t.Properties), Children: childPolicyDefinitionFromImport(t.Children)}
 }
 
-func propertyPolicyDefinitionFromImport(policy domainsession.PropertyPolicyImport) *clientv1.PropertyPolicy {
+func propertyPolicyDefinitionFromImport(policy sessionapi.PropertyPolicyImport) *clientv1.PropertyPolicy {
 	out := &clientv1.PropertyPolicy{AllowExtra: policy.AllowExtra, Forbidden: append([]string(nil), policy.Forbidden...)}
 	for _, prop := range policy.Allowed {
 		var defaultValue *structpb.Value
@@ -275,7 +275,7 @@ func propertyPolicyDefinitionFromImport(policy domainsession.PropertyPolicyImpor
 	return out
 }
 
-func childPolicyDefinitionFromImport(policy domainsession.ChildPolicyImport) *clientv1.ChildPolicy {
+func childPolicyDefinitionFromImport(policy sessionapi.ChildPolicyImport) *clientv1.ChildPolicy {
 	out := &clientv1.ChildPolicy{Allowed: policy.Allowed}
 	for _, ref := range policy.AllowedTemplates {
 		out.AllowedTemplates = append(out.AllowedTemplates, &clientv1.TemplateRef{Key: ref.Key, Version: ref.Version})

@@ -8,7 +8,7 @@ import (
 	"github.com/myceldb/mycel/internal/cli/app"
 )
 
-func TestREPLLoginUsesDaemonWithoutDataDir(t *testing.T) {
+func TestREPLLoginUsesDaemon(t *testing.T) {
 	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
 	createTestUser(t, addr, adminPassword, "repl-user", "repl-pass")
@@ -22,12 +22,9 @@ func TestREPLLoginUsesDaemonWithoutDataDir(t *testing.T) {
 	if !strings.Contains(out.String(), "logged in as repl-user") {
 		t.Fatalf("expected daemon login output, got:\n%s", out.String())
 	}
-	if a.DataDir != "" {
-		t.Fatalf("REPL should not require/populate data dir for daemon login, got %q", a.DataDir)
-	}
 }
 
-func TestREPLSpaceSetUsesDaemonWithoutDataDir(t *testing.T) {
+func TestREPLSpaceSetUsesDaemon(t *testing.T) {
 	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
 	createTestUser(t, addr, adminPassword, "repl-space", "repl-pass")
@@ -41,8 +38,5 @@ func TestREPLSpaceSetUsesDaemonWithoutDataDir(t *testing.T) {
 	}
 	if a.CurrentSpaceID == nil || a.CurrentSpaceID.String() != spaceID {
 		t.Fatalf("expected current space %s, got %v; output:\n%s", spaceID, a.CurrentSpaceID, out.String())
-	}
-	if a.DataDir != "" {
-		t.Fatalf("REPL should not require/populate data dir for daemon space set, got %q", a.DataDir)
 	}
 }

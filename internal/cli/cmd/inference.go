@@ -50,66 +50,7 @@ func newInferencePackageCommand(a *app.App) *cobra.Command {
 
 func newInferencePackageApplyCommand(a *app.App) *cobra.Command {
 	return &cobra.Command{Use: "apply FILE", Short: "Apply inference definitions from a YAML or JSON package", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(a.DaemonAddr) != "" {
-			return runDaemonInferencePackageApply(cmd, a, args[0])
-		}
-		mgr, err := authorizedSemanticGlobalManager(cmd.Context(), a)
-		if err != nil {
-			return err
-		}
-		raw, err := os.ReadFile(args[0])
-		if err != nil {
-			return err
-		}
-		var doc inferencePackageDocument
-		if err := unmarshalYAMLWithJSONTags(raw, &doc); err != nil {
-			return fmt.Errorf("invalid inference package: %w", err)
-		}
-		if strings.TrimSpace(doc.Name) == "" || strings.TrimSpace(doc.Version) == "" {
-			return fmt.Errorf("invalid inference package: name and version are required")
-		}
-		for _, endpoint := range doc.ModelEndpoints {
-			if _, err := mgr.UpsertModelEndpoint(cmd.Context(), endpoint); err != nil {
-				return err
-			}
-		}
-		for _, model := range doc.Models {
-			if _, err := mgr.UpsertModel(cmd.Context(), model); err != nil {
-				return err
-			}
-		}
-		for _, vectorStore := range doc.VectorStores {
-			if _, err := mgr.UpsertVectorStore(cmd.Context(), vectorStore); err != nil {
-				return err
-			}
-		}
-		for _, def := range doc.ModelEndpointCapabilities {
-			endpointRef := firstNonEmpty(def.ModelEndpointID, def.ModelEndpoint)
-			modelRef := firstNonEmpty(def.ModelID, def.Model)
-			endpointID, err := resolveModelEndpointID(cmd.Context(), mgr, endpointRef)
-			if err != nil {
-				return err
-			}
-			modelID, err := resolveModelID(cmd.Context(), mgr, modelRef)
-			if err != nil {
-				return err
-			}
-			enabled := true
-			if def.Enabled != nil {
-				enabled = *def.Enabled
-			}
-			if _, err := mgr.UpsertModelEndpointCapability(cmd.Context(), domainsemantic.ModelEndpointCapability{ModelEndpointID: endpointID, ModelID: modelID, Operation: def.Operation, Enabled: enabled, ModelNameOverride: def.ModelNameOverride, Metadata: def.Metadata}); err != nil {
-				return err
-			}
-		}
-		pkg, err := mgr.UpsertPackage(cmd.Context(), domainsemantic.InferencePackage{Name: doc.Name, Version: doc.Version, Source: firstNonEmpty(doc.Source, args[0]), Checksum: doc.Checksum, DefinitionCounts: map[string]int{"model_endpoints": len(doc.ModelEndpoints), "models": len(doc.Models), "model_endpoint_capabilities": len(doc.ModelEndpointCapabilities), "vector_stores": len(doc.VectorStores)}})
-		if err != nil {
-			return err
-		}
-		if err := appendSemanticConfigEvent(a.DataDir, "inference_package_applied", nil, map[string]any{"package_id": pkg.ID.String(), "name": pkg.Name, "version": pkg.Version}); err != nil {
-			return err
-		}
-		return a.Print(pkg, fmt.Sprintf("inference package applied: %s@%s\n", pkg.Name, pkg.Version))
+		return runDaemonInferencePackageApply(cmd, a, args[0])
 	}}
 }
 
@@ -252,38 +193,9 @@ func newInferenceCapabilityDeleteCommand(a *app.App) *cobra.Command {
 }
 
 func newInferenceCapabilityAddCommand(a *app.App) *cobra.Command {
-	var endpointRef, modelRef, operation, modelNameOverride string
-	var disabled bool
-	cmd := &cobra.Command{Use: "add", Short: "Provision a model endpoint capability", RunE: func(cmd *cobra.Command, args []string) error {
-		mgr, err := authorizedSemanticGlobalManager(cmd.Context(), a)
-		if err != nil {
-			return err
-		}
-		endpointID, err := resolveModelEndpointID(cmd.Context(), mgr, endpointRef)
-		if err != nil {
-			return err
-		}
-		modelID, err := resolveModelID(cmd.Context(), mgr, modelRef)
-		if err != nil {
-			return err
-		}
-		capability, err := mgr.UpsertModelEndpointCapability(cmd.Context(), domainsemantic.ModelEndpointCapability{ModelEndpointID: endpointID, ModelID: modelID, Operation: domainsemantic.Operation(operation), Enabled: !disabled, ModelNameOverride: modelNameOverride})
-		if err != nil {
-			return err
-		}
-		if err := appendSemanticConfigEvent(a.DataDir, "model_endpoint_capability_changed", nil, map[string]any{"capability_id": capability.ID.String()}); err != nil {
-			return err
-		}
-		return a.Print(capability, fmt.Sprintf("capability added: %s\n", capability.ID))
+	return &cobra.Command{Use: "add", Short: "Deprecated embedded capability provisioning", Deprecated: "use `inference package apply` to provision capabilities through the daemon", RunE: func(cmd *cobra.Command, args []string) error {
+		return fmt.Errorf("embedded capability add is no longer supported; use `inference package apply`")
 	}}
-	cmd.Flags().StringVar(&endpointRef, "model-endpoint", "", "model endpoint key or ID")
-	cmd.Flags().StringVar(&modelRef, "model", "", "model key or ID")
-	cmd.Flags().StringVar(&operation, "operation", string(domainsemantic.OperationEmbeddings), "operation")
-	cmd.Flags().StringVar(&modelNameOverride, "model-name-override", "", "endpoint-specific model name override")
-	cmd.Flags().BoolVar(&disabled, "disabled", false, "create capability disabled")
-	_ = cmd.MarkFlagRequired("model-endpoint")
-	_ = cmd.MarkFlagRequired("model")
-	return cmd
 }
 
 func newInferenceModelEndpointCommand(a *app.App) *cobra.Command {
@@ -523,51 +435,7 @@ func newInferenceCredentialAddCommand(a *app.App) *cobra.Command {
 	var endpointRef, ownerUser, ownerType, ownerID, authType, apiKey, apiKeyEnv, externalRef, name string
 	var isDefault bool
 	cmd := &cobra.Command{Use: "add KEY", Short: "Add an inference credential", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(a.DaemonAddr) != "" {
-			return runDaemonInferenceCredentialAdd(cmd, a, args[0], endpointRef, ownerUser, ownerType, ownerID, authType, apiKey, apiKeyEnv, externalRef, name, isDefault)
-		}
-		mgr, err := authorizedSemanticGlobalManager(cmd.Context(), a)
-		if err != nil {
-			return err
-		}
-		endpointID, err := resolveModelEndpointID(cmd.Context(), mgr, endpointRef)
-		if err != nil {
-			return err
-		}
-		if apiKey == "" && apiKeyEnv != "" {
-			apiKey = os.Getenv(apiKeyEnv)
-		}
-		if ownerUser != "" {
-			ownerType = string(domainsemantic.CredentialOwnerUser)
-			ownerID = ownerUser
-		}
-		if ownerType == "" {
-			ownerType = string(domainsemantic.CredentialOwnerUser)
-		}
-		secret := domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID}
-		if externalRef != "" {
-			secret.Kind = domainsemantic.SecretKindExternalRef
-			secret.ExternalRef = externalRef
-		} else {
-			ciphertext, err := encryptSecretForCLI(a.DataDir, a.Config.UserStoreEncryptionKeyB64, apiKey)
-			if err != nil {
-				return err
-			}
-			secret.Kind = domainsemantic.SecretKindInlineEncrypted
-			secret.Ciphertext = ciphertext
-		}
-		storedSecret, err := mgr.UpsertSecret(cmd.Context(), secret)
-		if err != nil {
-			return err
-		}
-		credential, err := mgr.UpsertCredential(cmd.Context(), domainsemantic.InferenceCredential{Key: args[0], Name: firstNonEmpty(name, args[0]), ModelEndpointID: endpointID, OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID, AuthType: domainsemantic.AuthMode(authType), SecretRef: storedSecret.ID, Status: domainsemantic.CredentialStatusActive, IsDefault: isDefault})
-		if err != nil {
-			return err
-		}
-		if err := appendSemanticConfigEvent(a.DataDir, "credential_changed", nil, map[string]any{"credential_id": credential.ID.String()}); err != nil {
-			return err
-		}
-		return a.Print(credential, fmt.Sprintf("credential added: %s\n", credential.ID))
+		return runDaemonInferenceCredentialAdd(cmd, a, args[0], endpointRef, ownerUser, ownerType, ownerID, authType, apiKey, apiKeyEnv, externalRef, name, isDefault)
 	}}
 	cmd.Flags().StringVar(&endpointRef, "model-endpoint", "", "model endpoint key or ID")
 	cmd.Flags().StringVar(&ownerUser, "owner-user", "", "user ref/ID that owns the credential")
@@ -627,69 +495,7 @@ func newInferenceCredentialGrantCommand(a *app.App) *cobra.Command {
 	var allowBackgroundUse, includeDescendants, isDefault bool
 	var priority int
 	cmd := &cobra.Command{Use: "grant CREDENTIAL", Short: "Grant a credential for a space-owned processing scope", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(a.DaemonAddr) != "" {
-			return runDaemonInferenceCredentialGrant(cmd, a, args[0], spaceIDText, domainRef, indexRef, nodeText, endpointRef, modelRef, operations, allowBackgroundUse, includeDescendants, isDefault, priority)
-		}
-		spaceID, err := a.ResolveSpaceID(spaceIDText)
-		if err != nil {
-			return err
-		}
-		tok, err := a.AccessToken(cmd.Context())
-		if err != nil {
-			return err
-		}
-		globalMgr, err := authenticatedSemanticGlobalManager(cmd.Context(), a)
-		if err != nil {
-			return err
-		}
-		credentialID, err := resolveCredentialID(cmd.Context(), globalMgr, args[0])
-		if err != nil {
-			return err
-		}
-		domainID, err := resolveDomainID(cmd.Context(), a, tok, spaceID, domainRef)
-		if err != nil {
-			return err
-		}
-		spaceMgr, err := authenticatedSemanticSpaceManager(cmd.Context(), a, spaceID)
-		if err != nil {
-			return err
-		}
-		var indexID domainsemantic.SemanticIndexID
-		if strings.TrimSpace(indexRef) != "" {
-			index, err := resolveSemanticIndexForDomain(cmd.Context(), spaceMgr, indexRef, domainID)
-			if err != nil {
-				return err
-			}
-			indexID = index.ID
-		}
-		scope, err := semanticScope(spaceID, domainID, indexID, nodeText, includeDescendants)
-		if err != nil {
-			return err
-		}
-		var endpointID *domainsemantic.ModelEndpointID
-		if endpointRef != "" {
-			id, err := resolveModelEndpointID(cmd.Context(), globalMgr, endpointRef)
-			if err != nil {
-				return err
-			}
-			endpointID = &id
-		}
-		var modelID *domainsemantic.InferenceModelID
-		if modelRef != "" {
-			id, err := resolveModelID(cmd.Context(), globalMgr, modelRef)
-			if err != nil {
-				return err
-			}
-			modelID = &id
-		}
-		grant, err := spaceMgr.UpsertCredentialGrant(cmd.Context(), domainsemantic.CredentialGrant{CredentialID: credentialID, Scope: scope, Operations: operationsFromStrings(operations), ModelEndpointID: endpointID, ModelID: modelID, Priority: priority, IsDefault: isDefault, AllowBackgroundUse: allowBackgroundUse, GrantedBy: a.UserRef})
-		if err != nil {
-			return err
-		}
-		if err := appendSemanticConfigEvent(a.DataDir, "credential_grant_changed", &spaceID, map[string]any{"credential_grant_id": grant.ID.String()}); err != nil {
-			return err
-		}
-		return a.Print(grant, fmt.Sprintf("credential grant added: %s\n", grant.ID))
+		return runDaemonInferenceCredentialGrant(cmd, a, args[0], spaceIDText, domainRef, indexRef, nodeText, endpointRef, modelRef, operations, allowBackgroundUse, includeDescendants, isDefault, priority)
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
 	cmd.Flags().StringVar(&domainRef, "domain", "", "domain key or ID")
@@ -793,45 +599,7 @@ func newInferencePolicyEffectCommand(a *app.App, effect domainsemantic.PolicyEff
 	var operations, privacyClasses []string
 	var includeDescendants, noInference, disallowThirdParty, requireLocalEndpoint bool
 	cmd := &cobra.Command{Use: string(effect), Short: fmt.Sprintf("Create a %s inference policy", effect), RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(a.DaemonAddr) != "" {
-			return runDaemonInferencePolicyCreate(cmd, a, effect, spaceIDText, domainRef, indexRef, nodeText, reason, operations, privacyClasses, includeDescendants, noInference, disallowThirdParty, requireLocalEndpoint)
-		}
-		spaceID, err := a.ResolveSpaceID(spaceIDText)
-		if err != nil {
-			return err
-		}
-		tok, err := a.AccessToken(cmd.Context())
-		if err != nil {
-			return err
-		}
-		domainID, err := resolveDomainID(cmd.Context(), a, tok, spaceID, domainRef)
-		if err != nil {
-			return err
-		}
-		spaceMgr, err := authenticatedSemanticSpaceManager(cmd.Context(), a, spaceID)
-		if err != nil {
-			return err
-		}
-		var indexID domainsemantic.SemanticIndexID
-		if strings.TrimSpace(indexRef) != "" {
-			index, err := resolveSemanticIndexForDomain(cmd.Context(), spaceMgr, indexRef, domainID)
-			if err != nil {
-				return err
-			}
-			indexID = index.ID
-		}
-		scope, err := semanticScope(spaceID, domainID, indexID, nodeText, includeDescendants)
-		if err != nil {
-			return err
-		}
-		policy, err := spaceMgr.UpsertInferencePolicy(cmd.Context(), domainsemantic.InferencePolicy{Scope: scope, Effect: effect, Operations: operationsFromStrings(operations), NoInference: noInference, AllowedPrivacyClasses: privacyClassesFromStrings(privacyClasses), DisallowThirdParty: disallowThirdParty, RequireLocalEndpoint: requireLocalEndpoint, Reason: reason, CreatedBy: a.UserRef})
-		if err != nil {
-			return err
-		}
-		if err := appendSemanticConfigEvent(a.DataDir, "inference_policy_changed", &spaceID, map[string]any{"policy_id": policy.ID.String(), "effect": string(effect)}); err != nil {
-			return err
-		}
-		return a.Print(policy, fmt.Sprintf("inference policy added: %s\n", policy.ID))
+		return runDaemonInferencePolicyCreate(cmd, a, effect, spaceIDText, domainRef, indexRef, nodeText, reason, operations, privacyClasses, includeDescendants, noInference, disallowThirdParty, requireLocalEndpoint)
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
 	cmd.Flags().StringVar(&domainRef, "domain", "", "domain key or ID")

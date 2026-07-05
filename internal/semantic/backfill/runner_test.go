@@ -15,8 +15,8 @@ import (
 	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	"github.com/myceldb/mycel/session"
-	sessionapi "github.com/myceldb/mycel/session/api"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
+	"github.com/myceldb/mycel/internal/session/filesession"
 	storesemantic "github.com/myceldb/mycel/store/semantic"
 	storetemplate "github.com/myceldb/mycel/store/template"
 )
@@ -49,14 +49,14 @@ func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	if result.GeneratedCount != 0 || result.SkippedCount != 1 || len(env.connector.calls) != 1 {
 		t.Fatalf("expected current hash skip without connector call, result=%+v calls=%+v", result, env.connector.calls)
 	}
-	if _, err := env.sess.UpdateNode(ctx, session.UpdateNodeInput{ID: root.ID, TemplateID: root.TemplateID, Content: "changed root", Props: root.Props}); err != nil {
+	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: root.ID, TemplateID: root.TemplateID, Content: "changed root", Props: root.Props}); err != nil {
 		t.Fatalf("update root failed: %v", err)
 	}
 	result, err = env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
 	if err != nil || result.GeneratedCount != 1 || len(env.connector.calls) != 2 {
 		t.Fatalf("expected changed source to regenerate, result=%+v calls=%+v err=%v", result, env.connector.calls, err)
 	}
-	if _, err := env.sess.UpdateNode(ctx, session.UpdateNodeInput{ID: root.ID, TemplateID: root.TemplateID, Content: "root note", Props: root.Props}); err != nil {
+	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: root.ID, TemplateID: root.TemplateID, Content: "root note", Props: root.Props}); err != nil {
 		t.Fatalf("restore root failed: %v", err)
 	}
 	result, err = env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
@@ -128,7 +128,7 @@ type backfillTestEnv struct {
 	spaceID   domainspace.SpaceID
 	domainID  graph.DomainID
 	userID    identity.UserID
-	sess      session.Session
+	sess      sessionapi.Session
 	globalMgr storesemantic.GlobalManager
 	spaceMgr  storesemantic.SpaceManager
 	vector    vectorstore.MycelFileBackend
@@ -157,8 +157,8 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	if err := tmplMgr.Init(ctx, filepath.Join(root, "meta", "templates")); err != nil {
 		t.Fatalf("template init failed: %v", err)
 	}
-	sess := session.NewSessionWithStoreConfig(filepath.Join(root, "graphs"), filepath.Join(root, "blobs"), spaceID, tmplMgr, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{NotFound: errNotFound{}}, nil, session.Config{CurrentUserID: userID, DomainID: domainID})
-	templates, err := sess.ImportTemplates(ctx, session.ImportTemplatesInput{Document: session.ImportDocument{SchemaVersion: 1, Templates: []session.TemplateImport{{Key: "note", Version: "1.0.0", DisplayName: "Note", Children: session.ChildPolicyImport{Allowed: true, AllowedTemplates: []session.TemplateRefImport{{Key: "note", Version: "1.0.0"}}}}}}})
+	sess := filesession.NewWithStoreConfig(filepath.Join(root, "graphs"), filepath.Join(root, "blobs"), spaceID, tmplMgr, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{NotFound: errNotFound{}}, nil, filesession.Config{CurrentUserID: userID, DomainID: domainID})
+	templates, err := sess.ImportTemplates(ctx, sessionapi.ImportTemplatesInput{Document: sessionapi.ImportDocument{SchemaVersion: 1, Templates: []sessionapi.TemplateImport{{Key: "note", Version: "1.0.0", DisplayName: "Note", Children: sessionapi.ChildPolicyImport{Allowed: true, AllowedTemplates: []sessionapi.TemplateRefImport{{Key: "note", Version: "1.0.0"}}}}}}})
 	if err != nil {
 		t.Fatalf("import templates failed: %v", err)
 	}
@@ -212,15 +212,15 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 func (e *backfillTestEnv) addRootWithChild(t *testing.T, rootText, childText string) (graph.Node, graph.Node) {
 	t.Helper()
 	ctx := context.Background()
-	root, err := e.sess.AddNode(ctx, session.AddNodeInput{TemplateID: &e.template.ID, Content: rootText})
+	root, err := e.sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &e.template.ID, Content: rootText})
 	if err != nil {
 		t.Fatalf("add root failed: %v", err)
 	}
-	child, err := e.sess.AddNode(ctx, session.AddNodeInput{TemplateID: &e.template.ID, Content: childText})
+	child, err := e.sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &e.template.ID, Content: childText})
 	if err != nil {
 		t.Fatalf("add child failed: %v", err)
 	}
-	if _, err := e.sess.AddEdge(ctx, session.AddEdgeInput{FromID: root.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 1}}); err != nil {
+	if _, err := e.sess.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: root.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 1}}); err != nil {
 		t.Fatalf("add edge failed: %v", err)
 	}
 	return root, child

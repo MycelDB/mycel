@@ -39,19 +39,10 @@ func NewSpaceCommand(a *app.App) *cobra.Command {
 }
 
 func NewNodeCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "node", Aliases: []string{"nodes"}, Short: "Manage graph nodes"}
-	add := NewAddNodeCommand(a)
-	add.Use = "add"
-	add.Short = "Add a node"
-	del := NewDeleteNodeCommand(a)
-	del.Use = "delete NODE_ID"
-	del.Aliases = []string{"del", "remove", "rm"}
-	get := NewGetNodeCommand(a)
-	get.Use = "get NODE_ID"
-	list := NewListNodesCommand(a)
-	list.Use = "list"
-	list.Aliases = []string{"ls"}
-	cmd.AddCommand(add, get, list, del)
+	cmd := newGraphNodeCommand(a)
+	cmd.Use = "node"
+	cmd.Aliases = []string{"nodes"}
+	cmd.Short = "Manage graph nodes through daemon gRPC"
 	return cmd
 }
 

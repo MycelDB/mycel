@@ -6,9 +6,9 @@ Draft design notes for the `refactor_daemon` branch.
 
 ## Summary
 
-Mycel is currently primarily consumed as an embedded Go library. The long-term direction is for Mycel to become a daemon process that can run standalone or as part of a mesh of Mycel daemons. Existing engine, domain, storage, session, metadata, semantic, and auth components should remain reusable; the migration adds a daemon runtime, public APIs, connector libraries, connection management, space caching, and eventually replication.
+Mycel is being refactored from an embedded Go library into a daemon process that can run standalone or as part of a mesh of Mycel daemons. Applications and tools should use daemon Admin/Client gRPC APIs; the public embedded engine runtime is removed, and remaining session/storage internals are transitional daemon implementation scaffolding. Existing domain, storage, session, metadata, semantic, and auth components may remain reusable internally while the migration adds daemon APIs, connector libraries, connection management, space caching, and eventually replication.
 
-The migration should be gradual. Each phase should leave the existing embedded/library use case functional while introducing daemon capabilities behind stable interfaces.
+The migration is no longer preserving embedded/library runtime support as a public compatibility target. Each phase should keep daemon/API behavior functional while removing local application-owned runtime entrypoints.
 
 Current implementation status on `refactor_daemon` includes daemon initialization, authenticated Admin Auth/Operator/User APIs, CLI admin/user-management commands over daemon gRPC, the daemon-backed Client AuthService for standard users, daemon-backed Client/Admin space APIs, daemon-backed Client DomainService, daemon-backed Client TemplateService, daemon-backed Client Session/Transaction lifecycle services, the daemon-backed Client GraphService MVP, the daemon-backed Client BlobService MVP, the daemon-backed Client QueryService MVP, the daemon-backed Client ImportExportService with structured graph/template/blob and replace-domain support, the daemon-backed Client MetadataCatalogService MVP, the daemon-backed Client SemanticService MVP, the daemon-backed Client ChangeStreamService with durable replay and graph change payloads, the daemon-backed AdminDomainService lookup MVP, the daemon-backed AdminSemanticService index configuration/delete MVP, the daemon-backed AdminSemanticMaintenanceService backfill/maintenance MVP, the daemon-backed AdminSemanticMigrationService legacy embedding migration MVP, the daemon-backed AdminInferenceService package/catalog/credentials/grants/policies/soft-lifecycle plus reference-safe hard-delete MVP, and TLS/mTLS transport hardening for daemon gRPC. See:
 
@@ -31,11 +31,12 @@ Current implementation status on `refactor_daemon` includes daemon initializatio
 - [Client Metadata Catalog API](api/metadata-catalog.md)
 - [Client Semantic API](api/semantic.md)
 - [Client Change Stream API](api/change-stream.md)
+- [Daemon-only boundary](daemon-only-boundary.md)
 
 ## Goals
 
-- Preserve the existing embedded/library behavior during migration.
-- Introduce a long-running Mycel daemon process.
+- Remove embedded/library runtime behavior as a supported public interface.
+- Introduce and harden a long-running Mycel daemon process.
 - Support standalone daemon deployments first.
 - Prepare for mesh deployments and graph replication between daemons.
 - Define separate API surfaces for client, admin, and private daemon-to-daemon operations.
@@ -45,10 +46,9 @@ Current implementation status on `refactor_daemon` includes daemon initializatio
 
 ## Non-goals for the initial migration
 
-- Do not require all consumers to switch to daemon mode immediately.
 - Do not implement mesh replication before single-daemon mode is stable.
-- Do not remove embedded mode during the migration.
 - Do not force browser clients to use raw gRPC directly.
+- Do not preserve embedded/library runtime support as a long-term public API; it is deprecated and scheduled for removal/internalization after daemon API parity.
 
 ## Target Architecture
 
@@ -67,8 +67,8 @@ Applications / Connectors
 |  Connection Manager         |
 |  Space / Session Cache      |
 |  Background Workers         |
-|  Existing Engine Components |
-|  Existing Storage Components|
+|  Internal Runtime Modules   |
+|  Internal Storage Components|
 +-----------------------------+
         |
         v
@@ -197,24 +197,17 @@ Responsibilities may include:
 - subscriptions/change notifications
 - compression/protocol negotiation
 
-A key migration mechanism is to define a connector abstraction with at least two implementations:
-
-```text
-EmbeddedConnector -> existing in-process engine
-NetworkConnector  -> daemon Client API
-```
-
-This lets consumers move behind the connector abstraction before daemon mode is mandatory.
+Future connectors should wrap daemon Client/Admin APIs rather than reintroducing an in-process embedded runtime.
 
 ## Reusable Existing Components
 
 The daemon should reuse existing Mycel components wherever possible:
 
 - domain models
-- engine operations
+- daemon module operations
 - stores
 - graph storage
-- session abstractions
+- internal session abstractions
 - metadata indexes
 - semantic indexes and maintenance
 - auth/session primitives
@@ -226,7 +219,7 @@ The main new layer is a daemon runtime around these components, not a rewrite of
 
 ### API service layer
 
-Maps network requests to engine/session/store operations. Handles validation, authentication, authorization, request limits, and error translation.
+Maps network requests to daemon module, internal session, and store operations. Handles validation, authentication, authorization, request limits, and error translation.
 
 ### Connection manager
 
@@ -277,90 +270,13 @@ The daemon should enforce:
 - memory limits
 - backpressure under load
 
-## Gradual Migration Plan
+## Current Migration Plan
 
-### Phase 1: Design and API boundaries
+The migration now targets daemon-only behavior rather than embedded/daemon dual mode. See [Daemon-only boundary](daemon-only-boundary.md) for active phase tracking.
 
-No behavior change.
+Completed or in-progress milestones include daemon process/runtime setup, authenticated Admin and Client gRPC APIs, daemon-backed CLI commands, TLS/mTLS transport hardening, removal of CLI embedded-engine paths, deletion of the legacy `engine` tree, and internalization/removal of the public `session` package.
 
-- Document daemon architecture.
-- Define client, admin, and private API surfaces.
-- Define connector model.
-- Define migration strategy.
-
-Existing state remains:
-
-```text
-Application -> embedded Mycel engine -> storage
-```
-
-### Phase 2: Introduce service interfaces
-
-No daemon required yet.
-
-- Extract client-facing engine operations behind service interfaces.
-- Extract admin/system operations behind service interfaces.
-- Keep current embedded API working.
-- Route existing Go calls directly to the same underlying engine implementation.
-
-### Phase 3: Add in-process connector
-
-Still no network dependency.
-
-- Define a connector interface.
-- Implement `EmbeddedConnector` over the existing engine.
-- Start adapting tests and selected consumers to use the connector abstraction.
-
-Target shape:
-
-```text
-Application -> Connector interface -> EmbeddedConnector -> engine -> storage
-```
-
-### Phase 4: Add daemon process shell
-
-Introduce a daemon command without requiring consumers to use it.
-
-- Add `mycel daemon` command.
-- Load config and data directory.
-- Initialize engine and stores.
-- Expose health/readiness and minimal diagnostics.
-- Keep embedded mode unchanged.
-
-### Phase 5: Add network Client API
-
-Expose core graph/space operations over the network.
-
-- Define protobuf service contracts.
-- Implement server handlers over the service interfaces.
-- Implement generated or hand-written `NetworkConnector`.
-- Add behavior parity tests comparing `EmbeddedConnector` and `NetworkConnector`.
-
-Target shape:
-
-```text
-Application -> NetworkConnector -> Mycel daemon -> engine -> storage
-```
-
-### Phase 6: Migrate consumers behind connector abstraction
-
-Consumers such as Knot PKM should select Mycel mode by configuration.
-
-Initial default:
-
-```text
-embedded
-```
-
-Optional daemon mode:
-
-```text
-daemon
-```
-
-This lets PKM and other consumers continue running while daemon mode matures.
-
-### Phase 7: Add space/session cache manager
+### Space/session cache manager
 
 Once network mode works, improve daemon performance.
 
@@ -383,7 +299,7 @@ Move operational concerns into daemon admin APIs.
 - backups/import/export
 - config/mesh readiness
 
-Adapt CLI commands to call the Admin API where appropriate, while preserving embedded CLI paths during migration.
+Adapt CLI commands to call the Admin API where appropriate; embedded CLI paths are not preserved.
 
 ### Phase 9: Move background work into daemon
 
@@ -415,18 +331,18 @@ When daemon mode is stable and consumers are ready:
 
 ```text
 default: daemon
-fallback: embedded
+fallback: none
 ```
 
-Embedded mode may remain useful for tests, local tooling, single-process deployments, and libraries.
+Embedded mode is no longer a supported application runtime.
 
 ## Compatibility Principles
 
 - Every phase must leave the repository buildable and tests runnable.
-- Existing embedded behavior should remain available until daemon mode is explicitly ready to replace it.
+- Embedded runtime entrypoints should not be reintroduced.
 - Protocol definitions should be versioned.
 - Data format compatibility should be preserved wherever possible.
-- Migration should prioritize parity tests between embedded and daemon behavior.
+- Migration should prioritize daemon API/module tests over embedded parity tests.
 
 ## Open Questions
 
@@ -436,4 +352,4 @@ Embedded mode may remain useful for tests, local tooling, single-process deploym
 - What is the daemon identity model for private mesh communication?
 - Which operations belong in Client API vs Admin API when they affect both user data and daemon operations?
 - How much local caching should connectors perform versus leaving caching entirely daemon-side?
-- Should CLI default to embedded access, daemon admin access, or auto-detect?
+- Which additional daemon Admin APIs are needed before remaining internal scaffolding can be deleted?

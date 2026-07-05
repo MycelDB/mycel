@@ -24,7 +24,8 @@ import (
 	semanticmigration "github.com/myceldb/mycel/internal/semantic/migration"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	"github.com/myceldb/mycel/session"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
+	"github.com/myceldb/mycel/internal/session/filesession"
 	storeaccounting "github.com/myceldb/mycel/store/accounting"
 	storeembedding "github.com/myceldb/mycel/store/embedding"
 	storesemantic "github.com/myceldb/mycel/store/semantic"
@@ -227,7 +228,7 @@ func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID
 	if err := templates.Init(ctx, filepath.Join(m.dataDir, "templates")); err != nil {
 		return semanticbackfill.Runner{}, err
 	}
-	sess := session.NewSession(filepath.Join(m.dataDir, "graphs"), filepath.Join(m.dataDir, "blobs"), spaceID, templates, session.Permissions{Read: true, Admin: true}, session.Errors{Closed: fmt.Errorf("session closed"), NotFound: fmt.Errorf("not found"), Unauthorized: fmt.Errorf("unauthorized"), Conflict: fmt.Errorf("conflict")})
+	sess := filesession.New(filepath.Join(m.dataDir, "graphs"), filepath.Join(m.dataDir, "blobs"), spaceID, templates, sessionapi.Permissions{Read: true, Admin: true}, sessionapi.Errors{Closed: fmt.Errorf("session closed"), NotFound: fmt.Errorf("not found"), Unauthorized: fmt.Errorf("unauthorized"), Conflict: fmt.Errorf("conflict")})
 	global := m.GlobalManager()
 	return semanticbackfill.Runner{Session: sess, GlobalManager: global, SpaceManager: mgr, Connector: connectors.Service{GlobalManager: global, Accounting: m.accounting, SecretKeyB64: m.secretKeyB64}, VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}, nil
 }

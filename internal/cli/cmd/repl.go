@@ -53,7 +53,6 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 			}
 			a.UserRef = args[1]
 			a.Password = args[2]
-			a.Token = ""
 			conn, _, login, err := loginDaemonUser(ctx, a)
 			if err != nil {
 				fmt.Fprintln(out, "error:", err)
@@ -62,7 +61,6 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 			_ = conn.Close()
 			fmt.Fprintf(out, "logged in as %s\n", login.GetPrincipal().GetUsername())
 		case "logout":
-			a.Token = ""
 			a.UserRef = ""
 			a.Password = ""
 			a.CurrentSpaceID = nil

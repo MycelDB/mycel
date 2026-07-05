@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/internal/blobstorage"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	"github.com/myceldb/mycel/query"
-	sessionapi "github.com/myceldb/mycel/session/api"
 	storetemplate "github.com/myceldb/mycel/store/template"
 )
 

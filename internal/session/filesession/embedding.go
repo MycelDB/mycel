@@ -12,7 +12,7 @@ import (
 	"github.com/myceldb/mycel/internal/embedding/catalog"
 	"github.com/myceldb/mycel/internal/embedding/provider"
 	"github.com/myceldb/mycel/internal/embeddingstore"
-	sessionapi "github.com/myceldb/mycel/session/api"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 )
 
 type resolvedEmbeddingConfig struct {
@@ -257,7 +257,7 @@ func (s *FileSession) selectEmbeddingBatchNodes(ctx context.Context, in sessiona
 
 func (s *FileSession) resolveEmbeddingConfig(ctx context.Context, profileID *domainembedding.ProfileID, providerID, modelID string, keyID *domainembedding.ProviderKeyID, mode domainembedding.SourceMode, props []string, maxDepth *int, minLength int) (resolvedEmbeddingConfig, error) {
 	if s.embeddingManager == nil || s.currentUserID == uuid.Nil {
-		return resolvedEmbeddingConfig{}, fmt.Errorf("embedding metadata is unavailable; open sessions through engine.OpenSession")
+		return resolvedEmbeddingConfig{}, fmt.Errorf("embedding metadata is unavailable; use daemon semantic/indexing APIs instead of direct file sessions")
 	}
 	cat, err := catalog.Load()
 	if err != nil {

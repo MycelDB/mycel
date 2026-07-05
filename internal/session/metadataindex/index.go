@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/myceldb/mycel/domain/graph"
-	sessionapi "github.com/myceldb/mycel/session/api"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 )
 
 type valueKey struct {

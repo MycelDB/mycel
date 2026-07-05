@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
 	domainspace "github.com/myceldb/mycel/domain/space"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	q "github.com/myceldb/mycel/query"
-	sessionapi "github.com/myceldb/mycel/session/api"
 	storetemplate "github.com/myceldb/mycel/store/template"
 )
 

@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/myceldb/mycel/domain/graph"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	"github.com/myceldb/mycel/query"
-	sessionapi "github.com/myceldb/mycel/session/api"
 )
 
 func TestFileSessionTransactionPhase2ReadYourWrites(t *testing.T) {

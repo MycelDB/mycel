@@ -1,73 +1,92 @@
 # MycelDB
 
-Go library and CLI for MycelDB graph spaces.
+Daemon and CLI for MycelDB graph spaces.
 
 Module path: `github.com/myceldb/mycel`.
 
+## Runtime model
+
+MycelDB v2 is daemon-first and is being refactored to be daemon-only:
+
+```text
+myceld owns the data directory
+mycel and applications talk to myceld over gRPC
+```
+
+Do not embed Mycel by opening an engine or file-backed sessions in an application process. The historical public `engine` and `session` runtime packages have been removed; remaining file-session code lives under `internal/` for daemon implementation and migration coverage only.
+
+See [`docs/v2/design/daemon-only-boundary.md`](docs/v2/design/daemon-only-boundary.md) for the boundary and removal plan.
+
 ## Layout
 
-See [`docs/architecture.md`](docs/architecture.md) for a navigation guide, import conventions, and layer diagram.
+**Supported daemon-facing surfaces:**
 
-**Public API (safe for embedders):**
-- `engine/`: engine API, constructor, lifecycle, auth, and system/space management
-- `session/`: scoped graph-space operations (nodes, edges, templates, queries)
-- `domain/identity`: users, user IDs, and ownership
-- `domain/space`: spaces, space IDs, and space-level configuration types
-- `domain/access`: system roles, space permissions, and ACL rule types
-- `domain/graph`: pure graph domain types for nodes, edges, templates, and template policies
-- `domain/embedding`: pure embedding metadata, record, and semantic-search result types
-- `domain/semantic`: advanced semantic/inference resource metadata types
-- `query/`: programmatic GQL-style query builder
-- `store/`: injectable persistence interfaces (for tests or custom backends)
+- `cmd/myceld/`: daemon entrypoint and owner of local storage.
+- `cmd/mycel/`: CLI client for daemon Admin and Client APIs.
+- `api/proto/`: protobuf service definitions.
+- `gen/go/`: generated Go gRPC/protobuf stubs.
+- `domain/`: pure domain value types used by daemon internals and API mapping.
+- `query/`: query-building/value helpers used by daemon query code.
 
-**Internal (do not import from applications):**
-- `engine/internal/`: default engine implementation
-- `internal/session/filesession/`: file-backed session implementation
-- `internal/graphstorage/`, `internal/filestore/`: low-level persistence
-- `internal/cli/`: CLI command implementation
-- `cmd/mycel/`: CLI entrypoint binary
+**Daemon implementation internals:**
 
-**Documentation:**
-- `docs/`: API/reference documentation
+- `internal/daemon/`: runtime, modules, auth, and gRPC service adapters.
+- `internal/graphstorage/`, `internal/blobstorage/`, `internal/session/filesession/`: local persistence used by `myceld`.
+- `store/`: transitional file-backed stores used by daemon modules; not a supported application extension API.
+- `internal/session/`: internal session API/types and file-session implementation used by daemon modules.
 
-## API docs
-- Architecture and navigation: `docs/architecture.md`
-- Edge structures: `docs/domain/graph/edge.md`
-- Session API: `docs/session/session.md`
-- Programmatic queries: `docs/query/gql-mapping.md`
-- Node operations: `docs/domain/graph/node.md`
-- Node templates: `docs/domain/graph/template.md`
-- User structures: `docs/domain/identity/user.md`
-- Space structures: `docs/domain/space/space.md`
-- Access control: `docs/domain/access/access.md`
-- Storage layout: `docs/storage/layout.md`
-- CLI usage: `docs/cli/README.md`
-- Semantic indexing and embeddings: `docs/semantic/README.md`
-- Embeddings MVP: `docs/semantic/current-mvp.md`
-- Custom metadata indexing: `docs/metadata.md`
-
-## CLI
-
-Build and run the operator CLI from the module root:
+## Build
 
 ```sh
 make build
-bin/mycel --help
 ```
 
-See `docs/cli/README.md` for command reference.
+This builds:
 
-## Data directory
+- `bin/myceld`
+- `bin/mycel`
 
-MycelDB tools and services use `MYCELDB_DATA_DIR` as the shared default data directory when no explicit data directory is supplied.
+## Run the daemon
 
 ```sh
-export MYCELDB_DATA_DIR=~/mycel_data
+make start
 ```
 
-Explicit `engine.EngineConfig.DataDir` values still take precedence.
+Defaults:
+
+```text
+MYCELD_DATA_DIR=~/mycel_data
+MYCELD_GRPC_ADDR=127.0.0.1:9091
+```
+
+Stop it with:
+
+```sh
+make stop
+```
+
+## CLI
+
+The CLI connects to `myceld` over gRPC:
+
+```sh
+bin/mycel --daemon-addr 127.0.0.1:9091 --help
+```
+
+Admin APIs require an operator login. Client APIs require a standard-user login. Optional CLI configuration is loaded from `--config` or `MYCEL_CONFIG`; daemon connection defaults come from `MYCELD_GRPC_ADDR` and related `MYCELD_TLS*` settings.
+
+TLS/mTLS daemon connection flags are available:
+
+```sh
+--daemon-tls
+--daemon-tls-ca /path/to/ca.pem
+--daemon-tls-client-cert /path/to/client.pem
+--daemon-tls-client-key /path/to/client-key.pem
+```
 
 ## Testing
-- Run once: `make test`
+
+- Daemon-only boundary check: `make check-daemon-only`
+- Run once: `make test` (includes daemon-only checks)
 - Verbose + coverage: `make test-verbose`
-- Watch mode (verbose + coverage): `make test-watch` (requires `watchexec`)
+- Watch mode: `make test-watch` (requires `watchexec`)

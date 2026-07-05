@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: test test-verbose test-watch build build-cli build-daemon run-cli run-daemon start stop generate-proto
+.PHONY: check-daemon-only test test-verbose test-watch build build-cli build-daemon run-cli run-daemon start stop generate-proto
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -12,18 +12,21 @@ MYCELD_STDOUT_LOG = $(MYCELD_DATA_DIR)/log/myceld.stdout.log
 generate-proto:
 	go run github.com/bufbuild/buf/cmd/buf@v1.50.1 generate
 
-test:
+check-daemon-only:
+	scripts/check-daemon-only.sh
+
+test: check-daemon-only
 	go test ./...
 
-test-verbose:
+test-verbose: check-daemon-only
 	go test -v -count=1 -cover -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
 test-watch:
 	@command -v watchexec >/dev/null 2>&1 || (echo "watchexec is required. Install with: brew install watchexec" && exit 1)
-	watchexec -e go -- "go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
+	watchexec -e go,sh -- "scripts/check-daemon-only.sh && go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
 
-build: build-cli build-daemon
+build: check-daemon-only build-cli build-daemon
 
 build-cli:
 	go build -o bin/$(CLI_BINARY) ./cmd/mycel
