@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/domain/graph"
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
 	daegraph "github.com/myceldb/mycel/internal/daemon/modules/graph"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
 	"google.golang.org/grpc/codes"

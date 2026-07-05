@@ -7,7 +7,7 @@ Implemented initial daemon-oriented Admin Operator API on the `refactor_daemon` 
 The protobuf source of truth is:
 
 ```text
-api/proto/mycel/admin/v1/operator.proto
+github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/operator.proto
 ```
 
 This document depends on:

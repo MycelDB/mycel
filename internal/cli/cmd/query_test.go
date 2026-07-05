@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 )
 
 func TestQueryNodesCommandUsesDaemonGRPC(t *testing.T) {

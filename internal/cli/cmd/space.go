@@ -3,9 +3,9 @@ package cmd
 import (
 	"fmt"
 
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	domainspace "github.com/myceldb/mycel/domain/space"
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/spf13/cobra"
 )

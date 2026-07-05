@@ -7,7 +7,7 @@ Implemented daemon-oriented Client Change Stream API MVP on the `refactor_daemon
 The protobuf source of truth is:
 
 ```text
-api/proto/mycel/client/v1/change_stream.proto
+github.com/myceldb/mycel-api/api/proto/mycel/client/v1/change_stream.proto
 ```
 
 This document depends on:

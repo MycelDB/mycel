@@ -6,11 +6,11 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/domain/graph"
 	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	domainspace "github.com/myceldb/mycel/domain/space"
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"

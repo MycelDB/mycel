@@ -7,7 +7,7 @@ Implemented daemon-backed MVP.
 Protobuf source:
 
 ```text
-api/proto/mycel/admin/v1/semantic_maintenance.proto
+github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/semantic_maintenance.proto
 ```
 
 ## Service

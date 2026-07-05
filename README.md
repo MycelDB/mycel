@@ -23,8 +23,8 @@ See [`docs/v2/design/daemon-only-boundary.md`](docs/v2/design/daemon-only-bounda
 
 - `cmd/myceld/`: daemon entrypoint and owner of local storage.
 - `cmd/mycel/`: CLI client for daemon Admin and Client APIs.
-- `api/proto/`: protobuf service definitions.
-- `gen/go/`: generated Go gRPC/protobuf stubs.
+- `github.com/myceldb/mycel-api/api/proto/`: protobuf service definitions.
+- `github.com/myceldb/mycel-api/gen/go/`: generated Go gRPC/protobuf stubs consumed by the daemon and clients.
 - `domain/`: pure domain value types used by daemon internals and API mapping.
 - `query/`: query-building/value helpers used by daemon query code.
 

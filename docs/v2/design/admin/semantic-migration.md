@@ -7,7 +7,7 @@ Implemented daemon-backed MVP for legacy embedding profile migration.
 Protobuf source:
 
 ```text
-api/proto/mycel/admin/v1/semantic_migration.proto
+github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/semantic_migration.proto
 ```
 
 ## Service

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	daemonchange "github.com/myceldb/mycel/internal/daemon/modules/changestream"
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	"google.golang.org/grpc/codes"

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel-api/gen/go/mycel/common/v1"
 	domainspace "github.com/myceldb/mycel/domain/space"
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
-	commonv1 "github.com/myceldb/mycel/gen/go/mycel/common/v1"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	"google.golang.org/grpc/codes"

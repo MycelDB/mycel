@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	daemonapp "github.com/myceldb/mycel/internal/daemon/app"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"

@@ -9,7 +9,7 @@ This document defines cross-cutting authorization concepts used by the Client AP
 The protobuf source of truth for shared access-control types is:
 
 ```text
-api/proto/mycel/common/v1/access.proto
+github.com/myceldb/mycel-api/api/proto/mycel/common/v1/access.proto
 ```
 
 ## Summary

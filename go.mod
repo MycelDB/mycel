@@ -1,20 +1,19 @@
 module github.com/myceldb/mycel
 
-go 1.23.0
+go 1.25.5
 
 require (
 	github.com/google/uuid v1.6.0
 	github.com/jedib0t/go-pretty/v6 v6.7.10
 	github.com/knadh/koanf/parsers/yaml v1.1.0
 	github.com/knadh/koanf/providers/confmap v1.0.0
-	github.com/knadh/koanf/providers/env v1.1.0
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.3.5
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5
-	golang.org/x/crypto v0.36.0
-	google.golang.org/grpc v1.73.0
-	google.golang.org/protobuf v1.36.6
+	golang.org/x/crypto v0.50.0
+	google.golang.org/grpc v1.82.0
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -26,10 +25,13 @@ require (
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
+	github.com/myceldb/mycel-api v0.1.0
 	github.com/rivo/uniseg v0.4.7 // indirect
 	go.yaml.in/yaml/v3 v3.0.3 // indirect
-	golang.org/x/net v0.38.0 // indirect
-	golang.org/x/sys v0.32.0 // indirect
-	golang.org/x/text v0.23.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250324211829-b45e905df463 // indirect
+	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 )
+
+replace github.com/myceldb/mycel-api => ../mycel-api

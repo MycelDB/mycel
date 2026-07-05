@@ -10,8 +10,8 @@ import (
 	"net"
 	"os"
 
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"

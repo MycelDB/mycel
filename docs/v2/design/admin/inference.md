@@ -7,7 +7,7 @@ Implemented daemon-oriented Admin Inference API MVP on the `refactor_daemon` bra
 The protobuf source of truth is:
 
 ```text
-api/proto/mycel/admin/v1/inference.proto
+github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/inference.proto
 ```
 
 ## Purpose

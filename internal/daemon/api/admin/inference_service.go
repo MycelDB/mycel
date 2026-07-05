@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
+	commonv1 "github.com/myceldb/mycel-api/gen/go/mycel/common/v1"
 	"github.com/myceldb/mycel/domain/graph"
 	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	domainspace "github.com/myceldb/mycel/domain/space"
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
-	commonv1 "github.com/myceldb/mycel/gen/go/mycel/common/v1"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonsemantic "github.com/myceldb/mycel/internal/daemon/modules/semantic"
 	"google.golang.org/grpc/codes"

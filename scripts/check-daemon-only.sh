@@ -36,6 +36,14 @@ if [ -e session ]; then
   fail=1
 fi
 
+if [ -e api/proto ] || [ -e gen/go ] || [ -e buf.yaml ] || [ -e buf.gen.yaml ]; then
+  echo "daemon-only check failed: protobuf sources and generated stubs belong in github.com/myceldb/mycel-api" >&2
+  for path in api/proto gen/go buf.yaml buf.gen.yaml; do
+    [ -e "$path" ] && echo "  $path" >&2
+  done
+  fail=1
+fi
+
 report_match "Go code must not import public engine/session packages" \
   rg -n 'github\.com/myceldb/mycel/(engine|session)("|/)' --glob '*.go' --glob '!gen/**' .
 

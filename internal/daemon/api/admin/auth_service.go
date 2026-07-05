@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
 	"google.golang.org/grpc/codes"

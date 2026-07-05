@@ -7,7 +7,7 @@ Implemented daemon-backed operator lookup MVP.
 Protobuf source:
 
 ```text
-api/proto/mycel/admin/v1/domain.proto
+github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/domain.proto
 ```
 
 ## Service

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	domainspace "github.com/myceldb/mycel/domain/space"
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/durationpb"

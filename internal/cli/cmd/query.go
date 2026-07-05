@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/structpb"

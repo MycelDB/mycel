@@ -7,7 +7,7 @@ Implemented daemon-oriented Client Template API on the `refactor_daemon` branch.
 The protobuf source of truth is:
 
 ```text
-api/proto/mycel/client/v1/template.proto
+github.com/myceldb/mycel-api/api/proto/mycel/client/v1/template.proto
 ```
 
 This document depends on:

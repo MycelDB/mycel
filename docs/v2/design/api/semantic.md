@@ -7,7 +7,7 @@ Implemented daemon-oriented Client Semantic API MVP on the `refactor_daemon` bra
 The protobuf source of truth is:
 
 ```text
-api/proto/mycel/client/v1/semantic.proto
+github.com/myceldb/mycel-api/api/proto/mycel/client/v1/semantic.proto
 ```
 
 This document depends on:

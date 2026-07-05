@@ -7,7 +7,7 @@ Implemented daemon-oriented Client Metadata Catalog API MVP on the `refactor_dae
 The protobuf source of truth is:
 
 ```text
-api/proto/mycel/client/v1/metadata_catalog.proto
+github.com/myceldb/mycel-api/api/proto/mycel/client/v1/metadata_catalog.proto
 ```
 
 This document depends on:

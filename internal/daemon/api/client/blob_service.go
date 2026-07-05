@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	daemonblob "github.com/myceldb/mycel/internal/daemon/modules/blob"
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	"google.golang.org/grpc/codes"

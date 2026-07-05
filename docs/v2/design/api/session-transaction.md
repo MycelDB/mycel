@@ -7,7 +7,7 @@ Implemented daemon-oriented Client Session and Transaction lifecycle APIs on the
 The protobuf source of truth is:
 
 ```text
-api/proto/mycel/client/v1/session.proto
+github.com/myceldb/mycel-api/api/proto/mycel/client/v1/session.proto
 ```
 
 This document depends on the cross-cutting access-control model in:

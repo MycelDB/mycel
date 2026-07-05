@@ -7,7 +7,7 @@ Implemented initial daemon-oriented Admin User API on the `refactor_daemon` bran
 The protobuf source of truth is:
 
 ```text
-api/proto/mycel/admin/v1/user.proto
+github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/user.proto
 ```
 
 This document depends on:

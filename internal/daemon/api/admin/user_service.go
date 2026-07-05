@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
+	commonv1 "github.com/myceldb/mycel-api/gen/go/mycel/common/v1"
 	domainauth "github.com/myceldb/mycel/domain/auth"
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
-	commonv1 "github.com/myceldb/mycel/gen/go/mycel/common/v1"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	storesession "github.com/myceldb/mycel/store/session"

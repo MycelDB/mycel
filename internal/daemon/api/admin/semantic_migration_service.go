@@ -4,11 +4,11 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
+	commonv1 "github.com/myceldb/mycel-api/gen/go/mycel/common/v1"
 	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
-	commonv1 "github.com/myceldb/mycel/gen/go/mycel/common/v1"
 	daemonsemantic "github.com/myceldb/mycel/internal/daemon/modules/semantic"
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	semanticmigration "github.com/myceldb/mycel/internal/semantic/migration"

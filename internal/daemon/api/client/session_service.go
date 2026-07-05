@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	daemonchange "github.com/myceldb/mycel/internal/daemon/modules/changestream"
 	daegraph "github.com/myceldb/mycel/internal/daemon/modules/graph"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"

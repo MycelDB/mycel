@@ -9,10 +9,10 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	domainembedding "github.com/myceldb/mycel/domain/embedding"
 	"github.com/myceldb/mycel/domain/identity"
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
 	storeembedding "github.com/myceldb/mycel/store/embedding"
 )
 

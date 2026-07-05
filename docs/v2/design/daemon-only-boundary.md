@@ -12,8 +12,8 @@ The daemon-only target supports:
 
 - `cmd/myceld`: the daemon process and sole owner of the data directory.
 - `cmd/mycel`: operator/user CLI that connects to `myceld` over gRPC.
-- `api/proto/**`: protobuf service definitions for Admin and Client APIs.
-- `gen/go/**`: generated gRPC/protobuf Go client/server stubs.
+- `github.com/myceldb/mycel-api/api/proto/**`: protobuf service definitions for Admin and Client APIs.
+- `github.com/myceldb/mycel-api/gen/go/**`: generated gRPC/protobuf Go client/server stubs.
 - Domain value packages that are pure data/type definitions and do not open local storage.
 - Future client libraries that wrap gRPC connections to a daemon.
 

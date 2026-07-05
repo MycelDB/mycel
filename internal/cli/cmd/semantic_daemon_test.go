@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/domain/graph"
 	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
 	storesemantic "github.com/myceldb/mycel/store/semantic"
 )
 
