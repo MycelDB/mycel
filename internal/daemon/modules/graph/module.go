@@ -490,9 +490,6 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		return CommitResult{}, mapStorageError(err)
 	}
 	expectedRevision := uint64(tx.BaseRevision)
-	if expectedRevision == 0 && store.Revision() > 0 {
-		expectedRevision = store.Revision()
-	}
 	storageTx.ExpectRevision(expectedRevision)
 	for _, node := range sortedNodes(snapshot.putNodes) {
 		if err := storageTx.PutNode(node); err != nil {
