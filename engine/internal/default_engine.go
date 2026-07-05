@@ -272,11 +272,9 @@ func (e *defaultEngine) Open(cfg EngineConfig) error {
 		var admin identity.User
 		if !exists {
 			status := identity.UserStatusActive
-			username := cfg.AdminUsername
 			admin, err = um.Create(context.Background(), user.CreateInput{
 				User: identity.UserInput{
-					Ref:      identity.UserRef(cfg.AdminUsername),
-					Username: &username,
+					Username: identity.UserRef(cfg.AdminUsername),
 					Status:   status,
 				},
 				Password: cfg.AdminPassword,
@@ -381,7 +379,7 @@ func (e *defaultEngine) LoginSession(ctx context.Context, in LoginSessionInput) 
 	now := time.Now().UTC()
 	rec, err := e.refreshSessionManager.Create(ctx, domainauth.RefreshSession{
 		UserID:            account.ID,
-		UserRef:           account.Ref,
+		UserRef:           account.Username,
 		Status:            domainauth.RefreshSessionStatusActive,
 		RefreshTokenHash:  refreshTokenHash,
 		CreatedAt:         now,
@@ -397,7 +395,7 @@ func (e *defaultEngine) LoginSession(ctx context.Context, in LoginSessionInput) 
 	if err != nil {
 		return LoginSessionResult{}, err
 	}
-	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.login_success", UserID: &account.ID, UserRef: account.Ref, SessionID: &rec.ID, Message: "login session created"})
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.login_success", UserID: &account.ID, UserRef: account.Username, SessionID: &rec.ID, Message: "login session created"})
 	return LoginSessionResult{
 		AccessToken:          accessToken,
 		AccessTokenExpiresAt: accessTokenExpiresAt,
@@ -484,7 +482,7 @@ func (e *defaultEngine) RefreshSession(ctx context.Context, in RefreshSessionInp
 	if err != nil {
 		return RefreshSessionResult{}, err
 	}
-	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_success", UserID: &account.ID, UserRef: account.Ref, SessionID: &updated.ID, Message: "refresh session rotated"})
+	_ = e.recordAuthAuditEvent(context.Background(), domainauth.AuthAuditEvent{Type: "auth.refresh_success", UserID: &account.ID, UserRef: account.Username, SessionID: &updated.ID, Message: "refresh session rotated"})
 	return RefreshSessionResult{
 		AccessToken:          accessToken,
 		AccessTokenExpiresAt: accessTokenExpiresAt,
@@ -674,7 +672,7 @@ func (e *defaultEngine) mintAccessToken(ctx context.Context, account identity.Us
 		IAT:      now.Unix(),
 		EXP:      expiresAt.Unix(),
 		UserID:   account.ID,
-		UserRef:  account.Ref,
+		UserRef:  account.Username,
 		Roles:    roles,
 		OwnerIDs: []identity.UserID{account.ID},
 		SpaceIDs: []domainspace.SpaceID{},

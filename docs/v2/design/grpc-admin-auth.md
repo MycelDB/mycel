@@ -45,7 +45,9 @@ mycel.admin.v1.AdminAuthService.LoginOperator
 mycel.admin.v1.AdminAuthService.WhoAmI
 ```
 
-`LoginOperator` is public. `WhoAmI` and Admin API operations such as `AdminOperatorService.ListOperators` and `AdminOperatorService.SetOperatorPassword` require a bearer token.
+`LoginOperator` is public. `WhoAmI` and all Admin API operations require a bearer token.
+
+Authorization is currently coarse: only active operators can log in; active `system_admin` operators may create, update, disable, enable, soft-delete, grant roles/capabilities, and change another operator's password. Operators with user-management capabilities may manage standard users through `AdminUserService`. Any authenticated operator can list/read operators and change their own password.
 
 ## Token model
 
@@ -67,7 +69,7 @@ Future hardening can add:
 - refresh sessions for operators
 - token revocation lists
 - mTLS for operator-to-daemon administration
-- explicit role/capability checks
+- finer-grained capability checks beyond the current system-admin gate
 
 ## CLI behavior
 
@@ -83,7 +85,26 @@ An authenticated operator can change their own password:
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<current-password>' admin password set --new-password '<new-password>'
 ```
 
-The initial implementation intentionally restricts `SetOperatorPassword` to the authenticated operator's own ID. Attempts to change another operator's password return `PermissionDenied`. Broader operator-management semantics should wait for persisted roles/capabilities.
+A system admin can change another operator's password by passing `--operator-id`.
+
+Additional operator lifecycle commands include:
+
+```sh
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin get --operator-id '<id>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin find --operator-username '<username>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin create --operator-username '<username>' --new-password '<password>' [--email '<email>'] [--role system-admin]
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin update --operator-id '<id>' --email '<email>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin disable --operator-id '<id>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin enable --operator-id '<id>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin delete --operator-id '<id>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin role list --operator-id '<id>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin role grant --operator-id '<id>' --role space-admin
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin role revoke --operator-id '<id>' --grant-id '<grant-id>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin capability list --operator-id '<id>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin capability grant --operator-id '<id>' --capability operator-manage
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin capability revoke --operator-id '<id>' --grant-id '<grant-id>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin session list --operator-id '<id>'
+```
 
 The CLI list flow is:
 
@@ -91,11 +112,19 @@ The CLI list flow is:
 2. receive access token
 3. call `AdminOperatorService.ListOperators` with `authorization: Bearer <token>` metadata
 
+Standard user-management commands use the same daemon operator login flow:
+
+```sh
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' user add --user-username alice --new-password '<password>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' user list
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' user delete '<user-id>'
+```
+
 The CLI password-change flow is:
 
 1. call `AdminAuthService.LoginOperator` with the current password
 2. call `AdminAuthService.WhoAmI` with the access token
-3. call `AdminOperatorService.SetOperatorPassword` for that operator ID with the new password
+3. call `AdminOperatorService.SetOperatorPassword` for the requested operator ID, defaulting to the authenticated operator ID
 
 The command rejects missing `--username/-u` or `--password/-p`.
 
@@ -119,9 +148,9 @@ Tests cover:
 - tampered and expired token rejection
 - gRPC interceptor requiring bearer metadata
 - `LoginOperator` success and bad-password rejection
-- `ListOperators` requiring an authenticated context
-- gRPC server rejecting anonymous `ListOperators`
+- `AdminOperatorService` and `AdminUserService` methods requiring an authenticated context
+- gRPC server rejecting anonymous admin calls
 - CLI requiring credentials and rejecting bad passwords
-- CLI login plus authenticated admin listing over gRPC
-- self-service admin password change over gRPC
+- CLI login plus authenticated admin/operator management over gRPC
+- self-service and system-admin password change over gRPC
 - old password rejection and new password acceptance after a password change

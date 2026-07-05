@@ -11,6 +11,7 @@ import (
 	domainspace "github.com/myceldb/mycel/domain/space"
 	mycelengine "github.com/myceldb/mycel/engine"
 	adminv1 "github.com/myceldb/mycel/gen/go/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
 )
 
 func RenderDaemonOperatorsTable(operators []*adminv1.Operator) {
@@ -28,9 +29,35 @@ func RenderUsersTable(users []identity.User) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"User ID", "Ref", "Email", "Username", "Status"})
+	t.AppendHeader(table.Row{"User ID", "Username", "Status"})
 	for _, u := range users {
-		t.AppendRow(table.Row{u.ID, u.Ref, stringPtrValue(u.Email), stringPtrValue(u.Username), u.Status})
+		t.AppendRow(table.Row{u.ID, u.Username, u.Status})
+	}
+	t.Render()
+}
+
+func RenderDaemonUsersTable(users []*adminv1.User) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleDefault)
+	t.AppendHeader(table.Row{"User ID", "Username", "State", "Created At"})
+	for _, user := range users {
+		t.AppendRow(table.Row{user.GetUserId(), user.GetUsername(), user.GetState().String(), user.GetCreateTime().AsTime()})
+	}
+	t.Render()
+}
+
+func RenderClientSpacesTable(spaces []*clientv1.Space) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleDefault)
+	t.AppendHeader(table.Row{"Space ID", "Owner", "Name", "State", "Access"})
+	for _, sp := range spaces {
+		roles := make([]string, 0, len(sp.GetCallerAccess().GetRoles()))
+		for _, role := range sp.GetCallerAccess().GetRoles() {
+			roles = append(roles, role.String())
+		}
+		t.AppendRow(table.Row{sp.GetSpaceId(), sp.GetOwner().GetId(), sp.GetName(), sp.GetState().String(), strings.Join(roles, ",")})
 	}
 	t.Render()
 }
@@ -46,6 +73,17 @@ func RenderSpacesTable(spaces []domainspace.Space) {
 	t.Render()
 }
 
+func RenderClientDomainsTable(domains []*clientv1.Domain) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleDefault)
+	t.AppendHeader(table.Row{"Domain ID", "Space ID", "Key", "Name", "Default"})
+	for _, d := range domains {
+		t.AppendRow(table.Row{d.GetDomainId(), d.GetSpaceId(), d.GetKey(), d.GetName(), d.GetDefault()})
+	}
+	t.Render()
+}
+
 func RenderDomainsTable(domains []graph.Domain) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
@@ -53,6 +91,17 @@ func RenderDomainsTable(domains []graph.Domain) {
 	t.AppendHeader(table.Row{"Domain ID", "Space ID", "Key", "Name", "Default"})
 	for _, d := range domains {
 		t.AppendRow(table.Row{d.ID, d.SpaceID, d.Key, d.Name, d.Default})
+	}
+	t.Render()
+}
+
+func RenderClientTemplatesTable(templates []*clientv1.Template) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleDefault)
+	t.AppendHeader(table.Row{"Template ID", "Key", "Version", "Display Name", "State", "System"})
+	for _, tmpl := range templates {
+		t.AppendRow(table.Row{tmpl.GetTemplateId(), tmpl.GetKey(), tmpl.GetVersion(), tmpl.GetDisplayName(), tmpl.GetState().String(), tmpl.GetSystem()})
 	}
 	t.Render()
 }
@@ -97,6 +146,17 @@ func RenderSpaceAccessTable(rules []access.SpaceAccessRule) {
 	t.AppendHeader(table.Row{"Rule ID", "Space ID", "User ID", "Permissions"})
 	for _, rule := range rules {
 		t.AppendRow(table.Row{rule.ID, rule.SpaceID, rule.UserID, joinSpacePermissions(rule.Permissions)})
+	}
+	t.Render()
+}
+
+func RenderClientAuthSessionsTable(sessions []*clientv1.AuthSessionSummary) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleDefault)
+	t.AppendHeader(table.Row{"Session ID", "State", "Client", "Current", "Last Seen", "Expires At"})
+	for _, session := range sessions {
+		t.AppendRow(table.Row{session.GetAuthSessionId(), session.GetState().String(), session.GetClient().GetName(), session.GetCurrent(), session.GetLastSeenTime().AsTime(), session.GetExpireTime().AsTime()})
 	}
 	t.Render()
 }

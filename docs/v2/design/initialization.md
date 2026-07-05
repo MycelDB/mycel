@@ -4,7 +4,7 @@
 
 Draft v2 design note for the `refactor_daemon` branch.
 
-This document describes the intended daemon initialization behavior for the current design scope only. It does not describe a complete daemon runtime and does not introduce additional functionality beyond initialization and listing admins/operators.
+This document describes the intended daemon initialization behavior for the current design scope only. It does not describe a complete daemon runtime beyond initialization, module registration, and the current admin/operator management slice.
 
 ## Scope
 
@@ -16,29 +16,29 @@ The current initialization design covers:
 - log directory creation
 - logger initialization
 - admin management module initialization
+- user management module initialization
 - admin store creation when missing
+- user store creation when missing
 - default standalone admin creation when no admin store exists
-- list admins operation
-- gRPC listener startup for initial Admin API operations
+- admin/operator list and lifecycle operations
+- gRPC listener startup for Admin API operations
 - startup/shutdown log messages
 
 Out of scope for this document:
 
 - client graph APIs
 - admin user management
-- admin operator role mutation
+- admin operator role/capability mutation beyond the current daemon-local file store
 - space management
 - mesh networking
 - replication
 - gRPC listener setup details
 - production credential rotation
-- full daemon module lifecycle beyond init/list admins
+- full daemon module lifecycle beyond init/admin operator management
 
 ## Terminology
 
-This document uses **admin** to describe the initial daemon administrator account created during standalone initialization.
-
-The v2 Admin API design also uses the term **operator** for system admins/operators. The implementation may align naming later, but the narrow initialization behavior described here is simply: create and list daemon admins.
+This document uses **admin** to describe daemon administrator accounts and **operator** for the Admin API model of those accounts. The standalone bootstrap creates one initial active system-admin operator named `admin`.
 
 ## Initialization inputs
 
@@ -72,13 +72,17 @@ Within the data directory, the current initialization design creates the followi
 <data>/
   log/
   admins/
+  users/
+    sessions/
 ```
 
 `log/` stores daemon log files.
 
 `admins/` stores daemon admin/operator management data for the current design scope.
 
-Additional directories will be introduced by future modules, but they are not part of this document's current behavior.
+`users/` stores daemon standard-user management data and user refresh-session records.
+
+Additional directories will be introduced by future modules.
 
 ## Logging initialization
 
@@ -189,7 +193,7 @@ If `abort` is true, daemon startup stops. If `abort` is false, the daemon logs t
 
 ## Admin management module initialization
 
-The current registered module is the admin management module.
+The current registered modules are the admin management module and the user management module.
 
 Its `Init` method checks:
 
@@ -201,35 +205,56 @@ If `<data>/admins/` does not exist, the module creates it.
 
 If the admin store does not exist, the module creates it.
 
-If the daemon is running in `standalone` mode and the admin store was missing or contains no admins, the module creates a default admin account:
+If the daemon is running in `standalone` mode and the admin store was missing or contains no admins, the module creates a default active system-admin operator:
 
 ```text
 username: admin
 password: randomly generated
 ```
 
-The module persists the admin account with a password hash, not the plaintext password.
+The module persists the admin account with a password hash, active state, create/update timestamps, and a `system_admin` role grant. It does not store the plaintext password.
 
 The module logs the generated username and plaintext password once for bootstrap access and explicitly tells the operator to change the generated password immediately.
 
-If the admin store already exists and contains at least one admin, the module does not recreate the default admin.
+If the admin store already exists and contains at least one admin, the module does not recreate the default admin. For compatibility with earlier daemon slices, standalone initialization also ensures at least one active existing admin has the `system_admin` role; if no active system admin exists, it grants `system_admin` to the first active existing admin and logs the migration.
 
-## List admins/operators operation
+## User management module initialization
 
-The current admin management behavior includes a read-only list operation.
+The user module initializes:
+
+```text
+<data>/users/users.json
+<data>/users/sessions/refresh_sessions.json
+```
+
+It stores daemon-managed standard users with active/disabled/deleted state, optional email/display name, create/update timestamps, and bcrypt password hashes. Password plaintext is never persisted.
+
+The module also owns user refresh-session listing and revocation for AdminUserService.
+
+## Admins/operators operations
+
+The current admin management behavior includes daemon-local operator lifecycle operations.
 
 Internally, the admin module exposes safe `AdminSummary` values that omit password hashes. Externally, authenticated clients access those summaries through:
 
 ```text
 mycel.admin.v1.AdminAuthService.LoginOperator
-mycel.admin.v1.AdminOperatorService.ListOperators
+mycel.admin.v1.AdminOperatorService
 ```
 
-`LoginOperator` verifies an operator username/password and returns a short-lived bearer token. `ListOperators` requires that token in gRPC metadata. The list operation returns known daemon admins as v2 Admin API `Operator` records. The list operation is read-only and does not create, update, disable, delete, or grant privileges.
+`LoginOperator` verifies an operator username/password and returns a short-lived bearer token. `AdminOperatorService` methods require that token in gRPC metadata. The current service supports list/get/find/create/update/disable/enable/soft-delete/password/role/capability/session RPCs backed by the daemon-local file store.
 
-The current design does not define additional admin operations in this initialization document.
+Only active operators can log in. Mutations that affect other operators require operator-management capability. The module rejects actions that would remove the last active system admin. Operator session RPCs are currently empty/no-op placeholders because operator access tokens are short-lived and not persisted.
 
-Future Admin API documents may define richer operator/admin lifecycle operations separately.
+## Standard user operations
+
+Authenticated operators with `CAPABILITY_USER_CREATE` / `CAPABILITY_USER_MANAGE` can call:
+
+```text
+mycel.admin.v1.AdminUserService
+```
+
+The current service supports list/get/find/create/update/disable/enable/soft-delete/password/session RPCs backed by the daemon user module.
 
 ## Initialization sequence
 

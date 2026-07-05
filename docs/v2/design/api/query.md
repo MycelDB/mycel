@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for the daemon-oriented Client Query API on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Query API MVP on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -21,6 +21,8 @@ docs/v2/design/api/graph.md
 ## Purpose
 
 `QueryService` is the transaction-scoped Client API for structured graph queries.
+
+The current daemon MVP executes structured protobuf queries over daemon graph transaction snapshots, including read-your-writes for active read-write transactions.
 
 The v1 query API is a structured protobuf API, not a raw query-string language. It mirrors Mycel's current in-process query builder while leaving room for connector-generated helper APIs.
 
@@ -76,6 +78,30 @@ service QueryService {
   rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);
 }
 ```
+
+## CLI
+
+The daemon-backed CLI includes a basic node-query helper:
+
+```sh
+./bin/mycel -u alice -p '<password>' query nodes --transaction-id '<tx-id>'
+./bin/mycel -u alice -p '<password>' query nodes --transaction-id '<tx-id>' --tag test1
+./bin/mycel -u alice -p '<password>' query nodes --transaction-id '<tx-id>' --property-exists status
+./bin/mycel -u alice -p '<password>' query nodes --transaction-id '<tx-id>' --property-equals status=active
+./bin/mycel -u alice -p '<password>' query nodes --transaction-id '<tx-id>' --template-key logseq.journal
+```
+
+These commands construct a `GraphQuery` with start alias `n` and return the matched node as `node`.
+
+## Current implementation notes
+
+- Supports transaction-scoped node pattern starts.
+- Supports linear traversal steps in the protobuf API for `out` and `in` directions.
+- Supports node and tree projections.
+- Supports `and`, `has_tag`, `property_exists`, `property_equals`, and `between` expressions.
+- Supports order specs, query limit, and response pagination.
+- Scalar projections are minimal and currently return the bound node id for the requested alias.
+- The CLI currently exposes the common node-query subset; richer traversal query construction is available via gRPC clients.
 
 ## Transaction scoping
 

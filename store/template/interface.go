@@ -60,6 +60,12 @@ type TemplateRefImport struct {
 	Version string `json:"version"`
 }
 
+type UpdateInput struct {
+	TemplateID  graph.TemplateID
+	DisplayName *string
+	Description *string
+}
+
 // Manager manages templates for spaces.
 type Manager interface {
 	Init(ctx context.Context, location string) error
@@ -67,5 +73,8 @@ type Manager interface {
 	ListBySpace(ctx context.Context, spaceID domainspace.SpaceID) ([]graph.Template, error)
 	GetByID(ctx context.Context, id graph.TemplateID) (graph.Template, error)
 	Find(ctx context.Context, spaceID domainspace.SpaceID, key string, version string) (graph.Template, error)
+	Update(ctx context.Context, in UpdateInput) (graph.Template, error)
+	Archive(ctx context.Context, id graph.TemplateID) (graph.Template, error)
+	DeleteByID(ctx context.Context, id graph.TemplateID) error
 	DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error
 }

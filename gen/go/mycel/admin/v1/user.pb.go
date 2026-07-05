@@ -9,7 +9,6 @@ package adminv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	fieldmaskpb "google.golang.org/protobuf/types/known/fieldmaskpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
@@ -336,12 +335,8 @@ func (x *GetUserResponse) GetUser() *User {
 }
 
 type FindUserRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Types that are valid to be assigned to Lookup:
-	//
-	//	*FindUserRequest_Username
-	//	*FindUserRequest_Email
-	Lookup        isFindUserRequest_Lookup `protobuf_oneof:"lookup"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -376,46 +371,12 @@ func (*FindUserRequest) Descriptor() ([]byte, []int) {
 	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *FindUserRequest) GetLookup() isFindUserRequest_Lookup {
-	if x != nil {
-		return x.Lookup
-	}
-	return nil
-}
-
 func (x *FindUserRequest) GetUsername() string {
 	if x != nil {
-		if x, ok := x.Lookup.(*FindUserRequest_Username); ok {
-			return x.Username
-		}
+		return x.Username
 	}
 	return ""
 }
-
-func (x *FindUserRequest) GetEmail() string {
-	if x != nil {
-		if x, ok := x.Lookup.(*FindUserRequest_Email); ok {
-			return x.Email
-		}
-	}
-	return ""
-}
-
-type isFindUserRequest_Lookup interface {
-	isFindUserRequest_Lookup()
-}
-
-type FindUserRequest_Username struct {
-	Username string `protobuf:"bytes,1,opt,name=username,proto3,oneof"`
-}
-
-type FindUserRequest_Email struct {
-	Email string `protobuf:"bytes,2,opt,name=email,proto3,oneof"`
-}
-
-func (*FindUserRequest_Username) isFindUserRequest_Lookup() {}
-
-func (*FindUserRequest_Email) isFindUserRequest_Lookup() {}
 
 type FindUserResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -462,15 +423,13 @@ func (x *FindUserResponse) GetUser() *User {
 }
 
 type CreateUserRequest struct {
-	state       protoimpl.MessageState `protogen:"open.v1"`
-	Username    string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
-	DisplayName string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	Email       string                 `protobuf:"bytes,3,opt,name=email,proto3" json:"email,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Username string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
 	// Optional initial password. Password plaintext is never returned and must be
 	// hashed by the daemon before storage.
-	Password *string `protobuf:"bytes,4,opt,name=password,proto3,oneof" json:"password,omitempty"`
+	Password *string `protobuf:"bytes,2,opt,name=password,proto3,oneof" json:"password,omitempty"`
 	// When true, the user is created disabled and cannot log in until enabled.
-	Disabled      bool `protobuf:"varint,5,opt,name=disabled,proto3" json:"disabled,omitempty"`
+	Disabled      bool `protobuf:"varint,3,opt,name=disabled,proto3" json:"disabled,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -508,20 +467,6 @@ func (*CreateUserRequest) Descriptor() ([]byte, []int) {
 func (x *CreateUserRequest) GetUsername() string {
 	if x != nil {
 		return x.Username
-	}
-	return ""
-}
-
-func (x *CreateUserRequest) GetDisplayName() string {
-	if x != nil {
-		return x.DisplayName
-	}
-	return ""
-}
-
-func (x *CreateUserRequest) GetEmail() string {
-	if x != nil {
-		return x.Email
 	}
 	return ""
 }
@@ -584,104 +529,6 @@ func (x *CreateUserResponse) GetUser() *User {
 	return nil
 }
 
-type UpdateUserRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	User  *User                  `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
-	// Mutable paths are limited to "display_name" and "email" in v1. Username is
-	// immutable in v1.
-	UpdateMask    *fieldmaskpb.FieldMask `protobuf:"bytes,2,opt,name=update_mask,json=updateMask,proto3" json:"update_mask,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *UpdateUserRequest) Reset() {
-	*x = UpdateUserRequest{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[8]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *UpdateUserRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*UpdateUserRequest) ProtoMessage() {}
-
-func (x *UpdateUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[8]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use UpdateUserRequest.ProtoReflect.Descriptor instead.
-func (*UpdateUserRequest) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{8}
-}
-
-func (x *UpdateUserRequest) GetUser() *User {
-	if x != nil {
-		return x.User
-	}
-	return nil
-}
-
-func (x *UpdateUserRequest) GetUpdateMask() *fieldmaskpb.FieldMask {
-	if x != nil {
-		return x.UpdateMask
-	}
-	return nil
-}
-
-type UpdateUserResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	User          *User                  `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *UpdateUserResponse) Reset() {
-	*x = UpdateUserResponse{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[9]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *UpdateUserResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*UpdateUserResponse) ProtoMessage() {}
-
-func (x *UpdateUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[9]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use UpdateUserResponse.ProtoReflect.Descriptor instead.
-func (*UpdateUserResponse) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{9}
-}
-
-func (x *UpdateUserResponse) GetUser() *User {
-	if x != nil {
-		return x.User
-	}
-	return nil
-}
-
 type DisableUserRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	UserId         string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -693,7 +540,7 @@ type DisableUserRequest struct {
 
 func (x *DisableUserRequest) Reset() {
 	*x = DisableUserRequest{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[10]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -705,7 +552,7 @@ func (x *DisableUserRequest) String() string {
 func (*DisableUserRequest) ProtoMessage() {}
 
 func (x *DisableUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[10]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -718,7 +565,7 @@ func (x *DisableUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisableUserRequest.ProtoReflect.Descriptor instead.
 func (*DisableUserRequest) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{10}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DisableUserRequest) GetUserId() string {
@@ -751,7 +598,7 @@ type DisableUserResponse struct {
 
 func (x *DisableUserResponse) Reset() {
 	*x = DisableUserResponse{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[11]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -763,7 +610,7 @@ func (x *DisableUserResponse) String() string {
 func (*DisableUserResponse) ProtoMessage() {}
 
 func (x *DisableUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[11]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -776,7 +623,7 @@ func (x *DisableUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisableUserResponse.ProtoReflect.Descriptor instead.
 func (*DisableUserResponse) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{11}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DisableUserResponse) GetUser() *User {
@@ -795,7 +642,7 @@ type EnableUserRequest struct {
 
 func (x *EnableUserRequest) Reset() {
 	*x = EnableUserRequest{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[12]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -807,7 +654,7 @@ func (x *EnableUserRequest) String() string {
 func (*EnableUserRequest) ProtoMessage() {}
 
 func (x *EnableUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[12]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -820,7 +667,7 @@ func (x *EnableUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnableUserRequest.ProtoReflect.Descriptor instead.
 func (*EnableUserRequest) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{12}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *EnableUserRequest) GetUserId() string {
@@ -839,7 +686,7 @@ type EnableUserResponse struct {
 
 func (x *EnableUserResponse) Reset() {
 	*x = EnableUserResponse{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[13]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -851,7 +698,7 @@ func (x *EnableUserResponse) String() string {
 func (*EnableUserResponse) ProtoMessage() {}
 
 func (x *EnableUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[13]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -864,7 +711,7 @@ func (x *EnableUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnableUserResponse.ProtoReflect.Descriptor instead.
 func (*EnableUserResponse) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{13}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *EnableUserResponse) GetUser() *User {
@@ -884,7 +731,7 @@ type DeleteUserRequest struct {
 
 func (x *DeleteUserRequest) Reset() {
 	*x = DeleteUserRequest{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[14]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -896,7 +743,7 @@ func (x *DeleteUserRequest) String() string {
 func (*DeleteUserRequest) ProtoMessage() {}
 
 func (x *DeleteUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[14]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -909,7 +756,7 @@ func (x *DeleteUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteUserRequest.ProtoReflect.Descriptor instead.
 func (*DeleteUserRequest) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{14}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *DeleteUserRequest) GetUserId() string {
@@ -935,7 +782,7 @@ type DeleteUserResponse struct {
 
 func (x *DeleteUserResponse) Reset() {
 	*x = DeleteUserResponse{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[15]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -947,7 +794,7 @@ func (x *DeleteUserResponse) String() string {
 func (*DeleteUserResponse) ProtoMessage() {}
 
 func (x *DeleteUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[15]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -960,7 +807,7 @@ func (x *DeleteUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteUserResponse.ProtoReflect.Descriptor instead.
 func (*DeleteUserResponse) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{15}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DeleteUserResponse) GetUser() *User {
@@ -981,7 +828,7 @@ type SetUserPasswordRequest struct {
 
 func (x *SetUserPasswordRequest) Reset() {
 	*x = SetUserPasswordRequest{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[16]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -993,7 +840,7 @@ func (x *SetUserPasswordRequest) String() string {
 func (*SetUserPasswordRequest) ProtoMessage() {}
 
 func (x *SetUserPasswordRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[16]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1006,7 +853,7 @@ func (x *SetUserPasswordRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetUserPasswordRequest.ProtoReflect.Descriptor instead.
 func (*SetUserPasswordRequest) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{16}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SetUserPasswordRequest) GetUserId() string {
@@ -1039,7 +886,7 @@ type SetUserPasswordResponse struct {
 
 func (x *SetUserPasswordResponse) Reset() {
 	*x = SetUserPasswordResponse{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[17]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1051,7 +898,7 @@ func (x *SetUserPasswordResponse) String() string {
 func (*SetUserPasswordResponse) ProtoMessage() {}
 
 func (x *SetUserPasswordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[17]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1064,7 +911,7 @@ func (x *SetUserPasswordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetUserPasswordResponse.ProtoReflect.Descriptor instead.
 func (*SetUserPasswordResponse) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{17}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SetUserPasswordResponse) GetUser() *User {
@@ -1086,7 +933,7 @@ type ListUserSessionsRequest struct {
 
 func (x *ListUserSessionsRequest) Reset() {
 	*x = ListUserSessionsRequest{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[18]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1098,7 +945,7 @@ func (x *ListUserSessionsRequest) String() string {
 func (*ListUserSessionsRequest) ProtoMessage() {}
 
 func (x *ListUserSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[18]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1111,7 +958,7 @@ func (x *ListUserSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListUserSessionsRequest.ProtoReflect.Descriptor instead.
 func (*ListUserSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{18}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ListUserSessionsRequest) GetUserId() string {
@@ -1152,7 +999,7 @@ type ListUserSessionsResponse struct {
 
 func (x *ListUserSessionsResponse) Reset() {
 	*x = ListUserSessionsResponse{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[19]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1164,7 +1011,7 @@ func (x *ListUserSessionsResponse) String() string {
 func (*ListUserSessionsResponse) ProtoMessage() {}
 
 func (x *ListUserSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[19]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1177,7 +1024,7 @@ func (x *ListUserSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListUserSessionsResponse.ProtoReflect.Descriptor instead.
 func (*ListUserSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{19}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ListUserSessionsResponse) GetSessions() []*AdminAuthSessionSummary {
@@ -1204,7 +1051,7 @@ type RevokeUserSessionRequest struct {
 
 func (x *RevokeUserSessionRequest) Reset() {
 	*x = RevokeUserSessionRequest{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[20]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1216,7 +1063,7 @@ func (x *RevokeUserSessionRequest) String() string {
 func (*RevokeUserSessionRequest) ProtoMessage() {}
 
 func (x *RevokeUserSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[20]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1229,7 +1076,7 @@ func (x *RevokeUserSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeUserSessionRequest.ProtoReflect.Descriptor instead.
 func (*RevokeUserSessionRequest) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{20}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *RevokeUserSessionRequest) GetUserId() string {
@@ -1254,7 +1101,7 @@ type RevokeUserSessionResponse struct {
 
 func (x *RevokeUserSessionResponse) Reset() {
 	*x = RevokeUserSessionResponse{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[21]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1266,7 +1113,7 @@ func (x *RevokeUserSessionResponse) String() string {
 func (*RevokeUserSessionResponse) ProtoMessage() {}
 
 func (x *RevokeUserSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[21]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1279,7 +1126,7 @@ func (x *RevokeUserSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeUserSessionResponse.ProtoReflect.Descriptor instead.
 func (*RevokeUserSessionResponse) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{21}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{19}
 }
 
 type RevokeUserSessionsRequest struct {
@@ -1291,7 +1138,7 @@ type RevokeUserSessionsRequest struct {
 
 func (x *RevokeUserSessionsRequest) Reset() {
 	*x = RevokeUserSessionsRequest{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[22]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1303,7 +1150,7 @@ func (x *RevokeUserSessionsRequest) String() string {
 func (*RevokeUserSessionsRequest) ProtoMessage() {}
 
 func (x *RevokeUserSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[22]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1316,7 +1163,7 @@ func (x *RevokeUserSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeUserSessionsRequest.ProtoReflect.Descriptor instead.
 func (*RevokeUserSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{22}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *RevokeUserSessionsRequest) GetUserId() string {
@@ -1335,7 +1182,7 @@ type RevokeUserSessionsResponse struct {
 
 func (x *RevokeUserSessionsResponse) Reset() {
 	*x = RevokeUserSessionsResponse{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[23]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1347,7 +1194,7 @@ func (x *RevokeUserSessionsResponse) String() string {
 func (*RevokeUserSessionsResponse) ProtoMessage() {}
 
 func (x *RevokeUserSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[23]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1360,7 +1207,7 @@ func (x *RevokeUserSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeUserSessionsResponse.ProtoReflect.Descriptor instead.
 func (*RevokeUserSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{23}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *RevokeUserSessionsResponse) GetRevokedCount() int32 {
@@ -1374,18 +1221,16 @@ type User struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
-	DisplayName   string                 `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	Email         string                 `protobuf:"bytes,4,opt,name=email,proto3" json:"email,omitempty"`
-	State         UserState              `protobuf:"varint,5,opt,name=state,proto3,enum=mycel.admin.v1.UserState" json:"state,omitempty"`
-	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
-	UpdateTime    *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
+	State         UserState              `protobuf:"varint,3,opt,name=state,proto3,enum=mycel.admin.v1.UserState" json:"state,omitempty"`
+	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	UpdateTime    *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *User) Reset() {
 	*x = User{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[24]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1397,7 +1242,7 @@ func (x *User) String() string {
 func (*User) ProtoMessage() {}
 
 func (x *User) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[24]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1410,7 +1255,7 @@ func (x *User) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use User.ProtoReflect.Descriptor instead.
 func (*User) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{24}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *User) GetUserId() string {
@@ -1423,20 +1268,6 @@ func (x *User) GetUserId() string {
 func (x *User) GetUsername() string {
 	if x != nil {
 		return x.Username
-	}
-	return ""
-}
-
-func (x *User) GetDisplayName() string {
-	if x != nil {
-		return x.DisplayName
-	}
-	return ""
-}
-
-func (x *User) GetEmail() string {
-	if x != nil {
-		return x.Email
 	}
 	return ""
 }
@@ -1476,7 +1307,7 @@ type AdminAuthSessionSummary struct {
 
 func (x *AdminAuthSessionSummary) Reset() {
 	*x = AdminAuthSessionSummary{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[25]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1488,7 +1319,7 @@ func (x *AdminAuthSessionSummary) String() string {
 func (*AdminAuthSessionSummary) ProtoMessage() {}
 
 func (x *AdminAuthSessionSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[25]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1501,7 +1332,7 @@ func (x *AdminAuthSessionSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdminAuthSessionSummary.ProtoReflect.Descriptor instead.
 func (*AdminAuthSessionSummary) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{25}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *AdminAuthSessionSummary) GetAuthSessionId() string {
@@ -1558,7 +1389,7 @@ type AdminClientInfo struct {
 
 func (x *AdminClientInfo) Reset() {
 	*x = AdminClientInfo{}
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[26]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1570,7 +1401,7 @@ func (x *AdminClientInfo) String() string {
 func (*AdminClientInfo) ProtoMessage() {}
 
 func (x *AdminClientInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_mycel_admin_v1_user_proto_msgTypes[26]
+	mi := &file_mycel_admin_v1_user_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1583,7 +1414,7 @@ func (x *AdminClientInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdminClientInfo.ProtoReflect.Descriptor instead.
 func (*AdminClientInfo) Descriptor() ([]byte, []int) {
-	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{26}
+	return file_mycel_admin_v1_user_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *AdminClientInfo) GetName() string {
@@ -1618,7 +1449,7 @@ var File_mycel_admin_v1_user_proto protoreflect.FileDescriptor
 
 const file_mycel_admin_v1_user_proto_rawDesc = "" +
 	"\n" +
-	"\x19mycel/admin/v1/user.proto\x12\x0emycel.admin.v1\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa2\x01\n" +
+	"\x19mycel/admin/v1/user.proto\x12\x0emycel.admin.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa2\x01\n" +
 	"\x10ListUsersRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
@@ -1631,27 +1462,17 @@ const file_mycel_admin_v1_user_proto_rawDesc = "" +
 	"\x0eGetUserRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\";\n" +
 	"\x0fGetUserResponse\x12(\n" +
-	"\x04user\x18\x01 \x01(\v2\x14.mycel.admin.v1.UserR\x04user\"Q\n" +
-	"\x0fFindUserRequest\x12\x1c\n" +
-	"\busername\x18\x01 \x01(\tH\x00R\busername\x12\x16\n" +
-	"\x05email\x18\x02 \x01(\tH\x00R\x05emailB\b\n" +
-	"\x06lookup\"<\n" +
+	"\x04user\x18\x01 \x01(\v2\x14.mycel.admin.v1.UserR\x04user\"-\n" +
+	"\x0fFindUserRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\"<\n" +
 	"\x10FindUserResponse\x12(\n" +
-	"\x04user\x18\x01 \x01(\v2\x14.mycel.admin.v1.UserR\x04user\"\xb2\x01\n" +
+	"\x04user\x18\x01 \x01(\v2\x14.mycel.admin.v1.UserR\x04user\"y\n" +
 	"\x11CreateUserRequest\x12\x1a\n" +
-	"\busername\x18\x01 \x01(\tR\busername\x12!\n" +
-	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x14\n" +
-	"\x05email\x18\x03 \x01(\tR\x05email\x12\x1f\n" +
-	"\bpassword\x18\x04 \x01(\tH\x00R\bpassword\x88\x01\x01\x12\x1a\n" +
-	"\bdisabled\x18\x05 \x01(\bR\bdisabledB\v\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1f\n" +
+	"\bpassword\x18\x02 \x01(\tH\x00R\bpassword\x88\x01\x01\x12\x1a\n" +
+	"\bdisabled\x18\x03 \x01(\bR\bdisabledB\v\n" +
 	"\t_password\">\n" +
 	"\x12CreateUserResponse\x12(\n" +
-	"\x04user\x18\x01 \x01(\v2\x14.mycel.admin.v1.UserR\x04user\"z\n" +
-	"\x11UpdateUserRequest\x12(\n" +
-	"\x04user\x18\x01 \x01(\v2\x14.mycel.admin.v1.UserR\x04user\x12;\n" +
-	"\vupdate_mask\x18\x02 \x01(\v2\x1a.google.protobuf.FieldMaskR\n" +
-	"updateMask\">\n" +
-	"\x12UpdateUserResponse\x12(\n" +
 	"\x04user\x18\x01 \x01(\v2\x14.mycel.admin.v1.UserR\x04user\"n\n" +
 	"\x12DisableUserRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
@@ -1690,16 +1511,14 @@ const file_mycel_admin_v1_user_proto_rawDesc = "" +
 	"\x19RevokeUserSessionsRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\"A\n" +
 	"\x1aRevokeUserSessionsResponse\x12#\n" +
-	"\rrevoked_count\x18\x01 \x01(\x05R\frevokedCount\"\x9f\x02\n" +
+	"\rrevoked_count\x18\x01 \x01(\x05R\frevokedCount\"\xe6\x01\n" +
 	"\x04User\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1a\n" +
-	"\busername\x18\x02 \x01(\tR\busername\x12!\n" +
-	"\fdisplay_name\x18\x03 \x01(\tR\vdisplayName\x12\x14\n" +
-	"\x05email\x18\x04 \x01(\tR\x05email\x12/\n" +
-	"\x05state\x18\x05 \x01(\x0e2\x19.mycel.admin.v1.UserStateR\x05state\x12;\n" +
-	"\vcreate_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"\busername\x18\x02 \x01(\tR\busername\x12/\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x19.mycel.admin.v1.UserStateR\x05state\x12;\n" +
+	"\vcreate_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"createTime\x12;\n" +
-	"\vupdate_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"\vupdate_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"updateTime\"\xf3\x02\n" +
 	"\x17AdminAuthSessionSummary\x12&\n" +
 	"\x0fauth_session_id\x18\x01 \x01(\tR\rauthSessionId\x12;\n" +
@@ -1724,15 +1543,13 @@ const file_mycel_admin_v1_user_proto_rawDesc = "" +
 	"$ADMIN_AUTH_SESSION_STATE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fADMIN_AUTH_SESSION_STATE_ACTIVE\x10\x01\x12$\n" +
 	" ADMIN_AUTH_SESSION_STATE_EXPIRED\x10\x02\x12$\n" +
-	" ADMIN_AUTH_SESSION_STATE_REVOKED\x10\x032\xcd\b\n" +
+	" ADMIN_AUTH_SESSION_STATE_REVOKED\x10\x032\xf8\a\n" +
 	"\x10AdminUserService\x12P\n" +
 	"\tListUsers\x12 .mycel.admin.v1.ListUsersRequest\x1a!.mycel.admin.v1.ListUsersResponse\x12J\n" +
 	"\aGetUser\x12\x1e.mycel.admin.v1.GetUserRequest\x1a\x1f.mycel.admin.v1.GetUserResponse\x12M\n" +
 	"\bFindUser\x12\x1f.mycel.admin.v1.FindUserRequest\x1a .mycel.admin.v1.FindUserResponse\x12S\n" +
 	"\n" +
-	"CreateUser\x12!.mycel.admin.v1.CreateUserRequest\x1a\".mycel.admin.v1.CreateUserResponse\x12S\n" +
-	"\n" +
-	"UpdateUser\x12!.mycel.admin.v1.UpdateUserRequest\x1a\".mycel.admin.v1.UpdateUserResponse\x12V\n" +
+	"CreateUser\x12!.mycel.admin.v1.CreateUserRequest\x1a\".mycel.admin.v1.CreateUserResponse\x12V\n" +
 	"\vDisableUser\x12\".mycel.admin.v1.DisableUserRequest\x1a#.mycel.admin.v1.DisableUserResponse\x12S\n" +
 	"\n" +
 	"EnableUser\x12!.mycel.admin.v1.EnableUserRequest\x1a\".mycel.admin.v1.EnableUserResponse\x12S\n" +
@@ -1756,7 +1573,7 @@ func file_mycel_admin_v1_user_proto_rawDescGZIP() []byte {
 }
 
 var file_mycel_admin_v1_user_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_mycel_admin_v1_user_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_mycel_admin_v1_user_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_mycel_admin_v1_user_proto_goTypes = []any{
 	(UserState)(0),                     // 0: mycel.admin.v1.UserState
 	(AdminAuthSessionState)(0),         // 1: mycel.admin.v1.AdminAuthSessionState
@@ -1768,88 +1585,76 @@ var file_mycel_admin_v1_user_proto_goTypes = []any{
 	(*FindUserResponse)(nil),           // 7: mycel.admin.v1.FindUserResponse
 	(*CreateUserRequest)(nil),          // 8: mycel.admin.v1.CreateUserRequest
 	(*CreateUserResponse)(nil),         // 9: mycel.admin.v1.CreateUserResponse
-	(*UpdateUserRequest)(nil),          // 10: mycel.admin.v1.UpdateUserRequest
-	(*UpdateUserResponse)(nil),         // 11: mycel.admin.v1.UpdateUserResponse
-	(*DisableUserRequest)(nil),         // 12: mycel.admin.v1.DisableUserRequest
-	(*DisableUserResponse)(nil),        // 13: mycel.admin.v1.DisableUserResponse
-	(*EnableUserRequest)(nil),          // 14: mycel.admin.v1.EnableUserRequest
-	(*EnableUserResponse)(nil),         // 15: mycel.admin.v1.EnableUserResponse
-	(*DeleteUserRequest)(nil),          // 16: mycel.admin.v1.DeleteUserRequest
-	(*DeleteUserResponse)(nil),         // 17: mycel.admin.v1.DeleteUserResponse
-	(*SetUserPasswordRequest)(nil),     // 18: mycel.admin.v1.SetUserPasswordRequest
-	(*SetUserPasswordResponse)(nil),    // 19: mycel.admin.v1.SetUserPasswordResponse
-	(*ListUserSessionsRequest)(nil),    // 20: mycel.admin.v1.ListUserSessionsRequest
-	(*ListUserSessionsResponse)(nil),   // 21: mycel.admin.v1.ListUserSessionsResponse
-	(*RevokeUserSessionRequest)(nil),   // 22: mycel.admin.v1.RevokeUserSessionRequest
-	(*RevokeUserSessionResponse)(nil),  // 23: mycel.admin.v1.RevokeUserSessionResponse
-	(*RevokeUserSessionsRequest)(nil),  // 24: mycel.admin.v1.RevokeUserSessionsRequest
-	(*RevokeUserSessionsResponse)(nil), // 25: mycel.admin.v1.RevokeUserSessionsResponse
-	(*User)(nil),                       // 26: mycel.admin.v1.User
-	(*AdminAuthSessionSummary)(nil),    // 27: mycel.admin.v1.AdminAuthSessionSummary
-	(*AdminClientInfo)(nil),            // 28: mycel.admin.v1.AdminClientInfo
-	(*fieldmaskpb.FieldMask)(nil),      // 29: google.protobuf.FieldMask
-	(*timestamppb.Timestamp)(nil),      // 30: google.protobuf.Timestamp
+	(*DisableUserRequest)(nil),         // 10: mycel.admin.v1.DisableUserRequest
+	(*DisableUserResponse)(nil),        // 11: mycel.admin.v1.DisableUserResponse
+	(*EnableUserRequest)(nil),          // 12: mycel.admin.v1.EnableUserRequest
+	(*EnableUserResponse)(nil),         // 13: mycel.admin.v1.EnableUserResponse
+	(*DeleteUserRequest)(nil),          // 14: mycel.admin.v1.DeleteUserRequest
+	(*DeleteUserResponse)(nil),         // 15: mycel.admin.v1.DeleteUserResponse
+	(*SetUserPasswordRequest)(nil),     // 16: mycel.admin.v1.SetUserPasswordRequest
+	(*SetUserPasswordResponse)(nil),    // 17: mycel.admin.v1.SetUserPasswordResponse
+	(*ListUserSessionsRequest)(nil),    // 18: mycel.admin.v1.ListUserSessionsRequest
+	(*ListUserSessionsResponse)(nil),   // 19: mycel.admin.v1.ListUserSessionsResponse
+	(*RevokeUserSessionRequest)(nil),   // 20: mycel.admin.v1.RevokeUserSessionRequest
+	(*RevokeUserSessionResponse)(nil),  // 21: mycel.admin.v1.RevokeUserSessionResponse
+	(*RevokeUserSessionsRequest)(nil),  // 22: mycel.admin.v1.RevokeUserSessionsRequest
+	(*RevokeUserSessionsResponse)(nil), // 23: mycel.admin.v1.RevokeUserSessionsResponse
+	(*User)(nil),                       // 24: mycel.admin.v1.User
+	(*AdminAuthSessionSummary)(nil),    // 25: mycel.admin.v1.AdminAuthSessionSummary
+	(*AdminClientInfo)(nil),            // 26: mycel.admin.v1.AdminClientInfo
+	(*timestamppb.Timestamp)(nil),      // 27: google.protobuf.Timestamp
 }
 var file_mycel_admin_v1_user_proto_depIdxs = []int32{
-	26, // 0: mycel.admin.v1.ListUsersResponse.users:type_name -> mycel.admin.v1.User
-	26, // 1: mycel.admin.v1.GetUserResponse.user:type_name -> mycel.admin.v1.User
-	26, // 2: mycel.admin.v1.FindUserResponse.user:type_name -> mycel.admin.v1.User
-	26, // 3: mycel.admin.v1.CreateUserResponse.user:type_name -> mycel.admin.v1.User
-	26, // 4: mycel.admin.v1.UpdateUserRequest.user:type_name -> mycel.admin.v1.User
-	29, // 5: mycel.admin.v1.UpdateUserRequest.update_mask:type_name -> google.protobuf.FieldMask
-	26, // 6: mycel.admin.v1.UpdateUserResponse.user:type_name -> mycel.admin.v1.User
-	26, // 7: mycel.admin.v1.DisableUserResponse.user:type_name -> mycel.admin.v1.User
-	26, // 8: mycel.admin.v1.EnableUserResponse.user:type_name -> mycel.admin.v1.User
-	26, // 9: mycel.admin.v1.DeleteUserResponse.user:type_name -> mycel.admin.v1.User
-	26, // 10: mycel.admin.v1.SetUserPasswordResponse.user:type_name -> mycel.admin.v1.User
-	27, // 11: mycel.admin.v1.ListUserSessionsResponse.sessions:type_name -> mycel.admin.v1.AdminAuthSessionSummary
-	0,  // 12: mycel.admin.v1.User.state:type_name -> mycel.admin.v1.UserState
-	30, // 13: mycel.admin.v1.User.create_time:type_name -> google.protobuf.Timestamp
-	30, // 14: mycel.admin.v1.User.update_time:type_name -> google.protobuf.Timestamp
-	30, // 15: mycel.admin.v1.AdminAuthSessionSummary.create_time:type_name -> google.protobuf.Timestamp
-	30, // 16: mycel.admin.v1.AdminAuthSessionSummary.last_seen_time:type_name -> google.protobuf.Timestamp
-	30, // 17: mycel.admin.v1.AdminAuthSessionSummary.expire_time:type_name -> google.protobuf.Timestamp
-	1,  // 18: mycel.admin.v1.AdminAuthSessionSummary.state:type_name -> mycel.admin.v1.AdminAuthSessionState
-	28, // 19: mycel.admin.v1.AdminAuthSessionSummary.client:type_name -> mycel.admin.v1.AdminClientInfo
-	2,  // 20: mycel.admin.v1.AdminUserService.ListUsers:input_type -> mycel.admin.v1.ListUsersRequest
-	4,  // 21: mycel.admin.v1.AdminUserService.GetUser:input_type -> mycel.admin.v1.GetUserRequest
-	6,  // 22: mycel.admin.v1.AdminUserService.FindUser:input_type -> mycel.admin.v1.FindUserRequest
-	8,  // 23: mycel.admin.v1.AdminUserService.CreateUser:input_type -> mycel.admin.v1.CreateUserRequest
-	10, // 24: mycel.admin.v1.AdminUserService.UpdateUser:input_type -> mycel.admin.v1.UpdateUserRequest
-	12, // 25: mycel.admin.v1.AdminUserService.DisableUser:input_type -> mycel.admin.v1.DisableUserRequest
-	14, // 26: mycel.admin.v1.AdminUserService.EnableUser:input_type -> mycel.admin.v1.EnableUserRequest
-	16, // 27: mycel.admin.v1.AdminUserService.DeleteUser:input_type -> mycel.admin.v1.DeleteUserRequest
-	18, // 28: mycel.admin.v1.AdminUserService.SetUserPassword:input_type -> mycel.admin.v1.SetUserPasswordRequest
-	20, // 29: mycel.admin.v1.AdminUserService.ListUserSessions:input_type -> mycel.admin.v1.ListUserSessionsRequest
-	22, // 30: mycel.admin.v1.AdminUserService.RevokeUserSession:input_type -> mycel.admin.v1.RevokeUserSessionRequest
-	24, // 31: mycel.admin.v1.AdminUserService.RevokeUserSessions:input_type -> mycel.admin.v1.RevokeUserSessionsRequest
-	3,  // 32: mycel.admin.v1.AdminUserService.ListUsers:output_type -> mycel.admin.v1.ListUsersResponse
-	5,  // 33: mycel.admin.v1.AdminUserService.GetUser:output_type -> mycel.admin.v1.GetUserResponse
-	7,  // 34: mycel.admin.v1.AdminUserService.FindUser:output_type -> mycel.admin.v1.FindUserResponse
-	9,  // 35: mycel.admin.v1.AdminUserService.CreateUser:output_type -> mycel.admin.v1.CreateUserResponse
-	11, // 36: mycel.admin.v1.AdminUserService.UpdateUser:output_type -> mycel.admin.v1.UpdateUserResponse
-	13, // 37: mycel.admin.v1.AdminUserService.DisableUser:output_type -> mycel.admin.v1.DisableUserResponse
-	15, // 38: mycel.admin.v1.AdminUserService.EnableUser:output_type -> mycel.admin.v1.EnableUserResponse
-	17, // 39: mycel.admin.v1.AdminUserService.DeleteUser:output_type -> mycel.admin.v1.DeleteUserResponse
-	19, // 40: mycel.admin.v1.AdminUserService.SetUserPassword:output_type -> mycel.admin.v1.SetUserPasswordResponse
-	21, // 41: mycel.admin.v1.AdminUserService.ListUserSessions:output_type -> mycel.admin.v1.ListUserSessionsResponse
-	23, // 42: mycel.admin.v1.AdminUserService.RevokeUserSession:output_type -> mycel.admin.v1.RevokeUserSessionResponse
-	25, // 43: mycel.admin.v1.AdminUserService.RevokeUserSessions:output_type -> mycel.admin.v1.RevokeUserSessionsResponse
-	32, // [32:44] is the sub-list for method output_type
-	20, // [20:32] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	24, // 0: mycel.admin.v1.ListUsersResponse.users:type_name -> mycel.admin.v1.User
+	24, // 1: mycel.admin.v1.GetUserResponse.user:type_name -> mycel.admin.v1.User
+	24, // 2: mycel.admin.v1.FindUserResponse.user:type_name -> mycel.admin.v1.User
+	24, // 3: mycel.admin.v1.CreateUserResponse.user:type_name -> mycel.admin.v1.User
+	24, // 4: mycel.admin.v1.DisableUserResponse.user:type_name -> mycel.admin.v1.User
+	24, // 5: mycel.admin.v1.EnableUserResponse.user:type_name -> mycel.admin.v1.User
+	24, // 6: mycel.admin.v1.DeleteUserResponse.user:type_name -> mycel.admin.v1.User
+	24, // 7: mycel.admin.v1.SetUserPasswordResponse.user:type_name -> mycel.admin.v1.User
+	25, // 8: mycel.admin.v1.ListUserSessionsResponse.sessions:type_name -> mycel.admin.v1.AdminAuthSessionSummary
+	0,  // 9: mycel.admin.v1.User.state:type_name -> mycel.admin.v1.UserState
+	27, // 10: mycel.admin.v1.User.create_time:type_name -> google.protobuf.Timestamp
+	27, // 11: mycel.admin.v1.User.update_time:type_name -> google.protobuf.Timestamp
+	27, // 12: mycel.admin.v1.AdminAuthSessionSummary.create_time:type_name -> google.protobuf.Timestamp
+	27, // 13: mycel.admin.v1.AdminAuthSessionSummary.last_seen_time:type_name -> google.protobuf.Timestamp
+	27, // 14: mycel.admin.v1.AdminAuthSessionSummary.expire_time:type_name -> google.protobuf.Timestamp
+	1,  // 15: mycel.admin.v1.AdminAuthSessionSummary.state:type_name -> mycel.admin.v1.AdminAuthSessionState
+	26, // 16: mycel.admin.v1.AdminAuthSessionSummary.client:type_name -> mycel.admin.v1.AdminClientInfo
+	2,  // 17: mycel.admin.v1.AdminUserService.ListUsers:input_type -> mycel.admin.v1.ListUsersRequest
+	4,  // 18: mycel.admin.v1.AdminUserService.GetUser:input_type -> mycel.admin.v1.GetUserRequest
+	6,  // 19: mycel.admin.v1.AdminUserService.FindUser:input_type -> mycel.admin.v1.FindUserRequest
+	8,  // 20: mycel.admin.v1.AdminUserService.CreateUser:input_type -> mycel.admin.v1.CreateUserRequest
+	10, // 21: mycel.admin.v1.AdminUserService.DisableUser:input_type -> mycel.admin.v1.DisableUserRequest
+	12, // 22: mycel.admin.v1.AdminUserService.EnableUser:input_type -> mycel.admin.v1.EnableUserRequest
+	14, // 23: mycel.admin.v1.AdminUserService.DeleteUser:input_type -> mycel.admin.v1.DeleteUserRequest
+	16, // 24: mycel.admin.v1.AdminUserService.SetUserPassword:input_type -> mycel.admin.v1.SetUserPasswordRequest
+	18, // 25: mycel.admin.v1.AdminUserService.ListUserSessions:input_type -> mycel.admin.v1.ListUserSessionsRequest
+	20, // 26: mycel.admin.v1.AdminUserService.RevokeUserSession:input_type -> mycel.admin.v1.RevokeUserSessionRequest
+	22, // 27: mycel.admin.v1.AdminUserService.RevokeUserSessions:input_type -> mycel.admin.v1.RevokeUserSessionsRequest
+	3,  // 28: mycel.admin.v1.AdminUserService.ListUsers:output_type -> mycel.admin.v1.ListUsersResponse
+	5,  // 29: mycel.admin.v1.AdminUserService.GetUser:output_type -> mycel.admin.v1.GetUserResponse
+	7,  // 30: mycel.admin.v1.AdminUserService.FindUser:output_type -> mycel.admin.v1.FindUserResponse
+	9,  // 31: mycel.admin.v1.AdminUserService.CreateUser:output_type -> mycel.admin.v1.CreateUserResponse
+	11, // 32: mycel.admin.v1.AdminUserService.DisableUser:output_type -> mycel.admin.v1.DisableUserResponse
+	13, // 33: mycel.admin.v1.AdminUserService.EnableUser:output_type -> mycel.admin.v1.EnableUserResponse
+	15, // 34: mycel.admin.v1.AdminUserService.DeleteUser:output_type -> mycel.admin.v1.DeleteUserResponse
+	17, // 35: mycel.admin.v1.AdminUserService.SetUserPassword:output_type -> mycel.admin.v1.SetUserPasswordResponse
+	19, // 36: mycel.admin.v1.AdminUserService.ListUserSessions:output_type -> mycel.admin.v1.ListUserSessionsResponse
+	21, // 37: mycel.admin.v1.AdminUserService.RevokeUserSession:output_type -> mycel.admin.v1.RevokeUserSessionResponse
+	23, // 38: mycel.admin.v1.AdminUserService.RevokeUserSessions:output_type -> mycel.admin.v1.RevokeUserSessionsResponse
+	28, // [28:39] is the sub-list for method output_type
+	17, // [17:28] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_mycel_admin_v1_user_proto_init() }
 func file_mycel_admin_v1_user_proto_init() {
 	if File_mycel_admin_v1_user_proto != nil {
 		return
-	}
-	file_mycel_admin_v1_user_proto_msgTypes[4].OneofWrappers = []any{
-		(*FindUserRequest_Username)(nil),
-		(*FindUserRequest_Email)(nil),
 	}
 	file_mycel_admin_v1_user_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}
@@ -1858,7 +1663,7 @@ func file_mycel_admin_v1_user_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mycel_admin_v1_user_proto_rawDesc), len(file_mycel_admin_v1_user_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   27,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

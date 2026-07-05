@@ -245,7 +245,7 @@ func TestRuntimeEngine_LoginSession_CreatesRefreshSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("current user with login-session access token failed: %v", err)
 	}
-	if current.Ref != identity.UserRef("admin@example.com") {
+	if current.Username != identity.UserRef("admin@example.com") {
 		t.Fatalf("unexpected current user: %#v", current)
 	}
 
@@ -315,7 +315,7 @@ func TestRuntimeEngine_RefreshSession_RotatesTokenAndMintsAccessToken(t *testing
 	if err != nil {
 		t.Fatalf("current user with refreshed access token failed: %v", err)
 	}
-	if current.Ref != identity.UserRef("admin@example.com") {
+	if current.Username != identity.UserRef("admin@example.com") {
 		t.Fatalf("unexpected current user: %#v", current)
 	}
 	if _, err := engine.RefreshSession(ctx, RefreshSessionInput{RefreshToken: login.RefreshToken}); !errors.Is(err, ErrInvalidCredentials) {
@@ -487,7 +487,7 @@ func TestRuntimeEngine_RefreshSessionManagement_UserScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admin login session failed: %v", err)
 	}
-	if _, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminLogin.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"}); err != nil {
+	if _, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminLogin.AccessToken, User: identity.UserInput{Username: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"}); err != nil {
 		t.Fatalf("create bob failed: %v", err)
 	}
 	bobLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("bob@example.com"), Password: "bob-password"})
@@ -590,7 +590,7 @@ func TestRuntimeEngine_CleanupRefreshSessions_RequiresOperatePermission(t *testi
 	if err != nil {
 		t.Fatalf("admin login session failed: %v", err)
 	}
-	if _, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminLogin.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"}); err != nil {
+	if _, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminLogin.AccessToken, User: identity.UserInput{Username: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"}); err != nil {
 		t.Fatalf("create bob failed: %v", err)
 	}
 	bobLogin, err := engine.LoginSession(ctx, LoginSessionInput{UserRef: identity.UserRef("bob@example.com"), Password: "bob-password"})
@@ -868,7 +868,7 @@ func TestRuntimeEngine_GrantSystemRoleAndRevokeLastSuperuserFails(t *testing.T) 
 	}
 	status := identity.UserStatusActive
 	operator, err := engine.userManager.Create(ctx, storeuser.CreateInput{
-		User:     identity.UserInput{Ref: identity.UserRef("operator@example.com"), Status: status},
+		User:     identity.UserInput{Username: identity.UserRef("operator@example.com"), Status: status},
 		Password: "operator-password",
 	})
 	if err != nil {
@@ -1035,7 +1035,7 @@ func TestRuntimeEngine_CreateSpaceForOwnerUserID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
-	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Username: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
 	if err != nil {
 		t.Fatalf("expected create user success, got error: %v", err)
 	}
@@ -1074,7 +1074,7 @@ func TestRuntimeEngine_CreateSpaceForOwnerRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
-	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Username: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
 	if err != nil {
 		t.Fatalf("expected create user success, got error: %v", err)
 	}
@@ -1101,11 +1101,11 @@ func TestRuntimeEngine_CreateSpaceForDifferentOwnerRequiresManageAccess(t *testi
 	if err != nil {
 		t.Fatalf("expected authenticate success, got error: %v", err)
 	}
-	operator, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("operator@example.com"), Status: identity.UserStatusActive}, Password: "operator-password"})
+	operator, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Username: identity.UserRef("operator@example.com"), Status: identity.UserStatusActive}, Password: "operator-password"})
 	if err != nil {
 		t.Fatalf("expected create operator success, got error: %v", err)
 	}
-	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Username: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
 	if err != nil {
 		t.Fatalf("expected create bob success, got error: %v", err)
 	}
@@ -1140,7 +1140,7 @@ func TestRuntimeEngine_CreateSpace_UnauthorizedWithoutSystemRole(t *testing.T) {
 
 	status := identity.UserStatusActive
 	_, err := engine.userManager.Create(context.Background(), storeuser.CreateInput{
-		User:     identity.UserInput{Ref: identity.UserRef("regular@example.com"), Status: status},
+		User:     identity.UserInput{Username: identity.UserRef("regular@example.com"), Status: status},
 		Password: "regular-password",
 	})
 	if err != nil {
@@ -1265,7 +1265,7 @@ func TestRuntimeEngine_SpaceAccessReadOnlyUserCannotWrite(t *testing.T) {
 
 	status := identity.UserStatusActive
 	reader, err := engine.userManager.Create(ctx, storeuser.CreateInput{
-		User:     identity.UserInput{Ref: identity.UserRef("reader@example.com"), Status: status},
+		User:     identity.UserInput{Username: identity.UserRef("reader@example.com"), Status: status},
 		Password: "reader-password",
 	})
 	if err != nil {
@@ -1514,7 +1514,7 @@ func TestRuntimeEngine_DeleteUserCascadesOwnedSpaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected admin auth success, got error: %v", err)
 	}
-	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Username: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
 	if err != nil {
 		t.Fatalf("expected create user success, got error: %v", err)
 	}
@@ -1695,7 +1695,7 @@ func TestRuntimeEngine_ListUsersAndSpaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected auth success, got error: %v", err)
 	}
-	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: token.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
+	bob, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: token.AccessToken, User: identity.UserInput{Username: identity.UserRef("bob@example.com"), Status: identity.UserStatusActive}, Password: "bob-password"})
 	if err != nil {
 		t.Fatalf("expected create user success, got error: %v", err)
 	}
@@ -1934,7 +1934,7 @@ func TestRuntimeEngine_UpdateNodeMissingAndReadOnly(t *testing.T) {
 	}
 	_ = adminSession.Close()
 
-	reader, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Ref: identity.UserRef("reader@example.com"), Status: identity.UserStatusActive}, Password: "reader-password"})
+	reader, err := engine.CreateUser(ctx, CreateUserInput{AccessToken: adminToken.AccessToken, User: identity.UserInput{Username: identity.UserRef("reader@example.com"), Status: identity.UserStatusActive}, Password: "reader-password"})
 	if err != nil {
 		t.Fatalf("expected create reader success, got error: %v", err)
 	}

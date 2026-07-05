@@ -13,6 +13,13 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
 	"github.com/myceldb/mycel/internal/daemon/modules/admin"
+	daemonblob "github.com/myceldb/mycel/internal/daemon/modules/blob"
+	daemonchange "github.com/myceldb/mycel/internal/daemon/modules/changestream"
+	daegraph "github.com/myceldb/mycel/internal/daemon/modules/graph"
+	daemonsemantic "github.com/myceldb/mycel/internal/daemon/modules/semantic"
+	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
+	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
+	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
 )
@@ -38,7 +45,47 @@ func Run(ctx context.Context) int {
 		return 1
 	}
 	serverCtx, stopServer := context.WithCancel(ctx)
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminModule, AdminAuthenticator: adminModule, PasswordManager: adminModule, Logger: rt.Logger})
+	userModule, ok := daemonruntime.ModuleAs[*daemonuser.Module](rt, daemonuser.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: user module is not registered\n")
+		return 1
+	}
+	spaceModule, ok := daemonruntime.ModuleAs[*daemonspace.Module](rt, daemonspace.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: space module is not registered\n")
+		return 1
+	}
+	sessionModule, ok := daemonruntime.ModuleAs[*daemonsession.Module](rt, daemonsession.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: session module is not registered\n")
+		return 1
+	}
+	graphModule, ok := daemonruntime.ModuleAs[*daegraph.Module](rt, daegraph.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: graph module is not registered\n")
+		return 1
+	}
+	blobModule, ok := daemonruntime.ModuleAs[*daemonblob.Module](rt, daemonblob.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: blob module is not registered\n")
+		return 1
+	}
+	semanticModule, ok := daemonruntime.ModuleAs[*daemonsemantic.Module](rt, daemonsemantic.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: semantic module is not registered\n")
+		return 1
+	}
+	changeModule, ok := daemonruntime.ModuleAs[*daemonchange.Module](rt, daemonchange.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: change stream module is not registered\n")
+		return 1
+	}
+	tlsConfig, err := server.LoadTLSConfig(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSClientCAFile, cfg.TLSRequireClientCert)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "myceld TLS config error: %v\n", err)
+		return 1
+	}
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminModule, AdminAuthenticator: adminModule, OperatorManager: adminModule, UserManager: userModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, Logger: rt.Logger, TLSConfig: tlsConfig})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -82,7 +129,14 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
 	adminModule := admin.NewModule()
-	if err := rt.InitModules(ctx, []daemonruntime.Module{adminModule}); err != nil {
+	userModule := daemonuser.NewModule()
+	spaceModule := daemonspace.NewModule()
+	sessionModule := daemonsession.NewModule()
+	graphModule := daegraph.NewModule()
+	blobModule := daemonblob.NewModule(graphModule)
+	semanticModule := daemonsemantic.NewModule()
+	changeModule := daemonchange.NewModule()
+	if err := rt.InitModules(ctx, []daemonruntime.Module{adminModule, userModule, spaceModule, sessionModule, graphModule, blobModule, semanticModule, changeModule}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}
@@ -98,6 +152,8 @@ func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath str
 		"log_path", logPath,
 		"log_level", cfg.LogLevel,
 		"log_format", cfg.LogFormat,
+		"tls_enabled", cfg.TLSCertFile != "",
+		"mtls_required", cfg.TLSRequireClientCert,
 	)
 }
 

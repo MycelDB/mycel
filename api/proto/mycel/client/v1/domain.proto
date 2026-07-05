@@ -50,6 +50,7 @@ message ListDomainsResponse {
 message GetDomainRequest {
   string space_id = 1;
   string domain_id = 2;
+  string key = 3;
 }
 
 message GetDomainResponse {
@@ -60,6 +61,7 @@ message CreateDomainRequest {
   string space_id = 1;
   string name = 2;
   string description = 3;
+  string key = 4;
 }
 
 message CreateDomainResponse {
@@ -112,6 +114,9 @@ message Domain {
   // Access currently effective for the authenticated caller. This is advisory
   // for client UI; the daemon still enforces authorization on each request.
   mycel.common.v1.EffectiveAccess caller_access = 10;
+
+  // Stable human-readable key unique within the space.
+  string key = 11;
 }
 
 enum DomainState {

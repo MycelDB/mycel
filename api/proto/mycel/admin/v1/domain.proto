@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package mycel.admin.v1;
+
+import "mycel/client/v1/domain.proto";
+
+option go_package = "github.com/myceldb/mycel/gen/go/mycel/admin/v1;adminv1";
+
+// AdminDomainService provides operator-facing domain lookup helpers for admin
+// semantic/inference workflows.
+service AdminDomainService {
+  rpc ListDomains(AdminDomainServiceListDomainsRequest) returns (AdminDomainServiceListDomainsResponse);
+  rpc GetDomain(AdminDomainServiceGetDomainRequest) returns (AdminDomainServiceGetDomainResponse);
+}
+
+message AdminDomainServiceListDomainsRequest {
+  string space_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+  bool include_system = 4;
+}
+
+message AdminDomainServiceListDomainsResponse {
+  repeated mycel.client.v1.Domain domains = 1;
+  string next_page_token = 2;
+}
+
+message AdminDomainServiceGetDomainRequest {
+  string space_id = 1;
+
+  // Domain UUID or stable key/name. Empty resolves the default domain.
+  string domain_ref = 2;
+}
+
+message AdminDomainServiceGetDomainResponse {
+  mycel.client.v1.Domain domain = 1;
+}

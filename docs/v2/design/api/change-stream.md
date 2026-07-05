@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for the daemon-oriented Client Change Stream API on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Change Stream API MVP on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -22,7 +22,9 @@ docs/v2/design/api/graph.md
 
 `ChangeStreamService` is a server-streaming Client API that lets clients and connectors watch committed changes for a space/domain.
 
-It streams durable committed changes. It does not stream uncommitted transaction operations.
+The current daemon implementation uses daemon-local pub/sub plus file-backed bounded history under the daemon data directory. `TransactionService.CommitTransaction` publishes one transaction-level change event after graph commit and session revision advancement.
+
+It streams committed changes observed by the daemon. Replay survives daemon restarts within the configured/compiled history window. It does not stream uncommitted transaction operations.
 
 ## Scope
 
@@ -52,6 +54,28 @@ service ChangeStreamService {
   rpc WatchDomainChanges(WatchDomainChangesRequest) returns (stream WatchDomainChangesResponse);
 }
 ```
+
+## CLI
+
+Daemon-backed watcher:
+
+```sh
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u alice -p '<password>' \
+  change-stream watch --space-id '<space-id>' --domain default --include-current
+```
+
+For tests/smoke scripts, `--max-events N` stops after N stream messages.
+
+## Current implementation notes
+
+- Streams require standard user bearer auth through the daemon stream interceptor.
+- The daemon validates caller visibility for the requested space/domain before subscribing.
+- `include_current` emits a checkpoint with the daemon's currently observed durable revision.
+- Commit events include per-node/per-edge changes plus a `CHANGE_EVENT_TYPE_REVISION_ADVANCED` marker.
+- Create/update node and edge changes include payloads; delete changes include ids.
+- Resume from `after_revision` is supported against daemon-local bounded file-backed history.
+- If requested resume history has been compacted, the daemon returns `OUT_OF_RANGE`.
+- Heartbeats are emitted periodically on idle streams.
 
 ## WatchDomainChanges
 
@@ -83,7 +107,7 @@ message WatchDomainChangesResponse {
 
 ## Checkpoints
 
-A checkpoint reports the daemon's current observed domain revision.
+A checkpoint reports the daemon's current observed domain revision. The daemon also persists compact checkpoint files beside the event log so restart-time checkpoints reflect the durable stream position.
 
 ```protobuf
 message ChangeCheckpoint {
@@ -106,7 +130,7 @@ When `include_current` is true, the daemon should send a checkpoint before strea
 WatchDomainChanges(after_revision = last_seen_revision)
 ```
 
-The daemon should stream events after that revision.
+The daemon streams events after that revision from its bounded durable history.
 
 If the daemon no longer has sufficient history to resume from the requested revision, it should return:
 
@@ -210,7 +234,7 @@ For normal Client API callers, returning `NOT_FOUND` for inaccessible spaces/dom
 
 Connectors should:
 
-- track the last seen domain revision
+- persist the last seen domain revision/checkpoint
 - resume with `after_revision`
 - resync on `OUT_OF_RANGE`
 - process events in revision order

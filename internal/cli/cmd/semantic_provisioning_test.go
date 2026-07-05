@@ -31,11 +31,11 @@ func TestSemanticProvisioningCLI(t *testing.T) {
 	if _, err := eng.CreateDomain(ctx, mycelengine.CreateDomainInput{AccessToken: auth.AccessToken, SpaceID: space.SpaceID, Key: "personal-pkm", Name: "Personal PKM"}); err != nil {
 		t.Fatalf("create domain failed: %v", err)
 	}
-	bob, err := eng.CreateUser(ctx, mycelengine.CreateUserInput{AccessToken: auth.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob"), Status: identity.UserStatusActive}, Password: "pass"})
+	bob, err := eng.CreateUser(ctx, mycelengine.CreateUserInput{AccessToken: auth.AccessToken, User: identity.UserInput{Username: identity.UserRef("bob"), Status: identity.UserStatusActive}, Password: "pass"})
 	if err != nil {
 		t.Fatalf("create bob failed: %v", err)
 	}
-	if _, err := eng.CreateUser(ctx, mycelengine.CreateUserInput{AccessToken: auth.AccessToken, User: identity.UserInput{Ref: identity.UserRef("charlie"), Status: identity.UserStatusActive}, Password: "pass"}); err != nil {
+	if _, err := eng.CreateUser(ctx, mycelengine.CreateUserInput{AccessToken: auth.AccessToken, User: identity.UserInput{Username: identity.UserRef("charlie"), Status: identity.UserStatusActive}, Password: "pass"}); err != nil {
 		t.Fatalf("create charlie failed: %v", err)
 	}
 	if _, err := eng.GrantSpaceAccess(ctx, mycelengine.GrantSpaceAccessInput{AccessToken: auth.AccessToken, SpaceID: space.SpaceID, UserID: bob.ID, Permissions: []access.SpacePermission{access.SpacePermissionAdmin}}); err != nil {

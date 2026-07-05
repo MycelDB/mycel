@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for the daemon-oriented Client Domain API on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Domain API on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -87,7 +87,7 @@ message ListDomainsResponse {
 
 ### GetDomain
 
-Returns a domain by id.
+Returns a domain by id or stable key.
 
 Required capability:
 
@@ -109,7 +109,7 @@ domain.create
 
 Domains are flat within a space. There is no domain hierarchy.
 
-The domain name must be unique within the space among non-deleted domains.
+The domain key must be unique within the space among non-deleted domains. The CLI preserves the existing `domain add KEY --name ...` shape by sending both key and display name.
 
 ### UpdateDomain
 
@@ -162,10 +162,11 @@ message Domain {
   google.protobuf.Timestamp create_time = 8;
   google.protobuf.Timestamp update_time = 9;
   mycel.common.v1.EffectiveAccess caller_access = 10;
+  string key = 11;
 }
 ```
 
-A domain has no parent domain.
+A domain has no parent domain. Mycel preserves the existing stable domain `key` concept for CLI compatibility and human-readable references.
 
 ## Default domain
 
@@ -251,6 +252,27 @@ Domain metadata must replicate across the mesh.
 A domain may become a useful future replication, placement, policy, or routing boundary. The v1 API should therefore treat domain identity and metadata as stable replicated state.
 
 Deleting a domain must replicate as a destructive domain-level operation so other daemons remove the same domain and contained graph data.
+
+## CLI
+
+The CLI now uses daemon gRPC and standard-user credentials for domain commands:
+
+```sh
+./bin/mycel -u alice -p '<password>' domain list --space-id '<space-id>'
+./bin/mycel -u alice -p '<password>' domain show default --space-id '<space-id>'
+./bin/mycel -u alice -p '<password>' domain add notes --space-id '<space-id>' --name Notes
+./bin/mycel -u alice -p '<password>' domain update --space-id '<space-id>' --domain-id '<domain-id>' --description 'Updated'
+./bin/mycel -u alice -p '<password>' domain delete '<domain-id>' --space-id '<space-id>'
+```
+
+`domain show` can resolve by key or by `--domain-id`. Domain creation currently requires effective space admin access, matching the previous embedded engine behavior.
+
+## Current implementation notes
+
+- Domains are stored in the daemon space module's metadata store under `<MYCELD_DATA_DIR>/meta/domains.json`.
+- `DomainService` is registered on the Client API and uses user bearer tokens from Client `AuthService`.
+- Default domains cannot be deleted or renamed.
+- Domain delete removes domain metadata and domain embedding policies. Graph-content cascade will be hardened further when daemon graph/session services are migrated.
 
 ## Open questions
 

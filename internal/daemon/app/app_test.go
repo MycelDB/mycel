@@ -21,13 +21,19 @@ func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 	if _, ok := rt.Modules["admin"]; !ok {
 		t.Fatalf("expected admin module to be registered, got modules: %#v", rt.Modules)
 	}
+	if _, ok := rt.Modules["user"]; !ok {
+		t.Fatalf("expected user module to be registered, got modules: %#v", rt.Modules)
+	}
 	if err := rt.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 
 	assertDir(t, dataDir)
 	assertDir(t, filepath.Join(dataDir, "log"))
+	assertDir(t, filepath.Join(dataDir, "users"))
+	assertDir(t, filepath.Join(dataDir, "users", "sessions"))
 	assertFile(t, filepath.Join(dataDir, "log", LogFilename))
+	assertFile(t, filepath.Join(dataDir, "users", "users.json"))
 
 	logContent := readFile(t, rt.LogPath)
 	for _, want := range []string{"daemon startup begins", "data directory ready", "log directory ready", "initializing module", "daemon initialization complete"} {

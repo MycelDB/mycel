@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for the daemon-oriented Admin User API on the `refactor_daemon` branch.
+Implemented initial daemon-oriented Admin User API on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -13,14 +13,16 @@ api/proto/mycel/admin/v1/user.proto
 This document depends on:
 
 ```text
-docs/v2/design/access-control.md
+docs/v2/design/grpc-admin-auth.md
 ```
 
 ## Purpose
 
-`AdminUserService` manages standard users in the Mycel daemon.
+`AdminUserService` manages standard user identities in the Mycel daemon.
 
-System admins/operators are fundamentally different from standard users and are not created through this service. Admin/operator identity and role management should be designed as a separate Admin API service.
+The daemon user identity is intentionally minimal. Application/business profile attributes such as display name, email, avatar, locale, preferences, onboarding state, or app-specific metadata belong in application spaces as graph data.
+
+System admins/operators are separate principals and are not created through this service. Admin/operator identity, roles, and capabilities are managed by `AdminOperatorService`.
 
 ## Scope
 
@@ -28,9 +30,8 @@ System admins/operators are fundamentally different from standard users and are 
 
 - list standard users
 - get a standard user
-- find a standard user by username or email
+- find a standard user by username
 - create a standard user
-- update standard user display metadata
 - disable/enable a standard user
 - soft-delete a standard user
 - set a standard user's password
@@ -38,6 +39,9 @@ System admins/operators are fundamentally different from standard users and are 
 
 `AdminUserService` does not include:
 
+- display names
+- email addresses
+- user profile attributes
 - system admin/operator creation
 - admin role assignment
 - admin capability assignment
@@ -46,8 +50,6 @@ System admins/operators are fundamentally different from standard users and are 
 - space access grants
 - signup/onboarding flows
 
-Space access grants belong to a future `AdminAccessService`. Public signup remains a higher-level product concern currently handled by Knot PKM.
-
 ## Service definition
 
 ```protobuf
@@ -55,16 +57,11 @@ service AdminUserService {
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
   rpc GetUser(GetUserRequest) returns (GetUserResponse);
   rpc FindUser(FindUserRequest) returns (FindUserResponse);
-
   rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
-  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse);
-
   rpc DisableUser(DisableUserRequest) returns (DisableUserResponse);
   rpc EnableUser(EnableUserRequest) returns (EnableUserResponse);
   rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
-
   rpc SetUserPassword(SetUserPasswordRequest) returns (SetUserPasswordResponse);
-
   rpc ListUserSessions(ListUserSessionsRequest) returns (ListUserSessionsResponse);
   rpc RevokeUserSession(RevokeUserSessionRequest) returns (RevokeUserSessionResponse);
   rpc RevokeUserSessions(RevokeUserSessionsRequest) returns (RevokeUserSessionsResponse);
@@ -75,19 +72,13 @@ service AdminUserService {
 
 A user is a standard application/product principal.
 
-There is no `UserKind` in v1. Admins/operators and system principals are modeled separately.
-
-Recommended shape:
-
 ```protobuf
 message User {
   string user_id = 1;
   string username = 2;
-  string display_name = 3;
-  string email = 4;
-  UserState state = 5;
-  google.protobuf.Timestamp create_time = 6;
-  google.protobuf.Timestamp update_time = 7;
+  UserState state = 3;
+  google.protobuf.Timestamp create_time = 4;
+  google.protobuf.Timestamp update_time = 5;
 }
 ```
 
@@ -102,200 +93,139 @@ enum UserState {
 }
 ```
 
-## CreateUser
+The domain identity model uses `identity.User.Username` as the immutable login/unique username. Legacy embedded user store decoding tolerates old `Ref`/`Username` JSON keys but drops old presentation metadata.
 
-Creates a standard user.
+## Behavior
 
-```protobuf
-message CreateUserRequest {
-  string username = 1;
-  string display_name = 2;
-  string email = 3;
-  optional string password = 4;
-  bool disabled = 5;
-}
-```
-
-Behavior:
+`CreateUser`:
 
 - creates a standard user only
-- does not create a space
-- does not assign admin roles
-- does not assign admin capabilities
-- does not assign space access
-- hashes password before storage if password is supplied
-- never returns password plaintext or password hash
+- requires a username and password in the current daemon-local implementation
+- hashes the password with bcrypt before storage
 - creates an active user by default unless `disabled` is true
-- audits the user creation
+- does not create a space, assign admin roles/capabilities, or grant space access
+- never returns password plaintext or password hashes
 
-Required capability:
+`DisableUser` / `EnableUser`:
 
-```text
-user.create
-```
+- disabled users cannot log in once Client API auth is backed by this module
+- disable can revoke existing refresh sessions
 
-## ListUsers
+`DeleteUser`:
 
-Lists standard users.
+- is a soft delete (`USER_STATE_DELETED`)
+- can revoke existing refresh sessions
+- does not purge user-owned data immediately
+- owned-space transfer/archive enforcement remains a follow-up once daemon space/admin APIs are wired in
 
-Supports pagination and optional inclusion of disabled/deleted users.
+`SetUserPassword`:
 
-Required capability:
+- bcrypt-hashes the new password
+- never returns password plaintext or password hashes
+- can revoke existing refresh sessions
 
-```text
-user.manage
-```
+`ListUserSessions`, `RevokeUserSession`, and `RevokeUserSessions` use the daemon user module's durable refresh-session store and expose only coarse session metadata.
 
-A future capability split may introduce `user.read`.
+## Module/store
 
-## GetUser and FindUser
-
-`GetUser` retrieves a user by id.
-
-`FindUser` retrieves a user by username or email.
-
-Required capability:
+The daemon initializes a dedicated user module:
 
 ```text
-user.manage
+internal/daemon/modules/user
 ```
 
-## UpdateUser
-
-Updates mutable user display metadata.
-
-Mutable fields in v1:
-
-- `display_name`
-- `email`
-
-Username is immutable in v1.
-
-Required capability:
+It stores daemon-managed standard users and their refresh sessions under:
 
 ```text
-user.manage
+<MYCELD_DATA_DIR>/users/users.json
+<MYCELD_DATA_DIR>/users/sessions/refresh_sessions.json
 ```
 
-## DisableUser and EnableUser
+User records include:
 
-Disabling a user:
+- id
+- username
+- active/disabled/deleted state
+- bcrypt password hash
+- create/update timestamps
 
-- prevents new login
-- optionally revokes existing auth sessions
-- retains user identity for ownership, audit, and reference integrity
-
-Enabling a user restores login eligibility.
-
-Required capability:
-
-```text
-user.manage
-```
-
-## DeleteUser
-
-`DeleteUser` is a soft delete in v1.
-
-Behavior:
-
-- marks the user deleted
-- prevents login
-- optionally revokes sessions
-- preserves identity for audit and historical references
-- does not purge user data immediately
-
-Deletion should be rejected if the user owns spaces unless a future Admin Space API defines and supplies an ownership transfer/archive policy.
-
-Required capability:
-
-```text
-user.manage
-```
-
-## SetUserPassword
-
-Sets or resets a standard user's password.
-
-Behavior:
-
-- hashes password before storage
-- never returns password plaintext or password hash
-- optionally revokes existing sessions
-- audits the password change without logging the password
-
-Required capability:
-
-```text
-user.manage
-```
-
-A future capability split may introduce `user.password.set`.
-
-## Auth session management
-
-Admin user session management includes:
-
-- list auth sessions for a user
-- revoke one auth session
-- revoke all auth sessions for a user
-
-These operations are user-wide administrative equivalents of client-owned session management.
-
-Session summaries expose coarse metadata only and must not expose refresh token plaintext, refresh token hashes, raw request metadata hashes, or secrets.
-
-Required capability:
-
-```text
-user.manage
-```
-
-A future capability split may introduce `user.session.manage`.
-
-## Users vs admins/operators
-
-Standard users and system admins/operators are separate concepts.
-
-This service does not create admins. A future service should manage operators/admins and their roles/capabilities, for example:
-
-```text
-AdminOperatorService
-```
-
-This separation avoids implying that a normal user can become an operator simply by adding a kind/role through the standard user API.
-
-## Users vs space access
-
-Creating a user does not imply space creation or space access.
-
-Space access grants are separate and should be handled by a future `AdminAccessService`.
-
-This keeps user identity lifecycle separate from collaboration/authorization over spaces.
+Admin API summaries intentionally omit password hashes.
 
 ## Authorization
+
+All AdminUserService methods require daemon operator bearer-token authentication.
 
 Current coarse capability mapping:
 
 | Operation | Required capability |
 | --- | --- |
-| CreateUser | `user.create` |
-| All other methods | `user.manage` |
+| `CreateUser` | `CAPABILITY_USER_CREATE` |
+| All other methods | `CAPABILITY_USER_MANAGE` |
+
+The initial operator roles grant these capabilities as follows:
+
+| Operator role | User-management capabilities |
+| --- | --- |
+| `SYSTEM_ADMIN` | `CAPABILITY_USER_CREATE`, `CAPABILITY_USER_MANAGE` |
+| `USER_ADMIN` | `CAPABILITY_USER_CREATE`, `CAPABILITY_USER_MANAGE` |
+
+Direct operator capability grants are also honored.
 
 Future versions may split `user.manage` into finer capabilities:
 
 - `user.read`
-- `user.update`
 - `user.disable`
 - `user.delete`
 - `user.password.set`
 - `user.session.manage`
+
+## CLI commands
+
+Existing `mycel user ...` commands now call daemon gRPC. Root flags `-u/--username` and `-p/--password` are daemon operator credentials:
+
+```sh
+mycel -u admin -p '<operator-password>' user add --user-username alice --new-password '<password>'
+mycel -u admin -p '<operator-password>' user list [--include-disabled] [--include-deleted]
+mycel -u admin -p '<operator-password>' user get --user-id '<id>'
+mycel -u admin -p '<operator-password>' user find --user-username alice
+mycel -u admin -p '<operator-password>' user disable --user-id '<id>' [--revoke-sessions]
+mycel -u admin -p '<operator-password>' user enable --user-id '<id>'
+mycel -u admin -p '<operator-password>' user delete '<id>' [--revoke-sessions]
+mycel -u admin -p '<operator-password>' user password set --user-id '<id>' --new-password '<password>' [--revoke-sessions]
+mycel -u admin -p '<operator-password>' user session list --user-id '<id>' [--include-inactive]
+mycel -u admin -p '<operator-password>' user session revoke --user-id '<id>' --session-id '<session-id>'
+mycel -u admin -p '<operator-password>' user session revoke-all --user-id '<id>'
+```
+
+`--ref` remains as a deprecated alias for `--user-username` on add/find for compatibility with the old embedded CLI vocabulary.
+
+## Users vs profile data
+
+User profile and business attributes should be represented in application spaces. For example, an app can create a profile node keyed by the daemon `user_id` or `username` and define its own fields, validation, access control, and retention behavior.
+
+This keeps daemon identity lifecycle separate from application data modeling.
+
+## Users vs admins/operators
+
+Standard users and system admins/operators are separate concepts.
+
+This service does not create admins. Operators/admins and their roles/capabilities are managed through:
+
+```text
+AdminOperatorService
+```
+
+## Users vs space access
+
+Creating a user does not imply space creation or space access.
+
+Space access grants belong to a future daemon Admin Access API. This keeps user identity lifecycle separate from collaboration/authorization over spaces.
 
 ## Audit requirements
 
 Audit events should be emitted for:
 
 - create user
-- update user
 - disable user
 - enable user
 - delete user
@@ -311,21 +241,19 @@ Audit records must not include:
 - refresh token hashes
 - secrets
 
+Full audit emission is still future hardening for this daemon slice.
+
 ## Error model
 
-The protobuf does not define custom error messages for this draft. Implementations should use standard gRPC status codes.
-
-Suggested mappings:
+The implementation uses standard gRPC status codes.
 
 | Condition | gRPC status |
 | --- | --- |
 | missing/invalid admin auth | `UNAUTHENTICATED` |
 | missing admin capability | `PERMISSION_DENIED` |
 | malformed request | `INVALID_ARGUMENT` |
-| duplicate username/email | `ALREADY_EXISTS` |
-| user not found | `NOT_FOUND` |
-| username update attempted | `FAILED_PRECONDITION` |
-| delete blocked by owned spaces | `FAILED_PRECONDITION` |
+| duplicate username | `ALREADY_EXISTS` |
+| user/session not found | `NOT_FOUND` |
 | service unavailable | `UNAVAILABLE` |
 
 ## Mesh implications
@@ -336,7 +264,6 @@ User auth sessions may be local or replicated depending on future auth/session a
 
 ## Open questions
 
-- Should email be required or optional?
-- Should password be required for all standard users, or can passwordless users exist for external identity providers later?
+- Should passwordless users be allowed later for external identity providers?
 - Should user deletion support an explicit owned-space policy once Admin Space API is designed?
 - Should session summaries be moved to a shared/common proto once Admin and Client Auth APIs are implemented together?

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/identity"
@@ -17,11 +18,13 @@ import (
 const spacesStoreFile = "spaces.json"
 
 type storedSpace struct {
-	SpaceID  domainspace.SpaceID       `json:"space_id"`
-	OwnerID  identity.UserID           `json:"owner_id"`
-	Name     string                    `json:"name"`
-	Status   string                    `json:"status"`
-	Settings domainspace.SpaceSettings `json:"settings,omitempty"`
+	SpaceID   domainspace.SpaceID       `json:"space_id"`
+	OwnerID   identity.UserID           `json:"owner_id"`
+	Name      string                    `json:"name"`
+	Status    string                    `json:"status"`
+	Settings  domainspace.SpaceSettings `json:"settings,omitempty"`
+	CreatedAt time.Time                 `json:"created_at,omitempty"`
+	UpdatedAt time.Time                 `json:"updated_at,omitempty"`
 }
 
 type defaultManager struct {
@@ -161,12 +164,15 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (domainspac
 	if status == "" {
 		status = "active"
 	}
+	now := time.Now().UTC()
 	s := storedSpace{
-		SpaceID:  uuid.New(),
-		OwnerID:  in.OwnerID,
-		Name:     in.Name,
-		Status:   status,
-		Settings: in.Settings,
+		SpaceID:   uuid.New(),
+		OwnerID:   in.OwnerID,
+		Name:      in.Name,
+		Status:    status,
+		Settings:  in.Settings,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	m.spaces = append(m.spaces, s)
 	m.rebuildIndex()
@@ -217,12 +223,19 @@ func (m *defaultManager) persist() error {
 }
 
 func (s storedSpace) toModel() domainspace.Space {
+	createdAt := s.CreatedAt
+	updatedAt := s.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = createdAt
+	}
 	return domainspace.Space{
-		SpaceID:  s.SpaceID,
-		OwnerID:  s.OwnerID,
-		Name:     s.Name,
-		Status:   s.Status,
-		Settings: s.Settings,
+		SpaceID:   s.SpaceID,
+		OwnerID:   s.OwnerID,
+		Name:      s.Name,
+		Status:    s.Status,
+		Settings:  s.Settings,
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
 	}
 }
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for the daemon-oriented Client Metadata Catalog API on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Metadata Catalog API MVP on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -21,6 +21,8 @@ docs/v2/design/api/query.md
 ## Purpose
 
 `MetadataCatalogService` is a small transaction-scoped Client API for metadata discovery.
+
+The current daemon implementation scans the active graph transaction snapshot, including staged writes in read-write transactions.
 
 It lists known canonical tags and custom property names visible in a transaction snapshot.
 
@@ -52,6 +54,25 @@ service MetadataCatalogService {
   rpc ListPropertyNames(ListPropertyNamesRequest) returns (ListPropertyNamesResponse);
 }
 ```
+
+## CLI
+
+Daemon-backed metadata catalog commands:
+
+```sh
+./bin/mycel -u alice -p '<password>' metadata tags --transaction-id '<tx-id>'
+./bin/mycel -u alice -p '<password>' metadata properties --transaction-id '<tx-id>'
+```
+
+Text output is tab-separated `name` and `node_count`. JSON output returns the protobuf response shape.
+
+## Current implementation notes
+
+- `ListTags` normalizes tag values with the existing graph metadata helpers.
+- `ListPropertyNames` normalizes custom property names from the canonical `properties` node prop.
+- Results are sorted by descending `node_count`, then ascending name.
+- Pagination is offset-token based and capped by daemon policy.
+- Property value listing remains a future API extension because the current proto only defines tag and property-name summaries.
 
 ## Transaction scoping
 

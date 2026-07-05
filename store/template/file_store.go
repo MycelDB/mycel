@@ -31,6 +31,7 @@ type storedTemplate struct {
 	DisplayName string               `json:"display_name,omitempty"`
 	Description string               `json:"description,omitempty"`
 	System      bool                 `json:"system,omitempty"`
+	State       string               `json:"state,omitempty"`
 	Properties  graph.PropertyPolicy `json:"properties"`
 	Children    graph.ChildPolicy    `json:"children"`
 }
@@ -121,6 +122,7 @@ func (m *defaultManager) Import(ctx context.Context, spaceID domainspace.SpaceID
 			DisplayName: in.DisplayName,
 			Description: in.Description,
 			System:      in.System,
+			State:       graph.TemplateStateActive,
 			Properties:  toPropertyPolicy(in.Properties),
 			Children:    toChildPolicy(in.Children),
 		}
@@ -196,6 +198,84 @@ func (m *defaultManager) Find(ctx context.Context, spaceID domainspace.SpaceID, 
 	return m.templates[idx].toModel(), nil
 }
 
+func (m *defaultManager) Update(ctx context.Context, in UpdateInput) (graph.Template, error) {
+	if err := ctx.Err(); err != nil {
+		return graph.Template{}, err
+	}
+	if in.TemplateID == uuid.Nil {
+		return graph.Template{}, fmt.Errorf("%w: template_id is required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx, ok := m.indexByID[in.TemplateID]
+	if !ok {
+		return graph.Template{}, ErrTemplateNotFound
+	}
+	old := m.templates[idx]
+	updated := old
+	if in.DisplayName != nil {
+		updated.DisplayName = strings.TrimSpace(*in.DisplayName)
+	}
+	if in.Description != nil {
+		updated.Description = strings.TrimSpace(*in.Description)
+	}
+	m.templates[idx] = updated
+	if err := m.persistSpace(updated.SpaceID); err != nil {
+		m.templates[idx] = old
+		return graph.Template{}, err
+	}
+	return updated.toModel(), nil
+}
+
+func (m *defaultManager) Archive(ctx context.Context, id graph.TemplateID) (graph.Template, error) {
+	if err := ctx.Err(); err != nil {
+		return graph.Template{}, err
+	}
+	if id == uuid.Nil {
+		return graph.Template{}, fmt.Errorf("%w: template_id is required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx, ok := m.indexByID[id]
+	if !ok {
+		return graph.Template{}, ErrTemplateNotFound
+	}
+	old := m.templates[idx]
+	updated := old
+	updated.State = graph.TemplateStateArchived
+	m.templates[idx] = updated
+	if err := m.persistSpace(updated.SpaceID); err != nil {
+		m.templates[idx] = old
+		return graph.Template{}, err
+	}
+	return updated.toModel(), nil
+}
+
+func (m *defaultManager) DeleteByID(ctx context.Context, id graph.TemplateID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: template_id is required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx, ok := m.indexByID[id]
+	if !ok {
+		return ErrTemplateNotFound
+	}
+	spaceID := m.templates[idx].SpaceID
+	oldTemplates := append([]storedTemplate(nil), m.templates...)
+	m.templates = append(m.templates[:idx], m.templates[idx+1:]...)
+	m.rebuildIndex()
+	if err := m.persistSpace(spaceID); err != nil {
+		m.templates = oldTemplates
+		m.rebuildIndex()
+		return err
+	}
+	return nil
+}
+
 func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -244,6 +324,10 @@ func (m *defaultManager) persistSpace(spaceID domainspace.SpaceID) error {
 }
 
 func (t storedTemplate) toModel() graph.Template {
+	state := t.State
+	if state == "" {
+		state = graph.TemplateStateActive
+	}
 	return graph.Template{
 		ID:          t.ID,
 		SpaceID:     t.SpaceID,
@@ -252,6 +336,7 @@ func (t storedTemplate) toModel() graph.Template {
 		DisplayName: t.DisplayName,
 		Description: t.Description,
 		System:      t.System,
+		State:       state,
 		Properties:  t.Properties,
 		Children:    t.Children,
 	}

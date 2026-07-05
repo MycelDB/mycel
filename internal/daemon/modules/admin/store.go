@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const StoreFilename = "admins.json"
@@ -17,10 +18,15 @@ const StoreFilename = "admins.json"
 var ErrDuplicateAdmin = errors.New("admin already exists")
 var ErrStoreNotFound = errors.New("admin store not found")
 var ErrAdminNotFound = errors.New("admin not found")
+var ErrGrantNotFound = errors.New("grant not found")
+var ErrLastSystemAdmin = errors.New("cannot remove the last active system admin")
 
 type Store interface {
 	List(context.Context) ([]Admin, error)
 	Create(context.Context, Admin) error
+	GetByID(ctx context.Context, adminID string) (Admin, error)
+	Find(ctx context.Context, username string, email string) (Admin, error)
+	Update(ctx context.Context, adminID string, update func(*Admin) error) (Admin, error)
 	UpdatePasswordHash(ctx context.Context, adminID string, passwordHash string) (Admin, error)
 }
 
@@ -68,9 +74,43 @@ func (s *FileStore) List(ctx context.Context) ([]Admin, error) {
 	if err != nil {
 		return nil, err
 	}
-	admins := append([]Admin(nil), doc.Admins...)
+	admins := make([]Admin, 0, len(doc.Admins))
+	for _, admin := range doc.Admins {
+		admins = append(admins, admin.normalized())
+	}
 	sort.Slice(admins, func(i, j int) bool { return admins[i].Username < admins[j].Username })
 	return admins, nil
+}
+
+func (s *FileStore) GetByID(ctx context.Context, adminID string) (Admin, error) {
+	admins, err := s.List(ctx)
+	if err != nil {
+		return Admin{}, err
+	}
+	for _, admin := range admins {
+		if admin.ID == adminID {
+			return admin.normalized(), nil
+		}
+	}
+	return Admin{}, ErrAdminNotFound
+}
+
+func (s *FileStore) Find(ctx context.Context, username string, email string) (Admin, error) {
+	admins, err := s.List(ctx)
+	if err != nil {
+		return Admin{}, err
+	}
+	username = strings.TrimSpace(username)
+	email = strings.TrimSpace(email)
+	for _, admin := range admins {
+		if username != "" && strings.EqualFold(admin.Username, username) {
+			return admin.normalized(), nil
+		}
+		if email != "" && admin.Email != "" && strings.EqualFold(admin.Email, email) {
+			return admin.normalized(), nil
+		}
+	}
+	return Admin{}, ErrAdminNotFound
 }
 
 func (s *FileStore) Create(ctx context.Context, admin Admin) error {
@@ -84,15 +124,15 @@ func (s *FileStore) Create(ctx context.Context, admin Admin) error {
 		return err
 	}
 	for _, existing := range doc.Admins {
-		if strings.EqualFold(existing.Username, admin.Username) || existing.ID == admin.ID {
+		if strings.EqualFold(existing.Username, admin.Username) || existing.ID == admin.ID || (admin.Email != "" && existing.Email != "" && strings.EqualFold(existing.Email, admin.Email)) {
 			return ErrDuplicateAdmin
 		}
 	}
-	doc.Admins = append(doc.Admins, admin)
+	doc.Admins = append(doc.Admins, admin.normalized())
 	return s.write(doc)
 }
 
-func (s *FileStore) UpdatePasswordHash(ctx context.Context, adminID string, passwordHash string) (Admin, error) {
+func (s *FileStore) Update(ctx context.Context, adminID string, update func(*Admin) error) (Admin, error) {
 	if err := ctx.Err(); err != nil {
 		return Admin{}, err
 	}
@@ -104,12 +144,23 @@ func (s *FileStore) UpdatePasswordHash(ctx context.Context, adminID string, pass
 	}
 	for i := range doc.Admins {
 		if doc.Admins[i].ID == adminID {
-			doc.Admins[i].PasswordHash = passwordHash
-			updated := doc.Admins[i]
-			return updated, s.write(doc)
+			admin := doc.Admins[i].normalized()
+			if err := update(&admin); err != nil {
+				return Admin{}, err
+			}
+			admin.UpdatedAt = time.Now().UTC()
+			doc.Admins[i] = admin.normalized()
+			return doc.Admins[i], s.write(doc)
 		}
 	}
 	return Admin{}, ErrAdminNotFound
+}
+
+func (s *FileStore) UpdatePasswordHash(ctx context.Context, adminID string, passwordHash string) (Admin, error) {
+	return s.Update(ctx, adminID, func(admin *Admin) error {
+		admin.PasswordHash = passwordHash
+		return nil
+	})
 }
 
 func (s *FileStore) read() (storeDocument, error) {
@@ -123,6 +174,9 @@ func (s *FileStore) read() (storeDocument, error) {
 	}
 	if doc.Admins == nil {
 		doc.Admins = []Admin{}
+	}
+	for i := range doc.Admins {
+		doc.Admins[i] = doc.Admins[i].normalized()
 	}
 	return doc, nil
 }

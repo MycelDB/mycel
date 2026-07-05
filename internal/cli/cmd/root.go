@@ -46,7 +46,7 @@ func NewRootCommand(a *app.App, repl bool) *cobra.Command {
 	a.DataDir = mycelengine.ResolveDataDir(a.DataDir)
 	root.PersistentFlags().StringVar(&a.ConfigFile, "config", a.ConfigFile, "optional MycelDB config file (defaults to MYCELDB_CONFIG)")
 	root.PersistentFlags().StringVarP(&a.DataDir, "data-dir", "d", a.DataDir, "MycelDB data directory (defaults to MYCELDB_DATA_DIR)")
-	root.PersistentFlags().StringVarP(&a.UserRef, "username", "u", a.UserRef, "username/user_ref for non-REPL authentication")
+	root.PersistentFlags().StringVarP(&a.UserRef, "username", "u", a.UserRef, "username for non-REPL authentication")
 	root.PersistentFlags().StringVarP(&a.Password, "password", "p", a.Password, "password for non-REPL authentication")
 	root.PersistentFlags().StringVar(&a.Output, "output", app.DefaultOutput(a.Output), "output format: text or json")
 	root.PersistentFlags().StringVar(&a.UserStoreEncryptionKeyB64, "user-store-encryption-key-b64", a.UserStoreEncryptionKeyB64, "base64 AES-256 key for the user store")
@@ -64,8 +64,14 @@ func NewRootCommand(a *app.App, repl bool) *cobra.Command {
 	root.PersistentFlags().Int64Var(&a.BlobMaxOtherBytes, "blob-max-other-bytes", a.BlobMaxOtherBytes, "uncategorized blob upload cap in bytes")
 	root.PersistentFlags().BoolVar(&a.AdvancedSemanticEnabled, "semantic-advanced-enabled", a.AdvancedSemanticEnabled, "enable advanced semantic implementation paths as they are introduced")
 	root.PersistentFlags().StringVar(&a.DaemonAddr, "daemon-addr", a.DaemonAddr, "myceld gRPC address (defaults to MYCELD_GRPC_ADDR or 127.0.0.1:9091)")
+	root.PersistentFlags().BoolVar(&a.DaemonTLS, "daemon-tls", a.DaemonTLS, "use TLS for daemon gRPC (defaults to MYCELD_TLS=true when set)")
+	root.PersistentFlags().StringVar(&a.DaemonTLSCAFile, "daemon-tls-ca", a.DaemonTLSCAFile, "CA certificate file for daemon TLS (defaults to MYCELD_TLS_CA_FILE)")
+	root.PersistentFlags().StringVar(&a.DaemonTLSServerName, "daemon-tls-server-name", a.DaemonTLSServerName, "override daemon TLS server name (defaults to MYCELD_TLS_SERVER_NAME or host from --daemon-addr)")
+	root.PersistentFlags().BoolVar(&a.DaemonTLSInsecureSkipVerify, "daemon-tls-insecure-skip-verify", a.DaemonTLSInsecureSkipVerify, "skip daemon TLS certificate verification (testing only; MYCELD_TLS_INSECURE_SKIP_VERIFY)")
+	root.PersistentFlags().StringVar(&a.DaemonTLSClientCertFile, "daemon-tls-client-cert", a.DaemonTLSClientCertFile, "client certificate for daemon mTLS (defaults to MYCELD_TLS_CLIENT_CERT_FILE)")
+	root.PersistentFlags().StringVar(&a.DaemonTLSClientKeyFile, "daemon-tls-client-key", a.DaemonTLSClientKeyFile, "client private key for daemon mTLS (defaults to MYCELD_TLS_CLIENT_KEY_FILE)")
 
-	root.AddCommand(NewInitCommand(a), NewAdminCommand(a), NewUserCommand(a), NewSpaceCommand(a), NewDomainCommand(a), NewNodeCommand(a), NewBlobCommand(a), NewTemplateCommand(a), NewACLCommand(a), NewAuthCommand(a), NewEmbeddingsCommand(a), NewInferenceCommand(a), NewSemanticCommand(a), NewAccountingCommand(a), NewReplCommand(a))
+	root.AddCommand(NewInitCommand(a), NewAdminCommand(a), NewUserCommand(a), NewSpaceCommand(a), NewDomainCommand(a), NewNodeCommand(a), NewGraphCommand(a), NewBlobCommand(a), NewTemplateCommand(a), NewACLCommand(a), NewAuthCommand(a), NewSessionCommand(a), NewTransactionCommand(a), NewQueryCommand(a), NewMetadataCommand(a), NewExportCommand(a), NewImportCommand(a), NewEmbeddingsCommand(a), NewInferenceCommand(a), NewSemanticCommand(a), NewChangeStreamCommand(a), NewAccountingCommand(a), NewReplCommand(a))
 	if repl {
 		root.Use = ""
 	}

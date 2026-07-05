@@ -770,7 +770,6 @@ type AuthPrincipal struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
-	DisplayName   string                 `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -815,13 +814,6 @@ func (x *AuthPrincipal) GetUserId() string {
 func (x *AuthPrincipal) GetUsername() string {
 	if x != nil {
 		return x.Username
-	}
-	return ""
-}
-
-func (x *AuthPrincipal) GetDisplayName() string {
-	if x != nil {
-		return x.DisplayName
 	}
 	return ""
 }
@@ -1038,11 +1030,10 @@ const file_mycel_client_v1_auth_proto_rawDesc = "" +
 	"\x19RevokeAuthSessionResponse\" \n" +
 	"\x1eRevokeOtherAuthSessionsRequest\"F\n" +
 	"\x1fRevokeOtherAuthSessionsResponse\x12#\n" +
-	"\rrevoked_count\x18\x01 \x01(\x05R\frevokedCount\"g\n" +
+	"\rrevoked_count\x18\x01 \x01(\x05R\frevokedCount\"D\n" +
 	"\rAuthPrincipal\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1a\n" +
-	"\busername\x18\x02 \x01(\tR\busername\x12!\n" +
-	"\fdisplay_name\x18\x03 \x01(\tR\vdisplayName\"\x80\x03\n" +
+	"\busername\x18\x02 \x01(\tR\busername\"\x80\x03\n" +
 	"\x12AuthSessionSummary\x12&\n" +
 	"\x0fauth_session_id\x18\x01 \x01(\tR\rauthSessionId\x12;\n" +
 	"\vcreate_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +

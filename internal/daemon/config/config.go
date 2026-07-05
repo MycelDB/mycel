@@ -15,11 +15,16 @@ const (
 )
 
 type Config struct {
-	DataDir   string
-	Mode      string
-	LogLevel  string
-	LogFormat string
-	GRPCAddr  string
+	DataDir                   string
+	Mode                      string
+	LogLevel                  string
+	LogFormat                 string
+	GRPCAddr                  string
+	UserStoreEncryptionKeyB64 string
+	TLSCertFile               string
+	TLSKeyFile                string
+	TLSClientCAFile           string
+	TLSRequireClientCert      bool
 }
 
 func LoadFromEnv() (Config, error) {
@@ -32,11 +37,16 @@ func LoadFromEnv() (Config, error) {
 		}
 	}
 	cfg := Config{
-		DataDir:   dataDir,
-		Mode:      valueOrDefault(os.Getenv("MYCELD_MODE"), DefaultMode),
-		LogLevel:  valueOrDefault(os.Getenv("MYCELD_LOG_LEVEL"), DefaultLogLevel),
-		LogFormat: valueOrDefault(os.Getenv("MYCELD_LOG_FORMAT"), DefaultLogFormat),
-		GRPCAddr:  valueOrDefault(os.Getenv("MYCELD_GRPC_ADDR"), DefaultGRPCAddr),
+		DataDir:                   dataDir,
+		Mode:                      valueOrDefault(os.Getenv("MYCELD_MODE"), DefaultMode),
+		LogLevel:                  valueOrDefault(os.Getenv("MYCELD_LOG_LEVEL"), DefaultLogLevel),
+		LogFormat:                 valueOrDefault(os.Getenv("MYCELD_LOG_FORMAT"), DefaultLogFormat),
+		GRPCAddr:                  valueOrDefault(os.Getenv("MYCELD_GRPC_ADDR"), DefaultGRPCAddr),
+		UserStoreEncryptionKeyB64: strings.TrimSpace(os.Getenv("MYCELD_USER_STORE_ENCRYPTION_KEY_B64")),
+		TLSCertFile:               strings.TrimSpace(os.Getenv("MYCELD_TLS_CERT_FILE")),
+		TLSKeyFile:                strings.TrimSpace(os.Getenv("MYCELD_TLS_KEY_FILE")),
+		TLSClientCAFile:           strings.TrimSpace(os.Getenv("MYCELD_TLS_CLIENT_CA_FILE")),
+		TLSRequireClientCert:      parseBoolEnv(os.Getenv("MYCELD_TLS_REQUIRE_CLIENT_CERT")),
 	}
 	return cfg, cfg.Validate()
 }
@@ -71,7 +81,27 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.GRPCAddr) == "" {
 		return fmt.Errorf("MYCELD_GRPC_ADDR must not be empty")
 	}
+	certSet := strings.TrimSpace(c.TLSCertFile) != ""
+	keySet := strings.TrimSpace(c.TLSKeyFile) != ""
+	if certSet != keySet {
+		return fmt.Errorf("MYCELD_TLS_CERT_FILE and MYCELD_TLS_KEY_FILE must be set together")
+	}
+	if strings.TrimSpace(c.TLSClientCAFile) != "" && !certSet {
+		return fmt.Errorf("MYCELD_TLS_CLIENT_CA_FILE requires MYCELD_TLS_CERT_FILE and MYCELD_TLS_KEY_FILE")
+	}
+	if c.TLSRequireClientCert && strings.TrimSpace(c.TLSClientCAFile) == "" {
+		return fmt.Errorf("MYCELD_TLS_REQUIRE_CLIENT_CERT requires MYCELD_TLS_CLIENT_CA_FILE")
+	}
 	return nil
+}
+
+func parseBoolEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func valueOrDefault(value, fallback string) string {

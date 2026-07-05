@@ -13,35 +13,69 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type fakeAdminLister struct {
-	admins []daemonadmin.AdminSummary
-	err    error
+type fakeOperatorManager struct {
+	admins      []daemonadmin.AdminSummary
+	admin       daemonadmin.AdminSummary
+	systemAdmin bool
+	operatorID  string
+	password    string
+	err         error
 }
 
-func (f fakeAdminLister) ListAdmins(context.Context) ([]daemonadmin.AdminSummary, error) {
+func (f *fakeOperatorManager) ListAdmins(context.Context) ([]daemonadmin.AdminSummary, error) {
 	return f.admins, f.err
 }
-
-type fakePasswordManager struct {
-	admin      daemonadmin.AdminSummary
-	operatorID string
-	password   string
-	err        error
+func (f *fakeOperatorManager) AuthenticateOperator(context.Context, string, string) (daemonadmin.AdminSummary, error) {
+	return f.admin, f.err
 }
-
-func (f *fakePasswordManager) SetOperatorPassword(ctx context.Context, operatorID string, password string) (daemonadmin.AdminSummary, error) {
+func (f *fakeOperatorManager) SetOperatorPassword(ctx context.Context, operatorID string, password string) (daemonadmin.AdminSummary, error) {
 	f.operatorID = operatorID
 	f.password = password
-	if f.err != nil {
-		return daemonadmin.AdminSummary{}, f.err
-	}
-	return f.admin, nil
+	return f.admin, f.err
+}
+func (f *fakeOperatorManager) GetOperator(context.Context, string) (daemonadmin.AdminSummary, error) {
+	return f.admin, f.err
+}
+func (f *fakeOperatorManager) FindOperator(context.Context, string, string) (daemonadmin.AdminSummary, error) {
+	return f.admin, f.err
+}
+func (f *fakeOperatorManager) CreateOperator(context.Context, daemonadmin.CreateOperatorInput) (daemonadmin.AdminSummary, error) {
+	return f.admin, f.err
+}
+func (f *fakeOperatorManager) UpdateOperator(context.Context, daemonadmin.UpdateOperatorInput) (daemonadmin.AdminSummary, error) {
+	return f.admin, f.err
+}
+func (f *fakeOperatorManager) DisableOperator(context.Context, string) (daemonadmin.AdminSummary, error) {
+	return f.admin, f.err
+}
+func (f *fakeOperatorManager) EnableOperator(context.Context, string) (daemonadmin.AdminSummary, error) {
+	return f.admin, f.err
+}
+func (f *fakeOperatorManager) DeleteOperator(context.Context, string) (daemonadmin.AdminSummary, error) {
+	return f.admin, f.err
+}
+func (f *fakeOperatorManager) GrantRole(context.Context, string, string, daemonadmin.AccessScope, string, string) (daemonadmin.RoleGrant, daemonadmin.AdminSummary, error) {
+	return daemonadmin.RoleGrant{ID: "grant-1", Role: daemonadmin.OperatorRoleSystemAdmin}, f.admin, f.err
+}
+func (f *fakeOperatorManager) RevokeRole(context.Context, string, string) (daemonadmin.AdminSummary, error) {
+	return f.admin, f.err
+}
+func (f *fakeOperatorManager) GrantCapability(context.Context, string, string, daemonadmin.AccessScope, string, string) (daemonadmin.CapabilityGrant, daemonadmin.AdminSummary, error) {
+	return daemonadmin.CapabilityGrant{ID: "grant-1", Capability: "CAPABILITY_OPERATOR_MANAGE"}, f.admin, f.err
+}
+func (f *fakeOperatorManager) RevokeCapability(context.Context, string, string) (daemonadmin.AdminSummary, error) {
+	return f.admin, f.err
+}
+func (f *fakeOperatorManager) IsSystemAdmin(context.Context, string) (bool, error) {
+	return f.systemAdmin, f.err
+}
+func (f *fakeOperatorManager) HasCapability(context.Context, string, string) (bool, error) {
+	return f.systemAdmin, f.err
 }
 
 func TestListOperatorsMapsAdminSummaries(t *testing.T) {
 	createdAt := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	svc := NewOperatorService(fakeAdminLister{admins: []daemonadmin.AdminSummary{{ID: "admin-1", Username: "admin", CreatedAt: createdAt}}}, nil)
-
+	svc := NewOperatorService(&fakeOperatorManager{admins: []daemonadmin.AdminSummary{{ID: "admin-1", Username: "admin", State: daemonadmin.AdminStateActive, CreatedAt: createdAt, UpdatedAt: createdAt}}})
 	res, err := svc.ListOperators(authenticatedContext(), &adminv1.ListOperatorsRequest{})
 	if err != nil {
 		t.Fatalf("ListOperators() error = %v", err)
@@ -65,7 +99,7 @@ func TestListOperatorsMapsAdminSummaries(t *testing.T) {
 }
 
 func TestListOperatorsRequiresAuthentication(t *testing.T) {
-	svc := NewOperatorService(fakeAdminLister{}, nil)
+	svc := NewOperatorService(&fakeOperatorManager{})
 	_, err := svc.ListOperators(context.Background(), &adminv1.ListOperatorsRequest{})
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected Unauthenticated, got %v", err)
@@ -73,11 +107,7 @@ func TestListOperatorsRequiresAuthentication(t *testing.T) {
 }
 
 func TestListOperatorsPaginates(t *testing.T) {
-	svc := NewOperatorService(fakeAdminLister{admins: []daemonadmin.AdminSummary{
-		{ID: "1", Username: "a", CreatedAt: time.Now()},
-		{ID: "2", Username: "b", CreatedAt: time.Now()},
-		{ID: "3", Username: "c", CreatedAt: time.Now()},
-	}}, nil)
+	svc := NewOperatorService(&fakeOperatorManager{admins: []daemonadmin.AdminSummary{{ID: "1", Username: "a", State: daemonadmin.AdminStateActive, CreatedAt: time.Now()}, {ID: "2", Username: "b", State: daemonadmin.AdminStateActive, CreatedAt: time.Now()}, {ID: "3", Username: "c", State: daemonadmin.AdminStateActive, CreatedAt: time.Now()}}})
 	first, err := svc.ListOperators(authenticatedContext(), &adminv1.ListOperatorsRequest{PageSize: 2})
 	if err != nil {
 		t.Fatalf("first ListOperators() error = %v", err)
@@ -95,17 +125,26 @@ func TestListOperatorsPaginates(t *testing.T) {
 }
 
 func TestListOperatorsRejectsInvalidPageToken(t *testing.T) {
-	svc := NewOperatorService(fakeAdminLister{}, nil)
+	svc := NewOperatorService(&fakeOperatorManager{})
 	_, err := svc.ListOperators(authenticatedContext(), &adminv1.ListOperatorsRequest{PageToken: "bad"})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
 }
 
+func TestCreateOperatorRequiresSystemAdmin(t *testing.T) {
+	svc := NewOperatorService(&fakeOperatorManager{systemAdmin: false})
+	password := "pass"
+	_, err := svc.CreateOperator(authenticatedContext(), &adminv1.CreateOperatorRequest{Username: "bob", Password: &password})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
+	}
+}
+
 func TestSetOperatorPasswordChangesOwnPassword(t *testing.T) {
 	createdAt := time.Now().UTC()
-	manager := &fakePasswordManager{admin: daemonadmin.AdminSummary{ID: "op-1", Username: "admin", CreatedAt: createdAt}}
-	svc := NewOperatorService(nil, manager)
+	manager := &fakeOperatorManager{admin: daemonadmin.AdminSummary{ID: "op-1", Username: "admin", CreatedAt: createdAt}}
+	svc := NewOperatorService(manager)
 	res, err := svc.SetOperatorPassword(authenticatedContext(), &adminv1.SetOperatorPasswordRequest{OperatorId: "op-1", Password: "new-pass"})
 	if err != nil {
 		t.Fatalf("SetOperatorPassword() error = %v", err)
@@ -119,8 +158,8 @@ func TestSetOperatorPasswordChangesOwnPassword(t *testing.T) {
 }
 
 func TestSetOperatorPasswordUsesPrincipalWhenOperatorIDMissing(t *testing.T) {
-	manager := &fakePasswordManager{admin: daemonadmin.AdminSummary{ID: "op-1", Username: "admin", CreatedAt: time.Now()}}
-	svc := NewOperatorService(nil, manager)
+	manager := &fakeOperatorManager{admin: daemonadmin.AdminSummary{ID: "op-1", Username: "admin", CreatedAt: time.Now()}}
+	svc := NewOperatorService(manager)
 	_, err := svc.SetOperatorPassword(authenticatedContext(), &adminv1.SetOperatorPasswordRequest{Password: "new-pass"})
 	if err != nil {
 		t.Fatalf("SetOperatorPassword() error = %v", err)
@@ -131,7 +170,7 @@ func TestSetOperatorPasswordUsesPrincipalWhenOperatorIDMissing(t *testing.T) {
 }
 
 func TestSetOperatorPasswordRejectsUnauthenticatedOtherOrEmpty(t *testing.T) {
-	svc := NewOperatorService(nil, &fakePasswordManager{})
+	svc := NewOperatorService(&fakeOperatorManager{})
 	if _, err := svc.SetOperatorPassword(context.Background(), &adminv1.SetOperatorPasswordRequest{OperatorId: "op-1", Password: "new-pass"}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected Unauthenticated, got %v", err)
 	}
@@ -140,6 +179,17 @@ func TestSetOperatorPasswordRejectsUnauthenticatedOtherOrEmpty(t *testing.T) {
 	}
 	if _, err := svc.SetOperatorPassword(authenticatedContext(), &adminv1.SetOperatorPasswordRequest{OperatorId: "op-1"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", err)
+	}
+}
+
+func TestGrantRoleRequiresSystemAdmin(t *testing.T) {
+	svc := NewOperatorService(&fakeOperatorManager{systemAdmin: true, admin: daemonadmin.AdminSummary{ID: "op-2", Username: "bob"}})
+	res, err := svc.GrantOperatorRole(authenticatedContext(), &adminv1.GrantOperatorRoleRequest{OperatorId: "op-2", Role: adminv1.OperatorRole_OPERATOR_ROLE_USER_ADMIN})
+	if err != nil {
+		t.Fatalf("GrantOperatorRole() error = %v", err)
+	}
+	if res.GetGrant().GetRole() != adminv1.OperatorRole_OPERATOR_ROLE_SYSTEM_ADMIN {
+		t.Fatalf("unexpected grant: %#v", res.GetGrant())
 	}
 }
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for daemon-oriented Client Session and Transaction APIs on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Session and Transaction lifecycle APIs on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -283,6 +283,8 @@ The exact enforcement point for delete capabilities may be graph-operation speci
 
 ## Audit and replication
 
+The current daemon implementation provides in-memory session and transaction lifecycle state. Graph/query operations do not yet attach to transaction ids; that is the next migration slice.
+
 A committed read-write transaction is the natural audit and replication unit.
 
 Commit records should include:
@@ -329,6 +331,38 @@ Sessions and open transactions are daemon-local runtime state. They are not them
 Committed read-write transactions, however, produce durable graph changes and commit metadata that must replicate across the mesh when the affected space/domain is replicated.
 
 Domain revisions must be meaningful enough for daemons and connectors to reason about consistency and conflict handling.
+
+## CLI
+
+The CLI now uses daemon gRPC and standard-user credentials for session and transaction lifecycle commands:
+
+```sh
+./bin/mycel -u alice -p '<password>' session open --space-id '<space-id>' --domain-id '<domain-id>'
+./bin/mycel -u alice -p '<password>' session get '<session-id>'
+./bin/mycel -u alice -p '<password>' session heartbeat '<session-id>'
+./bin/mycel -u alice -p '<password>' session close '<session-id>'
+
+./bin/mycel -u alice -p '<password>' transaction begin '<session-id>' --mode read-write
+./bin/mycel -u alice -p '<password>' transaction get '<transaction-id>'
+./bin/mycel -u alice -p '<password>' transaction commit '<transaction-id>'
+./bin/mycel -u alice -p '<password>' transaction rollback '<transaction-id>'
+./bin/mycel -u alice -p '<password>' transaction close '<transaction-id>'
+```
+
+`session open` can resolve the default domain when `--domain-id` is omitted:
+
+```sh
+./bin/mycel -u alice -p '<password>' session open --space-id '<space-id>'
+```
+
+## Current implementation notes
+
+- `SessionService` and `TransactionService` are registered on the Client API and require user bearer tokens.
+- Session ownership is tied to the authenticated user principal.
+- `OpenSession` validates that the caller can see the target space/domain through the daemon space module.
+- Session/transaction lifecycle state is in-memory and therefore reset by daemon restart.
+- Read-write transaction commit persists staged daemon `GraphService` operations first, then advances daemon lifecycle revision metadata with the graph `operation_count`.
+- Closing a session closes read-only transactions and rolls back active read-write transactions.
 
 ## Open questions
 

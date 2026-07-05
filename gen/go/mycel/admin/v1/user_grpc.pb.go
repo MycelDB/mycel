@@ -23,7 +23,6 @@ const (
 	AdminUserService_GetUser_FullMethodName            = "/mycel.admin.v1.AdminUserService/GetUser"
 	AdminUserService_FindUser_FullMethodName           = "/mycel.admin.v1.AdminUserService/FindUser"
 	AdminUserService_CreateUser_FullMethodName         = "/mycel.admin.v1.AdminUserService/CreateUser"
-	AdminUserService_UpdateUser_FullMethodName         = "/mycel.admin.v1.AdminUserService/UpdateUser"
 	AdminUserService_DisableUser_FullMethodName        = "/mycel.admin.v1.AdminUserService/DisableUser"
 	AdminUserService_EnableUser_FullMethodName         = "/mycel.admin.v1.AdminUserService/EnableUser"
 	AdminUserService_DeleteUser_FullMethodName         = "/mycel.admin.v1.AdminUserService/DeleteUser"
@@ -44,7 +43,6 @@ type AdminUserServiceClient interface {
 	GetUser(ctx context.Context, in *GetUserRequest, opts ...grpc.CallOption) (*GetUserResponse, error)
 	FindUser(ctx context.Context, in *FindUserRequest, opts ...grpc.CallOption) (*FindUserResponse, error)
 	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*CreateUserResponse, error)
-	UpdateUser(ctx context.Context, in *UpdateUserRequest, opts ...grpc.CallOption) (*UpdateUserResponse, error)
 	DisableUser(ctx context.Context, in *DisableUserRequest, opts ...grpc.CallOption) (*DisableUserResponse, error)
 	EnableUser(ctx context.Context, in *EnableUserRequest, opts ...grpc.CallOption) (*EnableUserResponse, error)
 	DeleteUser(ctx context.Context, in *DeleteUserRequest, opts ...grpc.CallOption) (*DeleteUserResponse, error)
@@ -96,16 +94,6 @@ func (c *adminUserServiceClient) CreateUser(ctx context.Context, in *CreateUserR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateUserResponse)
 	err := c.cc.Invoke(ctx, AdminUserService_CreateUser_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *adminUserServiceClient) UpdateUser(ctx context.Context, in *UpdateUserRequest, opts ...grpc.CallOption) (*UpdateUserResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(UpdateUserResponse)
-	err := c.cc.Invoke(ctx, AdminUserService_UpdateUser_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +181,6 @@ type AdminUserServiceServer interface {
 	GetUser(context.Context, *GetUserRequest) (*GetUserResponse, error)
 	FindUser(context.Context, *FindUserRequest) (*FindUserResponse, error)
 	CreateUser(context.Context, *CreateUserRequest) (*CreateUserResponse, error)
-	UpdateUser(context.Context, *UpdateUserRequest) (*UpdateUserResponse, error)
 	DisableUser(context.Context, *DisableUserRequest) (*DisableUserResponse, error)
 	EnableUser(context.Context, *EnableUserRequest) (*EnableUserResponse, error)
 	DeleteUser(context.Context, *DeleteUserRequest) (*DeleteUserResponse, error)
@@ -222,9 +209,6 @@ func (UnimplementedAdminUserServiceServer) FindUser(context.Context, *FindUserRe
 }
 func (UnimplementedAdminUserServiceServer) CreateUser(context.Context, *CreateUserRequest) (*CreateUserResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateUser not implemented")
-}
-func (UnimplementedAdminUserServiceServer) UpdateUser(context.Context, *UpdateUserRequest) (*UpdateUserResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method UpdateUser not implemented")
 }
 func (UnimplementedAdminUserServiceServer) DisableUser(context.Context, *DisableUserRequest) (*DisableUserResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DisableUser not implemented")
@@ -336,24 +320,6 @@ func _AdminUserService_CreateUser_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AdminUserServiceServer).CreateUser(ctx, req.(*CreateUserRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AdminUserService_UpdateUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(UpdateUserRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AdminUserServiceServer).UpdateUser(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AdminUserService_UpdateUser_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AdminUserServiceServer).UpdateUser(ctx, req.(*UpdateUserRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -506,10 +472,6 @@ var AdminUserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateUser",
 			Handler:    _AdminUserService_CreateUser_Handler,
-		},
-		{
-			MethodName: "UpdateUser",
-			Handler:    _AdminUserService_UpdateUser_Handler,
 		},
 		{
 			MethodName: "DisableUser",

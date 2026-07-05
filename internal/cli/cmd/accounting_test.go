@@ -27,7 +27,7 @@ func TestAccountingUsageCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth failed: %v", err)
 	}
-	bob, err := eng.CreateUser(ctx, mycelengine.CreateUserInput{AccessToken: auth.AccessToken, User: identity.UserInput{Ref: identity.UserRef("bob"), Status: identity.UserStatusActive}, Password: "pass"})
+	bob, err := eng.CreateUser(ctx, mycelengine.CreateUserInput{AccessToken: auth.AccessToken, User: identity.UserInput{Username: identity.UserRef("bob"), Status: identity.UserStatusActive}, Password: "pass"})
 	if err != nil {
 		t.Fatalf("create bob failed: %v", err)
 	}

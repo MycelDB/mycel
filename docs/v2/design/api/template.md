@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for the daemon-oriented Client Template API on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Template API on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -257,6 +257,29 @@ Suggested mappings:
 Templates are durable space metadata and must replicate with the space across the mesh.
 
 Template archive/delete operations must replicate with enough ordering to preserve node/template interpretation on all replicas.
+
+## CLI
+
+The CLI now uses daemon gRPC and standard-user credentials for template commands:
+
+```sh
+./bin/mycel -u alice -p '<password>' template list --space-id '<space-id>'
+./bin/mycel -u alice -p '<password>' template import --file templates.json --space-id '<space-id>'
+./bin/mycel -u alice -p '<password>' template create note --version 1.0.0 --display-name Note --space-id '<space-id>'
+./bin/mycel -u alice -p '<password>' template find note --version 1.0.0 --space-id '<space-id>'
+./bin/mycel -u alice -p '<password>' template get '<template-id>' --space-id '<space-id>'
+./bin/mycel -u alice -p '<password>' template update '<template-id>' --display-name 'Note v1' --space-id '<space-id>'
+./bin/mycel -u alice -p '<password>' template archive '<template-id>' --space-id '<space-id>'
+./bin/mycel -u alice -p '<password>' template delete '<template-id>' --space-id '<space-id>'
+```
+
+## Current implementation notes
+
+- `TemplateService` is registered on the daemon Client API and uses user bearer tokens from Client `AuthService`.
+- Templates are stored under `<MYCELD_DATA_DIR>/templates/<space-id>.json`.
+- List/get/find require readable space access; create/update/archive/delete/import require effective space admin access.
+- Archive marks template state as archived.
+- Delete currently deletes template metadata. Reference-aware delete/detach will be hardened when daemon graph/session services are migrated.
 
 ## Open questions
 

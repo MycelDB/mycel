@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for the daemon-oriented Client Import/Export API on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Import/Export API MVP on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -23,6 +23,8 @@ docs/v2/design/api/template.md
 ## Purpose
 
 `ImportExportService` provides client/application data portability for graph/domain data.
+
+The current daemon implementation supports transaction-scoped structured Mycel stream export/import of graph nodes, edges, optional templates, optional blob payloads, and `REPLACE_DOMAIN` mode. Raw JSON/NDJSON gRPC chunk formats and semantic-index export remain future hardening slices.
 
 It is distinct from Admin API backup/restore. Admin backup/restore may include users, access grants, daemon configuration, mesh metadata, semantic credentials, and other operational state. Client import/export is for application data inside authorized spaces/domains.
 
@@ -84,6 +86,63 @@ service ImportExportService {
   rpc ImportDomain(stream ImportDomainRequest) returns (ImportDomainResponse);
 }
 ```
+
+## CLI
+
+The daemon-backed CLI provides JSON document wrappers around the structured gRPC stream:
+
+```sh
+./bin/mycel -u alice -p '<password>' export domain \
+  --transaction-id '<read-tx-id>' \
+  --file domain.json \
+  --include-templates \
+  --include-blobs
+
+./bin/mycel -u alice -p '<password>' import domain \
+  --transaction-id '<write-tx-id>' \
+  --file domain.json \
+  --mode append \
+  --include-templates \
+  --include-blobs
+```
+
+The JSON document shape is intentionally simple for the MVP:
+
+```json
+{
+  "format": "mycel-domain-json-v1",
+  "manifest": { "space_id": "...", "domain_id": "..." },
+  "templates": [
+    { "key": "note", "version": "1.0.0", "display_name": "Note" }
+  ],
+  "blob_metadata": [
+    { "import_blob_id": "...", "declared_mime_type": "text/plain", "size_bytes": 12 }
+  ],
+  "blob_chunks": [
+    { "import_blob_id": "...", "chunk": "base64..." }
+  ],
+  "nodes": [
+    { "node_id": "...", "content": "A", "props": { "tags": ["test1"] } }
+  ],
+  "edges": [
+    { "edge_id": "...", "from_node_id": "...", "to_node_id": "...", "kind": "contains", "props": { "order": 0 } }
+  ]
+}
+```
+
+`import domain` defaults to preserving supplied node/edge ids so exported documents can be imported into another domain while preserving containment edge endpoints.
+
+## Current implementation notes
+
+- `ExportDomain` currently supports `DOMAIN_EXPORT_FORMAT_MYCEL_STREAM`.
+- `ImportDomain` currently supports `DOMAIN_IMPORT_FORMAT_MYCEL_STREAM`.
+- Node and edge records are supported.
+- Template records are supported when `include_templates` is set.
+- Blob metadata/chunk records are supported when `include_blobs` is set.
+- `APPEND`, basic `UPSERT`, and `REPLACE_DOMAIN` modes are supported for graph records.
+- Raw JSON chunks, NDJSON chunks, and semantic-index export are not yet implemented.
+- Import mutates only the transaction overlay; callers still commit or roll back through `TransactionService`.
+- Export reads the active transaction snapshot, including read-your-writes for read-write transactions.
 
 ## Transaction scoping
 

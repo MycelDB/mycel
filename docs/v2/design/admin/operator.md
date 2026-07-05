@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for the daemon-oriented Admin Operator API on the `refactor_daemon` branch.
+Implemented initial daemon-oriented Admin Operator API on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -13,7 +13,7 @@ api/proto/mycel/admin/v1/operator.proto
 This document depends on:
 
 ```text
-docs/v2/design/access-control.md
+docs/v2/design/grpc-admin-auth.md
 docs/v2/design/admin/user.md
 ```
 
@@ -92,14 +92,14 @@ service AdminOperatorService {
 
 ## Operator model
 
-Recommended shape:
+Protobuf shape:
 
 ```protobuf
 message Operator {
   string operator_id = 1;
   string username = 2;
-  string display_name = 3;
-  string email = 4;
+  string display_name = 3; // not persisted in the initial daemon store
+  string email = 4;        // optional, persisted
   OperatorState state = 5;
   google.protobuf.Timestamp create_time = 6;
   google.protobuf.Timestamp update_time = 7;
@@ -119,7 +119,7 @@ enum OperatorState {
 
 ## CreateOperator
 
-Creates a system admin/operator.
+Creates a system admin/operator. The current implementation requires a password in the request; it does not generate or log credentials for non-bootstrap operators.
 
 ```protobuf
 message CreateOperatorRequest {
@@ -155,12 +155,12 @@ Behavior:
 - assigns initial built-in operator roles
 - assigns optional direct capability grants
 - computes effective capabilities
-- audits creation and grants
+- requires the caller to be an active `SYSTEM_ADMIN`
 
-Required capability:
+Authorization in this slice:
 
 ```text
-operator.create
+active SYSTEM_ADMIN operator
 ```
 
 ## Operator roles
@@ -207,31 +207,30 @@ message OperatorCapabilityGrant {
 
 `RevokeOperatorRole` and `RevokeOperatorCapability` revoke existing grants by grant id.
 
-The response should return updated effective capabilities where useful so admin UIs can refresh state without an extra call.
+The response returns updated effective capabilities where useful so admin UIs can refresh state without an extra call.
 
-Required capability:
+Authorization in this slice:
 
 ```text
-operator.manage
+active SYSTEM_ADMIN operator
 ```
 
-Some deployments may require `SYSTEM_ADMIN` or equivalent effective capability for granting `SYSTEM_ADMIN` to another operator. This should be enforced by policy.
+The daemon rejects revoking the final active `SYSTEM_ADMIN` role.
 
 ## UpdateOperator
 
 Updates mutable operator display metadata.
 
-Mutable fields in v1:
+Mutable fields in the current implementation:
 
-- `display_name`
 - `email`
 
-Username is immutable in v1.
+`display_name` is present in the protobuf but not persisted in the initial daemon store. Username is immutable.
 
-Required capability:
+Authorization in this slice:
 
 ```text
-operator.manage
+active SYSTEM_ADMIN operator
 ```
 
 ## DisableOperator and EnableOperator
@@ -239,13 +238,13 @@ operator.manage
 Disabling an operator:
 
 - prevents new operator login
-- optionally revokes existing operator auth sessions
 - preserves identity for audit and historical references
+- rejects disabling the last active system admin
 
-Required capability:
+Authorization in this slice:
 
 ```text
-operator.manage
+active SYSTEM_ADMIN operator
 ```
 
 ## DeleteOperator
@@ -259,12 +258,12 @@ Behavior:
 - optionally revokes sessions
 - preserves identity for audit/history
 
-Deletion should reject attempts that would remove the last active system admin/operator unless a bootstrap/recovery path is explicitly available.
+Deletion rejects attempts that would remove the last active system admin/operator.
 
-Required capability:
+Authorization in this slice:
 
 ```text
-operator.manage
+active SYSTEM_ADMIN operator
 ```
 
 ## SetOperatorPassword
@@ -278,44 +277,35 @@ Behavior:
 - optionally revokes sessions
 - audits the password change without logging the password
 
-Required capability:
+Authorization in this slice:
 
 ```text
-operator.manage
+self-service for authenticated operator, or active SYSTEM_ADMIN for another operator
 ```
 
 ## Operator auth sessions
 
 Operator session management is separate from standard user session management.
 
-Session summaries expose coarse metadata only and must not expose refresh token plaintext, refresh token hashes, raw request metadata hashes, or secrets.
-
-Required capability:
-
-```text
-operator.manage
-```
+Current implementation note: daemon access tokens are short-lived and not persisted, so `ListOperatorSessions` returns an empty list and revoke session RPCs are no-op placeholders. Future persisted refresh sessions must expose coarse metadata only and must not expose refresh token plaintext, refresh token hashes, raw request metadata hashes, or secrets.
 
 ## Bootstrap
 
 The first operator cannot be created through an authenticated admin call unless an operator already exists.
 
-Implementation must define a bootstrap mechanism, such as:
-
-- local-only CLI bootstrap command
-- setup mode when no operator exists
-- bootstrap configuration/env secret
-
-Bootstrap must be auditable and should be disabled once the first operator exists.
+Current bootstrap behavior: standalone daemon initialization creates one active `admin` operator with a random password and a `SYSTEM_ADMIN` role when the admin store is empty. The plaintext password is logged once with an explicit change-password warning and is never stored as plaintext.
 
 ## Authorization
 
-Current coarse capability mapping:
+Current coarse authorization mapping:
 
-| Operation | Required capability |
+| Operation | Required authorization |
 | --- | --- |
-| CreateOperator | `operator.create` |
-| All other methods | `operator.manage` |
+| `ListOperators`, `GetOperator`, `FindOperator`, `ListOperatorRoles`, `ListOperatorCapabilities`, session placeholder RPCs | Any authenticated active operator |
+| `SetOperatorPassword` for self | Authenticated active operator |
+| Create/update/disable/enable/delete another operator, grant/revoke roles, grant/revoke capabilities, set another operator password | Active `SYSTEM_ADMIN` operator |
+
+Role/capability values are persisted and effective capabilities are returned, but enforcement currently uses the active `SYSTEM_ADMIN` role as the coarse mutation gate.
 
 Future versions may split `operator.manage` into finer capabilities:
 
@@ -368,7 +358,7 @@ Suggested mappings:
 | duplicate username/email | `ALREADY_EXISTS` |
 | operator not found | `NOT_FOUND` |
 | username update attempted | `FAILED_PRECONDITION` |
-| deleting/disabling last system admin | `FAILED_PRECONDITION` |
+| deleting/disabling last system admin or revoking final `SYSTEM_ADMIN` role | `FAILED_PRECONDITION` |
 | bootstrap disabled | `FAILED_PRECONDITION` |
 | service unavailable | `UNAVAILABLE` |
 
@@ -378,9 +368,33 @@ Operator identities, role grants, and capability grants are security-critical co
 
 Operator auth sessions may be local or replicated depending on future auth/session architecture, but disabled/deleted operator state must be enforced consistently across the mesh.
 
+## Current CLI commands
+
+All commands authenticate with root flags `-u/--username` and `-p/--password`; command-specific usernames use `--operator-username` to avoid colliding with the login username.
+
+```sh
+mycel -u admin -p '<password>' admin list
+mycel -u admin -p '<password>' admin get --operator-id '<id>'
+mycel -u admin -p '<password>' admin find --operator-username '<username>'
+mycel -u admin -p '<password>' admin create --operator-username '<username>' --new-password '<password>' [--email '<email>'] [--role system-admin]
+mycel -u admin -p '<password>' admin update --operator-id '<id>' --email '<email>'
+mycel -u admin -p '<password>' admin disable --operator-id '<id>'
+mycel -u admin -p '<password>' admin enable --operator-id '<id>'
+mycel -u admin -p '<password>' admin delete --operator-id '<id>'
+mycel -u admin -p '<password>' admin password set [--operator-id '<id>'] --new-password '<password>'
+mycel -u admin -p '<password>' admin role list --operator-id '<id>'
+mycel -u admin -p '<password>' admin role grant --operator-id '<id>' --role space-admin
+mycel -u admin -p '<password>' admin role revoke --operator-id '<id>' --grant-id '<grant-id>'
+mycel -u admin -p '<password>' admin capability list --operator-id '<id>'
+mycel -u admin -p '<password>' admin capability grant --operator-id '<id>' --capability operator-manage
+mycel -u admin -p '<password>' admin capability revoke --operator-id '<id>' --grant-id '<grant-id>'
+mycel -u admin -p '<password>' admin session list --operator-id '<id>'
+mycel -u admin -p '<password>' admin session revoke --operator-id '<id>' --session-id '<session-id>'
+mycel -u admin -p '<password>' admin session revoke-all --operator-id '<id>'
+```
+
 ## Open questions
 
-- Should operator roles be system-scoped only in v1, or can some roles be space-scoped?
 - Should direct operator capability grants be required to be system-scoped initially?
-- What exact bootstrap mechanism should be implemented first?
 - Should `SYSTEM_ADMIN` grant/revoke require multi-party approval in production deployments later?
+- What durable operator refresh-session model should replace the current short-lived-token-only placeholder?

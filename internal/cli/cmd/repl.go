@@ -9,8 +9,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/myceldb/mycel/domain/identity"
-	mycelengine "github.com/myceldb/mycel/engine"
 	"github.com/myceldb/mycel/internal/cli/app"
 	"github.com/spf13/cobra"
 )
@@ -20,9 +18,6 @@ func NewReplCommand(a *app.App) *cobra.Command {
 		Use:   "repl",
 		Short: "Start an interactive MycelDB REPL",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if strings.TrimSpace(a.DataDir) == "" {
-				return fmt.Errorf("--data-dir/-d is required")
-			}
 			return RunREPL(cmd.Context(), a, os.Stdin, os.Stdout)
 		},
 	}
@@ -59,17 +54,13 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 			a.UserRef = args[1]
 			a.Password = args[2]
 			a.Token = ""
-			if err := a.EnsureEngine(ctx); err != nil {
-				fmt.Fprintln(out, "error:", err)
-				continue
-			}
-			res, err := a.Engine.Authenticate(ctx, mycelengine.AuthInput{UserRef: identity.UserRef(a.UserRef), Password: a.Password})
+			conn, _, login, err := loginDaemonUser(ctx, a)
 			if err != nil {
 				fmt.Fprintln(out, "error:", err)
 				continue
 			}
-			a.Token = res.AccessToken
-			fmt.Fprintln(out, "logged in")
+			_ = conn.Close()
+			fmt.Fprintf(out, "logged in as %s\n", login.GetPrincipal().GetUsername())
 		case "logout":
 			a.Token = ""
 			a.UserRef = ""

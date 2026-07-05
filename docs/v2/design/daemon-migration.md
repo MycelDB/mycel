@@ -10,6 +10,28 @@ Mycel is currently primarily consumed as an embedded Go library. The long-term d
 
 The migration should be gradual. Each phase should leave the existing embedded/library use case functional while introducing daemon capabilities behind stable interfaces.
 
+Current implementation status on `refactor_daemon` includes daemon initialization, authenticated Admin Auth/Operator/User APIs, CLI admin/user-management commands over daemon gRPC, the daemon-backed Client AuthService for standard users, daemon-backed Client/Admin space APIs, daemon-backed Client DomainService, daemon-backed Client TemplateService, daemon-backed Client Session/Transaction lifecycle services, the daemon-backed Client GraphService MVP, the daemon-backed Client BlobService MVP, the daemon-backed Client QueryService MVP, the daemon-backed Client ImportExportService with structured graph/template/blob and replace-domain support, the daemon-backed Client MetadataCatalogService MVP, the daemon-backed Client SemanticService MVP, the daemon-backed Client ChangeStreamService with durable replay and graph change payloads, the daemon-backed AdminDomainService lookup MVP, the daemon-backed AdminSemanticService index configuration/delete MVP, the daemon-backed AdminSemanticMaintenanceService backfill/maintenance MVP, the daemon-backed AdminSemanticMigrationService legacy embedding migration MVP, the daemon-backed AdminInferenceService package/catalog/credentials/grants/policies/soft-lifecycle plus reference-safe hard-delete MVP, and TLS/mTLS transport hardening for daemon gRPC. See:
+
+- [gRPC Admin Auth API](grpc-admin-auth.md)
+- [gRPC Admin List](grpc-admin-list.md)
+- [Admin Domain API](admin/domain.md)
+- [Admin Semantic API](admin/semantic.md)
+- [Admin Inference API](admin/inference.md)
+- [Admin Semantic Maintenance API](admin/semantic-maintenance.md)
+- [Admin Semantic Migration API](admin/semantic-migration.md)
+- [gRPC Client Auth API](grpc-client-auth.md)
+- [Client Space API](api/space.md)
+- [Client Domain API](api/domain.md)
+- [Client Template API](api/template.md)
+- [Client Session and Transaction API](api/session-transaction.md)
+- [Client Graph API](api/graph.md)
+- [Client Blob API](api/blob.md)
+- [Client Query API](api/query.md)
+- [Client Import/Export API](api/import-export.md)
+- [Client Metadata Catalog API](api/metadata-catalog.md)
+- [Client Semantic API](api/semantic.md)
+- [Client Change Stream API](api/change-stream.md)
+
 ## Goals
 
 - Preserve the existing embedded/library behavior during migration.
@@ -107,7 +129,34 @@ Responsibilities may include:
 - conflict detection/resolution
 - health and liveness between peers
 
-This API should use stronger daemon identity controls than normal client APIs, likely mTLS or equivalent daemon credentials.
+This API should use stronger daemon identity controls than normal client APIs, likely mTLS or equivalent daemon credentials. Single-daemon gRPC already supports TLS and optional client-certificate verification; future mesh APIs should require daemon identity and mTLS by default.
+
+## Transport Security
+
+Daemon gRPC defaults to plaintext loopback for local development compatibility. Operators can enable TLS by setting both:
+
+```sh
+MYCELD_TLS_CERT_FILE=/path/to/server.pem
+MYCELD_TLS_KEY_FILE=/path/to/server-key.pem
+```
+
+Optional mTLS is enabled with:
+
+```sh
+MYCELD_TLS_CLIENT_CA_FILE=/path/to/client-ca.pem
+MYCELD_TLS_REQUIRE_CLIENT_CERT=true
+```
+
+CLI clients use plaintext by default, or TLS when `--daemon-tls` / `MYCELD_TLS=true` is set. TLS material can be provided with:
+
+```sh
+--daemon-tls-ca /path/to/ca.pem
+--daemon-tls-server-name localhost
+--daemon-tls-client-cert /path/to/client.pem
+--daemon-tls-client-key /path/to/client-key.pem
+```
+
+`--daemon-tls-insecure-skip-verify` exists only for local testing and should not be used in production. Bearer-token authentication and authorization remain required by Admin and Client APIs even when mTLS is enabled.
 
 ## Protocol Direction
 

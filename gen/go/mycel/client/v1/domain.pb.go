@@ -198,6 +198,7 @@ type GetDomainRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SpaceId       string                 `protobuf:"bytes,1,opt,name=space_id,json=spaceId,proto3" json:"space_id,omitempty"`
 	DomainId      string                 `protobuf:"bytes,2,opt,name=domain_id,json=domainId,proto3" json:"domain_id,omitempty"`
+	Key           string                 `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -242,6 +243,13 @@ func (x *GetDomainRequest) GetSpaceId() string {
 func (x *GetDomainRequest) GetDomainId() string {
 	if x != nil {
 		return x.DomainId
+	}
+	return ""
+}
+
+func (x *GetDomainRequest) GetKey() string {
+	if x != nil {
+		return x.Key
 	}
 	return ""
 }
@@ -295,6 +303,7 @@ type CreateDomainRequest struct {
 	SpaceId       string                 `protobuf:"bytes,1,opt,name=space_id,json=spaceId,proto3" json:"space_id,omitempty"`
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	Key           string                 `protobuf:"bytes,4,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -346,6 +355,13 @@ func (x *CreateDomainRequest) GetName() string {
 func (x *CreateDomainRequest) GetDescription() string {
 	if x != nil {
 		return x.Description
+	}
+	return ""
+}
+
+func (x *CreateDomainRequest) GetKey() string {
+	if x != nil {
+		return x.Key
 	}
 	return ""
 }
@@ -616,7 +632,9 @@ type Domain struct {
 	UpdateTime *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
 	// Access currently effective for the authenticated caller. This is advisory
 	// for client UI; the daemon still enforces authorization on each request.
-	CallerAccess  *v1.EffectiveAccess `protobuf:"bytes,10,opt,name=caller_access,json=callerAccess,proto3" json:"caller_access,omitempty"`
+	CallerAccess *v1.EffectiveAccess `protobuf:"bytes,10,opt,name=caller_access,json=callerAccess,proto3" json:"caller_access,omitempty"`
+	// Stable human-readable key unique within the space.
+	Key           string `protobuf:"bytes,11,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -721,6 +739,13 @@ func (x *Domain) GetCallerAccess() *v1.EffectiveAccess {
 	return nil
 }
 
+func (x *Domain) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
 var File_mycel_client_v1_domain_proto protoreflect.FileDescriptor
 
 const file_mycel_client_v1_domain_proto_rawDesc = "" +
@@ -734,16 +759,18 @@ const file_mycel_client_v1_domain_proto_rawDesc = "" +
 	"\x0einclude_system\x18\x04 \x01(\bR\rincludeSystem\"p\n" +
 	"\x13ListDomainsResponse\x121\n" +
 	"\adomains\x18\x01 \x03(\v2\x17.mycel.client.v1.DomainR\adomains\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"J\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\\\n" +
 	"\x10GetDomainRequest\x12\x19\n" +
 	"\bspace_id\x18\x01 \x01(\tR\aspaceId\x12\x1b\n" +
-	"\tdomain_id\x18\x02 \x01(\tR\bdomainId\"D\n" +
+	"\tdomain_id\x18\x02 \x01(\tR\bdomainId\x12\x10\n" +
+	"\x03key\x18\x03 \x01(\tR\x03key\"D\n" +
 	"\x11GetDomainResponse\x12/\n" +
-	"\x06domain\x18\x01 \x01(\v2\x17.mycel.client.v1.DomainR\x06domain\"f\n" +
+	"\x06domain\x18\x01 \x01(\v2\x17.mycel.client.v1.DomainR\x06domain\"x\n" +
 	"\x13CreateDomainRequest\x12\x19\n" +
 	"\bspace_id\x18\x01 \x01(\tR\aspaceId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
-	"\vdescription\x18\x03 \x01(\tR\vdescription\"G\n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x10\n" +
+	"\x03key\x18\x04 \x01(\tR\x03key\"G\n" +
 	"\x14CreateDomainResponse\x12/\n" +
 	"\x06domain\x18\x01 \x01(\v2\x17.mycel.client.v1.DomainR\x06domain\"\xbb\x01\n" +
 	"\x13UpdateDomainRequest\x12\x19\n" +
@@ -757,7 +784,7 @@ const file_mycel_client_v1_domain_proto_rawDesc = "" +
 	"\x13DeleteDomainRequest\x12\x19\n" +
 	"\bspace_id\x18\x01 \x01(\tR\aspaceId\x12\x1b\n" +
 	"\tdomain_id\x18\x02 \x01(\tR\bdomainId\"\x16\n" +
-	"\x14DeleteDomainResponse\"\x9d\x03\n" +
+	"\x14DeleteDomainResponse\"\xaf\x03\n" +
 	"\x06Domain\x12\x19\n" +
 	"\bspace_id\x18\x01 \x01(\tR\aspaceId\x12\x1b\n" +
 	"\tdomain_id\x18\x02 \x01(\tR\bdomainId\x12\x12\n" +
@@ -771,7 +798,8 @@ const file_mycel_client_v1_domain_proto_rawDesc = "" +
 	"\vupdate_time\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"updateTime\x12E\n" +
 	"\rcaller_access\x18\n" +
-	" \x01(\v2 .mycel.common.v1.EffectiveAccessR\fcallerAccess*D\n" +
+	" \x01(\v2 .mycel.common.v1.EffectiveAccessR\fcallerAccess\x12\x10\n" +
+	"\x03key\x18\v \x01(\tR\x03key*D\n" +
 	"\vDomainState\x12\x1c\n" +
 	"\x18DOMAIN_STATE_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13DOMAIN_STATE_ACTIVE\x10\x012\xd4\x03\n" +

@@ -2,11 +2,11 @@
 
 ## Status
 
-Implemented initial v2 daemon gRPC endpoint on the `refactor_daemon` branch.
+Implemented v2 daemon gRPC Admin Operator API slice on the `refactor_daemon` branch.
 
 ## Purpose
 
-The first daemon Admin API operation exposes the current daemon bootstrap/admin accounts over gRPC so clients can list existing daemon admins without reading daemon store files directly.
+The daemon Admin API exposes bootstrap/admin operator accounts over gRPC so clients can inspect and manage daemon admins without reading daemon store files directly.
 
 The user-facing CLI command is:
 
@@ -24,24 +24,43 @@ mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin list
 
 ## API surface
 
-The daemon implements the existing protobuf service:
+The daemon implements `mycel.admin.v1.AdminOperatorService` methods for:
 
 ```text
-mycel.admin.v1.AdminOperatorService.ListOperators
+ListOperators
+GetOperator
+FindOperator
+CreateOperator
+UpdateOperator
+DisableOperator
+EnableOperator
+DeleteOperator
+SetOperatorPassword
+ListOperatorRoles
+GrantOperatorRole
+RevokeOperatorRole
+ListOperatorCapabilities
+GrantOperatorCapability
+RevokeOperatorCapability
+ListOperatorSessions
+RevokeOperatorSession
+RevokeOperatorSessions
 ```
 
-Although the CLI uses the word `admin`, the v2 Admin API models daemon administrators as **operators**. The bootstrap admin module currently stores a narrower `AdminSummary`, which maps to the protobuf `Operator` message.
+Although the CLI uses the word `admin`, the v2 Admin API models daemon administrators as **operators**. The admin module persists a compact operator record and maps it to protobuf `Operator` messages.
 
 ## Mapping
 
 ```text
 AdminSummary.ID        -> Operator.operator_id
 AdminSummary.Username  -> Operator.username
+AdminSummary.Email     -> Operator.email
+AdminSummary.State     -> Operator.state
 AdminSummary.CreatedAt -> Operator.create_time
-state                  -> OPERATOR_STATE_ACTIVE
+AdminSummary.UpdatedAt -> Operator.update_time
 ```
 
-The initial store does not yet track display name, email, disabled state, deleted state, update time, roles, capabilities, or sessions. Those fields/operations remain future Admin API work.
+The store intentionally does not persist `display_name` in this slice. It persists optional email, active/disabled/deleted state, update time, role grants, and direct capability grants. Session RPCs are implemented as empty/no-op placeholders because daemon access tokens are short-lived and not persisted.
 
 Password hashes are never returned by this API.
 
@@ -55,7 +74,7 @@ The daemon listens on a configurable gRPC address:
 | --- | --- | --- |
 | `MYCELD_GRPC_ADDR` | `127.0.0.1:9091` | Address for the daemon gRPC listener. |
 
-The default is loopback-only because daemon admin authentication/authorization has not been implemented yet.
+The default is loopback-only because transport security is not complete yet.
 
 The CLI first calls `AdminAuthService.LoginOperator`, then calls `ListOperators` with gRPC metadata:
 
@@ -81,12 +100,11 @@ The CLI resolves the daemon address from:
 
 ## Current limitations
 
-- Initial daemon admin auth exists, but transport security is not complete.
+- Transport security is not complete; TLS/mTLS is not configured yet.
 - Loopback-only default is a safety constraint, not a complete security boundary.
-- Only `ListOperators` is implemented; other `AdminOperatorService` methods return unimplemented.
-- TLS/mTLS is not configured yet.
-- Explicit role/capability authorization is not yet persisted; current authenticated bootstrap admins are treated as active operators.
-- The direct store-backed admin module remains the source of truth until richer operator storage is designed.
+- Authorization is currently coarse: system admins may mutate other operators; authenticated operators may read operator records and change their own password.
+- Operator auth sessions are not persisted; session list/revoke RPCs return empty/no-op results while access tokens remain short-lived.
+- The direct file-backed admin module remains the source of truth until richer daemon metadata storage is introduced.
 
 ## Validation expectations
 
@@ -96,6 +114,8 @@ Tests cover:
 - pagination and invalid page tokens
 - no password/hash leakage
 - gRPC server registration
-- anonymous gRPC list calls fail with `Unauthenticated`
-- CLI `mycel admin list` using login plus authenticated gRPC
+- anonymous gRPC calls fail with `Unauthenticated`
+- system-admin checks for mutating operator operations
+- last active system admin protection
+- CLI `mycel admin ...` commands using login plus authenticated gRPC
 - CLI daemon address resolution via `--daemon-addr` and `MYCELD_GRPC_ADDR`

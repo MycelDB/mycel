@@ -38,6 +38,12 @@ type App struct {
 	BlobMaxOtherBytes            int64
 	AdvancedSemanticEnabled      bool
 	DaemonAddr                   string
+	DaemonTLS                    bool
+	DaemonTLSCAFile              string
+	DaemonTLSServerName          string
+	DaemonTLSInsecureSkipVerify  bool
+	DaemonTLSClientCertFile      string
+	DaemonTLSClientKeyFile       string
 	Engine                       mycelengine.Engine
 	Token                        mycelengine.AccessToken
 	CurrentSpaceID               *domainspace.SpaceID

@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for the daemon-oriented Client Blob API on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Blob API MVP on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -20,6 +20,18 @@ docs/v2/design/api/graph.md
 ## Purpose
 
 `BlobService` is the client-facing API for raw blob content and blob metadata.
+
+The current daemon implementation stores raw content under:
+
+```text
+<MYCELD_DATA_DIR>/blobs/<space-id>
+```
+
+and metadata under:
+
+```text
+<MYCELD_DATA_DIR>/blob_meta/<space-id>.json
+```
 
 Blob-backed graph node creation belongs to `GraphService` because it creates graph state inside a transaction. `BlobService` itself does not mutate the graph.
 
@@ -189,6 +201,31 @@ See:
 ```text
 docs/v2/design/api/graph.md
 ```
+
+## CLI
+
+Daemon-backed raw blob commands:
+
+```sh
+./bin/mycel -u alice -p '<password>' blob upload --space-id '<space-id>' --mime-type text/plain ./note.txt
+./bin/mycel -u alice -p '<password>' blob get --space-id '<space-id>' '<blob-id>'
+./bin/mycel -u alice -p '<password>' blob download --space-id '<space-id>' '<blob-id>' --output-file ./note.txt
+./bin/mycel -u alice -p '<password>' blob delete --space-id '<space-id>' '<blob-id>'
+```
+
+`blob upload` is raw blob upload only. Transaction-scoped graph attachment is available through `GraphService.CreateBlobNode` and the CLI command:
+
+```sh
+./bin/mycel -u alice -p '<password>' graph blob-node create --transaction-id '<tx-id>' --mime-type image/png ./image.png
+```
+
+## Current implementation notes
+
+- Client and server streaming RPCs are protected by the same bearer-token auth as unary client RPCs.
+- Raw blob IDs are SHA-256 content addresses; the API `digest` field is exposed as `sha256:<blob-id>`.
+- Uploads are deduplicated by content address.
+- `DeleteBlob` checks daemon graph storage and rejects blobs with live graph references.
+- `GraphService.CreateBlobNode` uploads blob content, creates a blob-backed graph node in the transaction overlay, and auto-populates blob metadata props.
 
 ## Browser/Connect-Web considerations
 

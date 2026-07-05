@@ -70,6 +70,38 @@ func TestModuleInitStandaloneCreatesDefaultAdminAndLogsCredentials(t *testing.T)
 	}
 }
 
+func TestModuleInitStandalonePromotesExistingAdminWhenNoSystemAdmin(t *testing.T) {
+	dataDir := t.TempDir()
+	adminDir := filepath.Join(dataDir, "admins")
+	if err := os.MkdirAll(adminDir, 0o700); err != nil {
+		t.Fatalf("mkdir admin dir: %v", err)
+	}
+	store, _, err := OpenStore(adminDir)
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	hash, err := HashPassword("old-pass")
+	if err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
+	}
+	if err := store.Create(context.Background(), Admin{ID: "old-admin", Username: "admin", PasswordHash: hash}); err != nil {
+		t.Fatalf("Create() old admin error = %v", err)
+	}
+
+	var logs bytes.Buffer
+	module := initModule(t, dataDir, "standalone", &logs)
+	admins, err := module.ListAdmins(context.Background())
+	if err != nil || len(admins) != 1 {
+		t.Fatalf("ListAdmins() = %v, %v", admins, err)
+	}
+	if len(admins[0].RoleGrants) != 1 || admins[0].RoleGrants[0].Role != OperatorRoleSystemAdmin {
+		t.Fatalf("expected existing admin to be promoted to system admin, got %+v", admins[0])
+	}
+	if !strings.Contains(logs.String(), "existing standalone admin promoted to system admin") {
+		t.Fatalf("expected migration warning, got logs:\n%s", logs.String())
+	}
+}
+
 func TestModuleAuthenticateOperator(t *testing.T) {
 	dataDir := t.TempDir()
 	var logs bytes.Buffer
@@ -122,6 +154,50 @@ func TestModuleAuthenticateOperatorRejectsInvalidCredentials(t *testing.T) {
 	}
 	if _, err := module.AuthenticateOperator(context.Background(), "missing", extractLoggedPassword(t, logs.String())); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials for missing user, got %v", err)
+	}
+}
+
+func TestModuleRejectsRemovingLastActiveSystemAdmin(t *testing.T) {
+	dataDir := t.TempDir()
+	var logs bytes.Buffer
+	module := initModule(t, dataDir, "standalone", &logs)
+	admins, err := module.ListAdmins(context.Background())
+	if err != nil || len(admins) != 1 {
+		t.Fatalf("ListAdmins() = %v, %v", admins, err)
+	}
+	adminID := admins[0].ID
+	roleGrantID := admins[0].RoleGrants[0].ID
+
+	if _, err := module.DisableOperator(context.Background(), adminID); !errors.Is(err, ErrLastSystemAdmin) {
+		t.Fatalf("expected disable last system admin to fail, got %v", err)
+	}
+	if _, err := module.DeleteOperator(context.Background(), adminID); !errors.Is(err, ErrLastSystemAdmin) {
+		t.Fatalf("expected delete last system admin to fail, got %v", err)
+	}
+	if _, err := module.RevokeRole(context.Background(), adminID, roleGrantID); !errors.Is(err, ErrLastSystemAdmin) {
+		t.Fatalf("expected revoke last system admin role to fail, got %v", err)
+	}
+}
+
+func TestModuleAllowsRemovingSystemAdminWhenAnotherActiveSystemAdminExists(t *testing.T) {
+	dataDir := t.TempDir()
+	var logs bytes.Buffer
+	module := initModule(t, dataDir, "standalone", &logs)
+	admins, err := module.ListAdmins(context.Background())
+	if err != nil || len(admins) != 1 {
+		t.Fatalf("ListAdmins() = %v, %v", admins, err)
+	}
+	bootstrap := admins[0]
+
+	second, err := module.CreateOperator(context.Background(), CreateOperatorInput{Username: "second", Password: "second-pass", Roles: []RoleGrant{{Role: OperatorRoleSystemAdmin, Scope: systemScope(), GrantedByOperatorID: bootstrap.ID}}})
+	if err != nil {
+		t.Fatalf("CreateOperator() error = %v", err)
+	}
+	if _, err := module.DisableOperator(context.Background(), bootstrap.ID); err != nil {
+		t.Fatalf("expected bootstrap disable to succeed while second system admin is active: %v", err)
+	}
+	if _, err := module.DeleteOperator(context.Background(), second.ID); !errors.Is(err, ErrLastSystemAdmin) {
+		t.Fatalf("expected deleting remaining active system admin to fail, got %v", err)
 	}
 }
 

@@ -117,7 +117,6 @@ message RevokeOtherAuthSessionsResponse {
 message AuthPrincipal {
   string user_id = 1;
   string username = 2;
-  string display_name = 3;
 }
 
 message AuthSessionSummary {

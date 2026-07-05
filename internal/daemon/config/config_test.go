@@ -11,6 +11,10 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("MYCELD_LOG_LEVEL", "")
 	t.Setenv("MYCELD_LOG_FORMAT", "")
 	t.Setenv("MYCELD_GRPC_ADDR", "")
+	t.Setenv("MYCELD_TLS_CERT_FILE", "")
+	t.Setenv("MYCELD_TLS_KEY_FILE", "")
+	t.Setenv("MYCELD_TLS_CLIENT_CA_FILE", "")
+	t.Setenv("MYCELD_TLS_REQUIRE_CLIENT_CERT", "")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -31,6 +35,10 @@ func TestConfigValidateRejectsBadValues(t *testing.T) {
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "noisy", LogFormat: "text", GRPCAddr: DefaultGRPCAddr},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "xml", GRPCAddr: DefaultGRPCAddr},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: ""},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSCertFile: "cert.pem"},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSKeyFile: "key.pem"},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSClientCAFile: "ca.pem"},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSCertFile: "cert.pem", TLSKeyFile: "key.pem", TLSRequireClientCert: true},
 	}
 	for _, tc := range cases {
 		if err := tc.Validate(); err == nil {

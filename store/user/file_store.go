@@ -26,6 +26,32 @@ type storedUser struct {
 	Password string        `json:"password"`
 }
 
+func (s *storedUser) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		User struct {
+			ID       identity.UserID     `json:"ID"`
+			Username identity.UserRef    `json:"Username"`
+			Ref      identity.UserRef    `json:"Ref"`
+			Status   identity.UserStatus `json:"Status"`
+		} `json:"user"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	username := raw.User.Username
+	if raw.User.Ref != "" {
+		username = raw.User.Ref
+	}
+	status := raw.User.Status
+	if status == "paused" || status == "revoked" {
+		status = identity.UserStatusDisabled
+	}
+	s.User = identity.User{ID: raw.User.ID, Username: username, Status: status}
+	s.Password = raw.Password
+	return nil
+}
+
 type encryptedStore struct {
 	Format    string `json:"format"`
 	NonceB64  string `json:"nonce_b64"`
@@ -143,13 +169,13 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (identity.U
 	if err := ctx.Err(); err != nil {
 		return identity.User{}, err
 	}
-	if strings.TrimSpace(string(in.User.Ref)) == "" {
-		return identity.User{}, fmt.Errorf("%w: user_ref is required", ErrInvalidInput)
+	if strings.TrimSpace(string(in.User.Username)) == "" {
+		return identity.User{}, fmt.Errorf("%w: username is required", ErrInvalidInput)
 	}
 	if strings.TrimSpace(in.Password) == "" {
 		return identity.User{}, fmt.Errorf("%w: password is required", ErrInvalidInput)
 	}
-	refLC := normalizeRef(in.User.Ref)
+	refLC := normalizeRef(in.User.Username)
 	if _, exists := m.indexByRefLC[refLC]; exists {
 		return identity.User{}, ErrDuplicateUserRef
 	}
@@ -168,8 +194,6 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (identity.U
 
 	u := identity.User{
 		ID:       id,
-		Ref:      in.User.Ref,
-		Email:    in.User.Email,
 		Username: in.User.Username,
 		Status:   status,
 	}
@@ -224,7 +248,7 @@ func (m *defaultManager) rebuildIndex() {
 	m.indexByRefLC = map[string]int{}
 	for i, u := range m.users {
 		m.indexByID[u.User.ID] = i
-		m.indexByRefLC[normalizeRef(u.User.Ref)] = i
+		m.indexByRefLC[normalizeRef(u.User.Username)] = i
 	}
 }
 

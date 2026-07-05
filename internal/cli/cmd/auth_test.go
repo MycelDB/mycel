@@ -2,124 +2,105 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	mycelengine "github.com/myceldb/mycel/engine"
+	clientv1 "github.com/myceldb/mycel/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
 )
 
-func TestAuthSessionListCommandJSONOmitsTokenMaterial(t *testing.T) {
-	dataDir, sessions := setupAuthSessionCLIData(t, 2)
-	out, err := runCLI(t, "--data-dir", dataDir, "--username", "admin@example.com", "--password", "change-me-now", "--output", "json", "auth", "session", "list")
+func TestAuthLoginWhoAmIAndSessionListUseDaemonGRPC(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	createTestUser(t, addr, adminPassword, "alice", "alice-pass")
+
+	out, err := runCLI(t, "--daemon-addr", addr, "--username", "alice", "--password", "alice-pass", "--output", "json", "auth", "login")
 	if err != nil {
-		t.Fatalf("auth session list failed: %v", err)
+		t.Fatalf("auth login failed: %v\n%s", err, out)
 	}
-	var listed []mycelengine.RefreshSessionInfo
-	if err := json.Unmarshal([]byte(out), &listed); err != nil {
-		t.Fatalf("decode list output failed: %v\n%s", err, out)
+	var login clientv1.LoginResponse
+	if err := json.Unmarshal([]byte(out), &login); err != nil {
+		t.Fatalf("decode login output: %v\n%s", err, out)
 	}
-	if len(listed) != 2 {
-		t.Fatalf("expected 2 sessions, got %#v", listed)
+	if login.GetAccessToken() == "" || login.GetRefreshToken() == "" || login.GetPrincipal().GetUsername() != "alice" {
+		t.Fatalf("unexpected login response: %#v", &login)
 	}
-	if strings.Contains(out, "refresh_token_hash") || strings.Contains(out, string(sessions[0].RefreshToken)) || strings.Contains(out, string(sessions[1].RefreshToken)) {
+
+	out, err = runCLI(t, "--daemon-addr", addr, "--username", "alice", "--password", "alice-pass", "--output", "json", "auth", "whoami")
+	if err != nil || !strings.Contains(out, "alice") {
+		t.Fatalf("auth whoami failed: %v\n%s", err, out)
+	}
+
+	out, err = runCLI(t, "--daemon-addr", addr, "--username", "alice", "--password", "alice-pass", "--output", "json", "auth", "session", "list")
+	if err != nil {
+		t.Fatalf("auth session list failed: %v\n%s", err, out)
+	}
+	var sessions []*clientv1.AuthSessionSummary
+	if err := json.Unmarshal([]byte(out), &sessions); err != nil {
+		t.Fatalf("decode session list: %v\n%s", err, out)
+	}
+	if len(sessions) == 0 {
+		t.Fatalf("expected at least one session, got %s", out)
+	}
+	if strings.Contains(out, login.GetRefreshToken()) || strings.Contains(out, "refresh_token_hash") {
 		t.Fatalf("session list leaked token material: %s", out)
 	}
 }
 
-func TestAuthSessionRevokeCommand(t *testing.T) {
-	dataDir, sessions := setupAuthSessionCLIData(t, 2)
-	out, err := runCLI(t, "--data-dir", dataDir, "--username", "admin@example.com", "--password", "change-me-now", "--output", "json", "auth", "session", "revoke", sessions[0].RefreshSession.ID.String(), "--reason", "cli revoke")
+func TestAuthRefreshAndRevokeOtherUseDaemonGRPC(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	createTestUser(t, addr, adminPassword, "bob", "bob-pass")
+
+	out, err := runCLI(t, "--daemon-addr", addr, "--username", "bob", "--password", "bob-pass", "--output", "json", "auth", "login")
 	if err != nil {
-		t.Fatalf("auth session revoke failed: %v", err)
+		t.Fatalf("auth login failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "\"revoked\": true") {
-		t.Fatalf("expected revoke confirmation, got %s", out)
+	var login clientv1.LoginResponse
+	if err := json.Unmarshal([]byte(out), &login); err != nil {
+		t.Fatalf("decode login output: %v\n%s", err, out)
 	}
 
-	eng := reopenEngine(t, dataDir)
-	defer eng.Close()
-	if _, err := eng.RefreshSession(context.Background(), mycelengine.RefreshSessionInput{RefreshToken: sessions[0].RefreshToken}); err == nil {
-		t.Fatal("expected revoked refresh token to fail")
+	out, err = runCLI(t, "--daemon-addr", addr, "--output", "json", "auth", "refresh", "--refresh-token", login.GetRefreshToken())
+	if err != nil {
+		t.Fatalf("auth refresh failed: %v\n%s", err, out)
 	}
-	if _, err := eng.RefreshSession(context.Background(), mycelengine.RefreshSessionInput{RefreshToken: sessions[1].RefreshToken}); err != nil {
-		t.Fatalf("expected other refresh token to remain valid: %v", err)
+	var refreshed clientv1.RefreshResponse
+	if err := json.Unmarshal([]byte(out), &refreshed); err != nil {
+		t.Fatalf("decode refresh output: %v\n%s", err, out)
+	}
+	if refreshed.GetRefreshToken() == "" || refreshed.GetRefreshToken() == login.GetRefreshToken() || refreshed.GetPrincipal().GetUsername() != "bob" {
+		t.Fatalf("unexpected refresh response: %#v", &refreshed)
+	}
+
+	out, err = runCLI(t, "--daemon-addr", addr, "--username", "bob", "--password", "bob-pass", "--output", "json", "auth", "session", "revoke-other")
+	if err != nil {
+		t.Fatalf("auth revoke-other failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "revoked_count") && strings.TrimSpace(out) != "{}" {
+		t.Fatalf("unexpected revoke-other output: %s", out)
 	}
 }
 
-func TestAuthSessionRevokeOtherCommand(t *testing.T) {
-	dataDir, sessions := setupAuthSessionCLIData(t, 3)
-	out, err := runCLI(t, "--data-dir", dataDir, "--username", "admin@example.com", "--password", "change-me-now", "--output", "json", "auth", "session", "revoke-other", "--current-session-id", sessions[2].RefreshSession.ID.String(), "--reason", "cli revoke other")
-	if err != nil {
-		t.Fatalf("auth session revoke-other failed: %v", err)
+func TestAuthSessionCleanupUnavailableOverDaemon(t *testing.T) {
+	out, err := runCLI(t, "auth", "session", "cleanup")
+	if err == nil {
+		t.Fatalf("expected cleanup to be unavailable, got %s", out)
 	}
-	if !strings.Contains(out, "\"revoked_count\": 2") {
-		t.Fatalf("expected revoke-other count, got %s", out)
-	}
-
-	eng := reopenEngine(t, dataDir)
-	defer eng.Close()
-	if _, err := eng.RefreshSession(context.Background(), mycelengine.RefreshSessionInput{RefreshToken: sessions[0].RefreshToken}); err == nil {
-		t.Fatal("expected first refresh token to fail")
-	}
-	if _, err := eng.RefreshSession(context.Background(), mycelengine.RefreshSessionInput{RefreshToken: sessions[1].RefreshToken}); err == nil {
-		t.Fatal("expected second refresh token to fail")
-	}
-	if _, err := eng.RefreshSession(context.Background(), mycelengine.RefreshSessionInput{RefreshToken: sessions[2].RefreshToken}); err != nil {
-		t.Fatalf("expected current refresh token to remain valid: %v", err)
+	if !strings.Contains(err.Error(), "not available over daemon gRPC") {
+		t.Fatalf("unexpected cleanup error: %v", err)
 	}
 }
 
-func TestAuthSessionCleanupCommand(t *testing.T) {
-	dataDir, _ := setupAuthSessionCLIData(t, 1)
-	out, err := runCLI(t, "--data-dir", dataDir, "--username", "admin@example.com", "--password", "change-me-now", "--output", "json", "auth", "session", "cleanup")
-	if err != nil {
-		t.Fatalf("auth session cleanup failed: %v", err)
-	}
-	var result mycelengine.CleanupRefreshSessionsResult
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		t.Fatalf("decode cleanup output failed: %v\n%s", err, out)
-	}
-	if result.ChangedCount != 0 {
-		t.Fatalf("expected no cleanup changes for fresh sessions, got %d", result.ChangedCount)
-	}
-}
-
-func setupAuthSessionCLIData(t *testing.T, count int) (string, []mycelengine.LoginSessionResult) {
+func createTestUser(t *testing.T, addr, adminPassword, username, password string) {
 	t.Helper()
-	dataDir := filepath.Join(t.TempDir(), "mycel-cli-auth-session")
-	eng, err := mycelengine.NewEngine(mycelengine.EngineConfig{DataDir: dataDir, Mode: mycelengine.EngineModeStandalone, CreateIfMissing: true, AdminUsername: "admin@example.com", AdminPassword: "change-me-now", RefreshAuditRetentionTTL: time.Hour}, nil, nil, nil, nil)
+	out, err := runCLI(t, "--daemon-addr", addr, "--username", "admin", "--password", adminPassword, "user", "add", "--user-username", username, "--new-password", password)
 	if err != nil {
-		t.Fatalf("create engine failed: %v", err)
+		t.Fatalf("create test user failed: %v\n%s", err, out)
 	}
-	sessions := make([]mycelengine.LoginSessionResult, 0, count)
-	for i := 0; i < count; i++ {
-		res, err := eng.LoginSession(context.Background(), mycelengine.LoginSessionInput{UserRef: "admin@example.com", Password: "change-me-now", Metadata: mycelengine.RefreshSessionMetadata{ClientName: "test-cli"}})
-		if err != nil {
-			_ = eng.Close()
-			t.Fatalf("login session %d failed: %v", i, err)
-		}
-		sessions = append(sessions, res)
-	}
-	if err := eng.Close(); err != nil {
-		t.Fatalf("close engine failed: %v", err)
-	}
-	return dataDir, sessions
-}
-
-func reopenEngine(t *testing.T, dataDir string) mycelengine.Engine {
-	t.Helper()
-	eng, err := mycelengine.NewEngine(mycelengine.EngineConfig{DataDir: dataDir, Mode: mycelengine.EngineModeStandalone, CreateIfMissing: false}, nil, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("reopen engine failed: %v", err)
-	}
-	return eng
 }
 
 func runCLI(t *testing.T, args ...string) (string, error) {

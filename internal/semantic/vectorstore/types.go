@@ -46,6 +46,7 @@ type DeleteInput struct {
 
 type VerifyDeletedInput struct {
 	SpaceID         domainspace.SpaceID
+	DomainID        graph.DomainID
 	SemanticIndexID domainsemantic.SemanticIndexID
 	NodeID          graph.NodeID
 	SourceMode      string

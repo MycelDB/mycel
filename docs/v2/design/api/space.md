@@ -2,7 +2,13 @@
 
 ## Status
 
-Draft design for the daemon-oriented Client Space API on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Space API on the `refactor_daemon` branch for standard-user `ListSpaces` and `GetSpace`.
+
+An initial operator-facing Admin Space API is also implemented for CLI/admin create/delete/list/get flows:
+
+```text
+mycel.admin.v1.AdminSpaceService
+```
 
 The protobuf source of truth is:
 
@@ -41,7 +47,7 @@ The Client `SpaceService` does **not** include:
 - mesh placement/replication controls
 - assigning or revoking space admins
 
-Those operations belong to the Admin API.
+Those operations belong to the Admin API. The current daemon slice implements Admin create/delete/list/get for spaces so the CLI can avoid direct store access.
 
 ## Service definition
 
@@ -324,6 +330,32 @@ Admin-facing:
 Space metadata, ownership metadata, state, and access metadata must replicate across the mesh.
 
 A daemon serving `ListSpaces` or `GetSpace` must be able to compute effective capabilities from replicated access metadata. The detailed consistency model is future work, but the API should assume that space visibility and access decisions are mesh-relevant and not purely local.
+
+## CLI
+
+Client/user-facing discovery uses standard-user credentials:
+
+```sh
+./bin/mycel -u alice -p '<password>' space list
+./bin/mycel -u alice -p '<password>' space get '<space-id>'
+```
+
+Admin/operator creation and deletion use operator credentials:
+
+```sh
+./bin/mycel -u admin -p '<operator-password>' space add 'Personal' --owner-username alice
+./bin/mycel -u admin -p '<operator-password>' space delete '<space-id>'
+```
+
+The daemon resolves the address from `--daemon-addr`, `MYCELD_GRPC_ADDR`, or the default `127.0.0.1:9091`.
+
+## Current implementation notes
+
+- The daemon space module opens existing metadata stores under `<MYCELD_DATA_DIR>/meta`.
+- Space owners receive admin space access when an Admin API create call creates a space.
+- Client listing returns spaces owned by the authenticated user or readable through existing ACL grants.
+- Effective access is returned for client UI convenience and is still advisory.
+- Space create/delete are currently Admin API operations gated by operator space capabilities.
 
 ## Open questions
 

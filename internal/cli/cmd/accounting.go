@@ -297,7 +297,7 @@ func resolveAccountingUserID(a *app.App, raw string) (identity.UserID, error) {
 		return uuid.Nil, err
 	}
 	for _, user := range users {
-		if string(user.Ref) == raw || (user.Username != nil && *user.Username == raw) {
+		if string(user.Username) == raw {
 			return user.ID, nil
 		}
 	}

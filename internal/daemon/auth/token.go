@@ -25,10 +25,20 @@ var (
 	ErrExpiredToken = errors.New("expired token")
 )
 
+type PrincipalKind string
+
+const (
+	PrincipalKindOperator PrincipalKind = "operator"
+	PrincipalKindUser     PrincipalKind = "user"
+)
+
 type Principal struct {
-	OperatorID string
-	Username   string
-	CreatedAt  time.Time
+	Kind          PrincipalKind
+	OperatorID    string
+	UserID        string
+	AuthSessionID string
+	Username      string
+	CreatedAt     time.Time
 }
 
 type contextKey struct{}
@@ -49,11 +59,14 @@ type TokenManager struct {
 }
 
 type tokenPayload struct {
-	OperatorID string `json:"operator_id"`
-	Username   string `json:"username"`
-	CreatedAt  int64  `json:"created_at"`
-	IssuedAt   int64  `json:"iat"`
-	ExpiresAt  int64  `json:"exp"`
+	Kind          PrincipalKind `json:"kind,omitempty"`
+	OperatorID    string        `json:"operator_id,omitempty"`
+	UserID        string        `json:"user_id,omitempty"`
+	AuthSessionID string        `json:"auth_session_id,omitempty"`
+	Username      string        `json:"username"`
+	CreatedAt     int64         `json:"created_at"`
+	IssuedAt      int64         `json:"iat"`
+	ExpiresAt     int64         `json:"exp"`
 }
 
 func NewRandomTokenManager(ttl time.Duration) (*TokenManager, error) {
@@ -77,7 +90,15 @@ func (m *TokenManager) Issue(principal Principal) (string, time.Time, error) {
 	}
 	now := m.now().UTC()
 	expireAt := now.Add(m.ttl)
-	payload := tokenPayload{OperatorID: principal.OperatorID, Username: principal.Username, CreatedAt: principal.CreatedAt.UTC().Unix(), IssuedAt: now.Unix(), ExpiresAt: expireAt.Unix()}
+	kind := principal.Kind
+	if kind == "" {
+		if principal.OperatorID != "" {
+			kind = PrincipalKindOperator
+		} else if principal.UserID != "" {
+			kind = PrincipalKindUser
+		}
+	}
+	payload := tokenPayload{Kind: kind, OperatorID: principal.OperatorID, UserID: principal.UserID, AuthSessionID: principal.AuthSessionID, Username: principal.Username, CreatedAt: principal.CreatedAt.UTC().Unix(), IssuedAt: now.Unix(), ExpiresAt: expireAt.Unix()}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return "", time.Time{}, err
@@ -107,13 +128,19 @@ func (m *TokenManager) Verify(token string) (Principal, error) {
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 		return Principal{}, ErrInvalidToken
 	}
-	if payload.OperatorID == "" || payload.Username == "" || payload.ExpiresAt <= 0 {
+	if payload.Kind == "" && payload.OperatorID != "" {
+		payload.Kind = PrincipalKindOperator
+	}
+	if payload.Kind == "" && payload.UserID != "" {
+		payload.Kind = PrincipalKindUser
+	}
+	if payload.Username == "" || payload.ExpiresAt <= 0 || (payload.OperatorID == "" && payload.UserID == "") {
 		return Principal{}, ErrInvalidToken
 	}
 	if !m.now().UTC().Before(time.Unix(payload.ExpiresAt, 0)) {
 		return Principal{}, ErrExpiredToken
 	}
-	return Principal{OperatorID: payload.OperatorID, Username: payload.Username, CreatedAt: time.Unix(payload.CreatedAt, 0).UTC()}, nil
+	return Principal{Kind: payload.Kind, OperatorID: payload.OperatorID, UserID: payload.UserID, AuthSessionID: payload.AuthSessionID, Username: payload.Username, CreatedAt: time.Unix(payload.CreatedAt, 0).UTC()}, nil
 }
 
 func (m *TokenManager) UnaryInterceptor(publicMethods map[string]bool) grpc.UnaryServerInterceptor {
@@ -128,6 +155,26 @@ func (m *TokenManager) UnaryInterceptor(publicMethods map[string]bool) grpc.Unar
 		return handler(ContextWithPrincipal(ctx, principal), req)
 	}
 }
+
+func (m *TokenManager) StreamInterceptor(publicMethods map[string]bool) grpc.StreamServerInterceptor {
+	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if publicMethods[info.FullMethod] {
+			return handler(srv, stream)
+		}
+		principal, err := m.PrincipalFromIncomingContext(stream.Context())
+		if err != nil {
+			return err
+		}
+		return handler(srv, &principalServerStream{ServerStream: stream, ctx: ContextWithPrincipal(stream.Context(), principal)})
+	}
+}
+
+type principalServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *principalServerStream) Context() context.Context { return s.ctx }
 
 func (m *TokenManager) PrincipalFromIncomingContext(ctx context.Context) (Principal, error) {
 	md, ok := metadata.FromIncomingContext(ctx)

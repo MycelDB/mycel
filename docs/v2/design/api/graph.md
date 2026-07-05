@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft design for the daemon-oriented Client Graph API on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Graph API MVP on the `refactor_daemon` branch.
 
 The protobuf source of truth is:
 
@@ -23,6 +23,8 @@ docs/v2/design/api/blob.md
 `GraphService` is the transaction-scoped Client API for reading and mutating graph nodes and edges inside a domain.
 
 The graph API does not open sessions or transactions. Clients first open a session and begin a transaction, then pass `transaction_id` to graph operations.
+
+The current daemon implementation supports node/edge CRUD, containment helpers, subtree move/reorder, batch `ApplyGraphOperations`, and transaction-scoped `CreateBlobNode` integrated with daemon blob storage.
 
 ```text
 OpenSession(space_id, domain_id)
@@ -123,6 +125,42 @@ service GraphService {
 
   rpc ApplyGraphOperations(ApplyGraphOperationsRequest) returns (ApplyGraphOperationsResponse);
 }
+```
+
+## CLI
+
+The daemon-backed CLI exposes transaction-scoped graph commands:
+
+```sh
+./bin/mycel -u alice -p '<password>' graph node create --transaction-id '<tx-id>' --content 'A'
+./bin/mycel -u alice -p '<password>' graph node get '<node-id>' --transaction-id '<tx-id>'
+./bin/mycel -u alice -p '<password>' graph node list --transaction-id '<tx-id>'
+./bin/mycel -u alice -p '<password>' graph node update '<node-id>' --transaction-id '<tx-id>' --content 'updated' --mask content
+./bin/mycel -u alice -p '<password>' graph node delete '<node-id>' --transaction-id '<tx-id>' --recursive
+
+./bin/mycel -u alice -p '<password>' graph blob-node create --transaction-id '<tx-id>' --mime-type image/png ./image.png
+
+./bin/mycel -u alice -p '<password>' graph edge create --transaction-id '<tx-id>' --from '<parent-id>' --to '<child-id>' --kind contains --props-json '{"order":0}'
+./bin/mycel -u alice -p '<password>' graph edge get '<edge-id>' --transaction-id '<tx-id>'
+./bin/mycel -u alice -p '<password>' graph edge list --transaction-id '<tx-id>'
+./bin/mycel -u alice -p '<password>' graph edge delete '<edge-id>' --transaction-id '<tx-id>'
+
+./bin/mycel -u alice -p '<password>' graph children '<parent-id>' --transaction-id '<tx-id>'
+./bin/mycel -u alice -p '<password>' graph parent '<child-id>' --transaction-id '<tx-id>'
+```
+
+A complete transaction flow:
+
+```sh
+SESSION_ID=$(./bin/mycel -u alice -p '<password>' --output json session open --space-id '<space-id>' | jq -r '.session_id')
+TX_ID=$(./bin/mycel -u alice -p '<password>' --output json transaction begin "$SESSION_ID" --mode read-write | jq -r '.transaction_id')
+A_ID=$(./bin/mycel -u alice -p '<password>' --output json graph node create --transaction-id "$TX_ID" --content A | jq -r '.node_id')
+C_ID=$(./bin/mycel -u alice -p '<password>' --output json graph node create --transaction-id "$TX_ID" --content C --props-json '{"tags":["test1"]}' | jq -r '.node_id')
+D_ID=$(./bin/mycel -u alice -p '<password>' --output json graph node create --transaction-id "$TX_ID" --content D | jq -r '.node_id')
+./bin/mycel -u alice -p '<password>' graph edge create --transaction-id "$TX_ID" --from "$A_ID" --to "$C_ID" --kind contains --props-json '{"order":0}'
+./bin/mycel -u alice -p '<password>' graph edge create --transaction-id "$TX_ID" --from "$A_ID" --to "$D_ID" --kind contains --props-json '{"order":1}'
+./bin/mycel -u alice -p '<password>' transaction commit "$TX_ID"
+./bin/mycel -u alice -p '<password>' session close "$SESSION_ID"
 ```
 
 ## Transaction scoping

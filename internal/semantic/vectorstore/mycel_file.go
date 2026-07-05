@@ -88,8 +88,27 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
-	if in.SpaceID == uuid.Nil || in.SemanticIndexID == uuid.Nil || in.NodeID == uuid.Nil {
-		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("space_id, semantic_index_id, and node_id are required")
+	if in.SpaceID == uuid.Nil || in.DomainID == uuid.Nil || in.SemanticIndexID == uuid.Nil || in.NodeID == uuid.Nil {
+		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("space_id, domain_id, semantic_index_id, and node_id are required")
+	}
+	if in.TargetRecordID != uuid.Nil {
+		recs, err := b.readAll(in.SpaceID, in.SemanticIndexID)
+		if err != nil {
+			return domainsemantic.AdvancedEmbeddingRecord{}, err
+		}
+		found := false
+		for _, existing := range recs {
+			if existing.ID == in.TargetRecordID {
+				found = true
+				if existing.DomainID != in.DomainID || existing.NodeID != in.NodeID {
+					return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record does not match domain_id and node_id")
+				}
+				break
+			}
+		}
+		if !found {
+			return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record not found")
+		}
 	}
 	rec := domainsemantic.AdvancedEmbeddingRecord{ID: newID(), SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticIndexID: in.SemanticIndexID, NodeID: in.NodeID, SourceMode: strings.TrimSpace(in.SourceMode), ModelEndpointID: in.ModelEndpointID, ModelID: in.ModelID, ModelEndpointCapabilityID: in.ModelEndpointCapID, CredentialID: in.CredentialID, CredentialGrantID: in.CredentialGrantID, PolicyDecisionID: in.PolicyDecisionID, VectorStoreID: in.VectorStoreID, Tombstone: true, DeleteTargetRecordID: in.TargetRecordID, DeleteReason: strings.TrimSpace(in.Reason), CreatedAt: in.CreatedAt}
 	if rec.CreatedAt.IsZero() {
@@ -111,6 +130,19 @@ func (b MycelFileBackend) ListRecords(ctx context.Context, spaceID uuid.UUID, se
 		return nil, err
 	}
 	return b.readAll(spaceID, semanticIndexID)
+}
+
+func (b MycelFileBackend) PurgeIndex(ctx context.Context, spaceID uuid.UUID, semanticIndexID domainsemantic.SemanticIndexID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(b.GraphsDir) == "" {
+		return fmt.Errorf("graphs dir is required")
+	}
+	if spaceID == uuid.Nil || semanticIndexID == uuid.Nil {
+		return fmt.Errorf("space_id and semantic_index_id are required")
+	}
+	return os.RemoveAll(filepath.Join(b.GraphsDir, spaceID.String(), "semantic", "indexes", semanticIndexID.String()))
 }
 
 func (b MycelFileBackend) Search(ctx context.Context, in SearchInput) ([]SearchResult, error) {
@@ -167,13 +199,16 @@ func (b MycelFileBackend) VerifyDeleted(ctx context.Context, in VerifyDeletedInp
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	if in.DomainID == uuid.Nil {
+		return false, fmt.Errorf("domain_id is required")
+	}
 	recs, err := b.readAll(in.SpaceID, in.SemanticIndexID)
 	if err != nil {
 		return false, err
 	}
 	for i := len(recs) - 1; i >= 0; i-- {
 		rec := recs[i]
-		if rec.NodeID != in.NodeID || (strings.TrimSpace(in.SourceMode) != "" && rec.SourceMode != strings.TrimSpace(in.SourceMode)) {
+		if rec.NodeID != in.NodeID || (in.DomainID != uuid.Nil && rec.DomainID != in.DomainID) || (strings.TrimSpace(in.SourceMode) != "" && rec.SourceMode != strings.TrimSpace(in.SourceMode)) {
 			continue
 		}
 		if in.TargetRecordID != uuid.Nil && rec.ID != in.TargetRecordID && rec.DeleteTargetRecordID != in.TargetRecordID {

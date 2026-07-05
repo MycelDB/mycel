@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package mycel.admin.v1;
 
-import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/myceldb/mycel/gen/go/mycel/admin/v1;adminv1";
@@ -15,7 +14,6 @@ service AdminUserService {
   rpc FindUser(FindUserRequest) returns (FindUserResponse);
 
   rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
-  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse);
 
   rpc DisableUser(DisableUserRequest) returns (DisableUserResponse);
   rpc EnableUser(EnableUserRequest) returns (EnableUserResponse);
@@ -49,10 +47,7 @@ message GetUserResponse {
 }
 
 message FindUserRequest {
-  oneof lookup {
-    string username = 1;
-    string email = 2;
-  }
+  string username = 1;
 }
 
 message FindUserResponse {
@@ -61,30 +56,16 @@ message FindUserResponse {
 
 message CreateUserRequest {
   string username = 1;
-  string display_name = 2;
-  string email = 3;
 
   // Optional initial password. Password plaintext is never returned and must be
   // hashed by the daemon before storage.
-  optional string password = 4;
+  optional string password = 2;
 
   // When true, the user is created disabled and cannot log in until enabled.
-  bool disabled = 5;
+  bool disabled = 3;
 }
 
 message CreateUserResponse {
-  User user = 1;
-}
-
-message UpdateUserRequest {
-  User user = 1;
-
-  // Mutable paths are limited to "display_name" and "email" in v1. Username is
-  // immutable in v1.
-  google.protobuf.FieldMask update_mask = 2;
-}
-
-message UpdateUserResponse {
   User user = 1;
 }
 
@@ -155,11 +136,9 @@ message RevokeUserSessionsResponse {
 message User {
   string user_id = 1;
   string username = 2;
-  string display_name = 3;
-  string email = 4;
-  UserState state = 5;
-  google.protobuf.Timestamp create_time = 6;
-  google.protobuf.Timestamp update_time = 7;
+  UserState state = 3;
+  google.protobuf.Timestamp create_time = 4;
+  google.protobuf.Timestamp update_time = 5;
 }
 
 enum UserState {
