@@ -713,3 +713,126 @@ func newHierarchyTestFileSessionWithSink(t *testing.T, sink graphchange.Sink) (s
 	sess := NewConfig(graphsDir, t.TempDir(), spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}, Config{GraphChangeSink: sink})
 	return sess, sess.(*FileSession), tmplID
 }
+
+func TestFileSessionGraphChangeSinkNotInvokedForRollbackReadOnlyOrNoop(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	sess, _, tmplID := newHierarchyTestFileSessionWithSink(t, graphchange.SinkFunc(func(context.Context, graphchange.CommittedEvent) error {
+		calls++
+		return nil
+	}))
+	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "rolled back", Props: map[string]any{}}); err != nil {
+		t.Fatalf("stage node: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("rollback emitted %d events", calls)
+	}
+
+	readOnly, err := sess.Begin(ctx, sessionapi.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("begin read-only tx: %v", err)
+	}
+	if err := readOnly.Commit(ctx); err != nil {
+		t.Fatalf("read-only commit: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("read-only commit emitted %d events", calls)
+	}
+
+	noop, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin noop tx: %v", err)
+	}
+	if err := noop.Commit(ctx); err != nil {
+		t.Fatalf("noop commit: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("noop commit emitted %d events", calls)
+	}
+}
+
+func TestFileSessionGraphChangeSinkIncludesMoveReorderAndDeleteContext(t *testing.T) {
+	ctx := context.Background()
+	events := []graphchange.CommittedEvent{}
+	sess, _, tmplID := newHierarchyTestFileSessionWithSink(t, graphchange.SinkFunc(func(_ context.Context, event graphchange.CommittedEvent) error {
+		events = append(events, event)
+		return nil
+	}))
+	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add root: %v", err)
+	}
+	oldParent, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "old", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add old parent: %v", err)
+	}
+	newParent, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "new", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add new parent: %v", err)
+	}
+	child, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add child: %v", err)
+	}
+	sibling, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "sibling", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("add sibling: %v", err)
+	}
+	if _, err := sess.AddEdge(ctx, containsInput(root.ID, oldParent.ID, 0)); err != nil {
+		t.Fatalf("add root/old edge: %v", err)
+	}
+	if _, err := sess.AddEdge(ctx, containsInput(root.ID, newParent.ID, 1)); err != nil {
+		t.Fatalf("add root/new edge: %v", err)
+	}
+	if _, err := sess.AddEdge(ctx, containsInput(oldParent.ID, child.ID, 0)); err != nil {
+		t.Fatalf("add old/child edge: %v", err)
+	}
+	if _, err := sess.AddEdge(ctx, containsInput(newParent.ID, sibling.ID, 0)); err != nil {
+		t.Fatalf("add new/sibling edge: %v", err)
+	}
+
+	events = nil
+	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: child.ID, NewParentID: newParent.ID}); err != nil {
+		t.Fatalf("move subtree: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("move emitted %d events", len(events))
+	}
+	move := events[0]
+	if move.OldParentByNodeID[child.ID] != oldParent.ID || move.NewParentByNodeID[child.ID] != newParent.ID {
+		t.Fatalf("move parent context = old %s new %s, want old %s new %s", move.OldParentByNodeID[child.ID], move.NewParentByNodeID[child.ID], oldParent.ID, newParent.ID)
+	}
+	if len(move.ChangedEdges) == 0 {
+		t.Fatalf("move should report changed edges: %+v", move)
+	}
+
+	events = nil
+	if _, err := sess.ReorderChildren(ctx, sessionapi.ReorderChildrenInput{ParentID: newParent.ID, ChildIDs: []graph.NodeID{child.ID, sibling.ID}}); err != nil {
+		t.Fatalf("reorder children: %v", err)
+	}
+	if len(events) != 1 || len(events[0].ChangedEdges) == 0 {
+		t.Fatalf("reorder event missing changed edges: %+v", events)
+	}
+
+	events = nil
+	if err := sess.DeleteNode(ctx, sessionapi.DeleteNodeInput{ID: child.ID, Recursive: true}); err != nil {
+		t.Fatalf("delete child: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("delete emitted %d events", len(events))
+	}
+	deleteEvent := events[0]
+	if len(deleteEvent.DeletedNodeIDs) != 1 || deleteEvent.DeletedNodeIDs[0] != child.ID {
+		t.Fatalf("unexpected delete event: %+v", deleteEvent)
+	}
+	if deleteEvent.OldParentByNodeID[child.ID] != newParent.ID {
+		t.Fatalf("delete old parent = %s, want %s", deleteEvent.OldParentByNodeID[child.ID], newParent.ID)
+	}
+}

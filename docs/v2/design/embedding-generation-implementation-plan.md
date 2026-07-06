@@ -4,10 +4,10 @@
 
 Implementation plan for the daemon-owned semantic embedding generation pipeline described in [embedding-package.md](embedding-package.md).
 
-Initial implementation slice completed:
+Initial implementation slices completed:
 
-- `internal/graphchange` neutral commit event/sink package.
-- `FileSession` and daemon graph module emit graph-change events after successful commits.
+- Phase 1 complete: `internal/graphchange` neutral commit event/sink package.
+- Phase 2 complete: `FileSession` and daemon graph module emit graph-change events after successful commits, preserve old/new context for moves/deletes/reorders, and do not emit for rollback/discard, read-only commits, or no-op commits.
 - Sink failures do not fail graph commits; failures are recorded as maintenance-degraded state on the emitting component.
 - `store/semantic.MaintenanceManager` owns dirty events and dirty work items.
 - Semantic analyzer/worker use `MaintenanceManager` for operational state and `SpaceManager` for semantic resources.
@@ -80,7 +80,7 @@ Add a neutral graph commit event/sink boundary that graph/session code can call 
 go test ./internal/graphchange
 ```
 
-## Phase 2: Wire graph commits to graphchange sink
+## Phase 2: Wire graph commits to graphchange sink — complete
 
 ### Goal
 
@@ -100,7 +100,8 @@ Make graph mutations notify committed changes without knowing about semantic mai
 - Add tests for:
   - node create/update/delete events
   - edge add/delete/reorder/move context
-  - transaction rollback emits no event
+  - transaction rollback/discard emits no event
+  - read-only/no-op commits emit no event
   - sink failure behavior
   - sink failure is non-fatal and records degraded state
 
