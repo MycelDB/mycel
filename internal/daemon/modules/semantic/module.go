@@ -11,11 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
 	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	domainspace "github.com/myceldb/mycel/domain/space"
+	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/embedding/catalog"
 	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
@@ -33,12 +35,13 @@ import (
 )
 
 type Module struct {
-	mu           sync.Mutex
-	dataDir      string
-	secretKeyB64 string
-	global       storesemantic.GlobalManager
-	accounting   storeaccounting.Manager
-	spaces       map[domainspace.SpaceID]storesemantic.SpaceManager
+	mu                sync.Mutex
+	dataDir           string
+	secretKeyB64      string
+	global            storesemantic.GlobalManager
+	accounting        storeaccounting.Manager
+	spaces            map[domainspace.SpaceID]storesemantic.SpaceManager
+	maintenanceConfig daemonconfig.SemanticMaintenanceConfig
 }
 
 func NewModule() *Module {
@@ -64,6 +67,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.global = global
 	m.accounting = acct
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
+	m.maintenanceConfig = rt.Config.SemanticMaintenance
 	return daemonruntime.OK(ModuleName)
 }
 
@@ -203,7 +207,7 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 }
 
 func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error) {
@@ -219,7 +223,7 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
-	return semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner}.ProcessOnce(ctx, in.Limit)
+	return semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig)}.ProcessOnce(ctx, in.Limit)
 }
 
 func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error) {
@@ -269,6 +273,18 @@ func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID
 	}
 	global := m.GlobalManager()
 	return semanticbackfill.Runner{Session: sess, GlobalManager: global, SpaceManager: mgr, Connector: connectors.Service{GlobalManager: global, Accounting: m.accounting, SecretKeyB64: m.secretKeyB64}, VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}, nil
+}
+
+func workerConfigFromDaemon(cfg daemonconfig.SemanticMaintenanceConfig) semanticmaintenance.WorkerConfig {
+	lease := cfg.WorkerInterval * 3
+	if lease <= 0 {
+		lease = 5 * time.Minute
+	}
+	retryBase := cfg.WorkerInterval
+	if retryBase <= 0 {
+		retryBase = 30 * time.Second
+	}
+	return semanticmaintenance.WorkerConfig{WorkerCount: cfg.WorkerCount, MaxBatchSize: cfg.MaxBatchSize, LeaseDuration: lease, ClaimedBy: "myceld-semantic-worker", RetryBaseDelay: retryBase, RetryMaxDelay: 15 * time.Minute}
 }
 
 func (m *Module) Search(ctx context.Context, in SearchInput) (semanticsearch.Result, error) {

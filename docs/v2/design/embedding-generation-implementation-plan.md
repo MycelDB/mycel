@@ -13,6 +13,7 @@ Initial implementation slices completed:
 - Semantic analyzer/worker use `MaintenanceManager` for operational state and `SpaceManager` for semantic resources.
 - Phase 4 complete: `internal/semantic/maintenance.DirtyEventAppender` adapts graph-change events to durable semantic dirty events without depending on `SpaceManager`.
 - Phase 5 complete: analyzer uses maintenance checkpoints, semantic source policies, graph/template reads, nearest ancestor-or-self subtree resolution, old/new move context, delete cleanup/refresh handling, and configurable dirty cooldown.
+- Phase 6 complete: one-shot worker processing supports configurable batch size, lease duration, worker-pool concurrency, retry/permanent failure classification, exponential backoff, non-forced refreshes for source-hash idempotency, delete/tombstone work, structured failure logging, and daemon config defaults. Continuous daemon lifecycle loops remain Phase 7.
 
 This plan assumes the daemon-only architecture: applications write graph data through `myceld`, and `myceld` owns graph storage, semantic resources, dirty event persistence, background workers, vector records, and accounting.
 
@@ -246,7 +247,7 @@ earliest_run_at = analyze_time + semantic.maintenance.dirty_cooldown
 go test ./internal/semantic/maintenance
 ```
 
-## Phase 6: Worker pool
+## Phase 6: Worker pool — complete
 
 ### Goal
 
@@ -291,23 +292,20 @@ system global limit
 
 - Worker flow:
   1. claim ready work items with lease
-  2. load semantic index
-  3. load endpoint/model/capability/vector-store definitions
-  4. resolve policy, credential, and grant
-  5. load target source node/tree
-  6. assemble source text
-  7. compute source hash
-  8. skip if latest matching vector has same source hash
-  9. throttle/backoff provider calls
-  10. call connector
-  11. append accounting event
-  12. upsert vector record or tombstone
-  13. complete/fail work item
+  2. process claimed work through configurable worker-pool concurrency
+  3. for refresh work, call semantic backfill with `Force=false` so source-hash idempotency can skip current records
+  4. for explicit backfill work, call semantic backfill with `Force=true`
+  5. for delete/cleanup work, call semantic vectorstore delete/tombstone
+  6. classify failures as retryable/permanent
+  7. apply exponential backoff for retryable failures
+  8. complete/fail work item through `MaintenanceManager`
+
+Backfill execution owns endpoint/model/capability lookup, policy/grant/credential resolution, source assembly, source-hash checks, connector calls, accounting, and vector upserts.
 - Add retry/backoff policy:
-  - retryable: rate limit, transient provider error, vector store transient errors
-  - permanent: invalid config, missing credential, policy denied, source excluded
+  - retryable: rate limit, transient provider/transport errors
+  - permanent: invalid config, missing credential, policy denied, source excluded/configuration errors
 - Add structured logging for all failures.
-- Add tests with fake connector/vectorstore/accounting.
+- Add tests with fake backfill runner and vectorstore.
 
 ### Acceptance
 

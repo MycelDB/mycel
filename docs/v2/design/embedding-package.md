@@ -414,7 +414,7 @@ status = pending
 not_before <= now
 ```
 
-Claims should have a lease (`claimed_until`) so work can recover after daemon restart or worker crash.
+Claims should have a lease (`claimed_until`) so work can recover after daemon restart or worker crash. One-shot worker processing supports configurable batch size, lease duration, worker count, retry/permanent failure classification, exponential backoff, non-forced refreshes for source-hash idempotency, delete/tombstone work, and structured failure logging. Continuous daemon lifecycle loops are wired separately by the daemon semantic module.
 
 ## Worker execution
 
@@ -430,7 +430,7 @@ For a ready work item, the worker:
 6. Assembles source text with the index source policy.
 7. Computes source hash.
 8. Checks the latest current vector record for the same binding.
-9. Skips if the source hash is unchanged.
+9. Skips if the source hash is unchanged for refresh work.
 10. Applies throttling/backoff limits.
 11. Calls the embedding provider through the connector.
 12. Records token/accounting usage.

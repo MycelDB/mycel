@@ -3,6 +3,9 @@ package maintenance
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -346,31 +349,33 @@ func countPending(items []domainsemantic.SemanticDirtyWorkItem, indexID domainse
 	return count
 }
 
+type BackfillRunner interface {
+	Run(ctx context.Context, in backfill.Input) (backfill.Result, error)
+}
+
+type WorkerConfig struct {
+	WorkerCount    int
+	MaxBatchSize   int
+	LeaseDuration  time.Duration
+	ClaimedBy      string
+	RetryBaseDelay time.Duration
+	RetryMaxDelay  time.Duration
+}
+
 type Worker struct {
 	SpaceManager       storesemantic.SpaceManager
 	MaintenanceManager storesemantic.MaintenanceManager
-	Backfill           backfill.Runner
+	Backfill           BackfillRunner
+	VectorBackend      vectorstore.Backend
+	Config             WorkerConfig
+	ClassifyFailure    func(error, domainsemantic.SemanticDirtyWorkItem, WorkerConfig, time.Time) storesemantic.WorkFailure
+	Logger             *slog.Logger
 }
 
 type WorkerResult struct {
 	Processed int `json:"processed"`
 	Completed int `json:"completed"`
 	Failed    int `json:"failed"`
-}
-
-func (w Worker) deleteVector(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) error {
-	indexes, err := w.SpaceManager.ListSemanticIndexes(ctx)
-	if err != nil {
-		return err
-	}
-	for _, index := range indexes {
-		if index.ID != item.SemanticIndexID {
-			continue
-		}
-		_, err := w.Backfill.VectorBackend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticIndexID: item.SemanticIndexID, NodeID: item.TargetNodeID, VectorStoreID: index.VectorStoreID, Reason: item.Reason})
-		return err
-	}
-	return fmt.Errorf("semantic index %s not found", item.SemanticIndexID)
 }
 
 func (w Worker) ProcessOnce(ctx context.Context, limit int) (WorkerResult, error) {
@@ -380,35 +385,209 @@ func (w Worker) ProcessOnce(ctx context.Context, limit int) (WorkerResult, error
 	if w.MaintenanceManager == nil {
 		return WorkerResult{}, fmt.Errorf("maintenance manager is required")
 	}
-	items, err := w.MaintenanceManager.ClaimReadyWork(ctx, storesemantic.ClaimReadyWorkInput{Limit: limit, LeaseDuration: 5 * time.Minute, ClaimedBy: "semantic-maintenance-worker"})
+	if w.Backfill == nil {
+		return WorkerResult{}, fmt.Errorf("backfill runner is required")
+	}
+	cfg := w.effectiveConfig(limit)
+	items, err := w.MaintenanceManager.ClaimReadyWork(ctx, storesemantic.ClaimReadyWorkInput{Limit: cfg.MaxBatchSize, LeaseDuration: cfg.LeaseDuration, ClaimedBy: cfg.ClaimedBy})
 	if err != nil {
 		return WorkerResult{}, err
 	}
-	result := WorkerResult{}
+	if len(items) == 0 {
+		return WorkerResult{}, nil
+	}
+	if cfg.WorkerCount <= 1 || len(items) == 1 {
+		result := WorkerResult{}
+		for _, item := range items {
+			res, err := w.processItem(ctx, item, cfg)
+			result.Processed += res.Processed
+			result.Completed += res.Completed
+			result.Failed += res.Failed
+			if err != nil {
+				return result, err
+			}
+		}
+		return result, nil
+	}
+	jobs := make(chan domainsemantic.SemanticDirtyWorkItem)
+	var mu sync.Mutex
+	var result WorkerResult
+	var firstErr error
+	var wg sync.WaitGroup
+	workers := minInt(cfg.WorkerCount, len(items))
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range jobs {
+				res, err := w.processItem(ctx, item, cfg)
+				mu.Lock()
+				result.Processed += res.Processed
+				result.Completed += res.Completed
+				result.Failed += res.Failed
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}()
+	}
 	for _, item := range items {
-		result.Processed++
-		if item.Action == domainsemantic.SemanticDirtyWorkActionRefresh || item.Action == domainsemantic.SemanticDirtyWorkActionBackfill {
-			nodeIDs := []graph.NodeID{item.TargetNodeID}
-			if item.Action == domainsemantic.SemanticDirtyWorkActionBackfill && graph.NodeID(item.SemanticIndexID) == item.TargetNodeID {
-				nodeIDs = nil
-			}
-			_, err = w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: true, ContinueOnError: true})
-		} else if item.Action == domainsemantic.SemanticDirtyWorkActionDelete || item.Action == domainsemantic.SemanticDirtyWorkActionCleanup {
-			err = w.deleteVector(ctx, item)
-		} else {
-			err = nil
+		jobs <- item
+	}
+	close(jobs)
+	wg.Wait()
+	return result, firstErr
+}
+
+func (w Worker) processItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem, cfg WorkerConfig) (WorkerResult, error) {
+	result := WorkerResult{Processed: 1}
+	err := w.runItem(ctx, item)
+	if err != nil {
+		result.Failed++
+		failure := w.classifyFailure(err, item, cfg, time.Now().UTC())
+		w.logFailure(item, failure)
+		if failErr := w.MaintenanceManager.FailWork(ctx, item.ID, failure); failErr != nil {
+			return result, failErr
 		}
-		if err != nil {
-			result.Failed++
-			if failErr := w.MaintenanceManager.FailWork(ctx, item.ID, storesemantic.WorkFailure{Category: "worker_error", Message: err.Error(), Retryable: false}); failErr != nil {
-				return result, failErr
-			}
-		} else {
-			result.Completed++
-			if completeErr := w.MaintenanceManager.CompleteWork(ctx, item.ID, storesemantic.WorkResult{}); completeErr != nil {
-				return result, completeErr
-			}
-		}
+		return result, nil
+	}
+	result.Completed++
+	if completeErr := w.MaintenanceManager.CompleteWork(ctx, item.ID, storesemantic.WorkResult{}); completeErr != nil {
+		return result, completeErr
 	}
 	return result, nil
+}
+
+func (w Worker) runItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) error {
+	if item.Action == domainsemantic.SemanticDirtyWorkActionRefresh || item.Action == domainsemantic.SemanticDirtyWorkActionBackfill {
+		nodeIDs := []graph.NodeID{item.TargetNodeID}
+		force := false
+		if item.Action == domainsemantic.SemanticDirtyWorkActionBackfill {
+			force = true
+			if graph.NodeID(item.SemanticIndexID) == item.TargetNodeID {
+				nodeIDs = nil
+			}
+		}
+		_, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true})
+		return err
+	}
+	if item.Action == domainsemantic.SemanticDirtyWorkActionDelete || item.Action == domainsemantic.SemanticDirtyWorkActionCleanup {
+		return w.deleteVector(ctx, item)
+	}
+	return nil
+}
+
+func (w Worker) deleteVector(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) error {
+	backend := w.VectorBackend
+	if backend == nil {
+		return fmt.Errorf("vector backend is required for delete work")
+	}
+	indexes, err := w.SpaceManager.ListSemanticIndexes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, index := range indexes {
+		if index.ID != item.SemanticIndexID {
+			continue
+		}
+		_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticIndexID: item.SemanticIndexID, NodeID: item.TargetNodeID, VectorStoreID: index.VectorStoreID, Reason: item.Reason})
+		return err
+	}
+	return fmt.Errorf("semantic index %s not found", item.SemanticIndexID)
+}
+
+func (w Worker) effectiveConfig(limit int) WorkerConfig {
+	cfg := w.Config
+	if cfg.WorkerCount <= 0 {
+		cfg.WorkerCount = 1
+	}
+	if cfg.MaxBatchSize <= 0 {
+		cfg.MaxBatchSize = 100
+	}
+	if limit > 0 && limit < cfg.MaxBatchSize {
+		cfg.MaxBatchSize = limit
+	}
+	if cfg.LeaseDuration <= 0 {
+		cfg.LeaseDuration = 5 * time.Minute
+	}
+	if strings.TrimSpace(cfg.ClaimedBy) == "" {
+		cfg.ClaimedBy = "semantic-maintenance-worker"
+	}
+	if cfg.RetryBaseDelay <= 0 {
+		cfg.RetryBaseDelay = 30 * time.Second
+	}
+	if cfg.RetryMaxDelay <= 0 {
+		cfg.RetryMaxDelay = 15 * time.Minute
+	}
+	return cfg
+}
+
+func (w Worker) classifyFailure(err error, item domainsemantic.SemanticDirtyWorkItem, cfg WorkerConfig, now time.Time) storesemantic.WorkFailure {
+	if w.ClassifyFailure != nil {
+		return w.ClassifyFailure(err, item, cfg, now)
+	}
+	return DefaultClassifyFailure(err, item, cfg, now)
+}
+
+func (w Worker) logFailure(item domainsemantic.SemanticDirtyWorkItem, failure storesemantic.WorkFailure) {
+	if w.Logger == nil {
+		return
+	}
+	w.Logger.Warn("semantic maintenance work failed", "work_item_id", item.ID.String(), "space_id", item.SpaceID.String(), "domain_id", item.DomainID.String(), "semantic_index_id", item.SemanticIndexID.String(), "target_node_id", item.TargetNodeID.String(), "category", failure.Category, "retryable", failure.Retryable, "attempts", item.Attempts)
+}
+
+func DefaultClassifyFailure(err error, item domainsemantic.SemanticDirtyWorkItem, cfg WorkerConfig, now time.Time) storesemantic.WorkFailure {
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	category := "internal_error"
+	retryable := false
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "rate_limited") || strings.Contains(lower, "429"):
+		category = "rate_limited"
+		retryable = true
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline") || strings.Contains(lower, "temporar") || strings.Contains(lower, "unavailable") || strings.Contains(lower, "connection reset"):
+		category = "provider_error"
+		retryable = true
+	case strings.Contains(lower, "credential") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission") || strings.Contains(lower, "policy denies") || strings.Contains(lower, "no background credential grant"):
+		category = "authorization_error"
+	case strings.Contains(lower, "not found") || strings.Contains(lower, "disabled") || strings.Contains(lower, "required") || strings.Contains(lower, "invalid"):
+		category = "configuration_error"
+	case strings.Contains(lower, "vector"):
+		category = "vector_store_error"
+	}
+	failure := storesemantic.WorkFailure{FailedAt: now, Category: category, Message: message, Retryable: retryable}
+	if retryable {
+		delay := backoffDelay(item.Attempts, cfg.RetryBaseDelay, cfg.RetryMaxDelay)
+		next := now.Add(delay)
+		failure.NextRunAt = &next
+	}
+	return failure
+}
+
+func backoffDelay(attempts int, base time.Duration, max time.Duration) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	delay := base
+	for i := 1; i < attempts; i++ {
+		delay *= 2
+		if delay >= max {
+			return max
+		}
+	}
+	if delay > max {
+		return max
+	}
+	return delay
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
