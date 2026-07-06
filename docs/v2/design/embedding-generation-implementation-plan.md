@@ -12,6 +12,7 @@ Initial implementation slices completed:
 - Phase 3 complete: `store/semantic.MaintenanceManager` owns dirty events, checkpoints, dirty work items, append-only work records, claim leases, completion, and failure state.
 - Semantic analyzer/worker use `MaintenanceManager` for operational state and `SpaceManager` for semantic resources.
 - Phase 4 complete: `internal/semantic/maintenance.DirtyEventAppender` adapts graph-change events to durable semantic dirty events without depending on `SpaceManager`.
+- Phase 5 complete: analyzer uses maintenance checkpoints, semantic source policies, graph/template reads, nearest ancestor-or-self subtree resolution, old/new move context, delete cleanup/refresh handling, and configurable dirty cooldown.
 
 This plan assumes the daemon-only architecture: applications write graph data through `myceld`, and `myceld` owns graph storage, semantic resources, dirty event persistence, background workers, vector records, and accounting.
 
@@ -194,7 +195,7 @@ Convert graph change notifications into durable maintenance dirty events.
 go test ./internal/semantic/maintenance ./internal/daemon/modules/semantic ./internal/daemon/modules/graph
 ```
 
-## Phase 5: Analyzer/coalescer
+## Phase 5: Analyzer/coalescer — complete
 
 ### Goal
 
@@ -204,14 +205,14 @@ Analyze raw dirty events and upsert debounced target-level semantic work items.
 
 - Add analyzer in `internal/semantic/maintenance`.
 - Analyzer inputs:
-  - `SpaceManager` for active indexes/source policies
+  - `SpaceManager` for active indexes/source policies and index state
   - `MaintenanceManager` for dirty events/checkpoints/work items
   - graph session/read model for nodes/edges/templates
 - For each dirty event batch:
-  - coalesce latest changes by node/edge
+  - use per-index maintenance checkpoints to process each dirty event once
   - load active semantic indexes by space/domain
   - resolve embedding target per index/source policy
-  - upsert work items keyed by:
+  - rely on `MaintenanceManager.UpsertDirtyWorkItem` for target-level coalescing keyed by:
 
 ```text
 space_id + domain_id + semantic_index_id + target_node_id
@@ -221,11 +222,11 @@ space_id + domain_id + semantic_index_id + target_node_id
   - `self`: target is changed node if it matches index root/template policy
   - `subtree`: nearest ancestor-or-self matching index root/template policy
   - edge move/reorder: analyze old and new containment paths
-  - delete: dirty old containing root or tombstone target as needed
-- Apply global cooldown:
+  - delete: refresh old containing subtree root when available, otherwise enqueue delete/cleanup for the deleted target
+- Apply configurable dirty cooldown through work item `earliest_run_at`:
 
 ```text
-not_before = latest_dirty_at + semantic.maintenance.dirty_cooldown
+earliest_run_at = analyze_time + semantic.maintenance.dirty_cooldown
 ```
 
 - Save analyzer checkpoints only after successful work-item upserts.
@@ -234,8 +235,10 @@ not_before = latest_dirty_at + semantic.maintenance.dirty_cooldown
   - subtree target resolution
   - dropped irrelevant node
   - move dirties old and new roots
-  - delete produces cleanup/tombstone work
-  - repeated edits coalesce into one work item with pushed-out `not_before`
+  - delete refreshes old containing subtree root
+  - repeated edits coalesce through `MaintenanceManager`
+  - cooldown sets `earliest_run_at`
+  - checkpoint skip on subsequent analyzer runs
 
 ### Acceptance
 

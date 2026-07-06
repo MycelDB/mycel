@@ -199,7 +199,11 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	reader, err := m.graphReader(ctx, in.SpaceID)
+	if err != nil {
+		return semanticmaintenance.AnalyzeResult{}, err
+	}
+	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 }
 
 func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error) {
@@ -250,12 +254,19 @@ func (m *Module) MigrateLegacyEmbeddings(ctx context.Context, in LegacyMigration
 	return semanticmigration.MigrateLegacyEmbeddings(ctx, semanticmigration.LegacyEmbeddingInput{OwnerUserID: ownerID, SpaceID: in.SpaceID, DomainID: in.DomainID, ProfileRef: in.ProfileRef, AllowBackgroundUse: in.AllowBackgroundUse, AddAllowPolicy: in.AddAllowPolicy, Strict: in.Strict, DryRun: in.DryRun, Limit: in.Limit, Catalog: cat, EmbeddingManager: embeddings, GlobalManager: m.GlobalManager(), SpaceManager: spaceMgr, EncryptSecret: m.EncryptSecret})
 }
 
-func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID, mgr storesemantic.SpaceManager) (semanticbackfill.Runner, error) {
+func (m *Module) graphReader(ctx context.Context, spaceID domainspace.SpaceID) (sessionapi.Session, error) {
 	templates := storetemplate.NewManager()
 	if err := templates.Init(ctx, filepath.Join(m.dataDir, "templates")); err != nil {
+		return nil, err
+	}
+	return filesession.New(filepath.Join(m.dataDir, "graphs"), filepath.Join(m.dataDir, "blobs"), spaceID, templates, sessionapi.Permissions{Read: true, Admin: true}, sessionapi.Errors{Closed: fmt.Errorf("session closed"), NotFound: fmt.Errorf("not found"), Unauthorized: fmt.Errorf("unauthorized"), Conflict: fmt.Errorf("conflict")}), nil
+}
+
+func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID, mgr storesemantic.SpaceManager) (semanticbackfill.Runner, error) {
+	sess, err := m.graphReader(ctx, spaceID)
+	if err != nil {
 		return semanticbackfill.Runner{}, err
 	}
-	sess := filesession.New(filepath.Join(m.dataDir, "graphs"), filepath.Join(m.dataDir, "blobs"), spaceID, templates, sessionapi.Permissions{Read: true, Admin: true}, sessionapi.Errors{Closed: fmt.Errorf("session closed"), NotFound: fmt.Errorf("not found"), Unauthorized: fmt.Errorf("unauthorized"), Conflict: fmt.Errorf("conflict")})
 	global := m.GlobalManager()
 	return semanticbackfill.Runner{Session: sess, GlobalManager: global, SpaceManager: mgr, Connector: connectors.Service{GlobalManager: global, Accounting: m.accounting, SecretKeyB64: m.secretKeyB64}, VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}, nil
 }

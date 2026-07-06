@@ -278,11 +278,14 @@ Dirty events are not embedding work yet. The analyzer must decide whether a chan
 Processing steps:
 
 1. Read raw dirty events.
-2. Coalesce duplicate node changes, keeping the latest event/context for each affected node.
+2. Use per-index maintenance checkpoints to skip events already analyzed.
 3. Load active semantic indexes for the relevant space/domain.
-4. Evaluate each index source policy.
+4. Evaluate each index source policy using graph/template reads.
 5. Resolve dirty node/edge changes to semantic embedding targets.
 6. Upsert target-level semantic work items with a cooldown.
+7. Save analyzer checkpoints only after successful work-item upserts.
+
+The initial coalescing boundary is `MaintenanceManager.UpsertDirtyWorkItem`, keyed by semantic index and target node. Repeated dirty events for the same target update the existing item, merge transaction IDs, and push out the next eligible run time.
 
 ## Embedding target resolution
 
@@ -307,7 +310,7 @@ else:
   drop
 ```
 
-For edge moves/reorders, analyze both old and new containment paths when available.
+For edge moves/reorders, analyze both old and new containment paths when available. For deletes, refresh the old containing subtree root when it can be resolved; otherwise enqueue delete/cleanup work for the deleted target.
 
 Initial recommendation: use the nearest matching ancestor-or-self. Avoid dirtying every matching ancestor until there is a clear product need, because it can multiply work substantially.
 
