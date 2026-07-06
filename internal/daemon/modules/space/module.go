@@ -9,15 +9,15 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/domain/access"
-	"github.com/myceldb/mycel/domain/graph"
-	"github.com/myceldb/mycel/domain/identity"
-	domainspace "github.com/myceldb/mycel/domain/space"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
-	"github.com/myceldb/mycel/store/acl"
-	storedomains "github.com/myceldb/mycel/store/domains"
-	storespaces "github.com/myceldb/mycel/store/spaces"
-	storetemplate "github.com/myceldb/mycel/store/template"
+	"github.com/myceldb/mycel/internal/graph/model"
+	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
+	"github.com/myceldb/mycel/internal/identity/model"
+	"github.com/myceldb/mycel/internal/space/access"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"github.com/myceldb/mycel/internal/space/storage/acl"
+	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
+	storespaces "github.com/myceldb/mycel/internal/space/storage/spaces"
 )
 
 var ErrSpaceNotFound = errors.New("space not found")

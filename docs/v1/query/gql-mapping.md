@@ -1,6 +1,6 @@
 # Programmatic GQL-style queries
 
-MycelDB exposes a Go query builder in `github.com/myceldb/mycel/query`. The builder maps to GQL-style clauses:
+Historical note: the former public Go query builder has been internalized as daemon implementation. Applications should use the daemon query API instead. Internally, the builder maps to GQL-style clauses:
 
 - `Match(...)`
 - `Where(...)`
@@ -12,8 +12,7 @@ The implementation runs in memory over the current session's or transaction's no
 ## Last seven calendar days of journals
 
 ```go
-import q "github.com/myceldb/mycel/query"
-
+// Daemon-internal code only; not an application import path.
 rows, err := sess.Query().
     Match(
         q.Pattern().

@@ -12,13 +12,13 @@ import (
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
-	"github.com/myceldb/mycel/domain/graph"
-	"github.com/myceldb/mycel/domain/identity"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	domainspace "github.com/myceldb/mycel/domain/space"
 	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
-	storesemantic "github.com/myceldb/mycel/store/semantic"
+	"github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/identity/model"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 func TestAdminInferencePackageApplyUsesDaemonGRPC(t *testing.T) {

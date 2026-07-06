@@ -21,13 +21,13 @@ check-public-surface:
 test: check-daemon-only check-public-surface
 	go test ./...
 
-test-verbose: check-daemon-only
+test-verbose: check-daemon-only check-public-surface
 	go test -v -count=1 -cover -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
 test-watch:
 	@command -v watchexec >/dev/null 2>&1 || (echo "watchexec is required. Install with: brew install watchexec" && exit 1)
-	watchexec -e go,sh -- "scripts/check-daemon-only.sh && go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
+	watchexec -e go,sh -- "scripts/check-daemon-only.sh && scripts/check-public-surface.sh && go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
 
 build: check-daemon-only check-public-surface build-cli build-daemon
 

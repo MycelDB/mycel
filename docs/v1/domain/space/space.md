@@ -1,9 +1,11 @@
-# Spaces
+# Spaces (v1 historical)
 
-Space domain types are exposed by `github.com/myceldb/mycel/domain/space`.
+This page described the former public embedded Go `domain/space` package. The
+implementation package is now internal.
 
-`SpaceID` is the immutable UUID identifier for a space.
+Applications should use daemon Admin/Client Space and Domain APIs (`mycel-api`
+protobufs or `mycel-go-sdk`) instead of importing space structs from the `mycel`
+module. Daemon-internal space records live under `internal/space/model` and are
+not application contracts.
 
-`Space` is the owner-scoped logical container for graph data. It stores the space ID, owner user ID, name, status, and space settings.
-
-`SpaceSettings` defines tunable limits and behavior at space scope, such as maximum space size, chunk targets, asset/PDF limits, and compaction behavior.
+See [API space design](../../../v2/design/api/space.md) and [API domain design](../../../v2/design/api/domain.md).

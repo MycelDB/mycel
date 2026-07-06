@@ -5,9 +5,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	"github.com/myceldb/mycel/internal/graphchange"
-	storesemantic "github.com/myceldb/mycel/store/semantic"
+	"github.com/myceldb/mycel/internal/graph/change"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 )
 
 // DirtyEventAppender adapts graph commit notifications into durable semantic

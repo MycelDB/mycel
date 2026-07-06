@@ -5,15 +5,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/domain/graph"
-	"github.com/myceldb/mycel/domain/identity"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/identity/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	semanticmigration "github.com/myceldb/mycel/internal/semantic/migration"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
-	storesemantic "github.com/myceldb/mycel/store/semantic"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 const ModuleName = "semantic"

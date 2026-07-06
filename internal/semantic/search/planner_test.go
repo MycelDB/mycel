@@ -8,13 +8,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/domain/graph"
-	"github.com/myceldb/mycel/domain/identity"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/identity/model"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	storesemantic "github.com/myceldb/mycel/store/semantic"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 func TestPlannerSearchesAllowedIndexesAndWarnsForSkipped(t *testing.T) {

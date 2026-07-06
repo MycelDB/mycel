@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domaingraph "github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 )
 
 func TestModuleDurableReplayIncludesGraphPayload(t *testing.T) {

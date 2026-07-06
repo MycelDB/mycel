@@ -8,9 +8,9 @@ import (
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel-api/gen/go/mycel/common/v1"
-	domainauth "github.com/myceldb/mycel/domain/auth"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

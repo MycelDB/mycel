@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	domainspace "github.com/myceldb/mycel/domain/space"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 // App holds process/REPL state shared by commands.

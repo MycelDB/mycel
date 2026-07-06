@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/domain/graph"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
+	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/semantic/backfill"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	storesemantic "github.com/myceldb/mycel/store/semantic"
 )
 
 type GraphReader interface {

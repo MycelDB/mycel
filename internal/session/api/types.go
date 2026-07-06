@@ -5,10 +5,10 @@ import (
 	"errors"
 	"io"
 
-	"github.com/myceldb/mycel/domain/graph"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	"github.com/myceldb/mycel/query"
-	storetemplate "github.com/myceldb/mycel/store/template"
+	"github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/graph/query"
+	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 )
 
 var (

@@ -6,11 +6,11 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/domain/graph"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	domainspace "github.com/myceldb/mycel/domain/space"
-	"github.com/myceldb/mycel/internal/graphchange"
-	storesemantic "github.com/myceldb/mycel/store/semantic"
+	"github.com/myceldb/mycel/internal/graph/change"
+	"github.com/myceldb/mycel/internal/graph/model"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 func TestDirtyEventAppenderPersistsGraphChange(t *testing.T) {

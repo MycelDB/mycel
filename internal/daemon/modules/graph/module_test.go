@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domaingraph "github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
-	"github.com/myceldb/mycel/internal/graphchange"
+	"github.com/myceldb/mycel/internal/graph/change"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 )
 
 func TestModuleFineGrainedOCC(t *testing.T) {

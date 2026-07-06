@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	domaingraph "github.com/myceldb/mycel/domain/graph"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 )
 
 const ModuleName = "change_stream"

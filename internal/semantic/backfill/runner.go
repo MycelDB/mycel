@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/domain/graph"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	"github.com/myceldb/mycel/internal/embedding"
 	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
+	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 )
 

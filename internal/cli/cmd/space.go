@@ -5,8 +5,8 @@ import (
 
 	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
-	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/cli/app"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/spf13/cobra"
 )
 

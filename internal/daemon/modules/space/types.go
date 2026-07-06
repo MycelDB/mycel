@@ -3,10 +3,10 @@ package space
 import (
 	"context"
 
-	"github.com/myceldb/mycel/domain/graph"
-	"github.com/myceldb/mycel/domain/identity"
-	domainspace "github.com/myceldb/mycel/domain/space"
-	storetemplate "github.com/myceldb/mycel/store/template"
+	"github.com/myceldb/mycel/internal/graph/model"
+	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
+	"github.com/myceldb/mycel/internal/identity/model"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 const ModuleName = "space"

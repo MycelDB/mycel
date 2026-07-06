@@ -7,10 +7,10 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
-	"github.com/myceldb/mycel/domain/access"
-	"github.com/myceldb/mycel/domain/graph"
-	"github.com/myceldb/mycel/domain/identity"
-	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/identity/model"
+	"github.com/myceldb/mycel/internal/space/access"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 func RenderDaemonOperatorsTable(operators []*adminv1.Operator) {

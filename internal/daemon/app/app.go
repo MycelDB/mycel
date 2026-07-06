@@ -22,7 +22,7 @@ import (
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
-	"github.com/myceldb/mycel/internal/graphchange"
+	"github.com/myceldb/mycel/internal/graph/change"
 )
 
 const LogFilename = "myceld.log"

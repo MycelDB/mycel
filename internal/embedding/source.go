@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/myceldb/mycel/domain/graph"
 	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
+	"github.com/myceldb/mycel/internal/graph/model"
 )
 
 type SourceInput struct {

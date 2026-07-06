@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	domainauth "github.com/myceldb/mycel/domain/auth"
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 )
 
 const (

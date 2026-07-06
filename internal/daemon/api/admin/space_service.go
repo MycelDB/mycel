@@ -10,11 +10,11 @@ import (
 	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	commonv1 "github.com/myceldb/mycel-api/gen/go/mycel/common/v1"
-	"github.com/myceldb/mycel/domain/identity"
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
+	"github.com/myceldb/mycel/internal/identity/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

@@ -6,7 +6,7 @@ Draft design notes for the `refactor_daemon` branch.
 
 ## Summary
 
-Mycel is being refactored from an embedded Go library into a daemon process that can run standalone or as part of a mesh of Mycel daemons. Applications and tools should use daemon Admin/Client gRPC APIs; the public embedded engine runtime is removed, and remaining session/storage internals are transitional daemon implementation scaffolding. Existing domain, storage, session, metadata, semantic, and auth components may remain reusable internally while the migration adds daemon APIs, connector libraries, connection management, space caching, and eventually replication.
+Mycel has been refactored from an embedded Go library into a daemon process that can run standalone or as part of a mesh of Mycel daemons. Applications and tools should use daemon Admin/Client gRPC APIs; the public embedded engine runtime is removed, and session/storage/domain/query implementation packages now live under `internal/`. Existing domain, storage, session, metadata, semantic, and auth components remain reusable only inside the daemon implementation while the migration continues to add daemon APIs, connector libraries, connection management, space caching, and eventually replication.
 
 The migration is no longer preserving embedded/library runtime support as a public compatibility target. Each phase should keep daemon/API behavior functional while removing local application-owned runtime entrypoints.
 
@@ -274,7 +274,7 @@ The daemon should enforce:
 
 The migration now targets daemon-only behavior rather than embedded/daemon dual mode. See [Daemon-only boundary](daemon-only-boundary.md) for active phase tracking.
 
-Completed or in-progress milestones include daemon process/runtime setup, authenticated Admin and Client gRPC APIs, daemon-backed CLI commands, TLS/mTLS transport hardening, removal of CLI embedded-engine paths, deletion of the legacy `engine` tree, and internalization/removal of the public `session` package.
+Completed milestones include daemon process/runtime setup, authenticated Admin and Client gRPC APIs, daemon-backed CLI commands, TLS/mTLS transport hardening, removal of CLI embedded-engine paths, deletion of the legacy `engine` tree, removal/internalization of the public `session` package, and internalization of `domain`, `store`, and `query` implementation packages.
 
 ### Space/session cache manager
 

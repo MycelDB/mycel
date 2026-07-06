@@ -1,11 +1,13 @@
 # Auth session renewal implementation plan
 
-Status: complete. Phases 1 through 10 are implemented on the `session_renewal` branch. This plan documents how MycelDB can provide native durable auth/session renewal primitives for applications that need Mycel-owned long-lived sessions. Knot PKM currently implements browser-session renewal at the application layer; see its `session_renewal` work for the immediate product implementation.
+Status: historical. Phases 1 through 10 were implemented on the `session_renewal` branch before the daemon-only refactor. The embedded `engine`/`session` public APIs referenced below have since been removed or internalized. Current applications should use daemon Admin/Client auth/session APIs from `mycel-api`/`mycel-go-sdk`.
+
+This plan remains as design history for durable auth/session renewal primitives. Knot PKM currently implements browser-session renewal at the application layer; see its `session_renewal` work for the immediate product implementation.
 
 Related docs:
 
-- `docs/architecture.md` — current auth/session architecture and package boundaries.
-- `docs/cli/README.md` — CLI configuration and auth-session commands.
+- `docs/v2/design/daemon-only-boundary.md` — current package boundary.
+- `docs/v2/design/grpc-client-auth.md` — current client auth API design.
 - `docs/auth-session-migration.md` — adoption and migration guidance.
 - Knot PKM server `docs/design/session-renewal-auth.md` — app-owned refresh-session design.
 

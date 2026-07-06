@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/domain/identity"
 	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
+	"github.com/myceldb/mycel/internal/identity/model"
 )
 
 func TestProviderKeySecretsAreEncryptedAndRedacted(t *testing.T) {

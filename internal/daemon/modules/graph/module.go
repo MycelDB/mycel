@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domaingraph "github.com/myceldb/mycel/domain/graph"
-	domainspace "github.com/myceldb/mycel/domain/space"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
-	"github.com/myceldb/mycel/internal/graphchange"
-	"github.com/myceldb/mycel/internal/graphstorage"
+	"github.com/myceldb/mycel/internal/graph/change"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/graph/storage"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 const childOrderStep = 1000

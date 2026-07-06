@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 )
 
 type OpenAICompatible struct{ HTTPClient *http.Client }

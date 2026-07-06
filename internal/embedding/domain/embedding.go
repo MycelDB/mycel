@@ -4,9 +4,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/domain/graph"
-	"github.com/myceldb/mycel/domain/identity"
-	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/identity/model"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 // IDs for embedding metadata and generated records.

@@ -27,7 +27,7 @@ internal/embedding/
   provider/    low-level embedding provider client helpers
   source.go    graph node/tree source-text assembly helpers
 
-internal/graphchange/
+internal/graph/change/
   event and sink interfaces for graph commit notifications
 
 internal/semantic/
@@ -172,7 +172,7 @@ Graph/session code should not import semantic maintenance packages and should no
 Proposed package:
 
 ```text
-internal/graphchange
+internal/graph/change
 ```
 
 Conceptual interface:
@@ -232,7 +232,7 @@ Graph mutation paths should do only cheap durable bookkeeping. They should not r
 
 ## Raw dirty events
 
-Graph commits notify `internal/graphchange.Sink` for every mutation that can change semantic source text. The semantic sink implementation appends raw dirty events through `MaintenanceManager`, not `SpaceManager`.
+Graph commits notify `internal/graph/change.Sink` for every mutation that can change semantic source text. The semantic sink implementation appends raw dirty events through `MaintenanceManager`, not `SpaceManager`.
 
 Supported event categories:
 
@@ -497,7 +497,7 @@ Throttling should be able to use both request counts and token counts.
 
 It does not own embedding generation. Legacy file-session embedding methods and their internal session API types have been removed; semantic search uses the advanced semantic-index path.
 
-`FileSession` may notify graph changes when graph commits mutate content or containment. It should depend only on the neutral `internal/graphchange` sink interface, not on `store/semantic`, `SpaceManager`, `MaintenanceManager`, analyzer logic, or worker implementation details.
+`FileSession` may notify graph changes when graph commits mutate content or containment. It should depend only on the neutral `internal/graph/change` sink interface, not on `store/semantic`, `SpaceManager`, `MaintenanceManager`, analyzer logic, or worker implementation details.
 
 ## Migration notes
 
@@ -509,7 +509,7 @@ Completed cleanup in this branch:
 - legacy direct file-session embedding generation/search stubs removed from internal session APIs.
 - obsolete domain embedding policy storage/API removed.
 - legacy profile CRUD removed from `internal/embedding/store`; the store now keeps the minimum profile/key reader surface required by `semantic migrate legacy-embeddings`.
-- `internal/graphchange` event/sink interfaces wire graph commits to semantic dirty-event appenders.
+- `internal/graph/change` event/sink interfaces wire graph commits to semantic dirty-event appenders.
 - `store/semantic.MaintenanceManager` owns dirty events, checkpoints, work items, leases, and failures.
 - daemon startup runs analyzer/worker loops when maintenance is enabled.
 - maintenance status and controls are exposed through Admin APIs.

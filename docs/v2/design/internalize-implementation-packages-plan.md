@@ -33,33 +33,17 @@ This plan builds on [Mycel Public Go Surface Audit](public-surface-audit.md).
 
 ## Current blockers
 
-One known workspace production consumer still imports embedded-era Mycel packages:
-
-```text
-knot_pkm/knot_pkm_importer
-```
-
-Current imports include:
-
-```text
-github.com/myceldb/mycel/domain/graph
-github.com/myceldb/mycel/domain/identity
-github.com/myceldb/mycel/domain/space
-github.com/myceldb/mycel/engine
-github.com/myceldb/mycel/session
-```
-
-This consumer must be migrated before public implementation packages can be removed or made inaccessible in a released Mycel version.
+No known workspace production consumers import embedded-era Mycel packages. `domain/**`, `store/**`, and `query` have been internalized; remaining work is enforcement/release cleanup.
 
 ## Phase 0: Freeze the intended boundary
 
-Status: implemented in transitional mode. `scripts/check-public-surface.sh` is wired into `make test` and `make build`. It fails on newly introduced top-level implementation packages and can run with `--strict` after `knot_pkm_importer` is migrated.
+Status: implemented. `scripts/check-public-surface.sh` is wired into `make test` and `make build`. It fails on newly introduced top-level implementation packages and on reintroduced public `domain`, `store`, `query`, `engine`, or `session` packages.
 
 ### Tasks
 
 - Document that `mycel` is daemon-only and not an application library API. **Done.**
 - Add a checked script that fails on external consumer imports of old packages in strict mode. **Done.**
-- Run the script initially in report-only/transitional mode while `knot_pkm_importer` has not yet migrated. **Done.**
+- Initially run the script in report-only/transitional mode while `knot_pkm_importer` had not yet migrated; after Phase 3, enforce the internalized boundary. **Done.**
 - Add a Mycel-local check that no new packages are added outside approved public locations. **Done.**
 
 Approved public locations:
@@ -99,9 +83,11 @@ git diff --check
 go test ./...
 ```
 
-If importer is not yet migrated, `scripts/check-public-surface.sh --workspace <root>` reports known hits without failing. After Phase 1, `scripts/check-public-surface.sh --workspace <root> --strict` must be zero-hit.
+After Phase 3, `scripts/check-public-surface.sh --workspace <root> --strict` should pass.
 
 ## Phase 1: Migrate `knot_pkm_importer` to daemon SDK/API
+
+Status: implemented. The importer no longer imports `github.com/myceldb/mycel/...` and uses `mycel-go-sdk`/`mycel-api` against a running `myceld` daemon.
 
 ### Goal
 
@@ -166,6 +152,8 @@ Expected result: no production Go imports of `github.com/myceldb/mycel/...` outs
 
 ## Phase 2: Move low-risk Mycel packages under `internal/`
 
+Status: implemented. `query` is now `internal/graph/query`; `store/*` is now `internal/store/*`.
+
 ### Goal
 
 Internalize packages with no external consumers and minimal dependency fanout.
@@ -173,21 +161,21 @@ Internalize packages with no external consumers and minimal dependency fanout.
 ### Packages
 
 ```text
-query                -> internal/query or internal/session/query
-store/accounting     -> internal/store/accounting
-store/acl            -> internal/store/acl
-store/domains        -> internal/store/domains
-store/semantic       -> internal/store/semantic
-store/session        -> internal/store/session
-store/spaces         -> internal/store/spaces
-store/template       -> internal/store/template
-store/user           -> delete if still unused, otherwise internal/store/user
+query                -> internal/graph/query or internal/session/query
+store/accounting     -> internal/semantic/accounting
+store/acl            -> internal/space/storage/acl
+store/domains        -> internal/space/storage/domains
+store/semantic       -> internal/semantic/storage
+store/session        -> internal/identity/storage/session
+store/spaces         -> internal/space/storage/spaces
+store/template       -> internal/graph/template/storage
+store/user           -> delete if still unused, otherwise internal/identity/storage/user
 ```
 
 ### Recommended order
 
 1. `query`
-   - direct importers: `internal/session/api`, `internal/session/filesession`
+   - direct importers: `internal/session/api`, `internal/graph/filesession`
    - low risk; validates the mechanical move pattern
 2. Store packages with one direct importer:
    - `store/acl`
@@ -215,9 +203,9 @@ For each package:
 Example:
 
 ```sh
-git mv query internal/query
-rg 'github.com/myceldb/mycel/query' -l | xargs perl -pi -e 's#github.com/myceldb/mycel/query#github.com/myceldb/mycel/internal/query#g'
-go test ./internal/session/api ./internal/session/filesession ./internal/query
+git mv query internal/graph/query
+rg 'github.com/myceldb/mycel/query' -l | xargs perl -pi -e 's#github.com/myceldb/mycel/query#github.com/myceldb/mycel/internal/graph/query#g'
+go test ./internal/session/api ./internal/graph/filesession ./internal/graph/query
 ```
 
 ### Acceptance
@@ -237,6 +225,8 @@ git diff --check
 
 ## Phase 3: Move domain packages under `internal/domain/`
 
+Status: implemented. `domain/*` is now `internal/domain/*`.
+
 ### Goal
 
 Make in-process domain structs implementation-only. Proto/API messages remain the public DTOs.
@@ -244,12 +234,12 @@ Make in-process domain structs implementation-only. Proto/API messages remain th
 ### Packages
 
 ```text
-domain/identity   -> internal/domain/identity
-domain/space      -> internal/domain/space
-domain/graph      -> internal/domain/graph
-domain/access     -> internal/domain/access
-domain/auth       -> internal/domain/auth
-domain/semantic   -> internal/domain/semantic
+domain/identity   -> internal/identity/model
+domain/space      -> internal/space/model
+domain/graph      -> internal/graph/model
+domain/access     -> internal/space/access
+domain/auth       -> internal/identity/auth
+domain/semantic   -> internal/semantic/model
 ```
 
 ### Dependency order
@@ -281,12 +271,12 @@ However, because many packages import multiple domain packages, it may be safer 
 
 ```sh
 mkdir -p internal/domain
-git mv domain/identity internal/domain/identity
-git mv domain/space internal/domain/space
-git mv domain/graph internal/domain/graph
-git mv domain/access internal/domain/access
-git mv domain/auth internal/domain/auth
-git mv domain/semantic internal/domain/semantic
+git mv domain/identity internal/identity/model
+git mv domain/space internal/space/model
+git mv domain/graph internal/graph/model
+git mv domain/access internal/space/access
+git mv domain/auth internal/identity/auth
+git mv domain/semantic internal/semantic/model
 rg 'github.com/myceldb/mycel/domain/' -l --glob '*.go' \
   | xargs perl -pi -e 's#github.com/myceldb/mycel/domain/#github.com/myceldb/mycel/internal/domain/#g'
 ```
@@ -312,10 +302,12 @@ git diff --check
 ### Risks
 
 - High churn across daemon API adapters, semantic maintenance, graph/session, and stores.
-- Any sibling module still importing `domain/*` will fail immediately if it updates to this Mycel version.
+- Any sibling module still importing `domain/*` will fail immediately if it updates to this Mycel version; workspace checks should stay strict.
 - Docs/examples may need updates even when code compiles.
 
 ## Phase 4: Remove or neutralize obsolete top-level packages
+
+Status: implemented. The only remaining root package is documentation-only; implementation packages are under `internal/`; public runtime/application contracts are `mycel-api` and `mycel-go-sdk`.
 
 ### Goal
 
@@ -341,6 +333,8 @@ go test ./...
 
 ## Phase 5: Enforce guardrails in CI/scripts
 
+Status: implemented. `scripts/check-public-surface.sh` is wired into `make test`, `make test-verbose`, `make test-watch`, and `make build`. It auto-detects the Knotbase workspace when this repo is checked out at `<workspace>/myceldb/mycel`, fails on external implementation-package imports by default, and strict workspace mode passes after Phase 3.
+
 ### Goal
 
 Prevent regression to public implementation imports.
@@ -357,7 +351,7 @@ Checks:
 
 1. No `domain`, `store`, `query`, `engine`, or `session` package exists outside `internal/`.
 2. No sibling production repo imports `github.com/myceldb/mycel/(domain|store|query|engine|session)`.
-3. Optional: root module only exposes approved packages.
+3. Root module exposes only approved packages (`cmd/*`, `internal/*`, and the doc-only module root).
 
 - Wire script into Makefile/CI.
 - Add documentation in README and `docs/v2/design/daemon-only-boundary.md`.
@@ -365,8 +359,9 @@ Checks:
 ### Acceptance
 
 ```sh
-./scripts/check-public-surface.sh /Users/martinbeauvais/Projects/knotbase/Knotbase
-go test ./...
+./scripts/check-public-surface.sh --workspace /Users/martinbeauvais/Projects/knotbase/Knotbase --strict
+make test
+make build
 ```
 
 ## Suggested commit breakdown
@@ -376,7 +371,7 @@ go test ./...
 3. `Move query package under internal`
 4. `Move file store packages under internal`
 5. `Internalize domain packages`
-6. `Document daemon-only Go package boundary`
+6. `Document daemon-only Go package boundary` — implemented in README, `doc.go`, historical v1 notes, and `docs/v2/design/daemon-only-boundary.md`.
 
 Keep Phase 3 as a dedicated commit because it will be mostly mechanical and high-churn.
 

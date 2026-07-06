@@ -1,43 +1,11 @@
-# User Structures
+# User Identity (v1 historical)
 
-This document describes user identity types exposed by `github.com/myceldb/mycel/domain/identity`.
+This page described the former public embedded Go `domain/identity` package. The
+implementation package is now internal.
 
-## Identity model
-Each user has two identifiers:
+Applications should use daemon Admin/Client user/auth APIs (`mycel-api`
+protobufs or `mycel-go-sdk`) instead of importing identity structs from the
+`mycel` module. Daemon-internal identity records live under
+`internal/identity/model` and are not application contracts.
 
-- **Internal**: `UserID` (UUID, immutable)
-- **External**: `UserRef` (string, unique, immutable)
-
-`UserRef` can hold values like email, username, or identity-provider subject.
-
-## `UserStatus`
-- `pending`
-- `active`
-- `paused`
-- `revoked`
-
-## `User`
-| Field | Type | Description |
-|---|---|---|
-| `ID` | `UserID` | Internal stable system key. |
-| `Ref` | `UserRef` | External unique identifier. |
-| `Email` | `*string` | Optional email attribute. |
-| `Username` | `*string` | Optional username attribute. |
-| `Status` | `UserStatus` | User lifecycle state. |
-
-## `UserInput`
-| Field | Type | Required | Description |
-|---|---|---:|---|
-| `ID` | `*UserID` | No | Optional caller-provided UUID. |
-| `Ref` | `UserRef` | Yes | External unique identifier. |
-| `Email` | `*string` | No | Optional email attribute. |
-| `Username` | `*string` | No | Optional username attribute. |
-| `Status` | `UserStatus` | Yes | Initial lifecycle state. |
-
-## User management APIs
-
-`CreateUser` requires a caller with the `users:manage` system permission.
-
-`DeleteUser` is a hard delete. It removes the user record, removes access rules for the user, and deletes every space owned by the user including each space's metadata, ACLs, templates, graph nodes, and graph edges.
-
-The last `superuser` cannot be deleted.
+See [Admin user design](../../../v2/design/admin/user.md) and [Client auth design](../../../v2/design/grpc-client-auth.md).

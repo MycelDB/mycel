@@ -6,7 +6,7 @@ Implementation plan for the daemon-owned semantic embedding generation pipeline 
 
 Initial implementation slices completed:
 
-- Phase 1 complete: `internal/graphchange` neutral commit event/sink package.
+- Phase 1 complete: `internal/graph/change` neutral commit event/sink package.
 - Phase 2 complete: `FileSession` and daemon graph module emit graph-change events after successful commits, preserve old/new context for moves/deletes/reorders, and do not emit for rollback/discard, read-only commits, or no-op commits.
 - Sink failures do not fail graph commits; failures are recorded as maintenance-degraded state on the emitting component.
 - Phase 3 complete: `store/semantic.MaintenanceManager` owns dirty events, checkpoints, dirty work items, append-only work records, claim leases, completion, and failure state.
@@ -22,7 +22,7 @@ This plan assumes the daemon-only architecture: applications write graph data th
 
 ```text
 Graph/session commit
-  -> internal/graphchange.Sink
+  -> internal/graph/change.Sink
   -> semantic dirty-event appender
   -> store/semantic.MaintenanceManager append-only dirty log
   -> internal/semantic/maintenance analyzer
@@ -35,7 +35,7 @@ Graph/session commit
 
 Key boundaries:
 
-- `FileSession` emits graph commit notifications through a neutral `internal/graphchange` interface.
+- `FileSession` emits graph commit notifications through a neutral `internal/graph/change` interface.
 - `SpaceManager` remains focused on semantic resources: indexes, grants, policies, decisions, states.
 - `MaintenanceManager` owns dirty events, checkpoints, work items, leases, attempts, backoff, and failures.
 - `internal/semantic/maintenance` owns analyzer/worker behavior.
@@ -56,7 +56,7 @@ Add a neutral graph commit event/sink boundary that graph/session code can call 
 
 ### Tasks
 
-- Add `internal/graphchange` package:
+- Add `internal/graph/change` package:
   - `CommittedEvent`
   - `ChangedEdgeRef`
   - `Sink`
@@ -80,7 +80,7 @@ Add a neutral graph commit event/sink boundary that graph/session code can call 
 ### Acceptance
 
 ```sh
-go test ./internal/graphchange
+go test ./internal/graph/change
 ```
 
 ## Phase 2: Wire graph commits to graphchange sink — complete
@@ -111,7 +111,7 @@ Make graph mutations notify committed changes without knowing about semantic mai
 ### Acceptance
 
 ```sh
-go test ./internal/session/filesession ./internal/daemon/modules/graph
+go test ./internal/graph/filesession ./internal/daemon/modules/graph
 ```
 
 ## Phase 3: MaintenanceManager persistence — complete
@@ -169,7 +169,7 @@ graphs/<space_id>/semantic/maintenance/
 ### Acceptance
 
 ```sh
-go test ./store/semantic
+go test ./internal/semantic/storage
 ```
 
 ## Phase 4: Semantic dirty-event appender — complete

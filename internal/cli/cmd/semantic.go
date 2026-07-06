@@ -8,10 +8,10 @@ import (
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
-	"github.com/myceldb/mycel/domain/graph"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/cli/app"
+	"github.com/myceldb/mycel/internal/graph/model"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 )
