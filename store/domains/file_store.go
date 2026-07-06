@@ -203,6 +203,69 @@ func (m *defaultManager) ListBySpace(ctx context.Context, spaceID domainspace.Sp
 	return out, nil
 }
 
+func (m *defaultManager) Update(ctx context.Context, in UpdateInput) (graph.Domain, error) {
+	if err := ctx.Err(); err != nil {
+		return graph.Domain{}, err
+	}
+	if in.DomainID == uuid.Nil {
+		return graph.Domain{}, fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexByID[in.DomainID]
+	if !ok {
+		return graph.Domain{}, ErrDomainNotFound
+	}
+	old := m.domains[idx]
+	updated := old
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			return graph.Domain{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
+		}
+		updated.Name = name
+	}
+	if in.Description != nil {
+		updated.Description = strings.TrimSpace(*in.Description)
+	}
+	updated.UpdatedAt = time.Now().UTC()
+	m.domains[idx] = updated
+	if err := m.persist(); err != nil {
+		m.domains[idx] = old
+		return graph.Domain{}, err
+	}
+	return updated.toModel(), nil
+}
+
+func (m *defaultManager) DeleteByID(ctx context.Context, id graph.DomainID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexByID[id]
+	if !ok {
+		return ErrDomainNotFound
+	}
+	oldDomains := append([]storedDomain(nil), m.domains...)
+	oldPolicies := append([]domainembedding.DomainEmbeddingPolicy(nil), m.policies...)
+	m.domains = append(m.domains[:idx], m.domains[idx+1:]...)
+	policies := m.policies[:0]
+	for _, p := range m.policies {
+		if p.DomainID != id {
+			policies = append(policies, p)
+		}
+	}
+	m.policies = policies
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.domains = oldDomains
+		m.policies = oldPolicies
+		m.rebuildIndex()
+		return err
+	}
+	return nil
+}
+
 func (m *defaultManager) SetEmbeddingPolicy(ctx context.Context, policy domainembedding.DomainEmbeddingPolicy) (domainembedding.DomainEmbeddingPolicy, error) {
 	if err := ctx.Err(); err != nil {
 		return domainembedding.DomainEmbeddingPolicy{}, err

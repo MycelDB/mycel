@@ -70,7 +70,13 @@ func (t *localTxn) Commit() error {
 	if err := t.store.ensureReady(); err != nil {
 		return err
 	}
-	if t.expectedRevision != nil && t.store.revision != *t.expectedRevision {
+	if t.expectedRevision != nil && *t.expectedRevision > t.store.revision {
+		return ErrConflict
+	}
+	if _, ok := t.writeSetConflict(); ok {
+		return ErrConflict
+	}
+	if _, ok := t.invariantConflict(); ok {
 		return ErrConflict
 	}
 	zero := uuid.Nil
@@ -147,6 +153,122 @@ func (t *localTxn) Commit() error {
 		t.store.applyEdgeDelete(id, edgeDelLocs[i])
 	}
 	t.store.revision++
+	newRev := t.store.revision
+	for _, n := range t.nodePuts {
+		t.store.nodeModRev[n.ID] = newRev
+	}
+	for _, id := range t.nodeDeletes {
+		t.store.nodeModRev[id] = newRev
+	}
+	for _, e := range t.edgePuts {
+		t.store.edgeModRev[e.ID] = newRev
+	}
+	for _, id := range t.edgeDeletes {
+		t.store.edgeModRev[id] = newRev
+	}
 	t.closed = true
 	return nil
+}
+
+// invariantConflict reports graph-shape conflicts that are not captured by
+// entity ID write-set overlap, such as edge endpoints deleted by a concurrent
+// commit or two different contains edges claiming the same child.
+func (t *localTxn) invariantConflict() (string, bool) {
+	nodePuts := make(map[graph.NodeID]struct{}, len(t.nodePuts))
+	for _, node := range t.nodePuts {
+		nodePuts[node.ID] = struct{}{}
+	}
+	nodeDeletes := make(map[graph.NodeID]struct{}, len(t.nodeDeletes))
+	for _, id := range t.nodeDeletes {
+		nodeDeletes[id] = struct{}{}
+	}
+	edgeDeletes := make(map[graph.EdgeID]struct{}, len(t.edgeDeletes))
+	for _, id := range t.edgeDeletes {
+		edgeDeletes[id] = struct{}{}
+	}
+	edgePuts := make(map[graph.EdgeID]graph.Edge, len(t.edgePuts))
+	for _, edge := range t.edgePuts {
+		edgePuts[edge.ID] = edge
+	}
+	containsChild := map[graph.NodeID]graph.EdgeID{}
+	for _, edge := range t.edgePuts {
+		if _, deleting := nodeDeletes[edge.FromID]; deleting {
+			return edge.ID.String(), true
+		}
+		if _, deleting := nodeDeletes[edge.ToID]; deleting {
+			return edge.ID.String(), true
+		}
+		if _, ok := t.store.nodeRecords[edge.FromID]; !ok {
+			if _, created := nodePuts[edge.FromID]; !created {
+				return edge.ID.String(), true
+			}
+		}
+		if _, ok := t.store.nodeRecords[edge.ToID]; !ok {
+			if _, created := nodePuts[edge.ToID]; !created {
+				return edge.ID.String(), true
+			}
+		}
+		if edge.Kind == graph.EdgeKindContains {
+			if existing, ok := containsChild[edge.ToID]; ok && existing != edge.ID {
+				return edge.ToID.String(), true
+			}
+			containsChild[edge.ToID] = edge.ID
+			if existing, ok := t.store.containsParent[edge.ToID]; ok && existing != edge.ID {
+				if _, deleting := edgeDeletes[existing]; !deleting {
+					return edge.ToID.String(), true
+				}
+			}
+		}
+	}
+	for _, id := range t.nodeDeletes {
+		for edgeID, edge := range t.store.edgeRecords {
+			if edge.FromID != id && edge.ToID != id {
+				continue
+			}
+			if replacement, replacing := edgePuts[edgeID]; replacing && replacement.FromID != id && replacement.ToID != id {
+				continue
+			}
+			if _, deleting := edgeDeletes[edgeID]; !deleting {
+				return id.String(), true
+			}
+		}
+		for _, edge := range t.edgePuts {
+			if edge.FromID == id || edge.ToID == id {
+				return id.String(), true
+			}
+		}
+	}
+	return "", false
+}
+
+// writeSetConflict reports whether any entity this transaction writes or deletes
+// was modified by another committed transaction after this transaction's base
+// revision. Transactions whose write-sets are disjoint from concurrent commits
+// do not conflict; new entities (never written before) never conflict.
+func (t *localTxn) writeSetConflict() (string, bool) {
+	if t.expectedRevision == nil {
+		return "", false
+	}
+	base := *t.expectedRevision
+	for _, n := range t.nodePuts {
+		if t.store.nodeModRev[n.ID] > base {
+			return n.ID.String(), true
+		}
+	}
+	for _, id := range t.nodeDeletes {
+		if t.store.nodeModRev[id] > base {
+			return id.String(), true
+		}
+	}
+	for _, e := range t.edgePuts {
+		if t.store.edgeModRev[e.ID] > base {
+			return e.ID.String(), true
+		}
+	}
+	for _, id := range t.edgeDeletes {
+		if t.store.edgeModRev[id] > base {
+			return id.String(), true
+		}
+	}
+	return "", false
 }

@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
 	domainspace "github.com/myceldb/mycel/domain/space"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	q "github.com/myceldb/mycel/query"
-	sessionapi "github.com/myceldb/mycel/session/api"
 	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
@@ -52,6 +52,36 @@ func (m hierarchyTemplateManager) Find(ctx context.Context, spaceID domainspace.
 		}
 	}
 	return graph.Template{}, storetemplate.ErrTemplateNotFound
+}
+
+func (m hierarchyTemplateManager) Update(ctx context.Context, in storetemplate.UpdateInput) (graph.Template, error) {
+	tmpl, ok := m.templates[in.TemplateID]
+	if !ok {
+		return graph.Template{}, storetemplate.ErrTemplateNotFound
+	}
+	if in.DisplayName != nil {
+		tmpl.DisplayName = *in.DisplayName
+	}
+	if in.Description != nil {
+		tmpl.Description = *in.Description
+	}
+	return tmpl, nil
+}
+
+func (m hierarchyTemplateManager) Archive(ctx context.Context, id graph.TemplateID) (graph.Template, error) {
+	tmpl, ok := m.templates[id]
+	if !ok {
+		return graph.Template{}, storetemplate.ErrTemplateNotFound
+	}
+	tmpl.State = graph.TemplateStateArchived
+	return tmpl, nil
+}
+
+func (m hierarchyTemplateManager) DeleteByID(ctx context.Context, id graph.TemplateID) error {
+	if _, ok := m.templates[id]; !ok {
+		return storetemplate.ErrTemplateNotFound
+	}
+	return nil
 }
 
 func (m hierarchyTemplateManager) DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error {

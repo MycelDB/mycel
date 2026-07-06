@@ -154,6 +154,9 @@ func TestLocalStoreRevisionAndConflict(t *testing.T) {
 	if got := store.Revision(); got != 1 {
 		t.Fatalf("revision after tx1 = %d, want 1", got)
 	}
+	// A concurrent transaction with a stale base revision that writes a DISJOINT
+	// (brand-new) node must NOT conflict: conflict detection is per write-set,
+	// not whole-graph.
 	tx2, err := store.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin tx2 failed: %v", err)
@@ -162,8 +165,25 @@ func TestLocalStoreRevisionAndConflict(t *testing.T) {
 	if err := tx2.PutNode(graph.Node{ID: graph.NodeID(uuid.New()), Content: "two", Props: map[string]any{}}); err != nil {
 		t.Fatalf("put node2 failed: %v", err)
 	}
-	if err := tx2.Commit(); err != ErrConflict {
-		t.Fatalf("expected ErrConflict, got %v", err)
+	if err := tx2.Commit(); err != nil {
+		t.Fatalf("expected disjoint write to succeed, got %v", err)
+	}
+	if got := store.Revision(); got != 2 {
+		t.Fatalf("revision after tx2 = %d, want 2", got)
+	}
+
+	// A transaction with a stale base revision that writes an OVERLAPPING entity
+	// (node1, last modified at revision 1) must still conflict.
+	tx3, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx3 failed: %v", err)
+	}
+	tx3.ExpectRevision(0)
+	if err := tx3.PutNode(graph.Node{ID: node1.ID, Content: "one-updated", Props: map[string]any{}}); err != nil {
+		t.Fatalf("put node1 update failed: %v", err)
+	}
+	if err := tx3.Commit(); err != ErrConflict {
+		t.Fatalf("expected ErrConflict on overlapping write, got %v", err)
 	}
 }
 
@@ -196,5 +216,261 @@ func TestLocalStoreRevisionRebuildsFromCommittedTransactions(t *testing.T) {
 	defer store.Close()
 	if got := store.Revision(); got != 2 {
 		t.Fatalf("rebuilt revision = %d, want 2", got)
+	}
+}
+
+func TestLocalStoreWriteSetConflictSurvivesReopen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), Content: "one", Props: map[string]any{}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	tx.ExpectRevision(0)
+	if err := tx.PutNode(node); err != nil {
+		t.Fatalf("put failed: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit failed: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+
+	disjoint, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin disjoint failed: %v", err)
+	}
+	disjoint.ExpectRevision(0)
+	if err := disjoint.PutNode(graph.Node{ID: graph.NodeID(uuid.New()), Content: "two", Props: map[string]any{}}); err != nil {
+		t.Fatalf("put disjoint failed: %v", err)
+	}
+	if err := disjoint.Commit(); err != nil {
+		t.Fatalf("stale disjoint write after reopen should succeed, got %v", err)
+	}
+
+	overlap, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin overlap failed: %v", err)
+	}
+	overlap.ExpectRevision(0)
+	node.Content = "updated"
+	if err := overlap.PutNode(node); err != nil {
+		t.Fatalf("put overlap failed: %v", err)
+	}
+	if err := overlap.Commit(); err != ErrConflict {
+		t.Fatalf("stale overlapping write after reopen = %v, want ErrConflict", err)
+	}
+}
+
+func TestLocalStoreRejectsEdgeToConcurrentlyDeletedEndpoint(t *testing.T) {
+	ctx := context.Background()
+	store, parent, child := newStoreWithParentChild(t, ctx)
+	defer store.Close()
+	base := store.Revision()
+
+	edgeTx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin edge tx failed: %v", err)
+	}
+	edgeTx.ExpectRevision(base)
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindReferences, Props: map[string]any{}}
+	if err := edgeTx.PutEdge(edge); err != nil {
+		t.Fatalf("put edge failed: %v", err)
+	}
+	deleteTx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin delete tx failed: %v", err)
+	}
+	deleteTx.ExpectRevision(base)
+	if err := deleteTx.DeleteNode(child.ID); err != nil {
+		t.Fatalf("delete child failed: %v", err)
+	}
+	if err := deleteTx.Commit(); err != nil {
+		t.Fatalf("delete commit failed: %v", err)
+	}
+	if err := edgeTx.Commit(); err != ErrConflict {
+		t.Fatalf("edge commit after endpoint delete = %v, want ErrConflict", err)
+	}
+}
+
+func TestLocalStoreRejectsNodeDeleteAfterConcurrentEdgeAdd(t *testing.T) {
+	ctx := context.Background()
+	store, parent, child := newStoreWithParentChild(t, ctx)
+	defer store.Close()
+	base := store.Revision()
+
+	deleteTx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin delete tx failed: %v", err)
+	}
+	deleteTx.ExpectRevision(base)
+	if err := deleteTx.DeleteNode(child.ID); err != nil {
+		t.Fatalf("delete child failed: %v", err)
+	}
+	edgeTx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin edge tx failed: %v", err)
+	}
+	edgeTx.ExpectRevision(base)
+	if err := edgeTx.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindReferences, Props: map[string]any{}}); err != nil {
+		t.Fatalf("put edge failed: %v", err)
+	}
+	if err := edgeTx.Commit(); err != nil {
+		t.Fatalf("edge commit failed: %v", err)
+	}
+	if err := deleteTx.Commit(); err != ErrConflict {
+		t.Fatalf("delete after concurrent edge add = %v, want ErrConflict", err)
+	}
+}
+
+func TestLocalStoreRejectsConcurrentContainsParents(t *testing.T) {
+	ctx := context.Background()
+	store, parent, child := newStoreWithParentChild(t, ctx)
+	defer store.Close()
+	secondParent := graph.Node{ID: graph.NodeID(uuid.New()), Content: "parent-two", Props: map[string]any{}}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin seed failed: %v", err)
+	}
+	seed.ExpectRevision(store.Revision())
+	if err := seed.PutNode(secondParent); err != nil {
+		t.Fatalf("put second parent failed: %v", err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed commit failed: %v", err)
+	}
+	base := store.Revision()
+
+	first, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin first failed: %v", err)
+	}
+	first.ExpectRevision(base)
+	if err := first.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+		t.Fatalf("put first contains failed: %v", err)
+	}
+	second, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin second failed: %v", err)
+	}
+	second.ExpectRevision(base)
+	if err := second.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: secondParent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+		t.Fatalf("put second contains failed: %v", err)
+	}
+	if err := first.Commit(); err != nil {
+		t.Fatalf("first commit failed: %v", err)
+	}
+	if err := second.Commit(); err != ErrConflict {
+		t.Fatalf("second contains parent commit = %v, want ErrConflict", err)
+	}
+}
+
+func newStoreWithParentChild(t *testing.T, ctx context.Context) (*LocalStore, graph.Node, graph.Node) {
+	t.Helper()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	parent := graph.Node{ID: graph.NodeID(uuid.New()), Content: "parent", Props: map[string]any{}}
+	child := graph.Node{ID: graph.NodeID(uuid.New()), Content: "child", Props: map[string]any{}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin seed failed: %v", err)
+	}
+	tx.ExpectRevision(0)
+	if err := tx.PutNode(parent); err != nil {
+		t.Fatalf("put parent failed: %v", err)
+	}
+	if err := tx.PutNode(child); err != nil {
+		t.Fatalf("put child failed: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("seed commit failed: %v", err)
+	}
+	return store, parent, child
+}
+
+func TestLocalStoreRejectsFutureExpectedRevision(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer store.Close()
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	tx.ExpectRevision(store.Revision() + 1)
+	if err := tx.PutNode(graph.Node{ID: graph.NodeID(uuid.New()), Content: "future", Props: map[string]any{}}); err != nil {
+		t.Fatalf("put failed: %v", err)
+	}
+	if err := tx.Commit(); err != ErrConflict {
+		t.Fatalf("future expected revision commit = %v, want ErrConflict", err)
+	}
+}
+
+func TestLocalStoreAllowsEdgeMoveAwayBeforeNodeDelete(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer store.Close()
+	oldParent := graph.Node{ID: graph.NodeID(uuid.New()), Content: "old-parent", Props: map[string]any{}}
+	newParent := graph.Node{ID: graph.NodeID(uuid.New()), Content: "new-parent", Props: map[string]any{}}
+	child := graph.Node{ID: graph.NodeID(uuid.New()), Content: "child", Props: map[string]any{}}
+	edgeID := graph.EdgeID(uuid.New())
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin seed failed: %v", err)
+	}
+	seed.ExpectRevision(0)
+	for _, node := range []graph.Node{oldParent, newParent, child} {
+		if err := seed.PutNode(node); err != nil {
+			t.Fatalf("put seed node failed: %v", err)
+		}
+	}
+	if err := seed.PutEdge(graph.Edge{ID: edgeID, FromID: oldParent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+		t.Fatalf("put seed edge failed: %v", err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed commit failed: %v", err)
+	}
+
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin move/delete failed: %v", err)
+	}
+	tx.ExpectRevision(store.Revision())
+	if err := tx.PutEdge(graph.Edge{ID: edgeID, FromID: newParent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+		t.Fatalf("move edge failed: %v", err)
+	}
+	if err := tx.DeleteNode(oldParent.ID); err != nil {
+		t.Fatalf("delete old parent failed: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("edge move away before node delete should commit, got %v", err)
+	}
+	if _, err := store.GetNode(ctx, oldParent.ID); err != ErrNotFound {
+		t.Fatalf("old parent lookup = %v, want ErrNotFound", err)
+	}
+	moved, err := store.GetEdge(ctx, edgeID)
+	if err != nil {
+		t.Fatalf("moved edge lookup failed: %v", err)
+	}
+	if moved.FromID != newParent.ID || moved.ToID != child.ID {
+		t.Fatalf("moved edge = %#v", moved)
 	}
 }

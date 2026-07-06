@@ -17,7 +17,7 @@ func NewUserCommand(a *app.App) *cobra.Command {
 	del := NewDeleteUserCommand(a)
 	del.Use = "delete USER_ID"
 	del.Aliases = []string{"del", "remove", "rm"}
-	cmd.AddCommand(add, list, del)
+	cmd.AddCommand(add, list, NewGetUserCommand(a), NewFindUserCommand(a), NewDisableUserCommand(a), NewEnableUserCommand(a), del, NewUserPasswordCommand(a), NewUserSessionCommand(a))
 	return cmd
 }
 
@@ -33,37 +33,22 @@ func NewSpaceCommand(a *app.App) *cobra.Command {
 	del := NewDeleteSpaceCommand(a)
 	del.Use = "delete [SPACE_ID]"
 	del.Aliases = []string{"del", "remove", "rm"}
-	cmd.AddCommand(add, list, NewSetSpaceCommand(a), NewUnsetSpaceCommand(a), del)
+	get := NewGetSpaceCommand(a)
+	cmd.AddCommand(add, list, get, NewSetSpaceCommand(a), NewUnsetSpaceCommand(a), del)
 	return cmd
 }
 
 func NewNodeCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "node", Aliases: []string{"nodes"}, Short: "Manage graph nodes"}
-	add := NewAddNodeCommand(a)
-	add.Use = "add"
-	add.Short = "Add a node"
-	del := NewDeleteNodeCommand(a)
-	del.Use = "delete NODE_ID"
-	del.Aliases = []string{"del", "remove", "rm"}
-	get := NewGetNodeCommand(a)
-	get.Use = "get NODE_ID"
-	list := NewListNodesCommand(a)
-	list.Use = "list"
-	list.Aliases = []string{"ls"}
-	cmd.AddCommand(add, get, list, del)
+	cmd := newGraphNodeCommand(a)
+	cmd.Use = "node"
+	cmd.Aliases = []string{"nodes"}
+	cmd.Short = "Manage graph nodes through daemon gRPC"
 	return cmd
 }
 
 func NewBlobCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "blob", Aliases: []string{"blobs"}, Short: "Manage blob nodes and content"}
-	add := NewAddBlobCommand(a)
-	add.Use = "add FILE"
-	add.Short = "Add a blob node from a file"
-	get := NewGetBlobCommand(a)
-	get.Use = "get NODE_ID"
-	get.Aliases = []string{"download"}
-	get.Short = "Download blob content attached to a node"
-	cmd.AddCommand(add, get)
+	cmd := &cobra.Command{Use: "blob", Aliases: []string{"blobs"}, Short: "Manage raw blob content through daemon gRPC"}
+	cmd.AddCommand(NewUploadBlobCommand(a), NewGetRawBlobCommand(a), NewDownloadRawBlobCommand(a), NewDeleteRawBlobCommand(a))
 	return cmd
 }
 
@@ -77,6 +62,6 @@ func NewTemplateCommand(a *app.App) *cobra.Command {
 	list.Use = "list"
 	list.Aliases = []string{"ls"}
 	list.Short = "List templates for a space"
-	cmd.AddCommand(imp, list)
+	cmd.AddCommand(imp, list, NewGetTemplateCommand(a), NewFindTemplateCommand(a), NewCreateTemplateCommand(a), NewUpdateTemplateCommand(a), NewArchiveTemplateCommand(a), NewDeleteTemplateCommand(a))
 	return cmd
 }

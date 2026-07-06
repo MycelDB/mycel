@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/myceldb/mycel/domain/graph"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	"github.com/myceldb/mycel/query"
-	sessionapi "github.com/myceldb/mycel/session/api"
 )
 
 func TestFileSessionTransactionPhase2ReadYourWrites(t *testing.T) {
@@ -576,6 +576,37 @@ func TestFileSessionPhase6ApplyGraphFailureDoesNotPersistPartialNode(t *testing.
 func TestFileSessionTransactionPhase8ConflictOnStaleCommit(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	ctx := context.Background()
+	// Seed a shared node both transactions will mutate, so their write-sets
+	// overlap and a stale commit must conflict.
+	seed, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "seed", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("seed add failed: %v", err)
+	}
+	tx1, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx1 failed: %v", err)
+	}
+	tx2, err := sess.Begin(ctx, sessionapi.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin tx2 failed: %v", err)
+	}
+	if _, err := tx1.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "tx1", Props: map[string]any{}}); err != nil {
+		t.Fatalf("tx1 update failed: %v", err)
+	}
+	if _, err := tx2.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "tx2", Props: map[string]any{}}); err != nil {
+		t.Fatalf("tx2 update failed: %v", err)
+	}
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("tx1 commit failed: %v", err)
+	}
+	if err := tx2.Commit(ctx); err == nil || !strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("expected stale tx2 commit conflict, got %v", err)
+	}
+}
+
+func TestFileSessionTransactionDisjointWritesDoNotConflict(t *testing.T) {
+	sess, tmplID := newHierarchyTestSession(t)
+	ctx := context.Background()
 	tx1, err := sess.Begin(ctx, sessionapi.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin tx1 failed: %v", err)
@@ -593,8 +624,10 @@ func TestFileSessionTransactionPhase8ConflictOnStaleCommit(t *testing.T) {
 	if err := tx1.Commit(ctx); err != nil {
 		t.Fatalf("tx1 commit failed: %v", err)
 	}
-	if err := tx2.Commit(ctx); err == nil || !strings.Contains(err.Error(), "conflict") {
-		t.Fatalf("expected stale tx2 commit conflict, got %v", err)
+	// tx2 created a brand-new, disjoint node; a stale base revision must not
+	// cause a false conflict.
+	if err := tx2.Commit(ctx); err != nil {
+		t.Fatalf("expected disjoint tx2 commit to succeed, got %v", err)
 	}
 }
 

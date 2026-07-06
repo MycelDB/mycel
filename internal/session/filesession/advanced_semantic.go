@@ -10,7 +10,7 @@ import (
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	sessionapi "github.com/myceldb/mycel/session/api"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	storesemantic "github.com/myceldb/mycel/store/semantic"
 )
 
@@ -29,7 +29,7 @@ func (s *FileSession) AdvancedSemanticSearch(ctx context.Context, in sessionapi.
 		return sessionapi.AdvancedSemanticSearchOutput{}, fmt.Errorf("advanced semantic search is disabled")
 	}
 	if s.semanticManager == nil || s.accountingManager == nil {
-		return sessionapi.AdvancedSemanticSearchOutput{}, fmt.Errorf("advanced semantic managers are unavailable; open sessions through engine.OpenSession")
+		return sessionapi.AdvancedSemanticSearchOutput{}, fmt.Errorf("advanced semantic managers are unavailable; use the daemon SemanticService instead of direct file sessions")
 	}
 	if strings.TrimSpace(in.Text) == "" {
 		return sessionapi.AdvancedSemanticSearchOutput{}, fmt.Errorf("query text is required")

@@ -76,11 +76,14 @@ func TestMycelFileVectorBackendUpsertSearchDelete(t *testing.T) {
 	if len(results) != 3 || results[0].Record.ID != latest.ID || results[0].Record.SourceHash != "sha256:new" {
 		t.Fatalf("expected latest node1 first, got %+v (old=%s)", results, old.ID)
 	}
+	if _, err := backend.Delete(ctx, DeleteInput{SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), SemanticIndexID: indexID, NodeID: node1, SourceMode: "self", VectorStoreID: storeID, TargetRecordID: latest.ID, Reason: "wrong_domain", ModelEndpointID: endpointID, ModelID: modelID, CredentialGrantID: grantID, CreatedAt: now.Add(3 * time.Minute)}); err == nil {
+		t.Fatal("expected wrong-domain target delete to fail")
+	}
 
 	if _, err := backend.Delete(ctx, DeleteInput{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, NodeID: node1, SourceMode: "self", VectorStoreID: storeID, TargetRecordID: latest.ID, Reason: "manual_delete", ModelEndpointID: endpointID, ModelID: modelID, CredentialGrantID: grantID, CreatedAt: now.Add(3 * time.Minute)}); err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}
-	deleted, err := backend.VerifyDeleted(ctx, VerifyDeletedInput{SpaceID: spaceID, SemanticIndexID: indexID, NodeID: node1, SourceMode: "self", TargetRecordID: latest.ID})
+	deleted, err := backend.VerifyDeleted(ctx, VerifyDeletedInput{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, NodeID: node1, SourceMode: "self", TargetRecordID: latest.ID})
 	if err != nil || !deleted {
 		t.Fatalf("expected verified deleted, deleted=%v err=%v", deleted, err)
 	}
@@ -105,6 +108,10 @@ func TestMycelFileVectorBackendValidation(t *testing.T) {
 	_, err := backend.Upsert(context.Background(), domainsemantic.AdvancedEmbeddingRecord{SpaceID: uuid.New(), DomainID: uuid.New(), SemanticIndexID: uuid.New(), NodeID: uuid.New(), ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Dimensions: 3, Vector: []float64{1}})
 	if err == nil {
 		t.Fatal("expected dimension validation error")
+	}
+	_, err = backend.Delete(context.Background(), DeleteInput{SpaceID: domainspace.SpaceID(uuid.New()), SemanticIndexID: domainsemantic.SemanticIndexID(uuid.New()), NodeID: graph.NodeID(uuid.New()), VectorStoreID: domainsemantic.VectorStoreID(uuid.New())})
+	if err == nil {
+		t.Fatal("expected delete domain_id validation error")
 	}
 }
 

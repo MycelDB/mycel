@@ -1,6 +1,8 @@
 package space
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/identity"
 )
@@ -12,9 +14,11 @@ type SpaceID = uuid.UUID
 
 // Space is an owner-scoped logical container for graph data.
 type Space struct {
-	SpaceID  SpaceID
-	OwnerID  identity.UserID
-	Name     string
-	Status   string
-	Settings SpaceSettings
+	SpaceID   SpaceID
+	OwnerID   identity.UserID
+	Name      string
+	Status    string
+	Settings  SpaceSettings
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }

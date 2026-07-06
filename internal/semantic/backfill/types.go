@@ -8,12 +8,12 @@ import (
 	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	"github.com/myceldb/mycel/session"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	storesemantic "github.com/myceldb/mycel/store/semantic"
 )
 
 type Runner struct {
-	Session       session.Session
+	Session       sessionapi.Session
 	GlobalManager storesemantic.GlobalManager
 	SpaceManager  storesemantic.SpaceManager
 	Connector     ConnectorService

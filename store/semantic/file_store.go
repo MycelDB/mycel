@@ -429,6 +429,96 @@ func (m *globalManager) ListCredentials(ctx context.Context) ([]domainsemantic.I
 	return append([]domainsemantic.InferenceCredential(nil), m.credentials.Credentials...), nil
 }
 
+func (m *globalManager) DeleteModelEndpoint(ctx context.Context, id domainsemantic.ModelEndpointID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.endpoints.ModelEndpoints {
+		if item.ID == id {
+			m.endpoints.ModelEndpoints = append(m.endpoints.ModelEndpoints[:i], m.endpoints.ModelEndpoints[i+1:]...)
+			return m.persistLocked(m.path(modelEndpointsFileName), m.endpoints)
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *globalManager) DeleteModel(ctx context.Context, id domainsemantic.InferenceModelID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.models.Models {
+		if item.ID == id {
+			m.models.Models = append(m.models.Models[:i], m.models.Models[i+1:]...)
+			return m.persistLocked(m.path(modelsFileName), m.models)
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *globalManager) DeleteModelEndpointCapability(ctx context.Context, id domainsemantic.ModelEndpointCapabilityID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.capabilities.Capabilities {
+		if item.ID == id {
+			m.capabilities.Capabilities = append(m.capabilities.Capabilities[:i], m.capabilities.Capabilities[i+1:]...)
+			return m.persistLocked(m.path(modelEndpointCapsFileName), m.capabilities)
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *globalManager) DeleteVectorStore(ctx context.Context, id domainsemantic.VectorStoreID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.vectorStores.VectorStores {
+		if item.ID == id {
+			m.vectorStores.VectorStores = append(m.vectorStores.VectorStores[:i], m.vectorStores.VectorStores[i+1:]...)
+			return m.persistLocked(m.path(vectorStoresFileName), m.vectorStores)
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *globalManager) DeleteSecret(ctx context.Context, id domainsemantic.SecretID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.secrets.Secrets {
+		if item.ID == id {
+			m.secrets.Secrets = append(m.secrets.Secrets[:i], m.secrets.Secrets[i+1:]...)
+			return m.persistLocked(m.path(secretsFileName), m.secrets)
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *globalManager) DeleteCredential(ctx context.Context, id domainsemantic.InferenceCredentialID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.credentials.Credentials {
+		if item.ID == id {
+			m.credentials.Credentials = append(m.credentials.Credentials[:i], m.credentials.Credentials[i+1:]...)
+			return m.persistLocked(m.path(credentialsFileName), m.credentials)
+		}
+	}
+	return ErrNotFound
+}
+
 func (m *globalManager) path(name string) string {
 	switch name {
 	case packagesFileName, modelEndpointsFileName, modelsFileName, modelEndpointCapsFileName, vectorStoresFileName:
@@ -593,6 +683,113 @@ func (m *spaceManager) ListInferencePolicies(ctx context.Context) ([]domainseman
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return append([]domainsemantic.InferencePolicy(nil), m.policies.Policies...), nil
+}
+
+func (m *spaceManager) DeleteSemanticIndex(ctx context.Context, id domainsemantic.SemanticIndexID, purgeDependents bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	found := false
+	for i, item := range m.indexes.Indexes {
+		if item.ID == id {
+			m.indexes.Indexes = append(m.indexes.Indexes[:i], m.indexes.Indexes[i+1:]...)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ErrNotFound
+	}
+	if purgeDependents {
+		grants := m.grants.Grants[:0]
+		for _, grant := range m.grants.Grants {
+			if grant.Scope.SemanticIndexID != id {
+				grants = append(grants, grant)
+			}
+		}
+		m.grants.Grants = grants
+		policies := m.policies.Policies[:0]
+		for _, policy := range m.policies.Policies {
+			if policy.Scope.SemanticIndexID != id {
+				policies = append(policies, policy)
+			}
+		}
+		m.policies.Policies = policies
+		dirty := m.dirtyQueue.Items[:0]
+		for _, item := range m.dirtyQueue.Items {
+			if item.SemanticIndexID != id {
+				dirty = append(dirty, item)
+			}
+		}
+		m.dirtyQueue.Items = dirty
+		states := m.indexStates.States[:0]
+		for _, state := range m.indexStates.States {
+			if state.SemanticIndexID != id {
+				states = append(states, state)
+			}
+		}
+		m.indexStates.States = states
+		decisions := m.policyDecisions.Decisions[:0]
+		for _, decision := range m.policyDecisions.Decisions {
+			if decision.Scope.SemanticIndexID != id {
+				decisions = append(decisions, decision)
+			}
+		}
+		m.policyDecisions.Decisions = decisions
+	}
+	if err := persistJSON(m.path(semanticIndexesFileName), m.indexes); err != nil {
+		return err
+	}
+	if purgeDependents {
+		if err := persistJSON(m.path(credentialGrantsFileName), m.grants); err != nil {
+			return err
+		}
+		if err := persistJSON(m.path(inferencePoliciesFileName), m.policies); err != nil {
+			return err
+		}
+		if err := persistJSON(m.path(dirtyQueueFileName), m.dirtyQueue); err != nil {
+			return err
+		}
+		if err := persistJSON(m.path(indexStateFileName), m.indexStates); err != nil {
+			return err
+		}
+		if err := persistJSON(m.path(policyDecisionsFileName), m.policyDecisions); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *spaceManager) DeleteCredentialGrant(ctx context.Context, id domainsemantic.CredentialGrantID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.grants.Grants {
+		if item.ID == id {
+			m.grants.Grants = append(m.grants.Grants[:i], m.grants.Grants[i+1:]...)
+			return persistJSON(m.path(credentialGrantsFileName), m.grants)
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *spaceManager) DeleteInferencePolicy(ctx context.Context, id domainsemantic.InferencePolicyID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.policies.Policies {
+		if item.ID == id {
+			m.policies.Policies = append(m.policies.Policies[:i], m.policies.Policies[i+1:]...)
+			return persistJSON(m.path(inferencePoliciesFileName), m.policies)
+		}
+	}
+	return ErrNotFound
 }
 
 func (m *spaceManager) AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error) {

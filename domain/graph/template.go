@@ -12,6 +12,11 @@ type TemplateID = uuid.UUID
 //
 // Templates provide a schema-like contract for node props and direct child
 // relationships. Nodes refer to templates by TemplateID.
+const (
+	TemplateStateActive   = "active"
+	TemplateStateArchived = "archived"
+)
+
 type Template struct {
 	ID          TemplateID          `json:"id"`
 	SpaceID     domainspace.SpaceID `json:"space_id"`
@@ -20,6 +25,7 @@ type Template struct {
 	DisplayName string              `json:"display_name,omitempty"`
 	Description string              `json:"description,omitempty"`
 	System      bool                `json:"system,omitempty"`
+	State       string              `json:"state,omitempty"`
 	Properties  PropertyPolicy      `json:"properties"`
 	Children    ChildPolicy         `json:"children"`
 }

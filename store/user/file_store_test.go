@@ -19,7 +19,7 @@ func TestDefaultManager_InitAndCreate_Plaintext(t *testing.T) {
 
 	status := identity.UserStatusActive
 	_, err := m.Create(context.Background(), CreateInput{
-		User:     identity.UserInput{Ref: identity.UserRef("Admin@Example.com"), Status: status},
+		User:     identity.UserInput{Username: identity.UserRef("Admin@Example.com"), Status: status},
 		Password: "secret",
 	})
 	if err != nil {
@@ -43,7 +43,7 @@ func TestDefaultManager_Init_WithWrongKeyFailsDecrypt(t *testing.T) {
 	}
 	status := identity.UserStatusActive
 	_, err := m1.Create(context.Background(), CreateInput{
-		User:     identity.UserInput{Ref: identity.UserRef("admin@example.com"), Status: status},
+		User:     identity.UserInput{Username: identity.UserRef("admin@example.com"), Status: status},
 		Password: "secret",
 	})
 	if err != nil {

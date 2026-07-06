@@ -42,6 +42,11 @@ type LocalStore struct {
 	journalDay       map[int]map[graph.NodeID]struct{}
 	blobRefs         map[graph.BlobID]map[graph.NodeID]struct{}
 	revision         uint64
+	// nodeModRev/edgeModRev record the store revision at which each entity was
+	// last written, enabling write-set (fine-grained) conflict detection so that
+	// concurrent transactions touching disjoint entities do not conflict.
+	nodeModRev map[graph.NodeID]uint64
+	edgeModRev map[graph.EdgeID]uint64
 }
 
 func Open(ctx context.Context, spacePath string) (*LocalStore, error) {
@@ -110,6 +115,7 @@ func (s *LocalStore) loadManifest() (manifest, error) {
 func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 	s.resetIndexes()
 	committed := map[uuid.UUID]struct{}{}
+	commitRevision := map[uuid.UUID]uint64{}
 	s.revision = 0
 	for _, seg := range s.manifest.TxnSegments {
 		if err := ctx.Err(); err != nil {
@@ -119,6 +125,7 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 			if r.header.kind == RecordKindTxnCommit {
 				if _, exists := committed[r.header.txnID]; !exists {
 					s.revision++
+					commitRevision[r.header.txnID] = s.revision
 				}
 				committed[r.header.txnID] = struct{}{}
 			}
@@ -129,7 +136,8 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 	}
 	for _, seg := range s.manifest.NodeSegments {
 		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindNode, func(r scannedRecord) error {
-			if _, ok := committed[r.header.txnID]; !ok {
+			rev, ok := commitRevision[r.header.txnID]
+			if !ok {
 				return nil
 			}
 			switch r.header.kind {
@@ -139,8 +147,11 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 					return err
 				}
 				s.applyNodePut(n, r.location)
+				s.nodeModRev[n.ID] = rev
 			case RecordKindNodeTombstone:
-				s.applyNodeDelete(graph.NodeID(r.header.entityID), r.location)
+				id := graph.NodeID(r.header.entityID)
+				s.applyNodeDelete(id, r.location)
+				s.nodeModRev[id] = rev
 			}
 			return nil
 		}); err != nil {
@@ -149,7 +160,8 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 	}
 	for _, seg := range s.manifest.EdgeSegments {
 		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindEdge, func(r scannedRecord) error {
-			if _, ok := committed[r.header.txnID]; !ok {
+			rev, ok := commitRevision[r.header.txnID]
+			if !ok {
 				return nil
 			}
 			switch r.header.kind {
@@ -159,8 +171,11 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 					return err
 				}
 				s.applyEdgePut(e, r.location)
+				s.edgeModRev[e.ID] = rev
 			case RecordKindEdgeTombstone:
-				s.applyEdgeDelete(graph.EdgeID(r.header.entityID), r.location)
+				id := graph.EdgeID(r.header.entityID)
+				s.applyEdgeDelete(id, r.location)
+				s.edgeModRev[id] = rev
 			}
 			return nil
 		}); err != nil {
@@ -181,6 +196,8 @@ func (s *LocalStore) resetIndexes() {
 	s.containsParent = map[graph.NodeID]graph.EdgeID{}
 	s.journalDay = map[int]map[graph.NodeID]struct{}{}
 	s.blobRefs = map[graph.BlobID]map[graph.NodeID]struct{}{}
+	s.nodeModRev = map[graph.NodeID]uint64{}
+	s.edgeModRev = map[graph.EdgeID]uint64{}
 }
 func (s *LocalStore) Close() error {
 	s.mu.Lock()

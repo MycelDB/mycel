@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
 	domainspace "github.com/myceldb/mycel/domain/space"
-	sessionapi "github.com/myceldb/mycel/session/api"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 )
 
 func TestMetadataIndexTags(t *testing.T) {

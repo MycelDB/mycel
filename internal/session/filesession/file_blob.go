@@ -14,7 +14,7 @@ import (
 	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/internal/blobstorage"
 	"github.com/myceldb/mycel/internal/graphstorage"
-	sessionapi "github.com/myceldb/mycel/session/api"
+	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	storetemplate "github.com/myceldb/mycel/store/template"
 )
 
