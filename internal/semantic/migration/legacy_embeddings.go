@@ -6,12 +6,12 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
 	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
 	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	domainspace "github.com/myceldb/mycel/domain/space"
-	storeembedding "github.com/myceldb/mycel/store/embedding"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
+	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
 	storesemantic "github.com/myceldb/mycel/store/semantic"
 )
 

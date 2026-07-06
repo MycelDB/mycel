@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
 	"github.com/myceldb/mycel/domain/graph"
 	domainspace "github.com/myceldb/mycel/domain/space"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 )
 
 func TestManagerEnsureDefaultAndListBySpace(t *testing.T) {

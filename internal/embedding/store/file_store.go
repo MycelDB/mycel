@@ -1,4 +1,4 @@
-package embedding
+package store
 
 import (
 	"context"
@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
 	"github.com/myceldb/mycel/domain/identity"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 	"github.com/myceldb/mycel/internal/filestore"
 )
 

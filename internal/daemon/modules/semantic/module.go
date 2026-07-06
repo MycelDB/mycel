@@ -18,6 +18,7 @@ import (
 	domainspace "github.com/myceldb/mycel/domain/space"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/embedding/catalog"
+	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
@@ -27,7 +28,6 @@ import (
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	"github.com/myceldb/mycel/internal/session/filesession"
 	storeaccounting "github.com/myceldb/mycel/store/accounting"
-	storeembedding "github.com/myceldb/mycel/store/embedding"
 	storesemantic "github.com/myceldb/mycel/store/semantic"
 	storetemplate "github.com/myceldb/mycel/store/template"
 )

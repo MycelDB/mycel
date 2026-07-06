@@ -17,11 +17,11 @@ import (
 	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/blobstorage"
+	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
 	"github.com/myceldb/mycel/internal/graphstorage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	"github.com/myceldb/mycel/query"
 	storeaccounting "github.com/myceldb/mycel/store/accounting"
-	storeembedding "github.com/myceldb/mycel/store/embedding"
 	storesemantic "github.com/myceldb/mycel/store/semantic"
 	storetemplate "github.com/myceldb/mycel/store/template"
 )

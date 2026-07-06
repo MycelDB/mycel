@@ -3,9 +3,9 @@ package domains
 import (
 	"context"
 
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
 	"github.com/myceldb/mycel/domain/graph"
 	domainspace "github.com/myceldb/mycel/domain/space"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 )
 
 // CreateInput is the create payload managed by Manager.

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"io"
 
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
 	"github.com/myceldb/mycel/domain/graph"
 	domainsemantic "github.com/myceldb/mycel/domain/semantic"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 	"github.com/myceldb/mycel/query"
 	storetemplate "github.com/myceldb/mycel/store/template"
 )

@@ -1,10 +1,10 @@
-package embedding
+package store
 
 import (
 	"context"
 
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
 	"github.com/myceldb/mycel/domain/identity"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 )
 
 type AddKeyInput struct {

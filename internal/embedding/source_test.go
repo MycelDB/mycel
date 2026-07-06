@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
 	"github.com/myceldb/mycel/domain/graph"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 )
 
 func TestAssembleSubtreeOrdersChildren(t *testing.T) {
