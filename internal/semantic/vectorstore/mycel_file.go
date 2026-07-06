@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	"github.com/myceldb/mycel/internal/filestore"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 )
 
 const (

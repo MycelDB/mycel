@@ -3,13 +3,13 @@ package backfill
 import (
 	"context"
 
-	"github.com/myceldb/mycel/domain/graph"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
-	storesemantic "github.com/myceldb/mycel/store/semantic"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 type Runner struct {

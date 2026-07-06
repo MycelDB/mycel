@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
-	"github.com/myceldb/mycel/domain/graph"
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
-	storetemplate "github.com/myceldb/mycel/store/template"
+	"github.com/myceldb/mycel/internal/graph/model"
+	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"

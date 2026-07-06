@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	domaingraph "github.com/myceldb/mycel/domain/graph"
-	"github.com/myceldb/mycel/internal/blobstorage"
+	"github.com/myceldb/mycel/internal/blob/storage"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 )
 
 const sniffLen = 512

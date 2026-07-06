@@ -5,11 +5,10 @@ import (
 	"errors"
 	"io"
 
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
-	"github.com/myceldb/mycel/domain/graph"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	"github.com/myceldb/mycel/query"
-	storetemplate "github.com/myceldb/mycel/store/template"
+	"github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/graph/query"
+	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 )
 
 var (
@@ -212,92 +211,7 @@ type ReorderChildrenInput struct {
 	ChildIDs []graph.NodeID
 }
 
-// GenerateNodeEmbeddingInput manually creates or refreshes an embedding for one node.
-type GenerateNodeEmbeddingInput struct {
-	NodeID            graph.NodeID
-	ProfileID         *domainembedding.ProfileID
-	ProviderID        string
-	ModelID           string
-	ProviderKeyID     *domainembedding.ProviderKeyID
-	SourceMode        domainembedding.SourceMode
-	IncludeProps      []string
-	MaxDepth          *int
-	MinimumTextLength int
-	Force             bool
-}
-
-// GenerateNodeEmbeddingsInput manually creates or refreshes embeddings for multiple nodes.
-type GenerateNodeEmbeddingsInput struct {
-	NodeIDs           []graph.NodeID
-	ProfileID         *domainembedding.ProfileID
-	ProviderID        string
-	ModelID           string
-	ProviderKeyID     *domainembedding.ProviderKeyID
-	SourceMode        domainembedding.SourceMode
-	IncludeProps      []string
-	MaxDepth          *int
-	MinimumTextLength int
-	Force             bool
-}
-
-// GenerateNodeEmbeddingBatchInput manually creates or refreshes embeddings for a selected node set.
-type GenerateNodeEmbeddingBatchInput struct {
-	NodeIDs           []graph.NodeID
-	TemplateKeys      []string
-	Contains          string
-	Limit             int
-	ProfileID         *domainembedding.ProfileID
-	ProviderID        string
-	ModelID           string
-	ProviderKeyID     *domainembedding.ProviderKeyID
-	SourceMode        domainembedding.SourceMode
-	IncludeProps      []string
-	MaxDepth          *int
-	MinimumTextLength int
-	Force             bool
-	ContinueOnError   bool
-}
-
-// GenerateNodeEmbeddingBatchResult summarizes manual batch/backfill generation.
-type GenerateNodeEmbeddingBatchResult struct {
-	SelectedCount  int                               `json:"selected_count"`
-	GeneratedCount int                               `json:"generated_count"`
-	SkippedCount   int                               `json:"skipped_count"`
-	FailedCount    int                               `json:"failed_count"`
-	Records        []domainembedding.EmbeddingRecord `json:"records"`
-	Skipped        []EmbeddingBatchSkipped           `json:"skipped"`
-	Failures       []EmbeddingBatchFailure           `json:"failures"`
-}
-
-// EmbeddingBatchSkipped describes a selected node that already had a current embedding.
-type EmbeddingBatchSkipped struct {
-	NodeID graph.NodeID `json:"node_id"`
-	Reason string       `json:"reason"`
-}
-
-// EmbeddingBatchFailure describes a selected node that failed during batch generation.
-type EmbeddingBatchFailure struct {
-	NodeID graph.NodeID `json:"node_id"`
-	Error  string       `json:"error"`
-}
-
-// ListNodeEmbeddingsInput lists embeddings associated with a graph node.
-type ListNodeEmbeddingsInput struct {
-	NodeID graph.NodeID
-}
-
-// SemanticSearchInput embeds query text and searches generated node embeddings.
-type SemanticSearchInput struct {
-	Text          string
-	ProfileID     *domainembedding.ProfileID
-	ProviderID    string
-	ModelID       string
-	ProviderKeyID *domainembedding.ProviderKeyID
-	Limit         int
-	MinScore      float64
-}
-
-// AdvancedSemanticSearchInput searches advanced semantic indexes instead of MVP embedding profiles.
+// AdvancedSemanticSearchInput searches daemon semantic indexes.
 type AdvancedSemanticSearchInput struct {
 	Text             string
 	SemanticIndexIDs []domainsemantic.SemanticIndexID
@@ -446,11 +360,6 @@ type Session interface {
 	ApplyGraph(ctx context.Context, in ApplyGraphInput) (ApplyGraphResult, error)
 	MoveSubtree(ctx context.Context, in MoveSubtreeInput) (graph.Edge, error)
 	ReorderChildren(ctx context.Context, in ReorderChildrenInput) ([]graph.Edge, error)
-	GenerateNodeEmbedding(ctx context.Context, in GenerateNodeEmbeddingInput) (domainembedding.EmbeddingRecord, error)
-	GenerateNodeEmbeddings(ctx context.Context, in GenerateNodeEmbeddingsInput) ([]domainembedding.EmbeddingRecord, error)
-	GenerateNodeEmbeddingBatch(ctx context.Context, in GenerateNodeEmbeddingBatchInput) (GenerateNodeEmbeddingBatchResult, error)
-	ListNodeEmbeddings(ctx context.Context, in ListNodeEmbeddingsInput) ([]domainembedding.EmbeddingRecord, error)
-	SemanticSearch(ctx context.Context, in SemanticSearchInput) ([]domainembedding.SemanticSearchResult, error)
 	AdvancedSemanticSearch(ctx context.Context, in AdvancedSemanticSearchInput) (AdvancedSemanticSearchOutput, error)
 	ListTags(ctx context.Context) ([]TagSummary, error)
 	FindNodesByTag(ctx context.Context, in FindNodesByTagInput) ([]graph.Node, error)

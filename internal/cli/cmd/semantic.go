@@ -8,10 +8,10 @@ import (
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
-	"github.com/myceldb/mycel/domain/graph"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/cli/app"
+	"github.com/myceldb/mycel/internal/graph/model"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 )
@@ -258,8 +258,47 @@ func daemonResolveAdminVectorStoreID(ctx context.Context, client adminv1.AdminIn
 }
 
 func newSemanticMaintenanceCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "maintenance", Short: "Run semantic maintenance primitives"}
-	cmd.AddCommand(newSemanticMaintenanceAnalyzeCommand(a), newSemanticMaintenanceProcessCommand(a))
+	cmd := &cobra.Command{Use: "maintenance", Short: "Inspect and run semantic maintenance"}
+	cmd.AddCommand(newSemanticMaintenanceStatusCommand(a), newSemanticMaintenanceListCommand(a), newSemanticMaintenanceRetryCommand(a), newSemanticMaintenanceCancelCommand(a), newSemanticMaintenanceAnalyzeCommand(a), newSemanticMaintenanceProcessCommand(a))
+	return cmd
+}
+
+func newSemanticMaintenanceStatusCommand(a *app.App) *cobra.Command {
+	var spaceIDText string
+	cmd := &cobra.Command{Use: "status", Short: "Show semantic maintenance queue status", RunE: func(cmd *cobra.Command, args []string) error {
+		return runDaemonSemanticMaintenanceStatus(cmd, a, spaceIDText)
+	}}
+	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	return cmd
+}
+
+func newSemanticMaintenanceListCommand(a *app.App) *cobra.Command {
+	var spaceIDText, statusText string
+	var limit int
+	cmd := &cobra.Command{Use: "list", Short: "List safe semantic maintenance work item metadata", RunE: func(cmd *cobra.Command, args []string) error {
+		return runDaemonSemanticMaintenanceList(cmd, a, spaceIDText, statusText, limit)
+	}}
+	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&statusText, "status", "", "optional work status filter")
+	cmd.Flags().IntVar(&limit, "limit", 100, "maximum work items to list")
+	return cmd
+}
+
+func newSemanticMaintenanceRetryCommand(a *app.App) *cobra.Command {
+	var spaceIDText string
+	cmd := &cobra.Command{Use: "retry WORK_ITEM_ID", Short: "Retry a failed or delayed semantic maintenance work item", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return runDaemonSemanticMaintenanceRetry(cmd, a, spaceIDText, args[0])
+	}}
+	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
+	return cmd
+}
+
+func newSemanticMaintenanceCancelCommand(a *app.App) *cobra.Command {
+	var spaceIDText string
+	cmd := &cobra.Command{Use: "cancel WORK_ITEM_ID", Short: "Cancel a semantic maintenance work item", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return runDaemonSemanticMaintenanceCancel(cmd, a, spaceIDText, args[0])
+	}}
+	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
 	return cmd
 }
 
@@ -348,6 +387,74 @@ func newSemanticIndexBackfillCommand(a *app.App) *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "regenerate even if source hash is current")
 	cmd.Flags().BoolVar(&continueOnError, "continue-on-error", false, "continue after per-node failures")
 	return cmd
+}
+
+func runDaemonSemanticMaintenanceStatus(cmd *cobra.Command, a *app.App, spaceIDText string) error {
+	conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	spaceID, err := a.ResolveSpaceID(spaceIDText)
+	if err != nil {
+		return err
+	}
+	res, err := adminv1.NewAdminSemanticMaintenanceServiceClient(conn).GetSemanticMaintenanceStatus(authCtx, &adminv1.GetSemanticMaintenanceStatusRequest{SpaceId: spaceID.String()})
+	if err != nil {
+		return err
+	}
+	return a.Print(res, fmt.Sprintf("enabled=%t degraded=%t pending=%d running=%d failed_retryable=%d failed_permanent=%d\n", res.GetEnabled(), res.GetDegraded(), res.GetQueueDepthPending(), res.GetQueueDepthRunning(), res.GetQueueDepthFailedRetryable(), res.GetQueueDepthFailedPermanent()))
+}
+
+func runDaemonSemanticMaintenanceList(cmd *cobra.Command, a *app.App, spaceIDText, statusText string, limit int) error {
+	conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	spaceID, err := a.ResolveSpaceID(spaceIDText)
+	if err != nil {
+		return err
+	}
+	res, err := adminv1.NewAdminSemanticMaintenanceServiceClient(conn).ListSemanticMaintenanceWork(authCtx, &adminv1.ListSemanticMaintenanceWorkRequest{SpaceId: spaceID.String(), Status: strings.TrimSpace(statusText), Limit: int32(limit)})
+	if err != nil {
+		return err
+	}
+	return a.Print(res, fmt.Sprintf("items=%d\n", len(res.GetItems())))
+}
+
+func runDaemonSemanticMaintenanceRetry(cmd *cobra.Command, a *app.App, spaceIDText, workID string) error {
+	conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	spaceID, err := a.ResolveSpaceID(spaceIDText)
+	if err != nil {
+		return err
+	}
+	res, err := adminv1.NewAdminSemanticMaintenanceServiceClient(conn).RetrySemanticMaintenanceWork(authCtx, &adminv1.RetrySemanticMaintenanceWorkRequest{SpaceId: spaceID.String(), WorkItemId: strings.TrimSpace(workID)})
+	if err != nil {
+		return err
+	}
+	return a.Print(res, fmt.Sprintf("retried=%s status=%s\n", res.GetItem().GetWorkItemId(), res.GetItem().GetStatus()))
+}
+
+func runDaemonSemanticMaintenanceCancel(cmd *cobra.Command, a *app.App, spaceIDText, workID string) error {
+	conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	spaceID, err := a.ResolveSpaceID(spaceIDText)
+	if err != nil {
+		return err
+	}
+	res, err := adminv1.NewAdminSemanticMaintenanceServiceClient(conn).CancelSemanticMaintenanceWork(authCtx, &adminv1.CancelSemanticMaintenanceWorkRequest{SpaceId: spaceID.String(), WorkItemId: strings.TrimSpace(workID)})
+	if err != nil {
+		return err
+	}
+	return a.Print(res, fmt.Sprintf("cancelled=%s status=%s\n", res.GetItem().GetWorkItemId(), res.GetItem().GetStatus()))
 }
 
 func runDaemonSemanticMaintenanceAnalyze(cmd *cobra.Command, a *app.App, spaceIDText, indexRef string, limit int) error {

@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
-	domaingraph "github.com/myceldb/mycel/domain/graph"
 	daemonblob "github.com/myceldb/mycel/internal/daemon/modules/blob"
 	daegraph "github.com/myceldb/mycel/internal/daemon/modules/graph"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"

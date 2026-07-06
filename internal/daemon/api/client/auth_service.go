@@ -7,10 +7,10 @@ import (
 	"time"
 
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
-	domainauth "github.com/myceldb/mycel/domain/auth"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
-	storesession "github.com/myceldb/mycel/store/session"
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"

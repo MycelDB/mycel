@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
-	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/internal/cli/app"
+	"github.com/myceldb/mycel/internal/graph/model"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"

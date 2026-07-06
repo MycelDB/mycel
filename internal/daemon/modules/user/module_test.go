@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domainauth "github.com/myceldb/mycel/domain/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 )
 
 func TestModuleInitCreatesUserStore(t *testing.T) {

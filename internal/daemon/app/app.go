@@ -22,6 +22,7 @@ import (
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
+	"github.com/myceldb/mycel/internal/graph/change"
 )
 
 const LogFilename = "myceld.log"
@@ -140,6 +141,13 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		_ = rt.Close()
 		return nil, err
 	}
+	graphModule.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
+		appender, err := semanticModule.DirtyEventAppender(ctx, event.SpaceID)
+		if err != nil {
+			return err
+		}
+		return appender.OnGraphCommitted(ctx, event)
+	}))
 	logger.Info("daemon initialization complete")
 	return rt, nil
 }

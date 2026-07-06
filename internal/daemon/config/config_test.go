@@ -3,6 +3,7 @@ package config
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadFromEnvDefaults(t *testing.T) {
@@ -28,6 +29,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.Mode != DefaultMode || cfg.LogLevel != DefaultLogLevel || cfg.LogFormat != DefaultLogFormat || cfg.GRPCAddr != DefaultGRPCAddr {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
+	if !cfg.SemanticMaintenance.Enabled || cfg.SemanticMaintenance.DirtyCooldown != DefaultSemanticDirtyCooldown || cfg.SemanticMaintenance.WorkerCount != DefaultSemanticWorkerCount || cfg.SemanticMaintenance.MaxBatchSize != DefaultSemanticMaxBatchSize {
+		t.Fatalf("unexpected semantic maintenance defaults: %+v", cfg.SemanticMaintenance)
+	}
 }
 
 func TestLoadFromEnvBootstrapAdminCredentials(t *testing.T) {
@@ -41,6 +45,25 @@ func TestLoadFromEnvBootstrapAdminCredentials(t *testing.T) {
 	}
 	if cfg.BootstrapAdminUsername != "bootstrap-admin" || cfg.BootstrapAdminPassword != "bootstrap-password" {
 		t.Fatalf("unexpected bootstrap credentials in config: username=%q password=%q", cfg.BootstrapAdminUsername, cfg.BootstrapAdminPassword)
+	}
+}
+
+func TestLoadFromEnvSemanticMaintenanceOverrides(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_SEMANTIC_MAINTENANCE_ENABLED", "false")
+	t.Setenv("MYCELD_SEMANTIC_DIRTY_COOLDOWN", "2m")
+	t.Setenv("MYCELD_SEMANTIC_ANALYZER_INTERVAL", "3s")
+	t.Setenv("MYCELD_SEMANTIC_WORKER_INTERVAL", "4s")
+	t.Setenv("MYCELD_SEMANTIC_WORKER_COUNT", "5")
+	t.Setenv("MYCELD_SEMANTIC_MAX_BATCH_SIZE", "50")
+	t.Setenv("MYCELD_SEMANTIC_CREDENTIAL_MAX_REQUESTS_PER_MINUTE", "12")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	sem := cfg.SemanticMaintenance
+	if sem.Enabled || sem.DirtyCooldown != 2*time.Minute || sem.AnalyzerInterval != 3*time.Second || sem.WorkerInterval != 4*time.Second || sem.WorkerCount != 5 || sem.MaxBatchSize != 50 || sem.CredentialDefaults.MaxRequestsPerMinute != 12 {
+		t.Fatalf("unexpected semantic overrides: %+v", sem)
 	}
 }
 

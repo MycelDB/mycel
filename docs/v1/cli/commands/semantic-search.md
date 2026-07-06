@@ -45,4 +45,4 @@ Query embedding calls append inference accounting events with reason `semantic_q
 
 ## Notes
 
-Phase 6 supports local `mycel-file` semantic indexes. The older MVP `mycel embeddings search` command remains unchanged and can continue to be used with embedding profiles while applications migrate to semantic indexes.
+Semantic search uses daemon semantic indexes. The older MVP `mycel embeddings search` command has been removed; migrate legacy profile/key metadata with `semantic migrate legacy-embeddings` where needed.

@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domainauth "github.com/myceldb/mycel/domain/auth"
-	"github.com/myceldb/mycel/domain/identity"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
-	storesession "github.com/myceldb/mycel/store/session"
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	"github.com/myceldb/mycel/internal/identity/model"
+	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
 )
 
 type Module struct {

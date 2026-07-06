@@ -1,11 +1,8 @@
 # MycelDB CLI
 
-`mycel` is a Cobra-based command-line client for the embedded MycelDB engine.
-
-It supports:
-
-- one-shot CLI commands
-- interactive REPL mode
+`mycel` is a Cobra-based command-line client for the `myceld` daemon. The old
+embedded-engine CLI mode (`-d/--data-dir`, `MYCELDB_DATA_DIR`, local engine
+initialization) has been removed.
 
 Build from the module root:
 
@@ -20,31 +17,25 @@ Or run without installing:
 go run ./cmd/mycel --help
 ```
 
-Set the shared MycelDB data directory, or pass `-d/--data-dir` on each command:
-
-```sh
-export MYCELDB_DATA_DIR=~/mycel_data
-```
-
 ## Configuration
 
-MycelDB CLI configuration precedence is: built-in defaults, optional YAML file, environment variables, then command-line flags.
+The CLI connects to a running daemon. Connection settings use `MYCELD_*` daemon
+connection environment variables and matching flags, for example:
 
-Use `--config` or `MYCELDB_CONFIG` to load a YAML file.
+```sh
+export MYCELD_GRPC_ADDR=127.0.0.1:9091
+mycel --daemon-addr "$MYCELD_GRPC_ADDR" --help
+```
 
-Blob upload limits use `-1` for unlimited. Exact MIME overrides can use `0` to disallow that MIME type.
+Optional CLI configuration is loaded from `--config` or `MYCEL_CONFIG`.
 
-Auth/session environment aliases include `MYCELDB_AUTH_ACCESS_TOKEN_TTL`, `MYCELDB_AUTH_REFRESH_IDLE_TTL`, `MYCELDB_AUTH_REFRESH_ABSOLUTE_TTL`, `MYCELDB_AUTH_REFRESH_AUDIT_RETENTION_TTL`, and `MYCELDB_AUTH_REFRESH_TOKEN_BYTES`.
-
-Other common environment aliases include `MYCELDB_DATA_DIR`, `MYCELDB_USER_STORE_ENCRYPTION_KEY_B64`, and `MYCELDB_STORAGE_BLOBS_MAX_*_BYTES`.
-
-Phase 0 advanced semantic implementation work is gated by `semantic.advanced_enabled`, `MYCELDB_SEMANTIC_ADVANCED_ENABLED`, or `--semantic-advanced-enabled`. The flag defaults to `false` and is intentionally no-op until later phases introduce gated implementation paths.
+`myceld`, not the CLI, owns runtime/storage configuration such as
+`MYCELD_DATA_DIR` and daemon TLS settings.
 
 ## Authentication
 
-Initialize a data directory once before running normal commands. See [init](commands/init.md).
-
-All other non-REPL commands require an initialized data directory and credentials unless a command explicitly says otherwise.
+Admin APIs require operator/admin credentials. Client APIs require a standard
+user login/session. Initialize and run `myceld` before using normal commands.
 
 ## REPL
 
@@ -52,43 +43,15 @@ See [repl](commands/repl.md).
 
 ## Command Reference
 
-Each command or command family is documented in its own file under [`commands/`](commands/).
+Each command or command family is documented in its own file under
+[`commands/`](commands/). Some v1 command pages describe historical embedded
+flows; prefer v2 design docs and current `mycel --help` output when in doubt.
 
-Core commands:
+Removed MVP embedding-profile commands:
 
-- [init](commands/init.md)
-- [repl](commands/repl.md)
-- [user add](commands/user-add.md)
-- [user list](commands/user-list.md)
-- [user delete](commands/user-delete.md)
-- [acl grant](commands/acl-grant.md)
-- [acl revoke](commands/acl-revoke.md)
-- [acl list](commands/acl-list.md)
-- [auth session list](commands/auth-session-list.md)
-- [auth session revoke](commands/auth-session-revoke.md)
-- [auth session revoke-other](commands/auth-session-revoke-other.md)
-- [auth session cleanup](commands/auth-session-cleanup.md)
-- [space add](commands/space-add.md)
-- [space list](commands/space-list.md)
-- [space delete](commands/space-delete.md)
-- [space set](commands/space-set.md)
-- [space unset](commands/space-unset.md)
-- [template import](commands/template-import.md)
-- [template list](commands/template-list.md)
-- [node add](commands/node-add.md)
-- [node list](commands/node-list.md)
-- [node get](commands/node-get.md)
-- [node delete](commands/node-delete.md)
+- The old `mycel embeddings ...` command tree has been removed. Use daemon-backed semantic indexes, inference credentials/grants, semantic maintenance, and `semantic search` instead. Existing legacy profile/key data can be converted with [semantic migrate legacy embeddings](commands/semantic-migrate-legacy-embeddings.md) while that migration path remains available.
 
-Current MVP embedding commands:
-
-- [embeddings catalog](commands/embeddings-catalog.md)
-- [embeddings keys add](commands/embeddings-keys-add.md)
-- [embeddings profiles add](commands/embeddings-profiles-add.md)
-- [embeddings generate](commands/embeddings-generate.md)
-- [embeddings search](commands/embeddings-search.md)
-
-Target advanced semantic/inference commands:
+Daemon semantic/inference commands include:
 
 - [inference package apply](commands/inference-package-apply.md)
 - [inference capability add](commands/inference-capability-add.md)
@@ -103,6 +66,7 @@ Target advanced semantic/inference commands:
 - [semantic maintenance analyze](commands/semantic-maintenance-analyze.md)
 - [semantic maintenance process](commands/semantic-maintenance-process.md)
 - [semantic migrate legacy embeddings](commands/semantic-migrate-legacy-embeddings.md)
+
 Accounting commands:
 
 - [accounting usage summarize](commands/accounting-usage-summarize.md)

@@ -21,7 +21,7 @@ docs/v2/design/api/graph.md
 
 `SemanticService` is the client-facing API for semantic search over graph data.
 
-The current daemon implementation uses the existing semantic metadata stores under `meta/` and `graphs/<space-id>/semantic/`, the embedded `mycel-file` vector backend, and the existing semantic search planner. Inline encrypted secrets can be decrypted by the daemon when `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` is configured.
+The current daemon implementation uses semantic metadata stores under `meta/` and `graphs/<space-id>/semantic/`, the internal `mycel-file` vector backend, and the daemon semantic search planner. Inline encrypted secrets can be decrypted by the daemon when `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` is configured.
 
 The Client API owns using semantic search. The Admin API owns semantic infrastructure and operations, including:
 
@@ -69,7 +69,7 @@ Daemon-backed Client SemanticService commands:
   semantic search --space-id '<space-id>' --domain personal-pkm --index notes-search --text 'query text'
 ```
 
-`semantic search` currently uses daemon gRPC when `--daemon-addr` is supplied; embedded legacy behavior is retained for local semantic maintenance/backfill tests and workflows until the admin-side semantic operations are moved behind daemon APIs.
+`semantic search` uses daemon gRPC. Local embedded search workflows are not supported application interfaces.
 
 ## Current implementation notes
 
@@ -77,7 +77,7 @@ Daemon-backed Client SemanticService commands:
 - `SemanticSearch` validates caller graph/domain visibility, resolves an explicit semantic index or all enabled search indexes in the domain, runs the existing semantic search planner, and loads committed graph nodes for returned hits.
 - Search is not transaction-scoped and may lag graph commits until semantic maintenance/backfill has generated vector records.
 - Search warnings are returned for safe non-fatal conditions such as missing grants/policies, provider failures, or stale node references.
-- Admin-side semantic index list/upsert now has an AdminSemanticService MVP. Inference provisioning, credentials, policies, maintenance, and backfill remain embedded CLI/store workflows for now.
+- Admin-side semantic index, inference provisioning, credentials, policies, maintenance, and backfill operations are daemon Admin API responsibilities.
 
 ## Transaction scoping
 

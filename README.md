@@ -13,27 +13,58 @@ myceld owns the data directory
 mycel and applications talk to myceld over gRPC
 ```
 
-Do not embed Mycel by opening an engine or file-backed sessions in an application process. The historical public `engine` and `session` runtime packages have been removed; remaining file-session code lives under `internal/` for daemon implementation and migration coverage only.
+Do not embed Mycel by opening an engine or file-backed sessions in an application process. Applications should use `mycel-go-sdk` and `mycel-api`; the `mycel` module contains daemon binaries and internal implementation packages only. The historical public `engine`, `session`, `domain`, `query`, and `store` implementation packages have been removed or internalized.
 
 See [`docs/v2/design/daemon-only-boundary.md`](docs/v2/design/daemon-only-boundary.md) for the boundary and removal plan.
 
+## Go package boundary
+
+Applications should import:
+
+```text
+github.com/myceldb/mycel-api/gen/go/...
+github.com/myceldb/mycel-go-sdk
+```
+
+Applications should not import implementation packages from this module:
+
+```text
+github.com/myceldb/mycel/domain/...
+github.com/myceldb/mycel/store/...
+github.com/myceldb/mycel/query
+github.com/myceldb/mycel/engine
+github.com/myceldb/mycel/session
+```
+
+Those packages are removed or internalized. The root `github.com/myceldb/mycel` package is documentation-only.
+
 ## Layout
 
-**Supported daemon-facing surfaces:**
+**Supported application-facing surfaces:**
+
+- `github.com/myceldb/mycel-api/api/proto/`: protobuf service definitions.
+- `github.com/myceldb/mycel-api/gen/go/`: generated Go gRPC/protobuf stubs.
+- `github.com/myceldb/mycel-go-sdk`: Go daemon client helpers.
+
+**Supported binaries in this module:**
 
 - `cmd/myceld/`: daemon entrypoint and owner of local storage.
 - `cmd/mycel/`: CLI client for daemon Admin and Client APIs.
-- `github.com/myceldb/mycel-api/api/proto/`: protobuf service definitions.
-- `github.com/myceldb/mycel-api/gen/go/`: generated Go gRPC/protobuf stubs consumed by the daemon and clients.
-- `domain/`: pure domain value types used by daemon internals and API mapping.
-- `query/`: query-building/value helpers used by daemon query code.
 
 **Daemon implementation internals:**
 
 - `internal/daemon/`: runtime, modules, auth, and gRPC service adapters.
-- `internal/graphstorage/`, `internal/blobstorage/`, `internal/session/filesession/`: local persistence used by `myceld`.
-- `store/`: transitional file-backed stores used by daemon modules; not a supported application extension API.
-- `internal/session/`: internal session API/types and file-session implementation used by daemon modules.
+- `internal/graph/model/`: in-process graph records and template policies.
+- `internal/graph/storage/`: graph persistence used by `myceld`.
+- `internal/graph/template/storage/`: graph template catalog persistence.
+- `internal/graph/change/`: neutral graph commit events/sinks used by semantic maintenance.
+- `internal/blob/storage/`: blob persistence used by `myceld`.
+- `internal/graph/filesession/`: file-backed graph session runtime used by `myceld`.
+- `internal/graph/query/` and `internal/graph/metadataindex/`: graph query planning/evaluation and metadata indexing internals.
+- `internal/session/api/`: internal daemon/session contract types shared by daemon modules and graph sessions.
+- `internal/semantic/model/`, `internal/semantic/storage/`, and `internal/semantic/accounting/`: semantic/inference model, persistence, and usage accounting internals.
+- `internal/space/model/`, `internal/space/access/`, and `internal/space/storage/`: space/access models and space/domain/ACL persistence.
+- `internal/identity/model/`, `internal/identity/auth/`, and `internal/identity/storage/`: identity/auth models and user/session persistence.
 
 ## Build
 
@@ -87,6 +118,7 @@ TLS/mTLS daemon connection flags are available:
 ## Testing
 
 - Daemon-only boundary check: `make check-daemon-only`
-- Run once: `make test` (includes daemon-only checks)
+- Public Go surface check: `make check-public-surface`
+- Run once: `make test` (includes daemon-only and public-surface checks)
 - Verbose + coverage: `make test-verbose`
 - Watch mode: `make test-watch` (requires `watchexec`)

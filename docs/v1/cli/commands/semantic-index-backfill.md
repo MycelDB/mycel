@@ -43,4 +43,4 @@ Only `mycel-file` vector stores are supported by this initial command.
 
 ## Notes
 
-The current MVP `mycel embeddings ...` profile flow is unchanged and can run side-by-side with semantic index backfill until semantic search/query planning is enabled in later phases.
+The old MVP `mycel embeddings ...` profile flow has been removed. Semantic index backfill and maintenance are the supported embedding-generation paths.

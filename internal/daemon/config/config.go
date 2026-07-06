@@ -4,16 +4,50 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
-	DefaultMode                   = "standalone"
-	DefaultLogLevel               = "info"
-	DefaultLogFormat              = "text"
-	DefaultGRPCAddr               = "127.0.0.1:9091"
-	DefaultBootstrapAdminUsername = "admin"
+	DefaultMode                             = "standalone"
+	DefaultLogLevel                         = "info"
+	DefaultLogFormat                        = "text"
+	DefaultGRPCAddr                         = "127.0.0.1:9091"
+	DefaultBootstrapAdminUsername           = "admin"
+	DefaultSemanticDirtyCooldown            = 60 * time.Second
+	DefaultSemanticAnalyzerInterval         = 5 * time.Second
+	DefaultSemanticWorkerInterval           = 5 * time.Second
+	DefaultSemanticWorkerCount              = 2
+	DefaultSemanticMaxBatchSize             = 100
+	DefaultSemanticMaxConcurrentProvider    = 4
+	DefaultSemanticMaxRequestsPerMinute     = 60
+	DefaultSemanticMaxTokensPerMinute       = 100000
+	DefaultSemanticProviderConcurrent       = 2
+	DefaultSemanticCredentialConcurrent     = 1
+	DefaultSemanticCredentialRequestsPerMin = 30
+	DefaultSemanticCredentialTokensPerMin   = 50000
 )
+
+type SemanticThrottleConfig struct {
+	MaxConcurrentCalls   int
+	MaxRequestsPerMinute int
+	MaxTokensPerMinute   int
+}
+
+type SemanticMaintenanceConfig struct {
+	Enabled                    bool
+	DirtyCooldown              time.Duration
+	AnalyzerInterval           time.Duration
+	WorkerInterval             time.Duration
+	WorkerCount                int
+	MaxBatchSize               int
+	MaxConcurrentProviderCalls int
+	MaxRequestsPerMinute       int
+	MaxTokensPerMinute         int
+	ProviderDefaults           SemanticThrottleConfig
+	CredentialDefaults         SemanticThrottleConfig
+}
 
 type Config struct {
 	DataDir                   string
@@ -28,6 +62,7 @@ type Config struct {
 	TLSKeyFile                string
 	TLSClientCAFile           string
 	TLSRequireClientCert      bool
+	SemanticMaintenance       SemanticMaintenanceConfig
 }
 
 func LoadFromEnv() (Config, error) {
@@ -52,6 +87,27 @@ func LoadFromEnv() (Config, error) {
 		TLSKeyFile:                strings.TrimSpace(os.Getenv("MYCELD_TLS_KEY_FILE")),
 		TLSClientCAFile:           strings.TrimSpace(os.Getenv("MYCELD_TLS_CLIENT_CA_FILE")),
 		TLSRequireClientCert:      parseBoolEnv(os.Getenv("MYCELD_TLS_REQUIRE_CLIENT_CERT")),
+		SemanticMaintenance: SemanticMaintenanceConfig{
+			Enabled:                    parseBoolEnvDefault(os.Getenv("MYCELD_SEMANTIC_MAINTENANCE_ENABLED"), true),
+			DirtyCooldown:              parseDurationEnv(os.Getenv("MYCELD_SEMANTIC_DIRTY_COOLDOWN"), DefaultSemanticDirtyCooldown),
+			AnalyzerInterval:           parseDurationEnv(os.Getenv("MYCELD_SEMANTIC_ANALYZER_INTERVAL"), DefaultSemanticAnalyzerInterval),
+			WorkerInterval:             parseDurationEnv(os.Getenv("MYCELD_SEMANTIC_WORKER_INTERVAL"), DefaultSemanticWorkerInterval),
+			WorkerCount:                parseIntEnv(os.Getenv("MYCELD_SEMANTIC_WORKER_COUNT"), DefaultSemanticWorkerCount),
+			MaxBatchSize:               parseIntEnv(os.Getenv("MYCELD_SEMANTIC_MAX_BATCH_SIZE"), DefaultSemanticMaxBatchSize),
+			MaxConcurrentProviderCalls: parseIntEnv(os.Getenv("MYCELD_SEMANTIC_MAX_CONCURRENT_PROVIDER_CALLS"), DefaultSemanticMaxConcurrentProvider),
+			MaxRequestsPerMinute:       parseIntEnv(os.Getenv("MYCELD_SEMANTIC_MAX_REQUESTS_PER_MINUTE"), DefaultSemanticMaxRequestsPerMinute),
+			MaxTokensPerMinute:         parseIntEnv(os.Getenv("MYCELD_SEMANTIC_MAX_TOKENS_PER_MINUTE"), DefaultSemanticMaxTokensPerMinute),
+			ProviderDefaults: SemanticThrottleConfig{
+				MaxConcurrentCalls:   parseIntEnv(os.Getenv("MYCELD_SEMANTIC_PROVIDER_MAX_CONCURRENT_CALLS"), DefaultSemanticProviderConcurrent),
+				MaxRequestsPerMinute: parseIntEnv(os.Getenv("MYCELD_SEMANTIC_PROVIDER_MAX_REQUESTS_PER_MINUTE"), DefaultSemanticMaxRequestsPerMinute),
+				MaxTokensPerMinute:   parseIntEnv(os.Getenv("MYCELD_SEMANTIC_PROVIDER_MAX_TOKENS_PER_MINUTE"), DefaultSemanticMaxTokensPerMinute),
+			},
+			CredentialDefaults: SemanticThrottleConfig{
+				MaxConcurrentCalls:   parseIntEnv(os.Getenv("MYCELD_SEMANTIC_CREDENTIAL_MAX_CONCURRENT_CALLS"), DefaultSemanticCredentialConcurrent),
+				MaxRequestsPerMinute: parseIntEnv(os.Getenv("MYCELD_SEMANTIC_CREDENTIAL_MAX_REQUESTS_PER_MINUTE"), DefaultSemanticCredentialRequestsPerMin),
+				MaxTokensPerMinute:   parseIntEnv(os.Getenv("MYCELD_SEMANTIC_CREDENTIAL_MAX_TOKENS_PER_MINUTE"), DefaultSemanticCredentialTokensPerMin),
+			},
+		},
 	}
 	return cfg, cfg.Validate()
 }
@@ -100,16 +156,79 @@ func (c Config) Validate() error {
 	if c.TLSRequireClientCert && strings.TrimSpace(c.TLSClientCAFile) == "" {
 		return fmt.Errorf("MYCELD_TLS_REQUIRE_CLIENT_CERT requires MYCELD_TLS_CLIENT_CA_FILE")
 	}
+	if err := c.SemanticMaintenance.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c SemanticMaintenanceConfig) Validate() error {
+	if c.DirtyCooldown < 0 {
+		return fmt.Errorf("MYCELD_SEMANTIC_DIRTY_COOLDOWN must be positive")
+	}
+	if c.AnalyzerInterval < 0 {
+		return fmt.Errorf("MYCELD_SEMANTIC_ANALYZER_INTERVAL must be positive")
+	}
+	if c.WorkerInterval < 0 {
+		return fmt.Errorf("MYCELD_SEMANTIC_WORKER_INTERVAL must be positive")
+	}
+	for name, value := range map[string]int{
+		"MYCELD_SEMANTIC_WORKER_COUNT":                       c.WorkerCount,
+		"MYCELD_SEMANTIC_MAX_BATCH_SIZE":                     c.MaxBatchSize,
+		"MYCELD_SEMANTIC_MAX_CONCURRENT_PROVIDER_CALLS":      c.MaxConcurrentProviderCalls,
+		"MYCELD_SEMANTIC_MAX_REQUESTS_PER_MINUTE":            c.MaxRequestsPerMinute,
+		"MYCELD_SEMANTIC_MAX_TOKENS_PER_MINUTE":              c.MaxTokensPerMinute,
+		"MYCELD_SEMANTIC_PROVIDER_MAX_CONCURRENT_CALLS":      c.ProviderDefaults.MaxConcurrentCalls,
+		"MYCELD_SEMANTIC_PROVIDER_MAX_REQUESTS_PER_MINUTE":   c.ProviderDefaults.MaxRequestsPerMinute,
+		"MYCELD_SEMANTIC_PROVIDER_MAX_TOKENS_PER_MINUTE":     c.ProviderDefaults.MaxTokensPerMinute,
+		"MYCELD_SEMANTIC_CREDENTIAL_MAX_CONCURRENT_CALLS":    c.CredentialDefaults.MaxConcurrentCalls,
+		"MYCELD_SEMANTIC_CREDENTIAL_MAX_REQUESTS_PER_MINUTE": c.CredentialDefaults.MaxRequestsPerMinute,
+		"MYCELD_SEMANTIC_CREDENTIAL_MAX_TOKENS_PER_MINUTE":   c.CredentialDefaults.MaxTokensPerMinute,
+	} {
+		if value < 0 {
+			return fmt.Errorf("%s must be positive", name)
+		}
+	}
 	return nil
 }
 
 func parseBoolEnv(value string) bool {
+	return parseBoolEnvDefault(value, false)
+}
+
+func parseBoolEnvDefault(value string, fallback bool) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "y", "on":
 		return true
-	default:
+	case "0", "false", "no", "n", "off":
 		return false
+	default:
+		return fallback
 	}
+}
+
+func parseDurationEnv(value string, fallback time.Duration) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return -1
+	}
+	return d
+}
+
+func parseIntEnv(value string, fallback int) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	i, err := strconv.Atoi(value)
+	if err != nil {
+		return -1
+	}
+	return i
 }
 
 func valueOrDefault(value, fallback string) string {

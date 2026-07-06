@@ -2,15 +2,16 @@ package admin
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel-api/gen/go/mycel/common/v1"
-	"github.com/myceldb/mycel/domain/graph"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	domainspace "github.com/myceldb/mycel/domain/space"
 	daemonsemantic "github.com/myceldb/mycel/internal/daemon/modules/semantic"
+	"github.com/myceldb/mycel/internal/graph/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -23,6 +24,70 @@ type AdminSemanticMaintenanceService struct {
 
 func NewAdminSemanticMaintenanceService(semantic daemonsemantic.Manager, authorizer OperatorAuthorizer) *AdminSemanticMaintenanceService {
 	return &AdminSemanticMaintenanceService{semantic: semantic, authorizer: authorizer}
+}
+
+func (s *AdminSemanticMaintenanceService) GetSemanticMaintenanceStatus(ctx context.Context, req *adminv1.GetSemanticMaintenanceStatusRequest) (*adminv1.GetSemanticMaintenanceStatusResponse, error) {
+	if err := s.requireMaintenance(ctx); err != nil {
+		return nil, err
+	}
+	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.semantic.GetMaintenanceStatus(ctx, daemonsemantic.MaintenanceStatusInput{SpaceID: spaceID})
+	if err != nil {
+		return nil, mapAdminSemanticMaintenanceError(err, "get semantic maintenance status")
+	}
+	return &adminv1.GetSemanticMaintenanceStatusResponse{Enabled: res.Enabled, Degraded: res.Degraded, DegradedReason: res.DegradedReason, QueueDepthPending: int32(res.QueueDepthPending), QueueDepthRunning: int32(res.QueueDepthRunning), QueueDepthFailedRetryable: int32(res.QueueDepthFailedRetryable), QueueDepthFailedPermanent: int32(res.QueueDepthFailedPermanent), OldestPendingAgeSeconds: int64(res.OldestPendingAge.Seconds()), LastDirtyEventAt: formatMaintenanceTime(res.LastDirtyEventAt), LastAnalyzedAt: formatMaintenanceTime(res.LastAnalyzedAt), LastWorkerSuccessAt: formatMaintenanceTime(res.LastWorkerSuccessAt), LastWorkerErrorAt: formatMaintenanceTime(res.LastWorkerErrorAt), ThrottleState: res.ThrottleState, AnalyzerRuns: int32(res.AnalyzerRuns), WorkerRuns: int32(res.WorkerRuns)}, nil
+}
+
+func (s *AdminSemanticMaintenanceService) ListSemanticMaintenanceWork(ctx context.Context, req *adminv1.ListSemanticMaintenanceWorkRequest) (*adminv1.ListSemanticMaintenanceWorkResponse, error) {
+	if err := s.requireMaintenance(ctx); err != nil {
+		return nil, err
+	}
+	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.semantic.ListMaintenanceWork(ctx, daemonsemantic.MaintenanceWorkListInput{SpaceID: spaceID, Status: req.GetStatus(), Limit: int(req.GetLimit())})
+	if err != nil {
+		return nil, mapAdminSemanticMaintenanceError(err, "list semantic maintenance work")
+	}
+	out := &adminv1.ListSemanticMaintenanceWorkResponse{}
+	for _, item := range items {
+		out.Items = append(out.Items, mapMaintenanceWorkItem(item))
+	}
+	return out, nil
+}
+
+func (s *AdminSemanticMaintenanceService) RetrySemanticMaintenanceWork(ctx context.Context, req *adminv1.RetrySemanticMaintenanceWorkRequest) (*adminv1.RetrySemanticMaintenanceWorkResponse, error) {
+	if err := s.requireMaintenance(ctx); err != nil {
+		return nil, err
+	}
+	spaceID, workID, err := parseMaintenanceWorkControl(req.GetSpaceId(), req.GetWorkItemId())
+	if err != nil {
+		return nil, err
+	}
+	item, err := s.semantic.RetryMaintenanceWork(ctx, daemonsemantic.MaintenanceWorkControlInput{SpaceID: spaceID, WorkItemID: workID})
+	if err != nil {
+		return nil, mapAdminSemanticMaintenanceError(err, "retry semantic maintenance work")
+	}
+	return &adminv1.RetrySemanticMaintenanceWorkResponse{Item: mapMaintenanceWorkItem(item)}, nil
+}
+
+func (s *AdminSemanticMaintenanceService) CancelSemanticMaintenanceWork(ctx context.Context, req *adminv1.CancelSemanticMaintenanceWorkRequest) (*adminv1.CancelSemanticMaintenanceWorkResponse, error) {
+	if err := s.requireMaintenance(ctx); err != nil {
+		return nil, err
+	}
+	spaceID, workID, err := parseMaintenanceWorkControl(req.GetSpaceId(), req.GetWorkItemId())
+	if err != nil {
+		return nil, err
+	}
+	item, err := s.semantic.CancelMaintenanceWork(ctx, daemonsemantic.MaintenanceWorkControlInput{SpaceID: spaceID, WorkItemID: workID})
+	if err != nil {
+		return nil, mapAdminSemanticMaintenanceError(err, "cancel semantic maintenance work")
+	}
+	return &adminv1.CancelSemanticMaintenanceWorkResponse{Item: mapMaintenanceWorkItem(item)}, nil
 }
 
 func (s *AdminSemanticMaintenanceService) AnalyzeSemanticDirtyWork(ctx context.Context, req *adminv1.AnalyzeSemanticDirtyWorkRequest) (*adminv1.AnalyzeSemanticDirtyWorkResponse, error) {
@@ -99,6 +164,29 @@ func (s *AdminSemanticMaintenanceService) requireMaintenance(ctx context.Context
 		return status.Error(codes.PermissionDenied, "operator lacks required semantic maintenance capability")
 	}
 	return nil
+}
+
+func parseMaintenanceWorkControl(spaceIDText string, workIDText string) (domainspace.SpaceID, uuid.UUID, error) {
+	spaceID, err := parseSemanticUUID[domainspace.SpaceID](spaceIDText, "space_id")
+	if err != nil {
+		return domainspace.SpaceID(uuid.Nil), uuid.Nil, err
+	}
+	workID, err := uuid.Parse(workIDText)
+	if err != nil || workID == uuid.Nil {
+		return domainspace.SpaceID(uuid.Nil), uuid.Nil, status.Error(codes.InvalidArgument, "work_item_id must be a UUID")
+	}
+	return spaceID, workID, nil
+}
+
+func mapMaintenanceWorkItem(item daemonsemantic.MaintenanceWorkItem) *adminv1.SemanticMaintenanceWorkItem {
+	return &adminv1.SemanticMaintenanceWorkItem{WorkItemId: item.ID.String(), SpaceId: item.SpaceID.String(), DomainId: item.DomainID.String(), SemanticIndexId: item.SemanticIndexID.String(), TargetNodeId: item.TargetNodeID.String(), Action: item.Action, Status: item.Status, AttemptCount: int32(item.AttemptCount), NotBefore: formatMaintenanceTime(item.NotBefore), ClaimedUntil: formatMaintenanceTime(item.ClaimedUntil), LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: item.LastErrorMessageSanitized, CreatedAt: formatMaintenanceTime(item.CreatedAt), UpdatedAt: formatMaintenanceTime(item.UpdatedAt)}
+}
+
+func formatMaintenanceTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func mapBackfillResponse(res semanticbackfill.Result) *adminv1.BackfillSemanticIndexResponse {

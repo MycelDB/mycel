@@ -13,19 +13,23 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domaingraph "github.com/myceldb/mycel/domain/graph"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
-	"github.com/myceldb/mycel/internal/graphstorage"
+	"github.com/myceldb/mycel/internal/graph/change"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/graph/storage"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 const childOrderStep = 1000
 
 type Module struct {
-	mu       sync.Mutex
-	dataDir  string
-	stores   map[string]*graphstorage.LocalStore
-	overlays map[string]*overlay
+	mu                     sync.Mutex
+	dataDir                string
+	stores                 map[string]*graphstorage.LocalStore
+	overlays               map[string]*overlay
+	changeSink             graphchange.Sink
+	lastGraphChangeSinkErr error
 }
 
 type overlay struct {
@@ -41,6 +45,18 @@ func NewModule() *Module {
 }
 
 func (m *Module) Name() string { return ModuleName }
+
+func (m *Module) SetChangeSink(sink graphchange.Sink) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.changeSink = sink
+}
+
+func (m *Module) LastGraphChangeSinkError() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastGraphChangeSinkErr
+}
 
 func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonruntime.InitResult {
 	m.dataDir = filepath.Join(rt.Config.DataDir, "graphs")
@@ -485,6 +501,10 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	if err != nil {
 		return CommitResult{}, err
 	}
+	graphEvent, err := m.graphChangeEvent(ctx, tx, store, snapshot)
+	if err != nil {
+		return CommitResult{}, err
+	}
 	storageTx, err := store.Begin(ctx)
 	if err != nil {
 		return CommitResult{}, mapStorageError(err)
@@ -515,10 +535,116 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 			return CommitResult{}, mapStorageError(err)
 		}
 	}
-	if err := storageTx.Commit(); err != nil {
+	info, err := storageTx.CommitWithInfo()
+	if err != nil {
 		return CommitResult{}, mapStorageError(err)
 	}
+	m.notifyGraphChangeSink(ctx, info, graphEvent)
 	return CommitResult{OperationCount: snapshot.opCount, CommittedRevision: int64(store.Revision()), Changes: changes}, nil
+}
+
+func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
+	if event.Empty() {
+		return
+	}
+	m.mu.Lock()
+	sink := m.changeSink
+	m.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	event.TxnID = info.TxnID
+	event.GraphRevision = info.NextRevision
+	if err := sink.OnGraphCommitted(ctx, event); err != nil {
+		m.mu.Lock()
+		m.lastGraphChangeSinkErr = err
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Lock()
+	m.lastGraphChangeSinkErr = nil
+	m.mu.Unlock()
+}
+
+func (m *Module) graphChangeEvent(ctx context.Context, tx daemonsession.GraphTransaction, store *graphstorage.LocalStore, snapshot *overlay) (graphchange.CommittedEvent, error) {
+	spaceID, err := uuid.Parse(tx.SpaceID)
+	if err != nil || spaceID == uuid.Nil {
+		return graphchange.CommittedEvent{}, fmt.Errorf("%w: space_id must be a UUID", ErrInvalidInput)
+	}
+	domainID := mustDomainID(tx.DomainID)
+	event := graphchange.CommittedEvent{
+		SpaceID:           domainspace.SpaceID(spaceID),
+		DomainIDs:         []domaingraph.DomainID{domainID},
+		CreatedNodeIDs:    []domaingraph.NodeID{},
+		UpdatedNodeIDs:    []domaingraph.NodeID{},
+		DeletedNodeIDs:    []domaingraph.NodeID{},
+		ChangedEdges:      []graphchange.EdgeChange{},
+		OldParentByNodeID: map[domaingraph.NodeID]domaingraph.NodeID{},
+		NewParentByNodeID: map[domaingraph.NodeID]domaingraph.NodeID{},
+		OldDomainByNodeID: map[domaingraph.NodeID]domaingraph.DomainID{},
+		NewDomainByNodeID: map[domaingraph.NodeID]domaingraph.DomainID{},
+		CommittedAt:       time.Now().UTC(),
+	}
+	for _, node := range sortedNodes(snapshot.putNodes) {
+		old, err := store.GetNode(ctx, node.ID)
+		if err == nil {
+			event.UpdatedNodeIDs = append(event.UpdatedNodeIDs, node.ID)
+			event.OldDomainByNodeID[node.ID] = old.DomainID
+		} else if errors.Is(err, graphstorage.ErrNotFound) {
+			event.CreatedNodeIDs = append(event.CreatedNodeIDs, node.ID)
+		} else {
+			return graphchange.CommittedEvent{}, mapStorageError(err)
+		}
+		event.NewDomainByNodeID[node.ID] = node.DomainID
+		if parent, err := store.Parent(ctx, node.ID); err == nil && parent != nil {
+			event.OldParentByNodeID[node.ID] = parent.FromID
+		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+			return graphchange.CommittedEvent{}, mapStorageError(err)
+		}
+	}
+	for _, id := range sortedNodeIDs(snapshot.deleteNodes) {
+		event.DeletedNodeIDs = append(event.DeletedNodeIDs, id)
+		old, err := store.GetNode(ctx, id)
+		if err == nil {
+			event.OldDomainByNodeID[id] = old.DomainID
+		} else if !errors.Is(err, graphstorage.ErrNotFound) {
+			return graphchange.CommittedEvent{}, mapStorageError(err)
+		}
+		if parent, err := store.Parent(ctx, id); err == nil && parent != nil {
+			event.OldParentByNodeID[id] = parent.FromID
+		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+			return graphchange.CommittedEvent{}, mapStorageError(err)
+		}
+	}
+	for _, edge := range sortedEdges(snapshot.putEdges) {
+		change := "added"
+		if old, err := store.GetEdge(ctx, edge.ID); err == nil {
+			change = "updated"
+			if old.Kind == domaingraph.EdgeKindContains && old.ToID == edge.ToID && old.FromID != edge.FromID {
+				event.OldParentByNodeID[old.ToID] = old.FromID
+			}
+		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+			return graphchange.CommittedEvent{}, mapStorageError(err)
+		}
+		if edge.Kind == domaingraph.EdgeKindContains {
+			event.NewParentByNodeID[edge.ToID] = edge.FromID
+		}
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: change, FromID: edge.FromID, ToID: edge.ToID})
+	}
+	for _, id := range sortedEdgeIDs(snapshot.deleteEdges) {
+		edge, err := store.GetEdge(ctx, id)
+		if err != nil {
+			if errors.Is(err, graphstorage.ErrNotFound) {
+				continue
+			}
+			return graphchange.CommittedEvent{}, mapStorageError(err)
+		}
+		if edge.Kind == domaingraph.EdgeKindContains {
+			event.OldParentByNodeID[edge.ToID] = edge.FromID
+		}
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
+	}
+	return event, nil
 }
 
 func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalStore, snapshot *overlay) ([]GraphChange, error) {

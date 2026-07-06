@@ -6,13 +6,13 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
-	"github.com/myceldb/mycel/domain/graph"
-	"github.com/myceldb/mycel/domain/identity"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
-	domainspace "github.com/myceldb/mycel/domain/space"
-	storeembedding "github.com/myceldb/mycel/store/embedding"
-	storesemantic "github.com/myceldb/mycel/store/semantic"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
+	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
+	"github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/identity/model"
+	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 type EncryptSecretFunc func(ctx context.Context, plain string) (*domainsemantic.EncryptedSecretPayload, error)
