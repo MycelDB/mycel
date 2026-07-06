@@ -13,7 +13,8 @@ Initial implementation slices completed:
 - Semantic analyzer/worker use `MaintenanceManager` for operational state and `SpaceManager` for semantic resources.
 - Phase 4 complete: `internal/semantic/maintenance.DirtyEventAppender` adapts graph-change events to durable semantic dirty events without depending on `SpaceManager`.
 - Phase 5 complete: analyzer uses maintenance checkpoints, semantic source policies, graph/template reads, nearest ancestor-or-self subtree resolution, old/new move context, delete cleanup/refresh handling, and configurable dirty cooldown.
-- Phase 6 complete: one-shot worker processing supports configurable batch size, lease duration, worker-pool concurrency, retry/permanent failure classification, exponential backoff, non-forced refreshes for source-hash idempotency, delete/tombstone work, structured failure logging, and daemon config defaults. Continuous daemon lifecycle loops remain Phase 7.
+- Phase 6 complete: one-shot worker processing supports configurable batch size, lease duration, worker-pool concurrency, retry/permanent failure classification, exponential backoff, non-forced refreshes for source-hash idempotency, delete/tombstone work, structured failure logging, and daemon config defaults.
+- Phase 7 complete: daemon semantic module starts/stops analyzer and worker maintenance loops when enabled, uses configured intervals/batch/worker settings, records loop stats/errors, and shuts down through runtime/module close.
 
 This plan assumes the daemon-only architecture: applications write graph data through `myceld`, and `myceld` owns graph storage, semantic resources, dirty event persistence, background workers, vector records, and accounting.
 
@@ -313,7 +314,7 @@ Backfill execution owns endpoint/model/capability lookup, policy/grant/credentia
 go test ./internal/semantic/maintenance ./internal/semantic/backfill ./internal/semantic/vectorstore
 ```
 
-## Phase 7: Daemon lifecycle and config
+## Phase 7: Daemon lifecycle and config — complete
 
 ### Goal
 
@@ -327,10 +328,11 @@ Start analyzer and worker loops as part of `myceld` when semantic maintenance is
   - create dirty event appender sink
   - register sink with graph/session construction
   - start analyzer loop(s)
-  - start worker pool
-  - shut down cleanly on daemon stop
+  - start worker loop(s)
+  - record loop run/error stats
+  - shut down cleanly on daemon/runtime close
 - Ensure disabled config still records graph data but does not run background workers.
-- Add tests for startup/shutdown and config defaults.
+- Add tests for startup/shutdown, runtime close behavior, loop execution, and config defaults.
 
 ### Acceptance
 

@@ -23,10 +23,23 @@ func New(cfg config.Config, logger *slog.Logger, logPath string, close func() er
 }
 
 func (r *Runtime) Close() error {
-	if r == nil || r.close == nil {
+	if r == nil {
 		return nil
 	}
-	return r.close()
+	var firstErr error
+	for _, module := range r.Modules {
+		if closer, ok := module.(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if r.close != nil {
+		if err := r.close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (r *Runtime) Module(name string) (Module, bool) {

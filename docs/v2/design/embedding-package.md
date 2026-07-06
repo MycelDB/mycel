@@ -414,11 +414,11 @@ status = pending
 not_before <= now
 ```
 
-Claims should have a lease (`claimed_until`) so work can recover after daemon restart or worker crash. One-shot worker processing supports configurable batch size, lease duration, worker count, retry/permanent failure classification, exponential backoff, non-forced refreshes for source-hash idempotency, delete/tombstone work, and structured failure logging. Continuous daemon lifecycle loops are wired separately by the daemon semantic module.
+Claims should have a lease (`claimed_until`) so work can recover after daemon restart or worker crash. Worker processing supports configurable batch size, lease duration, worker count, retry/permanent failure classification, exponential backoff, non-forced refreshes for source-hash idempotency, delete/tombstone work, and structured failure logging. Daemon lifecycle loops run analyzer and worker passes on configured intervals when semantic maintenance is enabled.
 
 ## Worker execution
 
-`internal/semantic/maintenance` owns worker behavior. `internal/daemon/modules/semantic` owns daemon lifecycle: reading config, starting/stopping analyzer and worker goroutines, and wiring managers/connectors/vector stores/accounting.
+`internal/semantic/maintenance` owns analyzer/worker behavior. `internal/daemon/modules/semantic` owns daemon lifecycle: reading config, starting/stopping analyzer and worker loops, recording loop stats/errors, and wiring managers/connectors/vector stores/accounting.
 
 For a ready work item, the worker:
 

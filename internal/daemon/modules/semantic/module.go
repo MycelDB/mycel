@@ -6,8 +6,10 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -35,13 +37,25 @@ import (
 )
 
 type Module struct {
-	mu                sync.Mutex
-	dataDir           string
-	secretKeyB64      string
-	global            storesemantic.GlobalManager
-	accounting        storeaccounting.Manager
-	spaces            map[domainspace.SpaceID]storesemantic.SpaceManager
-	maintenanceConfig daemonconfig.SemanticMaintenanceConfig
+	mu                 sync.Mutex
+	dataDir            string
+	secretKeyB64       string
+	global             storesemantic.GlobalManager
+	accounting         storeaccounting.Manager
+	spaces             map[domainspace.SpaceID]storesemantic.SpaceManager
+	maintenanceConfig  daemonconfig.SemanticMaintenanceConfig
+	logger             *slog.Logger
+	maintenanceCancel  context.CancelFunc
+	maintenanceWG      sync.WaitGroup
+	maintenanceRunning bool
+	stats              MaintenanceStats
+}
+
+type MaintenanceStats struct {
+	AnalyzerRuns      int
+	WorkerRuns        int
+	LastAnalyzerError string
+	LastWorkerError   string
 }
 
 func NewModule() *Module {
@@ -68,7 +82,133 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.accounting = acct
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
 	m.maintenanceConfig = rt.Config.SemanticMaintenance
+	m.logger = rt.Logger
+	if m.maintenanceConfig.Enabled {
+		m.startMaintenance(ctx)
+		rt.Logger.Info("semantic maintenance started", "analyzer_interval", m.maintenanceConfig.AnalyzerInterval.String(), "worker_interval", m.maintenanceConfig.WorkerInterval.String(), "worker_count", m.maintenanceConfig.WorkerCount, "max_batch_size", m.maintenanceConfig.MaxBatchSize)
+	} else {
+		rt.Logger.Info("semantic maintenance disabled")
+	}
 	return daemonruntime.OK(ModuleName)
+}
+
+func (m *Module) startMaintenance(parent context.Context) {
+	m.mu.Lock()
+	if m.maintenanceRunning {
+		m.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	m.maintenanceCancel = cancel
+	m.maintenanceRunning = true
+	m.mu.Unlock()
+	m.maintenanceWG.Add(2)
+	go m.maintenanceLoop(ctx, "analyzer", m.maintenanceConfig.AnalyzerInterval, m.runAnalyzerOnce)
+	go m.maintenanceLoop(ctx, "worker", m.maintenanceConfig.WorkerInterval, m.runWorkerOnce)
+}
+
+func (m *Module) Close() error {
+	m.mu.Lock()
+	cancel := m.maintenanceCancel
+	m.maintenanceCancel = nil
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	m.maintenanceWG.Wait()
+	m.mu.Lock()
+	m.maintenanceRunning = false
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Module) MaintenanceRunning() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.maintenanceRunning
+}
+
+func (m *Module) MaintenanceStats() MaintenanceStats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stats
+}
+
+func (m *Module) maintenanceLoop(ctx context.Context, name string, interval time.Duration, fn func(context.Context) error) {
+	defer m.maintenanceWG.Done()
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	m.runMaintenanceTask(ctx, name, fn)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.runMaintenanceTask(ctx, name, fn)
+		}
+	}
+}
+
+func (m *Module) runMaintenanceTask(ctx context.Context, name string, fn func(context.Context) error) {
+	if err := fn(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		m.recordMaintenanceRun(name, err)
+		if m.logger != nil {
+			m.logger.Warn("semantic maintenance loop failed", "loop", name, "error", err)
+		}
+		return
+	}
+	m.recordMaintenanceRun(name, nil)
+}
+
+func (m *Module) recordMaintenanceRun(name string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch name {
+	case "analyzer":
+		m.stats.AnalyzerRuns++
+		m.stats.LastAnalyzerError = errorString(err)
+	case "worker":
+		m.stats.WorkerRuns++
+		m.stats.LastWorkerError = errorString(err)
+	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func (m *Module) runAnalyzerOnce(ctx context.Context) error {
+	spaces, err := m.ListSpaceManagers(ctx)
+	if err != nil {
+		return err
+	}
+	var out error
+	for _, space := range spaces {
+		if _, err := m.AnalyzeDirtyWork(ctx, AnalyzeInput{SpaceID: space.SpaceID}); err != nil {
+			out = errors.Join(out, err)
+		}
+	}
+	return out
+}
+
+func (m *Module) runWorkerOnce(ctx context.Context) error {
+	spaces, err := m.ListSpaceManagers(ctx)
+	if err != nil {
+		return err
+	}
+	var out error
+	for _, space := range spaces {
+		if _, err := m.ProcessDirtyWork(ctx, ProcessInput{SpaceID: space.SpaceID, Limit: m.maintenanceConfig.MaxBatchSize}); err != nil {
+			out = errors.Join(out, err)
+		}
+	}
+	return out
 }
 
 func (m *Module) GlobalManager() storesemantic.GlobalManager {
