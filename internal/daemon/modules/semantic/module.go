@@ -140,6 +140,25 @@ func (m *Module) ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager,
 	return out, nil
 }
 
+func (m *Module) MaintenanceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.MaintenanceManager, error) {
+	if spaceID == domainspace.SpaceID(uuid.Nil) {
+		return nil, fmt.Errorf("space_id is required")
+	}
+	mgr := storesemantic.NewMaintenanceManager()
+	if err := mgr.Init(ctx, filepath.Join(m.dataDir, "graphs", spaceID.String(), "semantic", "maintenance"), spaceID); err != nil {
+		return nil, err
+	}
+	return mgr, nil
+}
+
+func (m *Module) DirtyEventAppender(ctx context.Context, spaceID domainspace.SpaceID) (semanticmaintenance.DirtyEventAppender, error) {
+	mgr, err := m.MaintenanceManager(ctx, spaceID)
+	if err != nil {
+		return semanticmaintenance.DirtyEventAppender{}, err
+	}
+	return semanticmaintenance.DirtyEventAppender{MaintenanceManager: mgr}, nil
+}
+
 func (m *Module) SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.SpaceManager, error) {
 	if spaceID == domainspace.SpaceID(uuid.Nil) {
 		return nil, fmt.Errorf("space_id is required")
@@ -176,7 +195,11 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	return semanticmaintenance.Analyzer{SpaceManager: mgr}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	maintenanceMgr, err := m.MaintenanceManager(ctx, in.SpaceID)
+	if err != nil {
+		return semanticmaintenance.AnalyzeResult{}, err
+	}
+	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 }
 
 func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error) {
@@ -184,11 +207,15 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
+	maintenanceMgr, err := m.MaintenanceManager(ctx, in.SpaceID)
+	if err != nil {
+		return semanticmaintenance.WorkerResult{}, err
+	}
 	runner, err := m.backfillRunner(ctx, in.SpaceID, mgr)
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
-	return semanticmaintenance.Worker{SpaceManager: mgr, Backfill: runner}.ProcessOnce(ctx, in.Limit)
+	return semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner}.ProcessOnce(ctx, in.Limit)
 }
 
 func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error) {

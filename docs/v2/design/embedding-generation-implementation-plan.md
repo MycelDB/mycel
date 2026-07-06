@@ -2,7 +2,16 @@
 
 ## Status
 
-Draft implementation plan for the daemon-owned semantic embedding generation pipeline described in [embedding-package.md](embedding-package.md).
+Implementation plan for the daemon-owned semantic embedding generation pipeline described in [embedding-package.md](embedding-package.md).
+
+Initial implementation slice completed:
+
+- `internal/graphchange` neutral commit event/sink package.
+- `FileSession` and daemon graph module emit graph-change events after successful commits.
+- Sink failures do not fail graph commits; failures are recorded as maintenance-degraded state on the emitting component.
+- `store/semantic.MaintenanceManager` owns dirty events and dirty work items.
+- Semantic analyzer/worker use `MaintenanceManager` for operational state and `SpaceManager` for semantic resources.
+- `internal/semantic/maintenance.DirtyEventAppender` adapts graph-change events to durable semantic dirty events.
 
 This plan assumes the daemon-only architecture: applications write graph data through `myceld`, and `myceld` owns graph storage, semantic resources, dirty event persistence, background workers, vector records, and accounting.
 
@@ -61,8 +70,9 @@ Add a neutral graph commit event/sink boundary that graph/session code can call 
   - old/new domain maps
   - committed timestamp
 - Add tests for `MultiSink` ordering/error behavior.
-- Decide sink failure semantics:
-  - recommended: if a durable sink append fails, graph commit returns an error or records a clear maintenance-degraded state.
+- Sink failure semantics:
+  - graph commits do not fail when a sink fails
+  - sink errors are recorded as maintenance-degraded state and should be surfaced through status/Admin APIs
 
 ### Acceptance
 
@@ -79,12 +89,12 @@ Make graph mutations notify committed changes without knowing about semantic mai
 ### Tasks
 
 - Add optional `GraphChangeSink`/`ChangeSink` field to `filesession.Config` or graph module/session construction.
-- Extend `FileSession.commitGraphAtRevision` to build a `graphchange.CommittedEvent` after a successful graph commit.
+- Extend `FileSession.commitGraphAtRevision` to build a `graphchange.CommittedEvent` before commit while old state is available, then emit it after a successful graph commit.
 - Preserve enough old state before mutation for deletes/moves:
   - deleted nodes
   - old parent containment
   - old domain
-- Notify the sink synchronously with the committed event.
+- Notify the sink synchronously after commit with the committed event.
 - Ensure read-only transactions do not emit events.
 - Ensure failed/rolled-back transactions do not emit events.
 - Add tests for:
@@ -92,6 +102,7 @@ Make graph mutations notify committed changes without knowing about semantic mai
   - edge add/delete/reorder/move context
   - transaction rollback emits no event
   - sink failure behavior
+  - sink failure is non-fatal and records degraded state
 
 ### Acceptance
 
@@ -116,6 +127,17 @@ Add durable append-only semantic maintenance storage that is separate from `Spac
   - `WorkResult`
   - `WorkFailure`
 - Implement file-backed persistence under:
+
+```text
+graphs/<space_id>/semantic/maintenance/
+  dirty/
+    graph-dirty-000001.ksem       # initial append-only newline JSON segment
+  work/
+    state.json                    # initial materialized queue state
+```
+
+- Initial slice keeps the storage simple and durable.
+- Follow-up work should evolve this to segmented append-only dirty/work queues with manifests:
 
 ```text
 graphs/<space_id>/semantic/maintenance/
@@ -232,7 +254,7 @@ Process ready semantic work items asynchronously and idempotently.
 ### Tasks
 
 - Add worker in `internal/semantic/maintenance`.
-- Add daemon config:
+- Add daemon config. Default dirty cooldown is 60s and is configurable at the system level:
 
 ```yaml
 semantic:
@@ -246,6 +268,24 @@ semantic:
     max_concurrent_provider_calls: 4
     max_requests_per_minute: 60
     max_tokens_per_minute: 100000
+    provider_defaults:
+      max_concurrent_calls: 2
+      max_requests_per_minute: 60
+      max_tokens_per_minute: 100000
+    credential_defaults:
+      max_concurrent_calls: 1
+      max_requests_per_minute: 30
+      max_tokens_per_minute: 50000
+```
+
+- Effective throttling is the strictest applicable limit across:
+
+```text
+system global limit
+  ∩ provider limit
+  ∩ model/capability limit
+  ∩ credential limit
+  ∩ credential grant limit
 ```
 
 - Worker flow:
@@ -362,10 +402,57 @@ go test ./...
 
 For phases that affect daemon behavior, also run daemon integration tests and semantic CLI/Admin tests.
 
-## Open questions
+## Decisions
 
-- Should sink failure fail graph commits or mark semantic maintenance degraded while graph commits succeed?
-- Should dirty event append be part of graph storage commit atomically, or synchronously after commit with explicit failure handling?
-- What is the default cooldown: 30s, 60s, or deployment-specific only?
-- What are initial throttle defaults per provider/model/credential?
-- What Admin API shape should expose maintenance queue state without leaking secrets?
+- Sink failure does not fail graph commits.
+- Dirty event append happens synchronously after graph commit with explicit failure handling.
+- Sink failures mark semantic maintenance degraded and are surfaced through status/Admin APIs.
+- Default dirty cooldown is 60s and configurable at the system level.
+- Throttling starts conservative and is applied at global, provider, model/capability, credential, and credential-grant scopes.
+
+## Admin API recommendation
+
+Expose operational metadata only. Do not expose credential secret values, raw provider request bodies, raw source text, embedding vectors, or full provider responses.
+
+Recommended Admin APIs:
+
+- `GetSemanticMaintenanceStatus`
+- `ListSemanticMaintenanceWork`
+- `GetSemanticMaintenanceWork`
+- `RetrySemanticMaintenanceWork`
+- `CancelSemanticMaintenanceWork`
+- `RunSemanticMaintenanceAnalyzer`
+- `RunSemanticMaintenanceWorkerOnce`
+
+Recommended status fields:
+
+- `enabled`
+- `degraded`
+- `degraded_reason`
+- `queue_depth_pending`
+- `queue_depth_running`
+- `queue_depth_failed_retryable`
+- `queue_depth_failed_permanent`
+- `oldest_pending_age`
+- `last_dirty_event_at`
+- `last_analyzed_at`
+- `last_worker_success_at`
+- `last_worker_error_at`
+- `throttle_state`
+
+Safe work-item fields:
+
+- `work_item_id`
+- `space_id`
+- `domain_id`
+- `semantic_index_id`
+- `target_node_id`
+- `action`
+- `status`
+- `attempt_count`
+- `not_before`
+- `claimed_until`
+- `last_error_category`
+- `last_error_message_sanitized`
+- `created_at`
+- `updated_at`

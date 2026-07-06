@@ -34,8 +34,11 @@ const (
 	dirtyQueueFileName        = "dirty_queue.json"
 	indexStateFileName        = "index_state.json"
 	policyDecisionsFileName   = "policy_decisions.json"
-	graphDirtyEventsDirName   = "events"
+	maintenanceDirName        = "maintenance"
+	graphDirtyEventsDirName   = "dirty"
 	graphDirtyEventsFileName  = "graph-dirty-000001.ksem"
+	workStateDirName          = "work"
+	workStateFileName         = "state.json"
 	defaultVectorStoreKey     = "mycel-file"
 	defaultVectorStoreName    = "Mycel embedded file vector store"
 )
@@ -541,9 +544,15 @@ type spaceManager struct {
 	indexes         semanticIndexesState
 	grants          credentialGrantsState
 	policies        inferencePoliciesState
-	dirtyQueue      dirtyQueueState
 	indexStates     indexStatesState
 	policyDecisions policyDecisionsState
+}
+
+type maintenanceManager struct {
+	mu         sync.RWMutex
+	location   string
+	spaceID    domainspace.SpaceID
+	dirtyQueue dirtyQueueState
 }
 
 func (m *spaceManager) Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error {
@@ -572,16 +581,13 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	if err := loadJSON(m.path(inferencePoliciesFileName), &m.policies, inferencePoliciesState{Policies: []domainsemantic.InferencePolicy{}}); err != nil {
 		return err
 	}
-	if err := loadJSON(m.path(dirtyQueueFileName), &m.dirtyQueue, dirtyQueueState{Items: []domainsemantic.SemanticDirtyWorkItem{}}); err != nil {
-		return err
-	}
 	if err := loadJSON(m.path(indexStateFileName), &m.indexStates, indexStatesState{States: []domainsemantic.SemanticIndexState{}}); err != nil {
 		return err
 	}
 	if err := loadJSON(m.path(policyDecisionsFileName), &m.policyDecisions, policyDecisionsState{Decisions: []domainsemantic.PolicyDecision{}}); err != nil {
 		return err
 	}
-	return os.MkdirAll(filepath.Join(location, graphDirtyEventsDirName), 0o755)
+	return os.MkdirAll(filepath.Join(location, maintenanceDirName), 0o755)
 }
 
 func (m *spaceManager) UpsertSemanticIndex(ctx context.Context, index domainsemantic.SemanticIndex) (domainsemantic.SemanticIndex, error) {
@@ -717,13 +723,6 @@ func (m *spaceManager) DeleteSemanticIndex(ctx context.Context, id domainsemanti
 			}
 		}
 		m.policies.Policies = policies
-		dirty := m.dirtyQueue.Items[:0]
-		for _, item := range m.dirtyQueue.Items {
-			if item.SemanticIndexID != id {
-				dirty = append(dirty, item)
-			}
-		}
-		m.dirtyQueue.Items = dirty
 		states := m.indexStates.States[:0]
 		for _, state := range m.indexStates.States {
 			if state.SemanticIndexID != id {
@@ -747,9 +746,6 @@ func (m *spaceManager) DeleteSemanticIndex(ctx context.Context, id domainsemanti
 			return err
 		}
 		if err := persistJSON(m.path(inferencePoliciesFileName), m.policies); err != nil {
-			return err
-		}
-		if err := persistJSON(m.path(dirtyQueueFileName), m.dirtyQueue); err != nil {
 			return err
 		}
 		if err := persistJSON(m.path(indexStateFileName), m.indexStates); err != nil {
@@ -792,7 +788,30 @@ func (m *spaceManager) DeleteInferencePolicy(ctx context.Context, id domainseman
 	return ErrNotFound
 }
 
-func (m *spaceManager) AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error) {
+func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(location) == "" {
+		return fmt.Errorf("%w: location is required", ErrInvalidInput)
+	}
+	if spaceID == uuid.Nil {
+		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.location = location
+	m.spaceID = spaceID
+	if err := os.MkdirAll(filepath.Join(location, graphDirtyEventsDirName), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(location, workStateDirName), 0o755); err != nil {
+		return err
+	}
+	return loadJSON(m.workStatePath(), &m.dirtyQueue, dirtyQueueState{Items: []domainsemantic.SemanticDirtyWorkItem{}})
+}
+
+func (m *maintenanceManager) AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.GraphDirtyEvent{}, err
 	}
@@ -834,7 +853,7 @@ func (m *spaceManager) AppendGraphDirtyEvent(ctx context.Context, event domainse
 	return event, f.Sync()
 }
 
-func (m *spaceManager) ListGraphDirtyEvents(ctx context.Context) ([]domainsemantic.GraphDirtyEvent, error) {
+func (m *maintenanceManager) ListGraphDirtyEvents(ctx context.Context) ([]domainsemantic.GraphDirtyEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -843,7 +862,7 @@ func (m *spaceManager) ListGraphDirtyEvents(ctx context.Context) ([]domainsemant
 	return readGraphDirtyEvents(m.graphDirtyEventsPath())
 }
 
-func (m *spaceManager) UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error) {
+func (m *maintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error) {
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.SemanticDirtyWorkItem{}, err
 	}
@@ -875,14 +894,14 @@ func (m *spaceManager) UpsertDirtyWorkItem(ctx context.Context, item domainseman
 			}
 			item.SourceTxnIDs = mergeTxnIDs(existing.SourceTxnIDs, item.SourceTxnIDs)
 			m.dirtyQueue.Items[i] = item
-			return item, persistJSON(m.path(dirtyQueueFileName), m.dirtyQueue)
+			return item, persistJSON(m.workStatePath(), m.dirtyQueue)
 		}
 	}
 	m.dirtyQueue.Items = append(m.dirtyQueue.Items, item)
-	return item, persistJSON(m.path(dirtyQueueFileName), m.dirtyQueue)
+	return item, persistJSON(m.workStatePath(), m.dirtyQueue)
 }
 
-func (m *spaceManager) ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+func (m *maintenanceManager) ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -953,8 +972,12 @@ func (m *spaceManager) ListPolicyDecisions(ctx context.Context) ([]domainsemanti
 	return append([]domainsemantic.PolicyDecision(nil), m.policyDecisions.Decisions...), nil
 }
 
-func (m *spaceManager) graphDirtyEventsPath() string {
+func (m *maintenanceManager) graphDirtyEventsPath() string {
 	return filepath.Join(m.location, graphDirtyEventsDirName, graphDirtyEventsFileName)
+}
+
+func (m *maintenanceManager) workStatePath() string {
+	return filepath.Join(m.location, workStateDirName, workStateFileName)
 }
 
 func (m *spaceManager) path(name string) string { return filepath.Join(m.location, name) }

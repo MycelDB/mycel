@@ -108,6 +108,7 @@ type Txn interface {
 	PutEdge(edge graph.Edge) error
 	DeleteEdge(id graph.EdgeID) error
 	Commit() error
+	CommitWithInfo() (CommitInfo, error)
 	Rollback() error
 }
 

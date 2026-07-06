@@ -249,6 +249,51 @@ func TestSpaceManagerUpsertsScopedSemanticResources(t *testing.T) {
 	}
 }
 
+func TestMaintenanceManagerPersistsDirtyEventsAndWork(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	location := t.TempDir()
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, location, spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	txnID := uuid.New()
+	event := domainsemantic.GraphDirtyEvent{TxnID: txnID, GraphRevision: 7, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, CreatedNodeIDs: []graph.NodeID{nodeID}}
+	first, err := mgr.AppendGraphDirtyEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("append event failed: %v", err)
+	}
+	second, err := mgr.AppendGraphDirtyEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("append duplicate failed: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("expected idempotent append, first=%s second=%s", first.ID, second.ID)
+	}
+	item, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, SourceTxnIDs: []uuid.UUID{txnID}, FirstGraphRevision: 7, LastGraphRevision: 7})
+	if err != nil {
+		t.Fatalf("upsert work failed: %v", err)
+	}
+	if item.ID == uuid.Nil || item.Status != domainsemantic.SemanticDirtyWorkStatusPending || item.Action != domainsemantic.SemanticDirtyWorkActionRefresh {
+		t.Fatalf("unexpected item defaults: %+v", item)
+	}
+	reloaded := NewMaintenanceManager()
+	if err := reloaded.Init(ctx, location, spaceID); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	events, err := reloaded.ListGraphDirtyEvents(ctx)
+	if err != nil || len(events) != 1 || events[0].TxnID != txnID {
+		t.Fatalf("unexpected events: %+v err=%v", events, err)
+	}
+	items, err := reloaded.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 1 || items[0].ID != item.ID {
+		t.Fatalf("unexpected items: %+v err=%v", items, err)
+	}
+}
+
 func TestSpaceManagerRejectsMismatchedSpaceScope(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

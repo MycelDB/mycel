@@ -14,7 +14,8 @@ import (
 )
 
 type Analyzer struct {
-	SpaceManager storesemantic.SpaceManager
+	SpaceManager       storesemantic.SpaceManager
+	MaintenanceManager storesemantic.MaintenanceManager
 }
 
 type AnalyzeInput struct {
@@ -31,6 +32,9 @@ func (a Analyzer) AnalyzeOnce(ctx context.Context, in AnalyzeInput) (AnalyzeResu
 	if a.SpaceManager == nil {
 		return AnalyzeResult{}, fmt.Errorf("space manager is required")
 	}
+	if a.MaintenanceManager == nil {
+		return AnalyzeResult{}, fmt.Errorf("maintenance manager is required")
+	}
 	indexes, err := a.SpaceManager.ListSemanticIndexes(ctx)
 	if err != nil {
 		return AnalyzeResult{}, err
@@ -43,7 +47,7 @@ func (a Analyzer) AnalyzeOnce(ctx context.Context, in AnalyzeInput) (AnalyzeResu
 	for _, st := range states {
 		stateByIndex[st.SemanticIndexID] = st
 	}
-	events, err := a.SpaceManager.ListGraphDirtyEvents(ctx)
+	events, err := a.MaintenanceManager.ListGraphDirtyEvents(ctx)
 	if err != nil {
 		return AnalyzeResult{}, err
 	}
@@ -80,7 +84,7 @@ func (a Analyzer) AnalyzeOnce(ctx context.Context, in AnalyzeInput) (AnalyzeResu
 				break
 			}
 		}
-		items, _ := a.SpaceManager.ListDirtyWorkItems(ctx)
+		items, _ := a.MaintenanceManager.ListDirtyWorkItems(ctx)
 		state.DirtyCount = countPending(items, index.ID)
 		state.State = "active"
 		state.LastError = ""
@@ -100,7 +104,7 @@ func (a Analyzer) enqueueForEvent(ctx context.Context, index domainsemantic.Sema
 		if containsNode(event.DeletedNodeIDs, nodeID) {
 			item.Action = domainsemantic.SemanticDirtyWorkActionDelete
 		}
-		if _, err := a.SpaceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
+		if _, err := a.MaintenanceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
 			return count, err
 		}
 		count++
@@ -179,8 +183,9 @@ func countPending(items []domainsemantic.SemanticDirtyWorkItem, indexID domainse
 }
 
 type Worker struct {
-	SpaceManager storesemantic.SpaceManager
-	Backfill     backfill.Runner
+	SpaceManager       storesemantic.SpaceManager
+	MaintenanceManager storesemantic.MaintenanceManager
+	Backfill           backfill.Runner
 }
 
 type WorkerResult struct {
@@ -208,7 +213,10 @@ func (w Worker) ProcessOnce(ctx context.Context, limit int) (WorkerResult, error
 	if w.SpaceManager == nil {
 		return WorkerResult{}, fmt.Errorf("space manager is required")
 	}
-	items, err := w.SpaceManager.ListDirtyWorkItems(ctx)
+	if w.MaintenanceManager == nil {
+		return WorkerResult{}, fmt.Errorf("maintenance manager is required")
+	}
+	items, err := w.MaintenanceManager.ListDirtyWorkItems(ctx)
 	if err != nil {
 		return WorkerResult{}, err
 	}
@@ -223,7 +231,7 @@ func (w Worker) ProcessOnce(ctx context.Context, limit int) (WorkerResult, error
 		result.Processed++
 		item.Status = domainsemantic.SemanticDirtyWorkStatusRunning
 		item.Attempts++
-		if _, err := w.SpaceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
+		if _, err := w.MaintenanceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
 			return result, err
 		}
 		if item.Action == domainsemantic.SemanticDirtyWorkActionRefresh || item.Action == domainsemantic.SemanticDirtyWorkActionBackfill {
@@ -246,7 +254,7 @@ func (w Worker) ProcessOnce(ctx context.Context, limit int) (WorkerResult, error
 			item.LastError = ""
 			result.Completed++
 		}
-		if _, err := w.SpaceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
+		if _, err := w.MaintenanceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
 			return result, err
 		}
 	}

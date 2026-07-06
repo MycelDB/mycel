@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
+	domainspace "github.com/myceldb/mycel/domain/space"
+	"github.com/myceldb/mycel/internal/graphchange"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	"github.com/myceldb/mycel/query"
 )
@@ -651,4 +654,62 @@ func TestFileSessionTransactionPhase8ReadOnlyCommitDoesNotConflict(t *testing.T)
 	if err := readOnly.Commit(ctx); err != nil {
 		t.Fatalf("read-only commit should not conflict, got %v", err)
 	}
+}
+
+func TestFileSessionGraphChangeSinkReceivesPostCommitEvent(t *testing.T) {
+	ctx := context.Background()
+	seen := false
+	sess, fs, tmplID := newHierarchyTestFileSessionWithSink(t, graphchange.SinkFunc(func(_ context.Context, event graphchange.CommittedEvent) error {
+		seen = true
+		if event.TxnID == uuid.Nil {
+			t.Fatalf("expected txn id")
+		}
+		if event.GraphRevision == 0 {
+			t.Fatalf("expected graph revision")
+		}
+		if len(event.CreatedNodeIDs) != 1 {
+			t.Fatalf("expected one created node, got %+v", event)
+		}
+		return nil
+	}))
+	if _, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "node", Props: map[string]any{}}); err != nil {
+		t.Fatalf("add node failed: %v", err)
+	}
+	if !seen {
+		t.Fatalf("expected sink to be invoked")
+	}
+	if err := fs.LastGraphChangeSinkError(); err != nil {
+		t.Fatalf("unexpected sink error: %v", err)
+	}
+}
+
+func TestFileSessionGraphChangeSinkFailureDoesNotFailCommit(t *testing.T) {
+	ctx := context.Background()
+	sinkErr := errors.New("sink failed")
+	sess, fs, tmplID := newHierarchyTestFileSessionWithSink(t, graphchange.SinkFunc(func(context.Context, graphchange.CommittedEvent) error {
+		return sinkErr
+	}))
+	node, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "node", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("graph commit should succeed despite sink failure: %v", err)
+	}
+	if _, err := sess.GetNode(ctx, node.ID); err != nil {
+		t.Fatalf("committed node should be visible: %v", err)
+	}
+	if !errors.Is(fs.LastGraphChangeSinkError(), sinkErr) {
+		t.Fatalf("expected recorded sink error, got %v", fs.LastGraphChangeSinkError())
+	}
+}
+
+func newHierarchyTestFileSessionWithSink(t *testing.T, sink graphchange.Sink) (sessionapi.Session, *FileSession, graph.TemplateID) {
+	t.Helper()
+	spaceID := domainspace.SpaceID(uuid.New())
+	graphsDir := t.TempDir()
+	prepareSpaceDir(t, graphsDir, spaceID)
+	tmplID := graph.TemplateID(uuid.New())
+	manager := hierarchyTemplateManager{templates: map[graph.TemplateID]graph.Template{
+		tmplID: {ID: tmplID, SpaceID: spaceID, Key: "entry", Version: "1", Children: graph.ChildPolicy{Allowed: true}, Properties: graph.PropertyPolicy{AllowExtra: true}},
+	}}
+	sess := NewConfig(graphsDir, t.TempDir(), spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}, Config{GraphChangeSink: sink})
+	return sess, sess.(*FileSession), tmplID
 }

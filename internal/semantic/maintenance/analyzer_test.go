@@ -18,9 +18,14 @@ func TestAnalyzerCoalescesGraphDirtyEvents(t *testing.T) {
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	nodeID := graph.NodeID(uuid.New())
+	root := t.TempDir()
 	mgr := storesemantic.NewSpaceManager()
-	if err := mgr.Init(ctx, filepath.Join(t.TempDir(), "semantic"), spaceID); err != nil {
+	if err := mgr.Init(ctx, filepath.Join(root, "semantic"), spaceID); err != nil {
 		t.Fatalf("init failed: %v", err)
+	}
+	maintenanceMgr := storesemantic.NewMaintenanceManager()
+	if err := maintenanceMgr.Init(ctx, filepath.Join(root, "semantic", "maintenance"), spaceID); err != nil {
+		t.Fatalf("maintenance init failed: %v", err)
 	}
 	idx, err := mgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true})
 	if err != nil {
@@ -28,24 +33,24 @@ func TestAnalyzerCoalescesGraphDirtyEvents(t *testing.T) {
 	}
 	txnID := uuid.New()
 	event := domainsemantic.GraphDirtyEvent{TxnID: txnID, GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, CreatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}
-	if _, err := mgr.AppendGraphDirtyEvent(ctx, event); err != nil {
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, event); err != nil {
 		t.Fatalf("append event failed: %v", err)
 	}
-	if _, err := mgr.AppendGraphDirtyEvent(ctx, event); err != nil {
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, event); err != nil {
 		t.Fatalf("append duplicate failed: %v", err)
 	}
-	events, err := mgr.ListGraphDirtyEvents(ctx)
+	events, err := maintenanceMgr.ListGraphDirtyEvents(ctx)
 	if err != nil || len(events) != 1 {
 		t.Fatalf("expected idempotent event list, events=%+v err=%v", events, err)
 	}
-	res, err := (Analyzer{SpaceManager: mgr}).AnalyzeOnce(ctx, AnalyzeInput{})
+	res, err := (Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr}).AnalyzeOnce(ctx, AnalyzeInput{})
 	if err != nil {
 		t.Fatalf("analyze failed: %v", err)
 	}
 	if res.ProcessedEvents != 1 || res.EnqueuedItems != 1 {
 		t.Fatalf("unexpected analyze result %+v", res)
 	}
-	items, err := mgr.ListDirtyWorkItems(ctx)
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("expected one dirty item, items=%+v err=%v", items, err)
 	}
@@ -56,7 +61,7 @@ func TestAnalyzerCoalescesGraphDirtyEvents(t *testing.T) {
 	if err != nil || len(states) != 1 || states[0].GraphDirtyCheckpointRevision != 1 || states[0].DirtyCount != 1 {
 		t.Fatalf("unexpected states %+v err=%v", states, err)
 	}
-	res, err = (Analyzer{SpaceManager: mgr}).AnalyzeOnce(ctx, AnalyzeInput{})
+	res, err = (Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr}).AnalyzeOnce(ctx, AnalyzeInput{})
 	if err != nil {
 		t.Fatalf("second analyze failed: %v", err)
 	}

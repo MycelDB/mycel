@@ -199,9 +199,11 @@ func (a DirtyEventAppender) OnGraphCommitted(ctx context.Context, ev graphchange
 
 This keeps embedding scheduling totally out of `SpaceManager` and keeps graph/session code decoupled from semantic analyzer and worker internals.
 
-### Durability rule
+### Durability and failure rule
 
-The sink must append a durable dirty event before the graph write is considered fully maintenance-visible. The sink should do only cheap local persistence. It must not:
+The sink appends a durable dirty event synchronously after the graph commit. Graph commits do not fail if the sink fails; instead, the emitting component records semantic maintenance as degraded so Admin/status APIs can surface the failure and operators can trigger recovery.
+
+The sink should do only cheap local persistence. It must not:
 
 - resolve semantic indexes
 - evaluate policies
@@ -390,7 +392,19 @@ semantic:
     max_concurrent_provider_calls: 4
     max_requests_per_minute: 60
     max_tokens_per_minute: 100000
+    provider_defaults:
+      max_concurrent_calls: 2
+      max_requests_per_minute: 60
+      max_tokens_per_minute: 100000
+    credential_defaults:
+      max_concurrent_calls: 1
+      max_requests_per_minute: 30
+      max_tokens_per_minute: 50000
 ```
+
+The default dirty cooldown is 60 seconds and configurable at the system level.
+
+Effective throttling should be the strictest active limit across global, provider, model/capability, credential, and credential-grant scopes.
 
 The worker pool should claim ready work items where:
 
@@ -439,7 +453,7 @@ vector_store_error
 internal_error
 ```
 
-Retryable failures should use exponential backoff. Permanent failures should be recorded and surfaced through maintenance/status APIs.
+Retryable failures should use exponential backoff. Permanent failures should be recorded and surfaced through maintenance/status APIs. Maintenance status should expose queue depths, degraded state/reason, oldest pending age, failure counts/categories, last analyzer/worker timestamps, and throttle state without exposing secrets, source text, provider payloads, or vectors.
 
 All failures should be structured logged with:
 

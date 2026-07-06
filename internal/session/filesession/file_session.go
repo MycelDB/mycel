@@ -14,10 +14,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
-	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/blobstorage"
 	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
+	"github.com/myceldb/mycel/internal/graphchange"
 	"github.com/myceldb/mycel/internal/graphstorage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	"github.com/myceldb/mycel/query"
@@ -37,6 +37,7 @@ type Config struct {
 	UserStoreEncryptionKeyB64 string
 	DomainID                  graph.DomainID
 	AdvancedSemanticEnabled   bool
+	GraphChangeSink           graphchange.Sink
 }
 
 // New opens the default file-backed session implementation.
@@ -51,12 +52,12 @@ func NewWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID
 
 // NewWithStoreConfig opens a session that borrows an engine-owned graph store.
 func NewWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink}
 }
 
 // NewConfig opens the default file-backed session implementation.
 func NewConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink}
 }
 
 // FileSession is the default file-backed Session implementation.
@@ -78,6 +79,8 @@ type FileSession struct {
 	accountingManager         storeaccounting.Manager
 	userStoreEncryptionKeyB64 string
 	advancedSemanticEnabled   bool
+	graphChangeSink           graphchange.Sink
+	lastGraphChangeSinkErr    error
 	closeStore                bool
 	closed                    bool
 }
@@ -571,22 +574,13 @@ func (s *FileSession) commitGraphAtRevision(ctx context.Context, putNodes []grap
 	if expectedRevision != nil {
 		txn.ExpectRevision(*expectedRevision)
 	}
-	if s.advancedSemanticEnabled && (len(putNodes) > 0 || len(putEdges) > 0 || len(deleteNodes) > 0 || len(deleteEdges) > 0) {
-		event, err := s.buildGraphDirtyEvent(ctx, store, putNodes, putEdges, deleteNodes, deleteEdges)
+	var event graphchange.CommittedEvent
+	if s.graphChangeSink != nil && (len(putNodes) > 0 || len(putEdges) > 0 || len(deleteNodes) > 0 || len(deleteEdges) > 0) {
+		event, err = s.buildGraphChangeEvent(ctx, store, putNodes, putEdges, deleteNodes, deleteEdges)
 		if err != nil {
 			_ = txn.Rollback()
 			return err
 		}
-		txn.SetCommitHook(func(info graphstorage.CommitInfo) error {
-			event.TxnID = info.TxnID
-			event.GraphRevision = info.NextRevision
-			mgr := storesemantic.NewSpaceManager()
-			if err := mgr.Init(ctx, filepath.Join(s.graphsDir, s.spaceID.String(), "semantic"), s.spaceID); err != nil {
-				return err
-			}
-			_, err := mgr.AppendGraphDirtyEvent(ctx, event)
-			return err
-		})
 	}
 	for _, node := range putNodes {
 		if err := txn.PutNode(node); err != nil {
@@ -612,18 +606,30 @@ func (s *FileSession) commitGraphAtRevision(ctx context.Context, putNodes []grap
 			return err
 		}
 	}
-	if err := txn.Commit(); err != nil {
+	info, err := txn.CommitWithInfo()
+	if err != nil {
 		if errors.Is(err, graphstorage.ErrConflict) && s.errors.Conflict != nil {
 			return s.errors.Conflict
 		}
 		return err
 	}
+	if s.graphChangeSink != nil && !event.Empty() {
+		event.TxnID = info.TxnID
+		event.GraphRevision = info.NextRevision
+		if err := s.graphChangeSink.OnGraphCommitted(ctx, event); err != nil {
+			s.lastGraphChangeSinkErr = err
+		} else {
+			s.lastGraphChangeSinkErr = nil
+		}
+	}
 	s.releaseUnreferencedBlobs(ctx, store, releasedBlobs)
 	return nil
 }
 
-func (s *FileSession) buildGraphDirtyEvent(ctx context.Context, store *graphstorage.LocalStore, putNodes []graph.Node, putEdges []graph.Edge, deleteNodes []graph.NodeID, deleteEdges []graph.EdgeID) (domainsemantic.GraphDirtyEvent, error) {
-	event := domainsemantic.GraphDirtyEvent{SpaceID: s.spaceID, DomainIDs: []graph.DomainID{}, CreatedNodeIDs: []graph.NodeID{}, UpdatedNodeIDs: []graph.NodeID{}, DeletedNodeIDs: []graph.NodeID{}, ChangedEdges: []domainsemantic.GraphDirtyEdgeChange{}, OldParentByNodeID: map[graph.NodeID]graph.NodeID{}, NewParentByNodeID: map[graph.NodeID]graph.NodeID{}, OldDomainByNodeID: map[graph.NodeID]graph.DomainID{}, NewDomainByNodeID: map[graph.NodeID]graph.DomainID{}, CommittedAt: time.Now().UTC()}
+func (s *FileSession) LastGraphChangeSinkError() error { return s.lastGraphChangeSinkErr }
+
+func (s *FileSession) buildGraphChangeEvent(ctx context.Context, store *graphstorage.LocalStore, putNodes []graph.Node, putEdges []graph.Edge, deleteNodes []graph.NodeID, deleteEdges []graph.EdgeID) (graphchange.CommittedEvent, error) {
+	event := graphchange.CommittedEvent{SpaceID: s.spaceID, DomainIDs: []graph.DomainID{}, CreatedNodeIDs: []graph.NodeID{}, UpdatedNodeIDs: []graph.NodeID{}, DeletedNodeIDs: []graph.NodeID{}, ChangedEdges: []graphchange.EdgeChange{}, OldParentByNodeID: map[graph.NodeID]graph.NodeID{}, NewParentByNodeID: map[graph.NodeID]graph.NodeID{}, OldDomainByNodeID: map[graph.NodeID]graph.DomainID{}, NewDomainByNodeID: map[graph.NodeID]graph.DomainID{}, CommittedAt: time.Now().UTC()}
 	domains := map[graph.DomainID]bool{}
 	addDomain := func(id graph.DomainID) {
 		if id != uuid.Nil {
@@ -639,14 +645,14 @@ func (s *FileSession) buildGraphDirtyEvent(ctx context.Context, store *graphstor
 		} else if errors.Is(err, graphstorage.ErrNotFound) {
 			event.CreatedNodeIDs = append(event.CreatedNodeIDs, node.ID)
 		} else {
-			return domainsemantic.GraphDirtyEvent{}, err
+			return graphchange.CommittedEvent{}, err
 		}
 		event.NewDomainByNodeID[node.ID] = node.DomainID
 		addDomain(node.DomainID)
 		if parent, err := store.Parent(ctx, node.ID); err == nil && parent != nil {
 			event.OldParentByNodeID[node.ID] = parent.FromID
 		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
-			return domainsemantic.GraphDirtyEvent{}, err
+			return graphchange.CommittedEvent{}, err
 		}
 	}
 	for _, id := range deleteNodes {
@@ -656,12 +662,12 @@ func (s *FileSession) buildGraphDirtyEvent(ctx context.Context, store *graphstor
 			event.OldDomainByNodeID[id] = old.DomainID
 			addDomain(old.DomainID)
 		} else if !errors.Is(err, graphstorage.ErrNotFound) {
-			return domainsemantic.GraphDirtyEvent{}, err
+			return graphchange.CommittedEvent{}, err
 		}
 		if parent, err := store.Parent(ctx, id); err == nil && parent != nil {
 			event.OldParentByNodeID[id] = parent.FromID
 		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
-			return domainsemantic.GraphDirtyEvent{}, err
+			return graphchange.CommittedEvent{}, err
 		}
 	}
 	for _, edge := range putEdges {
@@ -672,12 +678,12 @@ func (s *FileSession) buildGraphDirtyEvent(ctx context.Context, store *graphstor
 				event.OldParentByNodeID[old.ToID] = old.FromID
 			}
 		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
-			return domainsemantic.GraphDirtyEvent{}, err
+			return graphchange.CommittedEvent{}, err
 		}
 		if edge.Kind == graph.EdgeKindContains {
 			event.NewParentByNodeID[edge.ToID] = edge.FromID
 		}
-		event.ChangedEdges = append(event.ChangedEdges, domainsemantic.GraphDirtyEdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: change, FromID: edge.FromID, ToID: edge.ToID})
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: change, FromID: edge.FromID, ToID: edge.ToID})
 	}
 	for _, id := range deleteEdges {
 		edge, err := store.GetEdge(ctx, id)
@@ -685,12 +691,12 @@ func (s *FileSession) buildGraphDirtyEvent(ctx context.Context, store *graphstor
 			if errors.Is(err, graphstorage.ErrNotFound) {
 				continue
 			}
-			return domainsemantic.GraphDirtyEvent{}, err
+			return graphchange.CommittedEvent{}, err
 		}
 		if edge.Kind == graph.EdgeKindContains {
 			event.OldParentByNodeID[edge.ToID] = edge.FromID
 		}
-		event.ChangedEdges = append(event.ChangedEdges, domainsemantic.GraphDirtyEdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
 	}
 	for id := range domains {
 		event.DomainIDs = append(event.DomainIDs, id)

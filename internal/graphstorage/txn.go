@@ -62,26 +62,31 @@ func (t *localTxn) DeleteEdge(id graph.EdgeID) error {
 func (t *localTxn) Rollback() error { t.closed = true; return nil }
 
 func (t *localTxn) Commit() error {
+	_, err := t.CommitWithInfo()
+	return err
+}
+
+func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	if t.closed {
-		return ErrTxnClosed
+		return CommitInfo{}, ErrTxnClosed
 	}
 	t.store.mu.Lock()
 	defer t.store.mu.Unlock()
 	if err := t.store.ensureReady(); err != nil {
-		return err
+		return CommitInfo{}, err
 	}
 	if t.expectedRevision != nil && *t.expectedRevision > t.store.revision {
-		return ErrConflict
+		return CommitInfo{}, ErrConflict
 	}
 	if _, ok := t.writeSetConflict(); ok {
-		return ErrConflict
+		return CommitInfo{}, ErrConflict
 	}
 	if _, ok := t.invariantConflict(); ok {
-		return ErrConflict
+		return CommitInfo{}, ErrConflict
 	}
 	zero := uuid.Nil
 	if _, err := t.store.txns.appendRecord(RecordKindTxnBegin, t.id, zero, nil); err != nil {
-		return err
+		return CommitInfo{}, err
 	}
 	nodeLocs := make([]RecordLocation, len(t.nodePuts))
 	edgeLocs := make([]RecordLocation, len(t.edgePuts))
@@ -90,55 +95,56 @@ func (t *localTxn) Commit() error {
 	for i, n := range t.nodePuts {
 		payload, err := encodeNode(n)
 		if err != nil {
-			return err
+			return CommitInfo{}, err
 		}
 		loc, err := t.store.nodes.appendRecord(RecordKindNodePut, t.id, n.ID, payload)
 		if err != nil {
-			return err
+			return CommitInfo{}, err
 		}
 		nodeLocs[i] = loc
 	}
 	for i, id := range t.nodeDeletes {
 		loc, err := t.store.nodes.appendRecord(RecordKindNodeTombstone, t.id, id, nil)
 		if err != nil {
-			return err
+			return CommitInfo{}, err
 		}
 		nodeDelLocs[i] = loc
 	}
 	for i, e := range t.edgePuts {
 		payload, err := encodeEdge(e)
 		if err != nil {
-			return err
+			return CommitInfo{}, err
 		}
 		loc, err := t.store.edges.appendRecord(RecordKindEdgePut, t.id, e.ID, payload)
 		if err != nil {
-			return err
+			return CommitInfo{}, err
 		}
 		edgeLocs[i] = loc
 	}
 	for i, id := range t.edgeDeletes {
 		loc, err := t.store.edges.appendRecord(RecordKindEdgeTombstone, t.id, id, nil)
 		if err != nil {
-			return err
+			return CommitInfo{}, err
 		}
 		edgeDelLocs[i] = loc
 	}
 	if err := t.store.nodes.sync(); err != nil {
-		return err
+		return CommitInfo{}, err
 	}
 	if err := t.store.edges.sync(); err != nil {
-		return err
+		return CommitInfo{}, err
 	}
+	info := CommitInfo{TxnID: t.id, NextRevision: t.store.revision + 1}
 	if t.commitHook != nil {
-		if err := t.commitHook(CommitInfo{TxnID: t.id, NextRevision: t.store.revision + 1}); err != nil {
-			return err
+		if err := t.commitHook(info); err != nil {
+			return CommitInfo{}, err
 		}
 	}
 	if _, err := t.store.txns.appendRecord(RecordKindTxnCommit, t.id, zero, nil); err != nil {
-		return err
+		return CommitInfo{}, err
 	}
 	if err := t.store.txns.sync(); err != nil {
-		return err
+		return CommitInfo{}, err
 	}
 	for i, n := range t.nodePuts {
 		t.store.applyNodePut(n, nodeLocs[i])
@@ -167,7 +173,7 @@ func (t *localTxn) Commit() error {
 		t.store.edgeModRev[id] = newRev
 	}
 	t.closed = true
-	return nil
+	return info, nil
 }
 
 // invariantConflict reports graph-shape conflicts that are not captured by

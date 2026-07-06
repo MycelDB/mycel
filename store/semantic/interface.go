@@ -33,7 +33,7 @@ type GlobalManager interface {
 	DeleteCredential(ctx context.Context, id domainsemantic.InferenceCredentialID) error
 }
 
-// SpaceManager stores space-owned semantic metadata under graphs/<space_id>/semantic/.
+// SpaceManager stores space-owned semantic resource metadata under graphs/<space_id>/semantic/.
 type SpaceManager interface {
 	Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error
 	UpsertSemanticIndex(ctx context.Context, index domainsemantic.SemanticIndex) (domainsemantic.SemanticIndex, error)
@@ -45,15 +45,22 @@ type SpaceManager interface {
 	UpsertInferencePolicy(ctx context.Context, policy domainsemantic.InferencePolicy) (domainsemantic.InferencePolicy, error)
 	ListInferencePolicies(ctx context.Context) ([]domainsemantic.InferencePolicy, error)
 	DeleteInferencePolicy(ctx context.Context, id domainsemantic.InferencePolicyID) error
-	AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error)
-	ListGraphDirtyEvents(ctx context.Context) ([]domainsemantic.GraphDirtyEvent, error)
-	UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error)
-	ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error)
 	UpsertIndexState(ctx context.Context, state domainsemantic.SemanticIndexState) (domainsemantic.SemanticIndexState, error)
 	ListIndexStates(ctx context.Context) ([]domainsemantic.SemanticIndexState, error)
 	UpsertPolicyDecision(ctx context.Context, decision domainsemantic.PolicyDecision) (domainsemantic.PolicyDecision, error)
 	ListPolicyDecisions(ctx context.Context) ([]domainsemantic.PolicyDecision, error)
 }
 
-func NewGlobalManager() GlobalManager { return &globalManager{} }
-func NewSpaceManager() SpaceManager   { return &spaceManager{} }
+// MaintenanceManager stores dynamic semantic background-processing state under
+// graphs/<space_id>/semantic/maintenance/.
+type MaintenanceManager interface {
+	Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error
+	AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error)
+	ListGraphDirtyEvents(ctx context.Context) ([]domainsemantic.GraphDirtyEvent, error)
+	UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error)
+	ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error)
+}
+
+func NewGlobalManager() GlobalManager           { return &globalManager{} }
+func NewSpaceManager() SpaceManager             { return &spaceManager{} }
+func NewMaintenanceManager() MaintenanceManager { return &maintenanceManager{} }
