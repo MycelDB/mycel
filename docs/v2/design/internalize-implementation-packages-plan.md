@@ -53,12 +53,14 @@ This consumer must be migrated before public implementation packages can be remo
 
 ## Phase 0: Freeze the intended boundary
 
+Status: implemented in transitional mode. `scripts/check-public-surface.sh` is wired into `make test` and `make build`. It fails on newly introduced top-level implementation packages and can run with `--strict` after `knot_pkm_importer` is migrated.
+
 ### Tasks
 
-- Document that `mycel` is daemon-only and not an application library API.
-- Add a checked script that fails on external consumer imports of old packages.
-- Run the script initially in report-only mode if `knot_pkm_importer` has not yet migrated.
-- Add a Mycel-local check that no new packages are added outside approved public locations.
+- Document that `mycel` is daemon-only and not an application library API. **Done.**
+- Add a checked script that fails on external consumer imports of old packages in strict mode. **Done.**
+- Run the script initially in report-only/transitional mode while `knot_pkm_importer` has not yet migrated. **Done.**
+- Add a Mycel-local check that no new packages are added outside approved public locations. **Done.**
 
 Approved public locations:
 
@@ -97,7 +99,7 @@ git diff --check
 go test ./...
 ```
 
-If importer is not yet migrated, the external-import script may be allowed to report known hits only. After Phase 1, it must be zero-hit.
+If importer is not yet migrated, `scripts/check-public-surface.sh --workspace <root>` reports known hits without failing. After Phase 1, `scripts/check-public-surface.sh --workspace <root> --strict` must be zero-hit.
 
 ## Phase 1: Migrate `knot_pkm_importer` to daemon SDK/API
 

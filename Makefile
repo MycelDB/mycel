@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: check-daemon-only test test-verbose test-watch build build-cli build-daemon run-cli run-daemon start stop api-info
+.PHONY: check-daemon-only check-public-surface test test-verbose test-watch build build-cli build-daemon run-cli run-daemon start stop api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -15,7 +15,10 @@ api-info:
 check-daemon-only:
 	scripts/check-daemon-only.sh
 
-test: check-daemon-only
+check-public-surface:
+	scripts/check-public-surface.sh
+
+test: check-daemon-only check-public-surface
 	go test ./...
 
 test-verbose: check-daemon-only
@@ -26,7 +29,7 @@ test-watch:
 	@command -v watchexec >/dev/null 2>&1 || (echo "watchexec is required. Install with: brew install watchexec" && exit 1)
 	watchexec -e go,sh -- "scripts/check-daemon-only.sh && go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
 
-build: check-daemon-only build-cli build-daemon
+build: check-daemon-only check-public-surface build-cli build-daemon
 
 build-cli:
 	go build -o bin/$(CLI_BINARY) ./cmd/mycel

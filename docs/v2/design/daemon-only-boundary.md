@@ -8,14 +8,18 @@ Mycel is now intended to run as a daemon-owned database process. Applications an
 
 ## Supported public surfaces
 
-The daemon-only target supports:
+The daemon-only target supports application access through:
+
+- `github.com/myceldb/mycel-api/api/proto/**`: protobuf service definitions for Admin and Client APIs.
+- `github.com/myceldb/mycel-api/gen/go/**`: generated gRPC/protobuf Go client/server stubs.
+- `github.com/myceldb/mycel-go-sdk`: Go client helpers that wrap daemon gRPC connections.
+
+This module supports binaries, not an embedded application library:
 
 - `cmd/myceld`: the daemon process and sole owner of the data directory.
 - `cmd/mycel`: operator/user CLI that connects to `myceld` over gRPC.
-- `github.com/myceldb/mycel-api/api/proto/**`: protobuf service definitions for Admin and Client APIs.
-- `github.com/myceldb/mycel-api/gen/go/**`: generated gRPC/protobuf Go client/server stubs.
-- Domain value packages that are pure data/type definitions and do not open local storage.
-- Future client libraries that wrap gRPC connections to a daemon.
+
+The remaining `domain/**`, `store/**`, and `query` packages are transitional implementation packages from the embedded era. They are not supported application APIs and are scheduled for internalization; see [Internalize Mycel Implementation Packages Plan](internalize-implementation-packages-plan.md).
 
 ## Unsupported runtime surfaces
 
@@ -23,7 +27,7 @@ These surfaces are removed, deprecated, or scheduled for removal/internalization
 
 - `engine.NewEngine`, `engine.Engine`, and the legacy `engine/` tree are removed.
 - `session.NewSession`, `session.NewSessionWithStore`, `session/api`, and direct public file-backed graph sessions are removed/internalized.
-- Public `store/**` manager interfaces as application extension points for embedded storage.
+- Public `domain/**`, `store/**`, and `query` packages as application extension points or DTO contracts.
 - CLI paths that open local stores or authenticate against local engine state.
 - `MYCELDB_*` embedded runtime configuration as a supported operator interface.
 
@@ -59,6 +63,7 @@ Only `myceld` should read or mutate the Mycel data directory. CLI commands and a
 3. **Session public package internalization**: implemented. `session/api` moved to `internal/session/api`; public `session` constructors and type aliases were removed; daemon internals call `internal/session/filesession` directly.
 4. **Config cleanup**: implemented. Active CLI config no longer reads embedded `MYCELDB_*` settings or exposes local runtime flags (`--data-dir`, auth TTLs, blob limits, semantic toggles). The CLI uses `MYCEL_CONFIG` for optional CLI config files and `MYCELD_*` for daemon connection/TLS settings.
 5. **Docs and enforcement**: implemented. `scripts/check-daemon-only.sh` is wired into `make test` and `make build`; it fails if the legacy `engine` tree, public `session` package, public embedded imports, legacy `MYCELDB_*` code references, or removed embedded CLI flags are reintroduced.
+6. **Public Go implementation surface freeze**: in progress. `scripts/check-public-surface.sh` is wired into `make test` and `make build` in transitional mode. It fails if new top-level implementation packages are added, reports remaining `domain/**`, `store/**`, and `query` debt, and can run in strict mode once `knot_pkm_importer` is migrated.
 
 ## Migration rule
 

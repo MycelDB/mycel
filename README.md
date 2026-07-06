@@ -19,21 +19,23 @@ See [`docs/v2/design/daemon-only-boundary.md`](docs/v2/design/daemon-only-bounda
 
 ## Layout
 
-**Supported daemon-facing surfaces:**
+**Supported application-facing surfaces:**
+
+- `github.com/myceldb/mycel-api/api/proto/`: protobuf service definitions.
+- `github.com/myceldb/mycel-api/gen/go/`: generated Go gRPC/protobuf stubs.
+- `github.com/myceldb/mycel-go-sdk`: Go daemon client helpers.
+
+**Supported binaries in this module:**
 
 - `cmd/myceld/`: daemon entrypoint and owner of local storage.
 - `cmd/mycel/`: CLI client for daemon Admin and Client APIs.
-- `github.com/myceldb/mycel-api/api/proto/`: protobuf service definitions.
-- `github.com/myceldb/mycel-api/gen/go/`: generated Go gRPC/protobuf stubs consumed by the daemon and clients.
-- `domain/`: pure domain value types used by daemon internals and API mapping.
-- `query/`: query-building/value helpers used by daemon query code.
 
 **Daemon implementation internals:**
 
 - `internal/daemon/`: runtime, modules, auth, and gRPC service adapters.
 - `internal/graphstorage/`, `internal/blobstorage/`, `internal/session/filesession/`: local persistence used by `myceld`.
-- `store/`: transitional file-backed stores used by daemon modules; not a supported application extension API.
 - `internal/session/`: internal session API/types and file-session implementation used by daemon modules.
+- `domain/`, `query/`, and `store/`: transitional implementation packages from the embedded era. They are not supported application APIs and are scheduled to move under `internal/` after remaining consumers migrate.
 
 ## Build
 
@@ -87,6 +89,7 @@ TLS/mTLS daemon connection flags are available:
 ## Testing
 
 - Daemon-only boundary check: `make check-daemon-only`
-- Run once: `make test` (includes daemon-only checks)
+- Public Go surface check: `make check-public-surface`
+- Run once: `make test` (includes daemon-only and public-surface checks)
 - Verbose + coverage: `make test-verbose`
 - Watch mode: `make test-watch` (requires `watchexec`)
