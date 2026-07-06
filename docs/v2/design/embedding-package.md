@@ -27,6 +27,9 @@ internal/embedding/
   provider/    low-level embedding provider client helpers
   source.go    graph node/tree source-text assembly helpers
 
+internal/graphchange/
+  event and sink interfaces for graph commit notifications
+
 internal/semantic/
   backfill/     semantic-index backfill execution
   maintenance/  dirty work analysis, scheduling, and worker behavior
@@ -162,25 +165,72 @@ maintenanceManager := semantic.MaintenanceManager(ctx, spaceID)
 
 This keeps semantic resource APIs separate from queue/worker mechanics.
 
+## Graph change notification boundary
+
+Graph/session code should not import semantic maintenance packages and should not know how embeddings are scheduled. Instead, graph commits should publish a neutral graph-change event through a narrow sink interface.
+
+Proposed package:
+
+```text
+internal/graphchange
+```
+
+Conceptual interface:
+
+```go
+type Sink interface {
+    OnGraphCommitted(ctx context.Context, event CommittedEvent) error
+}
+
+type MultiSink []Sink
+```
+
+`FileSession` or the daemon graph module depends only on this neutral package. Semantic maintenance then provides an implementation that converts committed graph changes into durable dirty events:
+
+```go
+type DirtyEventAppender struct {
+    Maintenance storesemantic.MaintenanceManager
+}
+
+func (a DirtyEventAppender) OnGraphCommitted(ctx context.Context, ev graphchange.CommittedEvent) error {
+    return a.Maintenance.AppendDirtyEvent(ctx, DirtyEventFromGraphCommit(ev))
+}
+```
+
+This keeps embedding scheduling totally out of `SpaceManager` and keeps graph/session code decoupled from semantic analyzer and worker internals.
+
+### Durability rule
+
+The sink must append a durable dirty event before the graph write is considered fully maintenance-visible. The sink should do only cheap local persistence. It must not:
+
+- resolve semantic indexes
+- evaluate policies
+- call model endpoints
+- generate embeddings
+- write vectors
+
+The preferred implementation is a synchronous durable append of the graph dirty event after a successful graph commit. In-memory asynchronous callbacks are not sufficient unless backed by another durable log, because dirty events must survive daemon crashes.
+
 ## Embedding generation architecture
 
 Embedding generation is a daemon maintenance pipeline:
 
 ```text
 graph mutation
-  -> append raw graph dirty event
-  -> analyze/coalesce dirty events
-  -> upsert semantic embedding work item
+  -> graphchange.Sink.OnGraphCommitted
+  -> MaintenanceManager appends raw graph dirty event
+  -> analyzer/coalescer reads dirty events
+  -> analyzer upserts semantic embedding work item
   -> worker pool processes ready work
-  -> call provider through connector
-  -> append semantic vector record or tombstone
+  -> connector calls provider
+  -> vectorstore appends semantic vector record or tombstone
 ```
 
 Graph mutation paths should do only cheap durable bookkeeping. They should not resolve model endpoints, credentials, policies, or call external providers.
 
 ## Raw dirty events
 
-Graph commits append raw dirty events for every mutation that can change semantic source text. These events are stored through `MaintenanceManager`, not `SpaceManager`.
+Graph commits notify `internal/graphchange.Sink` for every mutation that can change semantic source text. The semantic sink implementation appends raw dirty events through `MaintenanceManager`, not `SpaceManager`.
 
 Supported event categories:
 
@@ -195,7 +245,7 @@ Supported event categories:
 
 Raw events must include enough old/new context to analyze deletes and moves after commit. For example, moving a node between parents can dirty both the old containing source root and the new containing source root.
 
-Conceptual event fields:
+Conceptual `graphchange.CommittedEvent` fields:
 
 ```text
 id
@@ -214,6 +264,8 @@ old_domain_by_node_id
 new_domain_by_node_id
 committed_at
 ```
+
+The persisted maintenance dirty event may use the same shape or a semantic-specific projection, but it should retain enough old/new context for delete and move analysis.
 
 The raw dirty event log should be append-only. A compacted checkpoint/state file may exist beside the append-only segments for efficient analyzer restarts, but the raw event history is the durable source of truth.
 
@@ -430,7 +482,7 @@ Throttling should be able to use both request counts and token counts.
 
 It should not own embedding generation. Legacy file-session embedding methods should fail with daemon-only guidance or eventually be removed from internal interfaces once callers are migrated.
 
-`FileSession` may still emit raw graph dirty events when graph commits mutate content or containment. It should depend only on the narrow dirty-event append path, not on analyzer or worker implementation details.
+`FileSession` may notify graph changes when graph commits mutate content or containment. It should depend only on the neutral `internal/graphchange` sink interface, not on `store/semantic`, `SpaceManager`, `MaintenanceManager`, analyzer logic, or worker implementation details.
 
 ## Migration notes
 
@@ -443,6 +495,7 @@ Completed cleanup in this branch:
 
 Remaining direction:
 
+- add `internal/graphchange` event/sink interfaces and wire graph commits to a semantic dirty-event appender
 - add `store/semantic.MaintenanceManager` for dirty events, checkpoints, work items, leases, and failures
 - make semantic dirty event/work queues explicit and append-only
 - wire daemon startup to run analyzer/worker loops when enabled
