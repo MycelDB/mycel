@@ -1,13 +1,13 @@
 # `mycel embeddings profiles add`
 
-Current MVP command that creates an embedding profile.
+Removed legacy MVP command.
 
-## Example
+Embedding profiles have been replaced by daemon semantic indexes plus inference credentials/grants:
 
 ```sh
-mycel embeddings profiles add --name pages --provider openai --model openai/text-embedding-3-small --source subtree -u USER -p PASSWORD
+mycel semantic index add ...
+mycel inference credential add ...
+mycel inference credential grant ...
 ```
 
-## Status
-
-Current MVP command. Advanced semantic design uses `semantic index add`.
+Existing legacy provider-key/profile metadata can be converted with `mycel semantic migrate legacy-embeddings` while that migration path remains available.

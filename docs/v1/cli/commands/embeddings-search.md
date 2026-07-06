@@ -1,13 +1,11 @@
 # `mycel embeddings search`
 
-Current MVP command that performs profile-based embedding search.
+Removed legacy MVP command.
 
-## Example
+Profile-based embedding search has been replaced by daemon semantic-index search:
 
 ```sh
-mycel embeddings search --space-id <space_id> --profile <profile_id> --text "sleep and focus" -u USER -p PASSWORD
+mycel semantic search --space-id <space_id> --domain default --text "sleep and focus"
 ```
 
-## Status
-
-Current MVP command. Advanced semantic design uses `semantic search` over semantic indexes.
+Provision semantic indexes and inference credentials/grants with the `semantic` and `inference` command groups. Existing legacy embedding profile/key metadata can be converted with `mycel semantic migrate legacy-embeddings` while that migration path remains available.

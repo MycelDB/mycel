@@ -1,13 +1,13 @@
 # `mycel embeddings catalog`
 
-Current MVP command that lists known embedding provider/model catalog entries.
+Removed legacy MVP command.
 
-## Example
+Use daemon inference and semantic resources instead:
 
 ```sh
-mycel embeddings catalog -u USER -p PASSWORD
+mycel inference package apply <package.yaml>
+mycel inference capability add ...
+mycel semantic index add ...
 ```
 
-## Status
-
-Current MVP command. Advanced semantic design replaces direct profile-centric flows with semantic indexes.
+The built-in catalog remains an internal migration/provisioning helper, but the `mycel embeddings ...` command tree is no longer registered.

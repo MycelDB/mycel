@@ -74,4 +74,4 @@ When the backfill index argument is a key, daemon mode uses AdminDomainService s
 - Backfill currently uses the `mycel-file` vector backend.
 - The Admin controls mutate durable work state only: retry returns a work item to pending and clears sanitized error fields; cancel marks an item cancelled.
 - The worker processes pending dirty work in a bounded single pass; durable job scheduling is future work.
-- Legacy embedding migration remains an embedded CLI path until its engine/store dependencies are extracted into a daemon service.
+- Legacy embedding migration is a separate daemon Admin API and CLI path; semantic maintenance itself does not read legacy profiles.

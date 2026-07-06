@@ -5,7 +5,6 @@ import (
 
 	"github.com/myceldb/mycel/domain/graph"
 	domainspace "github.com/myceldb/mycel/domain/space"
-	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 )
 
 // CreateInput is the create payload managed by Manager.
@@ -34,7 +33,5 @@ type Manager interface {
 	ListBySpace(ctx context.Context, spaceID domainspace.SpaceID) ([]graph.Domain, error)
 	Update(ctx context.Context, in UpdateInput) (graph.Domain, error)
 	DeleteByID(ctx context.Context, id graph.DomainID) error
-	SetEmbeddingPolicy(ctx context.Context, policy domainembedding.DomainEmbeddingPolicy) (domainembedding.DomainEmbeddingPolicy, error)
-	GetEmbeddingPolicy(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (domainembedding.DomainEmbeddingPolicy, error)
 	DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error
 }

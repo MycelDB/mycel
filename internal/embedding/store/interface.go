@@ -30,37 +30,6 @@ type DeleteKeyInput struct {
 	ID      domainembedding.ProviderKeyID
 }
 
-type AddProfileInput struct {
-	OwnerID            identity.UserID
-	Name               string
-	ProviderID         string
-	ModelID            string
-	SourceMode         domainembedding.SourceMode
-	IncludeProps       []string
-	MaxDepth           *int
-	MinimumTextLength  int
-	TargetTemplateKeys []string
-}
-
-type UpdateProfileInput struct {
-	OwnerID            identity.UserID
-	ID                 domainembedding.ProfileID
-	Name               *string
-	ProviderID         *string
-	ModelID            *string
-	SourceMode         *domainembedding.SourceMode
-	IncludeProps       *[]string
-	MaxDepth           *int
-	ClearMaxDepth      bool
-	MinimumTextLength  *int
-	TargetTemplateKeys *[]string
-}
-
-type DeleteProfileInput struct {
-	OwnerID identity.UserID
-	ID      domainembedding.ProfileID
-}
-
 // Manager stores system-level embedding metadata.
 type Manager interface {
 	Init(ctx context.Context, location string, encryptionKeyB64 string) error
@@ -72,10 +41,6 @@ type Manager interface {
 	ResolveAPIKey(ctx context.Context, ownerID identity.UserID, providerID string, keyID domainembedding.ProviderKeyID) (domainembedding.ProviderKey, string, error)
 
 	ListProfiles(ctx context.Context, ownerID identity.UserID) ([]domainembedding.Profile, error)
-	GetProfile(ctx context.Context, ownerID identity.UserID, id domainembedding.ProfileID) (domainembedding.Profile, error)
-	AddProfile(ctx context.Context, in AddProfileInput) (domainembedding.Profile, error)
-	UpdateProfile(ctx context.Context, in UpdateProfileInput) (domainembedding.Profile, error)
-	DeleteProfile(ctx context.Context, in DeleteProfileInput) error
 }
 
 func NewManager() Manager { return &defaultManager{} }

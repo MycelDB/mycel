@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
 	domainspace "github.com/myceldb/mycel/domain/space"
-	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 	"github.com/myceldb/mycel/internal/filestore"
 )
 
@@ -30,15 +29,13 @@ type storedDomain struct {
 }
 
 type storedState struct {
-	Domains  []storedDomain                          `json:"domains"`
-	Policies []domainembedding.DomainEmbeddingPolicy `json:"embedding_policies,omitempty"`
+	Domains []storedDomain `json:"domains"`
 }
 
 type defaultManager struct {
 	location    string
 	storePath   string
 	domains     []storedDomain
-	policies    []domainembedding.DomainEmbeddingPolicy
 	indexByID   map[graph.DomainID]int
 	indexByKey  map[string]int
 	defaultBySp map[domainspace.SpaceID]int
@@ -64,7 +61,6 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 	if _, err := os.Stat(m.storePath); err != nil {
 		if os.IsNotExist(err) {
 			m.domains = []storedDomain{}
-			m.policies = []domainembedding.DomainEmbeddingPolicy{}
 			m.rebuildIndex()
 			return m.persist()
 		}
@@ -84,7 +80,6 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 		state.Domains = domains
 	}
 	m.domains = state.Domains
-	m.policies = state.Policies
 	m.rebuildIndex()
 	return nil
 }
@@ -247,80 +242,14 @@ func (m *defaultManager) DeleteByID(ctx context.Context, id graph.DomainID) erro
 		return ErrDomainNotFound
 	}
 	oldDomains := append([]storedDomain(nil), m.domains...)
-	oldPolicies := append([]domainembedding.DomainEmbeddingPolicy(nil), m.policies...)
 	m.domains = append(m.domains[:idx], m.domains[idx+1:]...)
-	policies := m.policies[:0]
-	for _, p := range m.policies {
-		if p.DomainID != id {
-			policies = append(policies, p)
-		}
-	}
-	m.policies = policies
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
 		m.domains = oldDomains
-		m.policies = oldPolicies
 		m.rebuildIndex()
 		return err
 	}
 	return nil
-}
-
-func (m *defaultManager) SetEmbeddingPolicy(ctx context.Context, policy domainembedding.DomainEmbeddingPolicy) (domainembedding.DomainEmbeddingPolicy, error) {
-	if err := ctx.Err(); err != nil {
-		return domainembedding.DomainEmbeddingPolicy{}, err
-	}
-	if policy.SpaceID == uuid.Nil {
-		return domainembedding.DomainEmbeddingPolicy{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
-	}
-	if policy.DomainID == uuid.Nil {
-		return domainembedding.DomainEmbeddingPolicy{}, fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
-	}
-	d, err := m.GetByID(ctx, policy.DomainID)
-	if err != nil {
-		return domainembedding.DomainEmbeddingPolicy{}, err
-	}
-	if d.SpaceID != policy.SpaceID {
-		return domainembedding.DomainEmbeddingPolicy{}, fmt.Errorf("%w: domain does not belong to space", ErrInvalidInput)
-	}
-	if policy.RefreshMode == "" {
-		policy.RefreshMode = domainembedding.DomainEmbeddingRefreshManual
-	}
-	for i, existing := range m.policies {
-		if existing.SpaceID == policy.SpaceID && existing.DomainID == policy.DomainID {
-			old := m.policies[i]
-			m.policies[i] = policy
-			if err := m.persist(); err != nil {
-				m.policies[i] = old
-				return domainembedding.DomainEmbeddingPolicy{}, err
-			}
-			return policy, nil
-		}
-	}
-	m.policies = append(m.policies, policy)
-	if err := m.persist(); err != nil {
-		m.policies = m.policies[:len(m.policies)-1]
-		return domainembedding.DomainEmbeddingPolicy{}, err
-	}
-	return policy, nil
-}
-
-func (m *defaultManager) GetEmbeddingPolicy(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (domainembedding.DomainEmbeddingPolicy, error) {
-	if err := ctx.Err(); err != nil {
-		return domainembedding.DomainEmbeddingPolicy{}, err
-	}
-	if spaceID == uuid.Nil {
-		return domainembedding.DomainEmbeddingPolicy{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
-	}
-	if domainID == uuid.Nil {
-		return domainembedding.DomainEmbeddingPolicy{}, fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
-	}
-	for _, policy := range m.policies {
-		if policy.SpaceID == spaceID && policy.DomainID == domainID {
-			return policy, nil
-		}
-	}
-	return domainembedding.DomainEmbeddingPolicy{}, ErrDomainNotFound
 }
 
 func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error {
@@ -331,25 +260,16 @@ func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID domainspace
 		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
 	oldDomains := append([]storedDomain(nil), m.domains...)
-	oldPolicies := append([]domainembedding.DomainEmbeddingPolicy(nil), m.policies...)
 	domains := m.domains[:0]
 	for _, d := range m.domains {
 		if d.SpaceID != spaceID {
 			domains = append(domains, d)
 		}
 	}
-	policies := m.policies[:0]
-	for _, p := range m.policies {
-		if p.SpaceID != spaceID {
-			policies = append(policies, p)
-		}
-	}
 	m.domains = domains
-	m.policies = policies
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
 		m.domains = oldDomains
-		m.policies = oldPolicies
 		m.rebuildIndex()
 		return err
 	}
@@ -370,7 +290,7 @@ func (m *defaultManager) rebuildIndex() {
 }
 
 func (m *defaultManager) persist() error {
-	b, err := json.MarshalIndent(storedState{Domains: m.domains, Policies: m.policies}, "", "  ")
+	b, err := json.MarshalIndent(storedState{Domains: m.domains}, "", "  ")
 	if err != nil {
 		return err
 	}

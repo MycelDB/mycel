@@ -16,7 +16,6 @@ import (
 	"github.com/myceldb/mycel/domain/identity"
 	domainspace "github.com/myceldb/mycel/domain/space"
 	"github.com/myceldb/mycel/internal/blobstorage"
-	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
 	"github.com/myceldb/mycel/internal/graphchange"
 	"github.com/myceldb/mycel/internal/graphstorage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
@@ -31,7 +30,6 @@ type Config struct {
 	BlobLimits                sessionapi.BlobLimits
 	BlobStaleTmpAge           time.Duration
 	CurrentUserID             identity.UserID
-	EmbeddingManager          storeembedding.Manager
 	SemanticManager           storesemantic.GlobalManager
 	AccountingManager         storeaccounting.Manager
 	UserStoreEncryptionKeyB64 string
@@ -52,12 +50,12 @@ func NewWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID
 
 // NewWithStoreConfig opens a session that borrows an engine-owned graph store.
 func NewWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink}
 }
 
 // NewConfig opens the default file-backed session implementation.
 func NewConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, embeddingManager: cfg.EmbeddingManager, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink}
 }
 
 // FileSession is the default file-backed Session implementation.
@@ -74,7 +72,6 @@ type FileSession struct {
 	blobLimits                sessionapi.BlobLimits
 	blobStaleTmpAge           time.Duration
 	currentUserID             identity.UserID
-	embeddingManager          storeembedding.Manager
 	semanticManager           storesemantic.GlobalManager
 	accountingManager         storeaccounting.Manager
 	userStoreEncryptionKeyB64 string

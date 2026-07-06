@@ -2,12 +2,16 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/identity"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 )
 
 func TestProviderKeySecretsAreEncryptedAndRedacted(t *testing.T) {
@@ -50,13 +54,12 @@ func TestProviderKeySecretsAreEncryptedAndRedacted(t *testing.T) {
 
 func TestProfilesAreOwnerScoped(t *testing.T) {
 	ctx := context.Background()
-	mgr := NewManager()
-	if err := mgr.Init(ctx, t.TempDir(), ""); err != nil {
-		t.Fatal(err)
-	}
+	dir := t.TempDir()
 	ownerA := identity.UserID(uuid.New())
 	ownerB := identity.UserID(uuid.New())
-	if _, err := mgr.AddProfile(ctx, AddProfileInput{OwnerID: ownerA, Name: "a", ProviderID: "openai", ModelID: "openai/text-embedding-3-small"}); err != nil {
+	seedLegacyProfileFixture(t, dir, ownerA)
+	mgr := NewManager()
+	if err := mgr.Init(ctx, dir, ""); err != nil {
 		t.Fatal(err)
 	}
 	profilesA, err := mgr.ListProfiles(ctx, ownerA)
@@ -67,7 +70,20 @@ func TestProfilesAreOwnerScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profilesA) != 1 || len(profilesB) != 0 {
-		t.Fatalf("unexpected scoped profiles: a=%d b=%d", len(profilesA), len(profilesB))
+	if len(profilesA) != 1 || profilesA[0].Name != "a" || len(profilesB) != 0 {
+		t.Fatalf("unexpected scoped profiles: a=%#v b=%#v", profilesA, profilesB)
+	}
+}
+
+func seedLegacyProfileFixture(t *testing.T, dir string, ownerID identity.UserID) {
+	t.Helper()
+	now := time.Now().UTC()
+	profile := domainembedding.Profile{ID: uuid.New(), OwnerID: ownerID, Name: "a", ProviderID: "openai", ModelID: "openai/text-embedding-3-small", SourceMode: domainembedding.SourceModeSubtree, CreatedAt: now, UpdatedAt: now}
+	raw, err := json.Marshal(storedData{Keys: []storedKey{}, Profiles: []domainembedding.Profile{profile}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, storeFile), raw, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

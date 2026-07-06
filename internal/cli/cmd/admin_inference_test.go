@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
@@ -227,9 +228,7 @@ func TestAdminSemanticMigrationUsesDaemonGRPC(t *testing.T) {
 	if _, err := embeddings.AddKey(context.Background(), storeembedding.AddKeyInput{OwnerID: ownerID, ProviderID: "openai", Name: "OpenAI Legacy", APIKey: "sk-test", IsDefault: true}); err != nil {
 		t.Fatalf("add legacy key: %v", err)
 	}
-	if _, err := embeddings.AddProfile(context.Background(), storeembedding.AddProfileInput{OwnerID: ownerID, Name: "Legacy Notes", ProviderID: "openai", ModelID: "openai/text-embedding-3-small", SourceMode: domainembedding.SourceModeSelf, MinimumTextLength: 1}); err != nil {
-		t.Fatalf("add legacy profile: %v", err)
-	}
+	seedLegacyEmbeddingProfile(t, filepath.Join(dataDir, "meta", "embedding", "embeddings.json"), ownerID)
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "migrate", "legacy-embeddings", "--space-id", createdSpace.GetSpace().GetSpaceId(), "--domain", "default", "--dry-run")
 	if err != nil {
 		t.Fatalf("semantic migration dry-run failed: %v\n%s", err, out)
@@ -240,6 +239,27 @@ func TestAdminSemanticMigrationUsesDaemonGRPC(t *testing.T) {
 	}
 	if !migrated.GetDryRun() || migrated.GetProfilesSeen() != 1 || migrated.GetProfilesMigrated() != 1 || migrated.GetProfilesSkipped() != 0 {
 		t.Fatalf("unexpected migration response: %#v", &migrated)
+	}
+}
+
+func seedLegacyEmbeddingProfile(t *testing.T, path string, ownerID identity.UserID) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read legacy embedding fixture: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode legacy embedding fixture: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	doc["profiles"] = []map[string]any{{"id": uuid.New().String(), "owner_id": ownerID.String(), "name": "Legacy Notes", "provider_id": "openai", "model_id": "openai/text-embedding-3-small", "source_mode": string(domainembedding.SourceModeSelf), "minimum_text_length": 1, "created_at": now, "updated_at": now}}
+	updated, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatalf("encode legacy embedding fixture: %v", err)
+	}
+	if err := os.WriteFile(path, updated, 0o644); err != nil {
+		t.Fatalf("write legacy embedding fixture: %v", err)
 	}
 }
 

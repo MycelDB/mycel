@@ -378,19 +378,21 @@ Remove or further isolate legacy embedding profile APIs once semantic maintenanc
 
 ### Tasks
 
-- Remove unsupported direct embedding methods from internal session interfaces if no callers remain.
-- Remove `internal/embedding/domain` simple generated-record types if migration no longer needs them.
-- Keep `internal/embedding/catalog` and source assembly helpers if still used.
-- Update docs to mark v1 MVP embedding generation as replaced by daemon semantic maintenance.
+- Remove unsupported direct embedding methods from internal session interfaces if no callers remain. **Done.**
+- Remove obsolete domain embedding policy APIs/storage. **Done.**
+- Remove legacy profile CRUD from `internal/embedding/store`; keep migration-only readers. **Done.**
+- Remove `internal/embedding/domain` simple generated-record types when migration/on-disk compatibility no longer needs them.
+- Keep `internal/embedding/catalog` and source assembly helpers while semantic migration/backfill use them.
+- Update docs to mark v1 MVP embedding generation as replaced by daemon semantic maintenance. **Done.**
 
 ### Acceptance
 
 ```sh
-rg 'GenerateNodeEmbedding|SemanticSearchInput|EmbeddingRecord|ProviderKey|ProfileID' --glob '*.go'
+rg 'GenerateNodeEmbedding|SemanticSearchInput|DomainEmbeddingPolicy|AddProfile|UpdateProfile|DeleteProfile' --glob '*.go'
 go test ./...
 ```
 
-Remaining hits should be intentional migration/catalog references only.
+Remaining legacy profile/key hits should be intentional migration/catalog/source compatibility references only.
 
 ## Rollout and validation strategy
 

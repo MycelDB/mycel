@@ -80,15 +80,11 @@ Core commands:
 - [node get](commands/node-get.md)
 - [node delete](commands/node-delete.md)
 
-Current MVP embedding commands:
+Removed MVP embedding-profile commands:
 
-- [embeddings catalog](commands/embeddings-catalog.md)
-- [embeddings keys add](commands/embeddings-keys-add.md)
-- [embeddings profiles add](commands/embeddings-profiles-add.md)
-- [embeddings generate](commands/embeddings-generate.md)
-- [embeddings search](commands/embeddings-search.md)
+- The old `mycel embeddings ...` command tree has been removed. Use daemon-backed semantic indexes, inference credentials/grants, semantic maintenance, and `semantic search` instead. Existing legacy profile/key data can be converted with [semantic migrate legacy embeddings](commands/semantic-migrate-legacy-embeddings.md) while that migration path remains available.
 
-Target advanced semantic/inference commands:
+Daemon semantic/inference commands:
 
 - [inference package apply](commands/inference-package-apply.md)
 - [inference capability add](commands/inference-capability-add.md)

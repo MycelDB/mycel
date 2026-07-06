@@ -1,14 +1,13 @@
 # `mycel embeddings generate`
 
-Current MVP command that generates embeddings for one node or a selected batch.
+Removed legacy MVP command.
 
-## Examples
+Embedding generation is now daemon-owned semantic maintenance over semantic indexes. Use:
 
 ```sh
-mycel embeddings generate --space-id <space_id> --node <node_id> --profile <profile_id> -u USER -p PASSWORD
-mycel embeddings generate --space-id <space_id> --profile <profile_id> --template-key logseq.page --limit 500 -u USER -p PASSWORD
+mycel semantic maintenance analyze --space-id <space_id>
+mycel semantic maintenance process --space-id <space_id>
+mycel semantic index backfill <semantic_index_id_or_key> --space-id <space_id>
 ```
 
-## Notes
-
-Batch generation requires `--node`, `--template-key`, or `--contains`. It skips current embeddings by source hash unless `--force` is set.
+Existing legacy embedding profile/key metadata can be converted with `mycel semantic migrate legacy-embeddings` while that migration path remains available.

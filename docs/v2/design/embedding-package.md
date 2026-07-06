@@ -2,9 +2,9 @@
 
 ## Status
 
-Draft design for the daemon-only semantic architecture.
+Implemented daemon-only semantic architecture, with remaining legacy embedding metadata isolated to migration-only readers.
 
-The legacy embedding profile subsystem has been internalized under `internal/embedding`, and the old `internal/embeddingstore` package has been removed. New embedding generation should be driven by daemon semantic indexes, inference credentials/grants, semantic maintenance, and semantic vector stores.
+The legacy embedding profile subsystem has been internalized under `internal/embedding`, the old `internal/embeddingstore` package has been removed, and the embedded/session profile generation APIs have been deleted. New embedding generation is driven by daemon semantic indexes, inference credentials/grants, semantic maintenance, and semantic vector stores.
 
 ## Goals
 
@@ -21,8 +21,8 @@ Current intended layout:
 
 ```text
 internal/embedding/
-  domain/      legacy embedding profile/key data types
-  store/       legacy embedding profile/key metadata store
+  domain/      migration/catalog/source data types
+  store/       read-oriented legacy provider-key/profile metadata store for migration
   catalog/     built-in embedding provider/model catalog
   provider/    low-level embedding provider client helpers
   source.go    graph node/tree source-text assembly helpers
@@ -40,18 +40,18 @@ internal/semantic/
 
 ### `internal/embedding/domain`
 
-Contains legacy embedding metadata types, such as:
+Contains migration/catalog/source metadata types, such as:
 
-- provider keys
-- embedding profiles
-- simple embedding records
+- provider keys used by the legacy migration reader
+- embedding profiles used by the legacy migration reader
+- simple legacy embedding records for old on-disk shape compatibility
 - source modes: `self`, `subtree`
 
-This package is internal because the daemon-only architecture should not expose provider-key/profile-driven embedding generation as a public API. Public semantic concepts should be represented through Admin/Client API messages and `domain/semantic` resource types.
+This package is internal because the daemon-only architecture does not expose provider-key/profile-driven embedding generation as a public API. Public semantic concepts are represented through Admin/Client API messages and `domain/semantic` resource types.
 
 ### `internal/embedding/store`
 
-Stores legacy provider-key/profile metadata. It remains only for migration and compatibility paths that convert old embedding settings into semantic resources.
+Reads legacy provider-key/profile metadata. It remains only for migration paths that convert old embedding settings into semantic resources. Profile CRUD has been removed; migration uses `ListProfiles`, `ListKeys`, and `ResolveAPIKey` over existing `embeddings.json` data.
 
 It is not the target storage for generated semantic vectors.
 
@@ -495,7 +495,7 @@ Throttling should be able to use both request counts and token counts.
 
 `FileSession` remains the internal file-backed graph/blob/template/metadata session implementation used by daemon internals.
 
-It should not own embedding generation. Legacy file-session embedding methods should fail with daemon-only guidance or eventually be removed from internal interfaces once callers are migrated.
+It does not own embedding generation. Legacy file-session embedding methods and their internal session API types have been removed; semantic search uses the advanced semantic-index path.
 
 `FileSession` may notify graph changes when graph commits mutate content or containment. It should depend only on the neutral `internal/graphchange` sink interface, not on `store/semantic`, `SpaceManager`, `MaintenanceManager`, analyzer logic, or worker implementation details.
 
@@ -506,14 +506,15 @@ Completed cleanup in this branch:
 - `domain/embedding` moved to `internal/embedding/domain`.
 - `store/embedding` moved to `internal/embedding/store`.
 - `internal/embeddingstore` removed.
-- legacy direct file-session embedding generation/search now fails with a clear unsupported error.
+- legacy direct file-session embedding generation/search stubs removed from internal session APIs.
+- obsolete domain embedding policy storage/API removed.
+- legacy profile CRUD removed from `internal/embedding/store`; the store now keeps the minimum profile/key reader surface required by `semantic migrate legacy-embeddings`.
+- `internal/graphchange` event/sink interfaces wire graph commits to semantic dirty-event appenders.
+- `store/semantic.MaintenanceManager` owns dirty events, checkpoints, work items, leases, and failures.
+- daemon startup runs analyzer/worker loops when maintenance is enabled.
+- maintenance status and controls are exposed through Admin APIs.
 
 Remaining direction:
 
-- add `internal/graphchange` event/sink interfaces and wire graph commits to a semantic dirty-event appender
-- add `store/semantic.MaintenanceManager` for dirty events, checkpoints, work items, leases, and failures
-- make semantic dirty event/work queues explicit and append-only
-- wire daemon startup to run analyzer/worker loops when enabled
-- add throttling/accounting to provider calls
-- expose maintenance status and failure visibility through Admin APIs
-- remove legacy embedding profile/key APIs when migration paths no longer need them
+- add deeper throttling/accounting integration to provider calls
+- remove the migration-only legacy profile/key reader once supported legacy migration windows close
