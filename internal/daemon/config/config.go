@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	DefaultMode      = "standalone"
-	DefaultLogLevel  = "info"
-	DefaultLogFormat = "text"
-	DefaultGRPCAddr  = "127.0.0.1:9091"
+	DefaultMode                   = "standalone"
+	DefaultLogLevel               = "info"
+	DefaultLogFormat              = "text"
+	DefaultGRPCAddr               = "127.0.0.1:9091"
+	DefaultBootstrapAdminUsername = "admin"
 )
 
 type Config struct {
@@ -21,6 +22,8 @@ type Config struct {
 	LogFormat                 string
 	GRPCAddr                  string
 	UserStoreEncryptionKeyB64 string
+	BootstrapAdminUsername    string
+	BootstrapAdminPassword    string
 	TLSCertFile               string
 	TLSKeyFile                string
 	TLSClientCAFile           string
@@ -43,6 +46,8 @@ func LoadFromEnv() (Config, error) {
 		LogFormat:                 valueOrDefault(os.Getenv("MYCELD_LOG_FORMAT"), DefaultLogFormat),
 		GRPCAddr:                  valueOrDefault(os.Getenv("MYCELD_GRPC_ADDR"), DefaultGRPCAddr),
 		UserStoreEncryptionKeyB64: strings.TrimSpace(os.Getenv("MYCELD_USER_STORE_ENCRYPTION_KEY_B64")),
+		BootstrapAdminUsername:    strings.TrimSpace(os.Getenv("MYCELD_BOOTSTRAP_ADMIN_USERNAME")),
+		BootstrapAdminPassword:    os.Getenv("MYCELD_BOOTSTRAP_ADMIN_PASSWORD"),
 		TLSCertFile:               strings.TrimSpace(os.Getenv("MYCELD_TLS_CERT_FILE")),
 		TLSKeyFile:                strings.TrimSpace(os.Getenv("MYCELD_TLS_KEY_FILE")),
 		TLSClientCAFile:           strings.TrimSpace(os.Getenv("MYCELD_TLS_CLIENT_CA_FILE")),
@@ -80,6 +85,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.GRPCAddr) == "" {
 		return fmt.Errorf("MYCELD_GRPC_ADDR must not be empty")
+	}
+	if strings.TrimSpace(c.BootstrapAdminUsername) != "" && c.BootstrapAdminPassword == "" {
+		return fmt.Errorf("MYCELD_BOOTSTRAP_ADMIN_PASSWORD must be set when MYCELD_BOOTSTRAP_ADMIN_USERNAME is set")
 	}
 	certSet := strings.TrimSpace(c.TLSCertFile) != ""
 	keySet := strings.TrimSpace(c.TLSKeyFile) != ""

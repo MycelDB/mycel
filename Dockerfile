@@ -1,45 +1,45 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.24
+# Build from the myceldb directory so the local mycel-api replacement is
+# available to the mycel module:
+#   docker build -f mycel/Dockerfile -t local/myceld:dev .
+
+ARG GO_VERSION=1.25.5
 ARG ALPINE_VERSION=3.21
-ARG BUF_VERSION=v1.50.1
 
 FROM golang:${GO_VERSION}-alpine AS builder
-
-ARG BUF_VERSION
 
 RUN apk add --no-cache ca-certificates git
 
 WORKDIR /src
 
-COPY go.mod go.sum ./
+COPY mycel-api/go.mod mycel-api/go.sum ./mycel-api/
+COPY mycel/go.mod mycel/go.sum ./mycel/
+
+WORKDIR /src/mycel
 RUN go mod download
 
-RUN GOBIN=/usr/local/bin go install github.com/bufbuild/buf/cmd/buf@${BUF_VERSION}
+COPY mycel-api ../mycel-api
+COPY mycel ./
 
-COPY . ./
-
-# Validate protobuf definitions and generate Go gRPC client/server stubs into
-# /src/gen. Generated stubs are intentionally not committed to the repository.
-# To inspect or extract them from the builder stage:
-#   docker build --target builder -t mycel-builder .
-#   cid=$(docker create mycel-builder)
-#   docker cp "$cid":/src/gen ./gen
-#   docker rm "$cid"
-RUN buf lint && buf generate
-
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mycel ./cmd/mycel
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/myceld ./cmd/myceld && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mycel ./cmd/mycel
 
 FROM alpine:${ALPINE_VERSION}
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata busybox-extras
 
 WORKDIR /app
+COPY --from=builder /out/myceld /usr/local/bin/myceld
 COPY --from=builder /out/mycel /usr/local/bin/mycel
 
-ENV MYCELDB_DATA_DIR=/data/mycel
+ENV MYCELD_DATA_DIR=/data/mycel \
+    MYCELD_GRPC_ADDR=0.0.0.0:9091
 
 VOLUME ["/data/mycel"]
+EXPOSE 9091
 
-ENTRYPOINT ["mycel"]
-CMD ["--help"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD nc -z 127.0.0.1 9091 || exit 1
+
+ENTRYPOINT ["myceld"]

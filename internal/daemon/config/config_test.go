@@ -11,6 +11,8 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("MYCELD_LOG_LEVEL", "")
 	t.Setenv("MYCELD_LOG_FORMAT", "")
 	t.Setenv("MYCELD_GRPC_ADDR", "")
+	t.Setenv("MYCELD_BOOTSTRAP_ADMIN_USERNAME", "")
+	t.Setenv("MYCELD_BOOTSTRAP_ADMIN_PASSWORD", "")
 	t.Setenv("MYCELD_TLS_CERT_FILE", "")
 	t.Setenv("MYCELD_TLS_KEY_FILE", "")
 	t.Setenv("MYCELD_TLS_CLIENT_CA_FILE", "")
@@ -28,6 +30,20 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvBootstrapAdminCredentials(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_BOOTSTRAP_ADMIN_USERNAME", "bootstrap-admin")
+	t.Setenv("MYCELD_BOOTSTRAP_ADMIN_PASSWORD", "bootstrap-password")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.BootstrapAdminUsername != "bootstrap-admin" || cfg.BootstrapAdminPassword != "bootstrap-password" {
+		t.Fatalf("unexpected bootstrap credentials in config: username=%q password=%q", cfg.BootstrapAdminUsername, cfg.BootstrapAdminPassword)
+	}
+}
+
 func TestConfigValidateRejectsBadValues(t *testing.T) {
 	cases := []Config{
 		{DataDir: "", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr},
@@ -35,6 +51,7 @@ func TestConfigValidateRejectsBadValues(t *testing.T) {
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "noisy", LogFormat: "text", GRPCAddr: DefaultGRPCAddr},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "xml", GRPCAddr: DefaultGRPCAddr},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: ""},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, BootstrapAdminUsername: "admin"},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSCertFile: "cert.pem"},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSKeyFile: "key.pem"},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSClientCAFile: "ca.pem"},

@@ -70,6 +70,70 @@ func TestModuleInitStandaloneCreatesDefaultAdminAndLogsCredentials(t *testing.T)
 	}
 }
 
+func TestModuleInitStandaloneUsesConfiguredBootstrapAdminCredentials(t *testing.T) {
+	dataDir := t.TempDir()
+	var logs bytes.Buffer
+	module := initModuleWithConfig(t, config.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", BootstrapAdminUsername: "compose-admin", BootstrapAdminPassword: "compose-password"}, &logs)
+
+	summaries, err := module.ListAdmins(context.Background())
+	if err != nil {
+		t.Fatalf("ListAdmins() error = %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].Username != "compose-admin" {
+		t.Fatalf("expected configured bootstrap admin, got %+v", summaries)
+	}
+	if _, err := module.AuthenticateOperator(context.Background(), "compose-admin", "compose-password"); err != nil {
+		t.Fatalf("expected configured bootstrap credentials to authenticate: %v", err)
+	}
+	admins := listPersistedAdmins(t, module)
+	if len(admins) != 1 {
+		t.Fatalf("expected 1 persisted admin, got %d", len(admins))
+	}
+	if err := VerifyPassword(admins[0].PasswordHash, "compose-password"); err != nil {
+		t.Fatalf("stored password hash does not match configured bootstrap password: %v", err)
+	}
+
+	logContent := logs.String()
+	if !strings.Contains(logContent, "default standalone admin created from configured bootstrap credentials") {
+		t.Fatalf("expected configured bootstrap log, got:\n%s", logContent)
+	}
+	if !strings.Contains(logContent, "username=compose-admin") || !strings.Contains(logContent, "password_configured=true") {
+		t.Fatalf("expected configured username/password marker in log, got:\n%s", logContent)
+	}
+	if strings.Contains(logContent, "compose-password") || extractLoggedPassword(t, logContent) != "" {
+		t.Fatalf("configured bootstrap password must not be logged, got:\n%s", logContent)
+	}
+	storeContent := readFile(t, filepath.Join(dataDir, "admins", StoreFilename))
+	if strings.Contains(storeContent, "compose-password") {
+		t.Fatalf("admin store contains plaintext configured password")
+	}
+}
+
+func TestModuleInitStandaloneDoesNotOverwriteExistingAdminWithBootstrapCredentials(t *testing.T) {
+	dataDir := t.TempDir()
+	var logs bytes.Buffer
+	first := initModuleWithConfig(t, config.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", BootstrapAdminUsername: "initial-admin", BootstrapAdminPassword: "initial-password"}, &logs)
+	firstAdmins, err := first.ListAdmins(context.Background())
+	if err != nil || len(firstAdmins) != 1 {
+		t.Fatalf("first ListAdmins() = %v, %v", firstAdmins, err)
+	}
+
+	second := initModuleWithConfig(t, config.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", BootstrapAdminUsername: "replacement-admin", BootstrapAdminPassword: "replacement-password"}, &logs)
+	secondAdmins, err := second.ListAdmins(context.Background())
+	if err != nil || len(secondAdmins) != 1 {
+		t.Fatalf("second ListAdmins() = %v, %v", secondAdmins, err)
+	}
+	if secondAdmins[0].ID != firstAdmins[0].ID || secondAdmins[0].Username != "initial-admin" {
+		t.Fatalf("expected existing admin to remain unchanged, first=%+v second=%+v", firstAdmins[0], secondAdmins[0])
+	}
+	if _, err := second.AuthenticateOperator(context.Background(), "initial-admin", "initial-password"); err != nil {
+		t.Fatalf("expected original credentials to remain valid: %v", err)
+	}
+	if _, err := second.AuthenticateOperator(context.Background(), "replacement-admin", "replacement-password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected replacement bootstrap credentials to be ignored, got %v", err)
+	}
+}
+
 func TestModuleInitStandalonePromotesExistingAdminWhenNoSystemAdmin(t *testing.T) {
 	dataDir := t.TempDir()
 	adminDir := filepath.Join(dataDir, "admins")
@@ -267,9 +331,14 @@ func assertAdminSummaryDoesNotExposePasswordHash(t *testing.T) {
 
 func initModule(t *testing.T, dataDir, mode string, logs *bytes.Buffer) *Module {
 	t.Helper()
+	return initModuleWithConfig(t, config.Config{DataDir: dataDir, Mode: mode, LogLevel: "debug", LogFormat: "text"}, logs)
+}
+
+func initModuleWithConfig(t *testing.T, cfg config.Config, logs *bytes.Buffer) *Module {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	rt := &daemonruntime.Runtime{
-		Config: config.Config{DataDir: dataDir, Mode: mode, LogLevel: "debug", LogFormat: "text"},
+		Config: cfg,
 		Logger: logger,
 	}
 	module := NewModule()

@@ -54,16 +54,16 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to list admins", err)
 	}
 	if rt.Config.Mode == "standalone" && len(admins) == 0 {
-		password, err := GeneratePassword()
+		username, password, generated, err := bootstrapAdminCredentials(rt.Config.BootstrapAdminUsername, rt.Config.BootstrapAdminPassword)
 		if err != nil {
-			return daemonruntime.Abort(ModuleName, "security", "failed to generate default admin password", err)
+			return daemonruntime.Abort(ModuleName, "security", "failed to resolve default admin credentials", err)
 		}
 		hash, err := HashPassword(password)
 		if err != nil {
 			return daemonruntime.Abort(ModuleName, "security", "failed to hash default admin password", err)
 		}
 		now := time.Now().UTC()
-		admin := Admin{ID: uuid.NewString(), Username: "admin", State: AdminStateActive, PasswordHash: hash, CreatedAt: now, UpdatedAt: now}
+		admin := Admin{ID: uuid.NewString(), Username: username, State: AdminStateActive, PasswordHash: hash, CreatedAt: now, UpdatedAt: now}
 		admin.RoleGrants = []RoleGrant{newRoleGrant(admin.ID, OperatorRoleSystemAdmin, systemScope(), "bootstrap system admin", admin.ID)}
 		if err := store.Create(ctx, admin); err != nil {
 			if errors.Is(err, ErrDuplicateAdmin) {
@@ -71,7 +71,11 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 			}
 			return daemonruntime.Abort(ModuleName, "store", "failed to create default admin", err)
 		}
-		rt.Logger.Warn("default standalone admin created; change this password immediately", "username", admin.Username, "password", password, "change_password_required", true)
+		if generated {
+			rt.Logger.Warn("default standalone admin created; change this password immediately", "username", admin.Username, "password", password, "change_password_required", true)
+		} else {
+			rt.Logger.Warn("default standalone admin created from configured bootstrap credentials", "username", admin.Username, "password_configured", true, "change_password_required", true)
+		}
 	}
 	if rt.Config.Mode == "standalone" {
 		if err := m.ensureStandaloneSystemAdmin(ctx, rt.Logger); err != nil {
@@ -79,6 +83,21 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		}
 	}
 	return daemonruntime.OK(ModuleName)
+}
+
+func bootstrapAdminCredentials(username string, password string) (string, string, bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		username = "admin"
+	}
+	if password != "" {
+		return username, password, false, nil
+	}
+	generated, err := GeneratePassword()
+	if err != nil {
+		return "", "", false, fmt.Errorf("generate password: %w", err)
+	}
+	return username, generated, true, nil
 }
 
 func (m *Module) ensureStandaloneSystemAdmin(ctx context.Context, logger *slog.Logger) error {
