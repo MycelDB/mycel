@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
@@ -273,6 +274,10 @@ func TestMaintenanceManagerPersistsDirtyEventsAndWork(t *testing.T) {
 	if first.ID != second.ID {
 		t.Fatalf("expected idempotent append, first=%s second=%s", first.ID, second.ID)
 	}
+	checkpoint := MaintenanceCheckpoint{Consumer: "analyzer", SpaceID: spaceID, LastGraphRevision: 7, LastGraphDirtyEventID: first.ID}
+	if err := mgr.SaveCheckpoint(ctx, checkpoint); err != nil {
+		t.Fatalf("save checkpoint failed: %v", err)
+	}
 	item, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, SourceTxnIDs: []uuid.UUID{txnID}, FirstGraphRevision: 7, LastGraphRevision: 7})
 	if err != nil {
 		t.Fatalf("upsert work failed: %v", err)
@@ -280,6 +285,31 @@ func TestMaintenanceManagerPersistsDirtyEventsAndWork(t *testing.T) {
 	if item.ID == uuid.Nil || item.Status != domainsemantic.SemanticDirtyWorkStatusPending || item.Action != domainsemantic.SemanticDirtyWorkActionRefresh {
 		t.Fatalf("unexpected item defaults: %+v", item)
 	}
+	now := time.Now().UTC()
+	claimed, err := mgr.ClaimReadyWork(ctx, ClaimReadyWorkInput{Now: now, Limit: 1, LeaseDuration: time.Minute, ClaimedBy: "worker-1"})
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim work: claimed=%+v err=%v", claimed, err)
+	}
+	if claimed[0].Status != domainsemantic.SemanticDirtyWorkStatusRunning || claimed[0].ClaimedBy != "worker-1" || claimed[0].ClaimedUntil == nil || claimed[0].Attempts != 1 {
+		t.Fatalf("unexpected claim: %+v", claimed[0])
+	}
+	if err := mgr.CompleteWork(ctx, item.ID, WorkResult{CompletedAt: now.Add(time.Second)}); err != nil {
+		t.Fatalf("complete work: %v", err)
+	}
+
+	retryNodeID := graph.NodeID(uuid.New())
+	retryItem, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: retryNodeID})
+	if err != nil {
+		t.Fatalf("upsert retry work failed: %v", err)
+	}
+	if _, err := mgr.ClaimReadyWork(ctx, ClaimReadyWorkInput{Now: now, Limit: 1, LeaseDuration: time.Minute, ClaimedBy: "worker-2"}); err != nil {
+		t.Fatalf("claim retry work: %v", err)
+	}
+	nextRun := now.Add(time.Hour)
+	if err := mgr.FailWork(ctx, retryItem.ID, WorkFailure{FailedAt: now.Add(2 * time.Second), Category: "rate_limited", Message: "slow down", Retryable: true, NextRunAt: &nextRun}); err != nil {
+		t.Fatalf("fail retry work: %v", err)
+	}
+
 	reloaded := NewMaintenanceManager()
 	if err := reloaded.Init(ctx, location, spaceID); err != nil {
 		t.Fatalf("reload failed: %v", err)
@@ -288,9 +318,68 @@ func TestMaintenanceManagerPersistsDirtyEventsAndWork(t *testing.T) {
 	if err != nil || len(events) != 1 || events[0].TxnID != txnID {
 		t.Fatalf("unexpected events: %+v err=%v", events, err)
 	}
+	gotCheckpoint, err := reloaded.GetCheckpoint(ctx, "analyzer")
+	if err != nil || gotCheckpoint.LastGraphRevision != 7 || gotCheckpoint.LastGraphDirtyEventID != first.ID {
+		t.Fatalf("unexpected checkpoint: %+v err=%v", gotCheckpoint, err)
+	}
 	items, err := reloaded.ListDirtyWorkItems(ctx)
-	if err != nil || len(items) != 1 || items[0].ID != item.ID {
+	if err != nil || len(items) != 2 {
 		t.Fatalf("unexpected items: %+v err=%v", items, err)
+	}
+	byID := map[uuid.UUID]domainsemantic.SemanticDirtyWorkItem{}
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	if byID[item.ID].Status != domainsemantic.SemanticDirtyWorkStatusComplete || byID[item.ID].CompletedAt == nil {
+		t.Fatalf("completed item not persisted: %+v", byID[item.ID])
+	}
+	if byID[retryItem.ID].Status != domainsemantic.SemanticDirtyWorkStatusPending || byID[retryItem.ID].EarliestRunAt == nil || byID[retryItem.ID].LastErrorCategory != "rate_limited" {
+		t.Fatalf("retry item not persisted: %+v", byID[retryItem.ID])
+	}
+
+	if err := os.Remove(filepath.Join(location, workStateDirName, workStateFileName)); err != nil {
+		t.Fatalf("remove materialized state: %v", err)
+	}
+	rebuilt := NewMaintenanceManager()
+	if err := rebuilt.Init(ctx, location, spaceID); err != nil {
+		t.Fatalf("rebuild failed: %v", err)
+	}
+	rebuiltItems, err := rebuilt.ListDirtyWorkItems(ctx)
+	if err != nil || len(rebuiltItems) != 2 {
+		t.Fatalf("unexpected rebuilt items: %+v err=%v", rebuiltItems, err)
+	}
+}
+
+func TestMaintenanceManagerReclaimsExpiredLeases(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	item, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, SemanticIndexID: indexID, TargetNodeID: nodeID})
+	if err != nil {
+		t.Fatalf("upsert failed: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := mgr.ClaimReadyWork(ctx, ClaimReadyWorkInput{Now: now, Limit: 1, LeaseDuration: time.Second, ClaimedBy: "first"}); err != nil {
+		t.Fatalf("first claim failed: %v", err)
+	}
+	second, err := mgr.ClaimReadyWork(ctx, ClaimReadyWorkInput{Now: now.Add(500 * time.Millisecond), Limit: 1, LeaseDuration: time.Second, ClaimedBy: "second"})
+	if err != nil {
+		t.Fatalf("second claim before expiry failed: %v", err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("expected no claim before lease expiry, got %+v", second)
+	}
+	reclaimed, err := mgr.ClaimReadyWork(ctx, ClaimReadyWorkInput{Now: now.Add(2 * time.Second), Limit: 1, LeaseDuration: time.Second, ClaimedBy: "second"})
+	if err != nil || len(reclaimed) != 1 {
+		t.Fatalf("reclaim after expiry: %+v err=%v", reclaimed, err)
+	}
+	if reclaimed[0].ID != item.ID || reclaimed[0].ClaimedBy != "second" || reclaimed[0].Attempts != 2 {
+		t.Fatalf("unexpected reclaimed item: %+v", reclaimed[0])
 	}
 }
 

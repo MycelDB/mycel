@@ -363,16 +363,14 @@ graphs/<space_id>/semantic/
 
   maintenance/
     dirty/
-      manifest.json
-      segments/*.kdirty
+      graph-dirty-000001.ksem  # append-only newline JSON dirty-event segment
     work/
-      manifest.json
-      segments/*.kwork
-      state.json           # materialized queue state for efficient claims
+      work-000001.ksem         # append-only newline JSON work-state segment
+      state.json               # materialized queue state for efficient claims
     checkpoints.json
 ```
 
-The append-only dirty/work segments provide durability and replayability. `state.json` is a materialized view of the latest work-item state and can be rebuilt from segments if necessary.
+The append-only dirty/work segments provide durability and replayability. `state.json` is a materialized view of the latest work-item state and can be rebuilt from the work segment if necessary. Future hardening can add manifests and segment rotation once queue volume requires it.
 
 ## Cooldown and worker pool configuration
 

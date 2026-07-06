@@ -9,7 +9,7 @@ Initial implementation slices completed:
 - Phase 1 complete: `internal/graphchange` neutral commit event/sink package.
 - Phase 2 complete: `FileSession` and daemon graph module emit graph-change events after successful commits, preserve old/new context for moves/deletes/reorders, and do not emit for rollback/discard, read-only commits, or no-op commits.
 - Sink failures do not fail graph commits; failures are recorded as maintenance-degraded state on the emitting component.
-- `store/semantic.MaintenanceManager` owns dirty events and dirty work items.
+- Phase 3 complete: `store/semantic.MaintenanceManager` owns dirty events, checkpoints, dirty work items, append-only work records, claim leases, completion, and failure state.
 - Semantic analyzer/worker use `MaintenanceManager` for operational state and `SpaceManager` for semantic resources.
 - `internal/semantic/maintenance.DirtyEventAppender` adapts graph-change events to durable semantic dirty events.
 
@@ -111,7 +111,7 @@ Make graph mutations notify committed changes without knowing about semantic mai
 go test ./internal/session/filesession ./internal/daemon/modules/graph
 ```
 
-## Phase 3: MaintenanceManager persistence
+## Phase 3: MaintenanceManager persistence — complete
 
 ### Goal
 
@@ -122,9 +122,9 @@ Add durable append-only semantic maintenance storage that is separate from `Spac
 - Add `store/semantic.MaintenanceManager` interface.
 - Add data models:
   - `GraphDirtyEvent`
-  - `SemanticConfigDirtyEvent`
   - `MaintenanceCheckpoint`
-  - `SemanticWorkItem`
+  - `SemanticDirtyWorkItem`
+  - `ClaimReadyWorkInput`
   - `WorkResult`
   - `WorkFailure`
 - Implement file-backed persistence under:
@@ -132,28 +132,25 @@ Add durable append-only semantic maintenance storage that is separate from `Spac
 ```text
 graphs/<space_id>/semantic/maintenance/
   dirty/
-    graph-dirty-000001.ksem       # initial append-only newline JSON segment
+    graph-dirty-000001.ksem       # append-only newline JSON dirty-event segment
   work/
-    state.json                    # initial materialized queue state
+    work-000001.ksem              # append-only newline JSON work-state segment
+    state.json                    # materialized queue state
+  checkpoints.json
 ```
 
-- Initial slice keeps the storage simple and durable.
-- Follow-up work should evolve this to segmented append-only dirty/work queues with manifests:
+- Dirty and work segments are append-only single-segment logs in the Phase 3 implementation.
+- `state.json` is a materialized view of the latest work-item state and can be rebuilt from `work-000001.ksem`.
+- Future hardening can add manifest files and segment rotation:
 
 ```text
-graphs/<space_id>/semantic/maintenance/
   dirty/
     manifest.json
     segments/*.kdirty
   work/
     manifest.json
     segments/*.kwork
-    state.json
-  checkpoints.json
 ```
-
-- Dirty and work segments are append-only.
-- `state.json` is a materialized view of the latest work-item state.
 - Add replay/rebuild support for `state.json` from work segments if missing/corrupt.
 - Add claim/lease methods:
   - claim ready pending work

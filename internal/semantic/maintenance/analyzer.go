@@ -216,24 +216,13 @@ func (w Worker) ProcessOnce(ctx context.Context, limit int) (WorkerResult, error
 	if w.MaintenanceManager == nil {
 		return WorkerResult{}, fmt.Errorf("maintenance manager is required")
 	}
-	items, err := w.MaintenanceManager.ListDirtyWorkItems(ctx)
+	items, err := w.MaintenanceManager.ClaimReadyWork(ctx, storesemantic.ClaimReadyWorkInput{Limit: limit, LeaseDuration: 5 * time.Minute, ClaimedBy: "semantic-maintenance-worker"})
 	if err != nil {
 		return WorkerResult{}, err
 	}
 	result := WorkerResult{}
 	for _, item := range items {
-		if item.Status != domainsemantic.SemanticDirtyWorkStatusPending {
-			continue
-		}
-		if limit > 0 && result.Processed >= limit {
-			break
-		}
 		result.Processed++
-		item.Status = domainsemantic.SemanticDirtyWorkStatusRunning
-		item.Attempts++
-		if _, err := w.MaintenanceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
-			return result, err
-		}
 		if item.Action == domainsemantic.SemanticDirtyWorkActionRefresh || item.Action == domainsemantic.SemanticDirtyWorkActionBackfill {
 			nodeIDs := []graph.NodeID{item.TargetNodeID}
 			if item.Action == domainsemantic.SemanticDirtyWorkActionBackfill && graph.NodeID(item.SemanticIndexID) == item.TargetNodeID {
@@ -246,16 +235,15 @@ func (w Worker) ProcessOnce(ctx context.Context, limit int) (WorkerResult, error
 			err = nil
 		}
 		if err != nil {
-			item.Status = domainsemantic.SemanticDirtyWorkStatusFailed
-			item.LastError = err.Error()
 			result.Failed++
+			if failErr := w.MaintenanceManager.FailWork(ctx, item.ID, storesemantic.WorkFailure{Category: "worker_error", Message: err.Error(), Retryable: false}); failErr != nil {
+				return result, failErr
+			}
 		} else {
-			item.Status = domainsemantic.SemanticDirtyWorkStatusComplete
-			item.LastError = ""
 			result.Completed++
-		}
-		if _, err := w.MaintenanceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
-			return result, err
+			if completeErr := w.MaintenanceManager.CompleteWork(ctx, item.ID, storesemantic.WorkResult{}); completeErr != nil {
+				return result, completeErr
+			}
 		}
 	}
 	return result, nil

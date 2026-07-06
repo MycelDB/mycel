@@ -2,7 +2,9 @@ package semantic
 
 import (
 	"context"
+	"time"
 
+	"github.com/google/uuid"
 	domainsemantic "github.com/myceldb/mycel/domain/semantic"
 	domainspace "github.com/myceldb/mycel/domain/space"
 )
@@ -51,14 +53,50 @@ type SpaceManager interface {
 	ListPolicyDecisions(ctx context.Context) ([]domainsemantic.PolicyDecision, error)
 }
 
+// MaintenanceCheckpoint tracks a named semantic maintenance consumer's durable progress.
+type MaintenanceCheckpoint struct {
+	Consumer              string                           `json:"consumer"`
+	SpaceID               domainspace.SpaceID              `json:"space_id"`
+	LastGraphRevision     uint64                           `json:"last_graph_revision,omitempty"`
+	LastGraphDirtyEventID domainsemantic.GraphDirtyEventID `json:"last_graph_dirty_event_id,omitempty"`
+	UpdatedAt             time.Time                        `json:"updated_at"`
+}
+
+// ClaimReadyWorkInput controls atomic work leasing.
+type ClaimReadyWorkInput struct {
+	Now           time.Time
+	Limit         int
+	LeaseDuration time.Duration
+	ClaimedBy     string
+}
+
+// WorkResult marks a claimed work item complete.
+type WorkResult struct {
+	CompletedAt time.Time
+}
+
+// WorkFailure marks a claimed work item failed or retryable.
+type WorkFailure struct {
+	FailedAt  time.Time
+	Category  string
+	Message   string
+	Retryable bool
+	NextRunAt *time.Time
+}
+
 // MaintenanceManager stores dynamic semantic background-processing state under
 // graphs/<space_id>/semantic/maintenance/.
 type MaintenanceManager interface {
 	Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error
 	AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error)
 	ListGraphDirtyEvents(ctx context.Context) ([]domainsemantic.GraphDirtyEvent, error)
+	GetCheckpoint(ctx context.Context, consumer string) (MaintenanceCheckpoint, error)
+	SaveCheckpoint(ctx context.Context, checkpoint MaintenanceCheckpoint) error
 	UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error)
 	ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error)
+	ClaimReadyWork(ctx context.Context, in ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error)
+	CompleteWork(ctx context.Context, id uuid.UUID, result WorkResult) error
+	FailWork(ctx context.Context, id uuid.UUID, failure WorkFailure) error
 }
 
 func NewGlobalManager() GlobalManager           { return &globalManager{} }

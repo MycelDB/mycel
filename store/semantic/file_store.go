@@ -39,6 +39,8 @@ const (
 	graphDirtyEventsFileName  = "graph-dirty-000001.ksem"
 	workStateDirName          = "work"
 	workStateFileName         = "state.json"
+	workEventsFileName        = "work-000001.ksem"
+	checkpointsFileName       = "checkpoints.json"
 	defaultVectorStoreKey     = "mycel-file"
 	defaultVectorStoreName    = "Mycel embedded file vector store"
 )
@@ -85,6 +87,16 @@ type inferencePoliciesState struct {
 
 type dirtyQueueState struct {
 	Items []domainsemantic.SemanticDirtyWorkItem `json:"items"`
+}
+
+type maintenanceCheckpointState struct {
+	Checkpoints []MaintenanceCheckpoint `json:"checkpoints"`
+}
+
+type workLogRecord struct {
+	Kind string                               `json:"kind"`
+	At   time.Time                            `json:"at"`
+	Item domainsemantic.SemanticDirtyWorkItem `json:"item"`
 }
 
 type indexStatesState struct {
@@ -549,10 +561,11 @@ type spaceManager struct {
 }
 
 type maintenanceManager struct {
-	mu         sync.RWMutex
-	location   string
-	spaceID    domainspace.SpaceID
-	dirtyQueue dirtyQueueState
+	mu          sync.RWMutex
+	location    string
+	spaceID     domainspace.SpaceID
+	dirtyQueue  dirtyQueueState
+	checkpoints maintenanceCheckpointState
 }
 
 func (m *spaceManager) Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error {
@@ -808,7 +821,28 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 	if err := os.MkdirAll(filepath.Join(location, workStateDirName), 0o755); err != nil {
 		return err
 	}
-	return loadJSON(m.workStatePath(), &m.dirtyQueue, dirtyQueueState{Items: []domainsemantic.SemanticDirtyWorkItem{}})
+	if err := loadJSON(m.checkpointsPath(), &m.checkpoints, maintenanceCheckpointState{Checkpoints: []MaintenanceCheckpoint{}}); err != nil {
+		return err
+	}
+	if err := loadJSON(m.workStatePath(), &m.dirtyQueue, dirtyQueueState{Items: []domainsemantic.SemanticDirtyWorkItem{}}); err != nil {
+		rebuilt, rebuildErr := readWorkItemsFromLog(m.workEventsPath())
+		if rebuildErr != nil {
+			return err
+		}
+		m.dirtyQueue = dirtyQueueState{Items: rebuilt}
+		return persistJSON(m.workStatePath(), m.dirtyQueue)
+	}
+	if len(m.dirtyQueue.Items) == 0 {
+		rebuilt, err := readWorkItemsFromLog(m.workEventsPath())
+		if err != nil {
+			return err
+		}
+		if len(rebuilt) > 0 {
+			m.dirtyQueue = dirtyQueueState{Items: rebuilt}
+			return persistJSON(m.workStatePath(), m.dirtyQueue)
+		}
+	}
+	return nil
 }
 
 func (m *maintenanceManager) AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error) {
@@ -862,6 +896,47 @@ func (m *maintenanceManager) ListGraphDirtyEvents(ctx context.Context) ([]domain
 	return readGraphDirtyEvents(m.graphDirtyEventsPath())
 }
 
+func (m *maintenanceManager) GetCheckpoint(ctx context.Context, consumer string) (MaintenanceCheckpoint, error) {
+	if err := ctx.Err(); err != nil {
+		return MaintenanceCheckpoint{}, err
+	}
+	consumer = strings.TrimSpace(consumer)
+	if consumer == "" {
+		return MaintenanceCheckpoint{}, fmt.Errorf("%w: consumer is required", ErrInvalidInput)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, checkpoint := range m.checkpoints.Checkpoints {
+		if checkpoint.Consumer == consumer {
+			return checkpoint, nil
+		}
+	}
+	return MaintenanceCheckpoint{Consumer: consumer, SpaceID: m.spaceID}, nil
+}
+
+func (m *maintenanceManager) SaveCheckpoint(ctx context.Context, checkpoint MaintenanceCheckpoint) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	checkpoint.Consumer = strings.TrimSpace(checkpoint.Consumer)
+	if checkpoint.Consumer == "" || checkpoint.SpaceID != m.spaceID {
+		return fmt.Errorf("%w: consumer and matching space_id are required", ErrInvalidInput)
+	}
+	if checkpoint.UpdatedAt.IsZero() {
+		checkpoint.UpdatedAt = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, existing := range m.checkpoints.Checkpoints {
+		if existing.Consumer == checkpoint.Consumer {
+			m.checkpoints.Checkpoints[i] = checkpoint
+			return persistJSON(m.checkpointsPath(), m.checkpoints)
+		}
+	}
+	m.checkpoints.Checkpoints = append(m.checkpoints.Checkpoints, checkpoint)
+	return persistJSON(m.checkpointsPath(), m.checkpoints)
+}
+
 func (m *maintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error) {
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.SemanticDirtyWorkItem{}, err
@@ -884,6 +959,12 @@ func (m *maintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domai
 	if item.CreatedAt.IsZero() {
 		item.CreatedAt = now
 	}
+	if item.Status == domainsemantic.SemanticDirtyWorkStatusPending {
+		item.ClaimedBy = ""
+		item.ClaimedUntil = nil
+		item.CompletedAt = nil
+		item.FailedAt = nil
+	}
 	item.UpdatedAt = now
 	for i, existing := range m.dirtyQueue.Items {
 		if existing.SemanticIndexID == item.SemanticIndexID && existing.TargetNodeID == item.TargetNodeID {
@@ -893,9 +974,15 @@ func (m *maintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domai
 				item.FirstGraphRevision = existing.FirstGraphRevision
 			}
 			item.SourceTxnIDs = mergeTxnIDs(existing.SourceTxnIDs, item.SourceTxnIDs)
+			if err := m.appendWorkLogRecord("upsert", item); err != nil {
+				return domainsemantic.SemanticDirtyWorkItem{}, err
+			}
 			m.dirtyQueue.Items[i] = item
 			return item, persistJSON(m.workStatePath(), m.dirtyQueue)
 		}
+	}
+	if err := m.appendWorkLogRecord("upsert", item); err != nil {
+		return domainsemantic.SemanticDirtyWorkItem{}, err
 	}
 	m.dirtyQueue.Items = append(m.dirtyQueue.Items, item)
 	return item, persistJSON(m.workStatePath(), m.dirtyQueue)
@@ -908,6 +995,138 @@ func (m *maintenanceManager) ListDirtyWorkItems(ctx context.Context) ([]domainse
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return append([]domainsemantic.SemanticDirtyWorkItem(nil), m.dirtyQueue.Items...), nil
+}
+
+func (m *maintenanceManager) ClaimReadyWork(ctx context.Context, in ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	now := in.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	lease := in.LeaseDuration
+	if lease <= 0 {
+		lease = time.Minute
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 1
+	}
+	claimedBy := strings.TrimSpace(in.ClaimedBy)
+	if claimedBy == "" {
+		claimedBy = "semantic-worker"
+	}
+	claimedUntil := now.Add(lease)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	claimed := []domainsemantic.SemanticDirtyWorkItem{}
+	for i := range m.dirtyQueue.Items {
+		if len(claimed) >= limit {
+			break
+		}
+		item := m.dirtyQueue.Items[i]
+		if !workItemReady(item, now) {
+			continue
+		}
+		item.Status = domainsemantic.SemanticDirtyWorkStatusRunning
+		item.Attempts++
+		item.ClaimedBy = claimedBy
+		item.ClaimedUntil = &claimedUntil
+		item.UpdatedAt = now
+		if err := m.appendWorkLogRecord("claim", item); err != nil {
+			return nil, err
+		}
+		m.dirtyQueue.Items[i] = item
+		claimed = append(claimed, item)
+	}
+	if len(claimed) == 0 {
+		return []domainsemantic.SemanticDirtyWorkItem{}, nil
+	}
+	return claimed, persistJSON(m.workStatePath(), m.dirtyQueue)
+}
+
+func (m *maintenanceManager) CompleteWork(ctx context.Context, id uuid.UUID, result WorkResult) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: work item id is required", ErrInvalidInput)
+	}
+	now := result.CompletedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.dirtyQueue.Items {
+		if item.ID != id {
+			continue
+		}
+		item.Status = domainsemantic.SemanticDirtyWorkStatusComplete
+		item.ClaimedBy = ""
+		item.ClaimedUntil = nil
+		item.LastError = ""
+		item.LastErrorCategory = ""
+		item.CompletedAt = &now
+		item.FailedAt = nil
+		item.UpdatedAt = now
+		if err := m.appendWorkLogRecord("complete", item); err != nil {
+			return err
+		}
+		m.dirtyQueue.Items[i] = item
+		return persistJSON(m.workStatePath(), m.dirtyQueue)
+	}
+	return ErrNotFound
+}
+
+func (m *maintenanceManager) FailWork(ctx context.Context, id uuid.UUID, failure WorkFailure) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: work item id is required", ErrInvalidInput)
+	}
+	now := failure.FailedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.dirtyQueue.Items {
+		if item.ID != id {
+			continue
+		}
+		if failure.Retryable {
+			item.Status = domainsemantic.SemanticDirtyWorkStatusPending
+			item.EarliestRunAt = failure.NextRunAt
+		} else {
+			item.Status = domainsemantic.SemanticDirtyWorkStatusFailed
+		}
+		item.ClaimedBy = ""
+		item.ClaimedUntil = nil
+		item.LastError = failure.Message
+		item.LastErrorCategory = failure.Category
+		item.FailedAt = &now
+		item.CompletedAt = nil
+		item.UpdatedAt = now
+		if err := m.appendWorkLogRecord("fail", item); err != nil {
+			return err
+		}
+		m.dirtyQueue.Items[i] = item
+		return persistJSON(m.workStatePath(), m.dirtyQueue)
+	}
+	return ErrNotFound
+}
+
+func workItemReady(item domainsemantic.SemanticDirtyWorkItem, now time.Time) bool {
+	if item.Status == domainsemantic.SemanticDirtyWorkStatusPending {
+		return item.EarliestRunAt == nil || !item.EarliestRunAt.After(now)
+	}
+	if item.Status == domainsemantic.SemanticDirtyWorkStatusRunning && item.ClaimedUntil != nil && item.ClaimedUntil.Before(now) {
+		return item.EarliestRunAt == nil || !item.EarliestRunAt.After(now)
+	}
+	return false
 }
 
 func (m *spaceManager) UpsertIndexState(ctx context.Context, state domainsemantic.SemanticIndexState) (domainsemantic.SemanticIndexState, error) {
@@ -980,6 +1199,34 @@ func (m *maintenanceManager) workStatePath() string {
 	return filepath.Join(m.location, workStateDirName, workStateFileName)
 }
 
+func (m *maintenanceManager) workEventsPath() string {
+	return filepath.Join(m.location, workStateDirName, workEventsFileName)
+}
+
+func (m *maintenanceManager) checkpointsPath() string {
+	return filepath.Join(m.location, checkpointsFileName)
+}
+
+func (m *maintenanceManager) appendWorkLogRecord(kind string, item domainsemantic.SemanticDirtyWorkItem) error {
+	if err := os.MkdirAll(filepath.Dir(m.workEventsPath()), 0o755); err != nil {
+		return err
+	}
+	record := workLogRecord{Kind: kind, At: time.Now().UTC(), Item: item}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(m.workEventsPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(append(raw, '\n')); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
 func (m *spaceManager) path(name string) string { return filepath.Join(m.location, name) }
 
 func readGraphDirtyEvents(path string) ([]domainsemantic.GraphDirtyEvent, error) {
@@ -1002,6 +1249,38 @@ func readGraphDirtyEvents(path string) ([]domainsemantic.GraphDirtyEvent, error)
 		out = append(out, event)
 	}
 	return out, nil
+}
+
+func readWorkItemsFromLog(path string) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []domainsemantic.SemanticDirtyWorkItem{}, nil
+		}
+		return nil, err
+	}
+	items := []domainsemantic.SemanticDirtyWorkItem{}
+	index := map[uuid.UUID]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var record workLogRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return nil, err
+		}
+		item := record.Item
+		if item.ID == uuid.Nil {
+			continue
+		}
+		if pos, ok := index[item.ID]; ok {
+			items[pos] = item
+			continue
+		}
+		index[item.ID] = len(items)
+		items = append(items, item)
+	}
+	return items, nil
 }
 
 func mergeTxnIDs(a, b []uuid.UUID) []uuid.UUID {

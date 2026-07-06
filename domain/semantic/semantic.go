@@ -409,7 +409,12 @@ type SemanticDirtyWorkItem struct {
 	Status             SemanticDirtyWorkStatus `json:"status"`
 	EarliestRunAt      *time.Time              `json:"earliest_run_at,omitempty"`
 	Attempts           int                     `json:"attempts,omitempty"`
+	ClaimedBy          string                  `json:"claimed_by,omitempty"`
+	ClaimedUntil       *time.Time              `json:"claimed_until,omitempty"`
 	LastError          string                  `json:"last_error,omitempty"`
+	LastErrorCategory  string                  `json:"last_error_category,omitempty"`
+	CompletedAt        *time.Time              `json:"completed_at,omitempty"`
+	FailedAt           *time.Time              `json:"failed_at,omitempty"`
 	CreatedAt          time.Time               `json:"created_at"`
 	UpdatedAt          time.Time               `json:"updated_at"`
 }
