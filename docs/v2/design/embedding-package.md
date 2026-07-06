@@ -29,7 +29,7 @@ internal/embedding/
 
 internal/semantic/
   backfill/     semantic-index backfill execution
-  maintenance/  dirty work analysis and processing
+  maintenance/  dirty work analysis, scheduling, and worker behavior
   search/       semantic query planning and execution
   vectorstore/  semantic-index-aware vector backend
   connectors/   daemon inference connector abstraction
@@ -109,6 +109,59 @@ These records include semantic provenance:
 
 New embedding generation should write only through `internal/semantic/vectorstore`, not through legacy embedding record storage.
 
+## Manager boundaries
+
+Semantic persistence should be split between resource configuration and operational maintenance state.
+
+### `SpaceManager`
+
+`store/semantic.SpaceManager` should remain focused on semantic resources and relatively stable per-space state:
+
+- semantic indexes
+- credential grants
+- inference policies
+- policy decisions
+- index states
+
+It should not become the owner of dirty event queues, worker leases, retry state, or debounce state.
+
+### `MaintenanceManager`
+
+A dedicated `store/semantic.MaintenanceManager` should own dynamic background-processing state:
+
+- append-only graph dirty events
+- semantic configuration dirty events
+- analyzer checkpoints
+- coalesced semantic embedding work items
+- worker claims/leases
+- attempts, backoff, and last errors
+
+Conceptual interface shape:
+
+```go
+type MaintenanceManager interface {
+    AppendDirtyEvent(ctx context.Context, event GraphDirtyEvent) error
+    ListDirtyEvents(ctx context.Context, in ListDirtyEventsInput) ([]GraphDirtyEvent, error)
+
+    GetCheckpoint(ctx context.Context, consumer string) (MaintenanceCheckpoint, error)
+    SaveCheckpoint(ctx context.Context, checkpoint MaintenanceCheckpoint) error
+
+    UpsertWorkItem(ctx context.Context, item SemanticWorkItem) (SemanticWorkItem, error)
+    ClaimReadyWork(ctx context.Context, in ClaimReadyWorkInput) ([]SemanticWorkItem, error)
+    CompleteWork(ctx context.Context, id uuid.UUID, result WorkResult) error
+    FailWork(ctx context.Context, id uuid.UUID, failure WorkFailure) error
+}
+```
+
+The daemon semantic module should open both managers for a space:
+
+```go
+spaceManager := semantic.SpaceManager(ctx, spaceID)
+maintenanceManager := semantic.MaintenanceManager(ctx, spaceID)
+```
+
+This keeps semantic resource APIs separate from queue/worker mechanics.
+
 ## Embedding generation architecture
 
 Embedding generation is a daemon maintenance pipeline:
@@ -127,7 +180,7 @@ Graph mutation paths should do only cheap durable bookkeeping. They should not r
 
 ## Raw dirty events
 
-Graph commits append raw dirty events for every mutation that can change semantic source text.
+Graph commits append raw dirty events for every mutation that can change semantic source text. These events are stored through `MaintenanceManager`, not `SpaceManager`.
 
 Supported event categories:
 
@@ -162,7 +215,7 @@ new_domain_by_node_id
 committed_at
 ```
 
-The raw dirty event log should be append-only.
+The raw dirty event log should be append-only. A compacted checkpoint/state file may exist beside the append-only segments for efficient analyzer restarts, but the raw event history is the durable source of truth.
 
 ## Dirty event analysis
 
@@ -206,7 +259,7 @@ Initial recommendation: use the nearest matching ancestor-or-self. Avoid dirtyin
 
 ## Semantic embedding work queue
 
-The analyzer upserts a second durable queue of coalesced work items. This queue is keyed by:
+The analyzer upserts a second durable queue of coalesced work items through `MaintenanceManager`. This queue is keyed by:
 
 ```text
 space_id + domain_id + semantic_index_id + target_node_id
@@ -244,6 +297,29 @@ last_dirty_node_id = dirty node
 
 This is the debounce boundary. Frequent edits to the same note/tree produce one embedding refresh after the content is quiet.
 
+Recommended maintenance storage layout:
+
+```text
+graphs/<space_id>/semantic/
+  indexes/                 # semantic index vector records and manifests
+  grants.json              # space-owned credential grants
+  policies.json            # inference policies
+  decisions.json           # policy decisions
+  states.json              # semantic index states
+
+  maintenance/
+    dirty/
+      manifest.json
+      segments/*.kdirty
+    work/
+      manifest.json
+      segments/*.kwork
+      state.json           # materialized queue state for efficient claims
+    checkpoints.json
+```
+
+The append-only dirty/work segments provide durability and replayability. `state.json` is a materialized view of the latest work-item state and can be rebuilt from segments if necessary.
+
 ## Cooldown and worker pool configuration
 
 Semantic maintenance should be controlled by daemon config.
@@ -274,6 +350,8 @@ not_before <= now
 Claims should have a lease (`claimed_until`) so work can recover after daemon restart or worker crash.
 
 ## Worker execution
+
+`internal/semantic/maintenance` owns worker behavior. `internal/daemon/modules/semantic` owns daemon lifecycle: reading config, starting/stopping analyzer and worker goroutines, and wiring managers/connectors/vector stores/accounting.
 
 For a ready work item, the worker:
 
@@ -352,7 +430,7 @@ Throttling should be able to use both request counts and token counts.
 
 It should not own embedding generation. Legacy file-session embedding methods should fail with daemon-only guidance or eventually be removed from internal interfaces once callers are migrated.
 
-`FileSession` may still emit raw graph dirty events when graph commits mutate content or containment.
+`FileSession` may still emit raw graph dirty events when graph commits mutate content or containment. It should depend only on the narrow dirty-event append path, not on analyzer or worker implementation details.
 
 ## Migration notes
 
@@ -365,6 +443,7 @@ Completed cleanup in this branch:
 
 Remaining direction:
 
+- add `store/semantic.MaintenanceManager` for dirty events, checkpoints, work items, leases, and failures
 - make semantic dirty event/work queues explicit and append-only
 - wire daemon startup to run analyzer/worker loops when enabled
 - add throttling/accounting to provider calls
