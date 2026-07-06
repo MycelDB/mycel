@@ -11,7 +11,7 @@ Initial implementation slices completed:
 - Sink failures do not fail graph commits; failures are recorded as maintenance-degraded state on the emitting component.
 - Phase 3 complete: `store/semantic.MaintenanceManager` owns dirty events, checkpoints, dirty work items, append-only work records, claim leases, completion, and failure state.
 - Semantic analyzer/worker use `MaintenanceManager` for operational state and `SpaceManager` for semantic resources.
-- `internal/semantic/maintenance.DirtyEventAppender` adapts graph-change events to durable semantic dirty events.
+- Phase 4 complete: `internal/semantic/maintenance.DirtyEventAppender` adapts graph-change events to durable semantic dirty events without depending on `SpaceManager`.
 
 This plan assumes the daemon-only architecture: applications write graph data through `myceld`, and `myceld` owns graph storage, semantic resources, dirty event persistence, background workers, vector records, and accounting.
 
@@ -169,7 +169,7 @@ graphs/<space_id>/semantic/maintenance/
 go test ./store/semantic
 ```
 
-## Phase 4: Semantic dirty-event appender
+## Phase 4: Semantic dirty-event appender — complete
 
 ### Goal
 
@@ -186,7 +186,7 @@ Convert graph change notifications into durable maintenance dirty events.
   - no provider calls
   - no vector writes
 - Wire daemon semantic module/graph module so graph sessions receive this sink when semantic maintenance is enabled.
-- Add tests with fake maintenance manager.
+- Add tests with real and fake maintenance managers, including full old/new context conversion and missing-manager behavior.
 
 ### Acceptance
 
