@@ -18,9 +18,15 @@ mycel.admin.v1.AdminSemanticMaintenanceService
 
 Implemented RPCs:
 
+- `GetSemanticMaintenanceStatus`
+- `ListSemanticMaintenanceWork`
+- `RetrySemanticMaintenanceWork`
+- `CancelSemanticMaintenanceWork`
 - `AnalyzeSemanticDirtyWork`
 - `ProcessSemanticDirtyWork`
 - `BackfillSemanticIndex`
+
+Visibility responses expose queue counters, lifecycle timestamps, sanitized error summaries, and work item metadata only. They intentionally do not expose credential secret values, raw source text, embedding vectors, raw provider request bodies, or full provider responses.
 
 ## Authorization
 
@@ -35,6 +41,18 @@ CAPABILITY_SEMANTIC_SEARCH
 Daemon-backed commands are used when `--daemon-addr` is supplied:
 
 ```sh
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic maintenance status --space-id '<space-id>'
+
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic maintenance list --space-id '<space-id>' --status pending --limit 100
+
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic maintenance retry --space-id '<space-id>' '<work-item-id>'
+
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic maintenance cancel --space-id '<space-id>' '<work-item-id>'
+
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
   semantic maintenance analyze --space-id '<space-id>'
 
@@ -54,5 +72,6 @@ When the backfill index argument is a key, daemon mode uses AdminDomainService s
 ## Notes and limitations
 
 - Backfill currently uses the `mycel-file` vector backend.
+- The Admin controls mutate durable work state only: retry returns a work item to pending and clears sanitized error fields; cancel marks an item cancelled.
 - The worker processes pending dirty work in a bounded single pass; durable job scheduling is future work.
 - Legacy embedding migration remains an embedded CLI path until its engine/store dependencies are extracted into a daemon service.

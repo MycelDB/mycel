@@ -2,7 +2,9 @@ package semantic
 
 import (
 	"context"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
 	domainsemantic "github.com/myceldb/mycel/domain/semantic"
@@ -23,6 +25,10 @@ type Manager interface {
 	ListVectorRecords(ctx context.Context, spaceID domainspace.SpaceID, indexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error)
 	PurgeVectorIndex(ctx context.Context, spaceID domainspace.SpaceID, indexID domainsemantic.SemanticIndexID) error
 	EncryptSecret(ctx context.Context, plain string) (*domainsemantic.EncryptedSecretPayload, error)
+	GetMaintenanceStatus(ctx context.Context, in MaintenanceStatusInput) (MaintenanceStatus, error)
+	ListMaintenanceWork(ctx context.Context, in MaintenanceWorkListInput) ([]MaintenanceWorkItem, error)
+	RetryMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput) (MaintenanceWorkItem, error)
+	CancelMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput) (MaintenanceWorkItem, error)
 	AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanticmaintenance.AnalyzeResult, error)
 	ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error)
 	BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error)
@@ -40,6 +46,56 @@ type AnalyzeInput struct {
 	SpaceID         domainspace.SpaceID
 	SemanticIndexID domainsemantic.SemanticIndexID
 	Limit           int
+}
+
+type MaintenanceStatusInput struct {
+	SpaceID domainspace.SpaceID
+}
+
+type MaintenanceStatus struct {
+	Enabled                   bool
+	Degraded                  bool
+	DegradedReason            string
+	QueueDepthPending         int
+	QueueDepthRunning         int
+	QueueDepthFailedRetryable int
+	QueueDepthFailedPermanent int
+	OldestPendingAge          time.Duration
+	LastDirtyEventAt          time.Time
+	LastAnalyzedAt            time.Time
+	LastWorkerSuccessAt       time.Time
+	LastWorkerErrorAt         time.Time
+	ThrottleState             string
+	AnalyzerRuns              int
+	WorkerRuns                int
+}
+
+type MaintenanceWorkListInput struct {
+	SpaceID domainspace.SpaceID
+	Status  string
+	Limit   int
+}
+
+type MaintenanceWorkControlInput struct {
+	SpaceID    domainspace.SpaceID
+	WorkItemID uuid.UUID
+}
+
+type MaintenanceWorkItem struct {
+	ID                        uuid.UUID
+	SpaceID                   domainspace.SpaceID
+	DomainID                  graph.DomainID
+	SemanticIndexID           domainsemantic.SemanticIndexID
+	TargetNodeID              graph.NodeID
+	Action                    string
+	Status                    string
+	AttemptCount              int
+	NotBefore                 time.Time
+	ClaimedUntil              time.Time
+	LastErrorCategory         string
+	LastErrorMessageSanitized string
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
 }
 
 type ProcessInput struct {

@@ -11,9 +11,13 @@ import (
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
+	"github.com/myceldb/mycel/domain/graph"
 	"github.com/myceldb/mycel/domain/identity"
+	domainsemantic "github.com/myceldb/mycel/domain/semantic"
+	domainspace "github.com/myceldb/mycel/domain/space"
 	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
+	storesemantic "github.com/myceldb/mycel/store/semantic"
 )
 
 func TestAdminInferencePackageApplyUsesDaemonGRPC(t *testing.T) {
@@ -240,7 +244,7 @@ func TestAdminSemanticMigrationUsesDaemonGRPC(t *testing.T) {
 }
 
 func TestAdminSemanticMaintenanceUsesDaemonGRPC(t *testing.T) {
-	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	dataDir, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
 	createTestUser(t, addr, adminPassword, "maint-user", "maint-pass")
 	out, err := runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "space", "add", "Maintenance Space", "--owner-username", "maint-user")
@@ -252,6 +256,14 @@ func TestAdminSemanticMaintenanceUsesDaemonGRPC(t *testing.T) {
 		t.Fatalf("decode space add: %v\n%s", err, out)
 	}
 	spaceID := createdSpace.GetSpace().GetSpaceId()
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "status", "--space-id", spaceID)
+	if err != nil {
+		t.Fatalf("semantic maintenance status failed: %v\n%s", err, out)
+	}
+	var status adminv1.GetSemanticMaintenanceStatusResponse
+	if err := json.Unmarshal([]byte(out), &status); err != nil || status.GetThrottleState() != "ok" {
+		t.Fatalf("unexpected status: %#v err=%v out=%s", &status, err, out)
+	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "analyze", "--space-id", spaceID)
 	if err != nil {
 		t.Fatalf("semantic maintenance analyze failed: %v\n%s", err, out)
@@ -268,4 +280,43 @@ func TestAdminSemanticMaintenanceUsesDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &processed); err != nil || processed.GetProcessedItems() != 0 || processed.GetCompletedItems() != 0 || processed.GetFailedItems() != 0 {
 		t.Fatalf("unexpected process result: %#v err=%v out=%s", &processed, err, out)
 	}
+	seededWorkID := seedSemanticMaintenanceWork(t, dataDir, spaceID)
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "list", "--space-id", spaceID)
+	if err != nil {
+		t.Fatalf("semantic maintenance list failed: %v\n%s", err, out)
+	}
+	var listed adminv1.ListSemanticMaintenanceWorkResponse
+	if err := json.Unmarshal([]byte(out), &listed); err != nil || len(listed.GetItems()) != 1 || listed.GetItems()[0].GetWorkItemId() != seededWorkID.String() {
+		t.Fatalf("unexpected work list: %#v err=%v out=%s", &listed, err, out)
+	}
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "cancel", "--space-id", spaceID, seededWorkID.String())
+	if err != nil {
+		t.Fatalf("semantic maintenance cancel failed: %v\n%s", err, out)
+	}
+	var cancelled adminv1.CancelSemanticMaintenanceWorkResponse
+	if err := json.Unmarshal([]byte(out), &cancelled); err != nil || cancelled.GetItem().GetStatus() != string(domainsemantic.SemanticDirtyWorkStatusCancelled) {
+		t.Fatalf("unexpected cancel response: %#v err=%v out=%s", &cancelled, err, out)
+	}
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "retry", "--space-id", spaceID, seededWorkID.String())
+	if err != nil {
+		t.Fatalf("semantic maintenance retry failed: %v\n%s", err, out)
+	}
+	var retried adminv1.RetrySemanticMaintenanceWorkResponse
+	if err := json.Unmarshal([]byte(out), &retried); err != nil || retried.GetItem().GetStatus() != string(domainsemantic.SemanticDirtyWorkStatusPending) || retried.GetItem().GetLastErrorCategory() != "" {
+		t.Fatalf("unexpected retry response: %#v err=%v out=%s", &retried, err, out)
+	}
+}
+
+func seedSemanticMaintenanceWork(t *testing.T, dataDir string, spaceIDText string) uuid.UUID {
+	t.Helper()
+	spaceID := domainspace.SpaceID(uuid.MustParse(spaceIDText))
+	mgr := storesemantic.NewMaintenanceManager()
+	if err := mgr.Init(context.Background(), filepath.Join(dataDir, "graphs", spaceIDText, "semantic", "maintenance"), spaceID); err != nil {
+		t.Fatalf("init maintenance manager: %v", err)
+	}
+	item, err := mgr.UpsertDirtyWorkItem(context.Background(), domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), SemanticIndexID: domainsemantic.SemanticIndexID(uuid.New()), TargetNodeID: graph.NodeID(uuid.New()), Action: domainsemantic.SemanticDirtyWorkActionRefresh, Status: domainsemantic.SemanticDirtyWorkStatusPending, LastError: "secret provider payload should not leak", LastErrorCategory: "rate_limited"})
+	if err != nil {
+		t.Fatalf("seed work item: %v", err)
+	}
+	return item.ID
 }

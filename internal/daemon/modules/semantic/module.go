@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,10 +53,14 @@ type Module struct {
 }
 
 type MaintenanceStats struct {
-	AnalyzerRuns      int
-	WorkerRuns        int
-	LastAnalyzerError string
-	LastWorkerError   string
+	AnalyzerRuns        int
+	WorkerRuns          int
+	LastAnalyzerError   string
+	LastWorkerError     string
+	LastAnalyzerAt      time.Time
+	LastWorkerAt        time.Time
+	LastWorkerSuccessAt time.Time
+	LastWorkerErrorAt   time.Time
 }
 
 func NewModule() *Module {
@@ -166,13 +171,21 @@ func (m *Module) runMaintenanceTask(ctx context.Context, name string, fn func(co
 func (m *Module) recordMaintenanceRun(name string, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := time.Now().UTC()
 	switch name {
 	case "analyzer":
 		m.stats.AnalyzerRuns++
+		m.stats.LastAnalyzerAt = now
 		m.stats.LastAnalyzerError = errorString(err)
 	case "worker":
 		m.stats.WorkerRuns++
+		m.stats.LastWorkerAt = now
 		m.stats.LastWorkerError = errorString(err)
+		if err != nil {
+			m.stats.LastWorkerErrorAt = now
+		} else {
+			m.stats.LastWorkerSuccessAt = now
+		}
 	}
 }
 
@@ -314,6 +327,172 @@ func (m *Module) SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) 
 		return nil, err
 	}
 	return mgr, nil
+}
+
+func (m *Module) GetMaintenanceStatus(ctx context.Context, in MaintenanceStatusInput) (MaintenanceStatus, error) {
+	maintenanceMgr, err := m.MaintenanceManager(ctx, in.SpaceID)
+	if err != nil {
+		return MaintenanceStatus{}, err
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil {
+		return MaintenanceStatus{}, err
+	}
+	events, err := maintenanceMgr.ListGraphDirtyEvents(ctx)
+	if err != nil {
+		return MaintenanceStatus{}, err
+	}
+	indexes, err := m.SpaceManager(ctx, in.SpaceID)
+	if err != nil {
+		return MaintenanceStatus{}, err
+	}
+	states, err := indexes.ListIndexStates(ctx)
+	if err != nil {
+		return MaintenanceStatus{}, err
+	}
+	now := time.Now().UTC()
+	status := MaintenanceStatus{Enabled: m.maintenanceConfig.Enabled, ThrottleState: "ok"}
+	for _, item := range items {
+		switch domainsemantic.SemanticDirtyWorkStatus(item.Status) {
+		case domainsemantic.SemanticDirtyWorkStatusPending:
+			if item.LastError != "" || item.LastErrorCategory != "" {
+				status.QueueDepthFailedRetryable++
+			} else {
+				status.QueueDepthPending++
+			}
+			if !item.CreatedAt.IsZero() {
+				age := now.Sub(item.CreatedAt)
+				if status.OldestPendingAge == 0 || age > status.OldestPendingAge {
+					status.OldestPendingAge = age
+				}
+			}
+		case domainsemantic.SemanticDirtyWorkStatusRunning:
+			status.QueueDepthRunning++
+		case domainsemantic.SemanticDirtyWorkStatusFailed:
+			status.QueueDepthFailedPermanent++
+		}
+	}
+	for _, event := range events {
+		if event.CommittedAt.After(status.LastDirtyEventAt) {
+			status.LastDirtyEventAt = event.CommittedAt
+		}
+	}
+	for _, state := range states {
+		if state.UpdatedAt.After(status.LastAnalyzedAt) {
+			status.LastAnalyzedAt = state.UpdatedAt
+		}
+	}
+	stats := m.MaintenanceStats()
+	status.AnalyzerRuns = stats.AnalyzerRuns
+	status.WorkerRuns = stats.WorkerRuns
+	status.LastWorkerSuccessAt = stats.LastWorkerSuccessAt
+	status.LastWorkerErrorAt = stats.LastWorkerErrorAt
+	if stats.LastAnalyzerError != "" || stats.LastWorkerError != "" {
+		status.Degraded = true
+		status.DegradedReason = firstNonEmpty(stats.LastAnalyzerError, stats.LastWorkerError)
+	}
+	return status, nil
+}
+
+func (m *Module) ListMaintenanceWork(ctx context.Context, in MaintenanceWorkListInput) ([]MaintenanceWorkItem, error) {
+	maintenanceMgr, err := m.MaintenanceManager(ctx, in.SpaceID)
+	if err != nil {
+		return nil, err
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []MaintenanceWorkItem{}
+	for _, item := range items {
+		if in.Status != "" && string(item.Status) != in.Status {
+			continue
+		}
+		out = append(out, toMaintenanceWorkItem(item))
+		if in.Limit > 0 && len(out) >= in.Limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (m *Module) RetryMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput) (MaintenanceWorkItem, error) {
+	return m.mutateMaintenanceWork(ctx, in, func(item domainsemantic.SemanticDirtyWorkItem) domainsemantic.SemanticDirtyWorkItem {
+		item.Status = domainsemantic.SemanticDirtyWorkStatusPending
+		item.ClaimedBy = ""
+		item.ClaimedUntil = nil
+		item.EarliestRunAt = nil
+		item.LastError = ""
+		item.LastErrorCategory = ""
+		item.FailedAt = nil
+		item.CompletedAt = nil
+		return item
+	})
+}
+
+func (m *Module) CancelMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput) (MaintenanceWorkItem, error) {
+	return m.mutateMaintenanceWork(ctx, in, func(item domainsemantic.SemanticDirtyWorkItem) domainsemantic.SemanticDirtyWorkItem {
+		item.Status = domainsemantic.SemanticDirtyWorkStatusCancelled
+		item.ClaimedBy = ""
+		item.ClaimedUntil = nil
+		item.LastError = "cancelled by operator"
+		item.LastErrorCategory = "cancelled"
+		return item
+	})
+}
+
+func (m *Module) mutateMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput, mutate func(domainsemantic.SemanticDirtyWorkItem) domainsemantic.SemanticDirtyWorkItem) (MaintenanceWorkItem, error) {
+	if in.WorkItemID == uuid.Nil {
+		return MaintenanceWorkItem{}, fmt.Errorf("work_item_id is required")
+	}
+	maintenanceMgr, err := m.MaintenanceManager(ctx, in.SpaceID)
+	if err != nil {
+		return MaintenanceWorkItem{}, err
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil {
+		return MaintenanceWorkItem{}, err
+	}
+	for _, item := range items {
+		if item.ID != in.WorkItemID {
+			continue
+		}
+		item = mutate(item)
+		updated, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, item)
+		if err != nil {
+			return MaintenanceWorkItem{}, err
+		}
+		return toMaintenanceWorkItem(updated), nil
+	}
+	return MaintenanceWorkItem{}, fmt.Errorf("semantic maintenance work item %s not found", in.WorkItemID)
+}
+
+func toMaintenanceWorkItem(item domainsemantic.SemanticDirtyWorkItem) MaintenanceWorkItem {
+	out := MaintenanceWorkItem{ID: item.ID, SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticIndexID: item.SemanticIndexID, TargetNodeID: item.TargetNodeID, Action: string(item.Action), Status: string(item.Status), AttemptCount: item.Attempts, LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: sanitizeMaintenanceError(item.LastError), CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	if item.EarliestRunAt != nil {
+		out.NotBefore = *item.EarliestRunAt
+	}
+	if item.ClaimedUntil != nil {
+		out.ClaimedUntil = *item.ClaimedUntil
+	}
+	return out
+}
+
+func sanitizeMaintenanceError(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 500 {
+		return value[:500]
+	}
+	return value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (m *Module) ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticIndex, error) {
