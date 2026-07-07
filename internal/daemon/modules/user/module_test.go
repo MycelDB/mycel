@@ -12,8 +12,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/daemon/config"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestModuleInitCreatesUserStore(t *testing.T) {
@@ -24,6 +27,20 @@ func TestModuleInitCreatesUserStore(t *testing.T) {
 	}
 	if len(users) != 0 {
 		t.Fatalf("expected empty user store, got %d", len(users))
+	}
+}
+
+func TestModuleQuiesceRejectsCreateUser(t *testing.T) {
+	ctx := context.Background()
+	module := initUserModule(t, t.TempDir())
+	lease, err := module.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(ctx)
+	_, err = module.CreateUser(ctx, CreateUserInput{Username: "blocked", Password: "pass"})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("CreateUser() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
 	}
 }
 

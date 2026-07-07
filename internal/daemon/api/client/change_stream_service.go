@@ -150,6 +150,9 @@ func changeEventFilter(values []clientv1.ChangeEventType) map[clientv1.ChangeEve
 }
 
 func mapChangeStreamError(err error, action string) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, daemonchange.ErrInvalidInput) {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}

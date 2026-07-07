@@ -119,6 +119,11 @@ func (s *AdminSemanticService) UpsertSemanticIndex(ctx context.Context, req *adm
 	if err != nil {
 		return nil, err
 	}
+	ctx, release, err := s.semantic.BeginMutation(ctx)
+	if err != nil {
+		return nil, mapAdminSemanticError(err, "begin semantic mutation")
+	}
+	defer release()
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "open semantic space manager")
@@ -153,6 +158,11 @@ func (s *AdminSemanticService) DeleteSemanticIndex(ctx context.Context, req *adm
 	if _, err := s.spaces.GetSpace(ctx, spaceID.String()); err != nil {
 		return nil, mapSpaceError(err, "get space")
 	}
+	ctx, release, err := s.semantic.BeginMutation(ctx)
+	if err != nil {
+		return nil, mapAdminSemanticError(err, "begin semantic mutation")
+	}
+	defer release()
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "open semantic space manager")
@@ -413,6 +423,9 @@ func paginateAdminSemantic[T any](items []T, pageSize int, pageToken string) ([]
 func mapAdminSemanticError(err error, action string) error {
 	if err == nil {
 		return nil
+	}
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return status.Error(codes.Unavailable, err.Error())

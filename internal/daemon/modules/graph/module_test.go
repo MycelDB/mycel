@@ -9,12 +9,103 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestModuleQuiesceRejectsGraphCommit(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, Logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "blocked", Props: map[string]any{}}); err != nil {
+		t.Fatalf("stage node: %v", err)
+	}
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(ctx)
+	_, err = m.CommitTransactionGraph(ctx, tx)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("CommitTransactionGraph() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
+}
+
+func TestPhase8BackupWaitsForGraphWorkAndReleasesWrites(t *testing.T) {
+	ctx := context.Background()
+	coordinator := quiesce.NewCoordinator()
+	m := NewModule()
+	rt := daemonruntime.New(config.Config{DataDir: t.TempDir()}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "", nil)
+	rt.Quiesce = coordinator
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	dataDir := t.TempDir()
+	mgr := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}, Quiesce: coordinator})
+	releaseActive, err := m.gate.Enter(ctx)
+	if err != nil {
+		t.Fatalf("enter graph gate: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.Trigger(ctx, backupcore.TriggerInput{Source: "test"})
+		done <- err
+	}()
+	waitForGraphGateQuiesced(t, m.gate)
+	select {
+	case err := <-done:
+		t.Fatalf("backup completed before active graph work drained: %v", err)
+	default:
+	}
+	releaseActive()
+	if err := <-done; err != nil {
+		t.Fatalf("backup trigger after graph drain: %v", err)
+	}
+
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test", Mode: quiesce.ModeBackup})
+	if err != nil {
+		t.Fatalf("quiesce graph gate: %v", err)
+	}
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "blocked", Props: map[string]any{}}); err != nil {
+		t.Fatalf("stage blocked node: %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); status.Code(err) != codes.Unavailable {
+		t.Fatalf("quiesced commit code = %v, want unavailable (err=%v)", status.Code(err), err)
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatalf("release graph gate: %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("commit after release: %v", err)
+	}
+}
+
+func waitForGraphGateQuiesced(t *testing.T, gate *quiesce.Gate) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		if gate.Status().Quiesced {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for graph gate to quiesce")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
 
 func TestModuleFineGrainedOCC(t *testing.T) {
 	ctx := context.Background()

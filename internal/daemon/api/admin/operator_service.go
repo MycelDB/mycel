@@ -331,6 +331,9 @@ func normalizePageSize(size int32) int {
 }
 
 func mapAdminError(err error, action string) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, daemonadmin.ErrAdminNotFound) {
 		return status.Error(codes.NotFound, "operator not found")
 	}

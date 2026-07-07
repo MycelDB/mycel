@@ -19,6 +19,7 @@ import (
 const ModuleName = "semantic"
 
 type Manager interface {
+	BeginMutation(ctx context.Context) (context.Context, func(), error)
 	GlobalManager() storesemantic.GlobalManager
 	SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.SpaceManager, error)
 	ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager, error)

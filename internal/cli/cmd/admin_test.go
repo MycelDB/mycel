@@ -14,6 +14,7 @@ import (
 	daemonapp "github.com/myceldb/mycel/internal/daemon/app"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
+	daemonbackup "github.com/myceldb/mycel/internal/daemon/modules/backup"
 	daemonblob "github.com/myceldb/mycel/internal/daemon/modules/blob"
 	daemonchange "github.com/myceldb/mycel/internal/daemon/modules/changestream"
 	daegraph "github.com/myceldb/mycel/internal/daemon/modules/graph"
@@ -23,6 +24,8 @@ import (
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestAdminListCommandJSONUsesGRPC(t *testing.T) {
@@ -211,6 +214,89 @@ func TestAdminGrantAndSessionCommands(t *testing.T) {
 	}
 }
 
+func TestAdminBackupCommandsUseDaemonGRPC(t *testing.T) {
+	dataDir, addr, password, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	backupDir := filepath.Join(filepath.Dir(dataDir), "cli-backups")
+	base := []string{"--daemon-addr", addr, "--username", "admin", "--password", password, "--output", "json"}
+
+	out, err := runCLI(t, append(base, "admin", "backup", "policy", "get")...)
+	if err != nil {
+		t.Fatalf("backup policy get failed: %v\n%s", err, out)
+	}
+	var policy adminv1.BackupPolicy
+	if err := json.Unmarshal([]byte(out), &policy); err != nil {
+		t.Fatalf("decode policy: %v\n%s", err, out)
+	}
+	if policy.GetCompression() != "zip" {
+		t.Fatalf("unexpected default policy: %#v", &policy)
+	}
+
+	out, err = runCLI(t, append(base, "admin", "backup", "policy", "set", "--enabled", "--dir", backupDir, "--interval", "1h", "--keep", "2", "--include-logs")...)
+	if err != nil {
+		t.Fatalf("backup policy set failed: %v\n%s", err, out)
+	}
+	if err := json.Unmarshal([]byte(out), &policy); err != nil {
+		t.Fatalf("decode updated policy: %v\n%s", err, out)
+	}
+	if !policy.GetEnabled() || policy.GetBackupDir() != backupDir || policy.GetIntervalSeconds() != 3600 || policy.GetRetentionCount() != 2 || !policy.GetIncludeLogs() {
+		t.Fatalf("unexpected updated policy: %#v", &policy)
+	}
+
+	out, err = runCLI(t, append(base, "admin", "backup", "trigger", "--reason", "cli-test")...)
+	if err != nil {
+		t.Fatalf("backup trigger failed: %v\n%s", err, out)
+	}
+	var trigger adminv1.TriggerBackupResponse
+	if err := json.Unmarshal([]byte(out), &trigger); err != nil {
+		t.Fatalf("decode trigger: %v\n%s", err, out)
+	}
+	backupID := trigger.GetBackup().GetBackupId()
+	if backupID == "" || trigger.GetStatus().GetState() != "succeeded" {
+		t.Fatalf("unexpected trigger response: %#v", &trigger)
+	}
+
+	out, err = runCLI(t, append(base, "admin", "backup", "status")...)
+	if err != nil {
+		t.Fatalf("backup status failed: %v\n%s", err, out)
+	}
+	var statusRes adminv1.GetBackupStatusResponse
+	if err := json.Unmarshal([]byte(out), &statusRes); err != nil {
+		t.Fatalf("decode status: %v\n%s", err, out)
+	}
+	if statusRes.GetStatus().GetBackupId() != backupID || statusRes.GetStatus().GetLastSuccessAt() == "" {
+		t.Fatalf("unexpected status: %#v", &statusRes)
+	}
+
+	out, err = runCLI(t, append(base, "admin", "backup", "list")...)
+	if err != nil {
+		t.Fatalf("backup list failed: %v\n%s", err, out)
+	}
+	var backups adminv1.ListBackupsResponse
+	if err := json.Unmarshal([]byte(out), &backups); err != nil {
+		t.Fatalf("decode list: %v\n%s", err, out)
+	}
+	if len(backups.GetBackups()) != 1 || backups.GetBackups()[0].GetBackupId() != backupID {
+		t.Fatalf("unexpected backups: %#v", &backups)
+	}
+
+	out, err = runCLI(t, append(base, "admin", "backup", "delete", backupID)...)
+	if err != nil {
+		t.Fatalf("backup delete failed: %v\n%s", err, out)
+	}
+	var deleted adminv1.DeleteBackupResponse
+	if err := json.Unmarshal([]byte(out), &deleted); err != nil || deleted.GetBackupId() != backupID {
+		t.Fatalf("unexpected delete output err=%v deleted=%#v raw=%s", err, &deleted, out)
+	}
+}
+
+func TestBackupCLIErrorSurfacesUnavailableAsTemporary(t *testing.T) {
+	err := backupCLIError("trigger backup", status.Error(codes.Unavailable, "service is quiesced"))
+	if err == nil || !strings.Contains(err.Error(), "temporarily unavailable") {
+		t.Fatalf("unexpected backupCLIError: %v", err)
+	}
+}
+
 func TestUserCommandsUseDaemonGRPC(t *testing.T) {
 	_, addr, password, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
@@ -340,41 +426,45 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	if err != nil {
 		t.Fatalf("initialize daemon admin store failed: %v", err)
 	}
-	adminModule, ok := daemonruntime.ModuleAs[*daemonadmin.Module](rt, daemonadmin.ModuleName)
+	adminModule, ok := daemonruntime.ServiceAs[*daemonadmin.Module](rt, daemonadmin.ModuleName)
 	if !ok {
-		t.Fatal("admin module was not registered")
+		t.Fatal("admin service was not registered")
 	}
-	userModule, ok := daemonruntime.ModuleAs[*daemonuser.Module](rt, daemonuser.ModuleName)
+	userModule, ok := daemonruntime.ServiceAs[*daemonuser.Module](rt, daemonuser.ModuleName)
 	if !ok {
-		t.Fatal("user module was not registered")
+		t.Fatal("user service was not registered")
 	}
-	spaceModule, ok := daemonruntime.ModuleAs[*daemonspace.Module](rt, daemonspace.ModuleName)
+	spaceModule, ok := daemonruntime.ServiceAs[*daemonspace.Module](rt, daemonspace.ModuleName)
 	if !ok {
-		t.Fatal("space module was not registered")
+		t.Fatal("space service was not registered")
 	}
-	sessionModule, ok := daemonruntime.ModuleAs[*daemonsession.Module](rt, daemonsession.ModuleName)
+	sessionModule, ok := daemonruntime.ServiceAs[*daemonsession.Module](rt, daemonsession.ModuleName)
 	if !ok {
-		t.Fatal("session module was not registered")
+		t.Fatal("session service was not registered")
 	}
-	graphModule, ok := daemonruntime.ModuleAs[*daegraph.Module](rt, daegraph.ModuleName)
+	graphModule, ok := daemonruntime.ServiceAs[*daegraph.Module](rt, daegraph.ModuleName)
 	if !ok {
-		t.Fatal("graph module was not registered")
+		t.Fatal("graph service was not registered")
 	}
-	blobModule, ok := daemonruntime.ModuleAs[*daemonblob.Module](rt, daemonblob.ModuleName)
+	blobModule, ok := daemonruntime.ServiceAs[*daemonblob.Module](rt, daemonblob.ModuleName)
 	if !ok {
-		t.Fatal("blob module was not registered")
+		t.Fatal("blob service was not registered")
 	}
-	semanticModule, ok := daemonruntime.ModuleAs[*daemonsemantic.Module](rt, daemonsemantic.ModuleName)
+	semanticModule, ok := daemonruntime.ServiceAs[*daemonsemantic.Module](rt, daemonsemantic.ModuleName)
 	if !ok {
-		t.Fatal("semantic module was not registered")
+		t.Fatal("semantic service was not registered")
 	}
-	changeModule, ok := daemonruntime.ModuleAs[*daemonchange.Module](rt, daemonchange.ModuleName)
+	changeModule, ok := daemonruntime.ServiceAs[*daemonchange.Module](rt, daemonchange.ModuleName)
 	if !ok {
-		t.Fatal("change stream module was not registered")
+		t.Fatal("change stream service was not registered")
+	}
+	backupModule, ok := daemonruntime.ServiceAs[*daemonbackup.Module](rt, daemonbackup.ModuleName)
+	if !ok {
+		t.Fatal("backup service was not registered")
 	}
 	password := bootstrapPasswordFromLog(t, rt.LogPath)
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: adminModule, AdminAuthenticator: adminModule, OperatorManager: adminModule, UserManager: userModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, Logger: rt.Logger})
+	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: adminModule, AdminAuthenticator: adminModule, OperatorManager: adminModule, BackupManager: backupModule, UserManager: userModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, Logger: rt.Logger, Quiesce: rt.Quiesce})
 	if err != nil {
 		_ = rt.Close()
 		t.Fatalf("start grpc server failed: %v", err)

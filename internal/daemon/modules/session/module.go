@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 )
 
@@ -22,10 +23,11 @@ type Module struct {
 	transactions map[string]GraphTransaction
 	revisions    map[string]int64
 	commits      map[string]TransactionCommit
+	gate         *quiesce.Gate
 }
 
 func NewModule() *Module {
-	return &Module{sessions: map[string]GraphSession{}, transactions: map[string]GraphTransaction{}, revisions: map[string]int64{}, commits: map[string]TransactionCommit{}}
+	return &Module{sessions: map[string]GraphSession{}, transactions: map[string]GraphTransaction{}, revisions: map[string]int64{}, commits: map[string]TransactionCommit{}, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -43,11 +45,24 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	if m.commits == nil {
 		m.commits = map[string]TransactionCommit{}
 	}
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if rt.Quiesce != nil {
+		if err := rt.Quiesce.Register(m.gate); err != nil {
+			return daemonruntime.Abort(ModuleName, "quiesce", "register session quiesce participant", err)
+		}
+	}
 	rt.Logger.Info("session module initialized", "storage", "memory")
 	return daemonruntime.OK(ModuleName)
 }
 
 func (m *Module) OpenSession(ctx context.Context, input OpenSessionInput) (GraphSession, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return GraphSession{}, err
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return GraphSession{}, err
 	}
@@ -77,6 +92,11 @@ func (m *Module) GetSession(ctx context.Context, userID string, sessionID string
 }
 
 func (m *Module) HeartbeatSession(ctx context.Context, userID string, sessionID string, extension time.Duration) (GraphSession, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return GraphSession{}, err
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return GraphSession{}, err
 	}
@@ -104,6 +124,11 @@ func (m *Module) HeartbeatSession(ctx context.Context, userID string, sessionID 
 }
 
 func (m *Module) CloseSession(ctx context.Context, userID string, sessionID string) (GraphSession, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return GraphSession{}, err
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return GraphSession{}, err
 	}
@@ -135,6 +160,11 @@ func (m *Module) CloseSession(ctx context.Context, userID string, sessionID stri
 }
 
 func (m *Module) BeginTransaction(ctx context.Context, input BeginTransactionInput) (GraphTransaction, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return GraphTransaction{}, err
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return GraphTransaction{}, err
 	}
@@ -180,6 +210,11 @@ func (m *Module) CommitTransactionAtRevision(ctx context.Context, userID string,
 }
 
 func (m *Module) commitTransaction(ctx context.Context, userID string, transactionID string, operationCount int32, committedRevision int64) (TransactionCommit, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return TransactionCommit{}, err
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return TransactionCommit{}, err
 	}
@@ -215,6 +250,11 @@ func (m *Module) commitTransaction(ctx context.Context, userID string, transacti
 }
 
 func (m *Module) RollbackTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return GraphTransaction{}, err
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return GraphTransaction{}, err
 	}
@@ -233,6 +273,11 @@ func (m *Module) RollbackTransaction(ctx context.Context, userID string, transac
 }
 
 func (m *Module) CloseTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return GraphTransaction{}, err
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return GraphTransaction{}, err
 	}
@@ -252,6 +297,17 @@ func (m *Module) CloseTransaction(ctx context.Context, userID string, transactio
 		m.transactions[tx.ID] = tx
 	}
 	return tx, nil
+}
+
+func (m *Module) enterWrite(ctx context.Context) (func(), error) {
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
 }
 
 func (m *Module) getSessionLocked(userID string, sessionID string) (GraphSession, error) {

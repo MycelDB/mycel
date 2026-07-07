@@ -280,6 +280,9 @@ func mapUserSession(session domainauth.RefreshSession) *adminv1.AdminAuthSession
 }
 
 func mapUserError(err error, action string) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, daemonuser.ErrUserNotFound) || errors.Is(err, storesession.ErrSessionNotFound) {
 		return status.Error(codes.NotFound, "user or session not found")
 	}

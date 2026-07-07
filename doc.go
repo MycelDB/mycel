@@ -7,5 +7,6 @@
 //
 // The historical public engine, session, domain, query, and store implementation
 // packages have been removed or internalized. Do not open or mutate a Mycel data
-// directory from an application process; myceld owns the runtime and storage.
+// directory from an application process; myceld owns the runtime and storage,
+// including quiesced backup creation and offline-restore-compatible archives.
 package mycel

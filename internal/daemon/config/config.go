@@ -27,6 +27,13 @@ const (
 	DefaultSemanticCredentialConcurrent     = 1
 	DefaultSemanticCredentialRequestsPerMin = 30
 	DefaultSemanticCredentialTokensPerMin   = 50000
+	DefaultBackupInterval                   = 24 * time.Hour
+	DefaultBackupRetentionCount             = 7
+	DefaultBackupCompression                = "zip"
+	DefaultBackupQuiesceDrainTimeout        = 2 * time.Minute
+	DefaultBackupTimeout                    = 30 * time.Minute
+	DefaultBackupRetryAfter                 = 5 * time.Second
+	DefaultBackupStatusHistoryLimit         = 20
 )
 
 type SemanticThrottleConfig struct {
@@ -49,6 +56,20 @@ type SemanticMaintenanceConfig struct {
 	CredentialDefaults         SemanticThrottleConfig
 }
 
+type BackupConfig struct {
+	Enabled                bool
+	BackupDir              string
+	Interval               time.Duration
+	RetentionCount         int
+	IncludeLogs            bool
+	Compression            string
+	QuiesceDrainTimeout    time.Duration
+	BackupTimeout          time.Duration
+	RetryAfter             time.Duration
+	StatusHistoryLimit     int
+	AllowReadsDuringBackup bool
+}
+
 type Config struct {
 	DataDir                   string
 	Mode                      string
@@ -63,6 +84,7 @@ type Config struct {
 	TLSClientCAFile           string
 	TLSRequireClientCert      bool
 	SemanticMaintenance       SemanticMaintenanceConfig
+	Backup                    BackupConfig
 }
 
 func LoadFromEnv() (Config, error) {
@@ -87,6 +109,19 @@ func LoadFromEnv() (Config, error) {
 		TLSKeyFile:                strings.TrimSpace(os.Getenv("MYCELD_TLS_KEY_FILE")),
 		TLSClientCAFile:           strings.TrimSpace(os.Getenv("MYCELD_TLS_CLIENT_CA_FILE")),
 		TLSRequireClientCert:      parseBoolEnv(os.Getenv("MYCELD_TLS_REQUIRE_CLIENT_CERT")),
+		Backup: BackupConfig{
+			Enabled:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
+			BackupDir:              strings.TrimSpace(os.Getenv("MYCELD_BACKUP_DIR")),
+			Interval:               parseDurationEnv(os.Getenv("MYCELD_BACKUP_INTERVAL"), DefaultBackupInterval),
+			RetentionCount:         parseIntEnv(os.Getenv("MYCELD_BACKUP_RETENTION_COUNT"), DefaultBackupRetentionCount),
+			IncludeLogs:            parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_INCLUDE_LOGS"), false),
+			Compression:            valueOrDefault(os.Getenv("MYCELD_BACKUP_COMPRESSION"), DefaultBackupCompression),
+			QuiesceDrainTimeout:    parseDurationEnv(os.Getenv("MYCELD_BACKUP_QUIESCE_DRAIN_TIMEOUT"), DefaultBackupQuiesceDrainTimeout),
+			BackupTimeout:          parseDurationEnv(os.Getenv("MYCELD_BACKUP_TIMEOUT"), DefaultBackupTimeout),
+			RetryAfter:             parseDurationEnv(os.Getenv("MYCELD_BACKUP_RETRY_AFTER"), DefaultBackupRetryAfter),
+			StatusHistoryLimit:     parseIntEnv(os.Getenv("MYCELD_BACKUP_STATUS_HISTORY_LIMIT"), DefaultBackupStatusHistoryLimit),
+			AllowReadsDuringBackup: parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ALLOW_READS_DURING_BACKUP"), false),
+		},
 		SemanticMaintenance: SemanticMaintenanceConfig{
 			Enabled:                    parseBoolEnvDefault(os.Getenv("MYCELD_SEMANTIC_MAINTENANCE_ENABLED"), true),
 			DirtyCooldown:              parseDurationEnv(os.Getenv("MYCELD_SEMANTIC_DIRTY_COOLDOWN"), DefaultSemanticDirtyCooldown),
@@ -158,6 +193,34 @@ func (c Config) Validate() error {
 	}
 	if err := c.SemanticMaintenance.Validate(); err != nil {
 		return err
+	}
+	if err := c.Backup.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c BackupConfig) Validate() error {
+	if c.Interval < 0 {
+		return fmt.Errorf("MYCELD_BACKUP_INTERVAL must be positive")
+	}
+	if c.RetentionCount < 0 {
+		return fmt.Errorf("MYCELD_BACKUP_RETENTION_COUNT must be positive")
+	}
+	if c.QuiesceDrainTimeout < 0 {
+		return fmt.Errorf("MYCELD_BACKUP_QUIESCE_DRAIN_TIMEOUT must be positive")
+	}
+	if c.BackupTimeout < 0 {
+		return fmt.Errorf("MYCELD_BACKUP_TIMEOUT must be positive")
+	}
+	if c.RetryAfter < 0 {
+		return fmt.Errorf("MYCELD_BACKUP_RETRY_AFTER must be positive")
+	}
+	if c.StatusHistoryLimit < 0 {
+		return fmt.Errorf("MYCELD_BACKUP_STATUS_HISTORY_LIMIT must be positive")
+	}
+	if compression := strings.ToLower(strings.TrimSpace(c.Compression)); compression != "" && compression != "zip" {
+		return fmt.Errorf("MYCELD_BACKUP_COMPRESSION must be zip")
 	}
 	return nil
 }

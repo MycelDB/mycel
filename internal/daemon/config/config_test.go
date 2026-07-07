@@ -32,6 +32,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if !cfg.SemanticMaintenance.Enabled || cfg.SemanticMaintenance.DirtyCooldown != DefaultSemanticDirtyCooldown || cfg.SemanticMaintenance.WorkerCount != DefaultSemanticWorkerCount || cfg.SemanticMaintenance.MaxBatchSize != DefaultSemanticMaxBatchSize {
 		t.Fatalf("unexpected semantic maintenance defaults: %+v", cfg.SemanticMaintenance)
 	}
+	if cfg.Backup.Enabled || cfg.Backup.Interval != DefaultBackupInterval || cfg.Backup.RetentionCount != DefaultBackupRetentionCount || cfg.Backup.Compression != DefaultBackupCompression || cfg.Backup.QuiesceDrainTimeout != DefaultBackupQuiesceDrainTimeout || cfg.Backup.BackupTimeout != DefaultBackupTimeout || cfg.Backup.RetryAfter != DefaultBackupRetryAfter || cfg.Backup.StatusHistoryLimit != DefaultBackupStatusHistoryLimit || cfg.Backup.AllowReadsDuringBackup {
+		t.Fatalf("unexpected backup defaults: %+v", cfg.Backup)
+	}
 }
 
 func TestLoadFromEnvBootstrapAdminCredentials(t *testing.T) {
@@ -67,6 +70,29 @@ func TestLoadFromEnvSemanticMaintenanceOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvBackupOverrides(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_BACKUP_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_DIR", "/tmp/mycel-backups")
+	t.Setenv("MYCELD_BACKUP_INTERVAL", "2h")
+	t.Setenv("MYCELD_BACKUP_RETENTION_COUNT", "9")
+	t.Setenv("MYCELD_BACKUP_INCLUDE_LOGS", "true")
+	t.Setenv("MYCELD_BACKUP_COMPRESSION", "zip")
+	t.Setenv("MYCELD_BACKUP_QUIESCE_DRAIN_TIMEOUT", "3m")
+	t.Setenv("MYCELD_BACKUP_TIMEOUT", "45m")
+	t.Setenv("MYCELD_BACKUP_RETRY_AFTER", "7s")
+	t.Setenv("MYCELD_BACKUP_STATUS_HISTORY_LIMIT", "12")
+	t.Setenv("MYCELD_BACKUP_ALLOW_READS_DURING_BACKUP", "true")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	backup := cfg.Backup
+	if !backup.Enabled || backup.BackupDir != "/tmp/mycel-backups" || backup.Interval != 2*time.Hour || backup.RetentionCount != 9 || !backup.IncludeLogs || backup.Compression != "zip" || backup.QuiesceDrainTimeout != 3*time.Minute || backup.BackupTimeout != 45*time.Minute || backup.RetryAfter != 7*time.Second || backup.StatusHistoryLimit != 12 || !backup.AllowReadsDuringBackup {
+		t.Fatalf("unexpected backup overrides: %+v", backup)
+	}
+}
+
 func TestConfigValidateRejectsBadValues(t *testing.T) {
 	cases := []Config{
 		{DataDir: "", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr},
@@ -79,6 +105,9 @@ func TestConfigValidateRejectsBadValues(t *testing.T) {
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSKeyFile: "key.pem"},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSClientCAFile: "ca.pem"},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSCertFile: "cert.pem", TLSKeyFile: "key.pem", TLSRequireClientCert: true},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{Interval: -1}},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{RetentionCount: -1}},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{Compression: "tar.gz"}},
 	}
 	for _, tc := range cases {
 		if err := tc.Validate(); err == nil {

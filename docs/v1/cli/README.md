@@ -67,6 +67,15 @@ Daemon semantic/inference commands include:
 - [semantic maintenance process](commands/semantic-maintenance-process.md)
 - [semantic migrate legacy embeddings](commands/semantic-migrate-legacy-embeddings.md)
 
+Backup commands:
+
+- [admin backup policy get](commands/admin-backup-policy-get.md)
+- [admin backup policy set](commands/admin-backup-policy-set.md)
+- [admin backup trigger](commands/admin-backup-trigger.md)
+- [admin backup status](commands/admin-backup-status.md)
+- [admin backup list](commands/admin-backup-list.md)
+- [admin backup delete](commands/admin-backup-delete.md)
+
 Accounting commands:
 
 - [accounting usage summarize](commands/accounting-usage-summarize.md)

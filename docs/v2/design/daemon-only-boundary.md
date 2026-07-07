@@ -21,6 +21,8 @@ This module supports binaries, not an embedded application library:
 
 The former public `domain/**`, `query`, and `store/**` implementation packages have moved under `internal/`; see [Internalize Mycel Implementation Packages Plan](internalize-implementation-packages-plan.md). Further internal namespace cleanup is tracked in [Internal Bounded-Context Package Plan](internal-bounded-context-package-plan.md).
 
+Daemon service lifecycle/capability interfaces are specified in [Daemon Service Interfaces Design](daemon-service-interfaces.md), with phased delivery tracked in [Daemon Service Interfaces Implementation Plan](daemon-service-interfaces-implementation-plan.md). Daemon-owned backup and service quiescing are specified in [Quiesce and Backup Design](quiesce-and-backup.md), with phased delivery tracked in [Quiesce and Backup Implementation Plan](quiesce-and-backup-implementation-plan.md).
+
 ## Go package boundary
 
 `github.com/myceldb/mycel` is not an application library. Its importable root package is documentation-only; implementation code is internal to this module.
@@ -76,6 +78,8 @@ Applications / tools
 ```
 
 Only `myceld` should read or mutate the Mycel data directory. CLI commands and application code should not instantiate an engine or file session in-process.
+
+This ownership rule includes backups. Operators should use `mycel.admin.v1.AdminBackupService`, SDK helpers that call that service, or `mycel admin backup ...`; applications must not zip or copy `MYCELD_DATA_DIR` directly while the daemon is live. The daemon quiesces work before snapshotting and returns transient `codes.Unavailable` for new non-exempt RPCs, including reads unless explicitly exempted/proven safe, during backup.
 
 ## Refactor phases after this boundary
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/graph/filesession"
 	"github.com/myceldb/mycel/internal/graph/model"
 	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
@@ -17,7 +18,6 @@ import (
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
-	"github.com/myceldb/mycel/internal/graph/filesession"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 

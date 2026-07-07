@@ -96,6 +96,22 @@ Stop it with:
 make stop
 ```
 
+## Backups
+
+Backups are owned by `myceld`, not by applications copying the data directory. Operators manage policy and manual runs through the Admin Backup API or CLI:
+
+```sh
+bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin backup policy get
+bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin backup trigger --reason 'before upgrade'
+bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin backup status
+```
+
+Backups quiesce daemon work before snapshotting. New non-exempt RPCs during quiesce, including reads unless explicitly exempted/proven safe, may fail transiently with gRPC `codes.Unavailable`; applications should retry with bounded backoff. Users are not logged out by default.
+
+Scheduled backups are disabled by default. Key daemon settings include `MYCELD_BACKUP_ENABLED`, `MYCELD_BACKUP_DIR`, `MYCELD_BACKUP_INTERVAL`, `MYCELD_BACKUP_RETENTION_COUNT`, and `MYCELD_BACKUP_INCLUDE_LOGS`. The backup directory must be outside `MYCELD_DATA_DIR`. Restore is offline-only in the MVP: stop `myceld`, verify and extract the archive into an empty/restored data directory, then start `myceld` against that directory.
+
+See [`docs/v2/design/admin/backup.md`](docs/v2/design/admin/backup.md) and [`docs/v2/design/quiesce-and-backup.md`](docs/v2/design/quiesce-and-backup.md).
+
 ## CLI
 
 The CLI connects to `myceld` over gRPC:

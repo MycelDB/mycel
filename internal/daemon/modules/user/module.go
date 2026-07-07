@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	"github.com/myceldb/mycel/internal/identity/model"
@@ -19,9 +20,10 @@ import (
 type Module struct {
 	store    Store
 	sessions storesession.Manager
+	gate     *quiesce.Gate
 }
 
-func NewModule() *Module { return &Module{} }
+func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
 
 func Open(dataDir string) (*Module, error) {
 	store, err := OpenExistingStore(filepath.Join(dataDir, "users"))
@@ -63,6 +65,14 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open user session store", err)
 	}
 	m.sessions = sessions
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if rt.Quiesce != nil {
+		if err := rt.Quiesce.Register(m.gate); err != nil {
+			return daemonruntime.Abort(ModuleName, "quiesce", "register user quiesce participant", err)
+		}
+	}
 	return daemonruntime.OK(ModuleName)
 }
 
@@ -98,6 +108,11 @@ func (m *Module) FindUser(ctx context.Context, username string) (UserSummary, er
 }
 
 func (m *Module) CreateUser(ctx context.Context, input CreateUserInput) (UserSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	defer release()
 	username := strings.TrimSpace(input.Username)
 	if username == "" {
 		return UserSummary{}, fmt.Errorf("username must not be empty")
@@ -122,6 +137,11 @@ func (m *Module) CreateUser(ctx context.Context, input CreateUserInput) (UserSum
 }
 
 func (m *Module) DisableUser(ctx context.Context, userID string) (UserSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	defer release()
 	user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateDisabled; return nil })
 	if err != nil {
 		return UserSummary{}, err
@@ -130,6 +150,11 @@ func (m *Module) DisableUser(ctx context.Context, userID string) (UserSummary, e
 }
 
 func (m *Module) EnableUser(ctx context.Context, userID string) (UserSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	defer release()
 	user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateActive; return nil })
 	if err != nil {
 		return UserSummary{}, err
@@ -138,6 +163,11 @@ func (m *Module) EnableUser(ctx context.Context, userID string) (UserSummary, er
 }
 
 func (m *Module) DeleteUser(ctx context.Context, userID string) (UserSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	defer release()
 	user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateDeleted; return nil })
 	if err != nil {
 		return UserSummary{}, err
@@ -146,6 +176,11 @@ func (m *Module) DeleteUser(ctx context.Context, userID string) (UserSummary, er
 }
 
 func (m *Module) SetUserPassword(ctx context.Context, userID string, password string) (UserSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	defer release()
 	if strings.TrimSpace(userID) == "" {
 		return UserSummary{}, ErrUserNotFound
 	}
@@ -184,6 +219,11 @@ func (m *Module) AuthenticateUser(ctx context.Context, username string, password
 }
 
 func (m *Module) CreateAuthSession(ctx context.Context, user UserSummary, metadata domainauth.RefreshSessionMetadata, tokenBytes int, idleTTL time.Duration, absoluteTTL time.Duration) (domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return "", domainauth.RefreshSession{}, err
+	}
+	defer release()
 	userID, err := parseUserID(user.ID)
 	if err != nil {
 		return "", domainauth.RefreshSession{}, err
@@ -205,6 +245,11 @@ func (m *Module) CreateAuthSession(ctx context.Context, user UserSummary, metada
 }
 
 func (m *Module) RefreshAuthSession(ctx context.Context, refreshToken domainauth.RefreshToken, metadata domainauth.RefreshSessionMetadata, tokenBytes int, idleTTL time.Duration) (UserSummary, domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return UserSummary{}, "", domainauth.RefreshSession{}, err
+	}
+	defer release()
 	refreshTokenHash, err := domainauth.HashRefreshToken(refreshToken)
 	if err != nil {
 		return UserSummary{}, "", domainauth.RefreshSession{}, ErrInvalidRefreshToken
@@ -274,6 +319,11 @@ func (m *Module) ListUserSessions(ctx context.Context, userID string) ([]domaina
 }
 
 func (m *Module) RevokeUserSession(ctx context.Context, userID string, sessionID string) error {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	userUUID, err := parseUserID(userID)
 	if err != nil {
 		return err
@@ -294,6 +344,11 @@ func (m *Module) RevokeUserSession(ctx context.Context, userID string, sessionID
 }
 
 func (m *Module) RevokeUserSessions(ctx context.Context, userID string) (int, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	id, err := parseUserID(userID)
 	if err != nil {
 		return 0, err
@@ -314,6 +369,17 @@ func (m *Module) RevokeUserSessions(ctx context.Context, userID string) (int, er
 		count++
 	}
 	return count, nil
+}
+
+func (m *Module) enterWrite(ctx context.Context) (func(), error) {
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
 }
 
 func refreshSessionRefreshable(rec domainauth.RefreshSession, now time.Time) bool {

@@ -1,13 +1,18 @@
 package app
 
 import (
+	"archive/zip"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/daemon/config"
+	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
+	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 )
 
 func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
@@ -18,11 +23,18 @@ func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	if _, ok := rt.Modules["admin"]; !ok {
-		t.Fatalf("expected admin module to be registered, got modules: %#v", rt.Modules)
+	if _, ok := rt.Service("admin"); !ok {
+		t.Fatalf("expected admin service to be registered, got services: %#v", rt.ServicesByName)
 	}
-	if _, ok := rt.Modules["user"]; !ok {
-		t.Fatalf("expected user module to be registered, got modules: %#v", rt.Modules)
+	if _, ok := rt.Service("user"); !ok {
+		t.Fatalf("expected user service to be registered, got services: %#v", rt.ServicesByName)
+	}
+	statuses := rt.ServiceStatuses(context.Background())
+	if len(statuses) == 0 {
+		t.Fatal("expected service statuses to be collected")
+	}
+	if !hasServiceStatus(statuses, "semantic") || !hasServiceStatus(statuses, "backup") {
+		t.Fatalf("expected semantic and backup service statuses, got %#v", statuses)
 	}
 	if err := rt.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -36,10 +48,48 @@ func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 	assertFile(t, filepath.Join(dataDir, "users", "users.json"))
 
 	logContent := readFile(t, rt.LogPath)
-	for _, want := range []string{"daemon startup begins", "data directory ready", "log directory ready", "initializing module", "daemon initialization complete"} {
+	for _, want := range []string{"daemon startup begins", "data directory ready", "log directory ready", "initializing service", "daemon initialization complete"} {
 		if !strings.Contains(logContent, want) {
 			t.Fatalf("expected log %q, got:\n%s", want, logContent)
 		}
+	}
+}
+
+func TestPhase8OfflineRestoreArchiveBootsDaemonAndListsResources(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "mycel-data")
+	backupDir := filepath.Join(t.TempDir(), "backups")
+	cfg := config.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"}
+	rt, err := Initialize(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	mgr := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: backupDir, IncludeLogs: true}, Quiesce: rt.Quiesce})
+	result, err := mgr.Trigger(context.Background(), backupcore.TriggerInput{Source: "restore-test"})
+	if err != nil {
+		_ = rt.Close()
+		t.Fatalf("Trigger() error = %v", err)
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatalf("Close() original runtime error = %v", err)
+	}
+
+	restoredDir := filepath.Join(t.TempDir(), "restored")
+	unzipArchive(t, result.ArchivePath, restoredDir)
+	restored, err := Initialize(context.Background(), config.Config{DataDir: restoredDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("Initialize(restored) error = %v", err)
+	}
+	defer restored.Close()
+	adminService, ok := daemonruntime.ServiceAs[*daemonadmin.Module](restored, daemonadmin.ModuleName)
+	if !ok {
+		t.Fatal("restored admin service is not registered")
+	}
+	admins, err := adminService.ListAdmins(context.Background())
+	if err != nil {
+		t.Fatalf("ListAdmins(restored) error = %v", err)
+	}
+	if len(admins) == 0 || admins[0].Username != "admin" {
+		t.Fatalf("unexpected restored admins: %#v", admins)
 	}
 }
 
@@ -66,6 +116,15 @@ func TestRunLogsStartupAndShutdown(t *testing.T) {
 			t.Fatalf("expected log %q, got:\n%s", want, logContent)
 		}
 	}
+}
+
+func hasServiceStatus(statuses []daemonruntime.ServiceStatus, name string) bool {
+	for _, status := range statuses {
+		if status.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func assertDir(t *testing.T, path string) {
@@ -97,4 +156,43 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read file %s: %v", path, err)
 	}
 	return string(data)
+}
+
+func unzipArchive(t *testing.T, archivePath string, dst string) {
+	t.Helper()
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		t.Fatalf("open archive %s: %v", archivePath, err)
+	}
+	defer reader.Close()
+	for _, file := range reader.File {
+		path := filepath.Join(dst, file.Name)
+		if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(dst)+string(filepath.Separator)) {
+			t.Fatalf("archive entry escapes restore dir: %s", file.Name)
+		}
+		if file.FileInfo().IsDir() {
+			if err := os.MkdirAll(path, file.Mode()); err != nil {
+				t.Fatalf("mkdir restored dir %s: %v", path, err)
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir restored parent %s: %v", path, err)
+		}
+		in, err := file.Open()
+		if err != nil {
+			t.Fatalf("open archive file %s: %v", file.Name, err)
+		}
+		out, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, file.Mode())
+		if err != nil {
+			_ = in.Close()
+			t.Fatalf("create restored file %s: %v", path, err)
+		}
+		_, copyErr := io.Copy(out, in)
+		closeInErr := in.Close()
+		closeOutErr := out.Close()
+		if copyErr != nil || closeInErr != nil || closeOutErr != nil {
+			t.Fatalf("restore file %s failed: copy=%v closeIn=%v closeOut=%v", file.Name, copyErr, closeInErr, closeOutErr)
+		}
+	}
 }

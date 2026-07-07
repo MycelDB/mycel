@@ -340,6 +340,9 @@ func mapSemanticError(err error, action string) error {
 	if err == nil {
 		return nil
 	}
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return status.Error(codes.Unavailable, err.Error())
 	}

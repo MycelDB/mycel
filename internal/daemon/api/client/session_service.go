@@ -307,6 +307,9 @@ func transactionStateToProto(state daemonsession.TransactionState) clientv1.Tran
 }
 
 func mapSessionError(err error, action string) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, daemonsession.ErrInvalidInput) || errors.Is(err, daemonspace.ErrInvalidInput) {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}

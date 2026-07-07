@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/graph/model"
 	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
@@ -30,9 +31,10 @@ type Module struct {
 	templates storetemplate.Manager
 	access    acl.Manager
 	dataDir   string
+	gate      *quiesce.Gate
 }
 
-func NewModule() *Module { return &Module{} }
+func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
 
 func (m *Module) Name() string { return ModuleName }
 
@@ -65,6 +67,14 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.templates = templates
 	m.access = accessMgr
 	m.dataDir = rt.Config.DataDir
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if rt.Quiesce != nil {
+		if err := rt.Quiesce.Register(m.gate); err != nil {
+			return daemonruntime.Abort(ModuleName, "quiesce", "register space quiesce participant", err)
+		}
+	}
 	return daemonruntime.OK(ModuleName)
 }
 
@@ -143,6 +153,11 @@ func (m *Module) GetSpace(ctx context.Context, spaceID string) (domainspace.Spac
 }
 
 func (m *Module) CreateSpace(ctx context.Context, input CreateSpaceInput) (domainspace.Space, graph.Domain, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return domainspace.Space{}, graph.Domain{}, err
+	}
+	defer release()
 	if strings.TrimSpace(input.Name) == "" {
 		return domainspace.Space{}, graph.Domain{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
 	}
@@ -173,6 +188,11 @@ func (m *Module) CreateSpace(ctx context.Context, input CreateSpaceInput) (domai
 }
 
 func (m *Module) DeleteSpace(ctx context.Context, spaceID string) error {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	id, err := parseSpaceID(spaceID)
 	if err != nil {
 		return err
@@ -312,6 +332,11 @@ func (m *Module) GetVisibleDomain(ctx context.Context, userID string, spaceID st
 }
 
 func (m *Module) CreateDomain(ctx context.Context, userID string, input CreateDomainInput) (graph.Domain, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	defer release()
 	uid, err := parseUserID(userID)
 	if err != nil {
 		return graph.Domain{}, err
@@ -335,6 +360,11 @@ func (m *Module) CreateDomain(ctx context.Context, userID string, input CreateDo
 }
 
 func (m *Module) UpdateDomain(ctx context.Context, userID string, input UpdateDomainInput) (graph.Domain, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	defer release()
 	uid, err := parseUserID(userID)
 	if err != nil {
 		return graph.Domain{}, err
@@ -361,6 +391,11 @@ func (m *Module) UpdateDomain(ctx context.Context, userID string, input UpdateDo
 }
 
 func (m *Module) DeleteDomain(ctx context.Context, userID string, spaceID string, domainID string) error {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	uid, err := parseUserID(userID)
 	if err != nil {
 		return err
@@ -499,6 +534,11 @@ func (m *Module) FindVisibleTemplate(ctx context.Context, userID string, spaceID
 }
 
 func (m *Module) CreateTemplate(ctx context.Context, userID string, spaceID string, template storetemplate.TemplateImport) (graph.Template, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return graph.Template{}, err
+	}
+	defer release()
 	_, sp, err := m.requireSpaceAdmin(ctx, userID, spaceID)
 	if err != nil {
 		return graph.Template{}, err
@@ -514,6 +554,11 @@ func (m *Module) CreateTemplate(ctx context.Context, userID string, spaceID stri
 }
 
 func (m *Module) UpdateTemplate(ctx context.Context, userID string, spaceID string, templateID string, displayName *string, description *string) (graph.Template, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return graph.Template{}, err
+	}
+	defer release()
 	_, sp, err := m.requireSpaceAdmin(ctx, userID, spaceID)
 	if err != nil {
 		return graph.Template{}, err
@@ -533,6 +578,11 @@ func (m *Module) UpdateTemplate(ctx context.Context, userID string, spaceID stri
 }
 
 func (m *Module) ArchiveTemplate(ctx context.Context, userID string, spaceID string, templateID string) (graph.Template, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return graph.Template{}, err
+	}
+	defer release()
 	_, sp, err := m.requireSpaceAdmin(ctx, userID, spaceID)
 	if err != nil {
 		return graph.Template{}, err
@@ -552,6 +602,11 @@ func (m *Module) ArchiveTemplate(ctx context.Context, userID string, spaceID str
 }
 
 func (m *Module) DeleteTemplate(ctx context.Context, userID string, spaceID string, templateID string) error {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	_, sp, err := m.requireSpaceAdmin(ctx, userID, spaceID)
 	if err != nil {
 		return err
@@ -574,6 +629,11 @@ func (m *Module) DeleteTemplate(ctx context.Context, userID string, spaceID stri
 }
 
 func (m *Module) ImportTemplates(ctx context.Context, userID string, spaceID string, templates []storetemplate.TemplateImport) ([]graph.Template, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	_, sp, err := m.requireSpaceAdmin(ctx, userID, spaceID)
 	if err != nil {
 		return nil, err
@@ -583,6 +643,17 @@ func (m *Module) ImportTemplates(ctx context.Context, userID string, spaceID str
 		return nil, mapTemplateStoreError(err)
 	}
 	return created, nil
+}
+
+func (m *Module) enterWrite(ctx context.Context) (func(), error) {
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
 }
 
 func (m *Module) requireSpaceRead(ctx context.Context, userID string, spaceID string) (identity.UserID, domainspace.Space, error) {

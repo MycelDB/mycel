@@ -107,6 +107,9 @@ func normalizeAdminDomainPageSize(size int32) int {
 }
 
 func mapAdminDomainError(err error, action string) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, daemonspace.ErrInvalidInput) {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}

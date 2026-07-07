@@ -107,6 +107,9 @@ func MapSpace(sp domainspace.Space, access daemonspace.EffectiveAccess) *clientv
 }
 
 func mapSpaceError(err error, action string) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, daemonspace.ErrInvalidInput) {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}

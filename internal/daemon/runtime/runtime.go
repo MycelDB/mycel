@@ -2,24 +2,42 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/myceldb/mycel/internal/daemon/config"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 )
 
 type Runtime struct {
-	Config  config.Config
-	Logger  *slog.Logger
-	Modules map[string]Module
+	Config config.Config
+	Logger *slog.Logger
+
+	// ServicesByName is the canonical runtime service registry.
+	ServicesByName  map[string]Service
+	serviceOrder    []Service
+	startedServices []Service
+
+	// Quiesce coordinates daemon services that can temporarily drain work for
+	// backup or other maintenance operations.
+	Quiesce *quiesce.Coordinator
+
 	LogPath string
 
 	close func() error
 }
 
 func New(cfg config.Config, logger *slog.Logger, logPath string, close func() error) *Runtime {
-	return &Runtime{Config: cfg, Logger: logger, Modules: map[string]Module{}, LogPath: logPath, close: close}
+	return &Runtime{
+		Config:         cfg,
+		Logger:         logger,
+		ServicesByName: map[string]Service{},
+		Quiesce:        quiesce.NewCoordinator(),
+		LogPath:        logPath,
+		close:          close,
+	}
 }
 
 func (r *Runtime) Close() error {
@@ -27,8 +45,11 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	var firstErr error
-	for _, module := range r.Modules {
-		if closer, ok := module.(interface{ Close() error }); ok {
+	if err := r.StopServices(context.Background()); err != nil {
+		firstErr = err
+	}
+	for _, service := range r.Services() {
+		if closer, ok := service.(interface{ Close() error }); ok {
 			if err := closer.Close(); err != nil && firstErr == nil {
 				firstErr = err
 			}
@@ -42,30 +63,136 @@ func (r *Runtime) Close() error {
 	return firstErr
 }
 
-func (r *Runtime) Module(name string) (Module, bool) {
-	if r == nil || r.Modules == nil {
-		return nil, false
+func (r *Runtime) RegisterService(service Service) error {
+	if service == nil {
+		return &InitError{Module: "", Type: "config", Message: "service must not be nil", Abort: true}
 	}
-	module, ok := r.Modules[name]
-	return module, ok
+	name := strings.TrimSpace(service.Name())
+	if name == "" {
+		return &InitError{Module: "", Type: "config", Message: "service name must not be empty", Abort: true}
+	}
+	if r.ServicesByName == nil {
+		r.ServicesByName = map[string]Service{}
+	}
+	if _, exists := r.ServicesByName[name]; exists {
+		return &InitError{Module: name, Type: "config", Message: "service is already registered", Abort: true}
+	}
+	r.ServicesByName[name] = service
+	r.serviceOrder = append(r.serviceOrder, service)
+	return nil
 }
 
-func ModuleAs[T Module](r *Runtime, name string) (T, bool) {
+func (r *Runtime) unregisterService(name string) {
+	if r == nil {
+		return
+	}
+	delete(r.ServicesByName, name)
+	for i, service := range r.serviceOrder {
+		if strings.TrimSpace(service.Name()) == name {
+			r.serviceOrder = append(r.serviceOrder[:i], r.serviceOrder[i+1:]...)
+			return
+		}
+	}
+}
+
+func (r *Runtime) Services() []Service {
+	if r == nil || len(r.serviceOrder) == 0 {
+		return nil
+	}
+	services := make([]Service, len(r.serviceOrder))
+	copy(services, r.serviceOrder)
+	return services
+}
+
+func (r *Runtime) Service(name string) (Service, bool) {
+	if r == nil || r.ServicesByName == nil {
+		return nil, false
+	}
+	service, ok := r.ServicesByName[name]
+	return service, ok
+}
+
+func ServiceAs[T Service](r *Runtime, name string) (T, bool) {
 	var zero T
-	module, ok := r.Module(name)
+	service, ok := r.Service(name)
 	if !ok {
 		return zero, false
 	}
-	typed, ok := module.(T)
+	typed, ok := service.(T)
 	if !ok {
 		return zero, false
 	}
 	return typed, true
 }
 
-type Module interface {
-	Name() string
-	Init(context.Context, *Runtime) InitResult
+func (r *Runtime) StartServices(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	if len(r.startedServices) > 0 {
+		return nil
+	}
+	for _, service := range r.serviceOrder {
+		starter, ok := service.(Starter)
+		if !ok {
+			continue
+		}
+		if err := starter.Start(ctx); err != nil {
+			stopErr := r.StopServices(context.Background())
+			return errors.Join(err, stopErr)
+		}
+		r.startedServices = append(r.startedServices, service)
+	}
+	return nil
+}
+
+func (r *Runtime) StopServices(ctx context.Context) error {
+	if r == nil || len(r.startedServices) == 0 {
+		return nil
+	}
+	var errs []error
+	for i := len(r.startedServices) - 1; i >= 0; i-- {
+		service := r.startedServices[i]
+		stopper, ok := service.(Stopper)
+		if !ok {
+			continue
+		}
+		if err := stopper.Stop(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	r.startedServices = nil
+	return errors.Join(errs...)
+}
+
+func (r *Runtime) ServiceStatuses(ctx context.Context) []ServiceStatus {
+	if r == nil {
+		return nil
+	}
+	var statuses []ServiceStatus
+	for _, service := range r.Services() {
+		reporter, ok := service.(StatusReporter)
+		if !ok {
+			continue
+		}
+		statuses = append(statuses, reporter.Status(ctx))
+	}
+	return statuses
+}
+
+func (r *Runtime) HealthStatuses(ctx context.Context) []HealthStatus {
+	if r == nil {
+		return nil
+	}
+	var statuses []HealthStatus
+	for _, service := range r.Services() {
+		reporter, ok := service.(HealthReporter)
+		if !ok {
+			continue
+		}
+		statuses = append(statuses, reporter.Health(ctx))
+	}
+	return statuses
 }
 
 type InitResult struct {
@@ -110,42 +237,35 @@ func Continue(module, issueType, message string, err error) InitResult {
 	return InitResult{Error: &InitError{Module: module, Type: issueType, Message: message, Err: err, Abort: false}}
 }
 
-func (r *Runtime) InitModules(ctx context.Context, modules []Module) error {
-	if r.Modules == nil {
-		r.Modules = map[string]Module{}
-	}
-	for _, module := range modules {
-		name := strings.TrimSpace(module.Name())
-		if name == "" {
-			return &InitError{Module: "", Type: "config", Message: "module name must not be empty", Abort: true}
+func (r *Runtime) InitServices(ctx context.Context, services []Service) error {
+	for _, service := range services {
+		if err := r.RegisterService(service); err != nil {
+			return err
 		}
-		if _, exists := r.Modules[name]; exists {
-			return &InitError{Module: name, Type: "config", Message: "module is already registered", Abort: true}
-		}
-		r.Modules[name] = module
-		r.Logger.Info("initializing module", "module", name)
-		result := module.Init(ctx, r)
+		name := strings.TrimSpace(service.Name())
+		r.Logger.Info("initializing service", "service", name)
+		result := service.Init(ctx, r)
 		if result.OK {
-			r.Logger.Info("module initialized", "module", name)
+			r.Logger.Info("service initialized", "service", name)
 			continue
 		}
 		if result.Error == nil {
-			err := &InitError{Module: name, Type: "unknown", Message: "module returned non-ok result without error", Abort: true}
-			r.Logger.Error("module initialization failed", "module", err.Module, "type", err.Type, "message", err.Message, "abort", err.Abort)
-			delete(r.Modules, name)
+			err := &InitError{Module: name, Type: "unknown", Message: "service returned non-ok result without error", Abort: true}
+			r.Logger.Error("service initialization failed", "service", err.Module, "type", err.Type, "message", err.Message, "abort", err.Abort)
+			r.unregisterService(name)
 			return err
 		}
 		issue := result.Error
-		attrs := []any{"module", issue.Module, "type", issue.Type, "message", issue.Message, "abort", issue.Abort}
+		attrs := []any{"service", issue.Module, "type", issue.Type, "message", issue.Message, "abort", issue.Abort}
 		if issue.Err != nil {
 			attrs = append(attrs, "error", issue.Err)
 		}
 		if issue.Abort {
-			r.Logger.Error("module initialization failed", attrs...)
-			delete(r.Modules, name)
+			r.Logger.Error("service initialization failed", attrs...)
+			r.unregisterService(name)
 			return issue
 		}
-		r.Logger.Warn("module initialization issue; continuing", attrs...)
+		r.Logger.Warn("service initialization issue; continuing", attrs...)
 	}
 	return nil
 }

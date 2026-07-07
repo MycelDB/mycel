@@ -142,6 +142,9 @@ func mapProtoBlob(blob daemonblob.BlobMeta) *clientv1.Blob {
 }
 
 func mapBlobSpaceError(err error) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, daemonspace.ErrInvalidInput) {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -155,6 +158,9 @@ func mapBlobSpaceError(err error) error {
 }
 
 func mapBlobError(err error, action string) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, daemonblob.ErrInvalidInput) {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}

@@ -6,15 +6,81 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
+	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/daemon/config"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type fakeRefCounter struct{ count int }
 
 func (f fakeRefCounter) BlobRefCount(context.Context, string, string) (int, error) {
 	return f.count, nil
+}
+
+func TestPhase8BackupWaitsForBlobWorkAndReleasesUploads(t *testing.T) {
+	ctx := context.Background()
+	coordinator := quiesce.NewCoordinator()
+	m := NewModule(fakeRefCounter{})
+	rt := daemonruntime.New(config.Config{DataDir: t.TempDir()}, slog.Default(), "", nil)
+	rt.Quiesce = coordinator
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	mgr := backupcore.NewManager(backupcore.ManagerConfig{DataDir: t.TempDir(), Policy: backupcore.Policy{BackupDir: t.TempDir()}, Quiesce: coordinator})
+	releaseActive, err := m.gate.Enter(ctx)
+	if err != nil {
+		t.Fatalf("enter blob gate: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.Trigger(ctx, backupcore.TriggerInput{Source: "test"})
+		done <- err
+	}()
+	waitForBlobGateQuiesced(t, m.gate)
+	select {
+	case err := <-done:
+		t.Fatalf("backup completed before active blob work drained: %v", err)
+	default:
+	}
+	releaseActive()
+	if err := <-done; err != nil {
+		t.Fatalf("backup trigger after blob drain: %v", err)
+	}
+
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test", Mode: quiesce.ModeBackup})
+	if err != nil {
+		t.Fatalf("quiesce blob gate: %v", err)
+	}
+	_, err = m.UploadBlob(ctx, UploadInput{SpaceID: "space-1", Reader: bytes.NewReader([]byte("blocked"))})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("UploadBlob() code = %v, want unavailable (err=%v)", status.Code(err), err)
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatalf("release blob gate: %v", err)
+	}
+	if _, err := m.UploadBlob(ctx, UploadInput{SpaceID: "space-1", Reader: bytes.NewReader([]byte("allowed"))}); err != nil {
+		t.Fatalf("UploadBlob() after release error = %v", err)
+	}
+}
+
+func waitForBlobGateQuiesced(t *testing.T, gate *quiesce.Gate) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		if gate.Status().Quiesced {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for blob gate to quiesce")
+		case <-time.After(time.Millisecond):
+		}
+	}
 }
 
 func TestModuleUploadGetOpenDeleteBlob(t *testing.T) {
@@ -49,6 +115,23 @@ func TestModuleUploadGetOpenDeleteBlob(t *testing.T) {
 	}
 	if _, err := m.GetBlob(ctx, "space-1", meta.BlobID); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+}
+
+func TestModuleQuiesceRejectsUpload(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule(fakeRefCounter{})
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, Logger: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(ctx)
+	_, err = m.UploadBlob(ctx, UploadInput{SpaceID: "space-1", Reader: bytes.NewReader([]byte("blocked"))})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("UploadBlob() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
 	}
 }
 

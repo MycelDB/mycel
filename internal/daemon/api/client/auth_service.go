@@ -228,6 +228,9 @@ func normalizePageSize(size int32) int {
 }
 
 func mapAuthError(err error, action string) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, daemonuser.ErrInvalidCredentials) || errors.Is(err, daemonuser.ErrInvalidRefreshToken) {
 		return status.Error(codes.Unauthenticated, "invalid credentials")
 	}

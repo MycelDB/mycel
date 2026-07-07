@@ -7,9 +7,90 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	backupcore "github.com/myceldb/mycel/internal/backup"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestPhase8BackupWaitsForSemanticWorkAndBlocksManualMutation(t *testing.T) {
+	ctx := context.Background()
+	coordinator := quiesce.NewCoordinator()
+	m := NewModule()
+	rt := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})
+	rt.Quiesce = coordinator
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	mgr := backupcore.NewManager(backupcore.ManagerConfig{DataDir: rt.Config.DataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}, Quiesce: coordinator})
+	releaseActive, err := m.gate.Enter(ctx)
+	if err != nil {
+		t.Fatalf("enter semantic gate: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.Trigger(ctx, backupcore.TriggerInput{Source: "test"})
+		done <- err
+	}()
+	waitForSemanticGateQuiesced(t, m.gate)
+	select {
+	case err := <-done:
+		t.Fatalf("backup completed before active semantic work drained: %v", err)
+	default:
+	}
+	releaseActive()
+	if err := <-done; err != nil {
+		t.Fatalf("backup trigger after semantic drain: %v", err)
+	}
+
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test", Mode: quiesce.ModeBackup})
+	if err != nil {
+		t.Fatalf("quiesce semantic gate: %v", err)
+	}
+	_, err = m.AnalyzeDirtyWork(ctx, AnalyzeInput{SpaceID: domainspace.SpaceID(uuid.New())})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("AnalyzeDirtyWork() code = %v, want unavailable (err=%v)", status.Code(err), err)
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatalf("release semantic gate: %v", err)
+	}
+	if err := m.PurgeVectorIndex(ctx, domainspace.SpaceID(uuid.New()), uuid.New()); err != nil {
+		t.Fatalf("semantic mutation after release failed: %v", err)
+	}
+}
+
+func waitForSemanticGateQuiesced(t *testing.T, gate *quiesce.Gate) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		if gate.Status().Quiesced {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for semantic gate to quiesce")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func TestSemanticQuiesceRejectsManualMaintenance(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(ctx)
+	_, err = m.AnalyzeDirtyWork(ctx, AnalyzeInput{SpaceID: domainspace.SpaceID(uuid.New())})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("AnalyzeDirtyWork() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
+}
 
 func TestSemanticMaintenanceDisabledDoesNotStartLoops(t *testing.T) {
 	ctx := context.Background()
@@ -26,12 +107,53 @@ func TestSemanticMaintenanceDisabledDoesNotStartLoops(t *testing.T) {
 	}
 }
 
+func TestSemanticMaintenanceEnabledDoesNotStartBeforeStart(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	rt := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: true, DirtyCooldown: time.Second, AnalyzerInterval: 10 * time.Millisecond, WorkerInterval: 10 * time.Millisecond, WorkerCount: 1, MaxBatchSize: 10, MaxConcurrentProviderCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1, ProviderDefaults: daemonconfig.SemanticThrottleConfig{MaxConcurrentCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1}, CredentialDefaults: daemonconfig.SemanticThrottleConfig{MaxConcurrentCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1}})
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	if m.MaintenanceRunning() {
+		t.Fatalf("maintenance should not run until Start")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+}
+
+func TestSemanticServiceStatus(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	rt := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: true, DirtyCooldown: time.Second, AnalyzerInterval: 10 * time.Millisecond, WorkerInterval: 10 * time.Millisecond, WorkerCount: 1, MaxBatchSize: 10, MaxConcurrentProviderCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1, ProviderDefaults: daemonconfig.SemanticThrottleConfig{MaxConcurrentCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1}, CredentialDefaults: daemonconfig.SemanticThrottleConfig{MaxConcurrentCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1}})
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	status := m.Status(ctx)
+	if status.Name != ModuleName || status.State != "stopped" || status.Started {
+		t.Fatalf("unexpected stopped status: %#v", status)
+	}
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	status = m.Status(ctx)
+	if status.Name != ModuleName || status.State != "running" || !status.Started || status.StartedAt.IsZero() {
+		t.Fatalf("unexpected running status: %#v", status)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+}
+
 func TestSemanticMaintenanceEnabledStartsLoopsAndStops(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
 	rt := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: true, DirtyCooldown: time.Second, AnalyzerInterval: 10 * time.Millisecond, WorkerInterval: 10 * time.Millisecond, WorkerCount: 1, MaxBatchSize: 10, MaxConcurrentProviderCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1, ProviderDefaults: daemonconfig.SemanticThrottleConfig{MaxConcurrentCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1}, CredentialDefaults: daemonconfig.SemanticThrottleConfig{MaxConcurrentCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1}})
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
+	}
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("start failed: %v", err)
 	}
 	if !m.MaintenanceRunning() {
 		t.Fatalf("maintenance should be running")
@@ -49,9 +171,11 @@ func TestRuntimeCloseStopsSemanticMaintenance(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
 	rt := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: true, DirtyCooldown: time.Second, AnalyzerInterval: 10 * time.Millisecond, WorkerInterval: 10 * time.Millisecond, WorkerCount: 1, MaxBatchSize: 10, MaxConcurrentProviderCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1, ProviderDefaults: daemonconfig.SemanticThrottleConfig{MaxConcurrentCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1}, CredentialDefaults: daemonconfig.SemanticThrottleConfig{MaxConcurrentCalls: 1, MaxRequestsPerMinute: 1, MaxTokensPerMinute: 1}})
-	rt.Modules = map[string]daemonruntime.Module{ModuleName: m}
-	if result := m.Init(ctx, rt); !result.OK {
-		t.Fatalf("init failed: %v", result.Error)
+	if err := rt.InitServices(ctx, []daemonruntime.Service{m}); err != nil {
+		t.Fatalf("init services failed: %v", err)
+	}
+	if err := rt.StartServices(ctx); err != nil {
+		t.Fatalf("start services failed: %v", err)
 	}
 	waitForStats(t, m, func(stats MaintenanceStats) bool { return stats.AnalyzerRuns > 0 && stats.WorkerRuns > 0 })
 	if err := rt.Close(); err != nil {

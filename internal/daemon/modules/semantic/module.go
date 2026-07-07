@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/embedding/catalog"
 	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
@@ -37,6 +38,12 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
+var _ daemonruntime.Starter = (*Module)(nil)
+var _ daemonruntime.Stopper = (*Module)(nil)
+var _ daemonruntime.StatusReporter = (*Module)(nil)
+
+type semanticGateContextKey struct{}
+
 type Module struct {
 	mu                 sync.Mutex
 	dataDir            string
@@ -49,7 +56,9 @@ type Module struct {
 	maintenanceCancel  context.CancelFunc
 	maintenanceWG      sync.WaitGroup
 	maintenanceRunning bool
+	maintenanceStarted time.Time
 	stats              MaintenanceStats
+	gate               *quiesce.Gate
 }
 
 type MaintenanceStats struct {
@@ -64,7 +73,7 @@ type MaintenanceStats struct {
 }
 
 func NewModule() *Module {
-	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}}
+	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -88,13 +97,56 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
 	m.maintenanceConfig = rt.Config.SemanticMaintenance
 	m.logger = rt.Logger
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if rt.Quiesce != nil {
+		if err := rt.Quiesce.Register(m.gate); err != nil {
+			return daemonruntime.Abort(ModuleName, "quiesce", "register semantic quiesce participant", err)
+		}
+	}
 	if m.maintenanceConfig.Enabled {
-		m.startMaintenance(ctx)
-		rt.Logger.Info("semantic maintenance started", "analyzer_interval", m.maintenanceConfig.AnalyzerInterval.String(), "worker_interval", m.maintenanceConfig.WorkerInterval.String(), "worker_count", m.maintenanceConfig.WorkerCount, "max_batch_size", m.maintenanceConfig.MaxBatchSize)
+		rt.Logger.Info("semantic maintenance configured", "analyzer_interval", m.maintenanceConfig.AnalyzerInterval.String(), "worker_interval", m.maintenanceConfig.WorkerInterval.String(), "worker_count", m.maintenanceConfig.WorkerCount, "max_batch_size", m.maintenanceConfig.MaxBatchSize)
 	} else {
 		rt.Logger.Info("semantic maintenance disabled")
 	}
 	return daemonruntime.OK(ModuleName)
+}
+
+func (m *Module) Start(ctx context.Context) error {
+	if !m.maintenanceConfig.Enabled {
+		return nil
+	}
+	m.startMaintenance(ctx)
+	if m.logger != nil {
+		m.logger.Info("semantic maintenance started", "analyzer_interval", m.maintenanceConfig.AnalyzerInterval.String(), "worker_interval", m.maintenanceConfig.WorkerInterval.String(), "worker_count", m.maintenanceConfig.WorkerCount, "max_batch_size", m.maintenanceConfig.MaxBatchSize)
+	}
+	return nil
+}
+
+func (m *Module) Stop(ctx context.Context) error {
+	m.mu.Lock()
+	cancel := m.maintenanceCancel
+	m.maintenanceCancel = nil
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		m.maintenanceWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	m.mu.Lock()
+	m.maintenanceRunning = false
+	m.maintenanceStarted = time.Time{}
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Module) startMaintenance(parent context.Context) {
@@ -106,6 +158,7 @@ func (m *Module) startMaintenance(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	m.maintenanceCancel = cancel
 	m.maintenanceRunning = true
+	m.maintenanceStarted = time.Now().UTC()
 	m.mu.Unlock()
 	m.maintenanceWG.Add(2)
 	go m.maintenanceLoop(ctx, "analyzer", m.maintenanceConfig.AnalyzerInterval, m.runAnalyzerOnce)
@@ -113,18 +166,7 @@ func (m *Module) startMaintenance(parent context.Context) {
 }
 
 func (m *Module) Close() error {
-	m.mu.Lock()
-	cancel := m.maintenanceCancel
-	m.maintenanceCancel = nil
-	m.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	m.maintenanceWG.Wait()
-	m.mu.Lock()
-	m.maintenanceRunning = false
-	m.mu.Unlock()
-	return nil
+	return m.Stop(context.Background())
 }
 
 func (m *Module) MaintenanceRunning() bool {
@@ -137,6 +179,19 @@ func (m *Module) MaintenanceStats() MaintenanceStats {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.stats
+}
+
+func (m *Module) Status(ctx context.Context) daemonruntime.ServiceStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := "disabled"
+	if m.maintenanceConfig.Enabled {
+		state = "stopped"
+	}
+	if m.maintenanceRunning {
+		state = "running"
+	}
+	return daemonruntime.ServiceStatus{Name: ModuleName, State: state, Started: m.maintenanceRunning, StartedAt: m.maintenanceStarted}
 }
 
 func (m *Module) maintenanceLoop(ctx context.Context, name string, interval time.Duration, fn func(context.Context) error) {
@@ -158,6 +213,14 @@ func (m *Module) maintenanceLoop(ctx context.Context, name string, interval time
 }
 
 func (m *Module) runMaintenanceTask(ctx context.Context, name string, fn func(context.Context) error) {
+	release, err := m.enterWork(ctx)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("semantic maintenance skipped", "loop", name, "error", err)
+		}
+		return
+	}
+	defer release()
 	if err := fn(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		m.recordMaintenanceRun(name, err)
 		if m.logger != nil {
@@ -166,6 +229,20 @@ func (m *Module) runMaintenanceTask(ctx context.Context, name string, fn func(co
 		return
 	}
 	m.recordMaintenanceRun(name, nil)
+}
+
+func (m *Module) enterWork(ctx context.Context) (func(), error) {
+	if entered, _ := ctx.Value(semanticGateContextKey{}).(bool); entered {
+		return func() {}, nil
+	}
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
 }
 
 func (m *Module) recordMaintenanceRun(name string, err error) {
@@ -224,6 +301,14 @@ func (m *Module) runWorkerOnce(ctx context.Context) error {
 	return out
 }
 
+func (m *Module) BeginMutation(ctx context.Context) (context.Context, func(), error) {
+	release, err := m.enterWork(ctx)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return context.WithValue(ctx, semanticGateContextKey{}, true), release, nil
+}
+
 func (m *Module) GlobalManager() storesemantic.GlobalManager {
 	// Semantic admin/provisioning commands are still being migrated to daemon APIs.
 	// Reload the file-backed global manager on demand so client semantic search can
@@ -242,6 +327,11 @@ func (m *Module) ListVectorRecords(ctx context.Context, spaceID domainspace.Spac
 }
 
 func (m *Module) PurgeVectorIndex(ctx context.Context, spaceID domainspace.SpaceID, indexID domainsemantic.SemanticIndexID) error {
+	release, err := m.enterWork(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}.PurgeIndex(ctx, spaceID, indexID)
 }
 
@@ -417,6 +507,11 @@ func (m *Module) ListMaintenanceWork(ctx context.Context, in MaintenanceWorkList
 }
 
 func (m *Module) RetryMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput) (MaintenanceWorkItem, error) {
+	release, err := m.enterWork(ctx)
+	if err != nil {
+		return MaintenanceWorkItem{}, err
+	}
+	defer release()
 	return m.mutateMaintenanceWork(ctx, in, func(item domainsemantic.SemanticDirtyWorkItem) domainsemantic.SemanticDirtyWorkItem {
 		item.Status = domainsemantic.SemanticDirtyWorkStatusPending
 		item.ClaimedBy = ""
@@ -431,6 +526,11 @@ func (m *Module) RetryMaintenanceWork(ctx context.Context, in MaintenanceWorkCon
 }
 
 func (m *Module) CancelMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput) (MaintenanceWorkItem, error) {
+	release, err := m.enterWork(ctx)
+	if err != nil {
+		return MaintenanceWorkItem{}, err
+	}
+	defer release()
 	return m.mutateMaintenanceWork(ctx, in, func(item domainsemantic.SemanticDirtyWorkItem) domainsemantic.SemanticDirtyWorkItem {
 		item.Status = domainsemantic.SemanticDirtyWorkStatusCancelled
 		item.ClaimedBy = ""
@@ -514,6 +614,11 @@ func (m *Module) ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, d
 }
 
 func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanticmaintenance.AnalyzeResult, error) {
+	release, err := m.enterWork(ctx)
+	if err != nil {
+		return semanticmaintenance.AnalyzeResult{}, err
+	}
+	defer release()
 	mgr, err := m.SpaceManager(ctx, in.SpaceID)
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
@@ -530,6 +635,11 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 }
 
 func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error) {
+	release, err := m.enterWork(ctx)
+	if err != nil {
+		return semanticmaintenance.WorkerResult{}, err
+	}
+	defer release()
 	mgr, err := m.SpaceManager(ctx, in.SpaceID)
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
@@ -546,6 +656,11 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 }
 
 func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error) {
+	release, err := m.enterWork(ctx)
+	if err != nil {
+		return semanticbackfill.Result{}, err
+	}
+	defer release()
 	mgr, err := m.SpaceManager(ctx, in.SpaceID)
 	if err != nil {
 		return semanticbackfill.Result{}, err
@@ -558,6 +673,11 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 }
 
 func (m *Module) MigrateLegacyEmbeddings(ctx context.Context, in LegacyMigrationInput) (semanticmigration.LegacyEmbeddingResult, error) {
+	release, err := m.enterWork(ctx)
+	if err != nil {
+		return semanticmigration.LegacyEmbeddingResult{}, err
+	}
+	defer release()
 	ownerID, err := uuid.Parse(in.OwnerUserID)
 	if err != nil || ownerID == uuid.Nil {
 		return semanticmigration.LegacyEmbeddingResult{}, fmt.Errorf("owner_user_id is required")

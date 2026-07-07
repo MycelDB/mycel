@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 )
 
@@ -20,9 +21,10 @@ var ErrInvalidCredentials = errors.New("invalid operator credentials")
 
 type Module struct {
 	store Store
+	gate  *quiesce.Gate
 }
 
-func NewModule() *Module { return &Module{} }
+func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
 
 func OpenLister(dataDir string) (*Module, error) {
 	store, err := OpenExistingStore(filepath.Join(dataDir, "admins"))
@@ -47,6 +49,14 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open admin store", err)
 	}
 	m.store = store
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if rt.Quiesce != nil {
+		if err := rt.Quiesce.Register(m.gate); err != nil {
+			return daemonruntime.Abort(ModuleName, "quiesce", "register admin quiesce participant", err)
+		}
+	}
 	rt.Logger.Info("admin store ready", "path", filepath.Join(adminDir, StoreFilename), "created", storeCreated)
 
 	admins, err := store.List(ctx)
@@ -148,6 +158,11 @@ func (m *Module) AuthenticateOperator(ctx context.Context, username string, pass
 }
 
 func (m *Module) SetOperatorPassword(ctx context.Context, operatorID string, password string) (AdminSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	defer release()
 	if m.store == nil {
 		return AdminSummary{}, fmt.Errorf("admin module is not initialized")
 	}
@@ -200,6 +215,11 @@ func (m *Module) FindOperator(ctx context.Context, username string, email string
 }
 
 func (m *Module) CreateOperator(ctx context.Context, input CreateOperatorInput) (AdminSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	defer release()
 	if strings.TrimSpace(input.Username) == "" {
 		return AdminSummary{}, fmt.Errorf("username must not be empty")
 	}
@@ -244,6 +264,11 @@ func (m *Module) CreateOperator(ctx context.Context, input CreateOperatorInput) 
 }
 
 func (m *Module) UpdateOperator(ctx context.Context, input UpdateOperatorInput) (AdminSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	defer release()
 	admin, err := m.store.Update(ctx, input.OperatorID, func(admin *Admin) error {
 		if input.Email != nil {
 			admin.Email = strings.TrimSpace(*input.Email)
@@ -257,6 +282,11 @@ func (m *Module) UpdateOperator(ctx context.Context, input UpdateOperatorInput) 
 }
 
 func (m *Module) DisableOperator(ctx context.Context, operatorID string) (AdminSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	defer release()
 	if err := m.ensureCanRemoveSystemAdmin(ctx, operatorID, ""); err != nil {
 		return AdminSummary{}, err
 	}
@@ -268,6 +298,11 @@ func (m *Module) DisableOperator(ctx context.Context, operatorID string) (AdminS
 }
 
 func (m *Module) EnableOperator(ctx context.Context, operatorID string) (AdminSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	defer release()
 	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateActive; return nil })
 	if err != nil {
 		return AdminSummary{}, err
@@ -276,6 +311,11 @@ func (m *Module) EnableOperator(ctx context.Context, operatorID string) (AdminSu
 }
 
 func (m *Module) DeleteOperator(ctx context.Context, operatorID string) (AdminSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	defer release()
 	if err := m.ensureCanRemoveSystemAdmin(ctx, operatorID, ""); err != nil {
 		return AdminSummary{}, err
 	}
@@ -287,6 +327,11 @@ func (m *Module) DeleteOperator(ctx context.Context, operatorID string) (AdminSu
 }
 
 func (m *Module) GrantRole(ctx context.Context, operatorID string, role string, scope AccessScope, reason string, grantedBy string) (RoleGrant, AdminSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return RoleGrant{}, AdminSummary{}, err
+	}
+	defer release()
 	grant := newRoleGrant(operatorID, role, normalizeScope(scope), reason, grantedBy)
 	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.RoleGrants = append(admin.RoleGrants, grant); return nil })
 	if err != nil {
@@ -296,6 +341,11 @@ func (m *Module) GrantRole(ctx context.Context, operatorID string, role string, 
 }
 
 func (m *Module) RevokeRole(ctx context.Context, operatorID string, grantID string) (AdminSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	defer release()
 	if err := m.ensureCanRemoveSystemAdmin(ctx, operatorID, grantID); err != nil {
 		return AdminSummary{}, err
 	}
@@ -315,6 +365,11 @@ func (m *Module) RevokeRole(ctx context.Context, operatorID string, grantID stri
 }
 
 func (m *Module) GrantCapability(ctx context.Context, operatorID string, capability string, scope AccessScope, reason string, grantedBy string) (CapabilityGrant, AdminSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return CapabilityGrant{}, AdminSummary{}, err
+	}
+	defer release()
 	grant := CapabilityGrant{ID: uuid.NewString(), OperatorID: operatorID, Capability: capability, Scope: normalizeScope(scope), Reason: reason, GrantedByOperatorID: grantedBy, CreatedAt: time.Now().UTC()}
 	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.CapabilityGrants = append(admin.CapabilityGrants, grant); return nil })
 	if err != nil {
@@ -324,6 +379,11 @@ func (m *Module) GrantCapability(ctx context.Context, operatorID string, capabil
 }
 
 func (m *Module) RevokeCapability(ctx context.Context, operatorID string, grantID string) (AdminSummary, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return AdminSummary{}, err
+	}
+	defer release()
 	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error {
 		for i, grant := range admin.CapabilityGrants {
 			if grant.ID == grantID {
@@ -337,6 +397,17 @@ func (m *Module) RevokeCapability(ctx context.Context, operatorID string, grantI
 		return AdminSummary{}, err
 	}
 	return admin.toSummary(), nil
+}
+
+func (m *Module) enterWrite(ctx context.Context) (func(), error) {
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
 }
 
 func (m *Module) ensureCanRemoveSystemAdmin(ctx context.Context, operatorID string, grantID string) error {
@@ -426,7 +497,7 @@ func (m *Module) HasCapability(ctx context.Context, operatorID string, capabilit
 func capabilitiesForRole(role string) []string {
 	switch role {
 	case OperatorRoleSystemAdmin:
-		return []string{"CAPABILITY_OPERATOR_CREATE", "CAPABILITY_OPERATOR_MANAGE", "CAPABILITY_USER_CREATE", "CAPABILITY_USER_MANAGE", "CAPABILITY_SPACE_CREATE", "CAPABILITY_SPACE_UPDATE", "CAPABILITY_SPACE_MANAGE_ACCESS", "CAPABILITY_SPACE_ARCHIVE", "CAPABILITY_SPACE_DELETE", "CAPABILITY_SEMANTIC_SEARCH", "CAPABILITY_DAEMON_CONFIGURE", "CAPABILITY_MESH_MANAGE"}
+		return []string{"CAPABILITY_OPERATOR_CREATE", "CAPABILITY_OPERATOR_MANAGE", "CAPABILITY_USER_CREATE", "CAPABILITY_USER_MANAGE", "CAPABILITY_SPACE_CREATE", "CAPABILITY_SPACE_UPDATE", "CAPABILITY_SPACE_MANAGE_ACCESS", "CAPABILITY_SPACE_ARCHIVE", "CAPABILITY_SPACE_DELETE", "CAPABILITY_SEMANTIC_SEARCH", "CAPABILITY_DAEMON_CONFIGURE", "CAPABILITY_MESH_MANAGE", "CAPABILITY_SYSTEM_COMPACT_SPACE", "CAPABILITY_SYSTEM_MAINTAIN_SPACE", "CAPABILITY_SYSTEM_BACKUP_SPACE"}
 	case OperatorRoleUserAdmin:
 		return []string{"CAPABILITY_USER_CREATE", "CAPABILITY_USER_MANAGE"}
 	case OperatorRoleSpaceAdmin:

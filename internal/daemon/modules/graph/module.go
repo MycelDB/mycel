@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
@@ -30,6 +31,7 @@ type Module struct {
 	overlays               map[string]*overlay
 	changeSink             graphchange.Sink
 	lastGraphChangeSinkErr error
+	gate                   *quiesce.Gate
 }
 
 type overlay struct {
@@ -41,7 +43,7 @@ type overlay struct {
 }
 
 func NewModule() *Module {
-	return &Module{stores: map[string]*graphstorage.LocalStore{}, overlays: map[string]*overlay{}}
+	return &Module{stores: map[string]*graphstorage.LocalStore{}, overlays: map[string]*overlay{}, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -68,6 +70,14 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	}
 	if m.overlays == nil {
 		m.overlays = map[string]*overlay{}
+	}
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if rt.Quiesce != nil {
+		if err := rt.Quiesce.Register(m.gate); err != nil {
+			return daemonruntime.Abort(ModuleName, "quiesce", "register graph quiesce participant", err)
+		}
 	}
 	rt.Logger.Info("graph module initialized", "storage", "file", "path", m.dataDir)
 	return daemonruntime.OK(ModuleName)
@@ -483,6 +493,11 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	if tx.Mode == daemonsession.TransactionModeReadOnly {
 		return CommitResult{}, nil
 	}
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	defer release()
 	m.mu.Lock()
 	o := m.overlays[tx.ID]
 	if o == nil || o.opCount == 0 {
@@ -541,6 +556,17 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	}
 	m.notifyGraphChangeSink(ctx, info, graphEvent)
 	return CommitResult{OperationCount: snapshot.opCount, CommittedRevision: int64(store.Revision()), Changes: changes}, nil
+}
+
+func (m *Module) enterWrite(ctx context.Context) (func(), error) {
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
 }
 
 func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {

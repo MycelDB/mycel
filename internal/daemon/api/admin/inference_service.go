@@ -35,6 +35,14 @@ func NewAdminInferenceService(semantic daemonsemantic.Manager, authorizer Operat
 	return &AdminInferenceService{semantic: semantic, authorizer: authorizer}
 }
 
+func (s *AdminInferenceService) beginSemanticMutation(ctx context.Context) (context.Context, func(), error) {
+	ctx, release, err := s.semantic.BeginMutation(ctx)
+	if err != nil {
+		return ctx, nil, mapAdminInferenceError(err, "begin semantic mutation")
+	}
+	return ctx, release, nil
+}
+
 func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *adminv1.AdminInferenceServiceApplyInferencePackageRequest) (*adminv1.AdminInferenceServiceApplyInferencePackageResponse, error) {
 	principal, err := s.requireInferenceManage(ctx)
 	if err != nil {
@@ -43,6 +51,11 @@ func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *
 	if strings.TrimSpace(req.GetName()) == "" || strings.TrimSpace(req.GetVersion()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "name and version are required")
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	mgr := s.semantic.GlobalManager()
 	endpoints := make([]domainsemantic.ModelEndpoint, 0, len(req.GetModelEndpoints()))
 	for _, protoEndpoint := range req.GetModelEndpoints() {
@@ -254,6 +267,11 @@ func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *admin
 	} else {
 		return nil, status.Error(codes.InvalidArgument, "secret_value, inline_secret, or external_ref is required")
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	mgr := s.semantic.GlobalManager()
 	storedSecret, err := mgr.UpsertSecret(ctx, secret)
 	if err != nil {
@@ -331,6 +349,11 @@ func (s *AdminInferenceService) CreateCredentialGrant(ctx context.Context, req *
 		}
 		modelID = &id
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
@@ -389,6 +412,11 @@ func (s *AdminInferenceService) CreateInferencePolicy(ctx context.Context, req *
 	if err != nil {
 		return nil, err
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
@@ -438,6 +466,11 @@ func (s *AdminInferenceService) SetModelEndpointEnabled(ctx context.Context, req
 	if err != nil {
 		return nil, err
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	items, err := s.semantic.GlobalManager().ListModelEndpoints(ctx)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "list model endpoints")
@@ -463,6 +496,11 @@ func (s *AdminInferenceService) SetVectorStoreEnabled(ctx context.Context, req *
 	if err != nil {
 		return nil, err
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	items, err := s.semantic.GlobalManager().ListVectorStores(ctx)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "list vector stores")
@@ -488,6 +526,11 @@ func (s *AdminInferenceService) SetModelEndpointCapabilityEnabled(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	cap.Enabled = req.GetEnabled()
 	stored, err := s.semantic.GlobalManager().UpsertModelEndpointCapability(ctx, cap)
 	if err != nil {
@@ -508,6 +551,11 @@ func (s *AdminInferenceService) SetCredentialStatus(ctx context.Context, req *ad
 	if statusValue == "" {
 		return nil, status.Error(codes.InvalidArgument, "status is required")
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	items, err := s.semantic.GlobalManager().ListCredentials(ctx)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "list credentials")
@@ -537,6 +585,11 @@ func (s *AdminInferenceService) ExpireCredentialGrant(ctx context.Context, req *
 	if err != nil {
 		return nil, err
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
@@ -571,6 +624,11 @@ func (s *AdminInferenceService) ExpireInferencePolicy(ctx context.Context, req *
 	if err != nil {
 		return nil, err
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
@@ -608,6 +666,11 @@ func (s *AdminInferenceService) DeleteModelEndpoint(ctx context.Context, req *ad
 	if len(refs) > 0 {
 		return nil, referencedPrecondition("model endpoint", refs)
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := s.semantic.GlobalManager().DeleteModelEndpoint(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete model endpoint")
 	}
@@ -629,6 +692,11 @@ func (s *AdminInferenceService) DeleteModel(ctx context.Context, req *adminv1.Ad
 	if len(refs) > 0 {
 		return nil, referencedPrecondition("model", refs)
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := s.semantic.GlobalManager().DeleteModel(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete model")
 	}
@@ -650,6 +718,11 @@ func (s *AdminInferenceService) DeleteVectorStore(ctx context.Context, req *admi
 	if len(refs) > 0 {
 		return nil, referencedPrecondition("vector store", refs)
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := s.semantic.GlobalManager().DeleteVectorStore(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete vector store")
 	}
@@ -671,6 +744,11 @@ func (s *AdminInferenceService) DeleteModelEndpointCapability(ctx context.Contex
 	if len(refs) > 0 {
 		return nil, referencedPrecondition("model endpoint capability", refs)
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := s.semantic.GlobalManager().DeleteModelEndpointCapability(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete model endpoint capability")
 	}
@@ -703,6 +781,11 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 	if len(grantRefs) > 0 && !req.GetDeleteGrants() {
 		return nil, referencedPrecondition("credential", grantRefs)
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	deletedGrants := int32(0)
 	if req.GetDeleteGrants() {
 		spaces, err := s.semantic.ListSpaceManagers(ctx)
@@ -764,6 +847,11 @@ func (s *AdminInferenceService) DeleteCredentialGrant(ctx context.Context, req *
 	} else if len(refs) > 0 {
 		return nil, referencedPrecondition("credential grant", refs)
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
@@ -786,6 +874,11 @@ func (s *AdminInferenceService) DeleteInferencePolicy(ctx context.Context, req *
 	if err != nil {
 		return nil, err
 	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
@@ -1597,6 +1690,9 @@ func filterPoliciesUnexpired(items []domainsemantic.InferencePolicy, now time.Ti
 func mapAdminInferenceError(err error, action string) error {
 	if err == nil {
 		return nil
+	}
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return status.Error(codes.Unavailable, err.Error())

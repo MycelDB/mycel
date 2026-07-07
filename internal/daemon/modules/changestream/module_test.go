@@ -10,9 +10,27 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 )
+
+func TestModuleQuiesceSkipsPublishCommit(t *testing.T) {
+	ctx := context.Background()
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	m := NewModule()
+	initChangeStreamModule(t, m, t.TempDir())
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(ctx)
+	m.PublishCommit(ctx, commitForTest(spaceID, domainID, 1), nil)
+	if got := m.CurrentRevision(spaceID, domainID); got != 0 {
+		t.Fatalf("CurrentRevision() = %d, want 0 while quiesced", got)
+	}
+}
 
 func TestModuleDurableReplayIncludesGraphPayload(t *testing.T) {
 	ctx := context.Background()

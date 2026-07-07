@@ -13,7 +13,10 @@ import (
 	"testing"
 
 	"github.com/myceldb/mycel/internal/daemon/config"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestModuleInitStandaloneCreatesDefaultAdminAndLogsCredentials(t *testing.T) {
@@ -178,6 +181,26 @@ func TestModuleAuthenticateOperator(t *testing.T) {
 	}
 	if admin.Username != "admin" || admin.ID == "" || admin.CreatedAt.IsZero() {
 		t.Fatalf("unexpected authenticated admin: %+v", admin)
+	}
+}
+
+func TestModuleQuiesceRejectsSetOperatorPassword(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	var logs bytes.Buffer
+	module := initModule(t, dataDir, "standalone", &logs)
+	admins, err := module.ListAdmins(ctx)
+	if err != nil || len(admins) != 1 {
+		t.Fatalf("ListAdmins() = %v, %v", admins, err)
+	}
+	lease, err := module.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(ctx)
+	_, err = module.SetOperatorPassword(ctx, admins[0].ID, "blocked-password")
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("SetOperatorPassword() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
 	}
 }
 

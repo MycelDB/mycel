@@ -478,6 +478,9 @@ func protoStruct(value map[string]any) *structpb.Struct {
 }
 
 func mapGraphError(err error, action string) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
 	if errors.Is(err, daegraph.ErrInvalidInput) {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}

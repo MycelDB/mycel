@@ -13,6 +13,7 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
 	"github.com/myceldb/mycel/internal/daemon/modules/admin"
+	daemonbackup "github.com/myceldb/mycel/internal/daemon/modules/backup"
 	daemonblob "github.com/myceldb/mycel/internal/daemon/modules/blob"
 	daemonchange "github.com/myceldb/mycel/internal/daemon/modules/changestream"
 	daegraph "github.com/myceldb/mycel/internal/daemon/modules/graph"
@@ -40,45 +41,50 @@ func Run(ctx context.Context) int {
 	}
 	defer func() { _ = rt.Close() }()
 
-	adminModule, ok := daemonruntime.ModuleAs[*admin.Module](rt, admin.ModuleName)
+	adminService, ok := daemonruntime.ServiceAs[*admin.Module](rt, admin.ModuleName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: admin module is not registered\n")
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: admin service is not registered\n")
 		return 1
 	}
 	serverCtx, stopServer := context.WithCancel(ctx)
-	userModule, ok := daemonruntime.ModuleAs[*daemonuser.Module](rt, daemonuser.ModuleName)
+	userService, ok := daemonruntime.ServiceAs[*daemonuser.Module](rt, daemonuser.ModuleName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: user module is not registered\n")
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: user service is not registered\n")
 		return 1
 	}
-	spaceModule, ok := daemonruntime.ModuleAs[*daemonspace.Module](rt, daemonspace.ModuleName)
+	spaceService, ok := daemonruntime.ServiceAs[*daemonspace.Module](rt, daemonspace.ModuleName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: space module is not registered\n")
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: space service is not registered\n")
 		return 1
 	}
-	sessionModule, ok := daemonruntime.ModuleAs[*daemonsession.Module](rt, daemonsession.ModuleName)
+	sessionService, ok := daemonruntime.ServiceAs[*daemonsession.Module](rt, daemonsession.ModuleName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: session module is not registered\n")
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: session service is not registered\n")
 		return 1
 	}
-	graphModule, ok := daemonruntime.ModuleAs[*daegraph.Module](rt, daegraph.ModuleName)
+	graphService, ok := daemonruntime.ServiceAs[*daegraph.Module](rt, daegraph.ModuleName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: graph module is not registered\n")
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: graph service is not registered\n")
 		return 1
 	}
-	blobModule, ok := daemonruntime.ModuleAs[*daemonblob.Module](rt, daemonblob.ModuleName)
+	blobService, ok := daemonruntime.ServiceAs[*daemonblob.Module](rt, daemonblob.ModuleName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: blob module is not registered\n")
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: blob service is not registered\n")
 		return 1
 	}
-	semanticModule, ok := daemonruntime.ModuleAs[*daemonsemantic.Module](rt, daemonsemantic.ModuleName)
+	semanticService, ok := daemonruntime.ServiceAs[*daemonsemantic.Module](rt, daemonsemantic.ModuleName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: semantic module is not registered\n")
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: semantic service is not registered\n")
 		return 1
 	}
-	changeModule, ok := daemonruntime.ModuleAs[*daemonchange.Module](rt, daemonchange.ModuleName)
+	changeService, ok := daemonruntime.ServiceAs[*daemonchange.Module](rt, daemonchange.ModuleName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: change stream module is not registered\n")
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: change stream service is not registered\n")
+		return 1
+	}
+	backupService, ok := daemonruntime.ServiceAs[*daemonbackup.Module](rt, daemonbackup.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: backup service is not registered\n")
 		return 1
 	}
 	tlsConfig, err := server.LoadTLSConfig(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSClientCAFile, cfg.TLSRequireClientCert)
@@ -86,7 +92,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld TLS config error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminModule, AdminAuthenticator: adminModule, OperatorManager: adminModule, UserManager: userModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, Logger: rt.Logger, TLSConfig: tlsConfig})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -129,25 +135,30 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	logger.Info("log directory ready", "path", logDir, "created", logDirCreated)
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
-	adminModule := admin.NewModule()
-	userModule := daemonuser.NewModule()
-	spaceModule := daemonspace.NewModule()
-	sessionModule := daemonsession.NewModule()
-	graphModule := daegraph.NewModule()
-	blobModule := daemonblob.NewModule(graphModule)
-	semanticModule := daemonsemantic.NewModule()
-	changeModule := daemonchange.NewModule()
-	if err := rt.InitModules(ctx, []daemonruntime.Module{adminModule, userModule, spaceModule, sessionModule, graphModule, blobModule, semanticModule, changeModule}); err != nil {
+	adminService := admin.NewModule()
+	userService := daemonuser.NewModule()
+	spaceService := daemonspace.NewModule()
+	sessionService := daemonsession.NewModule()
+	graphService := daegraph.NewModule()
+	blobService := daemonblob.NewModule(graphService)
+	semanticService := daemonsemantic.NewModule()
+	changeService := daemonchange.NewModule()
+	backupService := daemonbackup.NewModule()
+	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, graphService, blobService, semanticService, changeService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}
-	graphModule.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
-		appender, err := semanticModule.DirtyEventAppender(ctx, event.SpaceID)
+	graphService.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
+		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)
 		if err != nil {
 			return err
 		}
 		return appender.OnGraphCommitted(ctx, event)
 	}))
+	if err := rt.StartServices(ctx); err != nil {
+		_ = rt.Close()
+		return nil, err
+	}
 	logger.Info("daemon initialization complete")
 	return rt, nil
 }

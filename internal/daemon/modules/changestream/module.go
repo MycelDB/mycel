@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 )
 
@@ -29,10 +30,11 @@ type Module struct {
 	current      map[string]int64
 	loaded       map[string]bool
 	subscribers  map[string]map[string]chan Event
+	gate         *quiesce.Gate
 }
 
 func NewModule() *Module {
-	return &Module{historyLimit: defaultHistoryLimit, history: map[string][]Event{}, current: map[string]int64{}, loaded: map[string]bool{}, subscribers: map[string]map[string]chan Event{}}
+	return &Module{historyLimit: defaultHistoryLimit, history: map[string][]Event{}, current: map[string]int64{}, loaded: map[string]bool{}, subscribers: map[string]map[string]chan Event{}, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -54,6 +56,14 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		m.subscribers = map[string]map[string]chan Event{}
 	}
 	m.dataDir = filepath.Join(rt.Config.DataDir, "change-stream")
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if rt.Quiesce != nil {
+		if err := rt.Quiesce.Register(m.gate); err != nil {
+			return daemonruntime.Abort(ModuleName, "quiesce", "register change-stream quiesce participant", err)
+		}
+	}
 	if err := os.MkdirAll(m.dataDir, 0o700); err != nil {
 		return daemonruntime.Abort(ModuleName, "storage", "create change stream data directory", err)
 	}
@@ -124,6 +134,11 @@ func (m *Module) Subscribe(ctx context.Context, input SubscribeInput) (*Subscrip
 }
 
 func (m *Module) PublishCommit(ctx context.Context, commit daemonsession.TransactionCommit, changes []GraphChange) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return
+	}
+	defer release()
 	if ctx.Err() != nil || strings.TrimSpace(commit.SpaceID) == "" || strings.TrimSpace(commit.DomainID) == "" || commit.CommittedRevision <= 0 {
 		return
 	}
@@ -153,6 +168,13 @@ func (m *Module) PublishCommit(ctx context.Context, commit daemonsession.Transac
 	for _, ch := range subs {
 		safeOfferEvent(ch, cloneEvent(event))
 	}
+}
+
+func (m *Module) enterWrite(ctx context.Context) (func(), error) {
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	return m.gate.Enter(ctx)
 }
 
 func safeOfferEvent(ch chan Event, event Event) {

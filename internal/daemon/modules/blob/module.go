@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/blob/storage"
+	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 )
@@ -27,10 +28,11 @@ type Module struct {
 	metaDir    string
 	stores     map[string]*blobstorage.Store
 	refCounter RefCounter
+	gate       *quiesce.Gate
 }
 
 func NewModule(refCounter RefCounter) *Module {
-	return &Module{stores: map[string]*blobstorage.Store{}, refCounter: refCounter}
+	return &Module{stores: map[string]*blobstorage.Store{}, refCounter: refCounter, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -46,11 +48,24 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	if m.stores == nil {
 		m.stores = map[string]*blobstorage.Store{}
 	}
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if rt.Quiesce != nil {
+		if err := rt.Quiesce.Register(m.gate); err != nil {
+			return daemonruntime.Abort(ModuleName, "quiesce", "register blob quiesce participant", err)
+		}
+	}
 	rt.Logger.Info("blob module initialized", "storage", "file", "path", m.dataDir)
 	return daemonruntime.OK(ModuleName)
 }
 
 func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return BlobMeta{}, err
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return BlobMeta{}, err
 	}
@@ -142,6 +157,11 @@ func (m *Module) OpenBlob(ctx context.Context, spaceID string, blobID string) (B
 }
 
 func (m *Module) DeleteBlob(ctx context.Context, spaceID string, blobID string) (string, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	meta, err := m.GetBlob(ctx, spaceID, blobID)
 	if err != nil {
 		return "", err
@@ -173,6 +193,17 @@ func (m *Module) DeleteBlob(ctx context.Context, spaceID string, blobID string) 
 		return "", err
 	}
 	return meta.BlobID, nil
+}
+
+func (m *Module) enterWrite(ctx context.Context) (func(), error) {
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
 }
 
 func (m *Module) store(spaceID string) (*blobstorage.Store, error) {
