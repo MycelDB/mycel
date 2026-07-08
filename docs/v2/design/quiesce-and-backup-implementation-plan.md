@@ -46,7 +46,7 @@ MYCELD_BACKUP_DIR=
 MYCELD_BACKUP_INTERVAL=24h
 MYCELD_BACKUP_RETENTION_COUNT=7
 MYCELD_BACKUP_INCLUDE_LOGS=false
-MYCELD_BACKUP_COMPRESSION=zip
+MYCELD_BACKUP_COMPRESSION=zip  # legacy archive-format seed; maps to archive_format
 MYCELD_BACKUP_QUIESCE_DRAIN_TIMEOUT=2m
 MYCELD_BACKUP_TIMEOUT=30m
 MYCELD_BACKUP_RETRY_AFTER=5s
@@ -218,7 +218,7 @@ git diff --check
 
 ## Phase 4: Backup manager and snapshot archive
 
-Status: implemented. `internal/backup.Manager` now supports manual trigger with single-flight protection, backup directory validation with symlink resolution, daemon-wide quiesce acquisition/release, data-dir staging outside the data dir, log include/exclude policy, symlink skipping, zip archive creation through `.tmp`, sidecar manifest creation with archive size/checksum, and success/failure run status recording.
+Status: implemented. `internal/backup.Manager` now supports manual trigger with single-flight protection, backup directory validation with symlink resolution, daemon-wide quiesce acquisition/release, data-dir staging outside the data dir, log include/exclude policy, symlink skipping, archive creation through `.tmp` for `zip`, `tar`, `tar.gz`, and `tar.zst`, sidecar manifest creation with archive size/checksum, and success/failure run status recording.
 
 ### Goals
 
@@ -247,7 +247,7 @@ internal/backup/snapshot_test.go
 4. Copy data dir to a staging directory outside data dir.
 5. Do not follow symlinks.
 6. Optionally exclude logs when `include_logs=false`.
-7. Create zip archive as `.tmp`.
+7. Create configured archive format as `.tmp`.
 8. Write manifest with backup id, timestamp, size, checksum, daemon version, and policy summary.
 9. Atomic rename completed archive.
 10. Always release quiesce leases in `defer`.
@@ -309,7 +309,7 @@ The exact module home can be `internal/daemon/modules/backup` if backup state gr
 
 ### Unit tests
 
-- Policy update validates interval, retention, and backup directory.
+- Policy update validates interval, retention, backup directory, schedule fields, and archive format.
 - Disabled policy does not schedule backups.
 - Trigger invokes backup manager.
 - Status includes participant quiesce states.
@@ -358,7 +358,7 @@ internal/daemon/runtime/runtime.go
 1. Start scheduler during daemon startup when backup policy is enabled.
 2. Reconfigure scheduler when policy changes.
 3. Compute `next_run_at` from `last_success_at` or daemon start time.
-4. Trigger backup at interval.
+4. Trigger backup when the configured interval/daily/weekly schedule is due.
 5. Avoid overlapping scheduled and manual backups.
 6. Apply retention by count after successful backup.
 7. Optionally support max-age retention later.
@@ -367,7 +367,7 @@ internal/daemon/runtime/runtime.go
 ### Unit tests
 
 - Scheduler does not run when disabled.
-- Scheduler triggers when interval elapses.
+- Scheduler triggers when interval elapses or a daily/weekly wall-clock slot is due.
 - Policy update changes next run.
 - Manual backup and scheduled backup do not overlap.
 - Retention keeps newest N complete backups.
@@ -411,7 +411,9 @@ SDK repositories can add helpers after API stabilizes.
 
 ```text
 mycel admin backup policy get
-mycel admin backup policy set --enabled --interval 24h --keep 7 --dir /path/to/backups
+mycel admin backup policy set --enabled --schedule interval --interval 24h --keep 7 --dir /path/to/backups --archive-format zip
+mycel admin backup policy set --enabled --schedule daily --time-of-day 22:00 --timezone UTC --archive-format tar.zst
+mycel admin backup policy set --enabled --schedule weekly --time-of-day 02:00 --weekday sun --weekday wed --run-missed
 mycel admin backup trigger
 mycel admin backup status
 mycel admin backup list

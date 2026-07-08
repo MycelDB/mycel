@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -151,18 +152,59 @@ func (s *AdminBackupService) mapQuiesceStatus() *adminv1.QuiesceStatus {
 }
 
 func mapBackupPolicy(policy backupcore.Policy) *adminv1.BackupPolicy {
-	return &adminv1.BackupPolicy{Enabled: policy.Enabled, BackupDir: policy.BackupDir, IntervalSeconds: int64(policy.Interval.Seconds()), RetentionCount: int32(policy.RetentionCount), IncludeLogs: policy.IncludeLogs, Compression: policy.Compression, QuiesceDrainTimeoutSeconds: int64(policy.QuiesceDrainTimeout.Seconds()), BackupTimeoutSeconds: int64(policy.BackupTimeout.Seconds()), RetryAfterSeconds: int64(policy.RetryAfter.Seconds()), StatusHistoryLimit: int32(policy.StatusHistoryLimit), AllowReadsDuringBackup: policy.AllowReadsDuringBackup}
+	policy = backupcore.EffectivePolicy("", policy)
+	weekdays := make([]int32, 0, len(policy.Weekdays))
+	for _, weekday := range policy.Weekdays {
+		weekdays = append(weekdays, int32(weekday))
+	}
+	return &adminv1.BackupPolicy{Enabled: policy.Enabled, BackupDir: policy.BackupDir, IntervalSeconds: int64(policy.Interval.Seconds()), RetentionCount: int32(policy.RetentionCount), IncludeLogs: policy.IncludeLogs, Compression: policy.Compression, ArchiveFormat: archiveFormatToProto(policy.ArchiveFormat), QuiesceDrainTimeoutSeconds: int64(policy.QuiesceDrainTimeout.Seconds()), BackupTimeoutSeconds: int64(policy.BackupTimeout.Seconds()), RetryAfterSeconds: int64(policy.RetryAfter.Seconds()), StatusHistoryLimit: int32(policy.StatusHistoryLimit), AllowReadsDuringBackup: policy.AllowReadsDuringBackup, ScheduleKind: policy.ScheduleKind, TimeOfDay: policy.TimeOfDay, Timezone: policy.Timezone, Weekdays: weekdays, RunMissed: policy.RunMissed}
 }
 
 func backupPolicyFromProto(policy *adminv1.BackupPolicy) backupcore.Policy {
 	if policy == nil {
 		return backupcore.Policy{}
 	}
-	return backupcore.Policy{Enabled: policy.GetEnabled(), BackupDir: policy.GetBackupDir(), Interval: time.Duration(policy.GetIntervalSeconds()) * time.Second, RetentionCount: int(policy.GetRetentionCount()), IncludeLogs: policy.GetIncludeLogs(), Compression: policy.GetCompression(), QuiesceDrainTimeout: time.Duration(policy.GetQuiesceDrainTimeoutSeconds()) * time.Second, BackupTimeout: time.Duration(policy.GetBackupTimeoutSeconds()) * time.Second, RetryAfter: time.Duration(policy.GetRetryAfterSeconds()) * time.Second, StatusHistoryLimit: int(policy.GetStatusHistoryLimit()), AllowReadsDuringBackup: policy.GetAllowReadsDuringBackup()}
+	weekdays := make([]int, 0, len(policy.GetWeekdays()))
+	for _, weekday := range policy.GetWeekdays() {
+		weekdays = append(weekdays, int(weekday))
+	}
+	return backupcore.Policy{Enabled: policy.GetEnabled(), BackupDir: policy.GetBackupDir(), Interval: time.Duration(policy.GetIntervalSeconds()) * time.Second, RetentionCount: int(policy.GetRetentionCount()), IncludeLogs: policy.GetIncludeLogs(), Compression: policy.GetCompression(), ArchiveFormat: archiveFormatFromProto(policy.GetArchiveFormat()), QuiesceDrainTimeout: time.Duration(policy.GetQuiesceDrainTimeoutSeconds()) * time.Second, BackupTimeout: time.Duration(policy.GetBackupTimeoutSeconds()) * time.Second, RetryAfter: time.Duration(policy.GetRetryAfterSeconds()) * time.Second, StatusHistoryLimit: int(policy.GetStatusHistoryLimit()), AllowReadsDuringBackup: policy.GetAllowReadsDuringBackup(), ScheduleKind: policy.GetScheduleKind(), TimeOfDay: policy.GetTimeOfDay(), Timezone: policy.GetTimezone(), Weekdays: weekdays, RunMissed: policy.GetRunMissed()}
 }
 
 func mapBackupSummary(manifest backupcore.Manifest) *adminv1.BackupSummary {
-	return &adminv1.BackupSummary{BackupId: manifest.BackupID, ArchiveName: manifest.ArchiveName, CreatedAt: formatBackupTime(manifest.CreatedAt), CompletedAt: formatBackupTime(manifest.CompletedAt), SizeBytes: manifest.SizeBytes, ChecksumSha256: manifest.ChecksumSHA256, Compression: manifest.Policy.Compression, IncludeLogs: manifest.Policy.IncludeLogs}
+	return &adminv1.BackupSummary{BackupId: manifest.BackupID, ArchiveName: manifest.ArchiveName, CreatedAt: formatBackupTime(manifest.CreatedAt), CompletedAt: formatBackupTime(manifest.CompletedAt), SizeBytes: manifest.SizeBytes, ChecksumSha256: manifest.ChecksumSHA256, Compression: manifest.Policy.Compression, ArchiveFormat: archiveFormatToProto(backupcore.ArchiveFormat(manifest.Policy.ArchiveFormat)), IncludeLogs: manifest.Policy.IncludeLogs}
+}
+
+func archiveFormatToProto(format backupcore.ArchiveFormat) adminv1.BackupArchiveFormat {
+	switch format {
+	case "", backupcore.ArchiveFormatZip:
+		return adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP
+	case backupcore.ArchiveFormatTar:
+		return adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR
+	case backupcore.ArchiveFormatTarGz:
+		return adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR_GZ
+	case backupcore.ArchiveFormatTarZst:
+		return adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR_ZST
+	default:
+		return adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_UNSPECIFIED
+	}
+}
+
+func archiveFormatFromProto(format adminv1.BackupArchiveFormat) backupcore.ArchiveFormat {
+	switch format {
+	case adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_UNSPECIFIED:
+		return ""
+	case adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP:
+		return backupcore.ArchiveFormatZip
+	case adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR:
+		return backupcore.ArchiveFormatTar
+	case adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR_GZ:
+		return backupcore.ArchiveFormatTarGz
+	case adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR_ZST:
+		return backupcore.ArchiveFormatTarZst
+	default:
+		return backupcore.ArchiveFormat(fmt.Sprintf("unknown:%d", format.Number()))
+	}
 }
 
 func mapQuiesceParticipant(in quiesce.ParticipantStatus) *adminv1.QuiesceParticipantStatus {
@@ -193,7 +235,7 @@ func mapBackupError(err error, action string) error {
 		return status.Error(codes.Unavailable, err.Error())
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "required") || strings.Contains(msg, "must") || strings.Contains(msg, "unsupported") || strings.Contains(msg, "invalid") {
+	if strings.Contains(msg, "required") || strings.Contains(msg, "must") || strings.Contains(msg, "unsupported") || strings.Contains(msg, "invalid") || strings.Contains(msg, "unknown time zone") || strings.Contains(msg, "out of range") {
 		return status.Error(codes.InvalidArgument, msg)
 	}
 	return status.Errorf(codes.Internal, "%s: %v", action, err)

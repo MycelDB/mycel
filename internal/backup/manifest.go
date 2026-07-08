@@ -22,10 +22,12 @@ type Manifest struct {
 type PolicySummary struct {
 	IncludeLogs            bool   `json:"include_logs"`
 	Compression            string `json:"compression"`
+	ArchiveFormat          string `json:"archive_format"`
 	RetentionCount         int    `json:"retention_count"`
 	AllowReadsDuringBackup bool   `json:"allow_reads_during_backup"`
 }
 
 func policySummary(policy Policy) PolicySummary {
-	return PolicySummary{IncludeLogs: policy.IncludeLogs, Compression: policy.Compression, RetentionCount: policy.RetentionCount, AllowReadsDuringBackup: policy.AllowReadsDuringBackup}
+	policy = EffectivePolicy("", policy)
+	return PolicySummary{IncludeLogs: policy.IncludeLogs, Compression: policy.Compression, ArchiveFormat: string(policy.ArchiveFormat), RetentionCount: policy.RetentionCount, AllowReadsDuringBackup: policy.AllowReadsDuringBackup}
 }

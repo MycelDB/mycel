@@ -11,7 +11,7 @@ Service lifecycle and capability interfaces used by this design are defined in [
 ## Goals
 
 - Let operators enable/disable scheduled backups through Admin APIs.
-- Let operators configure backup interval, backup directory, retention count, and related policy.
+- Let operators configure interval/daily/weekly backup schedules, backup directory, archive format, retention count, and related policy.
 - Support manual backup triggers through Admin APIs/CLI.
 - Produce a consistent archive of the daemon data directory.
 - Avoid logging users out for routine backups.
@@ -297,9 +297,9 @@ manual trigger or scheduler tick
   -> acquire backup mutex
   -> coordinator.QuiesceAll(reason=backup)
   -> copy MYCELD_DATA_DIR to staging directory outside data dir
-  -> compress staging directory to backup-dir/mycel-backup-<timestamp>.zip.tmp
+  -> write staging directory to backup-dir/<backup-id>.<format>.tmp
   -> write manifest/checksum
-  -> atomic rename .tmp to .zip
+  -> atomic rename .tmp to completed archive extension
   -> apply retention
   -> release quiesce leases in reverse order
 ```
@@ -316,15 +316,21 @@ backup_dir: string
 interval_seconds: int64
 retention_count: int32
 include_logs: bool
-compression: zip
+archive_format: enum (zip, tar, tar.gz, tar.zst)
+compression: zip (deprecated compatibility string)
 quiesce_drain_timeout_seconds: int64
 backup_timeout_seconds: int64
 retry_after_seconds: int64
 status_history_limit: int32
 allow_reads_during_backup: bool
+schedule_kind: interval | daily | weekly
+time_of_day: HH:MM
+timezone: IANA timezone, default UTC
+weekdays: 0=Sunday .. 6=Saturday
+run_missed: bool
 ```
 
-Runtime status exposes `last_success_at` and `next_run_at`; failures are reported in backup status history/status. Policy is persisted under daemon metadata at `meta/backup/policy.json`, not inside any application space.
+Runtime status exposes `last_success_at` and `next_run_at`; failures are reported in backup status history/status. Interval schedules are based on the last successful interval run, while daily/weekly schedules are wall-clock and timezone-aware. Manual backups push interval schedules out but do not shift daily/weekly wall-clock schedules. If `run_missed` is enabled, the daemon can run a missed calendar slot after restart when the prior successful backup predates the missed slot. Policy is persisted under daemon metadata at `meta/backup/policy.json`, not inside any application space.
 
 ## Defaults
 
@@ -335,10 +341,13 @@ Recommended effective backup defaults:
 ```text
 enabled: false
 backup_dir: sibling of data dir, for example /data/mycel-backups when MYCELD_DATA_DIR=/data/mycel
+schedule_kind: interval
 interval: 24h
+timezone: UTC
 retention_count: 7
 include_logs: false
-compression: zip
+archive_format: zip
+compression: zip (deprecated compatibility string)
 quiesce_drain_timeout: 2m
 backup_timeout: 30m
 retry_after: 5s
@@ -369,7 +378,7 @@ MYCELD_BACKUP_DIR=
 MYCELD_BACKUP_INTERVAL=24h
 MYCELD_BACKUP_RETENTION_COUNT=7
 MYCELD_BACKUP_INCLUDE_LOGS=false
-MYCELD_BACKUP_COMPRESSION=zip
+MYCELD_BACKUP_COMPRESSION=zip  # legacy archive-format seed; maps to archive_format
 MYCELD_BACKUP_QUIESCE_DRAIN_TIMEOUT=2m
 MYCELD_BACKUP_TIMEOUT=30m
 MYCELD_BACKUP_RETRY_AFTER=5s

@@ -13,6 +13,6 @@ Use JSON for automation:
 mycel ... --output json admin backup policy get
 ```
 
-The policy is daemon-owned and persisted under `meta/backup/policy.json` after Admin API updates. Scheduled backups are disabled by default.
+The policy is daemon-owned and persisted under `meta/backup/policy.json` after Admin API updates. Scheduled backups are disabled by default. Text output includes schedule fields (`schedule`, `time_of_day`, `timezone`, `weekdays`, `run_missed`) and `archive_format`; JSON output includes both preferred `archive_format` and deprecated compatibility `compression` fields during the transition window.
 
 See also: [`docs/v2/design/admin/backup.md`](../../../v2/design/admin/backup.md).

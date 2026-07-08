@@ -228,18 +228,18 @@ func TestAdminBackupCommandsUseDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &policy); err != nil {
 		t.Fatalf("decode policy: %v\n%s", err, out)
 	}
-	if policy.GetCompression() != "zip" {
+	if policy.GetCompression() != "zip" || policy.GetArchiveFormat() != adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP {
 		t.Fatalf("unexpected default policy: %#v", &policy)
 	}
 
-	out, err = runCLI(t, append(base, "admin", "backup", "policy", "set", "--enabled", "--dir", backupDir, "--interval", "1h", "--keep", "2", "--include-logs")...)
+	out, err = runCLI(t, append(base, "admin", "backup", "policy", "set", "--enabled", "--dir", backupDir, "--interval", "1h", "--keep", "2", "--archive-format", "zip", "--include-logs", "--schedule", "weekly", "--time-of-day", "22:00", "--timezone", "America/Toronto", "--weekday", "sun", "--weekday", "wed", "--run-missed")...)
 	if err != nil {
 		t.Fatalf("backup policy set failed: %v\n%s", err, out)
 	}
 	if err := json.Unmarshal([]byte(out), &policy); err != nil {
 		t.Fatalf("decode updated policy: %v\n%s", err, out)
 	}
-	if !policy.GetEnabled() || policy.GetBackupDir() != backupDir || policy.GetIntervalSeconds() != 3600 || policy.GetRetentionCount() != 2 || !policy.GetIncludeLogs() {
+	if !policy.GetEnabled() || policy.GetBackupDir() != backupDir || policy.GetIntervalSeconds() != 3600 || policy.GetRetentionCount() != 2 || policy.GetArchiveFormat() != adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP || policy.GetCompression() != "zip" || !policy.GetIncludeLogs() || policy.GetScheduleKind() != "weekly" || policy.GetTimeOfDay() != "22:00" || policy.GetTimezone() != "America/Toronto" || len(policy.GetWeekdays()) != 2 || policy.GetWeekdays()[0] != 0 || policy.GetWeekdays()[1] != 3 || !policy.GetRunMissed() {
 		t.Fatalf("unexpected updated policy: %#v", &policy)
 	}
 
@@ -287,6 +287,39 @@ func TestAdminBackupCommandsUseDaemonGRPC(t *testing.T) {
 	var deleted adminv1.DeleteBackupResponse
 	if err := json.Unmarshal([]byte(out), &deleted); err != nil || deleted.GetBackupId() != backupID {
 		t.Fatalf("unexpected delete output err=%v deleted=%#v raw=%s", err, &deleted, out)
+	}
+}
+
+func TestBackupCLIArchiveFormatParsing(t *testing.T) {
+	cases := map[string]adminv1.BackupArchiveFormat{
+		"zip":     adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP,
+		"TAR":     adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR,
+		"tar.gz":  adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR_GZ,
+		"tgz":     adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR_GZ,
+		"tar.zst": adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR_ZST,
+		"tzst":    adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR_ZST,
+	}
+	for raw, want := range cases {
+		got, err := parseBackupArchiveFormat(raw)
+		if err != nil || got != want {
+			t.Fatalf("parseBackupArchiveFormat(%q) = %v, %v; want %v, nil", raw, got, err, want)
+		}
+	}
+	if _, err := parseBackupArchiveFormat("rar"); err == nil {
+		t.Fatal("expected invalid archive format to fail")
+	}
+}
+
+func TestBackupCLIWeekdayParsing(t *testing.T) {
+	weekdays, err := parseBackupWeekdays([]string{"sun", "Wednesday", "3", "fri"})
+	if err != nil {
+		t.Fatalf("parseBackupWeekdays() error = %v", err)
+	}
+	if len(weekdays) != 3 || weekdays[0] != 0 || weekdays[1] != 3 || weekdays[2] != 5 {
+		t.Fatalf("unexpected weekdays: %#v", weekdays)
+	}
+	if _, err := parseBackupWeekdays([]string{"noday"}); err == nil {
+		t.Fatal("expected invalid weekday to fail")
 	}
 }
 

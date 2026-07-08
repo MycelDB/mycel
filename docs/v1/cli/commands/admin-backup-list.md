@@ -14,7 +14,7 @@ Options:
 | `--page-size` | Maximum number of backups to return. |
 | `--page-token` | Pagination token returned by a previous JSON response. |
 
-Text output prints backup id, completion time, and archive size. JSON output returns the full `ListBackupsResponse`, including `next_page_token`:
+Text output prints backup id, completion time, and archive size. JSON output returns the full `ListBackupsResponse`, including `next_page_token` and each backup's `archive_format`:
 
 ```sh
 mycel ... --output json admin backup list --page-size 50

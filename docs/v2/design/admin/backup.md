@@ -43,15 +43,21 @@ The daemon still authenticates backup RPCs during quiesce. The minimal Admin aut
 |---|---:|---|
 | `enabled` | `false` | Enables scheduled backups when true. Manual triggers are still available when false. |
 | `backup_dir` | sibling of data dir, e.g. `~/mycel_data-backups` | Directory for completed archives and sidecar manifests. |
-| `interval_seconds` | `86400` / `24h` | Scheduled backup interval. After a manual success, the next scheduled run is pushed out by this interval. |
+| `interval_seconds` | `86400` / `24h` | Interval schedule period, used when `schedule_kind` is empty or `interval`. After a manual success, interval scheduling is pushed out by this period. |
 | `retention_count` | `7` | Number of newest complete backups to keep. Older complete backups are deleted after successful backup runs. |
 | `include_logs` | `false` | Include daemon logs in the archive. |
-| `compression` | `zip` | Archive format. |
+| `archive_format` | `BACKUP_ARCHIVE_FORMAT_ZIP` | Archive/container format enum. Supported formats are `zip`, `tar`, `tar.gz`, and `tar.zst`. |
+| `compression` | `zip` | Deprecated legacy archive/compression string kept for compatibility. Prefer `archive_format`. |
 | `quiesce_drain_timeout_seconds` | `120` / `2m` | Maximum time to stop new work and drain active participants. |
 | `backup_timeout_seconds` | `1800` / `30m` | Maximum time for the backup trigger operation. |
 | `retry_after_seconds` | `5` | Delay used by the scheduler after transient failures or backup conflicts. |
 | `status_history_limit` | `20` | Number of recent status entries retained in daemon memory/status. |
 | `allow_reads_during_backup` | `false` | Reserved for proven-safe reads; default behavior is conservative. |
+| `schedule_kind` | `interval` | Schedule kind: `interval`, `daily`, or `weekly`. Empty means `interval` for compatibility. |
+| `time_of_day` | empty | Wall-clock time for daily/weekly schedules in `HH:MM` 24-hour format. |
+| `timezone` | `UTC` | IANA timezone for daily/weekly schedules, for example `UTC` or `America/Toronto`. |
+| `weekdays` | empty | Weekdays for weekly schedules, where `0=Sunday` through `6=Saturday`. |
+| `run_missed` | `false` | Whether the daemon should run a missed calendar schedule after restart. |
 
 The effective policy is persisted by the daemon under `meta/backup/policy.json` when updated through the Admin API.
 
@@ -71,6 +77,8 @@ MYCELD_BACKUP_STATUS_HISTORY_LIMIT
 MYCELD_BACKUP_ALLOW_READS_DURING_BACKUP
 ```
 
+`MYCELD_BACKUP_COMPRESSION` is the legacy startup seed for archive format and maps to `archive_format`; persisted Admin policy uses both fields during the compatibility window. Calendar schedule fields are configured through the Admin API/CLI.
+
 ## CLI
 
 ```sh
@@ -78,7 +86,13 @@ mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
   admin backup policy get
 
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
-  admin backup policy set --enabled --dir /var/backups/mycel --interval 24h --keep 7
+  admin backup policy set --enabled --dir /var/backups/mycel --schedule interval --interval 24h --keep 7 --archive-format zip
+
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  admin backup policy set --enabled --schedule daily --time-of-day 22:00 --timezone America/Toronto --archive-format tar.zst
+
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  admin backup policy set --enabled --schedule weekly --time-of-day 02:00 --timezone UTC --weekday sun --weekday wed --run-missed
 
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
   admin backup trigger --reason 'before upgrade'
@@ -105,7 +119,7 @@ The daemon validates `backup_dir` before writing:
 - symlinks are resolved before containment checks;
 - the directory must be writable.
 
-Completed backups are written as a zip archive plus a sidecar manifest. Temporary/incomplete `.tmp` files are ignored by list and retention logic.
+Completed backups are written as an archive plus a sidecar manifest. Supported archive extensions are `.zip`, `.tar`, `.tar.gz`, and `.tar.zst`. Temporary/incomplete `.tmp` files are ignored by list and retention logic.
 
 ## Quiesce behavior and client errors
 
@@ -128,7 +142,11 @@ Online restore is intentionally not part of the first API. To restore:
 1. Stop `myceld` for the target data directory.
 2. Choose the backup archive and verify its sidecar manifest/checksum.
 3. Create a new empty restore directory outside the current data directory.
-4. Extract the zip archive into that restore directory. Preserve file modes where possible.
+4. Extract the archive into that restore directory. Preserve file modes where possible:
+   - `zip`: `unzip backup.zip -d /restore/dir`
+   - `tar`: `tar -xf backup.tar -C /restore/dir`
+   - `tar.gz`: `tar -xzf backup.tar.gz -C /restore/dir`
+   - `tar.zst`: `tar --zstd -xf backup.tar.zst -C /restore/dir`
 5. Point `MYCELD_DATA_DIR` at the restored directory, or move the restored directory into place while the daemon is stopped.
 6. Start `myceld` and verify basic resources with daemon APIs or CLI commands.
 7. Keep the original data directory until the restore is verified.

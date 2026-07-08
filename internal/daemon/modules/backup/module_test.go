@@ -62,6 +62,44 @@ func TestBackupServiceSchedulerTriggersAtInterval(t *testing.T) {
 	}
 }
 
+func TestBackupServiceManualTriggerDoesNotShiftDailyNextRun(t *testing.T) {
+	m := NewModule()
+	now := time.Now().UTC().Add(2 * time.Hour)
+	timeOfDay := now.Format("15:04")
+	rt := testRuntime(t, daemonconfig.BackupConfig{Enabled: true, BackupDir: t.TempDir(), Interval: time.Hour, RetentionCount: 3, Compression: "zip", QuiesceDrainTimeout: time.Second, BackupTimeout: time.Minute, RetryAfter: time.Second, StatusHistoryLimit: 3})
+	writeBackupFixture(t, rt.Config.DataDir)
+	if result := m.Init(context.Background(), rt); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	if _, err := m.UpdatePolicy(context.Background(), backupcore.Policy{Enabled: true, BackupDir: rt.Config.Backup.BackupDir, Interval: time.Hour, RetentionCount: 3, Compression: "zip", QuiesceDrainTimeout: time.Second, BackupTimeout: time.Minute, RetryAfter: time.Second, StatusHistoryLimit: 3, ScheduleKind: backupcore.ScheduleKindDaily, TimeOfDay: timeOfDay, Timezone: "UTC"}); err != nil {
+		t.Fatalf("UpdatePolicy(daily) error = %v", err)
+	}
+	defer m.Stop(context.Background())
+	firstNext := m.RunStatus().NextRunAt
+	if firstNext.IsZero() {
+		t.Fatal("expected daily next run")
+	}
+	if _, err := m.Trigger(context.Background(), backupcore.TriggerInput{Source: "test"}); err != nil {
+		t.Fatalf("manual Trigger() error = %v", err)
+	}
+	secondNext := m.RunStatus().NextRunAt
+	if !secondNext.Equal(firstNext) {
+		t.Fatalf("manual trigger should not shift daily next run, first=%s second=%s", firstNext, secondNext)
+	}
+}
+
+func TestBackupServiceUpdatePolicyRejectsInvalidSchedule(t *testing.T) {
+	m := NewModule()
+	rt := testRuntime(t, daemonconfig.BackupConfig{Enabled: false, BackupDir: t.TempDir()})
+	if result := m.Init(context.Background(), rt); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	_, err := m.UpdatePolicy(context.Background(), backupcore.Policy{Enabled: true, BackupDir: t.TempDir(), Interval: time.Hour, RetentionCount: 3, Compression: "zip", QuiesceDrainTimeout: time.Second, BackupTimeout: time.Minute, RetryAfter: time.Second, StatusHistoryLimit: 3, ScheduleKind: backupcore.ScheduleKindWeekly, TimeOfDay: "22:00", Timezone: "UTC"})
+	if err == nil {
+		t.Fatal("expected invalid weekly schedule to be rejected")
+	}
+}
+
 func TestBackupServiceManualTriggerPushesNextRun(t *testing.T) {
 	m := NewModule()
 	rt := testRuntime(t, daemonconfig.BackupConfig{Enabled: true, BackupDir: t.TempDir(), Interval: time.Hour, RetentionCount: 3, Compression: "zip", QuiesceDrainTimeout: time.Second, BackupTimeout: time.Minute, RetryAfter: time.Second, StatusHistoryLimit: 3})

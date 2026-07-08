@@ -23,22 +23,142 @@ func TestAdminBackupPolicyGetUpdateAndValidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBackupPolicy() error = %v", err)
 	}
-	if getRes.GetPolicy().GetCompression() != "zip" || getRes.GetPolicy().GetRetentionCount() == 0 {
+	if getRes.GetPolicy().GetCompression() != "zip" || getRes.GetPolicy().GetArchiveFormat() != adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP || getRes.GetPolicy().GetRetentionCount() == 0 {
 		t.Fatalf("unexpected default policy: %#v", getRes.GetPolicy())
 	}
 
 	backupDir := t.TempDir()
-	updateRes, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, Compression: "zip", QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
+	updateRes, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, ArchiveFormat: adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP, QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
 	if err != nil {
 		t.Fatalf("UpdateBackupPolicy() error = %v", err)
 	}
-	if !updateRes.GetPolicy().GetEnabled() || updateRes.GetPolicy().GetBackupDir() != backupDir || updateRes.GetPolicy().GetRetentionCount() != 2 {
+	if !updateRes.GetPolicy().GetEnabled() || updateRes.GetPolicy().GetBackupDir() != backupDir || updateRes.GetPolicy().GetRetentionCount() != 2 || updateRes.GetPolicy().GetArchiveFormat() != adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP || updateRes.GetPolicy().GetCompression() != "zip" {
 		t.Fatalf("unexpected updated policy: %#v", updateRes.GetPolicy())
 	}
 
 	_, err = svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{BackupDir: filepath.Join(dataDir, "nested"), IntervalSeconds: 3600, RetentionCount: 1, Compression: "zip", QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("invalid backup dir code = %v, want InvalidArgument (err=%v)", status.Code(err), err)
+	}
+}
+
+func TestAdminBackupPolicyAcceptsLegacyCompressionFallback(t *testing.T) {
+	dataDir := backupAPIFixtureDataDir(t)
+	manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}})
+	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
+	backupDir := t.TempDir()
+	res, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, Compression: "zip", QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
+	if err != nil {
+		t.Fatalf("UpdateBackupPolicy(legacy compression) error = %v", err)
+	}
+	if res.GetPolicy().GetArchiveFormat() != adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP || res.GetPolicy().GetCompression() != "zip" {
+		t.Fatalf("legacy compression was not mapped to archive_format: %#v", res.GetPolicy())
+	}
+}
+
+func TestAdminBackupPolicyAcceptsArchiveFormatEnums(t *testing.T) {
+	formats := []adminv1.BackupArchiveFormat{
+		adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP,
+		adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR,
+		adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR_GZ,
+		adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR_ZST,
+	}
+	for _, format := range formats {
+		t.Run(format.String(), func(t *testing.T) {
+			dataDir := backupAPIFixtureDataDir(t)
+			manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}})
+			svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
+			backupDir := t.TempDir()
+			res, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, ArchiveFormat: format, QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
+			if err != nil {
+				t.Fatalf("UpdateBackupPolicy() error = %v", err)
+			}
+			if res.GetPolicy().GetArchiveFormat() != format {
+				t.Fatalf("archive_format = %v, want %v", res.GetPolicy().GetArchiveFormat(), format)
+			}
+		})
+	}
+}
+
+func TestAdminBackupPolicyRejectsUnknownArchiveFormat(t *testing.T) {
+	dataDir := backupAPIFixtureDataDir(t)
+	manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}})
+	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
+	backupDir := t.TempDir()
+	_, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, ArchiveFormat: adminv1.BackupArchiveFormat(99), QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("unknown archive format code = %v, want InvalidArgument (err=%v)", status.Code(err), err)
+	}
+}
+
+func TestAdminBackupPolicyMapsScheduleFields(t *testing.T) {
+	dataDir := backupAPIFixtureDataDir(t)
+	manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}})
+	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
+
+	backupDir := t.TempDir()
+	policy := &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, ArchiveFormat: adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP, QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4, ScheduleKind: backupcore.ScheduleKindWeekly, TimeOfDay: "22:00", Timezone: "America/Toronto", Weekdays: []int32{0, 3}, RunMissed: true}
+	updateRes, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: policy})
+	if err != nil {
+		t.Fatalf("UpdateBackupPolicy() error = %v", err)
+	}
+	got := updateRes.GetPolicy()
+	if got.GetScheduleKind() != backupcore.ScheduleKindWeekly || got.GetTimeOfDay() != "22:00" || got.GetTimezone() != "America/Toronto" || len(got.GetWeekdays()) != 2 || got.GetWeekdays()[0] != 0 || got.GetWeekdays()[1] != 3 || !got.GetRunMissed() {
+		t.Fatalf("schedule fields not preserved: %#v", got)
+	}
+
+	getRes, err := svc.GetBackupPolicy(authenticatedContext(), &adminv1.GetBackupPolicyRequest{})
+	if err != nil {
+		t.Fatalf("GetBackupPolicy() error = %v", err)
+	}
+	if getRes.GetPolicy().GetScheduleKind() != backupcore.ScheduleKindWeekly || getRes.GetPolicy().GetTimeOfDay() != "22:00" {
+		t.Fatalf("unexpected persisted schedule: %#v", getRes.GetPolicy())
+	}
+}
+
+func TestAdminBackupPolicyRejectsInvalidSchedule(t *testing.T) {
+	dataDir := backupAPIFixtureDataDir(t)
+	manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}})
+	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
+
+	base := &adminv1.BackupPolicy{Enabled: true, BackupDir: t.TempDir(), IntervalSeconds: 3600, RetentionCount: 2, Compression: "zip", QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}
+	tests := []*adminv1.BackupPolicy{
+		func() *adminv1.BackupPolicy { cp := *base; cp.ScheduleKind = "hourly"; return &cp }(),
+		func() *adminv1.BackupPolicy {
+			cp := *base
+			cp.ScheduleKind = backupcore.ScheduleKindDaily
+			cp.TimeOfDay = "9:00"
+			cp.Timezone = "UTC"
+			return &cp
+		}(),
+		func() *adminv1.BackupPolicy {
+			cp := *base
+			cp.ScheduleKind = backupcore.ScheduleKindDaily
+			cp.TimeOfDay = "09:00"
+			cp.Timezone = "Mars/Olympus"
+			return &cp
+		}(),
+		func() *adminv1.BackupPolicy {
+			cp := *base
+			cp.ScheduleKind = backupcore.ScheduleKindWeekly
+			cp.TimeOfDay = "09:00"
+			cp.Timezone = "UTC"
+			return &cp
+		}(),
+		func() *adminv1.BackupPolicy {
+			cp := *base
+			cp.ScheduleKind = backupcore.ScheduleKindWeekly
+			cp.TimeOfDay = "09:00"
+			cp.Timezone = "UTC"
+			cp.Weekdays = []int32{7}
+			return &cp
+		}(),
+	}
+	for _, tt := range tests {
+		_, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: tt})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("UpdateBackupPolicy(%#v) code = %v, want InvalidArgument (err=%v)", tt, status.Code(err), err)
+		}
 	}
 }
 
@@ -58,7 +178,7 @@ func TestAdminBackupTriggerListStatusAndDelete(t *testing.T) {
 		t.Fatalf("TriggerBackup() error = %v", err)
 	}
 	backupID := triggerRes.GetBackup().GetBackupId()
-	if backupID == "" || triggerRes.GetStatus().GetState() != string(backupcore.RunStateSucceeded) {
+	if backupID == "" || triggerRes.GetStatus().GetState() != string(backupcore.RunStateSucceeded) || triggerRes.GetBackup().GetArchiveFormat() != adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP || triggerRes.GetBackup().GetCompression() != "zip" {
 		t.Fatalf("unexpected trigger response: %#v", triggerRes)
 	}
 	if len(triggerRes.GetStatus().GetParticipants()) != 1 || triggerRes.GetStatus().GetParticipants()[0].GetName() != "test-service" {

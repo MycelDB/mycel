@@ -1,15 +1,19 @@
 package backup
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 )
 
@@ -59,6 +63,40 @@ func TestManagerUpdatePolicyRejectsNegativeAndPersists(t *testing.T) {
 	}
 }
 
+func TestManagerUpdatePolicyRejectsUnsupportedArchiveFormat(t *testing.T) {
+	dataDir := fixtureDataDir(t)
+	backupDir := t.TempDir()
+	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir}})
+	_, err := mgr.UpdatePolicy(context.Background(), Policy{Enabled: true, BackupDir: backupDir, Interval: time.Hour, RetentionCount: 2, ArchiveFormat: ArchiveFormat("rar"), QuiesceDrainTimeout: time.Second, BackupTimeout: time.Minute, RetryAfter: time.Second, StatusHistoryLimit: 3})
+	if err == nil || !contains(err.Error(), "archive_format") {
+		t.Fatalf("UpdatePolicy() error = %v, want unsupported archive_format", err)
+	}
+}
+
+func TestManagerDeleteBackupRemovesConfiguredArchiveFormats(t *testing.T) {
+	formats := []ArchiveFormat{ArchiveFormatZip, ArchiveFormatTar, ArchiveFormatTarGz, ArchiveFormatTarZst}
+	for _, format := range formats {
+		t.Run(string(format), func(t *testing.T) {
+			dataDir := fixtureDataDir(t)
+			backupDir := t.TempDir()
+			mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir, ArchiveFormat: format}})
+			res, err := mgr.Trigger(context.Background(), TriggerInput{Source: "test"})
+			if err != nil {
+				t.Fatalf("Trigger() error = %v", err)
+			}
+			if err := mgr.DeleteBackup(context.Background(), res.BackupID); err != nil {
+				t.Fatalf("DeleteBackup() error = %v", err)
+			}
+			if _, err := os.Stat(res.ArchivePath); !os.IsNotExist(err) {
+				t.Fatalf("archive still exists or unexpected stat error: %v", err)
+			}
+			if _, err := os.Stat(res.ManifestPath); !os.IsNotExist(err) {
+				t.Fatalf("manifest still exists or unexpected stat error: %v", err)
+			}
+		})
+	}
+}
+
 func TestManagerDeleteBackupRejectsEscapingManifestArchiveName(t *testing.T) {
 	dataDir := fixtureDataDir(t)
 	backupDir := t.TempDir()
@@ -95,12 +133,45 @@ func TestManagerCreatesArchiveManifestAndChecksum(t *testing.T) {
 	if manifest.ChecksumSHA256 != checksum || manifest.SizeBytes != size {
 		t.Fatalf("manifest checksum/size = %s/%d, want %s/%d", manifest.ChecksumSHA256, manifest.SizeBytes, checksum, size)
 	}
+	if manifest.Policy.ArchiveFormat != string(ArchiveFormatZip) || manifest.Policy.Compression != string(ArchiveFormatZip) {
+		t.Fatalf("manifest archive format summary = %#v", manifest.Policy)
+	}
 	entries := zipEntries(t, res.ArchivePath)
 	if !entries["meta/spaces.json"] || !entries["graphs/space/nodes.json"] {
 		t.Fatalf("archive missing expected entries: %#v", entries)
 	}
 	if entries["log/myceld.log"] {
 		t.Fatalf("archive included log despite IncludeLogs=false: %#v", entries)
+	}
+}
+
+func TestManagerCreatesConfiguredArchiveFormats(t *testing.T) {
+	formats := []ArchiveFormat{ArchiveFormatZip, ArchiveFormatTar, ArchiveFormatTarGz, ArchiveFormatTarZst}
+	for _, format := range formats {
+		t.Run(string(format), func(t *testing.T) {
+			dataDir := fixtureDataDir(t)
+			backupDir := t.TempDir()
+			mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir, ArchiveFormat: format, IncludeLogs: false}})
+			res, err := mgr.Trigger(context.Background(), TriggerInput{Source: "test"})
+			if err != nil {
+				t.Fatalf("Trigger() error = %v", err)
+			}
+			ext, err := ArchiveExtension(format)
+			if err != nil {
+				t.Fatalf("ArchiveExtension() error = %v", err)
+			}
+			if filepath.Ext(res.ArchivePath) == "" || filepath.Base(res.ArchivePath) != res.BackupID+ext {
+				t.Fatalf("archive path = %s, want backup_id%s", res.ArchivePath, ext)
+			}
+			entries := archiveEntries(t, format, res.ArchivePath)
+			if !entries["meta/spaces.json"] || !entries["graphs/space/nodes.json"] {
+				t.Fatalf("archive missing expected entries: %#v", entries)
+			}
+			manifest := readManifest(t, res.ManifestPath)
+			if manifest.Policy.ArchiveFormat != string(format) || manifest.Policy.Compression != string(format) {
+				t.Fatalf("manifest archive format summary = %#v, want %s", manifest.Policy, format)
+			}
+		})
 	}
 }
 
@@ -218,6 +289,48 @@ func writeFile(t *testing.T, path string, content string) {
 	}
 }
 
+func archiveEntries(t *testing.T, format ArchiveFormat, path string) map[string]bool {
+	t.Helper()
+	switch format {
+	case ArchiveFormatZip:
+		return zipEntries(t, path)
+	case ArchiveFormatTar:
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("open tar: %v", err)
+		}
+		defer file.Close()
+		return tarEntries(t, tar.NewReader(file))
+	case ArchiveFormatTarGz:
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("open tar.gz: %v", err)
+		}
+		defer file.Close()
+		gz, err := gzip.NewReader(file)
+		if err != nil {
+			t.Fatalf("open gzip: %v", err)
+		}
+		defer gz.Close()
+		return tarEntries(t, tar.NewReader(gz))
+	case ArchiveFormatTarZst:
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("open tar.zst: %v", err)
+		}
+		defer file.Close()
+		zr, err := zstd.NewReader(file)
+		if err != nil {
+			t.Fatalf("open zstd: %v", err)
+		}
+		defer zr.Close()
+		return tarEntries(t, tar.NewReader(zr))
+	default:
+		t.Fatalf("unsupported test archive format %q", format)
+		return nil
+	}
+}
+
 func zipEntries(t *testing.T, path string) map[string]bool {
 	t.Helper()
 	reader, err := zip.OpenReader(path)
@@ -230,6 +343,21 @@ func zipEntries(t *testing.T, path string) map[string]bool {
 		entries[file.Name] = true
 	}
 	return entries
+}
+
+func tarEntries(t *testing.T, reader *tar.Reader) map[string]bool {
+	t.Helper()
+	entries := map[string]bool{}
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			return entries
+		}
+		if err != nil {
+			t.Fatalf("read tar entry: %v", err)
+		}
+		entries[header.Name] = true
+	}
 }
 
 func readManifest(t *testing.T, path string) Manifest {

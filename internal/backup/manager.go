@@ -209,7 +209,7 @@ func (m *Manager) DeleteBackup(ctx context.Context, backupID string) error {
 	if manifest.BackupID != backupID {
 		return ErrBackupNotFound
 	}
-	if filepath.Base(manifest.ArchiveName) != manifest.ArchiveName || manifest.ArchiveName != backupID+".zip" {
+	if !validBackupArchiveName(backupID, manifest.ArchiveName) {
 		return fmt.Errorf("invalid backup manifest archive_name")
 	}
 	archivePath := filepath.Join(backupDir, manifest.ArchiveName)
@@ -296,8 +296,9 @@ func (m *Manager) finishRun(result TriggerResult, err error) {
 
 func (m *Manager) run(ctx context.Context, backupID string, started time.Time, input TriggerInput) (TriggerResult, error) {
 	policy := m.Policy()
-	if policy.Compression != "zip" {
-		return TriggerResult{}, fmt.Errorf("unsupported backup compression %q", policy.Compression)
+	archiveExt, err := ArchiveExtension(policy.ArchiveFormat)
+	if err != nil {
+		return TriggerResult{}, err
 	}
 	dataDir, backupDir, err := validateBackupDir(m.dataDir, policy.BackupDir)
 	if err != nil {
@@ -336,11 +337,11 @@ func (m *Manager) run(ctx context.Context, backupID string, started time.Time, i
 		return TriggerResult{}, fmt.Errorf("stage snapshot: %w", err)
 	}
 
-	archiveName := backupID + ".zip"
+	archiveName := backupID + archiveExt
 	archivePath := filepath.Join(backupDir, archiveName)
 	archiveTmp := archivePath + ".tmp"
 	defer os.Remove(archiveTmp)
-	if err := createZipArchive(runCtx, stagingDir, archiveTmp); err != nil {
+	if err := WriteArchive(runCtx, policy.ArchiveFormat, stagingDir, archiveTmp); err != nil {
 		return TriggerResult{}, fmt.Errorf("create archive: %w", err)
 	}
 	checksum, size, err := fileSHA256(archiveTmp)
@@ -408,8 +409,11 @@ func validatePolicy(dataDir string, policy Policy) error {
 	if policy.StatusHistoryLimit <= 0 {
 		return fmt.Errorf("status_history_limit must be positive")
 	}
-	if policy.Compression != "zip" {
-		return fmt.Errorf("unsupported backup compression %q", policy.Compression)
+	if !IsSupportedArchiveFormat(policy.ArchiveFormat) {
+		return fmt.Errorf("unsupported backup archive_format %q", policy.ArchiveFormat)
+	}
+	if err := ValidateSchedule(policy); err != nil {
+		return err
 	}
 	_, _, err := validateBackupDir(dataDir, policy.BackupDir)
 	return err
@@ -449,6 +453,19 @@ func persistPolicy(dataDir string, policy Policy) error {
 		return err
 	}
 	return nil
+}
+
+func validBackupArchiveName(backupID string, archiveName string) bool {
+	if filepath.Base(archiveName) != archiveName {
+		return false
+	}
+	for _, format := range []ArchiveFormat{ArchiveFormatZip, ArchiveFormatTar, ArchiveFormatTarGz, ArchiveFormatTarZst} {
+		ext, err := ArchiveExtension(format)
+		if err == nil && archiveName == backupID+ext {
+			return true
+		}
+	}
+	return false
 }
 
 func pathWithinDir(dir string, path string) bool {

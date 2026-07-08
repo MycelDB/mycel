@@ -9,26 +9,62 @@ import (
 const (
 	DefaultInterval            = 24 * time.Hour
 	DefaultRetentionCount      = 7
-	DefaultCompression         = "zip"
+	DefaultCompression         = string(ArchiveFormatZip)
+	DefaultArchiveFormat       = ArchiveFormatZip
 	DefaultQuiesceDrainTimeout = 2 * time.Minute
 	DefaultBackupTimeout       = 30 * time.Minute
 	DefaultRetryAfter          = 5 * time.Second
 	DefaultStatusHistoryLimit  = 20
+	DefaultScheduleKind        = ScheduleKindInterval
+	DefaultTimezone            = "UTC"
+)
+
+const (
+	ScheduleKindInterval = "interval"
+	ScheduleKindDaily    = "daily"
+	ScheduleKindWeekly   = "weekly"
+)
+
+type ArchiveFormat string
+
+const (
+	ArchiveFormatZip    ArchiveFormat = "zip"
+	ArchiveFormatTar    ArchiveFormat = "tar"
+	ArchiveFormatTarGz  ArchiveFormat = "tar.gz"
+	ArchiveFormatTarZst ArchiveFormat = "tar.zst"
 )
 
 // Policy describes daemon backup scheduling defaults and operator policy.
 type Policy struct {
-	Enabled                bool
-	BackupDir              string
-	Interval               time.Duration
-	RetentionCount         int
-	IncludeLogs            bool
+	Enabled        bool
+	BackupDir      string
+	Interval       time.Duration
+	RetentionCount int
+	IncludeLogs    bool
+	// Compression is the deprecated legacy archive/compression string. Keep it
+	// synchronized with ArchiveFormat while persisted policies migrate.
 	Compression            string
+	ArchiveFormat          ArchiveFormat
 	QuiesceDrainTimeout    time.Duration
 	BackupTimeout          time.Duration
 	RetryAfter             time.Duration
 	StatusHistoryLimit     int
 	AllowReadsDuringBackup bool
+	ScheduleKind           string
+	TimeOfDay              string
+	Timezone               string
+	Weekdays               []int
+	RunMissed              bool
+}
+
+func normalizeArchiveFormat(format ArchiveFormat, legacyCompression string) ArchiveFormat {
+	if strings.TrimSpace(string(format)) != "" {
+		return ArchiveFormat(strings.ToLower(strings.TrimSpace(string(format))))
+	}
+	if strings.TrimSpace(legacyCompression) != "" {
+		return ArchiveFormat(strings.ToLower(strings.TrimSpace(legacyCompression)))
+	}
+	return DefaultArchiveFormat
 }
 
 // DefaultBackupDir returns a sibling directory beside the daemon data dir.
@@ -51,9 +87,8 @@ func EffectivePolicy(dataDir string, policy Policy) Policy {
 	if policy.RetentionCount <= 0 {
 		policy.RetentionCount = DefaultRetentionCount
 	}
-	if strings.TrimSpace(policy.Compression) == "" {
-		policy.Compression = DefaultCompression
-	}
+	policy.ArchiveFormat = normalizeArchiveFormat(policy.ArchiveFormat, policy.Compression)
+	policy.Compression = string(policy.ArchiveFormat)
 	if policy.QuiesceDrainTimeout <= 0 {
 		policy.QuiesceDrainTimeout = DefaultQuiesceDrainTimeout
 	}
@@ -66,5 +101,16 @@ func EffectivePolicy(dataDir string, policy Policy) Policy {
 	if policy.StatusHistoryLimit <= 0 {
 		policy.StatusHistoryLimit = DefaultStatusHistoryLimit
 	}
+	if strings.TrimSpace(policy.ScheduleKind) == "" {
+		policy.ScheduleKind = DefaultScheduleKind
+	} else {
+		policy.ScheduleKind = strings.ToLower(strings.TrimSpace(policy.ScheduleKind))
+	}
+	if strings.TrimSpace(policy.Timezone) == "" {
+		policy.Timezone = DefaultTimezone
+	} else {
+		policy.Timezone = strings.TrimSpace(policy.Timezone)
+	}
+	policy.TimeOfDay = strings.TrimSpace(policy.TimeOfDay)
 	return policy
 }
