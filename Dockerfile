@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-# Build from the myceldb directory so the local mycel-api replacement is
+# Build from the myceldb directory so the local mycel-api protobuf contracts are
 # available to the mycel module:
 #   docker build -f mycel/Dockerfile -t local/myceld:dev .
 
@@ -9,11 +9,10 @@ ARG ALPINE_VERSION=3.21
 
 FROM golang:${GO_VERSION}-alpine AS builder
 
-RUN apk add --no-cache ca-certificates git
+RUN apk add --no-cache bash ca-certificates git
 
 WORKDIR /src
 
-COPY mycel-api/go.mod mycel-api/go.sum ./mycel-api/
 COPY mycel/go.mod mycel/go.sum ./mycel/
 
 WORKDIR /src/mycel
@@ -22,7 +21,8 @@ RUN go mod download
 COPY mycel-api ../mycel-api
 COPY mycel ./
 
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/myceld ./cmd/myceld && \
+RUN ./scripts/generate-proto.sh && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/myceld ./cmd/myceld && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mycel ./cmd/mycel
 
 FROM alpine:${ALPINE_VERSION}
