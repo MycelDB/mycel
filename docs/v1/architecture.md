@@ -24,8 +24,8 @@ For the active boundary, see:
 Use these from applications:
 
 ```text
-github.com/myceldb/mycel-api/gen/go/...
 github.com/myceldb/mycel-go-sdk
+github.com/myceldb/mycel-api/api/proto/... (for SDK/code generation)
 ```
 
 Do not import these from applications:

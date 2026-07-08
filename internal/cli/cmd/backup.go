@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

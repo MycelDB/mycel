@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"

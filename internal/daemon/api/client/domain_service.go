@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
-	commonv1 "github.com/myceldb/mycel-api/gen/go/mycel/common/v1"
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

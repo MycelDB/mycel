@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

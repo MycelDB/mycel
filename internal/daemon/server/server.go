@@ -10,8 +10,6 @@ import (
 	"net"
 	"os"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
@@ -25,6 +23,8 @@ import (
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )

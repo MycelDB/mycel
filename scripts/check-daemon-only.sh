@@ -36,9 +36,9 @@ if [ -e session ]; then
   fail=1
 fi
 
-if [ -e api/proto ] || [ -e gen/go ] || [ -e buf.yaml ] || [ -e buf.gen.yaml ]; then
-  echo "daemon-only check failed: protobuf sources and generated stubs belong in github.com/myceldb/mycel-api" >&2
-  for path in api/proto gen/go buf.yaml buf.gen.yaml; do
+if [ -e api/proto ] || [ -e gen/go ] || [ -e buf.yaml ]; then
+  echo "daemon-only check failed: protobuf sources belong in github.com/myceldb/mycel-api and generated public stubs must not be committed in mycel" >&2
+  for path in api/proto gen/go buf.yaml; do
     [ -e "$path" ] && echo "  $path" >&2
   done
   fail=1

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

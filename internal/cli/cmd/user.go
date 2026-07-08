@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"github.com/spf13/cobra"
 )
 

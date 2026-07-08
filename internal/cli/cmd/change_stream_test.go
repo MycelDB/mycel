@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 )
 
 func TestChangeStreamWatchReceivesCommitEvent(t *testing.T) {

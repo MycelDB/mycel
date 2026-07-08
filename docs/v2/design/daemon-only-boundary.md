@@ -10,9 +10,8 @@ Mycel is now intended to run as a daemon-owned database process. Applications an
 
 The daemon-only target supports application access through:
 
-- `github.com/myceldb/mycel-api/api/proto/**`: protobuf service definitions for Admin and Client APIs.
-- `github.com/myceldb/mycel-api/gen/go/**`: generated gRPC/protobuf Go client/server stubs.
-- `github.com/myceldb/mycel-go-sdk`: Go client helpers that wrap daemon gRPC connections.
+- `github.com/myceldb/mycel-api/api/proto/**`: language-independent protobuf service definitions for Admin and Client APIs.
+- `github.com/myceldb/mycel-go-sdk`: Go client helpers that generate and wrap Go daemon gRPC clients.
 
 This module supports binaries, not an embedded application library:
 

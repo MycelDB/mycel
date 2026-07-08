@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	"github.com/spf13/cobra"

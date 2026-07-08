@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"time"
 
-	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
 	"google.golang.org/grpc/codes"

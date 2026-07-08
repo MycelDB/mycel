@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/structpb"

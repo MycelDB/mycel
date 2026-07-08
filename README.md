@@ -13,7 +13,7 @@ myceld owns the data directory
 mycel and applications talk to myceld over gRPC
 ```
 
-Do not embed Mycel by opening an engine or file-backed sessions in an application process. Applications should use `mycel-go-sdk` and `mycel-api`; the `mycel` module contains daemon binaries and internal implementation packages only. The historical public `engine`, `session`, `domain`, `query`, and `store` implementation packages have been removed or internalized.
+Do not embed Mycel by opening an engine or file-backed sessions in an application process. Applications should use `mycel-go-sdk` and the language-independent protobuf contracts in `mycel-api`; the `mycel` module contains daemon binaries and internal implementation packages only. The historical public `engine`, `session`, `domain`, `query`, and `store` implementation packages have been removed or internalized.
 
 See [`docs/v2/design/daemon-only-boundary.md`](docs/v2/design/daemon-only-boundary.md) for the boundary and removal plan.
 
@@ -22,8 +22,8 @@ See [`docs/v2/design/daemon-only-boundary.md`](docs/v2/design/daemon-only-bounda
 Applications should import:
 
 ```text
-github.com/myceldb/mycel-api/gen/go/...
 github.com/myceldb/mycel-go-sdk
+github.com/myceldb/mycel-api/api/proto/... (for non-Go SDK/code generation)
 ```
 
 Applications should not import implementation packages from this module:
@@ -42,9 +42,8 @@ Those packages are removed or internalized. The root `github.com/myceldb/mycel` 
 
 **Supported application-facing surfaces:**
 
-- `github.com/myceldb/mycel-api/api/proto/`: protobuf service definitions.
-- `github.com/myceldb/mycel-api/gen/go/`: generated Go gRPC/protobuf stubs.
-- `github.com/myceldb/mycel-go-sdk`: Go daemon client helpers.
+- `github.com/myceldb/mycel-api/api/proto/`: language-independent protobuf service definitions.
+- `github.com/myceldb/mycel-go-sdk`: Go daemon client helpers and SDK-owned generated client stubs.
 
 **Supported binaries in this module:**
 
@@ -65,6 +64,18 @@ Those packages are removed or internalized. The root `github.com/myceldb/mycel` 
 - `internal/semantic/model/`, `internal/semantic/storage/`, and `internal/semantic/accounting/`: semantic/inference model, persistence, and usage accounting internals.
 - `internal/space/model/`, `internal/space/access/`, and `internal/space/storage/`: space/access models and space/domain/ACL persistence.
 - `internal/identity/model/`, `internal/identity/auth/`, and `internal/identity/storage/`: identity/auth models and user/session persistence.
+
+## Protobuf generation
+
+`myceld` and the `mycel` CLI generate the Go gRPC/protobuf stubs they need from the sibling `mycel-api` checkout. Generated files are written under `internal/gen/` and are ignored by git.
+
+```sh
+make generate-proto
+```
+
+By default this reads `../mycel-api/api/proto`. Set `MYCEL_API_ROOT=/path/to/mycel-api` to use another checkout.
+
+`make test`, `make build`, `make run-cli`, and `make run-daemon` run generation first.
 
 ## Build
 

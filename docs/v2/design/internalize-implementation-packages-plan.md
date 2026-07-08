@@ -17,8 +17,8 @@ github.com/myceldb/mycel/session
 Instead, applications should use:
 
 ```text
-github.com/myceldb/mycel-api/gen/go/...
 github.com/myceldb/mycel-go-sdk
+github.com/myceldb/mycel-api/api/proto/... (for SDK/code generation)
 ```
 
 This plan builds on [Mycel Public Go Surface Audit](public-surface-audit.md).

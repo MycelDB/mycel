@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"google.golang.org/grpc"
 )
 

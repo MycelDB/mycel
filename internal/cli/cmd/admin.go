@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
-	commonv1 "github.com/myceldb/mycel-api/gen/go/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"

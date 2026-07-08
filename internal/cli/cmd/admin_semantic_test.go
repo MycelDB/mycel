@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 )

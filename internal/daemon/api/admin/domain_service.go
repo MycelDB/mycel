@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
-	commonv1 "github.com/myceldb/mycel-api/gen/go/mycel/common/v1"
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

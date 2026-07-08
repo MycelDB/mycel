@@ -17,8 +17,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
@@ -30,6 +28,8 @@ import (
 	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
 	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"

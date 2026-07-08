@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	clientv1 "github.com/myceldb/mycel-api/gen/go/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/cli/app"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 )
 
 func TestAuthLoginWhoAmIAndSessionListUseDaemonGRPC(t *testing.T) {

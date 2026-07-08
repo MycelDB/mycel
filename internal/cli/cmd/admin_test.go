@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	adminv1 "github.com/myceldb/mycel-api/gen/go/mycel/admin/v1"
 	daemonapp "github.com/myceldb/mycel/internal/daemon/app"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
@@ -24,6 +23,7 @@ import (
 	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
