@@ -313,7 +313,7 @@ Implemented policy fields:
 ```text
 enabled: bool
 backup_dir: string
-interval_seconds: int64
+interval_hours: int32
 retention_count: int32
 include_logs: bool
 archive_format: enum (zip, tar, tar.gz, tar.zst)

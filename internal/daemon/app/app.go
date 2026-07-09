@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
 	"github.com/myceldb/mycel/internal/daemon/modules/admin"
@@ -92,7 +93,12 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld TLS config error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce})
+	tokenManager, err := auth.NewRandomTokenManager(cfg.AccessTokenTTL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
+		return 1
+	}
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -173,6 +179,7 @@ func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath str
 		"log_format", cfg.LogFormat,
 		"tls_enabled", cfg.TLSCertFile != "",
 		"mtls_required", cfg.TLSRequireClientCert,
+		"access_token_ttl", cfg.AccessTokenTTL,
 	)
 }
 

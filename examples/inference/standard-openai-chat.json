@@ -1,0 +1,63 @@
+{
+  "name": "standard-openai-chat",
+  "version": "2026-06",
+  "source": "examples/inference/standard-openai-chat.json",
+  "model_endpoints": [
+    {
+      "key": "openai",
+      "name": "OpenAI",
+      "connector_type": "openai-compatible",
+      "endpoint_url": "https://api.openai.com/v1",
+      "network_class": "external_https",
+      "privacy_class": "third_party",
+      "auth_modes": ["api_key"],
+      "operations": ["chat"],
+      "enabled": true
+    }
+  ],
+  "models": [
+    {
+      "key": "openai/gpt-4o",
+      "operation": "chat",
+      "model_name": "gpt-4o",
+      "connector_types": ["openai-compatible"],
+      "modality": "text",
+      "metadata": {
+        "provider": "openai"
+      }
+    },
+    {
+      "key": "openai/gpt-4o-mini",
+      "operation": "chat",
+      "model_name": "gpt-4o-mini",
+      "connector_types": ["openai-compatible"],
+      "modality": "text",
+      "metadata": {
+        "provider": "openai"
+      }
+    }
+  ],
+  "vector_stores": [
+    {
+      "key": "mycel-file",
+      "name": "Mycel File Vector Store",
+      "type": "mycel-file",
+      "privacy_class": "local_only",
+      "enabled": true
+    }
+  ],
+  "model_endpoint_capabilities": [
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-4o",
+      "operation": "chat",
+      "enabled": true
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-4o-mini",
+      "operation": "chat",
+      "enabled": true
+    }
+  ]
+}

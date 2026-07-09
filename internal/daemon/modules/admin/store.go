@@ -20,6 +20,7 @@ var ErrStoreNotFound = errors.New("admin store not found")
 var ErrAdminNotFound = errors.New("admin not found")
 var ErrGrantNotFound = errors.New("grant not found")
 var ErrLastSystemAdmin = errors.New("cannot remove the last active system admin")
+var ErrInvalidRefreshToken = errors.New("invalid refresh token")
 
 type Store interface {
 	List(context.Context) ([]Admin, error)

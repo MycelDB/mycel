@@ -90,6 +90,19 @@ func (f fakeOperatorManager) IsSystemAdmin(context.Context, string) (bool, error
 func (f fakeOperatorManager) HasCapability(context.Context, string, string) (bool, error) {
 	return true, nil
 }
+func (f fakeOperatorManager) CreateOperatorAuthSession(context.Context, daemonadmin.AdminSummary, domainauth.RefreshSessionMetadata, int, time.Duration, time.Duration) (domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	return "operator-refresh", domainauth.RefreshSession{ID: uuid.New(), CreatedAt: time.Now().UTC()}, nil
+}
+func (f fakeOperatorManager) RefreshOperatorAuthSession(context.Context, domainauth.RefreshToken, domainauth.RefreshSessionMetadata, int, time.Duration) (daemonadmin.AdminSummary, domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	return f.admin, "operator-refresh-2", domainauth.RefreshSession{ID: uuid.New(), CreatedAt: time.Now().UTC()}, nil
+}
+func (f fakeOperatorManager) ListOperatorSessions(context.Context, string) ([]domainauth.RefreshSession, error) {
+	return nil, nil
+}
+func (f fakeOperatorManager) RevokeOperatorSession(context.Context, string, string) error { return nil }
+func (f fakeOperatorManager) RevokeOperatorSessions(context.Context, string) (int, error) {
+	return 0, nil
+}
 
 type fakeUserManager struct{}
 

@@ -43,7 +43,7 @@ The daemon still authenticates backup RPCs during quiesce. The minimal Admin aut
 |---|---:|---|
 | `enabled` | `false` | Enables scheduled backups when true. Manual triggers are still available when false. |
 | `backup_dir` | sibling of data dir, e.g. `~/mycel_data-backups` | Directory for completed archives and sidecar manifests. |
-| `interval_seconds` | `86400` / `24h` | Interval schedule period, used when `schedule_kind` is empty or `interval`. After a manual success, interval scheduling is pushed out by this period. |
+| `interval_hours` | `24` | Interval schedule period in whole hours, used when `schedule_kind` is empty or `interval`. After a manual success, interval scheduling is pushed out by this period. |
 | `retention_count` | `7` | Number of newest complete backups to keep. Older complete backups are deleted after successful backup runs. |
 | `include_logs` | `false` | Include daemon logs in the archive. |
 | `archive_format` | `BACKUP_ARCHIVE_FORMAT_ZIP` | Archive/container format enum. Supported formats are `zip`, `tar`, `tar.gz`, and `tar.zst`. |
@@ -86,7 +86,7 @@ mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
   admin backup policy get
 
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
-  admin backup policy set --enabled --dir /var/backups/mycel --schedule interval --interval 24h --keep 7 --archive-format zip
+  admin backup policy set --enabled --dir /var/backups/mycel --schedule interval --interval-hours 24 --keep 7 --archive-format zip
 
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
   admin backup policy set --enabled --schedule daily --time-of-day 22:00 --timezone America/Toronto --archive-format tar.zst

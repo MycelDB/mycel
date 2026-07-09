@@ -13,6 +13,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	"github.com/myceldb/mycel/internal/identity/model"
+	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
 )
 
 const ModuleName = "admin"
@@ -20,8 +23,9 @@ const ModuleName = "admin"
 var ErrInvalidCredentials = errors.New("invalid operator credentials")
 
 type Module struct {
-	store Store
-	gate  *quiesce.Gate
+	store    Store
+	sessions storesession.Manager
+	gate     *quiesce.Gate
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -31,7 +35,11 @@ func OpenLister(dataDir string) (*Module, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Module{store: store}, nil
+	mgr := storesession.NewManager()
+	if err := mgr.Init(context.Background(), filepath.Join(dataDir, "admins", "sessions")); err != nil {
+		return nil, err
+	}
+	return &Module{store: store, sessions: mgr}, nil
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -49,6 +57,17 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open admin store", err)
 	}
 	m.store = store
+	sessionsDir := filepath.Join(adminDir, "sessions")
+	sessionsDirCreated, err := ensureDir(sessionsDir, 0o700)
+	if err != nil {
+		return daemonruntime.Abort(ModuleName, "filesystem", "failed to create admin sessions directory", err)
+	}
+	rt.Logger.Info("admin sessions directory ready", "path", sessionsDir, "created", sessionsDirCreated)
+	sessions := storesession.NewManager()
+	if err := sessions.Init(ctx, sessionsDir); err != nil {
+		return daemonruntime.Abort(ModuleName, "store", "failed to open admin session store", err)
+	}
+	m.sessions = sessions
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)
 	}
@@ -155,6 +174,178 @@ func (m *Module) AuthenticateOperator(ctx context.Context, username string, pass
 		return AdminSummary{}, ErrInvalidCredentials
 	}
 	return admin.toSummary(), nil
+}
+
+func (m *Module) CreateOperatorAuthSession(ctx context.Context, operator AdminSummary, metadata domainauth.RefreshSessionMetadata, tokenBytes int, idleTTL time.Duration, absoluteTTL time.Duration) (domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return "", domainauth.RefreshSession{}, err
+	}
+	defer release()
+	if m.sessions == nil {
+		return "", domainauth.RefreshSession{}, fmt.Errorf("admin session store is not initialized")
+	}
+	operatorID, err := parseOperatorID(operator.ID)
+	if err != nil {
+		return "", domainauth.RefreshSession{}, err
+	}
+	refreshToken, err := domainauth.NewRefreshToken(tokenBytes)
+	if err != nil {
+		return "", domainauth.RefreshSession{}, err
+	}
+	refreshTokenHash, err := domainauth.HashRefreshToken(refreshToken)
+	if err != nil {
+		return "", domainauth.RefreshSession{}, err
+	}
+	now := time.Now().UTC()
+	rec, err := m.sessions.Create(ctx, domainauth.RefreshSession{UserID: operatorID, UserRef: identity.UserRef(operator.Username), Status: domainauth.RefreshSessionStatusActive, RefreshTokenHash: refreshTokenHash, CreatedAt: now, LastUsedAt: now, IdleExpiresAt: now.Add(idleTTL), AbsoluteExpiresAt: now.Add(absoluteTTL), Metadata: metadata})
+	if err != nil {
+		return "", domainauth.RefreshSession{}, err
+	}
+	return refreshToken, rec, nil
+}
+
+func (m *Module) RefreshOperatorAuthSession(ctx context.Context, refreshToken domainauth.RefreshToken, metadata domainauth.RefreshSessionMetadata, tokenBytes int, idleTTL time.Duration) (AdminSummary, domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return AdminSummary{}, "", domainauth.RefreshSession{}, err
+	}
+	defer release()
+	if m.store == nil || m.sessions == nil {
+		return AdminSummary{}, "", domainauth.RefreshSession{}, fmt.Errorf("admin module is not initialized")
+	}
+	refreshTokenHash, err := domainauth.HashRefreshToken(refreshToken)
+	if err != nil {
+		return AdminSummary{}, "", domainauth.RefreshSession{}, ErrInvalidRefreshToken
+	}
+	rec, err := m.sessions.FindByTokenHash(ctx, refreshTokenHash)
+	if err != nil {
+		if errors.Is(err, storesession.ErrSessionNotFound) {
+			if consumed, reuseErr := m.sessions.FindByConsumedTokenHash(ctx, refreshTokenHash); reuseErr == nil {
+				_, _ = m.sessions.RevokeFamily(ctx, consumed.TokenFamilyID, time.Now().UTC(), "refresh token reuse detected")
+			}
+			return AdminSummary{}, "", domainauth.RefreshSession{}, ErrInvalidRefreshToken
+		}
+		return AdminSummary{}, "", domainauth.RefreshSession{}, err
+	}
+	if !domainauth.VerifyRefreshTokenHash(refreshToken, rec.RefreshTokenHash) {
+		return AdminSummary{}, "", domainauth.RefreshSession{}, ErrInvalidRefreshToken
+	}
+	now := time.Now().UTC()
+	if !operatorRefreshSessionRefreshable(rec, now) {
+		if rec.Status == domainauth.RefreshSessionStatusActive && operatorRefreshSessionExpired(rec, now) {
+			rec.Status = domainauth.RefreshSessionStatusExpired
+			_, _ = m.sessions.Update(ctx, rec)
+		}
+		return AdminSummary{}, "", domainauth.RefreshSession{}, ErrInvalidRefreshToken
+	}
+	admin, err := m.adminForOperatorSession(ctx, rec)
+	if err != nil {
+		if errors.Is(err, ErrAdminNotFound) {
+			return AdminSummary{}, "", domainauth.RefreshSession{}, ErrInvalidRefreshToken
+		}
+		return AdminSummary{}, "", domainauth.RefreshSession{}, err
+	}
+	if admin.State != AdminStateActive {
+		return AdminSummary{}, "", domainauth.RefreshSession{}, ErrInvalidRefreshToken
+	}
+	newRefreshToken, err := domainauth.NewRefreshToken(tokenBytes)
+	if err != nil {
+		return AdminSummary{}, "", domainauth.RefreshSession{}, err
+	}
+	newRefreshTokenHash, err := domainauth.HashRefreshToken(newRefreshToken)
+	if err != nil {
+		return AdminSummary{}, "", domainauth.RefreshSession{}, err
+	}
+	oldRefreshTokenHash := rec.RefreshTokenHash
+	rec.RefreshTokenHash = newRefreshTokenHash
+	rec.ConsumedRefreshTokenHashes = append(rec.ConsumedRefreshTokenHashes, oldRefreshTokenHash)
+	rec.RotationCounter++
+	rec.LastUsedAt = now
+	rec.IdleExpiresAt = now.Add(idleTTL)
+	if rec.IdleExpiresAt.After(rec.AbsoluteExpiresAt) {
+		rec.IdleExpiresAt = rec.AbsoluteExpiresAt
+	}
+	rec.Metadata = metadata
+	updated, err := m.sessions.Update(ctx, rec)
+	if err != nil {
+		return AdminSummary{}, "", domainauth.RefreshSession{}, err
+	}
+	return admin.toSummary(), newRefreshToken, updated, nil
+}
+
+func (m *Module) adminForOperatorSession(ctx context.Context, session domainauth.RefreshSession) (Admin, error) {
+	admin, err := m.store.GetByID(ctx, session.UserID.String())
+	if err == nil {
+		return admin, nil
+	}
+	if !errors.Is(err, ErrAdminNotFound) {
+		return Admin{}, err
+	}
+	if username := strings.TrimSpace(string(session.UserRef)); username != "" {
+		return m.store.Find(ctx, username, "")
+	}
+	return Admin{}, ErrAdminNotFound
+}
+
+func (m *Module) ListOperatorSessions(ctx context.Context, operatorID string) ([]domainauth.RefreshSession, error) {
+	id, err := parseOperatorID(operatorID)
+	if err != nil {
+		return nil, err
+	}
+	return m.sessions.ListByUser(ctx, id)
+}
+
+func (m *Module) RevokeOperatorSession(ctx context.Context, operatorID string, sessionID string) error {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	operatorUUID, err := parseOperatorID(operatorID)
+	if err != nil {
+		return err
+	}
+	sessionUUID, err := uuid.Parse(strings.TrimSpace(sessionID))
+	if err != nil {
+		return ErrAdminNotFound
+	}
+	rec, err := m.sessions.GetByID(ctx, domainauth.RefreshSessionID(sessionUUID))
+	if err != nil {
+		return err
+	}
+	if rec.UserID != operatorUUID {
+		return ErrAdminNotFound
+	}
+	_, err = m.sessions.RevokeByID(ctx, rec.ID, time.Now().UTC(), "operator session revoked")
+	return err
+}
+
+func (m *Module) RevokeOperatorSessions(ctx context.Context, operatorID string) (int, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	id, err := parseOperatorID(operatorID)
+	if err != nil {
+		return 0, err
+	}
+	sessions, err := m.sessions.ListByUser(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, session := range sessions {
+		if session.Status != domainauth.RefreshSessionStatusActive {
+			continue
+		}
+		if _, err := m.sessions.RevokeByID(ctx, session.ID, time.Now().UTC(), "operator sessions revoked"); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
 }
 
 func (m *Module) SetOperatorPassword(ctx context.Context, operatorID string, password string) (AdminSummary, error) {
@@ -526,6 +717,30 @@ func normalizeScope(scope AccessScope) AccessScope {
 		scope.Type = "system"
 	}
 	return scope
+}
+
+func operatorRefreshSessionRefreshable(rec domainauth.RefreshSession, now time.Time) bool {
+	return rec.Status == domainauth.RefreshSessionStatusActive && !operatorRefreshSessionExpired(rec, now)
+}
+
+func operatorRefreshSessionExpired(rec domainauth.RefreshSession, now time.Time) bool {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	return (!rec.AbsoluteExpiresAt.IsZero() && !rec.AbsoluteExpiresAt.After(now)) || (!rec.IdleExpiresAt.IsZero() && !rec.IdleExpiresAt.After(now))
+}
+
+func parseOperatorID(operatorID string) (identity.UserID, error) {
+	operatorID = strings.TrimSpace(operatorID)
+	if operatorID == "" {
+		return uuid.Nil, ErrAdminNotFound
+	}
+	if id, err := uuid.Parse(operatorID); err == nil {
+		return identity.UserID(id), nil
+	}
+	return identity.UserID(uuid.NewSHA1(uuid.NameSpaceURL, []byte("mycel-operator:"+operatorID))), nil
 }
 
 func ensureDir(path string, perm os.FileMode) (bool, error) {

@@ -34,6 +34,7 @@ const (
 	DefaultBackupTimeout                    = 30 * time.Minute
 	DefaultBackupRetryAfter                 = 5 * time.Second
 	DefaultBackupStatusHistoryLimit         = 20
+	DefaultAccessTokenTTL                   = 15 * time.Minute
 )
 
 type SemanticThrottleConfig struct {
@@ -83,6 +84,7 @@ type Config struct {
 	TLSKeyFile                string
 	TLSClientCAFile           string
 	TLSRequireClientCert      bool
+	AccessTokenTTL            time.Duration
 	SemanticMaintenance       SemanticMaintenanceConfig
 	Backup                    BackupConfig
 }
@@ -109,6 +111,7 @@ func LoadFromEnv() (Config, error) {
 		TLSKeyFile:                strings.TrimSpace(os.Getenv("MYCELD_TLS_KEY_FILE")),
 		TLSClientCAFile:           strings.TrimSpace(os.Getenv("MYCELD_TLS_CLIENT_CA_FILE")),
 		TLSRequireClientCert:      parseBoolEnv(os.Getenv("MYCELD_TLS_REQUIRE_CLIENT_CERT")),
+		AccessTokenTTL:            parseDurationEnv(os.Getenv("MYCELD_ACCESS_TOKEN_TTL"), DefaultAccessTokenTTL),
 		Backup: BackupConfig{
 			Enabled:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
 			BackupDir:              strings.TrimSpace(os.Getenv("MYCELD_BACKUP_DIR")),
@@ -190,6 +193,9 @@ func (c Config) Validate() error {
 	}
 	if c.TLSRequireClientCert && strings.TrimSpace(c.TLSClientCAFile) == "" {
 		return fmt.Errorf("MYCELD_TLS_REQUIRE_CLIENT_CERT requires MYCELD_TLS_CLIENT_CA_FILE")
+	}
+	if c.AccessTokenTTL < 0 {
+		return fmt.Errorf("MYCELD_ACCESS_TOKEN_TTL must be positive")
 	}
 	if err := c.SemanticMaintenance.Validate(); err != nil {
 		return err

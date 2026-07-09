@@ -28,7 +28,7 @@ func TestAdminBackupPolicyGetUpdateAndValidate(t *testing.T) {
 	}
 
 	backupDir := t.TempDir()
-	updateRes, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, ArchiveFormat: adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP, QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
+	updateRes, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalHours: 1, RetentionCount: 2, ArchiveFormat: adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP, QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
 	if err != nil {
 		t.Fatalf("UpdateBackupPolicy() error = %v", err)
 	}
@@ -36,7 +36,7 @@ func TestAdminBackupPolicyGetUpdateAndValidate(t *testing.T) {
 		t.Fatalf("unexpected updated policy: %#v", updateRes.GetPolicy())
 	}
 
-	_, err = svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{BackupDir: filepath.Join(dataDir, "nested"), IntervalSeconds: 3600, RetentionCount: 1, Compression: "zip", QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
+	_, err = svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{BackupDir: filepath.Join(dataDir, "nested"), IntervalHours: 1, RetentionCount: 1, Compression: "zip", QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("invalid backup dir code = %v, want InvalidArgument (err=%v)", status.Code(err), err)
 	}
@@ -47,7 +47,7 @@ func TestAdminBackupPolicyAcceptsLegacyCompressionFallback(t *testing.T) {
 	manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}})
 	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
 	backupDir := t.TempDir()
-	res, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, Compression: "zip", QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
+	res, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalHours: 1, RetentionCount: 2, Compression: "zip", QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
 	if err != nil {
 		t.Fatalf("UpdateBackupPolicy(legacy compression) error = %v", err)
 	}
@@ -69,7 +69,7 @@ func TestAdminBackupPolicyAcceptsArchiveFormatEnums(t *testing.T) {
 			manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}})
 			svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
 			backupDir := t.TempDir()
-			res, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, ArchiveFormat: format, QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
+			res, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalHours: 1, RetentionCount: 2, ArchiveFormat: format, QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
 			if err != nil {
 				t.Fatalf("UpdateBackupPolicy() error = %v", err)
 			}
@@ -85,7 +85,7 @@ func TestAdminBackupPolicyRejectsUnknownArchiveFormat(t *testing.T) {
 	manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}})
 	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
 	backupDir := t.TempDir()
-	_, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, ArchiveFormat: adminv1.BackupArchiveFormat(99), QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
+	_, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalHours: 1, RetentionCount: 2, ArchiveFormat: adminv1.BackupArchiveFormat(99), QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("unknown archive format code = %v, want InvalidArgument (err=%v)", status.Code(err), err)
 	}
@@ -97,7 +97,7 @@ func TestAdminBackupPolicyMapsScheduleFields(t *testing.T) {
 	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
 
 	backupDir := t.TempDir()
-	policy := &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalSeconds: 3600, RetentionCount: 2, ArchiveFormat: adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP, QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4, ScheduleKind: backupcore.ScheduleKindWeekly, TimeOfDay: "22:00", Timezone: "America/Toronto", Weekdays: []int32{0, 3}, RunMissed: true}
+	policy := &adminv1.BackupPolicy{Enabled: true, BackupDir: backupDir, IntervalHours: 1, RetentionCount: 2, ArchiveFormat: adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP, QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4, ScheduleKind: backupcore.ScheduleKindWeekly, TimeOfDay: "22:00", Timezone: "America/Toronto", Weekdays: []int32{0, 3}, RunMissed: true}
 	updateRes, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: policy})
 	if err != nil {
 		t.Fatalf("UpdateBackupPolicy() error = %v", err)
@@ -121,7 +121,7 @@ func TestAdminBackupPolicyRejectsInvalidSchedule(t *testing.T) {
 	manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}})
 	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
 
-	base := &adminv1.BackupPolicy{Enabled: true, BackupDir: t.TempDir(), IntervalSeconds: 3600, RetentionCount: 2, Compression: "zip", QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}
+	base := &adminv1.BackupPolicy{Enabled: true, BackupDir: t.TempDir(), IntervalHours: 1, RetentionCount: 2, Compression: "zip", QuiesceDrainTimeoutSeconds: 5, BackupTimeoutSeconds: 30, RetryAfterSeconds: 10, StatusHistoryLimit: 4}
 	tests := []*adminv1.BackupPolicy{
 		func() *adminv1.BackupPolicy { cp := *base; cp.ScheduleKind = "hourly"; return &cp }(),
 		func() *adminv1.BackupPolicy {

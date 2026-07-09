@@ -232,14 +232,14 @@ func TestAdminBackupCommandsUseDaemonGRPC(t *testing.T) {
 		t.Fatalf("unexpected default policy: %#v", &policy)
 	}
 
-	out, err = runCLI(t, append(base, "admin", "backup", "policy", "set", "--enabled", "--dir", backupDir, "--interval", "1h", "--keep", "2", "--archive-format", "zip", "--include-logs", "--schedule", "weekly", "--time-of-day", "22:00", "--timezone", "America/Toronto", "--weekday", "sun", "--weekday", "wed", "--run-missed")...)
+	out, err = runCLI(t, append(base, "admin", "backup", "policy", "set", "--enabled", "--dir", backupDir, "--interval-hours", "1", "--keep", "2", "--archive-format", "zip", "--include-logs", "--schedule", "weekly", "--time-of-day", "22:00", "--timezone", "America/Toronto", "--weekday", "sun", "--weekday", "wed", "--run-missed")...)
 	if err != nil {
 		t.Fatalf("backup policy set failed: %v\n%s", err, out)
 	}
 	if err := json.Unmarshal([]byte(out), &policy); err != nil {
 		t.Fatalf("decode updated policy: %v\n%s", err, out)
 	}
-	if !policy.GetEnabled() || policy.GetBackupDir() != backupDir || policy.GetIntervalSeconds() != 3600 || policy.GetRetentionCount() != 2 || policy.GetArchiveFormat() != adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP || policy.GetCompression() != "zip" || !policy.GetIncludeLogs() || policy.GetScheduleKind() != "weekly" || policy.GetTimeOfDay() != "22:00" || policy.GetTimezone() != "America/Toronto" || len(policy.GetWeekdays()) != 2 || policy.GetWeekdays()[0] != 0 || policy.GetWeekdays()[1] != 3 || !policy.GetRunMissed() {
+	if !policy.GetEnabled() || policy.GetBackupDir() != backupDir || policy.GetIntervalHours() != 1 || policy.GetRetentionCount() != 2 || policy.GetArchiveFormat() != adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP || policy.GetCompression() != "zip" || !policy.GetIncludeLogs() || policy.GetScheduleKind() != "weekly" || policy.GetTimeOfDay() != "22:00" || policy.GetTimezone() != "America/Toronto" || len(policy.GetWeekdays()) != 2 || policy.GetWeekdays()[0] != 0 || policy.GetWeekdays()[1] != 3 || !policy.GetRunMissed() {
 		t.Fatalf("unexpected updated policy: %#v", &policy)
 	}
 

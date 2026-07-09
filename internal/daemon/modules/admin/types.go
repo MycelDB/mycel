@@ -3,6 +3,8 @@ package admin
 import (
 	"context"
 	"time"
+
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 )
 
 const (
@@ -97,13 +99,26 @@ type OperatorAuthenticator interface {
 	AuthenticateOperator(ctx context.Context, username string, password string) (AdminSummary, error)
 }
 
+type OperatorSessionManager interface {
+	CreateOperatorAuthSession(ctx context.Context, operator AdminSummary, metadata domainauth.RefreshSessionMetadata, tokenBytes int, idleTTL time.Duration, absoluteTTL time.Duration) (domainauth.RefreshToken, domainauth.RefreshSession, error)
+	RefreshOperatorAuthSession(ctx context.Context, refreshToken domainauth.RefreshToken, metadata domainauth.RefreshSessionMetadata, tokenBytes int, idleTTL time.Duration) (AdminSummary, domainauth.RefreshToken, domainauth.RefreshSession, error)
+	ListOperatorSessions(ctx context.Context, operatorID string) ([]domainauth.RefreshSession, error)
+	RevokeOperatorSession(ctx context.Context, operatorID string, sessionID string) error
+	RevokeOperatorSessions(ctx context.Context, operatorID string) (int, error)
+}
+
+type OperatorAuthManager interface {
+	OperatorAuthenticator
+	OperatorSessionManager
+}
+
 type OperatorPasswordManager interface {
 	SetOperatorPassword(ctx context.Context, operatorID string, password string) (AdminSummary, error)
 }
 
 type OperatorManager interface {
 	AdminLister
-	OperatorAuthenticator
+	OperatorAuthManager
 	OperatorPasswordManager
 	GetOperator(ctx context.Context, operatorID string) (AdminSummary, error)
 	FindOperator(ctx context.Context, username string, email string) (AdminSummary, error)

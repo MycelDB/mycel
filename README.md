@@ -107,6 +107,18 @@ Stop it with:
 make stop
 ```
 
+## Authentication and sessions
+
+Daemon Client and Admin APIs use short-lived bearer access tokens plus durable refresh sessions. SDK callers should use `mycel-go-sdk` or another SDK generated from `mycel-api` so access-token expiry, refresh-token rotation, and one retry on expired-token `Unauthenticated` are handled automatically.
+
+Key daemon setting:
+
+```text
+MYCELD_ACCESS_TOKEN_TTL=15m
+```
+
+Keep access-token TTLs short; prefer refresh sessions over increasing the TTL for long-running services. Admin auth details are documented in [`docs/v2/design/grpc-admin-auth.md`](docs/v2/design/grpc-admin-auth.md), with release notes in [`docs/v2/design/auth-refresh-release-notes.md`](docs/v2/design/auth-refresh-release-notes.md).
+
 ## Backups
 
 Backups are owned by `myceld`, not by applications copying the data directory. Operators manage policy and manual runs through the Admin Backup API or CLI:

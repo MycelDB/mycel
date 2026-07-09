@@ -287,7 +287,17 @@ self-service for authenticated operator, or active SYSTEM_ADMIN for another oper
 
 Operator session management is separate from standard user session management.
 
-Current implementation note: daemon access tokens are short-lived and not persisted, so `ListOperatorSessions` returns an empty list and revoke session RPCs are no-op placeholders. Future persisted refresh sessions must expose coarse metadata only and must not expose refresh token plaintext, refresh token hashes, raw request metadata hashes, or secrets.
+Current behavior:
+
+- `LoginOperator` creates a durable operator auth session and returns a short-lived access token plus refresh token.
+- `RefreshOperator` rotates the refresh token, updates the session, and returns a new access token.
+- `LogoutOperator` revokes the current operator auth session by default.
+- `ListOperatorSessions` returns persisted operator auth sessions with coarse client metadata.
+- `RevokeOperatorSession` revokes one operator auth session.
+- `RevokeOperatorSessions` revokes active sessions for an operator.
+- Disable/delete/password-change operations revoke sessions when requested.
+
+Session responses must expose coarse metadata only and must never expose refresh token plaintext, refresh token hashes, consumed refresh-token hashes, raw request metadata hashes, or secrets.
 
 ## Bootstrap
 
@@ -301,7 +311,7 @@ Current coarse authorization mapping:
 
 | Operation | Required authorization |
 | --- | --- |
-| `ListOperators`, `GetOperator`, `FindOperator`, `ListOperatorRoles`, `ListOperatorCapabilities`, session placeholder RPCs | Any authenticated active operator |
+| `ListOperators`, `GetOperator`, `FindOperator`, `ListOperatorRoles`, `ListOperatorCapabilities`, operator session list/revoke RPCs | Any authenticated active operator |
 | `SetOperatorPassword` for self | Authenticated active operator |
 | Create/update/disable/enable/delete another operator, grant/revoke roles, grant/revoke capabilities, set another operator password | Active `SYSTEM_ADMIN` operator |
 

@@ -13,6 +13,7 @@ import (
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -58,6 +59,15 @@ func TestQuiesceUnaryInterceptorRejectsQuiescedRequest(t *testing.T) {
 	}
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("error code = %s, want %s", status.Code(err), codes.Unavailable)
+	}
+}
+
+func TestDefaultQuiesceExemptsAdminAuthRefresh(t *testing.T) {
+	exempt := defaultQuiesceExemptMethods()
+	for _, method := range []string{adminv1.AdminAuthService_LoginOperator_FullMethodName, adminv1.AdminAuthService_RefreshOperator_FullMethodName, adminv1.AdminAuthService_WhoAmI_FullMethodName} {
+		if !exempt[method] {
+			t.Fatalf("method %s is not quiesce-exempt", method)
+		}
 	}
 }
 

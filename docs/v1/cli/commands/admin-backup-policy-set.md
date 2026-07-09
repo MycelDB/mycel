@@ -19,7 +19,7 @@ Interval schedules are still supported:
 
 ```sh
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
-  admin backup policy set --schedule interval --interval 24h
+  admin backup policy set --schedule interval --interval-hours 24
 ```
 
 Weekly schedules can specify multiple weekdays:
@@ -41,7 +41,7 @@ Flags:
 | `--enabled` / `--disabled` | Enable or disable scheduled backups. Manual triggers remain available. |
 | `--dir` | Backup directory. Must not equal or be inside `MYCELD_DATA_DIR`; symlinks are resolved for validation. |
 | `--schedule` | Schedule kind: `interval`, `daily`, or `weekly`. Empty/default is `interval`. |
-| `--interval` | Interval duration for interval schedules, e.g. `24h`, `30m`, or seconds. |
+| `--interval-hours` | Interval period in whole hours for interval schedules, e.g. `24`. |
 | `--time-of-day` | Wall-clock backup time for daily/weekly schedules in `HH:MM` 24-hour format. |
 | `--timezone` | IANA timezone for daily/weekly schedules, e.g. `UTC` or `America/Toronto`. |
 | `--weekday` | Weekday for weekly schedules. Repeat for multiple days. Accepts `sun`..`sat`, full names, or `0`..`6` where `0=Sunday`. |

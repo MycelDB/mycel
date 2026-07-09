@@ -35,6 +35,21 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.Backup.Enabled || cfg.Backup.Interval != DefaultBackupInterval || cfg.Backup.RetentionCount != DefaultBackupRetentionCount || cfg.Backup.Compression != DefaultBackupCompression || cfg.Backup.QuiesceDrainTimeout != DefaultBackupQuiesceDrainTimeout || cfg.Backup.BackupTimeout != DefaultBackupTimeout || cfg.Backup.RetryAfter != DefaultBackupRetryAfter || cfg.Backup.StatusHistoryLimit != DefaultBackupStatusHistoryLimit || cfg.Backup.AllowReadsDuringBackup {
 		t.Fatalf("unexpected backup defaults: %+v", cfg.Backup)
 	}
+	if cfg.AccessTokenTTL != DefaultAccessTokenTTL {
+		t.Fatalf("unexpected access token TTL default: %s", cfg.AccessTokenTTL)
+	}
+}
+
+func TestLoadFromEnvAccessTokenTTLOverride(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_ACCESS_TOKEN_TTL", "750ms")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.AccessTokenTTL != 750*time.Millisecond {
+		t.Fatalf("unexpected access token TTL: %s", cfg.AccessTokenTTL)
+	}
 }
 
 func TestLoadFromEnvBootstrapAdminCredentials(t *testing.T) {

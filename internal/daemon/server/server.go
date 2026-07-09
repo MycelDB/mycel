@@ -32,7 +32,7 @@ import (
 type Config struct {
 	Addr               string
 	AdminLister        daemonadmin.AdminLister
-	AdminAuthenticator daemonadmin.OperatorAuthenticator
+	AdminAuthenticator daemonadmin.OperatorAuthManager
 	OperatorManager    daemonadmin.OperatorManager
 	BackupManager      daemonbackup.Manager
 	UserManager        daemonuser.Manager
@@ -101,7 +101,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen grpc %s: %w", cfg.Addr, err)
 	}
-	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true}
+	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true}
 	quiesceExempt := defaultQuiesceExemptMethods()
 	for method, exempt := range cfg.QuiesceExempt {
 		quiesceExempt[method] = exempt
@@ -154,6 +154,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 func defaultQuiesceExemptMethods() map[string]bool {
 	return map[string]bool{
 		adminv1.AdminAuthService_LoginOperator_FullMethodName:     true,
+		adminv1.AdminAuthService_RefreshOperator_FullMethodName:   true,
 		adminv1.AdminAuthService_WhoAmI_FullMethodName:            true,
 		adminv1.AdminBackupService_GetBackupPolicy_FullMethodName: true,
 		adminv1.AdminBackupService_TriggerBackup_FullMethodName:   true,

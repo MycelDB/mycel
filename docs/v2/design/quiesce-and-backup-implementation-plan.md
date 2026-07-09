@@ -411,7 +411,7 @@ SDK repositories can add helpers after API stabilizes.
 
 ```text
 mycel admin backup policy get
-mycel admin backup policy set --enabled --schedule interval --interval 24h --keep 7 --dir /path/to/backups --archive-format zip
+mycel admin backup policy set --enabled --schedule interval --interval-hours 24 --keep 7 --dir /path/to/backups --archive-format zip
 mycel admin backup policy set --enabled --schedule daily --time-of-day 22:00 --timezone UTC --archive-format tar.zst
 mycel admin backup policy set --enabled --schedule weekly --time-of-day 02:00 --weekday sun --weekday wed --run-missed
 mycel admin backup trigger

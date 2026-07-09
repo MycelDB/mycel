@@ -2,27 +2,50 @@
 
 ## Status
 
-Implemented initial daemon Admin API authentication on the `refactor_daemon` branch.
+Implemented for daemon Admin APIs. Admin authentication now uses the standard
+short-lived access-token plus durable refresh-token/session lifecycle.
+
+The protobuf contract is defined in `mycel.admin.v1.AdminAuthService` in
+`mycel-api` and consumed by SDKs/daemon implementations through locally
+generated stubs.
 
 ## Problem
 
-Admin API operations must not be callable anonymously. Even read-only operations such as listing daemon administrators expose sensitive operational information and must require an authenticated daemon operator.
+Admin API operations must not be callable anonymously. Even read-only
+operations such as listing daemon administrators expose sensitive operational
+information and must require an authenticated daemon operator.
+
+Long-running operator clients also cannot depend on a single short-lived access
+token remaining valid forever. Services such as Knot PKM keep daemon clients in
+memory for days, so they need automatic access-token renewal instead of process
+restarts.
 
 ## Approach
 
-The daemon uses the standard gRPC bearer-token pattern:
+The daemon uses the standard gRPC bearer-token pattern with refresh sessions:
 
-1. The client calls a public login RPC with operator username/password.
+1. The client calls public `LoginOperator` with operator username/password.
 2. The daemon verifies the password against the admin/operator store.
-3. The daemon returns a short-lived access token.
-4. The client sends the token on protected RPCs using gRPC metadata:
+3. The daemon creates a durable operator auth session and returns:
+   - a short-lived access token
+   - an access-token expiry timestamp
+   - a high-entropy refresh token
+4. The client sends the access token on protected RPCs using gRPC metadata:
 
 ```text
 authorization: Bearer <access-token>
 ```
 
-5. A daemon unary interceptor validates the token before protected service handlers run.
-6. Authenticated principal information is attached to `context.Context` for service-level checks.
+5. A daemon interceptor validates the access token before protected service
+   handlers run.
+6. Authenticated principal information, including the operator auth-session ID,
+   is attached to `context.Context` for service-level checks.
+7. Before expiry, or after one expired-token `Unauthenticated` response, SDKs
+   call public `RefreshOperator` with the refresh token.
+8. The daemon rotates the refresh token, updates the session, and returns a new
+   access token and refresh token.
+9. `LogoutOperator` revokes the current operator auth session, or an explicitly
+   supplied session when authorized.
 
 Unauthenticated requests return:
 
@@ -30,7 +53,7 @@ Unauthenticated requests return:
 grpc status: Unauthenticated
 ```
 
-Future authorization failures should return:
+Authorization failures return:
 
 ```text
 grpc status: PermissionDenied
@@ -42,38 +65,96 @@ The daemon exposes:
 
 ```text
 mycel.admin.v1.AdminAuthService.LoginOperator
+mycel.admin.v1.AdminAuthService.RefreshOperator
+mycel.admin.v1.AdminAuthService.LogoutOperator
 mycel.admin.v1.AdminAuthService.WhoAmI
 ```
 
-`LoginOperator` is public. `WhoAmI` and all Admin API operations require a bearer token.
+`LoginOperator` and `RefreshOperator` are public. `WhoAmI`, `LogoutOperator`,
+and all other Admin API operations require a bearer access token unless a method
+is explicitly exempted for daemon maintenance semantics.
 
-Authorization is currently coarse: only active operators can log in; active `system_admin` operators may create, update, disable, enable, soft-delete, grant roles/capabilities, and change another operator's password. Operators with user-management capabilities may manage standard users through `AdminUserService`. Any authenticated operator can list/read operators and change their own password.
+`LoginOperatorResponse` and `RefreshOperatorResponse` include:
+
+```text
+access_token
+access_token_expire_time
+operator
+refresh_token
+```
+
+The refresh token is optional in the protobuf contract so future browser or HTTP
+transports can carry it in an HttpOnly cookie. gRPC SDK/service clients should
+store and pass it explicitly.
 
 ## Token model
 
-The initial implementation issues daemon-local, HMAC-signed, short-lived access tokens.
+### Access tokens
+
+Access tokens are daemon-local, HMAC-signed, short-lived tokens.
 
 Current properties:
 
-- token payload contains operator ID, username, creation time, issued time, and expiry
-- token signature uses a daemon-local random signing key generated at daemon startup
-- tokens expire after a short TTL
+- token payload contains operator ID, username, principal kind, auth-session ID,
+  issued time, and expiry
+- token signature uses a daemon-local random signing key generated at daemon
+  startup
+- tokens expire after `MYCELD_ACCESS_TOKEN_TTL` when configured for the daemon,
+  or the default access-token TTL otherwise
 - tokens are not persisted
 - tokens become invalid on daemon restart because the signing key changes
 
-This is acceptable for the first daemon API slice because the CLI logs in for each admin command. Later REPL/session behavior can keep the token in memory for the process lifetime.
+The default TTL is intended to stay short. Increasing it is not the preferred
+fix for long-running services; use refresh sessions instead.
 
-Future hardening can add:
+### Refresh sessions
 
-- persisted signing key or keyring-backed secrets
-- refresh sessions for operators
-- token revocation lists
-- mTLS for operator-to-daemon administration
-- finer-grained capability checks beyond the current system-admin gate
+Operator refresh sessions are persisted under the daemon admin data directory.
+The daemon stores only refresh-token hashes, never raw refresh tokens.
+
+Refresh-session behavior:
+
+- created during `LoginOperator`
+- associated with the authenticated operator
+- contains coarse client metadata supplied by `OperatorClientInfo`
+- has idle and absolute expiries
+- rotates the refresh token on every successful `RefreshOperator`
+- records consumed token hashes to detect token reuse
+- revokes a token family on detected refresh-token reuse
+- is revoked by `LogoutOperator`, operator session revoke APIs, operator disable,
+  operator delete, and password-change paths that request session revocation
+
+If a refresh token is missing, invalid, reused, expired, or revoked, the daemon
+returns `Unauthenticated`.
+
+## SDK behavior
+
+The Go and Rust SDKs maintain access-token expiry and refresh-token state for
+both Client and Admin clients.
+
+Expected SDK behavior:
+
+- store access-token expiry and refresh token returned by login/refresh
+- refresh proactively shortly before access-token expiry
+- retry once on expired-token `Unauthenticated`
+- rotate stored refresh token after every refresh response
+- avoid recursive refresh attempts for login/refresh/logout RPCs
+- expose logout helpers that revoke the current auth session and clear local
+  token state
+
+Raw generated service clients still receive bearer metadata from SDK
+interceptors, but callers that bypass SDK convenience helpers must ensure they
+call refresh helpers themselves when needed.
+
+## Quiesce behavior
+
+`LoginOperator`, `RefreshOperator`, and `WhoAmI` are quiesce-exempt so operators
+and long-running services can maintain auth continuity while the daemon blocks
+normal mutating work for backup/quiesce operations.
 
 ## CLI behavior
 
-`mycel admin list` now authenticates before calling the protected list RPC:
+The CLI can still log in per command:
 
 ```sh
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin list
@@ -85,48 +166,16 @@ An authenticated operator can change their own password:
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<current-password>' admin password set --new-password '<new-password>'
 ```
 
-A system admin can change another operator's password by passing `--operator-id`.
-
-Additional operator lifecycle commands include:
+Operator lifecycle and session-management commands use the same daemon operator
+login flow. Examples:
 
 ```sh
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin get --operator-id '<id>'
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin find --operator-username '<username>'
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin create --operator-username '<username>' --new-password '<password>' [--email '<email>'] [--role system-admin]
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin update --operator-id '<id>' --email '<email>'
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin disable --operator-id '<id>'
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin enable --operator-id '<id>'
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin delete --operator-id '<id>'
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin role list --operator-id '<id>'
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin role grant --operator-id '<id>' --role space-admin
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin role revoke --operator-id '<id>' --grant-id '<grant-id>'
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin capability list --operator-id '<id>'
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin capability grant --operator-id '<id>' --capability operator-manage
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin capability revoke --operator-id '<id>' --grant-id '<grant-id>'
 mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin session list --operator-id '<id>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin session revoke --operator-id '<id>' --session-id '<auth-session-id>'
+mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<password>' admin session revoke-all --operator-id '<id>'
 ```
-
-The CLI list flow is:
-
-1. call `AdminAuthService.LoginOperator`
-2. receive access token
-3. call `AdminOperatorService.ListOperators` with `authorization: Bearer <token>` metadata
-
-Standard user-management commands use the same daemon operator login flow:
-
-```sh
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' user add --user-username alice --new-password '<password>'
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' user list
-mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' user delete '<user-id>'
-```
-
-The CLI password-change flow is:
-
-1. call `AdminAuthService.LoginOperator` with the current password
-2. call `AdminAuthService.WhoAmI` with the access token
-3. call `AdminOperatorService.SetOperatorPassword` for the requested operator ID, defaulting to the authenticated operator ID
-
-The command rejects missing `--username/-u` or `--password/-p`.
 
 ## Security notes
 
@@ -136,21 +185,28 @@ The daemon still defaults to a loopback-only gRPC listener:
 127.0.0.1:9091
 ```
 
-This is intentional until TLS/mTLS and richer admin authorization are implemented. Do not bind the daemon Admin API to a non-loopback interface in production without transport security.
+Do not bind the daemon Admin API to a non-loopback interface in production
+without transport security. TLS/mTLS is recommended for remote administration.
 
-The bootstrap password is logged once during standalone initialization. Logs must be protected because they contain the initial operator credential.
+The bootstrap password is logged once during standalone initialization. Logs
+must be protected because they contain the initial operator credential.
+
+Refresh tokens are bearer secrets. SDKs and service callers should keep them in
+process memory or a secure secret store, never logs or user-visible telemetry.
 
 ## Testing expectations
 
 Tests cover:
 
-- valid token issue and verification
-- tampered and expired token rejection
+- valid access-token issue and verification
+- tampered and expired access-token rejection
 - gRPC interceptor requiring bearer metadata
-- `LoginOperator` success and bad-password rejection
-- `AdminOperatorService` and `AdminUserService` methods requiring an authenticated context
-- gRPC server rejecting anonymous admin calls
-- CLI requiring credentials and rejecting bad passwords
-- CLI login plus authenticated admin/operator management over gRPC
-- self-service and system-admin password change over gRPC
-- old password rejection and new password acceptance after a password change
+- `LoginOperator` success, refresh-token issuance, and bad-password rejection
+- `RefreshOperator` access-token renewal and refresh-token rotation
+- refresh-token reuse rejection and session/family revocation behavior
+- `LogoutOperator` revoking the current session
+- operator session list/revoke APIs
+- password/disable/delete paths that revoke operator sessions
+- `RefreshOperator` public/quiesce-exempt server wiring
+- SDK auto-refresh and one retry on expired-token `Unauthenticated`
+- long-running PKM daemon runtime signup/onboarding after cached daemon tokens expire

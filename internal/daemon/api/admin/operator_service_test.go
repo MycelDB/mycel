@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -19,6 +21,8 @@ type fakeOperatorManager struct {
 	systemAdmin bool
 	operatorID  string
 	password    string
+	sessions    []domainauth.RefreshSession
+	revoked     int
 	err         error
 }
 
@@ -71,6 +75,33 @@ func (f *fakeOperatorManager) IsSystemAdmin(context.Context, string) (bool, erro
 }
 func (f *fakeOperatorManager) HasCapability(context.Context, string, string) (bool, error) {
 	return f.systemAdmin, f.err
+}
+func (f *fakeOperatorManager) CreateOperatorAuthSession(context.Context, daemonadmin.AdminSummary, domainauth.RefreshSessionMetadata, int, time.Duration, time.Duration) (domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	if f.err != nil {
+		return "", domainauth.RefreshSession{}, f.err
+	}
+	return "refresh", domainauth.RefreshSession{ID: uuid.New(), CreatedAt: time.Now().UTC()}, nil
+}
+
+func (f *fakeOperatorManager) RefreshOperatorAuthSession(context.Context, domainauth.RefreshToken, domainauth.RefreshSessionMetadata, int, time.Duration) (daemonadmin.AdminSummary, domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	if f.err != nil {
+		return daemonadmin.AdminSummary{}, "", domainauth.RefreshSession{}, f.err
+	}
+	return f.admin, "refresh-2", domainauth.RefreshSession{ID: uuid.New(), CreatedAt: time.Now().UTC()}, nil
+}
+
+func (f *fakeOperatorManager) ListOperatorSessions(context.Context, string) ([]domainauth.RefreshSession, error) {
+	return f.sessions, f.err
+}
+
+func (f *fakeOperatorManager) RevokeOperatorSession(context.Context, string, string) error {
+	f.revoked++
+	return f.err
+}
+
+func (f *fakeOperatorManager) RevokeOperatorSessions(context.Context, string) (int, error) {
+	f.revoked++
+	return 1, f.err
 }
 
 func TestListOperatorsMapsAdminSummaries(t *testing.T) {

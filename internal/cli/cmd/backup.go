@@ -39,10 +39,10 @@ func NewAdminBackupPolicyGetCommand(a *app.App) *cobra.Command {
 
 func NewAdminBackupPolicySetCommand(a *app.App) *cobra.Command {
 	var enabled, disabled, includeLogs, allowReads, runMissed, noRunMissed bool
-	var backupDir, interval, quiesceTimeout, backupTimeout, retryAfter string
+	var backupDir, quiesceTimeout, backupTimeout, retryAfter string
 	var scheduleKind, timeOfDay, timezone, archiveFormat string
 	var weekdays []string
-	var retention, historyLimit int32
+	var intervalHours, retention, historyLimit int32
 	cmd := &cobra.Command{Use: "set", Short: "Update backup policy", RunE: func(cmd *cobra.Command, args []string) error {
 		if enabled && disabled {
 			return fmt.Errorf("--enabled and --disabled are mutually exclusive")
@@ -72,12 +72,11 @@ func NewAdminBackupPolicySetCommand(a *app.App) *cobra.Command {
 		if cmd.Flags().Changed("dir") {
 			policy.BackupDir = backupDir
 		}
-		if cmd.Flags().Changed("interval") {
-			seconds, err := parseDurationSeconds(interval)
-			if err != nil {
-				return fmt.Errorf("invalid --interval: %w", err)
+		if cmd.Flags().Changed("interval-hours") {
+			if intervalHours <= 0 {
+				return fmt.Errorf("invalid --interval-hours %d: must be positive", intervalHours)
 			}
-			policy.IntervalSeconds = seconds
+			policy.IntervalHours = intervalHours
 		}
 		if cmd.Flags().Changed("keep") {
 			policy.RetentionCount = retention
@@ -155,7 +154,7 @@ func NewAdminBackupPolicySetCommand(a *app.App) *cobra.Command {
 	cmd.Flags().BoolVar(&enabled, "enabled", false, "enable scheduled backups")
 	cmd.Flags().BoolVar(&disabled, "disabled", false, "disable scheduled backups")
 	cmd.Flags().StringVar(&backupDir, "dir", "", "backup directory")
-	cmd.Flags().StringVar(&interval, "interval", "", "backup interval duration, e.g. 24h")
+	cmd.Flags().Int32Var(&intervalHours, "interval-hours", 0, "backup interval in whole hours")
 	cmd.Flags().Int32Var(&retention, "keep", 0, "number of backups to retain")
 	cmd.Flags().StringVar(&archiveFormat, "archive-format", "", "backup archive format: zip, tar, tar.gz, or tar.zst")
 	cmd.Flags().BoolVar(&includeLogs, "include-logs", false, "include daemon logs in backups")
@@ -271,7 +270,7 @@ func printBackupPolicy(a *app.App, policy *adminv1.BackupPolicy) error {
 	if policy == nil {
 		return a.Print(policy, "backup policy: <nil>\n")
 	}
-	text := fmt.Sprintf("backup policy:\n  enabled: %t\n  dir: %s\n  schedule: %s\n  interval: %s\n  time_of_day: %s\n  timezone: %s\n  weekdays: %s\n  run_missed: %t\n  keep: %d\n  include_logs: %t\n  archive_format: %s\n  quiesce_timeout: %s\n  backup_timeout: %s\n  retry_after: %s\n  history_limit: %d\n  allow_reads_during_backup: %t\n", policy.GetEnabled(), policy.GetBackupDir(), firstNonEmptyBackup(policy.GetScheduleKind(), "interval"), formatSeconds(policy.GetIntervalSeconds()), policy.GetTimeOfDay(), policy.GetTimezone(), formatBackupWeekdays(policy.GetWeekdays()), policy.GetRunMissed(), policy.GetRetentionCount(), policy.GetIncludeLogs(), formatBackupArchiveFormat(policy.GetArchiveFormat(), policy.GetCompression()), formatSeconds(policy.GetQuiesceDrainTimeoutSeconds()), formatSeconds(policy.GetBackupTimeoutSeconds()), formatSeconds(policy.GetRetryAfterSeconds()), policy.GetStatusHistoryLimit(), policy.GetAllowReadsDuringBackup())
+	text := fmt.Sprintf("backup policy:\n  enabled: %t\n  dir: %s\n  schedule: %s\n  interval_hours: %d\n  time_of_day: %s\n  timezone: %s\n  weekdays: %s\n  run_missed: %t\n  keep: %d\n  include_logs: %t\n  archive_format: %s\n  quiesce_timeout: %s\n  backup_timeout: %s\n  retry_after: %s\n  history_limit: %d\n  allow_reads_during_backup: %t\n", policy.GetEnabled(), policy.GetBackupDir(), firstNonEmptyBackup(policy.GetScheduleKind(), "interval"), policy.GetIntervalHours(), policy.GetTimeOfDay(), policy.GetTimezone(), formatBackupWeekdays(policy.GetWeekdays()), policy.GetRunMissed(), policy.GetRetentionCount(), policy.GetIncludeLogs(), formatBackupArchiveFormat(policy.GetArchiveFormat(), policy.GetCompression()), formatSeconds(policy.GetQuiesceDrainTimeoutSeconds()), formatSeconds(policy.GetBackupTimeoutSeconds()), formatSeconds(policy.GetRetryAfterSeconds()), policy.GetStatusHistoryLimit(), policy.GetAllowReadsDuringBackup())
 	return a.Print(policy, text)
 }
 

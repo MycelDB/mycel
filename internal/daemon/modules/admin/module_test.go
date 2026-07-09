@@ -11,10 +11,12 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -181,6 +183,65 @@ func TestModuleAuthenticateOperator(t *testing.T) {
 	}
 	if admin.Username != "admin" || admin.ID == "" || admin.CreatedAt.IsZero() {
 		t.Fatalf("unexpected authenticated admin: %+v", admin)
+	}
+}
+
+func TestModuleOperatorAuthSessionLifecycle(t *testing.T) {
+	dataDir := t.TempDir()
+	var logs bytes.Buffer
+	module := initModule(t, dataDir, "standalone", &logs)
+	admin, err := module.AuthenticateOperator(context.Background(), "admin", extractLoggedPassword(t, logs.String()))
+	if err != nil {
+		t.Fatalf("AuthenticateOperator() error = %v", err)
+	}
+	refreshToken, session, err := module.CreateOperatorAuthSession(context.Background(), admin, domainauth.RefreshSessionMetadata{ClientName: "test-client"}, 32, time.Hour, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateOperatorAuthSession() error = %v", err)
+	}
+	if refreshToken == "" || session.ID.String() == "" || session.UserID.String() != admin.ID || session.Metadata.ClientName != "test-client" {
+		t.Fatalf("unexpected session: token=%q session=%#v admin=%#v", refreshToken, session, admin)
+	}
+	refreshedAdmin, newRefreshToken, rotated, err := module.RefreshOperatorAuthSession(context.Background(), refreshToken, domainauth.RefreshSessionMetadata{ClientName: "test-client-2"}, 32, time.Hour)
+	if err != nil {
+		t.Fatalf("RefreshOperatorAuthSession() error = %v", err)
+	}
+	if refreshedAdmin.ID != admin.ID || newRefreshToken == "" || newRefreshToken == refreshToken || rotated.RotationCounter != 1 || rotated.Metadata.ClientName != "test-client-2" {
+		t.Fatalf("unexpected rotated session admin=%#v token=%q session=%#v", refreshedAdmin, newRefreshToken, rotated)
+	}
+	if _, _, _, err := module.RefreshOperatorAuthSession(context.Background(), refreshToken, domainauth.RefreshSessionMetadata{}, 32, time.Hour); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("expected reused refresh token to fail, got %v", err)
+	}
+	if err := module.RevokeOperatorSession(context.Background(), admin.ID, rotated.ID.String()); err != nil {
+		t.Fatalf("RevokeOperatorSession() error = %v", err)
+	}
+	if _, _, _, err := module.RefreshOperatorAuthSession(context.Background(), newRefreshToken, domainauth.RefreshSessionMetadata{}, 32, time.Hour); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("expected revoked refresh token to fail, got %v", err)
+	}
+}
+
+func TestModuleOperatorAuthSessionRefreshesLegacyNonUUIDOperatorID(t *testing.T) {
+	dataDir := t.TempDir()
+	var logs bytes.Buffer
+	module := initModule(t, dataDir, "standalone", &logs)
+	now := time.Now().UTC()
+	hash, err := HashPassword("legacy-password")
+	if err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
+	}
+	if err := module.store.Create(context.Background(), Admin{ID: "legacy-admin", Username: "legacy", PasswordHash: hash, State: AdminStateActive, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create legacy admin: %v", err)
+	}
+	admin := AdminSummary{ID: "legacy-admin", Username: "legacy", State: AdminStateActive, CreatedAt: now, UpdatedAt: now}
+	refreshToken, _, err := module.CreateOperatorAuthSession(context.Background(), admin, domainauth.RefreshSessionMetadata{}, 32, time.Hour, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateOperatorAuthSession() error = %v", err)
+	}
+	refreshedAdmin, newRefreshToken, _, err := module.RefreshOperatorAuthSession(context.Background(), refreshToken, domainauth.RefreshSessionMetadata{}, 32, time.Hour)
+	if err != nil {
+		t.Fatalf("RefreshOperatorAuthSession() error = %v", err)
+	}
+	if refreshedAdmin.ID != "legacy-admin" || refreshedAdmin.Username != "legacy" || newRefreshToken == "" || newRefreshToken == refreshToken {
+		t.Fatalf("unexpected refreshed legacy admin=%#v token=%q", refreshedAdmin, newRefreshToken)
 	}
 }
 

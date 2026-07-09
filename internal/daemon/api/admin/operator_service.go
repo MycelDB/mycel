@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -147,6 +150,11 @@ func (s *OperatorService) DisableOperator(ctx context.Context, req *adminv1.Disa
 	if err != nil {
 		return nil, mapAdminError(err, "disable operator")
 	}
+	if req.GetRevokeSessions() {
+		if _, err := s.manager.RevokeOperatorSessions(ctx, req.GetOperatorId()); err != nil {
+			return nil, mapAdminError(err, "revoke operator sessions")
+		}
+	}
 	return &adminv1.DisableOperatorResponse{Operator: mapAdminSummary(admin)}, nil
 }
 
@@ -168,6 +176,11 @@ func (s *OperatorService) DeleteOperator(ctx context.Context, req *adminv1.Delet
 	admin, err := s.manager.DeleteOperator(ctx, req.GetOperatorId())
 	if err != nil {
 		return nil, mapAdminError(err, "delete operator")
+	}
+	if req.GetRevokeSessions() {
+		if _, err := s.manager.RevokeOperatorSessions(ctx, req.GetOperatorId()); err != nil {
+			return nil, mapAdminError(err, "revoke operator sessions")
+		}
 	}
 	return &adminv1.DeleteOperatorResponse{Operator: mapAdminSummary(admin)}, nil
 }
@@ -192,6 +205,11 @@ func (s *OperatorService) SetOperatorPassword(ctx context.Context, req *adminv1.
 	admin, err := s.manager.SetOperatorPassword(ctx, operatorID, req.GetPassword())
 	if err != nil {
 		return nil, mapAdminError(err, "set operator password")
+	}
+	if req.GetRevokeSessions() {
+		if _, err := s.manager.RevokeOperatorSessions(ctx, operatorID); err != nil {
+			return nil, mapAdminError(err, "revoke operator sessions")
+		}
 	}
 	return &adminv1.SetOperatorPasswordResponse{Operator: mapAdminSummary(admin)}, nil
 }
@@ -280,21 +298,59 @@ func (s *OperatorService) ListOperatorSessions(ctx context.Context, req *adminv1
 	if _, err := principalFromContext(ctx); err != nil {
 		return nil, err
 	}
-	return &adminv1.ListOperatorSessionsResponse{Sessions: []*adminv1.OperatorAuthSessionSummary{}}, nil
+	offset, err := parsePageToken(req.GetPageToken())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	pageSize := normalizePageSize(req.GetPageSize())
+	sessions, err := s.manager.ListOperatorSessions(ctx, req.GetOperatorId())
+	if err != nil {
+		return nil, mapAdminError(err, "list operator sessions")
+	}
+	filtered := make([]domainauth.RefreshSession, 0, len(sessions))
+	for _, session := range sessions {
+		if !req.GetIncludeInactive() && operatorSessionState(session) != adminv1.OperatorAuthSessionState_OPERATOR_AUTH_SESSION_STATE_ACTIVE {
+			continue
+		}
+		filtered = append(filtered, session)
+	}
+	if offset > len(filtered) {
+		return nil, status.Error(codes.InvalidArgument, "page_token offset is beyond the session list")
+	}
+	end := offset + pageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	out := make([]*adminv1.OperatorAuthSessionSummary, 0, end-offset)
+	for _, session := range filtered[offset:end] {
+		out = append(out, mapOperatorSession(session))
+	}
+	var next string
+	if end < len(filtered) {
+		next = strconv.Itoa(end)
+	}
+	return &adminv1.ListOperatorSessionsResponse{Sessions: out, NextPageToken: next}, nil
 }
 
 func (s *OperatorService) RevokeOperatorSession(ctx context.Context, req *adminv1.RevokeOperatorSessionRequest) (*adminv1.RevokeOperatorSessionResponse, error) {
-	if _, err := principalFromContext(ctx); err != nil {
+	if _, err := s.requireSystemAdmin(ctx); err != nil {
 		return nil, err
+	}
+	if err := s.manager.RevokeOperatorSession(ctx, req.GetOperatorId(), req.GetAuthSessionId()); err != nil && !errors.Is(err, daemonadmin.ErrAdminNotFound) && !errors.Is(err, storesession.ErrSessionNotFound) {
+		return nil, mapAdminError(err, "revoke operator session")
 	}
 	return &adminv1.RevokeOperatorSessionResponse{}, nil
 }
 
 func (s *OperatorService) RevokeOperatorSessions(ctx context.Context, req *adminv1.RevokeOperatorSessionsRequest) (*adminv1.RevokeOperatorSessionsResponse, error) {
-	if _, err := principalFromContext(ctx); err != nil {
+	if _, err := s.requireSystemAdmin(ctx); err != nil {
 		return nil, err
 	}
-	return &adminv1.RevokeOperatorSessionsResponse{RevokedCount: 0}, nil
+	count, err := s.manager.RevokeOperatorSessions(ctx, req.GetOperatorId())
+	if err != nil {
+		return nil, mapAdminError(err, "revoke operator sessions")
+	}
+	return &adminv1.RevokeOperatorSessionsResponse{RevokedCount: int32(count)}, nil
 }
 
 func (s *OperatorService) requireSystemAdmin(ctx context.Context) (daemonauth.Principal, error) {
@@ -343,6 +399,9 @@ func mapAdminError(err error, action string) error {
 	if errors.Is(err, daemonadmin.ErrGrantNotFound) {
 		return status.Error(codes.NotFound, "grant not found")
 	}
+	if errors.Is(err, storesession.ErrSessionNotFound) {
+		return status.Error(codes.NotFound, "operator session not found")
+	}
 	if errors.Is(err, daemonadmin.ErrLastSystemAdmin) {
 		return status.Error(codes.FailedPrecondition, "cannot remove the last active system admin")
 	}
@@ -351,6 +410,21 @@ func mapAdminError(err error, action string) error {
 
 func mapAdminSummary(admin daemonadmin.AdminSummary) *adminv1.Operator {
 	return &adminv1.Operator{OperatorId: admin.ID, Username: admin.Username, Email: admin.Email, State: stateFromInternal(admin.State), CreateTime: timestamppb.New(admin.CreatedAt), UpdateTime: timestamppb.New(admin.UpdatedAt)}
+}
+
+func mapOperatorSession(session domainauth.RefreshSession) *adminv1.OperatorAuthSessionSummary {
+	return &adminv1.OperatorAuthSessionSummary{AuthSessionId: session.ID.String(), CreateTime: timestamppb.New(session.CreatedAt), LastSeenTime: timestamppb.New(session.LastUsedAt), ExpireTime: timestamppb.New(session.AbsoluteExpiresAt), State: operatorSessionState(session), Client: &adminv1.OperatorClientInfo{Name: session.Metadata.ClientName}}
+}
+
+func operatorSessionState(session domainauth.RefreshSession) adminv1.OperatorAuthSessionState {
+	now := time.Now().UTC()
+	if session.Status == domainauth.RefreshSessionStatusRevoked {
+		return adminv1.OperatorAuthSessionState_OPERATOR_AUTH_SESSION_STATE_REVOKED
+	}
+	if session.Status == domainauth.RefreshSessionStatusExpired || (!session.AbsoluteExpiresAt.IsZero() && !session.AbsoluteExpiresAt.After(now)) || (!session.IdleExpiresAt.IsZero() && !session.IdleExpiresAt.After(now)) {
+		return adminv1.OperatorAuthSessionState_OPERATOR_AUTH_SESSION_STATE_EXPIRED
+	}
+	return adminv1.OperatorAuthSessionState_OPERATOR_AUTH_SESSION_STATE_ACTIVE
 }
 
 func stateFromInternal(state string) adminv1.OperatorState {
