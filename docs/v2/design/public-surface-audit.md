@@ -47,7 +47,7 @@ Checked workspace components do not import `github.com/myceldb/mycel/...` direct
 
 - `knot_pkm/knot_pkm_server` uses `mycel-go-sdk` and `mycel-api`
 - `myceldb/mycel-go-sdk` uses `mycel-api`
-- `myceldb/mycelbench` uses `mycel-go-sdk` and `mycel-api`
+- `myceldb/mycel-bench` uses `mycel-go-sdk` and `mycel-api`
 
 ## Replacement path for `knot_pkm_importer`
 

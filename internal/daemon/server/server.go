@@ -125,7 +125,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	grpcServer := grpc.NewServer(serverOptions...)
 	adminv1.RegisterAdminAuthServiceServer(grpcServer, adminapi.NewAuthService(cfg.AdminAuthenticator, cfg.TokenManager))
 	adminv1.RegisterAdminOperatorServiceServer(grpcServer, adminapi.NewOperatorService(cfg.OperatorManager))
-	adminv1.RegisterAdminUserServiceServer(grpcServer, adminapi.NewUserService(cfg.UserManager, cfg.OperatorManager))
+	adminv1.RegisterAdminUserServiceServer(grpcServer, adminapi.NewUserService(cfg.UserManager, cfg.OperatorManager, cfg.TokenManager))
 	adminv1.RegisterAdminSpaceServiceServer(grpcServer, adminapi.NewAdminSpaceService(cfg.SpaceManager, cfg.UserManager, cfg.OperatorManager))
 	adminv1.RegisterAdminDomainServiceServer(grpcServer, adminapi.NewAdminDomainService(cfg.SpaceManager, cfg.OperatorManager))
 	adminv1.RegisterAdminInferenceServiceServer(grpcServer, adminapi.NewAdminInferenceService(cfg.SemanticManager, cfg.OperatorManager))

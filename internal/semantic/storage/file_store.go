@@ -604,6 +604,7 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 }
 
 func (m *spaceManager) UpsertSemanticIndex(ctx context.Context, index domainsemantic.SemanticIndex) (domainsemantic.SemanticIndex, error) {
+	index.Purpose = domainsemantic.NormalizeSemanticIndexPurpose(index.Purpose)
 	if err := validateSemanticIndex(ctx, m.spaceID, index); err != nil {
 		return domainsemantic.SemanticIndex{}, err
 	}

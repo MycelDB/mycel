@@ -606,7 +606,7 @@ func (m *Module) ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, d
 	}
 	out := make([]domainsemantic.SemanticIndex, 0, len(indexes))
 	for _, index := range indexes {
-		if index.SpaceID == spaceID && index.DomainID == domainID && index.Purpose == domainsemantic.SemanticIndexPurposeSearch {
+		if index.SpaceID == spaceID && index.DomainID == domainID && domainsemantic.IsSearchSemanticIndexPurpose(index.Purpose) {
 			out = append(out, index)
 		}
 	}
@@ -627,7 +627,7 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	reader, err := m.graphReader(ctx, in.SpaceID)
+	reader, err := m.graphReader(ctx, in.SpaceID, graph.DomainID(uuid.Nil))
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
@@ -648,7 +648,7 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
-	runner, err := m.backfillRunner(ctx, in.SpaceID, mgr)
+	runner, err := m.backfillRunner(ctx, in.SpaceID, graph.DomainID(uuid.Nil), mgr)
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
@@ -665,7 +665,18 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 	if err != nil {
 		return semanticbackfill.Result{}, err
 	}
-	runner, err := m.backfillRunner(ctx, in.SpaceID, mgr)
+	domainID := graph.DomainID(uuid.Nil)
+	indexes, err := mgr.ListSemanticIndexes(ctx)
+	if err != nil {
+		return semanticbackfill.Result{}, err
+	}
+	for _, index := range indexes {
+		if index.ID == in.SemanticIndexID {
+			domainID = index.DomainID
+			break
+		}
+	}
+	runner, err := m.backfillRunner(ctx, in.SpaceID, domainID, mgr)
 	if err != nil {
 		return semanticbackfill.Result{}, err
 	}
@@ -697,16 +708,16 @@ func (m *Module) MigrateLegacyEmbeddings(ctx context.Context, in LegacyMigration
 	return semanticmigration.MigrateLegacyEmbeddings(ctx, semanticmigration.LegacyEmbeddingInput{OwnerUserID: ownerID, SpaceID: in.SpaceID, DomainID: in.DomainID, ProfileRef: in.ProfileRef, AllowBackgroundUse: in.AllowBackgroundUse, AddAllowPolicy: in.AddAllowPolicy, Strict: in.Strict, DryRun: in.DryRun, Limit: in.Limit, Catalog: cat, EmbeddingManager: embeddings, GlobalManager: m.GlobalManager(), SpaceManager: spaceMgr, EncryptSecret: m.EncryptSecret})
 }
 
-func (m *Module) graphReader(ctx context.Context, spaceID domainspace.SpaceID) (sessionapi.Session, error) {
+func (m *Module) graphReader(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (sessionapi.Session, error) {
 	templates := storetemplate.NewManager()
 	if err := templates.Init(ctx, filepath.Join(m.dataDir, "templates")); err != nil {
 		return nil, err
 	}
-	return filesession.New(filepath.Join(m.dataDir, "graphs"), filepath.Join(m.dataDir, "blobs"), spaceID, templates, sessionapi.Permissions{Read: true, Admin: true}, sessionapi.Errors{Closed: fmt.Errorf("session closed"), NotFound: fmt.Errorf("not found"), Unauthorized: fmt.Errorf("unauthorized"), Conflict: fmt.Errorf("conflict")}), nil
+	return filesession.NewConfig(filepath.Join(m.dataDir, "graphs"), filepath.Join(m.dataDir, "blobs"), spaceID, templates, sessionapi.Permissions{Read: true, Admin: true}, sessionapi.Errors{Closed: fmt.Errorf("session closed"), NotFound: fmt.Errorf("not found"), Unauthorized: fmt.Errorf("unauthorized"), Conflict: fmt.Errorf("conflict")}, filesession.Config{DomainID: domainID}), nil
 }
 
-func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID, mgr storesemantic.SpaceManager) (semanticbackfill.Runner, error) {
-	sess, err := m.graphReader(ctx, spaceID)
+func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID, mgr storesemantic.SpaceManager) (semanticbackfill.Runner, error) {
+	sess, err := m.graphReader(ctx, spaceID, domainID)
 	if err != nil {
 		return semanticbackfill.Runner{}, err
 	}

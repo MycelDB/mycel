@@ -557,7 +557,7 @@ func effectiveCapabilities(admin daemonadmin.AdminSummary) []commonv1.Capability
 func capabilitiesForRole(role string) []commonv1.Capability {
 	switch role {
 	case daemonadmin.OperatorRoleSystemAdmin:
-		return []commonv1.Capability{commonv1.Capability_CAPABILITY_OPERATOR_CREATE, commonv1.Capability_CAPABILITY_OPERATOR_MANAGE, commonv1.Capability_CAPABILITY_USER_CREATE, commonv1.Capability_CAPABILITY_USER_MANAGE, commonv1.Capability_CAPABILITY_DAEMON_CONFIGURE, commonv1.Capability_CAPABILITY_MESH_MANAGE}
+		return []commonv1.Capability{commonv1.Capability_CAPABILITY_OPERATOR_CREATE, commonv1.Capability_CAPABILITY_OPERATOR_MANAGE, commonv1.Capability_CAPABILITY_USER_CREATE, commonv1.Capability_CAPABILITY_USER_MANAGE, commonv1.Capability_CAPABILITY_USER_SESSION_DELEGATE, commonv1.Capability_CAPABILITY_DAEMON_CONFIGURE, commonv1.Capability_CAPABILITY_MESH_MANAGE}
 	case daemonadmin.OperatorRoleUserAdmin:
 		return []commonv1.Capability{commonv1.Capability_CAPABILITY_USER_CREATE, commonv1.Capability_CAPABILITY_USER_MANAGE}
 	case daemonadmin.OperatorRoleSpaceAdmin:

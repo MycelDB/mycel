@@ -16,16 +16,17 @@ import (
 )
 
 type fakeUserManager struct {
-	users            []daemonuser.UserSummary
-	user             daemonuser.UserSummary
-	sessions         []domainauth.RefreshSession
-	created          daemonuser.CreateUserInput
-	passwordUserID   string
-	password         string
-	revokedSessionID string
-	revokedAllUserID string
-	revokedCount     int
-	err              error
+	users                  []daemonuser.UserSummary
+	user                   daemonuser.UserSummary
+	sessions               []domainauth.RefreshSession
+	created                daemonuser.CreateUserInput
+	passwordUserID         string
+	password               string
+	revokedSessionID       string
+	revokedAllUserID       string
+	revokedCount           int
+	createdSessionMetadata domainauth.RefreshSessionMetadata
+	err                    error
 }
 
 func (f *fakeUserManager) ListUsers(context.Context) ([]daemonuser.UserSummary, error) {
@@ -58,8 +59,9 @@ func (f *fakeUserManager) SetUserPassword(ctx context.Context, userID string, pa
 func (f *fakeUserManager) AuthenticateUser(context.Context, string, string) (daemonuser.UserSummary, error) {
 	return f.user, f.err
 }
-func (f *fakeUserManager) CreateAuthSession(context.Context, daemonuser.UserSummary, domainauth.RefreshSessionMetadata, int, time.Duration, time.Duration) (domainauth.RefreshToken, domainauth.RefreshSession, error) {
-	return "refresh", domainauth.RefreshSession{}, f.err
+func (f *fakeUserManager) CreateAuthSession(ctx context.Context, user daemonuser.UserSummary, metadata domainauth.RefreshSessionMetadata, tokenBytes int, idleTTL time.Duration, absoluteTTL time.Duration) (domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	f.createdSessionMetadata = metadata
+	return "refresh", domainauth.RefreshSession{ID: uuid.New(), UserID: uuid.MustParse(user.ID), Status: domainauth.RefreshSessionStatusActive, CreatedAt: time.Now().UTC(), LastUsedAt: time.Now().UTC(), AbsoluteExpiresAt: time.Now().UTC().Add(absoluteTTL), Metadata: metadata}, f.err
 }
 func (f *fakeUserManager) RefreshAuthSession(context.Context, domainauth.RefreshToken, domainauth.RefreshSessionMetadata, int, time.Duration) (daemonuser.UserSummary, domainauth.RefreshToken, domainauth.RefreshSession, error) {
 	return f.user, "refresh", domainauth.RefreshSession{}, f.err
@@ -83,11 +85,11 @@ func (f fakeAuthorizer) HasCapability(context.Context, string, string) (bool, er
 }
 
 func TestUserServiceRequiresAuthenticationAndCapability(t *testing.T) {
-	svc := NewUserService(&fakeUserManager{}, fakeAuthorizer{allowed: true})
+	svc := NewUserService(&fakeUserManager{}, fakeAuthorizer{allowed: true}, nil)
 	if _, err := svc.ListUsers(context.Background(), &adminv1.ListUsersRequest{}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected Unauthenticated, got %v", err)
 	}
-	svc = NewUserService(&fakeUserManager{}, fakeAuthorizer{allowed: false})
+	svc = NewUserService(&fakeUserManager{}, fakeAuthorizer{allowed: false}, nil)
 	if _, err := svc.ListUsers(userAuthenticatedContext(), &adminv1.ListUsersRequest{}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected PermissionDenied, got %v", err)
 	}
@@ -96,7 +98,7 @@ func TestUserServiceRequiresAuthenticationAndCapability(t *testing.T) {
 func TestUserServiceListFiltersAndMapsUsers(t *testing.T) {
 	createdAt := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	manager := &fakeUserManager{users: []daemonuser.UserSummary{{ID: "u1", Username: "active", State: daemonuser.UserStateActive, CreatedAt: createdAt, UpdatedAt: createdAt}, {ID: "u2", Username: "disabled", State: daemonuser.UserStateDisabled, CreatedAt: createdAt, UpdatedAt: createdAt}, {ID: "u3", Username: "deleted", State: daemonuser.UserStateDeleted, CreatedAt: createdAt, UpdatedAt: createdAt}}}
-	svc := NewUserService(manager, fakeAuthorizer{allowed: true})
+	svc := NewUserService(manager, fakeAuthorizer{allowed: true}, nil)
 	res, err := svc.ListUsers(userAuthenticatedContext(), &adminv1.ListUsersRequest{})
 	if err != nil {
 		t.Fatalf("ListUsers() error = %v", err)
@@ -112,7 +114,7 @@ func TestUserServiceListFiltersAndMapsUsers(t *testing.T) {
 
 func TestUserServiceCreate(t *testing.T) {
 	manager := &fakeUserManager{user: daemonuser.UserSummary{ID: "u1", Username: "alice", State: daemonuser.UserStateActive, CreatedAt: time.Now(), UpdatedAt: time.Now()}}
-	svc := NewUserService(manager, fakeAuthorizer{allowed: true})
+	svc := NewUserService(manager, fakeAuthorizer{allowed: true}, nil)
 	password := "pass"
 	res, err := svc.CreateUser(userAuthenticatedContext(), &adminv1.CreateUserRequest{Username: "alice", Password: &password})
 	if err != nil {
@@ -126,7 +128,7 @@ func TestUserServiceCreate(t *testing.T) {
 func TestUserServicePasswordAndSessions(t *testing.T) {
 	sessionID := uuid.New()
 	manager := &fakeUserManager{user: daemonuser.UserSummary{ID: "u1", Username: "alice", State: daemonuser.UserStateActive, CreatedAt: time.Now(), UpdatedAt: time.Now()}, revokedCount: 2, sessions: []domainauth.RefreshSession{{ID: sessionID, Status: domainauth.RefreshSessionStatusActive, CreatedAt: time.Now(), LastUsedAt: time.Now(), AbsoluteExpiresAt: time.Now().Add(time.Hour), Metadata: domainauth.RefreshSessionMetadata{ClientName: "test"}}}}
-	svc := NewUserService(manager, fakeAuthorizer{allowed: true})
+	svc := NewUserService(manager, fakeAuthorizer{allowed: true}, nil)
 	_, err := svc.SetUserPassword(userAuthenticatedContext(), &adminv1.SetUserPasswordRequest{UserId: "u1", Password: "new-pass", RevokeSessions: true})
 	if err != nil {
 		t.Fatalf("SetUserPassword() error = %v", err)
@@ -148,11 +150,31 @@ func TestUserServicePasswordAndSessions(t *testing.T) {
 	}
 }
 
+func TestUserServiceCreateUserSessionMintsClientTokens(t *testing.T) {
+	tokens, err := daemonauth.NewRandomTokenManager(time.Minute)
+	if err != nil {
+		t.Fatalf("new token manager: %v", err)
+	}
+	userID := uuid.NewString()
+	manager := &fakeUserManager{user: daemonuser.UserSummary{ID: userID, Username: "alice", State: daemonuser.UserStateActive, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}}
+	svc := NewUserService(manager, fakeAuthorizer{allowed: true}, tokens)
+	res, err := svc.CreateUserSession(userAuthenticatedContext(), &adminv1.CreateUserSessionRequest{UserId: userID, Client: &adminv1.AdminClientInfo{Name: "knot-pkm-server"}})
+	if err != nil {
+		t.Fatalf("CreateUserSession() error = %v", err)
+	}
+	if res.GetAccessToken() == "" || res.GetRefreshToken() == "" || res.GetAuthSessionId() == "" || res.GetUser().GetUserId() != userID {
+		t.Fatalf("unexpected delegated session response: %#v", res)
+	}
+	if manager.createdSessionMetadata.ClientName != "knot-pkm-server" {
+		t.Fatalf("expected client metadata to be persisted, got %+v", manager.createdSessionMetadata)
+	}
+}
+
 func TestUserServiceRequiresExpectedCapabilities(t *testing.T) {
 	ctx := userAuthenticatedContext()
 	manager := &fakeUserManager{user: daemonuser.UserSummary{ID: "u1", Username: "alice", State: daemonuser.UserStateActive, CreatedAt: time.Now(), UpdatedAt: time.Now()}}
 	authz := &recordingAuthorizer{allowed: true}
-	svc := NewUserService(manager, authz)
+	svc := NewUserService(manager, authz, nil)
 	password := "pass"
 	_, _ = svc.CreateUser(ctx, &adminv1.CreateUserRequest{Username: "alice", Password: &password})
 	if authz.lastCapability != commonv1.Capability_CAPABILITY_USER_CREATE.String() {
@@ -161,6 +183,10 @@ func TestUserServiceRequiresExpectedCapabilities(t *testing.T) {
 	_, _ = svc.ListUsers(ctx, &adminv1.ListUsersRequest{})
 	if authz.lastCapability != commonv1.Capability_CAPABILITY_USER_MANAGE.String() {
 		t.Fatalf("expected USER_MANAGE, got %s", authz.lastCapability)
+	}
+	_, _ = svc.CreateUserSession(ctx, &adminv1.CreateUserSessionRequest{UserId: "u1"})
+	if authz.lastCapability != commonv1.Capability_CAPABILITY_USER_SESSION_DELEGATE.String() {
+		t.Fatalf("expected USER_SESSION_DELEGATE, got %s", authz.lastCapability)
 	}
 }
 

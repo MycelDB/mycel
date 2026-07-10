@@ -18,6 +18,7 @@ type Manager interface {
 	GetSpace(ctx context.Context, spaceID string) (domainspace.Space, error)
 	CreateSpace(ctx context.Context, input CreateSpaceInput) (domainspace.Space, graph.Domain, error)
 	DeleteSpace(ctx context.Context, spaceID string) error
+	GrantSpaceUser(ctx context.Context, spaceID string, userID string, role string) (SpaceGrant, error)
 	EffectiveAccess(ctx context.Context, userID string, sp domainspace.Space) (EffectiveAccess, error)
 	DomainEffectiveAccess(ctx context.Context, userID string, spaceID string) (EffectiveAccess, error)
 	ListDomains(ctx context.Context, spaceID string, includeSystem bool) ([]graph.Domain, error)
@@ -56,6 +57,14 @@ type UpdateDomainInput struct {
 	DomainID    string
 	Name        *string
 	Description *string
+}
+
+type SpaceGrant struct {
+	ID           string
+	SpaceID      string
+	UserID       string
+	Role         string
+	Capabilities []string
 }
 
 type EffectiveAccess struct {

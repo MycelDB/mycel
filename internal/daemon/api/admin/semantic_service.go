@@ -59,7 +59,7 @@ func (s *AdminSemanticService) ListSemanticIndexes(ctx context.Context, req *adm
 		}
 		indexes = indexes[:0]
 		for _, index := range all {
-			if index.SpaceID == spaceID && index.DomainID == domainID && index.Purpose == domainsemantic.SemanticIndexPurposeSearch {
+			if index.SpaceID == spaceID && index.DomainID == domainID && domainsemantic.IsSearchSemanticIndexPurpose(index.Purpose) {
 				indexes = append(indexes, index)
 			}
 		}
@@ -128,10 +128,7 @@ func (s *AdminSemanticService) UpsertSemanticIndex(ctx context.Context, req *adm
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "open semantic space manager")
 	}
-	purpose := domainsemantic.SemanticIndexPurpose(strings.TrimSpace(req.GetPurpose()))
-	if purpose == "" {
-		purpose = domainsemantic.SemanticIndexPurposeSearch
-	}
+	purpose := domainsemantic.NormalizeSemanticIndexPurpose(domainsemantic.SemanticIndexPurpose(strings.TrimSpace(req.GetPurpose())))
 	index, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{ID: indexID, SpaceID: spaceID, DomainID: domainID, Key: key, Name: firstNonEmptyAdmin(req.GetDisplayName(), key), Purpose: purpose, SourcePolicy: policy, ModelEndpointID: endpointID, ModelID: modelID, ModelEndpointCapabilityID: capabilityID, VectorStoreID: vectorStoreID, Enabled: req.GetEnabled()})
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "upsert semantic index")

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
 	q "github.com/myceldb/mycel/internal/graph/query"
+	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -86,6 +87,38 @@ func (m hierarchyTemplateManager) DeleteByID(ctx context.Context, id graph.Templ
 
 func (m hierarchyTemplateManager) DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error {
 	return nil
+}
+
+func TestFileSessionRequiresManifestSpace(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	graphsDir := t.TempDir()
+	spacePath := filepath.Join(graphsDir, safeID(spaceID))
+	if err := os.MkdirAll(spacePath, 0o700); err != nil {
+		t.Fatalf("create space dir failed: %v", err)
+	}
+	store, err := graphstorage.Open(ctx, spacePath)
+	if err != nil {
+		t.Fatalf("create graph manifest failed: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close graph store failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(spacePath, ".space")); !os.IsNotExist(err) {
+		t.Fatalf("test setup expected no legacy .space marker, stat err=%v", err)
+	}
+	tmplID := graph.TemplateID(uuid.New())
+	manager := hierarchyTemplateManager{templates: map[graph.TemplateID]graph.Template{
+		tmplID: {ID: tmplID, SpaceID: spaceID, Key: "entry", Version: "1", Properties: graph.PropertyPolicy{AllowExtra: true}},
+	}}
+	sess := New(graphsDir, t.TempDir(), spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")})
+	defer sess.Close()
+	if templates, err := sess.ListTemplates(ctx); err != nil || len(templates) != 1 {
+		t.Fatalf("expected manifest-backed space to be live for templates, templates=%+v err=%v", templates, err)
+	}
+	if _, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "manifest-backed"}); err != nil {
+		t.Fatalf("expected manifest-backed space to allow graph writes, got %v", err)
+	}
 }
 
 func TestFileSessionNodeTimestamps(t *testing.T) {
@@ -373,13 +406,7 @@ func newHierarchyBenchmarkSession(b *testing.B) (sessionapi.Session, graph.Templ
 	b.Helper()
 	spaceID := domainspace.SpaceID(uuid.New())
 	graphsDir := b.TempDir()
-	spacePath := filepath.Join(graphsDir, safeID(spaceID))
-	if err := os.MkdirAll(spacePath, 0o700); err != nil {
-		b.Fatalf("create space dir failed: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(spacePath, ".space"), []byte(""), 0o600); err != nil {
-		b.Fatalf("create marker failed: %v", err)
-	}
+	prepareBenchmarkSpaceDir(b, graphsDir, spaceID)
 	tmplID := graph.TemplateID(uuid.New())
 	manager := hierarchyTemplateManager{templates: map[graph.TemplateID]graph.Template{
 		tmplID: {ID: tmplID, SpaceID: spaceID, Key: "entry", Version: "1", Children: graph.ChildPolicy{Allowed: true, Order: &graph.ChildOrderPolicy{Mode: graph.ChildOrderModeEdgeProperty, Property: "order", Direction: graph.SortDirectionAsc}}, Properties: graph.PropertyPolicy{AllowExtra: true}},
@@ -391,13 +418,27 @@ func newHierarchyBenchmarkSession(b *testing.B) (sessionapi.Session, graph.Templ
 
 func prepareSpaceDir(t *testing.T, graphsDir string, spaceID domainspace.SpaceID) {
 	t.Helper()
+	prepareManifestSpaceDir(t, graphsDir, spaceID)
+}
+
+func prepareManifestSpaceDir(t testing.TB, graphsDir string, spaceID domainspace.SpaceID) {
+	t.Helper()
 	spacePath := filepath.Join(graphsDir, safeID(spaceID))
 	if err := os.MkdirAll(spacePath, 0o700); err != nil {
 		t.Fatalf("create space dir failed: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(spacePath, ".space"), []byte(""), 0o600); err != nil {
-		t.Fatalf("create marker failed: %v", err)
+	store, err := graphstorage.Open(context.Background(), spacePath)
+	if err != nil {
+		t.Fatalf("create graph manifest failed: %v", err)
 	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close graph store failed: %v", err)
+	}
+}
+
+func prepareBenchmarkSpaceDir(b *testing.B, graphsDir string, spaceID domainspace.SpaceID) {
+	b.Helper()
+	prepareManifestSpaceDir(b, graphsDir, spaceID)
 }
 
 func nodeID() graph.NodeID { return graph.NodeID(uuid.New()) }

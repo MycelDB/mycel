@@ -163,6 +163,9 @@ func (fakeSpaceManager) CreateSpace(context.Context, daemonspace.CreateSpaceInpu
 	return domainspace.Space{}, graph.Domain{}, nil
 }
 func (fakeSpaceManager) DeleteSpace(context.Context, string) error { return nil }
+func (fakeSpaceManager) GrantSpaceUser(context.Context, string, string, string) (daemonspace.SpaceGrant, error) {
+	return daemonspace.SpaceGrant{}, nil
+}
 func (fakeSpaceManager) EffectiveAccess(context.Context, string, domainspace.Space) (daemonspace.EffectiveAccess, error) {
 	return daemonspace.EffectiveAccess{Roles: []string{"owner"}, Capabilities: []string{"CAPABILITY_SPACE_READ"}}, nil
 }

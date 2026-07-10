@@ -218,6 +218,102 @@ func (m *Module) DeleteSpace(ctx context.Context, spaceID string) error {
 	return nil
 }
 
+func (m *Module) GrantSpaceUser(ctx context.Context, spaceID string, userID string, role string) (SpaceGrant, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return SpaceGrant{}, err
+	}
+	defer release()
+	sp, err := m.GetSpace(ctx, spaceID)
+	if err != nil {
+		return SpaceGrant{}, err
+	}
+	uid, err := parseUserID(userID)
+	if err != nil {
+		return SpaceGrant{}, err
+	}
+	permissions, normalizedRole, capabilities, err := permissionsForSpaceRole(role)
+	if err != nil {
+		return SpaceGrant{}, err
+	}
+	if existing, ok, err := m.existingSpaceGrant(ctx, sp.SpaceID, uid); err != nil {
+		return SpaceGrant{}, err
+	} else if ok {
+		existingRole, existingCaps := strongestRoleForPermissions(existing.Permissions)
+		if spaceRoleRank(existingRole) >= spaceRoleRank(normalizedRole) {
+			return SpaceGrant{ID: existing.ID.String(), SpaceID: existing.SpaceID.String(), UserID: existing.UserID.String(), Role: existingRole, Capabilities: existingCaps}, nil
+		}
+	}
+	rule, err := m.access.Grant(ctx, acl.GrantInput{SpaceID: sp.SpaceID, UserID: uid, Permissions: permissions})
+	if err != nil {
+		return SpaceGrant{}, err
+	}
+	return SpaceGrant{ID: rule.ID.String(), SpaceID: rule.SpaceID.String(), UserID: rule.UserID.String(), Role: normalizedRole, Capabilities: capabilities}, nil
+}
+
+func (m *Module) existingSpaceGrant(ctx context.Context, spaceID uuid.UUID, userID uuid.UUID) (access.SpaceAccessRule, bool, error) {
+	rules, err := m.access.RulesForSpace(ctx, spaceID)
+	if err != nil {
+		return access.SpaceAccessRule{}, false, err
+	}
+	for _, rule := range rules {
+		if rule.UserID == userID {
+			return rule, true, nil
+		}
+	}
+	return access.SpaceAccessRule{}, false, nil
+}
+
+func permissionsForSpaceRole(role string) ([]access.SpacePermission, string, []string, error) {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "admin", "owner":
+		return []access.SpacePermission{access.SpacePermissionAdmin}, "admin", ownerCapabilities(), nil
+	case "writer", "write":
+		return []access.SpacePermission{access.SpacePermissionWrite}, "writer", writerCapabilities(), nil
+	case "reader", "read":
+		return []access.SpacePermission{access.SpacePermissionRead}, "reader", readerCapabilities(), nil
+	default:
+		return nil, "", nil, fmt.Errorf("%w: space role must be admin, writer, or reader", ErrInvalidInput)
+	}
+}
+
+func strongestRoleForPermissions(permissions []access.SpacePermission) (string, []string) {
+	role := ""
+	for _, perm := range permissions {
+		switch perm {
+		case access.SpacePermissionAdmin:
+			return "admin", ownerCapabilities()
+		case access.SpacePermissionWrite:
+			role = "writer"
+		case access.SpacePermissionRead:
+			if role == "" {
+				role = "reader"
+			}
+		}
+	}
+	switch role {
+	case "writer":
+		return role, writerCapabilities()
+	case "reader":
+		return role, readerCapabilities()
+	default:
+		return "", nil
+	}
+}
+
+func spaceRoleRank(role string) int {
+	switch role {
+	case "admin":
+		return 3
+	case "writer":
+		return 2
+	case "reader":
+		return 1
+	default:
+		return 0
+	}
+}
+
 func (m *Module) EffectiveAccess(ctx context.Context, userID string, sp domainspace.Space) (EffectiveAccess, error) {
 	uid, err := parseUserID(userID)
 	if err != nil {

@@ -250,6 +250,34 @@ func TestSpaceManagerUpsertsScopedSemanticResources(t *testing.T) {
 	}
 }
 
+func TestSpaceManagerNormalizesLegacySearchPurpose(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	mgr := NewSpaceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	index, err := mgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{
+		SpaceID:         spaceID,
+		DomainID:        domainID,
+		Key:             "notes-search",
+		Name:            "Notes Search",
+		Purpose:         domainsemantic.SemanticIndexPurpose("search"),
+		SourcePolicy:    domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSubtree},
+		ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()),
+		ModelID:         domainsemantic.InferenceModelID(uuid.New()),
+		VectorStoreID:   domainsemantic.VectorStoreID(uuid.New()),
+		Enabled:         true,
+	})
+	if err != nil {
+		t.Fatalf("upsert index failed: %v", err)
+	}
+	if index.Purpose != domainsemantic.SemanticIndexPurposeSearch {
+		t.Fatalf("expected canonical search purpose, got %q", index.Purpose)
+	}
+}
+
 func TestMaintenanceManagerPersistsDirtyEventsAndWork(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

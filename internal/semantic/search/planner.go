@@ -132,13 +132,10 @@ func (p Planner) selectIndexes(ctx context.Context, in Input) ([]domainsemantic.
 			wanted[id] = true
 		}
 	}
-	purpose := in.Purpose
-	if purpose == "" {
-		purpose = domainsemantic.SemanticIndexPurposeSearch
-	}
+	purpose := domainsemantic.NormalizeSemanticIndexPurpose(in.Purpose)
 	out := []domainsemantic.SemanticIndex{}
 	for _, index := range indexes {
-		if !index.Enabled || index.SpaceID != in.SpaceID || index.DomainID != in.DomainID || index.Purpose != purpose {
+		if !index.Enabled || index.SpaceID != in.SpaceID || index.DomainID != in.DomainID || domainsemantic.NormalizeSemanticIndexPurpose(index.Purpose) != purpose {
 			continue
 		}
 		if len(wanted) > 0 && !wanted[index.ID] {

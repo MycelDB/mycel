@@ -1,6 +1,7 @@
 package semantic
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -138,6 +139,26 @@ const (
 	SemanticIndexPurposeChat      SemanticIndexPurpose = "chat_context"
 	SemanticIndexPurposeRecommend SemanticIndexPurpose = "recommendation"
 )
+
+// NormalizeSemanticIndexPurpose maps accepted API aliases onto canonical stored
+// purpose values. The historical Admin API accepted "search"; keep reading and
+// upgrading that value so existing package/app clients remain compatible.
+func NormalizeSemanticIndexPurpose(purpose SemanticIndexPurpose) SemanticIndexPurpose {
+	switch strings.ToLower(strings.TrimSpace(string(purpose))) {
+	case "", "search", string(SemanticIndexPurposeSearch):
+		return SemanticIndexPurposeSearch
+	case string(SemanticIndexPurposeChat):
+		return SemanticIndexPurposeChat
+	case string(SemanticIndexPurposeRecommend):
+		return SemanticIndexPurposeRecommend
+	default:
+		return purpose
+	}
+}
+
+func IsSearchSemanticIndexPurpose(purpose SemanticIndexPurpose) bool {
+	return NormalizeSemanticIndexPurpose(purpose) == SemanticIndexPurposeSearch
+}
 
 // SourceExtraction identifies how graph content is assembled for an index.
 type SourceExtraction string

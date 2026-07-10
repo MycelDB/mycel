@@ -501,12 +501,12 @@ func (s *FileSession) spacePath() string {
 	return filepath.Join(s.graphsDir, safeID(s.spaceID))
 }
 
-func (s *FileSession) markerPath() string {
-	return filepath.Join(s.spacePath(), ".space")
+func (s *FileSession) manifestPath() string {
+	return filepath.Join(s.spacePath(), "manifest.mycel")
 }
 
 func (s *FileSession) ensureSpaceLive() error {
-	if _, err := os.Stat(s.markerPath()); err != nil {
+	if _, err := os.Stat(s.manifestPath()); err != nil {
 		if os.IsNotExist(err) {
 			return s.errors.NotFound
 		}

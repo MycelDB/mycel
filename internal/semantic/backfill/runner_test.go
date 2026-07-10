@@ -11,8 +11,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/filesession"
 	"github.com/myceldb/mycel/internal/graph/model"
+	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
+	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
@@ -34,6 +36,9 @@ func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	}
 	if len(env.connector.calls) != 1 || !strings.Contains(env.connector.calls[0], "child note") {
 		t.Fatalf("expected subtree source sent to connector, calls=%+v", env.connector.calls)
+	}
+	if len(env.connector.inputs) != 1 || env.connector.inputs[0].OnBehalfOfPrincipalID != env.userID || env.connector.inputs[0].EffectivePrincipalID != env.userID {
+		t.Fatalf("expected backfill attribution to credential owner %s, got %+v", env.userID, env.connector.inputs)
 	}
 	search, err := env.vector.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticIndexID: env.index.ID, Query: []float64{1, 0, 0}, Limit: 10, MinScore: 0.5})
 	if err != nil {
@@ -86,6 +91,50 @@ func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	}
 	if result.GeneratedCount != 1 || len(env.connector.calls) != 4 {
 		t.Fatalf("expected model binding change to regenerate despite same source hash, result=%+v calls=%+v", result, env.connector.calls)
+	}
+}
+
+func TestRunnerAccountingAttributesBackfillToCredentialOwner(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root, _ := env.addRootWithChild(t, "accounted root", "accounted child")
+	accountingMgr := storeaccounting.NewManager()
+	if err := accountingMgr.Init(ctx, t.TempDir()); err != nil {
+		t.Fatalf("accounting init failed: %v", err)
+	}
+	provider := &fakeProviderConnector{}
+	actorID := identity.UserID(uuid.New())
+	runner := env.runner
+	runner.Connector = connectors.Service{GlobalManager: env.globalMgr, Accounting: accountingMgr, ActorPrincipalID: actorID, Connectors: map[domainsemantic.ConnectorType]connectors.Connector{domainsemantic.ConnectorOpenAICompatible: provider}}
+	result, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
+	if err != nil {
+		t.Fatalf("backfill failed: %v", err)
+	}
+	if result.GeneratedCount != 1 || len(provider.requests) != 1 {
+		t.Fatalf("expected one accounted embedding call, result=%+v provider_requests=%+v", result, provider.requests)
+	}
+	events, err := accountingMgr.List(ctx, storeaccounting.Filter{})
+	if err != nil {
+		t.Fatalf("list accounting events failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one accounting event, got %+v", events)
+	}
+	event := events[0]
+	if event.Status != "success" || event.Operation != string(domainsemantic.OperationEmbeddings) || event.Reason != "semantic_backfill" {
+		t.Fatalf("unexpected accounting event status/operation/reason: %+v", event)
+	}
+	if event.ActorPrincipalID != actorID || event.EffectivePrincipalID != env.userID || event.OnBehalfOfPrincipalID != env.userID {
+		t.Fatalf("expected backfill accounting actor=%s effective/on_behalf=%s, got %+v", actorID, env.userID, event)
+	}
+	if event.SpaceID != env.spaceID || event.DomainID != env.domainID || event.SemanticIndexID != env.index.ID || event.TargetNodeID != root.ID {
+		t.Fatalf("unexpected accounting target attribution: %+v", event)
+	}
+	if event.ModelEndpointID != env.index.ModelEndpointID || event.ModelID != env.index.ModelID || event.CredentialID != env.grant.CredentialID || event.CredentialGrantID != env.grant.ID {
+		t.Fatalf("unexpected accounting semantic provenance: %+v", event)
+	}
+	if event.InputTokens == 0 || event.TotalTokens == 0 || event.TokenCountSource != "provider_reported" || event.ProviderRequestID != "fake-provider-request" {
+		t.Fatalf("unexpected accounting usage metrics: %+v", event)
 	}
 }
 
@@ -150,8 +199,12 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	if err := os.MkdirAll(spacePath, 0o755); err != nil {
 		t.Fatalf("create space path failed: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(spacePath, ".space"), []byte(""), 0o600); err != nil {
-		t.Fatalf("create space marker failed: %v", err)
+	store, err := graphstorage.Open(ctx, spacePath)
+	if err != nil {
+		t.Fatalf("create graph manifest failed: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close graph store failed: %v", err)
 	}
 	tmplMgr := storetemplate.NewManager()
 	if err := tmplMgr.Init(ctx, filepath.Join(root, "meta", "templates")); err != nil {
@@ -226,11 +279,24 @@ func (e *backfillTestEnv) addRootWithChild(t *testing.T, rootText, childText str
 	return root, child
 }
 
-type fakeConnector struct{ calls []string }
+type fakeConnector struct {
+	calls  []string
+	inputs []connectors.EmbedInput
+}
 
 func (f *fakeConnector) Embed(ctx context.Context, in connectors.EmbedInput) (connectors.EmbeddingResponse, error) {
 	f.calls = append(f.calls, in.Input)
+	f.inputs = append(f.inputs, in)
 	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "estimated"}, nil
+}
+
+type fakeProviderConnector struct {
+	requests []connectors.EmbeddingRequest
+}
+
+func (f *fakeProviderConnector) Embed(ctx context.Context, in connectors.EmbeddingRequest) (connectors.EmbeddingResponse, error) {
+	f.requests = append(f.requests, in)
+	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "provider_reported", ProviderRequestID: "fake-provider-request"}, nil
 }
 
 type errNotFound struct{}

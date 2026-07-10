@@ -18,6 +18,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+const (
+	adminDelegatedRefreshTokenBytes  = 32
+	adminDelegatedRefreshIdleTTL     = 30 * 24 * time.Hour
+	adminDelegatedRefreshAbsoluteTTL = 90 * 24 * time.Hour
+)
+
 type OperatorAuthorizer interface {
 	HasCapability(ctx context.Context, operatorID string, capability string) (bool, error)
 }
@@ -26,10 +32,11 @@ type UserService struct {
 	adminv1.UnimplementedAdminUserServiceServer
 	users      daemonuser.Manager
 	authorizer OperatorAuthorizer
+	tokens     *daemonauth.TokenManager
 }
 
-func NewUserService(users daemonuser.Manager, authorizer OperatorAuthorizer) *UserService {
-	return &UserService{users: users, authorizer: authorizer}
+func NewUserService(users daemonuser.Manager, authorizer OperatorAuthorizer, tokens *daemonauth.TokenManager) *UserService {
+	return &UserService{users: users, authorizer: authorizer, tokens: tokens}
 }
 
 func (s *UserService) ListUsers(ctx context.Context, req *adminv1.ListUsersRequest) (*adminv1.ListUsersResponse, error) {
@@ -171,6 +178,32 @@ func (s *UserService) SetUserPassword(ctx context.Context, req *adminv1.SetUserP
 	return &adminv1.SetUserPasswordResponse{User: mapUserSummary(user)}, nil
 }
 
+func (s *UserService) CreateUserSession(ctx context.Context, req *adminv1.CreateUserSessionRequest) (*adminv1.CreateUserSessionResponse, error) {
+	if _, err := s.requireUserSessionDelegate(ctx); err != nil {
+		return nil, err
+	}
+	if s.tokens == nil {
+		return nil, status.Error(codes.FailedPrecondition, "token manager is not initialized")
+	}
+	user, err := s.users.GetUser(ctx, req.GetUserId())
+	if err != nil {
+		return nil, mapUserError(err, "get user")
+	}
+	if user.State != daemonuser.UserStateActive {
+		return nil, status.Error(codes.FailedPrecondition, "user is not active")
+	}
+	refreshToken, rec, err := s.users.CreateAuthSession(ctx, user, adminClientMetadata(req.GetClient()), adminDelegatedRefreshTokenBytes, adminDelegatedRefreshIdleTTL, adminDelegatedRefreshAbsoluteTTL)
+	if err != nil {
+		return nil, mapUserError(err, "create user session")
+	}
+	accessToken, expireAt, err := s.tokens.Issue(daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: user.ID, AuthSessionID: rec.ID.String(), Username: user.Username, CreatedAt: user.CreatedAt})
+	if err != nil {
+		return nil, err
+	}
+	refreshTokenText := string(refreshToken)
+	return &adminv1.CreateUserSessionResponse{AccessToken: accessToken, AccessTokenExpireTime: timestamppb.New(expireAt), RefreshToken: &refreshTokenText, User: mapUserSummary(user), AuthSessionId: rec.ID.String()}, nil
+}
+
 func (s *UserService) ListUserSessions(ctx context.Context, req *adminv1.ListUserSessionsRequest) (*adminv1.ListUserSessionsResponse, error) {
 	if _, err := s.requireUserManage(ctx); err != nil {
 		return nil, err
@@ -238,6 +271,10 @@ func (s *UserService) requireUserManage(ctx context.Context) (daemonauth.Princip
 	return s.requireCapability(ctx, commonv1.Capability_CAPABILITY_USER_MANAGE)
 }
 
+func (s *UserService) requireUserSessionDelegate(ctx context.Context) (daemonauth.Principal, error) {
+	return s.requireCapability(ctx, commonv1.Capability_CAPABILITY_USER_SESSION_DELEGATE)
+}
+
 func (s *UserService) requireCapability(ctx context.Context, capability commonv1.Capability) (daemonauth.Principal, error) {
 	principal, err := principalFromContext(ctx)
 	if err != nil {
@@ -266,6 +303,17 @@ func userStateFromInternal(state string) adminv1.UserState {
 	default:
 		return adminv1.UserState_USER_STATE_ACTIVE
 	}
+}
+
+func adminClientMetadata(client *adminv1.AdminClientInfo) domainauth.RefreshSessionMetadata {
+	if client == nil {
+		return domainauth.RefreshSessionMetadata{ClientName: "admin-delegated-user-session"}
+	}
+	name := strings.TrimSpace(client.GetName())
+	if name == "" {
+		name = "admin-delegated-user-session"
+	}
+	return domainauth.RefreshSessionMetadata{ClientName: name}
 }
 
 func mapUserSession(session domainauth.RefreshSession) *adminv1.AdminAuthSessionSummary {

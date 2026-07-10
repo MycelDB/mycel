@@ -98,6 +98,25 @@ func (s *AdminSpaceService) DeleteSpace(ctx context.Context, req *adminv1.Delete
 	return &adminv1.DeleteSpaceResponse{}, nil
 }
 
+func (s *AdminSpaceService) GrantSpaceUser(ctx context.Context, req *adminv1.GrantSpaceUserRequest) (*adminv1.GrantSpaceUserResponse, error) {
+	if _, err := s.requireSpaceManage(ctx); err != nil {
+		return nil, err
+	}
+	userID, err := s.resolveOwnerID(ctx, req.GetUserId(), req.GetUsername())
+	if err != nil {
+		return nil, err
+	}
+	role, err := adminSpaceRoleToInternal(req.GetRole())
+	if err != nil {
+		return nil, err
+	}
+	grant, err := s.spaces.GrantSpaceUser(ctx, req.GetSpaceId(), userID.String(), role)
+	if err != nil {
+		return nil, mapSpaceError(err, "grant space user")
+	}
+	return &adminv1.GrantSpaceUserResponse{Grant: mapAdminSpaceGrant(grant)}, nil
+}
+
 func (s *AdminSpaceService) resolveOwnerID(ctx context.Context, ownerUserID string, ownerUsername string) (identity.UserID, error) {
 	ownerUserID = strings.TrimSpace(ownerUserID)
 	ownerUsername = strings.TrimSpace(ownerUsername)
@@ -131,6 +150,39 @@ func (s *AdminSpaceService) resolveOwnerID(ctx context.Context, ownerUserID stri
 		id = parsed
 	}
 	return id, nil
+}
+
+func adminSpaceRoleToInternal(role commonv1.SpaceRole) (string, error) {
+	switch role {
+	case commonv1.SpaceRole_SPACE_ROLE_ADMIN:
+		return "admin", nil
+	case commonv1.SpaceRole_SPACE_ROLE_WRITER:
+		return "writer", nil
+	case commonv1.SpaceRole_SPACE_ROLE_READER:
+		return "reader", nil
+	default:
+		return "", status.Error(codes.InvalidArgument, "space role must be admin, writer, or reader")
+	}
+}
+
+func mapAdminSpaceGrant(grant daemonspace.SpaceGrant) *commonv1.AccessGrant {
+	role := commonv1.SpaceRole_SPACE_ROLE_UNSPECIFIED
+	switch grant.Role {
+	case "admin":
+		role = commonv1.SpaceRole_SPACE_ROLE_ADMIN
+	case "writer":
+		role = commonv1.SpaceRole_SPACE_ROLE_WRITER
+	case "reader":
+		role = commonv1.SpaceRole_SPACE_ROLE_READER
+	}
+	caps := make([]commonv1.Capability, 0, len(grant.Capabilities))
+	for _, cap := range grant.Capabilities {
+		mapped := capabilityFromInternal(cap)
+		if mapped != commonv1.Capability_CAPABILITY_UNSPECIFIED {
+			caps = append(caps, mapped)
+		}
+	}
+	return &commonv1.AccessGrant{AccessGrantId: grant.ID, Principal: &commonv1.Principal{Type: commonv1.PrincipalType_PRINCIPAL_TYPE_USER, Id: grant.UserID}, Scope: &commonv1.AccessScope{Type: commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_SPACE, SpaceId: &grant.SpaceID}, Roles: []commonv1.SpaceRole{role}, Capabilities: caps}
 }
 
 func (s *AdminSpaceService) requireSpaceCreate(ctx context.Context) (daemonauth.Principal, error) {

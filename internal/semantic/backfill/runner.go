@@ -11,10 +11,15 @@ import (
 	"github.com/myceldb/mycel/internal/embedding"
 	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 	"github.com/myceldb/mycel/internal/graph/model"
+	identity "github.com/myceldb/mycel/internal/identity/model"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 )
+
+func isMissingGraphData(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "not found")
+}
 
 func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 	if err := ctx.Err(); err != nil {
@@ -54,11 +59,17 @@ func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 	}
 	nodes, err := r.Session.ListNodes(ctx)
 	if err != nil {
-		return Result{}, err
+		if !isMissingGraphData(err) {
+			return Result{}, err
+		}
+		nodes = []graph.Node{}
 	}
 	edges, err := r.Session.ListEdges(ctx)
 	if err != nil {
-		return Result{}, err
+		if !isMissingGraphData(err) {
+			return Result{}, err
+		}
+		edges = []graph.Edge{}
 	}
 	templates, err := r.Session.ListTemplates(ctx)
 	if err != nil {
@@ -108,7 +119,8 @@ func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIn
 			return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "current source hash already embedded"}, nil
 		}
 	}
-	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{ModelEndpointID: endpoint.ID, ModelID: model.ID, CredentialID: credential.ID, CredentialGrantID: grant.ID, SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, TargetNodeID: root.ID, Input: source.Text, Reason: "semantic_backfill"})
+	attribution := backfillCredentialOwnerAttribution(credential)
+	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{ModelEndpointID: endpoint.ID, ModelID: model.ID, CredentialID: credential.ID, CredentialGrantID: grant.ID, SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, TargetNodeID: root.ID, OnBehalfOfPrincipalID: attribution, EffectivePrincipalID: attribution, Input: source.Text, Reason: "semantic_backfill"})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
@@ -117,6 +129,17 @@ func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIn
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
 	return rec, nil, nil
+}
+
+func backfillCredentialOwnerAttribution(credential domainsemantic.InferenceCredential) identity.UserID {
+	if credential.OwnerType != domainsemantic.CredentialOwnerUser {
+		return uuid.Nil
+	}
+	id, err := uuid.Parse(strings.TrimSpace(credential.OwnerID))
+	if err != nil || id == uuid.Nil {
+		return uuid.Nil
+	}
+	return identity.UserID(id)
 }
 
 func (r Runner) listVectorRecords(ctx context.Context, index domainsemantic.SemanticIndex, model domainsemantic.InferenceModel) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
