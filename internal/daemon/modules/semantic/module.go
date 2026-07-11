@@ -36,6 +36,7 @@ import (
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 )
 
 var _ daemonruntime.Starter = (*Module)(nil)
@@ -631,7 +632,7 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, SkipIndex: m.skipDirectOnlyIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 }
 
 func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error) {
@@ -652,7 +653,7 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
-	return semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig)}.ProcessOnce(ctx, in.Limit)
+	return semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipDirectOnlyWorkItem}.ProcessOnce(ctx, in.Limit)
 }
 
 func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error) {
@@ -673,6 +674,11 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 	for _, index := range indexes {
 		if index.ID == in.SemanticIndexID {
 			domainID = index.DomainID
+			if skip, err := m.skipDirectOnlyIndex(ctx, index); err != nil {
+				return semanticbackfill.Result{}, err
+			} else if skip {
+				return semanticbackfill.Result{}, fmt.Errorf("direct_only domains are excluded from semantic maintenance")
+			}
 			break
 		}
 	}
@@ -706,6 +712,29 @@ func (m *Module) MigrateLegacyEmbeddings(ctx context.Context, in LegacyMigration
 		return semanticmigration.LegacyEmbeddingResult{}, err
 	}
 	return semanticmigration.MigrateLegacyEmbeddings(ctx, semanticmigration.LegacyEmbeddingInput{OwnerUserID: ownerID, SpaceID: in.SpaceID, DomainID: in.DomainID, ProfileRef: in.ProfileRef, AllowBackgroundUse: in.AllowBackgroundUse, AddAllowPolicy: in.AddAllowPolicy, Strict: in.Strict, DryRun: in.DryRun, Limit: in.Limit, Catalog: cat, EmbeddingManager: embeddings, GlobalManager: m.GlobalManager(), SpaceManager: spaceMgr, EncryptSecret: m.EncryptSecret})
+}
+
+func (m *Module) skipDirectOnlyIndex(ctx context.Context, index domainsemantic.SemanticIndex) (bool, error) {
+	return m.isDirectOnlyDomain(ctx, index.DomainID)
+}
+
+func (m *Module) skipDirectOnlyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (bool, error) {
+	return m.isDirectOnlyDomain(ctx, item.DomainID)
+}
+
+func (m *Module) isDirectOnlyDomain(ctx context.Context, domainID graph.DomainID) (bool, error) {
+	if domainID == graph.DomainID(uuid.Nil) {
+		return false, nil
+	}
+	domains := storedomains.NewManager()
+	if err := domains.Init(ctx, filepath.Join(m.dataDir, "meta")); err != nil {
+		return false, err
+	}
+	domain, err := domains.GetByID(ctx, domainID)
+	if err != nil {
+		return false, err
+	}
+	return graph.NormalizeDomainDiscoveryMode(domain.DiscoveryMode) == graph.DomainDiscoveryModeDirectOnly, nil
 }
 
 func (m *Module) graphReader(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (sessionapi.Session, error) {

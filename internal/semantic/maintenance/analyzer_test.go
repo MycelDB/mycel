@@ -213,6 +213,36 @@ func TestAnalyzerDropsIrrelevantSelfPolicyNode(t *testing.T) {
 	}
 }
 
+func TestAnalyzerSkipIndexDoesNotEnqueueDirtyWork(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	idx, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true})
+	if err != nil {
+		t.Fatalf("index upsert failed: %v", err)
+	}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Content: "node"}}}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("append event failed: %v", err)
+	}
+	res, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, SkipIndex: func(context.Context, domainsemantic.SemanticIndex) (bool, error) { return true, nil }}).AnalyzeOnce(ctx, AnalyzeInput{})
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	if res.ProcessedEvents != 0 || res.EnqueuedItems != 0 {
+		t.Fatalf("unexpected result %+v", res)
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil {
+		t.Fatalf("list dirty work failed: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no dirty work for skipped index %s, got %+v", idx.ID, items)
+	}
+}
+
 func newAnalyzerManagers(t *testing.T, ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.SpaceManager, storesemantic.MaintenanceManager) {
 	t.Helper()
 	root := t.TempDir()
