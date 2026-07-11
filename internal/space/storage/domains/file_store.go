@@ -18,14 +18,15 @@ import (
 const domainsStoreFile = "domains.json"
 
 type storedDomain struct {
-	ID          graph.DomainID      `json:"id"`
-	SpaceID     domainspace.SpaceID `json:"space_id"`
-	Key         string              `json:"key"`
-	Name        string              `json:"name"`
-	Description string              `json:"description,omitempty"`
-	Default     bool                `json:"default"`
-	CreatedAt   time.Time           `json:"created_at"`
-	UpdatedAt   time.Time           `json:"updated_at"`
+	ID            graph.DomainID            `json:"id"`
+	SpaceID       domainspace.SpaceID       `json:"space_id"`
+	Key           string                    `json:"key"`
+	Name          string                    `json:"name"`
+	Description   string                    `json:"description,omitempty"`
+	DiscoveryMode graph.DomainDiscoveryMode `json:"discovery_mode"`
+	Default       bool                      `json:"default"`
+	CreatedAt     time.Time                 `json:"created_at"`
+	UpdatedAt     time.Time                 `json:"updated_at"`
 }
 
 type storedState struct {
@@ -80,6 +81,9 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 		state.Domains = domains
 	}
 	m.domains = state.Domains
+	for i := range m.domains {
+		m.domains[i].DiscoveryMode = graph.NormalizeDomainDiscoveryMode(m.domains[i].DiscoveryMode)
+	}
 	m.rebuildIndex()
 	return nil
 }
@@ -109,8 +113,12 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (graph.Doma
 			return graph.Domain{}, fmt.Errorf("%w: default domain already exists", ErrConflict)
 		}
 	}
+	discoveryMode := graph.NormalizeDomainDiscoveryMode(in.DiscoveryMode)
+	if !graph.ValidDomainDiscoveryMode(discoveryMode) {
+		return graph.Domain{}, fmt.Errorf("%w: discovery_mode must be normal or direct_only", ErrInvalidInput)
+	}
 	now := time.Now().UTC()
-	d := storedDomain{ID: uuid.New(), SpaceID: in.SpaceID, Key: key, Name: name, Description: strings.TrimSpace(in.Description), Default: in.Default, CreatedAt: now, UpdatedAt: now}
+	d := storedDomain{ID: uuid.New(), SpaceID: in.SpaceID, Key: key, Name: name, Description: strings.TrimSpace(in.Description), DiscoveryMode: discoveryMode, Default: in.Default, CreatedAt: now, UpdatedAt: now}
 	m.domains = append(m.domains, d)
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
@@ -221,6 +229,13 @@ func (m *defaultManager) Update(ctx context.Context, in UpdateInput) (graph.Doma
 	if in.Description != nil {
 		updated.Description = strings.TrimSpace(*in.Description)
 	}
+	if in.DiscoveryMode != nil {
+		discoveryMode := graph.NormalizeDomainDiscoveryMode(*in.DiscoveryMode)
+		if !graph.ValidDomainDiscoveryMode(discoveryMode) {
+			return graph.Domain{}, fmt.Errorf("%w: discovery_mode must be normal or direct_only", ErrInvalidInput)
+		}
+		updated.DiscoveryMode = discoveryMode
+	}
 	updated.UpdatedAt = time.Now().UTC()
 	m.domains[idx] = updated
 	if err := m.persist(); err != nil {
@@ -299,7 +314,7 @@ func (m *defaultManager) persist() error {
 }
 
 func (d storedDomain) toModel() graph.Domain {
-	return graph.Domain{ID: d.ID, SpaceID: d.SpaceID, Key: d.Key, Name: d.Name, Description: d.Description, Default: d.Default, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt}
+	return graph.Domain{ID: d.ID, SpaceID: d.SpaceID, Key: d.Key, Name: d.Name, Description: d.Description, DiscoveryMode: graph.NormalizeDomainDiscoveryMode(d.DiscoveryMode), Default: d.Default, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt}
 }
 
 func normalizeKey(key string) string {

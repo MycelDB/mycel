@@ -46,6 +46,13 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if req.GetQuery() == nil || req.GetQuery().GetMatch() == nil || req.GetQuery().GetMatch().GetStart() == nil {
 		return nil, status.Error(codes.InvalidArgument, "query.match.start is required")
 	}
+	domain, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, tx.SpaceID, tx.DomainID, "")
+	if err != nil {
+		return nil, mapDomainError(err, "query domain")
+	}
+	if domaingraph.NormalizeDomainDiscoveryMode(domain.DiscoveryMode) == domaingraph.DomainDiscoveryModeDirectOnly {
+		return nil, status.Error(codes.FailedPrecondition, "direct_only domains are excluded from broad query execution")
+	}
 	nodes, err := s.allNodes(ctx, tx)
 	if err != nil {
 		return nil, mapGraphError(err, "query list nodes")

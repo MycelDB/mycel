@@ -372,7 +372,11 @@ func (m *Module) ListDomains(ctx context.Context, spaceID string, includeSystem 
 	if err != nil {
 		return nil, err
 	}
-	return m.domains.ListBySpace(ctx, sp.SpaceID)
+	domains, err := m.domains.ListBySpace(ctx, sp.SpaceID)
+	if err != nil {
+		return nil, err
+	}
+	return filterDiscoverableDomains(domains), nil
 }
 
 func (m *Module) GetDomainByRef(ctx context.Context, spaceID string, domainRef string) (graph.Domain, error) {
@@ -405,7 +409,11 @@ func (m *Module) ListVisibleDomains(ctx context.Context, userID string, spaceID 
 	if !canRead {
 		return nil, ErrSpaceNotFound
 	}
-	return m.domains.ListBySpace(ctx, sp.SpaceID)
+	domains, err := m.domains.ListBySpace(ctx, sp.SpaceID)
+	if err != nil {
+		return nil, err
+	}
+	return filterDiscoverableDomains(domains), nil
 }
 
 func (m *Module) GetVisibleDomain(ctx context.Context, userID string, spaceID string, domainID string, key string) (graph.Domain, error) {
@@ -452,7 +460,7 @@ func (m *Module) CreateDomain(ctx context.Context, userID string, input CreateDo
 	if key == "" {
 		key = input.Name
 	}
-	return m.domains.Create(ctx, storedomains.CreateInput{SpaceID: sp.SpaceID, Key: key, Name: input.Name, Description: input.Description})
+	return m.domains.Create(ctx, storedomains.CreateInput{SpaceID: sp.SpaceID, Key: key, Name: input.Name, Description: input.Description, DiscoveryMode: input.DiscoveryMode})
 }
 
 func (m *Module) UpdateDomain(ctx context.Context, userID string, input UpdateDomainInput) (graph.Domain, error) {
@@ -483,7 +491,17 @@ func (m *Module) UpdateDomain(ctx context.Context, userID string, input UpdateDo
 	if domain.Default && input.Name != nil && strings.TrimSpace(*input.Name) != domain.Name {
 		return graph.Domain{}, fmt.Errorf("%w: default domain name cannot be changed", ErrInvalidInput)
 	}
-	return m.domains.Update(ctx, storedomains.UpdateInput{DomainID: domain.ID, Name: input.Name, Description: input.Description})
+	return m.domains.Update(ctx, storedomains.UpdateInput{DomainID: domain.ID, Name: input.Name, Description: input.Description, DiscoveryMode: input.DiscoveryMode})
+}
+
+func filterDiscoverableDomains(domains []graph.Domain) []graph.Domain {
+	out := domains[:0]
+	for _, domain := range domains {
+		if graph.NormalizeDomainDiscoveryMode(domain.DiscoveryMode) != graph.DomainDiscoveryModeDirectOnly {
+			out = append(out, domain)
+		}
+	}
+	return out
 }
 
 func (m *Module) DeleteDomain(ctx context.Context, userID string, spaceID string, domainID string) error {

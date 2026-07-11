@@ -80,7 +80,7 @@ func (s *DomainService) CreateDomain(ctx context.Context, req *clientv1.CreateDo
 	if err != nil {
 		return nil, err
 	}
-	domain, err := s.spaces.CreateDomain(ctx, principal.UserID, daemonspace.CreateDomainInput{SpaceID: req.GetSpaceId(), Key: req.GetKey(), Name: req.GetName(), Description: req.GetDescription()})
+	domain, err := s.spaces.CreateDomain(ctx, principal.UserID, daemonspace.CreateDomainInput{SpaceID: req.GetSpaceId(), Key: req.GetKey(), Name: req.GetName(), Description: req.GetDescription(), DiscoveryMode: discoveryModeFromProto(req.GetDiscoveryMode())})
 	if err != nil {
 		return nil, mapDomainError(err, "create domain")
 	}
@@ -98,6 +98,7 @@ func (s *DomainService) UpdateDomain(ctx context.Context, req *clientv1.UpdateDo
 	}
 	var name *string
 	var description *string
+	var discoveryMode *graph.DomainDiscoveryMode
 	for _, path := range req.GetUpdateMask().GetPaths() {
 		switch strings.TrimSpace(path) {
 		case "name":
@@ -106,6 +107,9 @@ func (s *DomainService) UpdateDomain(ctx context.Context, req *clientv1.UpdateDo
 		case "description":
 			v := req.GetDomain().GetDescription()
 			description = &v
+		case "discovery_mode":
+			v := discoveryModeFromProto(req.GetDomain().GetDiscoveryMode())
+			discoveryMode = &v
 		default:
 			return nil, status.Errorf(codes.InvalidArgument, "unsupported update_mask path %q", path)
 		}
@@ -113,7 +117,7 @@ func (s *DomainService) UpdateDomain(ctx context.Context, req *clientv1.UpdateDo
 	if req.GetUpdateMask() == nil || len(req.GetUpdateMask().GetPaths()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "update_mask is required")
 	}
-	domain, err := s.spaces.UpdateDomain(ctx, principal.UserID, daemonspace.UpdateDomainInput{SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), Name: name, Description: description})
+	domain, err := s.spaces.UpdateDomain(ctx, principal.UserID, daemonspace.UpdateDomainInput{SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), Name: name, Description: description, DiscoveryMode: discoveryMode})
 	if err != nil {
 		return nil, mapDomainError(err, "update domain")
 	}
@@ -150,7 +154,27 @@ func MapDomain(domain graph.Domain, access daemonspace.EffectiveAccess) *clientv
 			capabilities = append(capabilities, mapped)
 		}
 	}
-	return &clientv1.Domain{SpaceId: domain.SpaceID.String(), DomainId: domain.ID.String(), Name: domain.Name, Description: domain.Description, State: clientv1.DomainState_DOMAIN_STATE_ACTIVE, Default: domain.Default, System: false, CreateTime: timestampOrNil(domain.CreatedAt), UpdateTime: timestampOrNil(domain.UpdatedAt), CallerAccess: &commonv1.EffectiveAccess{Roles: roles, Capabilities: capabilities}, Key: domain.Key}
+	return &clientv1.Domain{SpaceId: domain.SpaceID.String(), DomainId: domain.ID.String(), Name: domain.Name, Description: domain.Description, State: clientv1.DomainState_DOMAIN_STATE_ACTIVE, Default: domain.Default, System: false, CreateTime: timestampOrNil(domain.CreatedAt), UpdateTime: timestampOrNil(domain.UpdatedAt), CallerAccess: &commonv1.EffectiveAccess{Roles: roles, Capabilities: capabilities}, Key: domain.Key, DiscoveryMode: discoveryModeToProto(domain.DiscoveryMode)}
+}
+
+func discoveryModeFromProto(mode clientv1.DomainDiscoveryMode) graph.DomainDiscoveryMode {
+	switch mode {
+	case clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_DIRECT_ONLY:
+		return graph.DomainDiscoveryModeDirectOnly
+	case clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_NORMAL, clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_UNSPECIFIED:
+		return graph.DomainDiscoveryModeNormal
+	default:
+		return graph.DomainDiscoveryMode(mode.String())
+	}
+}
+
+func discoveryModeToProto(mode graph.DomainDiscoveryMode) clientv1.DomainDiscoveryMode {
+	switch graph.NormalizeDomainDiscoveryMode(mode) {
+	case graph.DomainDiscoveryModeDirectOnly:
+		return clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_DIRECT_ONLY
+	default:
+		return clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_NORMAL
+	}
 }
 
 func mapDomainError(err error, action string) error {

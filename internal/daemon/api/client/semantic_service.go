@@ -122,8 +122,12 @@ func (s *SemanticService) authorizeDomainRead(ctx context.Context, spaceIDText, 
 	if err != nil {
 		return principalUser{}, uuid.Nil, uuid.Nil, err
 	}
-	if _, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, spaceID.String(), domainID.String(), ""); err != nil {
+	domain, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, spaceID.String(), domainID.String(), "")
+	if err != nil {
 		return principalUser{}, uuid.Nil, uuid.Nil, mapDomainError(err, "semantic authorize domain")
+	}
+	if graph.NormalizeDomainDiscoveryMode(domain.DiscoveryMode) == graph.DomainDiscoveryModeDirectOnly {
+		return principalUser{}, uuid.Nil, uuid.Nil, status.Error(codes.FailedPrecondition, "direct_only domains are excluded from semantic search and indexing")
 	}
 	return principalUser{UserID: principal.UserID}, spaceID, domainID, nil
 }
