@@ -18,14 +18,18 @@ import (
 const domainsStoreFile = "domains.json"
 
 type storedDomain struct {
-	ID          graph.DomainID      `json:"id"`
-	SpaceID     domainspace.SpaceID `json:"space_id"`
-	Key         string              `json:"key"`
-	Name        string              `json:"name"`
-	Description string              `json:"description,omitempty"`
-	Default     bool                `json:"default"`
-	CreatedAt   time.Time           `json:"created_at"`
-	UpdatedAt   time.Time           `json:"updated_at"`
+	ID            graph.DomainID            `json:"id"`
+	SpaceID       domainspace.SpaceID       `json:"space_id"`
+	Key           string                    `json:"key"`
+	Name          string                    `json:"name"`
+	Description   string                    `json:"description,omitempty"`
+	DiscoveryMode graph.DomainDiscoveryMode `json:"discovery_mode"`
+	SearchMode    graph.DomainSearchMode    `json:"search_mode"`
+	SemanticMode  graph.DomainSemanticMode  `json:"semantic_mode"`
+	ReadOnly      bool                      `json:"read_only"`
+	Default       bool                      `json:"default"`
+	CreatedAt     time.Time                 `json:"created_at"`
+	UpdatedAt     time.Time                 `json:"updated_at"`
 }
 
 type storedState struct {
@@ -80,6 +84,9 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 		state.Domains = domains
 	}
 	m.domains = state.Domains
+	for i := range m.domains {
+		m.domains[i] = normalizeStoredDomainPolicy(m.domains[i])
+	}
 	m.rebuildIndex()
 	return nil
 }
@@ -109,8 +116,20 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (graph.Doma
 			return graph.Domain{}, fmt.Errorf("%w: default domain already exists", ErrConflict)
 		}
 	}
+	discoveryMode := graph.NormalizeDomainDiscoveryMode(in.DiscoveryMode)
+	if !graph.ValidDomainDiscoveryMode(discoveryMode) {
+		return graph.Domain{}, fmt.Errorf("%w: discovery_mode must be normal, explicit_only, or hidden", ErrInvalidInput)
+	}
+	searchMode := graph.NormalizeDomainSearchMode(in.SearchMode)
+	if !graph.ValidDomainSearchMode(searchMode) {
+		return graph.Domain{}, fmt.Errorf("%w: search_mode must be normal, explicit_only, or disabled", ErrInvalidInput)
+	}
+	semanticMode := graph.NormalizeDomainSemanticMode(in.SemanticMode)
+	if !graph.ValidDomainSemanticMode(semanticMode) {
+		return graph.Domain{}, fmt.Errorf("%w: semantic_mode must be normal, explicit_only, or disabled", ErrInvalidInput)
+	}
 	now := time.Now().UTC()
-	d := storedDomain{ID: uuid.New(), SpaceID: in.SpaceID, Key: key, Name: name, Description: strings.TrimSpace(in.Description), Default: in.Default, CreatedAt: now, UpdatedAt: now}
+	d := storedDomain{ID: uuid.New(), SpaceID: in.SpaceID, Key: key, Name: name, Description: strings.TrimSpace(in.Description), DiscoveryMode: discoveryMode, SearchMode: searchMode, SemanticMode: semanticMode, ReadOnly: in.ReadOnly, Default: in.Default, CreatedAt: now, UpdatedAt: now}
 	m.domains = append(m.domains, d)
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
@@ -221,6 +240,30 @@ func (m *defaultManager) Update(ctx context.Context, in UpdateInput) (graph.Doma
 	if in.Description != nil {
 		updated.Description = strings.TrimSpace(*in.Description)
 	}
+	if in.DiscoveryMode != nil {
+		discoveryMode := graph.NormalizeDomainDiscoveryMode(*in.DiscoveryMode)
+		if !graph.ValidDomainDiscoveryMode(discoveryMode) {
+			return graph.Domain{}, fmt.Errorf("%w: discovery_mode must be normal, explicit_only, or hidden", ErrInvalidInput)
+		}
+		updated.DiscoveryMode = discoveryMode
+	}
+	if in.SearchMode != nil {
+		searchMode := graph.NormalizeDomainSearchMode(*in.SearchMode)
+		if !graph.ValidDomainSearchMode(searchMode) {
+			return graph.Domain{}, fmt.Errorf("%w: search_mode must be normal, explicit_only, or disabled", ErrInvalidInput)
+		}
+		updated.SearchMode = searchMode
+	}
+	if in.SemanticMode != nil {
+		semanticMode := graph.NormalizeDomainSemanticMode(*in.SemanticMode)
+		if !graph.ValidDomainSemanticMode(semanticMode) {
+			return graph.Domain{}, fmt.Errorf("%w: semantic_mode must be normal, explicit_only, or disabled", ErrInvalidInput)
+		}
+		updated.SemanticMode = semanticMode
+	}
+	if in.ReadOnly != nil {
+		updated.ReadOnly = *in.ReadOnly
+	}
 	updated.UpdatedAt = time.Now().UTC()
 	m.domains[idx] = updated
 	if err := m.persist(); err != nil {
@@ -299,7 +342,15 @@ func (m *defaultManager) persist() error {
 }
 
 func (d storedDomain) toModel() graph.Domain {
-	return graph.Domain{ID: d.ID, SpaceID: d.SpaceID, Key: d.Key, Name: d.Name, Description: d.Description, Default: d.Default, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt}
+	d = normalizeStoredDomainPolicy(d)
+	return graph.Domain{ID: d.ID, SpaceID: d.SpaceID, Key: d.Key, Name: d.Name, Description: d.Description, DiscoveryMode: d.DiscoveryMode, SearchMode: d.SearchMode, SemanticMode: d.SemanticMode, ReadOnly: d.ReadOnly, Default: d.Default, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt}
+}
+
+func normalizeStoredDomainPolicy(d storedDomain) storedDomain {
+	d.DiscoveryMode = graph.NormalizeDomainDiscoveryMode(d.DiscoveryMode)
+	d.SearchMode = graph.NormalizeDomainSearchMode(d.SearchMode)
+	d.SemanticMode = graph.NormalizeDomainSemanticMode(d.SemanticMode)
+	return d
 }
 
 func normalizeKey(key string) string {

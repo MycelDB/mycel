@@ -46,17 +46,25 @@ type CreateSpaceInput struct {
 }
 
 type CreateDomainInput struct {
-	SpaceID     string
-	Key         string
-	Name        string
-	Description string
+	SpaceID       string
+	Key           string
+	Name          string
+	Description   string
+	DiscoveryMode graph.DomainDiscoveryMode
+	SearchMode    graph.DomainSearchMode
+	SemanticMode  graph.DomainSemanticMode
+	ReadOnly      bool
 }
 
 type UpdateDomainInput struct {
-	SpaceID     string
-	DomainID    string
-	Name        *string
-	Description *string
+	SpaceID       string
+	DomainID      string
+	Name          *string
+	Description   *string
+	DiscoveryMode *graph.DomainDiscoveryMode
+	SearchMode    *graph.DomainSearchMode
+	SemanticMode  *graph.DomainSemanticMode
+	ReadOnly      *bool
 }
 
 type SpaceGrant struct {

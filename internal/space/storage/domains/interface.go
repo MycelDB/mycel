@@ -9,17 +9,25 @@ import (
 
 // CreateInput is the create payload managed by Manager.
 type CreateInput struct {
-	SpaceID     domainspace.SpaceID
-	Key         string
-	Name        string
-	Description string
-	Default     bool
+	SpaceID       domainspace.SpaceID
+	Key           string
+	Name          string
+	Description   string
+	DiscoveryMode graph.DomainDiscoveryMode
+	SearchMode    graph.DomainSearchMode
+	SemanticMode  graph.DomainSemanticMode
+	ReadOnly      bool
+	Default       bool
 }
 
 type UpdateInput struct {
-	DomainID    graph.DomainID
-	Name        *string
-	Description *string
+	DomainID      graph.DomainID
+	Name          *string
+	Description   *string
+	DiscoveryMode *graph.DomainDiscoveryMode
+	SearchMode    *graph.DomainSearchMode
+	SemanticMode  *graph.DomainSemanticMode
+	ReadOnly      *bool
 }
 
 // Manager manages graph domains inside spaces.

@@ -98,6 +98,7 @@ type TransactionChangePublisher interface {
 type TransactionService struct {
 	clientv1.UnimplementedTransactionServiceServer
 	sessions  daemonsession.Manager
+	spaces    daemonspace.Manager
 	graphs    TransactionGraphCommitter
 	publisher TransactionChangePublisher
 }
@@ -111,6 +112,9 @@ func NewTransactionService(sessions daemonsession.Manager, args ...any) *Transac
 		if publisher, ok := arg.(TransactionChangePublisher); ok {
 			service.publisher = publisher
 		}
+		if spaces, ok := arg.(daemonspace.Manager); ok {
+			service.spaces = spaces
+		}
 	}
 	return service
 }
@@ -121,11 +125,24 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 		return nil, err
 	}
 	input := daemonsession.BeginTransactionInput{UserID: principal.UserID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode())}
-	if s.graphs != nil {
-		session, err := s.sessions.GetSession(ctx, principal.UserID, req.GetSessionId())
+	var session daemonsession.GraphSession
+	if s.graphs != nil || s.spaces != nil {
+		var err error
+		session, err = s.sessions.GetSession(ctx, principal.UserID, req.GetSessionId())
 		if err != nil {
 			return nil, mapSessionError(err, "begin transaction")
 		}
+	}
+	if s.spaces != nil {
+		domain, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, session.SpaceID, session.DomainID, "")
+		if err != nil {
+			return nil, mapDomainError(err, "begin transaction domain")
+		}
+		if domain.ReadOnly && input.Mode != daemonsession.TransactionModeReadOnly {
+			return nil, status.Error(codes.FailedPrecondition, "domain is read-only")
+		}
+	}
+	if s.graphs != nil {
 		baseRevision, err := s.graphs.CurrentRevision(ctx, session.SpaceID)
 		if err != nil {
 			return nil, mapGraphError(err, "begin transaction revision")

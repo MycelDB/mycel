@@ -27,6 +27,7 @@ type Analyzer struct {
 	MaintenanceManager storesemantic.MaintenanceManager
 	GraphReader        GraphReader
 	DirtyCooldown      time.Duration
+	SkipIndex          func(context.Context, domainsemantic.SemanticIndex) (bool, error)
 }
 
 type AnalyzeInput struct {
@@ -71,6 +72,15 @@ func (a Analyzer) AnalyzeOnce(ctx context.Context, in AnalyzeInput) (AnalyzeResu
 	for _, index := range indexes {
 		if !index.Enabled || (in.SemanticIndexID != uuid.Nil && index.ID != in.SemanticIndexID) {
 			continue
+		}
+		if a.SkipIndex != nil {
+			skip, err := a.SkipIndex(ctx, index)
+			if err != nil {
+				return result, err
+			}
+			if skip {
+				continue
+			}
 		}
 		state := stateByIndex[index.ID]
 		state.SemanticIndexID = index.ID
@@ -368,6 +378,7 @@ type Worker struct {
 	Backfill           BackfillRunner
 	VectorBackend      vectorstore.Backend
 	Config             WorkerConfig
+	SkipWorkItem       func(context.Context, domainsemantic.SemanticDirtyWorkItem) (bool, error)
 	ClassifyFailure    func(error, domainsemantic.SemanticDirtyWorkItem, WorkerConfig, time.Time) storesemantic.WorkFailure
 	Logger             *slog.Logger
 }
@@ -442,6 +453,19 @@ func (w Worker) ProcessOnce(ctx context.Context, limit int) (WorkerResult, error
 
 func (w Worker) processItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem, cfg WorkerConfig) (WorkerResult, error) {
 	result := WorkerResult{Processed: 1}
+	if w.SkipWorkItem != nil {
+		skip, err := w.SkipWorkItem(ctx, item)
+		if err != nil {
+			return result, err
+		}
+		if skip {
+			result.Completed++
+			if completeErr := w.MaintenanceManager.CompleteWork(ctx, item.ID, storesemantic.WorkResult{}); completeErr != nil {
+				return result, completeErr
+			}
+			return result, nil
+		}
+	}
 	err := w.runItem(ctx, item)
 	if err != nil {
 		result.Failed++
