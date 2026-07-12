@@ -14,6 +14,9 @@ type CreateInput struct {
 	Name          string
 	Description   string
 	DiscoveryMode graph.DomainDiscoveryMode
+	SearchMode    graph.DomainSearchMode
+	SemanticMode  graph.DomainSemanticMode
+	ReadOnly      bool
 	Default       bool
 }
 
@@ -22,6 +25,9 @@ type UpdateInput struct {
 	Name          *string
 	Description   *string
 	DiscoveryMode *graph.DomainDiscoveryMode
+	SearchMode    *graph.DomainSearchMode
+	SemanticMode  *graph.DomainSemanticMode
+	ReadOnly      *bool
 }
 
 // Manager manages graph domains inside spaces.

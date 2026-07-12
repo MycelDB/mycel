@@ -11,7 +11,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/model"
 )
 
-func TestModuleDirectOnlyDomainIsDirectlyAddressableButNotListed(t *testing.T) {
+func TestModuleExplicitOnlyDomainIsDirectlyAddressableButNotListed(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
 	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, Logger: slog.Default()}); !result.OK {
@@ -22,7 +22,7 @@ func TestModuleDirectOnlyDomainIsDirectlyAddressableButNotListed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	direct, err := m.CreateDomain(ctx, ownerID, CreateDomainInput{SpaceID: sp.SpaceID.String(), Key: "direct", Name: "Direct", DiscoveryMode: graph.DomainDiscoveryModeDirectOnly})
+	explicit, err := m.CreateDomain(ctx, ownerID, CreateDomainInput{SpaceID: sp.SpaceID.String(), Key: "explicit", Name: "Explicit", DiscoveryMode: graph.DomainDiscoveryModeExplicitOnly})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,20 +31,20 @@ func TestModuleDirectOnlyDomainIsDirectlyAddressableButNotListed(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, domain := range listed {
-		if domain.ID == direct.ID {
-			t.Fatalf("direct_only domain was listed: %#v", listed)
+		if domain.ID == explicit.ID {
+			t.Fatalf("explicit-only domain was listed: %#v", listed)
 		}
 	}
-	got, err := m.GetVisibleDomain(ctx, ownerID, sp.SpaceID.String(), direct.ID.String(), "")
+	got, err := m.GetVisibleDomain(ctx, ownerID, sp.SpaceID.String(), explicit.ID.String(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ID != direct.ID || got.DiscoveryMode != graph.DomainDiscoveryModeDirectOnly {
-		t.Fatalf("direct get = %#v, want %#v", got, direct)
+	if got.ID != explicit.ID || got.DiscoveryMode != graph.DomainDiscoveryModeExplicitOnly {
+		t.Fatalf("direct get = %#v, want %#v", got, explicit)
 	}
 }
 
-func TestModuleUpdateDiscoveryModeRoundTrip(t *testing.T) {
+func TestModuleUpdateDomainPolicyRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
 	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, Logger: slog.Default()}); !result.OK {
@@ -59,12 +59,15 @@ func TestModuleUpdateDiscoveryModeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mode := graph.DomainDiscoveryModeDirectOnly
-	updated, err := m.UpdateDomain(ctx, ownerID, UpdateDomainInput{SpaceID: sp.SpaceID.String(), DomainID: domain.ID.String(), DiscoveryMode: &mode})
+	discoveryMode := graph.DomainDiscoveryModeExplicitOnly
+	searchMode := graph.DomainSearchModeExplicitOnly
+	semanticMode := graph.DomainSemanticModeExplicitOnly
+	readOnly := true
+	updated, err := m.UpdateDomain(ctx, ownerID, UpdateDomainInput{SpaceID: sp.SpaceID.String(), DomainID: domain.ID.String(), DiscoveryMode: &discoveryMode, SearchMode: &searchMode, SemanticMode: &semanticMode, ReadOnly: &readOnly})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.DiscoveryMode != graph.DomainDiscoveryModeDirectOnly {
-		t.Fatalf("updated discovery mode = %q, want direct_only", updated.DiscoveryMode)
+	if updated.DiscoveryMode != graph.DomainDiscoveryModeExplicitOnly || updated.SearchMode != graph.DomainSearchModeExplicitOnly || updated.SemanticMode != graph.DomainSemanticModeExplicitOnly || !updated.ReadOnly {
+		t.Fatalf("updated policy = %+v", updated)
 	}
 }

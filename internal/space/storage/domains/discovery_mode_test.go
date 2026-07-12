@@ -13,7 +13,7 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-func TestManagerDiscoveryModeDefaultsAndRoundTrips(t *testing.T) {
+func TestManagerDomainPolicyDefaultsAndRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	m := NewManager()
 	if err := m.Init(ctx, t.TempDir()); err != nil {
@@ -25,50 +25,62 @@ func TestManagerDiscoveryModeDefaultsAndRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if normal.DiscoveryMode != graph.DomainDiscoveryModeNormal {
-		t.Fatalf("default discovery mode = %q, want normal", normal.DiscoveryMode)
+	if normal.DiscoveryMode != graph.DomainDiscoveryModeNormal || normal.SearchMode != graph.DomainSearchModeNormal || normal.SemanticMode != graph.DomainSemanticModeNormal || normal.ReadOnly {
+		t.Fatalf("default domain policy = %+v, want normal/search normal/semantic normal/writable", normal)
 	}
 
-	direct, err := m.Create(ctx, CreateInput{SpaceID: spaceID, Key: "direct", DiscoveryMode: graph.DomainDiscoveryModeDirectOnly})
+	explicit, err := m.Create(ctx, CreateInput{SpaceID: spaceID, Key: "manual", DiscoveryMode: graph.DomainDiscoveryModeExplicitOnly, SearchMode: graph.DomainSearchModeExplicitOnly, SemanticMode: graph.DomainSemanticModeExplicitOnly, ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if direct.DiscoveryMode != graph.DomainDiscoveryModeDirectOnly {
-		t.Fatalf("discovery mode = %q, want direct_only", direct.DiscoveryMode)
+	if explicit.DiscoveryMode != graph.DomainDiscoveryModeExplicitOnly || explicit.SearchMode != graph.DomainSearchModeExplicitOnly || explicit.SemanticMode != graph.DomainSemanticModeExplicitOnly || !explicit.ReadOnly {
+		t.Fatalf("explicit domain policy = %+v", explicit)
 	}
 
-	got, err := m.GetByID(ctx, direct.ID)
+	got, err := m.GetByID(ctx, explicit.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.DiscoveryMode != graph.DomainDiscoveryModeDirectOnly {
-		t.Fatalf("round-trip discovery mode = %q, want direct_only", got.DiscoveryMode)
+	if got.DiscoveryMode != graph.DomainDiscoveryModeExplicitOnly || got.SearchMode != graph.DomainSearchModeExplicitOnly || got.SemanticMode != graph.DomainSemanticModeExplicitOnly || !got.ReadOnly {
+		t.Fatalf("round-trip domain policy = %+v", got)
 	}
 }
 
-func TestManagerDiscoveryModeRejectsInvalid(t *testing.T) {
+func TestManagerDomainPolicyRejectsInvalid(t *testing.T) {
 	ctx := context.Background()
 	m := NewManager()
 	if err := m.Init(ctx, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	spaceID := domainspace.SpaceID(uuid.New())
-	_, err := m.Create(ctx, CreateInput{SpaceID: spaceID, Key: "bad", DiscoveryMode: graph.DomainDiscoveryMode("private")})
-	if err == nil {
+	if _, err := m.Create(ctx, CreateInput{SpaceID: spaceID, Key: "bad", DiscoveryMode: graph.DomainDiscoveryMode("private")}); err == nil {
 		t.Fatal("expected invalid discovery mode error")
+	}
+	if _, err := m.Create(ctx, CreateInput{SpaceID: spaceID, Key: "bad-search", SearchMode: graph.DomainSearchMode("private")}); err == nil {
+		t.Fatal("expected invalid search mode error")
+	}
+	if _, err := m.Create(ctx, CreateInput{SpaceID: spaceID, Key: "bad-semantic", SemanticMode: graph.DomainSemanticMode("private")}); err == nil {
+		t.Fatal("expected invalid semantic mode error")
 	}
 	domain, err := m.Create(ctx, CreateInput{SpaceID: spaceID, Key: "good"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	invalid := graph.DomainDiscoveryMode("private")
-	_, err = m.Update(ctx, UpdateInput{DomainID: domain.ID, DiscoveryMode: &invalid})
-	if err == nil {
+	invalidDiscovery := graph.DomainDiscoveryMode("private")
+	if _, err = m.Update(ctx, UpdateInput{DomainID: domain.ID, DiscoveryMode: &invalidDiscovery}); err == nil {
 		t.Fatal("expected invalid discovery mode update error")
+	}
+	invalidSearch := graph.DomainSearchMode("private")
+	if _, err = m.Update(ctx, UpdateInput{DomainID: domain.ID, SearchMode: &invalidSearch}); err == nil {
+		t.Fatal("expected invalid search mode update error")
+	}
+	invalidSemantic := graph.DomainSemanticMode("private")
+	if _, err = m.Update(ctx, UpdateInput{DomainID: domain.ID, SemanticMode: &invalidSemantic}); err == nil {
+		t.Fatal("expected invalid semantic mode update error")
 	}
 }
 
-func TestManagerDiscoveryModeNormalizesMissingStoredValue(t *testing.T) {
+func TestManagerDomainPolicyNormalizesMissingStoredValues(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	spaceID := domainspace.SpaceID(uuid.New())
@@ -92,7 +104,7 @@ func TestManagerDiscoveryModeNormalizesMissingStoredValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.DiscoveryMode != graph.DomainDiscoveryModeNormal {
-		t.Fatalf("legacy discovery mode = %q, want normal", got.DiscoveryMode)
+	if got.DiscoveryMode != graph.DomainDiscoveryModeNormal || got.SearchMode != graph.DomainSearchModeNormal || got.SemanticMode != graph.DomainSemanticModeNormal || got.ReadOnly {
+		t.Fatalf("legacy policy = %+v, want default normal policy", got)
 	}
 }

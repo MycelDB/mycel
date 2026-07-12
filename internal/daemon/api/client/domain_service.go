@@ -80,7 +80,7 @@ func (s *DomainService) CreateDomain(ctx context.Context, req *clientv1.CreateDo
 	if err != nil {
 		return nil, err
 	}
-	domain, err := s.spaces.CreateDomain(ctx, principal.UserID, daemonspace.CreateDomainInput{SpaceID: req.GetSpaceId(), Key: req.GetKey(), Name: req.GetName(), Description: req.GetDescription(), DiscoveryMode: discoveryModeFromProto(req.GetDiscoveryMode())})
+	domain, err := s.spaces.CreateDomain(ctx, principal.UserID, daemonspace.CreateDomainInput{SpaceID: req.GetSpaceId(), Key: req.GetKey(), Name: req.GetName(), Description: req.GetDescription(), DiscoveryMode: discoveryModeFromProto(req.GetDiscoveryMode()), SearchMode: searchModeFromProto(req.GetSearchMode()), SemanticMode: semanticModeFromProto(req.GetSemanticMode()), ReadOnly: req.GetReadOnly()})
 	if err != nil {
 		return nil, mapDomainError(err, "create domain")
 	}
@@ -99,6 +99,9 @@ func (s *DomainService) UpdateDomain(ctx context.Context, req *clientv1.UpdateDo
 	var name *string
 	var description *string
 	var discoveryMode *graph.DomainDiscoveryMode
+	var searchMode *graph.DomainSearchMode
+	var semanticMode *graph.DomainSemanticMode
+	var readOnly *bool
 	for _, path := range req.GetUpdateMask().GetPaths() {
 		switch strings.TrimSpace(path) {
 		case "name":
@@ -110,6 +113,15 @@ func (s *DomainService) UpdateDomain(ctx context.Context, req *clientv1.UpdateDo
 		case "discovery_mode":
 			v := discoveryModeFromProto(req.GetDomain().GetDiscoveryMode())
 			discoveryMode = &v
+		case "search_mode":
+			v := searchModeFromProto(req.GetDomain().GetSearchMode())
+			searchMode = &v
+		case "semantic_mode":
+			v := semanticModeFromProto(req.GetDomain().GetSemanticMode())
+			semanticMode = &v
+		case "read_only":
+			v := req.GetDomain().GetReadOnly()
+			readOnly = &v
 		default:
 			return nil, status.Errorf(codes.InvalidArgument, "unsupported update_mask path %q", path)
 		}
@@ -117,7 +129,7 @@ func (s *DomainService) UpdateDomain(ctx context.Context, req *clientv1.UpdateDo
 	if req.GetUpdateMask() == nil || len(req.GetUpdateMask().GetPaths()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "update_mask is required")
 	}
-	domain, err := s.spaces.UpdateDomain(ctx, principal.UserID, daemonspace.UpdateDomainInput{SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), Name: name, Description: description, DiscoveryMode: discoveryMode})
+	domain, err := s.spaces.UpdateDomain(ctx, principal.UserID, daemonspace.UpdateDomainInput{SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), Name: name, Description: description, DiscoveryMode: discoveryMode, SearchMode: searchMode, SemanticMode: semanticMode, ReadOnly: readOnly})
 	if err != nil {
 		return nil, mapDomainError(err, "update domain")
 	}
@@ -154,13 +166,15 @@ func MapDomain(domain graph.Domain, access daemonspace.EffectiveAccess) *clientv
 			capabilities = append(capabilities, mapped)
 		}
 	}
-	return &clientv1.Domain{SpaceId: domain.SpaceID.String(), DomainId: domain.ID.String(), Name: domain.Name, Description: domain.Description, State: clientv1.DomainState_DOMAIN_STATE_ACTIVE, Default: domain.Default, System: false, CreateTime: timestampOrNil(domain.CreatedAt), UpdateTime: timestampOrNil(domain.UpdatedAt), CallerAccess: &commonv1.EffectiveAccess{Roles: roles, Capabilities: capabilities}, Key: domain.Key, DiscoveryMode: discoveryModeToProto(domain.DiscoveryMode)}
+	return &clientv1.Domain{SpaceId: domain.SpaceID.String(), DomainId: domain.ID.String(), Name: domain.Name, Description: domain.Description, State: clientv1.DomainState_DOMAIN_STATE_ACTIVE, Default: domain.Default, System: false, CreateTime: timestampOrNil(domain.CreatedAt), UpdateTime: timestampOrNil(domain.UpdatedAt), CallerAccess: &commonv1.EffectiveAccess{Roles: roles, Capabilities: capabilities}, Key: domain.Key, DiscoveryMode: discoveryModeToProto(domain.DiscoveryMode), SearchMode: searchModeToProto(domain.SearchMode), SemanticMode: semanticModeToProto(domain.SemanticMode), ReadOnly: domain.ReadOnly}
 }
 
 func discoveryModeFromProto(mode clientv1.DomainDiscoveryMode) graph.DomainDiscoveryMode {
 	switch mode {
-	case clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_DIRECT_ONLY:
-		return graph.DomainDiscoveryModeDirectOnly
+	case clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_EXPLICIT_ONLY:
+		return graph.DomainDiscoveryModeExplicitOnly
+	case clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_HIDDEN:
+		return graph.DomainDiscoveryModeHidden
 	case clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_NORMAL, clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_UNSPECIFIED:
 		return graph.DomainDiscoveryModeNormal
 	default:
@@ -170,10 +184,60 @@ func discoveryModeFromProto(mode clientv1.DomainDiscoveryMode) graph.DomainDisco
 
 func discoveryModeToProto(mode graph.DomainDiscoveryMode) clientv1.DomainDiscoveryMode {
 	switch graph.NormalizeDomainDiscoveryMode(mode) {
-	case graph.DomainDiscoveryModeDirectOnly:
-		return clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_DIRECT_ONLY
+	case graph.DomainDiscoveryModeExplicitOnly:
+		return clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_EXPLICIT_ONLY
+	case graph.DomainDiscoveryModeHidden:
+		return clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_HIDDEN
 	default:
 		return clientv1.DomainDiscoveryMode_DOMAIN_DISCOVERY_MODE_NORMAL
+	}
+}
+
+func searchModeFromProto(mode clientv1.DomainSearchMode) graph.DomainSearchMode {
+	switch mode {
+	case clientv1.DomainSearchMode_DOMAIN_SEARCH_MODE_EXPLICIT_ONLY:
+		return graph.DomainSearchModeExplicitOnly
+	case clientv1.DomainSearchMode_DOMAIN_SEARCH_MODE_DISABLED:
+		return graph.DomainSearchModeDisabled
+	case clientv1.DomainSearchMode_DOMAIN_SEARCH_MODE_NORMAL, clientv1.DomainSearchMode_DOMAIN_SEARCH_MODE_UNSPECIFIED:
+		return graph.DomainSearchModeNormal
+	default:
+		return graph.DomainSearchMode(mode.String())
+	}
+}
+
+func searchModeToProto(mode graph.DomainSearchMode) clientv1.DomainSearchMode {
+	switch graph.NormalizeDomainSearchMode(mode) {
+	case graph.DomainSearchModeExplicitOnly:
+		return clientv1.DomainSearchMode_DOMAIN_SEARCH_MODE_EXPLICIT_ONLY
+	case graph.DomainSearchModeDisabled:
+		return clientv1.DomainSearchMode_DOMAIN_SEARCH_MODE_DISABLED
+	default:
+		return clientv1.DomainSearchMode_DOMAIN_SEARCH_MODE_NORMAL
+	}
+}
+
+func semanticModeFromProto(mode clientv1.DomainSemanticMode) graph.DomainSemanticMode {
+	switch mode {
+	case clientv1.DomainSemanticMode_DOMAIN_SEMANTIC_MODE_EXPLICIT_ONLY:
+		return graph.DomainSemanticModeExplicitOnly
+	case clientv1.DomainSemanticMode_DOMAIN_SEMANTIC_MODE_DISABLED:
+		return graph.DomainSemanticModeDisabled
+	case clientv1.DomainSemanticMode_DOMAIN_SEMANTIC_MODE_NORMAL, clientv1.DomainSemanticMode_DOMAIN_SEMANTIC_MODE_UNSPECIFIED:
+		return graph.DomainSemanticModeNormal
+	default:
+		return graph.DomainSemanticMode(mode.String())
+	}
+}
+
+func semanticModeToProto(mode graph.DomainSemanticMode) clientv1.DomainSemanticMode {
+	switch graph.NormalizeDomainSemanticMode(mode) {
+	case graph.DomainSemanticModeExplicitOnly:
+		return clientv1.DomainSemanticMode_DOMAIN_SEMANTIC_MODE_EXPLICIT_ONLY
+	case graph.DomainSemanticModeDisabled:
+		return clientv1.DomainSemanticMode_DOMAIN_SEMANTIC_MODE_DISABLED
+	default:
+		return clientv1.DomainSemanticMode_DOMAIN_SEMANTIC_MODE_NORMAL
 	}
 }
 

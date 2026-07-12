@@ -50,8 +50,8 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, mapDomainError(err, "query domain")
 	}
-	if domaingraph.NormalizeDomainDiscoveryMode(domain.DiscoveryMode) == domaingraph.DomainDiscoveryModeDirectOnly {
-		return nil, status.Error(codes.FailedPrecondition, "direct_only domains are excluded from broad query execution")
+	if !domaingraph.DomainBroadSearchable(domain) {
+		return nil, status.Error(codes.FailedPrecondition, "domain is excluded from broad query execution")
 	}
 	nodes, err := s.allNodes(ctx, tx)
 	if err != nil {

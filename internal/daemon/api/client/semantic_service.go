@@ -126,8 +126,8 @@ func (s *SemanticService) authorizeDomainRead(ctx context.Context, spaceIDText, 
 	if err != nil {
 		return principalUser{}, uuid.Nil, uuid.Nil, mapDomainError(err, "semantic authorize domain")
 	}
-	if graph.NormalizeDomainDiscoveryMode(domain.DiscoveryMode) == graph.DomainDiscoveryModeDirectOnly {
-		return principalUser{}, uuid.Nil, uuid.Nil, status.Error(codes.FailedPrecondition, "direct_only domains are excluded from semantic search and indexing")
+	if !graph.DomainExplicitSemanticSearchable(domain) {
+		return principalUser{}, uuid.Nil, uuid.Nil, status.Error(codes.FailedPrecondition, "domain is excluded from semantic search and indexing")
 	}
 	return principalUser{UserID: principal.UserID}, spaceID, domainID, nil
 }

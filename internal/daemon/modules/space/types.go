@@ -51,6 +51,9 @@ type CreateDomainInput struct {
 	Name          string
 	Description   string
 	DiscoveryMode graph.DomainDiscoveryMode
+	SearchMode    graph.DomainSearchMode
+	SemanticMode  graph.DomainSemanticMode
+	ReadOnly      bool
 }
 
 type UpdateDomainInput struct {
@@ -59,6 +62,9 @@ type UpdateDomainInput struct {
 	Name          *string
 	Description   *string
 	DiscoveryMode *graph.DomainDiscoveryMode
+	SearchMode    *graph.DomainSearchMode
+	SemanticMode  *graph.DomainSemanticMode
+	ReadOnly      *bool
 }
 
 type SpaceGrant struct {

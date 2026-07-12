@@ -125,6 +125,10 @@ Mutable fields:
 
 - description
 - non-default, non-system domain name
+- `discovery_mode`
+- `search_mode`
+- `semantic_mode`
+- `read_only`
 
 The default domain's name cannot be changed.
 
@@ -163,10 +167,54 @@ message Domain {
   google.protobuf.Timestamp update_time = 9;
   mycel.common.v1.EffectiveAccess caller_access = 10;
   string key = 11;
+  DomainDiscoveryMode discovery_mode = 12;
+  DomainSearchMode search_mode = 13;
+  DomainSemanticMode semantic_mode = 14;
+  bool read_only = 15;
 }
 ```
 
 A domain has no parent domain. Mycel preserves the existing stable domain `key` concept for CLI compatibility and human-readable references.
+
+## Domain policy
+
+Domain policy separates discovery, graph search/query, semantic behavior, and mutability.
+
+### Discovery mode
+
+`discovery_mode` controls broad domain listing and browsing:
+
+- `normal`: appears in ordinary domain listing/browsing.
+- `explicit_only`: hidden from ordinary discovery/listing, but accessible by explicit domain id/key.
+- `hidden`: hidden from ordinary discovery and inaccessible through normal visible-domain APIs unless the caller has admin/system visibility.
+
+### Search mode
+
+`search_mode` controls graph query/search behavior:
+
+- `normal`: included in ordinary broad query/search.
+- `explicit_only`: excluded from broad query/search, but allowed when the caller explicitly targets the domain.
+- `disabled`: not queryable/searchable through normal user search APIs.
+
+### Semantic mode
+
+`semantic_mode` controls semantic indexing and semantic search:
+
+- `normal`: indexed and included in ordinary semantic search.
+- `explicit_only`: indexed and semantically searchable only when explicitly targeted.
+- `disabled`: not semantically indexed and not semantically searchable.
+
+### Read-only domains
+
+`read_only = true` rejects normal client/user write transactions and graph mutations. Admin/import paths may still replace or update read-only domains.
+
+Common policy presets:
+
+| Use case | discovery_mode | search_mode | semantic_mode | read_only |
+| --- | --- | --- | --- | --- |
+| Normal user content | `normal` | `normal` | `normal` | `false` |
+| Private app/user metadata | `explicit_only` | `disabled` | `disabled` | `false` |
+| Product manual/help corpus | `explicit_only` | `explicit_only` | `explicit_only` | `true` |
 
 ## Default domain
 

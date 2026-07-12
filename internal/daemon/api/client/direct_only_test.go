@@ -19,8 +19,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestDirectOnlyExecuteQueryReturnsFailedPrecondition(t *testing.T) {
-	fixture := initDirectOnlyClientAPITest(t)
+func TestSearchDisabledExecuteQueryReturnsFailedPrecondition(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 
 	_, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
@@ -32,8 +32,8 @@ func TestDirectOnlyExecuteQueryReturnsFailedPrecondition(t *testing.T) {
 	}
 }
 
-func TestDirectOnlyGraphGetNodeByIDWorks(t *testing.T) {
-	fixture := initDirectOnlyClientAPITest(t)
+func TestExplicitOnlyGraphGetNodeByIDWorks(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{DiscoveryMode: graphmodel.DomainDiscoveryModeExplicitOnly, SearchMode: graphmodel.DomainSearchModeDisabled, SemanticMode: graphmodel.DomainSemanticModeDisabled})
 	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 
@@ -42,7 +42,7 @@ func TestDirectOnlyGraphGetNodeByIDWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
-	if _, err := NewTransactionService(fixture.sessions, fixture.graphs).CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+	if _, err := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces).CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
 		t.Fatalf("CommitTransaction() error = %v", err)
 	}
 
@@ -56,8 +56,8 @@ func TestDirectOnlyGraphGetNodeByIDWorks(t *testing.T) {
 	}
 }
 
-func TestDirectOnlySemanticSearchReturnsFailedPreconditionBeforeIndexes(t *testing.T) {
-	fixture := initDirectOnlyClientAPITest(t)
+func TestSemanticDisabledSearchReturnsFailedPreconditionBeforeIndexes(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SemanticMode: graphmodel.DomainSemanticModeDisabled})
 
 	_, err := NewSemanticService(nil, fixture.spaces, fixture.graphs).SemanticSearch(fixture.ctx, &clientv1.SemanticSearchRequest{
 		SpaceId:  fixture.spaceID,
@@ -69,7 +69,26 @@ func TestDirectOnlySemanticSearchReturnsFailedPreconditionBeforeIndexes(t *testi
 	}
 }
 
-type directOnlyClientAPIFixture struct {
+func TestReadOnlyDomainRejectsReadWriteTransactions(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{ReadOnly: true})
+
+	_, err := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces).BeginTransaction(fixture.ctx, &clientv1.BeginTransactionRequest{SessionId: fixture.sessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("BeginTransaction() code = %v, want %v (err: %v)", status.Code(err), codes.FailedPrecondition, err)
+	}
+	if _, err := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces).BeginTransaction(fixture.ctx, &clientv1.BeginTransactionRequest{SessionId: fixture.sessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY}); err != nil {
+		t.Fatalf("read-only BeginTransaction() error = %v", err)
+	}
+}
+
+type domainPolicyFixtureOptions struct {
+	DiscoveryMode graphmodel.DomainDiscoveryMode
+	SearchMode    graphmodel.DomainSearchMode
+	SemanticMode  graphmodel.DomainSemanticMode
+	ReadOnly      bool
+}
+
+type domainPolicyClientAPIFixture struct {
 	ctx       context.Context
 	spaces    *daemonspace.Module
 	sessions  *daemonsession.Module
@@ -79,7 +98,7 @@ type directOnlyClientAPIFixture struct {
 	sessionID string
 }
 
-func initDirectOnlyClientAPITest(t *testing.T) directOnlyClientAPIFixture {
+func initDomainPolicyClientAPITest(t *testing.T, opts domainPolicyFixtureOptions) domainPolicyClientAPIFixture {
 	t.Helper()
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
@@ -102,9 +121,21 @@ func initDirectOnlyClientAPITest(t *testing.T) directOnlyClientAPIFixture {
 	if err != nil {
 		t.Fatalf("create test space: %v", err)
 	}
-	mode := graphmodel.DomainDiscoveryModeDirectOnly
-	if _, err := spaceModule.UpdateDomain(ctx, userID.String(), daemonspace.UpdateDomainInput{SpaceID: space.SpaceID.String(), DomainID: domain.ID.String(), DiscoveryMode: &mode}); err != nil {
-		t.Fatalf("set domain direct_only: %v", err)
+	update := daemonspace.UpdateDomainInput{SpaceID: space.SpaceID.String(), DomainID: domain.ID.String()}
+	if opts.DiscoveryMode != "" {
+		update.DiscoveryMode = &opts.DiscoveryMode
+	}
+	if opts.SearchMode != "" {
+		update.SearchMode = &opts.SearchMode
+	}
+	if opts.SemanticMode != "" {
+		update.SemanticMode = &opts.SemanticMode
+	}
+	if opts.ReadOnly {
+		update.ReadOnly = &opts.ReadOnly
+	}
+	if _, err := spaceModule.UpdateDomain(ctx, userID.String(), update); err != nil {
+		t.Fatalf("set domain policy: %v", err)
 	}
 
 	authedCtx := daemonauth.ContextWithPrincipal(ctx, daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: userID.String(), Username: "alice"})
@@ -112,12 +143,12 @@ func initDirectOnlyClientAPITest(t *testing.T) directOnlyClientAPIFixture {
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
 	}
-	return directOnlyClientAPIFixture{ctx: authedCtx, spaces: spaceModule, sessions: sessionModule, graphs: graphModule, spaceID: space.SpaceID.String(), domainID: domain.ID.String(), sessionID: opened.GetSession().GetSessionId()}
+	return domainPolicyClientAPIFixture{ctx: authedCtx, spaces: spaceModule, sessions: sessionModule, graphs: graphModule, spaceID: space.SpaceID.String(), domainID: domain.ID.String(), sessionID: opened.GetSession().GetSessionId()}
 }
 
-func (f directOnlyClientAPIFixture) beginTransaction(t *testing.T, mode clientv1.TransactionMode) string {
+func (f domainPolicyClientAPIFixture) beginTransaction(t *testing.T, mode clientv1.TransactionMode) string {
 	t.Helper()
-	begun, err := NewTransactionService(f.sessions, f.graphs).BeginTransaction(f.ctx, &clientv1.BeginTransactionRequest{SessionId: f.sessionID, Mode: mode})
+	begun, err := NewTransactionService(f.sessions, f.graphs, f.spaces).BeginTransaction(f.ctx, &clientv1.BeginTransactionRequest{SessionId: f.sessionID, Mode: mode})
 	if err != nil {
 		t.Fatalf("BeginTransaction() error = %v", err)
 	}

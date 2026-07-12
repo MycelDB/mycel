@@ -140,7 +140,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	clientv1.RegisterDomainServiceServer(grpcServer, clientapi.NewDomainService(cfg.SpaceManager))
 	clientv1.RegisterTemplateServiceServer(grpcServer, clientapi.NewTemplateService(cfg.SpaceManager))
 	clientv1.RegisterSessionServiceServer(grpcServer, clientapi.NewSessionService(cfg.SessionManager, cfg.SpaceManager))
-	clientv1.RegisterTransactionServiceServer(grpcServer, clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.ChangeManager))
+	clientv1.RegisterTransactionServiceServer(grpcServer, clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.ChangeManager, cfg.SpaceManager))
 	clientv1.RegisterGraphServiceServer(grpcServer, clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager))
 	clientv1.RegisterBlobServiceServer(grpcServer, clientapi.NewBlobService(cfg.BlobManager, cfg.SpaceManager))
 	clientv1.RegisterQueryServiceServer(grpcServer, clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager))

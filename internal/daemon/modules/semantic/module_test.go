@@ -190,7 +190,7 @@ func TestRuntimeCloseStopsSemanticMaintenance(t *testing.T) {
 	}
 }
 
-func TestBackfillIndexRejectsDirectOnlyDomain(t *testing.T) {
+func TestBackfillIndexRejectsSemanticDisabledDomain(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
 	rt := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})
@@ -202,7 +202,7 @@ func TestBackfillIndexRejectsDirectOnlyDomain(t *testing.T) {
 	if err := domainMgr.Init(ctx, rt.Config.DataDir+"/meta"); err != nil {
 		t.Fatalf("domain store init failed: %v", err)
 	}
-	domain, err := domainMgr.Create(ctx, storedomains.CreateInput{SpaceID: spaceID, Key: "direct", DiscoveryMode: graph.DomainDiscoveryModeDirectOnly})
+	domain, err := domainMgr.Create(ctx, storedomains.CreateInput{SpaceID: spaceID, Key: "private", DiscoveryMode: graph.DomainDiscoveryModeExplicitOnly, SearchMode: graph.DomainSearchModeDisabled, SemanticMode: graph.DomainSemanticModeDisabled})
 	if err != nil {
 		t.Fatalf("create domain failed: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestBackfillIndexRejectsDirectOnlyDomain(t *testing.T) {
 	}
 	res, err := m.BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticIndexID: idx.ID})
 	if err == nil {
-		t.Fatal("expected direct_only backfill error")
+		t.Fatal("expected semantic disabled backfill error")
 	}
 	if len(res.Records) != 0 || res.GeneratedCount != 0 {
 		t.Fatalf("expected no generated records, got %+v", res)
