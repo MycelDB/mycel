@@ -2,11 +2,13 @@ package space
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
@@ -19,6 +21,7 @@ import (
 	"github.com/myceldb/mycel/internal/space/storage/acl"
 	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 	storespaces "github.com/myceldb/mycel/internal/space/storage/spaces"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 var ErrSpaceNotFound = errors.New("space not found")
@@ -26,12 +29,15 @@ var ErrUnauthorized = errors.New("space unauthorized")
 var ErrInvalidInput = errors.New("invalid space input")
 
 type Module struct {
-	spaces    storespaces.Manager
-	domains   storedomains.Manager
-	templates storetemplate.Manager
-	access    acl.Manager
-	dataDir   string
-	gate      *quiesce.Gate
+	spaces      storespaces.Manager
+	domains     storedomains.Manager
+	templates   storetemplate.Manager
+	access      acl.Manager
+	dataDir     string
+	gate        *quiesce.Gate
+	wal         *wal.Manager
+	walProgress wal.AppliedLSNStore
+	walWaiter   *wal.ApplyWaiter
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -67,6 +73,35 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.templates = templates
 	m.access = accessMgr
 	m.dataDir = rt.Config.DataDir
+	m.wal = rt.WAL
+	m.walProgress = rt.WALProgress
+	m.walWaiter = rt.WALWaiter
+	if rt.WALRegistry != nil {
+		if err := rt.WALRegistry.Register(recordTypeCreateSpaceWithDefaultDomain, wal.ApplierFunc(m.applyCreateSpaceWithDefaultDomain)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register space create WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeCreateDomain, wal.ApplierFunc(m.applyCreateDomain)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register domain create WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeUpdateDomain, wal.ApplierFunc(m.applyUpdateDomain)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register domain update WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeDeleteDomain, wal.ApplierFunc(m.applyDeleteDomain)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register domain delete WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeGrantSpaceUser, wal.ApplierFunc(m.applyGrantSpaceUser)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register space grant WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeDeleteSpace, wal.ApplierFunc(m.applyDeleteSpace)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register space delete WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypePutTemplate, wal.ApplierFunc(m.applyPutTemplate)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register template put WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeDeleteTemplate, wal.ApplierFunc(m.applyDeleteTemplate)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register template delete WAL applier", err)
+		}
+	}
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)
 	}
@@ -153,38 +188,73 @@ func (m *Module) GetSpace(ctx context.Context, spaceID string) (domainspace.Spac
 }
 
 func (m *Module) CreateSpace(ctx context.Context, input CreateSpaceInput) (domainspace.Space, graph.Domain, error) {
-	release, err := m.enterWrite(ctx)
+	result, err := m.CreateSpaceWithResult(ctx, input)
 	if err != nil {
 		return domainspace.Space{}, graph.Domain{}, err
+	}
+	return result.Space, result.Domain, nil
+}
+
+func (m *Module) CreateSpaceWithResult(ctx context.Context, input CreateSpaceInput) (CreateSpaceResult, error) {
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return CreateSpaceResult{}, err
 	}
 	defer release()
 	if strings.TrimSpace(input.Name) == "" {
-		return domainspace.Space{}, graph.Domain{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
+		return CreateSpaceResult{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
 	}
 	if input.OwnerUserID == uuid.Nil {
-		return domainspace.Space{}, graph.Domain{}, fmt.Errorf("%w: owner_user_id is required", ErrInvalidInput)
+		return CreateSpaceResult{}, fmt.Errorf("%w: owner_user_id is required", ErrInvalidInput)
 	}
-	sp, err := m.spaces.Create(ctx, storespaces.CreateInput{OwnerID: input.OwnerUserID, Name: input.Name})
-	if err != nil {
-		return domainspace.Space{}, graph.Domain{}, err
-	}
-	var domain graph.Domain
-	if strings.TrimSpace(input.DefaultDomainKey) != "" {
-		name := input.DefaultDomainName
-		if strings.TrimSpace(name) == "" {
-			name = input.DefaultDomainKey
+	if m.wal == nil {
+		sp, err := m.spaces.Create(ctx, storespaces.CreateInput{OwnerID: input.OwnerUserID, Name: input.Name})
+		if err != nil {
+			return CreateSpaceResult{}, err
 		}
-		domain, err = m.domains.Create(ctx, storedomains.CreateInput{SpaceID: sp.SpaceID, Key: input.DefaultDomainKey, Name: name, Default: true})
-	} else {
-		domain, err = m.domains.EnsureDefault(ctx, sp.SpaceID)
+		var domain graph.Domain
+		if strings.TrimSpace(input.DefaultDomainKey) != "" {
+			name := input.DefaultDomainName
+			if strings.TrimSpace(name) == "" {
+				name = input.DefaultDomainKey
+			}
+			domain, err = m.domains.Create(ctx, storedomains.CreateInput{SpaceID: sp.SpaceID, Key: input.DefaultDomainKey, Name: name, Default: true})
+		} else {
+			domain, err = m.domains.EnsureDefault(ctx, sp.SpaceID)
+		}
+		if err != nil {
+			return CreateSpaceResult{}, err
+		}
+		if _, err := m.access.Grant(ctx, acl.GrantInput{SpaceID: sp.SpaceID, UserID: input.OwnerUserID, Permissions: []access.SpacePermission{access.SpacePermissionAdmin}}); err != nil {
+			return CreateSpaceResult{}, err
+		}
+		return CreateSpaceResult{Space: sp, Domain: domain}, nil
 	}
+	record := m.buildCreateSpaceRecord(input)
+	payload, err := json.Marshal(record)
 	if err != nil {
-		return domainspace.Space{}, graph.Domain{}, err
+		return CreateSpaceResult{}, err
 	}
-	if _, err := m.access.Grant(ctx, acl.GrantInput{SpaceID: sp.SpaceID, UserID: input.OwnerUserID, Permissions: []access.SpacePermission{access.SpacePermissionAdmin}}); err != nil {
-		return domainspace.Space{}, graph.Domain{}, err
+	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeCreateSpaceWithDefaultDomain, SchemaVersion: 1, Timestamp: record.Space.CreatedAt, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+	if err != nil {
+		return CreateSpaceResult{}, err
 	}
-	return sp, domain, nil
+	if err := m.wal.Sync(ctx, lsn); err != nil {
+		return CreateSpaceResult{}, err
+	}
+	sp, domain, err := m.applyCreateSpaceRecord(ctx, record)
+	if err != nil {
+		return CreateSpaceResult{}, err
+	}
+	if m.walProgress != nil {
+		if err := m.walProgress.SetAppliedLSN(ctx, lsn); err != nil {
+			return CreateSpaceResult{}, err
+		}
+	}
+	if m.walWaiter != nil {
+		m.walWaiter.SetApplied(lsn)
+	}
+	return CreateSpaceResult{Space: sp, Domain: domain, CommitLSN: lsn}, nil
 }
 
 func (m *Module) DeleteSpace(ctx context.Context, spaceID string) error {
@@ -197,20 +267,50 @@ func (m *Module) DeleteSpace(ctx context.Context, spaceID string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.domains.DeleteForSpace(ctx, id); err != nil {
-		return err
-	}
-	if err := m.access.DeleteForSpace(ctx, id); err != nil {
-		return err
-	}
-	if err := m.templates.DeleteForSpace(ctx, id); err != nil {
-		return err
-	}
-	if err := m.spaces.DeleteByID(ctx, id); err != nil {
-		if errors.Is(err, storespaces.ErrSpaceNotFound) {
+	if m.wal == nil {
+		if err := m.domains.DeleteForSpace(ctx, id); err != nil {
+			return err
+		}
+		if err := m.access.DeleteForSpace(ctx, id); err != nil {
+			return err
+		}
+		if err := m.templates.DeleteForSpace(ctx, id); err != nil {
+			return err
+		}
+		if err := m.spaces.DeleteByID(ctx, id); err != nil {
+			if errors.Is(err, storespaces.ErrSpaceNotFound) {
+				return ErrSpaceNotFound
+			}
+			return err
+		}
+	} else {
+		if exists, err := m.spaces.ExistsByID(ctx, id); err != nil {
+			return err
+		} else if !exists {
 			return ErrSpaceNotFound
 		}
-		return err
+		payload, err := json.Marshal(deleteSpaceRecord{SpaceID: id})
+		if err != nil {
+			return err
+		}
+		lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeDeleteSpace, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+		if err != nil {
+			return err
+		}
+		if err := m.wal.Sync(ctx, lsn); err != nil {
+			return err
+		}
+		if err := m.applyDeleteSpace(ctx, wal.Record{Payload: payload}); err != nil {
+			return err
+		}
+		if m.walProgress != nil {
+			if err := m.walProgress.SetAppliedLSN(ctx, lsn); err != nil {
+				return err
+			}
+		}
+		if m.walWaiter != nil {
+			m.walWaiter.SetApplied(lsn)
+		}
 	}
 	if m.dataDir != "" {
 		_ = os.RemoveAll(filepath.Join(m.dataDir, "graphs", id.String()))
@@ -244,11 +344,44 @@ func (m *Module) GrantSpaceUser(ctx context.Context, spaceID string, userID stri
 			return SpaceGrant{ID: existing.ID.String(), SpaceID: existing.SpaceID.String(), UserID: existing.UserID.String(), Role: existingRole, Capabilities: existingCaps}, nil
 		}
 	}
-	rule, err := m.access.Grant(ctx, acl.GrantInput{SpaceID: sp.SpaceID, UserID: uid, Permissions: permissions})
+	if m.wal == nil {
+		rule, err := m.access.Grant(ctx, acl.GrantInput{SpaceID: sp.SpaceID, UserID: uid, Permissions: permissions})
+		if err != nil {
+			return SpaceGrant{}, err
+		}
+		return SpaceGrant{ID: rule.ID.String(), SpaceID: rule.SpaceID.String(), UserID: rule.UserID.String(), Role: normalizedRole, Capabilities: capabilities}, nil
+	}
+	ruleID := uuid.New()
+	if existing, ok, err := m.existingSpaceGrant(ctx, sp.SpaceID, uid); err != nil {
+		return SpaceGrant{}, err
+	} else if ok {
+		ruleID = existing.ID
+	}
+	rule := access.SpaceAccessRule{ID: ruleID, SpaceID: sp.SpaceID, UserID: uid, Permissions: permissions}
+	payload, err := json.Marshal(grantSpaceUserRecord{Rule: rule})
 	if err != nil {
 		return SpaceGrant{}, err
 	}
-	return SpaceGrant{ID: rule.ID.String(), SpaceID: rule.SpaceID.String(), UserID: rule.UserID.String(), Role: normalizedRole, Capabilities: capabilities}, nil
+	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeGrantSpaceUser, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+	if err != nil {
+		return SpaceGrant{}, err
+	}
+	if err := m.wal.Sync(ctx, lsn); err != nil {
+		return SpaceGrant{}, err
+	}
+	applied, err := m.access.ApplyGrant(ctx, rule)
+	if err != nil {
+		return SpaceGrant{}, err
+	}
+	if m.walProgress != nil {
+		if err := m.walProgress.SetAppliedLSN(ctx, lsn); err != nil {
+			return SpaceGrant{}, err
+		}
+	}
+	if m.walWaiter != nil {
+		m.walWaiter.SetApplied(lsn)
+	}
+	return SpaceGrant{ID: applied.ID.String(), SpaceID: applied.SpaceID.String(), UserID: applied.UserID.String(), Role: normalizedRole, Capabilities: capabilities}, nil
 }
 
 func (m *Module) existingSpaceGrant(ctx context.Context, spaceID uuid.UUID, userID uuid.UUID) (access.SpaceAccessRule, bool, error) {
@@ -473,7 +606,42 @@ func (m *Module) CreateDomain(ctx context.Context, userID string, input CreateDo
 	if key == "" {
 		key = input.Name
 	}
-	return m.domains.Create(ctx, storedomains.CreateInput{SpaceID: sp.SpaceID, Key: key, Name: input.Name, Description: input.Description, DiscoveryMode: input.DiscoveryMode, SearchMode: input.SearchMode, SemanticMode: input.SemanticMode, ReadOnly: input.ReadOnly})
+	if strings.TrimSpace(key) == "" {
+		return graph.Domain{}, fmt.Errorf("%w: key is required", ErrInvalidInput)
+	}
+	if existing, err := m.domains.FindBySpaceAndKey(ctx, sp.SpaceID, key); err == nil {
+		return existing, nil
+	} else if err != nil && !errors.Is(err, storedomains.ErrDomainNotFound) {
+		return graph.Domain{}, err
+	}
+	if m.wal == nil {
+		return m.domains.Create(ctx, storedomains.CreateInput{SpaceID: sp.SpaceID, Key: key, Name: input.Name, Description: input.Description, DiscoveryMode: input.DiscoveryMode, SearchMode: input.SearchMode, SemanticMode: input.SemanticMode, ReadOnly: input.ReadOnly})
+	}
+	record := m.buildCreateDomainRecord(sp.SpaceID, input)
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeCreateDomain, SchemaVersion: 1, Timestamp: record.Domain.CreatedAt, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	if err := m.wal.Sync(ctx, lsn); err != nil {
+		return graph.Domain{}, err
+	}
+	domain, err := m.domains.ApplyCreate(ctx, record.Domain)
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	if m.walProgress != nil {
+		if err := m.walProgress.SetAppliedLSN(ctx, lsn); err != nil {
+			return graph.Domain{}, err
+		}
+	}
+	if m.walWaiter != nil {
+		m.walWaiter.SetApplied(lsn)
+	}
+	return domain, nil
 }
 
 func (m *Module) UpdateDomain(ctx context.Context, userID string, input UpdateDomainInput) (graph.Domain, error) {
@@ -504,7 +672,70 @@ func (m *Module) UpdateDomain(ctx context.Context, userID string, input UpdateDo
 	if domain.Default && input.Name != nil && strings.TrimSpace(*input.Name) != domain.Name {
 		return graph.Domain{}, fmt.Errorf("%w: default domain name cannot be changed", ErrInvalidInput)
 	}
-	return m.domains.Update(ctx, storedomains.UpdateInput{DomainID: domain.ID, Name: input.Name, Description: input.Description, DiscoveryMode: input.DiscoveryMode, SearchMode: input.SearchMode, SemanticMode: input.SemanticMode, ReadOnly: input.ReadOnly})
+	if m.wal == nil {
+		return m.domains.Update(ctx, storedomains.UpdateInput{DomainID: domain.ID, Name: input.Name, Description: input.Description, DiscoveryMode: input.DiscoveryMode, SearchMode: input.SearchMode, SemanticMode: input.SemanticMode, ReadOnly: input.ReadOnly})
+	}
+	updated := domain
+	if input.Name != nil {
+		name := strings.TrimSpace(*input.Name)
+		if name == "" {
+			return graph.Domain{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
+		}
+		updated.Name = name
+	}
+	if input.Description != nil {
+		updated.Description = strings.TrimSpace(*input.Description)
+	}
+	if input.DiscoveryMode != nil {
+		mode := graph.NormalizeDomainDiscoveryMode(*input.DiscoveryMode)
+		if !graph.ValidDomainDiscoveryMode(mode) {
+			return graph.Domain{}, fmt.Errorf("%w: discovery_mode must be normal, explicit_only, or hidden", ErrInvalidInput)
+		}
+		updated.DiscoveryMode = mode
+	}
+	if input.SearchMode != nil {
+		mode := graph.NormalizeDomainSearchMode(*input.SearchMode)
+		if !graph.ValidDomainSearchMode(mode) {
+			return graph.Domain{}, fmt.Errorf("%w: search_mode must be normal, explicit_only, or disabled", ErrInvalidInput)
+		}
+		updated.SearchMode = mode
+	}
+	if input.SemanticMode != nil {
+		mode := graph.NormalizeDomainSemanticMode(*input.SemanticMode)
+		if !graph.ValidDomainSemanticMode(mode) {
+			return graph.Domain{}, fmt.Errorf("%w: semantic_mode must be normal, explicit_only, or disabled", ErrInvalidInput)
+		}
+		updated.SemanticMode = mode
+	}
+	if input.ReadOnly != nil {
+		updated.ReadOnly = *input.ReadOnly
+	}
+	updated.UpdatedAt = time.Now().UTC()
+	record := updateDomainRecord{Domain: updated}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeUpdateDomain, SchemaVersion: 1, Timestamp: updated.UpdatedAt, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	if err := m.wal.Sync(ctx, lsn); err != nil {
+		return graph.Domain{}, err
+	}
+	applied, err := m.domains.ApplyUpdate(ctx, updated)
+	if err != nil {
+		return graph.Domain{}, err
+	}
+	if m.walProgress != nil {
+		if err := m.walProgress.SetAppliedLSN(ctx, lsn); err != nil {
+			return graph.Domain{}, err
+		}
+	}
+	if m.walWaiter != nil {
+		m.walWaiter.SetApplied(lsn)
+	}
+	return applied, nil
 }
 
 func filterDiscoverableDomains(domains []graph.Domain) []graph.Domain {
@@ -545,11 +776,37 @@ func (m *Module) DeleteDomain(ctx context.Context, userID string, spaceID string
 	if domain.Default {
 		return fmt.Errorf("%w: default domain cannot be deleted", ErrInvalidInput)
 	}
-	if err := m.domains.DeleteByID(ctx, domain.ID); err != nil {
-		if errors.Is(err, storedomains.ErrDomainNotFound) {
-			return ErrSpaceNotFound
+	if m.wal == nil {
+		if err := m.domains.DeleteByID(ctx, domain.ID); err != nil {
+			if errors.Is(err, storedomains.ErrDomainNotFound) {
+				return ErrSpaceNotFound
+			}
+			return err
 		}
-		return err
+	} else {
+		record := deleteDomainRecord{DomainID: domain.ID, SpaceID: sp.SpaceID}
+		payload, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeDeleteDomain, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+		if err != nil {
+			return err
+		}
+		if err := m.wal.Sync(ctx, lsn); err != nil {
+			return err
+		}
+		if err := m.domains.ApplyDelete(ctx, domain.ID); err != nil {
+			return err
+		}
+		if m.walProgress != nil {
+			if err := m.walProgress.SetAppliedLSN(ctx, lsn); err != nil {
+				return err
+			}
+		}
+		if m.walWaiter != nil {
+			m.walWaiter.SetApplied(lsn)
+		}
 	}
 	if m.dataDir != "" {
 		_ = os.RemoveAll(filepath.Join(m.dataDir, "graphs", sp.SpaceID.String(), "domains", domain.ID.String()))
@@ -670,14 +927,22 @@ func (m *Module) CreateTemplate(ctx context.Context, userID string, spaceID stri
 	if err != nil {
 		return graph.Template{}, err
 	}
-	created, err := m.templates.Import(ctx, sp.SpaceID, storetemplate.ImportDocument{SchemaVersion: 1, Templates: []storetemplate.TemplateImport{template}})
-	if err != nil {
+	if m.wal == nil {
+		created, err := m.templates.Import(ctx, sp.SpaceID, storetemplate.ImportDocument{SchemaVersion: 1, Templates: []storetemplate.TemplateImport{template}})
+		if err != nil {
+			return graph.Template{}, mapTemplateStoreError(err)
+		}
+		if len(created) != 1 {
+			return graph.Template{}, fmt.Errorf("%w: template create returned no template", ErrInvalidInput)
+		}
+		return created[0], nil
+	}
+	if _, err := m.templates.Find(ctx, sp.SpaceID, template.Key, template.Version); err == nil {
+		return graph.Template{}, mapTemplateStoreError(storetemplate.ErrDuplicateTemplateVersion)
+	} else if err != nil && !errors.Is(err, storetemplate.ErrTemplateNotFound) {
 		return graph.Template{}, mapTemplateStoreError(err)
 	}
-	if len(created) != 1 {
-		return graph.Template{}, fmt.Errorf("%w: template create returned no template", ErrInvalidInput)
-	}
-	return created[0], nil
+	return m.commitTemplatePut(ctx, templateFromImport(sp.SpaceID, template))
 }
 
 func (m *Module) UpdateTemplate(ctx context.Context, userID string, spaceID string, templateID string, displayName *string, description *string) (graph.Template, error) {
@@ -701,7 +966,17 @@ func (m *Module) UpdateTemplate(ctx context.Context, userID string, spaceID stri
 	if existing.SpaceID != sp.SpaceID {
 		return graph.Template{}, ErrSpaceNotFound
 	}
-	return m.templates.Update(ctx, storetemplate.UpdateInput{TemplateID: id, DisplayName: displayName, Description: description})
+	if m.wal == nil {
+		return m.templates.Update(ctx, storetemplate.UpdateInput{TemplateID: id, DisplayName: displayName, Description: description})
+	}
+	updated := existing
+	if displayName != nil {
+		updated.DisplayName = strings.TrimSpace(*displayName)
+	}
+	if description != nil {
+		updated.Description = strings.TrimSpace(*description)
+	}
+	return m.commitTemplatePut(ctx, updated)
 }
 
 func (m *Module) ArchiveTemplate(ctx context.Context, userID string, spaceID string, templateID string) (graph.Template, error) {
@@ -725,7 +1000,12 @@ func (m *Module) ArchiveTemplate(ctx context.Context, userID string, spaceID str
 	if existing.SpaceID != sp.SpaceID {
 		return graph.Template{}, ErrSpaceNotFound
 	}
-	return m.templates.Archive(ctx, id)
+	if m.wal == nil {
+		return m.templates.Archive(ctx, id)
+	}
+	updated := existing
+	updated.State = graph.TemplateStateArchived
+	return m.commitTemplatePut(ctx, updated)
 }
 
 func (m *Module) DeleteTemplate(ctx context.Context, userID string, spaceID string, templateID string) error {
@@ -749,10 +1029,13 @@ func (m *Module) DeleteTemplate(ctx context.Context, userID string, spaceID stri
 	if existing.SpaceID != sp.SpaceID {
 		return ErrSpaceNotFound
 	}
-	if err := m.templates.DeleteByID(ctx, id); err != nil {
-		return mapTemplateStoreError(err)
+	if m.wal == nil {
+		if err := m.templates.DeleteByID(ctx, id); err != nil {
+			return mapTemplateStoreError(err)
+		}
+		return nil
 	}
-	return nil
+	return m.commitTemplateDelete(ctx, existing)
 }
 
 func (m *Module) ImportTemplates(ctx context.Context, userID string, spaceID string, templates []storetemplate.TemplateImport) ([]graph.Template, error) {
@@ -765,11 +1048,35 @@ func (m *Module) ImportTemplates(ctx context.Context, userID string, spaceID str
 	if err != nil {
 		return nil, err
 	}
-	created, err := m.templates.Import(ctx, sp.SpaceID, storetemplate.ImportDocument{SchemaVersion: 1, Templates: templates})
-	if err != nil {
-		return nil, mapTemplateStoreError(err)
+	if m.wal == nil {
+		created, err := m.templates.Import(ctx, sp.SpaceID, storetemplate.ImportDocument{SchemaVersion: 1, Templates: templates})
+		if err != nil {
+			return nil, mapTemplateStoreError(err)
+		}
+		return created, nil
 	}
-	return created, nil
+	out := make([]graph.Template, 0, len(templates))
+	seen := map[string]struct{}{}
+	for _, in := range templates {
+		key := strings.ToLower(strings.TrimSpace(in.Key)) + "@" + strings.TrimSpace(in.Version)
+		if _, ok := seen[key]; ok {
+			return nil, mapTemplateStoreError(storetemplate.ErrDuplicateTemplateVersion)
+		}
+		seen[key] = struct{}{}
+		if _, err := m.templates.Find(ctx, sp.SpaceID, in.Key, in.Version); err == nil {
+			return nil, mapTemplateStoreError(storetemplate.ErrDuplicateTemplateVersion)
+		} else if err != nil && !errors.Is(err, storetemplate.ErrTemplateNotFound) {
+			return nil, mapTemplateStoreError(err)
+		}
+	}
+	for _, in := range templates {
+		created, err := m.commitTemplatePut(ctx, templateFromImport(sp.SpaceID, in))
+		if err != nil {
+			return nil, mapTemplateStoreError(err)
+		}
+		out = append(out, created)
+	}
+	return out, nil
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {

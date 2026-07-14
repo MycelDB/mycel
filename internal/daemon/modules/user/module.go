@@ -15,12 +15,16 @@ import (
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	"github.com/myceldb/mycel/internal/identity/model"
 	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 type Module struct {
-	store    Store
-	sessions storesession.Manager
-	gate     *quiesce.Gate
+	store       Store
+	sessions    storesession.Manager
+	gate        *quiesce.Gate
+	wal         *wal.Manager
+	walProgress wal.AppliedLSNStore
+	walWaiter   *wal.ApplyWaiter
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -65,6 +69,14 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open user session store", err)
 	}
 	m.sessions = sessions
+	m.wal = rt.WAL
+	m.walProgress = rt.WALProgress
+	m.walWaiter = rt.WALWaiter
+	if rt.WALRegistry != nil {
+		if err := rt.WALRegistry.Register(recordTypeUserPut, wal.ApplierFunc(m.applyUserPut)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register user put WAL applier", err)
+		}
+	}
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)
 	}
@@ -130,10 +142,17 @@ func (m *Module) CreateUser(ctx context.Context, input CreateUserInput) (UserSum
 		state = UserStateDisabled
 	}
 	user := User{ID: uuid.NewString(), Username: username, State: state, PasswordHash: hash, CreatedAt: now, UpdatedAt: now}
-	if err := m.store.Create(ctx, user); err != nil {
+	if m.wal == nil {
+		if err := m.store.Create(ctx, user); err != nil {
+			return UserSummary{}, err
+		}
+		return user.toSummary(), nil
+	}
+	applied, err := m.commitUserPut(ctx, user)
+	if err != nil {
 		return UserSummary{}, err
 	}
-	return user.toSummary(), nil
+	return applied.toSummary(), nil
 }
 
 func (m *Module) DisableUser(ctx context.Context, userID string) (UserSummary, error) {
@@ -142,11 +161,24 @@ func (m *Module) DisableUser(ctx context.Context, userID string) (UserSummary, e
 		return UserSummary{}, err
 	}
 	defer release()
-	user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateDisabled; return nil })
+	if m.wal == nil {
+		user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateDisabled; return nil })
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return user.toSummary(), nil
+	}
+	user, err := m.store.GetByID(ctx, strings.TrimSpace(userID))
 	if err != nil {
 		return UserSummary{}, err
 	}
-	return user.toSummary(), nil
+	user.State = UserStateDisabled
+	user.UpdatedAt = time.Now().UTC()
+	applied, err := m.commitUserPut(ctx, user)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	return applied.toSummary(), nil
 }
 
 func (m *Module) EnableUser(ctx context.Context, userID string) (UserSummary, error) {
@@ -155,11 +187,24 @@ func (m *Module) EnableUser(ctx context.Context, userID string) (UserSummary, er
 		return UserSummary{}, err
 	}
 	defer release()
-	user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateActive; return nil })
+	if m.wal == nil {
+		user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateActive; return nil })
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return user.toSummary(), nil
+	}
+	user, err := m.store.GetByID(ctx, strings.TrimSpace(userID))
 	if err != nil {
 		return UserSummary{}, err
 	}
-	return user.toSummary(), nil
+	user.State = UserStateActive
+	user.UpdatedAt = time.Now().UTC()
+	applied, err := m.commitUserPut(ctx, user)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	return applied.toSummary(), nil
 }
 
 func (m *Module) DeleteUser(ctx context.Context, userID string) (UserSummary, error) {
@@ -168,11 +213,24 @@ func (m *Module) DeleteUser(ctx context.Context, userID string) (UserSummary, er
 		return UserSummary{}, err
 	}
 	defer release()
-	user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateDeleted; return nil })
+	if m.wal == nil {
+		user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateDeleted; return nil })
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return user.toSummary(), nil
+	}
+	user, err := m.store.GetByID(ctx, strings.TrimSpace(userID))
 	if err != nil {
 		return UserSummary{}, err
 	}
-	return user.toSummary(), nil
+	user.State = UserStateDeleted
+	user.UpdatedAt = time.Now().UTC()
+	applied, err := m.commitUserPut(ctx, user)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	return applied.toSummary(), nil
 }
 
 func (m *Module) SetUserPassword(ctx context.Context, userID string, password string) (UserSummary, error) {
@@ -191,11 +249,24 @@ func (m *Module) SetUserPassword(ctx context.Context, userID string, password st
 	if err != nil {
 		return UserSummary{}, err
 	}
-	user, err := m.store.UpdatePasswordHash(ctx, strings.TrimSpace(userID), hash)
+	if m.wal == nil {
+		user, err := m.store.UpdatePasswordHash(ctx, strings.TrimSpace(userID), hash)
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return user.toSummary(), nil
+	}
+	user, err := m.store.GetByID(ctx, strings.TrimSpace(userID))
 	if err != nil {
 		return UserSummary{}, err
 	}
-	return user.toSummary(), nil
+	user.PasswordHash = hash
+	user.UpdatedAt = time.Now().UTC()
+	applied, err := m.commitUserPut(ctx, user)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	return applied.toSummary(), nil
 }
 
 func (m *Module) AuthenticateUser(ctx context.Context, username string, password string) (UserSummary, error) {

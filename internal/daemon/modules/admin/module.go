@@ -16,6 +16,7 @@ import (
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	"github.com/myceldb/mycel/internal/identity/model"
 	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 const ModuleName = "admin"
@@ -23,9 +24,12 @@ const ModuleName = "admin"
 var ErrInvalidCredentials = errors.New("invalid operator credentials")
 
 type Module struct {
-	store    Store
-	sessions storesession.Manager
-	gate     *quiesce.Gate
+	store       Store
+	sessions    storesession.Manager
+	gate        *quiesce.Gate
+	wal         *wal.Manager
+	walProgress wal.AppliedLSNStore
+	walWaiter   *wal.ApplyWaiter
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -68,6 +72,14 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open admin session store", err)
 	}
 	m.sessions = sessions
+	m.wal = rt.WAL
+	m.walProgress = rt.WALProgress
+	m.walWaiter = rt.WALWaiter
+	if rt.WALRegistry != nil {
+		if err := rt.WALRegistry.Register(recordTypeAdminPut, wal.ApplierFunc(m.applyAdminPut)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register admin put WAL applier", err)
+		}
+	}
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)
 	}
@@ -367,7 +379,7 @@ func (m *Module) SetOperatorPassword(ctx context.Context, operatorID string, pas
 	if err != nil {
 		return AdminSummary{}, err
 	}
-	admin, err := m.store.UpdatePasswordHash(ctx, operatorID, hash)
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.PasswordHash = hash; return nil })
 	if err != nil {
 		return AdminSummary{}, err
 	}
@@ -448,10 +460,17 @@ func (m *Module) CreateOperator(ctx context.Context, input CreateOperatorInput) 
 		}
 		admin.CapabilityGrants = append(admin.CapabilityGrants, grant)
 	}
-	if err := m.store.Create(ctx, admin); err != nil {
+	if m.wal == nil {
+		if err := m.store.Create(ctx, admin); err != nil {
+			return AdminSummary{}, err
+		}
+		return admin.toSummary(), nil
+	}
+	applied, err := m.commitAdminPut(ctx, admin)
+	if err != nil {
 		return AdminSummary{}, err
 	}
-	return admin.toSummary(), nil
+	return applied.toSummary(), nil
 }
 
 func (m *Module) UpdateOperator(ctx context.Context, input UpdateOperatorInput) (AdminSummary, error) {
@@ -460,7 +479,7 @@ func (m *Module) UpdateOperator(ctx context.Context, input UpdateOperatorInput) 
 		return AdminSummary{}, err
 	}
 	defer release()
-	admin, err := m.store.Update(ctx, input.OperatorID, func(admin *Admin) error {
+	admin, err := m.updateAdminWithWAL(ctx, input.OperatorID, func(admin *Admin) error {
 		if input.Email != nil {
 			admin.Email = strings.TrimSpace(*input.Email)
 		}
@@ -481,7 +500,7 @@ func (m *Module) DisableOperator(ctx context.Context, operatorID string) (AdminS
 	if err := m.ensureCanRemoveSystemAdmin(ctx, operatorID, ""); err != nil {
 		return AdminSummary{}, err
 	}
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateDisabled; return nil })
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateDisabled; return nil })
 	if err != nil {
 		return AdminSummary{}, err
 	}
@@ -494,7 +513,7 @@ func (m *Module) EnableOperator(ctx context.Context, operatorID string) (AdminSu
 		return AdminSummary{}, err
 	}
 	defer release()
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateActive; return nil })
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateActive; return nil })
 	if err != nil {
 		return AdminSummary{}, err
 	}
@@ -510,7 +529,7 @@ func (m *Module) DeleteOperator(ctx context.Context, operatorID string) (AdminSu
 	if err := m.ensureCanRemoveSystemAdmin(ctx, operatorID, ""); err != nil {
 		return AdminSummary{}, err
 	}
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateDeleted; return nil })
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateDeleted; return nil })
 	if err != nil {
 		return AdminSummary{}, err
 	}
@@ -524,7 +543,7 @@ func (m *Module) GrantRole(ctx context.Context, operatorID string, role string, 
 	}
 	defer release()
 	grant := newRoleGrant(operatorID, role, normalizeScope(scope), reason, grantedBy)
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.RoleGrants = append(admin.RoleGrants, grant); return nil })
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.RoleGrants = append(admin.RoleGrants, grant); return nil })
 	if err != nil {
 		return RoleGrant{}, AdminSummary{}, err
 	}
@@ -540,7 +559,7 @@ func (m *Module) RevokeRole(ctx context.Context, operatorID string, grantID stri
 	if err := m.ensureCanRemoveSystemAdmin(ctx, operatorID, grantID); err != nil {
 		return AdminSummary{}, err
 	}
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error {
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error {
 		for i, grant := range admin.RoleGrants {
 			if grant.ID == grantID {
 				admin.RoleGrants = append(admin.RoleGrants[:i], admin.RoleGrants[i+1:]...)
@@ -562,7 +581,7 @@ func (m *Module) GrantCapability(ctx context.Context, operatorID string, capabil
 	}
 	defer release()
 	grant := CapabilityGrant{ID: uuid.NewString(), OperatorID: operatorID, Capability: capability, Scope: normalizeScope(scope), Reason: reason, GrantedByOperatorID: grantedBy, CreatedAt: time.Now().UTC()}
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.CapabilityGrants = append(admin.CapabilityGrants, grant); return nil })
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.CapabilityGrants = append(admin.CapabilityGrants, grant); return nil })
 	if err != nil {
 		return CapabilityGrant{}, AdminSummary{}, err
 	}
@@ -575,7 +594,7 @@ func (m *Module) RevokeCapability(ctx context.Context, operatorID string, grantI
 		return AdminSummary{}, err
 	}
 	defer release()
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error {
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error {
 		for i, grant := range admin.CapabilityGrants {
 			if grant.ID == grantID {
 				admin.CapabilityGrants = append(admin.CapabilityGrants[:i], admin.CapabilityGrants[i+1:]...)

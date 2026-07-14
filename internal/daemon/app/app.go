@@ -9,8 +9,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/myceldb/mycel/internal/daemon/auth"
+	"github.com/myceldb/mycel/internal/daemon/clustering"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
 	"github.com/myceldb/mycel/internal/daemon/modules/admin"
@@ -25,6 +27,7 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
 	"github.com/myceldb/mycel/internal/graph/change"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 const LogFilename = "myceld.log"
@@ -98,7 +101,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce, ClusteringServer: &clustering.ExchangeServer{DataDir: cfg.DataDir, Identity: *rt.NodeIdentity, State: rt.NodeState}})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -106,6 +109,9 @@ func Run(ctx context.Context) int {
 	defer stopServer()
 
 	rt.Logger.Info("daemon ready", "grpc_addr", grpcServer.Addr())
+	if len(cfg.Cluster.SeedPeers) > 0 && rt.NodeIdentity != nil {
+		go clustering.DiscoverSeeds(serverCtx, clustering.DiscoveryOptions{DataDir: cfg.DataDir, Identity: *rt.NodeIdentity, State: rt.NodeState, Seeds: cfg.Cluster.SeedPeers, Logger: rt.Logger})
+	}
 	logRuntimeConfiguration(rt.Logger, cfg, rt.LogPath, grpcServer.Addr())
 	waitForShutdown(ctx, rt.Logger)
 	stopServer()
@@ -141,6 +147,32 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	logger.Info("log directory ready", "path", logDir, "created", logDirCreated)
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
+	localNode, err := clustering.LoadOrCreate(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, SeedPeers: cfg.Cluster.SeedPeers})
+	if err != nil {
+		_ = rt.Close()
+		return nil, fmt.Errorf("initialize clustering identity: %w", err)
+	}
+	rt.NodeIdentity = &localNode.Identity
+	rt.NodeState = localNode.State
+	logger.Info("clustering identity ready", "node_id", localNode.Identity.NodeID, "node_name", localNode.Identity.NodeName, "cluster_id", localNode.Identity.ClusterID, "cluster_name", localNode.Identity.ClusterName, "node_state", localNode.State, "backend_advertise_addr", localNode.Identity.BackendAdvertiseAddr)
+	if cfg.WAL.Enabled {
+		walDir := cfg.WAL.Dir
+		if walDir == "" {
+			walDir = filepath.Join(cfg.DataDir, "wal")
+		}
+		walManager, err := wal.Open(ctx, wal.Options{Dir: walDir, SegmentBytes: cfg.WAL.SegmentBytes})
+		if err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("open wal: %w", err)
+		}
+		rt.WAL = walManager
+		progress := wal.NewFileProgressStore(filepath.Join(cfg.DataDir, "meta", "wal", "progress.json"))
+		rt.WALProgress = progress
+		rt.WALCheckpoint = wal.NewCheckpointStore(filepath.Join(cfg.DataDir, "meta", "wal", "checkpoint.json"))
+		rt.WALRecovery = wal.NewRecovery(walManager, rt.WALRegistry, progress)
+		rt.WALWaiter = rt.WALRecovery.Waiter()
+		logger.Info("wal ready", "path", walDir, "last_committed_lsn", walManager.LastCommittedLSN())
+	}
 	adminService := admin.NewModule()
 	userService := daemonuser.NewModule()
 	spaceService := daemonspace.NewModule()
@@ -153,6 +185,15 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, graphService, blobService, semanticService, changeService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
+	}
+	if rt.WALRecovery != nil {
+		started := time.Now()
+		applied, err := rt.WALRecovery.Recover(ctx)
+		if err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("recover wal: %w", err)
+		}
+		logger.Info("wal recovery complete", "applied_lsn", applied, "last_committed_lsn", rt.WAL.LastCommittedLSN(), "duration", time.Since(started))
 	}
 	graphService.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)

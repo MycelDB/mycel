@@ -41,6 +41,7 @@ type Manager interface {
 	SystemRules(ctx context.Context) ([]domainaccess.SystemAccessRule, error)
 	CanSystem(ctx context.Context, userID identity.UserID, permission domainaccess.SystemPermission) (bool, error)
 	Grant(ctx context.Context, in GrantInput) (domainaccess.SpaceAccessRule, error)
+	ApplyGrant(ctx context.Context, rule domainaccess.SpaceAccessRule) (domainaccess.SpaceAccessRule, error)
 	Revoke(ctx context.Context, in RevokeInput) error
 	DeleteForUser(ctx context.Context, userID identity.UserID) error
 	DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error

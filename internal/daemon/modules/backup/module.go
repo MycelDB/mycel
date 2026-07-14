@@ -9,6 +9,7 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 var _ daemonruntime.Starter = (*Module)(nil)
@@ -17,17 +18,21 @@ var _ daemonruntime.StatusReporter = (*Module)(nil)
 var _ Manager = (*Module)(nil)
 
 type Module struct {
-	mu        sync.Mutex
-	manager   *backupcore.Manager
-	policy    backupcore.Policy
-	logger    *slog.Logger
-	runCtx    context.Context
-	cancel    context.CancelFunc
-	running   bool
-	startedAt time.Time
-	nextRunAt time.Time
-	lastError string
-	wg        sync.WaitGroup
+	mu         sync.Mutex
+	manager    *backupcore.Manager
+	policy     backupcore.Policy
+	logger     *slog.Logger
+	runCtx     context.Context
+	cancel     context.CancelFunc
+	running    bool
+	startedAt  time.Time
+	nextRunAt  time.Time
+	lastError  string
+	wg         sync.WaitGroup
+	wal        *wal.Manager
+	progress   wal.AppliedLSNStore
+	checkpoint *wal.CheckpointStore
+	waiter     *wal.ApplyWaiter
 }
 
 func NewModule() *Module { return &Module{} }
@@ -40,6 +45,18 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	policy = m.manager.Policy()
 	m.policy = policy
 	m.logger = rt.Logger
+	m.wal = rt.WAL
+	m.progress = rt.WALProgress
+	m.checkpoint = rt.WALCheckpoint
+	m.waiter = rt.WALWaiter
+	if rt.WALRegistry != nil {
+		if err := rt.WALRegistry.Register(recordTypeBackupPolicyUpdate, wal.ApplierFunc(m.applyBackupPolicyUpdate)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register backup policy WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeBackupDelete, wal.ApplierFunc(m.applyBackupDelete)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register backup delete WAL applier", err)
+		}
+	}
 	if policy.Enabled {
 		rt.Logger.Info("backup service configured", "backup_dir", policy.BackupDir, "schedule_kind", policy.ScheduleKind, "interval", policy.Interval.String(), "retention_count", policy.RetentionCount, "compression", policy.Compression)
 	} else {
@@ -108,12 +125,19 @@ func (m *Module) UpdatePolicy(ctx context.Context, policy backupcore.Policy) (ba
 	if m.manager == nil {
 		return backupcore.Policy{}, nil
 	}
-	updated, err := m.manager.UpdatePolicy(ctx, policy)
-	if err != nil {
-		return backupcore.Policy{}, err
+	if m.wal != nil {
+		if err := m.commitWAL(ctx, recordTypeBackupPolicyUpdate, backupPolicyRecord{Policy: policy}); err != nil {
+			return backupcore.Policy{}, err
+		}
+	} else {
+		updated, err := m.manager.UpdatePolicy(ctx, policy)
+		if err != nil {
+			return backupcore.Policy{}, err
+		}
+		m.policy = updated
 	}
+	updated := m.manager.Policy()
 	m.mu.Lock()
-	m.policy = updated
 	running := m.running
 	if running {
 		cancel := m.cancel
@@ -155,11 +179,14 @@ func (m *Module) ListBackups(ctx context.Context) ([]backupcore.Manifest, error)
 }
 
 func (m *Module) DeleteBackup(ctx context.Context, backupID string) error {
+	if m.wal != nil {
+		return m.commitWAL(ctx, recordTypeBackupDelete, backupDeleteRecord{BackupID: backupID})
+	}
 	return m.manager.DeleteBackup(ctx, backupID)
 }
 
 func (m *Module) Trigger(ctx context.Context, input backupcore.TriggerInput) (backupcore.TriggerResult, error) {
-	result, err := m.manager.Trigger(ctx, input)
+	result, err := m.triggerWithWALCheckpoint(ctx, input)
 	if err == nil {
 		m.setNextRun(time.Now().UTC())
 	}
@@ -238,7 +265,10 @@ func (m *Module) schedulerLoop(ctx context.Context) {
 			m.setNextRun(time.Now().UTC())
 			continue
 		}
-		err := m.manager.RunScheduledBackup(ctx)
+		var err error
+		if m.Policy().Enabled {
+			_, err = m.triggerWithWALCheckpoint(ctx, backupcore.TriggerInput{Source: "scheduler", Reason: "scheduled backup"})
+		}
 		if err != nil && ctx.Err() == nil {
 			m.mu.Lock()
 			m.lastError = err.Error()

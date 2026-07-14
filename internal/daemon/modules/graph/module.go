@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ import (
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/graph/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 const childOrderStep = 1000
@@ -32,6 +34,9 @@ type Module struct {
 	changeSink             graphchange.Sink
 	lastGraphChangeSinkErr error
 	gate                   *quiesce.Gate
+	wal                    *wal.Manager
+	walProgress            wal.AppliedLSNStore
+	walWaiter              *wal.ApplyWaiter
 }
 
 type overlay struct {
@@ -70,6 +75,14 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	}
 	if m.overlays == nil {
 		m.overlays = map[string]*overlay{}
+	}
+	m.wal = rt.WAL
+	m.walProgress = rt.WALProgress
+	m.walWaiter = rt.WALWaiter
+	if rt.WALRegistry != nil {
+		if err := rt.WALRegistry.Register(recordTypeGraphCommit, wal.ApplierFunc(m.applyGraphCommit)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register graph commit WAL applier", err)
+		}
 	}
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)
@@ -520,42 +533,67 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	if err != nil {
 		return CommitResult{}, err
 	}
-	storageTx, err := store.Begin(ctx)
-	if err != nil {
-		return CommitResult{}, mapStorageError(err)
-	}
-	expectedRevision := uint64(tx.BaseRevision)
-	storageTx.ExpectRevision(expectedRevision)
-	for _, node := range sortedNodes(snapshot.putNodes) {
-		if err := storageTx.PutNode(node); err != nil {
-			_ = storageTx.Rollback()
+	record := graphCommitRecordFromSnapshot(tx, snapshot)
+	var committedRevision int64
+	var info graphstorage.CommitInfo
+	if m.wal == nil {
+		storageTx, err := store.Begin(ctx)
+		if err != nil {
 			return CommitResult{}, mapStorageError(err)
 		}
-	}
-	for _, edge := range sortedEdges(snapshot.putEdges) {
-		if err := storageTx.PutEdge(edge); err != nil {
-			_ = storageTx.Rollback()
+		storageTx.ExpectRevision(uint64(tx.BaseRevision))
+		for _, node := range record.PutNodes {
+			if err := storageTx.PutNode(node); err != nil {
+				_ = storageTx.Rollback()
+				return CommitResult{}, mapStorageError(err)
+			}
+		}
+		for _, edge := range record.PutEdges {
+			if err := storageTx.PutEdge(edge); err != nil {
+				_ = storageTx.Rollback()
+				return CommitResult{}, mapStorageError(err)
+			}
+		}
+		for _, id := range record.DeleteNodeIDs {
+			if err := storageTx.DeleteNode(id); err != nil {
+				_ = storageTx.Rollback()
+				return CommitResult{}, mapStorageError(err)
+			}
+		}
+		for _, id := range record.DeleteEdgeIDs {
+			if err := storageTx.DeleteEdge(id); err != nil {
+				_ = storageTx.Rollback()
+				return CommitResult{}, mapStorageError(err)
+			}
+		}
+		info, err = storageTx.CommitWithInfo()
+		if err != nil {
 			return CommitResult{}, mapStorageError(err)
 		}
-	}
-	for _, id := range sortedNodeIDs(snapshot.deleteNodes) {
-		if err := storageTx.DeleteNode(id); err != nil {
-			_ = storageTx.Rollback()
-			return CommitResult{}, mapStorageError(err)
+		committedRevision = int64(store.Revision())
+	} else {
+		payload, err := json.Marshal(record)
+		if err != nil {
+			return CommitResult{}, err
 		}
-	}
-	for _, id := range sortedEdgeIDs(snapshot.deleteEdges) {
-		if err := storageTx.DeleteEdge(id); err != nil {
-			_ = storageTx.Rollback()
-			return CommitResult{}, mapStorageError(err)
+		lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeGraphCommit, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+		if err != nil {
+			return CommitResult{}, err
 		}
-	}
-	info, err := storageTx.CommitWithInfo()
-	if err != nil {
-		return CommitResult{}, mapStorageError(err)
+		if err := m.wal.Sync(ctx, lsn); err != nil {
+			return CommitResult{}, err
+		}
+		committedRevision, _, err = m.applyGraphCommitRecord(ctx, record)
+		if err != nil {
+			return CommitResult{}, err
+		}
+		if err := m.markWALApplied(ctx, lsn); err != nil {
+			return CommitResult{}, err
+		}
+		info = graphstorage.CommitInfo{TxnID: uuid.New(), NextRevision: uint64(committedRevision)}
 	}
 	m.notifyGraphChangeSink(ctx, info, graphEvent)
-	return CommitResult{OperationCount: snapshot.opCount, CommittedRevision: int64(store.Revision()), Changes: changes}, nil
+	return CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}, nil
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {

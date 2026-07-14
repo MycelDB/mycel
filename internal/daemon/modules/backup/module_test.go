@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,7 +14,71 @@ import (
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	"github.com/myceldb/mycel/internal/wal"
 )
+
+func TestBackupServiceWALPolicyUpdateAndDelete(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	writeBackupFixture(t, dataDir)
+	wm, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal"), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wm.Close()
+	progress := wal.NewFileProgressStore(filepath.Join(dataDir, "meta", "wal", "progress.json"))
+	rt := testRuntimeWithDataDir(t, dataDir, daemonconfig.BackupConfig{Enabled: false})
+	rt.WAL = wm
+	rt.WALRegistry = wal.NewRegistry()
+	rt.WALProgress = progress
+	rt.WALCheckpoint = wal.NewCheckpointStore(filepath.Join(dataDir, "meta", "wal", "checkpoint.json"))
+	rt.WALWaiter = wal.NewApplyWaiter()
+	m := NewModule()
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("Init() error=%v", result.Error)
+	}
+	backupDir := filepath.Join(t.TempDir(), "backups")
+	policy, err := m.UpdatePolicy(ctx, backupcore.Policy{Enabled: true, BackupDir: backupDir, Interval: time.Hour, RetentionCount: 2, Compression: "zip", QuiesceDrainTimeout: time.Second, BackupTimeout: time.Minute, RetryAfter: time.Second, StatusHistoryLimit: 2})
+	if err != nil {
+		t.Fatalf("UpdatePolicy() error=%v", err)
+	}
+	if !policy.Enabled {
+		t.Fatalf("policy not enabled: %#v", policy)
+	}
+	if got := wm.LastCommittedLSN(); got != 1 {
+		t.Fatalf("LastCommittedLSN=%v want 1", got)
+	}
+	if _, err := m.Trigger(ctx, backupcore.TriggerInput{Source: "test"}); err != nil {
+		t.Fatalf("Trigger() error=%v", err)
+	}
+	cp, err := rt.WALCheckpoint.Load(ctx)
+	if err != nil || cp.LSN != 1 {
+		t.Fatalf("checkpoint=%#v err=%v, want lsn 1", cp, err)
+	}
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := backupcore.Manifest{Version: backupcore.ManifestVersion, BackupID: "backup-1", ArchiveName: "backup-1.zip", CreatedAt: time.Now(), CompletedAt: time.Now(), Policy: backupcore.PolicySummary{Compression: "zip"}}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "backup-1.manifest.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "backup-1.zip"), []byte("zip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DeleteBackup(ctx, "backup-1"); err != nil {
+		t.Fatalf("DeleteBackup() error=%v", err)
+	}
+	if got := wm.LastCommittedLSN(); got != 2 {
+		t.Fatalf("LastCommittedLSN=%v want 2", got)
+	}
+	if applied, err := progress.AppliedLSN(ctx); err != nil || applied != 2 {
+		t.Fatalf("AppliedLSN=%v err=%v want 2", applied, err)
+	}
+}
 
 func TestBackupServiceDisabledDoesNotStartScheduler(t *testing.T) {
 	m := NewModule()

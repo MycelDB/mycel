@@ -6,14 +6,20 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
+	"github.com/myceldb/mycel/internal/daemon/clustering"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 type Runtime struct {
 	Config config.Config
 	Logger *slog.Logger
+
+	NodeIdentity *clustering.NodeIdentity
+	NodeState    clustering.NodeState
 
 	// ServicesByName is the canonical runtime service registry.
 	ServicesByName  map[string]Service
@@ -23,6 +29,15 @@ type Runtime struct {
 	// Quiesce coordinates daemon services that can temporarily drain work for
 	// backup or other maintenance operations.
 	Quiesce *quiesce.Coordinator
+
+	// WAL is the daemon-owned write-ahead log manager. WALRegistry receives
+	// bounded-context appliers before WALRecovery runs during startup.
+	WAL           *wal.Manager
+	WALRegistry   *wal.Registry
+	WALRecovery   *wal.Recovery
+	WALProgress   wal.AppliedLSNStore
+	WALCheckpoint *wal.CheckpointStore
+	WALWaiter     *wal.ApplyWaiter
 
 	LogPath string
 
@@ -35,6 +50,7 @@ func New(cfg config.Config, logger *slog.Logger, logPath string, close func() er
 		Logger:         logger,
 		ServicesByName: map[string]Service{},
 		Quiesce:        quiesce.NewCoordinator(),
+		WALRegistry:    wal.NewRegistry(),
 		LogPath:        logPath,
 		close:          close,
 	}
@@ -45,6 +61,11 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	var firstErr error
+	if r.NodeIdentity != nil {
+		if err := clustering.WriteLocalState(r.Config.DataDir, clustering.NodeStateStopped, time.Now().UTC()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if err := r.StopServices(context.Background()); err != nil {
 		firstErr = err
 	}
@@ -53,6 +74,11 @@ func (r *Runtime) Close() error {
 			if err := closer.Close(); err != nil && firstErr == nil {
 				firstErr = err
 			}
+		}
+	}
+	if r.WAL != nil {
+		if err := r.WAL.Close(); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	if r.close != nil {

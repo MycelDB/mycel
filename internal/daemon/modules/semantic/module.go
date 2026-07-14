@@ -37,6 +37,7 @@ import (
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 var _ daemonruntime.Starter = (*Module)(nil)
@@ -50,7 +51,9 @@ type Module struct {
 	dataDir            string
 	secretKeyB64       string
 	global             storesemantic.GlobalManager
+	globalBase         storesemantic.GlobalManager
 	accounting         storeaccounting.Manager
+	accountingBase     storeaccounting.Manager
 	spaces             map[domainspace.SpaceID]storesemantic.SpaceManager
 	maintenanceConfig  daemonconfig.SemanticMaintenanceConfig
 	logger             *slog.Logger
@@ -60,6 +63,9 @@ type Module struct {
 	maintenanceStarted time.Time
 	stats              MaintenanceStats
 	gate               *quiesce.Gate
+	wal                *wal.Manager
+	walProgress        wal.AppliedLSNStore
+	walWaiter          *wal.ApplyWaiter
 }
 
 type MaintenanceStats struct {
@@ -93,8 +99,32 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	}
 	m.dataDir = rt.Config.DataDir
 	m.secretKeyB64 = rt.Config.UserStoreEncryptionKeyB64
-	m.global = global
-	m.accounting = acct
+	m.globalBase = global
+	m.wal = rt.WAL
+	m.walProgress = rt.WALProgress
+	m.walWaiter = rt.WALWaiter
+	if rt.WALRegistry != nil {
+		if err := rt.WALRegistry.Register(recordTypeSemanticGlobal, wal.ApplierFunc(m.applySemanticGlobal)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register semantic global WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeSemanticSpace, wal.ApplierFunc(m.applySemanticSpace)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register semantic space WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeSemanticAccounting, wal.ApplierFunc(m.applySemanticAccounting)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register semantic accounting WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeSemanticMaintenance, wal.ApplierFunc(m.applySemanticMaintenance)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register semantic maintenance WAL applier", err)
+		}
+	}
+	if m.wal != nil {
+		m.global = &walGlobalManager{inner: global, module: m}
+		m.accounting = &walAccountingManager{inner: acct, module: m}
+	} else {
+		m.global = global
+		m.accounting = acct
+	}
+	m.accountingBase = acct
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
 	m.maintenanceConfig = rt.Config.SemanticMaintenance
 	m.logger = rt.Logger
@@ -393,10 +423,17 @@ func (m *Module) MaintenanceManager(ctx context.Context, spaceID domainspace.Spa
 		return nil, fmt.Errorf("space_id is required")
 	}
 	mgr := storesemantic.NewMaintenanceManager()
-	if err := mgr.Init(ctx, filepath.Join(m.dataDir, "graphs", spaceID.String(), "semantic", "maintenance"), spaceID); err != nil {
+	if err := mgr.Init(ctx, m.maintenanceDir(spaceID), spaceID); err != nil {
 		return nil, err
 	}
+	if m.wal != nil {
+		return &walMaintenanceManager{inner: mgr, module: m, spaceID: spaceID}, nil
+	}
 	return mgr, nil
+}
+
+func (m *Module) maintenanceDir(spaceID domainspace.SpaceID) string {
+	return filepath.Join(m.dataDir, "graphs", spaceID.String(), "semantic", "maintenance")
 }
 
 func (m *Module) DirtyEventAppender(ctx context.Context, spaceID domainspace.SpaceID) (semanticmaintenance.DirtyEventAppender, error) {
@@ -414,10 +451,17 @@ func (m *Module) SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) 
 	// Reload per request so daemon client reads observe semantic admin/provisioning
 	// changes made by still-embedded workflows.
 	mgr := storesemantic.NewSpaceManager()
-	if err := mgr.Init(ctx, filepath.Join(m.dataDir, "graphs", spaceID.String(), "semantic"), spaceID); err != nil {
+	if err := mgr.Init(ctx, m.spaceSemanticDir(spaceID), spaceID); err != nil {
 		return nil, err
 	}
+	if m.wal != nil {
+		return &walSpaceManager{inner: mgr, module: m, spaceID: spaceID}, nil
+	}
 	return mgr, nil
+}
+
+func (m *Module) spaceSemanticDir(spaceID domainspace.SpaceID) string {
+	return filepath.Join(m.dataDir, "graphs", spaceID.String(), "semantic")
 }
 
 func (m *Module) GetMaintenanceStatus(ctx context.Context, in MaintenanceStatusInput) (MaintenanceStatus, error) {

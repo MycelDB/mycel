@@ -29,6 +29,7 @@ type Store interface {
 	Find(ctx context.Context, username string, email string) (Admin, error)
 	Update(ctx context.Context, adminID string, update func(*Admin) error) (Admin, error)
 	UpdatePasswordHash(ctx context.Context, adminID string, passwordHash string) (Admin, error)
+	ApplyPut(ctx context.Context, admin Admin) (Admin, error)
 }
 
 type FileStore struct {
@@ -162,6 +163,33 @@ func (s *FileStore) UpdatePasswordHash(ctx context.Context, adminID string, pass
 		admin.PasswordHash = passwordHash
 		return nil
 	})
+}
+
+func (s *FileStore) ApplyPut(ctx context.Context, admin Admin) (Admin, error) {
+	if err := ctx.Err(); err != nil {
+		return Admin{}, err
+	}
+	admin = admin.normalized()
+	if strings.TrimSpace(admin.ID) == "" || strings.TrimSpace(admin.Username) == "" {
+		return Admin{}, ErrAdminNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, err := s.read()
+	if err != nil {
+		return Admin{}, err
+	}
+	for i, existing := range doc.Admins {
+		if existing.ID == admin.ID {
+			doc.Admins[i] = admin
+			return admin, s.write(doc)
+		}
+		if strings.EqualFold(existing.Username, admin.Username) || (admin.Email != "" && existing.Email != "" && strings.EqualFold(existing.Email, admin.Email)) {
+			return Admin{}, ErrDuplicateAdmin
+		}
+	}
+	doc.Admins = append(doc.Admins, admin)
+	return admin, s.write(doc)
 }
 
 func (s *FileStore) read() (storeDocument, error) {

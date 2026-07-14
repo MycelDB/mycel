@@ -7,6 +7,7 @@ import (
 	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 const ModuleName = "space"
@@ -43,6 +44,12 @@ type CreateSpaceInput struct {
 	OwnerUserID       identity.UserID
 	DefaultDomainKey  string
 	DefaultDomainName string
+}
+
+type CreateSpaceResult struct {
+	Space     domainspace.Space
+	Domain    graph.Domain
+	CommitLSN wal.LSN
 }
 
 type CreateDomainInput struct {

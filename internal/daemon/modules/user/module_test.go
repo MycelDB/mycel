@@ -15,6 +15,7 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -41,6 +42,49 @@ func TestModuleQuiesceRejectsCreateUser(t *testing.T) {
 	_, err = module.CreateUser(ctx, CreateUserInput{Username: "blocked", Password: "pass"})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("CreateUser() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
+}
+
+func TestModuleWALUserMutationsAppendAndApply(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	walManager, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal"), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer walManager.Close()
+	progress := wal.NewFileProgressStore(filepath.Join(dataDir, "meta", "wal", "progress.json"))
+	var logs bytes.Buffer
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, Logger: slog.New(slog.NewTextHandler(&logs, nil)), WAL: walManager, WALRegistry: wal.NewRegistry(), WALProgress: progress, WALWaiter: wal.NewApplyWaiter()}
+	module := NewModule()
+	if result := module.Init(ctx, rt); !result.OK {
+		t.Fatalf("Init() error = %v logs=%s", result.Error, logs.String())
+	}
+	created, err := module.CreateUser(ctx, CreateUserInput{Username: "Alice", Password: "alice-pass"})
+	if err != nil {
+		t.Fatalf("CreateUser() error = %v", err)
+	}
+	if _, err := module.DisableUser(ctx, created.ID); err != nil {
+		t.Fatalf("DisableUser() error = %v", err)
+	}
+	if _, err := module.EnableUser(ctx, created.ID); err != nil {
+		t.Fatalf("EnableUser() error = %v", err)
+	}
+	if _, err := module.SetUserPassword(ctx, created.ID, "new-pass"); err != nil {
+		t.Fatalf("SetUserPassword() error = %v", err)
+	}
+	deleted, err := module.DeleteUser(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("DeleteUser() error = %v", err)
+	}
+	if deleted.State != UserStateDeleted {
+		t.Fatalf("deleted=%#v", deleted)
+	}
+	if got := walManager.LastCommittedLSN(); got != 5 {
+		t.Fatalf("LastCommittedLSN() = %v, want 5", got)
+	}
+	if applied, err := progress.AppliedLSN(ctx); err != nil || applied != 5 {
+		t.Fatalf("AppliedLSN() = %v, %v; want 5", applied, err)
 	}
 }
 
