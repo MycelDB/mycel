@@ -2,3 +2,10 @@
 coverage.out
 bin/
 data/
+internal/gen/
+.cache/
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/

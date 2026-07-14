@@ -4,76 +4,102 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/spf13/pflag"
 )
 
 func TestLoadDefaults(t *testing.T) {
-	t.Setenv(EnvConfig, "")
-	t.Setenv("MYCELDB_DATA_DIR", "")
+	clearConfigEnv(t)
 
 	cfg, err := Load(Options{})
 	if err != nil {
 		t.Fatalf("load defaults failed: %v", err)
 	}
-	if cfg.Output != "text" || cfg.AccessTokenTTL != time.Hour || cfg.BlobStaleTmpAge != time.Hour {
-		t.Fatalf("unexpected defaults: %+v", cfg)
+	if cfg.Output != "text" {
+		t.Fatalf("expected text output default, got %+v", cfg)
 	}
-	if cfg.BlobLimits.MaxSizeBytes != -1 || cfg.BlobLimits.MaxPDFBytes != -1 {
-		t.Fatalf("expected unlimited blob defaults, got %+v", cfg.BlobLimits)
+	if cfg.DaemonAddr != "" || cfg.Username != "" || cfg.Password != "" || cfg.DaemonTLS {
+		t.Fatalf("expected empty daemon/auth defaults, got %+v", cfg)
 	}
 }
 
 func TestLoadPrecedenceFileEnvFlags(t *testing.T) {
-	t.Setenv(EnvConfig, "")
-	t.Setenv("MYCELDB_DATA_DIR", "/from-env")
-	t.Setenv("MYCELDB_AUTH_ACCESS_TOKEN_TTL", "45m")
+	clearConfigEnv(t)
+	t.Setenv("MYCEL_OUTPUT", "json")
+	t.Setenv("MYCELD_GRPC_ADDR", "127.0.0.1:7777")
+	t.Setenv("MYCELD_TLS", "true")
 	configPath := filepath.Join(t.TempDir(), "mycel.yaml")
 	if err := os.WriteFile(configPath, []byte(`
-data_dir: /from-file
-output: json
-auth:
-  access_token_ttl: 30m
-storage:
-  blobs:
-    max_size_bytes: 100
-    max_pdf_bytes: 80
-    mime_type_limits:
-      application/pdf: 60
+output: text
+username: file-user
+password: file-pass
+daemon:
+  addr: 127.0.0.1:5555
+  tls_ca: /file/ca.pem
+  tls_server_name: file-server
 `), 0o600); err != nil {
 		t.Fatalf("write config failed: %v", err)
 	}
 	flags := testFlags(t,
 		"--config", configPath,
-		"--data-dir", "/from-flag",
-		"--auth-token-ttl", "15m",
-		"--blob-max-pdf-bytes", "50",
+		"--username", "flag-user",
+		"--daemon-addr", "127.0.0.1:9999",
+		"--daemon-tls-client-cert", "/flag/client.pem",
+		"--daemon-tls-client-key", "/flag/client-key.pem",
 	)
 
 	cfg, err := Load(Options{Flags: flags})
 	if err != nil {
 		t.Fatalf("load config failed: %v", err)
 	}
-	if cfg.DataDir != "/from-flag" {
-		t.Fatalf("expected flag data dir, got %q", cfg.DataDir)
-	}
-	if cfg.AccessTokenTTL != 15*time.Minute {
-		t.Fatalf("expected flag token ttl, got %s", cfg.AccessTokenTTL)
-	}
 	if cfg.Output != "json" {
-		t.Fatalf("expected file output json, got %q", cfg.Output)
+		t.Fatalf("expected env output override, got %q", cfg.Output)
 	}
-	if cfg.BlobLimits.MaxPDFBytes != 50 || cfg.BlobLimits.MimeTypeLimits["application/pdf"] != 60 {
-		t.Fatalf("unexpected blob limits: %+v", cfg.BlobLimits)
+	if cfg.Username != "flag-user" || cfg.Password != "file-pass" {
+		t.Fatalf("unexpected credentials: %+v", cfg)
+	}
+	if cfg.DaemonAddr != "127.0.0.1:9999" || !cfg.DaemonTLS {
+		t.Fatalf("unexpected daemon connection config: %+v", cfg)
+	}
+	if cfg.DaemonTLSCAFile != "/file/ca.pem" || cfg.DaemonTLSServerName != "file-server" {
+		t.Fatalf("expected file TLS settings, got %+v", cfg)
+	}
+	if cfg.DaemonTLSClientCertFile != "/flag/client.pem" || cfg.DaemonTLSClientKeyFile != "/flag/client-key.pem" {
+		t.Fatalf("expected flag mTLS settings, got %+v", cfg)
 	}
 }
 
-func TestLoadRejectsBlobLimitAboveGlobalCap(t *testing.T) {
-	t.Setenv(EnvConfig, "")
-	flags := testFlags(t, "--blob-max-size-bytes", "10", "--blob-max-image-bytes", "11")
-	if _, err := Load(Options{Flags: flags}); err == nil {
+func TestLoadRejectsInvalidOutput(t *testing.T) {
+	clearConfigEnv(t)
+	if _, err := Load(Options{Flags: testFlags(t, "--output", "xml")}); err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestLoadRejectsPartialClientCertificate(t *testing.T) {
+	clearConfigEnv(t)
+	if _, err := Load(Options{Flags: testFlags(t, "--daemon-tls-client-cert", "/client.pem")}); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func clearConfigEnv(t *testing.T) {
+	t.Helper()
+	envNames := []string{
+		EnvConfig,
+		"MYCEL_OUTPUT",
+		"MYCEL_USERNAME",
+		"MYCEL_PASSWORD",
+		"MYCELD_GRPC_ADDR",
+		"MYCELD_TLS",
+		"MYCELD_TLS_CA_FILE",
+		"MYCELD_TLS_SERVER_NAME",
+		"MYCELD_TLS_INSECURE_SKIP_VERIFY",
+		"MYCELD_TLS_CLIENT_CERT_FILE",
+		"MYCELD_TLS_CLIENT_KEY_FILE",
+	}
+	for _, name := range envNames {
+		t.Setenv(name, "")
 	}
 }
 
@@ -81,19 +107,16 @@ func testFlags(t *testing.T, args ...string) *pflag.FlagSet {
 	t.Helper()
 	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
 	flags.String("config", "", "")
-	flags.String("data-dir", "", "")
 	flags.String("output", "", "")
 	flags.String("username", "", "")
 	flags.String("password", "", "")
-	flags.String("user-store-encryption-key-b64", "", "")
-	flags.String("auth-token-ttl", "", "")
-	flags.String("blob-stale-tmp-age", "", "")
-	flags.Int64("blob-max-size-bytes", 0, "")
-	flags.Int64("blob-max-image-bytes", 0, "")
-	flags.Int64("blob-max-pdf-bytes", 0, "")
-	flags.Int64("blob-max-audio-bytes", 0, "")
-	flags.Int64("blob-max-video-bytes", 0, "")
-	flags.Int64("blob-max-other-bytes", 0, "")
+	flags.String("daemon-addr", "", "")
+	flags.Bool("daemon-tls", false, "")
+	flags.String("daemon-tls-ca", "", "")
+	flags.String("daemon-tls-server-name", "", "")
+	flags.Bool("daemon-tls-insecure-skip-verify", false, "")
+	flags.String("daemon-tls-client-cert", "", "")
+	flags.String("daemon-tls-client-key", "", "")
 	if err := flags.Parse(args); err != nil {
 		t.Fatalf("parse flags failed: %v", err)
 	}

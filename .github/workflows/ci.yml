@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout daemon
+        uses: actions/checkout@v4
+        with:
+          path: mycel
+      - name: Checkout API protos
+        uses: actions/checkout@v4
+        with:
+          repository: MycelDB/mycel-api
+          ref: develop
+          path: mycel-api
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mycel/go.mod
+          cache-dependency-path: mycel/go.sum
+      - name: Test
+        working-directory: mycel
+        run: make test
+      - name: Build
+        working-directory: mycel
+        run: make build
+      - name: Public surface check
+        working-directory: mycel
+        run: scripts/check-public-surface.sh --workspace "$GITHUB_WORKSPACE" --strict

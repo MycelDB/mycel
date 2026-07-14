@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 )
 
 type EmbedInput struct {

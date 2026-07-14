@@ -1,0 +1,77 @@
+# Admin Semantic Maintenance API
+
+## Status
+
+Implemented daemon-backed MVP.
+
+Protobuf source:
+
+```text
+github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/semantic_maintenance.proto
+```
+
+## Service
+
+```text
+mycel.admin.v1.AdminSemanticMaintenanceService
+```
+
+Implemented RPCs:
+
+- `GetSemanticMaintenanceStatus`
+- `ListSemanticMaintenanceWork`
+- `RetrySemanticMaintenanceWork`
+- `CancelSemanticMaintenanceWork`
+- `AnalyzeSemanticDirtyWork`
+- `ProcessSemanticDirtyWork`
+- `BackfillSemanticIndex`
+
+Visibility responses expose queue counters, lifecycle timestamps, sanitized error summaries, and work item metadata only. They intentionally do not expose credential secret values, raw source text, embedding vectors, raw provider request bodies, or full provider responses.
+
+## Authorization
+
+Requires an operator bearer token with the semantic/inference admin capability currently represented by:
+
+```text
+CAPABILITY_SEMANTIC_SEARCH
+```
+
+## CLI
+
+Daemon-backed commands are used when `--daemon-addr` is supplied:
+
+```sh
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic maintenance status --space-id '<space-id>'
+
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic maintenance list --space-id '<space-id>' --status pending --limit 100
+
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic maintenance retry --space-id '<space-id>' '<work-item-id>'
+
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic maintenance cancel --space-id '<space-id>' '<work-item-id>'
+
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic maintenance analyze --space-id '<space-id>'
+
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic maintenance process --space-id '<space-id>' --limit 10
+
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  semantic index backfill '<semantic-index-id-or-key>' \
+  --space-id '<space-id>' \
+  --domain '<domain-id>' \
+  --force \
+  --continue-on-error
+```
+
+When the backfill index argument is a key, daemon mode uses AdminDomainService so `--domain` may be a domain key such as `default` or a domain UUID.
+
+## Notes and limitations
+
+- Backfill currently uses the `mycel-file` vector backend.
+- The Admin controls mutate durable work state only: retry returns a work item to pending and clears sanitized error fields; cancel marks an item cancelled.
+- The worker processes pending dirty work in a bounded single pass; durable job scheduling is future work.
+- Legacy embedding migration is a separate daemon Admin API and CLI path; semantic maintenance itself does not read legacy profiles.

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	domainembedding "github.com/myceldb/mycel/domain/embedding"
+	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 )
 
 //go:embed embedding_catalog.json

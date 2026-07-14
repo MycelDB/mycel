@@ -1,0 +1,72 @@
+{
+  "name": "standard-openai-embeddings",
+  "version": "2026-06",
+  "source": "examples/inference/standard-openai-embeddings.json",
+  "model_endpoints": [
+    {
+      "key": "openai",
+      "name": "OpenAI",
+      "connector_type": "openai-compatible",
+      "endpoint_url": "https://api.openai.com/v1",
+      "network_class": "external_https",
+      "privacy_class": "third_party",
+      "auth_modes": ["api_key"],
+      "operations": ["embeddings"],
+      "enabled": true,
+      "metadata": {
+        "provider": "openai"
+      }
+    }
+  ],
+  "models": [
+    {
+      "key": "openai/text-embedding-3-small",
+      "operation": "embeddings",
+      "model_name": "text-embedding-3-small",
+      "dimensions": 1536,
+      "vector_space_key": "openai/text-embedding-3-small",
+      "connector_types": ["openai-compatible"],
+      "modality": "text",
+      "metadata": {
+        "provider": "openai",
+        "display_name": "OpenAI text-embedding-3-small"
+      }
+    },
+    {
+      "key": "openai/text-embedding-3-large",
+      "operation": "embeddings",
+      "model_name": "text-embedding-3-large",
+      "dimensions": 3072,
+      "vector_space_key": "openai/text-embedding-3-large",
+      "connector_types": ["openai-compatible"],
+      "modality": "text",
+      "metadata": {
+        "provider": "openai",
+        "display_name": "OpenAI text-embedding-3-large"
+      }
+    }
+  ],
+  "vector_stores": [
+    {
+      "key": "mycel-file",
+      "name": "Mycel File Vector Store",
+      "type": "mycel-file",
+      "privacy_class": "local_only",
+      "enabled": true
+    }
+  ],
+  "model_endpoint_capabilities": [
+    {
+      "model_endpoint": "openai",
+      "model": "openai/text-embedding-3-small",
+      "operation": "embeddings",
+      "enabled": true
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/text-embedding-3-large",
+      "operation": "embeddings",
+      "enabled": true
+    }
+  ]
+}
