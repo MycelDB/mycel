@@ -50,6 +50,7 @@ jobs:
           context: .
           file: mycel/Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             myceldb/mycel:${{ github.ref_name }}
             myceldb/mycel:latest
