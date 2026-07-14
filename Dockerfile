@@ -16,12 +16,15 @@ WORKDIR /src
 COPY mycel/go.mod mycel/go.sum ./mycel/
 
 WORKDIR /src/mycel
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY mycel-api ../mycel-api
 COPY mycel ./
 
-RUN ./scripts/generate-proto.sh && \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    ./scripts/generate-proto.sh && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/myceld ./cmd/myceld && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mycel ./cmd/mycel
 
