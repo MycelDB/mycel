@@ -24,6 +24,10 @@ jobs:
           repository: MycelDB/mycel-api
           ref: ${{ github.ref_name }}
           path: mycel-api
+          # GITHUB_TOKEN is scoped to this repository and cannot read sibling
+          # private repos. Use a fine-grained PAT with read-only Contents access
+          # to MycelDB/mycel-api while the API repo remains private.
+          token: ${{ secrets.MYCELDB_GITHUB_TOKEN }}
 
       - name: Verify tag is on main
         working-directory: mycel
