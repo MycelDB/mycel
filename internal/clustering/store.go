@@ -44,7 +44,7 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 			return LocalNode{State: NodeStateFailed}, err
 		}
 		now := nowFn().UTC()
-		id = NodeIdentity{Version: NodeIdentityVersion, NodeID: "node_" + uuid.NewString(), NodeName: strings.TrimSpace(opts.NodeName), ClusterID: "cluster_" + uuid.NewString(), ClusterName: strings.TrimSpace(opts.ClusterName), BackendAdvertiseAddr: strings.TrimSpace(opts.BackendAdvertiseAddr), CreatedAt: now, UpdatedAt: now}
+		id = NodeIdentity{Version: NodeIdentityVersion, NodeID: "node_" + uuid.NewString(), NodeName: strings.TrimSpace(opts.NodeName), ClusterID: "cluster_" + uuid.NewString(), ClusterName: strings.TrimSpace(opts.ClusterName), BackendAdvertiseAddr: strings.TrimSpace(opts.BackendAdvertiseAddr), ClusterAdmitted: opts.Bootstrap, ClusterBootstrap: opts.Bootstrap, NodePublicKeyFingerprint: strings.TrimSpace(opts.NodePublicKeyFingerprint), CreatedAt: now, UpdatedAt: now}
 		if err := ValidateIdentity(id); err != nil {
 			return LocalNode{State: NodeStateFailed}, err
 		}
@@ -76,6 +76,15 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 		id.BackendAdvertiseAddr = v
 		changed = true
 	}
+	if opts.Bootstrap && (!id.ClusterAdmitted || !id.ClusterBootstrap) {
+		id.ClusterAdmitted = true
+		id.ClusterBootstrap = true
+		changed = true
+	}
+	if v := strings.TrimSpace(opts.NodePublicKeyFingerprint); v != "" && id.NodePublicKeyFingerprint != v {
+		id.NodePublicKeyFingerprint = v
+		changed = true
+	}
 	if changed {
 		id.UpdatedAt = nowFn().UTC()
 		if err := ValidateIdentity(id); err != nil {
@@ -98,7 +107,7 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 
 func stateFor(id NodeIdentity) NodeState {
 	if strings.TrimSpace(id.ClusterName) != "" || strings.TrimSpace(id.BackendAdvertiseAddr) != "" {
-		return NodeStateClusterSingle
+		return NodeStateClustered
 	}
 	return NodeStateStandalone
 }

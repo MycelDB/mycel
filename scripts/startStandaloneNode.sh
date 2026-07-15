@@ -12,12 +12,25 @@ export MYCELD_GRPC_ADDR="$GRPC_ADDR"
 unset MYCELD_CLUSTER_NAME
 unset MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR
 
+case "$MYCELD_DATA_DIR" in
+  /tmp/mycel-*)
+    echo "Wiping node data directory: $MYCELD_DATA_DIR"
+    rm -rf "$MYCELD_DATA_DIR"
+    ;;
+  *)
+    echo "Refusing to wipe non-dev MYCELD_DATA_DIR: $MYCELD_DATA_DIR" >&2
+    echo "Use a /tmp/mycel-* data directory with this development script." >&2
+    exit 1
+    ;;
+esac
 mkdir -p "$DATA_DIR"
 
 echo "Starting myceld standalone"
 echo "  MYCELD_DATA_DIR=$MYCELD_DATA_DIR"
 echo "  MYCELD_GRPC_ADDR=$MYCELD_GRPC_ADDR"
 echo "  clustering identity: $MYCELD_DATA_DIR/meta/clustering/node.json"
+echo "  clustering state:    $MYCELD_DATA_DIR/meta/clustering/local_state.json"
+echo "  clustering peers:    $MYCELD_DATA_DIR/meta/clustering/peers.json"
 echo
 
 cd "$ROOT_DIR"

@@ -20,4 +20,7 @@ rm -rf "${repo_root}/internal/gen"
 (
   cd "${repo_root}"
   go run github.com/bufbuild/buf/cmd/buf@v1.50.1 generate "${api_root}" --template buf.gen.yaml
+  if [[ -d "${repo_root}/internal/clustering/proto" ]]; then
+    go run github.com/bufbuild/buf/cmd/buf@v1.50.1 generate "${repo_root}/internal/clustering/proto" --template buf.gen.yaml
+  fi
 )

@@ -38,6 +38,7 @@ const (
 	DefaultAccessTokenTTL                   = 15 * time.Minute
 	DefaultWALSegmentBytes                  = int64(64 * 1024 * 1024)
 	DefaultWALSyncPolicy                    = "always"
+	DefaultClusterDiscoveryInterval         = 5 * time.Second
 )
 
 type SemanticThrottleConfig struct {
@@ -85,6 +86,10 @@ type ClusterConfig struct {
 	Name                 string
 	BackendAdvertiseAddr string
 	SeedPeers            []string
+	DiscoveryInterval    time.Duration
+	Bootstrap            bool
+	JoinTokenFile        string
+	JoinToken            string
 }
 
 type Config struct {
@@ -142,6 +147,10 @@ func LoadFromEnv() (Config, error) {
 			Name:                 strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
 			BackendAdvertiseAddr: strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR")),
 			SeedPeers:            parseCSVEnv(os.Getenv("MYCELD_CLUSTER_SEED_PEERS")),
+			DiscoveryInterval:    parseDurationEnv(os.Getenv("MYCELD_CLUSTER_DISCOVERY_INTERVAL"), DefaultClusterDiscoveryInterval),
+			Bootstrap:            parseBoolEnvDefault(os.Getenv("MYCELD_CLUSTER_BOOTSTRAP"), false),
+			JoinTokenFile:        strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_JOIN_TOKEN_FILE")),
+			JoinToken:            strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_JOIN_TOKEN")),
 		},
 		Backup: BackupConfig{
 			Enabled:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
@@ -251,6 +260,12 @@ func (c ClusterConfig) Validate() error {
 		if err := validateClusterAddr("MYCELD_CLUSTER_SEED_PEERS", peer); err != nil {
 			return err
 		}
+	}
+	if c.DiscoveryInterval < 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_DISCOVERY_INTERVAL must be positive")
+	}
+	if c.Bootstrap && len(c.SeedPeers) > 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_BOOTSTRAP cannot be true when MYCELD_CLUSTER_SEED_PEERS is set")
 	}
 	return nil
 }

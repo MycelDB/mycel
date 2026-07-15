@@ -9,6 +9,18 @@ import (
 	"time"
 )
 
+func TestLoadOrCreateBootstrapWritesAdmissionFields(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	node, err := LoadOrCreate(ctx, Options{DataDir: dir, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093", Bootstrap: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.Identity.ClusterAdmitted || !node.Identity.ClusterBootstrap {
+		t.Fatalf("bootstrap/admitted not set: %#v", node.Identity)
+	}
+}
+
 func TestLoadOrCreateCreatesAndPreservesIdentity(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -53,8 +65,8 @@ func TestLoadOrCreatePersistsAndUpdatesMutableFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadOrCreate first: %v", err)
 	}
-	if first.State != NodeStateClusterSingle {
-		t.Fatalf("state=%s want %s", first.State, NodeStateClusterSingle)
+	if first.State != NodeStateClustered {
+		t.Fatalf("state=%s want %s", first.State, NodeStateClustered)
 	}
 	var local LocalState
 	raw, err := os.ReadFile(filepath.Join(dir, "meta", "clustering", "local_state.json"))
@@ -64,8 +76,8 @@ func TestLoadOrCreatePersistsAndUpdatesMutableFields(t *testing.T) {
 	if err := json.Unmarshal(raw, &local); err != nil {
 		t.Fatalf("unmarshal local state: %v", err)
 	}
-	if local.Mode != ClusterModeSingle || local.State != NodeStateClusterSingle {
-		t.Fatalf("local state=%#v want single", local)
+	if local.Mode != ClusterModeClustered || local.State != NodeStateClustered {
+		t.Fatalf("local state=%#v want clustered", local)
 	}
 	second, err := LoadOrCreate(ctx, Options{DataDir: dir, NodeName: "node-b", ClusterName: "cluster-b", BackendAdvertiseAddr: "10.0.0.5:9091"})
 	if err != nil {
@@ -94,14 +106,11 @@ func TestLoadOrCreateWritesPeers(t *testing.T) {
 	if err := json.Unmarshal(raw, &peers); err != nil {
 		t.Fatalf("unmarshal peers: %v", err)
 	}
-	if len(peers.Peers) != 2 {
-		t.Fatalf("peers len=%d want 2: %#v", len(peers.Peers), peers.Peers)
+	if len(peers.Peers) != 1 {
+		t.Fatalf("peers len=%d want 1 self only: %#v", len(peers.Peers), peers.Peers)
 	}
 	if peers.Peers[0].NodeID != local.Identity.NodeID || peers.Peers[0].State != PeerStateSelf {
 		t.Fatalf("self peer not first/matching: %#v", peers.Peers[0])
-	}
-	if peers.Peers[1].BackendAdvertiseAddr != "127.0.0.1:9192" || peers.Peers[1].State != PeerStateSeed {
-		t.Fatalf("seed peer mismatch: %#v", peers.Peers[1])
 	}
 }
 

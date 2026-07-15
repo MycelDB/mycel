@@ -6,15 +6,17 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/myceldb/mycel/internal/clustering/model"
 )
 
 const LocalStateVersion = 1
 
-type ClusterMode string
+type ClusterMode = model.ClusterMode
 
 const (
-	ClusterModeStandalone ClusterMode = "standalone"
-	ClusterModeSingle     ClusterMode = "single"
+	ClusterModeStandalone = model.ClusterModeStandalone
+	ClusterModeClustered  = model.ClusterModeClustered
 )
 
 type LocalState struct {
@@ -29,8 +31,8 @@ func StatePath(dataDir string) string {
 }
 
 func ModeForState(state NodeState) ClusterMode {
-	if state == NodeStateClusterSingle {
-		return ClusterModeSingle
+	if state == NodeStateClustered {
+		return ClusterModeClustered
 	}
 	return ClusterModeStandalone
 }

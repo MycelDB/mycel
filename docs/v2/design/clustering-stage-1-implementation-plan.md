@@ -238,7 +238,7 @@ localhost
 Create:
 
 ```text
-internal/daemon/clustering/
+internal/clustering/
   identity.go
   state.go
   store.go
@@ -343,7 +343,7 @@ If public API changes are too broad for Stage 1, runtime exposure plus tests are
 
 ### Step 2: Clustering package
 
-- Add `internal/daemon/clustering`.
+- Add `internal/clustering`.
 - Implement identity model and state constants.
 - Implement path helpers for `meta/clustering/node.json`.
 - Implement atomic JSON write pattern consistent with existing stores.
@@ -418,9 +418,14 @@ Stage 2A completed:
 - seed peer config via `MYCELD_CLUSTER_SEED_PEERS`
 - local `peers.json` with self and seed entries
 
+Stage 2B completed:
+
+- unsecured seed exchange over existing daemon gRPC
+- whole-peer-list propagation from the first reachable seed
+- retry loop via `MYCELD_CLUSTER_DISCOVERY_INTERVAL`
+
 Stage 2 candidates:
 
-- unsecured seed handshake
 - cluster status API/CLI
 - join token design
 - pending/active membership states

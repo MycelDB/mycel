@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/myceldb/mycel/internal/daemon/clustering"
+	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
@@ -18,8 +19,9 @@ type Runtime struct {
 	Config config.Config
 	Logger *slog.Logger
 
-	NodeIdentity *clustering.NodeIdentity
-	NodeState    clustering.NodeState
+	ClusterManager *clustering.Manager
+	NodeIdentity   *model.NodeIdentity
+	NodeState      model.NodeState
 
 	// ServicesByName is the canonical runtime service registry.
 	ServicesByName  map[string]Service
@@ -61,8 +63,12 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	var firstErr error
-	if r.NodeIdentity != nil {
-		if err := clustering.WriteLocalState(r.Config.DataDir, clustering.NodeStateStopped, time.Now().UTC()); err != nil && firstErr == nil {
+	if r.ClusterManager != nil {
+		if err := r.ClusterManager.Stop(context.Background()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	} else if r.NodeIdentity != nil {
+		if err := clustering.WriteLocalState(r.Config.DataDir, model.NodeStateStopped, time.Now().UTC()); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

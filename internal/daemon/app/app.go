@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/daemon/auth"
-	"github.com/myceldb/mycel/internal/daemon/clustering"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
 	"github.com/myceldb/mycel/internal/daemon/modules/admin"
@@ -101,7 +101,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce, ClusteringServer: &clustering.ExchangeServer{DataDir: cfg.DataDir, Identity: *rt.NodeIdentity, State: rt.NodeState}})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService()})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -109,8 +109,8 @@ func Run(ctx context.Context) int {
 	defer stopServer()
 
 	rt.Logger.Info("daemon ready", "grpc_addr", grpcServer.Addr())
-	if len(cfg.Cluster.SeedPeers) > 0 && rt.NodeIdentity != nil {
-		go clustering.DiscoverSeeds(serverCtx, clustering.DiscoveryOptions{DataDir: cfg.DataDir, Identity: *rt.NodeIdentity, State: rt.NodeState, Seeds: cfg.Cluster.SeedPeers, Logger: rt.Logger})
+	if rt.ClusterManager != nil {
+		_ = rt.ClusterManager.Start(serverCtx)
 	}
 	logRuntimeConfiguration(rt.Logger, cfg, rt.LogPath, grpcServer.Addr())
 	waitForShutdown(ctx, rt.Logger)
@@ -147,14 +147,19 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	logger.Info("log directory ready", "path", logDir, "created", logDirCreated)
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
-	localNode, err := clustering.LoadOrCreate(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, SeedPeers: cfg.Cluster.SeedPeers})
+	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, SeedPeers: cfg.Cluster.SeedPeers, Bootstrap: cfg.Cluster.Bootstrap, JoinToken: cfg.Cluster.JoinToken, JoinTokenFile: cfg.Cluster.JoinTokenFile}, logger)
 	if err != nil {
 		_ = rt.Close()
-		return nil, fmt.Errorf("initialize clustering identity: %w", err)
+		return nil, fmt.Errorf("initialize clustering: %w", err)
 	}
-	rt.NodeIdentity = &localNode.Identity
-	rt.NodeState = localNode.State
-	logger.Info("clustering identity ready", "node_id", localNode.Identity.NodeID, "node_name", localNode.Identity.NodeName, "cluster_id", localNode.Identity.ClusterID, "cluster_name", localNode.Identity.ClusterName, "node_state", localNode.State, "backend_advertise_addr", localNode.Identity.BackendAdvertiseAddr)
+	rt.ClusterManager = clusterManager
+	identity := clusterManager.Identity()
+	rt.NodeIdentity = &identity
+	rt.NodeState = clusterManager.State()
+	if reg := clusterManager.Registration(); reg != nil {
+		reg.Interval = cfg.Cluster.DiscoveryInterval
+	}
+	logger.Info("clustering ready", "node_id", identity.NodeID, "node_name", identity.NodeName, "cluster_id", identity.ClusterID, "cluster_name", identity.ClusterName, "node_state", rt.NodeState, "backend_advertise_addr", identity.BackendAdvertiseAddr)
 	if cfg.WAL.Enabled {
 		walDir := cfg.WAL.Dir
 		if walDir == "" {
