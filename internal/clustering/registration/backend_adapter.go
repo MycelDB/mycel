@@ -13,5 +13,5 @@ func (a BackendAdapter) RegisterNode(ctx context.Context, addr string, in Regist
 	if err != nil {
 		return RegisterNodeResult{}, err
 	}
-	return RegisterNodeResult{Accepted: res.Accepted, Reason: res.Reason, Snapshot: res.Snapshot}, nil
+	return RegisterNodeResult{Accepted: res.Accepted, Reason: res.Reason, Snapshot: res.Snapshot, Authority: res.Authority}, nil
 }

@@ -10,6 +10,8 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/clustering/topology"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestRegisterNodeUpdatesTopologyAndReturnsView(t *testing.T) {
@@ -123,7 +125,7 @@ func TestAddClusterNodeCreatesPendingMembership(t *testing.T) {
 	self := model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: "node_a", ClusterID: "cluster_a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", ClusterAdmitted: true, ClusterBootstrap: true, CreatedAt: now, UpdatedAt: now}
 	reg, _ := topology.NewRegistry(ctx, nil, model.Peer{NodeID: self.NodeID, BackendAdvertiseAddr: self.BackendAdvertiseAddr})
 	store := membership.NewFileStore(filepath.Join(t.TempDir(), "membership.json"), self.ClusterID, self.ClusterName)
-	svc := NewService(self, model.NodeStateClustered, reg).WithMembership(store)
+	svc := NewService(self, model.NodeStateClustered, reg).WithMembership(store).WithAuthority(&clusterpb.ClusterAuthority{ClusterId: self.ClusterID, Primary: &clusterpb.AuthorityPrimary{NodeId: self.NodeID}, AuthorityEpoch: 1})
 	res, err := svc.AddClusterNode(ctx, &clusterpb.AddClusterNodeRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, NodeName: "node-b"})
 	if err != nil {
 		t.Fatal(err)
@@ -137,6 +139,19 @@ func TestAddClusterNodeCreatesPendingMembership(t *testing.T) {
 	}
 	if member.JoinToken == nil || member.JoinToken.Hash == "" || member.JoinToken.Hash == res.GetToken() {
 		t.Fatalf("token not stored hashed: %#v", member.JoinToken)
+	}
+}
+
+func TestAddClusterNodeRejectsFollower(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	self := model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: "node_b", ClusterID: "cluster_a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9094", ClusterAdmitted: true, CreatedAt: now, UpdatedAt: now}
+	reg, _ := topology.NewRegistry(ctx, nil, model.Peer{NodeID: self.NodeID, BackendAdvertiseAddr: self.BackendAdvertiseAddr})
+	store := membership.NewFileStore(filepath.Join(t.TempDir(), "membership.json"), self.ClusterID, self.ClusterName)
+	svc := NewService(self, model.NodeStateClustered, reg).WithMembership(store).WithAuthority(&clusterpb.ClusterAuthority{ClusterId: self.ClusterID, Primary: &clusterpb.AuthorityPrimary{NodeId: "node_a"}, AuthorityEpoch: 1})
+	_, err := svc.AddClusterNode(ctx, &clusterpb.AddClusterNodeRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, NodeName: "node-c"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected failed precondition, got %v", err)
 	}
 }
 

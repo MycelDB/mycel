@@ -119,6 +119,23 @@ message ClusterView {
   NodeIdentity local_identity = 4;
   repeated Peer peers = 5;
   string updated_at = 6;
+  ClusterAuthority authority = 7;
+}
+
+message ClusterAuthority {
+  int32 version = 1;
+  string cluster_id = 2;
+  AuthorityPrimary primary = 3;
+  int64 authority_epoch = 4;
+  int64 term = 5;
+  string source = 6;
+  string updated_at = 7;
+}
+
+message AuthorityPrimary {
+  string node_id = 1;
+  string node_name = 2;
+  string backend_advertise_addr = 3;
 }
 
 // RegisterNodeRequest announces the caller and asks a reachable peer to return

@@ -7,6 +7,7 @@ import (
 
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/clustering/topology"
+	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 )
 
 type BackendClient interface {
@@ -22,22 +23,24 @@ type RegisterNodeInput struct {
 }
 
 type RegisterNodeResult struct {
-	Accepted bool
-	Reason   string
-	Snapshot model.Snapshot
+	Accepted  bool
+	Reason    string
+	Snapshot  model.Snapshot
+	Authority *clusterpb.ClusterAuthority
 }
 
 type Handler struct {
-	Topology   *topology.Registry
-	Client     BackendClient
-	Seeds      []string
-	Identity   model.NodeIdentity
-	State      model.NodeState
-	Interval   time.Duration
-	Timeout    time.Duration
-	Logger     *slog.Logger
-	JoinToken  string
-	OnAdmitted func(clusterID string) error
+	Topology    *topology.Registry
+	Client      BackendClient
+	Seeds       []string
+	Identity    model.NodeIdentity
+	State       model.NodeState
+	Interval    time.Duration
+	Timeout     time.Duration
+	Logger      *slog.Logger
+	JoinToken   string
+	OnAdmitted  func(clusterID string) error
+	OnAuthority func(*clusterpb.ClusterAuthority) error
 }
 
 func (h *Handler) Run(ctx context.Context) error {
@@ -95,6 +98,14 @@ func (h *Handler) TryOnce(ctx context.Context) bool {
 				if err := h.OnAdmitted(clusterID); err != nil {
 					return false
 				}
+			}
+		}
+		if h.OnAuthority != nil && result.Authority != nil {
+			if err := h.OnAuthority(result.Authority); err != nil {
+				if h.Logger != nil {
+					h.Logger.Warn("cluster authority persist failed", "seed", seed, "error", err)
+				}
+				return false
 			}
 		}
 		if err := h.Topology.Merge(ctx, result.Snapshot); err != nil {

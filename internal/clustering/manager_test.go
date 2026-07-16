@@ -11,7 +11,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/model"
 )
 
-func TestManagerBootstrapCreatesMembership(t *testing.T) {
+func TestManagerBootstrapCreatesMembershipAndAuthority(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	m, err := NewManager(ctx, Options{DataDir: dir, NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", Bootstrap: true}, nil)
@@ -29,6 +29,19 @@ func TestManagerBootstrapCreatesMembership(t *testing.T) {
 		t.Fatalf("member=%#v", member)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "meta", "clustering", "membership.json")); err != nil {
+		t.Fatal(err)
+	}
+	authority, ok := m.Authority()
+	if !ok {
+		t.Fatal("bootstrap authority missing")
+	}
+	if authority.Primary.NodeID != m.Identity().NodeID || authority.AuthorityEpoch != 1 || authority.Source != AuthoritySourceBootstrap {
+		t.Fatalf("unexpected authority: %#v", authority)
+	}
+	if m.LocalRole() != NodeRolePrimary {
+		t.Fatalf("expected primary role, got %s", m.LocalRole())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "meta", "clustering", "authority.json")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -49,6 +62,12 @@ func TestManagerNonBootstrapDoesNotCreateSelfMembership(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("non-bootstrap self should not be active membership")
+	}
+	if _, ok := m.Authority(); ok {
+		t.Fatal("non-bootstrap manager should not create authority")
+	}
+	if m.LocalRole() != NodeRoleNone {
+		t.Fatalf("expected no role, got %s", m.LocalRole())
 	}
 }
 
@@ -93,6 +112,42 @@ func TestManagerRestartPreservesIDs(t *testing.T) {
 	}
 	if first.Identity().NodeID != second.Identity().NodeID || first.Identity().ClusterID != second.Identity().ClusterID {
 		t.Fatalf("ids changed: first=%#v second=%#v", first.Identity(), second.Identity())
+	}
+}
+
+func TestManagerSetAuthorityDerivesFollowerRole(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	m, err := NewManager(ctx, Options{DataDir: dir, NodeName: "node-b", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9094"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := AdmitLocalNode(ctx, dir, m.Identity().ClusterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.identity = id
+	authority := Authority{Version: AuthorityVersion, ClusterID: m.Identity().ClusterID, Primary: AuthorityPrimary{NodeID: "node-a", NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"}, AuthorityEpoch: 1, Source: AuthoritySourceBootstrap}
+	if err := m.SetAuthority(ctx, authority); err != nil {
+		t.Fatal(err)
+	}
+	if m.LocalRole() != NodeRoleFollower {
+		t.Fatalf("expected follower role, got %s", m.LocalRole())
+	}
+	loaded, ok, err := LoadAuthority(ctx, AuthorityPath(dir))
+	if err != nil || !ok || loaded.Primary.NodeID != "node-a" {
+		t.Fatalf("authority not persisted loaded=%#v ok=%v err=%v", loaded, ok, err)
+	}
+}
+
+func TestManagerSetAuthorityRejectsClusterMismatch(t *testing.T) {
+	ctx := context.Background()
+	m, err := NewManager(ctx, Options{DataDir: t.TempDir(), NodeName: "node-b", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9094"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetAuthority(ctx, Authority{ClusterID: "other", Primary: AuthorityPrimary{NodeID: "node-a"}, AuthorityEpoch: 1}); err == nil {
+		t.Fatal("expected cluster mismatch to fail")
 	}
 }
 

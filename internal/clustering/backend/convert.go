@@ -58,6 +58,12 @@ func SnapshotToProto(s model.Snapshot, identity model.NodeIdentity, state model.
 	return &clusterpb.ClusterView{Version: int32(s.Version), Mode: ClusterModeToProto(modeForState(state)), LocalState: NodeStateToProto(state), LocalIdentity: IdentityToProto(identity), Peers: peers, UpdatedAt: formatTime(s.UpdatedAt)}
 }
 
+func SnapshotToProtoWithAuthority(s model.Snapshot, identity model.NodeIdentity, state model.NodeState, authority *clusterpb.ClusterAuthority) *clusterpb.ClusterView {
+	view := SnapshotToProto(s, identity, state)
+	view.Authority = authority
+	return view
+}
+
 func modeForState(state model.NodeState) model.ClusterMode {
 	if state == model.NodeStateClustered {
 		return model.ClusterModeClustered

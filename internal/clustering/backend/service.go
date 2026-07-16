@@ -21,6 +21,7 @@ type Service struct {
 	State      model.NodeState
 	Topology   *topology.Registry
 	Membership *membership.FileStore
+	Authority  *clusterpb.ClusterAuthority
 }
 
 func NewService(identity model.NodeIdentity, state model.NodeState, registry *topology.Registry) *Service {
@@ -30,6 +31,15 @@ func NewService(identity model.NodeIdentity, state model.NodeState, registry *to
 func (s *Service) WithMembership(store *membership.FileStore) *Service {
 	s.Membership = store
 	return s
+}
+
+func (s *Service) WithAuthority(authority *clusterpb.ClusterAuthority) *Service {
+	s.Authority = authority
+	return s
+}
+
+func (s *Service) clusterView() *clusterpb.ClusterView {
+	return SnapshotToProtoWithAuthority(s.Topology.Snapshot(), s.Identity, s.State, s.Authority)
 }
 
 func (s *Service) RegisterNode(ctx context.Context, req *clusterpb.RegisterNodeRequest) (*clusterpb.RegisterNodeResponse, error) {
@@ -44,22 +54,22 @@ func (s *Service) RegisterNode(ctx context.Context, req *clusterpb.RegisterNodeR
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if !s.Identity.ClusterAdmitted || s.Membership == nil {
-		return &clusterpb.RegisterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: false, Reason: "local node is not admitted to a cluster", ClusterView: SnapshotToProto(s.Topology.Snapshot(), s.Identity, s.State)}, nil
+		return &clusterpb.RegisterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: false, Reason: "local node is not admitted to a cluster", ClusterView: s.clusterView()}, nil
 	}
 	if s.Identity.ClusterName != "" && id.ClusterName != "" && s.Identity.ClusterName != id.ClusterName {
-		return &clusterpb.RegisterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: false, Reason: "cluster name mismatch", ClusterView: SnapshotToProto(s.Topology.Snapshot(), s.Identity, s.State)}, nil
+		return &clusterpb.RegisterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: false, Reason: "cluster name mismatch", ClusterView: s.clusterView()}, nil
 	}
 	now := time.Now().UTC()
 	if req.GetJoinToken() != "" {
 		if ok, reason, err := s.admitWithToken(ctx, id, req.GetJoinToken(), req.GetNodePublicKeyFingerprint(), now); err != nil {
 			return nil, err
 		} else if !ok {
-			return &clusterpb.RegisterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: false, Reason: reason, ClusterView: SnapshotToProto(s.Topology.Snapshot(), s.Identity, s.State)}, nil
+			return &clusterpb.RegisterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: false, Reason: reason, ClusterView: s.clusterView()}, nil
 		}
 	} else if ok, reason, err := s.validateReturningMember(ctx, id); err != nil {
 		return nil, err
 	} else if !ok {
-		return &clusterpb.RegisterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: false, Reason: reason, ClusterView: SnapshotToProto(s.Topology.Snapshot(), s.Identity, s.State)}, nil
+		return &clusterpb.RegisterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: false, Reason: reason, ClusterView: s.clusterView()}, nil
 	}
 	seen := now
 	peer := model.Peer{NodeID: id.NodeID, NodeName: id.NodeName, ClusterID: s.Identity.ClusterID, ClusterName: id.ClusterName, BackendAdvertiseAddr: id.BackendAdvertiseAddr, State: model.PeerStateActive, Source: model.PeerSourceDiscovered, LastSeenAt: &seen}
@@ -86,14 +96,14 @@ func (s *Service) RegisterNode(ctx context.Context, req *clusterpb.RegisterNodeR
 		}
 		_ = s.Topology.Upsert(ctx, known)
 	}
-	return &clusterpb.RegisterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: true, ClusterView: SnapshotToProto(s.Topology.Snapshot(), s.Identity, s.State)}, nil
+	return &clusterpb.RegisterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: true, ClusterView: s.clusterView()}, nil
 }
 
 func (s *Service) GetClusterView(ctx context.Context, req *clusterpb.GetClusterViewRequest) (*clusterpb.GetClusterViewResponse, error) {
 	if err := validateProtocol(req.GetProtocolVersion()); err != nil {
 		return nil, err
 	}
-	return &clusterpb.GetClusterViewResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, ClusterView: SnapshotToProto(s.Topology.Snapshot(), s.Identity, s.State)}, nil
+	return &clusterpb.GetClusterViewResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, ClusterView: s.clusterView()}, nil
 }
 
 func (s *Service) UpdateNodeStatus(ctx context.Context, req *clusterpb.UpdateNodeStatusRequest) (*clusterpb.UpdateNodeStatusResponse, error) {
@@ -236,6 +246,9 @@ func (s *Service) AddClusterNode(ctx context.Context, req *clusterpb.AddClusterN
 	if !s.Identity.ClusterAdmitted || s.Membership == nil {
 		return nil, status.Error(codes.PermissionDenied, "local node is not admitted to a cluster")
 	}
+	if !s.isPrimary() {
+		return nil, status.Error(codes.FailedPrecondition, "node is not cluster primary")
+	}
 	nodeName := strings.TrimSpace(req.GetNodeName())
 	if nodeName == "" {
 		return nil, status.Error(codes.InvalidArgument, "node_name is required")
@@ -255,6 +268,13 @@ func (s *Service) AddClusterNode(ctx context.Context, req *clusterpb.AddClusterN
 		return nil, err
 	}
 	return &clusterpb.AddClusterNodeResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, NodeName: nodeName, State: string(membership.MemberStatePending), Token: token, TokenId: member.JoinToken.TokenID, ExpiresAt: formatTime(expires)}, nil
+}
+
+func (s *Service) isPrimary() bool {
+	if s == nil || s.Authority == nil || s.Authority.GetPrimary() == nil {
+		return false
+	}
+	return s.Identity.NodeID != "" && s.Identity.NodeID == s.Authority.GetPrimary().GetNodeId()
 }
 
 func validateIdentity(id model.NodeIdentity) error {

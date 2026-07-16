@@ -2,6 +2,7 @@ package clustering
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"time"
@@ -19,6 +20,8 @@ type Manager struct {
 	state        model.NodeState
 	topology     *topology.Registry
 	membership   *membership.FileStore
+	authority    Authority
+	authorityOK  bool
 	registration *registration.Handler
 	backend      *backend.Service
 	logger       *slog.Logger
@@ -45,15 +48,30 @@ func NewManager(ctx context.Context, opts Options, logger *slog.Logger) (*Manage
 		}
 	}
 	membershipStore := membership.NewFileStore(membership.Path(opts.DataDir), local.Identity.ClusterID, local.Identity.ClusterName)
+	authority, authorityOK, err := LoadAuthority(ctx, AuthorityPath(opts.DataDir))
+	if err != nil {
+		return nil, err
+	}
 	if local.Identity.ClusterAdmitted && local.Identity.ClusterBootstrap {
 		now := time.Now().UTC()
 		joined := now
 		if err := membershipStore.UpsertMember(ctx, membership.Member{NodeName: local.Identity.NodeName, NodeID: local.Identity.NodeID, State: membership.MemberStateActive, BackendAdvertiseAddr: local.Identity.BackendAdvertiseAddr, Role: "member", ClusterBootstrap: true, NodePublicKeyFingerprint: local.Identity.NodePublicKeyFingerprint, CreatedAt: local.Identity.CreatedAt, UpdatedAt: now, JoinedAt: &joined}); err != nil {
 			return nil, err
 		}
+		if !authorityOK {
+			authority, err = InitBootstrapAuthority(ctx, opts.DataDir, local.Identity, now)
+			if err != nil {
+				return nil, err
+			}
+			authorityOK = true
+		} else if authority.ClusterID != local.Identity.ClusterID {
+			return nil, fmt.Errorf("authority cluster_id %q does not match local cluster_id %q", authority.ClusterID, local.Identity.ClusterID)
+		}
+	} else if authorityOK && authority.ClusterID != local.Identity.ClusterID {
+		return nil, fmt.Errorf("authority cluster_id %q does not match local cluster_id %q", authority.ClusterID, local.Identity.ClusterID)
 	}
-	m := &Manager{identity: local.Identity, state: local.State, topology: registry, membership: membershipStore, logger: logger, dataDir: opts.DataDir}
-	m.backend = backend.NewService(m.identity, m.state, registry).WithMembership(membershipStore)
+	m := &Manager{identity: local.Identity, state: local.State, topology: registry, membership: membershipStore, authority: authority, authorityOK: authorityOK, logger: logger, dataDir: opts.DataDir}
+	m.backend = backend.NewService(m.identity, m.state, registry).WithMembership(membershipStore).WithAuthority(AuthorityToProto(authority, authorityOK))
 	joinToken, err := LoadJoinToken(opts)
 	if err != nil {
 		return nil, err
@@ -64,7 +82,14 @@ func NewManager(ctx context.Context, opts Options, logger *slog.Logger) (*Manage
 			return err
 		}
 		m.identity = id
+		m.backend.Identity = id
 		return nil
+	}, OnAuthority: func(authorityProto *clusterpb.ClusterAuthority) error {
+		authority, ok, err := AuthorityFromProto(authorityProto)
+		if err != nil || !ok {
+			return err
+		}
+		return m.SetAuthority(ctx, authority)
 	}}
 	return m, nil
 }
@@ -123,6 +148,39 @@ func (m *Manager) IsBootstrap() bool {
 	}
 	return m.identity.ClusterBootstrap
 }
+
+func (m *Manager) Authority() (Authority, bool) {
+	if m == nil {
+		return Authority{}, false
+	}
+	return m.authority, m.authorityOK
+}
+
+func (m *Manager) LocalRole() NodeRole {
+	if m == nil {
+		return NodeRoleNone
+	}
+	return DeriveLocalRole(m.state, m.identity, m.authority, m.authorityOK)
+}
+
+func (m *Manager) SetAuthority(ctx context.Context, authority Authority) error {
+	if m == nil {
+		return nil
+	}
+	if authority.ClusterID != m.identity.ClusterID {
+		return fmt.Errorf("authority cluster_id %q does not match local cluster_id %q", authority.ClusterID, m.identity.ClusterID)
+	}
+	if err := SaveAuthority(ctx, AuthorityPath(m.dataDir), authority); err != nil {
+		return err
+	}
+	m.authority = authority
+	m.authorityOK = true
+	if m.backend != nil {
+		m.backend.WithAuthority(AuthorityToProto(authority, true))
+	}
+	return nil
+}
+
 func (m *Manager) BackendService() clusterpb.ClusterBackendServiceServer {
 	if m == nil {
 		return nil

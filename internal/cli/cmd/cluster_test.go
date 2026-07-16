@@ -19,7 +19,7 @@ func TestClusterStatusCommandUsesAdminAPI(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &status); err != nil {
 		t.Fatalf("decode cluster status: %v output=%s", err, out)
 	}
-	if status.Node.NodeID == "" || status.Node.Name == "" || status.Cluster.ClusterID == "" || status.Cluster.Mode == "" {
+	if status.Node.NodeID == "" || status.Node.Name == "" || status.Node.Role != "primary" || status.Cluster.ClusterID == "" || status.Cluster.Mode == "" || status.Authority.PrimaryNodeID != status.Node.NodeID || status.Authority.AuthorityEpoch != 1 {
 		t.Fatalf("unexpected cluster status: %#v", status)
 	}
 	if len(status.Peers) == 0 || status.Peers[0].State != "self" {

@@ -48,7 +48,7 @@ func TestAdminClusterServiceGetStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get cluster status: %v", err)
 	}
-	if res.GetNode().GetNodeName() != "node-a" || !res.GetNode().GetAdmitted() || !res.GetNode().GetBootstrap() {
+	if res.GetNode().GetNodeName() != "node-a" || !res.GetNode().GetAdmitted() || !res.GetNode().GetBootstrap() || res.GetNode().GetRole() != adminv1.ClusterNodeRole_CLUSTER_NODE_ROLE_PRIMARY {
 		t.Fatalf("unexpected node status: %#v", res.GetNode())
 	}
 	if res.GetCluster().GetClusterName() != "dev" || res.GetCluster().GetMode() != adminv1.ClusterMode_CLUSTER_MODE_CLUSTERED {
@@ -56,6 +56,9 @@ func TestAdminClusterServiceGetStatus(t *testing.T) {
 	}
 	if len(res.GetPeers()) == 0 || res.GetPeers()[0].GetState() != adminv1.ClusterPeerState_CLUSTER_PEER_STATE_SELF {
 		t.Fatalf("expected self peer, got %#v", res.GetPeers())
+	}
+	if res.GetAuthority().GetPrimaryNodeId() != res.GetNode().GetNodeId() || res.GetAuthority().GetAuthorityEpoch() != 1 {
+		t.Fatalf("unexpected authority: %#v", res.GetAuthority())
 	}
 }
 
@@ -118,6 +121,22 @@ func TestAdminClusterServiceAddNodeUsesDefaultTTL(t *testing.T) {
 	after := time.Now().UTC().Add(31 * time.Minute)
 	if expires.Before(before) || expires.After(after) {
 		t.Fatalf("expected default ttl near 30m, got expires_at=%s before=%s after=%s", expires, before, after)
+	}
+}
+
+func TestAdminClusterServiceAddNodeRejectsFollower(t *testing.T) {
+	ctx := context.Background()
+	mgr := newBootstrapClusterManager(t)
+	if err := mgr.SetAuthority(ctx, clustering.Authority{Version: clustering.AuthorityVersion, ClusterID: mgr.Identity().ClusterID, Primary: clustering.AuthorityPrimary{NodeID: "node-other", NodeName: "node-other", BackendAdvertiseAddr: "127.0.0.1:9094"}, AuthorityEpoch: 2, Source: clustering.AuthoritySourceManual, UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("set authority: %v", err)
+	}
+	if mgr.LocalRole() != clustering.NodeRoleFollower {
+		t.Fatalf("test setup expected follower role, got %s", mgr.LocalRole())
+	}
+	svc := NewAdminClusterService(mgr, clusterAuthz{allow: true})
+	_, err := svc.AddClusterNode(authenticatedClusterContext(), &adminv1.AddClusterNodeRequest{NodeName: "node-c"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected failed precondition for follower add-node, got %v", err)
 	}
 }
 

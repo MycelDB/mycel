@@ -50,13 +50,15 @@ func (s *AdminClusterService) GetClusterStatus(ctx context.Context, req *adminv1
 			Bootstrap:                identity.ClusterBootstrap,
 			BackendAdvertiseAddr:     identity.BackendAdvertiseAddr,
 			NodePublicKeyFingerprint: identity.NodePublicKeyFingerprint,
+			Role:                     nodeRoleToAdminProto(s.cluster.LocalRole()),
 		},
 		Cluster: &adminv1.ClusterInfo{
 			ClusterId:   identity.ClusterID,
 			ClusterName: identity.ClusterName,
 			Mode:        clusterModeFromNodeState(s.cluster.State()),
 		},
-		Peers: peers,
+		Peers:     peers,
+		Authority: clusterAuthorityToAdminProto(s.cluster.Authority()),
 	}, nil
 }
 
@@ -85,6 +87,9 @@ func (s *AdminClusterService) AddClusterNode(ctx context.Context, req *adminv1.A
 	}
 	if s.cluster == nil || !s.cluster.IsAdmitted() {
 		return nil, status.Error(codes.PermissionDenied, "local node is not admitted to a cluster")
+	}
+	if s.cluster.LocalRole() != clustering.NodeRolePrimary {
+		return nil, status.Error(codes.FailedPrecondition, "node is not cluster primary")
 	}
 	store, err := s.membershipStore()
 	if err != nil {
@@ -145,6 +150,32 @@ func (s *AdminClusterService) requireClusterManage(ctx context.Context) (daemona
 		return daemonauth.Principal{}, status.Error(codes.PermissionDenied, "cluster manage capability is required")
 	}
 	return principal, nil
+}
+
+func nodeRoleToAdminProto(role clustering.NodeRole) adminv1.ClusterNodeRole {
+	switch role {
+	case clustering.NodeRoleNone:
+		return adminv1.ClusterNodeRole_CLUSTER_NODE_ROLE_NONE
+	case clustering.NodeRolePrimary:
+		return adminv1.ClusterNodeRole_CLUSTER_NODE_ROLE_PRIMARY
+	case clustering.NodeRoleFollower:
+		return adminv1.ClusterNodeRole_CLUSTER_NODE_ROLE_FOLLOWER
+	case clustering.NodeRoleCandidate:
+		return adminv1.ClusterNodeRole_CLUSTER_NODE_ROLE_CANDIDATE
+	case clustering.NodeRoleObserver:
+		return adminv1.ClusterNodeRole_CLUSTER_NODE_ROLE_OBSERVER
+	case clustering.NodeRoleLearner:
+		return adminv1.ClusterNodeRole_CLUSTER_NODE_ROLE_LEARNER
+	default:
+		return adminv1.ClusterNodeRole_CLUSTER_NODE_ROLE_UNSPECIFIED
+	}
+}
+
+func clusterAuthorityToAdminProto(authority clustering.Authority, ok bool) *adminv1.ClusterAuthority {
+	if !ok {
+		return nil
+	}
+	return &adminv1.ClusterAuthority{ClusterId: authority.ClusterID, PrimaryNodeId: authority.Primary.NodeID, PrimaryNodeName: authority.Primary.NodeName, PrimaryBackendAdvertiseAddr: authority.Primary.BackendAdvertiseAddr, AuthorityEpoch: authority.AuthorityEpoch, Term: authority.Term, Source: string(authority.Source), UpdatedAt: formatClusterTime(authority.UpdatedAt)}
 }
 
 func clusterModeFromNodeState(state model.NodeState) adminv1.ClusterMode {

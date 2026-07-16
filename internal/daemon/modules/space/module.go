@@ -29,15 +29,16 @@ var ErrUnauthorized = errors.New("space unauthorized")
 var ErrInvalidInput = errors.New("invalid space input")
 
 type Module struct {
-	spaces      storespaces.Manager
-	domains     storedomains.Manager
-	templates   storetemplate.Manager
-	access      acl.Manager
-	dataDir     string
-	gate        *quiesce.Gate
-	wal         *wal.Manager
-	walProgress wal.AppliedLSNStore
-	walWaiter   *wal.ApplyWaiter
+	spaces         storespaces.Manager
+	domains        storedomains.Manager
+	templates      storetemplate.Manager
+	access         acl.Manager
+	dataDir        string
+	gate           *quiesce.Gate
+	wal            *wal.Manager
+	walProgress    wal.AppliedLSNStore
+	walWaiter      *wal.ApplyWaiter
+	writeAuthority func() error
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -76,6 +77,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
+	m.writeAuthority = rt.RequireWriteAuthority
 	if rt.WALRegistry != nil {
 		if err := rt.WALRegistry.Register(recordTypeCreateSpaceWithDefaultDomain, wal.ApplierFunc(m.applyCreateSpaceWithDefaultDomain)); err != nil {
 			return daemonruntime.Abort(ModuleName, "wal", "register space create WAL applier", err)
@@ -1080,6 +1082,9 @@ func (m *Module) ImportTemplates(ctx context.Context, userID string, spaceID str
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return nil, err
+	}
 	if m.gate == nil {
 		return func() {}, nil
 	}
@@ -1088,6 +1093,13 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 		return nil, quiesce.GRPCError(err)
 	}
 	return release, nil
+}
+
+func (m *Module) requireWriteAuthority() error {
+	if m.writeAuthority == nil {
+		return nil
+	}
+	return m.writeAuthority()
 }
 
 func (m *Module) requireSpaceRead(ctx context.Context, userID string, spaceID string) (identity.UserID, domainspace.Space, error) {

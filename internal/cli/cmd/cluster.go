@@ -35,9 +35,10 @@ func newClusterNodeCommand(a *app.App) *cobra.Command {
 }
 
 type clusterStatusOutput struct {
-	Node    clusterNodeOutput   `json:"node"`
-	Cluster clusterInfoOutput   `json:"cluster"`
-	Peers   []clusterPeerOutput `json:"peers"`
+	Node      clusterNodeOutput      `json:"node"`
+	Cluster   clusterInfoOutput      `json:"cluster"`
+	Authority clusterAuthorityOutput `json:"authority,omitempty"`
+	Peers     []clusterPeerOutput    `json:"peers"`
 }
 
 type clusterNodeOutput struct {
@@ -47,12 +48,24 @@ type clusterNodeOutput struct {
 	Admitted             bool   `json:"admitted"`
 	Bootstrap            bool   `json:"bootstrap"`
 	BackendAdvertiseAddr string `json:"backend_advertise_addr,omitempty"`
+	Role                 string `json:"role"`
 }
 
 type clusterInfoOutput struct {
 	ClusterID   string `json:"cluster_id"`
 	ClusterName string `json:"cluster_name,omitempty"`
 	Mode        string `json:"mode"`
+}
+
+type clusterAuthorityOutput struct {
+	ClusterID                   string `json:"cluster_id,omitempty"`
+	PrimaryNodeID               string `json:"primary_node_id,omitempty"`
+	PrimaryNodeName             string `json:"primary_node_name,omitempty"`
+	PrimaryBackendAdvertiseAddr string `json:"primary_backend_advertise_addr,omitempty"`
+	AuthorityEpoch              int64  `json:"authority_epoch,omitempty"`
+	Term                        int64  `json:"term,omitempty"`
+	Source                      string `json:"source,omitempty"`
+	UpdatedAt                   string `json:"updated_at,omitempty"`
 }
 
 type clusterPeerOutput struct {
@@ -137,11 +150,12 @@ func runClusterStatus(ctx context.Context, a *app.App) error {
 	}
 	node := res.GetNode()
 	cluster := res.GetCluster()
-	out := clusterStatusOutput{Node: clusterNodeOutput{NodeID: node.GetNodeId(), Name: node.GetNodeName(), State: nodeStateText(node.GetState()), Admitted: node.GetAdmitted(), Bootstrap: node.GetBootstrap(), BackendAdvertiseAddr: node.GetBackendAdvertiseAddr()}, Cluster: clusterInfoOutput{ClusterID: cluster.GetClusterId(), ClusterName: cluster.GetClusterName(), Mode: clusterModeText(cluster.GetMode())}}
+	authority := res.GetAuthority()
+	out := clusterStatusOutput{Node: clusterNodeOutput{NodeID: node.GetNodeId(), Name: node.GetNodeName(), State: nodeStateText(node.GetState()), Admitted: node.GetAdmitted(), Bootstrap: node.GetBootstrap(), BackendAdvertiseAddr: node.GetBackendAdvertiseAddr(), Role: nodeRoleText(node.GetRole())}, Cluster: clusterInfoOutput{ClusterID: cluster.GetClusterId(), ClusterName: cluster.GetClusterName(), Mode: clusterModeText(cluster.GetMode())}, Authority: clusterAuthorityOutput{ClusterID: authority.GetClusterId(), PrimaryNodeID: authority.GetPrimaryNodeId(), PrimaryNodeName: authority.GetPrimaryNodeName(), PrimaryBackendAdvertiseAddr: authority.GetPrimaryBackendAdvertiseAddr(), AuthorityEpoch: authority.GetAuthorityEpoch(), Term: authority.GetTerm(), Source: authority.GetSource(), UpdatedAt: authority.GetUpdatedAt()}}
 	for _, p := range res.GetPeers() {
 		out.Peers = append(out.Peers, clusterPeerOutput{NodeID: p.GetNodeId(), NodeName: p.GetNodeName(), ClusterID: p.GetClusterId(), ClusterName: p.GetClusterName(), BackendAdvertiseAddr: p.GetBackendAdvertiseAddr(), State: peerStateText(p.GetState()), Source: peerSourceText(p.GetSource()), LastSeenAt: p.GetLastSeenAt()})
 	}
-	lines := []string{fmt.Sprintf("node=%s name=%s state=%s cluster=%s mode=%s\n", out.Node.NodeID, out.Node.Name, out.Node.State, out.Cluster.ClusterName, out.Cluster.Mode)}
+	lines := []string{fmt.Sprintf("node=%s name=%s state=%s role=%s cluster=%s mode=%s primary=%s epoch=%d\n", out.Node.NodeID, out.Node.Name, out.Node.State, out.Node.Role, out.Cluster.ClusterName, out.Cluster.Mode, out.Authority.PrimaryNodeName, out.Authority.AuthorityEpoch)}
 	for _, p := range out.Peers {
 		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\n", p.State, p.NodeName, p.BackendAdvertiseAddr, p.Source))
 	}
@@ -182,4 +196,7 @@ func peerSourceText(v adminv1.ClusterPeerSource) string {
 }
 func memberStateText(v adminv1.ClusterMemberState) string {
 	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_member_state_")
+}
+func nodeRoleText(v adminv1.ClusterNodeRole) string {
+	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_node_role_")
 }
