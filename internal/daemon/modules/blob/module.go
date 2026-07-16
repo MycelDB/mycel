@@ -24,15 +24,16 @@ import (
 const sniffLen = 512
 
 type Module struct {
-	mu          sync.Mutex
-	dataDir     string
-	metaDir     string
-	stores      map[string]*blobstorage.Store
-	refCounter  RefCounter
-	gate        *quiesce.Gate
-	wal         *wal.Manager
-	walProgress wal.AppliedLSNStore
-	walWaiter   *wal.ApplyWaiter
+	mu             sync.Mutex
+	dataDir        string
+	metaDir        string
+	stores         map[string]*blobstorage.Store
+	refCounter     RefCounter
+	gate           *quiesce.Gate
+	wal            *wal.Manager
+	walProgress    wal.AppliedLSNStore
+	walWaiter      *wal.ApplyWaiter
+	writeAuthority func() error
 }
 
 func NewModule(refCounter RefCounter) *Module {
@@ -55,6 +56,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
+	m.writeAuthority = rt.RequireWriteAuthority
 	if rt.WALRegistry != nil {
 		if err := rt.WALRegistry.Register(recordTypeBlobMetaPut, wal.ApplierFunc(m.applyBlobMetaPut)); err != nil {
 			return daemonruntime.Abort(ModuleName, "wal", "register blob metadata put WAL applier", err)
@@ -212,6 +214,9 @@ func (m *Module) DeleteBlob(ctx context.Context, spaceID string, blobID string) 
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return nil, err
+	}
 	if m.gate == nil {
 		return func() {}, nil
 	}
@@ -220,6 +225,13 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 		return nil, quiesce.GRPCError(err)
 	}
 	return release, nil
+}
+
+func (m *Module) requireWriteAuthority() error {
+	if m.writeAuthority == nil {
+		return nil
+	}
+	return m.writeAuthority()
 }
 
 func (m *Module) store(spaceID string) (*blobstorage.Store, error) {

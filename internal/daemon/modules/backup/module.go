@@ -18,21 +18,22 @@ var _ daemonruntime.StatusReporter = (*Module)(nil)
 var _ Manager = (*Module)(nil)
 
 type Module struct {
-	mu         sync.Mutex
-	manager    *backupcore.Manager
-	policy     backupcore.Policy
-	logger     *slog.Logger
-	runCtx     context.Context
-	cancel     context.CancelFunc
-	running    bool
-	startedAt  time.Time
-	nextRunAt  time.Time
-	lastError  string
-	wg         sync.WaitGroup
-	wal        *wal.Manager
-	progress   wal.AppliedLSNStore
-	checkpoint *wal.CheckpointStore
-	waiter     *wal.ApplyWaiter
+	mu             sync.Mutex
+	manager        *backupcore.Manager
+	policy         backupcore.Policy
+	logger         *slog.Logger
+	runCtx         context.Context
+	cancel         context.CancelFunc
+	running        bool
+	startedAt      time.Time
+	nextRunAt      time.Time
+	lastError      string
+	wg             sync.WaitGroup
+	wal            *wal.Manager
+	progress       wal.AppliedLSNStore
+	checkpoint     *wal.CheckpointStore
+	waiter         *wal.ApplyWaiter
+	writeAuthority func() error
 }
 
 func NewModule() *Module { return &Module{} }
@@ -49,6 +50,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.progress = rt.WALProgress
 	m.checkpoint = rt.WALCheckpoint
 	m.waiter = rt.WALWaiter
+	m.writeAuthority = rt.RequireWriteAuthority
 	if rt.WALRegistry != nil {
 		if err := rt.WALRegistry.Register(recordTypeBackupPolicyUpdate, wal.ApplierFunc(m.applyBackupPolicyUpdate)); err != nil {
 			return daemonruntime.Abort(ModuleName, "wal", "register backup policy WAL applier", err)
@@ -122,6 +124,9 @@ func (m *Module) Policy() backupcore.Policy {
 }
 
 func (m *Module) UpdatePolicy(ctx context.Context, policy backupcore.Policy) (backupcore.Policy, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return backupcore.Policy{}, err
+	}
 	if m.manager == nil {
 		return backupcore.Policy{}, nil
 	}
@@ -179,6 +184,9 @@ func (m *Module) ListBackups(ctx context.Context) ([]backupcore.Manifest, error)
 }
 
 func (m *Module) DeleteBackup(ctx context.Context, backupID string) error {
+	if err := m.requireWriteAuthority(); err != nil {
+		return err
+	}
 	if m.wal != nil {
 		return m.commitWAL(ctx, recordTypeBackupDelete, backupDeleteRecord{BackupID: backupID})
 	}
@@ -186,11 +194,21 @@ func (m *Module) DeleteBackup(ctx context.Context, backupID string) error {
 }
 
 func (m *Module) Trigger(ctx context.Context, input backupcore.TriggerInput) (backupcore.TriggerResult, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return backupcore.TriggerResult{}, err
+	}
 	result, err := m.triggerWithWALCheckpoint(ctx, input)
 	if err == nil {
 		m.setNextRun(time.Now().UTC())
 	}
 	return result, err
+}
+
+func (m *Module) requireWriteAuthority() error {
+	if m.writeAuthority == nil {
+		return nil
+	}
+	return m.writeAuthority()
 }
 
 func (m *Module) Status(ctx context.Context) daemonruntime.ServiceStatus {

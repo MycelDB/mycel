@@ -7,6 +7,7 @@ import (
 
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/model"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -60,7 +61,19 @@ func TestRequireWriteAuthorityRejectsUnadmittedAndFollower(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := (&Runtime{ClusterManager: follower}).RequireWriteAuthority(); status.Code(err) != codes.FailedPrecondition {
+	err = (&Runtime{ClusterManager: follower}).RequireWriteAuthority()
+	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("follower should be failed precondition, got %v", err)
+	}
+	st, _ := status.FromError(err)
+	foundHint := false
+	for _, detail := range st.Details() {
+		info, ok := detail.(*errdetails.ErrorInfo)
+		if ok && info.GetReason() == NotPrimaryReason && info.GetMetadata()[PrimaryNodeIDKey] == "node-a" {
+			foundHint = true
+		}
+	}
+	if !foundHint {
+		t.Fatalf("expected primary hint detail, got %#v", st.Details())
 	}
 }

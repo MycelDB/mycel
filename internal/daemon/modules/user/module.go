@@ -19,12 +19,13 @@ import (
 )
 
 type Module struct {
-	store       Store
-	sessions    storesession.Manager
-	gate        *quiesce.Gate
-	wal         *wal.Manager
-	walProgress wal.AppliedLSNStore
-	walWaiter   *wal.ApplyWaiter
+	store          Store
+	sessions       storesession.Manager
+	gate           *quiesce.Gate
+	wal            *wal.Manager
+	walProgress    wal.AppliedLSNStore
+	walWaiter      *wal.ApplyWaiter
+	writeAuthority func() error
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -72,6 +73,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
+	m.writeAuthority = rt.RequireWriteAuthority
 	if rt.WALRegistry != nil {
 		if err := rt.WALRegistry.Register(recordTypeUserPut, wal.ApplierFunc(m.applyUserPut)); err != nil {
 			return daemonruntime.Abort(ModuleName, "wal", "register user put WAL applier", err)
@@ -120,6 +122,9 @@ func (m *Module) FindUser(ctx context.Context, username string) (UserSummary, er
 }
 
 func (m *Module) CreateUser(ctx context.Context, input CreateUserInput) (UserSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return UserSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return UserSummary{}, err
@@ -156,6 +161,9 @@ func (m *Module) CreateUser(ctx context.Context, input CreateUserInput) (UserSum
 }
 
 func (m *Module) DisableUser(ctx context.Context, userID string) (UserSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return UserSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return UserSummary{}, err
@@ -182,6 +190,9 @@ func (m *Module) DisableUser(ctx context.Context, userID string) (UserSummary, e
 }
 
 func (m *Module) EnableUser(ctx context.Context, userID string) (UserSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return UserSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return UserSummary{}, err
@@ -208,6 +219,9 @@ func (m *Module) EnableUser(ctx context.Context, userID string) (UserSummary, er
 }
 
 func (m *Module) DeleteUser(ctx context.Context, userID string) (UserSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return UserSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return UserSummary{}, err
@@ -234,6 +248,9 @@ func (m *Module) DeleteUser(ctx context.Context, userID string) (UserSummary, er
 }
 
 func (m *Module) SetUserPassword(ctx context.Context, userID string, password string) (UserSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return UserSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return UserSummary{}, err
@@ -451,6 +468,13 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 		return nil, quiesce.GRPCError(err)
 	}
 	return release, nil
+}
+
+func (m *Module) requireWriteAuthority() error {
+	if m.writeAuthority == nil {
+		return nil
+	}
+	return m.writeAuthority()
 }
 
 func refreshSessionRefreshable(rec domainauth.RefreshSession, now time.Time) bool {

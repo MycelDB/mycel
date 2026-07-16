@@ -24,12 +24,13 @@ const ModuleName = "admin"
 var ErrInvalidCredentials = errors.New("invalid operator credentials")
 
 type Module struct {
-	store       Store
-	sessions    storesession.Manager
-	gate        *quiesce.Gate
-	wal         *wal.Manager
-	walProgress wal.AppliedLSNStore
-	walWaiter   *wal.ApplyWaiter
+	store          Store
+	sessions       storesession.Manager
+	gate           *quiesce.Gate
+	wal            *wal.Manager
+	walProgress    wal.AppliedLSNStore
+	walWaiter      *wal.ApplyWaiter
+	writeAuthority func() error
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -75,6 +76,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
+	m.writeAuthority = rt.RequireWriteAuthority
 	if rt.WALRegistry != nil {
 		if err := rt.WALRegistry.Register(recordTypeAdminPut, wal.ApplierFunc(m.applyAdminPut)); err != nil {
 			return daemonruntime.Abort(ModuleName, "wal", "register admin put WAL applier", err)
@@ -361,6 +363,9 @@ func (m *Module) RevokeOperatorSessions(ctx context.Context, operatorID string) 
 }
 
 func (m *Module) SetOperatorPassword(ctx context.Context, operatorID string, password string) (AdminSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -474,6 +479,9 @@ func (m *Module) CreateOperator(ctx context.Context, input CreateOperatorInput) 
 }
 
 func (m *Module) UpdateOperator(ctx context.Context, input UpdateOperatorInput) (AdminSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -492,6 +500,9 @@ func (m *Module) UpdateOperator(ctx context.Context, input UpdateOperatorInput) 
 }
 
 func (m *Module) DisableOperator(ctx context.Context, operatorID string) (AdminSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -508,6 +519,9 @@ func (m *Module) DisableOperator(ctx context.Context, operatorID string) (AdminS
 }
 
 func (m *Module) EnableOperator(ctx context.Context, operatorID string) (AdminSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -521,6 +535,9 @@ func (m *Module) EnableOperator(ctx context.Context, operatorID string) (AdminSu
 }
 
 func (m *Module) DeleteOperator(ctx context.Context, operatorID string) (AdminSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -537,6 +554,9 @@ func (m *Module) DeleteOperator(ctx context.Context, operatorID string) (AdminSu
 }
 
 func (m *Module) GrantRole(ctx context.Context, operatorID string, role string, scope AccessScope, reason string, grantedBy string) (RoleGrant, AdminSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return RoleGrant{}, AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return RoleGrant{}, AdminSummary{}, err
@@ -551,6 +571,9 @@ func (m *Module) GrantRole(ctx context.Context, operatorID string, role string, 
 }
 
 func (m *Module) RevokeRole(ctx context.Context, operatorID string, grantID string) (AdminSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -575,6 +598,9 @@ func (m *Module) RevokeRole(ctx context.Context, operatorID string, grantID stri
 }
 
 func (m *Module) GrantCapability(ctx context.Context, operatorID string, capability string, scope AccessScope, reason string, grantedBy string) (CapabilityGrant, AdminSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return CapabilityGrant{}, AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return CapabilityGrant{}, AdminSummary{}, err
@@ -589,6 +615,9 @@ func (m *Module) GrantCapability(ctx context.Context, operatorID string, capabil
 }
 
 func (m *Module) RevokeCapability(ctx context.Context, operatorID string, grantID string) (AdminSummary, error) {
+	if err := m.requireWriteAuthority(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -618,6 +647,13 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 		return nil, quiesce.GRPCError(err)
 	}
 	return release, nil
+}
+
+func (m *Module) requireWriteAuthority() error {
+	if m.writeAuthority == nil {
+		return nil
+	}
+	return m.writeAuthority()
 }
 
 func (m *Module) ensureCanRemoveSystemAdmin(ctx context.Context, operatorID string, grantID string) error {

@@ -119,7 +119,7 @@ func runClusterNodeAdd(ctx context.Context, a *app.App, nodeName string, tokenFi
 	defer conn.Close()
 	res, err := adminv1.NewAdminClusterServiceClient(conn).AddClusterNode(authCtx, &adminv1.AddClusterNodeRequest{NodeName: strings.TrimSpace(nodeName)})
 	if err != nil {
-		return fmt.Errorf("add cluster node: %w", err)
+		return formatClusterWriteError("add cluster node", err)
 	}
 	out := clusterNodeAddOutput{NodeName: res.GetNodeName(), State: memberStateText(res.GetState()), Token: res.GetToken(), TokenID: res.GetTokenId(), ExpiresAt: res.GetExpiresAt()}
 	if strings.TrimSpace(tokenFile) != "" {

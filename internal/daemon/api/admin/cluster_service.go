@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -10,12 +11,35 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/membership"
 	"github.com/myceldb/mycel/internal/clustering/model"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
+	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 const clusterManageCapability = "CAPABILITY_MESH_MANAGE"
+
+func notPrimaryClusterError(cluster *clustering.Manager) error {
+	st := status.New(codes.FailedPrecondition, "node is not cluster primary")
+	if cluster == nil {
+		return st.Err()
+	}
+	authority, ok := cluster.Authority()
+	if !ok {
+		return st.Err()
+	}
+	withDetails, err := st.WithDetails(&errdetails.ErrorInfo{Reason: daemonruntime.NotPrimaryReason, Domain: "mycel.cluster", Metadata: map[string]string{
+		daemonruntime.PrimaryNodeIDKey:   authority.Primary.NodeID,
+		daemonruntime.PrimaryNodeNameKey: authority.Primary.NodeName,
+		daemonruntime.PrimaryBackendKey:  authority.Primary.BackendAdvertiseAddr,
+		daemonruntime.AuthorityEpochKey:  fmt.Sprintf("%d", authority.AuthorityEpoch),
+	}})
+	if err != nil {
+		return st.Err()
+	}
+	return withDetails.Err()
+}
 
 type AdminClusterService struct {
 	adminv1.UnimplementedAdminClusterServiceServer
@@ -89,7 +113,7 @@ func (s *AdminClusterService) AddClusterNode(ctx context.Context, req *adminv1.A
 		return nil, status.Error(codes.PermissionDenied, "local node is not admitted to a cluster")
 	}
 	if s.cluster.LocalRole() != clustering.NodeRolePrimary {
-		return nil, status.Error(codes.FailedPrecondition, "node is not cluster primary")
+		return nil, notPrimaryClusterError(s.cluster)
 	}
 	store, err := s.membershipStore()
 	if err != nil {
