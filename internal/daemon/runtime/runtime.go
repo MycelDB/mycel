@@ -16,6 +16,10 @@ import (
 	"github.com/myceldb/mycel/internal/wal"
 )
 
+type SnapshotReloadable interface {
+	ReloadAfterSnapshot(ctx context.Context) error
+}
+
 type Runtime struct {
 	Config config.Config
 	Logger *slog.Logger
@@ -44,6 +48,7 @@ type Runtime struct {
 
 	ReplicationFollower *replication.Follower
 	ReplicationProgress *replication.ProgressStore
+	ResyncCoordinator   *replication.ResyncCoordinator
 
 	LogPath string
 
@@ -60,6 +65,29 @@ func New(cfg config.Config, logger *slog.Logger, logPath string, close func() er
 		LogPath:        logPath,
 		close:          close,
 	}
+}
+
+func (r *Runtime) ReloadAfterSnapshot(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	for _, svc := range r.serviceOrder {
+		reloadable, ok := svc.(SnapshotReloadable)
+		if !ok {
+			continue
+		}
+		name := svc.Name()
+		if r.Logger != nil {
+			r.Logger.Info("reloading service after snapshot install", "service", name)
+		}
+		if err := reloadable.ReloadAfterSnapshot(ctx); err != nil {
+			if r.Logger != nil {
+				r.Logger.Error("service snapshot reload failed", "service", name, "error", err)
+			}
+			return fmt.Errorf("reload %s after snapshot: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) Close() error {

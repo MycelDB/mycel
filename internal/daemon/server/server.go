@@ -58,6 +58,7 @@ type Config struct {
 	ReplicationFollower *replication.Follower
 	WALStatus           adminapi.WALStatusProvider
 	WALCheckpoint       *wal.CheckpointStore
+	ResyncCoordinator   *replication.ResyncCoordinator
 }
 
 type Server struct {
@@ -146,7 +147,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.OperatorManager))
 	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
 	if cfg.ClusteringManager != nil {
-		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithReplication(cfg.ReplicationProgress, cfg.ReplicationFollower).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint))
+		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithReplication(cfg.ReplicationProgress, cfg.ReplicationFollower).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithResync(cfg.ResyncCoordinator))
 	}
 	if cfg.BackupManager != nil {
 		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.OperatorManager))
@@ -169,13 +170,21 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 
 func defaultQuiesceExemptMethods() map[string]bool {
 	return map[string]bool{
-		adminv1.AdminAuthService_LoginOperator_FullMethodName:     true,
-		adminv1.AdminAuthService_RefreshOperator_FullMethodName:   true,
-		adminv1.AdminAuthService_WhoAmI_FullMethodName:            true,
-		adminv1.AdminBackupService_GetBackupPolicy_FullMethodName: true,
-		adminv1.AdminBackupService_TriggerBackup_FullMethodName:   true,
-		adminv1.AdminBackupService_GetBackupStatus_FullMethodName: true,
-		adminv1.AdminBackupService_ListBackups_FullMethodName:     true,
+		adminv1.AdminAuthService_LoginOperator_FullMethodName:              true,
+		adminv1.AdminAuthService_RefreshOperator_FullMethodName:            true,
+		adminv1.AdminAuthService_WhoAmI_FullMethodName:                     true,
+		adminv1.AdminBackupService_GetBackupPolicy_FullMethodName:          true,
+		adminv1.AdminBackupService_TriggerBackup_FullMethodName:            true,
+		adminv1.AdminBackupService_GetBackupStatus_FullMethodName:          true,
+		adminv1.AdminBackupService_ListBackups_FullMethodName:              true,
+		adminv1.AdminClusterService_ResyncClusterNode_FullMethodName:       true,
+		clusterpb.ClusterBackendService_RegisterNode_FullMethodName:        true,
+		clusterpb.ClusterBackendService_GetClusterView_FullMethodName:      true,
+		clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName:    true,
+		clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true,
+		clusterpb.ClusterBackendService_AddClusterNode_FullMethodName:      true,
+		clusterpb.ClusterBackendService_StreamWal_FullMethodName:           true,
+		clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName:     true,
 	}
 }
 

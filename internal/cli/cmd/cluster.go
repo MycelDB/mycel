@@ -30,7 +30,13 @@ func newClusterNodeCommand(a *app.App) *cobra.Command {
 		return runClusterNodeAdd(cmd.Context(), a, args[0], tokenFile)
 	}}
 	add.Flags().StringVar(&tokenFile, "token-file", "", "write one-time join token to this file")
-	cmd.AddCommand(add)
+	resync := &cobra.Command{Use: "resync NODE", Short: "Resync an active follower from a primary snapshot", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterNodeResync(cmd.Context(), a, args[0])
+	}}
+	history := &cobra.Command{Use: "resync-history", Short: "Show recent cluster node resync operations", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterNodeResyncHistory(cmd.Context(), a)
+	}}
+	cmd.AddCommand(add, resync, history)
 	return cmd
 }
 
@@ -141,6 +147,33 @@ type clusterNodeAddOutput struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
+type clusterResyncOperationOutput struct {
+	OperationID                string `json:"operation_id"`
+	TargetNodeID               string `json:"target_node_id"`
+	TargetNodeName             string `json:"target_node_name"`
+	TargetBackendAdvertiseAddr string `json:"target_backend_advertise_addr"`
+	StartedAt                  string `json:"started_at"`
+	CompletedAt                string `json:"completed_at,omitempty"`
+	Status                     string `json:"status"`
+	SnapshotBaseLSN            uint64 `json:"snapshot_base_lsn,omitempty"`
+	TotalBytes                 uint64 `json:"total_bytes,omitempty"`
+	Checksum                   string `json:"checksum,omitempty"`
+	Error                      string `json:"error,omitempty"`
+}
+
+type clusterResyncHistoryOutput struct {
+	Operations []clusterResyncOperationOutput `json:"operations"`
+}
+
+type clusterNodeResyncOutput struct {
+	OperationID     string `json:"operation_id"`
+	TargetNodeID    string `json:"target_node_id"`
+	TargetNodeName  string `json:"target_node_name"`
+	SnapshotBaseLSN uint64 `json:"snapshot_base_lsn"`
+	TotalBytes      uint64 `json:"total_bytes"`
+	Checksum        string `json:"checksum"`
+}
+
 func runClusterNodeAdd(ctx context.Context, a *app.App, nodeName string, tokenFile string) error {
 	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
 	if err != nil {
@@ -166,6 +199,44 @@ func runClusterNodeAdd(ctx context.Context, a *app.App, nodeName string, tokenFi
 		text += fmt.Sprintf("Join token:\n%s\n", out.Token)
 	}
 	return a.Print(out, text)
+}
+
+func runClusterNodeResync(ctx context.Context, a *app.App, target string) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).ResyncClusterNode(authCtx, &adminv1.ResyncClusterNodeRequest{Target: strings.TrimSpace(target)})
+	if err != nil {
+		return formatClusterWriteError("resync cluster node", err)
+	}
+	out := clusterNodeResyncOutput{OperationID: res.GetOperationId(), TargetNodeID: res.GetTargetNodeId(), TargetNodeName: res.GetTargetNodeName(), SnapshotBaseLSN: res.GetSnapshotBaseLsn(), TotalBytes: res.GetTotalBytes(), Checksum: res.GetChecksum()}
+	text := fmt.Sprintf("Resync completed\nTarget: %s (%s)\nSnapshot base LSN: %d\nBytes transferred: %d\nOperation: %s\n", out.TargetNodeName, out.TargetNodeID, out.SnapshotBaseLSN, out.TotalBytes, out.OperationID)
+	return a.Print(out, text)
+}
+
+func runClusterNodeResyncHistory(ctx context.Context, a *app.App) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).ListClusterResyncOperations(authCtx, &adminv1.ListClusterResyncOperationsRequest{})
+	if err != nil {
+		return fmt.Errorf("list cluster resync operations: %w", err)
+	}
+	out := clusterResyncHistoryOutput{}
+	lines := []string{}
+	for _, op := range res.GetOperations() {
+		item := clusterResyncOperationOutput{OperationID: op.GetOperationId(), TargetNodeID: op.GetTargetNodeId(), TargetNodeName: op.GetTargetNodeName(), TargetBackendAdvertiseAddr: op.GetTargetBackendAdvertiseAddr(), StartedAt: op.GetStartedAt(), CompletedAt: op.GetCompletedAt(), Status: op.GetStatus(), SnapshotBaseLSN: op.GetSnapshotBaseLsn(), TotalBytes: op.GetTotalBytes(), Checksum: op.GetChecksum(), Error: op.GetError()}
+		out.Operations = append(out.Operations, item)
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\tlsn=%d\tbytes=%d\t%s\n", item.Status, item.OperationID, item.TargetNodeName, item.SnapshotBaseLSN, item.TotalBytes, item.Error))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "No resync operations recorded.\n")
+	}
+	return a.Print(out, strings.Join(lines, ""))
 }
 
 func runClusterStatus(ctx context.Context, a *app.App) error {

@@ -57,6 +57,7 @@ type AdminClusterService struct {
 	replicationFollower *replication.Follower
 	walStatus           WALStatusProvider
 	checkpointStore     *wal.CheckpointStore
+	resyncCoordinator   *replication.ResyncCoordinator
 }
 
 func NewAdminClusterService(cluster *clustering.Manager, authorizer OperatorAuthorizer) *AdminClusterService {
@@ -72,6 +73,11 @@ func (s *AdminClusterService) WithReplication(progress *replication.ProgressStor
 func (s *AdminClusterService) WithWALStatus(provider WALStatusProvider, checkpoint *wal.CheckpointStore) *AdminClusterService {
 	s.walStatus = provider
 	s.checkpointStore = checkpoint
+	return s
+}
+
+func (s *AdminClusterService) WithResync(coordinator *replication.ResyncCoordinator) *AdminClusterService {
+	s.resyncCoordinator = coordinator
 	return s
 }
 
@@ -170,6 +176,48 @@ func (s *AdminClusterService) AddClusterNode(ctx context.Context, req *adminv1.A
 		return nil, err
 	}
 	return &adminv1.AddClusterNodeResponse{NodeName: nodeName, State: adminv1.ClusterMemberState_CLUSTER_MEMBER_STATE_PENDING, Token: token, TokenId: member.JoinToken.TokenID, ExpiresAt: formatClusterTime(expires)}, nil
+}
+
+func (s *AdminClusterService) ListClusterResyncOperations(ctx context.Context, req *adminv1.ListClusterResyncOperationsRequest) (*adminv1.ListClusterResyncOperationsResponse, error) {
+	if _, err := principalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	if s.resyncCoordinator == nil || s.resyncCoordinator.History == nil {
+		return &adminv1.ListClusterResyncOperationsResponse{}, nil
+	}
+	ops, err := s.resyncCoordinator.History.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*adminv1.ClusterResyncOperation, 0, len(ops))
+	for _, op := range ops {
+		out = append(out, &adminv1.ClusterResyncOperation{OperationId: op.OperationID, TargetNodeId: op.TargetNodeID, TargetNodeName: op.TargetNodeName, TargetBackendAdvertiseAddr: op.TargetBackendAdvertiseAddr, StartedAt: formatClusterTime(op.StartedAt), CompletedAt: formatClusterTime(op.CompletedAt), Status: string(op.Status), SnapshotBaseLsn: op.SnapshotBaseLSN, TotalBytes: op.TotalBytes, Checksum: op.Checksum, Error: op.Error})
+	}
+	return &adminv1.ListClusterResyncOperationsResponse{Operations: out}, nil
+}
+
+func (s *AdminClusterService) ResyncClusterNode(ctx context.Context, req *adminv1.ResyncClusterNodeRequest) (*adminv1.ResyncClusterNodeResponse, error) {
+	if _, err := s.requireClusterManage(ctx); err != nil {
+		return nil, err
+	}
+	if s.cluster == nil || !s.cluster.IsAdmitted() {
+		return nil, status.Error(codes.PermissionDenied, "local node is not admitted to a cluster")
+	}
+	if s.cluster.LocalRole() != clustering.NodeRolePrimary {
+		return nil, notPrimaryClusterError(s.cluster)
+	}
+	if s.resyncCoordinator == nil {
+		return nil, status.Error(codes.Unavailable, "cluster resync is not available")
+	}
+	target := strings.TrimSpace(req.GetTarget())
+	if target == "" {
+		return nil, status.Error(codes.InvalidArgument, "target is required")
+	}
+	result, err := s.resyncCoordinator.Resync(ctx, target)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return &adminv1.ResyncClusterNodeResponse{OperationId: result.OperationID, TargetNodeId: result.Target.NodeID, TargetNodeName: result.Target.NodeName, SnapshotBaseLsn: result.SnapshotBaseLSN, TotalBytes: result.TotalBytes, Checksum: result.Checksum}, nil
 }
 
 func (s *AdminClusterService) replicationStatusToProto() *adminv1.ClusterReplicationStatus {

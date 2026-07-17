@@ -103,7 +103,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), ReplicationProgress: rt.ReplicationProgress, ReplicationFollower: rt.ReplicationFollower, WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), ReplicationProgress: rt.ReplicationProgress, ReplicationFollower: rt.ReplicationFollower, WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ResyncCoordinator: rt.ResyncCoordinator})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -206,10 +206,13 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	}
 	if rt.WALRegistry != nil && rt.ClusterManager != nil && rt.WAL != nil {
 		repDir := filepath.Join(cfg.DataDir, "meta", "clustering", "replication")
+		if err := replication.CleanupStaleSnapshotStaging(ctx, cfg.DataDir, 24*time.Hour); err != nil {
+			logger.Warn("failed to cleanup stale snapshot staging", "error", err)
+		}
 		receiveLog := replication.NewReceiveLog(filepath.Join(repDir, "receive-log"))
 		progress := replication.NewProgressStore(filepath.Join(repDir, "progress.json"))
 		rt.ReplicationProgress = progress
-		installer := &replication.SnapshotInstaller{DataDir: cfg.DataDir, Identity: rt.ClusterManager.Identity, Progress: progress, ReceiveLog: receiveLog, Authority: func() (string, int64, bool) {
+		installer := &replication.SnapshotInstaller{DataDir: cfg.DataDir, Identity: rt.ClusterManager.Identity, Progress: progress, ReceiveLog: receiveLog, ReloadAfterInstall: rt.ReloadAfterSnapshot, Authority: func() (string, int64, bool) {
 			a, ok := rt.ClusterManager.Authority()
 			return a.Primary.NodeID, a.AuthorityEpoch, ok
 		}}
@@ -220,6 +223,13 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 			return nil, fmt.Errorf("replay replicated wal: %w", err)
 		}
 		rt.ReplicationFollower = &replication.Follower{Manager: rt.ClusterManager, Streamer: backend.Client{}, Applier: applier, Progress: progress, Interval: cfg.Cluster.DiscoveryInterval, Logger: logger}
+		rt.ResyncCoordinator = &replication.ResyncCoordinator{Cluster: rt.ClusterManager, History: replication.NewResyncHistoryStore(filepath.Join(repDir, "resync-history.json")), Creator: &replication.SnapshotCreator{DataDir: cfg.DataDir, ClusterID: identity.ClusterID, PrimaryNodeID: identity.NodeID, AuthorityEpoch: func() int64 {
+			a, ok := rt.ClusterManager.Authority()
+			if !ok {
+				return 0
+			}
+			return a.AuthorityEpoch
+		}(), Quiesce: rt.Quiesce, WAL: rt.WAL, Progress: rt.WALProgress, Checkpoint: rt.WALCheckpoint, Logger: logger}, Client: backend.Client{}}
 	}
 	graphService.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)

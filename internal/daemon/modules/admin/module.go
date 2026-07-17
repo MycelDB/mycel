@@ -26,6 +26,7 @@ var ErrInvalidCredentials = errors.New("invalid operator credentials")
 type Module struct {
 	store          Store
 	sessions       storesession.Manager
+	dataDir        string
 	gate           *quiesce.Gate
 	wal            *wal.Manager
 	walProgress    wal.AppliedLSNStore
@@ -62,6 +63,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open admin store", err)
 	}
 	m.store = store
+	m.dataDir = rt.Config.DataDir
 	sessionsDir := filepath.Join(adminDir, "sessions")
 	sessionsDirCreated, err := ensureDir(sessionsDir, 0o700)
 	if err != nil {

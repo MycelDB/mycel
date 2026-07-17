@@ -17,11 +17,12 @@ import (
 )
 
 type SnapshotInstaller struct {
-	DataDir    string
-	Identity   func() model.NodeIdentity
-	Authority  func() (string, int64, bool) // primary node id, epoch, ok
-	Progress   *ProgressStore
-	ReceiveLog *ReceiveLog
+	DataDir            string
+	Identity           func() model.NodeIdentity
+	Authority          func() (string, int64, bool) // primary node id, epoch, ok
+	Progress           *ProgressStore
+	ReceiveLog         *ReceiveLog
+	ReloadAfterInstall func(ctx context.Context) error
 }
 
 func (i *SnapshotInstaller) InstallSnapshot(ctx context.Context, desc replsnapshot.SnapshotDescriptor, r io.Reader) (wal.LSN, error) {
@@ -85,14 +86,24 @@ func (i *SnapshotInstaller) InstallSnapshot(ctx context.Context, desc replsnapsh
 	if manifest.ClusterID != desc.ClusterID || manifest.PrimaryNodeID != desc.PrimaryNodeID || manifest.AuthorityEpoch != desc.AuthorityEpoch || manifest.SnapshotBaseLSN != desc.SnapshotBaseLSN {
 		return 0, fmt.Errorf("%w: manifest descriptor mismatch", replsnapshot.ErrSnapshotValidationFailed)
 	}
-	if err := installMaterializedSnapshot(ctx, i.DataDir, unpacked, manifest); err != nil {
+	tx, err := installMaterializedSnapshot(ctx, i.DataDir, unpacked, filepath.Join(staging, "rollback"), manifest)
+	if err != nil {
 		return 0, err
+	}
+	if i.ReloadAfterInstall != nil {
+		if err := i.ReloadAfterInstall(ctx); err != nil {
+			_ = tx.Rollback(context.Background())
+			return 0, err
+		}
 	}
 	if err := i.ReceiveLog.Clear(ctx); err != nil {
 		return 0, err
 	}
 	p := Progress{Version: ProgressVersion, ClusterID: desc.ClusterID, PrimaryNodeID: desc.PrimaryNodeID, AuthorityEpoch: desc.AuthorityEpoch, ReceivedLSN: desc.SnapshotBaseLSN, AppliedLSN: desc.SnapshotBaseLSN, CatchupState: CatchupStateCaughtUp}
 	if err := i.Progress.Save(ctx, p); err != nil {
+		return 0, err
+	}
+	if err := os.RemoveAll(staging); err != nil {
 		return 0, err
 	}
 	return desc.SnapshotBaseLSN, nil

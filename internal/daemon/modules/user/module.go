@@ -21,6 +21,7 @@ import (
 type Module struct {
 	store          Store
 	sessions       storesession.Manager
+	dataDir        string
 	gate           *quiesce.Gate
 	wal            *wal.Manager
 	walProgress    wal.AppliedLSNStore
@@ -57,6 +58,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open user store", err)
 	}
 	m.store = store
+	m.dataDir = rt.Config.DataDir
 	rt.Logger.Info("user store ready", "path", filepath.Join(userDir, StoreFilename), "created", storeCreated)
 
 	sessionsDir := filepath.Join(userDir, "sessions")
