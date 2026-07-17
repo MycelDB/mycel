@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/replication"
 	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
@@ -27,31 +28,36 @@ import (
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
+	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
 
 type Config struct {
-	Addr               string
-	AdminLister        daemonadmin.AdminLister
-	AdminAuthenticator daemonadmin.OperatorAuthManager
-	OperatorManager    daemonadmin.OperatorManager
-	BackupManager      daemonbackup.Manager
-	UserManager        daemonuser.Manager
-	SpaceManager       daemonspace.Manager
-	SessionManager     daemonsession.Manager
-	GraphManager       daegraph.Manager
-	BlobManager        daemonblob.Manager
-	SemanticManager    daemonsemantic.Manager
-	ChangeManager      daemonchange.Manager
-	TokenManager       *daemonauth.TokenManager
-	Quiesce            *quiesce.Coordinator
-	IngressGate        *quiesce.Gate
-	QuiesceExempt      map[string]bool
-	Logger             *slog.Logger
-	TLSConfig          *tls.Config
-	ClusteringManager  *clustering.Manager
-	ClusteringServer   clusterpb.ClusterBackendServiceServer
+	Addr                string
+	AdminLister         daemonadmin.AdminLister
+	AdminAuthenticator  daemonadmin.OperatorAuthManager
+	OperatorManager     daemonadmin.OperatorManager
+	BackupManager       daemonbackup.Manager
+	UserManager         daemonuser.Manager
+	SpaceManager        daemonspace.Manager
+	SessionManager      daemonsession.Manager
+	GraphManager        daegraph.Manager
+	BlobManager         daemonblob.Manager
+	SemanticManager     daemonsemantic.Manager
+	ChangeManager       daemonchange.Manager
+	TokenManager        *daemonauth.TokenManager
+	Quiesce             *quiesce.Coordinator
+	IngressGate         *quiesce.Gate
+	QuiesceExempt       map[string]bool
+	Logger              *slog.Logger
+	TLSConfig           *tls.Config
+	ClusteringManager   *clustering.Manager
+	ClusteringServer    clusterpb.ClusterBackendServiceServer
+	ReplicationProgress *replication.ProgressStore
+	ReplicationFollower *replication.Follower
+	WALStatus           adminapi.WALStatusProvider
+	WALCheckpoint       *wal.CheckpointStore
 }
 
 type Server struct {
@@ -105,7 +111,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen grpc %s: %w", cfg.Addr, err)
 	}
-	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_AddClusterNode_FullMethodName: true}
+	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_AddClusterNode_FullMethodName: true, clusterpb.ClusterBackendService_StreamWal_FullMethodName: true, clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName: true}
 	quiesceExempt := defaultQuiesceExemptMethods()
 	for method, exempt := range cfg.QuiesceExempt {
 		quiesceExempt[method] = exempt
@@ -140,7 +146,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.OperatorManager))
 	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
 	if cfg.ClusteringManager != nil {
-		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager))
+		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithReplication(cfg.ReplicationProgress, cfg.ReplicationFollower).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint))
 	}
 	if cfg.BackupManager != nil {
 		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.OperatorManager))

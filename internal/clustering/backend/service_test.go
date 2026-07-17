@@ -10,6 +10,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/clustering/topology"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -152,6 +153,17 @@ func TestAddClusterNodeRejectsFollower(t *testing.T) {
 	_, err := svc.AddClusterNode(ctx, &clusterpb.AddClusterNodeRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, NodeName: "node-c"})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected failed precondition, got %v", err)
+	}
+	st, _ := status.FromError(err)
+	foundHint := false
+	for _, detail := range st.Details() {
+		info, ok := detail.(*errdetails.ErrorInfo)
+		if ok && info.GetReason() == "MYCEL_CLUSTER_NOT_PRIMARY" && info.GetMetadata()["mycel-primary-node-id"] == "node_a" {
+			foundHint = true
+		}
+	}
+	if !foundHint {
+		t.Fatalf("expected primary hint detail, got %#v", st.Details())
 	}
 }
 

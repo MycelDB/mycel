@@ -11,6 +11,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/membership"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -137,6 +138,17 @@ func TestAdminClusterServiceAddNodeRejectsFollower(t *testing.T) {
 	_, err := svc.AddClusterNode(authenticatedClusterContext(), &adminv1.AddClusterNodeRequest{NodeName: "node-c"})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected failed precondition for follower add-node, got %v", err)
+	}
+	st, _ := status.FromError(err)
+	foundHint := false
+	for _, detail := range st.Details() {
+		info, ok := detail.(*errdetails.ErrorInfo)
+		if ok && info.GetReason() == "MYCEL_CLUSTER_NOT_PRIMARY" && info.GetMetadata()["mycel-primary-node-id"] == "node-other" {
+			foundHint = true
+		}
+	}
+	if !foundHint {
+		t.Fatalf("expected primary hint detail, got %#v", st.Details())
 	}
 }
 

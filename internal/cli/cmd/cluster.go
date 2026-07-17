@@ -35,10 +35,11 @@ func newClusterNodeCommand(a *app.App) *cobra.Command {
 }
 
 type clusterStatusOutput struct {
-	Node      clusterNodeOutput      `json:"node"`
-	Cluster   clusterInfoOutput      `json:"cluster"`
-	Authority clusterAuthorityOutput `json:"authority,omitempty"`
-	Peers     []clusterPeerOutput    `json:"peers"`
+	Node        clusterNodeOutput        `json:"node"`
+	Cluster     clusterInfoOutput        `json:"cluster"`
+	Authority   clusterAuthorityOutput   `json:"authority,omitempty"`
+	Replication clusterReplicationOutput `json:"replication,omitempty"`
+	Peers       []clusterPeerOutput      `json:"peers"`
 }
 
 type clusterNodeOutput struct {
@@ -66,6 +67,35 @@ type clusterAuthorityOutput struct {
 	Term                        int64  `json:"term,omitempty"`
 	Source                      string `json:"source,omitempty"`
 	UpdatedAt                   string `json:"updated_at,omitempty"`
+}
+
+type clusterReplicationOutput struct {
+	Role                        string                  `json:"role,omitempty"`
+	PrimaryNodeID               string                  `json:"primary_node_id,omitempty"`
+	PrimaryNodeName             string                  `json:"primary_node_name,omitempty"`
+	PrimaryBackendAdvertiseAddr string                  `json:"primary_backend_advertise_addr,omitempty"`
+	AuthorityEpoch              int64                   `json:"authority_epoch,omitempty"`
+	ReceivedLSN                 uint64                  `json:"received_lsn,omitempty"`
+	AppliedLSN                  uint64                  `json:"applied_lsn,omitempty"`
+	PrimaryLastLSN              uint64                  `json:"primary_last_lsn,omitempty"`
+	LagRecords                  uint64                  `json:"lag_records,omitempty"`
+	Connected                   bool                    `json:"connected"`
+	LastError                   string                  `json:"last_error,omitempty"`
+	UpdatedAt                   string                  `json:"updated_at,omitempty"`
+	CatchupState                string                  `json:"catchup_state,omitempty"`
+	FirstRetainedLSN            uint64                  `json:"first_retained_lsn,omitempty"`
+	CheckpointLSN               uint64                  `json:"checkpoint_lsn,omitempty"`
+	SnapshotRequired            *snapshotRequiredOutput `json:"snapshot_required,omitempty"`
+}
+
+type snapshotRequiredOutput struct {
+	RequestedAfterLSN uint64 `json:"requested_after_lsn"`
+	NextRequestedLSN  uint64 `json:"next_requested_lsn"`
+	FirstRetainedLSN  uint64 `json:"first_retained_lsn"`
+	LastCommittedLSN  uint64 `json:"last_committed_lsn"`
+	CheckpointLSN     uint64 `json:"checkpoint_lsn"`
+	PrimaryNodeID     string `json:"primary_node_id,omitempty"`
+	AuthorityEpoch    int64  `json:"authority_epoch,omitempty"`
 }
 
 type clusterPeerOutput struct {
@@ -152,10 +182,22 @@ func runClusterStatus(ctx context.Context, a *app.App) error {
 	cluster := res.GetCluster()
 	authority := res.GetAuthority()
 	out := clusterStatusOutput{Node: clusterNodeOutput{NodeID: node.GetNodeId(), Name: node.GetNodeName(), State: nodeStateText(node.GetState()), Admitted: node.GetAdmitted(), Bootstrap: node.GetBootstrap(), BackendAdvertiseAddr: node.GetBackendAdvertiseAddr(), Role: nodeRoleText(node.GetRole())}, Cluster: clusterInfoOutput{ClusterID: cluster.GetClusterId(), ClusterName: cluster.GetClusterName(), Mode: clusterModeText(cluster.GetMode())}, Authority: clusterAuthorityOutput{ClusterID: authority.GetClusterId(), PrimaryNodeID: authority.GetPrimaryNodeId(), PrimaryNodeName: authority.GetPrimaryNodeName(), PrimaryBackendAdvertiseAddr: authority.GetPrimaryBackendAdvertiseAddr(), AuthorityEpoch: authority.GetAuthorityEpoch(), Term: authority.GetTerm(), Source: authority.GetSource(), UpdatedAt: authority.GetUpdatedAt()}}
+	if repl := res.GetReplication(); repl != nil {
+		out.Replication = clusterReplicationOutput{Role: replicationRoleText(repl.GetRole()), PrimaryNodeID: repl.GetPrimaryNodeId(), PrimaryNodeName: repl.GetPrimaryNodeName(), PrimaryBackendAdvertiseAddr: repl.GetPrimaryBackendAdvertiseAddr(), AuthorityEpoch: repl.GetAuthorityEpoch(), ReceivedLSN: repl.GetReceivedLsn(), AppliedLSN: repl.GetAppliedLsn(), PrimaryLastLSN: repl.GetPrimaryLastLsn(), LagRecords: repl.GetLagRecords(), Connected: repl.GetConnected(), LastError: repl.GetLastError(), UpdatedAt: repl.GetUpdatedAt(), CatchupState: replicationCatchupText(repl.GetCatchupState()), FirstRetainedLSN: repl.GetFirstRetainedLsn(), CheckpointLSN: repl.GetCheckpointLsn()}
+		if snap := repl.GetSnapshotRequired(); snap != nil {
+			out.Replication.SnapshotRequired = &snapshotRequiredOutput{RequestedAfterLSN: snap.GetRequestedAfterLsn(), NextRequestedLSN: snap.GetNextRequestedLsn(), FirstRetainedLSN: snap.GetFirstRetainedLsn(), LastCommittedLSN: snap.GetLastCommittedLsn(), CheckpointLSN: snap.GetCheckpointLsn(), PrimaryNodeID: snap.GetPrimaryNodeId(), AuthorityEpoch: snap.GetAuthorityEpoch()}
+		}
+	}
 	for _, p := range res.GetPeers() {
 		out.Peers = append(out.Peers, clusterPeerOutput{NodeID: p.GetNodeId(), NodeName: p.GetNodeName(), ClusterID: p.GetClusterId(), ClusterName: p.GetClusterName(), BackendAdvertiseAddr: p.GetBackendAdvertiseAddr(), State: peerStateText(p.GetState()), Source: peerSourceText(p.GetSource()), LastSeenAt: p.GetLastSeenAt()})
 	}
-	lines := []string{fmt.Sprintf("node=%s name=%s state=%s role=%s cluster=%s mode=%s primary=%s epoch=%d\n", out.Node.NodeID, out.Node.Name, out.Node.State, out.Node.Role, out.Cluster.ClusterName, out.Cluster.Mode, out.Authority.PrimaryNodeName, out.Authority.AuthorityEpoch)}
+	replicationText := fmt.Sprintf("replication_applied_lsn=%d replication_lag=%d connected=%t", out.Replication.AppliedLSN, out.Replication.LagRecords, out.Replication.Connected)
+	if out.Replication.Role == "primary" {
+		replicationText = fmt.Sprintf("wal_last_lsn=%d first_retained_lsn=%d checkpoint_lsn=%d", out.Replication.PrimaryLastLSN, out.Replication.FirstRetainedLSN, out.Replication.CheckpointLSN)
+	} else if out.Replication.Role == "not_applicable" || out.Replication.Role == "" {
+		replicationText = "replication=not_applicable"
+	}
+	lines := []string{fmt.Sprintf("node=%s name=%s state=%s role=%s cluster=%s mode=%s primary=%s epoch=%d %s\n", out.Node.NodeID, out.Node.Name, out.Node.State, out.Node.Role, out.Cluster.ClusterName, out.Cluster.Mode, out.Authority.PrimaryNodeName, out.Authority.AuthorityEpoch, replicationText)}
 	for _, p := range out.Peers {
 		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\n", p.State, p.NodeName, p.BackendAdvertiseAddr, p.Source))
 	}
@@ -199,4 +241,10 @@ func memberStateText(v adminv1.ClusterMemberState) string {
 }
 func nodeRoleText(v adminv1.ClusterNodeRole) string {
 	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_node_role_")
+}
+func replicationRoleText(v adminv1.ClusterReplicationRole) string {
+	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_replication_role_")
+}
+func replicationCatchupText(v adminv1.ClusterReplicationCatchupState) string {
+	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_replication_catchup_state_")
 }

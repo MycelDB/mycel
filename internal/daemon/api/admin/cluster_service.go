@@ -10,9 +10,12 @@ import (
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/membership"
 	"github.com/myceldb/mycel/internal/clustering/model"
+	"github.com/myceldb/mycel/internal/clustering/replerror"
+	"github.com/myceldb/mycel/internal/clustering/replication"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -41,14 +44,35 @@ func notPrimaryClusterError(cluster *clustering.Manager) error {
 	return withDetails.Err()
 }
 
+type WALStatusProvider interface {
+	LastCommittedLSN() wal.LSN
+	RetainedRange(ctx context.Context) (wal.RetainedRange, error)
+}
+
 type AdminClusterService struct {
 	adminv1.UnimplementedAdminClusterServiceServer
-	cluster    *clustering.Manager
-	authorizer OperatorAuthorizer
+	cluster             *clustering.Manager
+	authorizer          OperatorAuthorizer
+	replicationProgress *replication.ProgressStore
+	replicationFollower *replication.Follower
+	walStatus           WALStatusProvider
+	checkpointStore     *wal.CheckpointStore
 }
 
 func NewAdminClusterService(cluster *clustering.Manager, authorizer OperatorAuthorizer) *AdminClusterService {
 	return &AdminClusterService{cluster: cluster, authorizer: authorizer}
+}
+
+func (s *AdminClusterService) WithReplication(progress *replication.ProgressStore, follower *replication.Follower) *AdminClusterService {
+	s.replicationProgress = progress
+	s.replicationFollower = follower
+	return s
+}
+
+func (s *AdminClusterService) WithWALStatus(provider WALStatusProvider, checkpoint *wal.CheckpointStore) *AdminClusterService {
+	s.walStatus = provider
+	s.checkpointStore = checkpoint
+	return s
 }
 
 func (s *AdminClusterService) GetClusterStatus(ctx context.Context, req *adminv1.GetClusterStatusRequest) (*adminv1.GetClusterStatusResponse, error) {
@@ -81,8 +105,9 @@ func (s *AdminClusterService) GetClusterStatus(ctx context.Context, req *adminv1
 			ClusterName: identity.ClusterName,
 			Mode:        clusterModeFromNodeState(s.cluster.State()),
 		},
-		Peers:     peers,
-		Authority: clusterAuthorityToAdminProto(s.cluster.Authority()),
+		Peers:       peers,
+		Authority:   clusterAuthorityToAdminProto(s.cluster.Authority()),
+		Replication: s.replicationStatusToProto(),
 	}, nil
 }
 
@@ -145,6 +170,94 @@ func (s *AdminClusterService) AddClusterNode(ctx context.Context, req *adminv1.A
 		return nil, err
 	}
 	return &adminv1.AddClusterNodeResponse{NodeName: nodeName, State: adminv1.ClusterMemberState_CLUSTER_MEMBER_STATE_PENDING, Token: token, TokenId: member.JoinToken.TokenID, ExpiresAt: formatClusterTime(expires)}, nil
+}
+
+func (s *AdminClusterService) replicationStatusToProto() *adminv1.ClusterReplicationStatus {
+	if s == nil || s.cluster == nil {
+		return nil
+	}
+	authority, _ := s.cluster.Authority()
+	status := &adminv1.ClusterReplicationStatus{PrimaryNodeId: authority.Primary.NodeID, PrimaryNodeName: authority.Primary.NodeName, PrimaryBackendAdvertiseAddr: authority.Primary.BackendAdvertiseAddr, AuthorityEpoch: authority.AuthorityEpoch}
+	switch s.cluster.LocalRole() {
+	case clustering.NodeRolePrimary:
+		status.Role = adminv1.ClusterReplicationRole_CLUSTER_REPLICATION_ROLE_PRIMARY
+		status.CatchupState = adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_CAUGHT_UP
+		s.populateWALRange(context.Background(), status)
+		return status
+	case clustering.NodeRoleFollower:
+		status.Role = adminv1.ClusterReplicationRole_CLUSTER_REPLICATION_ROLE_FOLLOWER
+	default:
+		status.Role = adminv1.ClusterReplicationRole_CLUSTER_REPLICATION_ROLE_NOT_APPLICABLE
+		return status
+	}
+	if s.replicationProgress == nil {
+		return status
+	}
+	progress, err := s.replicationProgress.Load(context.Background())
+	if err != nil {
+		status.LastError = err.Error()
+		return status
+	}
+	s.populateWALRange(context.Background(), status)
+	status.ReceivedLsn = uint64(progress.ReceivedLSN)
+	status.AppliedLsn = uint64(progress.AppliedLSN)
+	status.CatchupState = catchupStateToAdminProto(progress.CatchupState)
+	if progress.SnapshotRequired != nil {
+		status.SnapshotRequired = snapshotRequiredToAdminProto(*progress.SnapshotRequired)
+		status.FirstRetainedLsn = uint64(progress.SnapshotRequired.FirstRetainedLSN)
+		status.CheckpointLsn = uint64(progress.SnapshotRequired.CheckpointLSN)
+	}
+	if status.PrimaryLastLsn >= status.AppliedLsn && status.PrimaryLastLsn > 0 {
+		status.LagRecords = status.PrimaryLastLsn - status.AppliedLsn
+	} else if progress.ReceivedLSN >= progress.AppliedLSN {
+		status.LagRecords = uint64(progress.ReceivedLSN - progress.AppliedLSN)
+	}
+	status.Connected = false
+	status.LastError = progress.LastError
+	status.UpdatedAt = formatClusterTime(progress.UpdatedAt)
+	if s.replicationFollower != nil {
+		status.Connected = s.replicationFollower.Connected()
+		if e := s.replicationFollower.LastError(); e != "" {
+			status.LastError = e
+		}
+	}
+	return status
+}
+
+func (s *AdminClusterService) populateWALRange(ctx context.Context, out *adminv1.ClusterReplicationStatus) {
+	if s.walStatus != nil {
+		out.PrimaryLastLsn = uint64(s.walStatus.LastCommittedLSN())
+		if r, err := s.walStatus.RetainedRange(ctx); err == nil {
+			out.FirstRetainedLsn = uint64(r.FirstRetainedLSN)
+			out.PrimaryLastLsn = uint64(r.LastCommittedLSN)
+		}
+	}
+	if s.checkpointStore != nil {
+		if cp, err := s.checkpointStore.Load(ctx); err == nil {
+			out.CheckpointLsn = uint64(cp.LSN)
+		}
+	}
+}
+
+func snapshotRequiredToAdminProto(info replerror.SnapshotRequiredInfo) *adminv1.SnapshotRequiredInfo {
+	return &adminv1.SnapshotRequiredInfo{RequestedAfterLsn: uint64(info.RequestedAfterLSN), NextRequestedLsn: uint64(info.NextRequestedLSN), FirstRetainedLsn: uint64(info.FirstRetainedLSN), LastCommittedLsn: uint64(info.LastCommittedLSN), CheckpointLsn: uint64(info.CheckpointLSN), PrimaryNodeId: info.PrimaryNodeID, AuthorityEpoch: info.AuthorityEpoch}
+}
+
+func catchupStateToAdminProto(state replication.CatchupState) adminv1.ClusterReplicationCatchupState {
+	switch state {
+	case replication.CatchupStateStreaming:
+		return adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_STREAMING
+	case replication.CatchupStateCaughtUp:
+		return adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_CAUGHT_UP
+	case replication.CatchupStateRetrying:
+		return adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_RETRYING
+	case replication.CatchupStateSnapshotRequired:
+		return adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_SNAPSHOT_REQUIRED
+	case replication.CatchupStateError:
+		return adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_ERROR
+	default:
+		return adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_UNKNOWN
+	}
 }
 
 func (s *AdminClusterService) membershipStore() (*membership.FileStore, error) {

@@ -121,6 +121,24 @@ func (m *Manager) WaitUntilCommitted(ctx context.Context, target LSN) error {
 	}
 }
 
+type RetainedRange struct {
+	FirstRetainedLSN LSN
+	LastCommittedLSN LSN
+}
+
+func (m *Manager) RetainedRange(ctx context.Context) (RetainedRange, error) {
+	if err := ctx.Err(); err != nil {
+		return RetainedRange{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	first, err := m.oldestRetainedLSNLocked()
+	if err != nil {
+		return RetainedRange{}, err
+	}
+	return RetainedRange{FirstRetainedLSN: first, LastCommittedLSN: m.last}, nil
+}
+
 func (m *Manager) Status() (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

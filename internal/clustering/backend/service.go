@@ -11,17 +11,21 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/clustering/topology"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 type Service struct {
 	clusterpb.UnimplementedClusterBackendServiceServer
-	Identity   model.NodeIdentity
-	State      model.NodeState
-	Topology   *topology.Registry
-	Membership *membership.FileStore
-	Authority  *clusterpb.ClusterAuthority
+	Identity          model.NodeIdentity
+	State             model.NodeState
+	Topology          *topology.Registry
+	Membership        *membership.FileStore
+	Authority         *clusterpb.ClusterAuthority
+	WAL               WALReader
+	Checkpoint        CheckpointProvider
+	SnapshotInstaller SnapshotInstaller
 }
 
 func NewService(identity model.NodeIdentity, state model.NodeState, registry *topology.Registry) *Service {
@@ -247,7 +251,7 @@ func (s *Service) AddClusterNode(ctx context.Context, req *clusterpb.AddClusterN
 		return nil, status.Error(codes.PermissionDenied, "local node is not admitted to a cluster")
 	}
 	if !s.isPrimary() {
-		return nil, status.Error(codes.FailedPrecondition, "node is not cluster primary")
+		return nil, s.notPrimaryError()
 	}
 	nodeName := strings.TrimSpace(req.GetNodeName())
 	if nodeName == "" {
@@ -275,6 +279,23 @@ func (s *Service) isPrimary() bool {
 		return false
 	}
 	return s.Identity.NodeID != "" && s.Identity.NodeID == s.Authority.GetPrimary().GetNodeId()
+}
+
+func (s *Service) notPrimaryError() error {
+	st := status.New(codes.FailedPrecondition, "node is not cluster primary")
+	if s.Authority == nil || s.Authority.GetPrimary() == nil {
+		return st.Err()
+	}
+	withDetails, err := st.WithDetails(&errdetails.ErrorInfo{Reason: "MYCEL_CLUSTER_NOT_PRIMARY", Domain: "mycel.cluster", Metadata: map[string]string{
+		"mycel-primary-node-id":                s.Authority.GetPrimary().GetNodeId(),
+		"mycel-primary-node-name":              s.Authority.GetPrimary().GetNodeName(),
+		"mycel-primary-backend-advertise-addr": s.Authority.GetPrimary().GetBackendAdvertiseAddr(),
+		"mycel-authority-epoch":                fmt.Sprintf("%d", s.Authority.GetAuthorityEpoch()),
+	}})
+	if err != nil {
+		return st.Err()
+	}
+	return withDetails.Err()
 }
 
 func validateIdentity(id model.NodeIdentity) error {

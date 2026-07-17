@@ -35,6 +35,12 @@ service ClusterBackendService {
   // ListClusterMembers returns the authoritative admission/membership view.
   // Token hashes and plaintext token values are never returned.
   rpc ListClusterMembers(ListClusterMembersRequest) returns (ListClusterMembersResponse);
+
+  // StreamWal streams committed primary WAL records after the requested LSN.
+  rpc StreamWal(StreamWalRequest) returns (stream WalRecord);
+
+  // InstallSnapshot installs a primary-created resync snapshot on a follower.
+  rpc InstallSnapshot(stream SnapshotChunk) returns (InstallSnapshotResponse);
 }
 
 // ClusterProtocolVersion identifies the backend protocol shape used by a node.
@@ -224,6 +230,48 @@ message ListClusterMembersResponse {
   string cluster_id = 2;
   string cluster_name = 3;
   repeated ClusterMember members = 4;
+}
+
+message StreamWalRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string follower_node_id = 3;
+  uint64 after_lsn = 4;
+  int64 authority_epoch = 5;
+}
+
+message WalRecord {
+  uint64 lsn = 1;
+  string type = 2;
+  uint32 schema_version = 3;
+  string timestamp = 4;
+  string encoding = 5;
+  bytes payload = 6;
+}
+
+message SnapshotDescriptor {
+  string operation_id = 1;
+  string cluster_id = 2;
+  string primary_node_id = 3;
+  string target_node_id = 4;
+  int64 authority_epoch = 5;
+  uint64 snapshot_base_lsn = 6;
+  string manifest_json = 7;
+  uint64 total_bytes = 8;
+  string checksum = 9;
+}
+
+message SnapshotChunk {
+  oneof payload {
+    SnapshotDescriptor descriptor = 1;
+    bytes data = 2;
+  }
+}
+
+message InstallSnapshotResponse {
+  bool installed = 1;
+  uint64 applied_lsn = 2;
+  string message = 3;
 }
 
 message ClusterMember {

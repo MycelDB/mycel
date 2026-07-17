@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/backend"
+	"github.com/myceldb/mycel/internal/clustering/replication"
 	"github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
@@ -101,7 +103,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService()})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), ReplicationProgress: rt.ReplicationProgress, ReplicationFollower: rt.ReplicationFollower, WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -176,6 +178,8 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		rt.WALCheckpoint = wal.NewCheckpointStore(filepath.Join(cfg.DataDir, "meta", "wal", "checkpoint.json"))
 		rt.WALRecovery = wal.NewRecovery(walManager, rt.WALRegistry, progress)
 		rt.WALWaiter = rt.WALRecovery.Waiter()
+		clusterManager.SetBackendWAL(walManager)
+		clusterManager.SetBackendCheckpoint(rt.WALCheckpoint)
 		logger.Info("wal ready", "path", walDir, "last_committed_lsn", walManager.LastCommittedLSN())
 	}
 	adminService := admin.NewModule()
@@ -200,6 +204,23 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		}
 		logger.Info("wal recovery complete", "applied_lsn", applied, "last_committed_lsn", rt.WAL.LastCommittedLSN(), "duration", time.Since(started))
 	}
+	if rt.WALRegistry != nil && rt.ClusterManager != nil && rt.WAL != nil {
+		repDir := filepath.Join(cfg.DataDir, "meta", "clustering", "replication")
+		receiveLog := replication.NewReceiveLog(filepath.Join(repDir, "receive-log"))
+		progress := replication.NewProgressStore(filepath.Join(repDir, "progress.json"))
+		rt.ReplicationProgress = progress
+		installer := &replication.SnapshotInstaller{DataDir: cfg.DataDir, Identity: rt.ClusterManager.Identity, Progress: progress, ReceiveLog: receiveLog, Authority: func() (string, int64, bool) {
+			a, ok := rt.ClusterManager.Authority()
+			return a.Primary.NodeID, a.AuthorityEpoch, ok
+		}}
+		rt.ClusterManager.SetBackendSnapshotInstaller(installer)
+		applier := &replication.Applier{Log: receiveLog, Progress: progress, Registry: rt.WALRegistry, Logger: logger}
+		if err := applier.Replay(ctx); err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("replay replicated wal: %w", err)
+		}
+		rt.ReplicationFollower = &replication.Follower{Manager: rt.ClusterManager, Streamer: backend.Client{}, Applier: applier, Progress: progress, Interval: cfg.Cluster.DiscoveryInterval, Logger: logger}
+	}
 	graphService.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)
 		if err != nil {
@@ -210,6 +231,12 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	if err := rt.StartServices(ctx); err != nil {
 		_ = rt.Close()
 		return nil, err
+	}
+	if rt.ReplicationFollower != nil {
+		if err := rt.ReplicationFollower.Start(ctx); err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("start wal replication follower: %w", err)
+		}
 	}
 	logger.Info("daemon initialization complete")
 	return rt, nil

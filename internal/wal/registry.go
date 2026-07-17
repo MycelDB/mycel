@@ -43,3 +43,11 @@ func (r *Registry) Applier(recordType RecordType) (Applier, bool) {
 	a, ok := r.appliers[recordType]
 	return a, ok
 }
+
+func (r *Registry) Apply(ctx context.Context, rec Record) error {
+	applier, ok := r.Applier(rec.Type)
+	if !ok {
+		return fmt.Errorf("%w: no applier for %s", ErrInvalidRecord, rec.Type)
+	}
+	return applier.ApplyWAL(ctx, rec)
+}

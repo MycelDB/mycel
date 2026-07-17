@@ -115,7 +115,7 @@ This stage enables clients to move between nodes without re-authenticating per d
 
 ## Stage 4: WAL replication MVP
 
-Implement primary-to-follower WAL replication.
+Implemented as an MVP: primary-to-follower WAL propagation uses an internal `StreamWal` RPC, follower receive log, progress store, WAL applier replay, and role-aware status in CLI/UI. Remaining work includes snapshot transfer, retention coordination, stronger read consistency, and promotion/fencing.
 
 Minimum viable behavior:
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/model"
+	"github.com/myceldb/mycel/internal/clustering/replication"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
@@ -41,6 +42,9 @@ type Runtime struct {
 	WALCheckpoint *wal.CheckpointStore
 	WALWaiter     *wal.ApplyWaiter
 
+	ReplicationFollower *replication.Follower
+	ReplicationProgress *replication.ProgressStore
+
 	LogPath string
 
 	close func() error
@@ -63,6 +67,11 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	var firstErr error
+	if r.ReplicationFollower != nil {
+		if err := r.ReplicationFollower.Stop(context.Background()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if r.ClusterManager != nil {
 		if err := r.ClusterManager.Stop(context.Background()); err != nil && firstErr == nil {
 			firstErr = err

@@ -187,6 +187,27 @@ func (m *Manager) BackendService() clusterpb.ClusterBackendServiceServer {
 	}
 	return m.backend
 }
+
+func (m *Manager) SetBackendWAL(reader backend.WALReader) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithWAL(reader)
+}
+
+func (m *Manager) SetBackendCheckpoint(provider backend.CheckpointProvider) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithCheckpoint(provider)
+}
+
+func (m *Manager) SetBackendSnapshotInstaller(installer backend.SnapshotInstaller) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithSnapshotInstaller(installer)
+}
 func (m *Manager) Registration() *registration.Handler {
 	if m == nil {
 		return nil
