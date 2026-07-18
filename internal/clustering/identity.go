@@ -15,6 +15,7 @@ type Options struct {
 	NodeName                 string
 	ClusterName              string
 	BackendAdvertiseAddr     string
+	BackendAuthToken         string
 	SeedPeers                []string
 	Bootstrap                bool
 	NodePublicKeyFingerprint string

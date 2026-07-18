@@ -13,7 +13,7 @@ func (c Client) StreamWal(ctx context.Context, addr string, req *clusterpb.Strea
 		return err
 	}
 	defer conn.Close()
-	stream, err := clusterpb.NewClusterBackendServiceClient(conn).StreamWal(ctx, req)
+	stream, err := clusterpb.NewClusterBackendServiceClient(conn).StreamWal(c.authContext(ctx), req)
 	if err != nil {
 		return err
 	}

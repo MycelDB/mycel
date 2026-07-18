@@ -34,31 +34,34 @@ import (
 )
 
 type Config struct {
-	Addr                string
-	AdminLister         daemonadmin.AdminLister
-	AdminAuthenticator  daemonadmin.OperatorAuthManager
-	OperatorManager     daemonadmin.OperatorManager
-	BackupManager       daemonbackup.Manager
-	UserManager         daemonuser.Manager
-	SpaceManager        daemonspace.Manager
-	SessionManager      daemonsession.Manager
-	GraphManager        daegraph.Manager
-	BlobManager         daemonblob.Manager
-	SemanticManager     daemonsemantic.Manager
-	ChangeManager       daemonchange.Manager
-	TokenManager        *daemonauth.TokenManager
-	Quiesce             *quiesce.Coordinator
-	IngressGate         *quiesce.Gate
-	QuiesceExempt       map[string]bool
-	Logger              *slog.Logger
-	TLSConfig           *tls.Config
-	ClusteringManager   *clustering.Manager
-	ClusteringServer    clusterpb.ClusterBackendServiceServer
-	ReplicationProgress *replication.ProgressStore
-	ReplicationFollower *replication.Follower
-	WALStatus           adminapi.WALStatusProvider
-	WALCheckpoint       *wal.CheckpointStore
-	ResyncCoordinator   *replication.ResyncCoordinator
+	Addr                    string
+	AdminLister             daemonadmin.AdminLister
+	AdminAuthenticator      daemonadmin.OperatorAuthManager
+	OperatorManager         daemonadmin.OperatorManager
+	BackupManager           daemonbackup.Manager
+	UserManager             daemonuser.Manager
+	SpaceManager            daemonspace.Manager
+	SessionManager          daemonsession.Manager
+	GraphManager            daegraph.Manager
+	BlobManager             daemonblob.Manager
+	SemanticManager         daemonsemantic.Manager
+	ChangeManager           daemonchange.Manager
+	TokenManager            *daemonauth.TokenManager
+	Quiesce                 *quiesce.Coordinator
+	IngressGate             *quiesce.Gate
+	QuiesceExempt           map[string]bool
+	Logger                  *slog.Logger
+	TLSConfig               *tls.Config
+	ClusterBackendAuthToken string
+	ClusteringManager       *clustering.Manager
+	ClusteringServer        clusterpb.ClusterBackendServiceServer
+	ReplicationProgress     *replication.ProgressStore
+	ReplicationFollower     *replication.Follower
+	WALStatus               adminapi.WALStatusProvider
+	WALCheckpoint           *wal.CheckpointStore
+	ResyncCoordinator       *replication.ResyncCoordinator
+	SwitchoverCoordinator   *replication.SwitchoverCoordinator
+	FailoverCoordinator     *replication.FailoverCoordinator
 }
 
 type Server struct {
@@ -112,7 +115,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen grpc %s: %w", cfg.Addr, err)
 	}
-	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_AddClusterNode_FullMethodName: true, clusterpb.ClusterBackendService_StreamWal_FullMethodName: true, clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName: true}
+	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_AddClusterNode_FullMethodName: true, clusterpb.ClusterBackendService_StreamWal_FullMethodName: true, clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName: true, clusterpb.ClusterBackendService_GetReplicationStatus_FullMethodName: true, clusterpb.ClusterBackendService_InstallAuthority_FullMethodName: true}
 	quiesceExempt := defaultQuiesceExemptMethods()
 	for method, exempt := range cfg.QuiesceExempt {
 		quiesceExempt[method] = exempt
@@ -126,8 +129,8 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		}
 	}
 	baseOptions := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(cfg.TokenManager.UnaryInterceptor(publicMethods), quiesceUnaryInterceptor(cfg.IngressGate, quiesceExempt)),
-		grpc.ChainStreamInterceptor(cfg.TokenManager.StreamInterceptor(publicMethods), quiesceStreamInterceptor(cfg.IngressGate, quiesceExempt)),
+		grpc.ChainUnaryInterceptor(clusterBackendUnaryAuthInterceptor(cfg.ClusterBackendAuthToken), cfg.TokenManager.UnaryInterceptor(publicMethods), quiesceUnaryInterceptor(cfg.IngressGate, quiesceExempt)),
+		grpc.ChainStreamInterceptor(clusterBackendStreamAuthInterceptor(cfg.ClusterBackendAuthToken), cfg.TokenManager.StreamInterceptor(publicMethods), quiesceStreamInterceptor(cfg.IngressGate, quiesceExempt)),
 	}
 	if cfg.TLSConfig != nil {
 		baseOptions = append(baseOptions, grpc.Creds(credentials.NewTLS(cfg.TLSConfig)))
@@ -147,7 +150,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.OperatorManager))
 	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
 	if cfg.ClusteringManager != nil {
-		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithReplication(cfg.ReplicationProgress, cfg.ReplicationFollower).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithResync(cfg.ResyncCoordinator))
+		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithReplication(cfg.ReplicationProgress, cfg.ReplicationFollower).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithResync(cfg.ResyncCoordinator).WithSwitchover(cfg.SwitchoverCoordinator).WithFailover(cfg.FailoverCoordinator))
 	}
 	if cfg.BackupManager != nil {
 		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.OperatorManager))
@@ -170,21 +173,26 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 
 func defaultQuiesceExemptMethods() map[string]bool {
 	return map[string]bool{
-		adminv1.AdminAuthService_LoginOperator_FullMethodName:              true,
-		adminv1.AdminAuthService_RefreshOperator_FullMethodName:            true,
-		adminv1.AdminAuthService_WhoAmI_FullMethodName:                     true,
-		adminv1.AdminBackupService_GetBackupPolicy_FullMethodName:          true,
-		adminv1.AdminBackupService_TriggerBackup_FullMethodName:            true,
-		adminv1.AdminBackupService_GetBackupStatus_FullMethodName:          true,
-		adminv1.AdminBackupService_ListBackups_FullMethodName:              true,
-		adminv1.AdminClusterService_ResyncClusterNode_FullMethodName:       true,
-		clusterpb.ClusterBackendService_RegisterNode_FullMethodName:        true,
-		clusterpb.ClusterBackendService_GetClusterView_FullMethodName:      true,
-		clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName:    true,
-		clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true,
-		clusterpb.ClusterBackendService_AddClusterNode_FullMethodName:      true,
-		clusterpb.ClusterBackendService_StreamWal_FullMethodName:           true,
-		clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName:     true,
+		adminv1.AdminAuthService_LoginOperator_FullMethodName:               true,
+		adminv1.AdminAuthService_RefreshOperator_FullMethodName:             true,
+		adminv1.AdminAuthService_WhoAmI_FullMethodName:                      true,
+		adminv1.AdminBackupService_GetBackupPolicy_FullMethodName:           true,
+		adminv1.AdminBackupService_TriggerBackup_FullMethodName:             true,
+		adminv1.AdminBackupService_GetBackupStatus_FullMethodName:           true,
+		adminv1.AdminBackupService_ListBackups_FullMethodName:               true,
+		adminv1.AdminClusterService_ResyncClusterNode_FullMethodName:        true,
+		adminv1.AdminClusterService_SwitchClusterPrimary_FullMethodName:     true,
+		adminv1.AdminClusterService_PromoteLocalPrimary_FullMethodName:      true,
+		adminv1.AdminClusterService_GetClusterHealth_FullMethodName:         true,
+		clusterpb.ClusterBackendService_RegisterNode_FullMethodName:         true,
+		clusterpb.ClusterBackendService_GetClusterView_FullMethodName:       true,
+		clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName:     true,
+		clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName:  true,
+		clusterpb.ClusterBackendService_AddClusterNode_FullMethodName:       true,
+		clusterpb.ClusterBackendService_StreamWal_FullMethodName:            true,
+		clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName:      true,
+		clusterpb.ClusterBackendService_GetReplicationStatus_FullMethodName: true,
+		clusterpb.ClusterBackendService_InstallAuthority_FullMethodName:     true,
 	}
 }
 

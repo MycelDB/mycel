@@ -41,6 +41,12 @@ service ClusterBackendService {
 
   // InstallSnapshot installs a primary-created resync snapshot on a follower.
   rpc InstallSnapshot(stream SnapshotChunk) returns (InstallSnapshotResponse);
+
+  // GetReplicationStatus returns follower replication progress for planned switchover checks.
+  rpc GetReplicationStatus(GetReplicationStatusRequest) returns (GetReplicationStatusResponse);
+
+  // InstallAuthority installs a newer cluster authority on a node.
+  rpc InstallAuthority(InstallAuthorityRequest) returns (InstallAuthorityResponse);
 }
 
 // ClusterProtocolVersion identifies the backend protocol shape used by a node.
@@ -272,6 +278,39 @@ message InstallSnapshotResponse {
   bool installed = 1;
   uint64 applied_lsn = 2;
   string message = 3;
+}
+
+message GetReplicationStatusRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string requester_node_id = 3;
+}
+
+message GetReplicationStatusResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string local_node_id = 3;
+  string primary_node_id = 4;
+  int64 authority_epoch = 5;
+  uint64 received_lsn = 6;
+  uint64 applied_lsn = 7;
+  string catchup_state = 8;
+}
+
+message InstallAuthorityRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string operation_id = 2;
+  string cluster_id = 3;
+  string target_node_id = 4;
+  ClusterAuthority authority = 5;
+  uint64 final_lsn = 6;
+}
+
+message InstallAuthorityResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  bool installed = 2;
+  int64 authority_epoch = 3;
+  string message = 4;
 }
 
 message ClusterMember {

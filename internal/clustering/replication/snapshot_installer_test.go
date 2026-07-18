@@ -20,7 +20,10 @@ func TestSnapshotInstallerInstallsMaterializedAndPreservesIdentity(t *testing.T)
 	if err := os.MkdirAll(filepath.Join(src, "meta", "clustering"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(src, "data.txt"), []byte("new"), 0600); err != nil {
+	if err := os.MkdirAll(filepath.Join(src, "users"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "users", "users.json"), []byte("new"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(src, "meta", "clustering", "node.json"), []byte("must-not-copy"), 0600); err != nil {
@@ -46,7 +49,10 @@ func TestSnapshotInstallerInstallsMaterializedAndPreservesIdentity(t *testing.T)
 	if err := os.MkdirAll(filepath.Join(dst, "meta", "clustering"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dst, "data.txt"), []byte("old"), 0600); err != nil {
+	if err := os.MkdirAll(filepath.Join(dst, "users"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "users", "users.json"), []byte("old"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dst, "meta", "clustering", "node.json"), []byte("local-node"), 0600); err != nil {
@@ -59,7 +65,7 @@ func TestSnapshotInstallerInstallsMaterializedAndPreservesIdentity(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := os.ReadFile(filepath.Join(dst, "data.txt"))
+	got, _ := os.ReadFile(filepath.Join(dst, "users", "users.json"))
 	if string(got) != "new" {
 		t.Fatalf("data=%s", got)
 	}
@@ -79,7 +85,10 @@ func TestSnapshotInstallerInstallsMaterializedAndPreservesIdentity(t *testing.T)
 func TestSnapshotInstallerReloadFailureDoesNotResetProgress(t *testing.T) {
 	ctx := context.Background()
 	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "data.txt"), []byte("new"), 0600); err != nil {
+	if err := os.MkdirAll(filepath.Join(src, "users"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "users", "users.json"), []byte("new"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	manifest, err := replsnapshot.BuildManifest(ctx, src, replsnapshot.Manifest{ClusterID: "cluster", PrimaryNodeID: "node-a", AuthorityEpoch: 1, SnapshotBaseLSN: wal.LSN(7), CreatedAt: time.Now()}, replsnapshot.DefaultResyncSnapshotPathPolicy())
@@ -112,7 +121,7 @@ func TestSnapshotInstallerReloadFailureDoesNotResetProgress(t *testing.T) {
 	if p.AppliedLSN != 1 || p.ReceivedLSN != 1 {
 		t.Fatalf("progress reset after reload failure: %#v", p)
 	}
-	got, _ := os.ReadFile(filepath.Join(dst, "data.txt"))
+	got, _ := os.ReadFile(filepath.Join(dst, "users", "users.json"))
 	if string(got) != "" {
 		t.Fatalf("new file not rolled back: %q", got)
 	}
@@ -124,7 +133,10 @@ func TestSnapshotInstallerReloadFailureDoesNotResetProgress(t *testing.T) {
 func TestSnapshotInstallerReloadFailureRollsBackExistingFile(t *testing.T) {
 	ctx := context.Background()
 	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "data.txt"), []byte("new"), 0600); err != nil {
+	if err := os.MkdirAll(filepath.Join(src, "users"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "users", "users.json"), []byte("new"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	manifest, err := replsnapshot.BuildManifest(ctx, src, replsnapshot.Manifest{ClusterID: "cluster", PrimaryNodeID: "node-a", AuthorityEpoch: 1, SnapshotBaseLSN: wal.LSN(7), CreatedAt: time.Now()}, replsnapshot.DefaultResyncSnapshotPathPolicy())
@@ -144,7 +156,10 @@ func TestSnapshotInstallerReloadFailureRollsBackExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dst, "data.txt"), []byte("old"), 0600); err != nil {
+	if err := os.MkdirAll(filepath.Join(dst, "users"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "users", "users.json"), []byte("old"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	progress := NewProgressStore(filepath.Join(dst, "meta", "clustering", "replication", "progress.json"))
@@ -156,7 +171,7 @@ func TestSnapshotInstallerReloadFailureRollsBackExistingFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected reload error")
 	}
-	got, _ := os.ReadFile(filepath.Join(dst, "data.txt"))
+	got, _ := os.ReadFile(filepath.Join(dst, "users", "users.json"))
 	if string(got) != "old" {
 		t.Fatalf("existing file not rolled back: %q", got)
 	}

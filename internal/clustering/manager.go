@@ -70,13 +70,27 @@ func NewManager(ctx context.Context, opts Options, logger *slog.Logger) (*Manage
 	} else if authorityOK && authority.ClusterID != local.Identity.ClusterID {
 		return nil, fmt.Errorf("authority cluster_id %q does not match local cluster_id %q", authority.ClusterID, local.Identity.ClusterID)
 	}
+	if intent, ok, err := LoadSwitchoverIntent(ctx, opts.DataDir); err != nil {
+		return nil, err
+	} else if ok && intent.ClusterID == local.Identity.ClusterID && intent.Phase == SwitchoverIntentTargetInstalled {
+		if !authorityOK || intent.NewAuthority.AuthorityEpoch > authority.AuthorityEpoch {
+			authority = intent.NewAuthority
+			authorityOK = true
+			if err := SaveAuthority(ctx, AuthorityPath(opts.DataDir), authority); err != nil {
+				return nil, err
+			}
+			intent.Phase = SwitchoverIntentLocalInstalled
+			_ = SaveSwitchoverIntent(ctx, opts.DataDir, intent)
+			_ = ClearSwitchoverIntent(ctx, opts.DataDir)
+		}
+	}
 	m := &Manager{identity: local.Identity, state: local.State, topology: registry, membership: membershipStore, authority: authority, authorityOK: authorityOK, logger: logger, dataDir: opts.DataDir}
 	m.backend = backend.NewService(m.identity, m.state, registry).WithMembership(membershipStore).WithAuthority(AuthorityToProto(authority, authorityOK))
 	joinToken, err := LoadJoinToken(opts)
 	if err != nil {
 		return nil, err
 	}
-	m.registration = &registration.Handler{Topology: registry, Client: registration.BackendAdapter{Client: backend.Client{}}, Seeds: opts.SeedPeers, Identity: m.identity, State: m.state, Interval: 5 * time.Second, Timeout: 2 * time.Second, Logger: logger, JoinToken: joinToken, OnAdmitted: func(clusterID string) error {
+	m.registration = &registration.Handler{Topology: registry, Client: registration.BackendAdapter{Client: backend.Client{AuthToken: opts.BackendAuthToken}}, Seeds: opts.SeedPeers, Identity: m.identity, State: m.state, Interval: 5 * time.Second, Timeout: 2 * time.Second, Logger: logger, JoinToken: joinToken, OnAdmitted: func(clusterID string) error {
 		id, err := AdmitLocalNode(ctx, opts.DataDir, clusterID)
 		if err != nil {
 			return err
@@ -170,6 +184,17 @@ func (m *Manager) SetAuthority(ctx context.Context, authority Authority) error {
 	if authority.ClusterID != m.identity.ClusterID {
 		return fmt.Errorf("authority cluster_id %q does not match local cluster_id %q", authority.ClusterID, m.identity.ClusterID)
 	}
+	if m.authorityOK {
+		if authority.AuthorityEpoch < m.authority.AuthorityEpoch {
+			return fmt.Errorf("authority epoch %d is older than current epoch %d", authority.AuthorityEpoch, m.authority.AuthorityEpoch)
+		}
+		if authority.AuthorityEpoch == m.authority.AuthorityEpoch {
+			if authority.Primary.NodeID != m.authority.Primary.NodeID {
+				return fmt.Errorf("authority epoch %d conflicts with current primary %s", authority.AuthorityEpoch, m.authority.Primary.NodeID)
+			}
+			return nil
+		}
+	}
 	if err := SaveAuthority(ctx, AuthorityPath(m.dataDir), authority); err != nil {
 		return err
 	}
@@ -207,6 +232,20 @@ func (m *Manager) SetBackendSnapshotInstaller(installer backend.SnapshotInstalle
 		return
 	}
 	m.backend.WithSnapshotInstaller(installer)
+}
+
+func (m *Manager) SetBackendReplicationStatus(provider backend.ReplicationStatusProvider) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithReplicationStatus(provider)
+}
+
+func (m *Manager) SetBackendAuthorityInstaller(installer backend.AuthorityInstaller) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithAuthorityInstaller(installer)
 }
 func (m *Manager) Registration() *registration.Handler {
 	if m == nil {

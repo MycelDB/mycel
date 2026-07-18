@@ -19,7 +19,26 @@ func NewClusterCommand(a *app.App) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{Use: "members", Short: "List cluster admission membership", RunE: func(cmd *cobra.Command, args []string) error {
 		return runClusterMembers(cmd.Context(), a)
 	}})
-	cmd.AddCommand(newClusterNodeCommand(a))
+	cmd.AddCommand(&cobra.Command{Use: "health", Short: "Show aggregate cluster health", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterHealth(cmd.Context(), a)
+	}})
+	cmd.AddCommand(newClusterNodeCommand(a), newClusterPrimaryCommand(a))
+	return cmd
+}
+
+func newClusterPrimaryCommand(a *app.App) *cobra.Command {
+	cmd := &cobra.Command{Use: "primary", Short: "Manage cluster primary authority"}
+	switchCmd := &cobra.Command{Use: "switch NODE", Short: "Safely switch primary authority to a caught-up follower", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterPrimarySwitch(cmd.Context(), a, args[0])
+	}}
+	var force bool
+	var confirm string
+	promoteCmd := &cobra.Command{Use: "promote", Short: "Force-promote this node for emergency failover", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterPrimaryPromote(cmd.Context(), a, force, confirm)
+	}}
+	promoteCmd.Flags().BoolVar(&force, "force", false, "required: force emergency promotion")
+	promoteCmd.Flags().StringVar(&confirm, "confirm-old-primary-fenced", "", "required confirmation value: old-primary-fenced")
+	cmd.AddCommand(switchCmd, promoteCmd)
 	return cmd
 }
 
@@ -29,6 +48,12 @@ func newClusterNodeCommand(a *app.App) *cobra.Command {
 	add := &cobra.Command{Use: "add NODE_NAME", Short: "Create a pending node admission token", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		return runClusterNodeAdd(cmd.Context(), a, args[0], tokenFile)
 	}}
+	remove := &cobra.Command{Use: "remove NODE", Short: "Mark a non-primary cluster member removed", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterNodeRemove(cmd.Context(), a, args[0])
+	}}
+	rename := &cobra.Command{Use: "rename NODE NEW_NAME", Short: "Rename a cluster member", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterNodeRename(cmd.Context(), a, args[0], args[1])
+	}}
 	add.Flags().StringVar(&tokenFile, "token-file", "", "write one-time join token to this file")
 	resync := &cobra.Command{Use: "resync NODE", Short: "Resync an active follower from a primary snapshot", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		return runClusterNodeResync(cmd.Context(), a, args[0])
@@ -36,7 +61,7 @@ func newClusterNodeCommand(a *app.App) *cobra.Command {
 	history := &cobra.Command{Use: "resync-history", Short: "Show recent cluster node resync operations", RunE: func(cmd *cobra.Command, args []string) error {
 		return runClusterNodeResyncHistory(cmd.Context(), a)
 	}}
-	cmd.AddCommand(add, resync, history)
+	cmd.AddCommand(add, remove, rename, resync, history)
 	return cmd
 }
 
@@ -165,6 +190,16 @@ type clusterResyncHistoryOutput struct {
 	Operations []clusterResyncOperationOutput `json:"operations"`
 }
 
+type clusterPrimarySwitchOutput struct {
+	OperationID        string `json:"operation_id"`
+	OldPrimaryNodeID   string `json:"old_primary_node_id"`
+	OldPrimaryNodeName string `json:"old_primary_node_name"`
+	NewPrimaryNodeID   string `json:"new_primary_node_id"`
+	NewPrimaryNodeName string `json:"new_primary_node_name"`
+	AuthorityEpoch     int64  `json:"authority_epoch"`
+	FinalLSN           uint64 `json:"final_lsn"`
+}
+
 type clusterNodeResyncOutput struct {
 	OperationID     string `json:"operation_id"`
 	TargetNodeID    string `json:"target_node_id"`
@@ -199,6 +234,64 @@ func runClusterNodeAdd(ctx context.Context, a *app.App, nodeName string, tokenFi
 		text += fmt.Sprintf("Join token:\n%s\n", out.Token)
 	}
 	return a.Print(out, text)
+}
+
+func runClusterPrimaryPromote(ctx context.Context, a *app.App, force bool, confirm string) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).PromoteLocalPrimary(authCtx, &adminv1.PromoteLocalPrimaryRequest{Force: force, ConfirmOldPrimaryFenced: confirm})
+	if err != nil {
+		return formatClusterWriteError("promote local primary", err)
+	}
+	out := clusterPrimarySwitchOutput{OperationID: res.GetOperationId(), OldPrimaryNodeID: res.GetOldPrimaryNodeId(), OldPrimaryNodeName: res.GetOldPrimaryNodeName(), NewPrimaryNodeID: res.GetNewPrimaryNodeId(), NewPrimaryNodeName: res.GetNewPrimaryNodeName(), AuthorityEpoch: res.GetAuthorityEpoch()}
+	text := fmt.Sprintf("Local node promoted\nOld primary: %s (%s)\nNew primary: %s (%s)\nAuthority epoch: %d\n", out.OldPrimaryNodeName, out.OldPrimaryNodeID, out.NewPrimaryNodeName, out.NewPrimaryNodeID, out.AuthorityEpoch)
+	return a.Print(out, text)
+}
+
+func runClusterPrimarySwitch(ctx context.Context, a *app.App, target string) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).SwitchClusterPrimary(authCtx, &adminv1.SwitchClusterPrimaryRequest{Target: strings.TrimSpace(target)})
+	if err != nil {
+		return formatClusterWriteError("switch cluster primary", err)
+	}
+	out := clusterPrimarySwitchOutput{OperationID: res.GetOperationId(), OldPrimaryNodeID: res.GetOldPrimaryNodeId(), OldPrimaryNodeName: res.GetOldPrimaryNodeName(), NewPrimaryNodeID: res.GetNewPrimaryNodeId(), NewPrimaryNodeName: res.GetNewPrimaryNodeName(), AuthorityEpoch: res.GetAuthorityEpoch(), FinalLSN: res.GetFinalLsn()}
+	text := fmt.Sprintf("Primary switched\nOld primary: %s (%s)\nNew primary: %s (%s)\nAuthority epoch: %d\nFinal LSN: %d\n", out.OldPrimaryNodeName, out.OldPrimaryNodeID, out.NewPrimaryNodeName, out.NewPrimaryNodeID, out.AuthorityEpoch, out.FinalLSN)
+	return a.Print(out, text)
+}
+
+func runClusterNodeRemove(ctx context.Context, a *app.App, target string) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).RemoveClusterNode(authCtx, &adminv1.RemoveClusterNodeRequest{Target: strings.TrimSpace(target)})
+	if err != nil {
+		return formatClusterWriteError("remove cluster node", err)
+	}
+	out := clusterMemberOutput{NodeID: res.GetNodeId(), NodeName: res.GetNodeName(), State: memberStateText(res.GetState())}
+	return a.Print(out, fmt.Sprintf("Node %s removed.\n", out.NodeName))
+}
+
+func runClusterNodeRename(ctx context.Context, a *app.App, target string, newName string) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).RenameClusterNode(authCtx, &adminv1.RenameClusterNodeRequest{Target: strings.TrimSpace(target), NewNodeName: strings.TrimSpace(newName)})
+	if err != nil {
+		return formatClusterWriteError("rename cluster node", err)
+	}
+	out := clusterMemberOutput{NodeID: res.GetNodeId(), NodeName: res.GetNodeName(), State: memberStateText(res.GetState())}
+	return a.Print(out, fmt.Sprintf("Node renamed to %s.\n", out.NodeName))
 }
 
 func runClusterNodeResync(ctx context.Context, a *app.App, target string) error {
@@ -273,6 +366,23 @@ func runClusterStatus(ctx context.Context, a *app.App) error {
 		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\n", p.State, p.NodeName, p.BackendAdvertiseAddr, p.Source))
 	}
 	return a.Print(out, strings.Join(lines, ""))
+}
+
+func runClusterHealth(ctx context.Context, a *app.App) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).GetClusterHealth(authCtx, &adminv1.GetClusterHealthRequest{})
+	if err != nil {
+		return fmt.Errorf("get cluster health: %w", err)
+	}
+	text := fmt.Sprintf("status=%s role=%s primary=%s epoch=%d lag=%d catchup=%s active=%d pending=%d unreachable=%d\n", res.GetStatus(), res.GetLocalRole(), res.GetPrimaryNodeName(), res.GetAuthorityEpoch(), res.GetReplicationLagRecords(), res.GetCatchupState(), res.GetActiveMembers(), res.GetPendingMembers(), res.GetUnreachablePeers())
+	for _, warning := range res.GetWarnings() {
+		text += "warning: " + warning + "\n"
+	}
+	return a.Print(res, text)
 }
 
 func runClusterMembers(ctx context.Context, a *app.App) error {

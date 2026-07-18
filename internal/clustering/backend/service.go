@@ -18,14 +18,16 @@ import (
 
 type Service struct {
 	clusterpb.UnimplementedClusterBackendServiceServer
-	Identity          model.NodeIdentity
-	State             model.NodeState
-	Topology          *topology.Registry
-	Membership        *membership.FileStore
-	Authority         *clusterpb.ClusterAuthority
-	WAL               WALReader
-	Checkpoint        CheckpointProvider
-	SnapshotInstaller SnapshotInstaller
+	Identity           model.NodeIdentity
+	State              model.NodeState
+	Topology           *topology.Registry
+	Membership         *membership.FileStore
+	Authority          *clusterpb.ClusterAuthority
+	WAL                WALReader
+	Checkpoint         CheckpointProvider
+	SnapshotInstaller  SnapshotInstaller
+	ReplicationStatus  ReplicationStatusProvider
+	AuthorityInstaller AuthorityInstaller
 }
 
 func NewService(identity model.NodeIdentity, state model.NodeState, registry *topology.Registry) *Service {

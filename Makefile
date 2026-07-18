@@ -1,9 +1,14 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto check-daemon-only check-public-surface test test-verbose test-watch build build-cli build-daemon run-cli run-daemon start stop api-info
+.PHONY: generate-proto check-daemon-only check-public-surface test test-verbose test-watch coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
+COVERAGE_DIR ?= coverage
+COVERAGE_OUT ?= $(COVERAGE_DIR)/coverage.out
+COVERAGE_HTML ?= $(COVERAGE_DIR)/coverage.html
+DAEMON_COVERAGE_OUT ?= $(COVERAGE_DIR)/daemon-coverage.out
+DAEMON_COVERAGE_HTML ?= $(COVERAGE_DIR)/daemon-coverage.html
 MYCELD_DATA_DIR = $(HOME)/mycel_data
 MYCELD_GRPC_ADDR = 127.0.0.1:9091
 MYCELD_PID_FILE = $(MYCELD_DATA_DIR)/myceld.pid
@@ -31,6 +36,27 @@ test-verbose: generate-proto check-daemon-only check-public-surface
 test-watch:
 	@command -v watchexec >/dev/null 2>&1 || (echo "watchexec is required. Install with: brew install watchexec" && exit 1)
 	watchexec -e go,sh -- "make generate-proto && scripts/check-daemon-only.sh && scripts/check-public-surface.sh && go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
+
+coverage: generate-proto check-daemon-only check-public-surface
+	mkdir -p $(COVERAGE_DIR)
+	go test ./... -coverprofile=$(COVERAGE_OUT)
+	go tool cover -func=$(COVERAGE_OUT)
+
+coverage-html: coverage
+	go tool cover -html=$(COVERAGE_OUT) -o $(COVERAGE_HTML)
+	@echo "Coverage HTML written to $(COVERAGE_HTML)"
+
+daemon-coverage: generate-proto
+	mkdir -p $(COVERAGE_DIR)
+	go test ./internal/daemon/... -coverprofile=$(DAEMON_COVERAGE_OUT)
+	go tool cover -func=$(DAEMON_COVERAGE_OUT)
+
+daemon-coverage-html: daemon-coverage
+	go tool cover -html=$(DAEMON_COVERAGE_OUT) -o $(DAEMON_COVERAGE_HTML)
+	@echo "Daemon coverage HTML written to $(DAEMON_COVERAGE_HTML)"
+
+coverage-clean:
+	rm -rf $(COVERAGE_DIR)
 
 build: generate-proto check-daemon-only check-public-surface build-cli build-daemon
 

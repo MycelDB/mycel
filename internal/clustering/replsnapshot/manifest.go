@@ -74,7 +74,7 @@ func BuildManifest(ctx context.Context, root string, base Manifest, policy Snaps
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if policy.IsExcluded(rel) {
+		if !policy.IsIncluded(rel) {
 			return nil
 		}
 		sum, size, err := FileSHA256(path)
@@ -93,8 +93,8 @@ func ValidateManifest(m Manifest, policy SnapshotPathPolicy) error {
 		if !ok || clean != f.Path {
 			return fmt.Errorf("unsafe snapshot path %q", f.Path)
 		}
-		if policy.IsPreserved(f.Path) || policy.IsExcluded(f.Path) {
-			return fmt.Errorf("snapshot path is preserved/excluded: %s", f.Path)
+		if !policy.IsIncluded(f.Path) {
+			return fmt.Errorf("snapshot path is not managed/included: %s", f.Path)
 		}
 	}
 	return nil

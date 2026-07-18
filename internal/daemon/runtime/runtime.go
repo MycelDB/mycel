@@ -46,9 +46,11 @@ type Runtime struct {
 	WALCheckpoint *wal.CheckpointStore
 	WALWaiter     *wal.ApplyWaiter
 
-	ReplicationFollower *replication.Follower
-	ReplicationProgress *replication.ProgressStore
-	ResyncCoordinator   *replication.ResyncCoordinator
+	ReplicationFollower   *replication.Follower
+	ReplicationProgress   *replication.ProgressStore
+	ResyncCoordinator     *replication.ResyncCoordinator
+	SwitchoverCoordinator *replication.SwitchoverCoordinator
+	FailoverCoordinator   *replication.FailoverCoordinator
 
 	LogPath string
 

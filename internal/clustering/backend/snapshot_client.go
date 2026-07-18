@@ -15,7 +15,7 @@ func (c Client) InstallSnapshot(ctx context.Context, addr string, desc replsnaps
 		return replsnapshot.InstallSnapshotResult{}, err
 	}
 	defer conn.Close()
-	stream, err := clusterpb.NewClusterBackendServiceClient(conn).InstallSnapshot(ctx)
+	stream, err := clusterpb.NewClusterBackendServiceClient(conn).InstallSnapshot(c.authContext(ctx))
 	if err != nil {
 		return replsnapshot.InstallSnapshotResult{}, err
 	}

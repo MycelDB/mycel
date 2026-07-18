@@ -1,8 +1,9 @@
 # Mycel Documentation
 
-Documentation is temporarily split by architecture generation while the daemon migration is in progress.
+The documentation tree is organized around the current daemon-oriented architecture.
 
-- `v1/` contains the current library/CLI-oriented documentation.
-- `v2/` contains the daemon-oriented design and API documentation, including the semantic/embedding package design in `v2/design/embedding-package.md`, implementation plan in `v2/design/embedding-generation-implementation-plan.md`, and auth refresh release notes in `v2/design/auth-refresh-release-notes.md`.
+- `design/` contains architecture, API, operational, and design reference documents.
+- `implementation/` contains implementation plans and migration/package plans.
+- `makefile_commands.md` summarizes common `make` targets for building, testing, coverage, and running the daemon locally.
 
-This split is transitional. Once the daemon conversion effort is complete, the documentation tree should be restructured around the final architecture.
+The old `v1/` and `v2/` generation folders have been removed; use the topic-based folders above for current documentation.

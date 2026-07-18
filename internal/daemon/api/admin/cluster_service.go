@@ -51,13 +51,15 @@ type WALStatusProvider interface {
 
 type AdminClusterService struct {
 	adminv1.UnimplementedAdminClusterServiceServer
-	cluster             *clustering.Manager
-	authorizer          OperatorAuthorizer
-	replicationProgress *replication.ProgressStore
-	replicationFollower *replication.Follower
-	walStatus           WALStatusProvider
-	checkpointStore     *wal.CheckpointStore
-	resyncCoordinator   *replication.ResyncCoordinator
+	cluster               *clustering.Manager
+	authorizer            OperatorAuthorizer
+	replicationProgress   *replication.ProgressStore
+	replicationFollower   *replication.Follower
+	walStatus             WALStatusProvider
+	checkpointStore       *wal.CheckpointStore
+	resyncCoordinator     *replication.ResyncCoordinator
+	switchoverCoordinator *replication.SwitchoverCoordinator
+	failoverCoordinator   *replication.FailoverCoordinator
 }
 
 func NewAdminClusterService(cluster *clustering.Manager, authorizer OperatorAuthorizer) *AdminClusterService {
@@ -79,6 +81,101 @@ func (s *AdminClusterService) WithWALStatus(provider WALStatusProvider, checkpoi
 func (s *AdminClusterService) WithResync(coordinator *replication.ResyncCoordinator) *AdminClusterService {
 	s.resyncCoordinator = coordinator
 	return s
+}
+
+func (s *AdminClusterService) WithSwitchover(coordinator *replication.SwitchoverCoordinator) *AdminClusterService {
+	s.switchoverCoordinator = coordinator
+	return s
+}
+
+func (s *AdminClusterService) WithFailover(coordinator *replication.FailoverCoordinator) *AdminClusterService {
+	s.failoverCoordinator = coordinator
+	return s
+}
+
+func (s *AdminClusterService) GetClusterHealth(ctx context.Context, req *adminv1.GetClusterHealthRequest) (*adminv1.GetClusterHealthResponse, error) {
+	if _, err := principalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	if s.cluster == nil {
+		return nil, status.Error(codes.Unavailable, "clustering manager is not available")
+	}
+	warnings := []string{}
+	active, pending, unreachable := int32(0), int32(0), int32(0)
+	if ms := s.cluster.Membership(); ms != nil {
+		if data, err := ms.Load(ctx); err == nil {
+			for _, m := range data.Members {
+				switch m.State {
+				case membership.MemberStateActive:
+					active++
+				case membership.MemberStatePending:
+					pending++
+				}
+			}
+		}
+	}
+	if top := s.cluster.Topology(); top != nil {
+		for _, p := range top.List() {
+			if p.State == model.PeerStateUnreachable {
+				unreachable++
+				warnings = append(warnings, fmt.Sprintf("peer %s is unreachable", firstNonEmptyCluster(p.NodeName, p.BackendAdvertiseAddr)))
+			}
+		}
+	}
+	repl := s.replicationStatusToProto()
+	if repl != nil && repl.GetSnapshotRequired() != nil {
+		warnings = append(warnings, "replication requires snapshot resync")
+	}
+	if repl != nil && repl.GetLastError() != "" {
+		warnings = append(warnings, "replication error: "+repl.GetLastError())
+	}
+	if pending > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d pending member(s)", pending))
+	}
+	if !s.cluster.IsAdmitted() {
+		warnings = append(warnings, "local node is not admitted")
+	}
+	health := "healthy"
+	if len(warnings) > 0 {
+		health = "degraded"
+	}
+	if !s.cluster.IsAdmitted() {
+		health = "unhealthy"
+	}
+	a, _ := s.cluster.Authority()
+	out := &adminv1.GetClusterHealthResponse{Status: health, Warnings: warnings, LocalRole: string(s.cluster.LocalRole()), PrimaryNodeId: a.Primary.NodeID, PrimaryNodeName: a.Primary.NodeName, AuthorityEpoch: a.AuthorityEpoch, ActiveMembers: active, PendingMembers: pending, UnreachablePeers: unreachable}
+	if repl != nil {
+		out.ReplicationLagRecords = repl.GetLagRecords()
+		out.CatchupState = catchupStateText(repl.GetCatchupState())
+		out.SnapshotRequired = repl.GetSnapshotRequired() != nil
+	}
+	return out, nil
+}
+
+func firstNonEmptyCluster(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return "unknown"
+}
+
+func catchupStateText(state adminv1.ClusterReplicationCatchupState) string {
+	switch state {
+	case adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_STREAMING:
+		return "streaming"
+	case adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_CAUGHT_UP:
+		return "caught_up"
+	case adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_RETRYING:
+		return "retrying"
+	case adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_SNAPSHOT_REQUIRED:
+		return "snapshot_required"
+	case adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_ERROR:
+		return "error"
+	default:
+		return "unknown"
+	}
 }
 
 func (s *AdminClusterService) GetClusterStatus(ctx context.Context, req *adminv1.GetClusterStatusRequest) (*adminv1.GetClusterStatusResponse, error) {
@@ -134,6 +231,65 @@ func (s *AdminClusterService) ListClusterMembers(ctx context.Context, req *admin
 		members = append(members, clusterMemberToProto(member))
 	}
 	return &adminv1.ListClusterMembersResponse{ClusterId: data.ClusterID, ClusterName: data.ClusterName, Members: members}, nil
+}
+
+func (s *AdminClusterService) RemoveClusterNode(ctx context.Context, req *adminv1.RemoveClusterNodeRequest) (*adminv1.RemoveClusterNodeResponse, error) {
+	if _, err := s.requireClusterManage(ctx); err != nil {
+		return nil, err
+	}
+	if s.cluster == nil || !s.cluster.IsAdmitted() {
+		return nil, status.Error(codes.PermissionDenied, "local node is not admitted to a cluster")
+	}
+	if s.cluster.LocalRole() != clustering.NodeRolePrimary {
+		return nil, notPrimaryClusterError(s.cluster)
+	}
+	store, err := s.membershipStore()
+	if err != nil {
+		return nil, err
+	}
+	member, err := s.resolveMember(ctx, strings.TrimSpace(req.GetTarget()))
+	if err != nil {
+		return nil, err
+	}
+	a, _ := s.cluster.Authority()
+	if member.NodeID == a.Primary.NodeID || member.NodeID == s.cluster.Identity().NodeID {
+		return nil, status.Error(codes.FailedPrecondition, "cannot remove cluster primary")
+	}
+	member.State = membership.MemberStateRemoved
+	member.JoinToken = nil
+	if err := store.UpsertMember(ctx, member); err != nil {
+		return nil, err
+	}
+	return &adminv1.RemoveClusterNodeResponse{NodeId: member.NodeID, NodeName: member.NodeName, State: adminv1.ClusterMemberState_CLUSTER_MEMBER_STATE_REMOVED}, nil
+}
+
+func (s *AdminClusterService) RenameClusterNode(ctx context.Context, req *adminv1.RenameClusterNodeRequest) (*adminv1.RenameClusterNodeResponse, error) {
+	if _, err := s.requireClusterManage(ctx); err != nil {
+		return nil, err
+	}
+	if s.cluster == nil || !s.cluster.IsAdmitted() {
+		return nil, status.Error(codes.PermissionDenied, "local node is not admitted to a cluster")
+	}
+	if s.cluster.LocalRole() != clustering.NodeRolePrimary {
+		return nil, notPrimaryClusterError(s.cluster)
+	}
+	newName := strings.TrimSpace(req.GetNewNodeName())
+	if newName == "" {
+		return nil, status.Error(codes.InvalidArgument, "new_node_name is required")
+	}
+	store, err := s.membershipStore()
+	if err != nil {
+		return nil, err
+	}
+	member, err := s.resolveMember(ctx, strings.TrimSpace(req.GetTarget()))
+	if err != nil {
+		return nil, err
+	}
+	member.NodeName = newName
+	if err := store.UpsertMember(ctx, member); err != nil {
+		return nil, err
+	}
+	return &adminv1.RenameClusterNodeResponse{NodeId: member.NodeID, NodeName: member.NodeName, State: memberStateToAdminProto(member.State)}, nil
 }
 
 func (s *AdminClusterService) AddClusterNode(ctx context.Context, req *adminv1.AddClusterNodeRequest) (*adminv1.AddClusterNodeResponse, error) {
@@ -194,6 +350,50 @@ func (s *AdminClusterService) ListClusterResyncOperations(ctx context.Context, r
 		out = append(out, &adminv1.ClusterResyncOperation{OperationId: op.OperationID, TargetNodeId: op.TargetNodeID, TargetNodeName: op.TargetNodeName, TargetBackendAdvertiseAddr: op.TargetBackendAdvertiseAddr, StartedAt: formatClusterTime(op.StartedAt), CompletedAt: formatClusterTime(op.CompletedAt), Status: string(op.Status), SnapshotBaseLsn: op.SnapshotBaseLSN, TotalBytes: op.TotalBytes, Checksum: op.Checksum, Error: op.Error})
 	}
 	return &adminv1.ListClusterResyncOperationsResponse{Operations: out}, nil
+}
+
+func (s *AdminClusterService) PromoteLocalPrimary(ctx context.Context, req *adminv1.PromoteLocalPrimaryRequest) (*adminv1.PromoteLocalPrimaryResponse, error) {
+	if _, err := s.requireClusterManage(ctx); err != nil {
+		return nil, err
+	}
+	if s.failoverCoordinator == nil {
+		return nil, status.Error(codes.Unavailable, "cluster failover is not available")
+	}
+	result, err := s.failoverCoordinator.PromoteLocalPrimary(ctx, req.GetForce(), strings.TrimSpace(req.GetConfirmOldPrimaryFenced()))
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return &adminv1.PromoteLocalPrimaryResponse{OperationId: result.OperationID, OldPrimaryNodeId: result.OldPrimaryNodeID, OldPrimaryNodeName: result.OldPrimaryNodeName, NewPrimaryNodeId: result.NewPrimaryNodeID, NewPrimaryNodeName: result.NewPrimaryNodeName, AuthorityEpoch: result.AuthorityEpoch}, nil
+}
+
+func (s *AdminClusterService) SwitchClusterPrimary(ctx context.Context, req *adminv1.SwitchClusterPrimaryRequest) (*adminv1.SwitchClusterPrimaryResponse, error) {
+	if _, err := s.requireClusterManage(ctx); err != nil {
+		return nil, err
+	}
+	if s.cluster == nil || !s.cluster.IsAdmitted() {
+		return nil, status.Error(codes.PermissionDenied, "local node is not admitted to a cluster")
+	}
+	if s.cluster.LocalRole() != clustering.NodeRolePrimary {
+		return nil, notPrimaryClusterError(s.cluster)
+	}
+	if s.switchoverCoordinator == nil {
+		return nil, status.Error(codes.Unavailable, "cluster switchover is not available")
+	}
+	target := strings.TrimSpace(req.GetTarget())
+	if target == "" {
+		return nil, status.Error(codes.InvalidArgument, "target is required")
+	}
+	if req.GetDryRun() {
+		return nil, status.Error(codes.Unimplemented, "dry-run is not implemented")
+	}
+	if req.GetTimeoutSeconds() > 0 {
+		s.switchoverCoordinator.Timeout = time.Duration(req.GetTimeoutSeconds()) * time.Second
+	}
+	result, err := s.switchoverCoordinator.SwitchPrimary(ctx, target)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return &adminv1.SwitchClusterPrimaryResponse{OperationId: result.OperationID, OldPrimaryNodeId: result.OldPrimaryNodeID, OldPrimaryNodeName: result.OldPrimaryNodeName, NewPrimaryNodeId: result.NewPrimaryNodeID, NewPrimaryNodeName: result.NewPrimaryNodeName, AuthorityEpoch: result.AuthorityEpoch, FinalLsn: result.FinalLSN}, nil
 }
 
 func (s *AdminClusterService) ResyncClusterNode(ctx context.Context, req *adminv1.ResyncClusterNodeRequest) (*adminv1.ResyncClusterNodeResponse, error) {
@@ -306,6 +506,26 @@ func catchupStateToAdminProto(state replication.CatchupState) adminv1.ClusterRep
 	default:
 		return adminv1.ClusterReplicationCatchupState_CLUSTER_REPLICATION_CATCHUP_STATE_UNKNOWN
 	}
+}
+
+func (s *AdminClusterService) resolveMember(ctx context.Context, target string) (membership.Member, error) {
+	if target == "" {
+		return membership.Member{}, status.Error(codes.InvalidArgument, "target is required")
+	}
+	store, err := s.membershipStore()
+	if err != nil {
+		return membership.Member{}, err
+	}
+	data, err := store.Load(ctx)
+	if err != nil {
+		return membership.Member{}, err
+	}
+	for _, member := range data.Members {
+		if member.NodeID == target || strings.EqualFold(member.NodeName, target) {
+			return member, nil
+		}
+	}
+	return membership.Member{}, status.Error(codes.NotFound, "cluster member not found")
 }
 
 func (s *AdminClusterService) membershipStore() (*membership.FileStore, error) {

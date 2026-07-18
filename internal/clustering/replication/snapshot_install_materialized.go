@@ -35,9 +35,9 @@ func installMaterializedSnapshot(ctx context.Context, dataDir, unpacked, backupD
 			_ = tx.Rollback(context.Background())
 			return nil, err
 		}
-		if policy.IsPreserved(file.Path) || policy.IsExcluded(file.Path) {
+		if !policy.IsIncluded(file.Path) {
 			_ = tx.Rollback(context.Background())
-			return nil, errors.New("snapshot attempted to install preserved path")
+			return nil, errors.New("snapshot attempted to install unmanaged or preserved path")
 		}
 		src := filepath.Join(unpacked, filepath.FromSlash(file.Path))
 		dst := filepath.Join(dataDir, filepath.FromSlash(file.Path))

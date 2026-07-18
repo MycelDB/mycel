@@ -85,6 +85,7 @@ type WALConfig struct {
 type ClusterConfig struct {
 	Name                 string
 	BackendAdvertiseAddr string
+	BackendAuthToken     string
 	SeedPeers            []string
 	DiscoveryInterval    time.Duration
 	Bootstrap            bool
@@ -146,6 +147,7 @@ func LoadFromEnv() (Config, error) {
 		Cluster: ClusterConfig{
 			Name:                 strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
 			BackendAdvertiseAddr: strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR")),
+			BackendAuthToken:     strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN")),
 			SeedPeers:            parseCSVEnv(os.Getenv("MYCELD_CLUSTER_SEED_PEERS")),
 			DiscoveryInterval:    parseDurationEnv(os.Getenv("MYCELD_CLUSTER_DISCOVERY_INTERVAL"), DefaultClusterDiscoveryInterval),
 			Bootstrap:            parseBoolEnvDefault(os.Getenv("MYCELD_CLUSTER_BOOTSTRAP"), false),

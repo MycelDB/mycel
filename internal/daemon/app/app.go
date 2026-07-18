@@ -103,7 +103,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), ReplicationProgress: rt.ReplicationProgress, ReplicationFollower: rt.ReplicationFollower, WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ResyncCoordinator: rt.ResyncCoordinator})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), ReplicationProgress: rt.ReplicationProgress, ReplicationFollower: rt.ReplicationFollower, WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ResyncCoordinator: rt.ResyncCoordinator, SwitchoverCoordinator: rt.SwitchoverCoordinator, FailoverCoordinator: rt.FailoverCoordinator})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -149,7 +149,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	logger.Info("log directory ready", "path", logDir, "created", logDirCreated)
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
-	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, SeedPeers: cfg.Cluster.SeedPeers, Bootstrap: cfg.Cluster.Bootstrap, JoinToken: cfg.Cluster.JoinToken, JoinTokenFile: cfg.Cluster.JoinTokenFile}, logger)
+	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken, SeedPeers: cfg.Cluster.SeedPeers, Bootstrap: cfg.Cluster.Bootstrap, JoinToken: cfg.Cluster.JoinToken, JoinTokenFile: cfg.Cluster.JoinTokenFile}, logger)
 	if err != nil {
 		_ = rt.Close()
 		return nil, fmt.Errorf("initialize clustering: %w", err)
@@ -217,19 +217,23 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 			return a.Primary.NodeID, a.AuthorityEpoch, ok
 		}}
 		rt.ClusterManager.SetBackendSnapshotInstaller(installer)
+		rt.ClusterManager.SetBackendReplicationStatus(replication.BackendReplicationStatusProvider{Progress: progress, Cluster: rt.ClusterManager})
+		rt.ClusterManager.SetBackendAuthorityInstaller(replication.BackendAuthorityInstaller{Cluster: rt.ClusterManager, Progress: progress})
 		applier := &replication.Applier{Log: receiveLog, Progress: progress, Registry: rt.WALRegistry, Logger: logger}
 		if err := applier.Replay(ctx); err != nil {
 			_ = rt.Close()
 			return nil, fmt.Errorf("replay replicated wal: %w", err)
 		}
-		rt.ReplicationFollower = &replication.Follower{Manager: rt.ClusterManager, Streamer: backend.Client{}, Applier: applier, Progress: progress, Interval: cfg.Cluster.DiscoveryInterval, Logger: logger}
+		rt.ReplicationFollower = &replication.Follower{Manager: rt.ClusterManager, Streamer: backend.Client{AuthToken: cfg.Cluster.BackendAuthToken}, Applier: applier, Progress: progress, Interval: cfg.Cluster.DiscoveryInterval, Logger: logger}
 		rt.ResyncCoordinator = &replication.ResyncCoordinator{Cluster: rt.ClusterManager, History: replication.NewResyncHistoryStore(filepath.Join(repDir, "resync-history.json")), Creator: &replication.SnapshotCreator{DataDir: cfg.DataDir, ClusterID: identity.ClusterID, PrimaryNodeID: identity.NodeID, AuthorityEpoch: func() int64 {
 			a, ok := rt.ClusterManager.Authority()
 			if !ok {
 				return 0
 			}
 			return a.AuthorityEpoch
-		}(), Quiesce: rt.Quiesce, WAL: rt.WAL, Progress: rt.WALProgress, Checkpoint: rt.WALCheckpoint, Logger: logger}, Client: backend.Client{}}
+		}(), Quiesce: rt.Quiesce, WAL: rt.WAL, Progress: rt.WALProgress, Checkpoint: rt.WALCheckpoint, Logger: logger}, Client: backend.Client{AuthToken: cfg.Cluster.BackendAuthToken}}
+		rt.SwitchoverCoordinator = &replication.SwitchoverCoordinator{Cluster: rt.ClusterManager, DataDir: cfg.DataDir, WAL: rt.WAL, Quiesce: rt.Quiesce, Client: backend.Client{AuthToken: cfg.Cluster.BackendAuthToken}, Timeout: 60 * time.Second}
+		rt.FailoverCoordinator = &replication.FailoverCoordinator{Cluster: rt.ClusterManager}
 	}
 	graphService.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)
