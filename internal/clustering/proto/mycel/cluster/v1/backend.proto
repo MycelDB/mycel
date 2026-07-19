@@ -47,6 +47,10 @@ service ClusterBackendService {
 
   // InstallAuthority installs a newer cluster authority on a node.
   rpc InstallAuthority(InstallAuthorityRequest) returns (InstallAuthorityResponse);
+
+  // GetBlobPayload streams blob content from the primary to a follower before
+  // the follower applies replicated blob metadata.
+  rpc GetBlobPayload(GetBlobPayloadRequest) returns (stream BlobPayloadChunk);
 }
 
 // ClusterProtocolVersion identifies the backend protocol shape used by a node.
@@ -311,6 +315,22 @@ message InstallAuthorityResponse {
   bool installed = 2;
   int64 authority_epoch = 3;
   string message = 4;
+}
+
+message GetBlobPayloadRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string requester_node_id = 3;
+  string space_id = 4;
+  string blob_id = 5;
+  uint64 expected_size_bytes = 6;
+  string expected_checksum_algorithm = 7;
+  string expected_checksum_hex = 8;
+}
+
+message BlobPayloadChunk {
+  ClusterProtocolVersion protocol_version = 1;
+  bytes data = 2;
 }
 
 message ClusterMember {

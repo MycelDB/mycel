@@ -41,6 +41,7 @@ type Config struct {
 	BackupManager           daemonbackup.Manager
 	UserManager             daemonuser.Manager
 	SpaceManager            daemonspace.Manager
+	TemplateManager         adminv1.AdminTemplateServiceServer
 	SessionManager          daemonsession.Manager
 	GraphManager            daegraph.Manager
 	BlobManager             daemonblob.Manager
@@ -115,7 +116,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen grpc %s: %w", cfg.Addr, err)
 	}
-	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_AddClusterNode_FullMethodName: true, clusterpb.ClusterBackendService_StreamWal_FullMethodName: true, clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName: true, clusterpb.ClusterBackendService_GetReplicationStatus_FullMethodName: true, clusterpb.ClusterBackendService_InstallAuthority_FullMethodName: true}
+	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_AddClusterNode_FullMethodName: true, clusterpb.ClusterBackendService_StreamWal_FullMethodName: true, clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName: true, clusterpb.ClusterBackendService_GetReplicationStatus_FullMethodName: true, clusterpb.ClusterBackendService_InstallAuthority_FullMethodName: true, clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName: true}
 	quiesceExempt := defaultQuiesceExemptMethods()
 	for method, exempt := range cfg.QuiesceExempt {
 		quiesceExempt[method] = exempt
@@ -144,6 +145,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	adminv1.RegisterAdminOperatorServiceServer(grpcServer, adminapi.NewOperatorService(cfg.OperatorManager))
 	adminv1.RegisterAdminUserServiceServer(grpcServer, adminapi.NewUserService(cfg.UserManager, cfg.OperatorManager, cfg.TokenManager))
 	adminv1.RegisterAdminSpaceServiceServer(grpcServer, adminapi.NewAdminSpaceService(cfg.SpaceManager, cfg.UserManager, cfg.OperatorManager))
+	if cfg.TemplateManager != nil {
+		adminv1.RegisterAdminTemplateServiceServer(grpcServer, cfg.TemplateManager)
+	}
 	adminv1.RegisterAdminDomainServiceServer(grpcServer, adminapi.NewAdminDomainService(cfg.SpaceManager, cfg.OperatorManager))
 	adminv1.RegisterAdminInferenceServiceServer(grpcServer, adminapi.NewAdminInferenceService(cfg.SemanticManager, cfg.OperatorManager))
 	adminv1.RegisterAdminSemanticServiceServer(grpcServer, adminapi.NewAdminSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
@@ -193,6 +197,7 @@ func defaultQuiesceExemptMethods() map[string]bool {
 		clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName:      true,
 		clusterpb.ClusterBackendService_GetReplicationStatus_FullMethodName: true,
 		clusterpb.ClusterBackendService_InstallAuthority_FullMethodName:     true,
+		clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName:       true,
 	}
 }
 

@@ -1,5 +1,11 @@
 # WAL Propagation MVP Design
 
+## Blob payload replication
+
+Blob WAL records carry metadata plus a payload descriptor (space ID, blob ID, size, sha256 checksum), not raw payload bytes. On followers, blob metadata WAL records have a pre-apply dependency: the follower fetches the payload from the current primary using the internal `GetBlobPayload` backend RPC, validates size/checksum, installs the content-addressed object locally, and only then applies metadata.
+
+This preserves the invariant that if blob metadata is visible on a follower, the corresponding blob payload is readable locally. Payload fetch failures block applied-LSN advancement and surface as replication lag/errors until retry succeeds or an operator resyncs the follower.
+
 ## Status
 
 MVP implemented; hardening in progress.

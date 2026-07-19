@@ -8,11 +8,16 @@ import (
 	"github.com/myceldb/mycel/internal/wal"
 )
 
+type PreApplyHook interface {
+	BeforeApply(ctx context.Context, rec wal.Record) error
+}
+
 type Applier struct {
-	Log      *ReceiveLog
-	Progress *ProgressStore
-	Registry *wal.Registry
-	Logger   *slog.Logger
+	Log          *ReceiveLog
+	Progress     *ProgressStore
+	Registry     *wal.Registry
+	Logger       *slog.Logger
+	PreApplyHook PreApplyHook
 }
 
 func (a *Applier) ApplyReceived(ctx context.Context, clusterID, primaryNodeID string, epoch int64, rec Record) error {
@@ -45,7 +50,14 @@ func (a *Applier) ApplyReceived(ctx context.Context, clusterID, primaryNodeID st
 	if err := a.Progress.Save(ctx, p); err != nil {
 		return err
 	}
-	if err := a.Registry.Apply(ctx, rec.WALRecord()); err != nil {
+	walRec := rec.WALRecord()
+	if a.PreApplyHook != nil {
+		if err := a.PreApplyHook.BeforeApply(ctx, walRec); err != nil {
+			_ = a.Progress.UpdateError(ctx, err)
+			return err
+		}
+	}
+	if err := a.Registry.Apply(ctx, walRec); err != nil {
 		_ = a.Progress.UpdateError(ctx, err)
 		return err
 	}

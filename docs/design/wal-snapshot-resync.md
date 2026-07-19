@@ -1,5 +1,9 @@
 # WAL Snapshot Resync Design
 
+## Blob payload interaction
+
+Snapshots continue to include materialized blob payloads and metadata under the managed `blobs/**` and `blob_meta/**` roots. After snapshot install, normal WAL replication resumes. For blob metadata records committed after the snapshot base LSN, followers fetch and verify the blob payload from the primary before applying metadata. If a follower is too far behind or local payload state is suspect, operator resync remains the repair path.
+
 ## Status
 
 Design proposal.

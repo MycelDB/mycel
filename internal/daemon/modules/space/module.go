@@ -854,6 +854,47 @@ func (m *Module) resolveDomain(ctx context.Context, spaceID domainspace.SpaceID,
 	return domain, nil
 }
 
+func (m *Module) ListTemplates(ctx context.Context, spaceID string, includeSystem bool, includeArchived bool) ([]graph.Template, error) {
+	sp, err := m.GetSpace(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	templates, err := m.templates.ListBySpace(ctx, sp.SpaceID)
+	if err != nil {
+		return nil, mapTemplateStoreError(err)
+	}
+	out := make([]graph.Template, 0, len(templates))
+	for _, template := range templates {
+		if template.System && !includeSystem {
+			continue
+		}
+		if template.State == graph.TemplateStateArchived && !includeArchived {
+			continue
+		}
+		out = append(out, template)
+	}
+	return out, nil
+}
+
+func (m *Module) GetTemplate(ctx context.Context, spaceID string, templateID string) (graph.Template, error) {
+	sp, err := m.GetSpace(ctx, spaceID)
+	if err != nil {
+		return graph.Template{}, err
+	}
+	id, err := parseTemplateID(templateID)
+	if err != nil {
+		return graph.Template{}, err
+	}
+	template, err := m.templates.GetByID(ctx, id)
+	if err != nil {
+		return graph.Template{}, mapTemplateStoreError(err)
+	}
+	if template.SpaceID != sp.SpaceID {
+		return graph.Template{}, ErrSpaceNotFound
+	}
+	return template, nil
+}
+
 func (m *Module) ListVisibleTemplates(ctx context.Context, userID string, spaceID string, includeSystem bool, includeArchived bool) ([]graph.Template, error) {
 	uid, err := parseUserID(userID)
 	if err != nil {

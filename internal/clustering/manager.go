@@ -247,6 +247,14 @@ func (m *Manager) SetBackendAuthorityInstaller(installer backend.AuthorityInstal
 	}
 	m.backend.WithAuthorityInstaller(installer)
 }
+
+func (m *Manager) SetBackendBlobPayloadProvider(provider backend.BlobPayloadProvider) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithBlobPayloadProvider(provider)
+}
+
 func (m *Manager) Registration() *registration.Handler {
 	if m == nil {
 		return nil

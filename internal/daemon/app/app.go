@@ -14,6 +14,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/replication"
+	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	"github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
@@ -103,7 +104,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), ReplicationProgress: rt.ReplicationProgress, ReplicationFollower: rt.ReplicationFollower, WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ResyncCoordinator: rt.ResyncCoordinator, SwitchoverCoordinator: rt.SwitchoverCoordinator, FailoverCoordinator: rt.FailoverCoordinator})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, TemplateManager: adminapi.NewAdminTemplateService(spaceService, adminService), SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), ReplicationProgress: rt.ReplicationProgress, ReplicationFollower: rt.ReplicationFollower, WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ResyncCoordinator: rt.ResyncCoordinator, SwitchoverCoordinator: rt.SwitchoverCoordinator, FailoverCoordinator: rt.FailoverCoordinator})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -195,6 +196,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		_ = rt.Close()
 		return nil, err
 	}
+	clusterManager.SetBackendBlobPayloadProvider(daemonblob.BackendPayloadProvider{Module: blobService})
 	if rt.WALRecovery != nil {
 		started := time.Now()
 		applied, err := rt.WALRecovery.Recover(ctx)
@@ -219,7 +221,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		rt.ClusterManager.SetBackendSnapshotInstaller(installer)
 		rt.ClusterManager.SetBackendReplicationStatus(replication.BackendReplicationStatusProvider{Progress: progress, Cluster: rt.ClusterManager})
 		rt.ClusterManager.SetBackendAuthorityInstaller(replication.BackendAuthorityInstaller{Cluster: rt.ClusterManager, Progress: progress})
-		applier := &replication.Applier{Log: receiveLog, Progress: progress, Registry: rt.WALRegistry, Logger: logger}
+		applier := &replication.Applier{Log: receiveLog, Progress: progress, Registry: rt.WALRegistry, Logger: logger, PreApplyHook: daemonblob.PayloadPreApplyHook{Module: blobService, Cluster: rt.ClusterManager, Client: backend.Client{AuthToken: cfg.Cluster.BackendAuthToken}}}
 		if err := applier.Replay(ctx); err != nil {
 			_ = rt.Close()
 			return nil, fmt.Errorf("replay replicated wal: %w", err)

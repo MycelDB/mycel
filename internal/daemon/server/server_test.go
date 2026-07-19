@@ -192,6 +192,12 @@ func (fakeSpaceManager) UpdateDomain(context.Context, string, daemonspace.Update
 	return graph.Domain{}, nil
 }
 func (fakeSpaceManager) DeleteDomain(context.Context, string, string, string) error { return nil }
+func (fakeSpaceManager) ListTemplates(context.Context, string, bool, bool) ([]graph.Template, error) {
+	return []graph.Template{{ID: uuid.MustParse("00000000-0000-0000-0000-000000000005"), SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Key: "note", Version: "1.0.0", DisplayName: "Note", State: graph.TemplateStateActive}}, nil
+}
+func (fakeSpaceManager) GetTemplate(context.Context, string, string) (graph.Template, error) {
+	return graph.Template{}, daemonspace.ErrSpaceNotFound
+}
 func (fakeSpaceManager) ListVisibleTemplates(context.Context, string, string, bool, bool) ([]graph.Template, error) {
 	return []graph.Template{{ID: uuid.MustParse("00000000-0000-0000-0000-000000000005"), SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Key: "note", Version: "1.0.0", DisplayName: "Note", State: graph.TemplateStateActive}}, nil
 }

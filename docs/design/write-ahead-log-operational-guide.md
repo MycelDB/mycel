@@ -6,6 +6,23 @@ Implemented internal WAL foundation with daemon integration.
 
 This guide documents the current operational and developer behavior for Mycel's WAL implementation.
 
+## Blob payload replication
+
+Logical WAL records for blobs contain metadata and a payload descriptor only. Followers fetch missing blob bytes from the primary before applying blob metadata.
+
+Operationally:
+
+- blob payload transfer failures appear as follower replication lag/errors;
+- metadata for a new blob is not visible on a follower until bytes are locally installed and checksum-verified;
+- snapshot/resync still copies existing blob payloads and remains the recommended repair for severe inconsistencies.
+
+Validate with:
+
+```bash
+./scripts/validateBlobPayloadReplication.sh
+MYCELD_CLUSTER_BACKEND_AUTH_TOKEN=test-token ./scripts/validateBlobPayloadReplication.sh
+```
+
 ## Directory layout
 
 Default paths under `MYCELD_DATA_DIR`:

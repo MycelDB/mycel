@@ -13,7 +13,8 @@ const (
 )
 
 type blobMetaPutRecord struct {
-	Meta BlobMeta `json:"meta"`
+	Meta              BlobMeta          `json:"meta"`
+	PayloadDescriptor PayloadDescriptor `json:"payload_descriptor,omitempty"`
 }
 type blobMetaDeleteRecord struct {
 	SpaceID string `json:"space_id"`
@@ -37,7 +38,7 @@ func (m *Module) applyBlobMetaDelete(ctx context.Context, rec wal.Record) error 
 }
 
 func (m *Module) commitMetaPut(ctx context.Context, meta BlobMeta) (BlobMeta, error) {
-	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta})
+	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: descriptorFromMeta(meta)})
 	if err != nil {
 		return BlobMeta{}, err
 	}
