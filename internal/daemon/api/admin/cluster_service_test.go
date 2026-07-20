@@ -10,6 +10,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/membership"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
+	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -60,6 +61,28 @@ func TestAdminClusterServiceGetStatus(t *testing.T) {
 	}
 	if res.GetAuthority().GetPrimaryNodeId() != res.GetNode().GetNodeId() || res.GetAuthority().GetAuthorityEpoch() != 1 {
 		t.Fatalf("unexpected authority: %#v", res.GetAuthority())
+	}
+}
+
+func TestAdminClusterServiceRuntimeStatusAndSpaceRoute(t *testing.T) {
+	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithClusterRuntime(daemonconfig.ClusterConfig{Engine: "raft", Name: "dev", RaftNodeCount: 3, RaftPartitionCount: 16, RaftReplicaFactor: 3, RaftLocalNodeID: 2, RaftNodeAddrs: []string{"a:9091", "b:9091", "c:9091"}}, nil)
+	ctx := authenticatedClusterContext()
+	res, err := svc.GetClusterRuntimeStatus(ctx, &adminv1.GetClusterRuntimeStatusRequest{})
+	if err != nil {
+		t.Fatalf("runtime status: %v", err)
+	}
+	if res.GetEngine() != adminv1.ClusterEngine_CLUSTER_ENGINE_RAFT || res.GetRaftPartitionCount() != 16 || res.GetLocalRaftNodeId() != 2 || len(res.GetRaftNodeAddrs()) != 3 {
+		t.Fatalf("unexpected runtime status: %#v", res)
+	}
+	route, err := svc.LookupSpaceRoute(ctx, &adminv1.LookupSpaceRouteRequest{SpaceId: "490851b9-0038-4afc-b1f0-d1bd9e829bc8"})
+	if err != nil {
+		t.Fatalf("lookup route: %v", err)
+	}
+	if route.GetPartitionId() >= 16 || len(route.GetReplicaNodeIds()) != 3 {
+		t.Fatalf("unexpected route: %#v", route)
+	}
+	if _, err := svc.LookupSpaceRoute(ctx, &adminv1.LookupSpaceRouteRequest{SpaceId: "not-a-uuid"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected invalid argument, got %v", err)
 	}
 }
 

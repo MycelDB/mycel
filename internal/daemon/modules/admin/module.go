@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
@@ -24,14 +26,17 @@ const ModuleName = "admin"
 var ErrInvalidCredentials = errors.New("invalid operator credentials")
 
 type Module struct {
-	store          Store
-	sessions       storesession.Manager
-	dataDir        string
-	gate           *quiesce.Gate
-	wal            *wal.Manager
-	walProgress    wal.AppliedLSNStore
-	walWaiter      *wal.ApplyWaiter
-	writeAuthority func() error
+	mu                  sync.Mutex
+	store               Store
+	sessions            storesession.Manager
+	dataDir             string
+	gate                *quiesce.Gate
+	wal                 *wal.Manager
+	walProgress         wal.AppliedLSNStore
+	walWaiter           *wal.ApplyWaiter
+	writeAuthority      func() error
+	raftGroups          *consensus.MultiGroup
+	raftAppliedCommands map[string]struct{}
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -79,6 +84,10 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
 	m.writeAuthority = rt.RequireWriteAuthority
+	if m.raftAppliedCommands == nil {
+		m.raftAppliedCommands = map[string]struct{}{}
+	}
+	m.loadRaftAppliedCommands()
 	if rt.WALRegistry != nil {
 		if err := rt.WALRegistry.Register(recordTypeAdminPut, wal.ApplierFunc(m.applyAdminPut)); err != nil {
 			return daemonruntime.Abort(ModuleName, "wal", "register admin put WAL applier", err)
@@ -214,7 +223,15 @@ func (m *Module) CreateOperatorAuthSession(ctx context.Context, operator AdminSu
 		return "", domainauth.RefreshSession{}, err
 	}
 	now := time.Now().UTC()
-	rec, err := m.sessions.Create(ctx, domainauth.RefreshSession{UserID: operatorID, UserRef: identity.UserRef(operator.Username), Status: domainauth.RefreshSessionStatusActive, RefreshTokenHash: refreshTokenHash, CreatedAt: now, LastUsedAt: now, IdleExpiresAt: now.Add(idleTTL), AbsoluteExpiresAt: now.Add(absoluteTTL), Metadata: metadata})
+	rec := domainauth.RefreshSession{ID: domainauth.RefreshSessionID(uuid.New()), UserID: operatorID, UserRef: identity.UserRef(operator.Username), Status: domainauth.RefreshSessionStatusActive, TokenFamilyID: domainauth.TokenFamilyID(uuid.NewString()), RefreshTokenHash: refreshTokenHash, CreatedAt: now, LastUsedAt: now, IdleExpiresAt: now.Add(idleTTL), AbsoluteExpiresAt: now.Add(absoluteTTL), Metadata: metadata}
+	if m.raftGroups != nil {
+		applied, err := m.commitAdminSessionPutRaft(ctx, rec, "identity-admin-session-put")
+		if err != nil {
+			return "", domainauth.RefreshSession{}, err
+		}
+		return refreshToken, applied, nil
+	}
+	rec, err = m.sessions.Create(ctx, rec)
 	if err != nil {
 		return "", domainauth.RefreshSession{}, err
 	}
@@ -251,7 +268,11 @@ func (m *Module) RefreshOperatorAuthSession(ctx context.Context, refreshToken do
 	if !operatorRefreshSessionRefreshable(rec, now) {
 		if rec.Status == domainauth.RefreshSessionStatusActive && operatorRefreshSessionExpired(rec, now) {
 			rec.Status = domainauth.RefreshSessionStatusExpired
-			_, _ = m.sessions.Update(ctx, rec)
+			if m.raftGroups != nil {
+				_, _ = m.commitAdminSessionPutRaft(ctx, rec, "identity-admin-session-expire")
+			} else {
+				_, _ = m.sessions.Update(ctx, rec)
+			}
 		}
 		return AdminSummary{}, "", domainauth.RefreshSession{}, ErrInvalidRefreshToken
 	}
@@ -283,7 +304,12 @@ func (m *Module) RefreshOperatorAuthSession(ctx context.Context, refreshToken do
 		rec.IdleExpiresAt = rec.AbsoluteExpiresAt
 	}
 	rec.Metadata = metadata
-	updated, err := m.sessions.Update(ctx, rec)
+	var updated domainauth.RefreshSession
+	if m.raftGroups != nil {
+		updated, err = m.commitAdminSessionPutRaft(ctx, rec, "identity-admin-session-refresh")
+	} else {
+		updated, err = m.sessions.Update(ctx, rec)
+	}
 	if err != nil {
 		return AdminSummary{}, "", domainauth.RefreshSession{}, err
 	}
@@ -333,6 +359,13 @@ func (m *Module) RevokeOperatorSession(ctx context.Context, operatorID string, s
 	if rec.UserID != operatorUUID {
 		return ErrAdminNotFound
 	}
+	if m.raftGroups != nil {
+		rec.Status = domainauth.RefreshSessionStatusRevoked
+		rec.RevokedAt = time.Now().UTC()
+		rec.RevokedReason = "operator session revoked"
+		_, err = m.commitAdminSessionPutRaft(ctx, rec, "identity-admin-session-revoke")
+		return err
+	}
 	_, err = m.sessions.RevokeByID(ctx, rec.ID, time.Now().UTC(), "operator session revoked")
 	return err
 }
@@ -352,11 +385,19 @@ func (m *Module) RevokeOperatorSessions(ctx context.Context, operatorID string) 
 		return 0, err
 	}
 	count := 0
+	now := time.Now().UTC()
 	for _, session := range sessions {
 		if session.Status != domainauth.RefreshSessionStatusActive {
 			continue
 		}
-		if _, err := m.sessions.RevokeByID(ctx, session.ID, time.Now().UTC(), "operator sessions revoked"); err != nil {
+		if m.raftGroups != nil {
+			session.Status = domainauth.RefreshSessionStatusRevoked
+			session.RevokedAt = now
+			session.RevokedReason = "operator sessions revoked"
+			if _, err := m.commitAdminSessionPutRaft(ctx, session, "identity-admin-session-revoke"); err != nil {
+				return count, err
+			}
+		} else if _, err := m.sessions.RevokeByID(ctx, session.ID, now, "operator sessions revoked"); err != nil {
 			return count, err
 		}
 		count++
@@ -466,6 +507,13 @@ func (m *Module) CreateOperator(ctx context.Context, input CreateOperatorInput) 
 			grant.CreatedAt = now
 		}
 		admin.CapabilityGrants = append(admin.CapabilityGrants, grant)
+	}
+	if m.raftGroups != nil {
+		applied, err := m.commitAdminPutRaft(ctx, admin, "identity-admin-put")
+		if err != nil {
+			return AdminSummary{}, err
+		}
+		return applied.toSummary(), nil
 	}
 	if m.wal == nil {
 		if err := m.store.Create(ctx, admin); err != nil {

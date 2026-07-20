@@ -51,6 +51,27 @@ service ClusterBackendService {
   // GetBlobPayload streams blob content from the primary to a follower before
   // the follower applies replicated blob metadata.
   rpc GetBlobPayload(GetBlobPayloadRequest) returns (stream BlobPayloadChunk);
+
+  // DeliverRaftMessages delivers one or more etcd/raft messages for a specific
+  // Raft group to the target daemon. Payloads are serialized raftpb.Message
+  // values and are intentionally opaque to this protobuf API.
+  rpc DeliverRaftMessages(DeliverRaftMessagesRequest) returns (DeliverRaftMessagesResponse);
+
+  // GetRaftSpace reads a space from the callee. It is an experimental internal
+  // forwarding RPC used by Raft-mode leader-only reads.
+  rpc GetRaftSpace(GetRaftSpaceRequest) returns (GetRaftSpaceResponse);
+
+  // ListRaftSpaces lists spaces visible on the callee. It is an experimental
+  // internal forwarding RPC used by Raft-mode partition-leader aggregation.
+  rpc ListRaftSpaces(ListRaftSpacesRequest) returns (ListRaftSpacesResponse);
+
+  // ExecuteRaftGraphRead forwards a graph read/query to a partition leader.
+  // The request/response payloads are daemon-internal JSON envelopes.
+  rpc ExecuteRaftGraphRead(ExecuteRaftGraphReadRequest) returns (ExecuteRaftGraphReadResponse);
+
+  // ExecuteRaftSemanticRead forwards a semantic space read to a partition leader.
+  // The request/response payloads are daemon-internal JSON envelopes.
+  rpc ExecuteRaftSemanticRead(ExecuteRaftSemanticReadRequest) returns (ExecuteRaftSemanticReadResponse);
 }
 
 // ClusterProtocolVersion identifies the backend protocol shape used by a node.
@@ -331,6 +352,72 @@ message GetBlobPayloadRequest {
 message BlobPayloadChunk {
   ClusterProtocolVersion protocol_version = 1;
   bytes data = 2;
+}
+
+message RaftMessageEnvelope {
+  string group_id = 1;
+  uint64 from_node_id = 2;
+  bytes message = 3;
+}
+
+message DeliverRaftMessagesRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  repeated RaftMessageEnvelope messages = 2;
+}
+
+message DeliverRaftMessagesResponse {
+  ClusterProtocolVersion protocol_version = 1;
+}
+
+message GetRaftSpaceRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string space_id = 2;
+}
+
+message RaftSpace {
+  string space_id = 1;
+  string owner_id = 2;
+  string name = 3;
+  string status = 4;
+  string created_at = 5;
+  string updated_at = 6;
+}
+
+message GetRaftSpaceResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  RaftSpace space = 2;
+}
+
+message ListRaftSpacesRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  bool include_archived = 2;
+}
+
+message ListRaftSpacesResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  repeated RaftSpace spaces = 2;
+}
+
+message ExecuteRaftGraphReadRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string space_id = 2;
+  bytes payload = 3;
+}
+
+message ExecuteRaftGraphReadResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  bytes payload = 2;
+}
+
+message ExecuteRaftSemanticReadRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string space_id = 2;
+  bytes payload = 3;
+}
+
+message ExecuteRaftSemanticReadResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  bytes payload = 2;
 }
 
 message ClusterMember {

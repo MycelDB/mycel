@@ -60,6 +60,13 @@ func (m *Module) commitMaintenanceMutation(ctx context.Context, rec maintenanceM
 	if err != nil {
 		return err
 	}
+	if m.raftGroups != nil {
+		cmd, err := m.buildSemanticMaintenanceRaftCommand(rec, p, "semantic-maintenance-"+rec.SpaceID.String()+"-"+rec.Kind+"-"+uuid.NewString())
+		if err != nil {
+			return err
+		}
+		return m.proposeSemanticRaftCommand(ctx, cmd)
+	}
 	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: p})
 	if err != nil {
 		return err
@@ -181,12 +188,39 @@ func (w *walMaintenanceManager) Init(ctx context.Context, loc string, sid domain
 	return w.inner.Init(ctx, loc, sid)
 }
 func (w *walMaintenanceManager) ListGraphDirtyEvents(ctx context.Context) ([]domainsemantic.GraphDirtyEvent, error) {
+	if leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID); err != nil {
+		return nil, err
+	} else if forward {
+		var res raftSemanticDirtyEventsResponse
+		if err := w.module.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "list_dirty_events", SpaceID: w.spaceID}, &res); err != nil {
+			return nil, err
+		}
+		return res.Events, nil
+	}
 	return w.inner.ListGraphDirtyEvents(ctx)
 }
 func (w *walMaintenanceManager) GetCheckpoint(ctx context.Context, c string) (storesemantic.MaintenanceCheckpoint, error) {
+	if leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID); err != nil {
+		return storesemantic.MaintenanceCheckpoint{}, err
+	} else if forward {
+		var res raftSemanticCheckpointResponse
+		if err := w.module.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "get_checkpoint", SpaceID: w.spaceID, Consumer: c}, &res); err != nil {
+			return storesemantic.MaintenanceCheckpoint{}, err
+		}
+		return res.Checkpoint, nil
+	}
 	return w.inner.GetCheckpoint(ctx, c)
 }
 func (w *walMaintenanceManager) ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+	if leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID); err != nil {
+		return nil, err
+	} else if forward {
+		var res raftSemanticWorkItemsResponse
+		if err := w.module.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "list_work_items", SpaceID: w.spaceID}, &res); err != nil {
+			return nil, err
+		}
+		return res.Items, nil
+	}
 	return w.inner.ListDirtyWorkItems(ctx)
 }
 func (w *walMaintenanceManager) ClaimReadyWork(ctx context.Context, in storesemantic.ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error) {

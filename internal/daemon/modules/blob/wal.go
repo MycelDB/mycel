@@ -37,6 +37,21 @@ func (m *Module) applyBlobMetaDelete(ctx context.Context, rec wal.Record) error 
 	return m.applyMetaDelete(ctx, payload.SpaceID, payload.BlobID)
 }
 
+func (m *Module) commitMetaPutRaft(ctx context.Context, meta BlobMeta) (BlobMeta, error) {
+	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: descriptorFromMeta(meta)})
+	if err != nil {
+		return BlobMeta{}, err
+	}
+	cmd, err := m.buildBlobRaftCommand(meta.SpaceID, recordTypeBlobMetaPut, payload, "blob-meta-put-"+meta.SpaceID+"-"+meta.BlobID)
+	if err != nil {
+		return BlobMeta{}, err
+	}
+	if err := m.proposeBlobRaftCommand(ctx, cmd); err != nil {
+		return BlobMeta{}, err
+	}
+	return meta, nil
+}
+
 func (m *Module) commitMetaPut(ctx context.Context, meta BlobMeta) (BlobMeta, error) {
 	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: descriptorFromMeta(meta)})
 	if err != nil {
@@ -56,6 +71,18 @@ func (m *Module) commitMetaPut(ctx context.Context, meta BlobMeta) (BlobMeta, er
 		return BlobMeta{}, err
 	}
 	return meta, nil
+}
+
+func (m *Module) commitMetaDeleteRaft(ctx context.Context, spaceID string, blobID string) error {
+	payload, err := json.Marshal(blobMetaDeleteRecord{SpaceID: spaceID, BlobID: blobID})
+	if err != nil {
+		return err
+	}
+	cmd, err := m.buildBlobRaftCommand(spaceID, recordTypeBlobMetaDelete, payload, "blob-meta-delete-"+spaceID+"-"+blobID)
+	if err != nil {
+		return err
+	}
+	return m.proposeBlobRaftCommand(ctx, cmd)
 }
 
 func (m *Module) commitMetaDelete(ctx context.Context, spaceID string, blobID string) error {

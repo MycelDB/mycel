@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
@@ -47,26 +48,32 @@ var _ daemonruntime.StatusReporter = (*Module)(nil)
 type semanticGateContextKey struct{}
 
 type Module struct {
-	mu                 sync.Mutex
-	dataDir            string
-	secretKeyB64       string
-	global             storesemantic.GlobalManager
-	globalBase         storesemantic.GlobalManager
-	accounting         storeaccounting.Manager
-	accountingBase     storeaccounting.Manager
-	spaces             map[domainspace.SpaceID]storesemantic.SpaceManager
-	maintenanceConfig  daemonconfig.SemanticMaintenanceConfig
-	logger             *slog.Logger
-	maintenanceCancel  context.CancelFunc
-	maintenanceWG      sync.WaitGroup
-	maintenanceRunning bool
-	maintenanceStarted time.Time
-	stats              MaintenanceStats
-	gate               *quiesce.Gate
-	wal                *wal.Manager
-	walProgress        wal.AppliedLSNStore
-	walWaiter          *wal.ApplyWaiter
-	writeAuthority     func() error
+	mu                   sync.Mutex
+	dataDir              string
+	secretKeyB64         string
+	global               storesemantic.GlobalManager
+	globalBase           storesemantic.GlobalManager
+	accounting           storeaccounting.Manager
+	accountingBase       storeaccounting.Manager
+	spaces               map[domainspace.SpaceID]storesemantic.SpaceManager
+	maintenanceConfig    daemonconfig.SemanticMaintenanceConfig
+	logger               *slog.Logger
+	maintenanceCancel    context.CancelFunc
+	maintenanceWG        sync.WaitGroup
+	maintenanceRunning   bool
+	maintenanceStarted   time.Time
+	stats                MaintenanceStats
+	gate                 *quiesce.Gate
+	wal                  *wal.Manager
+	walProgress          wal.AppliedLSNStore
+	walWaiter            *wal.ApplyWaiter
+	writeAuthority       func() error
+	raftGroups           *consensus.MultiGroup
+	raftPartitionCount   uint32
+	raftLocalNode        consensus.NodeID
+	raftNodeAddrs        []string
+	raftBackendAuthToken string
+	raftAppliedCommands  map[string]struct{}
 }
 
 type MaintenanceStats struct {
@@ -100,6 +107,10 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	}
 	m.dataDir = rt.Config.DataDir
 	m.secretKeyB64 = rt.Config.UserStoreEncryptionKeyB64
+	if m.raftAppliedCommands == nil {
+		m.raftAppliedCommands = map[string]struct{}{}
+	}
+	m.loadRaftAppliedCommands()
 	m.globalBase = global
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
@@ -428,7 +439,7 @@ func (m *Module) MaintenanceManager(ctx context.Context, spaceID domainspace.Spa
 	if err := mgr.Init(ctx, m.maintenanceDir(spaceID), spaceID); err != nil {
 		return nil, err
 	}
-	if m.wal != nil {
+	if m.wal != nil || m.raftGroups != nil {
 		return &walMaintenanceManager{inner: mgr, module: m, spaceID: spaceID}, nil
 	}
 	return mgr, nil
@@ -456,7 +467,7 @@ func (m *Module) SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) 
 	if err := mgr.Init(ctx, m.spaceSemanticDir(spaceID), spaceID); err != nil {
 		return nil, err
 	}
-	if m.wal != nil {
+	if m.wal != nil || m.raftGroups != nil {
 		return &walSpaceManager{inner: mgr, module: m, spaceID: spaceID}, nil
 	}
 	return mgr, nil

@@ -8,11 +8,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/membership"
 	"github.com/myceldb/mycel/internal/clustering/model"
+	"github.com/myceldb/mycel/internal/clustering/partitioning"
 	"github.com/myceldb/mycel/internal/clustering/replerror"
 	"github.com/myceldb/mycel/internal/clustering/replication"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
+	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"github.com/myceldb/mycel/internal/wal"
@@ -60,6 +63,8 @@ type AdminClusterService struct {
 	resyncCoordinator     *replication.ResyncCoordinator
 	switchoverCoordinator *replication.SwitchoverCoordinator
 	failoverCoordinator   *replication.FailoverCoordinator
+	clusterConfig         daemonconfig.ClusterConfig
+	raftGroups            *consensus.MultiGroup
 }
 
 func NewAdminClusterService(cluster *clustering.Manager, authorizer OperatorAuthorizer) *AdminClusterService {
@@ -91,6 +96,65 @@ func (s *AdminClusterService) WithSwitchover(coordinator *replication.Switchover
 func (s *AdminClusterService) WithFailover(coordinator *replication.FailoverCoordinator) *AdminClusterService {
 	s.failoverCoordinator = coordinator
 	return s
+}
+
+func (s *AdminClusterService) WithClusterRuntime(cfg daemonconfig.ClusterConfig, groups *consensus.MultiGroup) *AdminClusterService {
+	s.clusterConfig = cfg
+	s.raftGroups = groups
+	return s
+}
+
+func (s *AdminClusterService) GetClusterRuntimeStatus(ctx context.Context, req *adminv1.GetClusterRuntimeStatusRequest) (*adminv1.GetClusterRuntimeStatusResponse, error) {
+	if _, err := principalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	out := &adminv1.GetClusterRuntimeStatusResponse{Engine: clusterEngineToProto(s.clusterConfig.Engine), ClusterName: s.clusterConfig.Name, RaftNodeCount: uint32(s.clusterConfig.RaftNodeCount), RaftPartitionCount: uint32(s.clusterConfig.RaftPartitionCount), RaftReplicaFactor: uint32(s.clusterConfig.RaftReplicaFactor), LocalRaftNodeId: uint64(s.clusterConfig.RaftLocalNodeID), RaftNodeAddrs: append([]string(nil), s.clusterConfig.RaftNodeAddrs...)}
+	if s.raftGroups != nil {
+		statuses := s.raftGroups.Status()
+		out.RaftGroupCount = int32(len(statuses))
+		for _, st := range statuses {
+			if st.Leader != 0 {
+				out.RaftGroupsWithLeader++
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *AdminClusterService) ListRaftGroups(ctx context.Context, req *adminv1.ListRaftGroupsRequest) (*adminv1.ListRaftGroupsResponse, error) {
+	if _, err := principalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	if s.raftGroups == nil {
+		return &adminv1.ListRaftGroupsResponse{}, nil
+	}
+	replicas := raftReplicaNodeIDs(s.clusterConfig.RaftNodeCount)
+	out := &adminv1.ListRaftGroupsResponse{}
+	for _, st := range s.raftGroups.Status() {
+		out.Groups = append(out.Groups, raftGroupStatusToProto(st, replicas))
+	}
+	return out, nil
+}
+
+func (s *AdminClusterService) LookupSpaceRoute(ctx context.Context, req *adminv1.LookupSpaceRouteRequest) (*adminv1.LookupSpaceRouteResponse, error) {
+	if _, err := principalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	partitionCount := uint32(s.clusterConfig.RaftPartitionCount)
+	if partitionCount == 0 {
+		return nil, status.Error(codes.FailedPrecondition, "raft partition count is not configured")
+	}
+	pid, err := partitioning.PartitionForSpace(req.GetSpaceId(), partitionCount)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	var leader consensus.NodeID
+	if s.raftGroups != nil {
+		if g, ok := s.raftGroups.Group(consensus.PartitionGroupID(pid.Uint32())); ok {
+			leader = g.Leader()
+		}
+	}
+	return &adminv1.LookupSpaceRouteResponse{SpaceId: strings.TrimSpace(req.GetSpaceId()), PartitionId: pid.Uint32(), LeaderNodeId: uint64(leader), ReplicaNodeIds: raftReplicaNodeIDs(s.clusterConfig.RaftNodeCount)}, nil
 }
 
 func (s *AdminClusterService) GetClusterHealth(ctx context.Context, req *adminv1.GetClusterHealthRequest) (*adminv1.GetClusterHealthResponse, error) {
@@ -680,4 +744,44 @@ func formatOptionalClusterTime(t *time.Time) string {
 		return ""
 	}
 	return formatClusterTime(*t)
+}
+
+func clusterEngineToProto(engine string) adminv1.ClusterEngine {
+	switch strings.ToLower(strings.TrimSpace(engine)) {
+	case "static", "":
+		return adminv1.ClusterEngine_CLUSTER_ENGINE_STATIC
+	case "raft":
+		return adminv1.ClusterEngine_CLUSTER_ENGINE_RAFT
+	default:
+		return adminv1.ClusterEngine_CLUSTER_ENGINE_UNSPECIFIED
+	}
+}
+
+func raftReplicaNodeIDs(nodeCount int) []uint64 {
+	if nodeCount <= 0 {
+		return nil
+	}
+	out := make([]uint64, 0, nodeCount)
+	for i := 1; i <= nodeCount; i++ {
+		out = append(out, uint64(i))
+	}
+	return out
+}
+
+func raftGroupStatusToProto(st consensus.GroupStatus, replicas []uint64) *adminv1.RaftGroupStatus {
+	kind := adminv1.RaftGroupKind_RAFT_GROUP_KIND_SYSTEM
+	partitionID := uint32(0)
+	if st.PartitionID != nil {
+		kind = adminv1.RaftGroupKind_RAFT_GROUP_KIND_PARTITION
+		partitionID = *st.PartitionID
+	}
+	health := adminv1.RaftGroupHealth_RAFT_GROUP_HEALTH_HEALTHY
+	if st.Leader == 0 {
+		health = adminv1.RaftGroupHealth_RAFT_GROUP_HEALTH_NO_LEADER
+	}
+	applyLag := uint64(0)
+	if st.CommitIndex > st.AppliedIndex {
+		applyLag = st.CommitIndex - st.AppliedIndex
+	}
+	return &adminv1.RaftGroupStatus{GroupId: string(st.GroupID), Kind: kind, PartitionId: partitionID, LocalNodeId: uint64(st.NodeID), LeaderNodeId: uint64(st.Leader), PreferredLeaderNodeId: uint64(st.PreferredLeader), ReplicaNodeIds: append([]uint64(nil), replicas...), Health: health, Term: st.Term, CommitIndex: st.CommitIndex, AppliedIndex: st.AppliedIndex, ApplyLag: applyLag}
 }

@@ -66,3 +66,18 @@ Example override:
 make start MYCELD_DATA_DIR=/tmp/mycel-data MYCELD_GRPC_ADDR=127.0.0.1:9093
 make stop MYCELD_DATA_DIR=/tmp/mycel-data
 ```
+
+## Experimental Raft clustering placeholders
+
+The space-partitioned Raft implementation is being introduced behind configuration placeholders. These settings are parsed and validated but do not activate a complete Raft runtime yet:
+
+```bash
+MYCELD_CLUSTER_ENGINE=static # default current behavior; future values: raft
+MYCELD_CLUSTER_RAFT_NODE_COUNT=3
+MYCELD_CLUSTER_RAFT_PARTITION_COUNT=64
+MYCELD_CLUSTER_RAFT_REPLICA_FACTOR=3
+MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID=1
+MYCELD_CLUSTER_RAFT_NODE_ADDRS=127.0.0.1:9101,127.0.0.1:9102,127.0.0.1:9103 # experimental; index = node_id - 1
+```
+
+The Raft sizing values and node address map are bootstrap-time cluster settings in the planned architecture and should be treated as immutable after cluster bootstrap once Raft mode is implemented.

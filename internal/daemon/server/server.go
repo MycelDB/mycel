@@ -11,10 +11,12 @@ import (
 	"os"
 
 	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/replication"
 	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
+	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
 	daemonbackup "github.com/myceldb/mycel/internal/daemon/modules/backup"
 	daemonblob "github.com/myceldb/mycel/internal/daemon/modules/blob"
@@ -63,6 +65,8 @@ type Config struct {
 	ResyncCoordinator       *replication.ResyncCoordinator
 	SwitchoverCoordinator   *replication.SwitchoverCoordinator
 	FailoverCoordinator     *replication.FailoverCoordinator
+	ClusterConfig           daemonconfig.ClusterConfig
+	RaftGroups              *consensus.MultiGroup
 }
 
 type Server struct {
@@ -116,7 +120,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen grpc %s: %w", cfg.Addr, err)
 	}
-	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_AddClusterNode_FullMethodName: true, clusterpb.ClusterBackendService_StreamWal_FullMethodName: true, clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName: true, clusterpb.ClusterBackendService_GetReplicationStatus_FullMethodName: true, clusterpb.ClusterBackendService_InstallAuthority_FullMethodName: true, clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName: true}
+	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_AddClusterNode_FullMethodName: true, clusterpb.ClusterBackendService_StreamWal_FullMethodName: true, clusterpb.ClusterBackendService_InstallSnapshot_FullMethodName: true, clusterpb.ClusterBackendService_GetReplicationStatus_FullMethodName: true, clusterpb.ClusterBackendService_InstallAuthority_FullMethodName: true, clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName: true, clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName: true, clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName: true, clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName: true}
 	quiesceExempt := defaultQuiesceExemptMethods()
 	for method, exempt := range cfg.QuiesceExempt {
 		quiesceExempt[method] = exempt
@@ -154,7 +158,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.OperatorManager))
 	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
 	if cfg.ClusteringManager != nil {
-		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithReplication(cfg.ReplicationProgress, cfg.ReplicationFollower).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithResync(cfg.ResyncCoordinator).WithSwitchover(cfg.SwitchoverCoordinator).WithFailover(cfg.FailoverCoordinator))
+		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithReplication(cfg.ReplicationProgress, cfg.ReplicationFollower).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithResync(cfg.ResyncCoordinator).WithSwitchover(cfg.SwitchoverCoordinator).WithFailover(cfg.FailoverCoordinator).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups))
 	}
 	if cfg.BackupManager != nil {
 		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.OperatorManager))
@@ -198,6 +202,9 @@ func defaultQuiesceExemptMethods() map[string]bool {
 		clusterpb.ClusterBackendService_GetReplicationStatus_FullMethodName: true,
 		clusterpb.ClusterBackendService_InstallAuthority_FullMethodName:     true,
 		clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName:       true,
+		clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName:  true,
+		clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName:         true,
+		clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName:       true,
 	}
 }
 

@@ -46,6 +46,7 @@ type CreateSpaceInput struct {
 	OwnerUserID       identity.UserID
 	DefaultDomainKey  string
 	DefaultDomainName string
+	CommandID         string
 }
 
 type CreateSpaceResult struct {

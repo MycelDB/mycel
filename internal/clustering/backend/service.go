@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/membership"
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/clustering/topology"
@@ -29,6 +30,10 @@ type Service struct {
 	ReplicationStatus   ReplicationStatusProvider
 	AuthorityInstaller  AuthorityInstaller
 	BlobPayloadProvider BlobPayloadProvider
+	RaftRouter          consensus.MessageSender
+	SpaceReader         SpaceReader
+	GraphReader         any
+	SemanticReader      any
 }
 
 func NewService(identity model.NodeIdentity, state model.NodeState, registry *topology.Registry) *Service {
@@ -42,6 +47,11 @@ func (s *Service) WithMembership(store *membership.FileStore) *Service {
 
 func (s *Service) WithAuthority(authority *clusterpb.ClusterAuthority) *Service {
 	s.Authority = authority
+	return s
+}
+
+func (s *Service) WithRaftRouter(router consensus.MessageSender) *Service {
+	s.RaftRouter = router
 	return s
 }
 

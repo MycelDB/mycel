@@ -29,7 +29,18 @@ func templateFromImport(spaceID domainspace.SpaceID, in storetemplate.TemplateIm
 }
 
 func (m *Module) commitTemplatePut(ctx context.Context, template graph.Template) (graph.Template, error) {
-	payload, err := json.Marshal(putTemplateRecord{Template: template})
+	record := putTemplateRecord{Template: template}
+	if m.raftGroups != nil {
+		cmd, err := m.buildPutTemplateRaftCommand(record, m.partitionCount, newInternalCommandID("space-template-put"))
+		if err != nil {
+			return graph.Template{}, err
+		}
+		if err := m.proposeSpaceMetadataCommand(ctx, cmd); err != nil {
+			return graph.Template{}, err
+		}
+		return template, nil
+	}
+	payload, err := json.Marshal(record)
 	if err != nil {
 		return graph.Template{}, err
 	}
@@ -51,7 +62,15 @@ func (m *Module) commitTemplatePut(ctx context.Context, template graph.Template)
 }
 
 func (m *Module) commitTemplateDelete(ctx context.Context, template graph.Template) error {
-	payload, err := json.Marshal(deleteTemplateRecord{TemplateID: template.ID, SpaceID: template.SpaceID})
+	record := deleteTemplateRecord{TemplateID: template.ID, SpaceID: template.SpaceID}
+	if m.raftGroups != nil {
+		cmd, err := m.buildDeleteTemplateRaftCommand(record, m.partitionCount, newInternalCommandID("space-template-delete"))
+		if err != nil {
+			return err
+		}
+		return m.proposeSpaceMetadataCommand(ctx, cmd)
+	}
+	payload, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}

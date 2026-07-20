@@ -11,12 +11,39 @@ func (w *walSpaceManager) Init(ctx context.Context, loc string, sid domainspace.
 	return w.inner.Init(ctx, loc, sid)
 }
 func (w *walSpaceManager) ListSemanticIndexes(ctx context.Context) ([]domainsemantic.SemanticIndex, error) {
+	if leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID); err != nil {
+		return nil, err
+	} else if forward {
+		var res raftSemanticIndexesResponse
+		if err := w.module.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "list_indexes", SpaceID: w.spaceID}, &res); err != nil {
+			return nil, err
+		}
+		return res.Indexes, nil
+	}
 	return w.inner.ListSemanticIndexes(ctx)
 }
 func (w *walSpaceManager) ListCredentialGrants(ctx context.Context) ([]domainsemantic.CredentialGrant, error) {
+	if leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID); err != nil {
+		return nil, err
+	} else if forward {
+		var res raftSemanticGrantsResponse
+		if err := w.module.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "list_grants", SpaceID: w.spaceID}, &res); err != nil {
+			return nil, err
+		}
+		return res.Grants, nil
+	}
 	return w.inner.ListCredentialGrants(ctx)
 }
 func (w *walSpaceManager) ListInferencePolicies(ctx context.Context) ([]domainsemantic.InferencePolicy, error) {
+	if leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID); err != nil {
+		return nil, err
+	} else if forward {
+		var res raftSemanticPoliciesResponse
+		if err := w.module.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "list_policies", SpaceID: w.spaceID}, &res); err != nil {
+			return nil, err
+		}
+		return res.Policies, nil
+	}
 	return w.inner.ListInferencePolicies(ctx)
 }
 func (w *walSpaceManager) ListIndexStates(ctx context.Context) ([]domainsemantic.SemanticIndexState, error) {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering/backend"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/membership"
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/clustering/registration"
@@ -218,6 +219,34 @@ func (m *Manager) SetBackendWAL(reader backend.WALReader) {
 		return
 	}
 	m.backend.WithWAL(reader)
+}
+
+func (m *Manager) SetBackendRaftRouter(router consensus.MessageSender) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithRaftRouter(router)
+}
+
+func (m *Manager) SetBackendSpaceReader(reader backend.SpaceReader) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithSpaceReader(reader)
+}
+
+func (m *Manager) SetBackendGraphReader(reader any) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.GraphReader = reader
+}
+
+func (m *Manager) SetBackendSemanticReader(reader any) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.SemanticReader = reader
 }
 
 func (m *Manager) SetBackendCheckpoint(provider backend.CheckpointProvider) {

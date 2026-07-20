@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/clustering/replication"
 	"github.com/myceldb/mycel/internal/daemon/config"
@@ -51,6 +52,9 @@ type Runtime struct {
 	ResyncCoordinator     *replication.ResyncCoordinator
 	SwitchoverCoordinator *replication.SwitchoverCoordinator
 	FailoverCoordinator   *replication.FailoverCoordinator
+
+	RaftGroups *consensus.MultiGroup
+	RaftRouter consensus.MessageSender
 
 	LogPath string
 
@@ -101,6 +105,9 @@ func (r *Runtime) Close() error {
 		if err := r.ReplicationFollower.Stop(context.Background()); err != nil && firstErr == nil {
 			firstErr = err
 		}
+	}
+	if r.RaftGroups != nil {
+		r.RaftGroups.Stop()
 	}
 	if r.ClusterManager != nil {
 		if err := r.ClusterManager.Stop(context.Background()); err != nil && firstErr == nil {

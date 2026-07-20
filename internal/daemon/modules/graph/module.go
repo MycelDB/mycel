@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
@@ -38,6 +39,12 @@ type Module struct {
 	walProgress            wal.AppliedLSNStore
 	walWaiter              *wal.ApplyWaiter
 	writeAuthority         func() error
+	raftGroups             *consensus.MultiGroup
+	raftPartitionCount     uint32
+	raftLocalNode          consensus.NodeID
+	raftNodeAddrs          []string
+	raftBackendAuthToken   string
+	raftAppliedCommands    map[string]struct{}
 }
 
 type overlay struct {
@@ -77,6 +84,10 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	if m.overlays == nil {
 		m.overlays = map[string]*overlay{}
 	}
+	if m.raftAppliedCommands == nil {
+		m.raftAppliedCommands = map[string]struct{}{}
+	}
+	m.loadRaftAppliedCommands()
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
@@ -106,12 +117,35 @@ func (m *Module) GetNode(ctx context.Context, tx daemonsession.GraphTransaction,
 	if err != nil {
 		return domaingraph.Node{}, err
 	}
+	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+		return domaingraph.Node{}, err
+	} else if forward {
+		req := raftReadRequest("get_node", tx)
+		req.ID = nodeID
+		var res raftGraphNodeResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return domaingraph.Node{}, err
+		}
+		return res.Node, nil
+	}
 	return m.node(ctx, tx, id)
 }
 
 func (m *Module) ListNodes(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Node, string, error) {
 	if err := ensureReadable(tx); err != nil {
 		return nil, "", err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+		return nil, "", err
+	} else if forward {
+		req := raftReadRequest("list_nodes", tx)
+		req.PageSize = pageSize
+		req.PageToken = pageToken
+		var res raftGraphNodesResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return nil, "", err
+		}
+		return res.Nodes, res.NextPageToken, nil
 	}
 	store, err := m.store(ctx, tx.SpaceID)
 	if err != nil {
@@ -283,12 +317,35 @@ func (m *Module) GetEdge(ctx context.Context, tx daemonsession.GraphTransaction,
 	if err != nil {
 		return domaingraph.Edge{}, err
 	}
+	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+		return domaingraph.Edge{}, err
+	} else if forward {
+		req := raftReadRequest("get_edge", tx)
+		req.ID = edgeID
+		var res raftGraphEdgeResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return domaingraph.Edge{}, err
+		}
+		return res.Edge, nil
+	}
 	return m.edge(ctx, tx, id)
 }
 
 func (m *Module) ListEdges(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error) {
 	if err := ensureReadable(tx); err != nil {
 		return nil, "", err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+		return nil, "", err
+	} else if forward {
+		req := raftReadRequest("list_edges", tx)
+		req.PageSize = pageSize
+		req.PageToken = pageToken
+		var res raftGraphEdgesResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return nil, "", err
+		}
+		return res.Edges, res.NextPageToken, nil
 	}
 	store, err := m.store(ctx, tx.SpaceID)
 	if err != nil {
@@ -397,6 +454,17 @@ func (m *Module) ListChildren(ctx context.Context, tx daemonsession.GraphTransac
 	if err != nil {
 		return nil, err
 	}
+	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+		return nil, err
+	} else if forward {
+		req := raftReadRequest("list_children", tx)
+		req.ID = parentNodeID
+		var res raftGraphEdgesResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return nil, err
+		}
+		return res.Edges, nil
+	}
 	edges, _, err := m.ListEdges(ctx, tx, 0, "")
 	if err != nil {
 		return nil, err
@@ -415,6 +483,17 @@ func (m *Module) GetParent(ctx context.Context, tx daemonsession.GraphTransactio
 	childID, err := parseUUID[domaingraph.NodeID](childNodeID, "child_node_id")
 	if err != nil {
 		return nil, err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+		return nil, err
+	} else if forward {
+		req := raftReadRequest("get_parent", tx)
+		req.ID = childNodeID
+		var res raftGraphOptionalEdgeResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return nil, err
+		}
+		return res.Edge, nil
 	}
 	return m.parentEdge(ctx, tx, childID)
 }
@@ -538,7 +617,20 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	record := graphCommitRecordFromSnapshot(tx, snapshot)
 	var committedRevision int64
 	var info graphstorage.CommitInfo
-	if m.wal == nil {
+	if m.raftGroups != nil {
+		cmd, err := m.buildGraphCommitRaftCommand(record, m.raftPartitionCount, graphRaftCommandID(ctx, tx.ID))
+		if err != nil {
+			return CommitResult{}, err
+		}
+		if err := m.proposeGraphRaftCommand(ctx, cmd); err != nil {
+			return CommitResult{}, err
+		}
+		committedRevision, err = m.CurrentRevision(ctx, tx.SpaceID)
+		if err != nil {
+			return CommitResult{}, err
+		}
+		info = graphstorage.CommitInfo{TxnID: uuid.New(), NextRevision: uint64(committedRevision)}
+	} else if m.wal == nil {
 		storageTx, err := store.Begin(ctx)
 		if err != nil {
 			return CommitResult{}, mapStorageError(err)
@@ -599,8 +691,10 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
-	if err := m.requireWriteAuthority(); err != nil {
-		return nil, err
+	if m.raftGroups == nil {
+		if err := m.requireWriteAuthority(); err != nil {
+			return nil, err
+		}
 	}
 	if m.gate == nil {
 		return func() {}, nil

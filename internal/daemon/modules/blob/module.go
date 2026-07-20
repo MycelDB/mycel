@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/blob/storage"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
@@ -24,16 +25,23 @@ import (
 const sniffLen = 512
 
 type Module struct {
-	mu             sync.Mutex
-	dataDir        string
-	metaDir        string
-	stores         map[string]*blobstorage.Store
-	refCounter     RefCounter
-	gate           *quiesce.Gate
-	wal            *wal.Manager
-	walProgress    wal.AppliedLSNStore
-	walWaiter      *wal.ApplyWaiter
-	writeAuthority func() error
+	mu                   sync.Mutex
+	dataDir              string
+	metaDir              string
+	stores               map[string]*blobstorage.Store
+	refCounter           RefCounter
+	gate                 *quiesce.Gate
+	wal                  *wal.Manager
+	walProgress          wal.AppliedLSNStore
+	walWaiter            *wal.ApplyWaiter
+	writeAuthority       func() error
+	raftGroups           *consensus.MultiGroup
+	raftPartitionCount   uint32
+	raftLocalNode        consensus.NodeID
+	raftNodeAddrs        []string
+	raftBackendAuthToken string
+	raftClusterID        string
+	raftAppliedCommands  map[string]struct{}
 }
 
 func NewModule(refCounter RefCounter) *Module {
@@ -53,6 +61,10 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	if m.stores == nil {
 		m.stores = map[string]*blobstorage.Store{}
 	}
+	if m.raftAppliedCommands == nil {
+		m.raftAppliedCommands = map[string]struct{}{}
+	}
+	m.loadRaftAppliedCommands()
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
@@ -119,6 +131,9 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 		if strings.TrimSpace(input.OriginalFilename) != "" {
 			existing.OriginalFilename = filepath.Base(input.OriginalFilename)
 		}
+		if m.raftGroups != nil {
+			return m.commitMetaPutRaft(ctx, existing)
+		}
 		if m.wal != nil {
 			return m.commitMetaPut(ctx, existing)
 		}
@@ -128,6 +143,9 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 		return existing, nil
 	}
 	meta := BlobMeta{BlobID: blobID, SpaceID: spaceID, Digest: "sha256:" + blobID, SizeBytes: size, MimeType: mimeType, DeclaredMimeType: strings.TrimSpace(input.DeclaredMimeType), OriginalFilename: filepath.Base(strings.TrimSpace(input.OriginalFilename)), CreateTime: time.Now().UTC()}
+	if m.raftGroups != nil {
+		return m.commitMetaPutRaft(ctx, meta)
+	}
 	if m.wal != nil {
 		return m.commitMetaPut(ctx, meta)
 	}
@@ -201,6 +219,12 @@ func (m *Module) DeleteBlob(ctx context.Context, spaceID string, blobID string) 
 	if err := store.Delete(ctx, domaingraph.BlobID(meta.BlobID)); err != nil {
 		return "", mapStorageError(err)
 	}
+	if m.raftGroups != nil {
+		if err := m.commitMetaDeleteRaft(ctx, meta.SpaceID, meta.BlobID); err != nil {
+			return "", err
+		}
+		return meta.BlobID, nil
+	}
 	if m.wal != nil {
 		if err := m.commitMetaDelete(ctx, meta.SpaceID, meta.BlobID); err != nil {
 			return "", err
@@ -214,8 +238,10 @@ func (m *Module) DeleteBlob(ctx context.Context, spaceID string, blobID string) 
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
-	if err := m.requireWriteAuthority(); err != nil {
-		return nil, err
+	if m.raftGroups == nil {
+		if err := m.requireWriteAuthority(); err != nil {
+			return nil, err
+		}
 	}
 	if m.gate == nil {
 		return func() {}, nil

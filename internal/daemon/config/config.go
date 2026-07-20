@@ -39,6 +39,11 @@ const (
 	DefaultWALSegmentBytes                  = int64(64 * 1024 * 1024)
 	DefaultWALSyncPolicy                    = "always"
 	DefaultClusterDiscoveryInterval         = 5 * time.Second
+	DefaultClusterEngine                    = "static"
+	DefaultClusterRaftNodeCount             = 3
+	DefaultClusterRaftPartitionCount        = 64
+	DefaultClusterRaftReplicaFactor         = 3
+	DefaultClusterRaftLocalNodeID           = 1
 )
 
 type SemanticThrottleConfig struct {
@@ -91,6 +96,12 @@ type ClusterConfig struct {
 	Bootstrap            bool
 	JoinTokenFile        string
 	JoinToken            string
+	Engine               string
+	RaftNodeCount        int
+	RaftPartitionCount   int
+	RaftReplicaFactor    int
+	RaftLocalNodeID      int
+	RaftNodeAddrs        []string
 }
 
 type Config struct {
@@ -153,6 +164,12 @@ func LoadFromEnv() (Config, error) {
 			Bootstrap:            parseBoolEnvDefault(os.Getenv("MYCELD_CLUSTER_BOOTSTRAP"), false),
 			JoinTokenFile:        strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_JOIN_TOKEN_FILE")),
 			JoinToken:            strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_JOIN_TOKEN")),
+			Engine:               valueOrDefault(os.Getenv("MYCELD_CLUSTER_ENGINE"), DefaultClusterEngine),
+			RaftNodeCount:        parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_COUNT"), DefaultClusterRaftNodeCount),
+			RaftPartitionCount:   parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_PARTITION_COUNT"), DefaultClusterRaftPartitionCount),
+			RaftReplicaFactor:    parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR"), DefaultClusterRaftReplicaFactor),
+			RaftLocalNodeID:      parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID"), DefaultClusterRaftLocalNodeID),
+			RaftNodeAddrs:        parseCSVEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS")),
 		},
 		Backup: BackupConfig{
 			Enabled:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
@@ -268,6 +285,52 @@ func (c ClusterConfig) Validate() error {
 	}
 	if c.Bootstrap && len(c.SeedPeers) > 0 {
 		return fmt.Errorf("MYCELD_CLUSTER_BOOTSTRAP cannot be true when MYCELD_CLUSTER_SEED_PEERS is set")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Engine)) {
+	case "", "static", "raft":
+	default:
+		return fmt.Errorf("MYCELD_CLUSTER_ENGINE must be static or raft")
+	}
+	nodeCount := c.RaftNodeCount
+	if nodeCount == 0 {
+		nodeCount = DefaultClusterRaftNodeCount
+	}
+	partitionCount := c.RaftPartitionCount
+	if partitionCount == 0 {
+		partitionCount = DefaultClusterRaftPartitionCount
+	}
+	replicaFactor := c.RaftReplicaFactor
+	if replicaFactor == 0 {
+		replicaFactor = DefaultClusterRaftReplicaFactor
+	}
+	if nodeCount <= 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_NODE_COUNT must be positive")
+	}
+	if partitionCount <= 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_PARTITION_COUNT must be positive")
+	}
+	if replicaFactor <= 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR must be positive")
+	}
+	if replicaFactor > nodeCount {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR must not exceed MYCELD_CLUSTER_RAFT_NODE_COUNT")
+	}
+	localNodeID := c.RaftLocalNodeID
+	if localNodeID == 0 {
+		localNodeID = DefaultClusterRaftLocalNodeID
+	}
+	if localNodeID <= 0 || localNodeID > nodeCount {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID must be between 1 and MYCELD_CLUSTER_RAFT_NODE_COUNT")
+	}
+	if len(c.RaftNodeAddrs) > 0 {
+		if len(c.RaftNodeAddrs) != nodeCount {
+			return fmt.Errorf("MYCELD_CLUSTER_RAFT_NODE_ADDRS must contain one host:port per raft node")
+		}
+		for _, addr := range c.RaftNodeAddrs {
+			if err := validateClusterAddr("MYCELD_CLUSTER_RAFT_NODE_ADDRS", addr); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
