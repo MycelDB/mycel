@@ -39,7 +39,6 @@ const (
 	DefaultWALSegmentBytes                  = int64(64 * 1024 * 1024)
 	DefaultWALSyncPolicy                    = "always"
 	DefaultClusterDiscoveryInterval         = 5 * time.Second
-	DefaultClusterEngine                    = "static"
 	DefaultClusterRaftNodeCount             = 3
 	DefaultClusterRaftPartitionCount        = 64
 	DefaultClusterRaftReplicaFactor         = 3
@@ -96,7 +95,6 @@ type ClusterConfig struct {
 	Bootstrap            bool
 	JoinTokenFile        string
 	JoinToken            string
-	Engine               string
 	RaftNodeCount        int
 	RaftPartitionCount   int
 	RaftReplicaFactor    int
@@ -164,7 +162,6 @@ func LoadFromEnv() (Config, error) {
 			Bootstrap:            parseBoolEnvDefault(os.Getenv("MYCELD_CLUSTER_BOOTSTRAP"), false),
 			JoinTokenFile:        strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_JOIN_TOKEN_FILE")),
 			JoinToken:            strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_JOIN_TOKEN")),
-			Engine:               valueOrDefault(os.Getenv("MYCELD_CLUSTER_ENGINE"), DefaultClusterEngine),
 			RaftNodeCount:        parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_COUNT"), DefaultClusterRaftNodeCount),
 			RaftPartitionCount:   parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_PARTITION_COUNT"), DefaultClusterRaftPartitionCount),
 			RaftReplicaFactor:    parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR"), DefaultClusterRaftReplicaFactor),
@@ -285,11 +282,6 @@ func (c ClusterConfig) Validate() error {
 	}
 	if c.Bootstrap && len(c.SeedPeers) > 0 {
 		return fmt.Errorf("MYCELD_CLUSTER_BOOTSTRAP cannot be true when MYCELD_CLUSTER_SEED_PEERS is set")
-	}
-	switch strings.ToLower(strings.TrimSpace(c.Engine)) {
-	case "", "static", "raft":
-	default:
-		return fmt.Errorf("MYCELD_CLUSTER_ENGINE must be static or raft")
 	}
 	nodeCount := c.RaftNodeCount
 	if nodeCount == 0 {

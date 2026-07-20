@@ -108,7 +108,7 @@ func (s *AdminClusterService) GetClusterRuntimeStatus(ctx context.Context, req *
 	if _, err := principalFromContext(ctx); err != nil {
 		return nil, err
 	}
-	out := &adminv1.GetClusterRuntimeStatusResponse{Engine: clusterEngineToProto(s.clusterConfig.Engine), ClusterName: s.clusterConfig.Name, RaftNodeCount: uint32(s.clusterConfig.RaftNodeCount), RaftPartitionCount: uint32(s.clusterConfig.RaftPartitionCount), RaftReplicaFactor: uint32(s.clusterConfig.RaftReplicaFactor), LocalRaftNodeId: uint64(s.clusterConfig.RaftLocalNodeID), RaftNodeAddrs: append([]string(nil), s.clusterConfig.RaftNodeAddrs...)}
+	out := &adminv1.GetClusterRuntimeStatusResponse{Engine: adminv1.ClusterEngine_CLUSTER_ENGINE_RAFT, ClusterName: s.clusterConfig.Name, RaftNodeCount: uint32(s.clusterConfig.RaftNodeCount), RaftPartitionCount: uint32(s.clusterConfig.RaftPartitionCount), RaftReplicaFactor: uint32(s.clusterConfig.RaftReplicaFactor), LocalRaftNodeId: uint64(s.clusterConfig.RaftLocalNodeID), RaftNodeAddrs: append([]string(nil), s.clusterConfig.RaftNodeAddrs...)}
 	if s.raftGroups != nil {
 		statuses := s.raftGroups.Status()
 		out.RaftGroupCount = int32(len(statuses))
@@ -744,17 +744,6 @@ func formatOptionalClusterTime(t *time.Time) string {
 		return ""
 	}
 	return formatClusterTime(*t)
-}
-
-func clusterEngineToProto(engine string) adminv1.ClusterEngine {
-	switch strings.ToLower(strings.TrimSpace(engine)) {
-	case "static", "":
-		return adminv1.ClusterEngine_CLUSTER_ENGINE_STATIC
-	case "raft":
-		return adminv1.ClusterEngine_CLUSTER_ENGINE_RAFT
-	default:
-		return adminv1.ClusterEngine_CLUSTER_ENGINE_UNSPECIFIED
-	}
 }
 
 func raftReplicaNodeIDs(nodeCount int) []uint64 {

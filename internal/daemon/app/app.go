@@ -8,14 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering"
-	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
-	"github.com/myceldb/mycel/internal/clustering/replication"
 	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	"github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
@@ -201,7 +198,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		_ = rt.Close()
 		return nil, err
 	}
-	if strings.EqualFold(cfg.Cluster.Engine, "raft") {
+	if raftRuntimeConfigured(cfg) {
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
 			return compositeSystemStateMachine{consensus.NewSystemStateMachine(), daemonuser.RaftStateMachine{Module: userService}, admin.RaftStateMachine{Module: adminService}}
 		}, func(partitionID uint32) consensus.StateMachine {
@@ -239,37 +236,8 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		}
 		logger.Info("wal recovery complete", "applied_lsn", applied, "last_committed_lsn", rt.WAL.LastCommittedLSN(), "duration", time.Since(started))
 	}
-	if rt.WALRegistry != nil && rt.ClusterManager != nil && rt.WAL != nil {
-		repDir := filepath.Join(cfg.DataDir, "meta", "clustering", "replication")
-		if err := replication.CleanupStaleSnapshotStaging(ctx, cfg.DataDir, 24*time.Hour); err != nil {
-			logger.Warn("failed to cleanup stale snapshot staging", "error", err)
-		}
-		receiveLog := replication.NewReceiveLog(filepath.Join(repDir, "receive-log"))
-		progress := replication.NewProgressStore(filepath.Join(repDir, "progress.json"))
-		rt.ReplicationProgress = progress
-		installer := &replication.SnapshotInstaller{DataDir: cfg.DataDir, Identity: rt.ClusterManager.Identity, Progress: progress, ReceiveLog: receiveLog, ReloadAfterInstall: rt.ReloadAfterSnapshot, Authority: func() (string, int64, bool) {
-			a, ok := rt.ClusterManager.Authority()
-			return a.Primary.NodeID, a.AuthorityEpoch, ok
-		}}
-		rt.ClusterManager.SetBackendSnapshotInstaller(installer)
-		rt.ClusterManager.SetBackendReplicationStatus(replication.BackendReplicationStatusProvider{Progress: progress, Cluster: rt.ClusterManager})
-		rt.ClusterManager.SetBackendAuthorityInstaller(replication.BackendAuthorityInstaller{Cluster: rt.ClusterManager, Progress: progress})
-		applier := &replication.Applier{Log: receiveLog, Progress: progress, Registry: rt.WALRegistry, Logger: logger, PreApplyHook: daemonblob.PayloadPreApplyHook{Module: blobService, Cluster: rt.ClusterManager, Client: backend.Client{AuthToken: cfg.Cluster.BackendAuthToken}}}
-		if err := applier.Replay(ctx); err != nil {
-			_ = rt.Close()
-			return nil, fmt.Errorf("replay replicated wal: %w", err)
-		}
-		rt.ReplicationFollower = &replication.Follower{Manager: rt.ClusterManager, Streamer: backend.Client{AuthToken: cfg.Cluster.BackendAuthToken}, Applier: applier, Progress: progress, Interval: cfg.Cluster.DiscoveryInterval, Logger: logger}
-		rt.ResyncCoordinator = &replication.ResyncCoordinator{Cluster: rt.ClusterManager, History: replication.NewResyncHistoryStore(filepath.Join(repDir, "resync-history.json")), Creator: &replication.SnapshotCreator{DataDir: cfg.DataDir, ClusterID: identity.ClusterID, PrimaryNodeID: identity.NodeID, AuthorityEpoch: func() int64 {
-			a, ok := rt.ClusterManager.Authority()
-			if !ok {
-				return 0
-			}
-			return a.AuthorityEpoch
-		}(), Quiesce: rt.Quiesce, WAL: rt.WAL, Progress: rt.WALProgress, Checkpoint: rt.WALCheckpoint, Logger: logger}, Client: backend.Client{AuthToken: cfg.Cluster.BackendAuthToken}}
-		rt.SwitchoverCoordinator = &replication.SwitchoverCoordinator{Cluster: rt.ClusterManager, DataDir: cfg.DataDir, WAL: rt.WAL, Quiesce: rt.Quiesce, Client: backend.Client{AuthToken: cfg.Cluster.BackendAuthToken}, Timeout: 60 * time.Second}
-		rt.FailoverCoordinator = &replication.FailoverCoordinator{Cluster: rt.ClusterManager}
-	}
+	// Static-primary WAL replication/follower/resync/switchover runtime wiring has been removed from daemon startup.
+	// Local WAL durability and recovery remain active above; clustered operation is Raft-only.
 	graphService.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)
 		if err != nil {
@@ -281,14 +249,15 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		_ = rt.Close()
 		return nil, err
 	}
-	if rt.ReplicationFollower != nil {
-		if err := rt.ReplicationFollower.Start(ctx); err != nil {
-			_ = rt.Close()
-			return nil, fmt.Errorf("start wal replication follower: %w", err)
-		}
-	}
 	logger.Info("daemon initialization complete")
 	return rt, nil
+}
+
+func raftRuntimeConfigured(cfg config.Config) bool {
+	// A daemon with an explicit Raft node address map participates in clustered Raft.
+	// A single-node Raft configuration is also valid for local tests/dev. Default
+	// standalone daemons without Raft addresses remain non-clustered.
+	return len(cfg.Cluster.RaftNodeAddrs) > 0 || cfg.Cluster.RaftNodeCount == 1
 }
 
 func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath string, grpcAddr string) {

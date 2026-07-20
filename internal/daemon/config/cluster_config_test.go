@@ -16,15 +16,8 @@ func TestClusterConfigAllowsBootstrapWithoutSeeds(t *testing.T) {
 	}
 }
 
-func TestClusterConfigRejectsUnknownEngine(t *testing.T) {
-	cfg := ClusterConfig{Engine: "bogus", DiscoveryInterval: DefaultClusterDiscoveryInterval}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected unknown cluster engine to fail")
-	}
-}
-
 func TestClusterConfigRejectsReplicaFactorGreaterThanNodeCount(t *testing.T) {
-	cfg := ClusterConfig{Engine: "raft", RaftNodeCount: 2, RaftPartitionCount: DefaultClusterRaftPartitionCount, RaftReplicaFactor: 3, DiscoveryInterval: DefaultClusterDiscoveryInterval}
+	cfg := ClusterConfig{RaftNodeCount: 2, RaftPartitionCount: DefaultClusterRaftPartitionCount, RaftReplicaFactor: 3, DiscoveryInterval: DefaultClusterDiscoveryInterval}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected replica factor greater than node count to fail")
 	}

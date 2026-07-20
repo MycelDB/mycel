@@ -38,14 +38,13 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.AccessTokenTTL != DefaultAccessTokenTTL {
 		t.Fatalf("unexpected access token TTL default: %s", cfg.AccessTokenTTL)
 	}
-	if cfg.Cluster.Engine != DefaultClusterEngine || cfg.Cluster.RaftNodeCount != DefaultClusterRaftNodeCount || cfg.Cluster.RaftPartitionCount != DefaultClusterRaftPartitionCount || cfg.Cluster.RaftReplicaFactor != DefaultClusterRaftReplicaFactor || cfg.Cluster.RaftLocalNodeID != DefaultClusterRaftLocalNodeID {
+	if cfg.Cluster.RaftNodeCount != DefaultClusterRaftNodeCount || cfg.Cluster.RaftPartitionCount != DefaultClusterRaftPartitionCount || cfg.Cluster.RaftReplicaFactor != DefaultClusterRaftReplicaFactor || cfg.Cluster.RaftLocalNodeID != DefaultClusterRaftLocalNodeID {
 		t.Fatalf("unexpected cluster raft defaults: %+v", cfg.Cluster)
 	}
 }
 
 func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
-	t.Setenv("MYCELD_CLUSTER_ENGINE", "raft")
 	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_COUNT", "5")
 	t.Setenv("MYCELD_CLUSTER_RAFT_PARTITION_COUNT", "128")
 	t.Setenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR", "3")
@@ -56,7 +55,7 @@ func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
-	if cfg.Cluster.Engine != "raft" || cfg.Cluster.RaftNodeCount != 5 || cfg.Cluster.RaftPartitionCount != 128 || cfg.Cluster.RaftReplicaFactor != 3 || cfg.Cluster.RaftLocalNodeID != 4 {
+	if cfg.Cluster.RaftNodeCount != 5 || cfg.Cluster.RaftPartitionCount != 128 || cfg.Cluster.RaftReplicaFactor != 3 || cfg.Cluster.RaftLocalNodeID != 4 {
 		t.Fatalf("unexpected raft cluster overrides: %+v", cfg.Cluster)
 	}
 	if len(cfg.Cluster.RaftNodeAddrs) != 5 || cfg.Cluster.RaftNodeAddrs[3] != "127.0.0.1:9104" {
@@ -66,7 +65,6 @@ func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 
 func TestLoadFromEnvRaftNodeAddrsValidation(t *testing.T) {
 	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
-	t.Setenv("MYCELD_CLUSTER_ENGINE", "raft")
 	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_COUNT", "3")
 	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS", "127.0.0.1:9101,127.0.0.1:9102")
 	if _, err := LoadFromEnv(); err == nil {

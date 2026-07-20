@@ -65,7 +65,7 @@ func TestAdminClusterServiceGetStatus(t *testing.T) {
 }
 
 func TestAdminClusterServiceRuntimeStatusAndSpaceRoute(t *testing.T) {
-	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithClusterRuntime(daemonconfig.ClusterConfig{Engine: "raft", Name: "dev", RaftNodeCount: 3, RaftPartitionCount: 16, RaftReplicaFactor: 3, RaftLocalNodeID: 2, RaftNodeAddrs: []string{"a:9091", "b:9091", "c:9091"}}, nil)
+	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithClusterRuntime(daemonconfig.ClusterConfig{Name: "dev", RaftNodeCount: 3, RaftPartitionCount: 16, RaftReplicaFactor: 3, RaftLocalNodeID: 2, RaftNodeAddrs: []string{"a:9091", "b:9091", "c:9091"}}, nil)
 	ctx := authenticatedClusterContext()
 	res, err := svc.GetClusterRuntimeStatus(ctx, &adminv1.GetClusterRuntimeStatusRequest{})
 	if err != nil {
