@@ -28,6 +28,7 @@ type Store interface {
 	Find(ctx context.Context, username string) (User, error)
 	Update(ctx context.Context, userID string, update func(*User) error) (User, error)
 	UpdatePasswordHash(ctx context.Context, userID string, passwordHash string) (User, error)
+	ApplyPut(ctx context.Context, user User) (User, error)
 }
 
 type FileStore struct {
@@ -155,6 +156,33 @@ func (s *FileStore) Update(ctx context.Context, userID string, update func(*User
 
 func (s *FileStore) UpdatePasswordHash(ctx context.Context, userID string, passwordHash string) (User, error) {
 	return s.Update(ctx, userID, func(user *User) error { user.PasswordHash = passwordHash; return nil })
+}
+
+func (s *FileStore) ApplyPut(ctx context.Context, user User) (User, error) {
+	if err := ctx.Err(); err != nil {
+		return User{}, err
+	}
+	user = user.normalized()
+	if strings.TrimSpace(user.ID) == "" || strings.TrimSpace(user.Username) == "" {
+		return User{}, ErrUserNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, err := s.read()
+	if err != nil {
+		return User{}, err
+	}
+	for i, existing := range doc.Users {
+		if existing.ID == user.ID {
+			doc.Users[i] = user
+			return user, s.write(doc)
+		}
+		if strings.EqualFold(existing.Username, user.Username) {
+			return User{}, ErrDuplicateUser
+		}
+	}
+	doc.Users = append(doc.Users, user)
+	return user, s.write(doc)
 }
 
 func (s *FileStore) read() (storeDocument, error) {

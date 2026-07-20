@@ -74,7 +74,9 @@ type Manager interface {
 	GetByID(ctx context.Context, id graph.TemplateID) (graph.Template, error)
 	Find(ctx context.Context, spaceID domainspace.SpaceID, key string, version string) (graph.Template, error)
 	Update(ctx context.Context, in UpdateInput) (graph.Template, error)
+	ApplyPut(ctx context.Context, template graph.Template) (graph.Template, error)
 	Archive(ctx context.Context, id graph.TemplateID) (graph.Template, error)
 	DeleteByID(ctx context.Context, id graph.TemplateID) error
+	ApplyDelete(ctx context.Context, id graph.TemplateID) error
 	DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error
 }

@@ -62,10 +62,17 @@ if [ -z "$workspace_root" ]; then
   fi
 fi
 
-if ! command -v rg >/dev/null 2>&1; then
-  echo "error: ripgrep (rg) is required for public surface checks" >&2
-  exit 1
-fi
+search_external_go() {
+  local pattern="$1"
+  if command -v rg >/dev/null 2>&1; then
+    rg -n "$pattern" . --glob '*.go' --glob '!myceldb/mycel/**' --glob '!**/vendor/**'
+  else
+    find . -type f -name '*.go' \
+      -not -path './myceldb/mycel/*' \
+      -not -path '*/vendor/*' \
+      -print0 | xargs -0 grep -n -E "$pattern"
+  fi
+}
 
 fail=0
 
@@ -101,11 +108,7 @@ if [ -n "$workspace_root" ]; then
     echo "public-surface check failed: workspace does not exist: $workspace_root" >&2
     fail=1
   else
-    external_hits="$(cd "$workspace_root" && rg -n 'github\.com/myceldb/mycel(/(domain|store|query|engine|session|$)|")' \
-      . \
-      --glob '*.go' \
-      --glob '!myceldb/mycel/**' \
-      --glob '!**/vendor/**' || true)"
+    external_hits="$(cd "$workspace_root" && search_external_go 'github\.com/myceldb/mycel(/(domain|store|query|engine|session|$)|")' || true)"
     if [ -n "$external_hits" ]; then
       print_block "public-surface check failed: external consumers import Mycel implementation packages" "$external_hits"
       fail=1

@@ -8,14 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	"github.com/myceldb/mycel/internal/identity/model"
 	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 const ModuleName = "admin"
@@ -23,9 +26,17 @@ const ModuleName = "admin"
 var ErrInvalidCredentials = errors.New("invalid operator credentials")
 
 type Module struct {
-	store    Store
-	sessions storesession.Manager
-	gate     *quiesce.Gate
+	mu                  sync.Mutex
+	store               Store
+	sessions            storesession.Manager
+	dataDir             string
+	gate                *quiesce.Gate
+	wal                 *wal.Manager
+	walProgress         wal.AppliedLSNStore
+	walWaiter           *wal.ApplyWaiter
+	writeAllowed        func() error
+	raftGroups          *consensus.MultiGroup
+	raftAppliedCommands map[string]struct{}
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -57,6 +68,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open admin store", err)
 	}
 	m.store = store
+	m.dataDir = rt.Config.DataDir
 	sessionsDir := filepath.Join(adminDir, "sessions")
 	sessionsDirCreated, err := ensureDir(sessionsDir, 0o700)
 	if err != nil {
@@ -68,6 +80,19 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open admin session store", err)
 	}
 	m.sessions = sessions
+	m.wal = rt.WAL
+	m.walProgress = rt.WALProgress
+	m.walWaiter = rt.WALWaiter
+	m.writeAllowed = rt.RequireLocalWriteAllowed
+	if m.raftAppliedCommands == nil {
+		m.raftAppliedCommands = map[string]struct{}{}
+	}
+	m.loadRaftAppliedCommands()
+	if rt.WALRegistry != nil {
+		if err := rt.WALRegistry.Register(recordTypeAdminPut, wal.ApplierFunc(m.applyAdminPut)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register admin put WAL applier", err)
+		}
+	}
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)
 	}
@@ -198,7 +223,15 @@ func (m *Module) CreateOperatorAuthSession(ctx context.Context, operator AdminSu
 		return "", domainauth.RefreshSession{}, err
 	}
 	now := time.Now().UTC()
-	rec, err := m.sessions.Create(ctx, domainauth.RefreshSession{UserID: operatorID, UserRef: identity.UserRef(operator.Username), Status: domainauth.RefreshSessionStatusActive, RefreshTokenHash: refreshTokenHash, CreatedAt: now, LastUsedAt: now, IdleExpiresAt: now.Add(idleTTL), AbsoluteExpiresAt: now.Add(absoluteTTL), Metadata: metadata})
+	rec := domainauth.RefreshSession{ID: domainauth.RefreshSessionID(uuid.New()), UserID: operatorID, UserRef: identity.UserRef(operator.Username), Status: domainauth.RefreshSessionStatusActive, TokenFamilyID: domainauth.TokenFamilyID(uuid.NewString()), RefreshTokenHash: refreshTokenHash, CreatedAt: now, LastUsedAt: now, IdleExpiresAt: now.Add(idleTTL), AbsoluteExpiresAt: now.Add(absoluteTTL), Metadata: metadata}
+	if m.raftGroups != nil {
+		applied, err := m.commitAdminSessionPutRaft(ctx, rec, "identity-admin-session-put")
+		if err != nil {
+			return "", domainauth.RefreshSession{}, err
+		}
+		return refreshToken, applied, nil
+	}
+	rec, err = m.sessions.Create(ctx, rec)
 	if err != nil {
 		return "", domainauth.RefreshSession{}, err
 	}
@@ -235,7 +268,11 @@ func (m *Module) RefreshOperatorAuthSession(ctx context.Context, refreshToken do
 	if !operatorRefreshSessionRefreshable(rec, now) {
 		if rec.Status == domainauth.RefreshSessionStatusActive && operatorRefreshSessionExpired(rec, now) {
 			rec.Status = domainauth.RefreshSessionStatusExpired
-			_, _ = m.sessions.Update(ctx, rec)
+			if m.raftGroups != nil {
+				_, _ = m.commitAdminSessionPutRaft(ctx, rec, "identity-admin-session-expire")
+			} else {
+				_, _ = m.sessions.Update(ctx, rec)
+			}
 		}
 		return AdminSummary{}, "", domainauth.RefreshSession{}, ErrInvalidRefreshToken
 	}
@@ -267,7 +304,12 @@ func (m *Module) RefreshOperatorAuthSession(ctx context.Context, refreshToken do
 		rec.IdleExpiresAt = rec.AbsoluteExpiresAt
 	}
 	rec.Metadata = metadata
-	updated, err := m.sessions.Update(ctx, rec)
+	var updated domainauth.RefreshSession
+	if m.raftGroups != nil {
+		updated, err = m.commitAdminSessionPutRaft(ctx, rec, "identity-admin-session-refresh")
+	} else {
+		updated, err = m.sessions.Update(ctx, rec)
+	}
 	if err != nil {
 		return AdminSummary{}, "", domainauth.RefreshSession{}, err
 	}
@@ -317,6 +359,13 @@ func (m *Module) RevokeOperatorSession(ctx context.Context, operatorID string, s
 	if rec.UserID != operatorUUID {
 		return ErrAdminNotFound
 	}
+	if m.raftGroups != nil {
+		rec.Status = domainauth.RefreshSessionStatusRevoked
+		rec.RevokedAt = time.Now().UTC()
+		rec.RevokedReason = "operator session revoked"
+		_, err = m.commitAdminSessionPutRaft(ctx, rec, "identity-admin-session-revoke")
+		return err
+	}
 	_, err = m.sessions.RevokeByID(ctx, rec.ID, time.Now().UTC(), "operator session revoked")
 	return err
 }
@@ -336,11 +385,19 @@ func (m *Module) RevokeOperatorSessions(ctx context.Context, operatorID string) 
 		return 0, err
 	}
 	count := 0
+	now := time.Now().UTC()
 	for _, session := range sessions {
 		if session.Status != domainauth.RefreshSessionStatusActive {
 			continue
 		}
-		if _, err := m.sessions.RevokeByID(ctx, session.ID, time.Now().UTC(), "operator sessions revoked"); err != nil {
+		if m.raftGroups != nil {
+			session.Status = domainauth.RefreshSessionStatusRevoked
+			session.RevokedAt = now
+			session.RevokedReason = "operator sessions revoked"
+			if _, err := m.commitAdminSessionPutRaft(ctx, session, "identity-admin-session-revoke"); err != nil {
+				return count, err
+			}
+		} else if _, err := m.sessions.RevokeByID(ctx, session.ID, now, "operator sessions revoked"); err != nil {
 			return count, err
 		}
 		count++
@@ -349,6 +406,9 @@ func (m *Module) RevokeOperatorSessions(ctx context.Context, operatorID string) 
 }
 
 func (m *Module) SetOperatorPassword(ctx context.Context, operatorID string, password string) (AdminSummary, error) {
+	if err := m.requireLocalWriteAllowed(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -367,7 +427,7 @@ func (m *Module) SetOperatorPassword(ctx context.Context, operatorID string, pas
 	if err != nil {
 		return AdminSummary{}, err
 	}
-	admin, err := m.store.UpdatePasswordHash(ctx, operatorID, hash)
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.PasswordHash = hash; return nil })
 	if err != nil {
 		return AdminSummary{}, err
 	}
@@ -448,19 +508,36 @@ func (m *Module) CreateOperator(ctx context.Context, input CreateOperatorInput) 
 		}
 		admin.CapabilityGrants = append(admin.CapabilityGrants, grant)
 	}
-	if err := m.store.Create(ctx, admin); err != nil {
+	if m.raftGroups != nil {
+		applied, err := m.commitAdminPutRaft(ctx, admin, "identity-admin-put")
+		if err != nil {
+			return AdminSummary{}, err
+		}
+		return applied.toSummary(), nil
+	}
+	if m.wal == nil {
+		if err := m.store.Create(ctx, admin); err != nil {
+			return AdminSummary{}, err
+		}
+		return admin.toSummary(), nil
+	}
+	applied, err := m.commitAdminPut(ctx, admin)
+	if err != nil {
 		return AdminSummary{}, err
 	}
-	return admin.toSummary(), nil
+	return applied.toSummary(), nil
 }
 
 func (m *Module) UpdateOperator(ctx context.Context, input UpdateOperatorInput) (AdminSummary, error) {
+	if err := m.requireLocalWriteAllowed(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
 	}
 	defer release()
-	admin, err := m.store.Update(ctx, input.OperatorID, func(admin *Admin) error {
+	admin, err := m.updateAdminWithWAL(ctx, input.OperatorID, func(admin *Admin) error {
 		if input.Email != nil {
 			admin.Email = strings.TrimSpace(*input.Email)
 		}
@@ -473,6 +550,9 @@ func (m *Module) UpdateOperator(ctx context.Context, input UpdateOperatorInput) 
 }
 
 func (m *Module) DisableOperator(ctx context.Context, operatorID string) (AdminSummary, error) {
+	if err := m.requireLocalWriteAllowed(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -481,7 +561,7 @@ func (m *Module) DisableOperator(ctx context.Context, operatorID string) (AdminS
 	if err := m.ensureCanRemoveSystemAdmin(ctx, operatorID, ""); err != nil {
 		return AdminSummary{}, err
 	}
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateDisabled; return nil })
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateDisabled; return nil })
 	if err != nil {
 		return AdminSummary{}, err
 	}
@@ -489,12 +569,15 @@ func (m *Module) DisableOperator(ctx context.Context, operatorID string) (AdminS
 }
 
 func (m *Module) EnableOperator(ctx context.Context, operatorID string) (AdminSummary, error) {
+	if err := m.requireLocalWriteAllowed(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
 	}
 	defer release()
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateActive; return nil })
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateActive; return nil })
 	if err != nil {
 		return AdminSummary{}, err
 	}
@@ -502,6 +585,9 @@ func (m *Module) EnableOperator(ctx context.Context, operatorID string) (AdminSu
 }
 
 func (m *Module) DeleteOperator(ctx context.Context, operatorID string) (AdminSummary, error) {
+	if err := m.requireLocalWriteAllowed(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -510,7 +596,7 @@ func (m *Module) DeleteOperator(ctx context.Context, operatorID string) (AdminSu
 	if err := m.ensureCanRemoveSystemAdmin(ctx, operatorID, ""); err != nil {
 		return AdminSummary{}, err
 	}
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateDeleted; return nil })
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.State = AdminStateDeleted; return nil })
 	if err != nil {
 		return AdminSummary{}, err
 	}
@@ -518,13 +604,16 @@ func (m *Module) DeleteOperator(ctx context.Context, operatorID string) (AdminSu
 }
 
 func (m *Module) GrantRole(ctx context.Context, operatorID string, role string, scope AccessScope, reason string, grantedBy string) (RoleGrant, AdminSummary, error) {
+	if err := m.requireLocalWriteAllowed(); err != nil {
+		return RoleGrant{}, AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return RoleGrant{}, AdminSummary{}, err
 	}
 	defer release()
 	grant := newRoleGrant(operatorID, role, normalizeScope(scope), reason, grantedBy)
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.RoleGrants = append(admin.RoleGrants, grant); return nil })
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.RoleGrants = append(admin.RoleGrants, grant); return nil })
 	if err != nil {
 		return RoleGrant{}, AdminSummary{}, err
 	}
@@ -532,6 +621,9 @@ func (m *Module) GrantRole(ctx context.Context, operatorID string, role string, 
 }
 
 func (m *Module) RevokeRole(ctx context.Context, operatorID string, grantID string) (AdminSummary, error) {
+	if err := m.requireLocalWriteAllowed(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
@@ -540,7 +632,7 @@ func (m *Module) RevokeRole(ctx context.Context, operatorID string, grantID stri
 	if err := m.ensureCanRemoveSystemAdmin(ctx, operatorID, grantID); err != nil {
 		return AdminSummary{}, err
 	}
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error {
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error {
 		for i, grant := range admin.RoleGrants {
 			if grant.ID == grantID {
 				admin.RoleGrants = append(admin.RoleGrants[:i], admin.RoleGrants[i+1:]...)
@@ -556,13 +648,16 @@ func (m *Module) RevokeRole(ctx context.Context, operatorID string, grantID stri
 }
 
 func (m *Module) GrantCapability(ctx context.Context, operatorID string, capability string, scope AccessScope, reason string, grantedBy string) (CapabilityGrant, AdminSummary, error) {
+	if err := m.requireLocalWriteAllowed(); err != nil {
+		return CapabilityGrant{}, AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return CapabilityGrant{}, AdminSummary{}, err
 	}
 	defer release()
 	grant := CapabilityGrant{ID: uuid.NewString(), OperatorID: operatorID, Capability: capability, Scope: normalizeScope(scope), Reason: reason, GrantedByOperatorID: grantedBy, CreatedAt: time.Now().UTC()}
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error { admin.CapabilityGrants = append(admin.CapabilityGrants, grant); return nil })
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error { admin.CapabilityGrants = append(admin.CapabilityGrants, grant); return nil })
 	if err != nil {
 		return CapabilityGrant{}, AdminSummary{}, err
 	}
@@ -570,12 +665,15 @@ func (m *Module) GrantCapability(ctx context.Context, operatorID string, capabil
 }
 
 func (m *Module) RevokeCapability(ctx context.Context, operatorID string, grantID string) (AdminSummary, error) {
+	if err := m.requireLocalWriteAllowed(); err != nil {
+		return AdminSummary{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return AdminSummary{}, err
 	}
 	defer release()
-	admin, err := m.store.Update(ctx, operatorID, func(admin *Admin) error {
+	admin, err := m.updateAdminWithWAL(ctx, operatorID, func(admin *Admin) error {
 		for i, grant := range admin.CapabilityGrants {
 			if grant.ID == grantID {
 				admin.CapabilityGrants = append(admin.CapabilityGrants[:i], admin.CapabilityGrants[i+1:]...)
@@ -599,6 +697,13 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 		return nil, quiesce.GRPCError(err)
 	}
 	return release, nil
+}
+
+func (m *Module) requireLocalWriteAllowed() error {
+	if m.writeAllowed == nil {
+		return nil
+	}
+	return m.writeAllowed()
 }
 
 func (m *Module) ensureCanRemoveSystemAdmin(ctx context.Context, operatorID string, grantID string) error {

@@ -15,20 +15,33 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/blob/storage"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 const sniffLen = 512
 
 type Module struct {
-	mu         sync.Mutex
-	dataDir    string
-	metaDir    string
-	stores     map[string]*blobstorage.Store
-	refCounter RefCounter
-	gate       *quiesce.Gate
+	mu                   sync.Mutex
+	dataDir              string
+	metaDir              string
+	stores               map[string]*blobstorage.Store
+	refCounter           RefCounter
+	gate                 *quiesce.Gate
+	wal                  *wal.Manager
+	walProgress          wal.AppliedLSNStore
+	walWaiter            *wal.ApplyWaiter
+	writeAllowed         func() error
+	raftGroups           *consensus.MultiGroup
+	raftPartitionCount   uint32
+	raftLocalNode        consensus.NodeID
+	raftNodeAddrs        []string
+	raftBackendAuthToken string
+	raftClusterID        string
+	raftAppliedCommands  map[string]struct{}
 }
 
 func NewModule(refCounter RefCounter) *Module {
@@ -47,6 +60,22 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	}
 	if m.stores == nil {
 		m.stores = map[string]*blobstorage.Store{}
+	}
+	if m.raftAppliedCommands == nil {
+		m.raftAppliedCommands = map[string]struct{}{}
+	}
+	m.loadRaftAppliedCommands()
+	m.wal = rt.WAL
+	m.walProgress = rt.WALProgress
+	m.walWaiter = rt.WALWaiter
+	m.writeAllowed = rt.RequireLocalWriteAllowed
+	if rt.WALRegistry != nil {
+		if err := rt.WALRegistry.Register(recordTypeBlobMetaPut, wal.ApplierFunc(m.applyBlobMetaPut)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register blob metadata put WAL applier", err)
+		}
+		if err := rt.WALRegistry.Register(recordTypeBlobMetaDelete, wal.ApplierFunc(m.applyBlobMetaDelete)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register blob metadata delete WAL applier", err)
+		}
 	}
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)
@@ -88,13 +117,11 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 	if err != nil {
 		return BlobMeta{}, mapStorageError(err)
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	metas, err := m.loadSpaceMetaLocked(spaceID)
+	blobID := string(id)
+	metas, err := m.loadSpaceMeta(spaceID)
 	if err != nil {
 		return BlobMeta{}, err
 	}
-	blobID := string(id)
 	if existing, ok := metas[blobID]; ok {
 		// Keep original create time and size/digest, but refresh client-declared metadata.
 		existing.MimeType = firstNonEmpty(existing.MimeType, mimeType)
@@ -104,15 +131,25 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 		if strings.TrimSpace(input.OriginalFilename) != "" {
 			existing.OriginalFilename = filepath.Base(input.OriginalFilename)
 		}
-		metas[blobID] = existing
-		if err := m.saveSpaceMetaLocked(spaceID, metas); err != nil {
+		if m.raftGroups != nil {
+			return m.commitMetaPutRaft(ctx, existing)
+		}
+		if m.wal != nil {
+			return m.commitMetaPut(ctx, existing)
+		}
+		if err := m.applyMetaPut(ctx, existing); err != nil {
 			return BlobMeta{}, err
 		}
 		return existing, nil
 	}
 	meta := BlobMeta{BlobID: blobID, SpaceID: spaceID, Digest: "sha256:" + blobID, SizeBytes: size, MimeType: mimeType, DeclaredMimeType: strings.TrimSpace(input.DeclaredMimeType), OriginalFilename: filepath.Base(strings.TrimSpace(input.OriginalFilename)), CreateTime: time.Now().UTC()}
-	metas[blobID] = meta
-	if err := m.saveSpaceMetaLocked(spaceID, metas); err != nil {
+	if m.raftGroups != nil {
+		return m.commitMetaPutRaft(ctx, meta)
+	}
+	if m.wal != nil {
+		return m.commitMetaPut(ctx, meta)
+	}
+	if err := m.applyMetaPut(ctx, meta); err != nil {
 		return BlobMeta{}, err
 	}
 	return meta, nil
@@ -182,20 +219,30 @@ func (m *Module) DeleteBlob(ctx context.Context, spaceID string, blobID string) 
 	if err := store.Delete(ctx, domaingraph.BlobID(meta.BlobID)); err != nil {
 		return "", mapStorageError(err)
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	metas, err := m.loadSpaceMetaLocked(meta.SpaceID)
-	if err != nil {
-		return "", err
+	if m.raftGroups != nil {
+		if err := m.commitMetaDeleteRaft(ctx, meta.SpaceID, meta.BlobID); err != nil {
+			return "", err
+		}
+		return meta.BlobID, nil
 	}
-	delete(metas, meta.BlobID)
-	if err := m.saveSpaceMetaLocked(meta.SpaceID, metas); err != nil {
+	if m.wal != nil {
+		if err := m.commitMetaDelete(ctx, meta.SpaceID, meta.BlobID); err != nil {
+			return "", err
+		}
+		return meta.BlobID, nil
+	}
+	if err := m.applyMetaDelete(ctx, meta.SpaceID, meta.BlobID); err != nil {
 		return "", err
 	}
 	return meta.BlobID, nil
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
+	if m.raftGroups == nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
+			return nil, err
+		}
+	}
 	if m.gate == nil {
 		return func() {}, nil
 	}
@@ -204,6 +251,13 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 		return nil, quiesce.GRPCError(err)
 	}
 	return release, nil
+}
+
+func (m *Module) requireLocalWriteAllowed() error {
+	if m.writeAllowed == nil {
+		return nil
+	}
+	return m.writeAllowed()
 }
 
 func (m *Module) store(spaceID string) (*blobstorage.Store, error) {
@@ -241,6 +295,12 @@ func (m *Module) meta(spaceID string, blobID string) (BlobMeta, error) {
 		return BlobMeta{}, ErrNotFound
 	}
 	return meta, nil
+}
+
+func (m *Module) loadSpaceMeta(spaceID string) (map[string]BlobMeta, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.loadSpaceMetaLocked(spaceID)
 }
 
 func (m *Module) loadSpaceMetaLocked(spaceID string) (map[string]BlobMeta, error) {

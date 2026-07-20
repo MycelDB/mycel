@@ -7,20 +7,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	"github.com/myceldb/mycel/internal/identity/model"
 	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 type Module struct {
-	store    Store
-	sessions storesession.Manager
-	gate     *quiesce.Gate
+	mu                  sync.Mutex
+	store               Store
+	sessions            storesession.Manager
+	dataDir             string
+	gate                *quiesce.Gate
+	wal                 *wal.Manager
+	walProgress         wal.AppliedLSNStore
+	walWaiter           *wal.ApplyWaiter
+	writeAllowed        func() error
+	raftGroups          *consensus.MultiGroup
+	raftAppliedCommands map[string]struct{}
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -52,6 +63,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open user store", err)
 	}
 	m.store = store
+	m.dataDir = rt.Config.DataDir
 	rt.Logger.Info("user store ready", "path", filepath.Join(userDir, StoreFilename), "created", storeCreated)
 
 	sessionsDir := filepath.Join(userDir, "sessions")
@@ -65,6 +77,19 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 		return daemonruntime.Abort(ModuleName, "store", "failed to open user session store", err)
 	}
 	m.sessions = sessions
+	m.wal = rt.WAL
+	m.walProgress = rt.WALProgress
+	m.walWaiter = rt.WALWaiter
+	m.writeAllowed = rt.RequireLocalWriteAllowed
+	if m.raftAppliedCommands == nil {
+		m.raftAppliedCommands = map[string]struct{}{}
+	}
+	m.loadRaftAppliedCommands()
+	if rt.WALRegistry != nil {
+		if err := rt.WALRegistry.Register(recordTypeUserPut, wal.ApplierFunc(m.applyUserPut)); err != nil {
+			return daemonruntime.Abort(ModuleName, "wal", "register user put WAL applier", err)
+		}
+	}
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)
 	}
@@ -108,6 +133,11 @@ func (m *Module) FindUser(ctx context.Context, username string) (UserSummary, er
 }
 
 func (m *Module) CreateUser(ctx context.Context, input CreateUserInput) (UserSummary, error) {
+	if m.raftGroups == nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
+			return UserSummary{}, err
+		}
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return UserSummary{}, err
@@ -130,52 +160,153 @@ func (m *Module) CreateUser(ctx context.Context, input CreateUserInput) (UserSum
 		state = UserStateDisabled
 	}
 	user := User{ID: uuid.NewString(), Username: username, State: state, PasswordHash: hash, CreatedAt: now, UpdatedAt: now}
-	if err := m.store.Create(ctx, user); err != nil {
+	if m.raftGroups != nil {
+		applied, err := m.commitUserPutRaft(ctx, user, "identity-user-put")
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return applied.toSummary(), nil
+	}
+	if m.wal == nil && m.raftGroups == nil {
+		if err := m.store.Create(ctx, user); err != nil {
+			return UserSummary{}, err
+		}
+		return user.toSummary(), nil
+	}
+	if m.raftGroups != nil {
+		applied, err := m.commitUserPutRaft(ctx, user, "identity-user-put")
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return applied.toSummary(), nil
+	}
+	applied, err := m.commitUserPut(ctx, user)
+	if err != nil {
 		return UserSummary{}, err
 	}
-	return user.toSummary(), nil
+	return applied.toSummary(), nil
 }
 
 func (m *Module) DisableUser(ctx context.Context, userID string) (UserSummary, error) {
+	if m.raftGroups == nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
+			return UserSummary{}, err
+		}
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return UserSummary{}, err
 	}
 	defer release()
-	user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateDisabled; return nil })
+	if m.wal == nil && m.raftGroups == nil {
+		user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateDisabled; return nil })
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return user.toSummary(), nil
+	}
+	user, err := m.store.GetByID(ctx, strings.TrimSpace(userID))
 	if err != nil {
 		return UserSummary{}, err
 	}
-	return user.toSummary(), nil
+	user.State = UserStateDisabled
+	user.UpdatedAt = time.Now().UTC()
+	if m.raftGroups != nil {
+		applied, err := m.commitUserPutRaft(ctx, user, "identity-user-put")
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return applied.toSummary(), nil
+	}
+	applied, err := m.commitUserPut(ctx, user)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	return applied.toSummary(), nil
 }
 
 func (m *Module) EnableUser(ctx context.Context, userID string) (UserSummary, error) {
+	if m.raftGroups == nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
+			return UserSummary{}, err
+		}
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return UserSummary{}, err
 	}
 	defer release()
-	user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateActive; return nil })
+	if m.wal == nil && m.raftGroups == nil {
+		user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateActive; return nil })
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return user.toSummary(), nil
+	}
+	user, err := m.store.GetByID(ctx, strings.TrimSpace(userID))
 	if err != nil {
 		return UserSummary{}, err
 	}
-	return user.toSummary(), nil
+	user.State = UserStateActive
+	user.UpdatedAt = time.Now().UTC()
+	if m.raftGroups != nil {
+		applied, err := m.commitUserPutRaft(ctx, user, "identity-user-put")
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return applied.toSummary(), nil
+	}
+	applied, err := m.commitUserPut(ctx, user)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	return applied.toSummary(), nil
 }
 
 func (m *Module) DeleteUser(ctx context.Context, userID string) (UserSummary, error) {
+	if m.raftGroups == nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
+			return UserSummary{}, err
+		}
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return UserSummary{}, err
 	}
 	defer release()
-	user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateDeleted; return nil })
+	if m.wal == nil && m.raftGroups == nil {
+		user, err := m.store.Update(ctx, strings.TrimSpace(userID), func(user *User) error { user.State = UserStateDeleted; return nil })
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return user.toSummary(), nil
+	}
+	user, err := m.store.GetByID(ctx, strings.TrimSpace(userID))
 	if err != nil {
 		return UserSummary{}, err
 	}
-	return user.toSummary(), nil
+	user.State = UserStateDeleted
+	user.UpdatedAt = time.Now().UTC()
+	if m.raftGroups != nil {
+		applied, err := m.commitUserPutRaft(ctx, user, "identity-user-put")
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return applied.toSummary(), nil
+	}
+	applied, err := m.commitUserPut(ctx, user)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	return applied.toSummary(), nil
 }
 
 func (m *Module) SetUserPassword(ctx context.Context, userID string, password string) (UserSummary, error) {
+	if m.raftGroups == nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
+			return UserSummary{}, err
+		}
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return UserSummary{}, err
@@ -191,11 +322,31 @@ func (m *Module) SetUserPassword(ctx context.Context, userID string, password st
 	if err != nil {
 		return UserSummary{}, err
 	}
-	user, err := m.store.UpdatePasswordHash(ctx, strings.TrimSpace(userID), hash)
+	if m.wal == nil && m.raftGroups == nil {
+		user, err := m.store.UpdatePasswordHash(ctx, strings.TrimSpace(userID), hash)
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return user.toSummary(), nil
+	}
+	user, err := m.store.GetByID(ctx, strings.TrimSpace(userID))
 	if err != nil {
 		return UserSummary{}, err
 	}
-	return user.toSummary(), nil
+	user.PasswordHash = hash
+	user.UpdatedAt = time.Now().UTC()
+	if m.raftGroups != nil {
+		applied, err := m.commitUserPutRaft(ctx, user, "identity-user-put")
+		if err != nil {
+			return UserSummary{}, err
+		}
+		return applied.toSummary(), nil
+	}
+	applied, err := m.commitUserPut(ctx, user)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	return applied.toSummary(), nil
 }
 
 func (m *Module) AuthenticateUser(ctx context.Context, username string, password string) (UserSummary, error) {
@@ -237,7 +388,15 @@ func (m *Module) CreateAuthSession(ctx context.Context, user UserSummary, metada
 		return "", domainauth.RefreshSession{}, err
 	}
 	now := time.Now().UTC()
-	rec, err := m.sessions.Create(ctx, domainauth.RefreshSession{UserID: userID, UserRef: identity.UserRef(user.Username), Status: domainauth.RefreshSessionStatusActive, RefreshTokenHash: refreshTokenHash, CreatedAt: now, LastUsedAt: now, IdleExpiresAt: now.Add(idleTTL), AbsoluteExpiresAt: now.Add(absoluteTTL), Metadata: metadata})
+	rec := domainauth.RefreshSession{ID: domainauth.RefreshSessionID(uuid.New()), UserID: userID, UserRef: identity.UserRef(user.Username), Status: domainauth.RefreshSessionStatusActive, TokenFamilyID: domainauth.TokenFamilyID(uuid.NewString()), RefreshTokenHash: refreshTokenHash, CreatedAt: now, LastUsedAt: now, IdleExpiresAt: now.Add(idleTTL), AbsoluteExpiresAt: now.Add(absoluteTTL), Metadata: metadata}
+	if m.raftGroups != nil {
+		applied, err := m.commitUserSessionPutRaft(ctx, rec, "identity-user-session-put")
+		if err != nil {
+			return "", domainauth.RefreshSession{}, err
+		}
+		return refreshToken, applied, nil
+	}
+	rec, err = m.sessions.Create(ctx, rec)
 	if err != nil {
 		return "", domainauth.RefreshSession{}, err
 	}
@@ -271,7 +430,11 @@ func (m *Module) RefreshAuthSession(ctx context.Context, refreshToken domainauth
 	if !refreshSessionRefreshable(rec, now) {
 		if rec.Status == domainauth.RefreshSessionStatusActive && refreshSessionExpired(rec, now) {
 			rec.Status = domainauth.RefreshSessionStatusExpired
-			_, _ = m.sessions.Update(ctx, rec)
+			if m.raftGroups != nil {
+				_, _ = m.commitUserSessionPutRaft(ctx, rec, "identity-user-session-expire")
+			} else {
+				_, _ = m.sessions.Update(ctx, rec)
+			}
 		}
 		return UserSummary{}, "", domainauth.RefreshSession{}, ErrInvalidRefreshToken
 	}
@@ -303,7 +466,12 @@ func (m *Module) RefreshAuthSession(ctx context.Context, refreshToken domainauth
 		rec.IdleExpiresAt = rec.AbsoluteExpiresAt
 	}
 	rec.Metadata = metadata
-	updated, err := m.sessions.Update(ctx, rec)
+	var updated domainauth.RefreshSession
+	if m.raftGroups != nil {
+		updated, err = m.commitUserSessionPutRaft(ctx, rec, "identity-user-session-refresh")
+	} else {
+		updated, err = m.sessions.Update(ctx, rec)
+	}
 	if err != nil {
 		return UserSummary{}, "", domainauth.RefreshSession{}, err
 	}
@@ -339,6 +507,13 @@ func (m *Module) RevokeUserSession(ctx context.Context, userID string, sessionID
 	if rec.UserID != userUUID {
 		return ErrUserNotFound
 	}
+	if m.raftGroups != nil {
+		rec.Status = domainauth.RefreshSessionStatusRevoked
+		rec.RevokedAt = time.Now().UTC()
+		rec.RevokedReason = "admin user session revoked"
+		_, err = m.commitUserSessionPutRaft(ctx, rec, "identity-user-session-revoke")
+		return err
+	}
 	_, err = m.sessions.RevokeByID(ctx, rec.ID, time.Now().UTC(), "admin user session revoked")
 	return err
 }
@@ -363,7 +538,14 @@ func (m *Module) RevokeUserSessions(ctx context.Context, userID string) (int, er
 		if rec.Status == domainauth.RefreshSessionStatusRevoked {
 			continue
 		}
-		if _, err := m.sessions.RevokeByID(ctx, rec.ID, now, "admin user sessions revoked"); err != nil {
+		if m.raftGroups != nil {
+			rec.Status = domainauth.RefreshSessionStatusRevoked
+			rec.RevokedAt = now
+			rec.RevokedReason = "admin user sessions revoked"
+			if _, err := m.commitUserSessionPutRaft(ctx, rec, "identity-user-session-revoke"); err != nil {
+				return count, err
+			}
+		} else if _, err := m.sessions.RevokeByID(ctx, rec.ID, now, "admin user sessions revoked"); err != nil {
 			return count, err
 		}
 		count++
@@ -380,6 +562,13 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 		return nil, quiesce.GRPCError(err)
 	}
 	return release, nil
+}
+
+func (m *Module) requireLocalWriteAllowed() error {
+	if m.writeAllowed == nil {
+		return nil
+	}
+	return m.writeAllowed()
 }
 
 func refreshSessionRefreshable(rec domainauth.RefreshSession, now time.Time) bool {

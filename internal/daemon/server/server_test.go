@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
@@ -191,6 +192,12 @@ func (fakeSpaceManager) UpdateDomain(context.Context, string, daemonspace.Update
 	return graph.Domain{}, nil
 }
 func (fakeSpaceManager) DeleteDomain(context.Context, string, string, string) error { return nil }
+func (fakeSpaceManager) ListTemplates(context.Context, string, bool, bool) ([]graph.Template, error) {
+	return []graph.Template{{ID: uuid.MustParse("00000000-0000-0000-0000-000000000005"), SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Key: "note", Version: "1.0.0", DisplayName: "Note", State: graph.TemplateStateActive}}, nil
+}
+func (fakeSpaceManager) GetTemplate(context.Context, string, string) (graph.Template, error) {
+	return graph.Template{}, daemonspace.ErrSpaceNotFound
+}
 func (fakeSpaceManager) ListVisibleTemplates(context.Context, string, string, bool, bool) ([]graph.Template, error) {
 	return []graph.Template{{ID: uuid.MustParse("00000000-0000-0000-0000-000000000005"), SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Key: "note", Version: "1.0.0", DisplayName: "Note", State: graph.TemplateStateActive}}, nil
 }
@@ -274,6 +281,56 @@ func TestServerRegistersProtectedAdminOperatorService(t *testing.T) {
 	}
 	if len(res.GetOperators()) != 1 || res.GetOperators()[0].GetUsername() != "admin" {
 		t.Fatalf("unexpected operators response: %#v", res)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("server returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for server shutdown")
+	}
+}
+
+func TestServerRegistersProtectedAdminClusterService(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := testServerConfig(t, ctx)
+	mgr, err := clustering.NewManager(ctx, clustering.Options{DataDir: t.TempDir(), NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093"}, slog.Default())
+	if err != nil {
+		t.Fatalf("new cluster manager: %v", err)
+	}
+	cfg.ClusteringManager = mgr
+	cfg.ClusteringServer = mgr.BackendService()
+	srv, errCh, err := Start(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer srv.Stop()
+
+	conn, err := grpc.DialContext(ctx, srv.Addr(), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	if err != nil {
+		t.Fatalf("dial grpc server: %v", err)
+	}
+	defer conn.Close()
+	client := adminv1.NewAdminClusterServiceClient(conn)
+	if _, err := client.GetClusterStatus(ctx, &adminv1.GetClusterStatusRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected unauthenticated cluster status to fail, got %v", err)
+	}
+	authClient := adminv1.NewAdminAuthServiceClient(conn)
+	login, err := authClient.LoginOperator(ctx, &adminv1.LoginOperatorRequest{Username: "admin", Password: "pass"})
+	if err != nil {
+		t.Fatalf("LoginOperator() error = %v", err)
+	}
+	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+login.GetAccessToken())
+	res, err := client.GetClusterStatus(authCtx, &adminv1.GetClusterStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetClusterStatus() error = %v", err)
+	}
+	if res.GetNode().GetNodeName() != "node-a" || res.GetCluster().GetClusterName() != "dev" {
+		t.Fatalf("unexpected cluster status: %#v", res)
 	}
 
 	cancel()

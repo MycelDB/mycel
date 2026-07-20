@@ -34,12 +34,15 @@ type UpdateInput struct {
 type Manager interface {
 	Init(ctx context.Context, location string) error
 	Create(ctx context.Context, in CreateInput) (graph.Domain, error)
+	ApplyCreate(ctx context.Context, domain graph.Domain) (graph.Domain, error)
 	EnsureDefault(ctx context.Context, spaceID domainspace.SpaceID) (graph.Domain, error)
 	GetByID(ctx context.Context, id graph.DomainID) (graph.Domain, error)
 	FindBySpaceAndKey(ctx context.Context, spaceID domainspace.SpaceID, key string) (graph.Domain, error)
 	GetDefault(ctx context.Context, spaceID domainspace.SpaceID) (graph.Domain, error)
 	ListBySpace(ctx context.Context, spaceID domainspace.SpaceID) ([]graph.Domain, error)
 	Update(ctx context.Context, in UpdateInput) (graph.Domain, error)
+	ApplyUpdate(ctx context.Context, domain graph.Domain) (graph.Domain, error)
 	DeleteByID(ctx context.Context, id graph.DomainID) error
+	ApplyDelete(ctx context.Context, id graph.DomainID) error
 	DeleteForSpace(ctx context.Context, spaceID domainspace.SpaceID) error
 }

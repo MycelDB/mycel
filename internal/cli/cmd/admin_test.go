@@ -455,7 +455,7 @@ func TestAdminListCommandFailsWhenDaemonUnavailable(t *testing.T) {
 func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "myceld")
-	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"})
+	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", NodeName: "node-a", Cluster: daemonconfig.ClusterConfig{Name: "dev", BackendAdvertiseAddr: "127.0.0.1:9093"}})
 	if err != nil {
 		t.Fatalf("initialize daemon admin store failed: %v", err)
 	}
@@ -497,7 +497,7 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	}
 	password := bootstrapPasswordFromLog(t, rt.LogPath)
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: adminModule, AdminAuthenticator: adminModule, OperatorManager: adminModule, BackupManager: backupModule, UserManager: userModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, Logger: rt.Logger, Quiesce: rt.Quiesce})
+	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: adminModule, AdminAuthenticator: adminModule, OperatorManager: adminModule, BackupManager: backupModule, UserManager: userModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, Logger: rt.Logger, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService()})
 	if err != nil {
 		_ = rt.Close()
 		t.Fatalf("start grpc server failed: %v", err)

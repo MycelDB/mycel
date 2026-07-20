@@ -9,7 +9,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
+	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
+	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	"github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
@@ -25,6 +29,7 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
 	"github.com/myceldb/mycel/internal/graph/change"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 const LogFilename = "myceld.log"
@@ -98,7 +103,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, Quiesce: rt.Quiesce})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, TemplateManager: adminapi.NewAdminTemplateService(spaceService, adminService), SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -106,6 +111,9 @@ func Run(ctx context.Context) int {
 	defer stopServer()
 
 	rt.Logger.Info("daemon ready", "grpc_addr", grpcServer.Addr())
+	if rt.ClusterManager != nil {
+		_ = rt.ClusterManager.Start(serverCtx)
+	}
 	logRuntimeConfiguration(rt.Logger, cfg, rt.LogPath, grpcServer.Addr())
 	waitForShutdown(ctx, rt.Logger)
 	stopServer()
@@ -141,6 +149,40 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	logger.Info("log directory ready", "path", logDir, "created", logDirCreated)
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
+	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken}, logger)
+	if err != nil {
+		_ = rt.Close()
+		return nil, fmt.Errorf("initialize clustering: %w", err)
+	}
+	rt.ClusterManager = clusterManager
+	if rt.RaftRouter != nil {
+		clusterManager.SetBackendRaftRouter(rt.RaftRouter)
+	}
+	identity := clusterManager.Identity()
+	rt.NodeIdentity = &identity
+	rt.NodeState = clusterManager.State()
+	if reg := clusterManager.Registration(); reg != nil {
+		reg.Interval = cfg.Cluster.DiscoveryInterval
+	}
+	logger.Info("clustering ready", "node_id", identity.NodeID, "node_name", identity.NodeName, "cluster_id", identity.ClusterID, "cluster_name", identity.ClusterName, "node_state", rt.NodeState, "backend_advertise_addr", identity.BackendAdvertiseAddr)
+	if cfg.WAL.Enabled {
+		walDir := cfg.WAL.Dir
+		if walDir == "" {
+			walDir = filepath.Join(cfg.DataDir, "wal")
+		}
+		walManager, err := wal.Open(ctx, wal.Options{Dir: walDir, SegmentBytes: cfg.WAL.SegmentBytes})
+		if err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("open wal: %w", err)
+		}
+		rt.WAL = walManager
+		progress := wal.NewFileProgressStore(filepath.Join(cfg.DataDir, "meta", "wal", "progress.json"))
+		rt.WALProgress = progress
+		rt.WALCheckpoint = wal.NewCheckpointStore(filepath.Join(cfg.DataDir, "meta", "wal", "checkpoint.json"))
+		rt.WALRecovery = wal.NewRecovery(walManager, rt.WALRegistry, progress)
+		rt.WALWaiter = rt.WALRecovery.Waiter()
+		logger.Info("wal ready", "path", walDir, "last_committed_lsn", walManager.LastCommittedLSN())
+	}
 	adminService := admin.NewModule()
 	userService := daemonuser.NewModule()
 	spaceService := daemonspace.NewModule()
@@ -154,6 +196,45 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		_ = rt.Close()
 		return nil, err
 	}
+	if raftRuntimeConfigured(cfg) {
+		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
+			return compositeSystemStateMachine{consensus.NewSystemStateMachine(), daemonuser.RaftStateMachine{Module: userService}, admin.RaftStateMachine{Module: adminService}}
+		}, func(partitionID uint32) consensus.StateMachine {
+			partitionCount := uint32(cfg.Cluster.RaftPartitionCount)
+			return compositePartitionStateMachine{
+				daemonspace.RaftStateMachine{Module: spaceService, PartitionCount: partitionCount},
+				daegraph.RaftStateMachine{Module: graphService, PartitionCount: partitionCount},
+				daemonblob.RaftStateMachine{Module: blobService, PartitionCount: partitionCount},
+				daemonsemantic.RaftStateMachine{Module: semanticService, PartitionCount: partitionCount},
+			}
+		}); err != nil {
+			_ = rt.Close()
+			return nil, err
+		}
+		spaceService.EnableExperimentalRaft(rt.RaftGroups, consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
+		graphService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
+		graphService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
+		blobService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
+		blobService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken, identity.ClusterID)
+		semanticService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
+		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
+		userService.EnableExperimentalRaft(rt.RaftGroups)
+		adminService.EnableExperimentalRaft(rt.RaftGroups)
+	}
+	clusterManager.SetBackendBlobPayloadProvider(daemonblob.BackendPayloadProvider{Module: blobService})
+	clusterManager.SetBackendSpaceReader(spaceService)
+	clusterManager.SetBackendGraphReader(graphService)
+	clusterManager.SetBackendSemanticReader(semanticService)
+	if rt.WALRecovery != nil {
+		started := time.Now()
+		applied, err := rt.WALRecovery.Recover(ctx)
+		if err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("recover wal: %w", err)
+		}
+		logger.Info("wal recovery complete", "applied_lsn", applied, "last_committed_lsn", rt.WAL.LastCommittedLSN(), "duration", time.Since(started))
+	}
+	// Local WAL durability and recovery remain active above; clustered operation is Raft-only.
 	graphService.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)
 		if err != nil {
@@ -167,6 +248,13 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	}
 	logger.Info("daemon initialization complete")
 	return rt, nil
+}
+
+func raftRuntimeConfigured(cfg config.Config) bool {
+	// A daemon with an explicit Raft node address map participates in clustered Raft.
+	// A single-node Raft configuration is also valid for local tests/dev. Default
+	// standalone daemons without Raft addresses remain non-clustered.
+	return len(cfg.Cluster.RaftNodeAddrs) > 0 || cfg.Cluster.RaftNodeCount == 1
 }
 
 func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath string, grpcAddr string) {

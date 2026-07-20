@@ -7,6 +7,7 @@ import (
 	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 const ModuleName = "space"
@@ -28,6 +29,8 @@ type Manager interface {
 	CreateDomain(ctx context.Context, userID string, input CreateDomainInput) (graph.Domain, error)
 	UpdateDomain(ctx context.Context, userID string, input UpdateDomainInput) (graph.Domain, error)
 	DeleteDomain(ctx context.Context, userID string, spaceID string, domainID string) error
+	ListTemplates(ctx context.Context, spaceID string, includeSystem bool, includeArchived bool) ([]graph.Template, error)
+	GetTemplate(ctx context.Context, spaceID string, templateID string) (graph.Template, error)
 	ListVisibleTemplates(ctx context.Context, userID string, spaceID string, includeSystem bool, includeArchived bool) ([]graph.Template, error)
 	GetVisibleTemplate(ctx context.Context, userID string, spaceID string, templateID string) (graph.Template, error)
 	FindVisibleTemplate(ctx context.Context, userID string, spaceID string, key string, version string) (graph.Template, error)
@@ -43,6 +46,13 @@ type CreateSpaceInput struct {
 	OwnerUserID       identity.UserID
 	DefaultDomainKey  string
 	DefaultDomainName string
+	CommandID         string
+}
+
+type CreateSpaceResult struct {
+	Space     domainspace.Space
+	Domain    graph.Domain
+	CommitLSN wal.LSN
 }
 
 type CreateDomainInput struct {

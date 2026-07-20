@@ -13,10 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -168,6 +170,63 @@ func TestModuleInitStandalonePromotesExistingAdminWhenNoSystemAdmin(t *testing.T
 	}
 	if !strings.Contains(logs.String(), "existing standalone admin promoted to system admin") {
 		t.Fatalf("expected migration warning, got logs:\n%s", logs.String())
+	}
+}
+
+func TestModuleWALOperatorMutationsAppendAndApply(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	walManager, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal"), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer walManager.Close()
+	progress := wal.NewFileProgressStore(filepath.Join(dataDir, "meta", "wal", "progress.json"))
+	var logs bytes.Buffer
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir, Mode: "mesh"}, Logger: slog.New(slog.NewTextHandler(&logs, nil)), WAL: walManager, WALRegistry: wal.NewRegistry(), WALProgress: progress, WALWaiter: wal.NewApplyWaiter()}
+	module := NewModule()
+	if result := module.Init(ctx, rt); !result.OK {
+		t.Fatalf("Init() error = %v logs=%s", result.Error, logs.String())
+	}
+	created, err := module.CreateOperator(ctx, CreateOperatorInput{Username: "op", Password: "op-pass"})
+	if err != nil {
+		t.Fatalf("CreateOperator() error = %v", err)
+	}
+	email := "op@example.com"
+	if _, err := module.UpdateOperator(ctx, UpdateOperatorInput{OperatorID: created.ID, Email: &email}); err != nil {
+		t.Fatalf("UpdateOperator() error = %v", err)
+	}
+	if _, err := module.SetOperatorPassword(ctx, created.ID, "new-pass"); err != nil {
+		t.Fatalf("SetOperatorPassword() error = %v", err)
+	}
+	grant, _, err := module.GrantRole(ctx, created.ID, OperatorRoleUserAdmin, systemScope(), "test", uuid.NewString())
+	if err != nil {
+		t.Fatalf("GrantRole() error = %v", err)
+	}
+	if _, err := module.RevokeRole(ctx, created.ID, grant.ID); err != nil {
+		t.Fatalf("RevokeRole() error = %v", err)
+	}
+	capGrant, _, err := module.GrantCapability(ctx, created.ID, "test.capability", systemScope(), "test", uuid.NewString())
+	if err != nil {
+		t.Fatalf("GrantCapability() error = %v", err)
+	}
+	if _, err := module.RevokeCapability(ctx, created.ID, capGrant.ID); err != nil {
+		t.Fatalf("RevokeCapability() error = %v", err)
+	}
+	if _, err := module.DisableOperator(ctx, created.ID); err != nil {
+		t.Fatalf("DisableOperator() error = %v", err)
+	}
+	if _, err := module.EnableOperator(ctx, created.ID); err != nil {
+		t.Fatalf("EnableOperator() error = %v", err)
+	}
+	if _, err := module.DeleteOperator(ctx, created.ID); err != nil {
+		t.Fatalf("DeleteOperator() error = %v", err)
+	}
+	if got := walManager.LastCommittedLSN(); got != 10 {
+		t.Fatalf("LastCommittedLSN() = %v, want 10", got)
+	}
+	if applied, err := progress.AppliedLSN(ctx); err != nil || applied != 10 {
+		t.Fatalf("AppliedLSN() = %v, %v; want 10", applied, err)
 	}
 }
 

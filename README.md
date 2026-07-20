@@ -15,7 +15,7 @@ mycel and applications talk to myceld over gRPC
 
 Do not embed Mycel by opening an engine or file-backed sessions in an application process. Applications should use `mycel-go-sdk` and the language-independent protobuf contracts in `mycel-api`; the `mycel` module contains daemon binaries and internal implementation packages only. The historical public `engine`, `session`, `domain`, `query`, and `store` implementation packages have been removed or internalized.
 
-See [`docs/v2/design/daemon-only-boundary.md`](docs/v2/design/daemon-only-boundary.md) for the boundary and removal plan.
+See [`docs/design/daemon-only-boundary.md`](docs/design/daemon-only-boundary.md) for the boundary and removal plan.
 
 ## Go package boundary
 
@@ -117,7 +117,7 @@ Key daemon setting:
 MYCELD_ACCESS_TOKEN_TTL=15m
 ```
 
-Keep access-token TTLs short; prefer refresh sessions over increasing the TTL for long-running services. Admin auth details are documented in [`docs/v2/design/grpc-admin-auth.md`](docs/v2/design/grpc-admin-auth.md), with release notes in [`docs/v2/design/auth-refresh-release-notes.md`](docs/v2/design/auth-refresh-release-notes.md).
+Keep access-token TTLs short; prefer refresh sessions over increasing the TTL for long-running services. Admin auth details are documented in [`docs/design/grpc-admin-auth.md`](docs/design/grpc-admin-auth.md), with release notes in [`docs/design/auth-refresh-release-notes.md`](docs/design/auth-refresh-release-notes.md).
 
 ## Backups
 
@@ -134,7 +134,7 @@ Backups quiesce daemon work before snapshotting. New non-exempt RPCs during quie
 
 Scheduled backups are disabled by default. Policies support interval, daily, and weekly schedules; daily/weekly schedules use wall-clock `time_of_day` plus an IANA timezone. Supported archive formats are `zip`, `tar`, `tar.gz`, and `tar.zst` through the `archive_format` policy/CLI flag. Key daemon settings include `MYCELD_BACKUP_ENABLED`, `MYCELD_BACKUP_DIR`, `MYCELD_BACKUP_INTERVAL`, `MYCELD_BACKUP_RETENTION_COUNT`, `MYCELD_BACKUP_INCLUDE_LOGS`, and the legacy archive-format seed `MYCELD_BACKUP_COMPRESSION`. The backup directory must be outside `MYCELD_DATA_DIR`. Restore is offline-only in the MVP: stop `myceld`, verify and extract the archive into an empty/restored data directory, then start `myceld` against that directory.
 
-See [`docs/v2/design/admin/backup.md`](docs/v2/design/admin/backup.md) and [`docs/v2/design/quiesce-and-backup.md`](docs/v2/design/quiesce-and-backup.md).
+See [`docs/design/admin/backup.md`](docs/design/admin/backup.md) and [`docs/design/quiesce-and-backup.md`](docs/design/quiesce-and-backup.md).
 
 ## CLI
 

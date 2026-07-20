@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -80,6 +82,41 @@ func waitForBlobGateQuiesced(t *testing.T, gate *quiesce.Gate) {
 			t.Fatal("timed out waiting for blob gate to quiesce")
 		case <-time.After(time.Millisecond):
 		}
+	}
+}
+
+func TestModuleWALBlobMetadataMutationsAppendAndApply(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	walManager, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal"), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer walManager.Close()
+	progress := wal.NewFileProgressStore(filepath.Join(dataDir, "meta", "wal", "progress.json"))
+	m := NewModule(fakeRefCounter{})
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, Logger: slog.Default(), WAL: walManager, WALRegistry: wal.NewRegistry(), WALProgress: progress, WALWaiter: wal.NewApplyWaiter()}
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	meta, err := m.UploadBlob(ctx, UploadInput{SpaceID: "space-1", DeclaredMimeType: "text/plain", OriginalFilename: "hello.txt", Reader: bytes.NewReader([]byte("hello blob"))})
+	if err != nil {
+		t.Fatalf("UploadBlob() error = %v", err)
+	}
+	if got := walManager.LastCommittedLSN(); got != 1 {
+		t.Fatalf("LastCommittedLSN() = %v, want 1", got)
+	}
+	if _, err := m.GetBlob(ctx, "space-1", meta.BlobID); err != nil {
+		t.Fatalf("GetBlob() error = %v", err)
+	}
+	if _, err := m.DeleteBlob(ctx, "space-1", meta.BlobID); err != nil {
+		t.Fatalf("DeleteBlob() error = %v", err)
+	}
+	if got := walManager.LastCommittedLSN(); got != 2 {
+		t.Fatalf("LastCommittedLSN() = %v, want 2", got)
+	}
+	if applied, err := progress.AppliedLSN(ctx); err != nil || applied != 2 {
+		t.Fatalf("AppliedLSN() = %v, %v; want 2", applied, err)
 	}
 }
 

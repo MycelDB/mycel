@@ -6,14 +6,27 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
+	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
+	"github.com/myceldb/mycel/internal/wal"
 )
+
+type SnapshotReloadable interface {
+	ReloadAfterSnapshot(ctx context.Context) error
+}
 
 type Runtime struct {
 	Config config.Config
 	Logger *slog.Logger
+
+	ClusterManager *clustering.Manager
+	NodeIdentity   *model.NodeIdentity
+	NodeState      model.NodeState
 
 	// ServicesByName is the canonical runtime service registry.
 	ServicesByName  map[string]Service
@@ -23,6 +36,18 @@ type Runtime struct {
 	// Quiesce coordinates daemon services that can temporarily drain work for
 	// backup or other maintenance operations.
 	Quiesce *quiesce.Coordinator
+
+	// WAL is the daemon-owned write-ahead log manager. WALRegistry receives
+	// bounded-context appliers before WALRecovery runs during startup.
+	WAL           *wal.Manager
+	WALRegistry   *wal.Registry
+	WALRecovery   *wal.Recovery
+	WALProgress   wal.AppliedLSNStore
+	WALCheckpoint *wal.CheckpointStore
+	WALWaiter     *wal.ApplyWaiter
+
+	RaftGroups *consensus.MultiGroup
+	RaftRouter consensus.MessageSender
 
 	LogPath string
 
@@ -35,9 +60,33 @@ func New(cfg config.Config, logger *slog.Logger, logPath string, close func() er
 		Logger:         logger,
 		ServicesByName: map[string]Service{},
 		Quiesce:        quiesce.NewCoordinator(),
+		WALRegistry:    wal.NewRegistry(),
 		LogPath:        logPath,
 		close:          close,
 	}
+}
+
+func (r *Runtime) ReloadAfterSnapshot(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	for _, svc := range r.serviceOrder {
+		reloadable, ok := svc.(SnapshotReloadable)
+		if !ok {
+			continue
+		}
+		name := svc.Name()
+		if r.Logger != nil {
+			r.Logger.Info("reloading service after snapshot install", "service", name)
+		}
+		if err := reloadable.ReloadAfterSnapshot(ctx); err != nil {
+			if r.Logger != nil {
+				r.Logger.Error("service snapshot reload failed", "service", name, "error", err)
+			}
+			return fmt.Errorf("reload %s after snapshot: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) Close() error {
@@ -45,6 +94,18 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	var firstErr error
+	if r.RaftGroups != nil {
+		r.RaftGroups.Stop()
+	}
+	if r.ClusterManager != nil {
+		if err := r.ClusterManager.Stop(context.Background()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	} else if r.NodeIdentity != nil {
+		if err := clustering.WriteLocalState(r.Config.DataDir, model.NodeStateStopped, time.Now().UTC()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if err := r.StopServices(context.Background()); err != nil {
 		firstErr = err
 	}
@@ -53,6 +114,11 @@ func (r *Runtime) Close() error {
 			if err := closer.Close(); err != nil && firstErr == nil {
 				firstErr = err
 			}
+		}
+	}
+	if r.WAL != nil {
+		if err := r.WAL.Close(); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	if r.close != nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,9 +17,49 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestModuleWALGraphCommitAppendsAndApplies(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	walManager, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal"), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer walManager.Close()
+	progress := wal.NewFileProgressStore(filepath.Join(dataDir, "meta", "wal", "progress.json"))
+	m := NewModule()
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, Logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), WAL: walManager, WALRegistry: wal.NewRegistry(), WALProgress: progress, WALWaiter: wal.NewApplyWaiter()}
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	node, err := m.CreateNode(ctx, tx, NodeInput{Content: "wal node", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	commit, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+	if commit.CommittedRevision != 1 || commit.OperationCount != 1 {
+		t.Fatalf("commit=%#v", commit)
+	}
+	if got := walManager.LastCommittedLSN(); got != 1 {
+		t.Fatalf("LastCommittedLSN() = %v, want 1", got)
+	}
+	if applied, err := progress.AppliedLSN(ctx); err != nil || applied != 1 {
+		t.Fatalf("AppliedLSN() = %v, %v; want 1", applied, err)
+	}
+	readTx := graphTx(tx.SpaceID, tx.DomainID, commit.CommittedRevision)
+	got, err := m.GetNode(ctx, readTx, node.ID.String())
+	if err != nil || got.ID != node.ID {
+		t.Fatalf("GetNode() = %#v, %v", got, err)
+	}
+}
 
 func TestModuleQuiesceRejectsGraphCommit(t *testing.T) {
 	ctx := context.Background()
