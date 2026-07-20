@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/myceldb/mycel/internal/cli/app"
@@ -22,55 +21,13 @@ func NewClusterCommand(a *app.App) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{Use: "health", Short: "Show aggregate cluster health", RunE: func(cmd *cobra.Command, args []string) error {
 		return runClusterHealth(cmd.Context(), a)
 	}})
-	cmd.AddCommand(newClusterNodeCommand(a), newClusterPrimaryCommand(a))
-	return cmd
-}
-
-func newClusterPrimaryCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "primary", Short: "Manage cluster primary authority"}
-	switchCmd := &cobra.Command{Use: "switch NODE", Short: "Safely switch primary authority to a caught-up follower", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		return runClusterPrimarySwitch(cmd.Context(), a, args[0])
-	}}
-	var force bool
-	var confirm string
-	promoteCmd := &cobra.Command{Use: "promote", Short: "Force-promote this node for emergency failover", RunE: func(cmd *cobra.Command, args []string) error {
-		return runClusterPrimaryPromote(cmd.Context(), a, force, confirm)
-	}}
-	promoteCmd.Flags().BoolVar(&force, "force", false, "required: force emergency promotion")
-	promoteCmd.Flags().StringVar(&confirm, "confirm-old-primary-fenced", "", "required confirmation value: old-primary-fenced")
-	cmd.AddCommand(switchCmd, promoteCmd)
-	return cmd
-}
-
-func newClusterNodeCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "node", Short: "Manage cluster node admission"}
-	var tokenFile string
-	add := &cobra.Command{Use: "add NODE_NAME", Short: "Create a pending node admission token", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		return runClusterNodeAdd(cmd.Context(), a, args[0], tokenFile)
-	}}
-	remove := &cobra.Command{Use: "remove NODE", Short: "Mark a non-primary cluster member removed", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		return runClusterNodeRemove(cmd.Context(), a, args[0])
-	}}
-	rename := &cobra.Command{Use: "rename NODE NEW_NAME", Short: "Rename a cluster member", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
-		return runClusterNodeRename(cmd.Context(), a, args[0], args[1])
-	}}
-	add.Flags().StringVar(&tokenFile, "token-file", "", "write one-time join token to this file")
-	resync := &cobra.Command{Use: "resync NODE", Short: "Resync an active follower from a primary snapshot", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		return runClusterNodeResync(cmd.Context(), a, args[0])
-	}}
-	history := &cobra.Command{Use: "resync-history", Short: "Show recent cluster node resync operations", RunE: func(cmd *cobra.Command, args []string) error {
-		return runClusterNodeResyncHistory(cmd.Context(), a)
-	}}
-	cmd.AddCommand(add, remove, rename, resync, history)
 	return cmd
 }
 
 type clusterStatusOutput struct {
-	Node        clusterNodeOutput        `json:"node"`
-	Cluster     clusterInfoOutput        `json:"cluster"`
-	Authority   clusterAuthorityOutput   `json:"authority,omitempty"`
-	Replication clusterReplicationOutput `json:"replication,omitempty"`
-	Peers       []clusterPeerOutput      `json:"peers"`
+	Node    clusterNodeOutput   `json:"node"`
+	Cluster clusterInfoOutput   `json:"cluster"`
+	Peers   []clusterPeerOutput `json:"peers"`
 }
 
 type clusterNodeOutput struct {
@@ -80,53 +37,12 @@ type clusterNodeOutput struct {
 	Admitted             bool   `json:"admitted"`
 	Bootstrap            bool   `json:"bootstrap"`
 	BackendAdvertiseAddr string `json:"backend_advertise_addr,omitempty"`
-	Role                 string `json:"role"`
 }
 
 type clusterInfoOutput struct {
 	ClusterID   string `json:"cluster_id"`
 	ClusterName string `json:"cluster_name,omitempty"`
 	Mode        string `json:"mode"`
-}
-
-type clusterAuthorityOutput struct {
-	ClusterID                   string `json:"cluster_id,omitempty"`
-	PrimaryNodeID               string `json:"primary_node_id,omitempty"`
-	PrimaryNodeName             string `json:"primary_node_name,omitempty"`
-	PrimaryBackendAdvertiseAddr string `json:"primary_backend_advertise_addr,omitempty"`
-	AuthorityEpoch              int64  `json:"authority_epoch,omitempty"`
-	Term                        int64  `json:"term,omitempty"`
-	Source                      string `json:"source,omitempty"`
-	UpdatedAt                   string `json:"updated_at,omitempty"`
-}
-
-type clusterReplicationOutput struct {
-	Role                        string                  `json:"role,omitempty"`
-	PrimaryNodeID               string                  `json:"primary_node_id,omitempty"`
-	PrimaryNodeName             string                  `json:"primary_node_name,omitempty"`
-	PrimaryBackendAdvertiseAddr string                  `json:"primary_backend_advertise_addr,omitempty"`
-	AuthorityEpoch              int64                   `json:"authority_epoch,omitempty"`
-	ReceivedLSN                 uint64                  `json:"received_lsn,omitempty"`
-	AppliedLSN                  uint64                  `json:"applied_lsn,omitempty"`
-	PrimaryLastLSN              uint64                  `json:"primary_last_lsn,omitempty"`
-	LagRecords                  uint64                  `json:"lag_records,omitempty"`
-	Connected                   bool                    `json:"connected"`
-	LastError                   string                  `json:"last_error,omitempty"`
-	UpdatedAt                   string                  `json:"updated_at,omitempty"`
-	CatchupState                string                  `json:"catchup_state,omitempty"`
-	FirstRetainedLSN            uint64                  `json:"first_retained_lsn,omitempty"`
-	CheckpointLSN               uint64                  `json:"checkpoint_lsn,omitempty"`
-	SnapshotRequired            *snapshotRequiredOutput `json:"snapshot_required,omitempty"`
-}
-
-type snapshotRequiredOutput struct {
-	RequestedAfterLSN uint64 `json:"requested_after_lsn"`
-	NextRequestedLSN  uint64 `json:"next_requested_lsn"`
-	FirstRetainedLSN  uint64 `json:"first_retained_lsn"`
-	LastCommittedLSN  uint64 `json:"last_committed_lsn"`
-	CheckpointLSN     uint64 `json:"checkpoint_lsn"`
-	PrimaryNodeID     string `json:"primary_node_id,omitempty"`
-	AuthorityEpoch    int64  `json:"authority_epoch,omitempty"`
 }
 
 type clusterPeerOutput struct {
@@ -145,7 +61,6 @@ type clusterMemberOutput struct {
 	NodeID                   string `json:"node_id,omitempty"`
 	State                    string `json:"state"`
 	BackendAdvertiseAddr     string `json:"backend_advertise_addr,omitempty"`
-	Role                     string `json:"role,omitempty"`
 	ClusterBootstrap         bool   `json:"cluster_bootstrap,omitempty"`
 	NodePublicKeyFingerprint string `json:"node_public_key_fingerprint,omitempty"`
 	TokenID                  string `json:"token_id,omitempty"`
@@ -163,175 +78,6 @@ type clusterMembersOutput struct {
 	Members     []clusterMemberOutput `json:"members"`
 }
 
-type clusterNodeAddOutput struct {
-	NodeName  string `json:"node_name"`
-	State     string `json:"state"`
-	Token     string `json:"token,omitempty"`
-	TokenFile string `json:"token_file,omitempty"`
-	TokenID   string `json:"token_id"`
-	ExpiresAt string `json:"expires_at"`
-}
-
-type clusterResyncOperationOutput struct {
-	OperationID                string `json:"operation_id"`
-	TargetNodeID               string `json:"target_node_id"`
-	TargetNodeName             string `json:"target_node_name"`
-	TargetBackendAdvertiseAddr string `json:"target_backend_advertise_addr"`
-	StartedAt                  string `json:"started_at"`
-	CompletedAt                string `json:"completed_at,omitempty"`
-	Status                     string `json:"status"`
-	SnapshotBaseLSN            uint64 `json:"snapshot_base_lsn,omitempty"`
-	TotalBytes                 uint64 `json:"total_bytes,omitempty"`
-	Checksum                   string `json:"checksum,omitempty"`
-	Error                      string `json:"error,omitempty"`
-}
-
-type clusterResyncHistoryOutput struct {
-	Operations []clusterResyncOperationOutput `json:"operations"`
-}
-
-type clusterPrimarySwitchOutput struct {
-	OperationID        string `json:"operation_id"`
-	OldPrimaryNodeID   string `json:"old_primary_node_id"`
-	OldPrimaryNodeName string `json:"old_primary_node_name"`
-	NewPrimaryNodeID   string `json:"new_primary_node_id"`
-	NewPrimaryNodeName string `json:"new_primary_node_name"`
-	AuthorityEpoch     int64  `json:"authority_epoch"`
-	FinalLSN           uint64 `json:"final_lsn"`
-}
-
-type clusterNodeResyncOutput struct {
-	OperationID     string `json:"operation_id"`
-	TargetNodeID    string `json:"target_node_id"`
-	TargetNodeName  string `json:"target_node_name"`
-	SnapshotBaseLSN uint64 `json:"snapshot_base_lsn"`
-	TotalBytes      uint64 `json:"total_bytes"`
-	Checksum        string `json:"checksum"`
-}
-
-func runClusterNodeAdd(ctx context.Context, a *app.App, nodeName string, tokenFile string) error {
-	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	res, err := adminv1.NewAdminClusterServiceClient(conn).AddClusterNode(authCtx, &adminv1.AddClusterNodeRequest{NodeName: strings.TrimSpace(nodeName)})
-	if err != nil {
-		return formatClusterWriteError("add cluster node", err)
-	}
-	out := clusterNodeAddOutput{NodeName: res.GetNodeName(), State: memberStateText(res.GetState()), Token: res.GetToken(), TokenID: res.GetTokenId(), ExpiresAt: res.GetExpiresAt()}
-	if strings.TrimSpace(tokenFile) != "" {
-		if err := os.WriteFile(tokenFile, []byte(res.GetToken()+"\n"), 0o600); err != nil {
-			return fmt.Errorf("write token file: %w", err)
-		}
-		out.Token = ""
-		out.TokenFile = tokenFile
-	}
-	text := fmt.Sprintf("Node %s added as %s.\n", out.NodeName, out.State)
-	if out.TokenFile != "" {
-		text += fmt.Sprintf("Token written to %s\n", out.TokenFile)
-	} else {
-		text += fmt.Sprintf("Join token:\n%s\n", out.Token)
-	}
-	return a.Print(out, text)
-}
-
-func runClusterPrimaryPromote(ctx context.Context, a *app.App, force bool, confirm string) error {
-	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	res, err := adminv1.NewAdminClusterServiceClient(conn).PromoteLocalPrimary(authCtx, &adminv1.PromoteLocalPrimaryRequest{Force: force, ConfirmOldPrimaryFenced: confirm})
-	if err != nil {
-		return formatClusterWriteError("promote local primary", err)
-	}
-	out := clusterPrimarySwitchOutput{OperationID: res.GetOperationId(), OldPrimaryNodeID: res.GetOldPrimaryNodeId(), OldPrimaryNodeName: res.GetOldPrimaryNodeName(), NewPrimaryNodeID: res.GetNewPrimaryNodeId(), NewPrimaryNodeName: res.GetNewPrimaryNodeName(), AuthorityEpoch: res.GetAuthorityEpoch()}
-	text := fmt.Sprintf("Local node promoted\nOld primary: %s (%s)\nNew primary: %s (%s)\nAuthority epoch: %d\n", out.OldPrimaryNodeName, out.OldPrimaryNodeID, out.NewPrimaryNodeName, out.NewPrimaryNodeID, out.AuthorityEpoch)
-	return a.Print(out, text)
-}
-
-func runClusterPrimarySwitch(ctx context.Context, a *app.App, target string) error {
-	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	res, err := adminv1.NewAdminClusterServiceClient(conn).SwitchClusterPrimary(authCtx, &adminv1.SwitchClusterPrimaryRequest{Target: strings.TrimSpace(target)})
-	if err != nil {
-		return formatClusterWriteError("switch cluster primary", err)
-	}
-	out := clusterPrimarySwitchOutput{OperationID: res.GetOperationId(), OldPrimaryNodeID: res.GetOldPrimaryNodeId(), OldPrimaryNodeName: res.GetOldPrimaryNodeName(), NewPrimaryNodeID: res.GetNewPrimaryNodeId(), NewPrimaryNodeName: res.GetNewPrimaryNodeName(), AuthorityEpoch: res.GetAuthorityEpoch(), FinalLSN: res.GetFinalLsn()}
-	text := fmt.Sprintf("Primary switched\nOld primary: %s (%s)\nNew primary: %s (%s)\nAuthority epoch: %d\nFinal LSN: %d\n", out.OldPrimaryNodeName, out.OldPrimaryNodeID, out.NewPrimaryNodeName, out.NewPrimaryNodeID, out.AuthorityEpoch, out.FinalLSN)
-	return a.Print(out, text)
-}
-
-func runClusterNodeRemove(ctx context.Context, a *app.App, target string) error {
-	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	res, err := adminv1.NewAdminClusterServiceClient(conn).RemoveClusterNode(authCtx, &adminv1.RemoveClusterNodeRequest{Target: strings.TrimSpace(target)})
-	if err != nil {
-		return formatClusterWriteError("remove cluster node", err)
-	}
-	out := clusterMemberOutput{NodeID: res.GetNodeId(), NodeName: res.GetNodeName(), State: memberStateText(res.GetState())}
-	return a.Print(out, fmt.Sprintf("Node %s removed.\n", out.NodeName))
-}
-
-func runClusterNodeRename(ctx context.Context, a *app.App, target string, newName string) error {
-	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	res, err := adminv1.NewAdminClusterServiceClient(conn).RenameClusterNode(authCtx, &adminv1.RenameClusterNodeRequest{Target: strings.TrimSpace(target), NewNodeName: strings.TrimSpace(newName)})
-	if err != nil {
-		return formatClusterWriteError("rename cluster node", err)
-	}
-	out := clusterMemberOutput{NodeID: res.GetNodeId(), NodeName: res.GetNodeName(), State: memberStateText(res.GetState())}
-	return a.Print(out, fmt.Sprintf("Node renamed to %s.\n", out.NodeName))
-}
-
-func runClusterNodeResync(ctx context.Context, a *app.App, target string) error {
-	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	res, err := adminv1.NewAdminClusterServiceClient(conn).ResyncClusterNode(authCtx, &adminv1.ResyncClusterNodeRequest{Target: strings.TrimSpace(target)})
-	if err != nil {
-		return formatClusterWriteError("resync cluster node", err)
-	}
-	out := clusterNodeResyncOutput{OperationID: res.GetOperationId(), TargetNodeID: res.GetTargetNodeId(), TargetNodeName: res.GetTargetNodeName(), SnapshotBaseLSN: res.GetSnapshotBaseLsn(), TotalBytes: res.GetTotalBytes(), Checksum: res.GetChecksum()}
-	text := fmt.Sprintf("Resync completed\nTarget: %s (%s)\nSnapshot base LSN: %d\nBytes transferred: %d\nOperation: %s\n", out.TargetNodeName, out.TargetNodeID, out.SnapshotBaseLSN, out.TotalBytes, out.OperationID)
-	return a.Print(out, text)
-}
-
-func runClusterNodeResyncHistory(ctx context.Context, a *app.App) error {
-	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	res, err := adminv1.NewAdminClusterServiceClient(conn).ListClusterResyncOperations(authCtx, &adminv1.ListClusterResyncOperationsRequest{})
-	if err != nil {
-		return fmt.Errorf("list cluster resync operations: %w", err)
-	}
-	out := clusterResyncHistoryOutput{}
-	lines := []string{}
-	for _, op := range res.GetOperations() {
-		item := clusterResyncOperationOutput{OperationID: op.GetOperationId(), TargetNodeID: op.GetTargetNodeId(), TargetNodeName: op.GetTargetNodeName(), TargetBackendAdvertiseAddr: op.GetTargetBackendAdvertiseAddr(), StartedAt: op.GetStartedAt(), CompletedAt: op.GetCompletedAt(), Status: op.GetStatus(), SnapshotBaseLSN: op.GetSnapshotBaseLsn(), TotalBytes: op.GetTotalBytes(), Checksum: op.GetChecksum(), Error: op.GetError()}
-		out.Operations = append(out.Operations, item)
-		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\tlsn=%d\tbytes=%d\t%s\n", item.Status, item.OperationID, item.TargetNodeName, item.SnapshotBaseLSN, item.TotalBytes, item.Error))
-	}
-	if len(lines) == 0 {
-		lines = append(lines, "No resync operations recorded.\n")
-	}
-	return a.Print(out, strings.Join(lines, ""))
-}
-
 func runClusterStatus(ctx context.Context, a *app.App) error {
 	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
 	if err != nil {
@@ -344,24 +90,11 @@ func runClusterStatus(ctx context.Context, a *app.App) error {
 	}
 	node := res.GetNode()
 	cluster := res.GetCluster()
-	authority := res.GetAuthority()
-	out := clusterStatusOutput{Node: clusterNodeOutput{NodeID: node.GetNodeId(), Name: node.GetNodeName(), State: nodeStateText(node.GetState()), Admitted: node.GetAdmitted(), Bootstrap: node.GetBootstrap(), BackendAdvertiseAddr: node.GetBackendAdvertiseAddr(), Role: nodeRoleText(node.GetRole())}, Cluster: clusterInfoOutput{ClusterID: cluster.GetClusterId(), ClusterName: cluster.GetClusterName(), Mode: clusterModeText(cluster.GetMode())}, Authority: clusterAuthorityOutput{ClusterID: authority.GetClusterId(), PrimaryNodeID: authority.GetPrimaryNodeId(), PrimaryNodeName: authority.GetPrimaryNodeName(), PrimaryBackendAdvertiseAddr: authority.GetPrimaryBackendAdvertiseAddr(), AuthorityEpoch: authority.GetAuthorityEpoch(), Term: authority.GetTerm(), Source: authority.GetSource(), UpdatedAt: authority.GetUpdatedAt()}}
-	if repl := res.GetReplication(); repl != nil {
-		out.Replication = clusterReplicationOutput{Role: replicationRoleText(repl.GetRole()), PrimaryNodeID: repl.GetPrimaryNodeId(), PrimaryNodeName: repl.GetPrimaryNodeName(), PrimaryBackendAdvertiseAddr: repl.GetPrimaryBackendAdvertiseAddr(), AuthorityEpoch: repl.GetAuthorityEpoch(), ReceivedLSN: repl.GetReceivedLsn(), AppliedLSN: repl.GetAppliedLsn(), PrimaryLastLSN: repl.GetPrimaryLastLsn(), LagRecords: repl.GetLagRecords(), Connected: repl.GetConnected(), LastError: repl.GetLastError(), UpdatedAt: repl.GetUpdatedAt(), CatchupState: replicationCatchupText(repl.GetCatchupState()), FirstRetainedLSN: repl.GetFirstRetainedLsn(), CheckpointLSN: repl.GetCheckpointLsn()}
-		if snap := repl.GetSnapshotRequired(); snap != nil {
-			out.Replication.SnapshotRequired = &snapshotRequiredOutput{RequestedAfterLSN: snap.GetRequestedAfterLsn(), NextRequestedLSN: snap.GetNextRequestedLsn(), FirstRetainedLSN: snap.GetFirstRetainedLsn(), LastCommittedLSN: snap.GetLastCommittedLsn(), CheckpointLSN: snap.GetCheckpointLsn(), PrimaryNodeID: snap.GetPrimaryNodeId(), AuthorityEpoch: snap.GetAuthorityEpoch()}
-		}
-	}
+	out := clusterStatusOutput{Node: clusterNodeOutput{NodeID: node.GetNodeId(), Name: node.GetNodeName(), State: nodeStateText(node.GetState()), Admitted: node.GetAdmitted(), Bootstrap: node.GetBootstrap(), BackendAdvertiseAddr: node.GetBackendAdvertiseAddr()}, Cluster: clusterInfoOutput{ClusterID: cluster.GetClusterId(), ClusterName: cluster.GetClusterName(), Mode: clusterModeText(cluster.GetMode())}}
 	for _, p := range res.GetPeers() {
 		out.Peers = append(out.Peers, clusterPeerOutput{NodeID: p.GetNodeId(), NodeName: p.GetNodeName(), ClusterID: p.GetClusterId(), ClusterName: p.GetClusterName(), BackendAdvertiseAddr: p.GetBackendAdvertiseAddr(), State: peerStateText(p.GetState()), Source: peerSourceText(p.GetSource()), LastSeenAt: p.GetLastSeenAt()})
 	}
-	replicationText := fmt.Sprintf("replication_applied_lsn=%d replication_lag=%d connected=%t", out.Replication.AppliedLSN, out.Replication.LagRecords, out.Replication.Connected)
-	if out.Replication.Role == "primary" {
-		replicationText = fmt.Sprintf("wal_last_lsn=%d first_retained_lsn=%d checkpoint_lsn=%d", out.Replication.PrimaryLastLSN, out.Replication.FirstRetainedLSN, out.Replication.CheckpointLSN)
-	} else if out.Replication.Role == "not_applicable" || out.Replication.Role == "" {
-		replicationText = "replication=not_applicable"
-	}
-	lines := []string{fmt.Sprintf("node=%s name=%s state=%s role=%s cluster=%s mode=%s primary=%s epoch=%d %s\n", out.Node.NodeID, out.Node.Name, out.Node.State, out.Node.Role, out.Cluster.ClusterName, out.Cluster.Mode, out.Authority.PrimaryNodeName, out.Authority.AuthorityEpoch, replicationText)}
+	lines := []string{fmt.Sprintf("node=%s name=%s state=%s cluster=%s mode=%s\n", out.Node.NodeID, out.Node.Name, out.Node.State, out.Cluster.ClusterName, out.Cluster.Mode)}
 	for _, p := range out.Peers {
 		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\n", p.State, p.NodeName, p.BackendAdvertiseAddr, p.Source))
 	}
@@ -378,7 +111,7 @@ func runClusterHealth(ctx context.Context, a *app.App) error {
 	if err != nil {
 		return fmt.Errorf("get cluster health: %w", err)
 	}
-	text := fmt.Sprintf("status=%s role=%s primary=%s epoch=%d lag=%d catchup=%s active=%d pending=%d unreachable=%d\n", res.GetStatus(), res.GetLocalRole(), res.GetPrimaryNodeName(), res.GetAuthorityEpoch(), res.GetReplicationLagRecords(), res.GetCatchupState(), res.GetActiveMembers(), res.GetPendingMembers(), res.GetUnreachablePeers())
+	text := fmt.Sprintf("status=%s active=%d pending=%d unreachable=%d\n", res.GetStatus(), res.GetActiveMembers(), res.GetPendingMembers(), res.GetUnreachablePeers())
 	for _, warning := range res.GetWarnings() {
 		text += "warning: " + warning + "\n"
 	}
@@ -398,7 +131,7 @@ func runClusterMembers(ctx context.Context, a *app.App) error {
 	out := clusterMembersOutput{ClusterID: res.GetClusterId(), ClusterName: res.GetClusterName()}
 	lines := []string{}
 	for _, m := range res.GetMembers() {
-		member := clusterMemberOutput{NodeName: m.GetNodeName(), NodeID: m.GetNodeId(), State: memberStateText(m.GetState()), BackendAdvertiseAddr: m.GetBackendAdvertiseAddr(), Role: m.GetRole(), ClusterBootstrap: m.GetClusterBootstrap(), NodePublicKeyFingerprint: m.GetNodePublicKeyFingerprint(), TokenID: m.GetTokenId(), TokenExpiresAt: m.GetTokenExpiresAt(), TokenConsumedAt: m.GetTokenConsumedAt(), TokenRevokedAt: m.GetTokenRevokedAt(), CreatedAt: m.GetCreatedAt(), UpdatedAt: m.GetUpdatedAt(), JoinedAt: m.GetJoinedAt()}
+		member := clusterMemberOutput{NodeName: m.GetNodeName(), NodeID: m.GetNodeId(), State: memberStateText(m.GetState()), BackendAdvertiseAddr: m.GetBackendAdvertiseAddr(), ClusterBootstrap: m.GetClusterBootstrap(), NodePublicKeyFingerprint: m.GetNodePublicKeyFingerprint(), TokenID: m.GetTokenId(), TokenExpiresAt: m.GetTokenExpiresAt(), TokenConsumedAt: m.GetTokenConsumedAt(), TokenRevokedAt: m.GetTokenRevokedAt(), CreatedAt: m.GetCreatedAt(), UpdatedAt: m.GetUpdatedAt(), JoinedAt: m.GetJoinedAt()}
 		out.Members = append(out.Members, member)
 		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\n", member.State, member.NodeName, member.NodeID, member.BackendAdvertiseAddr))
 	}
@@ -419,12 +152,6 @@ func peerSourceText(v adminv1.ClusterPeerSource) string {
 }
 func memberStateText(v adminv1.ClusterMemberState) string {
 	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_member_state_")
-}
-func nodeRoleText(v adminv1.ClusterNodeRole) string {
-	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_node_role_")
-}
-func replicationRoleText(v adminv1.ClusterReplicationRole) string {
-	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_replication_role_")
 }
 func replicationCatchupText(v adminv1.ClusterReplicationCatchupState) string {
 	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_replication_catchup_state_")

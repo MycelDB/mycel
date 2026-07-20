@@ -27,29 +27,11 @@ service ClusterBackendService {
   // unimplemented until there is a durable membership log.
   rpc WatchClusterUpdates(WatchClusterUpdatesRequest) returns (stream WatchClusterUpdatesResponse);
 
-  // AddClusterNode creates or updates a pending membership record and returns a
-  // node-scoped one-time join token. This is an early internal operator API;
-  // future production builds should expose it through an authenticated admin API.
-  rpc AddClusterNode(AddClusterNodeRequest) returns (AddClusterNodeResponse);
-
   // ListClusterMembers returns the authoritative admission/membership view.
   // Token hashes and plaintext token values are never returned.
   rpc ListClusterMembers(ListClusterMembersRequest) returns (ListClusterMembersResponse);
 
-  // StreamWal streams committed primary WAL records after the requested LSN.
-  rpc StreamWal(StreamWalRequest) returns (stream WalRecord);
-
-  // InstallSnapshot installs a primary-created resync snapshot on a follower.
-  rpc InstallSnapshot(stream SnapshotChunk) returns (InstallSnapshotResponse);
-
-  // GetReplicationStatus returns follower replication progress for planned switchover checks.
-  rpc GetReplicationStatus(GetReplicationStatusRequest) returns (GetReplicationStatusResponse);
-
-  // InstallAuthority installs a newer cluster authority on a node.
-  rpc InstallAuthority(InstallAuthorityRequest) returns (InstallAuthorityResponse);
-
-  // GetBlobPayload streams blob content from the primary to a follower before
-  // the follower applies replicated blob metadata.
+  // GetBlobPayload streams blob content between Raft peers before a peer applies replicated blob metadata.
   rpc GetBlobPayload(GetBlobPayloadRequest) returns (stream BlobPayloadChunk);
 
   // DeliverRaftMessages delivers one or more etcd/raft messages for a specific
@@ -156,23 +138,6 @@ message ClusterView {
   NodeIdentity local_identity = 4;
   repeated Peer peers = 5;
   string updated_at = 6;
-  ClusterAuthority authority = 7;
-}
-
-message ClusterAuthority {
-  int32 version = 1;
-  string cluster_id = 2;
-  AuthorityPrimary primary = 3;
-  int64 authority_epoch = 4;
-  int64 term = 5;
-  string source = 6;
-  string updated_at = 7;
-}
-
-message AuthorityPrimary {
-  string node_id = 1;
-  string node_name = 2;
-  string backend_advertise_addr = 3;
 }
 
 // RegisterNodeRequest announces the caller and asks a reachable peer to return
@@ -182,8 +147,7 @@ message RegisterNodeRequest {
   NodeIdentity identity = 2;
   NodeLifecycleState state = 3;
   repeated Peer known_peers = 4;
-  string join_token = 5;
-  string node_public_key_fingerprint = 6;
+  string node_public_key_fingerprint = 5;
 }
 
 // RegisterNodeResponse returns the callee's registration decision and current
@@ -237,21 +201,6 @@ message WatchClusterUpdatesResponse {
   ClusterView cluster_view = 3;
 }
 
-message AddClusterNodeRequest {
-  ClusterProtocolVersion protocol_version = 1;
-  string node_name = 2;
-  int64 token_ttl_seconds = 3;
-}
-
-message AddClusterNodeResponse {
-  ClusterProtocolVersion protocol_version = 1;
-  string node_name = 2;
-  string state = 3;
-  string token = 4;
-  string token_id = 5;
-  string expires_at = 6;
-}
-
 message ListClusterMembersRequest {
   ClusterProtocolVersion protocol_version = 1;
 }
@@ -261,81 +210,6 @@ message ListClusterMembersResponse {
   string cluster_id = 2;
   string cluster_name = 3;
   repeated ClusterMember members = 4;
-}
-
-message StreamWalRequest {
-  ClusterProtocolVersion protocol_version = 1;
-  string cluster_id = 2;
-  string follower_node_id = 3;
-  uint64 after_lsn = 4;
-  int64 authority_epoch = 5;
-}
-
-message WalRecord {
-  uint64 lsn = 1;
-  string type = 2;
-  uint32 schema_version = 3;
-  string timestamp = 4;
-  string encoding = 5;
-  bytes payload = 6;
-}
-
-message SnapshotDescriptor {
-  string operation_id = 1;
-  string cluster_id = 2;
-  string primary_node_id = 3;
-  string target_node_id = 4;
-  int64 authority_epoch = 5;
-  uint64 snapshot_base_lsn = 6;
-  string manifest_json = 7;
-  uint64 total_bytes = 8;
-  string checksum = 9;
-}
-
-message SnapshotChunk {
-  oneof payload {
-    SnapshotDescriptor descriptor = 1;
-    bytes data = 2;
-  }
-}
-
-message InstallSnapshotResponse {
-  bool installed = 1;
-  uint64 applied_lsn = 2;
-  string message = 3;
-}
-
-message GetReplicationStatusRequest {
-  ClusterProtocolVersion protocol_version = 1;
-  string cluster_id = 2;
-  string requester_node_id = 3;
-}
-
-message GetReplicationStatusResponse {
-  ClusterProtocolVersion protocol_version = 1;
-  string cluster_id = 2;
-  string local_node_id = 3;
-  string primary_node_id = 4;
-  int64 authority_epoch = 5;
-  uint64 received_lsn = 6;
-  uint64 applied_lsn = 7;
-  string catchup_state = 8;
-}
-
-message InstallAuthorityRequest {
-  ClusterProtocolVersion protocol_version = 1;
-  string operation_id = 2;
-  string cluster_id = 3;
-  string target_node_id = 4;
-  ClusterAuthority authority = 5;
-  uint64 final_lsn = 6;
-}
-
-message InstallAuthorityResponse {
-  ClusterProtocolVersion protocol_version = 1;
-  bool installed = 2;
-  int64 authority_epoch = 3;
-  string message = 4;
 }
 
 message GetBlobPayloadRequest {

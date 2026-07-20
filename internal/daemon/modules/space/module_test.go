@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
@@ -19,21 +18,16 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestModuleRejectsWriteWithoutClusterAuthority(t *testing.T) {
+func TestModuleAllowsStandaloneWrite(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
-	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: dataDir, NodeName: "node-b", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9094"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, Logger: slog.Default(), ClusterManager: clusterManager}
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, Logger: slog.Default()}
 	m := NewModule()
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	_, err = m.CreateSpaceWithResult(ctx, CreateSpaceInput{Name: "blocked", OwnerUserID: uuid.New()})
-	if status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("CreateSpaceWithResult() code = %v, want %v (err=%v)", status.Code(err), codes.PermissionDenied, err)
+	if _, err := m.CreateSpaceWithResult(ctx, CreateSpaceInput{Name: "standalone", OwnerUserID: uuid.New()}); err != nil {
+		t.Fatalf("CreateSpaceWithResult() error = %v", err)
 	}
 }
 

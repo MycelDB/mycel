@@ -90,11 +90,7 @@ type ClusterConfig struct {
 	Name                 string
 	BackendAdvertiseAddr string
 	BackendAuthToken     string
-	SeedPeers            []string
 	DiscoveryInterval    time.Duration
-	Bootstrap            bool
-	JoinTokenFile        string
-	JoinToken            string
 	RaftNodeCount        int
 	RaftPartitionCount   int
 	RaftReplicaFactor    int
@@ -157,11 +153,7 @@ func LoadFromEnv() (Config, error) {
 			Name:                 strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
 			BackendAdvertiseAddr: strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR")),
 			BackendAuthToken:     strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN")),
-			SeedPeers:            parseCSVEnv(os.Getenv("MYCELD_CLUSTER_SEED_PEERS")),
 			DiscoveryInterval:    parseDurationEnv(os.Getenv("MYCELD_CLUSTER_DISCOVERY_INTERVAL"), DefaultClusterDiscoveryInterval),
-			Bootstrap:            parseBoolEnvDefault(os.Getenv("MYCELD_CLUSTER_BOOTSTRAP"), false),
-			JoinTokenFile:        strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_JOIN_TOKEN_FILE")),
-			JoinToken:            strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_JOIN_TOKEN")),
 			RaftNodeCount:        parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_COUNT"), DefaultClusterRaftNodeCount),
 			RaftPartitionCount:   parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_PARTITION_COUNT"), DefaultClusterRaftPartitionCount),
 			RaftReplicaFactor:    parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR"), DefaultClusterRaftReplicaFactor),
@@ -272,16 +264,8 @@ func (c ClusterConfig) Validate() error {
 	if err := validateClusterAddr("MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR", c.BackendAdvertiseAddr); err != nil {
 		return err
 	}
-	for _, peer := range c.SeedPeers {
-		if err := validateClusterAddr("MYCELD_CLUSTER_SEED_PEERS", peer); err != nil {
-			return err
-		}
-	}
 	if c.DiscoveryInterval < 0 {
 		return fmt.Errorf("MYCELD_CLUSTER_DISCOVERY_INTERVAL must be positive")
-	}
-	if c.Bootstrap && len(c.SeedPeers) > 0 {
-		return fmt.Errorf("MYCELD_CLUSTER_BOOTSTRAP cannot be true when MYCELD_CLUSTER_SEED_PEERS is set")
 	}
 	nodeCount := c.RaftNodeCount
 	if nodeCount == 0 {

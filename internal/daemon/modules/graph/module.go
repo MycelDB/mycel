@@ -38,7 +38,7 @@ type Module struct {
 	wal                    *wal.Manager
 	walProgress            wal.AppliedLSNStore
 	walWaiter              *wal.ApplyWaiter
-	writeAuthority         func() error
+	writeAllowed           func() error
 	raftGroups             *consensus.MultiGroup
 	raftPartitionCount     uint32
 	raftLocalNode          consensus.NodeID
@@ -91,7 +91,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
-	m.writeAuthority = rt.RequireWriteAuthority
+	m.writeAllowed = rt.RequireLocalWriteAllowed
 	if rt.WALRegistry != nil {
 		if err := rt.WALRegistry.Register(recordTypeGraphCommit, wal.ApplierFunc(m.applyGraphCommit)); err != nil {
 			return daemonruntime.Abort(ModuleName, "wal", "register graph commit WAL applier", err)
@@ -692,7 +692,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 	if m.raftGroups == nil {
-		if err := m.requireWriteAuthority(); err != nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
 			return nil, err
 		}
 	}
@@ -706,11 +706,11 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 	return release, nil
 }
 
-func (m *Module) requireWriteAuthority() error {
-	if m.writeAuthority == nil {
+func (m *Module) requireLocalWriteAllowed() error {
+	if m.writeAllowed == nil {
 		return nil
 	}
-	return m.writeAuthority()
+	return m.writeAllowed()
 }
 
 func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {

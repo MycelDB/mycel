@@ -11,8 +11,8 @@ Make Raft the only supported clustering mechanism. By the end of this plan:
 
 ## Phase 0 — Final inventory and deletion classification
 
-- Update `mycel/docs/implementation/static-primary-clustering-artifact-inventory.md`.
-- Classify every artifact as delete, replace with Raft, or keep because unrelated.
+- Use the historical static-primary artifact inventory to classify every artifact as delete, replace with Raft, or keep because unrelated.
+- Remove the inventory once active static-primary cleanup is complete.
 - Confirm WAL files needed for local durability are not accidentally removed with WAL replication.
 
 Acceptance:

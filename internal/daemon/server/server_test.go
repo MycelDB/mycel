@@ -298,7 +298,7 @@ func TestServerRegistersProtectedAdminClusterService(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cfg := testServerConfig(t, ctx)
-	mgr, err := clustering.NewManager(ctx, clustering.Options{DataDir: t.TempDir(), NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", Bootstrap: true}, slog.Default())
+	mgr, err := clustering.NewManager(ctx, clustering.Options{DataDir: t.TempDir(), NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093"}, slog.Default())
 	if err != nil {
 		t.Fatalf("new cluster manager: %v", err)
 	}

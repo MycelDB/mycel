@@ -88,7 +88,7 @@ func (m *Module) ensureRaftPayloadAvailable(ctx context.Context, desc PayloadDes
 		if strings.TrimSpace(addr) == "" || nodeID == m.raftLocalNode {
 			continue
 		}
-		err := client.GetBlobPayload(ctx, addr, &clusterpb.GetBlobPayloadRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, ClusterId: m.raftClusterID, SpaceId: desc.SpaceID, BlobId: desc.BlobID, ExpectedSizeBytes: uint64(desc.SizeBytes), ExpectedChecksumAlgorithm: desc.ChecksumAlgorithm, ExpectedChecksumHex: desc.ChecksumHex}, func(r io.Reader) error {
+		err := client.GetBlobPayload(ctx, addr, &clusterpb.GetBlobPayloadRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, ClusterId: m.raftClusterID, RequesterNodeId: fmt.Sprintf("%d", m.raftLocalNode), SpaceId: desc.SpaceID, BlobId: desc.BlobID, ExpectedSizeBytes: uint64(desc.SizeBytes), ExpectedChecksumAlgorithm: desc.ChecksumAlgorithm, ExpectedChecksumHex: desc.ChecksumHex}, func(r io.Reader) error {
 			return m.ensurePayloadFromReader(ctx, desc, r)
 		})
 		if err == nil {

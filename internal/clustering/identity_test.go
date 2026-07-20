@@ -12,7 +12,7 @@ import (
 func TestLoadOrCreateBootstrapWritesAdmissionFields(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	node, err := LoadOrCreate(ctx, Options{DataDir: dir, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093", Bootstrap: true})
+	node, err := LoadOrCreate(ctx, Options{DataDir: dir, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestLoadOrCreatePersistsAndUpdatesMutableFields(t *testing.T) {
 func TestLoadOrCreateWritesPeers(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	local, err := LoadOrCreate(ctx, Options{DataDir: dir, NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9191", SeedPeers: []string{"127.0.0.1:9192", "127.0.0.1:9191"}})
+	local, err := LoadOrCreate(ctx, Options{DataDir: dir, NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9191"})
 	if err != nil {
 		t.Fatalf("LoadOrCreate: %v", err)
 	}

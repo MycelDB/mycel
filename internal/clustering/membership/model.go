@@ -29,17 +29,7 @@ type Member struct {
 	Role                     string      `json:"role,omitempty"`
 	ClusterBootstrap         bool        `json:"cluster_bootstrap,omitempty"`
 	NodePublicKeyFingerprint string      `json:"node_public_key_fingerprint,omitempty"`
-	JoinToken                *JoinToken  `json:"join_token,omitempty"`
 	CreatedAt                time.Time   `json:"created_at"`
 	UpdatedAt                time.Time   `json:"updated_at"`
 	JoinedAt                 *time.Time  `json:"joined_at,omitempty"`
-}
-
-type JoinToken struct {
-	TokenID    string     `json:"token_id"`
-	Hash       string     `json:"hash,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  time.Time  `json:"expires_at"`
-	ConsumedAt *time.Time `json:"consumed_at,omitempty"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }

@@ -21,7 +21,7 @@ This plan implements [Write-Ahead Log Design](write-ahead-log.md). The first mil
 
 ## Phase 0: Inventory and cut-line decisions
 
-Status: completed initial inventory. See [Write-Ahead Log Phase 0 Inventory](write-ahead-log-phase-0-inventory.md).
+Status: completed initial inventory; the old phase inventory document was removed after the WAL migration completed.
 
 ### Goals
 
@@ -452,7 +452,7 @@ No public distributed behavior yet, but future replication work should not need 
 
 ## Phase 9: Documentation and operational guide
 
-Status: completed. See [Write-Ahead Log Operational Guide](write-ahead-log-operational-guide.md) and [WAL Replication Readiness](write-ahead-log-replication-readiness.md).
+Status: completed. See the write-ahead log design and operational notes in `docs/design/write-ahead-log.md`.
 
 ### Goals
 

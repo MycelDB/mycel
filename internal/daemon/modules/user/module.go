@@ -29,7 +29,7 @@ type Module struct {
 	wal                 *wal.Manager
 	walProgress         wal.AppliedLSNStore
 	walWaiter           *wal.ApplyWaiter
-	writeAuthority      func() error
+	writeAllowed        func() error
 	raftGroups          *consensus.MultiGroup
 	raftAppliedCommands map[string]struct{}
 }
@@ -80,7 +80,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
-	m.writeAuthority = rt.RequireWriteAuthority
+	m.writeAllowed = rt.RequireLocalWriteAllowed
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
@@ -134,7 +134,7 @@ func (m *Module) FindUser(ctx context.Context, username string) (UserSummary, er
 
 func (m *Module) CreateUser(ctx context.Context, input CreateUserInput) (UserSummary, error) {
 	if m.raftGroups == nil {
-		if err := m.requireWriteAuthority(); err != nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
 			return UserSummary{}, err
 		}
 	}
@@ -189,7 +189,7 @@ func (m *Module) CreateUser(ctx context.Context, input CreateUserInput) (UserSum
 
 func (m *Module) DisableUser(ctx context.Context, userID string) (UserSummary, error) {
 	if m.raftGroups == nil {
-		if err := m.requireWriteAuthority(); err != nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
 			return UserSummary{}, err
 		}
 	}
@@ -227,7 +227,7 @@ func (m *Module) DisableUser(ctx context.Context, userID string) (UserSummary, e
 
 func (m *Module) EnableUser(ctx context.Context, userID string) (UserSummary, error) {
 	if m.raftGroups == nil {
-		if err := m.requireWriteAuthority(); err != nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
 			return UserSummary{}, err
 		}
 	}
@@ -265,7 +265,7 @@ func (m *Module) EnableUser(ctx context.Context, userID string) (UserSummary, er
 
 func (m *Module) DeleteUser(ctx context.Context, userID string) (UserSummary, error) {
 	if m.raftGroups == nil {
-		if err := m.requireWriteAuthority(); err != nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
 			return UserSummary{}, err
 		}
 	}
@@ -303,7 +303,7 @@ func (m *Module) DeleteUser(ctx context.Context, userID string) (UserSummary, er
 
 func (m *Module) SetUserPassword(ctx context.Context, userID string, password string) (UserSummary, error) {
 	if m.raftGroups == nil {
-		if err := m.requireWriteAuthority(); err != nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
 			return UserSummary{}, err
 		}
 	}
@@ -564,11 +564,11 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 	return release, nil
 }
 
-func (m *Module) requireWriteAuthority() error {
-	if m.writeAuthority == nil {
+func (m *Module) requireLocalWriteAllowed() error {
+	if m.writeAllowed == nil {
 		return nil
 	}
-	return m.writeAuthority()
+	return m.writeAllowed()
 }
 
 func refreshSessionRefreshable(rec domainauth.RefreshSession, now time.Time) bool {

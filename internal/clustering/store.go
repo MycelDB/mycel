@@ -24,11 +24,6 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 	if err := ValidateBackendAdvertiseAddr(opts.BackendAdvertiseAddr); err != nil {
 		return LocalNode{State: NodeStateFailed}, err
 	}
-	for _, peer := range opts.SeedPeers {
-		if err := ValidateBackendAdvertiseAddr(peer); err != nil {
-			return LocalNode{State: NodeStateFailed}, err
-		}
-	}
 	nowFn := opts.Now
 	if nowFn == nil {
 		nowFn = func() time.Time { return time.Now().UTC() }
@@ -44,7 +39,8 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 			return LocalNode{State: NodeStateFailed}, err
 		}
 		now := nowFn().UTC()
-		id = NodeIdentity{Version: NodeIdentityVersion, NodeID: "node_" + uuid.NewString(), NodeName: strings.TrimSpace(opts.NodeName), ClusterID: "cluster_" + uuid.NewString(), ClusterName: strings.TrimSpace(opts.ClusterName), BackendAdvertiseAddr: strings.TrimSpace(opts.BackendAdvertiseAddr), ClusterAdmitted: opts.Bootstrap, ClusterBootstrap: opts.Bootstrap, NodePublicKeyFingerprint: strings.TrimSpace(opts.NodePublicKeyFingerprint), CreatedAt: now, UpdatedAt: now}
+		clustered := strings.TrimSpace(opts.ClusterName) != "" || strings.TrimSpace(opts.BackendAdvertiseAddr) != ""
+		id = NodeIdentity{Version: NodeIdentityVersion, NodeID: "node_" + uuid.NewString(), NodeName: strings.TrimSpace(opts.NodeName), ClusterID: "cluster_" + uuid.NewString(), ClusterName: strings.TrimSpace(opts.ClusterName), BackendAdvertiseAddr: strings.TrimSpace(opts.BackendAdvertiseAddr), ClusterAdmitted: clustered, ClusterBootstrap: clustered, NodePublicKeyFingerprint: strings.TrimSpace(opts.NodePublicKeyFingerprint), CreatedAt: now, UpdatedAt: now}
 		if err := ValidateIdentity(id); err != nil {
 			return LocalNode{State: NodeStateFailed}, err
 		}
@@ -55,7 +51,7 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 		if err := WriteLocalState(opts.DataDir, state, now); err != nil {
 			return LocalNode{State: NodeStateFailed}, err
 		}
-		if err := WritePeers(opts.DataDir, id, opts.SeedPeers, now); err != nil {
+		if err := WritePeers(opts.DataDir, id, nil, now); err != nil {
 			return LocalNode{State: NodeStateFailed}, err
 		}
 		return LocalNode{Identity: id, State: state}, nil
@@ -76,11 +72,6 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 		id.BackendAdvertiseAddr = v
 		changed = true
 	}
-	if opts.Bootstrap && (!id.ClusterAdmitted || !id.ClusterBootstrap) {
-		id.ClusterAdmitted = true
-		id.ClusterBootstrap = true
-		changed = true
-	}
 	if v := strings.TrimSpace(opts.NodePublicKeyFingerprint); v != "" && id.NodePublicKeyFingerprint != v {
 		id.NodePublicKeyFingerprint = v
 		changed = true
@@ -99,7 +90,7 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 	if err := WriteLocalState(opts.DataDir, state, now); err != nil {
 		return LocalNode{State: NodeStateFailed}, err
 	}
-	if err := WritePeers(opts.DataDir, id, opts.SeedPeers, now); err != nil {
+	if err := WritePeers(opts.DataDir, id, nil, now); err != nil {
 		return LocalNode{State: NodeStateFailed}, err
 	}
 	return LocalNode{Identity: id, State: state}, nil

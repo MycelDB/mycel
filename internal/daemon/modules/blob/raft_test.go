@@ -130,7 +130,6 @@ func TestBlobRaftMetadataReplicatesAndFetchesPayloadAcrossThreeNodes(t *testing.
 		servers = append(servers, grpcServer)
 		identity := model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: fmt.Sprintf("node-%d", nodeID), ClusterID: clusterID, ClusterName: "test", ClusterAdmitted: true}
 		svc := clusterbackend.NewService(identity, model.NodeStateClustered, nil).WithBlobPayloadProvider(BackendPayloadProvider{Module: m})
-		svc.Authority = &clusterpb.ClusterAuthority{ClusterId: clusterID, Primary: &clusterpb.AuthorityPrimary{NodeId: identity.NodeID, BackendAdvertiseAddr: lis.Addr().String()}}
 		clusterpb.RegisterClusterBackendServiceServer(grpcServer, svc)
 		go func() { _ = grpcServer.Serve(lis) }()
 	}
@@ -248,7 +247,6 @@ func TestBlobRaftUploadSurvivesLeaderFailover(t *testing.T) {
 		servers = append(servers, grpcServer)
 		identity := model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: fmt.Sprintf("node-%d", nodeID), ClusterID: clusterID, ClusterName: "test", ClusterAdmitted: true}
 		svc := clusterbackend.NewService(identity, model.NodeStateClustered, nil).WithBlobPayloadProvider(BackendPayloadProvider{Module: m})
-		svc.Authority = &clusterpb.ClusterAuthority{ClusterId: clusterID, Primary: &clusterpb.AuthorityPrimary{NodeId: identity.NodeID, BackendAdvertiseAddr: lis.Addr().String()}}
 		clusterpb.RegisterClusterBackendServiceServer(grpcServer, svc)
 		go func() { _ = grpcServer.Serve(lis) }()
 	}
@@ -377,7 +375,6 @@ func TestBlobRaftStateMachineFetchesMissingPayloadFromPeer(t *testing.T) {
 	grpcServer := grpc.NewServer()
 	identity := model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: "node-1", ClusterID: "cluster-1", ClusterName: "test", ClusterAdmitted: true}
 	svc := clusterbackend.NewService(identity, model.NodeStateClustered, nil).WithBlobPayloadProvider(BackendPayloadProvider{Module: source})
-	svc.Authority = &clusterpb.ClusterAuthority{ClusterId: "cluster-1", Primary: &clusterpb.AuthorityPrimary{NodeId: "node-1", BackendAdvertiseAddr: lis.Addr().String()}}
 	clusterpb.RegisterClusterBackendServiceServer(grpcServer, svc)
 	go func() { _ = grpcServer.Serve(lis) }()
 	defer grpcServer.Stop()

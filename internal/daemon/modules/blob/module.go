@@ -34,7 +34,7 @@ type Module struct {
 	wal                  *wal.Manager
 	walProgress          wal.AppliedLSNStore
 	walWaiter            *wal.ApplyWaiter
-	writeAuthority       func() error
+	writeAllowed         func() error
 	raftGroups           *consensus.MultiGroup
 	raftPartitionCount   uint32
 	raftLocalNode        consensus.NodeID
@@ -68,7 +68,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
-	m.writeAuthority = rt.RequireWriteAuthority
+	m.writeAllowed = rt.RequireLocalWriteAllowed
 	if rt.WALRegistry != nil {
 		if err := rt.WALRegistry.Register(recordTypeBlobMetaPut, wal.ApplierFunc(m.applyBlobMetaPut)); err != nil {
 			return daemonruntime.Abort(ModuleName, "wal", "register blob metadata put WAL applier", err)
@@ -239,7 +239,7 @@ func (m *Module) DeleteBlob(ctx context.Context, spaceID string, blobID string) 
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 	if m.raftGroups == nil {
-		if err := m.requireWriteAuthority(); err != nil {
+		if err := m.requireLocalWriteAllowed(); err != nil {
 			return nil, err
 		}
 	}
@@ -253,11 +253,11 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 	return release, nil
 }
 
-func (m *Module) requireWriteAuthority() error {
-	if m.writeAuthority == nil {
+func (m *Module) requireLocalWriteAllowed() error {
+	if m.writeAllowed == nil {
 		return nil
 	}
-	return m.writeAuthority()
+	return m.writeAllowed()
 }
 
 func (m *Module) store(spaceID string) (*blobstorage.Store, error) {

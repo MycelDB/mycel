@@ -2,7 +2,6 @@ package clustering
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"path/filepath"
 	"time"
@@ -21,8 +20,6 @@ type Manager struct {
 	state        model.NodeState
 	topology     *topology.Registry
 	membership   *membership.FileStore
-	authority    Authority
-	authorityOK  bool
 	registration *registration.Handler
 	backend      *backend.Service
 	logger       *slog.Logger
@@ -40,72 +37,17 @@ func NewManager(ctx context.Context, opts Options, logger *slog.Logger) (*Manage
 	if err != nil {
 		return nil, err
 	}
-	for _, seed := range opts.SeedPeers {
-		if seed == "" {
-			continue
-		}
-		if err := ValidateBackendAdvertiseAddr(seed); err != nil {
-			return nil, err
-		}
-	}
 	membershipStore := membership.NewFileStore(membership.Path(opts.DataDir), local.Identity.ClusterID, local.Identity.ClusterName)
-	authority, authorityOK, err := LoadAuthority(ctx, AuthorityPath(opts.DataDir))
-	if err != nil {
-		return nil, err
-	}
 	if local.Identity.ClusterAdmitted && local.Identity.ClusterBootstrap {
 		now := time.Now().UTC()
 		joined := now
 		if err := membershipStore.UpsertMember(ctx, membership.Member{NodeName: local.Identity.NodeName, NodeID: local.Identity.NodeID, State: membership.MemberStateActive, BackendAdvertiseAddr: local.Identity.BackendAdvertiseAddr, Role: "member", ClusterBootstrap: true, NodePublicKeyFingerprint: local.Identity.NodePublicKeyFingerprint, CreatedAt: local.Identity.CreatedAt, UpdatedAt: now, JoinedAt: &joined}); err != nil {
 			return nil, err
 		}
-		if !authorityOK {
-			authority, err = InitBootstrapAuthority(ctx, opts.DataDir, local.Identity, now)
-			if err != nil {
-				return nil, err
-			}
-			authorityOK = true
-		} else if authority.ClusterID != local.Identity.ClusterID {
-			return nil, fmt.Errorf("authority cluster_id %q does not match local cluster_id %q", authority.ClusterID, local.Identity.ClusterID)
-		}
-	} else if authorityOK && authority.ClusterID != local.Identity.ClusterID {
-		return nil, fmt.Errorf("authority cluster_id %q does not match local cluster_id %q", authority.ClusterID, local.Identity.ClusterID)
 	}
-	if intent, ok, err := LoadSwitchoverIntent(ctx, opts.DataDir); err != nil {
-		return nil, err
-	} else if ok && intent.ClusterID == local.Identity.ClusterID && intent.Phase == SwitchoverIntentTargetInstalled {
-		if !authorityOK || intent.NewAuthority.AuthorityEpoch > authority.AuthorityEpoch {
-			authority = intent.NewAuthority
-			authorityOK = true
-			if err := SaveAuthority(ctx, AuthorityPath(opts.DataDir), authority); err != nil {
-				return nil, err
-			}
-			intent.Phase = SwitchoverIntentLocalInstalled
-			_ = SaveSwitchoverIntent(ctx, opts.DataDir, intent)
-			_ = ClearSwitchoverIntent(ctx, opts.DataDir)
-		}
-	}
-	m := &Manager{identity: local.Identity, state: local.State, topology: registry, membership: membershipStore, authority: authority, authorityOK: authorityOK, logger: logger, dataDir: opts.DataDir}
-	m.backend = backend.NewService(m.identity, m.state, registry).WithMembership(membershipStore).WithAuthority(AuthorityToProto(authority, authorityOK))
-	joinToken, err := LoadJoinToken(opts)
-	if err != nil {
-		return nil, err
-	}
-	m.registration = &registration.Handler{Topology: registry, Client: registration.BackendAdapter{Client: backend.Client{AuthToken: opts.BackendAuthToken}}, Seeds: opts.SeedPeers, Identity: m.identity, State: m.state, Interval: 5 * time.Second, Timeout: 2 * time.Second, Logger: logger, JoinToken: joinToken, OnAdmitted: func(clusterID string) error {
-		id, err := AdmitLocalNode(ctx, opts.DataDir, clusterID)
-		if err != nil {
-			return err
-		}
-		m.identity = id
-		m.backend.Identity = id
-		return nil
-	}, OnAuthority: func(authorityProto *clusterpb.ClusterAuthority) error {
-		authority, ok, err := AuthorityFromProto(authorityProto)
-		if err != nil || !ok {
-			return err
-		}
-		return m.SetAuthority(ctx, authority)
-	}}
+	m := &Manager{identity: local.Identity, state: local.State, topology: registry, membership: membershipStore, logger: logger, dataDir: opts.DataDir}
+	m.backend = backend.NewService(m.identity, m.state, registry).WithMembership(membershipStore)
+	m.registration = &registration.Handler{Topology: registry, Client: registration.BackendAdapter{Client: backend.Client{AuthToken: opts.BackendAuthToken}}, Identity: m.identity, State: m.state, Interval: 5 * time.Second, Timeout: 2 * time.Second, Logger: logger}
 	return m, nil
 }
 
@@ -164,61 +106,11 @@ func (m *Manager) IsBootstrap() bool {
 	return m.identity.ClusterBootstrap
 }
 
-func (m *Manager) Authority() (Authority, bool) {
-	if m == nil {
-		return Authority{}, false
-	}
-	return m.authority, m.authorityOK
-}
-
-func (m *Manager) LocalRole() NodeRole {
-	if m == nil {
-		return NodeRoleNone
-	}
-	return DeriveLocalRole(m.state, m.identity, m.authority, m.authorityOK)
-}
-
-func (m *Manager) SetAuthority(ctx context.Context, authority Authority) error {
-	if m == nil {
-		return nil
-	}
-	if authority.ClusterID != m.identity.ClusterID {
-		return fmt.Errorf("authority cluster_id %q does not match local cluster_id %q", authority.ClusterID, m.identity.ClusterID)
-	}
-	if m.authorityOK {
-		if authority.AuthorityEpoch < m.authority.AuthorityEpoch {
-			return fmt.Errorf("authority epoch %d is older than current epoch %d", authority.AuthorityEpoch, m.authority.AuthorityEpoch)
-		}
-		if authority.AuthorityEpoch == m.authority.AuthorityEpoch {
-			if authority.Primary.NodeID != m.authority.Primary.NodeID {
-				return fmt.Errorf("authority epoch %d conflicts with current primary %s", authority.AuthorityEpoch, m.authority.Primary.NodeID)
-			}
-			return nil
-		}
-	}
-	if err := SaveAuthority(ctx, AuthorityPath(m.dataDir), authority); err != nil {
-		return err
-	}
-	m.authority = authority
-	m.authorityOK = true
-	if m.backend != nil {
-		m.backend.WithAuthority(AuthorityToProto(authority, true))
-	}
-	return nil
-}
-
 func (m *Manager) BackendService() clusterpb.ClusterBackendServiceServer {
 	if m == nil {
 		return nil
 	}
 	return m.backend
-}
-
-func (m *Manager) SetBackendWAL(reader backend.WALReader) {
-	if m == nil || m.backend == nil {
-		return
-	}
-	m.backend.WithWAL(reader)
 }
 
 func (m *Manager) SetBackendRaftRouter(router consensus.MessageSender) {
@@ -247,34 +139,6 @@ func (m *Manager) SetBackendSemanticReader(reader any) {
 		return
 	}
 	m.backend.SemanticReader = reader
-}
-
-func (m *Manager) SetBackendCheckpoint(provider backend.CheckpointProvider) {
-	if m == nil || m.backend == nil {
-		return
-	}
-	m.backend.WithCheckpoint(provider)
-}
-
-func (m *Manager) SetBackendSnapshotInstaller(installer backend.SnapshotInstaller) {
-	if m == nil || m.backend == nil {
-		return
-	}
-	m.backend.WithSnapshotInstaller(installer)
-}
-
-func (m *Manager) SetBackendReplicationStatus(provider backend.ReplicationStatusProvider) {
-	if m == nil || m.backend == nil {
-		return
-	}
-	m.backend.WithReplicationStatus(provider)
-}
-
-func (m *Manager) SetBackendAuthorityInstaller(installer backend.AuthorityInstaller) {
-	if m == nil || m.backend == nil {
-		return
-	}
-	m.backend.WithAuthorityInstaller(installer)
 }
 
 func (m *Manager) SetBackendBlobPayloadProvider(provider backend.BlobPayloadProvider) {

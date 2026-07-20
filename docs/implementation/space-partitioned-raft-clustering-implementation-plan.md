@@ -689,16 +689,7 @@ scripts/validateRaftBlobPayloadReplication.sh
 scripts/validateRaftBackupRestore.sh
 ```
 
-Rewrite docs that describe old static-primary behavior:
-
-```text
-docs/design/cluster-leadership-authority.md
-docs/design/clustering-short-term-authority-and-client-behavior.md
-docs/design/cluster-safe-planned-switchover.md
-docs/design/wal-propagation-mvp.md
-docs/design/wal-snapshot-resync.md
-docs/design/write-ahead-log-operational-guide.md sections tied to cluster replication
-```
+Remove or replace docs that describe old static-primary behavior. The legacy authority, switchover, WAL-propagation, and snapshot-resync design docs were removed during static-primary cleanup; current clustered operation is documented by the Raft design and implementation plan.
 
 Update docs index:
 

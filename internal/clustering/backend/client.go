@@ -35,15 +35,13 @@ type RegisterNodeInput struct {
 	Identity                 model.NodeIdentity
 	State                    model.NodeState
 	KnownPeers               []model.Peer
-	JoinToken                string
 	NodePublicKeyFingerprint string
 }
 
 type RegisterNodeResult struct {
-	Accepted  bool
-	Reason    string
-	Snapshot  model.Snapshot
-	Authority *clusterpb.ClusterAuthority
+	Accepted bool
+	Reason   string
+	Snapshot model.Snapshot
 }
 
 func (c Client) RegisterNode(ctx context.Context, addr string, in RegisterNodeInput) (RegisterNodeResult, error) {
@@ -56,7 +54,7 @@ func (c Client) RegisterNode(ctx context.Context, addr string, in RegisterNodeIn
 	for _, p := range in.KnownPeers {
 		known = append(known, PeerToProto(p))
 	}
-	res, err := clusterpb.NewClusterBackendServiceClient(conn).RegisterNode(c.authContext(ctx), &clusterpb.RegisterNodeRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Identity: IdentityToProto(in.Identity), State: NodeStateToProto(in.State), KnownPeers: known, JoinToken: in.JoinToken, NodePublicKeyFingerprint: in.NodePublicKeyFingerprint})
+	res, err := clusterpb.NewClusterBackendServiceClient(conn).RegisterNode(c.authContext(ctx), &clusterpb.RegisterNodeRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Identity: IdentityToProto(in.Identity), State: NodeStateToProto(in.State), KnownPeers: known, NodePublicKeyFingerprint: in.NodePublicKeyFingerprint})
 	if err != nil {
 		return RegisterNodeResult{}, err
 	}
@@ -64,7 +62,7 @@ func (c Client) RegisterNode(ctx context.Context, addr string, in RegisterNodeIn
 	if err != nil {
 		return RegisterNodeResult{}, err
 	}
-	return RegisterNodeResult{Accepted: res.GetAccepted(), Reason: res.GetReason(), Snapshot: snap, Authority: res.GetClusterView().GetAuthority()}, nil
+	return RegisterNodeResult{Accepted: res.GetAccepted(), Reason: res.GetReason(), Snapshot: snap}, nil
 }
 
 func (c Client) GetClusterView(ctx context.Context, addr string) (model.Snapshot, error) {

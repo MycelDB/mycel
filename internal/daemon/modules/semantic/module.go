@@ -67,7 +67,7 @@ type Module struct {
 	wal                  *wal.Manager
 	walProgress          wal.AppliedLSNStore
 	walWaiter            *wal.ApplyWaiter
-	writeAuthority       func() error
+	writeAllowed         func() error
 	raftGroups           *consensus.MultiGroup
 	raftPartitionCount   uint32
 	raftLocalNode        consensus.NodeID
@@ -115,7 +115,7 @@ func (m *Module) Init(ctx context.Context, rt *daemonruntime.Runtime) daemonrunt
 	m.wal = rt.WAL
 	m.walProgress = rt.WALProgress
 	m.walWaiter = rt.WALWaiter
-	m.writeAuthority = rt.RequireWriteAuthority
+	m.writeAllowed = rt.RequireLocalWriteAllowed
 	if rt.WALRegistry != nil {
 		if err := rt.WALRegistry.Register(recordTypeSemanticGlobal, wal.ApplierFunc(m.applySemanticGlobal)); err != nil {
 			return daemonruntime.Abort(ModuleName, "wal", "register semantic global WAL applier", err)

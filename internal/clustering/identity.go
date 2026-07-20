@@ -16,11 +16,7 @@ type Options struct {
 	ClusterName              string
 	BackendAdvertiseAddr     string
 	BackendAuthToken         string
-	SeedPeers                []string
-	Bootstrap                bool
 	NodePublicKeyFingerprint string
-	JoinToken                string
-	JoinTokenFile            string
 	Now                      func() time.Time
 }
 
