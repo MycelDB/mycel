@@ -140,6 +140,50 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (graph.Doma
 	return d.toModel(), nil
 }
 
+func (m *defaultManager) ApplyCreate(ctx context.Context, domain graph.Domain) (graph.Domain, error) {
+	if err := ctx.Err(); err != nil {
+		return graph.Domain{}, err
+	}
+	if domain.ID == uuid.Nil {
+		return graph.Domain{}, fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
+	}
+	if domain.SpaceID == uuid.Nil {
+		return graph.Domain{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	key := normalizeKey(domain.Key)
+	if key == "" {
+		return graph.Domain{}, fmt.Errorf("%w: key is required", ErrInvalidInput)
+	}
+	if idx, ok := m.indexByID[domain.ID]; ok {
+		existing := m.domains[idx].toModel()
+		if existing.SpaceID == domain.SpaceID && existing.Key == key {
+			return existing, nil
+		}
+		return graph.Domain{}, fmt.Errorf("%w: conflicting domain id", ErrInvalidInput)
+	}
+	if _, ok := m.indexByKey[spaceKey(domain.SpaceID, key)]; ok {
+		return graph.Domain{}, fmt.Errorf("%w: conflicting space/key", ErrConflict)
+	}
+	if domain.Default {
+		if _, ok := m.defaultBySp[domain.SpaceID]; ok {
+			return graph.Domain{}, fmt.Errorf("%w: default domain already exists", ErrConflict)
+		}
+	}
+	d := storedDomain{ID: domain.ID, SpaceID: domain.SpaceID, Key: key, Name: strings.TrimSpace(domain.Name), Description: strings.TrimSpace(domain.Description), DiscoveryMode: graph.NormalizeDomainDiscoveryMode(domain.DiscoveryMode), SearchMode: graph.NormalizeDomainSearchMode(domain.SearchMode), SemanticMode: graph.NormalizeDomainSemanticMode(domain.SemanticMode), ReadOnly: domain.ReadOnly, Default: domain.Default, CreatedAt: domain.CreatedAt, UpdatedAt: domain.UpdatedAt}
+	if d.Name == "" {
+		d.Name = key
+	}
+	d = normalizeStoredDomainPolicy(d)
+	m.domains = append(m.domains, d)
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.domains = m.domains[:len(m.domains)-1]
+		m.rebuildIndex()
+		return graph.Domain{}, err
+	}
+	return d.toModel(), nil
+}
+
 func (m *defaultManager) EnsureDefault(ctx context.Context, spaceID domainspace.SpaceID) (graph.Domain, error) {
 	if err := ctx.Err(); err != nil {
 		return graph.Domain{}, err
@@ -273,6 +317,33 @@ func (m *defaultManager) Update(ctx context.Context, in UpdateInput) (graph.Doma
 	return updated.toModel(), nil
 }
 
+func (m *defaultManager) ApplyUpdate(ctx context.Context, domain graph.Domain) (graph.Domain, error) {
+	if err := ctx.Err(); err != nil {
+		return graph.Domain{}, err
+	}
+	if domain.ID == uuid.Nil {
+		return graph.Domain{}, fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexByID[domain.ID]
+	if !ok {
+		return graph.Domain{}, ErrDomainNotFound
+	}
+	old := m.domains[idx]
+	updated := storedDomain{ID: domain.ID, SpaceID: domain.SpaceID, Key: normalizeKey(domain.Key), Name: strings.TrimSpace(domain.Name), Description: strings.TrimSpace(domain.Description), DiscoveryMode: graph.NormalizeDomainDiscoveryMode(domain.DiscoveryMode), SearchMode: graph.NormalizeDomainSearchMode(domain.SearchMode), SemanticMode: graph.NormalizeDomainSemanticMode(domain.SemanticMode), ReadOnly: domain.ReadOnly, Default: domain.Default, CreatedAt: domain.CreatedAt, UpdatedAt: domain.UpdatedAt}
+	if updated.SpaceID == uuid.Nil || updated.Key == "" || updated.Name == "" {
+		return graph.Domain{}, fmt.Errorf("%w: invalid domain update record", ErrInvalidInput)
+	}
+	updated = normalizeStoredDomainPolicy(updated)
+	m.domains[idx] = updated
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.domains[idx] = old
+		m.rebuildIndex()
+		return graph.Domain{}, err
+	}
+	return updated.toModel(), nil
+}
+
 func (m *defaultManager) DeleteByID(ctx context.Context, id graph.DomainID) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -283,6 +354,28 @@ func (m *defaultManager) DeleteByID(ctx context.Context, id graph.DomainID) erro
 	idx, ok := m.indexByID[id]
 	if !ok {
 		return ErrDomainNotFound
+	}
+	oldDomains := append([]storedDomain(nil), m.domains...)
+	m.domains = append(m.domains[:idx], m.domains[idx+1:]...)
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.domains = oldDomains
+		m.rebuildIndex()
+		return err
+	}
+	return nil
+}
+
+func (m *defaultManager) ApplyDelete(ctx context.Context, id graph.DomainID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexByID[id]
+	if !ok {
+		return nil
 	}
 	oldDomains := append([]storedDomain(nil), m.domains...)
 	m.domains = append(m.domains[:idx], m.domains[idx+1:]...)

@@ -5,12 +5,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	daemonsemantic "github.com/myceldb/mycel/internal/daemon/modules/semantic"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

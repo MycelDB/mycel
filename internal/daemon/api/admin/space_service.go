@@ -9,13 +9,14 @@ import (
 	"github.com/google/uuid"
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
-	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
-	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/identity/model"
+	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -80,7 +81,7 @@ func (s *AdminSpaceService) CreateSpace(ctx context.Context, req *adminv1.Create
 	if err != nil {
 		return nil, err
 	}
-	sp, domain, err := s.spaces.CreateSpace(ctx, daemonspace.CreateSpaceInput{Name: req.GetName(), OwnerUserID: ownerID, DefaultDomainKey: req.GetDefaultDomainKey(), DefaultDomainName: req.GetDefaultDomainName()})
+	sp, domain, err := s.spaces.CreateSpace(ctx, daemonspace.CreateSpaceInput{Name: req.GetName(), OwnerUserID: ownerID, DefaultDomainKey: req.GetDefaultDomainKey(), DefaultDomainName: req.GetDefaultDomainName(), CommandID: idempotencyKeyFromContext(ctx)})
 	if err != nil {
 		return nil, mapSpaceError(err, "create space")
 	}
@@ -115,6 +116,20 @@ func (s *AdminSpaceService) GrantSpaceUser(ctx context.Context, req *adminv1.Gra
 		return nil, mapSpaceError(err, "grant space user")
 	}
 	return &adminv1.GrantSpaceUserResponse{Grant: mapAdminSpaceGrant(grant)}, nil
+}
+
+func idempotencyKeyFromContext(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"idempotency-key", "x-idempotency-key"} {
+		values := md.Get(key)
+		if len(values) > 0 {
+			return strings.TrimSpace(values[0])
+		}
+	}
+	return ""
 }
 
 func (s *AdminSpaceService) resolveOwnerID(ctx context.Context, ownerUserID string, ownerUsername string) (identity.UserID, error) {

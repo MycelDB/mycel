@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/myceldb/mycel/internal/daemon/quiesce"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
 func TestManagerRejectsBackupDirInsideDataDir(t *testing.T) {

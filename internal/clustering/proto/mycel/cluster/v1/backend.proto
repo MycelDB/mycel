@@ -1,0 +1,312 @@
+syntax = "proto3";
+
+package mycel.cluster.v1;
+
+// ClusterBackendService is the daemon-to-daemon control-plane API used for
+// cluster bootstrap, local node registration, peer-list exchange, and cluster
+// metadata updates.
+//
+// This API is intended for backend/internode communication, not end-user or
+// administrator clients. The first implementation may run unsecured on local
+// development networks; production use must add transport authentication and
+// node admission policy before accepting untrusted peers.
+service ClusterBackendService {
+  // RegisterNode announces a node to a reachable cluster peer and receives the
+  // peer's current cluster view. During early unsecured discovery this is also
+  // the bootstrap handshake used by seed peers.
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+
+  // GetClusterView returns the callee's current known cluster/peer view.
+  rpc GetClusterView(GetClusterViewRequest) returns (GetClusterViewResponse);
+
+  // UpdateNodeStatus lets a known peer refresh its liveness/status metadata.
+  rpc UpdateNodeStatus(UpdateNodeStatusRequest) returns (UpdateNodeStatusResponse);
+
+  // WatchClusterUpdates streams cluster view updates after the initial
+  // registration/bootstrap path. Implementations may initially leave this
+  // unimplemented until there is a durable membership log.
+  rpc WatchClusterUpdates(WatchClusterUpdatesRequest) returns (stream WatchClusterUpdatesResponse);
+
+  // ListClusterMembers returns the authoritative admission/membership view.
+  // Token hashes and plaintext token values are never returned.
+  rpc ListClusterMembers(ListClusterMembersRequest) returns (ListClusterMembersResponse);
+
+  // GetBlobPayload streams blob content between Raft peers before a peer applies replicated blob metadata.
+  rpc GetBlobPayload(GetBlobPayloadRequest) returns (stream BlobPayloadChunk);
+
+  // DeliverRaftMessages delivers one or more etcd/raft messages for a specific
+  // Raft group to the target daemon. Payloads are serialized raftpb.Message
+  // values and are intentionally opaque to this protobuf API.
+  rpc DeliverRaftMessages(DeliverRaftMessagesRequest) returns (DeliverRaftMessagesResponse);
+
+  // GetRaftSpace reads a space from the callee. It is an experimental internal
+  // forwarding RPC used by Raft-mode leader-only reads.
+  rpc GetRaftSpace(GetRaftSpaceRequest) returns (GetRaftSpaceResponse);
+
+  // ListRaftSpaces lists spaces visible on the callee. It is an experimental
+  // internal forwarding RPC used by Raft-mode partition-leader aggregation.
+  rpc ListRaftSpaces(ListRaftSpacesRequest) returns (ListRaftSpacesResponse);
+
+  // ExecuteRaftGraphRead forwards a graph read/query to a partition leader.
+  // The request/response payloads are daemon-internal JSON envelopes.
+  rpc ExecuteRaftGraphRead(ExecuteRaftGraphReadRequest) returns (ExecuteRaftGraphReadResponse);
+
+  // ExecuteRaftSemanticRead forwards a semantic space read to a partition leader.
+  // The request/response payloads are daemon-internal JSON envelopes.
+  rpc ExecuteRaftSemanticRead(ExecuteRaftSemanticReadRequest) returns (ExecuteRaftSemanticReadResponse);
+}
+
+// ClusterProtocolVersion identifies the backend protocol shape used by a node.
+enum ClusterProtocolVersion {
+  CLUSTER_PROTOCOL_VERSION_UNSPECIFIED = 0;
+  CLUSTER_PROTOCOL_VERSION_V1 = 1;
+}
+
+// NodeLifecycleState describes the local lifecycle state reported by a node.
+enum NodeLifecycleState {
+  NODE_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  NODE_LIFECYCLE_STATE_INITIALIZING = 1;
+  NODE_LIFECYCLE_STATE_STANDALONE = 2;
+  NODE_LIFECYCLE_STATE_CLUSTERED = 3;
+  NODE_LIFECYCLE_STATE_DISCOVERING = 4;
+  NODE_LIFECYCLE_STATE_ACTIVE = 5;
+  NODE_LIFECYCLE_STATE_DEGRADED = 6;
+  NODE_LIFECYCLE_STATE_STOPPED = 7;
+  NODE_LIFECYCLE_STATE_FAILED = 8;
+}
+
+// PeerMembershipState is the local view of a peer's cluster participation.
+enum PeerMembershipState {
+  PEER_MEMBERSHIP_STATE_UNSPECIFIED = 0;
+  PEER_MEMBERSHIP_STATE_SELF = 1;
+  PEER_MEMBERSHIP_STATE_SEED = 2;
+  PEER_MEMBERSHIP_STATE_ACTIVE = 3;
+  PEER_MEMBERSHIP_STATE_UNREACHABLE = 4;
+  PEER_MEMBERSHIP_STATE_PENDING = 5;
+  PEER_MEMBERSHIP_STATE_REJECTED = 6;
+  PEER_MEMBERSHIP_STATE_REMOVED = 7;
+}
+
+// PeerSource describes how a peer entry was learned.
+enum PeerSource {
+  PEER_SOURCE_UNSPECIFIED = 0;
+  PEER_SOURCE_SELF = 1;
+  PEER_SOURCE_SEED = 2;
+  PEER_SOURCE_DISCOVERED = 3;
+  PEER_SOURCE_MANUAL = 4;
+}
+
+// ClusterMode describes the local operating mode for clustering.
+enum ClusterMode {
+  CLUSTER_MODE_UNSPECIFIED = 0;
+  CLUSTER_MODE_STANDALONE = 1;
+  CLUSTER_MODE_CLUSTERED = 2;
+}
+
+// NodeIdentity is the stable identity and operator-facing metadata for a daemon.
+message NodeIdentity {
+  int32 version = 1;
+  string node_id = 2;
+  string node_name = 3;
+  string cluster_id = 4;
+  string cluster_name = 5;
+  string backend_advertise_addr = 6;
+  string created_at = 7;
+  string updated_at = 8;
+  bool cluster_admitted = 9;
+  bool cluster_bootstrap = 10;
+  string node_public_key_fingerprint = 11;
+}
+
+// Peer describes one known cluster peer from the sender's local view.
+message Peer {
+  string node_id = 1;
+  string node_name = 2;
+  string cluster_id = 3;
+  string cluster_name = 4;
+  string backend_advertise_addr = 5;
+  PeerMembershipState state = 6;
+  PeerSource source = 7;
+  string last_seen_at = 8;
+}
+
+// ClusterView is a snapshot of the sender's current local cluster metadata.
+message ClusterView {
+  int32 version = 1;
+  ClusterMode mode = 2;
+  NodeLifecycleState local_state = 3;
+  NodeIdentity local_identity = 4;
+  repeated Peer peers = 5;
+  string updated_at = 6;
+}
+
+// RegisterNodeRequest announces the caller and asks a reachable peer to return
+// its cluster view.
+message RegisterNodeRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  NodeIdentity identity = 2;
+  NodeLifecycleState state = 3;
+  repeated Peer known_peers = 4;
+  string node_public_key_fingerprint = 5;
+}
+
+// RegisterNodeResponse returns the callee's registration decision and current
+// cluster view. In the current unsecured development phase, accepted=true means
+// only that the peer shape was valid and compatible.
+message RegisterNodeResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  bool accepted = 2;
+  string reason = 3;
+  ClusterView cluster_view = 4;
+}
+
+// GetClusterViewRequest asks for the current local cluster view.
+message GetClusterViewRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string requester_node_id = 2;
+}
+
+// GetClusterViewResponse returns the current local cluster view.
+message GetClusterViewResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  ClusterView cluster_view = 2;
+}
+
+// UpdateNodeStatusRequest refreshes the caller's state/liveness information.
+message UpdateNodeStatusRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  NodeIdentity identity = 2;
+  NodeLifecycleState state = 3;
+  string observed_at = 4;
+}
+
+// UpdateNodeStatusResponse acknowledges a node status update.
+message UpdateNodeStatusResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  bool accepted = 2;
+  string reason = 3;
+}
+
+// WatchClusterUpdatesRequest starts a stream of cluster metadata updates.
+message WatchClusterUpdatesRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string requester_node_id = 2;
+  string after_update_id = 3;
+}
+
+// WatchClusterUpdatesResponse describes a cluster metadata event from the sender's local view.
+message WatchClusterUpdatesResponse {
+  string update_id = 1;
+  string updated_at = 2;
+  ClusterView cluster_view = 3;
+}
+
+message ListClusterMembersRequest {
+  ClusterProtocolVersion protocol_version = 1;
+}
+
+message ListClusterMembersResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string cluster_name = 3;
+  repeated ClusterMember members = 4;
+}
+
+message GetBlobPayloadRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string requester_node_id = 3;
+  string space_id = 4;
+  string blob_id = 5;
+  uint64 expected_size_bytes = 6;
+  string expected_checksum_algorithm = 7;
+  string expected_checksum_hex = 8;
+}
+
+message BlobPayloadChunk {
+  ClusterProtocolVersion protocol_version = 1;
+  bytes data = 2;
+}
+
+message RaftMessageEnvelope {
+  string group_id = 1;
+  uint64 from_node_id = 2;
+  bytes message = 3;
+}
+
+message DeliverRaftMessagesRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  repeated RaftMessageEnvelope messages = 2;
+}
+
+message DeliverRaftMessagesResponse {
+  ClusterProtocolVersion protocol_version = 1;
+}
+
+message GetRaftSpaceRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string space_id = 2;
+}
+
+message RaftSpace {
+  string space_id = 1;
+  string owner_id = 2;
+  string name = 3;
+  string status = 4;
+  string created_at = 5;
+  string updated_at = 6;
+}
+
+message GetRaftSpaceResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  RaftSpace space = 2;
+}
+
+message ListRaftSpacesRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  bool include_archived = 2;
+}
+
+message ListRaftSpacesResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  repeated RaftSpace spaces = 2;
+}
+
+message ExecuteRaftGraphReadRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string space_id = 2;
+  bytes payload = 3;
+}
+
+message ExecuteRaftGraphReadResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  bytes payload = 2;
+}
+
+message ExecuteRaftSemanticReadRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string space_id = 2;
+  bytes payload = 3;
+}
+
+message ExecuteRaftSemanticReadResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  bytes payload = 2;
+}
+
+message ClusterMember {
+  string node_name = 1;
+  string node_id = 2;
+  string state = 3;
+  string backend_advertise_addr = 4;
+  string role = 5;
+  bool cluster_bootstrap = 6;
+  string node_public_key_fingerprint = 7;
+  string token_id = 8;
+  string token_expires_at = 9;
+  string token_consumed_at = 10;
+  string token_revoked_at = 11;
+  string created_at = 12;
+  string updated_at = 13;
+  string joined_at = 14;
+}

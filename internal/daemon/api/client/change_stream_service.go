@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	daemonchange "github.com/myceldb/mycel/internal/daemon/modules/changestream"
-	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
+	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"

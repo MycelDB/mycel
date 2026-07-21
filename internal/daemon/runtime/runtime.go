@@ -6,14 +6,33 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
+	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/daemon/config"
-	"github.com/myceldb/mycel/internal/daemon/quiesce"
+	coreruntime "github.com/myceldb/mycel/internal/runtime"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
+	"github.com/myceldb/mycel/internal/wal"
 )
+
+type SnapshotReloadable interface {
+	ReloadAfterSnapshot(ctx context.Context) error
+}
+
+var _ coreruntime.Host = (*Runtime)(nil)
+var _ coreruntime.QuiesceRegistrar = (*Runtime)(nil)
+var _ coreruntime.QuiesceCoordinatorProvider = (*Runtime)(nil)
+var _ coreruntime.WALProvider = (*Runtime)(nil)
 
 type Runtime struct {
 	Config config.Config
 	Logger *slog.Logger
+
+	ClusterManager *clustering.Manager
+	NodeIdentity   *model.NodeIdentity
+	NodeState      model.NodeState
 
 	// ServicesByName is the canonical runtime service registry.
 	ServicesByName  map[string]Service
@@ -23,6 +42,18 @@ type Runtime struct {
 	// Quiesce coordinates daemon services that can temporarily drain work for
 	// backup or other maintenance operations.
 	Quiesce *quiesce.Coordinator
+
+	// WAL is the daemon-owned write-ahead log manager. WALRegistry receives
+	// bounded-context appliers before WALRecovery runs during startup.
+	WAL           *wal.Manager
+	WALRegistry   *wal.Registry
+	WALRecovery   *wal.Recovery
+	WALProgress   wal.AppliedLSNStore
+	WALCheckpoint *wal.CheckpointStore
+	WALWaiter     *wal.ApplyWaiter
+
+	RaftGroups *consensus.MultiGroup
+	RaftRouter consensus.MessageSender
 
 	LogPath string
 
@@ -35,9 +66,33 @@ func New(cfg config.Config, logger *slog.Logger, logPath string, close func() er
 		Logger:         logger,
 		ServicesByName: map[string]Service{},
 		Quiesce:        quiesce.NewCoordinator(),
+		WALRegistry:    wal.NewRegistry(),
 		LogPath:        logPath,
 		close:          close,
 	}
+}
+
+func (r *Runtime) ReloadAfterSnapshot(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	for _, svc := range r.serviceOrder {
+		reloadable, ok := svc.(SnapshotReloadable)
+		if !ok {
+			continue
+		}
+		name := svc.Name()
+		if r.Logger != nil {
+			r.Logger.Info("reloading service after snapshot install", "service", name)
+		}
+		if err := reloadable.ReloadAfterSnapshot(ctx); err != nil {
+			if r.Logger != nil {
+				r.Logger.Error("service snapshot reload failed", "service", name, "error", err)
+			}
+			return fmt.Errorf("reload %s after snapshot: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) Close() error {
@@ -45,6 +100,18 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	var firstErr error
+	if r.RaftGroups != nil {
+		r.RaftGroups.Stop()
+	}
+	if r.ClusterManager != nil {
+		if err := r.ClusterManager.Stop(context.Background()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	} else if r.NodeIdentity != nil {
+		if err := clustering.WriteLocalState(r.Config.DataDir, model.NodeStateStopped, time.Now().UTC()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if err := r.StopServices(context.Background()); err != nil {
 		firstErr = err
 	}
@@ -53,6 +120,11 @@ func (r *Runtime) Close() error {
 			if err := closer.Close(); err != nil && firstErr == nil {
 				firstErr = err
 			}
+		}
+	}
+	if r.WAL != nil {
+		if err := r.WAL.Close(); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	if r.close != nil {
@@ -93,6 +165,72 @@ func (r *Runtime) unregisterService(name string) {
 			return
 		}
 	}
+}
+
+func (r *Runtime) Log() *slog.Logger {
+	if r == nil {
+		return nil
+	}
+	return r.Logger
+}
+
+func (r *Runtime) DataDir() string {
+	if r == nil {
+		return ""
+	}
+	return r.Config.DataDir
+}
+
+func (r *Runtime) QuiesceCoordinator() *quiesce.Coordinator {
+	if r == nil {
+		return nil
+	}
+	if r.Quiesce == nil {
+		r.Quiesce = quiesce.NewCoordinator()
+	}
+	return r.Quiesce
+}
+
+func (r *Runtime) RegisterQuiesceParticipant(p quiesce.Participant) error {
+	if r == nil {
+		return nil
+	}
+	return r.QuiesceCoordinator().Register(p)
+}
+
+func (r *Runtime) WALManager() *wal.Manager {
+	if r == nil {
+		return nil
+	}
+	return r.WAL
+}
+
+func (r *Runtime) WALRegistryStore() *wal.Registry {
+	if r == nil {
+		return nil
+	}
+	return r.WALRegistry
+}
+
+func (r *Runtime) WALProgressStore() wal.AppliedLSNStore {
+	if r == nil {
+		return nil
+	}
+	return r.WALProgress
+}
+
+func (r *Runtime) WALWaiterStore() *wal.ApplyWaiter {
+	if r == nil {
+		return nil
+	}
+	return r.WALWaiter
+}
+
+func (r *Runtime) WALCheckpointStore() *wal.CheckpointStore {
+	if r == nil {
+		return nil
+	}
+	return r.WALCheckpoint
 }
 
 func (r *Runtime) Services() []Service {
@@ -193,48 +331,6 @@ func (r *Runtime) HealthStatuses(ctx context.Context) []HealthStatus {
 		statuses = append(statuses, reporter.Health(ctx))
 	}
 	return statuses
-}
-
-type InitResult struct {
-	OK    bool
-	Error *InitError
-}
-
-type InitError struct {
-	Module  string
-	Type    string
-	Message string
-	Err     error
-	Abort   bool
-}
-
-func (e *InitError) Error() string {
-	if e == nil {
-		return ""
-	}
-	if e.Err != nil {
-		return fmt.Sprintf("%s: %s: %v", e.Module, e.Message, e.Err)
-	}
-	return fmt.Sprintf("%s: %s", e.Module, e.Message)
-}
-
-func (e *InitError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Err
-}
-
-func OK(module string) InitResult {
-	return InitResult{OK: true}
-}
-
-func Abort(module, issueType, message string, err error) InitResult {
-	return InitResult{Error: &InitError{Module: module, Type: issueType, Message: message, Err: err, Abort: true}}
-}
-
-func Continue(module, issueType, message string, err error) InitResult {
-	return InitResult{Error: &InitError{Module: module, Type: issueType, Message: message, Err: err, Abort: false}}
 }
 
 func (r *Runtime) InitServices(ctx context.Context, services []Service) error {

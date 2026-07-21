@@ -1,8 +1,23 @@
 # Mycel Documentation
 
-Documentation is temporarily split by architecture generation while the daemon migration is in progress.
+The documentation tree is organized around Mycel architecture, API, operational, and implementation planning topics.
 
-- `v1/` contains the current library/CLI-oriented documentation.
-- `v2/` contains the daemon-oriented design and API documentation, including the semantic/embedding package design in `v2/design/embedding-package.md`, implementation plan in `v2/design/embedding-generation-implementation-plan.md`, and auth refresh release notes in `v2/design/auth-refresh-release-notes.md`.
+- `design/` contains architecture, API, operational, and design reference documents.
+- `implementation/` contains implementation plans and migration/package plans.
+- `makefile_commands.md` summarizes common `make` targets for building, testing, coverage, and running the daemon locally.
 
-This split is transitional. Once the daemon conversion effort is complete, the documentation tree should be restructured around the final architecture.
+Current subsystem/runtime architecture direction:
+
+- `design/subsystem-runtime-architecture.md` describes the target approach: top-level subsystems own service behavior, shared runtime packages define lifecycle/quiesce/health contracts, and the daemon acts as the composition root.
+- `design/subsystem-runtime-package-map.md` records the current package map and import-audit state during the migration.
+- `implementation/subsystem-runtime-architecture-implementation-plan.md` breaks the migration into functional phases with testing and documentation expectations.
+- `implementation/subsystem-service-physical-move-implementation-plan.md` plans the follow-up migration that physically moves service implementations out of `internal/daemon/modules/*`.
+- `implementation/runtime-host-service-initialization-implementation-plan.md` plans the migration from concrete daemon runtime initialization to common `internal/runtime.Host` and capability interfaces.
+
+Current clustering direction:
+
+- `design/space-partitioned-raft-clustering.md` describes the space-partitioned `etcd/raft` clustering architecture.
+- `implementation/space-partitioned-raft-clustering-implementation-plan.md` records the Raft migration phases.
+- `implementation/remove-static-primary-leftovers-implementation-plan.md` tracks final cleanup of legacy static-primary artifacts.
+
+The old `v1/` and `v2/` generation folders have been removed; use the topic-based folders above for current documentation.

@@ -10,20 +10,20 @@ import (
 	"testing"
 	"time"
 
+	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
+	daemonblob "github.com/myceldb/mycel/internal/blob/service"
+	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
 	daemonapp "github.com/myceldb/mycel/internal/daemon/app"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
-	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
-	daemonbackup "github.com/myceldb/mycel/internal/daemon/modules/backup"
-	daemonblob "github.com/myceldb/mycel/internal/daemon/modules/blob"
-	daemonchange "github.com/myceldb/mycel/internal/daemon/modules/changestream"
-	daegraph "github.com/myceldb/mycel/internal/daemon/modules/graph"
-	daemonsemantic "github.com/myceldb/mycel/internal/daemon/modules/semantic"
-	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
-	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
-	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
+	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
+	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
+	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -455,7 +455,7 @@ func TestAdminListCommandFailsWhenDaemonUnavailable(t *testing.T) {
 func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "myceld")
-	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0"})
+	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", NodeName: "node-a", Cluster: daemonconfig.ClusterConfig{Name: "dev", BackendAdvertiseAddr: "127.0.0.1:9093"}})
 	if err != nil {
 		t.Fatalf("initialize daemon admin store failed: %v", err)
 	}
@@ -497,7 +497,7 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	}
 	password := bootstrapPasswordFromLog(t, rt.LogPath)
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: adminModule, AdminAuthenticator: adminModule, OperatorManager: adminModule, BackupManager: backupModule, UserManager: userModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, Logger: rt.Logger, Quiesce: rt.Quiesce})
+	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", AdminLister: adminModule, AdminAuthenticator: adminModule, OperatorManager: adminModule, BackupManager: backupModule, UserManager: userModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, Logger: rt.Logger, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService()})
 	if err != nil {
 		_ = rt.Close()
 		t.Fatalf("start grpc server failed: %v", err)

@@ -6,9 +6,9 @@ import (
 	"errors"
 	"io"
 
-	daemonblob "github.com/myceldb/mycel/internal/daemon/modules/blob"
-	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
+	daemonblob "github.com/myceldb/mycel/internal/blob/service"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"

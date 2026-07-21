@@ -4,10 +4,14 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-if ! command -v rg >/dev/null 2>&1; then
-  echo "error: ripgrep (rg) is required for daemon-only enforcement checks" >&2
-  exit 1
-fi
+search_go() {
+  local pattern="$1"
+  if command -v rg >/dev/null 2>&1; then
+    rg -n "$pattern" --glob '*.go' --glob '!gen/**' .
+  else
+    grep -R -n -E --include='*.go' --exclude-dir=gen "$pattern" .
+  fi
+}
 
 fail=0
 
@@ -45,13 +49,13 @@ if [ -e api/proto ] || [ -e gen/go ] || [ -e buf.yaml ]; then
 fi
 
 report_match "Go code must not import public engine/session packages" \
-  rg -n 'github\.com/myceldb/mycel/(engine|session)("|/)' --glob '*.go' --glob '!gen/**' .
+  search_go 'github\.com/myceldb/mycel/(engine|session)("|/)'
 
 report_match "Go code must not reference legacy MYCELDB_* embedded environment variables" \
-  rg -n 'MYCELDB_' --glob '*.go' --glob '!gen/**' .
+  search_go 'MYCELDB_'
 
 report_match "Go code must not expose removed embedded CLI flags" \
-  rg -n '"(data-dir|auth-token-ttl|auth-refresh-[^"]*|blob-(stale|max)[^"]*|semantic-advanced-enabled|user-store-encryption-key-b64)"' --glob '*.go' --glob '!gen/**' .
+  search_go '"(data-dir|auth-token-ttl|auth-refresh-[^"]*|blob-(stale|max)[^"]*|semantic-advanced-enabled|user-store-encryption-key-b64)"'
 
 public_packages="$(go list ./... | grep -E '^github\.com/myceldb/mycel/(engine|session)($|/)' || true)"
 if [ -n "$public_packages" ]; then

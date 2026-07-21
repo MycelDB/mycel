@@ -182,6 +182,44 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (domainspac
 	return s.toModel(), nil
 }
 
+func (m *defaultManager) ApplyCreate(ctx context.Context, space domainspace.Space) (domainspace.Space, error) {
+	if err := ctx.Err(); err != nil {
+		return domainspace.Space{}, err
+	}
+	if space.SpaceID == uuid.Nil {
+		return domainspace.Space{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	if space.OwnerID == uuid.Nil {
+		return domainspace.Space{}, fmt.Errorf("%w: owner_id is required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(space.Name) == "" {
+		return domainspace.Space{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	if idx, ok := m.indexByID[space.SpaceID]; ok {
+		existing := m.spaces[idx].toModel()
+		if existing.OwnerID == space.OwnerID && strings.EqualFold(strings.TrimSpace(existing.Name), strings.TrimSpace(space.Name)) {
+			return existing, nil
+		}
+		return domainspace.Space{}, fmt.Errorf("%w: conflicting space id", ErrInvalidInput)
+	}
+	if _, ok := m.indexByName[ownerNameKey(space.OwnerID, space.Name)]; ok {
+		return domainspace.Space{}, fmt.Errorf("%w: conflicting owner/name", ErrInvalidInput)
+	}
+	status := space.Status
+	if status == "" {
+		status = "active"
+	}
+	s := storedSpace{SpaceID: space.SpaceID, OwnerID: space.OwnerID, Name: space.Name, Status: status, Settings: space.Settings, CreatedAt: space.CreatedAt, UpdatedAt: space.UpdatedAt}
+	m.spaces = append(m.spaces, s)
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.spaces = m.spaces[:len(m.spaces)-1]
+		m.rebuildIndex()
+		return domainspace.Space{}, err
+	}
+	return s.toModel(), nil
+}
+
 func (m *defaultManager) DeleteByID(ctx context.Context, id domainspace.SpaceID) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -192,6 +230,28 @@ func (m *defaultManager) DeleteByID(ctx context.Context, id domainspace.SpaceID)
 	idx, ok := m.indexByID[id]
 	if !ok {
 		return ErrSpaceNotFound
+	}
+	oldSpaces := append([]storedSpace(nil), m.spaces...)
+	m.spaces = append(m.spaces[:idx], m.spaces[idx+1:]...)
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.spaces = oldSpaces
+		m.rebuildIndex()
+		return err
+	}
+	return nil
+}
+
+func (m *defaultManager) ApplyDelete(ctx context.Context, id domainspace.SpaceID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	idx, ok := m.indexByID[id]
+	if !ok {
+		return nil
 	}
 	oldSpaces := append([]storedSpace(nil), m.spaces...)
 	m.spaces = append(m.spaces[:idx], m.spaces[idx+1:]...)

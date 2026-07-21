@@ -24,5 +24,7 @@ type Manager interface {
 	ListByOwner(ctx context.Context, ownerID identity.UserID) ([]domainspace.Space, error)
 	FindByOwnerAndName(ctx context.Context, ownerID identity.UserID, name string) (domainspace.Space, error)
 	Create(ctx context.Context, in CreateInput) (domainspace.Space, error)
+	ApplyCreate(ctx context.Context, space domainspace.Space) (domainspace.Space, error)
 	DeleteByID(ctx context.Context, id domainspace.SpaceID) error
+	ApplyDelete(ctx context.Context, id domainspace.SpaceID) error
 }

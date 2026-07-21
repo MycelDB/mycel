@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
-	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

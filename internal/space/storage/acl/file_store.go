@@ -222,6 +222,49 @@ func (m *defaultManager) Grant(ctx context.Context, in GrantInput) (domainaccess
 	return cloneSpaceRule(rule), nil
 }
 
+func (m *defaultManager) ApplyGrant(ctx context.Context, rule domainaccess.SpaceAccessRule) (domainaccess.SpaceAccessRule, error) {
+	if err := ctx.Err(); err != nil {
+		return domainaccess.SpaceAccessRule{}, err
+	}
+	if rule.ID == uuid.Nil {
+		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: rule id is required", ErrInvalidInput)
+	}
+	if rule.SpaceID == uuid.Nil {
+		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	if rule.UserID == uuid.Nil {
+		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	}
+	permissions, err := normalizePermissions(rule.Permissions)
+	if err != nil {
+		return domainaccess.SpaceAccessRule{}, err
+	}
+	key := spaceUserKey(rule.SpaceID, rule.UserID)
+	if idx, ok := m.indexBySpaceUser[key]; ok {
+		existing := m.spaceRules[idx]
+		if existing.ID == rule.ID {
+			oldRule := existing
+			existing.Permissions = permissions
+			m.spaceRules[idx] = existing
+			if err := m.persist(); err != nil {
+				m.spaceRules[idx] = oldRule
+				return domainaccess.SpaceAccessRule{}, err
+			}
+			return cloneSpaceRule(existing), nil
+		}
+		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: conflicting space/user rule", ErrInvalidInput)
+	}
+	rule.Permissions = permissions
+	m.spaceRules = append(m.spaceRules, rule)
+	m.rebuildIndex()
+	if err := m.persist(); err != nil {
+		m.spaceRules = m.spaceRules[:len(m.spaceRules)-1]
+		m.rebuildIndex()
+		return domainaccess.SpaceAccessRule{}, err
+	}
+	return cloneSpaceRule(rule), nil
+}
+
 func (m *defaultManager) Revoke(ctx context.Context, in RevokeInput) error {
 	if err := ctx.Err(); err != nil {
 		return err

@@ -69,6 +69,10 @@ func (m hierarchyTemplateManager) Update(ctx context.Context, in storetemplate.U
 	return tmpl, nil
 }
 
+func (m hierarchyTemplateManager) ApplyPut(ctx context.Context, tmpl graph.Template) (graph.Template, error) {
+	return tmpl, nil
+}
+
 func (m hierarchyTemplateManager) Archive(ctx context.Context, id graph.TemplateID) (graph.Template, error) {
 	tmpl, ok := m.templates[id]
 	if !ok {
@@ -82,6 +86,10 @@ func (m hierarchyTemplateManager) DeleteByID(ctx context.Context, id graph.Templ
 	if _, ok := m.templates[id]; !ok {
 		return storetemplate.ErrTemplateNotFound
 	}
+	return nil
+}
+
+func (m hierarchyTemplateManager) ApplyDelete(ctx context.Context, id graph.TemplateID) error {
 	return nil
 }
 

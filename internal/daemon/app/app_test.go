@@ -11,8 +11,9 @@ import (
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/daemon/config"
-	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
@@ -90,6 +91,46 @@ func TestPhase8OfflineRestoreArchiveBootsDaemonAndListsResources(t *testing.T) {
 	}
 	if len(admins) == 0 || admins[0].Username != "admin" {
 		t.Fatalf("unexpected restored admins: %#v", admins)
+	}
+}
+
+func TestInitializeWithWALEnabledOpensAndRecoversEmptyLog(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "mycel-data")
+	cfg := config.Config{DataDir: dataDir, Mode: "mesh", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", WAL: config.WALConfig{Enabled: true, SegmentBytes: 1024, SyncPolicy: "always"}}
+	rt, err := Initialize(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	if rt.WAL == nil || rt.WALRegistry == nil || rt.WALRecovery == nil || rt.WALWaiter == nil {
+		t.Fatalf("expected WAL runtime components to be initialized")
+	}
+	if got := rt.WAL.LastCommittedLSN(); got != 0 {
+		t.Fatalf("LastCommittedLSN() = %v, want 0", got)
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	assertDir(t, filepath.Join(dataDir, "wal"))
+}
+
+func TestInitializeWithWALCorruptionFailsStartup(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "mycel-data")
+	walDir := filepath.Join(dataDir, "wal")
+	mgr, err := wal.Open(context.Background(), wal.Options{Dir: walDir, SegmentBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lsn, err := mgr.Append(context.Background(), wal.PendingRecord{Type: "unknown.v1", SchemaVersion: 1, Payload: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Sync(context.Background(), lsn); err != nil {
+		t.Fatal(err)
+	}
+	_ = mgr.Close()
+	cfg := config.Config{DataDir: dataDir, Mode: "mesh", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", WAL: config.WALConfig{Enabled: true, SegmentBytes: 1024, SyncPolicy: "always"}}
+	if _, err := Initialize(context.Background(), cfg); err == nil {
+		t.Fatal("expected Initialize() to fail on unreplayable WAL record")
 	}
 }
 

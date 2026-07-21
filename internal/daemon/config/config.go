@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -35,6 +36,13 @@ const (
 	DefaultBackupRetryAfter                 = 5 * time.Second
 	DefaultBackupStatusHistoryLimit         = 20
 	DefaultAccessTokenTTL                   = 15 * time.Minute
+	DefaultWALSegmentBytes                  = int64(64 * 1024 * 1024)
+	DefaultWALSyncPolicy                    = "always"
+	DefaultClusterDiscoveryInterval         = 5 * time.Second
+	DefaultClusterRaftNodeCount             = 3
+	DefaultClusterRaftPartitionCount        = 64
+	DefaultClusterRaftReplicaFactor         = 3
+	DefaultClusterRaftLocalNodeID           = 1
 )
 
 type SemanticThrottleConfig struct {
@@ -71,12 +79,32 @@ type BackupConfig struct {
 	AllowReadsDuringBackup bool
 }
 
+type WALConfig struct {
+	Enabled      bool
+	Dir          string
+	SegmentBytes int64
+	SyncPolicy   string
+}
+
+type ClusterConfig struct {
+	Name                 string
+	BackendAdvertiseAddr string
+	BackendAuthToken     string
+	DiscoveryInterval    time.Duration
+	RaftNodeCount        int
+	RaftPartitionCount   int
+	RaftReplicaFactor    int
+	RaftLocalNodeID      int
+	RaftNodeAddrs        []string
+}
+
 type Config struct {
 	DataDir                   string
 	Mode                      string
 	LogLevel                  string
 	LogFormat                 string
 	GRPCAddr                  string
+	NodeName                  string
 	UserStoreEncryptionKeyB64 string
 	BootstrapAdminUsername    string
 	BootstrapAdminPassword    string
@@ -87,6 +115,8 @@ type Config struct {
 	AccessTokenTTL            time.Duration
 	SemanticMaintenance       SemanticMaintenanceConfig
 	Backup                    BackupConfig
+	WAL                       WALConfig
+	Cluster                   ClusterConfig
 }
 
 func LoadFromEnv() (Config, error) {
@@ -104,6 +134,7 @@ func LoadFromEnv() (Config, error) {
 		LogLevel:                  valueOrDefault(os.Getenv("MYCELD_LOG_LEVEL"), DefaultLogLevel),
 		LogFormat:                 valueOrDefault(os.Getenv("MYCELD_LOG_FORMAT"), DefaultLogFormat),
 		GRPCAddr:                  valueOrDefault(os.Getenv("MYCELD_GRPC_ADDR"), DefaultGRPCAddr),
+		NodeName:                  strings.TrimSpace(os.Getenv("MYCELD_NODE_NAME")),
 		UserStoreEncryptionKeyB64: strings.TrimSpace(os.Getenv("MYCELD_USER_STORE_ENCRYPTION_KEY_B64")),
 		BootstrapAdminUsername:    strings.TrimSpace(os.Getenv("MYCELD_BOOTSTRAP_ADMIN_USERNAME")),
 		BootstrapAdminPassword:    os.Getenv("MYCELD_BOOTSTRAP_ADMIN_PASSWORD"),
@@ -112,6 +143,23 @@ func LoadFromEnv() (Config, error) {
 		TLSClientCAFile:           strings.TrimSpace(os.Getenv("MYCELD_TLS_CLIENT_CA_FILE")),
 		TLSRequireClientCert:      parseBoolEnv(os.Getenv("MYCELD_TLS_REQUIRE_CLIENT_CERT")),
 		AccessTokenTTL:            parseDurationEnv(os.Getenv("MYCELD_ACCESS_TOKEN_TTL"), DefaultAccessTokenTTL),
+		WAL: WALConfig{
+			Enabled:      parseBoolEnvDefault(os.Getenv("MYCELD_WAL_ENABLED"), true),
+			Dir:          strings.TrimSpace(os.Getenv("MYCELD_WAL_DIR")),
+			SegmentBytes: int64(parseIntEnv(os.Getenv("MYCELD_WAL_SEGMENT_BYTES"), int(DefaultWALSegmentBytes))),
+			SyncPolicy:   valueOrDefault(os.Getenv("MYCELD_WAL_SYNC_POLICY"), DefaultWALSyncPolicy),
+		},
+		Cluster: ClusterConfig{
+			Name:                 strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
+			BackendAdvertiseAddr: strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR")),
+			BackendAuthToken:     strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN")),
+			DiscoveryInterval:    parseDurationEnv(os.Getenv("MYCELD_CLUSTER_DISCOVERY_INTERVAL"), DefaultClusterDiscoveryInterval),
+			RaftNodeCount:        parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_COUNT"), DefaultClusterRaftNodeCount),
+			RaftPartitionCount:   parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_PARTITION_COUNT"), DefaultClusterRaftPartitionCount),
+			RaftReplicaFactor:    parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR"), DefaultClusterRaftReplicaFactor),
+			RaftLocalNodeID:      parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID"), DefaultClusterRaftLocalNodeID),
+			RaftNodeAddrs:        parseCSVEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS")),
+		},
 		Backup: BackupConfig{
 			Enabled:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
 			BackupDir:              strings.TrimSpace(os.Getenv("MYCELD_BACKUP_DIR")),
@@ -203,7 +251,99 @@ func (c Config) Validate() error {
 	if err := c.Backup.Validate(); err != nil {
 		return err
 	}
+	if err := c.WAL.Validate(); err != nil {
+		return err
+	}
+	if err := c.Cluster.Validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (c ClusterConfig) Validate() error {
+	if err := validateClusterAddr("MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR", c.BackendAdvertiseAddr); err != nil {
+		return err
+	}
+	if c.DiscoveryInterval < 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_DISCOVERY_INTERVAL must be positive")
+	}
+	nodeCount := c.RaftNodeCount
+	if nodeCount == 0 {
+		nodeCount = DefaultClusterRaftNodeCount
+	}
+	partitionCount := c.RaftPartitionCount
+	if partitionCount == 0 {
+		partitionCount = DefaultClusterRaftPartitionCount
+	}
+	replicaFactor := c.RaftReplicaFactor
+	if replicaFactor == 0 {
+		replicaFactor = DefaultClusterRaftReplicaFactor
+	}
+	if nodeCount <= 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_NODE_COUNT must be positive")
+	}
+	if partitionCount <= 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_PARTITION_COUNT must be positive")
+	}
+	if replicaFactor <= 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR must be positive")
+	}
+	if replicaFactor > nodeCount {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR must not exceed MYCELD_CLUSTER_RAFT_NODE_COUNT")
+	}
+	localNodeID := c.RaftLocalNodeID
+	if localNodeID == 0 {
+		localNodeID = DefaultClusterRaftLocalNodeID
+	}
+	if localNodeID <= 0 || localNodeID > nodeCount {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID must be between 1 and MYCELD_CLUSTER_RAFT_NODE_COUNT")
+	}
+	if len(c.RaftNodeAddrs) > 0 {
+		if len(c.RaftNodeAddrs) != nodeCount {
+			return fmt.Errorf("MYCELD_CLUSTER_RAFT_NODE_ADDRS must contain one host:port per raft node")
+		}
+		for _, addr := range c.RaftNodeAddrs {
+			if err := validateClusterAddr("MYCELD_CLUSTER_RAFT_NODE_ADDRS", addr); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateClusterAddr(name string, addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%s must be host:port", name)
+	}
+	if strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return fmt.Errorf("%s must include host and port", name)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p <= 0 || p > 65535 {
+		return fmt.Errorf("%s port must be valid", name)
+	}
+	host = strings.Trim(host, "[]")
+	if host == "0.0.0.0" || host == "::" {
+		return fmt.Errorf("%s must not use wildcard host", name)
+	}
+	return nil
+}
+
+func (c WALConfig) Validate() error {
+	if c.SegmentBytes < 0 {
+		return fmt.Errorf("MYCELD_WAL_SEGMENT_BYTES must be positive")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.SyncPolicy)) {
+	case "", "always":
+		return nil
+	default:
+		return fmt.Errorf("MYCELD_WAL_SYNC_POLICY must be always")
+	}
 }
 
 func (c BackupConfig) Validate() error {
@@ -298,6 +438,18 @@ func parseIntEnv(value string, fallback int) int {
 		return -1
 	}
 	return i
+}
+
+func parseCSVEnv(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func valueOrDefault(value, fallback string) string {

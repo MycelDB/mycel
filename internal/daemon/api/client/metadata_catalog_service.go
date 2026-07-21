@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	daegraph "github.com/myceldb/mycel/internal/daemon/modules/graph"
-	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

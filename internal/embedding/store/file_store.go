@@ -24,17 +24,7 @@ import (
 
 const storeFile = "embeddings.json"
 
-type storedKey struct {
-	ID               domainembedding.ProviderKeyID `json:"id"`
-	OwnerID          identity.UserID               `json:"owner_id"`
-	ProviderID       string                        `json:"provider_id"`
-	Name             string                        `json:"name"`
-	IsDefault        bool                          `json:"is_default"`
-	Disabled         bool                          `json:"disabled"`
-	APIKeyCiphertext string                        `json:"api_key_ciphertext,omitempty"`
-	CreatedAt        time.Time                     `json:"created_at"`
-	UpdatedAt        time.Time                     `json:"updated_at"`
-}
+type storedKey = ProviderKeyRecord
 
 type storedData struct {
 	Keys     []storedKey               `json:"keys"`
@@ -205,11 +195,42 @@ func (m *defaultManager) DeleteKey(ctx context.Context, in DeleteKeyInput) error
 	if err := requireOwner(ctx, in.OwnerID); err != nil {
 		return err
 	}
+	return m.ApplyDeleteKey(ctx, in.OwnerID, in.ID)
+}
+
+func (m *defaultManager) ApplyPutKey(ctx context.Context, rec ProviderKeyRecord) (domainembedding.ProviderKey, error) {
+	if err := requireOwner(ctx, rec.OwnerID); err != nil {
+		return domainembedding.ProviderKey{}, err
+	}
+	if strings.TrimSpace(rec.ProviderID) == "" || strings.TrimSpace(rec.Name) == "" {
+		return domainembedding.ProviderKey{}, fmt.Errorf("%w: provider_id and name are required", ErrInvalidInput)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	idx := m.findKeyLocked(in.OwnerID, in.ID)
+	if rec.IsDefault {
+		m.clearDefaultKeysLocked(rec.OwnerID, rec.ProviderID, rec.ID)
+	}
+	idx := m.findKeyLocked(rec.OwnerID, rec.ID)
+	if idx >= 0 {
+		m.data.Keys[idx] = rec
+	} else {
+		m.data.Keys = append(m.data.Keys, rec)
+	}
+	if err := m.persistLocked(); err != nil {
+		return domainembedding.ProviderKey{}, err
+	}
+	return rec.toModel(), nil
+}
+
+func (m *defaultManager) ApplyDeleteKey(ctx context.Context, ownerID identity.UserID, id domainembedding.ProviderKeyID) error {
+	if err := requireOwner(ctx, ownerID); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx := m.findKeyLocked(ownerID, id)
 	if idx < 0 {
-		return ErrKeyNotFound
+		return nil
 	}
 	m.data.Keys = append(m.data.Keys[:idx], m.data.Keys[idx+1:]...)
 	return m.persistLocked()

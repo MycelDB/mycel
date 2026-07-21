@@ -227,6 +227,52 @@ func (m *defaultManager) Update(ctx context.Context, in UpdateInput) (graph.Temp
 	return updated.toModel(), nil
 }
 
+func (m *defaultManager) ApplyPut(ctx context.Context, template graph.Template) (graph.Template, error) {
+	if err := ctx.Err(); err != nil {
+		return graph.Template{}, err
+	}
+	if template.ID == uuid.Nil {
+		return graph.Template{}, fmt.Errorf("%w: template_id is required", ErrInvalidInput)
+	}
+	if template.SpaceID == uuid.Nil {
+		return graph.Template{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(template.Key) == "" {
+		return graph.Template{}, fmt.Errorf("%w: key is required", ErrInvalidInput)
+	}
+	if !validSemver(template.Version) {
+		return graph.Template{}, fmt.Errorf("%w: version must be semver", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := storedTemplate{ID: template.ID, SpaceID: template.SpaceID, Key: strings.TrimSpace(template.Key), Version: strings.TrimSpace(template.Version), DisplayName: strings.TrimSpace(template.DisplayName), Description: strings.TrimSpace(template.Description), System: template.System, State: template.State, Properties: template.Properties, Children: template.Children}
+	if st.State == "" {
+		st.State = graph.TemplateStateActive
+	}
+	if idx, ok := m.indexByID[template.ID]; ok {
+		old := m.templates[idx]
+		m.templates[idx] = st
+		m.rebuildIndex()
+		if err := m.persistSpace(st.SpaceID); err != nil {
+			m.templates[idx] = old
+			m.rebuildIndex()
+			return graph.Template{}, err
+		}
+		return st.toModel(), nil
+	}
+	if _, exists := m.indexBySpaceKeyVersion[spaceKeyVersion(st.SpaceID, st.Key, st.Version)]; exists {
+		return graph.Template{}, fmt.Errorf("%w: %s@%s", ErrDuplicateTemplateVersion, st.Key, st.Version)
+	}
+	m.templates = append(m.templates, st)
+	m.rebuildIndex()
+	if err := m.persistSpace(st.SpaceID); err != nil {
+		m.templates = m.templates[:len(m.templates)-1]
+		m.rebuildIndex()
+		return graph.Template{}, err
+	}
+	return st.toModel(), nil
+}
+
 func (m *defaultManager) Archive(ctx context.Context, id graph.TemplateID) (graph.Template, error) {
 	if err := ctx.Err(); err != nil {
 		return graph.Template{}, err
@@ -263,6 +309,31 @@ func (m *defaultManager) DeleteByID(ctx context.Context, id graph.TemplateID) er
 	idx, ok := m.indexByID[id]
 	if !ok {
 		return ErrTemplateNotFound
+	}
+	spaceID := m.templates[idx].SpaceID
+	oldTemplates := append([]storedTemplate(nil), m.templates...)
+	m.templates = append(m.templates[:idx], m.templates[idx+1:]...)
+	m.rebuildIndex()
+	if err := m.persistSpace(spaceID); err != nil {
+		m.templates = oldTemplates
+		m.rebuildIndex()
+		return err
+	}
+	return nil
+}
+
+func (m *defaultManager) ApplyDelete(ctx context.Context, id graph.TemplateID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: template_id is required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx, ok := m.indexByID[id]
+	if !ok {
+		return nil
 	}
 	spaceID := m.templates[idx].SpaceID
 	oldTemplates := append([]storedTemplate(nil), m.templates...)

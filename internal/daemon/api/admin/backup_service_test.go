@@ -8,8 +8,8 @@ import (
 	"time"
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
-	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

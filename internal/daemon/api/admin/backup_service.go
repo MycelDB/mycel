@@ -9,11 +9,11 @@ import (
 	"time"
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
+	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
-	daemonbackup "github.com/myceldb/mycel/internal/daemon/modules/backup"
-	"github.com/myceldb/mycel/internal/daemon/quiesce"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
