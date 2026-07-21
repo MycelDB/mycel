@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 
-	"github.com/myceldb/mycel/internal/daemon/quiesce"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"google.golang.org/grpc"
 )
 

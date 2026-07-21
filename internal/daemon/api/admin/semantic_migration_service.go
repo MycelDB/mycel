@@ -4,14 +4,14 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	daemonsemantic "github.com/myceldb/mycel/internal/daemon/modules/semantic"
-	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/identity/model"
 	semanticmigration "github.com/myceldb/mycel/internal/semantic/migration"
+	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

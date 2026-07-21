@@ -8,10 +8,10 @@ import (
 	"time"
 
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
-	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
 	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

@@ -1,10 +1,18 @@
 # Mycel Documentation
 
-The documentation tree is organized around the current daemon-oriented architecture.
+The documentation tree is organized around Mycel architecture, API, operational, and implementation planning topics.
 
 - `design/` contains architecture, API, operational, and design reference documents.
 - `implementation/` contains implementation plans and migration/package plans.
 - `makefile_commands.md` summarizes common `make` targets for building, testing, coverage, and running the daemon locally.
+
+Current subsystem/runtime architecture direction:
+
+- `design/subsystem-runtime-architecture.md` describes the target approach: top-level subsystems own service behavior, shared runtime packages define lifecycle/quiesce/health contracts, and the daemon acts as the composition root.
+- `design/subsystem-runtime-package-map.md` records the current package map and import-audit state during the migration.
+- `implementation/subsystem-runtime-architecture-implementation-plan.md` breaks the migration into functional phases with testing and documentation expectations.
+- `implementation/subsystem-service-physical-move-implementation-plan.md` plans the follow-up migration that physically moves service implementations out of `internal/daemon/modules/*`.
+- `implementation/runtime-host-service-initialization-implementation-plan.md` plans the migration from concrete daemon runtime initialization to common `internal/runtime.Host` and capability interfaces.
 
 Current clustering direction:
 

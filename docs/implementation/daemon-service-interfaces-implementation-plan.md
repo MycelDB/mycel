@@ -4,7 +4,9 @@
 
 Proposed.
 
-This plan implements the cross-cutting service lifecycle interfaces described in [Daemon Service Interfaces Design](daemon-service-interfaces.md). It should land before or alongside the quiesce/backup implementation so backup does not introduce ad hoc lifecycle behavior.
+This plan implements the cross-cutting service lifecycle interfaces described in [Daemon Service Interfaces Design](../design/daemon-service-interfaces.md). It should land before or alongside the quiesce/backup implementation so backup does not introduce ad hoc lifecycle behavior.
+
+> Note: this plan records the earlier daemon-centered service-interface migration. The current target packaging direction is described in [Subsystem Runtime Architecture Implementation Plan](subsystem-runtime-architecture-implementation-plan.md), which builds on this work and moves reusable runtime contracts toward common `internal/runtime` packages.
 
 ## Acceptance criteria
 

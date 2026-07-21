@@ -12,13 +12,19 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/daemon/config"
-	"github.com/myceldb/mycel/internal/daemon/quiesce"
+	coreruntime "github.com/myceldb/mycel/internal/runtime"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
 type SnapshotReloadable interface {
 	ReloadAfterSnapshot(ctx context.Context) error
 }
+
+var _ coreruntime.Host = (*Runtime)(nil)
+var _ coreruntime.QuiesceRegistrar = (*Runtime)(nil)
+var _ coreruntime.QuiesceCoordinatorProvider = (*Runtime)(nil)
+var _ coreruntime.WALProvider = (*Runtime)(nil)
 
 type Runtime struct {
 	Config config.Config
@@ -161,6 +167,72 @@ func (r *Runtime) unregisterService(name string) {
 	}
 }
 
+func (r *Runtime) Log() *slog.Logger {
+	if r == nil {
+		return nil
+	}
+	return r.Logger
+}
+
+func (r *Runtime) DataDir() string {
+	if r == nil {
+		return ""
+	}
+	return r.Config.DataDir
+}
+
+func (r *Runtime) QuiesceCoordinator() *quiesce.Coordinator {
+	if r == nil {
+		return nil
+	}
+	if r.Quiesce == nil {
+		r.Quiesce = quiesce.NewCoordinator()
+	}
+	return r.Quiesce
+}
+
+func (r *Runtime) RegisterQuiesceParticipant(p quiesce.Participant) error {
+	if r == nil {
+		return nil
+	}
+	return r.QuiesceCoordinator().Register(p)
+}
+
+func (r *Runtime) WALManager() *wal.Manager {
+	if r == nil {
+		return nil
+	}
+	return r.WAL
+}
+
+func (r *Runtime) WALRegistryStore() *wal.Registry {
+	if r == nil {
+		return nil
+	}
+	return r.WALRegistry
+}
+
+func (r *Runtime) WALProgressStore() wal.AppliedLSNStore {
+	if r == nil {
+		return nil
+	}
+	return r.WALProgress
+}
+
+func (r *Runtime) WALWaiterStore() *wal.ApplyWaiter {
+	if r == nil {
+		return nil
+	}
+	return r.WALWaiter
+}
+
+func (r *Runtime) WALCheckpointStore() *wal.CheckpointStore {
+	if r == nil {
+		return nil
+	}
+	return r.WALCheckpoint
+}
+
 func (r *Runtime) Services() []Service {
 	if r == nil || len(r.serviceOrder) == 0 {
 		return nil
@@ -259,48 +331,6 @@ func (r *Runtime) HealthStatuses(ctx context.Context) []HealthStatus {
 		statuses = append(statuses, reporter.Health(ctx))
 	}
 	return statuses
-}
-
-type InitResult struct {
-	OK    bool
-	Error *InitError
-}
-
-type InitError struct {
-	Module  string
-	Type    string
-	Message string
-	Err     error
-	Abort   bool
-}
-
-func (e *InitError) Error() string {
-	if e == nil {
-		return ""
-	}
-	if e.Err != nil {
-		return fmt.Sprintf("%s: %s: %v", e.Module, e.Message, e.Err)
-	}
-	return fmt.Sprintf("%s: %s", e.Module, e.Message)
-}
-
-func (e *InitError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Err
-}
-
-func OK(module string) InitResult {
-	return InitResult{OK: true}
-}
-
-func Abort(module, issueType, message string, err error) InitResult {
-	return InitResult{Error: &InitError{Module: module, Type: issueType, Message: message, Err: err, Abort: true}}
-}
-
-func Continue(module, issueType, message string, err error) InitResult {
-	return InitResult{Error: &InitError{Module: module, Type: issueType, Message: message, Err: err, Abort: false}}
 }
 
 func (r *Runtime) InitServices(ctx context.Context, services []Service) error {

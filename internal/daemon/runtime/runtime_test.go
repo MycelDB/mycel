@@ -9,12 +9,13 @@ import (
 	"testing"
 
 	"github.com/myceldb/mycel/internal/daemon/config"
-	"github.com/myceldb/mycel/internal/daemon/quiesce"
+	coreruntime "github.com/myceldb/mycel/internal/runtime"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
 type testModule struct {
 	name string
-	init func(context.Context, *Runtime) InitResult
+	init func(context.Context, coreruntime.Host) InitResult
 }
 
 type lifecycleService struct {
@@ -35,9 +36,9 @@ type statusService struct {
 }
 
 func (m testModule) Name() string { return m.name }
-func (m testModule) Init(ctx context.Context, rt *Runtime) InitResult {
+func (m testModule) Init(ctx context.Context, host coreruntime.Host) InitResult {
 	if m.init != nil {
-		return m.init(ctx, rt)
+		return m.init(ctx, host)
 	}
 	return OK(m.name)
 }
@@ -56,11 +57,15 @@ func (s lifecycleService) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (s initParticipantService) Init(ctx context.Context, rt *Runtime) InitResult {
-	if err := rt.Quiesce.Register(s.participant); err != nil {
+func (s initParticipantService) Init(ctx context.Context, host coreruntime.Host) InitResult {
+	registrar, ok := host.(coreruntime.QuiesceRegistrar)
+	if !ok {
+		return Abort(s.name, "quiesce", "host does not support quiesce registration", nil)
+	}
+	if err := registrar.RegisterQuiesceParticipant(s.participant); err != nil {
 		return Abort(s.name, "quiesce", "register quiesce participant", err)
 	}
-	return s.testModule.Init(ctx, rt)
+	return s.testModule.Init(ctx, host)
 }
 
 func (s statusService) Status(context.Context) ServiceStatus { return s.status }
@@ -78,6 +83,9 @@ func (p runtimeTestParticipant) Status() quiesce.ParticipantStatus {
 
 var _ Service = testModule{}
 var _ Starter = lifecycleService{}
+var _ coreruntime.Host = (*Runtime)(nil)
+var _ coreruntime.QuiesceRegistrar = (*Runtime)(nil)
+var _ coreruntime.WALProvider = (*Runtime)(nil)
 var _ Stopper = lifecycleService{}
 
 func TestRuntimeInitServicesRegistersByName(t *testing.T) {

@@ -11,8 +11,8 @@ import (
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/daemon/config"
-	daemonadmin "github.com/myceldb/mycel/internal/daemon/modules/admin"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
 	"github.com/myceldb/mycel/internal/wal"
 )
 

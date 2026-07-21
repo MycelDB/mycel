@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
 	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"

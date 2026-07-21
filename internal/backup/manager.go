@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/internal/daemon/quiesce"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
 var (

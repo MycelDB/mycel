@@ -6,6 +6,8 @@ Proposed.
 
 This document defines daemon service lifecycle and capability interfaces for Mycel. These interfaces are cross-cutting daemon concerns used by graph, blob, semantic, backup, identity, space, and other daemon services. The current `Module` concept should become `Service` as the canonical runtime abstraction, with a staged compatibility window.
 
+> Note: this document reflects the earlier daemon-centered service-interface design. The current target architecture is described in [Subsystem Runtime Architecture](subsystem-runtime-architecture.md), which preserves the service lifecycle concepts here but moves reusable runtime contracts and quiesce primitives toward common `internal/runtime` packages so top-level subsystems do not depend on daemon packages.
+
 ## Motivation
 
 Mycel already has a module concept:

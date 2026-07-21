@@ -7,9 +7,9 @@ import (
 	"time"
 
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
-	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
 	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

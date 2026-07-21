@@ -11,24 +11,23 @@ import (
 	"syscall"
 	"time"
 
+	backupservice "github.com/myceldb/mycel/internal/backup/service"
+	blobservice "github.com/myceldb/mycel/internal/blob/service"
+	changestreamservice "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	"github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
-	"github.com/myceldb/mycel/internal/daemon/modules/admin"
-	daemonbackup "github.com/myceldb/mycel/internal/daemon/modules/backup"
-	daemonblob "github.com/myceldb/mycel/internal/daemon/modules/blob"
-	daemonchange "github.com/myceldb/mycel/internal/daemon/modules/changestream"
-	daegraph "github.com/myceldb/mycel/internal/daemon/modules/graph"
-	daemonsemantic "github.com/myceldb/mycel/internal/daemon/modules/semantic"
-	daemonsession "github.com/myceldb/mycel/internal/daemon/modules/session"
-	daemonspace "github.com/myceldb/mycel/internal/daemon/modules/space"
-	daemonuser "github.com/myceldb/mycel/internal/daemon/modules/user"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
 	"github.com/myceldb/mycel/internal/graph/change"
+	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	identityservice "github.com/myceldb/mycel/internal/identity/service"
+	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
+	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	spaceservice "github.com/myceldb/mycel/internal/space/service"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
@@ -47,33 +46,33 @@ func Run(ctx context.Context) int {
 	}
 	defer func() { _ = rt.Close() }()
 
-	adminService, ok := daemonruntime.ServiceAs[*admin.Module](rt, admin.ModuleName)
+	adminService, ok := daemonruntime.ServiceAs[*identityservice.AdminModule](rt, identityservice.AdminModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: admin service is not registered\n")
 		return 1
 	}
 	serverCtx, stopServer := context.WithCancel(ctx)
-	userService, ok := daemonruntime.ServiceAs[*daemonuser.Module](rt, daemonuser.ModuleName)
+	userService, ok := daemonruntime.ServiceAs[*identityservice.UserModule](rt, identityservice.UserModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: user service is not registered\n")
 		return 1
 	}
-	spaceService, ok := daemonruntime.ServiceAs[*daemonspace.Module](rt, daemonspace.ModuleName)
+	spaceService, ok := daemonruntime.ServiceAs[*spaceservice.Module](rt, spaceservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: space service is not registered\n")
 		return 1
 	}
-	sessionService, ok := daemonruntime.ServiceAs[*daemonsession.Module](rt, daemonsession.ModuleName)
+	sessionService, ok := daemonruntime.ServiceAs[*sessionservice.Module](rt, sessionservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: session service is not registered\n")
 		return 1
 	}
-	graphService, ok := daemonruntime.ServiceAs[*daegraph.Module](rt, daegraph.ModuleName)
+	graphService, ok := daemonruntime.ServiceAs[*graphservice.Module](rt, graphservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: graph service is not registered\n")
 		return 1
 	}
-	blobService, ok := daemonruntime.ServiceAs[*daemonblob.Module](rt, daemonblob.ModuleName)
+	blobService, ok := daemonruntime.ServiceAs[*blobservice.Module](rt, blobservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: blob service is not registered\n")
 		return 1
@@ -83,12 +82,12 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: semantic service is not registered\n")
 		return 1
 	}
-	changeService, ok := daemonruntime.ServiceAs[*daemonchange.Module](rt, daemonchange.ModuleName)
+	changeService, ok := daemonruntime.ServiceAs[*changestreamservice.Module](rt, changestreamservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: change stream service is not registered\n")
 		return 1
 	}
-	backupService, ok := daemonruntime.ServiceAs[*daemonbackup.Module](rt, daemonbackup.ModuleName)
+	backupService, ok := daemonruntime.ServiceAs[*backupservice.Module](rt, backupservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: backup service is not registered\n")
 		return 1
@@ -183,28 +182,63 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		rt.WALWaiter = rt.WALRecovery.Waiter()
 		logger.Info("wal ready", "path", walDir, "last_committed_lsn", walManager.LastCommittedLSN())
 	}
-	adminService := admin.NewModule()
-	userService := daemonuser.NewModule()
-	spaceService := daemonspace.NewModule()
-	sessionService := daemonsession.NewModule()
-	graphService := daegraph.NewModule()
-	blobService := daemonblob.NewModule(graphService)
-	semanticService := daemonsemantic.NewModule()
-	changeService := daemonchange.NewModule()
-	backupService := daemonbackup.NewModule()
+	adminService := identityservice.NewAdminManager()
+	userService := identityservice.NewUserManager()
+	spaceService := spaceservice.NewModule()
+	sessionService := sessionservice.NewModule()
+	graphService := graphservice.NewModule()
+	blobService := blobservice.NewModule(graphService)
+	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
+		SecretKeyB64: cfg.UserStoreEncryptionKeyB64,
+		MaintenanceConfig: daemonsemantic.MaintenanceConfig{
+			Enabled:                    cfg.SemanticMaintenance.Enabled,
+			DirtyCooldown:              cfg.SemanticMaintenance.DirtyCooldown,
+			AnalyzerInterval:           cfg.SemanticMaintenance.AnalyzerInterval,
+			WorkerInterval:             cfg.SemanticMaintenance.WorkerInterval,
+			WorkerCount:                cfg.SemanticMaintenance.WorkerCount,
+			MaxBatchSize:               cfg.SemanticMaintenance.MaxBatchSize,
+			MaxConcurrentProviderCalls: cfg.SemanticMaintenance.MaxConcurrentProviderCalls,
+			MaxRequestsPerMinute:       cfg.SemanticMaintenance.MaxRequestsPerMinute,
+			MaxTokensPerMinute:         cfg.SemanticMaintenance.MaxTokensPerMinute,
+			ProviderDefaults: daemonsemantic.ThrottleConfig{
+				MaxConcurrentCalls:   cfg.SemanticMaintenance.ProviderDefaults.MaxConcurrentCalls,
+				MaxRequestsPerMinute: cfg.SemanticMaintenance.ProviderDefaults.MaxRequestsPerMinute,
+				MaxTokensPerMinute:   cfg.SemanticMaintenance.ProviderDefaults.MaxTokensPerMinute,
+			},
+			CredentialDefaults: daemonsemantic.ThrottleConfig{
+				MaxConcurrentCalls:   cfg.SemanticMaintenance.CredentialDefaults.MaxConcurrentCalls,
+				MaxRequestsPerMinute: cfg.SemanticMaintenance.CredentialDefaults.MaxRequestsPerMinute,
+				MaxTokensPerMinute:   cfg.SemanticMaintenance.CredentialDefaults.MaxTokensPerMinute,
+			},
+		},
+	})
+	changeService := changestreamservice.NewModule()
+	backupService := backupservice.NewModule(backupservice.Config{
+		Enabled:                cfg.Backup.Enabled,
+		BackupDir:              cfg.Backup.BackupDir,
+		Interval:               cfg.Backup.Interval,
+		RetentionCount:         cfg.Backup.RetentionCount,
+		IncludeLogs:            cfg.Backup.IncludeLogs,
+		Compression:            cfg.Backup.Compression,
+		QuiesceDrainTimeout:    cfg.Backup.QuiesceDrainTimeout,
+		BackupTimeout:          cfg.Backup.BackupTimeout,
+		RetryAfter:             cfg.Backup.RetryAfter,
+		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
+		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
+	})
 	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, graphService, blobService, semanticService, changeService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}
 	if raftRuntimeConfigured(cfg) {
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
-			return compositeSystemStateMachine{consensus.NewSystemStateMachine(), daemonuser.RaftStateMachine{Module: userService}, admin.RaftStateMachine{Module: adminService}}
+			return compositeSystemStateMachine{consensus.NewSystemStateMachine(), identityservice.UserRaftStateMachine{Module: userService}, identityservice.AdminRaftStateMachine{Module: adminService}}
 		}, func(partitionID uint32) consensus.StateMachine {
 			partitionCount := uint32(cfg.Cluster.RaftPartitionCount)
 			return compositePartitionStateMachine{
-				daemonspace.RaftStateMachine{Module: spaceService, PartitionCount: partitionCount},
-				daegraph.RaftStateMachine{Module: graphService, PartitionCount: partitionCount},
-				daemonblob.RaftStateMachine{Module: blobService, PartitionCount: partitionCount},
+				spaceservice.RaftStateMachine{Module: spaceService, PartitionCount: partitionCount},
+				graphservice.RaftStateMachine{Module: graphService, PartitionCount: partitionCount},
+				blobservice.RaftStateMachine{Module: blobService, PartitionCount: partitionCount},
 				daemonsemantic.RaftStateMachine{Module: semanticService, PartitionCount: partitionCount},
 			}
 		}); err != nil {
@@ -221,7 +255,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		userService.EnableExperimentalRaft(rt.RaftGroups)
 		adminService.EnableExperimentalRaft(rt.RaftGroups)
 	}
-	clusterManager.SetBackendBlobPayloadProvider(daemonblob.BackendPayloadProvider{Module: blobService})
+	clusterManager.SetBackendBlobPayloadProvider(blobservice.BackendPayloadProvider{Module: blobService})
 	clusterManager.SetBackendSpaceReader(spaceService)
 	clusterManager.SetBackendGraphReader(graphService)
 	clusterManager.SetBackendSemanticReader(semanticService)

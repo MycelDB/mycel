@@ -1,55 +1,37 @@
 package runtime
 
-import (
-	"context"
-	"time"
-)
+import coreruntime "github.com/myceldb/mycel/internal/runtime"
 
 // Service is the base interface for daemon runtime services.
-//
-// Services are initialized by the daemon runtime and may optionally implement
-// additional lifecycle/capability interfaces such as Starter, Stopper,
-// StatusReporter, or HealthReporter.
-type Service interface {
-	Name() string
-	Init(context.Context, *Runtime) InitResult
-}
+type Service = coreruntime.Service
 
 // Starter is implemented by services that own background work and need an
 // explicit start step after all services have initialized.
-type Starter interface {
-	Start(context.Context) error
-}
+type Starter = coreruntime.Starter
 
 // Stopper is implemented by services that need an explicit stop step during
 // daemon shutdown.
-type Stopper interface {
-	Stop(context.Context) error
-}
+type Stopper = coreruntime.Stopper
 
 // StatusReporter is implemented by services that can report non-sensitive
 // operational status.
-type StatusReporter interface {
-	Status(context.Context) ServiceStatus
-}
+type StatusReporter = coreruntime.StatusReporter
 
 // HealthReporter is implemented by services that can report a health summary.
-type HealthReporter interface {
-	Health(context.Context) HealthStatus
-}
+type HealthReporter = coreruntime.HealthReporter
 
 // ServiceStatus is a non-sensitive daemon service status summary.
-type ServiceStatus struct {
-	Name      string
-	State     string
-	Started   bool
-	StartedAt time.Time
-	LastError string
-}
+type ServiceStatus = coreruntime.ServiceStatus
 
 // HealthStatus is a non-sensitive daemon service health summary.
-type HealthStatus struct {
-	Name    string
-	Healthy bool
-	Reason  string
-}
+type HealthStatus = coreruntime.HealthStatus
+
+// InitResult describes service initialization outcome.
+type InitResult = coreruntime.InitResult
+
+// InitError is a structured initialization error.
+type InitError = coreruntime.InitError
+
+var OK = coreruntime.OK
+var Abort = coreruntime.Abort
+var Continue = coreruntime.Continue

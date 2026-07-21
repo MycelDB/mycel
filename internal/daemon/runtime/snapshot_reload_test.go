@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/myceldb/mycel/internal/daemon/config"
+	coreruntime "github.com/myceldb/mycel/internal/runtime"
 )
 
 type reloadTestService struct {
@@ -14,7 +15,7 @@ type reloadTestService struct {
 }
 
 func (s reloadTestService) Name() string { return s.name }
-func (s reloadTestService) Init(context.Context, *Runtime) InitResult {
+func (s reloadTestService) Init(context.Context, coreruntime.Host) InitResult {
 	return Continue(s.name, "", "", nil)
 }
 func (s reloadTestService) Start(context.Context) error { return nil }
@@ -29,7 +30,7 @@ func (s reloadTestService) ReloadAfterSnapshot(ctx context.Context) error {
 type nonReloadTestService struct{ name string }
 
 func (s nonReloadTestService) Name() string { return s.name }
-func (s nonReloadTestService) Init(context.Context, *Runtime) InitResult {
+func (s nonReloadTestService) Init(context.Context, coreruntime.Host) InitResult {
 	return Continue(s.name, "", "", nil)
 }
 func (s nonReloadTestService) Start(context.Context) error { return nil }
