@@ -286,7 +286,7 @@ func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransacti
 	if _, err := m.node(ctx, tx, id); err == nil {
 		content := input.Content
 		tmpl := input.TemplateID
-		return m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: input.NodeID, TemplateID: &tmpl, Content: &content, Props: input.Props})
+		return m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: input.NodeID, TemplateID: &tmpl, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload, Meta: input.Meta, Content: &content, Props: input.Props})
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Node{}, err
 	}
