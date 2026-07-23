@@ -17,7 +17,7 @@ Node { NodeId, DomainId, TemplateId, BlobId, Content, Props }
 to:
 
 ```text
-Node { NodeId, DomainId, TemplateId, Labels, Content, Meta }
+Node { NodeId, DomainId, TemplateId, Labels, Properties, Payload, Meta }
 ```
 
 Backward compatibility is not required. Each tranche should leave its own repository buildable/testable where practical, but coordinated cross-repository changes will require branch alignment.
@@ -79,18 +79,19 @@ message Node {
   string domain_id = 2;
   optional string template_id = 3;
   repeated string labels = 4;
-  google.protobuf.Struct content = 5;
-  google.protobuf.Struct meta = 6;
-  google.protobuf.Timestamp create_time = 7;
-  google.protobuf.Timestamp update_time = 8;
+  google.protobuf.Struct properties = 5;
+  google.protobuf.Struct payload = 6;
+  google.protobuf.Struct meta = 7;
+  google.protobuf.Timestamp create_time = 8;
+  google.protobuf.Timestamp update_time = 9;
 }
 ```
 
 Update create/update messages:
 
-- replace inline `content` string with `content` struct
-- replace `props` with `content` and/or `meta`
-- remove direct client-facing `blob_id` from `Node` if blob references are moved into `meta`, or decide to retain a first-class blob field before implementation
+- replace inline `content` string with `payload` struct
+- replace `props` with `properties` and/or `meta`
+- remove direct client-facing `blob_id` from `Node`; blob references belong in `payload`
 - add `labels` to create/update and query/match messages
 
 Important decisions before editing protos:
@@ -138,7 +139,8 @@ type Node struct {
     DomainID   DomainID
     TemplateID *TemplateID
     Labels     []string
-    Content    map[string]any
+    Properties map[string]any
+    Payload    map[string]any
     Meta       map[string]any
     CreatedAt  time.Time
     UpdatedAt  time.Time
@@ -185,7 +187,7 @@ go test ./internal/graph/storage ./internal/wal ./internal/changestream/...
 
 ## Tranche 5 — Graph service and session API update in `mycel`
 
-Update create/update/get/list operations to use labels/content/meta.
+Update create/update/get/list operations to use labels/properties/payload/meta.
 
 Likely areas:
 
@@ -197,10 +199,10 @@ Likely areas:
 
 Expected semantic changes:
 
-- create node accepts `labels` and `content`
-- update node updates content/labels as supported
+- create node accepts `labels`, `properties`, and `payload`
+- update node updates properties/payload/labels as supported
 - normal user update should not mutate protected `meta` unless explicitly allowed
-- query property equality reads `Node.Content[name]`, not `Props["properties"][name]`
+- query property equality reads `Node.Properties[name]`, not `Props["properties"][name]`
 - label filters read `Node.Labels`
 
 Validation:
@@ -222,7 +224,7 @@ On `node_modif`, GQL should map directly:
 
 ```text
 GQL labels -> Node.Labels
-GQL properties -> Node.Content
+GQL properties -> Node.Properties
 ```
 
 Tasks:
@@ -255,8 +257,8 @@ Likely areas:
 
 Mapping guidance:
 
-- human text for embedding/search should come from canonical content fields, likely `content.text`, or template-defined content fields
-- user properties come from `Content`
+- human text for embedding/search should come from canonical payload fields, likely `payload.text`, or template-defined payload fields
+- user properties come from `Properties`
 - Mycel-derived summaries/status live in `Meta`
 - labels are first-class and should be independently queryable
 
@@ -281,7 +283,8 @@ Possible flags:
 
 ```sh
 --label Person --label Employee
---content-json '{"text":"hello","status":"todo"}'
+--properties-json '{"status":"todo"}'
+--payload-json '{"text":"hello"}'
 --meta-json '{...}' # admin/system only if exposed
 ```
 
@@ -298,7 +301,7 @@ go test ./internal/cli/cmd
 Tasks:
 
 - update generated/hand-written TypeScript API types
-- replace uses of `node.content` string and `node.props` with `node.content`, `node.labels`, and `node.meta`
+- replace uses of legacy `node.content` string and `node.props` with `node.payload`, `node.properties`, `node.labels`, and `node.meta`
 - update node detail displays
 - update import/export views if they inspect nodes
 - decide whether `meta` is visible in admin-only screens
@@ -360,8 +363,8 @@ Likely impact:
 
 Mapping guidance:
 
-- old `node.content` -> `node.content.text` unless a template defines a different primary text field
-- old `node.props` user/domain attributes -> `node.content.*`
+- old `node.content` -> `node.payload.text` unless a template defines a different primary text field
+- old `node.props` user/domain attributes -> `node.properties.*`
 - Mycel/system-only derived attributes -> `node.meta.*`
 - labels can represent coarse graph classifications where useful
 
@@ -376,15 +379,15 @@ Validation:
 Likely impact:
 
 - TypeScript `Node`/`NodeProps` types
-- rendering paths that read `node.content`
+- rendering paths that read `node.payload.text`
 - editor mutations that update text
 - task/reference views that read `node.props`
 - tests/fixtures
 
 Mapping guidance:
 
-- display text: `node.content.text`
-- editable user fields: `node.content.*`
+- display text: `node.payload.text`
+- editable user fields: `node.properties.*`
 - read-only Mycel metadata: `node.meta.*`
 - labels: display as classifications/chips only where product-appropriate
 
@@ -406,9 +409,9 @@ Likely impact:
 
 Mapping guidance:
 
-- Logseq block/page text -> `content.text`
-- Logseq properties/frontmatter/task fields -> `content.*`
-- importer provenance/source bookkeeping -> decide carefully: user-visible source data can be `content.*`; Mycel-controlled importer internals can be `meta.*`
+- Logseq block/page text -> `payload.text`
+- Logseq properties/frontmatter/task fields -> `properties.*`
+- importer provenance/source bookkeeping -> decide carefully: user-visible source data can be `properties.*`; Mycel-controlled importer internals can be `meta.*`
 - labels may classify nodes such as `LogseqPage`, `LogseqBlock`, `Task`, if useful
 
 Validation:
@@ -436,8 +439,8 @@ End-to-end smoke flow:
 2. Bootstrap/login admin operator.
 3. Create standard user.
 4. Create a space/domain.
-5. Create a node with labels/content.
-6. Query by label/content.
+5. Create a node with labels/properties.
+6. Query by label/properties.
 7. Import a small Knot PKM fixture.
 8. Open the Knot PKM client and verify rendering/editing.
 9. Run semantic/search smoke tests if configured.
@@ -455,9 +458,9 @@ Cross-project validation should run every affected repo's build/test suite on ma
 ## Risks
 
 - Broad API break across generated clients and applications.
-- Ambiguity around text content canonicalization (`content.text` vs template-defined fields).
+- Ambiguity around text payload canonicalization (`payload.text` vs template-defined fields).
 - Meta access-control semantics may need careful API design.
-- Blob reference placement needs a firm decision before proto changes.
+- Payload blob schema needs a firm decision before proto changes.
 - Query/index code may still assume custom properties live under legacy `Props["properties"]`.
 - Knot PKM client/server/importer contain many `content`/`props` assumptions.
 
@@ -468,5 +471,5 @@ Pause implementation and ask for design confirmation if any of these arise:
 - need to preserve backward compatibility after all
 - disagreement over whether labels are first-class or template-derived
 - decision needed about user visibility/writability of `Meta`
-- decision needed about blob refs as first-class fields vs metadata values
+- decision needed about single-blob/multi-blob payload schema
 - cross-repo generated API incompatibility that cannot be resolved locally
