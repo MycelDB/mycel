@@ -373,7 +373,11 @@ func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
 	if n.TemplateID != nil {
 		ensureNodeSet(s.nodesByTemplate, *n.TemplateID)[n.ID] = struct{}{}
 	}
-	if day, ok := numberPropInt(n.Props["journal_day"]); ok {
+	propsForIndex := n.Properties
+	if len(propsForIndex) == 0 {
+		propsForIndex = n.Props
+	}
+	if day, ok := numberPropInt(propsForIndex["journal_day"]); ok {
 		ensureNodeSet(s.journalDay, day)[n.ID] = struct{}{}
 	}
 	if n.BlobRef != nil {
@@ -397,7 +401,11 @@ func (s *LocalStore) removeNodeIndexes(n graph.Node) {
 	if n.TemplateID != nil {
 		delete(s.nodesByTemplate[*n.TemplateID], n.ID)
 	}
-	if day, ok := numberPropInt(n.Props["journal_day"]); ok {
+	propsForIndex := n.Properties
+	if len(propsForIndex) == 0 {
+		propsForIndex = n.Props
+	}
+	if day, ok := numberPropInt(propsForIndex["journal_day"]); ok {
 		delete(s.journalDay[day], n.ID)
 	}
 	if n.BlobRef != nil {
@@ -499,7 +507,14 @@ func numberPropInt(v any) (int, bool) {
 		return 0, false
 	}
 }
-func cloneNode(n graph.Node) graph.Node { n.Props = cloneProps(n.Props); return n }
+func cloneNode(n graph.Node) graph.Node {
+	n.Labels = append([]string(nil), n.Labels...)
+	n.Properties = cloneProps(n.Properties)
+	n.Payload = cloneProps(n.Payload)
+	n.Meta = cloneProps(n.Meta)
+	n.Props = cloneProps(n.Props)
+	return n
+}
 func cloneEdge(e graph.Edge) graph.Edge { e.Props = cloneProps(e.Props); return e }
 func cloneProps(in map[string]any) map[string]any {
 	out := map[string]any{}

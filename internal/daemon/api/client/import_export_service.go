@@ -386,7 +386,10 @@ func (s *importState) uploadedBlobID(importBlobID string) string {
 }
 
 func nodeInputFromExportNode(node *clientv1.Node, preserveIDs bool) daegraph.NodeInput {
-	input := daegraph.NodeInput{TemplateID: node.GetTemplateId(), BlobID: node.GetBlobId(), Content: node.GetContent(), Props: structMap(node.GetProps())}
+	payload := structMap(node.GetPayload())
+	blobID, _ := payload["blob_id"].(string)
+	content, _ := payload["text"].(string)
+	input := daegraph.NodeInput{TemplateID: node.GetTemplateId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: payload, Meta: structMap(node.GetMeta()), BlobID: blobID, Content: content}
 	if preserveIDs {
 		input.NodeID = node.GetNodeId()
 	}

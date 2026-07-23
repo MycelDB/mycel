@@ -38,7 +38,14 @@ func (s *MetadataCatalogService) ListTags(ctx context.Context, req *clientv1.Lis
 	}
 	counts := map[string]int64{}
 	for _, node := range nodes {
-		tags, err := domaingraph.NormalizeTagsValue(node.Props[domaingraph.NodePropTags])
+		tagValue := any(nil)
+		if node.Properties != nil {
+			tagValue = node.Properties[domaingraph.NodePropTags]
+		}
+		if tagValue == nil {
+			tagValue = node.Props[domaingraph.NodePropTags]
+		}
+		tags, err := domaingraph.NormalizeTagsValue(tagValue)
 		if err != nil {
 			continue
 		}
@@ -74,9 +81,16 @@ func (s *MetadataCatalogService) ListPropertyNames(ctx context.Context, req *cli
 	}
 	counts := map[string]int64{}
 	for _, node := range nodes {
-		properties, err := domaingraph.NormalizeCustomPropertiesValue(node.Props[domaingraph.NodePropCustomProperties])
-		if err != nil {
-			continue
+		properties := node.Properties
+		if nested, err := domaingraph.NormalizeCustomPropertiesValue(properties[domaingraph.NodePropCustomProperties]); err == nil && len(nested) > 0 {
+			properties = nested
+		}
+		if properties == nil {
+			var err error
+			properties, err = domaingraph.NormalizeCustomPropertiesValue(node.Props[domaingraph.NodePropCustomProperties])
+			if err != nil {
+				continue
+			}
 		}
 		for name := range properties {
 			counts[name]++

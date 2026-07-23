@@ -93,9 +93,10 @@ func NewQueryGQLCommand(a *app.App) *cobra.Command {
 
 func NewQueryNodesCommand(a *app.App) *cobra.Command {
 	var transactionID, templateKey, tag, propertyExists, propertyEquals, pageToken string
+	var labels []string
 	var pageSize, limit int32
 	cmd := &cobra.Command{Use: "nodes", Short: "Query nodes in a daemon graph transaction", RunE: func(cmd *cobra.Command, args []string) error {
-		query, err := buildNodeQuery(templateKey, tag, propertyExists, propertyEquals, limit)
+		query, err := buildNodeQuery(templateKey, labels, tag, propertyExists, propertyEquals, limit)
 		if err != nil {
 			return err
 		}
@@ -117,7 +118,7 @@ func NewQueryNodesCommand(a *app.App) *cobra.Command {
 				continue
 			}
 			node := field.GetNode()
-			fmt.Printf("%s\t%s\n", node.GetNodeId(), previewText(node.GetContent(), 120))
+			fmt.Printf("%s\t%s\n", node.GetNodeId(), previewText(nodePayloadText(node), 120))
 		}
 		if res.GetNextPageToken() != "" {
 			fmt.Printf("next page token: %s\n", res.GetNextPageToken())
@@ -126,6 +127,7 @@ func NewQueryNodesCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&transactionID, "transaction-id", "", "transaction ID")
 	cmd.Flags().StringVar(&templateKey, "template-key", "", "restrict to template key")
+	cmd.Flags().StringArrayVar(&labels, "label", nil, "restrict to label; repeatable")
 	cmd.Flags().StringVar(&tag, "tag", "", "match canonical tag")
 	cmd.Flags().StringVar(&propertyExists, "property-exists", "", "match canonical custom property name")
 	cmd.Flags().StringVar(&propertyEquals, "property-equals", "", "match custom property equality as name=value")
@@ -149,19 +151,11 @@ type daemonGraphWriter struct {
 }
 
 func (w daemonGraphWriter) InsertNode(ctx context.Context, node execution.InsertNode) (execmodel.NodeRef, error) {
-	props := map[string]any{"properties": copyGQLProperties(node.Properties)}
-	if len(node.Labels) > 0 {
-		labels := make([]any, len(node.Labels))
-		for i, label := range node.Labels {
-			labels[i] = label
-		}
-		props["_gql_labels"] = labels
-	}
-	protoProps, err := structpb.NewStruct(props)
+	protoProperties, err := structpb.NewStruct(copyGQLProperties(node.Properties))
 	if err != nil {
 		return execmodel.NodeRef{}, err
 	}
-	res, err := w.graphClient.CreateNode(ctx, &clientv1.CreateNodeRequest{TransactionId: w.transactionID, Node: &clientv1.NodeCreate{Props: protoProps}})
+	res, err := w.graphClient.CreateNode(ctx, &clientv1.CreateNodeRequest{TransactionId: w.transactionID, Node: &clientv1.NodeCreate{Labels: append([]string(nil), node.Labels...), Properties: protoProperties}})
 	if err != nil {
 		return execmodel.NodeRef{}, err
 	}
@@ -184,12 +178,11 @@ func (w daemonGraphWriter) QueryNodes(ctx context.Context, query execution.Query
 			continue
 		}
 		node := field.GetNode()
-		props := node.GetProps().AsMap()
-		labels := gqlLabelsFromProps(props)
+		labels := node.GetLabels()
 		if !containsAllLabels(labels, query.Labels) {
 			continue
 		}
-		nodes = append(nodes, execmodel.Node{ID: node.GetNodeId(), Labels: labels, Properties: gqlCustomPropertiesFromProps(props)})
+		nodes = append(nodes, execmodel.Node{ID: node.GetNodeId(), Labels: labels, Properties: node.GetProperties().AsMap()})
 	}
 	return nodes, nil
 }
@@ -209,29 +202,7 @@ func buildGQLNodeQuery(query execution.QueryNodes) (*clientv1.GraphQuery, error)
 	} else if len(exprs) > 1 {
 		where = &clientv1.Expr{Expr: &clientv1.Expr_And{And: &clientv1.AndExpr{Exprs: exprs}}}
 	}
-	return &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}}, Where: where, Returns: []*clientv1.ReturnProjection{{Alias: "n", OutputName: "node", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}}, nil
-}
-
-func gqlCustomPropertiesFromProps(props map[string]any) map[string]any {
-	custom, ok := props["properties"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	return custom
-}
-
-func gqlLabelsFromProps(props map[string]any) []string {
-	raw, ok := props["_gql_labels"].([]any)
-	if !ok {
-		return nil
-	}
-	labels := make([]string, 0, len(raw))
-	for _, value := range raw {
-		if label, ok := value.(string); ok {
-			labels = append(labels, label)
-		}
-	}
-	return labels
+	return &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: append([]string(nil), query.Labels...)}}, Where: where, Returns: []*clientv1.ReturnProjection{{Alias: "n", OutputName: "node", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}}, nil
 }
 
 func containsAllLabels(labels []string, required []string) bool {
@@ -255,8 +226,8 @@ func copyGQLProperties(properties map[string]any) map[string]any {
 	return out
 }
 
-func buildNodeQuery(templateKey, tag, propertyExists, propertyEquals string, limit int32) (*clientv1.GraphQuery, error) {
-	start := &clientv1.NodePattern{Alias: "n"}
+func buildNodeQuery(templateKey string, labels []string, tag, propertyExists, propertyEquals string, limit int32) (*clientv1.GraphQuery, error) {
+	start := &clientv1.NodePattern{Alias: "n", Labels: append([]string(nil), labels...)}
 	if strings.TrimSpace(templateKey) != "" {
 		value := strings.TrimSpace(templateKey)
 		start.TemplateKey = &value

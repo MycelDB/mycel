@@ -189,14 +189,35 @@ func (e *queryExecution) match(pattern *clientv1.GraphPattern, where *clientv1.E
 }
 
 func (e *queryExecution) nodeMatches(node domaingraph.Node, pattern *clientv1.NodePattern) bool {
-	if pattern == nil || pattern.GetTemplateKey() == "" {
+	if pattern == nil {
 		return true
 	}
-	if node.TemplateID == nil {
+	if pattern.GetTemplateKey() != "" {
+		if node.TemplateID == nil {
+			return false
+		}
+		tmpl, ok := e.templateByID[node.TemplateID.String()]
+		if !ok || tmpl.Key != pattern.GetTemplateKey() {
+			return false
+		}
+	}
+	if len(pattern.GetLabels()) > 0 && !nodeHasLabels(node.Labels, pattern.GetLabels()) {
 		return false
 	}
-	tmpl, ok := e.templateByID[node.TemplateID.String()]
-	return ok && tmpl.Key == pattern.GetTemplateKey()
+	return true
+}
+
+func nodeHasLabels(labels []string, required []string) bool {
+	seen := map[string]struct{}{}
+	for _, label := range labels {
+		seen[label] = struct{}{}
+	}
+	for _, label := range required {
+		if _, ok := seen[label]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *queryExecution) applySteps(row *queryRowState, current []domaingraph.Node, steps []*clientv1.TraversalStep) error {
@@ -365,7 +386,14 @@ func (e *queryExecution) hasTag(row *queryRowState, alias string, tag string) (b
 	if err != nil {
 		return false, err
 	}
-	tags, err := domaingraph.NormalizeTagsValue(node.Props[domaingraph.NodePropTags])
+	tagValue := any(nil)
+	if node.Properties != nil {
+		tagValue = node.Properties[domaingraph.NodePropTags]
+	}
+	if tagValue == nil {
+		tagValue = node.Props[domaingraph.NodePropTags]
+	}
+	tags, err := domaingraph.NormalizeTagsValue(tagValue)
 	if err != nil {
 		return false, nil
 	}
@@ -386,11 +414,20 @@ func (e *queryExecution) customProperty(row *queryRowState, alias string, name s
 	if err != nil {
 		return nil, false, err
 	}
-	props, err := domaingraph.NormalizeCustomPropertiesValue(node.Props[domaingraph.NodePropCustomProperties])
-	if err != nil {
-		return nil, false, nil
+	props := node.Properties
+	if props == nil {
+		var err error
+		props, err = domaingraph.NormalizeCustomPropertiesValue(node.Props[domaingraph.NodePropCustomProperties])
+		if err != nil {
+			return nil, false, nil
+		}
 	}
 	value, ok := props[want]
+	if !ok {
+		if nested, err := domaingraph.NormalizeCustomPropertiesValue(props[domaingraph.NodePropCustomProperties]); err == nil {
+			value, ok = nested[want]
+		}
+	}
 	return value, ok, nil
 }
 

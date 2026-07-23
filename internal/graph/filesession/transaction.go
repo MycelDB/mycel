@@ -188,6 +188,7 @@ func (tx *fileTx) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (grap
 	if err != nil {
 		return graph.Node{}, err
 	}
+	applyNodeShape(&n, in.Labels, in.Properties, in.Payload, in.Meta)
 	now := time.Now().UTC()
 	n.CreatedAt = now
 	n.UpdatedAt = now
@@ -256,6 +257,7 @@ func (tx *fileTx) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeInput)
 	if err != nil {
 		return graph.Node{}, err
 	}
+	applyNodeShape(&n, in.Labels, in.Properties, in.Payload, in.Meta)
 	n.BlobRef = nodes[idx].BlobRef
 	n.DomainID = nodes[idx].DomainID
 	n.CreatedAt = nodes[idx].CreatedAt
@@ -1010,6 +1012,10 @@ func findEdgeIndex(edges []graph.Edge, id graph.EdgeID) int {
 }
 
 func cloneNode(node graph.Node) graph.Node {
+	node.Labels = append([]string(nil), node.Labels...)
+	node.Properties = copyProps(node.Properties)
+	node.Payload = copyProps(node.Payload)
+	node.Meta = copyProps(node.Meta)
 	node.Props = copyProps(node.Props)
 	return node
 }

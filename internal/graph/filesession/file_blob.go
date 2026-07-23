@@ -138,6 +138,18 @@ func (s *FileSession) stageBlobNode(ctx context.Context, in sessionapi.AddBlobNo
 		return graph.Node{}, blobstorage.StagedBlob{}, err
 	}
 	node.BlobRef = &staged.ID
+	if node.Payload == nil {
+		node.Payload = map[string]any{}
+	}
+	node.Payload["blob_id"] = string(staged.ID)
+	node.Payload[PropMimeType] = mimeType
+	node.Payload[PropSizeBytes] = staged.SizeBytes
+	if in.DeclaredMimeType != "" {
+		node.Payload[PropDeclaredMimeType] = in.DeclaredMimeType
+	}
+	if in.OriginalFilename != "" {
+		node.Payload[PropOriginalFilename] = filepath.Base(in.OriginalFilename)
+	}
 	now := time.Now().UTC()
 	node.CreatedAt = now
 	node.UpdatedAt = now

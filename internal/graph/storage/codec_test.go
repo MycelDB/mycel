@@ -2,6 +2,7 @@ package graphstorage
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 	"time"
 
@@ -26,6 +27,32 @@ func TestDecodeNodeSupportsLegacyPayloadWithoutTimestamps(t *testing.T) {
 	}
 	if got.Props["journal_day"] != int64(20260102) || !got.CreatedAt.IsZero() || !got.UpdatedAt.IsZero() {
 		t.Fatalf("unexpected decoded props/timestamps: %+v", got)
+	}
+}
+
+func TestNodeCodecRoundTripWithNewShape(t *testing.T) {
+	tmpl := graph.TemplateID(uuid.New())
+	node := graph.Node{
+		ID:         graph.NodeID(uuid.New()),
+		DomainID:   graph.DomainID(uuid.New()),
+		TemplateID: &tmpl,
+		Labels:     []string{"Person", "Employee"},
+		Properties: map[string]any{"name": "Alice", "age": int64(42)},
+		Payload:    map[string]any{"text": "profile"},
+		Meta:       map[string]any{"summary": "person profile"},
+		CreatedAt:  time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		UpdatedAt:  time.Date(2026, 1, 2, 4, 5, 6, 0, time.UTC),
+	}
+	encoded, err := encodeNode(node)
+	if err != nil {
+		t.Fatalf("encodeNode: %v", err)
+	}
+	got, err := decodeNode(encoded)
+	if err != nil {
+		t.Fatalf("decodeNode: %v", err)
+	}
+	if !reflect.DeepEqual(got.Labels, node.Labels) || !reflect.DeepEqual(got.Properties, node.Properties) || !reflect.DeepEqual(got.Payload, node.Payload) || !reflect.DeepEqual(got.Meta, node.Meta) {
+		t.Fatalf("new node shape mismatch: got %+v want %+v", got, node)
 	}
 }
 
