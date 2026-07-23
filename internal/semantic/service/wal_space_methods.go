@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"time"
 
+	"github.com/google/uuid"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
@@ -68,6 +70,12 @@ func (w *walSpaceManager) DeleteSemanticIndex(ctx context.Context, id domainsema
 	return w.module.commitSemanticMutation(ctx, recordTypeSemanticSpace, semanticMutationRecord{Kind: "semantic_index.delete", SpaceID: w.spaceID, Payload: raw(id), Flag: purge})
 }
 func (w *walSpaceManager) UpsertCredentialGrant(ctx context.Context, v domainsemantic.CredentialGrant) (domainsemantic.CredentialGrant, error) {
+	if v.ID == uuid.Nil {
+		v.ID = uuid.New()
+	}
+	if v.CreatedAt.IsZero() {
+		v.CreatedAt = time.Now().UTC()
+	}
 	if err := w.module.commitSemanticMutation(ctx, recordTypeSemanticSpace, semanticMutationRecord{Kind: "credential_grant.upsert", SpaceID: w.spaceID, Payload: raw(v)}); err != nil {
 		return domainsemantic.CredentialGrant{}, err
 	}
