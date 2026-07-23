@@ -136,6 +136,7 @@ func (s *FileSession) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (
 	if err != nil {
 		return graph.Node{}, err
 	}
+	applyNodeShape(&n, in.Labels, in.Properties, in.Payload, in.Meta)
 	now := time.Now().UTC()
 	n.CreatedAt = now
 	n.UpdatedAt = now
@@ -191,6 +192,7 @@ func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeIn
 	if err != nil {
 		return graph.Node{}, err
 	}
+	applyNodeShape(&n, in.Labels, in.Properties, in.Payload, in.Meta)
 	// Updates never touch the blob reference or domain; replacing blob content or
 	// moving domains are separate operations.
 	n.BlobRef = nodes[idx].BlobRef
@@ -760,7 +762,32 @@ func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID 
 			return graph.Node{}, err
 		}
 	}
-	return graph.Node{ID: nodeID, DomainID: s.domainID, TemplateID: templateID, Content: content, Props: props}, nil
+	node := graph.Node{ID: nodeID, DomainID: s.domainID, TemplateID: templateID, Content: content, Props: props}
+	if content != "" {
+		node.Payload = map[string]any{"text": content}
+	}
+	if props != nil {
+		node.Properties = copyProps(props)
+	}
+	return node, nil
+}
+
+func applyNodeShape(node *graph.Node, labels []string, properties, payload, meta map[string]any) {
+	if labels != nil {
+		node.Labels = append([]string(nil), labels...)
+	}
+	if properties != nil {
+		node.Properties = copyProps(properties)
+	}
+	if payload != nil {
+		node.Payload = copyProps(payload)
+		if text, ok := payload["text"].(string); ok {
+			node.Content = text
+		}
+	}
+	if meta != nil {
+		node.Meta = copyProps(meta)
+	}
 }
 
 func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to graph.Node, kind graph.EdgeKind, edges []graph.Edge) error {
@@ -1090,6 +1117,10 @@ func findNodeIndex(nodes []graph.Node, id graph.NodeID) int {
 func cloneNodes(nodes []graph.Node) []graph.Node {
 	out := make([]graph.Node, 0, len(nodes))
 	for _, node := range nodes {
+		node.Labels = append([]string(nil), node.Labels...)
+		node.Properties = copyProps(node.Properties)
+		node.Payload = copyProps(node.Payload)
+		node.Meta = copyProps(node.Meta)
 		node.Props = copyProps(node.Props)
 		out = append(out, node)
 	}

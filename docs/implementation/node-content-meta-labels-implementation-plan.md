@@ -169,6 +169,8 @@ go test ./internal/graph/...
 
 ## Tranche 4 — Storage format update in `mycel`
 
+Status: initial implementation complete. Graph storage codec persists `Labels`, `Properties`, `Payload`, and `Meta`, while retaining temporary legacy decode support during the incremental refactor.
+
 Update file/WAL/storage serialization to persist the new node shape.
 
 Likely areas:
@@ -192,6 +194,8 @@ go test ./internal/graph/storage ./internal/wal ./internal/changestream/...
 ```
 
 ## Tranche 5 — Graph service and session API update in `mycel`
+
+Status: initial implementation complete. Client graph APIs and session inputs accept the new shape, query matching can use labels/properties, and CLI graph/query commands use payload text. Some legacy fields remain internally for later tranches.
 
 Update create/update/get/list operations to use labels/properties/payload/meta.
 
