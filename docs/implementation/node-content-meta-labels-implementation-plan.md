@@ -150,7 +150,7 @@ type Node struct {
 Remove or replace:
 
 - `Content string`
-- `BlobID *BlobID` if blob refs move into `Meta`
+- `BlobID *BlobID` if blob refs move into `Payload`
 - `Props map[string]any`
 - `NodePropCustomProperties = "properties"` as a public compatibility mechanism
 - temporary GQL `_gql_labels` usage
@@ -244,7 +244,7 @@ go test ./internal/query/gql/... ./internal/cli/cmd
 
 ## Tranche 7 — Semantic/search/embedding updates in `mycel`
 
-Update subsystems that inspect node content/props.
+Update subsystems that inspect legacy node content/props.
 
 Likely areas:
 
@@ -359,7 +359,7 @@ Likely impact:
 - node serialization/deserialization
 - search result shaping
 - chat/steward context builders
-- graph mutations such as replacing node content
+- graph mutations such as replacing node payload text
 
 Mapping guidance:
 
@@ -381,7 +381,7 @@ Likely impact:
 - TypeScript `Node`/`NodeProps` types
 - rendering paths that read `node.payload.text`
 - editor mutations that update text
-- task/reference views that read `node.props`
+- task/reference views that read legacy `node.props`
 - tests/fixtures
 
 Mapping guidance:
