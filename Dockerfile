@@ -9,7 +9,7 @@ ARG ALPINE_VERSION=3.21
 
 FROM golang:${GO_VERSION}-alpine AS builder
 
-RUN apk add --no-cache bash ca-certificates curl git make openjdk17-jre
+RUN apk add --no-cache bash ca-certificates git
 
 WORKDIR /src
 
@@ -25,7 +25,6 @@ COPY mycel ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     ./scripts/generate-proto.sh && \
-    make generate-gql-parser && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/myceld ./cmd/myceld && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mycel ./cmd/mycel
 
