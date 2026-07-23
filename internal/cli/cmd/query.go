@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -76,7 +77,12 @@ func NewQueryGQLCommand(a *app.App) *cobra.Command {
 				return err
 			}
 			committed = true
-			return a.Print(gqlCLIResult{Result: result, TransactionID: transactionID}, fmt.Sprintf("query executed: rows=%d\n", len(result.Rows)))
+			if a.Output == "json" {
+				return a.Print(gqlCLIResult{Result: result, TransactionID: transactionID}, fmt.Sprintf("query executed: rows=%d\n", len(result.Rows)))
+			}
+			printGQLRows(result)
+			fmt.Printf("query executed: rows=%d\n", len(result.Rows))
+			return nil
 		}
 		commitRes, err := txClient.CommitTransaction(authCtx, &clientv1.CommitTransactionRequest{TransactionId: transactionID})
 		if err != nil {
@@ -203,6 +209,32 @@ func buildGQLNodeQuery(query execution.QueryNodes) (*clientv1.GraphQuery, error)
 		where = &clientv1.Expr{Expr: &clientv1.Expr_And{And: &clientv1.AndExpr{Exprs: exprs}}}
 	}
 	return &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: append([]string(nil), query.Labels...)}}, Where: where, Returns: []*clientv1.ReturnProjection{{Alias: "n", OutputName: "node", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}}, nil
+}
+
+func printGQLRows(result execmodel.Result) {
+	for _, row := range result.Rows {
+		columns := result.Columns
+		if len(columns) == 0 {
+			columns = make([]string, 0, len(row))
+			for column := range row {
+				columns = append(columns, column)
+			}
+		}
+		parts := make([]string, 0, len(columns))
+		for _, column := range columns {
+			value, ok := row[column]
+			if !ok {
+				continue
+			}
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				parts = append(parts, fmt.Sprintf("%s=<unprintable>", column))
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("%s=%s", column, encoded))
+		}
+		fmt.Println(strings.Join(parts, "\t"))
+	}
 }
 
 func containsAllLabels(labels []string, required []string) bool {
