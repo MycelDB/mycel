@@ -284,6 +284,8 @@ go test ./internal/semantic/... ./internal/embedding/... ./internal/graph/query/
 
 ## Tranche 8 — CLI updates in `mycel`
 
+Status: implemented. Graph node/blob-node create and update commands accept `--label`, `--properties-json`, `--payload-json`, and `--meta-json`; `--content`/`--props-json` remain temporary aliases. `query nodes` supports repeatable `--label` filters.
+
 Update CLI commands:
 
 - `graph node create`
@@ -312,6 +314,8 @@ go test ./internal/cli/cmd
 
 ## Tranche 9 — Admin UI update in `mycel-admin`
 
+Status: validated. Current admin UI does not expose client graph node content/props views, so no code changes were required; tests and production build pass.
+
 Tasks:
 
 - update generated/hand-written TypeScript API types
@@ -328,6 +332,8 @@ npm run build
 ```
 
 ## Tranche 10 — SDK updates
+
+Status: implemented for `mycel-go-sdk` and `mycel-rust-sdk`. Protobuf bindings were regenerated/updated from `mycel-api/node_modif`, and `UpdateNodeContent` helpers now update `payload.text` with an update mask of `payload`.
 
 ### `mycel-go-sdk`
 

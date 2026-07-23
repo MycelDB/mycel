@@ -34,9 +34,18 @@ func newGraphBlobNodeCommand(a *app.App) *cobra.Command {
 }
 
 func newGraphBlobNodeCreateCommand(a *app.App) *cobra.Command {
-	var transactionID, nodeID, templateID, propsJSON, declaredMimeType, originalFilename string
+	var transactionID, nodeID, templateID, propsJSON, propertiesJSON, payloadJSON, metaJSON, declaredMimeType, originalFilename string
+	var labels []string
 	cmd := &cobra.Command{Use: "create FILE", Short: "Create a blob-backed node in a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		props, err := protoProps(propsJSON)
+		properties, err := protoNodeMap(propertiesJSON, propsJSON)
+		if err != nil {
+			return err
+		}
+		payload, err := protoNodeMap(payloadJSON, "")
+		if err != nil {
+			return err
+		}
+		meta, err := protoNodeMap(metaJSON, "")
 		if err != nil {
 			return err
 		}
@@ -57,7 +66,7 @@ func newGraphBlobNodeCreateCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		metadata := &clientv1.CreateBlobNodeMetadata{TransactionId: transactionID, DeclaredMimeType: declaredMimeType, OriginalFilename: originalFilename, Properties: props}
+		metadata := &clientv1.CreateBlobNodeMetadata{TransactionId: transactionID, DeclaredMimeType: declaredMimeType, OriginalFilename: originalFilename, Labels: labels, Properties: properties, Payload: payload, Meta: meta}
 		if nodeID != "" {
 			metadata.NodeId = &nodeID
 		}
@@ -92,7 +101,11 @@ func newGraphBlobNodeCreateCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&transactionID, "transaction-id", "", "transaction ID")
 	cmd.Flags().StringVar(&nodeID, "node-id", "", "optional node ID")
 	cmd.Flags().StringVar(&templateID, "template-id", "", "optional template ID")
-	cmd.Flags().StringVar(&propsJSON, "props-json", "", "node properties as JSON object")
+	cmd.Flags().StringArrayVar(&labels, "label", nil, "node label; repeatable")
+	cmd.Flags().StringVar(&propertiesJSON, "properties-json", "", "node properties as JSON object")
+	cmd.Flags().StringVar(&payloadJSON, "payload-json", "", "node payload as JSON object")
+	cmd.Flags().StringVar(&metaJSON, "meta-json", "", "node metadata as JSON object")
+	cmd.Flags().StringVar(&propsJSON, "props-json", "", "deprecated alias for --properties-json")
 	cmd.Flags().StringVar(&declaredMimeType, "mime-type", "", "declared MIME type")
 	cmd.Flags().StringVar(&originalFilename, "filename", "", "original filename metadata")
 	_ = cmd.MarkFlagRequired("transaction-id")
@@ -100,9 +113,10 @@ func newGraphBlobNodeCreateCommand(a *app.App) *cobra.Command {
 }
 
 func newGraphNodeCreateCommand(a *app.App) *cobra.Command {
-	var transactionID, nodeID, templateID, content, propsJSON string
+	var transactionID, nodeID, templateID, content, propsJSON, propertiesJSON, payloadJSON, metaJSON string
+	var labels []string
 	cmd := &cobra.Command{Use: "create", Short: "Create a node in a daemon graph transaction", RunE: func(cmd *cobra.Command, args []string) error {
-		props, err := protoProps(propsJSON)
+		properties, payload, meta, err := parseNodeShape(propertiesJSON, propsJSON, payloadJSON, metaJSON, content)
 		if err != nil {
 			return err
 		}
@@ -111,7 +125,7 @@ func newGraphNodeCreateCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		req := &clientv1.CreateNodeRequest{TransactionId: transactionID, Node: &clientv1.NodeCreate{Payload: protoStruct(map[string]any{"text": content}), Properties: props}}
+		req := &clientv1.CreateNodeRequest{TransactionId: transactionID, Node: &clientv1.NodeCreate{Labels: labels, Payload: payload, Properties: properties, Meta: meta}}
 		if nodeID != "" {
 			req.Node.NodeId = &nodeID
 		}
@@ -127,8 +141,12 @@ func newGraphNodeCreateCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&transactionID, "transaction-id", "", "transaction ID")
 	cmd.Flags().StringVar(&nodeID, "node-id", "", "optional node ID")
 	cmd.Flags().StringVar(&templateID, "template-id", "", "optional template ID")
-	cmd.Flags().StringVar(&content, "content", "", "node content")
-	cmd.Flags().StringVar(&propsJSON, "props-json", "", "node properties as JSON object")
+	cmd.Flags().StringArrayVar(&labels, "label", nil, "node label; repeatable")
+	cmd.Flags().StringVar(&content, "content", "", "node text payload; deprecated alias for --payload-json")
+	cmd.Flags().StringVar(&propertiesJSON, "properties-json", "", "node properties as JSON object")
+	cmd.Flags().StringVar(&payloadJSON, "payload-json", "", "node payload as JSON object")
+	cmd.Flags().StringVar(&metaJSON, "meta-json", "", "node metadata as JSON object")
+	cmd.Flags().StringVar(&propsJSON, "props-json", "", "deprecated alias for --properties-json")
 	_ = cmd.MarkFlagRequired("transaction-id")
 	return cmd
 }
@@ -184,9 +202,10 @@ func newGraphNodeListCommand(a *app.App) *cobra.Command {
 }
 
 func newGraphNodeUpdateCommand(a *app.App) *cobra.Command {
-	var transactionID, content, propsJSON, templateID, mask string
+	var transactionID, content, propsJSON, propertiesJSON, payloadJSON, metaJSON, templateID, mask string
+	var labels []string
 	cmd := &cobra.Command{Use: "update NODE_ID", Short: "Update a node in a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		props, err := protoProps(propsJSON)
+		properties, payload, meta, err := parseNodeShape(propertiesJSON, propsJSON, payloadJSON, metaJSON, content)
 		if err != nil {
 			return err
 		}
@@ -195,7 +214,7 @@ func newGraphNodeUpdateCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		node := &clientv1.Node{NodeId: args[0], Payload: protoStruct(map[string]any{"text": content}), Properties: props}
+		node := &clientv1.Node{NodeId: args[0], Labels: labels, Payload: payload, Properties: properties, Meta: meta}
 		if templateID != "" {
 			node.TemplateId = &templateID
 		}
@@ -207,10 +226,14 @@ func newGraphNodeUpdateCommand(a *app.App) *cobra.Command {
 		return a.Print(res.GetNode(), fmt.Sprintf("node updated: %s\n", res.GetNode().GetNodeId()))
 	}}
 	cmd.Flags().StringVar(&transactionID, "transaction-id", "", "transaction ID")
-	cmd.Flags().StringVar(&content, "content", "", "node content")
-	cmd.Flags().StringVar(&propsJSON, "props-json", "", "node properties as JSON object")
+	cmd.Flags().StringArrayVar(&labels, "label", nil, "node label; repeatable")
+	cmd.Flags().StringVar(&content, "content", "", "node text payload; deprecated alias for --payload-json")
+	cmd.Flags().StringVar(&propertiesJSON, "properties-json", "", "node properties as JSON object")
+	cmd.Flags().StringVar(&payloadJSON, "payload-json", "", "node payload as JSON object")
+	cmd.Flags().StringVar(&metaJSON, "meta-json", "", "node metadata as JSON object")
+	cmd.Flags().StringVar(&propsJSON, "props-json", "", "deprecated alias for --properties-json")
 	cmd.Flags().StringVar(&templateID, "template-id", "", "template ID")
-	cmd.Flags().StringVar(&mask, "mask", "", "comma-separated update mask paths, e.g. content,props")
+	cmd.Flags().StringVar(&mask, "mask", "", "comma-separated update mask paths, e.g. payload,properties,labels,meta")
 	_ = cmd.MarkFlagRequired("transaction-id")
 	return cmd
 }
@@ -397,6 +420,39 @@ func protoStruct(value map[string]any) *structpb.Struct {
 		return nil
 	}
 	return out
+}
+
+func parseNodeShape(propertiesJSON, propsJSON, payloadJSON, metaJSON, content string) (*structpb.Struct, *structpb.Struct, *structpb.Struct, error) {
+	properties, err := protoNodeMap(propertiesJSON, propsJSON)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	payloadMap, err := app.ParseProps(payloadJSON)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if payloadMap == nil {
+		payloadMap = map[string]any{}
+	}
+	if content != "" {
+		payloadMap["text"] = content
+	}
+	payload, err := structpb.NewStruct(payloadMap)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	meta, err := protoNodeMap(metaJSON, "")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return properties, payload, meta, nil
+}
+
+func protoNodeMap(raw, legacyRaw string) (*structpb.Struct, error) {
+	if strings.TrimSpace(raw) == "" {
+		raw = legacyRaw
+	}
+	return protoProps(raw)
 }
 
 func protoProps(raw string) (*structpb.Struct, error) {

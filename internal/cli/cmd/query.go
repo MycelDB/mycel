@@ -93,9 +93,10 @@ func NewQueryGQLCommand(a *app.App) *cobra.Command {
 
 func NewQueryNodesCommand(a *app.App) *cobra.Command {
 	var transactionID, templateKey, tag, propertyExists, propertyEquals, pageToken string
+	var labels []string
 	var pageSize, limit int32
 	cmd := &cobra.Command{Use: "nodes", Short: "Query nodes in a daemon graph transaction", RunE: func(cmd *cobra.Command, args []string) error {
-		query, err := buildNodeQuery(templateKey, tag, propertyExists, propertyEquals, limit)
+		query, err := buildNodeQuery(templateKey, labels, tag, propertyExists, propertyEquals, limit)
 		if err != nil {
 			return err
 		}
@@ -126,6 +127,7 @@ func NewQueryNodesCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&transactionID, "transaction-id", "", "transaction ID")
 	cmd.Flags().StringVar(&templateKey, "template-key", "", "restrict to template key")
+	cmd.Flags().StringArrayVar(&labels, "label", nil, "restrict to label; repeatable")
 	cmd.Flags().StringVar(&tag, "tag", "", "match canonical tag")
 	cmd.Flags().StringVar(&propertyExists, "property-exists", "", "match canonical custom property name")
 	cmd.Flags().StringVar(&propertyEquals, "property-equals", "", "match custom property equality as name=value")
@@ -224,8 +226,8 @@ func copyGQLProperties(properties map[string]any) map[string]any {
 	return out
 }
 
-func buildNodeQuery(templateKey, tag, propertyExists, propertyEquals string, limit int32) (*clientv1.GraphQuery, error) {
-	start := &clientv1.NodePattern{Alias: "n"}
+func buildNodeQuery(templateKey string, labels []string, tag, propertyExists, propertyEquals string, limit int32) (*clientv1.GraphQuery, error) {
+	start := &clientv1.NodePattern{Alias: "n", Labels: append([]string(nil), labels...)}
 	if strings.TrimSpace(templateKey) != "" {
 		value := strings.TrimSpace(templateKey)
 		start.TemplateKey = &value
