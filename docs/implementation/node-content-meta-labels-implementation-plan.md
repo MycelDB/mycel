@@ -223,6 +223,8 @@ go test ./internal/daemon/api/client ./internal/session/... ./internal/cli/cmd
 
 ## Tranche 6 — GQL pipeline alignment in `mycel`
 
+Status: implemented. The GQL pipeline from `add_query_lang` has been ported to `node_modif`; CLI execution now writes GQL labels to `Node.Labels` and GQL properties to `Node.Properties`, and `MATCH` uses label-aware node patterns.
+
 The `add_query_lang` branch introduced a temporary adapter mapping:
 
 ```text
@@ -253,6 +255,8 @@ go test ./internal/query/gql/... ./internal/cli/cmd
 ```
 
 ## Tranche 7 — Semantic/search/embedding updates in `mycel`
+
+Status: initial implementation complete. Shared graph helpers expose canonical payload text and property lookup with temporary legacy fallbacks; graph query property expressions and embedding source assembly use those helpers.
 
 Update subsystems that inspect legacy node content/props.
 

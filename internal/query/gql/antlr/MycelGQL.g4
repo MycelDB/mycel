@@ -1,0 +1,120 @@
+// MycelGQL is a deliberately small GQL-compatible grammar slice.
+//
+// v0 supports the minimum statements needed to insert and return one node, for
+// example:
+//
+//   INSERT (:Person {name: 'Alice', age: 42})
+//   MATCH (p:Person {name: 'Alice'}) RETURN p
+//
+// This is not a complete ISO GQL grammar. Extend it clause by clause as Mycel's
+// query execution support grows.
+grammar MycelGQL;
+
+query
+  : statement EOF
+  ;
+
+statement
+  : insertStatement
+  | matchStatement
+  ;
+
+insertStatement
+  : INSERT nodePattern
+  ;
+
+matchStatement
+  : MATCH nodePattern RETURN returnItem (COMMA returnItem)*
+  ;
+
+returnItem
+  : variable
+  ;
+
+nodePattern
+  : LPAREN variable? labelExpression? propertyMap? RPAREN
+  ;
+
+variable
+  : IDENTIFIER
+  ;
+
+labelExpression
+  : COLON labelName (COLON labelName)*
+  ;
+
+labelName
+  : IDENTIFIER
+  ;
+
+propertyMap
+  : LBRACE propertyPair (COMMA propertyPair)* COMMA? RBRACE
+  ;
+
+propertyPair
+  : propertyKey COLON value
+  ;
+
+propertyKey
+  : IDENTIFIER
+  ;
+
+value
+  : STRING
+  | FLOAT
+  | INTEGER
+  | TRUE
+  | FALSE
+  | NULL
+  ;
+
+INSERT : [Ii] [Nn] [Ss] [Ee] [Rr] [Tt];
+MATCH  : [Mm] [Aa] [Tt] [Cc] [Hh];
+RETURN : [Rr] [Ee] [Tt] [Uu] [Rr] [Nn];
+TRUE   : [Tt] [Rr] [Uu] [Ee];
+FALSE  : [Ff] [Aa] [Ll] [Ss] [Ee];
+NULL   : [Nn] [Uu] [Ll] [Ll];
+
+LPAREN : '(';
+RPAREN : ')';
+LBRACE : '{';
+RBRACE : '}';
+COLON  : ':';
+COMMA  : ',';
+
+FLOAT
+  : '-'? DIGIT+ '.' DIGIT+
+  ;
+
+INTEGER
+  : '-'? DIGIT+
+  ;
+
+STRING
+  : '\'' ( ~['\\] | ESCAPE_SEQUENCE )* '\''
+  | '"'  ( ~["\\] | ESCAPE_SEQUENCE )* '"'
+  ;
+
+IDENTIFIER
+  : IDENTIFIER_START IDENTIFIER_PART*
+  ;
+
+WS
+  : [ \t\r\n]+ -> skip
+  ;
+
+fragment DIGIT
+  : [0-9]
+  ;
+
+fragment IDENTIFIER_START
+  : [A-Za-z_]
+  ;
+
+fragment IDENTIFIER_PART
+  : [A-Za-z0-9_]
+  ;
+
+fragment ESCAPE_SEQUENCE
+  : '\\' .
+  ;

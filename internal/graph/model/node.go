@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,4 +38,49 @@ type Node struct {
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// PayloadText returns the canonical text payload for indexing/display. It
+// falls back to the legacy Content field while the node refactor is in flight.
+func PayloadText(node Node) string {
+	if node.Payload != nil {
+		if text, ok := node.Payload["text"].(string); ok {
+			return text
+		}
+	}
+	return node.Content
+}
+
+// Property returns a user/domain property, falling back to legacy Props while
+// the node refactor is in flight.
+func Property(node Node, name string) (any, bool) {
+	if node.Properties != nil {
+		if value, ok := node.Properties[name]; ok {
+			return value, true
+		}
+	}
+	if node.Props != nil {
+		if value, ok := node.Props[name]; ok {
+			return value, true
+		}
+		if nested, ok := node.Props["properties"].(map[string]any); ok {
+			value, ok := nested[name]
+			return value, ok
+		}
+	}
+	return nil, false
+}
+
+// HasLabels reports whether node contains every required label.
+func HasLabels(node Node, required []string) bool {
+	seen := map[string]struct{}{}
+	for _, label := range node.Labels {
+		seen[strings.TrimSpace(label)] = struct{}{}
+	}
+	for _, label := range required {
+		if _, ok := seen[strings.TrimSpace(label)]; !ok {
+			return false
+		}
+	}
+	return true
 }
