@@ -365,7 +365,14 @@ func (e *queryExecution) hasTag(row *queryRowState, alias string, tag string) (b
 	if err != nil {
 		return false, err
 	}
-	tags, err := domaingraph.NormalizeTagsValue(node.Props[domaingraph.NodePropTags])
+	tagValue := any(nil)
+	if node.Properties != nil {
+		tagValue = node.Properties[domaingraph.NodePropTags]
+	}
+	if tagValue == nil {
+		tagValue = node.Props[domaingraph.NodePropTags]
+	}
+	tags, err := domaingraph.NormalizeTagsValue(tagValue)
 	if err != nil {
 		return false, nil
 	}
@@ -386,11 +393,20 @@ func (e *queryExecution) customProperty(row *queryRowState, alias string, name s
 	if err != nil {
 		return nil, false, err
 	}
-	props, err := domaingraph.NormalizeCustomPropertiesValue(node.Props[domaingraph.NodePropCustomProperties])
-	if err != nil {
-		return nil, false, nil
+	props := node.Properties
+	if props == nil {
+		var err error
+		props, err = domaingraph.NormalizeCustomPropertiesValue(node.Props[domaingraph.NodePropCustomProperties])
+		if err != nil {
+			return nil, false, nil
+		}
 	}
 	value, ok := props[want]
+	if !ok {
+		if nested, err := domaingraph.NormalizeCustomPropertiesValue(props[domaingraph.NodePropCustomProperties]); err == nil {
+			value, ok = nested[want]
+		}
+	}
 	return value, ok, nil
 }
 

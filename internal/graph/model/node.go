@@ -15,17 +15,26 @@ type NodeID = uuid.UUID
 // pages, blocks, journals, and tasks via template and properties.
 // TemplateID is optional; nodes may exist without a template. Hierarchy is
 // represented by contains edges rather than a parent field.
-// BlobRef is optional; when set, the node's content lives in the space's
-// content-addressed blob store and Content must be empty: a node has inline
-// text content or blob content, never both. Captions and similar text about
-// a blob belong in Props (e.g. caption, alt_text) or annotation children.
+// Labels are graph classifications, Properties are user/domain-defined
+// queryable values, Payload is primary text/blob payload data, and Meta is
+// Mycel-controlled metadata. Legacy BlobRef/Content/Props fields remain during
+// the refactor until all subsystems are migrated to the new shape.
 type Node struct {
 	ID         NodeID
 	DomainID   DomainID
 	TemplateID *TemplateID
-	BlobRef    *BlobID
-	Content    string
-	Props      map[string]any
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
+
+	// Deprecated: use Payload["blob_id"].
+	BlobRef *BlobID
+	// Deprecated: use Payload["text"].
+	Content string
+	// Deprecated: use Properties/Meta.
+	Props map[string]any
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }

@@ -42,7 +42,7 @@ func NewQueryNodesCommand(a *app.App) *cobra.Command {
 				continue
 			}
 			node := field.GetNode()
-			fmt.Printf("%s\t%s\n", node.GetNodeId(), previewText(node.GetContent(), 120))
+			fmt.Printf("%s\t%s\n", node.GetNodeId(), previewText(nodePayloadText(node), 120))
 		}
 		if res.GetNextPageToken() != "" {
 			fmt.Printf("next page token: %s\n", res.GetNextPageToken())

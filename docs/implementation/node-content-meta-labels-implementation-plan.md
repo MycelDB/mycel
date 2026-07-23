@@ -62,6 +62,8 @@ Expected: `node_modif`.
 
 ## Tranche 1 — API contract change in `mycel-api`
 
+Status: implemented on `mycel-api/node_modif` in commit `9ccb419`.
+
 Update protobuf definitions first because all downstream repositories depend on them.
 
 Likely files:
@@ -111,6 +113,8 @@ or the repository's existing generation commands.
 
 ## Tranche 2 — Regenerate and compile `mycel`
 
+Status: implemented for `mycel` local generated stubs with `make generate-proto`; full `go test ./...` passes after the tranche 3 adaptation.
+
 After `mycel-api` changes are available locally:
 
 - update the `mycel-api` dependency/reference used by `mycel`
@@ -123,6 +127,8 @@ make generate-proto
 Initial compile will fail. Use failures to drive the domain-model changes.
 
 ## Tranche 3 — Internal graph domain model in `mycel`
+
+Status: initial implementation complete. The internal node model now includes `Labels`, `Properties`, `Payload`, and `Meta`; legacy fields remain temporarily so later tranches can migrate subsystems incrementally while keeping the suite green.
 
 Likely files:
 

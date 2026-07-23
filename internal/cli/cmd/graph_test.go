@@ -52,7 +52,7 @@ func TestGraphBlobNodeCreateUsesDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &created); err != nil {
 		t.Fatalf("decode blob node create: %v\n%s", err, out)
 	}
-	if created.GetNode().GetBlobId() != created.GetBlob().GetBlobId() || created.GetNode().GetContent() != "" || created.GetBlob().GetSizeBytes() != int64(len("blob node body")) {
+	if created.GetNode().GetPayload().AsMap()["blob_id"] != created.GetBlob().GetBlobId() || nodePayloadText(created.GetNode()) != "" || created.GetBlob().GetSizeBytes() != int64(len("blob node body")) {
 		t.Fatalf("unexpected blob node response: %#v", &created)
 	}
 	out, err = runCLI(t, append(base, "transaction", "commit", tx.GetTransactionId())...)
@@ -160,7 +160,7 @@ func TestGraphCommandsCreateContainmentFlowThroughDaemonGRPC(t *testing.T) {
 		t.Fatalf("graph node get after commit failed: %v\n%s", err, out)
 	}
 	var gotA clientv1.Node
-	if err := json.Unmarshal([]byte(out), &gotA); err != nil || gotA.GetContent() != "A" {
+	if err := json.Unmarshal([]byte(out), &gotA); err != nil || nodePayloadText(&gotA) != "A" {
 		t.Fatalf("unexpected A after commit err=%v node=%#v raw=%s", err, &gotA, out)
 	}
 }

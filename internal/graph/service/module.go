@@ -203,7 +203,21 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 		}
 		blobRef = &blobID
 	}
-	n := domaingraph.Node{ID: id, DomainID: mustDomainID(tx.DomainID), TemplateID: templateID, BlobRef: blobRef, Content: input.Content, Props: cloneProps(input.Props), CreatedAt: now, UpdatedAt: now}
+	properties := cloneProps(input.Properties)
+	if properties == nil && input.Props != nil {
+		properties = cloneProps(input.Props)
+	}
+	payload := cloneProps(input.Payload)
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if strings.TrimSpace(input.Content) != "" {
+		payload["text"] = input.Content
+	}
+	if blobRef != nil {
+		payload["blob_id"] = string(*blobRef)
+	}
+	n := domaingraph.Node{ID: id, DomainID: mustDomainID(tx.DomainID), TemplateID: templateID, Labels: append([]string(nil), input.Labels...), Properties: properties, Payload: payload, Meta: cloneProps(input.Meta), BlobRef: blobRef, Content: input.Content, Props: cloneProps(input.Props), CreatedAt: now, UpdatedAt: now}
 	m.stageNode(tx.ID, n)
 	return cloneNode(n), nil
 }
@@ -228,14 +242,33 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 		}
 		n.TemplateID = templateID
 	}
+	if input.Labels != nil && (len(paths) == 0 || paths["labels"]) {
+		n.Labels = append([]string(nil), input.Labels...)
+	}
+	if input.Properties != nil && (len(paths) == 0 || paths["properties"]) {
+		n.Properties = cloneProps(input.Properties)
+	}
+	if input.Payload != nil && (len(paths) == 0 || paths["payload"]) {
+		n.Payload = cloneProps(input.Payload)
+	}
+	if input.Meta != nil && (len(paths) == 0 || paths["meta"]) {
+		n.Meta = cloneProps(input.Meta)
+	}
 	if input.Content != nil && (len(paths) == 0 || paths["content"]) {
 		if n.BlobRef != nil && *input.Content != "" {
 			return domaingraph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content", ErrInvalidInput)
 		}
 		n.Content = *input.Content
+		if n.Payload == nil {
+			n.Payload = map[string]any{}
+		}
+		n.Payload["text"] = *input.Content
 	}
 	if input.Props != nil && (len(paths) == 0 || paths["props"]) {
 		n.Props = cloneProps(input.Props)
+		if n.Properties == nil {
+			n.Properties = cloneProps(input.Props)
+		}
 	}
 	n.UpdatedAt = time.Now().UTC()
 	m.stageNode(tx.ID, n)
@@ -1085,7 +1118,14 @@ func mustDomainID(value string) domaingraph.DomainID {
 	return domaingraph.DomainID(id)
 }
 
-func cloneNode(n domaingraph.Node) domaingraph.Node { n.Props = cloneProps(n.Props); return n }
+func cloneNode(n domaingraph.Node) domaingraph.Node {
+	n.Labels = append([]string(nil), n.Labels...)
+	n.Properties = cloneProps(n.Properties)
+	n.Payload = cloneProps(n.Payload)
+	n.Meta = cloneProps(n.Meta)
+	n.Props = cloneProps(n.Props)
+	return n
+}
 func cloneEdge(e domaingraph.Edge) domaingraph.Edge { e.Props = cloneProps(e.Props); return e }
 func cloneProps(in map[string]any) map[string]any {
 	out := map[string]any{}

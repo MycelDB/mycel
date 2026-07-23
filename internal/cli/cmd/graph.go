@@ -57,7 +57,7 @@ func newGraphBlobNodeCreateCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		metadata := &clientv1.CreateBlobNodeMetadata{TransactionId: transactionID, DeclaredMimeType: declaredMimeType, OriginalFilename: originalFilename, Props: props}
+		metadata := &clientv1.CreateBlobNodeMetadata{TransactionId: transactionID, DeclaredMimeType: declaredMimeType, OriginalFilename: originalFilename, Properties: props}
 		if nodeID != "" {
 			metadata.NodeId = &nodeID
 		}
@@ -111,7 +111,7 @@ func newGraphNodeCreateCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		req := &clientv1.CreateNodeRequest{TransactionId: transactionID, Node: &clientv1.NodeCreate{Content: content, Props: props}}
+		req := &clientv1.CreateNodeRequest{TransactionId: transactionID, Node: &clientv1.NodeCreate{Payload: protoStruct(map[string]any{"text": content}), Properties: props}}
 		if nodeID != "" {
 			req.Node.NodeId = &nodeID
 		}
@@ -145,7 +145,7 @@ func newGraphNodeGetCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return a.Print(res.GetNode(), fmt.Sprintf("%s\t%s\n", res.GetNode().GetNodeId(), previewText(res.GetNode().GetContent(), 120)))
+		return a.Print(res.GetNode(), fmt.Sprintf("%s\t%s\n", res.GetNode().GetNodeId(), previewText(nodePayloadText(res.GetNode()), 120)))
 	}}
 	cmd.Flags().StringVar(&transactionID, "transaction-id", "", "transaction ID")
 	_ = cmd.MarkFlagRequired("transaction-id")
@@ -169,7 +169,7 @@ func newGraphNodeListCommand(a *app.App) *cobra.Command {
 			return a.Print(res, "")
 		}
 		for _, node := range res.GetNodes() {
-			fmt.Printf("%s\t%s\n", node.GetNodeId(), previewText(node.GetContent(), 120))
+			fmt.Printf("%s\t%s\n", node.GetNodeId(), previewText(nodePayloadText(node), 120))
 		}
 		if res.GetNextPageToken() != "" {
 			fmt.Printf("next page token: %s\n", res.GetNextPageToken())
@@ -195,7 +195,7 @@ func newGraphNodeUpdateCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		node := &clientv1.Node{NodeId: args[0], Content: content, Props: props}
+		node := &clientv1.Node{NodeId: args[0], Payload: protoStruct(map[string]any{"text": content}), Properties: props}
 		if templateID != "" {
 			node.TemplateId = &templateID
 		}
@@ -381,6 +381,22 @@ func newGraphParentCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&transactionID, "transaction-id", "", "transaction ID")
 	_ = cmd.MarkFlagRequired("transaction-id")
 	return cmd
+}
+
+func nodePayloadText(node *clientv1.Node) string {
+	if node == nil || node.GetPayload() == nil {
+		return ""
+	}
+	text, _ := node.GetPayload().AsMap()["text"].(string)
+	return text
+}
+
+func protoStruct(value map[string]any) *structpb.Struct {
+	out, err := structpb.NewStruct(value)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 func protoProps(raw string) (*structpb.Struct, error) {
