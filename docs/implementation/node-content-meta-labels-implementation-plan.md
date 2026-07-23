@@ -400,6 +400,8 @@ Validation:
 
 ## Tranche 13 — Knot PKM client
 
+Status: initial compatibility update complete on `knot_pkm_client/node_modif`. `BackendNode` now exposes optional `labels`, `payload`, `properties`, and `meta` alongside the existing PKM API convenience fields so UI code can migrate incrementally.
+
 Likely impact:
 
 - TypeScript `Node`/`NodeProps` types
@@ -424,6 +426,8 @@ npm run build
 
 ## Tranche 14 — Knot PKM importer
 
+Status: implemented on `knot_pkm_importer/node_modif`. Daemon imports now write Logseq text to `payload.text` and Logseq metadata to `properties`, and daemon node reads map `payload.text`/`properties` back into the importer's internal model.
+
 Likely impact:
 
 - internal importer node model
@@ -447,6 +451,8 @@ go test ./...
 or the importer repo's existing command.
 
 ## Tranche 15 — Knot PKM docs
+
+Status: implemented on `knot_pkm_docs/node_modif`. Manual export generation now emits node text as `payload.text` and manual bookkeeping as node `properties`, with docs updated accordingly.
 
 Update:
 
