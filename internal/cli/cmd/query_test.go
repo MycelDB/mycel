@@ -62,7 +62,8 @@ func TestQueryNodesCommandUsesDaemonGRPC(t *testing.T) {
 	row := rows[0].(map[string]any)
 	fields := row["fields"].(map[string]any)
 	nodeValue := fields["node"].(map[string]any)["Value"].(map[string]any)["Node"].(map[string]any)
-	if nodeValue["content"] != "A" {
+	payload := nodeValue["payload"].(map[string]any)
+	if payload["text"] != "A" {
 		t.Fatalf("unexpected query row: %#v raw=%s", nodeValue, out)
 	}
 	out, err = runCLI(t, append(base, "transaction", "commit", tx.GetTransactionId())...)

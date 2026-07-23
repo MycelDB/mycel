@@ -46,7 +46,40 @@ func encodeNode(node graph.Node) ([]byte, error) {
 		return nil, err
 	}
 	writeUUID(&b, node.DomainID)
+	writeStringSlice(&b, node.Labels)
+	if err := writeMap(&b, node.Properties); err != nil {
+		return nil, err
+	}
+	if err := writeMap(&b, node.Payload); err != nil {
+		return nil, err
+	}
+	if err := writeMap(&b, node.Meta); err != nil {
+		return nil, err
+	}
 	return b.Bytes(), nil
+}
+
+func writeStringSlice(b *bytes.Buffer, values []string) {
+	_ = binary.Write(b, binary.BigEndian, uint32(len(values)))
+	for _, value := range values {
+		writeString(b, value)
+	}
+}
+
+func readStringSlice(r *bytes.Reader) ([]string, error) {
+	var n uint32
+	if err := binary.Read(r, binary.BigEndian, &n); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, n)
+	for i := uint32(0); i < n; i++ {
+		value, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func writeBlobRef(b *bytes.Buffer, ref *graph.BlobID) error {
@@ -125,8 +158,32 @@ func decodeNode(payload []byte) (graph.Node, error) {
 		if err == nil {
 			blobRef, blobErr := readBlobRef(r)
 			domainID, domainErr := readDomainID(r)
-			if blobErr == nil && domainErr == nil && r.Len() == 0 {
-				return graph.Node{ID: graph.NodeID(id), DomainID: domainID, TemplateID: templateID, BlobRef: blobRef, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+			if blobErr == nil && domainErr == nil {
+				labels := []string(nil)
+				properties := map[string]any(nil)
+				payload := map[string]any(nil)
+				meta := map[string]any(nil)
+				if r.Len() > 0 {
+					labels, err = readStringSlice(r)
+					if err != nil {
+						return graph.Node{}, err
+					}
+					properties, err = readMap(r)
+					if err != nil {
+						return graph.Node{}, err
+					}
+					payload, err = readMap(r)
+					if err != nil {
+						return graph.Node{}, err
+					}
+					meta, err = readMap(r)
+					if err != nil {
+						return graph.Node{}, err
+					}
+				}
+				if r.Len() == 0 {
+					return graph.Node{ID: graph.NodeID(id), DomainID: domainID, TemplateID: templateID, Labels: labels, Properties: properties, Payload: payload, Meta: meta, BlobRef: blobRef, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+				}
 			}
 		}
 	}

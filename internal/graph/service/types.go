@@ -71,6 +71,10 @@ const (
 type NodeInput struct {
 	NodeID     string
 	TemplateID string
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	BlobID     string
 	Content    string
 	Props      map[string]any
@@ -79,6 +83,10 @@ type NodeInput struct {
 type UpdateNodeInput struct {
 	NodeID     string
 	TemplateID *string
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	Content    *string
 	Props      map[string]any
 	UpdateMask []string

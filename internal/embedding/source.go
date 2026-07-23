@@ -94,14 +94,11 @@ func AssembleSource(in SourceInput) SourceResult {
 
 func nodeText(n graph.Node, includeProps []string) string {
 	parts := []string{}
-	if strings.TrimSpace(n.Content) != "" {
-		parts = append(parts, strings.TrimSpace(n.Content))
+	if text := strings.TrimSpace(graph.PayloadText(n)); text != "" {
+		parts = append(parts, text)
 	}
 	for _, key := range includeProps {
-		if n.Props == nil {
-			continue
-		}
-		if v, ok := n.Props[key]; ok {
+		if v, ok := graph.Property(n, key); ok {
 			s := strings.TrimSpace(fmt.Sprint(v))
 			if s != "" {
 				parts = append(parts, fmt.Sprintf("%s: %s", key, s))

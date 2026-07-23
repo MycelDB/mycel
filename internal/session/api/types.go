@@ -84,6 +84,10 @@ type ImportTemplatesInput struct {
 type AddNodeInput struct {
 	ID         *graph.NodeID
 	TemplateID *graph.TemplateID
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	Content    string
 	Props      map[string]any
 }
@@ -92,6 +96,10 @@ type AddNodeInput struct {
 type UpsertNodeInput struct {
 	ID         *graph.NodeID
 	TemplateID *graph.TemplateID
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	Content    string
 	Props      map[string]any
 }
@@ -100,6 +108,10 @@ type UpsertNodeInput struct {
 type UpdateNodeInput struct {
 	ID         graph.NodeID
 	TemplateID *graph.TemplateID
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	Content    string
 	Props      map[string]any
 }
