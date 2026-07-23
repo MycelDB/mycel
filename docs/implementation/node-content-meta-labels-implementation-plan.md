@@ -356,6 +356,8 @@ cargo test
 
 ## Tranche 11 — Benchmarks and docs in MycelDB projects
 
+Status: implemented for `mycel-bench`; fixture/workload node creation now writes text to `payload.text` and benchmark tags/properties to `properties`. `mycel-www` currently has no tracked site content in this checkout, so no docs changes were required there.
+
 ### `mycel-bench`
 
 - update fixture creation
@@ -372,6 +374,8 @@ Validation:
 - docs build if applicable
 
 ## Tranche 12 — Knot PKM server
+
+Status: initial daemon-adapter implementation complete on `knot_pkm_server/node_modif`. Daemon node conversion maps Mycel `payload.text`/`payload.blob_id` back into PKM's current internal content/blob fields, and PKM daemon writes map content/props to Mycel `payload`/`properties`.
 
 Likely impact:
 
