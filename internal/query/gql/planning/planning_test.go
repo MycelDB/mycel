@@ -43,6 +43,31 @@ func TestPlannerPlansInsertNodeAnalysis(t *testing.T) {
 	}
 }
 
+func TestPlannerPlansMatchReturnNodeAnalysis(t *testing.T) {
+	a := analysis.Analysis{
+		AccessMode: analysis.ReadOnly,
+		Query: ast.Query{Statement: ast.MatchStatement{
+			Pattern: ast.NodePattern{Variable: "p", Labels: []string{"Person"}, Properties: []ast.Property{{Key: "name", Value: ast.Value{Kind: ast.StringValue, Value: "Alice"}}}},
+			Returns: []ast.ReturnItem{{Variable: "p"}},
+		}},
+	}
+
+	plan, err := Plan(a)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+
+	want := planmodel.Plan{
+		AccessMode: analysis.ReadOnly,
+		Operations: []planmodel.Operation{
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+		},
+	}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Plan() = %#v, want %#v", plan, want)
+	}
+}
+
 func TestPlannerRejectsMissingStatement(t *testing.T) {
 	_, err := Plan(analysis.Analysis{AccessMode: analysis.ReadWrite})
 	if err == nil {

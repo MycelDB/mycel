@@ -16,10 +16,19 @@ type InsertNode struct {
 	Properties map[string]any
 }
 
-// GraphWriter is the graph write capability required by the current executor.
-type GraphWriter interface {
-	InsertNode(ctx context.Context, node InsertNode) (execmodel.NodeRef, error)
+type QueryNodes struct {
+	Labels     []string
+	Properties map[string]any
 }
+
+// Graph is the graph capability required by the current executor.
+type Graph interface {
+	InsertNode(ctx context.Context, node InsertNode) (execmodel.NodeRef, error)
+	QueryNodes(ctx context.Context, query QueryNodes) ([]execmodel.Node, error)
+}
+
+// GraphWriter is kept as a compatibility alias for the current graph capability.
+type GraphWriter = Graph
 
 // Executor executes a planned GQL query.
 type Executor interface {
@@ -27,32 +36,50 @@ type Executor interface {
 }
 
 type executor struct {
-	graph GraphWriter
+	graph Graph
 }
 
-func NewExecutor(graph GraphWriter) Executor {
+func NewExecutor(graph Graph) Executor {
 	return executor{graph: graph}
 }
 
-func Execute(ctx context.Context, graph GraphWriter, plan planmodel.Plan) (execmodel.Result, error) {
+func Execute(ctx context.Context, graph Graph, plan planmodel.Plan) (execmodel.Result, error) {
 	return NewExecutor(graph).Execute(ctx, plan)
 }
 
 func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.Result, error) {
 	if e.graph == nil {
-		return execmodel.Result{}, fmt.Errorf("graph writer is required")
-	}
-	if plan.AccessMode != analysis.ReadWrite {
-		return execmodel.Result{}, fmt.Errorf("unsupported access mode %q", plan.AccessMode)
+		return execmodel.Result{}, fmt.Errorf("graph is required")
 	}
 	var result execmodel.Result
 	for _, op := range plan.Operations {
 		switch op := op.(type) {
 		case planmodel.InsertNodeOperation:
+			if plan.AccessMode != analysis.ReadWrite {
+				return execmodel.Result{}, fmt.Errorf("insert node requires read-write access mode")
+			}
 			if _, err := e.graph.InsertNode(ctx, InsertNode{Labels: append([]string(nil), op.Labels...), Properties: copyProperties(op.Properties)}); err != nil {
 				return execmodel.Result{}, err
 			}
 			result.Counters.NodesInserted++
+		case planmodel.QueryNodesOperation:
+			if plan.AccessMode != analysis.ReadOnly {
+				return execmodel.Result{}, fmt.Errorf("query nodes requires read-only access mode")
+			}
+			nodes, err := e.graph.QueryNodes(ctx, QueryNodes{Labels: append([]string(nil), op.Labels...), Properties: copyProperties(op.Properties)})
+			if err != nil {
+				return execmodel.Result{}, err
+			}
+			for _, ret := range op.Returns {
+				result.Columns = append(result.Columns, ret.Variable)
+			}
+			for _, node := range nodes {
+				row := execmodel.Row{}
+				for _, ret := range op.Returns {
+					row[ret.Variable] = execmodel.Value{Node: &node}
+				}
+				result.Rows = append(result.Rows, row)
+			}
 		default:
 			return execmodel.Result{}, fmt.Errorf("unsupported operation %T", op)
 		}

@@ -39,6 +39,11 @@ func (analyzer) Analyze(query model.Query) (Analysis, error) {
 			return Analysis{}, err
 		}
 		return Analysis{Query: query, AccessMode: ReadWrite}, nil
+	case model.MatchStatement:
+		if err := analyzeMatchStatement(stmt); err != nil {
+			return Analysis{}, err
+		}
+		return Analysis{Query: query, AccessMode: ReadOnly}, nil
 	case nil:
 		return Analysis{}, fmt.Errorf("query statement is required")
 	default:
@@ -63,6 +68,37 @@ func analyzeInsertStatement(stmt model.InsertStatement) error {
 	}
 	seenProperties := map[string]struct{}{}
 	for _, prop := range pattern.Properties {
+		if prop.Key == "" {
+			return fmt.Errorf("property key cannot be empty")
+		}
+		if _, exists := seenProperties[prop.Key]; exists {
+			return fmt.Errorf("duplicate property key %q", prop.Key)
+		}
+		seenProperties[prop.Key] = struct{}{}
+		if err := analyzeValue(prop.Value); err != nil {
+			return fmt.Errorf("property %q: %w", prop.Key, err)
+		}
+	}
+	return nil
+}
+
+func analyzeMatchStatement(stmt model.MatchStatement) error {
+	if stmt.Pattern.Variable == "" {
+		return fmt.Errorf("match node variable is required")
+	}
+	if len(stmt.Returns) == 0 {
+		return fmt.Errorf("match statement requires at least one return item")
+	}
+	for _, ret := range stmt.Returns {
+		if ret.Variable == "" {
+			return fmt.Errorf("return variable cannot be empty")
+		}
+		if ret.Variable != stmt.Pattern.Variable {
+			return fmt.Errorf("return variable %q is not defined", ret.Variable)
+		}
+	}
+	seenProperties := map[string]struct{}{}
+	for _, prop := range stmt.Pattern.Properties {
 		if prop.Key == "" {
 			return fmt.Errorf("property key cannot be empty")
 		}

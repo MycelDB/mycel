@@ -1,19 +1,34 @@
 // MycelGQL is a deliberately small GQL-compatible grammar slice.
 //
-// v0 supports the minimum statement needed to insert one node, for example:
+// v0 supports the minimum statements needed to insert and return one node, for
+// example:
 //
 //   INSERT (:Person {name: 'Alice', age: 42})
+//   MATCH (p:Person {name: 'Alice'}) RETURN p
 //
 // This is not a complete ISO GQL grammar. Extend it clause by clause as Mycel's
 // query execution support grows.
 grammar MycelGQL;
 
 query
-  : insertStatement EOF
+  : statement EOF
+  ;
+
+statement
+  : insertStatement
+  | matchStatement
   ;
 
 insertStatement
   : INSERT nodePattern
+  ;
+
+matchStatement
+  : MATCH nodePattern RETURN returnItem (COMMA returnItem)*
+  ;
+
+returnItem
+  : variable
   ;
 
 nodePattern
@@ -54,6 +69,8 @@ value
   ;
 
 INSERT : [Ii] [Nn] [Ss] [Ee] [Rr] [Tt];
+MATCH  : [Mm] [Aa] [Tt] [Cc] [Hh];
+RETURN : [Rr] [Ee] [Tt] [Uu] [Rr] [Nn];
 TRUE   : [Tt] [Rr] [Uu] [Ee];
 FALSE  : [Ff] [Aa] [Ll] [Ss] [Ee];
 NULL   : [Nn] [Uu] [Ll] [Ll];

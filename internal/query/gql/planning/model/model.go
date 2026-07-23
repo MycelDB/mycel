@@ -22,3 +22,17 @@ type InsertNodeOperation struct {
 }
 
 func (InsertNodeOperation) operation() {}
+
+// QueryNodesOperation returns nodes matching optional labels/properties.
+type QueryNodesOperation struct {
+	Variable   string
+	Labels     []string
+	Properties map[string]any
+	Returns    []ReturnItem
+}
+
+func (QueryNodesOperation) operation() {}
+
+type ReturnItem struct {
+	Variable string
+}

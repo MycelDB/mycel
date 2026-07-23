@@ -46,6 +46,27 @@ func TestExecutorExecutesInsertNodePlan(t *testing.T) {
 	}
 }
 
+func TestExecutorExecutesQueryNodesPlan(t *testing.T) {
+	graph := &fakeGraphWriter{nodes: []execmodel.Node{{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}}}}
+	plan := planmodel.Plan{
+		AccessMode: analysis.ReadOnly,
+		Operations: []planmodel.Operation{
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+		},
+	}
+
+	result, err := Execute(context.Background(), graph, plan)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !reflect.DeepEqual(graph.queried, []QueryNodes{{Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}}}) {
+		t.Fatalf("queried = %#v", graph.queried)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["p"].Node == nil || result.Rows[0]["p"].Node.ID != "node-1" {
+		t.Fatalf("unexpected result rows: %#v", result.Rows)
+	}
+}
+
 func TestExecutorRejectsMissingGraphWriter(t *testing.T) {
 	_, err := Execute(context.Background(), nil, planmodel.Plan{AccessMode: analysis.ReadWrite})
 	if err == nil {
@@ -73,6 +94,8 @@ type fakeGraphWriter struct {
 	nextID   string
 	err      error
 	inserted []InsertNode
+	queried  []QueryNodes
+	nodes    []execmodel.Node
 }
 
 func (f *fakeGraphWriter) InsertNode(_ context.Context, node InsertNode) (execmodel.NodeRef, error) {
@@ -81,4 +104,12 @@ func (f *fakeGraphWriter) InsertNode(_ context.Context, node InsertNode) (execmo
 	}
 	f.inserted = append(f.inserted, node)
 	return execmodel.NodeRef{ID: f.nextID}, nil
+}
+
+func (f *fakeGraphWriter) QueryNodes(_ context.Context, query QueryNodes) ([]execmodel.Node, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.queried = append(f.queried, query)
+	return f.nodes, nil
 }

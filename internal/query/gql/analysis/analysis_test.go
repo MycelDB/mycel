@@ -25,6 +25,27 @@ func TestAnalyzeInsertNodeAST(t *testing.T) {
 	}
 }
 
+func TestAnalyzeMatchReturnNodeAST(t *testing.T) {
+	query := model.Query{Statement: model.MatchStatement{
+		Pattern: model.NodePattern{
+			Variable: "p",
+			Labels:   []string{"Person"},
+			Properties: []model.Property{
+				{Key: "name", Value: model.Value{Kind: model.StringValue, Value: "Alice"}},
+			},
+		},
+		Returns: []model.ReturnItem{{Variable: "p"}},
+	}}
+
+	analysis, err := Analyze(query)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if analysis.AccessMode != ReadOnly {
+		t.Fatalf("Analyze().AccessMode = %q, want %q", analysis.AccessMode, ReadOnly)
+	}
+}
+
 func TestAnalyzeRejectsInvalidInsertNodeAST(t *testing.T) {
 	tests := []struct {
 		name    string

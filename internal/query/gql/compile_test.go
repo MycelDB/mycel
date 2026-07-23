@@ -76,6 +76,23 @@ func TestCompileInsertNodeSupportsOptionalVariableAndScalarProperties(t *testing
 	}
 }
 
+func TestCompileMatchReturnNodeProducesPlan(t *testing.T) {
+	plan, err := Compile("MATCH (p:Person {name: 'Alice'}) RETURN p")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	want := planmodel.Plan{
+		AccessMode: analysis.ReadOnly,
+		Operations: []planmodel.Operation{
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+		},
+	}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Compile() = %#v, want %#v", plan, want)
+	}
+}
+
 func TestCompileRejectsInvalidGQL(t *testing.T) {
 	_, err := Compile("INSERT :Person {name: 'Alice'}")
 	if err == nil {

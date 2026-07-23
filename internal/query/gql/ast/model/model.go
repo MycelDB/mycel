@@ -18,7 +18,20 @@ type InsertStatement struct {
 
 func (InsertStatement) statement() {}
 
-// NodePattern represents a node pattern inside an INSERT statement.
+// MatchStatement represents a GQL MATCH ... RETURN statement.
+type MatchStatement struct {
+	Pattern NodePattern
+	Returns []ReturnItem
+}
+
+func (MatchStatement) statement() {}
+
+// ReturnItem represents one returned variable or expression.
+type ReturnItem struct {
+	Variable string
+}
+
+// NodePattern represents a node pattern inside a GQL statement.
 type NodePattern struct {
 	Variable   string
 	Labels     []string

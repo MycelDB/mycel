@@ -12,6 +12,16 @@ func TestParserParsesInsertNode(t *testing.T) {
 	}
 }
 
+func TestParserParsesMatchReturnNode(t *testing.T) {
+	tree, err := Parse("MATCH (p:Person {name: 'Alice'}) RETURN p")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}
+
 func TestParserRejectsInvalidGQL(t *testing.T) {
 	_, err := Parse("INSERT :Person {name: 'Alice'}")
 	if err == nil {

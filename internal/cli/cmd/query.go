@@ -32,9 +32,6 @@ func NewQueryGQLCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if plan.AccessMode != analysis.ReadWrite {
-			return fmt.Errorf("unsupported GQL access mode %q", plan.AccessMode)
-		}
 		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
 		if err != nil {
 			return err
@@ -55,7 +52,11 @@ func NewQueryGQLCommand(a *app.App) *cobra.Command {
 		defer func() {
 			_, _ = sessionClient.CloseSession(authCtx, &clientv1.CloseSessionRequest{SessionId: sessionID})
 		}()
-		txRes, err := txClient.BeginTransaction(authCtx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE})
+		mode := clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE
+		if plan.AccessMode == analysis.ReadOnly {
+			mode = clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY
+		}
+		txRes, err := txClient.BeginTransaction(authCtx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: mode})
 		if err != nil {
 			return err
 		}
@@ -66,9 +67,16 @@ func NewQueryGQLCommand(a *app.App) *cobra.Command {
 				_, _ = txClient.RollbackTransaction(authCtx, &clientv1.RollbackTransactionRequest{TransactionId: transactionID})
 			}
 		}()
-		result, err := execution.Execute(authCtx, daemonGraphWriter{client: clientv1.NewGraphServiceClient(conn), transactionID: transactionID}, plan)
+		result, err := execution.Execute(authCtx, daemonGraphWriter{graphClient: clientv1.NewGraphServiceClient(conn), queryClient: clientv1.NewQueryServiceClient(conn), transactionID: transactionID}, plan)
 		if err != nil {
 			return err
+		}
+		if plan.AccessMode == analysis.ReadOnly {
+			if _, err := txClient.CloseTransaction(authCtx, &clientv1.CloseTransactionRequest{TransactionId: transactionID}); err != nil {
+				return err
+			}
+			committed = true
+			return a.Print(gqlCLIResult{Result: result, TransactionID: transactionID}, fmt.Sprintf("query executed: rows=%d\n", len(result.Rows)))
 		}
 		commitRes, err := txClient.CommitTransaction(authCtx, &clientv1.CommitTransactionRequest{TransactionId: transactionID})
 		if err != nil {
@@ -135,12 +143,13 @@ type gqlCLIResult struct {
 }
 
 type daemonGraphWriter struct {
-	client        clientv1.GraphServiceClient
+	graphClient   clientv1.GraphServiceClient
+	queryClient   clientv1.QueryServiceClient
 	transactionID string
 }
 
 func (w daemonGraphWriter) InsertNode(ctx context.Context, node execution.InsertNode) (execmodel.NodeRef, error) {
-	props := copyGQLProperties(node.Properties)
+	props := map[string]any{"properties": copyGQLProperties(node.Properties)}
 	if len(node.Labels) > 0 {
 		labels := make([]any, len(node.Labels))
 		for i, label := range node.Labels {
@@ -152,11 +161,90 @@ func (w daemonGraphWriter) InsertNode(ctx context.Context, node execution.Insert
 	if err != nil {
 		return execmodel.NodeRef{}, err
 	}
-	res, err := w.client.CreateNode(ctx, &clientv1.CreateNodeRequest{TransactionId: w.transactionID, Node: &clientv1.NodeCreate{Props: protoProps}})
+	res, err := w.graphClient.CreateNode(ctx, &clientv1.CreateNodeRequest{TransactionId: w.transactionID, Node: &clientv1.NodeCreate{Props: protoProps}})
 	if err != nil {
 		return execmodel.NodeRef{}, err
 	}
 	return execmodel.NodeRef{ID: res.GetNode().GetNodeId()}, nil
+}
+
+func (w daemonGraphWriter) QueryNodes(ctx context.Context, query execution.QueryNodes) ([]execmodel.Node, error) {
+	graphQuery, err := buildGQLNodeQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	res, err := w.queryClient.ExecuteQuery(ctx, &clientv1.ExecuteQueryRequest{TransactionId: w.transactionID, Query: graphQuery, PageSize: 100})
+	if err != nil {
+		return nil, err
+	}
+	nodes := []execmodel.Node{}
+	for _, row := range res.GetRows() {
+		field := row.GetFields()["node"]
+		if field == nil || field.GetNode() == nil {
+			continue
+		}
+		node := field.GetNode()
+		props := node.GetProps().AsMap()
+		labels := gqlLabelsFromProps(props)
+		if !containsAllLabels(labels, query.Labels) {
+			continue
+		}
+		nodes = append(nodes, execmodel.Node{ID: node.GetNodeId(), Labels: labels, Properties: gqlCustomPropertiesFromProps(props)})
+	}
+	return nodes, nil
+}
+
+func buildGQLNodeQuery(query execution.QueryNodes) (*clientv1.GraphQuery, error) {
+	exprs := []*clientv1.Expr{}
+	for key, value := range query.Properties {
+		protoValue, err := structpb.NewValue(value)
+		if err != nil {
+			return nil, err
+		}
+		exprs = append(exprs, &clientv1.Expr{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "n", Name: key, Value: protoValue}}})
+	}
+	var where *clientv1.Expr
+	if len(exprs) == 1 {
+		where = exprs[0]
+	} else if len(exprs) > 1 {
+		where = &clientv1.Expr{Expr: &clientv1.Expr_And{And: &clientv1.AndExpr{Exprs: exprs}}}
+	}
+	return &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}}, Where: where, Returns: []*clientv1.ReturnProjection{{Alias: "n", OutputName: "node", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}}, nil
+}
+
+func gqlCustomPropertiesFromProps(props map[string]any) map[string]any {
+	custom, ok := props["properties"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return custom
+}
+
+func gqlLabelsFromProps(props map[string]any) []string {
+	raw, ok := props["_gql_labels"].([]any)
+	if !ok {
+		return nil
+	}
+	labels := make([]string, 0, len(raw))
+	for _, value := range raw {
+		if label, ok := value.(string); ok {
+			labels = append(labels, label)
+		}
+	}
+	return labels
+}
+
+func containsAllLabels(labels []string, required []string) bool {
+	seen := map[string]struct{}{}
+	for _, label := range labels {
+		seen[label] = struct{}{}
+	}
+	for _, label := range required {
+		if _, ok := seen[label]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func copyGQLProperties(properties map[string]any) map[string]any {

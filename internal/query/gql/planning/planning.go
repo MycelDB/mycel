@@ -24,10 +24,34 @@ func (planner) Plan(a analysis.Analysis) (planmodel.Plan, error) {
 	switch stmt := a.Query.Statement.(type) {
 	case ast.InsertStatement:
 		return planInsertStatement(a, stmt), nil
+	case ast.MatchStatement:
+		return planMatchStatement(a, stmt), nil
 	case nil:
 		return planmodel.Plan{}, fmt.Errorf("query statement is required")
 	default:
 		return planmodel.Plan{}, fmt.Errorf("unsupported statement %T", a.Query.Statement)
+	}
+}
+
+func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) planmodel.Plan {
+	properties := make(map[string]any, len(stmt.Pattern.Properties))
+	for _, prop := range stmt.Pattern.Properties {
+		properties[prop.Key] = prop.Value.Value
+	}
+	returns := make([]planmodel.ReturnItem, 0, len(stmt.Returns))
+	for _, ret := range stmt.Returns {
+		returns = append(returns, planmodel.ReturnItem{Variable: ret.Variable})
+	}
+	return planmodel.Plan{
+		AccessMode: a.AccessMode,
+		Operations: []planmodel.Operation{
+			planmodel.QueryNodesOperation{
+				Variable:   stmt.Pattern.Variable,
+				Labels:     append([]string(nil), stmt.Pattern.Labels...),
+				Properties: properties,
+				Returns:    returns,
+			},
+		},
 	}
 }
 

@@ -23,10 +23,24 @@ func Build(tree antlr4.Tree) (model.Query, error) { return NewBuilder().Build(tr
 
 func (builder) Build(tree antlr4.Tree) (model.Query, error) {
 	queryCtx, ok := tree.(*generated.QueryContext)
-	if !ok || queryCtx.InsertStatement() == nil {
+	if !ok || queryCtx.Statement() == nil {
 		return model.Query{}, fmt.Errorf("expected query parse tree")
 	}
-	insertCtx, ok := queryCtx.InsertStatement().(*generated.InsertStatementContext)
+	stmtCtx, ok := queryCtx.Statement().(*generated.StatementContext)
+	if !ok {
+		return model.Query{}, fmt.Errorf("expected statement")
+	}
+	if insert := stmtCtx.InsertStatement(); insert != nil {
+		return buildInsertStatement(insert)
+	}
+	if match := stmtCtx.MatchStatement(); match != nil {
+		return buildMatchStatement(match)
+	}
+	return model.Query{}, fmt.Errorf("expected supported statement")
+}
+
+func buildInsertStatement(ctx generated.IInsertStatementContext) (model.Query, error) {
+	insertCtx, ok := ctx.(*generated.InsertStatementContext)
 	if !ok || insertCtx.NodePattern() == nil {
 		return model.Query{}, fmt.Errorf("expected insert statement")
 	}
@@ -35,6 +49,30 @@ func (builder) Build(tree antlr4.Tree) (model.Query, error) {
 		return model.Query{}, err
 	}
 	return model.Query{Statement: model.InsertStatement{Pattern: node}}, nil
+}
+
+func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, error) {
+	matchCtx, ok := ctx.(*generated.MatchStatementContext)
+	if !ok || matchCtx.NodePattern() == nil {
+		return model.Query{}, fmt.Errorf("expected match statement")
+	}
+	node, err := buildNodePattern(matchCtx.NodePattern())
+	if err != nil {
+		return model.Query{}, err
+	}
+	returns := make([]model.ReturnItem, 0, len(matchCtx.AllReturnItem()))
+	for _, item := range matchCtx.AllReturnItem() {
+		returnCtx, ok := item.(*generated.ReturnItemContext)
+		if !ok || returnCtx.Variable() == nil {
+			return model.Query{}, fmt.Errorf("invalid return item")
+		}
+		variableCtx, ok := returnCtx.Variable().(*generated.VariableContext)
+		if !ok || variableCtx.IDENTIFIER() == nil {
+			return model.Query{}, fmt.Errorf("invalid return variable")
+		}
+		returns = append(returns, model.ReturnItem{Variable: variableCtx.IDENTIFIER().GetText()})
+	}
+	return model.Query{Statement: model.MatchStatement{Pattern: node, Returns: returns}}, nil
 }
 
 func buildNodePattern(ctx generated.INodePatternContext) (model.NodePattern, error) {
