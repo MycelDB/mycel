@@ -4,6 +4,7 @@ coverage.out
 bin/
 data/
 internal/gen/
+internal/query/gql/antlr/generated/
 .cache/
 
 # Editor/OS
