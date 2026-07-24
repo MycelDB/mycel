@@ -6,7 +6,7 @@ This document tracks the MycelDB GQL feature roadmap. It is intentionally produc
 
 MycelDB GQL aims to provide a graph-native query language for nodes, edges, paths, projections, filtering, mutation, diagnostics, and higher-level application use cases such as Knot PKM.
 
-The current implemented subset is intentionally small and focused on node insertion, node matching, property filtering, scalar projection, and row limiting.
+The current implemented subset is intentionally small and focused on node insertion, node matching, relationship matching, relationship creation between matched nodes, property filtering, scalar projection, and row limiting.
 
 ## Feature Matrix
 
@@ -41,25 +41,28 @@ Desirability values are relative priorities:
 | String predicates | Support `CONTAINS`, `STARTS WITH`, `ENDS WITH`, or regex-like matching. | High | High | N |
 | `IS NULL` / `IS NOT NULL` | Test missing or null properties. | High | High | N |
 | Parameterized queries | Use query parameters instead of literal interpolation. | High | High | N |
-| Create edge | Create a relationship between existing or newly matched nodes. | Very High | Very High | N |
-| Match directed edge | Match directed relationships, e.g. `MATCH (a)-[r]->(b)`. | Very High | Very High | N |
-| Match undirected edge | Match relationships without direction, e.g. `MATCH (a)-[r]-(b)`. | High | High | N |
-| Edge labels/types | Match edge types/labels such as `-[r:LINKS_TO]->`. | Very High | Very High | N |
-| Edge properties | Store, filter, and return structured edge properties. | High | High | N |
-| Edge property predicates | Filter on edge values, e.g. `WHERE r.weight > 0.5`. | High | High | N |
-| Return edge | Return a matched relationship, e.g. `RETURN r`. | High | High | N |
-| Return edge properties | Return scalar edge property projections, e.g. `RETURN r.kind, r.weight`. | High | High | N |
+| Multiple independent `MATCH` node patterns | Bind multiple node variables, e.g. `MATCH (a:Person), (b:Person)`. | High | High | Y |
+| Create edge from matched endpoints | Create a relationship between matched node variables, e.g. `MATCH (a), (b) CREATE (a)-[:KNOWS]->(b)`. | Very High | Very High | Y |
+| Match directed edge | Match directed relationships, e.g. `MATCH (a)-[r]->(b)`. | Very High | Very High | Y |
+| Match incoming edge | Match incoming relationships, e.g. `MATCH (a)<-[r]-(b)`. | High | High | Y |
+| Match undirected edge | Match relationships without direction, e.g. `MATCH (a)-[r]-(b)`. | High | High | Y |
+| Edge labels/types | Match/create edge labels such as `-[r:LINKS_TO]->`. | Very High | Very High | Y |
+| Edge properties | Store, filter, and return structured edge properties. | High | High | Y |
+| Edge property equality predicates | Filter on edge equality values, e.g. `WHERE r.weight = 0.5`. | High | High | Y |
+| Edge comparison predicates | Filter on edge comparison values, e.g. `WHERE r.weight > 0.5`. | High | High | N |
+| Return edge | Return a matched relationship, e.g. `RETURN r`. | High | High | Y |
+| Return edge properties | Return scalar edge property projections, e.g. `RETURN r.kind, r.weight`. | High | High | Y |
 | Multi-hop path match | Match chained patterns such as `(a)-[:REFERS_TO]->(b)-[:MENTIONS]->(c)`. | Very High | Very High | N |
 | Variable-length traversal | Match bounded variable-length paths. | High | Very High | N |
 | Path binding | Bind a full path, e.g. `MATCH path = (a)-[*]->(b) RETURN path`. | Medium | High | N |
 | Path projection | Return nodes and edges in a matched path. | Medium | High | N |
 | Neighborhood expansion | Query neighbors around matched nodes. | High | Very High | N |
 | Shortest path | Find shortest paths between nodes. | Medium | Medium | N |
-| Standard `CREATE` alias | Add more standard GQL creation syntax beyond current `INSERT`. | Medium | Medium | N |
+| Standard node `CREATE` alias | Add standard GQL node creation syntax beyond current `INSERT`. | Medium | Medium | N |
 | `SET` property update | Update node or edge properties. | High | High | N |
 | `DELETE` node/edge | Delete matched graph elements. | High | Medium | N |
 | `MERGE` / upsert | Match-or-create nodes and relationships. | High | High | N |
-| Edge creation with matched endpoints | Create relationships after matching endpoints. | Very High | Very High | N |
+| Relationship `CREATE` with inline endpoint creation | Create relationships and endpoint nodes in the same `CREATE` clause. | High | High | N |
 | Edge upsert / merge | Match-or-create relationships. | High | High | N |
 | Aggregation | Support `COUNT`, grouping, and simple aggregates. | High | High | N |
 | Distinct rows | Support `RETURN DISTINCT ...`. | Medium | Medium | N |
@@ -96,16 +99,27 @@ RETURN p.firstName, p.lastName
 FETCH FIRST 10 ROWS ONLY
 ```
 
+```gql
+MATCH (martin:Person {firstName: 'Martin'}), (ivy:Person {firstName: 'Ivy'})
+CREATE (martin)-[:Spouse]->(ivy)
+```
+
+```gql
+MATCH (parent:Person)-[r:Daughter]->(child:Person)
+RETURN parent.firstName, r, child.firstName
+```
+
 ## Near-Term Priorities
 
 Near-term priorities should keep the implementation incremental while making GQL useful for real graph workflows:
 
-1. Edge creation and directed edge matching.
-2. Edge labels/types and edge properties.
+1. Broaden `CREATE` toward standard GQL syntax, including node `CREATE` aliases and eventually inline endpoint creation.
+2. Multi-hop path matching and path projection.
 3. `ORDER BY` and `OFFSET` for result shaping and pagination.
-4. Comparison predicates beyond equality.
+4. Comparison predicates beyond equality for node and edge properties.
 5. Aliased scalar projections.
 6. Payload projection for primary text/blob-backed nodes.
+7. Query parameters to avoid literal interpolation in application code.
 
 ## Knot PKM Use Cases
 
@@ -122,7 +136,7 @@ Knot PKM needs GQL to model and traverse relationships between notes, concepts, 
 - `NEXT`
 - `PREVIOUS`
 
-For Knot PKM, the highest-value unimplemented areas are edge patterns, neighborhood expansion, variable-length traversal, payload projection, and semantic/full-text predicates.
+For Knot PKM, edge creation and single-hop edge matching are now available. The highest-value remaining areas are multi-hop path patterns, neighborhood expansion, variable-length traversal, payload projection, and semantic/full-text predicates.
 
 ## Related Implementation Plans
 
