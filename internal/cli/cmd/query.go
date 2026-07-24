@@ -234,15 +234,32 @@ func printGQLRows(result execmodel.Result) {
 			if !ok {
 				continue
 			}
-			encoded, err := json.Marshal(value)
-			if err != nil {
-				parts = append(parts, fmt.Sprintf("%s=<unprintable>", column))
-				continue
-			}
-			parts = append(parts, fmt.Sprintf("%s=%s", column, encoded))
+			parts = append(parts, fmt.Sprintf("%s=%s", column, formatGQLValue(value)))
 		}
 		fmt.Println(strings.Join(parts, "\t"))
 	}
+}
+
+func formatGQLValue(value execmodel.Value) string {
+	if value.Node != nil {
+		encoded, err := json.Marshal(value.Node)
+		if err != nil {
+			return "<unprintable>"
+		}
+		return string(encoded)
+	}
+	if value.Edge != nil {
+		encoded, err := json.Marshal(value.Edge)
+		if err != nil {
+			return "<unprintable>"
+		}
+		return string(encoded)
+	}
+	encoded, err := json.Marshal(value.Scalar)
+	if err != nil {
+		return "<unprintable>"
+	}
+	return string(encoded)
 }
 
 func containsAllLabels(labels []string, required []string) bool {
