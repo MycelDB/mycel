@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -36,15 +37,23 @@ func TestModuleWALGraphCommitAppendsAndApplies(t *testing.T) {
 		t.Fatalf("init graph module: %v", result.Error)
 	}
 	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	node, err := m.CreateNode(ctx, tx, NodeInput{Content: "wal node", Props: map[string]any{}})
+	parent, err := m.CreateNode(ctx, tx, NodeInput{Content: "wal parent", Props: map[string]any{}})
 	if err != nil {
-		t.Fatalf("CreateNode() error = %v", err)
+		t.Fatalf("CreateNode(parent) error = %v", err)
+	}
+	child, err := m.CreateNode(ctx, tx, NodeInput{Content: "wal child", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CreateNode(child) error = %v", err)
+	}
+	edge, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.75}, Payload: map[string]any{"text": "wal edge payload"}, Meta: map[string]any{"source": "test"}})
+	if err != nil {
+		t.Fatalf("CreateEdge() error = %v", err)
 	}
 	commit, err := m.CommitTransactionGraph(ctx, tx)
 	if err != nil {
 		t.Fatalf("CommitTransactionGraph() error = %v", err)
 	}
-	if commit.CommittedRevision != 1 || commit.OperationCount != 1 {
+	if commit.CommittedRevision != 1 || commit.OperationCount != 3 {
 		t.Fatalf("commit=%#v", commit)
 	}
 	if got := walManager.LastCommittedLSN(); got != 1 {
@@ -54,9 +63,16 @@ func TestModuleWALGraphCommitAppendsAndApplies(t *testing.T) {
 		t.Fatalf("AppliedLSN() = %v, %v; want 1", applied, err)
 	}
 	readTx := graphTx(tx.SpaceID, tx.DomainID, commit.CommittedRevision)
-	got, err := m.GetNode(ctx, readTx, node.ID.String())
-	if err != nil || got.ID != node.ID {
+	got, err := m.GetNode(ctx, readTx, parent.ID.String())
+	if err != nil || got.ID != parent.ID {
 		t.Fatalf("GetNode() = %#v, %v", got, err)
+	}
+	gotEdge, err := m.GetEdge(ctx, readTx, edge.ID.String())
+	if err != nil || gotEdge.ID != edge.ID {
+		t.Fatalf("GetEdge() = %#v, %v", gotEdge, err)
+	}
+	if gotEdge.DomainID.String() != tx.DomainID || !reflect.DeepEqual(gotEdge.Labels, edge.Labels) || !reflect.DeepEqual(gotEdge.Properties, edge.Properties) || !reflect.DeepEqual(gotEdge.Payload, edge.Payload) || !reflect.DeepEqual(gotEdge.Meta, edge.Meta) || gotEdge.CreatedAt.IsZero() || gotEdge.UpdatedAt.IsZero() {
+		t.Fatalf("edge fields did not round trip through WAL commit: got %+v want %+v", gotEdge, edge)
 	}
 }
 

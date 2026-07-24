@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -23,7 +24,9 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	updatedAt := createdAt.Add(time.Hour)
 	parent := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "parent", Props: map[string]any{"journal_day": 20260102}, CreatedAt: createdAt, UpdatedAt: updatedAt}
 	child := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "child", Props: map[string]any{}}
-	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}
+	edgeCreatedAt := createdAt.Add(2 * time.Hour)
+	edgeUpdatedAt := edgeCreatedAt.Add(time.Hour)
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: graph.DomainID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"contains", "primary"}, Properties: map[string]any{"order": int64(0), "source": "test"}, Payload: map[string]any{"text": "edge payload"}, Meta: map[string]any{"system": "store-test"}, CreatedAt: edgeCreatedAt, UpdatedAt: edgeUpdatedAt}
 	tx, err := store.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +62,10 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	children, err := store.Children(ctx, parent.ID)
 	if err != nil || len(children) != 1 || children[0].ToID != child.ID {
 		t.Fatalf("unexpected children=%+v err=%v", children, err)
+	}
+	gotEdge := children[0]
+	if gotEdge.DomainID != edge.DomainID || !reflect.DeepEqual(gotEdge.Labels, edge.Labels) || !reflect.DeepEqual(gotEdge.Properties, edge.Properties) || !reflect.DeepEqual(gotEdge.Payload, edge.Payload) || !reflect.DeepEqual(gotEdge.Meta, edge.Meta) || !gotEdge.CreatedAt.Equal(edgeCreatedAt) || !gotEdge.UpdatedAt.Equal(edgeUpdatedAt) {
+		t.Fatalf("edge did not round trip through store: got %+v want %+v", gotEdge, edge)
 	}
 	ids, err := store.NodesByTemplate(ctx, tmpl)
 	if err != nil || len(ids) != 2 {

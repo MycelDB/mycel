@@ -56,6 +56,35 @@ func TestNodeCodecRoundTripWithNewShape(t *testing.T) {
 	}
 }
 
+func TestEdgeCodecRoundTripWithNewShape(t *testing.T) {
+	edge := graph.Edge{
+		ID:         graph.EdgeID(uuid.New()),
+		DomainID:   graph.DomainID(uuid.New()),
+		FromID:     graph.NodeID(uuid.New()),
+		ToID:       graph.NodeID(uuid.New()),
+		Labels:     []string{"REFERENCES", "CITES"},
+		Properties: map[string]any{"confidence": 0.92, "source": "manual"},
+		Payload:    map[string]any{"text": "relationship annotation", "blob_id": "blob_1"},
+		Meta:       map[string]any{"created_by": "user_1"},
+		CreatedAt:  time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC),
+		UpdatedAt:  time.Date(2026, 2, 3, 5, 6, 7, 0, time.UTC),
+	}
+	encoded, err := encodeEdge(edge)
+	if err != nil {
+		t.Fatalf("encodeEdge: %v", err)
+	}
+	got, err := decodeEdge(encoded)
+	if err != nil {
+		t.Fatalf("decodeEdge: %v", err)
+	}
+	if got.ID != edge.ID || got.DomainID != edge.DomainID || got.FromID != edge.FromID || got.ToID != edge.ToID || !got.CreatedAt.Equal(edge.CreatedAt) || !got.UpdatedAt.Equal(edge.UpdatedAt) {
+		t.Fatalf("edge identity/connectivity mismatch: got %+v want %+v", got, edge)
+	}
+	if !reflect.DeepEqual(got.Labels, edge.Labels) || !reflect.DeepEqual(got.Properties, edge.Properties) || !reflect.DeepEqual(got.Payload, edge.Payload) || !reflect.DeepEqual(got.Meta, edge.Meta) {
+		t.Fatalf("edge shape mismatch: got %+v want %+v", got, edge)
+	}
+}
+
 func TestNodeCodecRoundTripWithBlobRef(t *testing.T) {
 	tmpl := graph.TemplateID(uuid.New())
 	blobID := graph.BlobID("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3")
