@@ -129,3 +129,4 @@ For Knot PKM, the highest-value unimplemented areas are edge patterns, neighborh
 - `../implementation/gql-where-implementation-plan.md`
 - `../implementation/gql-property-return-projection-implementation-plan.md`
 - `../implementation/gql-edge-implementation-plan.md`
+- `../implementation/gql-relationship-create-implementation-plan.md`
