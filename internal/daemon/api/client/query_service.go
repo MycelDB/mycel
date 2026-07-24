@@ -629,7 +629,9 @@ func gqlRowsToProto(result execmodel.Result) []*clientv1.QueryRow {
 		for name, value := range row {
 			if value.Node != nil {
 				fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Node{Node: gqlNodeToProto(*value.Node)}}
+				continue
 			}
+			fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Scalar{Scalar: protoValue(value.Scalar)}}
 		}
 		rows = append(rows, &clientv1.QueryRow{Fields: fields})
 	}
