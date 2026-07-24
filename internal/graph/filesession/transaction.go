@@ -184,7 +184,7 @@ func (tx *fileTx) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (grap
 	if findNodeIndex(nodes, nodeID) >= 0 {
 		return graph.Node{}, fmt.Errorf("%w: node already exists", storetemplate.ErrInvalidInput)
 	}
-	n, err := tx.session.buildNode(ctx, nodes, nodeID, in.TemplateID, in.Content, in.Props)
+	n, err := tx.session.buildNode(ctx, nodes, nodeID, in.TemplateID, in.Content, in.Properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -253,11 +253,15 @@ func (tx *fileTx) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeInput)
 	if nodes[idx].BlobRef != nil && in.Content != "" {
 		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", storetemplate.ErrInvalidInput)
 	}
-	n, err := tx.session.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, in.Props)
+	properties := in.Properties
+	if properties == nil {
+		properties = in.Props
+	}
+	n, err := tx.session.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
-	applyNodeShape(&n, in.Labels, in.Properties, in.Payload, in.Meta)
+	applyNodeShape(&n, in.Labels, properties, in.Payload, in.Meta)
 	n.BlobRef = nodes[idx].BlobRef
 	n.DomainID = nodes[idx].DomainID
 	n.CreatedAt = nodes[idx].CreatedAt
@@ -350,7 +354,7 @@ func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.
 	if err != nil {
 		return fail(err)
 	}
-	createdEdge, err := tx.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: parentID, ToID: sibling.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": createdOrder}})
+	createdEdge, err := tx.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: parentID, ToID: sibling.ID, Labels: []string{"contains"}, Properties: map[string]any{"order": createdOrder}})
 	if err != nil {
 		return fail(err)
 	}
@@ -359,12 +363,12 @@ func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.
 
 func (tx *fileTx) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
-		return tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+		return tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Properties})
 	}
 	if _, err := tx.GetNode(ctx, *in.ID); err == nil {
-		return tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+		return tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Properties})
 	}
-	return tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+	return tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Properties})
 }
 
 func (tx *fileTx) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (graph.Edge, error) {
@@ -387,7 +391,7 @@ func (tx *fileTx) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (grap
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	if err := tx.session.validateNewEdge(ctx, from, to, in.Kind, edges); err != nil {
+	if err := tx.session.validateNewEdge(ctx, from, to, in.Labels, edges); err != nil {
 		return graph.Edge{}, err
 	}
 	edgeID, err := newGraphUUID()
@@ -400,7 +404,8 @@ func (tx *fileTx) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (grap
 	if findEdgeIndex(edges, edgeID) >= 0 {
 		return graph.Edge{}, fmt.Errorf("%w: edge already exists", storetemplate.ErrInvalidInput)
 	}
-	e := graph.Edge{ID: edgeID, FromID: in.FromID, ToID: in.ToID, Kind: in.Kind, Props: copyProps(in.Props)}
+	now := time.Now().UTC()
+	e := graph.Edge{ID: edgeID, DomainID: tx.session.domainID, FromID: in.FromID, ToID: in.ToID, Labels: append([]string(nil), in.Labels...), Properties: copyProps(in.Properties), Payload: copyProps(in.Payload), Meta: copyProps(in.Meta), CreatedAt: now, UpdatedAt: now}
 	delete(tx.overlay.deletedEdges, e.ID)
 	tx.overlay.addedEdges[e.ID] = e
 	return cloneEdge(e), nil
@@ -427,7 +432,7 @@ func (tx *fileTx) Children(ctx context.Context, parentID graph.NodeID) ([]graph.
 	}
 	out := []graph.Edge{}
 	for _, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.FromID == parentID {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.FromID == parentID {
 			out = append(out, edge)
 		}
 	}
@@ -451,7 +456,7 @@ func (tx *fileTx) Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge
 		return nil, err
 	}
 	for _, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.ToID == childID {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.ToID == childID {
 			cloned := cloneEdge(edge)
 			return &cloned, nil
 		}
@@ -585,14 +590,14 @@ func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInpu
 		}
 		edges[oldParentIndexes[0]].FromID = in.NewParentID
 		edges[oldParentIndexes[0]].ToID = in.NodeID
-		edges[oldParentIndexes[0]].Kind = graph.EdgeKindContains
-		edges[oldParentIndexes[0]].Props = copyProps(edges[oldParentIndexes[0]].Props)
+		edges[oldParentIndexes[0]].Labels = []string{"contains"}
+		edges[oldParentIndexes[0]].Properties = copyProps(edges[oldParentIndexes[0]].Properties)
 	} else {
 		edgeID, err := newGraphUUID()
 		if err != nil {
 			return graph.Edge{}, err
 		}
-		edges = append(edges, graph.Edge{ID: graph.EdgeID(edgeID), FromID: in.NewParentID, ToID: in.NodeID, Kind: graph.EdgeKindContains, Props: map[string]any{}})
+		edges = append(edges, graph.Edge{ID: graph.EdgeID(edgeID), FromID: in.NewParentID, ToID: in.NodeID, Labels: []string{"contains"}, Properties: map[string]any{}})
 	}
 	if oldParentID != uuid.Nil {
 		normalizeChildrenOrder(edges, oldParentID)
@@ -634,7 +639,7 @@ func (tx *fileTx) ReorderChildren(ctx context.Context, in sessionapi.ReorderChil
 	for order, childID := range in.ChildIDs {
 		edgeIndex := childEdgeByID[childID]
 		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = order * childOrderStep
+		edges[edgeIndex].Properties["order"] = order * childOrderStep
 		updated = append(updated, cloneEdge(edges[edgeIndex]))
 	}
 	for _, edge := range changedEdges(originalEdges, edges) {
@@ -901,7 +906,7 @@ func (tx *fileTx) validateFinalGraph(ctx context.Context, nodes []graph.Node, ed
 		if !fromOK || !toOK {
 			return fmt.Errorf("%w: edge endpoint not found", tx.session.errors.NotFound)
 		}
-		if edge.Kind != graph.EdgeKindContains {
+		if !graph.EdgeHasLabels(edge, []string{"contains"}) {
 			continue
 		}
 		if edge.FromID == edge.ToID {

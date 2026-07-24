@@ -174,7 +174,7 @@ func TestRecursiveDeleteReleasesBlobsOfSubtree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add annotation failed: %v", err)
 	}
-	if _, err := sess.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: parent.ID, ToID: annotation.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 0}}); err != nil {
+	if _, err := sess.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: parent.ID, ToID: annotation.ID, Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
 		t.Fatalf("attach annotation failed: %v", err)
 	}
 
@@ -462,7 +462,7 @@ func TestTransactionAddBlobNodeConflictCleansPromotedBlob(t *testing.T) {
 	sess, fs := newBlobTestSession(t)
 	// Seed a node the transaction will also mutate, so a concurrent commit to the
 	// same node forces a write-set conflict and exercises blob cleanup.
-	seed, err := sess.AddNode(ctx, sessionapi.AddNodeInput{Content: "seed", Props: map[string]any{}})
+	seed, err := sess.AddNode(ctx, sessionapi.AddNodeInput{Content: "seed", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("seed add failed: %v", err)
 	}
@@ -474,10 +474,10 @@ func TestTransactionAddBlobNodeConflictCleansPromotedBlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tx add blob failed: %v", err)
 	}
-	if _, err := tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "tx", Props: map[string]any{}}); err != nil {
+	if _, err := tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "tx", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("tx update seed failed: %v", err)
 	}
-	if _, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "advance revision", Props: map[string]any{}}); err != nil {
+	if _, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "advance revision", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("advance revision failed: %v", err)
 	}
 	if err := tx.Commit(ctx); err == nil {

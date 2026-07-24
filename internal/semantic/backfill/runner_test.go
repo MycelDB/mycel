@@ -273,7 +273,7 @@ func (e *backfillTestEnv) addRootWithChild(t *testing.T, rootText, childText str
 	if err != nil {
 		t.Fatalf("add child failed: %v", err)
 	}
-	if _, err := e.sess.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: root.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 1}}); err != nil {
+	if _, err := e.sess.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: root.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{"order": 1}}); err != nil {
 		t.Fatalf("add edge failed: %v", err)
 	}
 	return root, child

@@ -176,7 +176,7 @@ func newExecutionState(nodes []graph.Node, edges []graph.Edge, templates []graph
 		state.nodeByID[n.ID] = n
 	}
 	for _, edge := range edges {
-		if edge.Kind != graph.EdgeKindContains {
+		if !graph.EdgeHasLabels(edge, []string{"contains"}) {
 			continue
 		}
 		child, ok := state.nodeByID[edge.ToID]
@@ -280,7 +280,7 @@ func (s executionState) sortChildren(parent graph.Node, children []containsChild
 	}
 	desc := tmpl.Children.Order.Direction == graph.SortDirectionDesc
 	sort.SliceStable(children, func(i, j int) bool {
-		cmp, err := compareValues(children[i].edge.Props[tmpl.Children.Order.Property], children[j].edge.Props[tmpl.Children.Order.Property])
+		cmp, err := compareValues(children[i].edge.Properties[tmpl.Children.Order.Property], children[j].edge.Properties[tmpl.Children.Order.Property])
 		if err != nil || cmp == 0 {
 			return false
 		}
@@ -299,7 +299,7 @@ func (s executionState) edgeOrderForParent(parent graph.Node, edge graph.Edge) a
 	if !ok || tmpl.Children.Order == nil || tmpl.Children.Order.Mode != graph.ChildOrderModeEdgeProperty {
 		return nil
 	}
-	return edge.Props[tmpl.Children.Order.Property]
+	return edge.Properties[tmpl.Children.Order.Property]
 }
 
 func dedupeNodes(nodes []graph.Node) []graph.Node {

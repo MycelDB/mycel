@@ -175,11 +175,13 @@ type GetBlobResult struct {
 
 // AddEdgeInput is the write payload used when creating an edge.
 type AddEdgeInput struct {
-	ID     *graph.EdgeID
-	FromID graph.NodeID
-	ToID   graph.NodeID
-	Kind   graph.EdgeKind
-	Props  map[string]any
+	ID         *graph.EdgeID
+	FromID     graph.NodeID
+	ToID       graph.NodeID
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 }
 
 // AddGraphInput is a batch write payload containing nodes and edges.

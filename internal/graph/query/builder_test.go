@@ -110,7 +110,7 @@ func TestQueryLatestJournalEntriesViaContainsEdges(t *testing.T) {
 }
 
 func contains(from, to graph.NodeID, order int) graph.Edge {
-	return graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: from, ToID: to, Kind: graph.EdgeKindContains, Props: map[string]any{"order": order}}
+	return graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: from, ToID: to, Labels: []string{"contains"}, Properties: map[string]any{"order": order}}
 }
 
 func localDate(t time.Time) time.Time {

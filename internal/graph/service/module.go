@@ -423,29 +423,32 @@ func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err != nil {
 		return domaingraph.Edge{}, err
 	}
-	kind := domaingraph.EdgeKind(strings.TrimSpace(input.Kind))
-	if kind == "" {
-		return domaingraph.Edge{}, fmt.Errorf("%w: edge kind is required", ErrInvalidInput)
-	}
-	if _, err := m.node(ctx, tx, fromID); err != nil {
+	labels := normalizeLabels(input.Labels)
+	from, err := m.node(ctx, tx, fromID)
+	if err != nil {
 		return domaingraph.Edge{}, fmt.Errorf("%w: from node: %v", ErrInvalidInput, err)
 	}
-	if _, err := m.node(ctx, tx, toID); err != nil {
+	to, err := m.node(ctx, tx, toID)
+	if err != nil {
 		return domaingraph.Edge{}, fmt.Errorf("%w: to node: %v", ErrInvalidInput, err)
+	}
+	if from.DomainID != mustDomainID(tx.DomainID) || to.DomainID != mustDomainID(tx.DomainID) {
+		return domaingraph.Edge{}, fmt.Errorf("%w: edge endpoints must be in transaction domain", ErrInvalidInput)
 	}
 	if _, err := m.edge(ctx, tx, id); err == nil {
 		return domaingraph.Edge{}, fmt.Errorf("%w: edge already exists", ErrInvalidInput)
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Edge{}, err
 	}
-	if kind == domaingraph.EdgeKindContains {
+	if hasEdgeLabel(labels, "contains") {
 		if existing, err := m.parentEdge(ctx, tx, toID); err != nil {
 			return domaingraph.Edge{}, err
 		} else if existing != nil {
 			return domaingraph.Edge{}, fmt.Errorf("%w: child already has a contains parent", ErrInvalidInput)
 		}
 	}
-	e := domaingraph.Edge{ID: id, FromID: fromID, ToID: toID, Kind: kind, Props: cloneProps(input.Props)}
+	now := time.Now().UTC()
+	e := domaingraph.Edge{ID: id, DomainID: mustDomainID(tx.DomainID), FromID: fromID, ToID: toID, Labels: labels, Properties: cloneProps(input.Properties), Payload: cloneProps(input.Payload), Meta: cloneProps(input.Meta), CreatedAt: now, UpdatedAt: now}
 	m.stageEdge(tx.ID, e)
 	return cloneEdge(e), nil
 }
@@ -463,12 +466,19 @@ func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 		return domaingraph.Edge{}, err
 	}
 	paths := maskSet(input.UpdateMask)
-	if input.Kind != nil && (len(paths) == 0 || paths["kind"]) {
-		e.Kind = domaingraph.EdgeKind(strings.TrimSpace(*input.Kind))
+	if input.Labels != nil && (len(paths) == 0 || paths["labels"]) {
+		e.Labels = normalizeLabels(input.Labels)
 	}
-	if input.Props != nil && (len(paths) == 0 || paths["props"]) {
-		e.Props = cloneProps(input.Props)
+	if input.Properties != nil && (len(paths) == 0 || paths["properties"]) {
+		e.Properties = cloneProps(input.Properties)
 	}
+	if input.Payload != nil && (len(paths) == 0 || paths["payload"]) {
+		e.Payload = cloneProps(input.Payload)
+	}
+	if input.Meta != nil && (len(paths) == 0 || paths["meta"]) {
+		e.Meta = cloneProps(input.Meta)
+	}
+	e.UpdatedAt = time.Now().UTC()
 	m.stageEdge(tx.ID, e)
 	return cloneEdge(e), nil
 }
@@ -510,7 +520,7 @@ func (m *Module) ListChildren(ctx context.Context, tx daemonsession.GraphTransac
 	}
 	out := []domaingraph.Edge{}
 	for _, edge := range edges {
-		if edge.Kind == domaingraph.EdgeKindContains && edge.FromID == parentID {
+		if domaingraph.EdgeHasLabels(edge, []string{"contains"}) && edge.FromID == parentID {
 			out = append(out, edge)
 		}
 	}
@@ -564,7 +574,7 @@ func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransact
 		return domaingraph.Edge{}, err
 	} else if existing != nil {
 		edgeID = existing.ID
-		props = cloneProps(existing.Props)
+		props = cloneProps(existing.Properties)
 		m.stageEdgeDelete(tx.ID, existing.ID)
 	}
 	if edgeID == uuid.Nil {
@@ -580,7 +590,8 @@ func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransact
 		children, _ := m.ListChildren(ctx, tx, parentID.String())
 		props["order"] = len(children) * childOrderStep
 	}
-	e := domaingraph.Edge{ID: edgeID, FromID: parentID, ToID: childID, Kind: domaingraph.EdgeKindContains, Props: props}
+	now := time.Now().UTC()
+	e := domaingraph.Edge{ID: edgeID, DomainID: mustDomainID(tx.DomainID), FromID: parentID, ToID: childID, Labels: []string{"contains"}, Properties: props, CreatedAt: now, UpdatedAt: now}
 	m.stageEdge(tx.ID, e)
 	return cloneEdge(e), nil
 }
@@ -606,8 +617,8 @@ func (m *Module) ReorderChildren(ctx context.Context, tx daemonsession.GraphTran
 		if !ok {
 			return nil, fmt.Errorf("%w: child_node_ids must include every existing child exactly once", ErrInvalidInput)
 		}
-		edge.Props = cloneProps(edge.Props)
-		edge.Props["order"] = i * childOrderStep
+		edge.Properties = cloneProps(edge.Properties)
+		edge.Properties["order"] = i * childOrderStep
 		m.stageEdge(tx.ID, edge)
 		out = append(out, cloneEdge(edge))
 	}
@@ -829,16 +840,16 @@ func (m *Module) graphChangeEvent(ctx context.Context, tx daemonsession.GraphTra
 		change := "added"
 		if old, err := store.GetEdge(ctx, edge.ID); err == nil {
 			change = "updated"
-			if old.Kind == domaingraph.EdgeKindContains && old.ToID == edge.ToID && old.FromID != edge.FromID {
+			if domaingraph.EdgeHasLabels(old, []string{"contains"}) && old.ToID == edge.ToID && old.FromID != edge.FromID {
 				event.OldParentByNodeID[old.ToID] = old.FromID
 			}
 		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
 			return graphchange.CommittedEvent{}, mapStorageError(err)
 		}
-		if edge.Kind == domaingraph.EdgeKindContains {
+		if domaingraph.EdgeHasLabels(edge, []string{"contains"}) {
 			event.NewParentByNodeID[edge.ToID] = edge.FromID
 		}
-		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: change, FromID: edge.FromID, ToID: edge.ToID})
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Labels: append([]string(nil), edge.Labels...), Change: change, FromID: edge.FromID, ToID: edge.ToID})
 	}
 	for _, id := range sortedEdgeIDs(snapshot.deleteEdges) {
 		edge, err := store.GetEdge(ctx, id)
@@ -848,10 +859,10 @@ func (m *Module) graphChangeEvent(ctx context.Context, tx daemonsession.GraphTra
 			}
 			return graphchange.CommittedEvent{}, mapStorageError(err)
 		}
-		if edge.Kind == domaingraph.EdgeKindContains {
+		if domaingraph.EdgeHasLabels(edge, []string{"contains"}) {
 			event.OldParentByNodeID[edge.ToID] = edge.FromID
 		}
-		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Labels: append([]string(nil), edge.Labels...), Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
 	}
 	return event, nil
 }
@@ -985,7 +996,7 @@ func (m *Module) parentEdge(ctx context.Context, tx daemonsession.GraphTransacti
 		return nil, err
 	}
 	for _, edge := range edges {
-		if edge.Kind == domaingraph.EdgeKindContains && edge.ToID == childID {
+		if domaingraph.EdgeHasLabels(edge, []string{"contains"}) && edge.ToID == childID {
 			copy := cloneEdge(edge)
 			return &copy, nil
 		}
@@ -1126,7 +1137,33 @@ func cloneNode(n domaingraph.Node) domaingraph.Node {
 	n.Props = cloneProps(n.Props)
 	return n
 }
-func cloneEdge(e domaingraph.Edge) domaingraph.Edge { e.Props = cloneProps(e.Props); return e }
+func cloneEdge(e domaingraph.Edge) domaingraph.Edge {
+	e.Labels = append([]string(nil), e.Labels...)
+	e.Properties = cloneProps(e.Properties)
+	e.Payload = cloneProps(e.Payload)
+	e.Meta = cloneProps(e.Meta)
+	return e
+}
+
+func normalizeLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label != "" {
+			out = append(out, label)
+		}
+	}
+	return out
+}
+
+func hasEdgeLabel(labels []string, label string) bool {
+	for _, candidate := range labels {
+		if candidate == label {
+			return true
+		}
+	}
+	return false
+}
 func cloneProps(in map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range in {
@@ -1245,7 +1282,7 @@ func maskSet(paths []string) map[string]bool {
 }
 
 func edgeOrder(edge domaingraph.Edge, fallback int) int {
-	if value, ok := intProp(edge.Props["order"]); ok {
+	if value, ok := intProp(edge.Properties["order"]); ok {
 		return value
 	}
 	return fallback * childOrderStep

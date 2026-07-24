@@ -16,15 +16,15 @@ func TestMetadataIndexTags(t *testing.T) {
 	ctx := context.Background()
 	sess, tmplID := newHierarchyTestSession(t)
 
-	first, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "first", Props: map[string]any{"tags": []string{"Project", "Urgent"}}})
+	first, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "first", Properties: map[string]any{"tags": []string{"Project", "Urgent"}}})
 	if err != nil {
 		t.Fatalf("add first failed: %v", err)
 	}
-	second, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "second", Props: map[string]any{"tags": []any{"project"}}})
+	second, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "second", Properties: map[string]any{"tags": []any{"project"}}})
 	if err != nil {
 		t.Fatalf("add second failed: %v", err)
 	}
-	third, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "third", Props: map[string]any{"tags": []string{"archive"}}})
+	third, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "third", Properties: map[string]any{"tags": []string{"archive"}}})
 	if err != nil {
 		t.Fatalf("add third failed: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestMetadataIndexTags(t *testing.T) {
 		t.Fatalf("expected first all-tag match, got %v", got)
 	}
 
-	updated, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: second.ID, TemplateID: second.TemplateID, Content: second.Content, Props: map[string]any{"tags": []string{"waiting"}}})
+	updated, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: second.ID, TemplateID: second.TemplateID, Content: second.Content, Properties: map[string]any{"tags": []string{"waiting"}}})
 	if err != nil {
 		t.Fatalf("update second failed: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestMetadataIndexRebuildsLegacyShapesAfterReopen(t *testing.T) {
 	}}
 	errs := sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}
 	sess := New(graphsDir, blobsDir, spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, errs)
-	node, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "legacy", Props: map[string]any{
+	node, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "legacy", Properties: map[string]any{
 		"tags":       []any{"Project", 42, "#Urgent", "project", ""},
 		"properties": map[string]any{"Due Date": " 2026-06-20 ", "Priority": "High", "nested": map[string]any{"ignored": true}},
 	}})
@@ -121,7 +121,7 @@ func TestMetadataIndexTransactionsAreCommitVisible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin rollback create tx failed: %v", err)
 	}
-	if _, err := rolledBackCreate.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "rollback", Props: map[string]any{"tags": []string{"draft"}, "properties": map[string]any{"status": "draft"}}}); err != nil {
+	if _, err := rolledBackCreate.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "rollback", Properties: map[string]any{"tags": []string{"draft"}, "properties": map[string]any{"status": "draft"}}}); err != nil {
 		t.Fatalf("tx add rollback node failed: %v", err)
 	}
 	if err := rolledBackCreate.Rollback(ctx); err != nil {
@@ -134,7 +134,7 @@ func TestMetadataIndexTransactionsAreCommitVisible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin commit create tx failed: %v", err)
 	}
-	node, err := committedCreate.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "commit", Props: map[string]any{"tags": []string{"project"}, "properties": map[string]any{"status": "active"}}})
+	node, err := committedCreate.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "commit", Properties: map[string]any{"tags": []string{"project"}, "properties": map[string]any{"status": "active"}}})
 	if err != nil {
 		t.Fatalf("tx add commit node failed: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestMetadataIndexTransactionsAreCommitVisible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin rollback update tx failed: %v", err)
 	}
-	if _, err := rolledBackUpdate.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: node.ID, TemplateID: node.TemplateID, Content: node.Content, Props: map[string]any{"tags": []string{"archived"}, "properties": map[string]any{"status": "archived"}}}); err != nil {
+	if _, err := rolledBackUpdate.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: node.ID, TemplateID: node.TemplateID, Content: node.Content, Properties: map[string]any{"tags": []string{"archived"}, "properties": map[string]any{"status": "archived"}}}); err != nil {
 		t.Fatalf("tx update rollback node failed: %v", err)
 	}
 	if err := rolledBackUpdate.Rollback(ctx); err != nil {
@@ -162,7 +162,7 @@ func TestMetadataIndexTransactionsAreCommitVisible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin commit update tx failed: %v", err)
 	}
-	updated, err := committedUpdate.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: node.ID, TemplateID: node.TemplateID, Content: node.Content, Props: map[string]any{"tags": []string{"archived"}, "properties": map[string]any{"status": "archived"}}})
+	updated, err := committedUpdate.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: node.ID, TemplateID: node.TemplateID, Content: node.Content, Properties: map[string]any{"tags": []string{"archived"}, "properties": map[string]any{"status": "archived"}}})
 	if err != nil {
 		t.Fatalf("tx update commit node failed: %v", err)
 	}
@@ -203,11 +203,11 @@ func TestMetadataIndexProperties(t *testing.T) {
 	ctx := context.Background()
 	sess, tmplID := newHierarchyTestSession(t)
 
-	first, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "first", Props: map[string]any{"properties": map[string]any{"Priority": " high ", "Rating": 5, "Flagged": true}}})
+	first, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "first", Properties: map[string]any{"properties": map[string]any{"Priority": " high ", "Rating": 5, "Flagged": true}}})
 	if err != nil {
 		t.Fatalf("add first failed: %v", err)
 	}
-	second, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "second", Props: map[string]any{"properties": map[string]any{"priority": "low"}}})
+	second, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "second", Properties: map[string]any{"properties": map[string]any{"priority": "low"}}})
 	if err != nil {
 		t.Fatalf("add second failed: %v", err)
 	}

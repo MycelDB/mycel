@@ -172,7 +172,7 @@ func TestFileSessionMoveSubtreeMovesWholeSubtreeAndPreservesEdge(t *testing.T) {
 		AddEdges: []sessionapi.AddEdgeInput{
 			containsInput(rootID, aID, 0),
 			containsInput(rootID, cID, 1),
-			{ID: &bEdgeID, FromID: aID, ToID: bID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 0, "source": "test"}},
+			{ID: &bEdgeID, FromID: aID, ToID: bID, Labels: []string{"contains"}, Properties: map[string]any{"order": 0, "source": "test"}},
 			containsInput(bID, dID, 0),
 			containsInput(cID, eID, 0),
 		},
@@ -187,8 +187,8 @@ func TestFileSessionMoveSubtreeMovesWholeSubtreeAndPreservesEdge(t *testing.T) {
 	if moved.ID != bEdgeID || moved.FromID != cID || moved.ToID != bID {
 		t.Fatalf("expected moved edge id/from/to to be preserved and updated, got %+v", moved)
 	}
-	if moved.Props["source"] != "test" || moved.Props["order"] != childOrderStep {
-		t.Fatalf("expected moved edge props to preserve source and append sparse order, got %+v", moved.Props)
+	if moved.Properties["source"] != "test" || moved.Properties["order"] != childOrderStep {
+		t.Fatalf("expected moved edge props to preserve source and append sparse order, got %+v", moved.Properties)
 	}
 	assertChildren(t, sess, aID)
 	assertChildren(t, sess, cID, eID, bID)
@@ -255,7 +255,7 @@ func TestFileSessionMoveRootNodeUnderParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("move root failed: %v", err)
 	}
-	if moved.FromID != parentID || moved.ToID != rootID || moved.Props["order"] != 0 {
+	if moved.FromID != parentID || moved.ToID != rootID || moved.Properties["order"] != 0 {
 		t.Fatalf("unexpected moved root edge: %+v", moved)
 	}
 	assertChildren(t, sess, parentID, rootID)
@@ -335,7 +335,7 @@ func TestFileSessionReorderChildrenRequiresCompleteListAndQueryUsesOrder(t *test
 	if err != nil {
 		t.Fatalf("reorder failed: %v", err)
 	}
-	if len(updated) != 3 || updated[0].ToID != cID || updated[0].Props["order"] != 0 || updated[2].ToID != bID || updated[2].Props["order"] != 2*childOrderStep {
+	if len(updated) != 3 || updated[0].ToID != cID || updated[0].Properties["order"] != 0 || updated[2].ToID != bID || updated[2].Properties["order"] != 2*childOrderStep {
 		t.Fatalf("unexpected updated edges: %+v", updated)
 	}
 	assertChildren(t, sess, rootID, cID, aID, bID)
@@ -452,7 +452,7 @@ func prepareBenchmarkSpaceDir(b *testing.B, graphsDir string, spaceID domainspac
 func nodeID() graph.NodeID { return graph.NodeID(uuid.New()) }
 
 func containsInput(fromID, toID graph.NodeID, order int) sessionapi.AddEdgeInput {
-	return sessionapi.AddEdgeInput{FromID: fromID, ToID: toID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": order}}
+	return sessionapi.AddEdgeInput{FromID: fromID, ToID: toID, Labels: []string{"contains"}, Properties: map[string]any{"order": order}}
 }
 
 func assertChildren(t *testing.T, sess sessionapi.Session, parentID graph.NodeID, expected ...graph.NodeID) {
@@ -463,7 +463,7 @@ func assertChildren(t *testing.T, sess sessionapi.Session, parentID graph.NodeID
 	}
 	childEdges := []graph.Edge{}
 	for _, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.FromID == parentID {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.FromID == parentID {
 			childEdges = append(childEdges, edge)
 		}
 	}

@@ -379,7 +379,7 @@ func removeNested(nodes []graph.Node, edges []graph.Edge) []graph.Node {
 	}
 	parent := map[graph.NodeID]graph.NodeID{}
 	for _, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) {
 			parent[edge.ToID] = edge.FromID
 		}
 	}

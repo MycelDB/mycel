@@ -246,18 +246,31 @@ func plausibleUnixNanos(nanos int64) bool {
 func encodeEdge(edge graph.Edge) ([]byte, error) {
 	var b bytes.Buffer
 	writeUUID(&b, edge.ID)
+	writeUUID(&b, edge.DomainID)
 	writeUUID(&b, edge.FromID)
 	writeUUID(&b, edge.ToID)
-	writeString(&b, string(edge.Kind))
-	if err := writeMap(&b, edge.Props); err != nil {
+	writeStringSlice(&b, edge.Labels)
+	if err := writeMap(&b, edge.Properties); err != nil {
 		return nil, err
 	}
+	if err := writeMap(&b, edge.Payload); err != nil {
+		return nil, err
+	}
+	if err := writeMap(&b, edge.Meta); err != nil {
+		return nil, err
+	}
+	writeTime(&b, edge.CreatedAt)
+	writeTime(&b, edge.UpdatedAt)
 	return b.Bytes(), nil
 }
 
 func decodeEdge(payload []byte) (graph.Edge, error) {
 	r := bytes.NewReader(payload)
 	id, err := readUUID(r)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	domainID, err := readUUID(r)
 	if err != nil {
 		return graph.Edge{}, err
 	}
@@ -269,15 +282,31 @@ func decodeEdge(payload []byte) (graph.Edge, error) {
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	kind, err := readString(r)
+	labels, err := readStringSlice(r)
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	props, err := readMap(r)
+	properties, err := readMap(r)
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	return graph.Edge{ID: graph.EdgeID(id), FromID: graph.NodeID(from), ToID: graph.NodeID(to), Kind: graph.EdgeKind(kind), Props: props}, nil
+	edgePayload, err := readMap(r)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	meta, err := readMap(r)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	createdAt, err := readTime(r)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	updatedAt, err := readTime(r)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	return graph.Edge{ID: graph.EdgeID(id), DomainID: graph.DomainID(domainID), FromID: graph.NodeID(from), ToID: graph.NodeID(to), Labels: labels, Properties: properties, Payload: edgePayload, Meta: meta, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }
 
 func writeUUID(b *bytes.Buffer, id uuid.UUID) { b.Write(id[:]) }

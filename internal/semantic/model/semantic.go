@@ -370,11 +370,11 @@ type AdvancedEmbeddingRecord struct {
 }
 
 type GraphDirtyEdgeChange struct {
-	EdgeID graph.EdgeID   `json:"edge_id"`
-	Kind   graph.EdgeKind `json:"kind,omitempty"`
-	Change string         `json:"change"`
-	FromID graph.NodeID   `json:"from_id,omitempty"`
-	ToID   graph.NodeID   `json:"to_id,omitempty"`
+	EdgeID graph.EdgeID `json:"edge_id"`
+	Labels []string     `json:"labels,omitempty"`
+	Change string       `json:"change"`
+	FromID graph.NodeID `json:"from_id,omitempty"`
+	ToID   graph.NodeID `json:"to_id,omitempty"`
 }
 
 // GraphDirtyEvent records one raw graph transaction that may affect semantic indexes.

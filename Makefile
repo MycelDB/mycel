@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto check-daemon-only check-public-surface test test-verbose test-watch coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop api-info
+.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -13,12 +13,41 @@ MYCELD_DATA_DIR = $(HOME)/mycel_data
 MYCELD_GRPC_ADDR = 127.0.0.1:9091
 MYCELD_PID_FILE = $(MYCELD_DATA_DIR)/myceld.pid
 MYCELD_STDOUT_LOG = $(MYCELD_DATA_DIR)/log/myceld.stdout.log
+ANTLR_VERSION ?= 4.13.1
+ANTLR_JAR ?= bin/antlr-$(ANTLR_VERSION)-complete.jar
+ANTLR_DOCKER_IMAGE ?= eclipse-temurin:17-jre
+GQL_GRAMMAR_DIR = internal/query/gql/antlr
+GQL_GENERATED_DIR = $(GQL_GRAMMAR_DIR)/generated
 
 api-info:
 	@echo "Protobuf definitions live in github.com/myceldb/mycel-api; daemon Go stubs are generated locally under internal/gen/."
 
 generate-proto:
 	./scripts/generate-proto.sh
+
+antlr-jar:
+	@mkdir -p bin
+	@test -f $(ANTLR_JAR) || curl -L -o $(ANTLR_JAR) https://www.antlr.org/download/antlr-$(ANTLR_VERSION)-complete.jar
+
+validate-gql-grammar: antlr-jar
+	@command -v java >/dev/null 2>&1 || (echo "java is required to run ANTLR. Install a JRE/JDK and retry." && exit 1)
+	@tmpdir=$$(mktemp -d); \
+	cd $(GQL_GRAMMAR_DIR) && java -jar ../../../../$(ANTLR_JAR) -Dlanguage=Go -Werror -o $$tmpdir MycelGQL.g4; \
+	rm -rf $$tmpdir
+
+generate-gql-parser: antlr-jar
+	@command -v java >/dev/null 2>&1 || (echo "java is required to run ANTLR. Install a JRE/JDK and retry." && exit 1)
+	rm -rf $(GQL_GENERATED_DIR)
+	mkdir -p $(GQL_GENERATED_DIR)
+	cd $(GQL_GRAMMAR_DIR) && java -jar ../../../../$(ANTLR_JAR) -Dlanguage=Go -visitor -no-listener -package generated -o generated MycelGQL.g4
+	gofmt -w $(GQL_GENERATED_DIR)
+
+generate-gql-parser-docker: antlr-jar
+	@command -v docker >/dev/null 2>&1 || (echo "docker is required to run ANTLR generation without local Java." && exit 1)
+	rm -rf $(GQL_GENERATED_DIR)
+	mkdir -p $(GQL_GENERATED_DIR)
+	docker run --rm -u "$$(id -u):$$(id -g)" -v "$$(pwd):/work" -w /work $(ANTLR_DOCKER_IMAGE) sh -c 'cd $(GQL_GRAMMAR_DIR) && java -jar ../../../../$(ANTLR_JAR) -Dlanguage=Go -visitor -no-listener -package generated -o generated MycelGQL.g4'
+	gofmt -w $(GQL_GENERATED_DIR)
 
 check-daemon-only:
 	scripts/check-daemon-only.sh
@@ -131,3 +160,13 @@ stop:
 	kill -9 "$$pid" 2>/dev/null || true; \
 	rm -f "$$pidfile"; \
 	echo "myceld stopped"
+
+reset: stop
+	@set -eu; \
+	datadir="$(MYCELD_DATA_DIR)"; \
+	if [ -z "$$datadir" ] || [ "$$datadir" = "/" ]; then \
+		echo "refusing to remove unsafe data dir: $$datadir"; \
+		exit 1; \
+	fi; \
+	rm -rf "$$datadir"; \
+	echo "removed data dir: $$datadir"

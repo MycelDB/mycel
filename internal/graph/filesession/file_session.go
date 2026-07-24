@@ -132,7 +132,7 @@ func (s *FileSession) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (
 	if in.ID != nil {
 		nodeID = *in.ID
 	}
-	n, err := s.buildNode(ctx, nodes, nodeID, in.TemplateID, in.Content, in.Props)
+	n, err := s.buildNode(ctx, nodes, nodeID, in.TemplateID, in.Content, in.Properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -188,11 +188,15 @@ func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeIn
 	if nodes[idx].BlobRef != nil && in.Content != "" {
 		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", storetemplate.ErrInvalidInput)
 	}
-	n, err := s.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, in.Props)
+	properties := in.Properties
+	if properties == nil {
+		properties = in.Props
+	}
+	n, err := s.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
-	applyNodeShape(&n, in.Labels, in.Properties, in.Payload, in.Meta)
+	applyNodeShape(&n, in.Labels, properties, in.Payload, in.Meta)
 	// Updates never touch the blob reference or domain; replacing blob content or
 	// moving domains are separate operations.
 	n.BlobRef = nodes[idx].BlobRef
@@ -229,7 +233,7 @@ func (s *FileSession) UpdateNodeAndCreateSibling(ctx context.Context, in session
 
 func (s *FileSession) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
-		return s.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+		return s.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Properties})
 	}
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
@@ -245,9 +249,9 @@ func (s *FileSession) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeIn
 		return graph.Node{}, err
 	}
 	if findNodeIndex(nodes, *in.ID) >= 0 {
-		return s.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+		return s.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Properties})
 	}
-	n, err := s.buildNode(ctx, nodes, *in.ID, in.TemplateID, in.Content, in.Props)
+	n, err := s.buildNode(ctx, nodes, *in.ID, in.TemplateID, in.Content, in.Properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -287,7 +291,7 @@ func (s *FileSession) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	if err := s.validateNewEdge(ctx, from, to, in.Kind, edges); err != nil {
+	if err := s.validateNewEdge(ctx, from, to, in.Labels, edges); err != nil {
 		return graph.Edge{}, err
 	}
 	edgeID, err := newGraphUUID()
@@ -297,7 +301,8 @@ func (s *FileSession) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (
 	if in.ID != nil {
 		edgeID = *in.ID
 	}
-	e := graph.Edge{ID: edgeID, FromID: in.FromID, ToID: in.ToID, Kind: in.Kind, Props: copyProps(in.Props)}
+	now := time.Now().UTC()
+	e := graph.Edge{ID: edgeID, DomainID: s.domainID, FromID: in.FromID, ToID: in.ToID, Labels: append([]string(nil), in.Labels...), Properties: copyProps(in.Properties), Payload: copyProps(in.Payload), Meta: copyProps(in.Meta), CreatedAt: now, UpdatedAt: now}
 	if err := s.commitGraph(ctx, nil, []graph.Edge{e}, nil, nil); err != nil {
 		return graph.Edge{}, err
 	}
@@ -416,7 +421,7 @@ func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in
 		for changed {
 			changed = false
 			for _, edge := range edges {
-				if edge.Kind != graph.EdgeKindContains {
+				if !graph.EdgeHasLabels(edge, []string{"contains"}) {
 					continue
 				}
 				if _, parentDeleted := deleteIDs[edge.FromID]; parentDeleted {
@@ -429,7 +434,7 @@ func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in
 		}
 	} else {
 		for _, edge := range edges {
-			if edge.Kind == graph.EdgeKindContains && edge.FromID == in.ID {
+			if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.FromID == in.ID {
 				if s.errors.Conflict != nil {
 					return nil, nil, nil, fmt.Errorf("%w: node has child nodes", s.errors.Conflict)
 				}
@@ -673,16 +678,16 @@ func (s *FileSession) buildGraphChangeEvent(ctx context.Context, store *graphsto
 		change := "added"
 		if old, err := store.GetEdge(ctx, edge.ID); err == nil {
 			change = "updated"
-			if old.Kind == graph.EdgeKindContains && old.ToID == edge.ToID && old.FromID != edge.FromID {
+			if graph.EdgeHasLabels(old, []string{"contains"}) && old.ToID == edge.ToID && old.FromID != edge.FromID {
 				event.OldParentByNodeID[old.ToID] = old.FromID
 			}
 		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
 			return graphchange.CommittedEvent{}, err
 		}
-		if edge.Kind == graph.EdgeKindContains {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) {
 			event.NewParentByNodeID[edge.ToID] = edge.FromID
 		}
-		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: change, FromID: edge.FromID, ToID: edge.ToID})
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Labels: append([]string(nil), edge.Labels...), Change: change, FromID: edge.FromID, ToID: edge.ToID})
 	}
 	for _, id := range deleteEdges {
 		edge, err := store.GetEdge(ctx, id)
@@ -692,10 +697,10 @@ func (s *FileSession) buildGraphChangeEvent(ctx context.Context, store *graphsto
 			}
 			return graphchange.CommittedEvent{}, err
 		}
-		if edge.Kind == graph.EdgeKindContains {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) {
 			event.OldParentByNodeID[edge.ToID] = edge.FromID
 		}
-		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Labels: append([]string(nil), edge.Labels...), Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
 	}
 	for id := range domains {
 		event.DomainIDs = append(event.DomainIDs, id)
@@ -790,8 +795,8 @@ func applyNodeShape(node *graph.Node, labels []string, properties, payload, meta
 	}
 }
 
-func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to graph.Node, kind graph.EdgeKind, edges []graph.Edge) error {
-	if kind != graph.EdgeKindContains {
+func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to graph.Node, labels []string, edges []graph.Edge) error {
+	if !hasEdgeLabel(labels, "contains") {
 		return nil
 	}
 	if from.ID == to.ID {
@@ -801,7 +806,7 @@ func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to g
 		return fmt.Errorf("%w: contains edges cannot cross domains", storetemplate.ErrInvalidInput)
 	}
 	for _, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.ToID == to.ID {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.ToID == to.ID {
 			return fmt.Errorf("%w: node already has a contains parent", storetemplate.ErrInvalidInput)
 		}
 	}
@@ -817,7 +822,7 @@ func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to g
 
 func (s *FileSession) validateIncidentContains(ctx context.Context, node graph.Node, nodes []graph.Node, edges []graph.Edge) error {
 	for _, edge := range edges {
-		if edge.Kind != graph.EdgeKindContains {
+		if !graph.EdgeHasLabels(edge, []string{"contains"}) {
 			continue
 		}
 		if edge.FromID == node.ID {
@@ -879,7 +884,7 @@ func containsPath(edges []graph.Edge, from graph.NodeID, target graph.NodeID) bo
 		}
 		visited[id] = struct{}{}
 		for _, edge := range edges {
-			if edge.Kind == graph.EdgeKindContains && edge.FromID == id {
+			if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.FromID == id {
 				if visit(edge.ToID) {
 					return true
 				}
@@ -1056,7 +1061,7 @@ func changedEdges(original []graph.Edge, candidate []graph.Edge) []graph.Edge {
 }
 
 func edgesEqual(left graph.Edge, right graph.Edge) bool {
-	return left.ID == right.ID && left.FromID == right.FromID && left.ToID == right.ToID && left.Kind == right.Kind && reflect.DeepEqual(left.Props, right.Props)
+	return left.ID == right.ID && left.FromID == right.FromID && left.ToID == right.ToID && reflect.DeepEqual(left.Labels, right.Labels) && reflect.DeepEqual(left.Properties, right.Properties) && reflect.DeepEqual(left.Payload, right.Payload) && reflect.DeepEqual(left.Meta, right.Meta)
 }
 
 func deletedEdges(original []graph.Edge, remaining []graph.Edge) []graph.EdgeID {
@@ -1130,10 +1135,22 @@ func cloneNodes(nodes []graph.Node) []graph.Node {
 func cloneEdges(edges []graph.Edge) []graph.Edge {
 	out := make([]graph.Edge, 0, len(edges))
 	for _, edge := range edges {
-		edge.Props = copyProps(edge.Props)
+		edge.Labels = append([]string(nil), edge.Labels...)
+		edge.Properties = copyProps(edge.Properties)
+		edge.Payload = copyProps(edge.Payload)
+		edge.Meta = copyProps(edge.Meta)
 		out = append(out, edge)
 	}
 	return out
+}
+
+func hasEdgeLabel(labels []string, label string) bool {
+	for _, candidate := range labels {
+		if candidate == label {
+			return true
+		}
+	}
+	return false
 }
 
 func safeID(id domainspace.SpaceID) string {

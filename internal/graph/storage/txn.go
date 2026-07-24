@@ -214,7 +214,7 @@ func (t *localTxn) invariantConflict() (string, bool) {
 				return edge.ID.String(), true
 			}
 		}
-		if edge.Kind == graph.EdgeKindContains {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) {
 			if existing, ok := containsChild[edge.ToID]; ok && existing != edge.ID {
 				return edge.ToID.String(), true
 			}

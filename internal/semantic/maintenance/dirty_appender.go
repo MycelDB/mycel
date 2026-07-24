@@ -52,7 +52,7 @@ func DirtyEventFromGraphCommit(event graphchange.CommittedEvent) domainsemantic.
 		out.CommittedAt = time.Now().UTC()
 	}
 	for _, edge := range event.ChangedEdges {
-		out.ChangedEdges = append(out.ChangedEdges, domainsemantic.GraphDirtyEdgeChange{EdgeID: edge.EdgeID, Kind: edge.Kind, Change: edge.Change, FromID: edge.FromID, ToID: edge.ToID})
+		out.ChangedEdges = append(out.ChangedEdges, domainsemantic.GraphDirtyEdgeChange{EdgeID: edge.EdgeID, Labels: append([]string(nil), edge.Labels...), Change: edge.Change, FromID: edge.FromID, ToID: edge.ToID})
 	}
 	return out
 }

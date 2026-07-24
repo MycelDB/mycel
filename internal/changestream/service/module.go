@@ -319,9 +319,10 @@ func cloneGraphChanges(in []GraphChange) []GraphChange {
 		}
 		if change.Edge != nil {
 			edge := *change.Edge
-			if change.Edge.Props != nil {
-				edge.Props = cloneMap(change.Edge.Props)
-			}
+			edge.Labels = append([]string(nil), change.Edge.Labels...)
+			edge.Properties = cloneMap(change.Edge.Properties)
+			edge.Payload = cloneMap(change.Edge.Payload)
+			edge.Meta = cloneMap(change.Edge.Meta)
 			copy.Edge = &edge
 		}
 		out = append(out, copy)

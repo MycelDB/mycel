@@ -142,7 +142,7 @@ func TestAnalyzerMoveDirtiesOldAndNewSubtreeTargets(t *testing.T) {
 		parents:   map[graph.NodeID]graph.NodeID{childID: newRootID},
 		templates: []graph.Template{{ID: rootTmplID, SpaceID: spaceID, Key: "page"}, {ID: childTmplID, SpaceID: spaceID, Key: "block"}},
 	}
-	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, ChangedEdges: []domainsemantic.GraphDirtyEdgeChange{{Kind: graph.EdgeKindContains, Change: "updated", FromID: newRootID, ToID: childID}}, OldParentByNodeID: map[graph.NodeID]graph.NodeID{childID: oldRootID}, NewParentByNodeID: map[graph.NodeID]graph.NodeID{childID: newRootID}, CommittedAt: time.Now().UTC()}); err != nil {
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, ChangedEdges: []domainsemantic.GraphDirtyEdgeChange{{Labels: []string{"contains"}, Change: "updated", FromID: newRootID, ToID: childID}}, OldParentByNodeID: map[graph.NodeID]graph.NodeID{childID: oldRootID}, NewParentByNodeID: map[graph.NodeID]graph.NodeID{childID: newRootID}, CommittedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("append move event failed: %v", err)
 	}
 	res, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}).AnalyzeOnce(ctx, AnalyzeInput{})
@@ -275,7 +275,7 @@ func (r fakeGraphReader) Parent(_ context.Context, childID graph.NodeID) (*graph
 	if !ok || parentID == uuid.Nil {
 		return nil, nil
 	}
-	return &graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parentID, ToID: childID, Kind: graph.EdgeKindContains}, nil
+	return &graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parentID, ToID: childID, Labels: []string{"contains"}}, nil
 }
 
 func (r fakeGraphReader) ListTemplates(context.Context) ([]graph.Template, error) {
