@@ -9,7 +9,7 @@ ARG ALPINE_VERSION=3.21
 
 FROM golang:${GO_VERSION}-alpine AS builder
 
-RUN apk add --no-cache bash ca-certificates git openjdk17-jre
+RUN apk add --no-cache bash ca-certificates git make openjdk17-jre
 
 WORKDIR /src
 
