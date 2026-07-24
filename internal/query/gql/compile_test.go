@@ -99,3 +99,20 @@ func TestCompileRejectsInvalidGQL(t *testing.T) {
 		t.Fatal("Compile() error = nil, want syntax error")
 	}
 }
+
+func TestCompileMatchWhereProducesPlan(t *testing.T) {
+	plan, err := Compile("MATCH (p:Person) WHERE p.firstName = 'Alice' AND p.lastName = 'Jones' RETURN p")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	want := planmodel.Plan{
+		AccessMode: analysis.ReadOnly,
+		Operations: []planmodel.Operation{
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+		},
+	}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Compile() = %#v, want %#v", plan, want)
+	}
+}

@@ -112,3 +112,60 @@ func TestAnalyzeRejectsInvalidInsertNodeAST(t *testing.T) {
 		})
 	}
 }
+
+func TestAnalyzeMatchWhereAST(t *testing.T) {
+	query := model.Query{Statement: model.MatchStatement{
+		Pattern: model.NodePattern{Variable: "p", Labels: []string{"Person"}},
+		Where: &model.WhereClause{Predicates: []model.PropertyComparison{
+			{Variable: "p", Property: "firstName", Value: model.Value{Kind: model.StringValue, Value: "Alice"}},
+			{Variable: "p", Property: "lastName", Value: model.Value{Kind: model.StringValue, Value: "Jones"}},
+		}},
+		Returns: []model.ReturnItem{{Variable: "p"}},
+	}}
+
+	analysis, err := Analyze(query)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if analysis.AccessMode != ReadOnly {
+		t.Fatalf("Analyze().AccessMode = %q, want %q", analysis.AccessMode, ReadOnly)
+	}
+}
+
+func TestAnalyzeRejectsInvalidWhereAST(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   model.Query
+		wantErr string
+	}{
+		{
+			name: "undefined where variable",
+			query: model.Query{Statement: model.MatchStatement{
+				Pattern: model.NodePattern{Variable: "p", Labels: []string{"Person"}},
+				Where:   &model.WhereClause{Predicates: []model.PropertyComparison{{Variable: "q", Property: "firstName", Value: model.Value{Kind: model.StringValue, Value: "Alice"}}}},
+				Returns: []model.ReturnItem{{Variable: "p"}},
+			}},
+			wantErr: "where variable \"q\" is not defined",
+		},
+		{
+			name: "invalid where value",
+			query: model.Query{Statement: model.MatchStatement{
+				Pattern: model.NodePattern{Variable: "p", Labels: []string{"Person"}},
+				Where:   &model.WhereClause{Predicates: []model.PropertyComparison{{Variable: "p", Property: "age", Value: model.Value{Kind: model.IntValue, Value: 42}}}},
+				Returns: []model.ReturnItem{{Variable: "p"}},
+			}},
+			wantErr: "int value kind requires int64 payload",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Analyze(tt.query)
+			if err == nil {
+				t.Fatal("Analyze() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Analyze() error = %q, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}

@@ -74,3 +74,44 @@ func TestPlannerRejectsMissingStatement(t *testing.T) {
 		t.Fatal("Plan() error = nil, want error")
 	}
 }
+
+func TestPlannerPlansMatchWhereAnalysis(t *testing.T) {
+	a := analysis.Analysis{
+		AccessMode: analysis.ReadOnly,
+		Query: ast.Query{Statement: ast.MatchStatement{
+			Pattern: ast.NodePattern{Variable: "p", Labels: []string{"Person"}, Properties: []ast.Property{{Key: "firstName", Value: ast.Value{Kind: ast.StringValue, Value: "Alice"}}}},
+			Where:   &ast.WhereClause{Predicates: []ast.PropertyComparison{{Variable: "p", Property: "lastName", Value: ast.Value{Kind: ast.StringValue, Value: "Jones"}}}},
+			Returns: []ast.ReturnItem{{Variable: "p"}},
+		}},
+	}
+
+	plan, err := Plan(a)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	want := planmodel.Plan{
+		AccessMode: analysis.ReadOnly,
+		Operations: []planmodel.Operation{
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+		},
+	}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Plan() = %#v, want %#v", plan, want)
+	}
+}
+
+func TestPlannerRejectsConflictingInlineAndWhereProperty(t *testing.T) {
+	a := analysis.Analysis{
+		AccessMode: analysis.ReadOnly,
+		Query: ast.Query{Statement: ast.MatchStatement{
+			Pattern: ast.NodePattern{Variable: "p", Labels: []string{"Person"}, Properties: []ast.Property{{Key: "firstName", Value: ast.Value{Kind: ast.StringValue, Value: "Alice"}}}},
+			Where:   &ast.WhereClause{Predicates: []ast.PropertyComparison{{Variable: "p", Property: "firstName", Value: ast.Value{Kind: ast.StringValue, Value: "John"}}}},
+			Returns: []ast.ReturnItem{{Variable: "p"}},
+		}},
+	}
+
+	_, err := Plan(a)
+	if err == nil {
+		t.Fatal("Plan() error = nil, want conflict error")
+	}
+}

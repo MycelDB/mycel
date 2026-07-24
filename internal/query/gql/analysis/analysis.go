@@ -97,6 +97,25 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 			return fmt.Errorf("return variable %q is not defined", ret.Variable)
 		}
 	}
+	if stmt.Where != nil {
+		if len(stmt.Where.Predicates) == 0 {
+			return fmt.Errorf("where clause requires at least one predicate")
+		}
+		for _, predicate := range stmt.Where.Predicates {
+			if predicate.Variable == "" {
+				return fmt.Errorf("where predicate variable cannot be empty")
+			}
+			if predicate.Variable != stmt.Pattern.Variable {
+				return fmt.Errorf("where variable %q is not defined", predicate.Variable)
+			}
+			if predicate.Property == "" {
+				return fmt.Errorf("where property cannot be empty")
+			}
+			if err := analyzeValue(predicate.Value); err != nil {
+				return fmt.Errorf("where property %q: %w", predicate.Property, err)
+			}
+		}
+	}
 	seenProperties := map[string]struct{}{}
 	for _, prop := range stmt.Pattern.Properties {
 		if prop.Key == "" {

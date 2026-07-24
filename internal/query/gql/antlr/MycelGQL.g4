@@ -5,6 +5,7 @@
 //
 //   INSERT (:Person {name: 'Alice', age: 42})
 //   MATCH (p:Person {name: 'Alice'}) RETURN p
+//   MATCH (p:Person) WHERE p.name = 'Alice' RETURN p
 //
 // This is not a complete ISO GQL grammar. Extend it clause by clause as Mycel's
 // query execution support grows.
@@ -24,7 +25,19 @@ insertStatement
   ;
 
 matchStatement
-  : MATCH nodePattern RETURN returnItem (COMMA returnItem)*
+  : MATCH nodePattern whereClause? RETURN returnItem (COMMA returnItem)*
+  ;
+
+whereClause
+  : WHERE predicate
+  ;
+
+predicate
+  : propertyComparison (AND propertyComparison)*
+  ;
+
+propertyComparison
+  : IDENTIFIER DOT IDENTIFIER EQ value
   ;
 
 returnItem
@@ -70,7 +83,9 @@ value
 
 INSERT : [Ii] [Nn] [Ss] [Ee] [Rr] [Tt];
 MATCH  : [Mm] [Aa] [Tt] [Cc] [Hh];
+WHERE  : [Ww] [Hh] [Ee] [Rr] [Ee];
 RETURN : [Rr] [Ee] [Tt] [Uu] [Rr] [Nn];
+AND    : [Aa] [Nn] [Dd];
 TRUE   : [Tt] [Rr] [Uu] [Ee];
 FALSE  : [Ff] [Aa] [Ll] [Ss] [Ee];
 NULL   : [Nn] [Uu] [Ll] [Ll];
@@ -81,6 +96,8 @@ LBRACE : '{';
 RBRACE : '}';
 COLON  : ':';
 COMMA  : ',';
+DOT    : '.';
+EQ     : '=';
 
 FLOAT
   : '-'? DIGIT+ '.' DIGIT+

@@ -21,10 +21,23 @@ func (InsertStatement) statement() {}
 // MatchStatement represents a GQL MATCH ... RETURN statement.
 type MatchStatement struct {
 	Pattern NodePattern
+	Where   *WhereClause
 	Returns []ReturnItem
 }
 
 func (MatchStatement) statement() {}
+
+// WhereClause represents a conjunction of property predicates.
+type WhereClause struct {
+	Predicates []PropertyComparison
+}
+
+// PropertyComparison represents a variable.property = value predicate.
+type PropertyComparison struct {
+	Variable string
+	Property string
+	Value    Value
+}
 
 // ReturnItem represents one returned variable or expression.
 type ReturnItem struct {

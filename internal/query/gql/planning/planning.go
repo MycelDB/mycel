@@ -3,6 +3,7 @@ package planning
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	ast "github.com/myceldb/mycel/internal/query/gql/ast/model"
@@ -25,7 +26,7 @@ func (planner) Plan(a analysis.Analysis) (planmodel.Plan, error) {
 	case ast.InsertStatement:
 		return planInsertStatement(a, stmt), nil
 	case ast.MatchStatement:
-		return planMatchStatement(a, stmt), nil
+		return planMatchStatement(a, stmt)
 	case nil:
 		return planmodel.Plan{}, fmt.Errorf("query statement is required")
 	default:
@@ -33,10 +34,19 @@ func (planner) Plan(a analysis.Analysis) (planmodel.Plan, error) {
 	}
 }
 
-func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) planmodel.Plan {
+func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel.Plan, error) {
 	properties := make(map[string]any, len(stmt.Pattern.Properties))
 	for _, prop := range stmt.Pattern.Properties {
 		properties[prop.Key] = prop.Value.Value
+	}
+	if stmt.Where != nil {
+		for _, predicate := range stmt.Where.Predicates {
+			value := predicate.Value.Value
+			if existing, ok := properties[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
+				return planmodel.Plan{}, fmt.Errorf("conflicting values for property %q", predicate.Property)
+			}
+			properties[predicate.Property] = value
+		}
 	}
 	returns := make([]planmodel.ReturnItem, 0, len(stmt.Returns))
 	for _, ret := range stmt.Returns {
@@ -52,7 +62,7 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) planmodel.
 				Returns:    returns,
 			},
 		},
-	}
+	}, nil
 }
 
 func planInsertStatement(a analysis.Analysis, stmt ast.InsertStatement) planmodel.Plan {

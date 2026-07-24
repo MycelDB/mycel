@@ -71,3 +71,59 @@ func TestQueryNodesCommandUsesDaemonGRPC(t *testing.T) {
 		t.Fatalf("commit failed: %v\n%s", err, out)
 	}
 }
+
+func TestQueryGQLWhereCommandUsesDaemonGRPC(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	createTestUser(t, addr, adminPassword, "gql-user", "gql-pass")
+	out, err := runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "space", "add", "GQL Space", "--owner-username", "gql-user")
+	if err != nil {
+		t.Fatalf("space add failed: %v\n%s", err, out)
+	}
+	var createdSpace adminv1.CreateSpaceResponse
+	if err := json.Unmarshal([]byte(out), &createdSpace); err != nil {
+		t.Fatalf("decode space add: %v\n%s", err, out)
+	}
+	spaceID := createdSpace.GetSpace().GetSpaceId()
+	base := []string{"--daemon-addr", addr, "-u", "gql-user", "-p", "gql-pass", "--output", "json"}
+	for _, query := range []string{
+		"INSERT (:Person {firstName: 'Alice', lastName: 'Jones'})",
+		"INSERT (:Person {firstName: 'Alice', lastName: 'Brown'})",
+	} {
+		if out, err = runCLI(t, append(base, "query", "gql", "--space-id", spaceID, query)...); err != nil {
+			t.Fatalf("gql insert failed: %v\n%s", err, out)
+		}
+	}
+	tests := []struct {
+		name     string
+		query    string
+		wantRows int
+	}{
+		{name: "Alice Jones", query: "MATCH (p:Person) WHERE p.firstName = 'Alice' AND p.lastName = 'Jones' RETURN p", wantRows: 1},
+		{name: "Alice", query: "MATCH (p:Person) WHERE p.firstName = 'Alice' RETURN p", wantRows: 2},
+		{name: "John", query: "MATCH (p:Person) WHERE p.firstName = 'John' RETURN p", wantRows: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := runCLI(t, append(base, "query", "gql", "--space-id", spaceID, tt.query)...)
+			if err != nil {
+				t.Fatalf("gql match failed: %v\n%s", err, out)
+			}
+			rows := gqlResultRows(t, out)
+			if len(rows) != tt.wantRows {
+				t.Fatalf("rows = %d, want %d; raw=%s", len(rows), tt.wantRows, out)
+			}
+		})
+	}
+}
+
+func gqlResultRows(t *testing.T, raw string) []any {
+	t.Helper()
+	var res map[string]any
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatalf("decode gql response: %v\n%s", err, raw)
+	}
+	result, _ := res["result"].(map[string]any)
+	rows, _ := result["Rows"].([]any)
+	return rows
+}

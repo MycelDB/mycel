@@ -60,6 +60,14 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 	if err != nil {
 		return model.Query{}, err
 	}
+	var where *model.WhereClause
+	if whereCtx := matchCtx.WhereClause(); whereCtx != nil {
+		built, err := buildWhereClause(whereCtx)
+		if err != nil {
+			return model.Query{}, err
+		}
+		where = &built
+	}
 	returns := make([]model.ReturnItem, 0, len(matchCtx.AllReturnItem()))
 	for _, item := range matchCtx.AllReturnItem() {
 		returnCtx, ok := item.(*generated.ReturnItemContext)
@@ -72,7 +80,39 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 		}
 		returns = append(returns, model.ReturnItem{Variable: variableCtx.IDENTIFIER().GetText()})
 	}
-	return model.Query{Statement: model.MatchStatement{Pattern: node, Returns: returns}}, nil
+	return model.Query{Statement: model.MatchStatement{Pattern: node, Where: where, Returns: returns}}, nil
+}
+
+func buildWhereClause(ctx generated.IWhereClauseContext) (model.WhereClause, error) {
+	whereCtx, ok := ctx.(*generated.WhereClauseContext)
+	if !ok || whereCtx.Predicate() == nil {
+		return model.WhereClause{}, fmt.Errorf("invalid where clause")
+	}
+	predicateCtx, ok := whereCtx.Predicate().(*generated.PredicateContext)
+	if !ok {
+		return model.WhereClause{}, fmt.Errorf("invalid predicate")
+	}
+	where := model.WhereClause{Predicates: make([]model.PropertyComparison, 0, len(predicateCtx.AllPropertyComparison()))}
+	for _, comparison := range predicateCtx.AllPropertyComparison() {
+		built, err := buildPropertyComparison(comparison)
+		if err != nil {
+			return model.WhereClause{}, err
+		}
+		where.Predicates = append(where.Predicates, built)
+	}
+	return where, nil
+}
+
+func buildPropertyComparison(ctx generated.IPropertyComparisonContext) (model.PropertyComparison, error) {
+	comparisonCtx, ok := ctx.(*generated.PropertyComparisonContext)
+	if !ok || len(comparisonCtx.AllIDENTIFIER()) != 2 || comparisonCtx.Value() == nil {
+		return model.PropertyComparison{}, fmt.Errorf("invalid property comparison")
+	}
+	value, err := buildValue(comparisonCtx.Value())
+	if err != nil {
+		return model.PropertyComparison{}, err
+	}
+	return model.PropertyComparison{Variable: comparisonCtx.IDENTIFIER(0).GetText(), Property: comparisonCtx.IDENTIFIER(1).GetText(), Value: value}, nil
 }
 
 func buildNodePattern(ctx generated.INodePatternContext) (model.NodePattern, error) {

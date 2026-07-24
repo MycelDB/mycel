@@ -56,3 +56,27 @@ func TestBuilderBuildsMatchReturnNodeAST(t *testing.T) {
 		t.Fatalf("Build() = %#v, want %#v", query, want)
 	}
 }
+
+func TestBuilderBuildsMatchWhereAST(t *testing.T) {
+	tree, err := gqlantlr.Parse("MATCH (p:Person) WHERE p.firstName = 'Alice' AND p.lastName = 'Jones' RETURN p")
+	if err != nil {
+		t.Fatalf("antlr.Parse() error = %v", err)
+	}
+
+	query, err := Build(tree)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	want := model.Query{Statement: model.MatchStatement{
+		Pattern: model.NodePattern{Variable: "p", Labels: []string{"Person"}},
+		Where: &model.WhereClause{Predicates: []model.PropertyComparison{
+			{Variable: "p", Property: "firstName", Value: model.Value{Kind: model.StringValue, Value: "Alice"}},
+			{Variable: "p", Property: "lastName", Value: model.Value{Kind: model.StringValue, Value: "Jones"}},
+		}},
+		Returns: []model.ReturnItem{{Variable: "p"}},
+	}}
+	if !reflect.DeepEqual(query, want) {
+		t.Fatalf("Build() = %#v, want %#v", query, want)
+	}
+}

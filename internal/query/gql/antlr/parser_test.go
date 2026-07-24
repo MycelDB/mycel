@@ -28,3 +28,13 @@ func TestParserRejectsInvalidGQL(t *testing.T) {
 		t.Fatal("Parse() error = nil, want syntax error")
 	}
 }
+
+func TestParserParsesMatchWhereReturnNode(t *testing.T) {
+	tree, err := Parse("MATCH (p:Person) WHERE p.firstName = 'Alice' AND p.lastName = 'Jones' RETURN p")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}

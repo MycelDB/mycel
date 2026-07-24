@@ -422,10 +422,16 @@ func (e *queryExecution) customProperty(row *queryRowState, alias string, name s
 			return nil, false, nil
 		}
 	}
-	value, ok := props[want]
+	value, ok := props[name]
+	if !ok {
+		value, ok = props[want]
+	}
 	if !ok {
 		if nested, err := domaingraph.NormalizeCustomPropertiesValue(props[domaingraph.NodePropCustomProperties]); err == nil {
-			value, ok = nested[want]
+			value, ok = nested[name]
+			if !ok {
+				value, ok = nested[want]
+			}
 		}
 	}
 	return value, ok, nil
