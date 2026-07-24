@@ -25,7 +25,21 @@ insertStatement
   ;
 
 matchStatement
-  : MATCH nodePattern whereClause? RETURN returnItem (COMMA returnItem)* fetchFirstClause?
+  : MATCH matchPattern whereClause? RETURN returnItem (COMMA returnItem)* fetchFirstClause?
+  ;
+
+matchPattern
+  : nodePattern (relationshipPattern nodePattern)?
+  ;
+
+relationshipPattern
+  : MINUS edgePattern? MINUS GT
+  | LT MINUS edgePattern? MINUS
+  | MINUS edgePattern? MINUS
+  ;
+
+edgePattern
+  : LBRACK variable? labelExpression? propertyMap? RBRACK
   ;
 
 whereClause
@@ -113,10 +127,15 @@ LPAREN : '(';
 RPAREN : ')';
 LBRACE : '{';
 RBRACE : '}';
+LBRACK : '[';
+RBRACK : ']';
 COLON  : ':';
 COMMA  : ',';
 DOT    : '.';
 EQ     : '=';
+MINUS  : '-';
+LT     : '<';
+GT     : '>';
 
 FLOAT
   : '-'? DIGIT+ '.' DIGIT+

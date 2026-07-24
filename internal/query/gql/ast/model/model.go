@@ -20,10 +20,15 @@ func (InsertStatement) statement() {}
 
 // MatchStatement represents a GQL MATCH ... RETURN statement.
 type MatchStatement struct {
-	Pattern    NodePattern
-	Where      *WhereClause
-	Returns    []ReturnItem
-	FetchFirst *FetchFirstClause
+	// Pattern is the starting node pattern. It is retained for the initial
+	// node-only planning/execution pipeline.
+	Pattern NodePattern
+	// MatchPattern contains the full matched graph pattern, including an
+	// optional relationship pattern and target node.
+	MatchPattern MatchPattern
+	Where        *WhereClause
+	Returns      []ReturnItem
+	FetchFirst   *FetchFirstClause
 }
 
 func (MatchStatement) statement() {}
@@ -57,6 +62,31 @@ type ReturnItem struct {
 	Kind     ReturnItemKind
 	Variable string
 	Property string
+}
+
+// MatchPattern represents a GQL graph pattern. The initial edge-capable shape
+// supports one node or one node-edge-node path.
+type MatchPattern struct {
+	Start        NodePattern
+	Relationship *RelationshipPattern
+	End          *NodePattern
+}
+
+// RelationshipDirection describes how a relationship pattern is matched.
+type RelationshipDirection string
+
+const (
+	RelationshipOutgoing   RelationshipDirection = "outgoing"
+	RelationshipIncoming   RelationshipDirection = "incoming"
+	RelationshipUndirected RelationshipDirection = "undirected"
+)
+
+// RelationshipPattern represents an edge pattern inside a MATCH pattern.
+type RelationshipPattern struct {
+	Variable   string
+	Labels     []string
+	Properties []Property
+	Direction  RelationshipDirection
 }
 
 // NodePattern represents a node pattern inside a GQL statement.

@@ -53,13 +53,14 @@ func buildInsertStatement(ctx generated.IInsertStatementContext) (model.Query, e
 
 func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, error) {
 	matchCtx, ok := ctx.(*generated.MatchStatementContext)
-	if !ok || matchCtx.NodePattern() == nil {
+	if !ok || matchCtx.MatchPattern() == nil {
 		return model.Query{}, fmt.Errorf("expected match statement")
 	}
-	node, err := buildNodePattern(matchCtx.NodePattern())
+	matchPattern, err := buildMatchPattern(matchCtx.MatchPattern())
 	if err != nil {
 		return model.Query{}, err
 	}
+	node := matchPattern.Start
 	var where *model.WhereClause
 	if whereCtx := matchCtx.WhereClause(); whereCtx != nil {
 		built, err := buildWhereClause(whereCtx)
@@ -88,7 +89,103 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 		}
 		returns = append(returns, built)
 	}
-	return model.Query{Statement: model.MatchStatement{Pattern: node, Where: where, Returns: returns, FetchFirst: fetchFirst}}, nil
+	stmt := model.MatchStatement{Pattern: node, Where: where, Returns: returns, FetchFirst: fetchFirst}
+	if matchPattern.Relationship != nil {
+		stmt.MatchPattern = matchPattern
+	}
+	return model.Query{Statement: stmt}, nil
+}
+
+func buildMatchPattern(ctx generated.IMatchPatternContext) (model.MatchPattern, error) {
+	patternCtx, ok := ctx.(*generated.MatchPatternContext)
+	if !ok || len(patternCtx.AllNodePattern()) == 0 {
+		return model.MatchPattern{}, fmt.Errorf("invalid match pattern")
+	}
+	start, err := buildNodePattern(patternCtx.NodePattern(0))
+	if err != nil {
+		return model.MatchPattern{}, err
+	}
+	out := model.MatchPattern{Start: start}
+	if relCtx := patternCtx.RelationshipPattern(); relCtx != nil {
+		rel, err := buildRelationshipPattern(relCtx)
+		if err != nil {
+			return model.MatchPattern{}, err
+		}
+		out.Relationship = &rel
+		if len(patternCtx.AllNodePattern()) != 2 {
+			return model.MatchPattern{}, fmt.Errorf("relationship pattern requires target node")
+		}
+		end, err := buildNodePattern(patternCtx.NodePattern(1))
+		if err != nil {
+			return model.MatchPattern{}, err
+		}
+		out.End = &end
+	}
+	return out, nil
+}
+
+func buildRelationshipPattern(ctx generated.IRelationshipPatternContext) (model.RelationshipPattern, error) {
+	relCtx, ok := ctx.(*generated.RelationshipPatternContext)
+	if !ok {
+		return model.RelationshipPattern{}, fmt.Errorf("invalid relationship pattern")
+	}
+	rel := model.RelationshipPattern{Direction: model.RelationshipUndirected}
+	if relCtx.GT() != nil {
+		rel.Direction = model.RelationshipOutgoing
+	} else if relCtx.LT() != nil {
+		rel.Direction = model.RelationshipIncoming
+	}
+	if edge := relCtx.EdgePattern(); edge != nil {
+		built, err := buildEdgePattern(edge)
+		if err != nil {
+			return model.RelationshipPattern{}, err
+		}
+		built.Direction = rel.Direction
+		rel = built
+	}
+	return rel, nil
+}
+
+func buildEdgePattern(ctx generated.IEdgePatternContext) (model.RelationshipPattern, error) {
+	edgeCtx, ok := ctx.(*generated.EdgePatternContext)
+	if !ok {
+		return model.RelationshipPattern{}, fmt.Errorf("invalid edge pattern")
+	}
+	var edge model.RelationshipPattern
+	if variable := edgeCtx.Variable(); variable != nil {
+		v, ok := variable.(*generated.VariableContext)
+		if !ok || v.IDENTIFIER() == nil {
+			return model.RelationshipPattern{}, fmt.Errorf("invalid edge variable")
+		}
+		edge.Variable = v.IDENTIFIER().GetText()
+	}
+	if labels := edgeCtx.LabelExpression(); labels != nil {
+		labelCtx, ok := labels.(*generated.LabelExpressionContext)
+		if !ok {
+			return model.RelationshipPattern{}, fmt.Errorf("invalid edge label expression")
+		}
+		for _, label := range labelCtx.AllLabelName() {
+			nameCtx, ok := label.(*generated.LabelNameContext)
+			if !ok || nameCtx.IDENTIFIER() == nil {
+				return model.RelationshipPattern{}, fmt.Errorf("invalid edge label name")
+			}
+			edge.Labels = append(edge.Labels, nameCtx.IDENTIFIER().GetText())
+		}
+	}
+	if props := edgeCtx.PropertyMap(); props != nil {
+		propCtx, ok := props.(*generated.PropertyMapContext)
+		if !ok {
+			return model.RelationshipPattern{}, fmt.Errorf("invalid edge property map")
+		}
+		for _, pair := range propCtx.AllPropertyPair() {
+			prop, err := buildPropertyPair(pair)
+			if err != nil {
+				return model.RelationshipPattern{}, err
+			}
+			edge.Properties = append(edge.Properties, prop)
+		}
+	}
+	return edge, nil
 }
 
 func buildFetchFirstClause(ctx generated.IFetchFirstClauseContext) (model.FetchFirstClause, error) {

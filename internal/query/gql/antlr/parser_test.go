@@ -39,6 +39,32 @@ func TestParserParsesMatchWhereReturnNode(t *testing.T) {
 	}
 }
 
+func TestParserParsesDirectedRelationshipPattern(t *testing.T) {
+	tree, err := Parse("MATCH (a:Note)-[r:REFERENCES {confidence: 0.9}]->(b:Note) RETURN a, r, b")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}
+
+func TestParserParsesIncomingAndUndirectedRelationshipPatterns(t *testing.T) {
+	for _, query := range []string{
+		"MATCH (a)<-[r:REFERENCES]-(b) RETURN r",
+		"MATCH (a)-[r:RELATED_TO]-(b) RETURN r",
+		"MATCH (a)-->(b) RETURN a, b",
+	} {
+		tree, err := Parse(query)
+		if err != nil {
+			t.Fatalf("Parse(%q) error = %v", query, err)
+		}
+		if tree == nil {
+			t.Fatalf("Parse(%q) tree = nil", query)
+		}
+	}
+}
+
 func TestParserParsesFetchFirst(t *testing.T) {
 	tree, err := Parse("MATCH (p:Person) RETURN p FETCH FIRST 10 ROWS ONLY")
 	if err != nil {
