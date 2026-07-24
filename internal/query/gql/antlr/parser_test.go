@@ -39,6 +39,16 @@ func TestParserParsesMatchWhereReturnNode(t *testing.T) {
 	}
 }
 
+func TestParserParsesMatchCreateRelationship(t *testing.T) {
+	tree, err := Parse("MATCH (martin:Person {firstName: 'Martin'}), (ivy:Person {firstName: 'Ivy'}) CREATE (martin)-[:Spouse]->(ivy)")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}
+
 func TestParserParsesDirectedRelationshipPattern(t *testing.T) {
 	tree, err := Parse("MATCH (a:Note)-[r:REFERENCES {confidence: 0.9}]->(b:Note) RETURN a, r, b")
 	if err != nil {

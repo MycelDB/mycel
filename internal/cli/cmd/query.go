@@ -168,6 +168,19 @@ func (w daemonGraphWriter) InsertNode(ctx context.Context, node execution.Insert
 	return execmodel.NodeRef{ID: res.GetNode().GetNodeId()}, nil
 }
 
+func (w daemonGraphWriter) CreateEdge(ctx context.Context, edge execution.CreateEdge) (execmodel.Edge, error) {
+	props, err := structpb.NewStruct(copyGQLProperties(edge.Properties))
+	if err != nil {
+		return execmodel.Edge{}, err
+	}
+	res, err := w.graphClient.CreateEdge(ctx, &clientv1.CreateEdgeRequest{TransactionId: w.transactionID, Edge: &clientv1.EdgeCreate{FromNodeId: edge.FromNodeID, ToNodeId: edge.ToNodeID, Labels: append([]string(nil), edge.Labels...), Properties: props}})
+	if err != nil {
+		return execmodel.Edge{}, err
+	}
+	created := res.GetEdge()
+	return execmodel.Edge{ID: created.GetEdgeId(), DomainID: created.GetDomainId(), FromID: created.GetFromNodeId(), ToID: created.GetToNodeId(), Labels: created.GetLabels(), Properties: created.GetProperties().AsMap()}, nil
+}
+
 func (w daemonGraphWriter) QueryPattern(ctx context.Context, query execution.QueryPattern) ([]execution.PatternRow, error) {
 	return nil, fmt.Errorf("CLI local GQL relationship execution is not supported yet; use daemon ExecuteGQL")
 }

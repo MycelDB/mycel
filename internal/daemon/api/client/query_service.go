@@ -598,6 +598,14 @@ func (g gqlDaemonGraph) InsertNode(ctx context.Context, node execution.InsertNod
 	return execmodel.NodeRef{ID: created.ID.String()}, nil
 }
 
+func (g gqlDaemonGraph) CreateEdge(ctx context.Context, edge execution.CreateEdge) (execmodel.Edge, error) {
+	created, err := g.service.graphs.CreateEdge(ctx, g.tx, daegraph.EdgeInput{FromNodeID: edge.FromNodeID, ToNodeID: edge.ToNodeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload), Meta: copyMapAny(edge.Meta)})
+	if err != nil {
+		return execmodel.Edge{}, err
+	}
+	return gqlExecEdge(created), nil
+}
+
 func (g gqlDaemonGraph) QueryNodes(ctx context.Context, query execution.QueryNodes) ([]execmodel.Node, error) {
 	nodes, err := g.service.allNodes(ctx, g.tx)
 	if err != nil {
@@ -712,7 +720,7 @@ func queryResultFromRows(rows []*clientv1.QueryRow, next string) *clientv1.Query
 }
 
 func queryResultFromRowsWithCounters(rows []*clientv1.QueryRow, next string, counters execmodel.Counters) *clientv1.QueryResult {
-	return &clientv1.QueryResult{Rows: rows, NextPageToken: next, Graph: graphFromRows(rows), Counters: &clientv1.QueryCounters{RowsReturned: int32(len(rows)), NodesInserted: int32(counters.NodesInserted)}}
+	return &clientv1.QueryResult{Rows: rows, NextPageToken: next, Graph: graphFromRows(rows), Counters: &clientv1.QueryCounters{RowsReturned: int32(len(rows)), NodesInserted: int32(counters.NodesInserted), EdgesInserted: int32(counters.EdgesInserted)}}
 }
 
 func graphFromRows(rows []*clientv1.QueryRow) *clientv1.ResultGraph {

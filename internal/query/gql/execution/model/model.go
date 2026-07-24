@@ -11,6 +11,7 @@ type Result struct {
 // Counters summarizes mutations performed by a query.
 type Counters struct {
 	NodesInserted int
+	EdgesInserted int
 }
 
 type Row map[string]Value

@@ -16,6 +16,15 @@ type InsertNode struct {
 	Properties map[string]any
 }
 
+type CreateEdge struct {
+	FromNodeID string
+	ToNodeID   string
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
+}
+
 type QueryNodes struct {
 	Labels     []string
 	Properties map[string]any
@@ -57,6 +66,7 @@ type PatternRow struct {
 // Graph is the graph capability required by the current executor.
 type Graph interface {
 	InsertNode(ctx context.Context, node InsertNode) (execmodel.NodeRef, error)
+	CreateEdge(ctx context.Context, edge CreateEdge) (execmodel.Edge, error)
 	QueryNodes(ctx context.Context, query QueryNodes) ([]execmodel.Node, error)
 	QueryPattern(ctx context.Context, query QueryPattern) ([]PatternRow, error)
 }
@@ -96,6 +106,40 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				return execmodel.Result{}, err
 			}
 			result.Counters.NodesInserted++
+		case planmodel.MatchCreateRelationshipOperation:
+			if plan.AccessMode != analysis.ReadWrite {
+				return execmodel.Result{}, fmt.Errorf("create relationship requires read-write access mode")
+			}
+			bindings := []map[string]execmodel.Node{{}}
+			for _, match := range op.Matches {
+				nodes, err := e.graph.QueryNodes(ctx, QueryNodes{Labels: append([]string(nil), match.Labels...), Properties: copyProperties(match.Properties)})
+				if err != nil {
+					return execmodel.Result{}, err
+				}
+				next := []map[string]execmodel.Node{}
+				for _, binding := range bindings {
+					for _, node := range nodes {
+						copyBinding := map[string]execmodel.Node{}
+						for key, value := range binding {
+							copyBinding[key] = value
+						}
+						copyBinding[match.Variable] = node
+						next = append(next, copyBinding)
+					}
+				}
+				bindings = next
+			}
+			for _, binding := range bindings {
+				from, fromOK := binding[op.Relationship.FromVariable]
+				to, toOK := binding[op.Relationship.ToVariable]
+				if !fromOK || !toOK {
+					return execmodel.Result{}, fmt.Errorf("relationship endpoint is not bound")
+				}
+				if _, err := e.graph.CreateEdge(ctx, CreateEdge{FromNodeID: from.ID, ToNodeID: to.ID, Labels: append([]string(nil), op.Relationship.Labels...), Properties: copyProperties(op.Relationship.Properties)}); err != nil {
+					return execmodel.Result{}, err
+				}
+				result.Counters.EdgesInserted++
+			}
 		case planmodel.QueryPatternOperation:
 			if plan.AccessMode != analysis.ReadOnly {
 				return execmodel.Result{}, fmt.Errorf("query pattern requires read-only access mode")

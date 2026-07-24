@@ -33,6 +33,20 @@ type MatchStatement struct {
 
 func (MatchStatement) statement() {}
 
+// MatchCreateStatement represents MATCH ..., ... CREATE relationship.
+type MatchCreateStatement struct {
+	Matches []NodePattern
+	Create  CreateRelationshipPattern
+}
+
+func (MatchCreateStatement) statement() {}
+
+type CreateRelationshipPattern struct {
+	FromVariable string
+	ToVariable   string
+	Relationship RelationshipPattern
+}
+
 // FetchFirstClause represents FETCH FIRST n ROW(S) ONLY.
 type FetchFirstClause struct {
 	Count int64

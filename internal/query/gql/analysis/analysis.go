@@ -44,6 +44,11 @@ func (analyzer) Analyze(query model.Query) (Analysis, error) {
 			return Analysis{}, err
 		}
 		return Analysis{Query: query, AccessMode: ReadOnly}, nil
+	case model.MatchCreateStatement:
+		if err := analyzeMatchCreateStatement(stmt); err != nil {
+			return Analysis{}, err
+		}
+		return Analysis{Query: query, AccessMode: ReadWrite}, nil
 	case nil:
 		return Analysis{}, fmt.Errorf("query statement is required")
 	default:
@@ -78,6 +83,38 @@ func analyzeInsertStatement(stmt model.InsertStatement) error {
 		if err := analyzeValue(prop.Value); err != nil {
 			return fmt.Errorf("property %q: %w", prop.Key, err)
 		}
+	}
+	return nil
+}
+
+func analyzeMatchCreateStatement(stmt model.MatchCreateStatement) error {
+	if len(stmt.Matches) < 2 {
+		return fmt.Errorf("match create requires at least two node patterns")
+	}
+	defined := map[string]struct{}{}
+	for _, pattern := range stmt.Matches {
+		if pattern.Variable == "" {
+			return fmt.Errorf("matched node variable is required")
+		}
+		if _, exists := defined[pattern.Variable]; exists {
+			return fmt.Errorf("duplicate variable %q", pattern.Variable)
+		}
+		defined[pattern.Variable] = struct{}{}
+		if err := analyzePatternProperties(pattern.Properties); err != nil {
+			return err
+		}
+	}
+	if _, ok := defined[stmt.Create.FromVariable]; !ok {
+		return fmt.Errorf("create source variable %q is not defined", stmt.Create.FromVariable)
+	}
+	if _, ok := defined[stmt.Create.ToVariable]; !ok {
+		return fmt.Errorf("create target variable %q is not defined", stmt.Create.ToVariable)
+	}
+	if len(stmt.Create.Relationship.Labels) == 0 {
+		return fmt.Errorf("create relationship requires at least one label")
+	}
+	if err := analyzePatternProperties(stmt.Create.Relationship.Properties); err != nil {
+		return fmt.Errorf("relationship pattern: %w", err)
 	}
 	return nil
 }

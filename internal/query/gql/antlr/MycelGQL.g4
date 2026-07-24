@@ -17,6 +17,7 @@ query
 
 statement
   : insertStatement
+  | matchCreateStatement
   | matchStatement
   ;
 
@@ -26,6 +27,14 @@ insertStatement
 
 matchStatement
   : MATCH matchPattern whereClause? RETURN returnItem (COMMA returnItem)* fetchFirstClause?
+  ;
+
+matchCreateStatement
+  : MATCH nodePattern (COMMA nodePattern)+ CREATE createRelationshipPattern
+  ;
+
+createRelationshipPattern
+  : LPAREN variable RPAREN MINUS edgePattern? MINUS GT LPAREN variable RPAREN
   ;
 
 matchPattern
@@ -110,6 +119,7 @@ value
   ;
 
 INSERT : [Ii] [Nn] [Ss] [Ee] [Rr] [Tt];
+CREATE : [Cc] [Rr] [Ee] [Aa] [Tt] [Ee];
 MATCH  : [Mm] [Aa] [Tt] [Cc] [Hh];
 WHERE  : [Ww] [Hh] [Ee] [Rr] [Ee];
 RETURN : [Rr] [Ee] [Tt] [Uu] [Rr] [Nn];

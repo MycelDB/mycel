@@ -45,6 +45,21 @@ type QueryPatternOperation struct {
 
 func (QueryPatternOperation) operation() {}
 
+// MatchCreateRelationshipOperation creates relationships between matched nodes.
+type MatchCreateRelationshipOperation struct {
+	Matches      []NodePattern
+	Relationship CreateRelationshipOperation
+}
+
+func (MatchCreateRelationshipOperation) operation() {}
+
+type CreateRelationshipOperation struct {
+	FromVariable string
+	ToVariable   string
+	Labels       []string
+	Properties   map[string]any
+}
+
 type NodePattern struct {
 	Variable   string
 	Labels     []string

@@ -33,6 +33,9 @@ func (builder) Build(tree antlr4.Tree) (model.Query, error) {
 	if insert := stmtCtx.InsertStatement(); insert != nil {
 		return buildInsertStatement(insert)
 	}
+	if matchCreate := stmtCtx.MatchCreateStatement(); matchCreate != nil {
+		return buildMatchCreateStatement(matchCreate)
+	}
 	if match := stmtCtx.MatchStatement(); match != nil {
 		return buildMatchStatement(match)
 	}
@@ -49,6 +52,51 @@ func buildInsertStatement(ctx generated.IInsertStatementContext) (model.Query, e
 		return model.Query{}, err
 	}
 	return model.Query{Statement: model.InsertStatement{Pattern: node}}, nil
+}
+
+func buildMatchCreateStatement(ctx generated.IMatchCreateStatementContext) (model.Query, error) {
+	matchCtx, ok := ctx.(*generated.MatchCreateStatementContext)
+	if !ok || len(matchCtx.AllNodePattern()) < 2 || matchCtx.CreateRelationshipPattern() == nil {
+		return model.Query{}, fmt.Errorf("expected match create statement")
+	}
+	matches := make([]model.NodePattern, 0, len(matchCtx.AllNodePattern()))
+	for _, nodeCtx := range matchCtx.AllNodePattern() {
+		node, err := buildNodePattern(nodeCtx)
+		if err != nil {
+			return model.Query{}, err
+		}
+		matches = append(matches, node)
+	}
+	create, err := buildCreateRelationshipPattern(matchCtx.CreateRelationshipPattern())
+	if err != nil {
+		return model.Query{}, err
+	}
+	return model.Query{Statement: model.MatchCreateStatement{Matches: matches, Create: create}}, nil
+}
+
+func buildCreateRelationshipPattern(ctx generated.ICreateRelationshipPatternContext) (model.CreateRelationshipPattern, error) {
+	createCtx, ok := ctx.(*generated.CreateRelationshipPatternContext)
+	if !ok || len(createCtx.AllVariable()) != 2 {
+		return model.CreateRelationshipPattern{}, fmt.Errorf("invalid create relationship pattern")
+	}
+	fromCtx, ok := createCtx.Variable(0).(*generated.VariableContext)
+	if !ok || fromCtx.IDENTIFIER() == nil {
+		return model.CreateRelationshipPattern{}, fmt.Errorf("invalid create relationship source")
+	}
+	toCtx, ok := createCtx.Variable(1).(*generated.VariableContext)
+	if !ok || toCtx.IDENTIFIER() == nil {
+		return model.CreateRelationshipPattern{}, fmt.Errorf("invalid create relationship target")
+	}
+	rel := model.RelationshipPattern{Direction: model.RelationshipOutgoing}
+	if edge := createCtx.EdgePattern(); edge != nil {
+		built, err := buildEdgePattern(edge)
+		if err != nil {
+			return model.CreateRelationshipPattern{}, err
+		}
+		built.Direction = model.RelationshipOutgoing
+		rel = built
+	}
+	return model.CreateRelationshipPattern{FromVariable: fromCtx.IDENTIFIER().GetText(), ToVariable: toCtx.IDENTIFIER().GetText(), Relationship: rel}, nil
 }
 
 func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, error) {

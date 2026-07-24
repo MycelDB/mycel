@@ -27,11 +27,24 @@ func (planner) Plan(a analysis.Analysis) (planmodel.Plan, error) {
 		return planInsertStatement(a, stmt), nil
 	case ast.MatchStatement:
 		return planMatchStatement(a, stmt)
+	case ast.MatchCreateStatement:
+		return planMatchCreateStatement(a, stmt), nil
 	case nil:
 		return planmodel.Plan{}, fmt.Errorf("query statement is required")
 	default:
 		return planmodel.Plan{}, fmt.Errorf("unsupported statement %T", a.Query.Statement)
 	}
+}
+
+func planMatchCreateStatement(a analysis.Analysis, stmt ast.MatchCreateStatement) planmodel.Plan {
+	matches := make([]planmodel.NodePattern, 0, len(stmt.Matches))
+	for _, match := range stmt.Matches {
+		matches = append(matches, planmodel.NodePattern{Variable: match.Variable, Labels: append([]string(nil), match.Labels...), Properties: propertiesMap(match.Properties)})
+	}
+	return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.MatchCreateRelationshipOperation{
+		Matches:      matches,
+		Relationship: planmodel.CreateRelationshipOperation{FromVariable: stmt.Create.FromVariable, ToVariable: stmt.Create.ToVariable, Labels: append([]string(nil), stmt.Create.Relationship.Labels...), Properties: propertiesMap(stmt.Create.Relationship.Properties)},
+	}}}
 }
 
 func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel.Plan, error) {

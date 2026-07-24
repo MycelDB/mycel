@@ -59,6 +59,36 @@ func TestGraphServiceEdgeUsesLabelsPropertiesPayloadAndMeta(t *testing.T) {
 	}
 }
 
+func TestQueryServiceExecuteGQLCreatesRelationshipFromMatchedNodes(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {firstName: 'Martin', lastName: 'Beauvais'})"}); err != nil {
+		t.Fatalf("insert Martin: %v", err)
+	}
+	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {firstName: 'Ivy', lastName: 'Beauvais'})"}); err != nil {
+		t.Fatalf("insert Ivy: %v", err)
+	}
+	created, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (martin:Person {firstName: 'Martin', lastName: 'Beauvais'}), (ivy:Person {firstName: 'Ivy', lastName: 'Beauvais'}) CREATE (martin)-[:Spouse]->(ivy)"})
+	if err != nil {
+		t.Fatalf("create relationship: %v", err)
+	}
+	if created.GetResult().GetCounters().GetEdgesInserted() != 1 {
+		t.Fatalf("edges_inserted = %d, want 1", created.GetResult().GetCounters().GetEdgesInserted())
+	}
+	if _, err := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces).CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (martin:Person)-[r:Spouse]->(ivy:Person) RETURN martin.firstName, r, ivy.firstName"})
+	if err != nil {
+		t.Fatalf("query relationship: %v", err)
+	}
+	if len(res.GetResult().GetRows()) != 1 || res.GetResult().GetRows()[0].GetFields()["r"].GetEdge() == nil {
+		t.Fatalf("unexpected relationship rows: %+v", res.GetResult().GetRows())
+	}
+}
+
 func TestQueryServiceExecuteGQLReturnsRelationshipPatternRows(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)

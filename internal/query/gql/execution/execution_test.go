@@ -268,6 +268,7 @@ type fakeGraphWriter struct {
 	patternQueries []QueryPattern
 	nodes          []execmodel.Node
 	patternRows    []PatternRow
+	createdEdges   []CreateEdge
 }
 
 func (f *fakeGraphWriter) InsertNode(_ context.Context, node InsertNode) (execmodel.NodeRef, error) {
@@ -276,6 +277,14 @@ func (f *fakeGraphWriter) InsertNode(_ context.Context, node InsertNode) (execmo
 	}
 	f.inserted = append(f.inserted, node)
 	return execmodel.NodeRef{ID: f.nextID}, nil
+}
+
+func (f *fakeGraphWriter) CreateEdge(_ context.Context, edge CreateEdge) (execmodel.Edge, error) {
+	if f.err != nil {
+		return execmodel.Edge{}, f.err
+	}
+	f.createdEdges = append(f.createdEdges, edge)
+	return execmodel.Edge{ID: "edge-created", FromID: edge.FromNodeID, ToID: edge.ToNodeID, Labels: append([]string(nil), edge.Labels...), Properties: copyProperties(edge.Properties)}, nil
 }
 
 func (f *fakeGraphWriter) QueryPattern(_ context.Context, query QueryPattern) ([]PatternRow, error) {
