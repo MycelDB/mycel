@@ -11,6 +11,10 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/query/gql"
+	"github.com/myceldb/mycel/internal/query/gql/analysis"
+	"github.com/myceldb/mycel/internal/query/gql/execution"
+	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -95,7 +99,45 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 		}
 		out = append(out, protoRow)
 	}
-	return &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next}, nil
+	result := queryResultFromRows(out, next)
+	return &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result}, nil
+}
+
+func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLRequest) (*clientv1.ExecuteGQLResponse, error) {
+	if strings.TrimSpace(req.GetQuery()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "query is required")
+	}
+	if len(req.GetParams()) > 0 {
+		return nil, status.Error(codes.Unimplemented, "GQL parameters are reserved but not implemented yet")
+	}
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, req.GetTransactionId())
+	if err != nil {
+		return nil, mapSessionError(err, "execute gql")
+	}
+	if tx.State != daemonsession.TransactionStateActive {
+		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
+	}
+	plan, err := gql.Compile(req.GetQuery())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if plan.AccessMode == analysis.ReadWrite && tx.Mode != daemonsession.TransactionModeReadWrite {
+		return nil, status.Error(codes.FailedPrecondition, "GQL query requires a read-write transaction")
+	}
+	execResult, err := execution.Execute(ctx, gqlDaemonGraph{service: s, tx: tx}, plan)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	rows := gqlRowsToProto(execResult)
+	pageRows, next, err := paginateProtoQueryRows(rows, int(req.GetPageSize()), req.GetPageToken())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return &clientv1.ExecuteGQLResponse{Result: queryResultFromRowsWithCounters(pageRows, next, execResult.Counters)}, nil
 }
 
 func (s *QueryService) allNodes(ctx context.Context, tx daemonsession.GraphTransaction) ([]domaingraph.Node, error) {
@@ -541,6 +583,122 @@ func propValue(node domaingraph.Node, name string) any {
 		return node.Content
 	}
 	return node.Props[name]
+}
+
+type gqlDaemonGraph struct {
+	service *QueryService
+	tx      daemonsession.GraphTransaction
+}
+
+func (g gqlDaemonGraph) InsertNode(ctx context.Context, node execution.InsertNode) (execmodel.NodeRef, error) {
+	created, err := g.service.graphs.CreateNode(ctx, g.tx, daegraph.NodeInput{Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties)})
+	if err != nil {
+		return execmodel.NodeRef{}, err
+	}
+	return execmodel.NodeRef{ID: created.ID.String()}, nil
+}
+
+func (g gqlDaemonGraph) QueryNodes(ctx context.Context, query execution.QueryNodes) ([]execmodel.Node, error) {
+	nodes, err := g.service.allNodes(ctx, g.tx)
+	if err != nil {
+		return nil, err
+	}
+	out := []execmodel.Node{}
+	for _, node := range nodes {
+		if !nodeHasLabels(node.Labels, query.Labels) || !nodeHasProperties(node.Properties, query.Properties) {
+			continue
+		}
+		out = append(out, execmodel.Node{ID: node.ID.String(), DomainID: node.DomainID.String(), Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties)})
+	}
+	return out, nil
+}
+
+func nodeHasProperties(values map[string]any, required map[string]any) bool {
+	for key, value := range required {
+		if !queryValuesEqual(values[key], value) {
+			return false
+		}
+	}
+	return true
+}
+
+func gqlRowsToProto(result execmodel.Result) []*clientv1.QueryRow {
+	rows := make([]*clientv1.QueryRow, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		fields := map[string]*clientv1.QueryValue{}
+		for name, value := range row {
+			if value.Node != nil {
+				fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Node{Node: gqlNodeToProto(*value.Node)}}
+			}
+		}
+		rows = append(rows, &clientv1.QueryRow{Fields: fields})
+	}
+	return rows
+}
+
+func gqlNodeToProto(node execmodel.Node) *clientv1.Node {
+	return &clientv1.Node{NodeId: node.ID, DomainId: node.DomainID, Labels: append([]string(nil), node.Labels...), Properties: protoStruct(node.Properties)}
+}
+
+func queryResultFromRows(rows []*clientv1.QueryRow, next string) *clientv1.QueryResult {
+	return queryResultFromRowsWithCounters(rows, next, execmodel.Counters{})
+}
+
+func queryResultFromRowsWithCounters(rows []*clientv1.QueryRow, next string, counters execmodel.Counters) *clientv1.QueryResult {
+	return &clientv1.QueryResult{Rows: rows, NextPageToken: next, Graph: graphFromRows(rows), Counters: &clientv1.QueryCounters{RowsReturned: int32(len(rows)), NodesInserted: int32(counters.NodesInserted)}}
+}
+
+func graphFromRows(rows []*clientv1.QueryRow) *clientv1.ResultGraph {
+	seen := map[string]bool{}
+	nodes := []*clientv1.Node{}
+	for _, row := range rows {
+		for _, value := range row.GetFields() {
+			node := value.GetNode()
+			if node == nil || seen[node.GetNodeId()] {
+				continue
+			}
+			seen[node.GetNodeId()] = true
+			nodes = append(nodes, node)
+		}
+	}
+	return &clientv1.ResultGraph{Nodes: nodes}
+}
+
+func paginateProtoQueryRows(rows []*clientv1.QueryRow, pageSize int, pageToken string) ([]*clientv1.QueryRow, string, error) {
+	start := 0
+	if strings.TrimSpace(pageToken) != "" {
+		value, err := strconv.Atoi(pageToken)
+		if err != nil || value < 0 {
+			return nil, "", fmt.Errorf("invalid page_token")
+		}
+		start = value
+	}
+	if pageSize <= 0 || pageSize > queryMaxPageSize {
+		pageSize = queryMaxPageSize
+	}
+	if start >= len(rows) {
+		return []*clientv1.QueryRow{}, "", nil
+	}
+	end := start + pageSize
+	if end > len(rows) {
+		end = len(rows)
+	}
+	next := ""
+	if end < len(rows) {
+		next = strconv.Itoa(end)
+	}
+	return rows[start:end], next, nil
+}
+
+func copyMapAny(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func paginateQueryRows(rows []*queryRowState, pageSize int, pageToken string) ([]*queryRowState, string, error) {

@@ -21,6 +21,7 @@ type Value struct {
 
 type Node struct {
 	ID         string         `json:"id"`
+	DomainID   string         `json:"domainId,omitempty"`
 	Labels     []string       `json:"labels,omitempty"`
 	Properties map[string]any `json:"properties,omitempty"`
 }
