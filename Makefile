@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop api-info
+.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -160,3 +160,13 @@ stop:
 	kill -9 "$$pid" 2>/dev/null || true; \
 	rm -f "$$pidfile"; \
 	echo "myceld stopped"
+
+reset: stop
+	@set -eu; \
+	datadir="$(MYCELD_DATA_DIR)"; \
+	if [ -z "$$datadir" ] || [ "$$datadir" = "/" ]; then \
+		echo "refusing to remove unsafe data dir: $$datadir"; \
+		exit 1; \
+	fi; \
+	rm -rf "$$datadir"; \
+	echo "removed data dir: $$datadir"
