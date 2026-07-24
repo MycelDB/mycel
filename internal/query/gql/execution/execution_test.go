@@ -109,6 +109,78 @@ func TestExecutorQueryNodesFirstAndLastNameScenarios(t *testing.T) {
 	}
 }
 
+func TestExecutorExecutesPropertyReturnProjection(t *testing.T) {
+	graph := &fakeGraphWriter{nodes: []execmodel.Node{{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}}}}
+	plan := planmodel.Plan{
+		AccessMode: analysis.ReadOnly,
+		Operations: []planmodel.Operation{
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Returns: []planmodel.ReturnItem{
+				{Kind: planmodel.ReturnProperty, Variable: "p", Property: "firstName"},
+				{Kind: planmodel.ReturnProperty, Variable: "p", Property: "lastName"},
+			}},
+		},
+	}
+
+	result, err := Execute(context.Background(), graph, plan)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !reflect.DeepEqual(result.Columns, []string{"p.firstName", "p.lastName"}) {
+		t.Fatalf("columns = %#v", result.Columns)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["p.firstName"].Scalar != "Alice" || result.Rows[0]["p.lastName"].Scalar != "Jones" {
+		t.Fatalf("unexpected result rows: %#v", result.Rows)
+	}
+}
+
+func TestExecutorExecutesMixedReturnProjection(t *testing.T) {
+	graph := &fakeGraphWriter{nodes: []execmodel.Node{{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice"}}}}
+	plan := planmodel.Plan{
+		AccessMode: analysis.ReadOnly,
+		Operations: []planmodel.Operation{
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Returns: []planmodel.ReturnItem{
+				{Kind: planmodel.ReturnVariable, Variable: "p"},
+				{Kind: planmodel.ReturnProperty, Variable: "p", Property: "firstName"},
+			}},
+		},
+	}
+
+	result, err := Execute(context.Background(), graph, plan)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !reflect.DeepEqual(result.Columns, []string{"p", "p.firstName"}) {
+		t.Fatalf("columns = %#v", result.Columns)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["p"].Node == nil || result.Rows[0]["p"].Node.ID != "node-1" || result.Rows[0]["p.firstName"].Scalar != "Alice" {
+		t.Fatalf("unexpected result rows: %#v", result.Rows)
+	}
+}
+
+func TestExecutorMissingPropertyProjectionReturnsNilScalar(t *testing.T) {
+	graph := &fakeGraphWriter{nodes: []execmodel.Node{{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice"}}}}
+	plan := planmodel.Plan{
+		AccessMode: analysis.ReadOnly,
+		Operations: []planmodel.Operation{
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnProperty, Variable: "p", Property: "middleName"}}},
+		},
+	}
+
+	result, err := Execute(context.Background(), graph, plan)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("row count = %d", len(result.Rows))
+	}
+	if _, ok := result.Rows[0]["p.middleName"]; !ok {
+		t.Fatalf("missing projected column: %#v", result.Rows[0])
+	}
+	if result.Rows[0]["p.middleName"].Scalar != nil {
+		t.Fatalf("middleName scalar = %#v, want nil", result.Rows[0]["p.middleName"].Scalar)
+	}
+}
+
 func TestExecutorRejectsMissingGraphWriter(t *testing.T) {
 	_, err := Execute(context.Background(), nil, planmodel.Plan{AccessMode: analysis.ReadWrite})
 	if err == nil {

@@ -115,6 +115,36 @@ func TestQueryGQLWhereCommandUsesDaemonGRPC(t *testing.T) {
 			}
 		})
 	}
+
+	out, err = runCLI(t, append(base, "query", "gql", "--space-id", spaceID, "MATCH (p:Person) WHERE p.firstName = 'Alice' RETURN p.firstName, p.lastName")...)
+	if err != nil {
+		t.Fatalf("gql projection failed: %v\n%s", err, out)
+	}
+	columns := gqlResultColumns(t, out)
+	if len(columns) != 2 || columns[0] != "p.firstName" || columns[1] != "p.lastName" {
+		t.Fatalf("columns = %#v; raw=%s", columns, out)
+	}
+	pairs := map[string]bool{}
+	for _, row := range gqlResultRows(t, out) {
+		fields := row.(map[string]any)
+		first := fields["p.firstName"].(map[string]any)["scalar"]
+		last := fields["p.lastName"].(map[string]any)["scalar"]
+		pairs[first.(string)+" "+last.(string)] = true
+	}
+	if !pairs["Alice Jones"] || !pairs["Alice Brown"] || len(pairs) != 2 {
+		t.Fatalf("projected pairs = %#v; raw=%s", pairs, out)
+	}
+}
+
+func gqlResultColumns(t *testing.T, raw string) []any {
+	t.Helper()
+	var res map[string]any
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatalf("decode gql response: %v\n%s", err, raw)
+	}
+	result, _ := res["result"].(map[string]any)
+	columns, _ := result["Columns"].([]any)
+	return columns
 }
 
 func gqlResultRows(t *testing.T, raw string) []any {

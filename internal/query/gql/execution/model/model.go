@@ -16,7 +16,8 @@ type Counters struct {
 type Row map[string]Value
 
 type Value struct {
-	Node *Node `json:"node,omitempty"`
+	Node   *Node `json:"node,omitempty"`
+	Scalar any   `json:"scalar,omitempty"`
 }
 
 type Node struct {

@@ -10,8 +10,11 @@
 //	MATCH (n:Label {prop: 'value'}) RETURN n
 //	MATCH (n:Label) WHERE n.prop = 'value' RETURN n
 //	MATCH (n:Label) WHERE n.a = 'value' AND n.b = 42 RETURN n
+//	MATCH (n:Label) RETURN n.prop
+//	MATCH (n:Label) WHERE n.prop = 'value' RETURN n.prop
+//	MATCH (n:Label) RETURN n, n.prop
 //
 // Unsupported for now: OR, comparisons other than equality, predicate
-// parentheses, functions, relationship patterns, and scalar property
-// projection.
+// parentheses, functions, relationship patterns, aliases, and scalar
+// expressions other than property projection.
 package gql

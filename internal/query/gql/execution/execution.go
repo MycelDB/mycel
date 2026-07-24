@@ -71,12 +71,21 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				return execmodel.Result{}, err
 			}
 			for _, ret := range op.Returns {
-				result.Columns = append(result.Columns, ret.Variable)
+				result.Columns = append(result.Columns, returnColumn(ret))
 			}
 			for _, node := range nodes {
 				row := execmodel.Row{}
 				for _, ret := range op.Returns {
-					row[ret.Variable] = execmodel.Value{Node: &node}
+					column := returnColumn(ret)
+					switch returnKind(ret) {
+					case planmodel.ReturnVariable:
+						n := node
+						row[column] = execmodel.Value{Node: &n}
+					case planmodel.ReturnProperty:
+						row[column] = execmodel.Value{Scalar: node.Properties[ret.Property]}
+					default:
+						return execmodel.Result{}, fmt.Errorf("unsupported return item kind %q", ret.Kind)
+					}
 				}
 				result.Rows = append(result.Rows, row)
 			}
@@ -85,6 +94,20 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 		}
 	}
 	return result, nil
+}
+
+func returnKind(ret planmodel.ReturnItem) planmodel.ReturnItemKind {
+	if ret.Kind == "" {
+		return planmodel.ReturnVariable
+	}
+	return ret.Kind
+}
+
+func returnColumn(ret planmodel.ReturnItem) string {
+	if returnKind(ret) == planmodel.ReturnProperty {
+		return ret.Variable + "." + ret.Property
+	}
+	return ret.Variable
 }
 
 func copyProperties(properties map[string]any) map[string]any {
