@@ -34,6 +34,38 @@ type QueryNodesOperation struct {
 
 func (QueryNodesOperation) operation() {}
 
+// QueryPatternOperation returns rows matching a node-edge-node pattern.
+type QueryPatternOperation struct {
+	Start        NodePattern
+	Relationship RelationshipPattern
+	End          NodePattern
+	Returns      []ReturnItem
+	Limit        int64
+}
+
+func (QueryPatternOperation) operation() {}
+
+type NodePattern struct {
+	Variable   string
+	Labels     []string
+	Properties map[string]any
+}
+
+type RelationshipDirection string
+
+const (
+	RelationshipOutgoing   RelationshipDirection = "outgoing"
+	RelationshipIncoming   RelationshipDirection = "incoming"
+	RelationshipUndirected RelationshipDirection = "undirected"
+)
+
+type RelationshipPattern struct {
+	Variable   string
+	Labels     []string
+	Properties map[string]any
+	Direction  RelationshipDirection
+}
+
 type ReturnItemKind string
 
 const (

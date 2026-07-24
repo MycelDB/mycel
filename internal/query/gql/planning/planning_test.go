@@ -142,6 +142,58 @@ func TestPlannerPlansReturnPropertyAnalysis(t *testing.T) {
 	}
 }
 
+func TestPlannerPlansRelationshipPatternAnalysis(t *testing.T) {
+	a := analysis.Analysis{
+		AccessMode: analysis.ReadOnly,
+		Query: ast.Query{Statement: ast.MatchStatement{
+			Pattern: ast.NodePattern{Variable: "a", Labels: []string{"Note"}},
+			MatchPattern: ast.MatchPattern{
+				Start:        ast.NodePattern{Variable: "a", Labels: []string{"Note"}, Properties: []ast.Property{{Key: "title", Value: ast.Value{Kind: ast.StringValue, Value: "Source"}}}},
+				Relationship: &ast.RelationshipPattern{Variable: "r", Labels: []string{"REFERENCES"}, Properties: []ast.Property{{Key: "confidence", Value: ast.Value{Kind: ast.FloatValue, Value: 0.9}}}, Direction: ast.RelationshipOutgoing},
+				End:          &ast.NodePattern{Variable: "b", Labels: []string{"Note"}},
+			},
+			Where: &ast.WhereClause{Predicates: []ast.PropertyComparison{
+				{Variable: "r", Property: "source", Value: ast.Value{Kind: ast.StringValue, Value: "manual"}},
+				{Variable: "b", Property: "title", Value: ast.Value{Kind: ast.StringValue, Value: "Target"}},
+			}},
+			Returns:    []ast.ReturnItem{{Kind: ast.ReturnVariable, Variable: "a"}, {Kind: ast.ReturnVariable, Variable: "r"}, {Kind: ast.ReturnProperty, Variable: "r", Property: "confidence"}, {Kind: ast.ReturnVariable, Variable: "b"}},
+			FetchFirst: &ast.FetchFirstClause{Count: 5},
+		}},
+	}
+	plan, err := Plan(a)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	want := planmodel.Plan{AccessMode: analysis.ReadOnly, Operations: []planmodel.Operation{planmodel.QueryPatternOperation{
+		Start:        planmodel.NodePattern{Variable: "a", Labels: []string{"Note"}, Properties: map[string]any{"title": "Source"}},
+		Relationship: planmodel.RelationshipPattern{Variable: "r", Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.9, "source": "manual"}, Direction: planmodel.RelationshipOutgoing},
+		End:          planmodel.NodePattern{Variable: "b", Labels: []string{"Note"}, Properties: map[string]any{"title": "Target"}},
+		Returns: []planmodel.ReturnItem{
+			{Kind: planmodel.ReturnVariable, Variable: "a"},
+			{Kind: planmodel.ReturnVariable, Variable: "r"},
+			{Kind: planmodel.ReturnProperty, Variable: "r", Property: "confidence"},
+			{Kind: planmodel.ReturnVariable, Variable: "b"},
+		},
+		Limit: 5,
+	}}}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Plan() = %#v, want %#v", plan, want)
+	}
+}
+
+func TestPlannerRejectsConflictingRelationshipWhereProperty(t *testing.T) {
+	a := analysis.Analysis{AccessMode: analysis.ReadOnly, Query: ast.Query{Statement: ast.MatchStatement{
+		Pattern:      ast.NodePattern{Variable: "a"},
+		MatchPattern: ast.MatchPattern{Start: ast.NodePattern{Variable: "a"}, Relationship: &ast.RelationshipPattern{Variable: "r", Properties: []ast.Property{{Key: "confidence", Value: ast.Value{Kind: ast.FloatValue, Value: 0.9}}}}, End: &ast.NodePattern{Variable: "b"}},
+		Where:        &ast.WhereClause{Predicates: []ast.PropertyComparison{{Variable: "r", Property: "confidence", Value: ast.Value{Kind: ast.FloatValue, Value: 0.8}}}},
+		Returns:      []ast.ReturnItem{{Kind: ast.ReturnVariable, Variable: "r"}},
+	}}}
+	_, err := Plan(a)
+	if err == nil {
+		t.Fatal("Plan() error = nil, want conflict error")
+	}
+}
+
 func TestPlannerPlansFetchFirstAnalysis(t *testing.T) {
 	a := analysis.Analysis{
 		AccessMode: analysis.ReadOnly,

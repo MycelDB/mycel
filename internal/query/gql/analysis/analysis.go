@@ -83,8 +83,37 @@ func analyzeInsertStatement(stmt model.InsertStatement) error {
 }
 
 func analyzeMatchStatement(stmt model.MatchStatement) error {
-	if stmt.Pattern.Variable == "" {
+	pattern := stmt.MatchPattern
+	if pattern.Start.Variable == "" && pattern.Relationship == nil {
+		pattern.Start = stmt.Pattern
+	}
+	if pattern.Start.Variable == "" {
 		return fmt.Errorf("match node variable is required")
+	}
+	defined := map[string]struct{}{pattern.Start.Variable: {}}
+	if pattern.Relationship != nil {
+		if pattern.End == nil {
+			return fmt.Errorf("relationship pattern requires target node")
+		}
+		if pattern.End.Variable == "" {
+			return fmt.Errorf("relationship target variable is required")
+		}
+		if _, exists := defined[pattern.End.Variable]; exists {
+			return fmt.Errorf("duplicate variable %q", pattern.End.Variable)
+		}
+		defined[pattern.End.Variable] = struct{}{}
+		if pattern.Relationship.Variable != "" {
+			if _, exists := defined[pattern.Relationship.Variable]; exists {
+				return fmt.Errorf("duplicate variable %q", pattern.Relationship.Variable)
+			}
+			defined[pattern.Relationship.Variable] = struct{}{}
+		}
+		if err := analyzePatternProperties(pattern.Relationship.Properties); err != nil {
+			return fmt.Errorf("relationship pattern: %w", err)
+		}
+		if err := analyzePatternProperties(pattern.End.Properties); err != nil {
+			return fmt.Errorf("target node pattern: %w", err)
+		}
 	}
 	if len(stmt.Returns) == 0 {
 		return fmt.Errorf("match statement requires at least one return item")
@@ -97,7 +126,7 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 		if ret.Variable == "" {
 			return fmt.Errorf("return variable cannot be empty")
 		}
-		if ret.Variable != stmt.Pattern.Variable {
+		if _, ok := defined[ret.Variable]; !ok {
 			return fmt.Errorf("return variable %q is not defined", ret.Variable)
 		}
 		switch kind {
@@ -121,7 +150,7 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 			if predicate.Variable == "" {
 				return fmt.Errorf("where predicate variable cannot be empty")
 			}
-			if predicate.Variable != stmt.Pattern.Variable {
+			if _, ok := defined[predicate.Variable]; !ok {
 				return fmt.Errorf("where variable %q is not defined", predicate.Variable)
 			}
 			if predicate.Property == "" {
@@ -132,8 +161,15 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 			}
 		}
 	}
+	if err := analyzePatternProperties(pattern.Start.Properties); err != nil {
+		return err
+	}
+	return nil
+}
+
+func analyzePatternProperties(properties []model.Property) error {
 	seenProperties := map[string]struct{}{}
-	for _, prop := range stmt.Pattern.Properties {
+	for _, prop := range properties {
 		if prop.Key == "" {
 			return fmt.Errorf("property key cannot be empty")
 		}

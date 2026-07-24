@@ -194,6 +194,75 @@ func TestAnalyzeRejectsInvalidReturnPropertyAST(t *testing.T) {
 	}
 }
 
+func TestAnalyzeMatchRelationshipPatternAST(t *testing.T) {
+	query := model.Query{Statement: model.MatchStatement{
+		Pattern: model.NodePattern{Variable: "a", Labels: []string{"Note"}},
+		MatchPattern: model.MatchPattern{
+			Start:        model.NodePattern{Variable: "a", Labels: []string{"Note"}},
+			Relationship: &model.RelationshipPattern{Variable: "r", Labels: []string{"REFERENCES"}, Properties: []model.Property{{Key: "confidence", Value: model.Value{Kind: model.FloatValue, Value: 0.9}}}, Direction: model.RelationshipOutgoing},
+			End:          &model.NodePattern{Variable: "b", Labels: []string{"Note"}},
+		},
+		Where: &model.WhereClause{Predicates: []model.PropertyComparison{
+			{Variable: "r", Property: "source", Value: model.Value{Kind: model.StringValue, Value: "manual"}},
+			{Variable: "b", Property: "title", Value: model.Value{Kind: model.StringValue, Value: "Target"}},
+		}},
+		Returns: []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "a"}, {Kind: model.ReturnVariable, Variable: "r"}, {Kind: model.ReturnProperty, Variable: "r", Property: "confidence"}, {Kind: model.ReturnVariable, Variable: "b"}},
+	}}
+	if _, err := Analyze(query); err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+}
+
+func TestAnalyzeRejectsInvalidRelationshipPatternAST(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   model.Query
+		wantErr string
+	}{
+		{
+			name: "missing target variable",
+			query: model.Query{Statement: model.MatchStatement{
+				Pattern:      model.NodePattern{Variable: "a"},
+				MatchPattern: model.MatchPattern{Start: model.NodePattern{Variable: "a"}, Relationship: &model.RelationshipPattern{Variable: "r"}, End: &model.NodePattern{}},
+				Returns:      []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "a"}},
+			}},
+			wantErr: "relationship target variable is required",
+		},
+		{
+			name: "undefined return edge",
+			query: model.Query{Statement: model.MatchStatement{
+				Pattern:      model.NodePattern{Variable: "a"},
+				MatchPattern: model.MatchPattern{Start: model.NodePattern{Variable: "a"}, Relationship: &model.RelationshipPattern{}, End: &model.NodePattern{Variable: "b"}},
+				Returns:      []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "r"}},
+			}},
+			wantErr: "return variable \"r\" is not defined",
+		},
+		{
+			name: "duplicate edge property",
+			query: model.Query{Statement: model.MatchStatement{
+				Pattern: model.NodePattern{Variable: "a"},
+				MatchPattern: model.MatchPattern{Start: model.NodePattern{Variable: "a"}, Relationship: &model.RelationshipPattern{Variable: "r", Properties: []model.Property{
+					{Key: "confidence", Value: model.Value{Kind: model.FloatValue, Value: 0.9}},
+					{Key: "confidence", Value: model.Value{Kind: model.FloatValue, Value: 0.8}},
+				}}, End: &model.NodePattern{Variable: "b"}},
+				Returns: []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "r"}},
+			}},
+			wantErr: "duplicate property key",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Analyze(tt.query)
+			if err == nil {
+				t.Fatal("Analyze() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Analyze() error = %q, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestAnalyzeMatchFetchFirstAST(t *testing.T) {
 	query := model.Query{Statement: model.MatchStatement{
 		Pattern:    model.NodePattern{Variable: "p", Labels: []string{"Person"}},
