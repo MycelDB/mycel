@@ -208,7 +208,11 @@ func buildGQLNodeQuery(query execution.QueryNodes) (*clientv1.GraphQuery, error)
 	} else if len(exprs) > 1 {
 		where = &clientv1.Expr{Expr: &clientv1.Expr_And{And: &clientv1.AndExpr{Exprs: exprs}}}
 	}
-	return &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: append([]string(nil), query.Labels...)}}, Where: where, Returns: []*clientv1.ReturnProjection{{Alias: "n", OutputName: "node", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}}, nil
+	limit := int32(0)
+	if query.Limit > 0 {
+		limit = int32(query.Limit)
+	}
+	return &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: append([]string(nil), query.Labels...)}}, Where: where, Returns: []*clientv1.ReturnProjection{{Alias: "n", OutputName: "node", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}, Limit: limit}, nil
 }
 
 func printGQLRows(result execmodel.Result) {

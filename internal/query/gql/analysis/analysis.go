@@ -110,6 +110,9 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 			return fmt.Errorf("unsupported return item kind %q", kind)
 		}
 	}
+	if stmt.FetchFirst != nil && stmt.FetchFirst.Count <= 0 {
+		return fmt.Errorf("fetch first count must be positive")
+	}
 	if stmt.Where != nil {
 		if len(stmt.Where.Predicates) == 0 {
 			return fmt.Errorf("where clause requires at least one predicate")

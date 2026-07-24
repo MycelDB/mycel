@@ -68,6 +68,14 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 		}
 		where = &built
 	}
+	var fetchFirst *model.FetchFirstClause
+	if fetchCtx := matchCtx.FetchFirstClause(); fetchCtx != nil {
+		built, err := buildFetchFirstClause(fetchCtx)
+		if err != nil {
+			return model.Query{}, err
+		}
+		fetchFirst = &built
+	}
 	returns := make([]model.ReturnItem, 0, len(matchCtx.AllReturnItem()))
 	for _, item := range matchCtx.AllReturnItem() {
 		returnCtx, ok := item.(*generated.ReturnItemContext)
@@ -80,7 +88,19 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 		}
 		returns = append(returns, built)
 	}
-	return model.Query{Statement: model.MatchStatement{Pattern: node, Where: where, Returns: returns}}, nil
+	return model.Query{Statement: model.MatchStatement{Pattern: node, Where: where, Returns: returns, FetchFirst: fetchFirst}}, nil
+}
+
+func buildFetchFirstClause(ctx generated.IFetchFirstClauseContext) (model.FetchFirstClause, error) {
+	fetchCtx, ok := ctx.(*generated.FetchFirstClauseContext)
+	if !ok || fetchCtx.INTEGER() == nil {
+		return model.FetchFirstClause{}, fmt.Errorf("invalid fetch first clause")
+	}
+	count, err := strconv.ParseInt(fetchCtx.INTEGER().GetText(), 10, 64)
+	if err != nil {
+		return model.FetchFirstClause{}, fmt.Errorf("invalid fetch first count: %w", err)
+	}
+	return model.FetchFirstClause{Count: count}, nil
 }
 
 func buildReturnItem(ctx *generated.ReturnItemContext) (model.ReturnItem, error) {

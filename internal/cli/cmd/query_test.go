@@ -134,6 +134,14 @@ func TestQueryGQLWhereCommandUsesDaemonGRPC(t *testing.T) {
 	if !pairs["Alice Jones"] || !pairs["Alice Brown"] || len(pairs) != 2 {
 		t.Fatalf("projected pairs = %#v; raw=%s", pairs, out)
 	}
+
+	out, err = runCLI(t, append(base, "query", "gql", "--space-id", spaceID, "MATCH (p:Person) WHERE p.firstName = 'Alice' RETURN p.firstName, p.lastName FETCH FIRST 1 ROW ONLY")...)
+	if err != nil {
+		t.Fatalf("gql fetch first failed: %v\n%s", err, out)
+	}
+	if rows := gqlResultRows(t, out); len(rows) != 1 {
+		t.Fatalf("fetch first rows = %d, want 1; raw=%s", len(rows), out)
+	}
 }
 
 func gqlResultColumns(t *testing.T, raw string) []any {

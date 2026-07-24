@@ -104,3 +104,23 @@ func TestBuilderBuildsReturnPropertyAST(t *testing.T) {
 		t.Fatalf("Build() = %#v, want %#v", query, want)
 	}
 }
+
+func TestBuilderBuildsFetchFirstAST(t *testing.T) {
+	tree, err := gqlantlr.Parse("MATCH (p:Person) WHERE p.firstName = 'Alice' RETURN p.firstName FETCH FIRST 2 ROWS ONLY")
+	if err != nil {
+		t.Fatalf("antlr.Parse() error = %v", err)
+	}
+
+	query, err := Build(tree)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	stmt, ok := query.Statement.(model.MatchStatement)
+	if !ok {
+		t.Fatalf("statement = %T, want MatchStatement", query.Statement)
+	}
+	if stmt.FetchFirst == nil || stmt.FetchFirst.Count != 2 {
+		t.Fatalf("FetchFirst = %#v, want count 2", stmt.FetchFirst)
+	}
+}

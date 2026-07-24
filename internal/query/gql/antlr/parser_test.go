@@ -38,3 +38,23 @@ func TestParserParsesMatchWhereReturnNode(t *testing.T) {
 		t.Fatal("Parse() tree = nil")
 	}
 }
+
+func TestParserParsesFetchFirst(t *testing.T) {
+	tree, err := Parse("MATCH (p:Person) RETURN p FETCH FIRST 10 ROWS ONLY")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}
+
+func TestParserParsesFetchFirstSingularRow(t *testing.T) {
+	tree, err := Parse("MATCH (p:Person) RETURN p FETCH FIRST 1 ROW ONLY")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}

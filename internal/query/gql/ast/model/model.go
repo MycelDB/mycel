@@ -20,12 +20,18 @@ func (InsertStatement) statement() {}
 
 // MatchStatement represents a GQL MATCH ... RETURN statement.
 type MatchStatement struct {
-	Pattern NodePattern
-	Where   *WhereClause
-	Returns []ReturnItem
+	Pattern    NodePattern
+	Where      *WhereClause
+	Returns    []ReturnItem
+	FetchFirst *FetchFirstClause
 }
 
 func (MatchStatement) statement() {}
+
+// FetchFirstClause represents FETCH FIRST n ROW(S) ONLY.
+type FetchFirstClause struct {
+	Count int64
+}
 
 // WhereClause represents a conjunction of property predicates.
 type WhereClause struct {

@@ -181,6 +181,29 @@ func TestExecutorMissingPropertyProjectionReturnsNilScalar(t *testing.T) {
 	}
 }
 
+func TestExecutorAppliesFetchFirstLimit(t *testing.T) {
+	graph := &fakeGraphWriter{nodes: []execmodel.Node{
+		{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice"}},
+		{ID: "node-2", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice"}},
+	}}
+	plan := planmodel.Plan{
+		AccessMode: analysis.ReadOnly,
+		Operations: []planmodel.Operation{
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice"}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "p"}}, Limit: 1},
+		},
+	}
+	result, err := Execute(context.Background(), graph, plan)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["p"].Node == nil || result.Rows[0]["p"].Node.ID != "node-1" {
+		t.Fatalf("unexpected rows: %#v", result.Rows)
+	}
+	if len(graph.queried) != 1 || graph.queried[0].Limit != 1 {
+		t.Fatalf("queried = %#v, want limit 1", graph.queried)
+	}
+}
+
 func TestExecutorRejectsMissingGraphWriter(t *testing.T) {
 	_, err := Execute(context.Background(), nil, planmodel.Plan{AccessMode: analysis.ReadWrite})
 	if err == nil {

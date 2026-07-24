@@ -19,6 +19,7 @@ type InsertNode struct {
 type QueryNodes struct {
 	Labels     []string
 	Properties map[string]any
+	Limit      int64
 }
 
 // Graph is the graph capability required by the current executor.
@@ -66,9 +67,12 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 			if plan.AccessMode != analysis.ReadOnly {
 				return execmodel.Result{}, fmt.Errorf("query nodes requires read-only access mode")
 			}
-			nodes, err := e.graph.QueryNodes(ctx, QueryNodes{Labels: append([]string(nil), op.Labels...), Properties: copyProperties(op.Properties)})
+			nodes, err := e.graph.QueryNodes(ctx, QueryNodes{Labels: append([]string(nil), op.Labels...), Properties: copyProperties(op.Properties), Limit: op.Limit})
 			if err != nil {
 				return execmodel.Result{}, err
+			}
+			if op.Limit > 0 && int64(len(nodes)) > op.Limit {
+				nodes = nodes[:op.Limit]
 			}
 			for _, ret := range op.Returns {
 				result.Columns = append(result.Columns, returnColumn(ret))

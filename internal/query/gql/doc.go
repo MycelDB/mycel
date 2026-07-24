@@ -13,8 +13,10 @@
 //	MATCH (n:Label) RETURN n.prop
 //	MATCH (n:Label) WHERE n.prop = 'value' RETURN n.prop
 //	MATCH (n:Label) RETURN n, n.prop
+//	MATCH (n:Label) RETURN n FETCH FIRST 10 ROWS ONLY
+//	MATCH (n:Label) RETURN n.prop FETCH FIRST 1 ROW ONLY
 //
 // Unsupported for now: OR, comparisons other than equality, predicate
-// parentheses, functions, relationship patterns, aliases, and scalar
-// expressions other than property projection.
+// parentheses, functions, relationship patterns, aliases, OFFSET, ORDER BY,
+// Cypher-style LIMIT, and scalar expressions other than property projection.
 package gql

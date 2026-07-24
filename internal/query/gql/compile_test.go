@@ -132,3 +132,16 @@ func TestCompileMatchReturnPropertyProducesPlan(t *testing.T) {
 		t.Fatalf("Compile() = %#v, want %#v", plan, want)
 	}
 }
+
+func TestCompileMatchFetchFirstProducesPlan(t *testing.T) {
+	plan, err := Compile("MATCH (p:Person) WHERE p.firstName = 'Alice' RETURN p.firstName FETCH FIRST 2 ROWS ONLY")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	want := planmodel.Plan{AccessMode: analysis.ReadOnly, Operations: []planmodel.Operation{
+		planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice"}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnProperty, Variable: "p", Property: "firstName"}}, Limit: 2},
+	}}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Compile() = %#v, want %#v", plan, want)
+	}
+}

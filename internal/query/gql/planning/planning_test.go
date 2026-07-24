@@ -141,3 +141,24 @@ func TestPlannerPlansReturnPropertyAnalysis(t *testing.T) {
 		t.Fatalf("Plan() = %#v, want %#v", plan, want)
 	}
 }
+
+func TestPlannerPlansFetchFirstAnalysis(t *testing.T) {
+	a := analysis.Analysis{
+		AccessMode: analysis.ReadOnly,
+		Query: ast.Query{Statement: ast.MatchStatement{
+			Pattern:    ast.NodePattern{Variable: "p", Labels: []string{"Person"}},
+			Returns:    []ast.ReturnItem{{Kind: ast.ReturnVariable, Variable: "p"}},
+			FetchFirst: &ast.FetchFirstClause{Count: 10},
+		}},
+	}
+	plan, err := Plan(a)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	want := planmodel.Plan{AccessMode: analysis.ReadOnly, Operations: []planmodel.Operation{
+		planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "p"}}, Limit: 10},
+	}}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Plan() = %#v, want %#v", plan, want)
+	}
+}

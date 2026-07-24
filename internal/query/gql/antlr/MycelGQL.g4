@@ -25,7 +25,7 @@ insertStatement
   ;
 
 matchStatement
-  : MATCH nodePattern whereClause? RETURN returnItem (COMMA returnItem)*
+  : MATCH nodePattern whereClause? RETURN returnItem (COMMA returnItem)* fetchFirstClause?
   ;
 
 whereClause
@@ -47,6 +47,15 @@ returnItem
 
 propertyReference
   : IDENTIFIER DOT IDENTIFIER
+  ;
+
+fetchFirstClause
+  : FETCH FIRST INTEGER rowWord ONLY
+  ;
+
+rowWord
+  : ROW
+  | ROWS
   ;
 
 nodePattern
@@ -90,6 +99,11 @@ INSERT : [Ii] [Nn] [Ss] [Ee] [Rr] [Tt];
 MATCH  : [Mm] [Aa] [Tt] [Cc] [Hh];
 WHERE  : [Ww] [Hh] [Ee] [Rr] [Ee];
 RETURN : [Rr] [Ee] [Tt] [Uu] [Rr] [Nn];
+FETCH  : [Ff] [Ee] [Tt] [Cc] [Hh];
+FIRST  : [Ff] [Ii] [Rr] [Ss] [Tt];
+ROW    : [Rr] [Oo] [Ww];
+ROWS   : [Rr] [Oo] [Ww] [Ss];
+ONLY   : [Oo] [Nn] [Ll] [Yy];
 AND    : [Aa] [Nn] [Dd];
 TRUE   : [Tt] [Rr] [Uu] [Ee];
 FALSE  : [Ff] [Aa] [Ll] [Ss] [Ee];

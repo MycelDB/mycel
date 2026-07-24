@@ -29,6 +29,7 @@ type QueryNodesOperation struct {
 	Labels     []string
 	Properties map[string]any
 	Returns    []ReturnItem
+	Limit      int64
 }
 
 func (QueryNodesOperation) operation() {}

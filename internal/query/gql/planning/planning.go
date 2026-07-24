@@ -56,6 +56,10 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 		}
 		returns = append(returns, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Property: ret.Property})
 	}
+	var limit int64
+	if stmt.FetchFirst != nil {
+		limit = stmt.FetchFirst.Count
+	}
 	return planmodel.Plan{
 		AccessMode: a.AccessMode,
 		Operations: []planmodel.Operation{
@@ -64,6 +68,7 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 				Labels:     append([]string(nil), stmt.Pattern.Labels...),
 				Properties: properties,
 				Returns:    returns,
+				Limit:      limit,
 			},
 		},
 	}, nil

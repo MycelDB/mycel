@@ -193,3 +193,26 @@ func TestAnalyzeRejectsInvalidReturnPropertyAST(t *testing.T) {
 		t.Fatalf("Analyze() error = %v, want undefined variable", err)
 	}
 }
+
+func TestAnalyzeMatchFetchFirstAST(t *testing.T) {
+	query := model.Query{Statement: model.MatchStatement{
+		Pattern:    model.NodePattern{Variable: "p", Labels: []string{"Person"}},
+		Returns:    []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "p"}},
+		FetchFirst: &model.FetchFirstClause{Count: 1},
+	}}
+	if _, err := Analyze(query); err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+}
+
+func TestAnalyzeRejectsInvalidFetchFirstAST(t *testing.T) {
+	query := model.Query{Statement: model.MatchStatement{
+		Pattern:    model.NodePattern{Variable: "p", Labels: []string{"Person"}},
+		Returns:    []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "p"}},
+		FetchFirst: &model.FetchFirstClause{Count: 0},
+	}}
+	_, err := Analyze(query)
+	if err == nil || !strings.Contains(err.Error(), "fetch first count must be positive") {
+		t.Fatalf("Analyze() error = %v, want fetch first count error", err)
+	}
+}
