@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/graph/change"
-	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -340,16 +339,16 @@ func TestModuleGraphChangeSinkIncludesMoveReorderAndDeleteContext(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create sibling: %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: root.ID.String(), ToNodeID: oldParent.ID.String(), Kind: string(domaingraph.EdgeKindContains), Props: map[string]any{"order": 0}}); err != nil {
+	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: root.ID.String(), ToNodeID: oldParent.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
 		t.Fatalf("create root/old edge: %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: root.ID.String(), ToNodeID: newParent.ID.String(), Kind: string(domaingraph.EdgeKindContains), Props: map[string]any{"order": 1}}); err != nil {
+	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: root.ID.String(), ToNodeID: newParent.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 1}}); err != nil {
 		t.Fatalf("create root/new edge: %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: oldParent.ID.String(), ToNodeID: child.ID.String(), Kind: string(domaingraph.EdgeKindContains), Props: map[string]any{"order": 0}}); err != nil {
+	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: oldParent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
 		t.Fatalf("create old/child edge: %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: newParent.ID.String(), ToNodeID: sibling.ID.String(), Kind: string(domaingraph.EdgeKindContains), Props: map[string]any{"order": 0}}); err != nil {
+	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: newParent.ID.String(), ToNodeID: sibling.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
 		t.Fatalf("create new/sibling edge: %v", err)
 	}
 	commit, err := m.CommitTransactionGraph(ctx, seed)

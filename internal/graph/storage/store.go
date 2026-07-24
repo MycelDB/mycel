@@ -420,8 +420,8 @@ func (s *LocalStore) applyEdgePut(e graph.Edge, loc RecordLocation) {
 		s.removeEdgeIndexes(old)
 	}
 	s.edgeRecords[e.ID] = cloneEdge(e)
-	s.edgeMeta[e.ID] = EdgeMeta{ID: e.ID, FromID: e.FromID, ToID: e.ToID, Kind: e.Kind, Location: loc}
-	if e.Kind == graph.EdgeKindContains {
+	s.edgeMeta[e.ID] = EdgeMeta{ID: e.ID, DomainID: e.DomainID, FromID: e.FromID, ToID: e.ToID, Labels: append([]string(nil), e.Labels...), Location: loc}
+	if graph.EdgeHasLabels(e, []string{"contains"}) {
 		s.containsChildren[e.FromID] = append(s.containsChildren[e.FromID], e.ID)
 		s.containsParent[e.ToID] = e.ID
 		s.sortChildren(e.FromID)
@@ -435,7 +435,7 @@ func (s *LocalStore) applyEdgeDelete(id graph.EdgeID, loc RecordLocation) {
 	s.edgeMeta[id] = EdgeMeta{ID: id, Deleted: true, Location: loc}
 }
 func (s *LocalStore) removeEdgeIndexes(e graph.Edge) {
-	if e.Kind == graph.EdgeKindContains {
+	if graph.EdgeHasLabels(e, []string{"contains"}) {
 		ids := s.containsChildren[e.FromID]
 		out := ids[:0]
 		for _, id := range ids {
@@ -457,8 +457,8 @@ func (s *LocalStore) sortChildren(parent graph.NodeID) {
 	sort.SliceStable(s.containsChildren[parent], func(i, j int) bool {
 		ei := s.edgeRecords[s.containsChildren[parent][i]]
 		ej := s.edgeRecords[s.containsChildren[parent][j]]
-		oi, iok := numberPropInt(ei.Props["order"])
-		oj, jok := numberPropInt(ej.Props["order"])
+		oi, iok := numberPropInt(ei.Properties["order"])
+		oj, jok := numberPropInt(ej.Properties["order"])
 		if iok && jok && oi != oj {
 			return oi < oj
 		}
@@ -515,7 +515,13 @@ func cloneNode(n graph.Node) graph.Node {
 	n.Props = cloneProps(n.Props)
 	return n
 }
-func cloneEdge(e graph.Edge) graph.Edge { e.Props = cloneProps(e.Props); return e }
+func cloneEdge(e graph.Edge) graph.Edge {
+	e.Labels = append([]string(nil), e.Labels...)
+	e.Properties = cloneProps(e.Properties)
+	e.Payload = cloneProps(e.Payload)
+	e.Meta = cloneProps(e.Meta)
+	return e
+}
 func cloneProps(in map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range in {

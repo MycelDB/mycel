@@ -36,7 +36,7 @@ func AssembleSource(in SourceInput) SourceResult {
 	}
 	children := map[graph.NodeID][]graph.Edge{}
 	for _, e := range in.Edges {
-		if e.Kind == graph.EdgeKindContains {
+		if graph.EdgeHasLabels(e, []string{"contains"}) {
 			children[e.FromID] = append(children[e.FromID], e)
 		}
 	}
@@ -116,10 +116,10 @@ func maxDepthText(v *int) string {
 }
 
 func edgeOrder(e graph.Edge) (float64, bool) {
-	if e.Props == nil {
+	if e.Properties == nil {
 		return 0, false
 	}
-	v, ok := e.Props["order"]
+	v, ok := e.Properties["order"]
 	if !ok {
 		return 0, false
 	}

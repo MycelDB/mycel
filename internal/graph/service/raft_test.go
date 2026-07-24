@@ -112,7 +112,7 @@ func TestExecuteLocalRaftGraphReadChildrenAndParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateNode(child) error = %v", err)
 	}
-	edge, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Kind: string(domaingraph.EdgeKindContains), Props: map[string]any{"order": 1000}})
+	edge, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 1000}})
 	if err != nil {
 		t.Fatalf("CreateEdge() error = %v", err)
 	}

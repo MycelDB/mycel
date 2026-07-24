@@ -62,9 +62,10 @@ type NodeMeta struct {
 
 type EdgeMeta struct {
 	ID       graph.EdgeID
+	DomainID graph.DomainID
 	FromID   graph.NodeID
 	ToID     graph.NodeID
-	Kind     graph.EdgeKind
+	Labels   []string
 	Deleted  bool
 	Location RecordLocation
 }

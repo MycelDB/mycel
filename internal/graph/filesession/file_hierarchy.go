@@ -39,7 +39,7 @@ func (s *FileSession) ReorderChildren(ctx context.Context, in sessionapi.Reorder
 func containsParentEdgeIndexes(edges []graph.Edge, childID graph.NodeID) []int {
 	indexes := []int{}
 	for i, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.ToID == childID {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.ToID == childID {
 			indexes = append(indexes, i)
 		}
 	}
@@ -49,7 +49,7 @@ func containsParentEdgeIndexes(edges []graph.Edge, childID graph.NodeID) []int {
 func orderedContainsEdgeIndexes(edges []graph.Edge, parentID graph.NodeID) []int {
 	indexes := []int{}
 	for i, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.FromID == parentID {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.FromID == parentID {
 			indexes = append(indexes, i)
 		}
 	}
@@ -68,10 +68,10 @@ func orderedContainsEdgeIndexes(edges []graph.Edge, parentID graph.NodeID) []int
 }
 
 func edgeOrderNumber(edge graph.Edge) (float64, bool) {
-	if edge.Props == nil {
+	if edge.Properties == nil {
 		return 0, false
 	}
-	switch v := edge.Props["order"].(type) {
+	switch v := edge.Properties["order"].(type) {
 	case int:
 		return float64(v), true
 	case int8:
@@ -107,7 +107,7 @@ func edgeOrderNumber(edge graph.Edge) (float64, bool) {
 func normalizeChildrenOrder(edges []graph.Edge, parentID graph.NodeID) {
 	for order, edgeIndex := range orderedContainsEdgeIndexes(edges, parentID) {
 		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = order * childOrderStep
+		edges[edgeIndex].Properties["order"] = order * childOrderStep
 	}
 }
 
@@ -128,7 +128,7 @@ func setCompleteChildOrder(edges []graph.Edge, parentID graph.NodeID, childIDs [
 	for order, childID := range childIDs {
 		edgeIndex := childEdgeByID[childID]
 		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = order * childOrderStep
+		edges[edgeIndex].Properties["order"] = order * childOrderStep
 	}
 	return nil
 }
@@ -156,7 +156,7 @@ func setChildPosition(edges []graph.Edge, parentID graph.NodeID, childID graph.N
 	indexes[target] = movedIndex
 	for pos, edgeIndex := range indexes {
 		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = pos * childOrderStep
+		edges[edgeIndex].Properties["order"] = pos * childOrderStep
 	}
 	return cloneEdge(edges[movedIndex]), nil
 }
@@ -190,12 +190,12 @@ func validateCompleteChildOrder(edges []graph.Edge, parentID graph.NodeID, child
 }
 
 func ensureEdgeProps(edge *graph.Edge) {
-	if edge.Props == nil {
-		edge.Props = map[string]any{}
+	if edge.Properties == nil {
+		edge.Properties = map[string]any{}
 	}
 }
 
 func cloneEdge(edge graph.Edge) graph.Edge {
-	edge.Props = copyProps(edge.Props)
+	edge.Properties = copyProps(edge.Properties)
 	return edge
 }

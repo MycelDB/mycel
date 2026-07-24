@@ -13,7 +13,7 @@ import (
 // EdgeChange describes a graph edge mutation that may affect semantic source text.
 type EdgeChange struct {
 	EdgeID graph.EdgeID
-	Kind   graph.EdgeKind
+	Labels []string
 	Change string
 	FromID graph.NodeID
 	ToID   graph.NodeID

@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
@@ -78,7 +79,7 @@ func TestDirtyEventAppenderConvertsFullGraphChangeContext(t *testing.T) {
 		DeletedNodeIDs: []graph.NodeID{deletedID},
 		ChangedEdges: []graphchange.EdgeChange{{
 			EdgeID: edgeID,
-			Kind:   graph.EdgeKindContains,
+			Labels: []string{"contains"},
 			Change: "updated",
 			FromID: newParentID,
 			ToID:   nodeID,
@@ -104,7 +105,7 @@ func TestDirtyEventAppenderConvertsFullGraphChangeContext(t *testing.T) {
 	if len(event.CreatedNodeIDs) != 1 || event.CreatedNodeIDs[0] != nodeID || len(event.UpdatedNodeIDs) != 1 || event.UpdatedNodeIDs[0] != updatedID || len(event.DeletedNodeIDs) != 1 || event.DeletedNodeIDs[0] != deletedID {
 		t.Fatalf("unexpected node changes: %+v", event)
 	}
-	if len(event.ChangedEdges) != 1 || event.ChangedEdges[0].EdgeID != edgeID || event.ChangedEdges[0].Kind != graph.EdgeKindContains || event.ChangedEdges[0].Change != "updated" {
+	if len(event.ChangedEdges) != 1 || event.ChangedEdges[0].EdgeID != edgeID || !reflect.DeepEqual(event.ChangedEdges[0].Labels, []string{"contains"}) || event.ChangedEdges[0].Change != "updated" {
 		t.Fatalf("unexpected edge changes: %+v", event.ChangedEdges)
 	}
 	if event.OldParentByNodeID[nodeID] != oldParentID || event.NewParentByNodeID[nodeID] != newParentID {

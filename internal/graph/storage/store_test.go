@@ -23,7 +23,7 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	updatedAt := createdAt.Add(time.Hour)
 	parent := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "parent", Props: map[string]any{"journal_day": 20260102}, CreatedAt: createdAt, UpdatedAt: updatedAt}
 	child := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "child", Props: map[string]any{}}
-	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 0}}
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}
 	tx, err := store.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ func TestLocalStoreRejectsEdgeToConcurrentlyDeletedEndpoint(t *testing.T) {
 		t.Fatalf("begin edge tx failed: %v", err)
 	}
 	edgeTx.ExpectRevision(base)
-	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindReferences, Props: map[string]any{}}
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"references"}, Properties: map[string]any{}}
 	if err := edgeTx.PutEdge(edge); err != nil {
 		t.Fatalf("put edge failed: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestLocalStoreRejectsNodeDeleteAfterConcurrentEdgeAdd(t *testing.T) {
 		t.Fatalf("begin edge tx failed: %v", err)
 	}
 	edgeTx.ExpectRevision(base)
-	if err := edgeTx.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindReferences, Props: map[string]any{}}); err != nil {
+	if err := edgeTx.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"references"}, Properties: map[string]any{}}); err != nil {
 		t.Fatalf("put edge failed: %v", err)
 	}
 	if err := edgeTx.Commit(); err != nil {
@@ -357,7 +357,7 @@ func TestLocalStoreRejectsConcurrentContainsParents(t *testing.T) {
 		t.Fatalf("begin first failed: %v", err)
 	}
 	first.ExpectRevision(base)
-	if err := first.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+	if err := first.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{}}); err != nil {
 		t.Fatalf("put first contains failed: %v", err)
 	}
 	second, err := store.Begin(ctx)
@@ -365,7 +365,7 @@ func TestLocalStoreRejectsConcurrentContainsParents(t *testing.T) {
 		t.Fatalf("begin second failed: %v", err)
 	}
 	second.ExpectRevision(base)
-	if err := second.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: secondParent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+	if err := second.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: secondParent.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{}}); err != nil {
 		t.Fatalf("put second contains failed: %v", err)
 	}
 	if err := first.Commit(); err != nil {
@@ -442,7 +442,7 @@ func TestLocalStoreAllowsEdgeMoveAwayBeforeNodeDelete(t *testing.T) {
 			t.Fatalf("put seed node failed: %v", err)
 		}
 	}
-	if err := seed.PutEdge(graph.Edge{ID: edgeID, FromID: oldParent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+	if err := seed.PutEdge(graph.Edge{ID: edgeID, FromID: oldParent.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{}}); err != nil {
 		t.Fatalf("put seed edge failed: %v", err)
 	}
 	if err := seed.Commit(); err != nil {
@@ -454,7 +454,7 @@ func TestLocalStoreAllowsEdgeMoveAwayBeforeNodeDelete(t *testing.T) {
 		t.Fatalf("begin move/delete failed: %v", err)
 	}
 	tx.ExpectRevision(store.Revision())
-	if err := tx.PutEdge(graph.Edge{ID: edgeID, FromID: newParent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+	if err := tx.PutEdge(graph.Edge{ID: edgeID, FromID: newParent.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{}}); err != nil {
 		t.Fatalf("move edge failed: %v", err)
 	}
 	if err := tx.DeleteNode(oldParent.ID); err != nil {

@@ -96,13 +96,17 @@ type EdgeInput struct {
 	EdgeID     string
 	FromNodeID string
 	ToNodeID   string
-	Kind       string
-	Props      map[string]any
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 }
 
 type UpdateEdgeInput struct {
 	EdgeID     string
-	Kind       *string
-	Props      map[string]any
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	UpdateMask []string
 }

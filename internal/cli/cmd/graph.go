@@ -277,7 +277,7 @@ func newGraphEdgeCreateCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		edge := &clientv1.EdgeCreate{FromNodeId: from, ToNodeId: to, Kind: kind, Props: props}
+		edge := &clientv1.EdgeCreate{FromNodeId: from, ToNodeId: to, Labels: []string{kind}, Properties: props}
 		if edgeID != "" {
 			edge.EdgeId = &edgeID
 		}
@@ -311,7 +311,7 @@ func newGraphEdgeGetCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return a.Print(res.GetEdge(), fmt.Sprintf("%s\t%s -> %s\t%s\n", res.GetEdge().GetEdgeId(), res.GetEdge().GetFromNodeId(), res.GetEdge().GetToNodeId(), res.GetEdge().GetKind()))
+		return a.Print(res.GetEdge(), fmt.Sprintf("%s\t%s -> %s\t%s\n", res.GetEdge().GetEdgeId(), res.GetEdge().GetFromNodeId(), res.GetEdge().GetToNodeId(), strings.Join(res.GetEdge().GetLabels(), ",")))
 	}}
 	cmd.Flags().StringVar(&transactionID, "transaction-id", "", "transaction ID")
 	_ = cmd.MarkFlagRequired("transaction-id")
@@ -335,7 +335,7 @@ func newGraphEdgeListCommand(a *app.App) *cobra.Command {
 			return a.Print(res, "")
 		}
 		for _, edge := range res.GetEdges() {
-			fmt.Printf("%s\t%s -> %s\t%s\n", edge.GetEdgeId(), edge.GetFromNodeId(), edge.GetToNodeId(), edge.GetKind())
+			fmt.Printf("%s\t%s -> %s\t%s\n", edge.GetEdgeId(), edge.GetFromNodeId(), edge.GetToNodeId(), strings.Join(edge.GetLabels(), ","))
 		}
 		if res.GetNextPageToken() != "" {
 			fmt.Printf("next page token: %s\n", res.GetNextPageToken())

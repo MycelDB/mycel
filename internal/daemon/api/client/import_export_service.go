@@ -239,8 +239,7 @@ func (s *ImportExportService) importRecord(ctx context.Context, tx daemonsession
 		input := edgeInputFromExportEdge(value.Edge, metadata.GetOptions().GetPreserveIds())
 		if metadata.GetMode() == clientv1.DomainImportMode_DOMAIN_IMPORT_MODE_UPSERT && input.EdgeID != "" {
 			if _, err := s.graphs.GetEdge(ctx, tx, input.EdgeID); err == nil {
-				kind := input.Kind
-				if _, err := s.graphs.UpdateEdge(ctx, tx, daegraph.UpdateEdgeInput{EdgeID: input.EdgeID, Kind: &kind, Props: input.Props}); err != nil {
+				if _, err := s.graphs.UpdateEdge(ctx, tx, daegraph.UpdateEdgeInput{EdgeID: input.EdgeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload, Meta: input.Meta}); err != nil {
 					return mapGraphError(err, "import edge")
 				}
 				summary.EdgesUpdated++
@@ -397,7 +396,7 @@ func nodeInputFromExportNode(node *clientv1.Node, preserveIDs bool) daegraph.Nod
 }
 
 func edgeInputFromExportEdge(edge *clientv1.Edge, preserveIDs bool) daegraph.EdgeInput {
-	input := daegraph.EdgeInput{FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Kind: edge.GetKind(), Props: structMap(edge.GetProps())}
+	input := daegraph.EdgeInput{FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload()), Meta: structMap(edge.GetMeta())}
 	if preserveIDs {
 		input.EdgeID = edge.GetEdgeId()
 	}

@@ -270,8 +270,8 @@ func (e *queryExecution) applySteps(row *queryRowState, current []domaingraph.No
 		if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_UNSPECIFIED {
 			return fmt.Errorf("traversal direction is required")
 		}
-		kind := strings.TrimSpace(step.GetEdgeKind())
-		if kind == "" {
+		label := strings.TrimSpace(step.GetEdgeKind())
+		if label == "" {
 			return fmt.Errorf("traversal edge_kind is required")
 		}
 		next := []domaingraph.Node{}
@@ -319,9 +319,9 @@ func (e *queryExecution) traverse(row *queryRowState, start domaingraph.Node, st
 				continue
 			}
 			visited[visitKey] = true
-			if edge.Kind == domaingraph.EdgeKindContains && step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT {
+			if domaingraph.EdgeHasLabels(edge, []string{"contains"}) && step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT {
 				row.parentByChild[candidate.ID.String()] = node.ID.String()
-				row.orderByChild[candidate.ID.String()] = edge.Props["order"]
+				row.orderByChild[candidate.ID.String()] = edge.Properties["order"]
 			}
 			if childDepth >= minDepth && (maxDepth < 0 || childDepth <= maxDepth) && e.nodeMatches(candidate, step.GetTarget()) {
 				out = append(out, candidate)
@@ -342,12 +342,12 @@ func (e *queryExecution) stepEdges(node domaingraph.Node, step *clientv1.Travers
 	}
 	out := []domaingraph.Edge{}
 	for _, edge := range edges {
-		if string(edge.Kind) == step.GetEdgeKind() {
+		if domaingraph.EdgeHasLabels(edge, []string{step.GetEdgeKind()}) {
 			out = append(out, edge)
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		return numericOrder(out[i].Props["order"], i) < numericOrder(out[j].Props["order"], j)
+		return numericOrder(out[i].Properties["order"], i) < numericOrder(out[j].Properties["order"], j)
 	})
 	return out
 }

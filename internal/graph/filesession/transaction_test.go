@@ -22,11 +22,11 @@ func TestFileSessionTransactionPhase2ReadYourWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin failed: %v", err)
 	}
-	root, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	root, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add root failed: %v", err)
 	}
-	child, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Props: map[string]any{"k": "v"}})
+	child, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Properties: map[string]any{"k": "v"}})
 	if err != nil {
 		t.Fatalf("add child failed: %v", err)
 	}
@@ -77,11 +77,11 @@ func TestFileSessionTransactionPhase2ReadYourWrites(t *testing.T) {
 func TestFileSessionTransactionPhase2DeleteEdgeOverlay(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	ctx := context.Background()
-	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add root failed: %v", err)
 	}
-	child, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Props: map[string]any{}})
+	child, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add child failed: %v", err)
 	}
@@ -120,11 +120,11 @@ func TestFileSessionTransactionPhase3CommitPersistsStagedGraphDelta(t *testing.T
 	if err != nil {
 		t.Fatalf("begin failed: %v", err)
 	}
-	root, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	root, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add root failed: %v", err)
 	}
-	child, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Props: map[string]any{"k": "v"}})
+	child, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Properties: map[string]any{"k": "v"}})
 	if err != nil {
 		t.Fatalf("add child failed: %v", err)
 	}
@@ -159,11 +159,11 @@ func TestFileSessionTransactionPhase3CommitPersistsStagedGraphDelta(t *testing.T
 func TestFileSessionTransactionPhase3CommitDeletesStagedNodesAndEdges(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	ctx := context.Background()
-	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add root failed: %v", err)
 	}
-	child, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Props: map[string]any{}})
+	child, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add child failed: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestFileSessionTransactionPhase2ReadOnlyRejectsWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin read-only failed: %v", err)
 	}
-	_, err = tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "nope", Props: map[string]any{}})
+	_, err = tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "nope", Properties: map[string]any{}})
 	if !errors.Is(err, sessionapi.ErrReadOnlyTransaction) {
 		t.Fatalf("expected ErrReadOnlyTransaction, got %v", err)
 	}
@@ -233,7 +233,7 @@ func TestFileSessionTransactionPhase2QuerySeesStagedNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin failed: %v", err)
 	}
-	if _, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "query me", Props: map[string]any{}}); err != nil {
+	if _, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "query me", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("add node failed: %v", err)
 	}
 	rows, err := tx.Query().
@@ -251,15 +251,15 @@ func TestFileSessionTransactionPhase2QuerySeesStagedNodes(t *testing.T) {
 func TestFileSessionTransactionPhase4MoveSubtreeCommitAndRollback(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	ctx := context.Background()
-	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add root failed: %v", err)
 	}
-	other, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "other", Props: map[string]any{}})
+	other, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "other", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add other failed: %v", err)
 	}
-	child, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Props: map[string]any{}})
+	child, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add child failed: %v", err)
 	}
@@ -304,10 +304,10 @@ func TestFileSessionTransactionPhase4MoveSubtreeCommitAndRollback(t *testing.T) 
 func TestFileSessionTransactionPhase4ReorderChildrenCommit(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	ctx := context.Background()
-	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
-	a, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "a", Props: map[string]any{}})
-	b, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "b", Props: map[string]any{}})
-	c, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "c", Props: map[string]any{}})
+	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
+	a, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "a", Properties: map[string]any{}})
+	b, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "b", Properties: map[string]any{}})
+	c, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "c", Properties: map[string]any{}})
 	_, _ = sess.AddEdge(ctx, containsInput(root.ID, a.ID, 0))
 	_, _ = sess.AddEdge(ctx, containsInput(root.ID, b.ID, 1))
 	_, _ = sess.AddEdge(ctx, containsInput(root.ID, c.ID, 2))
@@ -342,8 +342,8 @@ func TestFileSessionTransactionPhase4ApplyGraphStagesAndCommits(t *testing.T) {
 	}
 	result, err := tx.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
 		AddNodes: []sessionapi.AddNodeInput{
-			{ID: &rootID, TemplateID: &tmplID, Content: "root", Props: map[string]any{}},
-			{ID: &childID, TemplateID: &tmplID, Content: "child", Props: map[string]any{}},
+			{ID: &rootID, TemplateID: &tmplID, Content: "root", Properties: map[string]any{}},
+			{ID: &childID, TemplateID: &tmplID, Content: "child", Properties: map[string]any{}},
 		},
 		AddEdges: []sessionapi.AddEdgeInput{containsInput(rootID, childID, 0)},
 	})
@@ -373,7 +373,7 @@ func TestFileSessionTransactionPhase4ApplyGraphRestoresOverlayOnError(t *testing
 		t.Fatalf("begin failed: %v", err)
 	}
 	if _, err := tx.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
-		AddNodes: []sessionapi.AddNodeInput{{ID: &rootID, TemplateID: &tmplID, Content: "root", Props: map[string]any{}}},
+		AddNodes: []sessionapi.AddNodeInput{{ID: &rootID, TemplateID: &tmplID, Content: "root", Properties: map[string]any{}}},
 		AddEdges: []sessionapi.AddEdgeInput{containsInput(rootID, nodeID(), 0)},
 	}); err == nil {
 		t.Fatalf("expected apply graph failure")
@@ -386,7 +386,7 @@ func TestFileSessionTransactionPhase4ApplyGraphRestoresOverlayOnError(t *testing
 func TestFileSessionTransactionPhase5QueryHidesStagedDeletes(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	ctx := context.Background()
-	node, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "delete me", Props: map[string]any{}})
+	node, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "delete me", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add node failed: %v", err)
 	}
@@ -422,9 +422,9 @@ func TestFileSessionTransactionPhase5QueryHidesStagedDeletes(t *testing.T) {
 func TestFileSessionTransactionPhase5QuerySeesMovedHierarchy(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	ctx := context.Background()
-	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
-	other, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "other", Props: map[string]any{}})
-	child, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Props: map[string]any{}})
+	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
+	other, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "other", Properties: map[string]any{}})
+	child, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Properties: map[string]any{}})
 	_, _ = sess.AddEdge(ctx, containsInput(root.ID, child.ID, 0))
 	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
 	if err != nil {
@@ -459,10 +459,10 @@ func TestFileSessionTransactionPhase5QuerySeesMovedHierarchy(t *testing.T) {
 func TestFileSessionTransactionPhase5QueryTreeUsesStagedOrder(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	ctx := context.Background()
-	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
-	a, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "a", Props: map[string]any{}})
-	b, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "b", Props: map[string]any{}})
-	c, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "c", Props: map[string]any{}})
+	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
+	a, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "a", Properties: map[string]any{}})
+	b, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "b", Properties: map[string]any{}})
+	c, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "c", Properties: map[string]any{}})
 	_, _ = sess.AddEdge(ctx, containsInput(root.ID, a.ID, 0))
 	_, _ = sess.AddEdge(ctx, containsInput(root.ID, b.ID, 1))
 	_, _ = sess.AddEdge(ctx, containsInput(root.ID, c.ID, 2))
@@ -496,11 +496,11 @@ func TestFileSessionTransactionPhase5QueryTreeUsesStagedOrder(t *testing.T) {
 func TestFileSessionPhase6UpdateNodeAndCreateSiblingIsTransactional(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	ctx := context.Background()
-	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add root failed: %v", err)
 	}
-	first, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "first", Props: map[string]any{}})
+	first, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "first", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add first failed: %v", err)
 	}
@@ -530,8 +530,8 @@ func TestFileSessionPhase6UpdateNodeAndCreateSiblingIsTransactional(t *testing.T
 func TestFileSessionPhase6TransactionUpdateNodeAndCreateSiblingRollback(t *testing.T) {
 	sess, tmplID := newHierarchyTestSession(t)
 	ctx := context.Background()
-	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
-	first, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "first", Props: map[string]any{}})
+	root, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
+	first, _ := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "first", Properties: map[string]any{}})
 	_, _ = sess.AddEdge(ctx, containsInput(root.ID, first.ID, 0))
 	tx, err := sess.Begin(ctx, sessionapi.TxOptions{})
 	if err != nil {
@@ -565,7 +565,7 @@ func TestFileSessionPhase6ApplyGraphFailureDoesNotPersistPartialNode(t *testing.
 	rootID := nodeID()
 	missingID := nodeID()
 	_, err := sess.ApplyGraph(ctx, sessionapi.ApplyGraphInput{
-		AddNodes: []sessionapi.AddNodeInput{{ID: &rootID, TemplateID: &tmplID, Content: "root", Props: map[string]any{}}},
+		AddNodes: []sessionapi.AddNodeInput{{ID: &rootID, TemplateID: &tmplID, Content: "root", Properties: map[string]any{}}},
 		AddEdges: []sessionapi.AddEdgeInput{containsInput(rootID, missingID, 0)},
 	})
 	if err == nil {
@@ -581,7 +581,7 @@ func TestFileSessionTransactionPhase8ConflictOnStaleCommit(t *testing.T) {
 	ctx := context.Background()
 	// Seed a shared node both transactions will mutate, so their write-sets
 	// overlap and a stale commit must conflict.
-	seed, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "seed", Props: map[string]any{}})
+	seed, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "seed", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("seed add failed: %v", err)
 	}
@@ -593,10 +593,10 @@ func TestFileSessionTransactionPhase8ConflictOnStaleCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin tx2 failed: %v", err)
 	}
-	if _, err := tx1.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "tx1", Props: map[string]any{}}); err != nil {
+	if _, err := tx1.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "tx1", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("tx1 update failed: %v", err)
 	}
-	if _, err := tx2.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "tx2", Props: map[string]any{}}); err != nil {
+	if _, err := tx2.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "tx2", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("tx2 update failed: %v", err)
 	}
 	if err := tx1.Commit(ctx); err != nil {
@@ -618,10 +618,10 @@ func TestFileSessionTransactionDisjointWritesDoNotConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin tx2 failed: %v", err)
 	}
-	if _, err := tx1.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "tx1", Props: map[string]any{}}); err != nil {
+	if _, err := tx1.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "tx1", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("tx1 add failed: %v", err)
 	}
-	if _, err := tx2.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "tx2", Props: map[string]any{}}); err != nil {
+	if _, err := tx2.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "tx2", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("tx2 add failed: %v", err)
 	}
 	if err := tx1.Commit(ctx); err != nil {
@@ -645,7 +645,7 @@ func TestFileSessionTransactionPhase8ReadOnlyCommitDoesNotConflict(t *testing.T)
 	if err != nil {
 		t.Fatalf("begin writer failed: %v", err)
 	}
-	if _, err := writer.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "writer", Props: map[string]any{}}); err != nil {
+	if _, err := writer.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "writer", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("writer add failed: %v", err)
 	}
 	if err := writer.Commit(ctx); err != nil {
@@ -672,7 +672,7 @@ func TestFileSessionGraphChangeSinkReceivesPostCommitEvent(t *testing.T) {
 		}
 		return nil
 	}))
-	if _, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "node", Props: map[string]any{}}); err != nil {
+	if _, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "node", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("add node failed: %v", err)
 	}
 	if !seen {
@@ -689,7 +689,7 @@ func TestFileSessionGraphChangeSinkFailureDoesNotFailCommit(t *testing.T) {
 	sess, fs, tmplID := newHierarchyTestFileSessionWithSink(t, graphchange.SinkFunc(func(context.Context, graphchange.CommittedEvent) error {
 		return sinkErr
 	}))
-	node, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "node", Props: map[string]any{}})
+	node, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "node", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("graph commit should succeed despite sink failure: %v", err)
 	}
@@ -725,7 +725,7 @@ func TestFileSessionGraphChangeSinkNotInvokedForRollbackReadOnlyOrNoop(t *testin
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
-	if _, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "rolled back", Props: map[string]any{}}); err != nil {
+	if _, err := tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "rolled back", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("stage node: %v", err)
 	}
 	if err := tx.Rollback(ctx); err != nil {
@@ -765,23 +765,23 @@ func TestFileSessionGraphChangeSinkIncludesMoveReorderAndDeleteContext(t *testin
 		events = append(events, event)
 		return nil
 	}))
-	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Props: map[string]any{}})
+	root, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "root", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add root: %v", err)
 	}
-	oldParent, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "old", Props: map[string]any{}})
+	oldParent, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "old", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add old parent: %v", err)
 	}
-	newParent, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "new", Props: map[string]any{}})
+	newParent, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "new", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add new parent: %v", err)
 	}
-	child, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Props: map[string]any{}})
+	child, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "child", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add child: %v", err)
 	}
-	sibling, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "sibling", Props: map[string]any{}})
+	sibling, err := sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &tmplID, Content: "sibling", Properties: map[string]any{}})
 	if err != nil {
 		t.Fatalf("add sibling: %v", err)
 	}

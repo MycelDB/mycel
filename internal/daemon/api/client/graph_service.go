@@ -432,15 +432,14 @@ func edgeInputFromProto(edge *clientv1.EdgeCreate) daegraph.EdgeInput {
 	if edge == nil {
 		return daegraph.EdgeInput{}
 	}
-	return daegraph.EdgeInput{EdgeID: edge.GetEdgeId(), FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Kind: edge.GetKind(), Props: structMap(edge.GetProps())}
+	return daegraph.EdgeInput{EdgeID: edge.GetEdgeId(), FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload()), Meta: structMap(edge.GetMeta())}
 }
 
 func updateEdgeInputFromProto(edge *clientv1.Edge) daegraph.UpdateEdgeInput {
 	if edge == nil {
 		return daegraph.UpdateEdgeInput{}
 	}
-	kind := edge.GetKind()
-	return daegraph.UpdateEdgeInput{EdgeID: edge.GetEdgeId(), Kind: &kind, Props: structMap(edge.GetProps())}
+	return daegraph.UpdateEdgeInput{EdgeID: edge.GetEdgeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload()), Meta: structMap(edge.GetMeta())}
 }
 
 func mapProtoNode(node domaingraph.Node) *clientv1.Node {
@@ -467,7 +466,7 @@ func mapProtoNode(node domaingraph.Node) *clientv1.Node {
 }
 
 func mapProtoEdge(edge domaingraph.Edge) *clientv1.Edge {
-	return &clientv1.Edge{EdgeId: edge.ID.String(), FromNodeId: edge.FromID.String(), ToNodeId: edge.ToID.String(), Kind: string(edge.Kind), Props: protoStruct(edge.Props)}
+	return &clientv1.Edge{EdgeId: edge.ID.String(), DomainId: edge.DomainID.String(), FromNodeId: edge.FromID.String(), ToNodeId: edge.ToID.String(), Labels: append([]string(nil), edge.Labels...), Properties: protoStruct(edge.Properties), Payload: protoStruct(edge.Payload), Meta: protoStruct(edge.Meta), CreateTime: timestamppb.New(edge.CreatedAt), UpdateTime: timestamppb.New(edge.UpdatedAt)}
 }
 
 func structMap(value *structpb.Struct) map[string]any {
