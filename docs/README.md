@@ -4,6 +4,7 @@ The documentation tree is organized around Mycel architecture, API, operational,
 
 - `design/` contains architecture, API, operational, and design reference documents.
 - `implementation/` contains implementation plans and migration/package plans.
+- `roadmap/` contains product and subsystem roadmaps, including `roadmap/gql-roadmap.md` for the GQL feature roadmap.
 - `makefile_commands.md` summarizes common `make` targets for building, testing, coverage, and running the daemon locally.
 
 Current subsystem/runtime architecture direction:
