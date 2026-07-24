@@ -47,11 +47,11 @@ func TestExecutorExecutesInsertNodePlan(t *testing.T) {
 }
 
 func TestExecutorExecutesQueryNodesPlan(t *testing.T) {
-	graph := &fakeGraphWriter{nodes: []execmodel.Node{{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}}}}
+	graph := &fakeGraphWriter{nodes: []execmodel.Node{{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}}}}
 	plan := planmodel.Plan{
 		AccessMode: analysis.ReadOnly,
 		Operations: []planmodel.Operation{
-			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
 		},
 	}
 
@@ -59,11 +59,53 @@ func TestExecutorExecutesQueryNodesPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if !reflect.DeepEqual(graph.queried, []QueryNodes{{Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}}}) {
+	if !reflect.DeepEqual(graph.queried, []QueryNodes{{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}}}) {
 		t.Fatalf("queried = %#v", graph.queried)
 	}
 	if len(result.Rows) != 1 || result.Rows[0]["p"].Node == nil || result.Rows[0]["p"].Node.ID != "node-1" {
 		t.Fatalf("unexpected result rows: %#v", result.Rows)
+	}
+}
+
+func TestExecutorQueryNodesFirstAndLastNameScenarios(t *testing.T) {
+	nodes := []execmodel.Node{
+		{ID: "node-alice-jones", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}},
+		{ID: "node-alice-brown", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Brown"}},
+	}
+	tests := []struct {
+		name       string
+		props      map[string]any
+		wantNodeID []string
+	}{
+		{name: "Alice Jones", props: map[string]any{"firstName": "Alice", "lastName": "Jones"}, wantNodeID: []string{"node-alice-jones"}},
+		{name: "Alice", props: map[string]any{"firstName": "Alice"}, wantNodeID: []string{"node-alice-jones", "node-alice-brown"}},
+		{name: "John", props: map[string]any{"firstName": "John"}, wantNodeID: []string{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			graph := &fakeGraphWriter{nodes: nodes}
+			plan := planmodel.Plan{
+				AccessMode: analysis.ReadOnly,
+				Operations: []planmodel.Operation{
+					planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: tt.props, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+				},
+			}
+
+			result, err := Execute(context.Background(), graph, plan)
+			if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			got := make([]string, 0, len(result.Rows))
+			for _, row := range result.Rows {
+				if row["p"].Node != nil {
+					got = append(got, row["p"].Node.ID)
+				}
+			}
+			if !reflect.DeepEqual(got, tt.wantNodeID) {
+				t.Fatalf("node ids = %#v, want %#v; rows=%#v", got, tt.wantNodeID, result.Rows)
+			}
+		})
 	}
 }
 
@@ -111,5 +153,34 @@ func (f *fakeGraphWriter) QueryNodes(_ context.Context, query QueryNodes) ([]exe
 		return nil, f.err
 	}
 	f.queried = append(f.queried, query)
-	return f.nodes, nil
+	out := []execmodel.Node{}
+	for _, node := range f.nodes {
+		if !hasAllLabels(node.Labels, query.Labels) || !hasProperties(node.Properties, query.Properties) {
+			continue
+		}
+		out = append(out, node)
+	}
+	return out, nil
+}
+
+func hasAllLabels(labels, required []string) bool {
+	seen := map[string]struct{}{}
+	for _, label := range labels {
+		seen[label] = struct{}{}
+	}
+	for _, label := range required {
+		if _, ok := seen[label]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func hasProperties(properties, required map[string]any) bool {
+	for key, want := range required {
+		if got, ok := properties[key]; !ok || !reflect.DeepEqual(got, want) {
+			return false
+		}
+	}
+	return true
 }
