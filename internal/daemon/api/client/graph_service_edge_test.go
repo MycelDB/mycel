@@ -59,6 +59,50 @@ func TestGraphServiceEdgeUsesLabelsPropertiesPayloadAndMeta(t *testing.T) {
 	}
 }
 
+func TestQueryServiceExecuteGQLReturnsRelationshipPatternRows(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+
+	fromID := uuid.NewString()
+	toID := uuid.NewString()
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{NodeId: &fromID, Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "Source"})}}); err != nil {
+		t.Fatalf("CreateNode(from) error = %v", err)
+	}
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{NodeId: &toID, Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "Target"})}}); err != nil {
+		t.Fatalf("CreateNode(to) error = %v", err)
+	}
+	createdEdge, err := graphSvc.CreateEdge(fixture.ctx, &clientv1.CreateEdgeRequest{TransactionId: writeTx, Edge: &clientv1.EdgeCreate{FromNodeId: fromID, ToNodeId: toID, Labels: []string{"REFERENCES"}, Properties: mustStruct(t, map[string]any{"confidence": 0.9})}})
+	if err != nil {
+		t.Fatalf("CreateEdge() error = %v", err)
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (a:Note)-[r:REFERENCES {confidence: 0.9}]->(b:Note) RETURN a, r, r.confidence, b.title"})
+	if err != nil {
+		t.Fatalf("ExecuteGQL() error = %v", err)
+	}
+	rows := res.GetResult().GetRows()
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, rows=%+v", len(rows), rows)
+	}
+	fields := rows[0].GetFields()
+	if fields["a"].GetNode().GetNodeId() != fromID || fields["b.title"].GetScalar().GetStringValue() != "Target" {
+		t.Fatalf("unexpected node fields: %+v", fields)
+	}
+	if fields["r"].GetEdge().GetEdgeId() != createdEdge.GetEdge().GetEdgeId() || !reflect.DeepEqual(fields["r"].GetEdge().GetLabels(), []string{"REFERENCES"}) || fields["r.confidence"].GetScalar().GetNumberValue() != 0.9 {
+		t.Fatalf("unexpected edge fields: %+v", fields)
+	}
+	graph := res.GetResult().GetGraph()
+	if len(graph.GetNodes()) != 1 || len(graph.GetEdges()) != 1 {
+		t.Fatalf("result graph = %+v, want returned node and edge", graph)
+	}
+}
+
 func mustStruct(t *testing.T, values map[string]any) *structpb.Struct {
 	t.Helper()
 	out, err := structpb.NewStruct(values)

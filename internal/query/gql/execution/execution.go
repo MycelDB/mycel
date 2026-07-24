@@ -22,10 +22,43 @@ type QueryNodes struct {
 	Limit      int64
 }
 
+type QueryPattern struct {
+	Start        QueryNodePattern
+	Relationship QueryRelationshipPattern
+	End          QueryNodePattern
+	Limit        int64
+}
+
+type QueryNodePattern struct {
+	Labels     []string
+	Properties map[string]any
+}
+
+type RelationshipDirection string
+
+const (
+	RelationshipOutgoing   RelationshipDirection = "outgoing"
+	RelationshipIncoming   RelationshipDirection = "incoming"
+	RelationshipUndirected RelationshipDirection = "undirected"
+)
+
+type QueryRelationshipPattern struct {
+	Labels     []string
+	Properties map[string]any
+	Direction  RelationshipDirection
+}
+
+type PatternRow struct {
+	Start execmodel.Node
+	Edge  execmodel.Edge
+	End   execmodel.Node
+}
+
 // Graph is the graph capability required by the current executor.
 type Graph interface {
 	InsertNode(ctx context.Context, node InsertNode) (execmodel.NodeRef, error)
 	QueryNodes(ctx context.Context, query QueryNodes) ([]execmodel.Node, error)
+	QueryPattern(ctx context.Context, query QueryPattern) ([]PatternRow, error)
 }
 
 // GraphWriter is kept as a compatibility alias for the current graph capability.
@@ -63,6 +96,61 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				return execmodel.Result{}, err
 			}
 			result.Counters.NodesInserted++
+		case planmodel.QueryPatternOperation:
+			if plan.AccessMode != analysis.ReadOnly {
+				return execmodel.Result{}, fmt.Errorf("query pattern requires read-only access mode")
+			}
+			rows, err := e.graph.QueryPattern(ctx, QueryPattern{
+				Start:        QueryNodePattern{Labels: append([]string(nil), op.Start.Labels...), Properties: copyProperties(op.Start.Properties)},
+				Relationship: QueryRelationshipPattern{Labels: append([]string(nil), op.Relationship.Labels...), Properties: copyProperties(op.Relationship.Properties), Direction: RelationshipDirection(op.Relationship.Direction)},
+				End:          QueryNodePattern{Labels: append([]string(nil), op.End.Labels...), Properties: copyProperties(op.End.Properties)},
+				Limit:        op.Limit,
+			})
+			if err != nil {
+				return execmodel.Result{}, err
+			}
+			if op.Limit > 0 && int64(len(rows)) > op.Limit {
+				rows = rows[:op.Limit]
+			}
+			for _, ret := range op.Returns {
+				result.Columns = append(result.Columns, returnColumn(ret))
+			}
+			for _, matched := range rows {
+				row := execmodel.Row{}
+				for _, ret := range op.Returns {
+					column := returnColumn(ret)
+					switch returnKind(ret) {
+					case planmodel.ReturnVariable:
+						switch ret.Variable {
+						case op.Start.Variable:
+							n := matched.Start
+							row[column] = execmodel.Value{Node: &n}
+						case op.Relationship.Variable:
+							edge := matched.Edge
+							row[column] = execmodel.Value{Edge: &edge}
+						case op.End.Variable:
+							n := matched.End
+							row[column] = execmodel.Value{Node: &n}
+						default:
+							return execmodel.Result{}, fmt.Errorf("return variable %q is not bound", ret.Variable)
+						}
+					case planmodel.ReturnProperty:
+						switch ret.Variable {
+						case op.Start.Variable:
+							row[column] = execmodel.Value{Scalar: matched.Start.Properties[ret.Property]}
+						case op.Relationship.Variable:
+							row[column] = execmodel.Value{Scalar: matched.Edge.Properties[ret.Property]}
+						case op.End.Variable:
+							row[column] = execmodel.Value{Scalar: matched.End.Properties[ret.Property]}
+						default:
+							return execmodel.Result{}, fmt.Errorf("return variable %q is not bound", ret.Variable)
+						}
+					default:
+						return execmodel.Result{}, fmt.Errorf("unsupported return item kind %q", ret.Kind)
+					}
+				}
+				result.Rows = append(result.Rows, row)
+			}
 		case planmodel.QueryNodesOperation:
 			if plan.AccessMode != analysis.ReadOnly {
 				return execmodel.Result{}, fmt.Errorf("query nodes requires read-only access mode")

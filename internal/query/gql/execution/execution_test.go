@@ -181,6 +181,39 @@ func TestExecutorMissingPropertyProjectionReturnsNilScalar(t *testing.T) {
 	}
 }
 
+func TestExecutorExecutesRelationshipPattern(t *testing.T) {
+	graph := &fakeGraphWriter{patternRows: []PatternRow{{
+		Start: execmodel.Node{ID: "source", Labels: []string{"Note"}, Properties: map[string]any{"title": "Source"}},
+		Edge:  execmodel.Edge{ID: "edge-1", Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.9}},
+		End:   execmodel.Node{ID: "target", Labels: []string{"Note"}, Properties: map[string]any{"title": "Target"}},
+	}}}
+	plan := planmodel.Plan{AccessMode: analysis.ReadOnly, Operations: []planmodel.Operation{planmodel.QueryPatternOperation{
+		Start:        planmodel.NodePattern{Variable: "a", Labels: []string{"Note"}},
+		Relationship: planmodel.RelationshipPattern{Variable: "r", Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.9}, Direction: planmodel.RelationshipOutgoing},
+		End:          planmodel.NodePattern{Variable: "b", Labels: []string{"Note"}},
+		Returns: []planmodel.ReturnItem{
+			{Kind: planmodel.ReturnVariable, Variable: "a"},
+			{Kind: planmodel.ReturnVariable, Variable: "r"},
+			{Kind: planmodel.ReturnProperty, Variable: "r", Property: "confidence"},
+			{Kind: planmodel.ReturnProperty, Variable: "b", Property: "title"},
+		},
+		Limit: 1,
+	}}}
+	result, err := Execute(context.Background(), graph, plan)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(graph.patternQueries) != 1 || graph.patternQueries[0].Limit != 1 || graph.patternQueries[0].Relationship.Direction != RelationshipOutgoing {
+		t.Fatalf("pattern queries = %#v", graph.patternQueries)
+	}
+	if !reflect.DeepEqual(result.Columns, []string{"a", "r", "r.confidence", "b.title"}) {
+		t.Fatalf("columns = %#v", result.Columns)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["a"].Node == nil || result.Rows[0]["r"].Edge == nil || result.Rows[0]["r.confidence"].Scalar != 0.9 || result.Rows[0]["b.title"].Scalar != "Target" {
+		t.Fatalf("unexpected rows: %#v", result.Rows)
+	}
+}
+
 func TestExecutorAppliesFetchFirstLimit(t *testing.T) {
 	graph := &fakeGraphWriter{nodes: []execmodel.Node{
 		{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice"}},
@@ -228,11 +261,13 @@ func TestExecutorPropagatesInsertNodeError(t *testing.T) {
 }
 
 type fakeGraphWriter struct {
-	nextID   string
-	err      error
-	inserted []InsertNode
-	queried  []QueryNodes
-	nodes    []execmodel.Node
+	nextID         string
+	err            error
+	inserted       []InsertNode
+	queried        []QueryNodes
+	patternQueries []QueryPattern
+	nodes          []execmodel.Node
+	patternRows    []PatternRow
 }
 
 func (f *fakeGraphWriter) InsertNode(_ context.Context, node InsertNode) (execmodel.NodeRef, error) {
@@ -241,6 +276,14 @@ func (f *fakeGraphWriter) InsertNode(_ context.Context, node InsertNode) (execmo
 	}
 	f.inserted = append(f.inserted, node)
 	return execmodel.NodeRef{ID: f.nextID}, nil
+}
+
+func (f *fakeGraphWriter) QueryPattern(_ context.Context, query QueryPattern) ([]PatternRow, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.patternQueries = append(f.patternQueries, query)
+	return append([]PatternRow(nil), f.patternRows...), nil
 }
 
 func (f *fakeGraphWriter) QueryNodes(_ context.Context, query QueryNodes) ([]execmodel.Node, error) {

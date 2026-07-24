@@ -605,12 +605,69 @@ func (g gqlDaemonGraph) QueryNodes(ctx context.Context, query execution.QueryNod
 	}
 	out := []execmodel.Node{}
 	for _, node := range nodes {
-		if !nodeHasLabels(node.Labels, query.Labels) || !nodeHasProperties(node.Properties, query.Properties) {
+		if !nodeMatchesGQLPattern(node, query.Labels, query.Properties) {
 			continue
 		}
-		out = append(out, execmodel.Node{ID: node.ID.String(), DomainID: node.DomainID.String(), Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties)})
+		out = append(out, gqlExecNode(node))
 	}
 	return out, nil
+}
+
+func (g gqlDaemonGraph) QueryPattern(ctx context.Context, query execution.QueryPattern) ([]execution.PatternRow, error) {
+	nodes, err := g.service.allNodes(ctx, g.tx)
+	if err != nil {
+		return nil, err
+	}
+	edges, err := g.service.allEdges(ctx, g.tx)
+	if err != nil {
+		return nil, err
+	}
+	nodeByID := map[string]domaingraph.Node{}
+	for _, node := range nodes {
+		nodeByID[node.ID.String()] = node
+	}
+	out := []execution.PatternRow{}
+	for _, edge := range edges {
+		if !nodeHasLabels(edge.Labels, query.Relationship.Labels) || !nodeHasProperties(edge.Properties, query.Relationship.Properties) {
+			continue
+		}
+		from, fromOK := nodeByID[edge.FromID.String()]
+		to, toOK := nodeByID[edge.ToID.String()]
+		if !fromOK || !toOK {
+			continue
+		}
+		appendIfMatch := func(start, end domaingraph.Node) {
+			if !nodeMatchesGQLPattern(start, query.Start.Labels, query.Start.Properties) || !nodeMatchesGQLPattern(end, query.End.Labels, query.End.Properties) {
+				return
+			}
+			out = append(out, execution.PatternRow{Start: gqlExecNode(start), Edge: gqlExecEdge(edge), End: gqlExecNode(end)})
+		}
+		switch query.Relationship.Direction {
+		case execution.RelationshipIncoming:
+			appendIfMatch(to, from)
+		case execution.RelationshipUndirected:
+			appendIfMatch(from, to)
+			appendIfMatch(to, from)
+		default:
+			appendIfMatch(from, to)
+		}
+		if query.Limit > 0 && int64(len(out)) >= query.Limit {
+			return out[:query.Limit], nil
+		}
+	}
+	return out, nil
+}
+
+func nodeMatchesGQLPattern(node domaingraph.Node, labels []string, properties map[string]any) bool {
+	return nodeHasLabels(node.Labels, labels) && nodeHasProperties(node.Properties, properties)
+}
+
+func gqlExecNode(node domaingraph.Node) execmodel.Node {
+	return execmodel.Node{ID: node.ID.String(), DomainID: node.DomainID.String(), Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties)}
+}
+
+func gqlExecEdge(edge domaingraph.Edge) execmodel.Edge {
+	return execmodel.Edge{ID: edge.ID.String(), DomainID: edge.DomainID.String(), FromID: edge.FromID.String(), ToID: edge.ToID.String(), Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload), Meta: copyMapAny(edge.Meta)}
 }
 
 func nodeHasProperties(values map[string]any, required map[string]any) bool {
@@ -631,6 +688,10 @@ func gqlRowsToProto(result execmodel.Result) []*clientv1.QueryRow {
 				fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Node{Node: gqlNodeToProto(*value.Node)}}
 				continue
 			}
+			if value.Edge != nil {
+				fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Edge{Edge: gqlEdgeToProto(*value.Edge)}}
+				continue
+			}
 			fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Scalar{Scalar: protoValue(value.Scalar)}}
 		}
 		rows = append(rows, &clientv1.QueryRow{Fields: fields})
@@ -642,6 +703,10 @@ func gqlNodeToProto(node execmodel.Node) *clientv1.Node {
 	return &clientv1.Node{NodeId: node.ID, DomainId: node.DomainID, Labels: append([]string(nil), node.Labels...), Properties: protoStruct(node.Properties)}
 }
 
+func gqlEdgeToProto(edge execmodel.Edge) *clientv1.Edge {
+	return &clientv1.Edge{EdgeId: edge.ID, DomainId: edge.DomainID, FromNodeId: edge.FromID, ToNodeId: edge.ToID, Labels: append([]string(nil), edge.Labels...), Properties: protoStruct(edge.Properties), Payload: protoStruct(edge.Payload), Meta: protoStruct(edge.Meta)}
+}
+
 func queryResultFromRows(rows []*clientv1.QueryRow, next string) *clientv1.QueryResult {
 	return queryResultFromRowsWithCounters(rows, next, execmodel.Counters{})
 }
@@ -651,19 +716,23 @@ func queryResultFromRowsWithCounters(rows []*clientv1.QueryRow, next string, cou
 }
 
 func graphFromRows(rows []*clientv1.QueryRow) *clientv1.ResultGraph {
-	seen := map[string]bool{}
+	seenNodes := map[string]bool{}
+	seenEdges := map[string]bool{}
 	nodes := []*clientv1.Node{}
+	edges := []*clientv1.Edge{}
 	for _, row := range rows {
 		for _, value := range row.GetFields() {
-			node := value.GetNode()
-			if node == nil || seen[node.GetNodeId()] {
-				continue
+			if node := value.GetNode(); node != nil && !seenNodes[node.GetNodeId()] {
+				seenNodes[node.GetNodeId()] = true
+				nodes = append(nodes, node)
 			}
-			seen[node.GetNodeId()] = true
-			nodes = append(nodes, node)
+			if edge := value.GetEdge(); edge != nil && !seenEdges[edge.GetEdgeId()] {
+				seenEdges[edge.GetEdgeId()] = true
+				edges = append(edges, edge)
+			}
 		}
 	}
-	return &clientv1.ResultGraph{Nodes: nodes}
+	return &clientv1.ResultGraph{Nodes: nodes, Edges: edges}
 }
 
 func paginateProtoQueryRows(rows []*clientv1.QueryRow, pageSize int, pageToken string) ([]*clientv1.QueryRow, string, error) {

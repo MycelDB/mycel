@@ -168,6 +168,10 @@ func (w daemonGraphWriter) InsertNode(ctx context.Context, node execution.Insert
 	return execmodel.NodeRef{ID: res.GetNode().GetNodeId()}, nil
 }
 
+func (w daemonGraphWriter) QueryPattern(ctx context.Context, query execution.QueryPattern) ([]execution.PatternRow, error) {
+	return nil, fmt.Errorf("CLI local GQL relationship execution is not supported yet; use daemon ExecuteGQL")
+}
+
 func (w daemonGraphWriter) QueryNodes(ctx context.Context, query execution.QueryNodes) ([]execmodel.Node, error) {
 	graphQuery, err := buildGQLNodeQuery(query)
 	if err != nil {
