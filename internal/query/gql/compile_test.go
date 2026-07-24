@@ -85,7 +85,7 @@ func TestCompileMatchReturnNodeProducesPlan(t *testing.T) {
 	want := planmodel.Plan{
 		AccessMode: analysis.ReadOnly,
 		Operations: []planmodel.Operation{
-			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "p"}}},
 		},
 	}
 	if !reflect.DeepEqual(plan, want) {
@@ -109,9 +109,25 @@ func TestCompileMatchWhereProducesPlan(t *testing.T) {
 	want := planmodel.Plan{
 		AccessMode: analysis.ReadOnly,
 		Operations: []planmodel.Operation{
-			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "p"}}},
 		},
 	}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Compile() = %#v, want %#v", plan, want)
+	}
+}
+
+func TestCompileMatchReturnPropertyProducesPlan(t *testing.T) {
+	plan, err := Compile("MATCH (p:Person) WHERE p.firstName = 'Alice' RETURN p.firstName, p.lastName")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	want := planmodel.Plan{AccessMode: analysis.ReadOnly, Operations: []planmodel.Operation{
+		planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice"}, Returns: []planmodel.ReturnItem{
+			{Kind: planmodel.ReturnProperty, Variable: "p", Property: "firstName"},
+			{Kind: planmodel.ReturnProperty, Variable: "p", Property: "lastName"},
+		}},
+	}}
 	if !reflect.DeepEqual(plan, want) {
 		t.Fatalf("Compile() = %#v, want %#v", plan, want)
 	}

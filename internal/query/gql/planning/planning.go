@@ -50,7 +50,11 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 	}
 	returns := make([]planmodel.ReturnItem, 0, len(stmt.Returns))
 	for _, ret := range stmt.Returns {
-		returns = append(returns, planmodel.ReturnItem{Variable: ret.Variable})
+		kind := planmodel.ReturnItemKind(ret.Kind)
+		if kind == "" {
+			kind = planmodel.ReturnVariable
+		}
+		returns = append(returns, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Property: ret.Property})
 	}
 	return planmodel.Plan{
 		AccessMode: a.AccessMode,

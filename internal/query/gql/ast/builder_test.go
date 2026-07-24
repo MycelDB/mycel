@@ -50,7 +50,7 @@ func TestBuilderBuildsMatchReturnNodeAST(t *testing.T) {
 				{Key: "name", Value: model.Value{Kind: model.StringValue, Value: "Alice"}},
 			},
 		},
-		Returns: []model.ReturnItem{{Variable: "p"}},
+		Returns: []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "p"}},
 	}}
 	if !reflect.DeepEqual(query, want) {
 		t.Fatalf("Build() = %#v, want %#v", query, want)
@@ -74,7 +74,31 @@ func TestBuilderBuildsMatchWhereAST(t *testing.T) {
 			{Variable: "p", Property: "firstName", Value: model.Value{Kind: model.StringValue, Value: "Alice"}},
 			{Variable: "p", Property: "lastName", Value: model.Value{Kind: model.StringValue, Value: "Jones"}},
 		}},
-		Returns: []model.ReturnItem{{Variable: "p"}},
+		Returns: []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "p"}},
+	}}
+	if !reflect.DeepEqual(query, want) {
+		t.Fatalf("Build() = %#v, want %#v", query, want)
+	}
+}
+
+func TestBuilderBuildsReturnPropertyAST(t *testing.T) {
+	tree, err := gqlantlr.Parse("MATCH (p:Person) RETURN p, p.firstName, p.lastName")
+	if err != nil {
+		t.Fatalf("antlr.Parse() error = %v", err)
+	}
+
+	query, err := Build(tree)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	want := model.Query{Statement: model.MatchStatement{
+		Pattern: model.NodePattern{Variable: "p", Labels: []string{"Person"}},
+		Returns: []model.ReturnItem{
+			{Kind: model.ReturnVariable, Variable: "p"},
+			{Kind: model.ReturnProperty, Variable: "p", Property: "firstName"},
+			{Kind: model.ReturnProperty, Variable: "p", Property: "lastName"},
+		},
 	}}
 	if !reflect.DeepEqual(query, want) {
 		t.Fatalf("Build() = %#v, want %#v", query, want)

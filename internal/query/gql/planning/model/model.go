@@ -33,6 +33,15 @@ type QueryNodesOperation struct {
 
 func (QueryNodesOperation) operation() {}
 
+type ReturnItemKind string
+
+const (
+	ReturnVariable ReturnItemKind = "variable"
+	ReturnProperty ReturnItemKind = "property"
+)
+
 type ReturnItem struct {
+	Kind     ReturnItemKind
 	Variable string
+	Property string
 }

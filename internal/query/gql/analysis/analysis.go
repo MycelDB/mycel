@@ -90,11 +90,24 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 		return fmt.Errorf("match statement requires at least one return item")
 	}
 	for _, ret := range stmt.Returns {
+		kind := ret.Kind
+		if kind == "" {
+			kind = model.ReturnVariable
+		}
 		if ret.Variable == "" {
 			return fmt.Errorf("return variable cannot be empty")
 		}
 		if ret.Variable != stmt.Pattern.Variable {
 			return fmt.Errorf("return variable %q is not defined", ret.Variable)
+		}
+		switch kind {
+		case model.ReturnVariable:
+		case model.ReturnProperty:
+			if ret.Property == "" {
+				return fmt.Errorf("return property cannot be empty")
+			}
+		default:
+			return fmt.Errorf("unsupported return item kind %q", kind)
 		}
 	}
 	if stmt.Where != nil {

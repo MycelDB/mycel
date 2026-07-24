@@ -39,9 +39,18 @@ type PropertyComparison struct {
 	Value    Value
 }
 
-// ReturnItem represents one returned variable or expression.
+type ReturnItemKind string
+
+const (
+	ReturnVariable ReturnItemKind = "variable"
+	ReturnProperty ReturnItemKind = "property"
+)
+
+// ReturnItem represents one returned variable or property expression.
 type ReturnItem struct {
+	Kind     ReturnItemKind
 	Variable string
+	Property string
 }
 
 // NodePattern represents a node pattern inside a GQL statement.

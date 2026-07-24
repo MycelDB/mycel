@@ -71,16 +71,34 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 	returns := make([]model.ReturnItem, 0, len(matchCtx.AllReturnItem()))
 	for _, item := range matchCtx.AllReturnItem() {
 		returnCtx, ok := item.(*generated.ReturnItemContext)
-		if !ok || returnCtx.Variable() == nil {
+		if !ok {
 			return model.Query{}, fmt.Errorf("invalid return item")
 		}
-		variableCtx, ok := returnCtx.Variable().(*generated.VariableContext)
-		if !ok || variableCtx.IDENTIFIER() == nil {
-			return model.Query{}, fmt.Errorf("invalid return variable")
+		built, err := buildReturnItem(returnCtx)
+		if err != nil {
+			return model.Query{}, err
 		}
-		returns = append(returns, model.ReturnItem{Variable: variableCtx.IDENTIFIER().GetText()})
+		returns = append(returns, built)
 	}
 	return model.Query{Statement: model.MatchStatement{Pattern: node, Where: where, Returns: returns}}, nil
+}
+
+func buildReturnItem(ctx *generated.ReturnItemContext) (model.ReturnItem, error) {
+	if prop := ctx.PropertyReference(); prop != nil {
+		propCtx, ok := prop.(*generated.PropertyReferenceContext)
+		if !ok || len(propCtx.AllIDENTIFIER()) != 2 {
+			return model.ReturnItem{}, fmt.Errorf("invalid return property")
+		}
+		return model.ReturnItem{Kind: model.ReturnProperty, Variable: propCtx.IDENTIFIER(0).GetText(), Property: propCtx.IDENTIFIER(1).GetText()}, nil
+	}
+	if variable := ctx.Variable(); variable != nil {
+		variableCtx, ok := variable.(*generated.VariableContext)
+		if !ok || variableCtx.IDENTIFIER() == nil {
+			return model.ReturnItem{}, fmt.Errorf("invalid return variable")
+		}
+		return model.ReturnItem{Kind: model.ReturnVariable, Variable: variableCtx.IDENTIFIER().GetText()}, nil
+	}
+	return model.ReturnItem{}, fmt.Errorf("invalid return item")
 }
 
 func buildWhereClause(ctx generated.IWhereClauseContext) (model.WhereClause, error) {

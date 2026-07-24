@@ -41,7 +41,12 @@ propertyComparison
   ;
 
 returnItem
-  : variable
+  : propertyReference
+  | variable
+  ;
+
+propertyReference
+  : IDENTIFIER DOT IDENTIFIER
   ;
 
 nodePattern

@@ -48,7 +48,7 @@ func TestPlannerPlansMatchReturnNodeAnalysis(t *testing.T) {
 		AccessMode: analysis.ReadOnly,
 		Query: ast.Query{Statement: ast.MatchStatement{
 			Pattern: ast.NodePattern{Variable: "p", Labels: []string{"Person"}, Properties: []ast.Property{{Key: "name", Value: ast.Value{Kind: ast.StringValue, Value: "Alice"}}}},
-			Returns: []ast.ReturnItem{{Variable: "p"}},
+			Returns: []ast.ReturnItem{{Kind: ast.ReturnVariable, Variable: "p"}},
 		}},
 	}
 
@@ -60,7 +60,7 @@ func TestPlannerPlansMatchReturnNodeAnalysis(t *testing.T) {
 	want := planmodel.Plan{
 		AccessMode: analysis.ReadOnly,
 		Operations: []planmodel.Operation{
-			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"name": "Alice"}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "p"}}},
 		},
 	}
 	if !reflect.DeepEqual(plan, want) {
@@ -81,7 +81,7 @@ func TestPlannerPlansMatchWhereAnalysis(t *testing.T) {
 		Query: ast.Query{Statement: ast.MatchStatement{
 			Pattern: ast.NodePattern{Variable: "p", Labels: []string{"Person"}, Properties: []ast.Property{{Key: "firstName", Value: ast.Value{Kind: ast.StringValue, Value: "Alice"}}}},
 			Where:   &ast.WhereClause{Predicates: []ast.PropertyComparison{{Variable: "p", Property: "lastName", Value: ast.Value{Kind: ast.StringValue, Value: "Jones"}}}},
-			Returns: []ast.ReturnItem{{Variable: "p"}},
+			Returns: []ast.ReturnItem{{Kind: ast.ReturnVariable, Variable: "p"}},
 		}},
 	}
 
@@ -92,7 +92,7 @@ func TestPlannerPlansMatchWhereAnalysis(t *testing.T) {
 	want := planmodel.Plan{
 		AccessMode: analysis.ReadOnly,
 		Operations: []planmodel.Operation{
-			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "p"}}},
 		},
 	}
 	if !reflect.DeepEqual(plan, want) {
@@ -106,12 +106,38 @@ func TestPlannerRejectsConflictingInlineAndWhereProperty(t *testing.T) {
 		Query: ast.Query{Statement: ast.MatchStatement{
 			Pattern: ast.NodePattern{Variable: "p", Labels: []string{"Person"}, Properties: []ast.Property{{Key: "firstName", Value: ast.Value{Kind: ast.StringValue, Value: "Alice"}}}},
 			Where:   &ast.WhereClause{Predicates: []ast.PropertyComparison{{Variable: "p", Property: "firstName", Value: ast.Value{Kind: ast.StringValue, Value: "John"}}}},
-			Returns: []ast.ReturnItem{{Variable: "p"}},
+			Returns: []ast.ReturnItem{{Kind: ast.ReturnVariable, Variable: "p"}},
 		}},
 	}
 
 	_, err := Plan(a)
 	if err == nil {
 		t.Fatal("Plan() error = nil, want conflict error")
+	}
+}
+
+func TestPlannerPlansReturnPropertyAnalysis(t *testing.T) {
+	a := analysis.Analysis{
+		AccessMode: analysis.ReadOnly,
+		Query: ast.Query{Statement: ast.MatchStatement{
+			Pattern: ast.NodePattern{Variable: "p", Labels: []string{"Person"}},
+			Returns: []ast.ReturnItem{
+				{Kind: ast.ReturnVariable, Variable: "p"},
+				{Kind: ast.ReturnProperty, Variable: "p", Property: "firstName"},
+			},
+		}},
+	}
+	plan, err := Plan(a)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	want := planmodel.Plan{AccessMode: analysis.ReadOnly, Operations: []planmodel.Operation{
+		planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{}, Returns: []planmodel.ReturnItem{
+			{Kind: planmodel.ReturnVariable, Variable: "p"},
+			{Kind: planmodel.ReturnProperty, Variable: "p", Property: "firstName"},
+		}},
+	}}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Plan() = %#v, want %#v", plan, want)
 	}
 }

@@ -51,7 +51,7 @@ func TestExecutorExecutesQueryNodesPlan(t *testing.T) {
 	plan := planmodel.Plan{
 		AccessMode: analysis.ReadOnly,
 		Operations: []planmodel.Operation{
-			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+			planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "p"}}},
 		},
 	}
 
@@ -88,7 +88,7 @@ func TestExecutorQueryNodesFirstAndLastNameScenarios(t *testing.T) {
 			plan := planmodel.Plan{
 				AccessMode: analysis.ReadOnly,
 				Operations: []planmodel.Operation{
-					planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: tt.props, Returns: []planmodel.ReturnItem{{Variable: "p"}}},
+					planmodel.QueryNodesOperation{Variable: "p", Labels: []string{"Person"}, Properties: tt.props, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "p"}}},
 				},
 			}
 
