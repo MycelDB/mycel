@@ -186,9 +186,9 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	userService := identityservice.NewUserManager()
 	spaceService := spaceservice.NewModule()
 	sessionService := sessionservice.NewModule()
+	schemaService := schemaservice.NewModule("")
 	graphService := graphservice.NewModule()
 	blobService := blobservice.NewModule(graphService)
-	schemaService := schemaservice.NewModule("")
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
 		SecretKeyB64: cfg.UserStoreEncryptionKeyB64,
 		MaintenanceConfig: daemonsemantic.MaintenanceConfig{
@@ -227,7 +227,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	})
-	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, graphService, schemaService, blobService, semanticService, changeService, backupService}); err != nil {
+	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, schemaService, graphService, blobService, semanticService, changeService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}

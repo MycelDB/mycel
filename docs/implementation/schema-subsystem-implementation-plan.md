@@ -73,7 +73,7 @@ Status: partially implemented on `improved_gql`. Public template protos were rem
 
 ## Tranche 3 — Schema-aware graph mutation validation
 
-Status: partially implemented on `improved_gql`. File-backed sessions now accept an optional schema manager and validate node/blob/edge creates and node updates in direct and transactional mutation paths. Wider daemon composition wiring and template-removal cleanup remain for later tranches.
+Status: implemented on `improved_gql` for core graph mutation paths. File-backed sessions and the daemon graph service validate node/blob/edge creates and node/edge updates with the schema manager. The daemon runtime registers the schema subsystem before graph service initialization so daemon graph mutations are schema-aware when a domain schema exists. Import/export validation and warning diagnostics remain for later API-focused tranches.
 
 ### Work
 

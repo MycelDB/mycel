@@ -20,6 +20,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/storage"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
@@ -33,6 +34,7 @@ type Module struct {
 	stores                 map[string]*graphstorage.LocalStore
 	overlays               map[string]*overlay
 	changeSink             graphchange.Sink
+	schemaManager          schemaservice.Manager
 	lastGraphChangeSinkErr error
 	gate                   *quiesce.Gate
 	wal                    *wal.Manager
@@ -73,6 +75,61 @@ func (m *Module) LastGraphChangeSinkError() error {
 	return m.lastGraphChangeSinkErr
 }
 
+func (m *Module) SetSchemaManager(manager schemaservice.Manager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schemaManager = manager
+}
+
+func (m *Module) validateSchemaNode(ctx context.Context, node domaingraph.Node) error {
+	m.mu.Lock()
+	manager := m.schemaManager
+	m.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	result, err := manager.ValidateNode(ctx, node.DomainID, node)
+	if err != nil {
+		return err
+	}
+	if result.Valid() {
+		return nil
+	}
+	return fmt.Errorf("%w: schema validation failed: %s", ErrInvalidInput, formatSchemaIssues(result.Issues))
+}
+
+func (m *Module) validateSchemaEdge(ctx context.Context, edge domaingraph.Edge, from domaingraph.Node, to domaingraph.Node) error {
+	m.mu.Lock()
+	manager := m.schemaManager
+	m.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	result, err := manager.ValidateEdge(ctx, edge.DomainID, edge, from, to)
+	if err != nil {
+		return err
+	}
+	if result.Valid() {
+		return nil
+	}
+	return fmt.Errorf("%w: schema validation failed: %s", ErrInvalidInput, formatSchemaIssues(result.Issues))
+}
+
+func formatSchemaIssues(issues []schemaservice.ValidationIssue) string {
+	if len(issues) == 0 {
+		return "unknown schema validation error"
+	}
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.Path != "" {
+			parts = append(parts, issue.Path+": "+issue.Message)
+			continue
+		}
+		parts = append(parts, issue.Message)
+	}
+	return strings.Join(parts, "; ")
+}
+
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	m.dataDir = filepath.Join(host.DataDir(), "graphs")
 	if err := os.MkdirAll(m.dataDir, 0o700); err != nil {
@@ -88,6 +145,13 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
 	m.loadRaftAppliedCommands()
+	if lookup, ok := host.(runtime.ServiceLookup); ok {
+		if schemaSvc, ok := lookup.Service(schemaservice.ModuleName); ok {
+			if manager, ok := schemaSvc.(schemaservice.Manager); ok {
+				m.schemaManager = manager
+			}
+		}
+	}
 	if provider, ok := host.(runtime.WALProvider); ok {
 		m.wal = provider.WALManager()
 		m.walProgress = provider.WALProgressStore()
@@ -214,6 +278,9 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 		payload["blob_id"] = string(*blobRef)
 	}
 	n := domaingraph.Node{ID: id, DomainID: mustDomainID(tx.DomainID), Labels: append([]string(nil), input.Labels...), Properties: properties, Payload: payload, Meta: cloneProps(input.Meta), BlobRef: blobRef, Content: input.Content, Props: cloneProps(input.Props), CreatedAt: now, UpdatedAt: now}
+	if err := m.validateSchemaNode(ctx, n); err != nil {
+		return domaingraph.Node{}, err
+	}
 	m.stageNode(tx.ID, n)
 	return cloneNode(n), nil
 }
@@ -260,6 +327,9 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 		}
 	}
 	n.UpdatedAt = time.Now().UTC()
+	if err := m.validateSchemaNode(ctx, n); err != nil {
+		return domaingraph.Node{}, err
+	}
 	m.stageNode(tx.ID, n)
 	return cloneNode(n), nil
 }
@@ -437,6 +507,9 @@ func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	}
 	now := time.Now().UTC()
 	e := domaingraph.Edge{ID: id, DomainID: mustDomainID(tx.DomainID), FromID: fromID, ToID: toID, Labels: labels, Properties: cloneProps(input.Properties), Payload: cloneProps(input.Payload), Meta: cloneProps(input.Meta), CreatedAt: now, UpdatedAt: now}
+	if err := m.validateSchemaEdge(ctx, e, from, to); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	m.stageEdge(tx.ID, e)
 	return cloneEdge(e), nil
 }
@@ -467,6 +540,17 @@ func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 		e.Meta = cloneProps(input.Meta)
 	}
 	e.UpdatedAt = time.Now().UTC()
+	from, err := m.node(ctx, tx, e.FromID)
+	if err != nil {
+		return domaingraph.Edge{}, fmt.Errorf("%w: from node: %v", ErrInvalidInput, err)
+	}
+	to, err := m.node(ctx, tx, e.ToID)
+	if err != nil {
+		return domaingraph.Edge{}, fmt.Errorf("%w: to node: %v", ErrInvalidInput, err)
+	}
+	if err := m.validateSchemaEdge(ctx, e, from, to); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	m.stageEdge(tx.ID, e)
 	return cloneEdge(e), nil
 }
