@@ -91,6 +91,34 @@ func TestModuleSchemaHierarchyEnabledEnforcesContainsSingleParent(t *testing.T) 
 	}
 }
 
+func TestModuleSchemaHierarchyMoveUsesSchemaLabel(t *testing.T) {
+	ctx := context.Background()
+	domainID := uuid.NewString()
+	manager := schemaservice.NewManager(storage.NewMemoryStore())
+	if err := manager.PutDomainSchema(ctx, schemaForGraphServiceWithHierarchyLabel(uuid.MustParse(domainID), schemamodel.SchemaModeStrict, "PARENT_OF")); err != nil {
+		t.Fatalf("PutDomainSchema() error = %v", err)
+	}
+	m := NewModule()
+	m.SetSchemaManager(manager)
+	tx := graphTx(uuid.NewString(), domainID, 0)
+	root, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "root"}})
+	child, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
+	edge, err := m.MoveSubtree(ctx, tx, child.ID.String(), root.ID.String(), nil)
+	if err != nil {
+		t.Fatalf("MoveSubtree() error = %v", err)
+	}
+	if len(edge.Labels) != 1 || edge.Labels[0] != "PARENT_OF" {
+		t.Fatalf("MoveSubtree() labels = %v, want [PARENT_OF]", edge.Labels)
+	}
+	children, err := m.ListChildren(ctx, tx, root.ID.String())
+	if err != nil {
+		t.Fatalf("ListChildren() error = %v", err)
+	}
+	if len(children) != 1 || children[0].ID != edge.ID {
+		t.Fatalf("ListChildren() = %+v, want moved hierarchy edge", children)
+	}
+}
+
 func TestModuleSchemaValidationWarnModeDoesNotReject(t *testing.T) {
 	ctx := context.Background()
 	m, tx := newSchemaValidatedModule(t, schemamodel.SchemaModeWarn)
@@ -117,9 +145,17 @@ func schemaForGraphService(domainID uuid.UUID, mode schemamodel.SchemaMode) sche
 }
 
 func schemaForGraphServiceWithContains(domainID uuid.UUID, mode schemamodel.SchemaMode, containsHierarchy bool) schemamodel.DomainSchema {
+	return schemaForGraphServiceWithHierarchyLabelAndFlag(domainID, mode, "contains", containsHierarchy)
+}
+
+func schemaForGraphServiceWithHierarchyLabel(domainID uuid.UUID, mode schemamodel.SchemaMode, hierarchyLabel string) schemamodel.DomainSchema {
+	return schemaForGraphServiceWithHierarchyLabelAndFlag(domainID, mode, hierarchyLabel, true)
+}
+
+func schemaForGraphServiceWithHierarchyLabelAndFlag(domainID uuid.UUID, mode schemamodel.SchemaMode, hierarchyLabel string, containsHierarchy bool) schemamodel.DomainSchema {
 	edgeTypes := []schemamodel.EdgeType{
 		{Name: "Knows", Labels: []string{"KNOWS"}, From: schemamodel.EndpointSpec{NodeTypes: []string{"Person"}}, To: schemamodel.EndpointSpec{NodeTypes: []string{"Person"}}},
-		{Name: "Contains", Labels: []string{"contains"}, From: schemamodel.EndpointSpec{NodeTypes: []string{"Person"}}, To: schemamodel.EndpointSpec{NodeTypes: []string{"Person"}}},
+		{Name: "Hierarchy", Labels: []string{hierarchyLabel}, From: schemamodel.EndpointSpec{NodeTypes: []string{"Person"}}, To: schemamodel.EndpointSpec{NodeTypes: []string{"Person"}}},
 	}
 	if containsHierarchy {
 		edgeTypes[1].Hierarchy = &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}

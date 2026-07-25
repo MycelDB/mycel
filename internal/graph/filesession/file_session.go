@@ -393,7 +393,7 @@ func (s *FileSession) DeleteNode(ctx context.Context, in sessionapi.DeleteNodeIn
 	})
 }
 
-func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in sessionapi.DeleteNodeInput) ([]graph.NodeID, []graph.Node, []graph.Edge, error) {
+func (s *FileSession) applyDeleteNode(ctx context.Context, nodes []graph.Node, edges []graph.Edge, in sessionapi.DeleteNodeInput) ([]graph.NodeID, []graph.Node, []graph.Edge, error) {
 	if in.ID == uuid.Nil {
 		return nil, nil, nil, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
 	}
@@ -406,7 +406,11 @@ func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in
 		for changed {
 			changed = false
 			for _, edge := range edges {
-				if !graph.EdgeHasLabels(edge, []string{"contains"}) {
+				isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+				if !isHierarchy {
 					continue
 				}
 				if _, parentDeleted := deleteIDs[edge.FromID]; parentDeleted {
@@ -419,7 +423,11 @@ func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in
 		}
 	} else {
 		for _, edge := range edges {
-			if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.FromID == in.ID {
+			isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if isHierarchy && edge.FromID == in.ID {
 				if s.errors.Conflict != nil {
 					return nil, nil, nil, fmt.Errorf("%w: node has child nodes", s.errors.Conflict)
 				}
@@ -638,10 +646,10 @@ func (s *FileSession) buildGraphChangeEvent(ctx context.Context, store *graphsto
 		}
 		event.NewDomainByNodeID[node.ID] = node.DomainID
 		addDomain(node.DomainID)
-		if parent, err := store.Parent(ctx, node.ID); err == nil && parent != nil {
-			event.OldParentByNodeID[node.ID] = parent.FromID
-		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+		if parent, err := s.storeHierarchyParent(ctx, store, node.ID); err != nil {
 			return graphchange.CommittedEvent{}, err
+		} else if parent != nil {
+			event.OldParentByNodeID[node.ID] = parent.FromID
 		}
 	}
 	for _, id := range deleteNodes {
@@ -653,23 +661,31 @@ func (s *FileSession) buildGraphChangeEvent(ctx context.Context, store *graphsto
 		} else if !errors.Is(err, graphstorage.ErrNotFound) {
 			return graphchange.CommittedEvent{}, err
 		}
-		if parent, err := store.Parent(ctx, id); err == nil && parent != nil {
-			event.OldParentByNodeID[id] = parent.FromID
-		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+		if parent, err := s.storeHierarchyParent(ctx, store, id); err != nil {
 			return graphchange.CommittedEvent{}, err
+		} else if parent != nil {
+			event.OldParentByNodeID[id] = parent.FromID
 		}
 	}
 	for _, edge := range putEdges {
 		change := "added"
 		if old, err := store.GetEdge(ctx, edge.ID); err == nil {
 			change = "updated"
-			if graph.EdgeHasLabels(old, []string{"contains"}) && old.ToID == edge.ToID && old.FromID != edge.FromID {
+			oldHierarchy, err := s.isHierarchyEdge(ctx, old)
+			if err != nil {
+				return graphchange.CommittedEvent{}, err
+			}
+			if oldHierarchy && old.ToID == edge.ToID && old.FromID != edge.FromID {
 				event.OldParentByNodeID[old.ToID] = old.FromID
 			}
 		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
 			return graphchange.CommittedEvent{}, err
 		}
-		if graph.EdgeHasLabels(edge, []string{"contains"}) {
+		isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+		if err != nil {
+			return graphchange.CommittedEvent{}, err
+		}
+		if isHierarchy {
 			event.NewParentByNodeID[edge.ToID] = edge.FromID
 		}
 		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Labels: append([]string(nil), edge.Labels...), Change: change, FromID: edge.FromID, ToID: edge.ToID})
@@ -682,7 +698,11 @@ func (s *FileSession) buildGraphChangeEvent(ctx context.Context, store *graphsto
 			}
 			return graphchange.CommittedEvent{}, err
 		}
-		if graph.EdgeHasLabels(edge, []string{"contains"}) {
+		isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+		if err != nil {
+			return graphchange.CommittedEvent{}, err
+		}
+		if isHierarchy {
 			event.OldParentByNodeID[edge.ToID] = edge.FromID
 		}
 		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Labels: append([]string(nil), edge.Labels...), Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
@@ -847,15 +867,50 @@ func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to g
 }
 
 func (s *FileSession) validateIncidentContains(ctx context.Context, node graph.Node, nodes []graph.Node, edges []graph.Edge) error {
+	return nil
+}
+
+func (s *FileSession) storeHierarchyParent(ctx context.Context, store *graphstorage.LocalStore, childID graph.NodeID) (*graph.Edge, error) {
+	edges, err := store.ListEdges(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for _, edge := range edges {
-		if !graph.EdgeHasLabels(edge, []string{"contains"}) {
-			continue
+		isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+		if err != nil {
+			return nil, err
 		}
-		if edge.FromID == node.ID || edge.ToID == node.ID {
-			continue
+		if isHierarchy && edge.ToID == childID {
+			copy := cloneEdge(edge)
+			return &copy, nil
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+func (s *FileSession) isHierarchyEdge(ctx context.Context, edge graph.Edge) (bool, error) {
+	policy, err := s.hierarchyPolicyForLabels(ctx, edge.Labels)
+	return policy != nil, err
+}
+
+func (s *FileSession) hierarchyEdgeLabelsForMutation(ctx context.Context) ([]string, error) {
+	if s.schemaManager != nil {
+		schema, err := s.schemaManager.GetDomainSchema(ctx, s.domainID)
+		if err != nil && !errors.Is(err, schemaservice.ErrSchemaNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			for _, edgeType := range schema.EdgeTypes {
+				if edgeType.Hierarchy != nil && edgeType.Hierarchy.Enabled {
+					if len(edgeType.Labels) > 0 {
+						return []string{edgeType.Labels[0]}, nil
+					}
+					return []string{edgeType.Name}, nil
+				}
+			}
+		}
+	}
+	return []string{"contains"}, nil
 }
 
 func (s *FileSession) hierarchyPolicyForLabels(ctx context.Context, labels []string) (*schemamodel.HierarchyPolicy, error) {
@@ -920,29 +975,6 @@ func containsPathWithPolicy(ctx context.Context, s *FileSession, edges []graph.E
 		}
 	}
 	return false, nil
-}
-
-func containsPath(edges []graph.Edge, from graph.NodeID, target graph.NodeID) bool {
-	visited := map[graph.NodeID]struct{}{}
-	var visit func(graph.NodeID) bool
-	visit = func(id graph.NodeID) bool {
-		if id == target {
-			return true
-		}
-		if _, ok := visited[id]; ok {
-			return false
-		}
-		visited[id] = struct{}{}
-		for _, edge := range edges {
-			if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.FromID == id {
-				if visit(edge.ToID) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	return visit(from)
 }
 
 func copyProps(in map[string]any) map[string]any {
