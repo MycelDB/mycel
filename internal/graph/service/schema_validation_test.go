@@ -56,6 +56,13 @@ func TestModuleSchemaHierarchyDisabledDoesNotEnforceContainsSingleParent(t *test
 	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: rootB.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err != nil {
 		t.Fatalf("schema-disabled contains should not enforce single-parent, got %v", err)
 	}
+	children, err := m.ListChildren(ctx, tx, rootA.ID.String())
+	if err != nil {
+		t.Fatalf("ListChildren() error = %v", err)
+	}
+	if len(children) != 0 {
+		t.Fatalf("schema-disabled contains should not be treated as hierarchy children, got %+v", children)
+	}
 }
 
 func TestModuleSchemaHierarchyEnabledEnforcesContainsSingleParent(t *testing.T) {
@@ -74,6 +81,13 @@ func TestModuleSchemaHierarchyEnabledEnforcesContainsSingleParent(t *testing.T) 
 	}
 	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: rootB.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err == nil {
 		t.Fatalf("expected hierarchy single-parent validation error")
+	}
+	children, err := m.ListChildren(ctx, tx, rootA.ID.String())
+	if err != nil {
+		t.Fatalf("ListChildren() error = %v", err)
+	}
+	if len(children) != 1 || children[0].ToID != child.ID {
+		t.Fatalf("schema-enabled contains should be treated as hierarchy child, got %+v", children)
 	}
 }
 

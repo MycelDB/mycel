@@ -650,7 +650,11 @@ func (m *Module) ListChildren(ctx context.Context, tx daemonsession.GraphTransac
 	}
 	out := []domaingraph.Edge{}
 	for _, edge := range edges {
-		if domaingraph.EdgeHasLabels(edge, []string{"contains"}) && edge.FromID == parentID {
+		policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if policy != nil && edge.FromID == parentID {
 			out = append(out, edge)
 		}
 	}
