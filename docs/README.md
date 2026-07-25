@@ -7,6 +7,11 @@ The documentation tree is organized around Mycel architecture, API, operational,
 - `roadmap/` contains product and subsystem roadmaps, including `roadmap/gql-roadmap.md` for the GQL feature roadmap.
 - `makefile_commands.md` summarizes common `make` targets for building, testing, coverage, and running the daemon locally.
 
+Current schema direction:
+
+- `design/schema-subsystem.md` describes the planned domain-scoped Schema subsystem replacing graph templates.
+- `implementation/schema-subsystem-implementation-plan.md` breaks the schema/template replacement and Knot PKM refactor into testable tranches.
+
 Current subsystem/runtime architecture direction:
 
 - `design/subsystem-runtime-architecture.md` describes the target approach: top-level subsystems own service behavior, shared runtime packages define lifecycle/quiesce/health contracts, and the daemon acts as the composition root.
