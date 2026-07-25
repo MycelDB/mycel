@@ -73,6 +73,8 @@ Status: partially implemented on `improved_gql`. File-session template property 
 
 ## Tranche 3 — Schema-aware graph mutation validation
 
+Status: partially implemented on `improved_gql`. File-backed sessions now accept an optional schema manager and validate node/blob/edge creates and node updates in direct and transactional mutation paths. Wider daemon composition wiring and template-removal cleanup remain for later tranches.
+
 ### Work
 
 - Inject schema manager into graph service/session mutation paths.

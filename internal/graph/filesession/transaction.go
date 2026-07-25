@@ -192,6 +192,9 @@ func (tx *fileTx) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (grap
 	now := time.Now().UTC()
 	n.CreatedAt = now
 	n.UpdatedAt = now
+	if err := tx.session.validateSchemaNode(ctx, n); err != nil {
+		return graph.Node{}, err
+	}
 	delete(tx.overlay.deletedNodes, n.ID)
 	tx.overlay.addedNodes[n.ID] = n
 	return cloneNode(n), nil
@@ -269,6 +272,9 @@ func (tx *fileTx) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeInput)
 		n.CreatedAt = time.Now().UTC()
 	}
 	n.UpdatedAt = time.Now().UTC()
+	if err := tx.session.validateSchemaNode(ctx, n); err != nil {
+		return graph.Node{}, err
+	}
 	candidateNodes := cloneNodes(nodes)
 	candidateNodes[idx] = n
 	edges, err := tx.ListEdges(ctx)
@@ -406,6 +412,9 @@ func (tx *fileTx) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (grap
 	}
 	now := time.Now().UTC()
 	e := graph.Edge{ID: edgeID, DomainID: tx.session.domainID, FromID: in.FromID, ToID: in.ToID, Labels: append([]string(nil), in.Labels...), Properties: copyProps(in.Properties), Payload: copyProps(in.Payload), Meta: copyProps(in.Meta), CreatedAt: now, UpdatedAt: now}
+	if err := tx.session.validateSchemaEdge(ctx, e, from, to); err != nil {
+		return graph.Edge{}, err
+	}
 	delete(tx.overlay.deletedEdges, e.ID)
 	tx.overlay.addedEdges[e.ID] = e
 	return cloneEdge(e), nil

@@ -18,6 +18,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/storage"
 	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
@@ -35,6 +36,7 @@ type Config struct {
 	DomainID                  graph.DomainID
 	AdvancedSemanticEnabled   bool
 	GraphChangeSink           graphchange.Sink
+	SchemaManager             schemaservice.Manager
 }
 
 // New opens the default file-backed session implementation.
@@ -49,12 +51,12 @@ func NewWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID
 
 // NewWithStoreConfig opens a session that borrows an engine-owned graph store.
 func NewWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink, schemaManager: cfg.SchemaManager}
 }
 
 // NewConfig opens the default file-backed session implementation.
 func NewConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink}
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink, schemaManager: cfg.SchemaManager}
 }
 
 // FileSession is the default file-backed Session implementation.
@@ -76,6 +78,7 @@ type FileSession struct {
 	userStoreEncryptionKeyB64 string
 	advancedSemanticEnabled   bool
 	graphChangeSink           graphchange.Sink
+	schemaManager             schemaservice.Manager
 	lastGraphChangeSinkErr    error
 	closeStore                bool
 	closed                    bool
@@ -139,6 +142,9 @@ func (s *FileSession) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (
 	now := time.Now().UTC()
 	n.CreatedAt = now
 	n.UpdatedAt = now
+	if err := s.validateSchemaNode(ctx, n); err != nil {
+		return graph.Node{}, err
+	}
 	if err := s.commitGraph(ctx, []graph.Node{n}, nil, nil, nil); err != nil {
 		return graph.Node{}, err
 	}
@@ -205,6 +211,9 @@ func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeIn
 		n.CreatedAt = time.Now().UTC()
 	}
 	n.UpdatedAt = time.Now().UTC()
+	if err := s.validateSchemaNode(ctx, n); err != nil {
+		return graph.Node{}, err
+	}
 	candidateNodes := append([]graph.Node(nil), nodes...)
 	candidateNodes[idx] = n
 	edges, err := s.readEdges()
@@ -257,6 +266,9 @@ func (s *FileSession) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeIn
 	now := time.Now().UTC()
 	n.CreatedAt = now
 	n.UpdatedAt = now
+	if err := s.validateSchemaNode(ctx, n); err != nil {
+		return graph.Node{}, err
+	}
 	if err := s.commitGraph(ctx, []graph.Node{n}, nil, nil, nil); err != nil {
 		return graph.Node{}, err
 	}
@@ -302,6 +314,9 @@ func (s *FileSession) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (
 	}
 	now := time.Now().UTC()
 	e := graph.Edge{ID: edgeID, DomainID: s.domainID, FromID: in.FromID, ToID: in.ToID, Labels: append([]string(nil), in.Labels...), Properties: copyProps(in.Properties), Payload: copyProps(in.Payload), Meta: copyProps(in.Meta), CreatedAt: now, UpdatedAt: now}
+	if err := s.validateSchemaEdge(ctx, e, from, to); err != nil {
+		return graph.Edge{}, err
+	}
 	if err := s.commitGraph(ctx, nil, []graph.Edge{e}, nil, nil); err != nil {
 		return graph.Edge{}, err
 	}
@@ -764,6 +779,49 @@ func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID 
 		node.Properties = copyProps(props)
 	}
 	return node, nil
+}
+
+func (s *FileSession) validateSchemaNode(ctx context.Context, node graph.Node) error {
+	if s.schemaManager == nil {
+		return nil
+	}
+	result, err := s.schemaManager.ValidateNode(ctx, node.DomainID, node)
+	if err != nil {
+		return err
+	}
+	if result.Valid() {
+		return nil
+	}
+	return fmt.Errorf("%w: schema validation failed: %s", storetemplate.ErrInvalidInput, formatSchemaIssues(result.Issues))
+}
+
+func (s *FileSession) validateSchemaEdge(ctx context.Context, edge graph.Edge, from graph.Node, to graph.Node) error {
+	if s.schemaManager == nil {
+		return nil
+	}
+	result, err := s.schemaManager.ValidateEdge(ctx, edge.DomainID, edge, from, to)
+	if err != nil {
+		return err
+	}
+	if result.Valid() {
+		return nil
+	}
+	return fmt.Errorf("%w: schema validation failed: %s", storetemplate.ErrInvalidInput, formatSchemaIssues(result.Issues))
+}
+
+func formatSchemaIssues(issues []schemaservice.ValidationIssue) string {
+	if len(issues) == 0 {
+		return "unknown schema validation error"
+	}
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.Path != "" {
+			parts = append(parts, issue.Path+": "+issue.Message)
+			continue
+		}
+		parts = append(parts, issue.Message)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func applyNodeShape(node *graph.Node, labels []string, properties, payload, meta map[string]any) {

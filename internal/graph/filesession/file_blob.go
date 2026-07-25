@@ -153,6 +153,10 @@ func (s *FileSession) stageBlobNode(ctx context.Context, in sessionapi.AddBlobNo
 	now := time.Now().UTC()
 	node.CreatedAt = now
 	node.UpdatedAt = now
+	if err := s.validateSchemaNode(ctx, node); err != nil {
+		_ = blobs.Discard(ctx, staged)
+		return graph.Node{}, blobstorage.StagedBlob{}, err
+	}
 	return node, staged, nil
 }
 
