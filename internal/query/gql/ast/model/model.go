@@ -73,17 +73,24 @@ const (
 
 // ReturnItem represents one returned variable or property expression.
 type ReturnItem struct {
-	Kind     ReturnItemKind
-	Variable string
-	Property string
+	Kind      ReturnItemKind
+	Variable  string
+	Namespace string
+	Property  string
 }
 
 // MatchPattern represents a GQL graph pattern. The initial edge-capable shape
 // supports one node or one node-edge-node path.
 type MatchPattern struct {
 	Start        NodePattern
+	Segments     []PathSegment
 	Relationship *RelationshipPattern
 	End          *NodePattern
+}
+
+type PathSegment struct {
+	Relationship RelationshipPattern
+	Node         NodePattern
 }
 
 // RelationshipDirection describes how a relationship pattern is matched.

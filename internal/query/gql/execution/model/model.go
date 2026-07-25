@@ -27,6 +27,8 @@ type Node struct {
 	DomainID   string         `json:"domainId,omitempty"`
 	Labels     []string       `json:"labels,omitempty"`
 	Properties map[string]any `json:"properties,omitempty"`
+	Payload    map[string]any `json:"payload,omitempty"`
+	Meta       map[string]any `json:"meta,omitempty"`
 }
 
 type Edge struct {

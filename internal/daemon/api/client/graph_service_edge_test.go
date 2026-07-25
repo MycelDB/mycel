@@ -133,6 +133,49 @@ func TestQueryServiceExecuteGQLReturnsRelationshipPatternRows(t *testing.T) {
 	}
 }
 
+func TestQueryServiceExecuteGQLReturnsMultiHopPathRows(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+
+	aID := uuid.NewString()
+	bID := uuid.NewString()
+	cID := uuid.NewString()
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{NodeId: &aID, Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "A"})}}); err != nil {
+		t.Fatalf("CreateNode(a) error = %v", err)
+	}
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{NodeId: &bID, Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "B"})}}); err != nil {
+		t.Fatalf("CreateNode(b) error = %v", err)
+	}
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{NodeId: &cID, Labels: []string{"Concept"}, Properties: mustStruct(t, map[string]any{"name": "C"})}}); err != nil {
+		t.Fatalf("CreateNode(c) error = %v", err)
+	}
+	if _, err := graphSvc.CreateEdge(fixture.ctx, &clientv1.CreateEdgeRequest{TransactionId: writeTx, Edge: &clientv1.EdgeCreate{FromNodeId: aID, ToNodeId: bID, Labels: []string{"REFERENCES"}}}); err != nil {
+		t.Fatalf("CreateEdge(a-b) error = %v", err)
+	}
+	if _, err := graphSvc.CreateEdge(fixture.ctx, &clientv1.CreateEdgeRequest{TransactionId: writeTx, Edge: &clientv1.EdgeCreate{FromNodeId: bID, ToNodeId: cID, Labels: []string{"MENTIONS"}}}); err != nil {
+		t.Fatalf("CreateEdge(b-c) error = %v", err)
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (a:Note)-[:REFERENCES]->(b:Note)-[:MENTIONS]->(c:Concept) RETURN a.title, b.title, c.name"})
+	if err != nil {
+		t.Fatalf("ExecuteGQL() error = %v", err)
+	}
+	rows := res.GetResult().GetRows()
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, rows=%+v", len(rows), rows)
+	}
+	fields := rows[0].GetFields()
+	if fields["a.title"].GetScalar().GetStringValue() != "A" || fields["b.title"].GetScalar().GetStringValue() != "B" || fields["c.name"].GetScalar().GetStringValue() != "C" {
+		t.Fatalf("unexpected fields: %+v", fields)
+	}
+}
+
 func mustStruct(t *testing.T, values map[string]any) *structpb.Struct {
 	t.Helper()
 	out, err := structpb.NewStruct(values)

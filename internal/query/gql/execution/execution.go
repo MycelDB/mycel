@@ -63,6 +63,11 @@ type PatternRow struct {
 	End   execmodel.Node
 }
 
+type pathBinding struct {
+	Nodes map[string]execmodel.Node
+	Edges map[string]execmodel.Edge
+}
+
 // Graph is the graph capability required by the current executor.
 type Graph interface {
 	InsertNode(ctx context.Context, node InsertNode) (execmodel.NodeRef, error)
@@ -140,6 +145,85 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				}
 				result.Counters.EdgesInserted++
 			}
+		case planmodel.QueryPathOperation:
+			if plan.AccessMode != analysis.ReadOnly {
+				return execmodel.Result{}, fmt.Errorf("query path requires read-only access mode")
+			}
+			bindings := []pathBinding{}
+			starts, err := e.graph.QueryNodes(ctx, QueryNodes{Labels: append([]string(nil), op.Start.Labels...), Properties: copyProperties(op.Start.Properties)})
+			if err != nil {
+				return execmodel.Result{}, err
+			}
+			for _, start := range starts {
+				bindings = append(bindings, pathBinding{Nodes: map[string]execmodel.Node{op.Start.Variable: start}, Edges: map[string]execmodel.Edge{}})
+			}
+			currentVar := op.Start.Variable
+			for _, segment := range op.Segments {
+				next := []pathBinding{}
+				for _, binding := range bindings {
+					current, ok := binding.Nodes[currentVar]
+					if !ok {
+						return execmodel.Result{}, fmt.Errorf("path variable %q is not bound", currentVar)
+					}
+					rows, err := e.graph.QueryPattern(ctx, QueryPattern{Start: QueryNodePattern{Properties: map[string]any{"__id": current.ID}}, Relationship: QueryRelationshipPattern{Labels: append([]string(nil), segment.Relationship.Labels...), Properties: copyProperties(segment.Relationship.Properties), Direction: RelationshipDirection(segment.Relationship.Direction)}, End: QueryNodePattern{Labels: append([]string(nil), segment.Node.Labels...), Properties: copyProperties(segment.Node.Properties)}})
+					if err != nil {
+						return execmodel.Result{}, err
+					}
+					for _, matched := range rows {
+						copyBinding := pathBinding{Nodes: map[string]execmodel.Node{}, Edges: map[string]execmodel.Edge{}}
+						for key, value := range binding.Nodes {
+							copyBinding.Nodes[key] = value
+						}
+						for key, value := range binding.Edges {
+							copyBinding.Edges[key] = value
+						}
+						if segment.Node.Variable != "" {
+							copyBinding.Nodes[segment.Node.Variable] = matched.End
+						}
+						if segment.Relationship.Variable != "" {
+							copyBinding.Edges[segment.Relationship.Variable] = matched.Edge
+						}
+						next = append(next, copyBinding)
+					}
+				}
+				bindings = next
+				currentVar = segment.Node.Variable
+			}
+			if op.Limit > 0 && int64(len(bindings)) > op.Limit {
+				bindings = bindings[:op.Limit]
+			}
+			for _, ret := range op.Returns {
+				result.Columns = append(result.Columns, returnColumn(ret))
+			}
+			for _, binding := range bindings {
+				row := execmodel.Row{}
+				for _, ret := range op.Returns {
+					column := returnColumn(ret)
+					if returnKind(ret) == planmodel.ReturnVariable {
+						if n, ok := binding.Nodes[ret.Variable]; ok {
+							n := n
+							row[column] = execmodel.Value{Node: &n}
+							continue
+						}
+						if edge, ok := binding.Edges[ret.Variable]; ok {
+							edge := edge
+							row[column] = execmodel.Value{Edge: &edge}
+							continue
+						}
+						return execmodel.Result{}, fmt.Errorf("return variable %q is not bound", ret.Variable)
+					}
+					if n, ok := binding.Nodes[ret.Variable]; ok {
+						row[column] = execmodel.Value{Scalar: projectNodeField(n, ret)}
+						continue
+					}
+					if edge, ok := binding.Edges[ret.Variable]; ok {
+						row[column] = execmodel.Value{Scalar: projectEdgeField(edge, ret)}
+						continue
+					}
+					return execmodel.Result{}, fmt.Errorf("return variable %q is not bound", ret.Variable)
+				}
+				result.Rows = append(result.Rows, row)
+			}
 		case planmodel.QueryPatternOperation:
 			if plan.AccessMode != analysis.ReadOnly {
 				return execmodel.Result{}, fmt.Errorf("query pattern requires read-only access mode")
@@ -181,11 +265,11 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 					case planmodel.ReturnProperty:
 						switch ret.Variable {
 						case op.Start.Variable:
-							row[column] = execmodel.Value{Scalar: matched.Start.Properties[ret.Property]}
+							row[column] = execmodel.Value{Scalar: projectNodeField(matched.Start, ret)}
 						case op.Relationship.Variable:
-							row[column] = execmodel.Value{Scalar: matched.Edge.Properties[ret.Property]}
+							row[column] = execmodel.Value{Scalar: projectEdgeField(matched.Edge, ret)}
 						case op.End.Variable:
-							row[column] = execmodel.Value{Scalar: matched.End.Properties[ret.Property]}
+							row[column] = execmodel.Value{Scalar: projectNodeField(matched.End, ret)}
 						default:
 							return execmodel.Result{}, fmt.Errorf("return variable %q is not bound", ret.Variable)
 						}
@@ -218,7 +302,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 						n := node
 						row[column] = execmodel.Value{Node: &n}
 					case planmodel.ReturnProperty:
-						row[column] = execmodel.Value{Scalar: node.Properties[ret.Property]}
+						row[column] = execmodel.Value{Scalar: projectNodeField(node, ret)}
 					default:
 						return execmodel.Result{}, fmt.Errorf("unsupported return item kind %q", ret.Kind)
 					}
@@ -241,9 +325,38 @@ func returnKind(ret planmodel.ReturnItem) planmodel.ReturnItemKind {
 
 func returnColumn(ret planmodel.ReturnItem) string {
 	if returnKind(ret) == planmodel.ReturnProperty {
+		if ret.Namespace != "" {
+			return ret.Variable + "." + ret.Namespace + "." + ret.Property
+		}
 		return ret.Variable + "." + ret.Property
 	}
 	return ret.Variable
+}
+
+func projectNodeField(node execmodel.Node, ret planmodel.ReturnItem) any {
+	switch ret.Namespace {
+	case "payload":
+		return node.Payload[ret.Property]
+	case "meta":
+		return node.Meta[ret.Property]
+	case "properties", "":
+		return node.Properties[ret.Property]
+	default:
+		return nil
+	}
+}
+
+func projectEdgeField(edge execmodel.Edge, ret planmodel.ReturnItem) any {
+	switch ret.Namespace {
+	case "payload":
+		return edge.Payload[ret.Property]
+	case "meta":
+		return edge.Meta[ret.Property]
+	case "properties", "":
+		return edge.Properties[ret.Property]
+	default:
+		return nil
+	}
 }
 
 func copyProperties(properties map[string]any) map[string]any {

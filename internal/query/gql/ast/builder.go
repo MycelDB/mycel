@@ -138,7 +138,7 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 		returns = append(returns, built)
 	}
 	stmt := model.MatchStatement{Pattern: node, Where: where, Returns: returns, FetchFirst: fetchFirst}
-	if matchPattern.Relationship != nil {
+	if matchPattern.Relationship != nil || len(matchPattern.Segments) > 0 {
 		stmt.MatchPattern = matchPattern
 	}
 	return model.Query{Statement: stmt}, nil
@@ -154,20 +154,27 @@ func buildMatchPattern(ctx generated.IMatchPatternContext) (model.MatchPattern, 
 		return model.MatchPattern{}, err
 	}
 	out := model.MatchPattern{Start: start}
-	if relCtx := patternCtx.RelationshipPattern(); relCtx != nil {
-		rel, err := buildRelationshipPattern(relCtx)
-		if err != nil {
-			return model.MatchPattern{}, err
-		}
-		out.Relationship = &rel
-		if len(patternCtx.AllNodePattern()) != 2 {
+	rels := patternCtx.AllRelationshipPattern()
+	if len(rels) > 0 {
+		if len(patternCtx.AllNodePattern()) != len(rels)+1 {
 			return model.MatchPattern{}, fmt.Errorf("relationship pattern requires target node")
 		}
-		end, err := buildNodePattern(patternCtx.NodePattern(1))
-		if err != nil {
-			return model.MatchPattern{}, err
+		for i, relCtx := range rels {
+			rel, err := buildRelationshipPattern(relCtx)
+			if err != nil {
+				return model.MatchPattern{}, err
+			}
+			node, err := buildNodePattern(patternCtx.NodePattern(i + 1))
+			if err != nil {
+				return model.MatchPattern{}, err
+			}
+			if len(rels) == 1 {
+				out.Relationship = &rel
+				out.End = &node
+				continue
+			}
+			out.Segments = append(out.Segments, model.PathSegment{Relationship: rel, Node: node})
 		}
-		out.End = &end
 	}
 	return out, nil
 }
@@ -251,10 +258,15 @@ func buildFetchFirstClause(ctx generated.IFetchFirstClauseContext) (model.FetchF
 func buildReturnItem(ctx *generated.ReturnItemContext) (model.ReturnItem, error) {
 	if prop := ctx.PropertyReference(); prop != nil {
 		propCtx, ok := prop.(*generated.PropertyReferenceContext)
-		if !ok || len(propCtx.AllIDENTIFIER()) != 2 {
+		if !ok || len(propCtx.AllIDENTIFIER()) < 2 || len(propCtx.AllIDENTIFIER()) > 3 {
 			return model.ReturnItem{}, fmt.Errorf("invalid return property")
 		}
-		return model.ReturnItem{Kind: model.ReturnProperty, Variable: propCtx.IDENTIFIER(0).GetText(), Property: propCtx.IDENTIFIER(1).GetText()}, nil
+		item := model.ReturnItem{Kind: model.ReturnProperty, Variable: propCtx.IDENTIFIER(0).GetText(), Property: propCtx.IDENTIFIER(1).GetText()}
+		if len(propCtx.AllIDENTIFIER()) == 3 {
+			item.Namespace = propCtx.IDENTIFIER(1).GetText()
+			item.Property = propCtx.IDENTIFIER(2).GetText()
+		}
+		return item, nil
 	}
 	if variable := ctx.Variable(); variable != nil {
 		variableCtx, ok := variable.(*generated.VariableContext)

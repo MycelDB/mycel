@@ -71,11 +71,41 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 		if kind == "" {
 			kind = planmodel.ReturnVariable
 		}
-		returns = append(returns, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Property: ret.Property})
+		returns = append(returns, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Namespace: ret.Namespace, Property: ret.Property})
 	}
 	var limit int64
 	if stmt.FetchFirst != nil {
 		limit = stmt.FetchFirst.Count
+	}
+	if len(pattern.Segments) > 1 {
+		segments := make([]planmodel.PathSegment, 0, len(pattern.Segments))
+		for i, segment := range pattern.Segments {
+			relProps := propertiesMap(segment.Relationship.Properties)
+			nodeProps := propertiesMap(segment.Node.Properties)
+			if stmt.Where != nil {
+				for _, predicate := range stmt.Where.Predicates {
+					value := predicate.Value.Value
+					switch predicate.Variable {
+					case segment.Relationship.Variable:
+						if existing, ok := relProps[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
+							return planmodel.Plan{}, fmt.Errorf("conflicting values for property %q", predicate.Property)
+						}
+						relProps[predicate.Property] = value
+					case segment.Node.Variable:
+						if existing, ok := nodeProps[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
+							return planmodel.Plan{}, fmt.Errorf("conflicting values for property %q", predicate.Property)
+						}
+						nodeProps[predicate.Property] = value
+					case pattern.Start.Variable:
+						if i == 0 {
+							// Already folded above.
+						}
+					}
+				}
+			}
+			segments = append(segments, planmodel.PathSegment{Relationship: planmodel.RelationshipPattern{Variable: segment.Relationship.Variable, Labels: append([]string(nil), segment.Relationship.Labels...), Properties: relProps, Direction: planmodel.RelationshipDirection(segment.Relationship.Direction)}, Node: planmodel.NodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: nodeProps}})
+		}
+		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, Limit: limit}}}, nil
 	}
 	if pattern.Relationship != nil {
 		relProps := propertiesMap(pattern.Relationship.Properties)

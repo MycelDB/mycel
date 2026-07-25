@@ -128,28 +128,34 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 		return fmt.Errorf("match node variable is required")
 	}
 	defined := map[string]struct{}{pattern.Start.Variable: {}}
-	if pattern.Relationship != nil {
+	segments := pattern.Segments
+	if len(segments) == 0 && pattern.Relationship != nil {
 		if pattern.End == nil {
 			return fmt.Errorf("relationship pattern requires target node")
 		}
-		if pattern.End.Variable == "" {
-			return fmt.Errorf("relationship target variable is required")
-		}
-		if _, exists := defined[pattern.End.Variable]; exists {
-			return fmt.Errorf("duplicate variable %q", pattern.End.Variable)
-		}
-		defined[pattern.End.Variable] = struct{}{}
-		if pattern.Relationship.Variable != "" {
-			if _, exists := defined[pattern.Relationship.Variable]; exists {
-				return fmt.Errorf("duplicate variable %q", pattern.Relationship.Variable)
+		segments = []model.PathSegment{{Relationship: *pattern.Relationship, Node: *pattern.End}}
+	}
+	if len(segments) > 0 {
+		for _, segment := range segments {
+			if segment.Node.Variable == "" {
+				return fmt.Errorf("relationship target variable is required")
 			}
-			defined[pattern.Relationship.Variable] = struct{}{}
-		}
-		if err := analyzePatternProperties(pattern.Relationship.Properties); err != nil {
-			return fmt.Errorf("relationship pattern: %w", err)
-		}
-		if err := analyzePatternProperties(pattern.End.Properties); err != nil {
-			return fmt.Errorf("target node pattern: %w", err)
+			if _, exists := defined[segment.Node.Variable]; exists {
+				return fmt.Errorf("duplicate variable %q", segment.Node.Variable)
+			}
+			defined[segment.Node.Variable] = struct{}{}
+			if segment.Relationship.Variable != "" {
+				if _, exists := defined[segment.Relationship.Variable]; exists {
+					return fmt.Errorf("duplicate variable %q", segment.Relationship.Variable)
+				}
+				defined[segment.Relationship.Variable] = struct{}{}
+			}
+			if err := analyzePatternProperties(segment.Relationship.Properties); err != nil {
+				return fmt.Errorf("relationship pattern: %w", err)
+			}
+			if err := analyzePatternProperties(segment.Node.Properties); err != nil {
+				return fmt.Errorf("target node pattern: %w", err)
+			}
 		}
 	}
 	if len(stmt.Returns) == 0 {
@@ -171,6 +177,11 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 		case model.ReturnProperty:
 			if ret.Property == "" {
 				return fmt.Errorf("return property cannot be empty")
+			}
+			switch ret.Namespace {
+			case "", "properties", "payload", "meta":
+			default:
+				return fmt.Errorf("unsupported return namespace %q", ret.Namespace)
 			}
 		default:
 			return fmt.Errorf("unsupported return item kind %q", kind)

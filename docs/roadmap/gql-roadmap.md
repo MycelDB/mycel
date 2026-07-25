@@ -52,7 +52,7 @@ Desirability values are relative priorities:
 | Edge comparison predicates | Filter on edge comparison values, e.g. `WHERE r.weight > 0.5`. | High | High | N |
 | Return edge | Return a matched relationship, e.g. `RETURN r`. | High | High | Y |
 | Return edge properties | Return scalar edge property projections, e.g. `RETURN r.kind, r.weight`. | High | High | Y |
-| Multi-hop path match | Match chained patterns such as `(a)-[:REFERS_TO]->(b)-[:MENTIONS]->(c)`. | Very High | Very High | N |
+| Multi-hop path match | Match chained patterns such as `(a)-[:REFERS_TO]->(b)-[:MENTIONS]->(c)`. | Very High | Very High | Y |
 | Variable-length traversal | Match bounded variable-length paths. | High | Very High | N |
 | Path binding | Bind a full path, e.g. `MATCH path = (a)-[*]->(b) RETURN path`. | Medium | High | N |
 | Path projection | Return nodes and edges in a matched path. | Medium | High | N |
@@ -69,7 +69,7 @@ Desirability values are relative priorities:
 | Aliased projections | Support `RETURN p.name AS name`. | Medium | High | N |
 | Function calls | Add built-in scalar, list, and string functions. | Medium | Medium | N |
 | List/map literals | Support richer literal values in queries. | Medium | Medium | N |
-| Payload projection | Return `Payload` fields such as primary text or blob references. | High | Very High | N |
+| Payload projection | Return `Payload` fields such as primary text or blob references. | High | Very High | Y |
 | Meta projection | Return Mycel-controlled metadata fields. | Medium | Medium | N |
 | Full-text search predicate | Match text payload/properties using a search index. | High | Very High | N |
 | Semantic/vector predicate | Query semantically similar nodes. | Medium | Very High | N |
@@ -109,16 +109,26 @@ MATCH (parent:Person)-[r:Daughter]->(child:Person)
 RETURN parent.firstName, r, child.firstName
 ```
 
+```gql
+MATCH (a:Note)-[:REFERENCES]->(b:Note)-[:MENTIONS]->(c:Concept)
+RETURN a.title, b.title, c.name
+```
+
+```gql
+MATCH (n:Note)
+RETURN n.payload.text
+```
+
 ## Near-Term Priorities
 
 Near-term priorities should keep the implementation incremental while making GQL useful for real graph workflows:
 
 1. Broaden `CREATE` toward standard GQL syntax, including node `CREATE` aliases and eventually inline endpoint creation.
-2. Multi-hop path matching and path projection.
+2. Path binding/projection and variable-length traversal.
 3. `ORDER BY` and `OFFSET` for result shaping and pagination.
 4. Comparison predicates beyond equality for node and edge properties.
 5. Aliased scalar projections.
-6. Payload projection for primary text/blob-backed nodes.
+6. Full map/list result values for richer payload returns.
 7. Query parameters to avoid literal interpolation in application code.
 
 ## Knot PKM Use Cases
@@ -136,7 +146,7 @@ Knot PKM needs GQL to model and traverse relationships between notes, concepts, 
 - `NEXT`
 - `PREVIOUS`
 
-For Knot PKM, edge creation and single-hop edge matching are now available. The highest-value remaining areas are multi-hop path patterns, neighborhood expansion, variable-length traversal, payload projection, and semantic/full-text predicates.
+For Knot PKM, edge creation, single-hop edge matching, multi-hop path matching, and scalar payload projection are now available. The highest-value remaining areas are neighborhood expansion, variable-length traversal, path projection, and semantic/full-text predicates.
 
 ## Related Implementation Plans
 

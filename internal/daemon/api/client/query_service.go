@@ -667,11 +667,14 @@ func (g gqlDaemonGraph) QueryPattern(ctx context.Context, query execution.QueryP
 }
 
 func nodeMatchesGQLPattern(node domaingraph.Node, labels []string, properties map[string]any) bool {
+	if id, ok := properties["__id"].(string); ok && node.ID.String() != id {
+		return false
+	}
 	return nodeHasLabels(node.Labels, labels) && nodeHasProperties(node.Properties, properties)
 }
 
 func gqlExecNode(node domaingraph.Node) execmodel.Node {
-	return execmodel.Node{ID: node.ID.String(), DomainID: node.DomainID.String(), Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties)}
+	return execmodel.Node{ID: node.ID.String(), DomainID: node.DomainID.String(), Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties), Payload: copyMapAny(node.Payload), Meta: copyMapAny(node.Meta)}
 }
 
 func gqlExecEdge(edge domaingraph.Edge) execmodel.Edge {
@@ -680,6 +683,9 @@ func gqlExecEdge(edge domaingraph.Edge) execmodel.Edge {
 
 func nodeHasProperties(values map[string]any, required map[string]any) bool {
 	for key, value := range required {
+		if key == "__id" {
+			continue
+		}
 		if !queryValuesEqual(values[key], value) {
 			return false
 		}
@@ -708,7 +714,7 @@ func gqlRowsToProto(result execmodel.Result) []*clientv1.QueryRow {
 }
 
 func gqlNodeToProto(node execmodel.Node) *clientv1.Node {
-	return &clientv1.Node{NodeId: node.ID, DomainId: node.DomainID, Labels: append([]string(nil), node.Labels...), Properties: protoStruct(node.Properties)}
+	return &clientv1.Node{NodeId: node.ID, DomainId: node.DomainID, Labels: append([]string(nil), node.Labels...), Properties: protoStruct(node.Properties), Payload: protoStruct(node.Payload), Meta: protoStruct(node.Meta)}
 }
 
 func gqlEdgeToProto(edge execmodel.Edge) *clientv1.Edge {

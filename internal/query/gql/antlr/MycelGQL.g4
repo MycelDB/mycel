@@ -38,7 +38,7 @@ createRelationshipPattern
   ;
 
 matchPattern
-  : nodePattern (relationshipPattern nodePattern)?
+  : nodePattern (relationshipPattern nodePattern)*
   ;
 
 relationshipPattern
@@ -69,7 +69,7 @@ returnItem
   ;
 
 propertyReference
-  : IDENTIFIER DOT IDENTIFIER
+  : IDENTIFIER DOT IDENTIFIER (DOT IDENTIFIER)?
   ;
 
 fetchFirstClause

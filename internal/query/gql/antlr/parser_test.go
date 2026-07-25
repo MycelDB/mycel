@@ -49,6 +49,26 @@ func TestParserParsesMatchCreateRelationship(t *testing.T) {
 	}
 }
 
+func TestParserParsesMultiHopRelationshipPattern(t *testing.T) {
+	tree, err := Parse("MATCH (a:Note)-[:REFERENCES]->(b:Note)-[:MENTIONS]->(c:Concept) RETURN a, b, c")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}
+
+func TestParserParsesPayloadProjection(t *testing.T) {
+	tree, err := Parse("MATCH (n:Note) RETURN n.payload.text")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}
+
 func TestParserParsesDirectedRelationshipPattern(t *testing.T) {
 	tree, err := Parse("MATCH (a:Note)-[r:REFERENCES {confidence: 0.9}]->(b:Note) RETURN a, r, b")
 	if err != nil {

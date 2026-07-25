@@ -133,6 +133,22 @@ func TestExecutorExecutesPropertyReturnProjection(t *testing.T) {
 	}
 }
 
+func TestExecutorExecutesPayloadReturnProjection(t *testing.T) {
+	graph := &fakeGraphWriter{nodes: []execmodel.Node{{ID: "node-1", Labels: []string{"Note"}, Payload: map[string]any{"text": "hello payload"}}}}
+	plan := planmodel.Plan{AccessMode: analysis.ReadOnly, Operations: []planmodel.Operation{planmodel.QueryNodesOperation{Variable: "n", Labels: []string{"Note"}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnProperty, Variable: "n", Namespace: "payload", Property: "text"}}}}}
+
+	result, err := Execute(context.Background(), graph, plan)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !reflect.DeepEqual(result.Columns, []string{"n.payload.text"}) {
+		t.Fatalf("columns = %#v", result.Columns)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["n.payload.text"].Scalar != "hello payload" {
+		t.Fatalf("unexpected result rows: %#v", result.Rows)
+	}
+}
+
 func TestExecutorExecutesMixedReturnProjection(t *testing.T) {
 	graph := &fakeGraphWriter{nodes: []execmodel.Node{{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice"}}}}
 	plan := planmodel.Plan{

@@ -45,6 +45,20 @@ type QueryPatternOperation struct {
 
 func (QueryPatternOperation) operation() {}
 
+type QueryPathOperation struct {
+	Start    NodePattern
+	Segments []PathSegment
+	Returns  []ReturnItem
+	Limit    int64
+}
+
+func (QueryPathOperation) operation() {}
+
+type PathSegment struct {
+	Relationship RelationshipPattern
+	Node         NodePattern
+}
+
 // MatchCreateRelationshipOperation creates relationships between matched nodes.
 type MatchCreateRelationshipOperation struct {
 	Matches      []NodePattern
@@ -89,7 +103,8 @@ const (
 )
 
 type ReturnItem struct {
-	Kind     ReturnItemKind
-	Variable string
-	Property string
+	Kind      ReturnItemKind
+	Variable  string
+	Namespace string
+	Property  string
 }
