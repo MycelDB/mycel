@@ -140,6 +140,58 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	return &clientv1.ExecuteGQLResponse{Result: queryResultFromRowsWithCounters(pageRows, next, execResult.Counters)}, nil
 }
 
+func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.ExecuteGQLScriptRequest) (*clientv1.ExecuteGQLScriptResponse, error) {
+	if strings.TrimSpace(req.GetScript()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "script is required")
+	}
+	if len(req.GetParams()) > 0 {
+		return nil, status.Error(codes.Unimplemented, "GQL parameters are reserved but not implemented yet")
+	}
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, req.GetTransactionId())
+	if err != nil {
+		return nil, mapSessionError(err, "execute gql script")
+	}
+	if tx.State != daemonsession.TransactionStateActive {
+		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
+	}
+	scriptPlan, err := gql.CompileScript(req.GetScript())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if scriptPlan.AccessMode == analysis.ReadWrite && tx.Mode != daemonsession.TransactionModeReadWrite {
+		return nil, status.Error(codes.FailedPrecondition, "GQL script requires a read-write transaction")
+	}
+	statementResults := []*clientv1.GQLStatementResult{}
+	aggregate := &clientv1.QueryResult{Graph: &clientv1.ResultGraph{}, Counters: &clientv1.QueryCounters{}}
+	for _, statement := range scriptPlan.Statements {
+		execResult, err := execution.Execute(ctx, gqlDaemonGraph{service: s, tx: tx}, statement.Plan)
+		if err != nil {
+			statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: false, Error: err.Error()})
+			if req.GetStopOnError() {
+				break
+			}
+			continue
+		}
+		rows := gqlRowsToProto(execResult)
+		pageRows, next, err := paginateProtoQueryRows(rows, int(req.GetPageSize()), "")
+		if err != nil {
+			statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: false, Error: err.Error()})
+			if req.GetStopOnError() {
+				break
+			}
+			continue
+		}
+		result := queryResultFromRowsWithCounters(pageRows, next, execResult.Counters)
+		statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: true, Result: result})
+		mergeQueryResult(aggregate, result)
+	}
+	return &clientv1.ExecuteGQLScriptResponse{Statements: statementResults, Result: aggregate}, nil
+}
+
 func (s *QueryService) allNodes(ctx context.Context, tx daemonsession.GraphTransaction) ([]domaingraph.Node, error) {
 	all := []domaingraph.Node{}
 	token := ""
@@ -727,6 +779,41 @@ func queryResultFromRows(rows []*clientv1.QueryRow, next string) *clientv1.Query
 
 func queryResultFromRowsWithCounters(rows []*clientv1.QueryRow, next string, counters execmodel.Counters) *clientv1.QueryResult {
 	return &clientv1.QueryResult{Rows: rows, NextPageToken: next, Graph: graphFromRows(rows), Counters: &clientv1.QueryCounters{RowsReturned: int32(len(rows)), NodesInserted: int32(counters.NodesInserted), EdgesInserted: int32(counters.EdgesInserted)}}
+}
+
+func mergeQueryResult(aggregate *clientv1.QueryResult, result *clientv1.QueryResult) {
+	if aggregate == nil || result == nil {
+		return
+	}
+	if len(result.GetRows()) > 0 {
+		aggregate.Rows = result.GetRows()
+	}
+	aggregate.NextPageToken = result.GetNextPageToken()
+	if aggregate.Counters == nil {
+		aggregate.Counters = &clientv1.QueryCounters{}
+	}
+	if result.GetCounters() != nil {
+		aggregate.Counters.RowsReturned += result.GetCounters().GetRowsReturned()
+		aggregate.Counters.NodesInserted += result.GetCounters().GetNodesInserted()
+		aggregate.Counters.NodesUpdated += result.GetCounters().GetNodesUpdated()
+		aggregate.Counters.NodesDeleted += result.GetCounters().GetNodesDeleted()
+		aggregate.Counters.EdgesInserted += result.GetCounters().GetEdgesInserted()
+		aggregate.Counters.EdgesDeleted += result.GetCounters().GetEdgesDeleted()
+	}
+	if aggregate.Graph == nil {
+		aggregate.Graph = &clientv1.ResultGraph{}
+	}
+	seen := map[string]bool{}
+	for _, node := range aggregate.Graph.GetNodes() {
+		seen[node.GetNodeId()] = true
+	}
+	for _, node := range result.GetGraph().GetNodes() {
+		if seen[node.GetNodeId()] {
+			continue
+		}
+		seen[node.GetNodeId()] = true
+		aggregate.Graph.Nodes = append(aggregate.Graph.Nodes, node)
+	}
 }
 
 func graphFromRows(rows []*clientv1.QueryRow) *clientv1.ResultGraph {
