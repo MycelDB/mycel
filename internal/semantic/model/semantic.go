@@ -318,7 +318,7 @@ type InferencePolicy struct {
 // SemanticSourcePolicy selects roots and describes source assembly for a semantic index.
 type SemanticSourcePolicy struct {
 	RootQuery         string           `json:"root_query,omitempty"`
-	TemplateKeys      []string         `json:"template_keys,omitempty"`
+	RecordTypes       []string         `json:"record_types,omitempty"`
 	Extraction        SourceExtraction `json:"extraction"`
 	IncludeProps      []string         `json:"include_props,omitempty"`
 	MaxDepth          *int             `json:"max_depth,omitempty"`

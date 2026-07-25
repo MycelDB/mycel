@@ -9,7 +9,9 @@ The documentation tree is organized around Mycel architecture, API, operational,
 
 Current schema direction:
 
-- `design/schema-subsystem.md` describes the planned domain-scoped Schema subsystem replacing graph templates.
+- `schema-subsystem.md` is the current operator/developer overview for domain-scoped schemas.
+- `gql-schema-behavior.md` documents schema-aware GQL validation and modes.
+- `design/schema-subsystem.md` records the original design for the domain-scoped Schema subsystem replacing graph templates.
 - `implementation/schema-subsystem-implementation-plan.md` breaks the schema/template replacement and Knot PKM refactor into testable tranches.
 
 Current subsystem/runtime architecture direction:

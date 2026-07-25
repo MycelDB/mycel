@@ -129,7 +129,7 @@ func MigrateLegacyEmbeddings(ctx context.Context, in LegacyEmbeddingInput) (Lega
 		if err != nil {
 			return result, err
 		}
-		index, err := in.SpaceManager.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: in.SpaceID, DomainID: in.DomainID, Key: legacySemanticIndexKey(profile), Name: firstNonEmpty(profile.Name, "Migrated legacy embedding profile"), Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: legacySourceExtraction(profile.SourceMode), TemplateKeys: append([]string(nil), profile.TargetTemplateKeys...), IncludeProps: append([]string(nil), profile.IncludeProps...), MaxDepth: profile.MaxDepth, MinimumTextLength: profile.MinimumTextLength}, ModelEndpointID: endpoint.ID, ModelID: modelRec.ID, ModelEndpointCapabilityID: capability.ID, VectorStoreID: mustDefaultVectorStore(ctx, in.GlobalManager), Enabled: true})
+		index, err := in.SpaceManager.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: in.SpaceID, DomainID: in.DomainID, Key: legacySemanticIndexKey(profile), Name: firstNonEmpty(profile.Name, "Migrated legacy embedding profile"), Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: legacySourceExtraction(profile.SourceMode), RecordTypes: append([]string(nil), profile.TargetTemplateKeys...), IncludeProps: append([]string(nil), profile.IncludeProps...), MaxDepth: profile.MaxDepth, MinimumTextLength: profile.MinimumTextLength}, ModelEndpointID: endpoint.ID, ModelID: modelRec.ID, ModelEndpointCapabilityID: capability.ID, VectorStoreID: mustDefaultVectorStore(ctx, in.GlobalManager), Enabled: true})
 		if err != nil {
 			return result, err
 		}

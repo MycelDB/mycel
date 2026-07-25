@@ -246,7 +246,7 @@ func (a Analyzer) deletedTarget(ctx context.Context, index domainsemantic.Semant
 }
 
 func nodeMatchesPolicy(node graph.Node, policy domainsemantic.SemanticSourcePolicy) bool {
-	// Template-key source filters are legacy and inert after template removal.
+	// Record-type source filters are currently advisory until semantic source filtering is implemented.
 	return true
 }
 

@@ -268,8 +268,8 @@ func semanticIndexDescription(index domainsemantic.SemanticIndex) string {
 	if index.SourcePolicy.Extraction != "" {
 		parts = append(parts, "source="+string(index.SourcePolicy.Extraction))
 	}
-	if len(index.SourcePolicy.TemplateKeys) > 0 {
-		parts = append(parts, "templates="+strings.Join(index.SourcePolicy.TemplateKeys, ","))
+	if len(index.SourcePolicy.RecordTypes) > 0 {
+		parts = append(parts, "record_types="+strings.Join(index.SourcePolicy.RecordTypes, ","))
 	}
 	return strings.Join(parts, "; ")
 }

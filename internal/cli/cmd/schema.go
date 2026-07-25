@@ -2,17 +2,21 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/myceldb/mycel/internal/cli/app"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	"github.com/myceldb/mycel/internal/schema/dsl"
 	"github.com/spf13/cobra"
 )
 
 func NewSchemaCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "schema", Short: "Manage domain schemas"}
-	cmd.AddCommand(newSchemaGetCommand(a), newSchemaPutCommand(a), newSchemaValidateCommand(a))
+	cmd.AddCommand(newSchemaGetCommand(a), newSchemaPutCommand(a), newSchemaValidateCommand(a), newSchemaCompileCommand(a))
 	return cmd
 }
 
@@ -38,8 +42,9 @@ func newSchemaGetCommand(a *app.App) *cobra.Command {
 
 func newSchemaPutCommand(a *app.App) *cobra.Command {
 	var domainID string
-	cmd := &cobra.Command{Use: "put schema.json", Short: "Put a domain schema JSON document", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		data, err := os.ReadFile(args[0])
+	var format string
+	cmd := &cobra.Command{Use: "put schema.{json|gwl}", Short: "Put a domain schema JSON or GWL document", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		data, err := readSchemaInput(args[0], format)
 		if err != nil {
 			return err
 		}
@@ -56,13 +61,15 @@ func newSchemaPutCommand(a *app.App) *cobra.Command {
 		return nil
 	}}
 	cmd.Flags().StringVar(&domainID, "domain", "", "domain UUID")
+	cmd.Flags().StringVar(&format, "format", "auto", "schema input format: auto, json, gwl")
 	_ = cmd.MarkFlagRequired("domain")
 	return cmd
 }
 
 func newSchemaValidateCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "validate schema.json", Short: "Validate a schema JSON document", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		data, err := os.ReadFile(args[0])
+	var format string
+	cmd := &cobra.Command{Use: "validate schema.{json|gwl}", Short: "Validate a schema JSON or GWL document", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		data, err := readSchemaInput(args[0], format)
 		if err != nil {
 			return err
 		}
@@ -84,5 +91,51 @@ func newSchemaValidateCommand(a *app.App) *cobra.Command {
 		}
 		return fmt.Errorf("schema invalid")
 	}}
+	cmd.Flags().StringVar(&format, "format", "auto", "schema input format: auto, json, gwl")
 	return cmd
+}
+
+func newSchemaCompileCommand(a *app.App) *cobra.Command {
+	var format string
+	cmd := &cobra.Command{Use: "compile schema.gwl", Short: "Compile a GWL schema document to canonical JSON", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		data, err := readSchemaInput(args[0], format)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}}
+	cmd.Flags().StringVar(&format, "format", "auto", "schema input format: auto, json, gwl")
+	return cmd
+}
+
+func readSchemaInput(path string, format string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	selected := strings.ToLower(strings.TrimSpace(format))
+	if selected == "" || selected == "auto" {
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".gwl", ".gql", ".schema":
+			selected = "gwl"
+		default:
+			selected = "json"
+		}
+	}
+	if selected == "json" {
+		return data, nil
+	}
+	if selected != "gwl" {
+		return nil, fmt.Errorf("unsupported schema format %q", format)
+	}
+	parsed, err := dsl.Parse(string(data))
+	if err != nil {
+		return nil, err
+	}
+	out, err := json.MarshalIndent(parsed, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

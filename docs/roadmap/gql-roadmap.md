@@ -73,7 +73,7 @@ Desirability values are relative priorities:
 | Meta projection | Return Mycel-controlled metadata fields. | Medium | Medium | N |
 | Full-text search predicate | Match text payload/properties using text predicate filtering. | High | Very High | Y |
 | Semantic/vector predicate | Query semantically similar nodes. Initial implementation uses local textual fallback until semantic index pushdown is wired. | Medium | Very High | Y |
-| Template-aware predicates | Filter/query using template or schema information. | Medium | High | N |
+| Schema-aware predicates | Filter/query using schema labels, record semantics, or schema-derived metadata. | Medium | High | Partial |
 | Degree predicates | Filter by incoming/outgoing edge counts. | Medium | High | N |
 | Explain plan | Show the compiled or optimized query plan. | Medium | Low | N |
 | Query diagnostics | Return timing, counters, and warnings. | Medium | Medium | N |
