@@ -26,26 +26,46 @@ type Analyzer interface {
 	Analyze(query model.Query) (Analysis, error)
 }
 
-type analyzer struct{}
+type analyzer struct {
+	schema SchemaContext
+}
 
-func NewAnalyzer() Analyzer { return analyzer{} }
+// Option configures the GQL analyzer.
+type Option func(*analyzer)
+
+// WithSchema enables schema-aware semantic validation.
+func WithSchema(schema SchemaContext) Option {
+	return func(a *analyzer) { a.schema = schema }
+}
+
+func NewAnalyzer(options ...Option) Analyzer {
+	a := analyzer{}
+	for _, option := range options {
+		option(&a)
+	}
+	return a
+}
 
 func Analyze(query model.Query) (Analysis, error) { return NewAnalyzer().Analyze(query) }
 
-func (analyzer) Analyze(query model.Query) (Analysis, error) {
+func AnalyzeWithSchema(query model.Query, schema SchemaContext) (Analysis, error) {
+	return NewAnalyzer(WithSchema(schema)).Analyze(query)
+}
+
+func (a analyzer) Analyze(query model.Query) (Analysis, error) {
 	switch stmt := query.Statement.(type) {
 	case model.InsertStatement:
-		if err := analyzeInsertStatement(stmt); err != nil {
+		if err := analyzeInsertStatement(stmt, a.schema); err != nil {
 			return Analysis{}, err
 		}
 		return Analysis{Query: query, AccessMode: ReadWrite}, nil
 	case model.MatchStatement:
-		if err := analyzeMatchStatement(stmt); err != nil {
+		if err := analyzeMatchStatement(stmt, a.schema); err != nil {
 			return Analysis{}, err
 		}
 		return Analysis{Query: query, AccessMode: ReadOnly}, nil
 	case model.MatchCreateStatement:
-		if err := analyzeMatchCreateStatement(stmt); err != nil {
+		if err := analyzeMatchCreateStatement(stmt, a.schema); err != nil {
 			return Analysis{}, err
 		}
 		return Analysis{Query: query, AccessMode: ReadWrite}, nil
@@ -56,7 +76,7 @@ func (analyzer) Analyze(query model.Query) (Analysis, error) {
 	}
 }
 
-func analyzeInsertStatement(stmt model.InsertStatement) error {
+func analyzeInsertStatement(stmt model.InsertStatement, schemaCtx SchemaContext) error {
 	pattern := stmt.Pattern
 	if len(pattern.Labels) == 0 {
 		return fmt.Errorf("insert node requires at least one label")
@@ -84,14 +104,15 @@ func analyzeInsertStatement(stmt model.InsertStatement) error {
 			return fmt.Errorf("property %q: %w", prop.Key, err)
 		}
 	}
-	return nil
+	return newSchemaState(schemaCtx).analyzeNodePattern(pattern)
 }
 
-func analyzeMatchCreateStatement(stmt model.MatchCreateStatement) error {
+func analyzeMatchCreateStatement(stmt model.MatchCreateStatement, schemaCtx SchemaContext) error {
 	if len(stmt.Matches) < 2 {
 		return fmt.Errorf("match create requires at least two node patterns")
 	}
 	defined := map[string]struct{}{}
+	schemaState := newSchemaState(schemaCtx)
 	for _, pattern := range stmt.Matches {
 		if pattern.Variable == "" {
 			return fmt.Errorf("matched node variable is required")
@@ -101,6 +122,9 @@ func analyzeMatchCreateStatement(stmt model.MatchCreateStatement) error {
 		}
 		defined[pattern.Variable] = struct{}{}
 		if err := analyzePatternProperties(pattern.Properties); err != nil {
+			return err
+		}
+		if err := schemaState.analyzeNodePattern(pattern); err != nil {
 			return err
 		}
 	}
@@ -113,13 +137,20 @@ func analyzeMatchCreateStatement(stmt model.MatchCreateStatement) error {
 	if len(stmt.Create.Relationship.Labels) == 0 {
 		return fmt.Errorf("create relationship requires at least one label")
 	}
+	edgeTypes, err := schemaState.analyzeRelationshipPattern(stmt.Create.Relationship)
+	if err != nil {
+		return err
+	}
 	if err := analyzePatternProperties(stmt.Create.Relationship.Properties); err != nil {
 		return fmt.Errorf("relationship pattern: %w", err)
+	}
+	if err := schemaState.validateRelationshipEndpoints(edgeTypes, stmt.Create.FromVariable, stmt.Create.ToVariable); err != nil {
+		return err
 	}
 	return nil
 }
 
-func analyzeMatchStatement(stmt model.MatchStatement) error {
+func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) error {
 	pattern := stmt.MatchPattern
 	if pattern.Start.Variable == "" && pattern.Relationship == nil {
 		pattern.Start = stmt.Pattern
@@ -128,6 +159,10 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 		return fmt.Errorf("match node variable is required")
 	}
 	defined := map[string]struct{}{pattern.Start.Variable: {}}
+	schemaState := newSchemaState(schemaCtx)
+	if err := schemaState.analyzeNodePattern(pattern.Start); err != nil {
+		return err
+	}
 	segments := pattern.Segments
 	if len(segments) == 0 && pattern.Relationship != nil {
 		if pattern.End == nil {
@@ -136,6 +171,7 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 		segments = []model.PathSegment{{Relationship: *pattern.Relationship, Node: *pattern.End}}
 	}
 	if len(segments) > 0 {
+		fromVar := pattern.Start.Variable
 		for _, segment := range segments {
 			if segment.Node.Variable == "" {
 				return fmt.Errorf("relationship target variable is required")
@@ -158,12 +194,23 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 				}
 				defined[segment.Relationship.Variable] = struct{}{}
 			}
+			edgeTypes, err := schemaState.analyzeRelationshipPattern(segment.Relationship)
+			if err != nil {
+				return err
+			}
 			if err := analyzePatternProperties(segment.Relationship.Properties); err != nil {
 				return fmt.Errorf("relationship pattern: %w", err)
 			}
 			if err := analyzePatternProperties(segment.Node.Properties); err != nil {
 				return fmt.Errorf("target node pattern: %w", err)
 			}
+			if err := schemaState.analyzeNodePattern(segment.Node); err != nil {
+				return err
+			}
+			if err := schemaState.validateRelationshipEndpoints(edgeTypes, fromVar, segment.Node.Variable); err != nil {
+				return err
+			}
+			fromVar = segment.Node.Variable
 		}
 	}
 	if len(stmt.Returns) == 0 {
@@ -191,6 +238,9 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 			default:
 				return fmt.Errorf("unsupported return namespace %q", ret.Namespace)
 			}
+			if err := schemaState.validateReturn(ret); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("unsupported return item kind %q", kind)
 		}
@@ -214,6 +264,9 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 			default:
 				return fmt.Errorf("unsupported text predicate namespace %q", predicate.Namespace)
 			}
+			if err := schemaState.validateWhereProperty(predicate.Variable, predicate.Namespace, predicate.Property); err != nil {
+				return err
+			}
 		}
 		for _, predicate := range stmt.Where.SemanticPredicates {
 			if _, ok := defined[predicate.Variable]; !ok {
@@ -235,6 +288,9 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 			}
 			if err := analyzeValue(predicate.Value); err != nil {
 				return fmt.Errorf("where property %q: %w", predicate.Property, err)
+			}
+			if err := schemaState.validateWhereProperty(predicate.Variable, "properties", predicate.Property); err != nil {
+				return err
 			}
 		}
 	}

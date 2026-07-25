@@ -36,3 +36,23 @@ func CompileAST(query ast.Query) (planmodel.Plan, error) {
 	}
 	return gqlplanning.Plan(analyzed)
 }
+
+// CompileASTWithSchema analyzes and plans Mycel's GQL AST using optional
+// schema-aware semantic validation.
+func CompileASTWithSchema(query ast.Query, schema gqlanalysis.SchemaContext) (planmodel.Plan, error) {
+	analyzed, err := gqlanalysis.AnalyzeWithSchema(query, schema)
+	if err != nil {
+		return planmodel.Plan{}, err
+	}
+	return gqlplanning.Plan(analyzed)
+}
+
+// CompileWithSchema parses, analyzes, and plans Mycel GQL with optional
+// schema-aware semantic validation.
+func CompileWithSchema(query string, schema gqlanalysis.SchemaContext) (planmodel.Plan, error) {
+	parsed, err := Parse(query)
+	if err != nil {
+		return planmodel.Plan{}, err
+	}
+	return CompileASTWithSchema(parsed, schema)
+}
