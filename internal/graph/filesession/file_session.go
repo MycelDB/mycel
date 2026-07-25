@@ -2,7 +2,6 @@ package filesession
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -752,21 +751,11 @@ func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID 
 		return graph.Node{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
 	}
 	props := copyProps(inputProps)
-	if templateID != nil {
-		t, err := s.templateManager.GetByID(ctx, *templateID)
-		if err != nil {
-			if errors.Is(err, storetemplate.ErrTemplateNotFound) {
-				return graph.Node{}, fmt.Errorf("%w: template not found", s.errors.NotFound)
-			}
-			return graph.Node{}, err
-		}
-		if t.SpaceID != s.spaceID {
-			return graph.Node{}, fmt.Errorf("%w: template not found in space", s.errors.NotFound)
-		}
-		if err := validateProps(&props, t); err != nil {
-			return graph.Node{}, err
-		}
-	}
+	// Template validation is intentionally bypassed as part of the schema
+	// subsystem migration. Tranche 3 will replace this with schema-aware node
+	// validation at the graph service boundary.
+	_ = ctx
+	_ = templateID
 	node := graph.Node{ID: nodeID, DomainID: s.domainID, TemplateID: templateID, Content: content, Props: props}
 	if content != "" {
 		node.Payload = map[string]any{"text": content}
@@ -813,11 +802,7 @@ func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to g
 	if containsPath(edges, to.ID, from.ID) {
 		return fmt.Errorf("%w: contains edge would create a cycle", storetemplate.ErrInvalidInput)
 	}
-	childTemplate, err := s.nodeTemplate(ctx, to, "child")
-	if err != nil {
-		return err
-	}
-	return s.validateChild(ctx, from, childTemplate)
+	return nil
 }
 
 func (s *FileSession) validateIncidentContains(ctx context.Context, node graph.Node, nodes []graph.Node, edges []graph.Edge) error {
@@ -825,51 +810,11 @@ func (s *FileSession) validateIncidentContains(ctx context.Context, node graph.N
 		if !graph.EdgeHasLabels(edge, []string{"contains"}) {
 			continue
 		}
-		if edge.FromID == node.ID {
-			child, ok := findNode(nodes, edge.ToID)
-			if !ok {
-				continue
-			}
-			childTemplate, err := s.nodeTemplate(ctx, child, "child")
-			if err != nil {
-				return err
-			}
-			if err := s.validateChild(ctx, node, childTemplate); err != nil {
-				return err
-			}
-		}
-		if edge.ToID == node.ID {
-			parent, ok := findNode(nodes, edge.FromID)
-			if !ok {
-				continue
-			}
-			childTemplate, err := s.nodeTemplate(ctx, node, "child")
-			if err != nil {
-				return err
-			}
-			if err := s.validateChild(ctx, parent, childTemplate); err != nil {
-				return err
-			}
+		if edge.FromID == node.ID || edge.ToID == node.ID {
+			continue
 		}
 	}
 	return nil
-}
-
-func (s *FileSession) nodeTemplate(ctx context.Context, node graph.Node, label string) (*graph.Template, error) {
-	if node.TemplateID == nil {
-		return nil, nil
-	}
-	t, err := s.templateManager.GetByID(ctx, *node.TemplateID)
-	if err != nil {
-		if errors.Is(err, storetemplate.ErrTemplateNotFound) {
-			return nil, fmt.Errorf("%w: %s template not found", s.errors.NotFound, label)
-		}
-		return nil, err
-	}
-	if t.SpaceID != s.spaceID {
-		return nil, fmt.Errorf("%w: %s template not found in space", s.errors.NotFound, label)
-	}
-	return &t, nil
 }
 
 func containsPath(edges []graph.Edge, from graph.NodeID, target graph.NodeID) bool {
@@ -893,144 +838,6 @@ func containsPath(edges []graph.Edge, from graph.NodeID, target graph.NodeID) bo
 		return false
 	}
 	return visit(from)
-}
-
-func (s *FileSession) validateChild(ctx context.Context, parent graph.Node, childTemplate *graph.Template) error {
-	if parent.TemplateID == nil {
-		return nil
-	}
-	parentTemplate, err := s.templateManager.GetByID(ctx, *parent.TemplateID)
-	if err != nil {
-		if errors.Is(err, storetemplate.ErrTemplateNotFound) {
-			return fmt.Errorf("%w: parent template not found", s.errors.NotFound)
-		}
-		return err
-	}
-	if parentTemplate.SpaceID != s.spaceID {
-		return fmt.Errorf("%w: parent template not found in space", s.errors.NotFound)
-	}
-	if !parentTemplate.Children.Allowed {
-		return fmt.Errorf("%w: parent template does not allow children", storetemplate.ErrInvalidInput)
-	}
-	if len(parentTemplate.Children.AllowedTemplates) == 0 {
-		return nil
-	}
-	if childTemplate == nil {
-		return fmt.Errorf("%w: child template is required", storetemplate.ErrInvalidInput)
-	}
-	for _, ref := range parentTemplate.Children.AllowedTemplates {
-		if ref.Key == childTemplate.Key && ref.Version == childTemplate.Version {
-			return nil
-		}
-	}
-	// Application extension nodes are app-level primitives that may be inserted into
-	// existing imported Logseq outlines whose templates predate the extension.
-	// Keep normal template allow-list validation strict for all other cases.
-	// Legacy pkm.* templates are accepted so existing pre-Mycel data can still be
-	// edited before/mid migration.
-	if (strings.HasPrefix(childTemplate.Key, "app.") || strings.HasPrefix(childTemplate.Key, "pkm.")) && strings.HasPrefix(parentTemplate.Key, "logseq.") {
-		return nil
-	}
-	return fmt.Errorf("%w: child template %s@%s is not allowed", storetemplate.ErrInvalidInput, childTemplate.Key, childTemplate.Version)
-}
-
-func validateProps(props *map[string]any, tmpl graph.Template) error {
-	if *props == nil {
-		*props = map[string]any{}
-	}
-	allowed := map[string]graph.TemplateProperty{}
-	for _, prop := range tmpl.Properties.Allowed {
-		allowed[prop.Name] = prop
-		if _, ok := (*props)[prop.Name]; !ok && prop.Default != nil {
-			(*props)[prop.Name] = prop.Default
-		}
-	}
-	for _, name := range tmpl.Properties.Forbidden {
-		if _, ok := (*props)[name]; ok {
-			return fmt.Errorf("%w: property %q is forbidden", storetemplate.ErrInvalidInput, name)
-		}
-	}
-	for name, value := range *props {
-		prop, ok := allowed[name]
-		if !ok {
-			if !tmpl.Properties.AllowExtra {
-				return fmt.Errorf("%w: property %q is not allowed", storetemplate.ErrInvalidInput, name)
-			}
-			continue
-		}
-		if err := validatePropertyValue(prop, value); err != nil {
-			return err
-		}
-	}
-	for _, prop := range tmpl.Properties.Allowed {
-		if !prop.Required {
-			continue
-		}
-		value, ok := (*props)[prop.Name]
-		if !ok || value == nil {
-			return fmt.Errorf("%w: required property %q is missing", storetemplate.ErrInvalidInput, prop.Name)
-		}
-	}
-	return nil
-}
-
-func validatePropertyValue(prop graph.TemplateProperty, value any) error {
-	if value == nil {
-		return fmt.Errorf("%w: property %q cannot be null", storetemplate.ErrInvalidInput, prop.Name)
-	}
-	valid := false
-	switch prop.Type {
-	case graph.PropertyTypeString:
-		_, valid = value.(string)
-	case graph.PropertyTypeNumber:
-		valid = isNumber(value)
-	case graph.PropertyTypeBool:
-		_, valid = value.(bool)
-	case graph.PropertyTypeObject:
-		_, valid = value.(map[string]any)
-	case graph.PropertyTypeArray:
-		valid = isArray(value)
-	case graph.PropertyTypeDate:
-		valid = isDate(value)
-	default:
-		return fmt.Errorf("%w: unsupported property type %q", storetemplate.ErrInvalidInput, prop.Type)
-	}
-	if !valid {
-		return fmt.Errorf("%w: property %q must be %s", storetemplate.ErrInvalidInput, prop.Name, prop.Type)
-	}
-	return nil
-}
-
-func isArray(value any) bool {
-	if value == nil {
-		return false
-	}
-	kind := reflect.TypeOf(value).Kind()
-	return kind == reflect.Array || kind == reflect.Slice
-}
-
-func isNumber(value any) bool {
-	switch n := value.(type) {
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
-		return true
-	case json.Number:
-		_, err := n.Float64()
-		return err == nil
-	default:
-		return false
-	}
-}
-
-func isDate(value any) bool {
-	s, ok := value.(string)
-	if !ok {
-		return false
-	}
-	if _, err := time.Parse(time.RFC3339, s); err == nil {
-		return true
-	}
-	_, err := time.Parse("2006-01-02", s)
-	return err == nil
 }
 
 func copyProps(in map[string]any) map[string]any {

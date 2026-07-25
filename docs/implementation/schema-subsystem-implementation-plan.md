@@ -54,6 +54,8 @@ type Manager interface {
 
 ## Tranche 2 — Remove old template implementation
 
+Status: partially implemented on `improved_gql`. File-session template property validation and template child-policy enforcement are bypassed so schema validation can replace them in later tranches while hardcoded `contains` structural checks remain active. Remaining work: remove `TemplateID` from graph/session/API models, delete `internal/graph/template`, and remove daemon/CLI template RPC surfaces after API/proto changes are coordinated.
+
 ### Work
 
 - Delete `internal/graph/template`.

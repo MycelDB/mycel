@@ -564,13 +564,9 @@ func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInpu
 	if containsPath(edges, in.NodeID, in.NewParentID) {
 		return graph.Edge{}, fmt.Errorf("%w: move would create a contains cycle", storetemplate.ErrInvalidInput)
 	}
-	childTemplate, err := tx.session.nodeTemplate(ctx, node, "child")
-	if err != nil {
-		return graph.Edge{}, err
-	}
-	if err := tx.session.validateChild(ctx, newParent, childTemplate); err != nil {
-		return graph.Edge{}, err
-	}
+	// Template child-policy validation is intentionally bypassed during the
+	// schema subsystem migration. Structural contains checks above remain in
+	// force; schema hierarchy policy will replace this in a later tranche.
 	oldParentID := graph.NodeID(uuid.Nil)
 	if len(oldParentIndexes) == 1 {
 		oldEdge := edges[oldParentIndexes[0]]
@@ -919,13 +915,8 @@ func (tx *fileTx) validateFinalGraph(ctx context.Context, nodes []graph.Node, ed
 		if containsPath(edges, edge.ToID, edge.FromID) {
 			return fmt.Errorf("%w: contains edge would create a cycle", storetemplate.ErrInvalidInput)
 		}
-		childTemplate, err := tx.session.nodeTemplate(ctx, to, "child")
-		if err != nil {
-			return err
-		}
-		if err := tx.session.validateChild(ctx, from, childTemplate); err != nil {
-			return err
-		}
+		_ = from
+		_ = to
 	}
 	return nil
 }

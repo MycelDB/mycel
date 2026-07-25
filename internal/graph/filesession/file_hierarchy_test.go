@@ -290,7 +290,7 @@ func TestFileSessionMoveSubtreeRejectsInvalidMoves(t *testing.T) {
 	}
 }
 
-func TestFileSessionMoveSubtreeValidatesChildTemplatePolicy(t *testing.T) {
+func TestFileSessionMoveSubtreeBypassesTemplateChildPolicyDuringSchemaMigration(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
 	graphsDir := t.TempDir()
@@ -311,8 +311,8 @@ func TestFileSessionMoveSubtreeValidatesChildTemplatePolicy(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("build graph failed: %v", err)
 	}
-	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: childID, NewParentID: parentID}); !errors.Is(err, storetemplate.ErrInvalidInput) {
-		t.Fatalf("expected template policy invalid input, got %v", err)
+	if _, err := sess.MoveSubtree(ctx, sessionapi.MoveSubtreeInput{NodeID: childID, NewParentID: parentID}); err != nil {
+		t.Fatalf("expected template policy to be bypassed during schema migration, got %v", err)
 	}
 }
 
