@@ -4,6 +4,7 @@ package execution
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
@@ -55,6 +56,12 @@ type QueryRelationshipPattern struct {
 	Labels     []string
 	Properties map[string]any
 	Direction  RelationshipDirection
+	Quantifier *RelationshipQuantifier
+}
+
+type RelationshipQuantifier struct {
+	Min int
+	Max int
 }
 
 type PatternRow struct {
@@ -165,7 +172,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 					if !ok {
 						return execmodel.Result{}, fmt.Errorf("path variable %q is not bound", currentVar)
 					}
-					rows, err := e.graph.QueryPattern(ctx, QueryPattern{Start: QueryNodePattern{Properties: map[string]any{"__id": current.ID}}, Relationship: QueryRelationshipPattern{Labels: append([]string(nil), segment.Relationship.Labels...), Properties: copyProperties(segment.Relationship.Properties), Direction: RelationshipDirection(segment.Relationship.Direction)}, End: QueryNodePattern{Labels: append([]string(nil), segment.Node.Labels...), Properties: copyProperties(segment.Node.Properties)}})
+					rows, err := e.expandSegment(ctx, current, segment)
 					if err != nil {
 						return execmodel.Result{}, err
 					}
@@ -196,6 +203,9 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				result.Columns = append(result.Columns, returnColumn(ret))
 			}
 			for _, binding := range bindings {
+				if !bindingMatchesPredicates(binding, op.TextPredicates, op.SemanticPredicates) {
+					continue
+				}
 				row := execmodel.Row{}
 				for _, ret := range op.Returns {
 					column := returnColumn(ret)
@@ -230,7 +240,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 			}
 			rows, err := e.graph.QueryPattern(ctx, QueryPattern{
 				Start:        QueryNodePattern{Labels: append([]string(nil), op.Start.Labels...), Properties: copyProperties(op.Start.Properties)},
-				Relationship: QueryRelationshipPattern{Labels: append([]string(nil), op.Relationship.Labels...), Properties: copyProperties(op.Relationship.Properties), Direction: RelationshipDirection(op.Relationship.Direction)},
+				Relationship: QueryRelationshipPattern{Labels: append([]string(nil), op.Relationship.Labels...), Properties: copyProperties(op.Relationship.Properties), Direction: RelationshipDirection(op.Relationship.Direction), Quantifier: executionQuantifier(op.Relationship.Quantifier)},
 				End:          QueryNodePattern{Labels: append([]string(nil), op.End.Labels...), Properties: copyProperties(op.End.Properties)},
 				Limit:        op.Limit,
 			})
@@ -244,6 +254,13 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				result.Columns = append(result.Columns, returnColumn(ret))
 			}
 			for _, matched := range rows {
+				binding := pathBinding{Nodes: map[string]execmodel.Node{op.Start.Variable: matched.Start, op.End.Variable: matched.End}, Edges: map[string]execmodel.Edge{}}
+				if op.Relationship.Variable != "" {
+					binding.Edges[op.Relationship.Variable] = matched.Edge
+				}
+				if !bindingMatchesPredicates(binding, op.TextPredicates, op.SemanticPredicates) {
+					continue
+				}
 				row := execmodel.Row{}
 				for _, ret := range op.Returns {
 					column := returnColumn(ret)
@@ -294,6 +311,10 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				result.Columns = append(result.Columns, returnColumn(ret))
 			}
 			for _, node := range nodes {
+				binding := pathBinding{Nodes: map[string]execmodel.Node{op.Variable: node}, Edges: map[string]execmodel.Edge{}}
+				if !bindingMatchesPredicates(binding, op.TextPredicates, op.SemanticPredicates) {
+					continue
+				}
 				row := execmodel.Row{}
 				for _, ret := range op.Returns {
 					column := returnColumn(ret)
@@ -314,6 +335,104 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 		}
 	}
 	return result, nil
+}
+
+func (e executor) expandSegment(ctx context.Context, current execmodel.Node, segment planmodel.PathSegment) ([]PatternRow, error) {
+	quant := segment.Relationship.Quantifier
+	if quant == nil {
+		return e.graph.QueryPattern(ctx, QueryPattern{Start: QueryNodePattern{Properties: map[string]any{"__id": current.ID}}, Relationship: QueryRelationshipPattern{Labels: append([]string(nil), segment.Relationship.Labels...), Properties: copyProperties(segment.Relationship.Properties), Direction: RelationshipDirection(segment.Relationship.Direction)}, End: QueryNodePattern{Labels: append([]string(nil), segment.Node.Labels...), Properties: copyProperties(segment.Node.Properties)}})
+	}
+	frontier := []execmodel.Node{current}
+	out := []PatternRow{}
+	for depth := 1; depth <= quant.Max; depth++ {
+		next := []execmodel.Node{}
+		for _, node := range frontier {
+			rows, err := e.graph.QueryPattern(ctx, QueryPattern{Start: QueryNodePattern{Properties: map[string]any{"__id": node.ID}}, Relationship: QueryRelationshipPattern{Labels: append([]string(nil), segment.Relationship.Labels...), Properties: copyProperties(segment.Relationship.Properties), Direction: RelationshipDirection(segment.Relationship.Direction)}, End: QueryNodePattern{}})
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				next = append(next, row.End)
+				if depth >= quant.Min && nodeMatchesPattern(row.End, segment.Node) {
+					out = append(out, PatternRow{Start: current, Edge: row.Edge, End: row.End})
+				}
+			}
+		}
+		frontier = next
+	}
+	return out, nil
+}
+
+func nodeMatchesPattern(node execmodel.Node, pattern planmodel.NodePattern) bool {
+	return hasAllStrings(node.Labels, pattern.Labels) && execHasProperties(node.Properties, pattern.Properties)
+}
+
+func hasAllStrings(values, required []string) bool {
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	for _, value := range required {
+		if _, ok := seen[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func execHasProperties(values, required map[string]any) bool {
+	for key, value := range required {
+		if values[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func executionQuantifier(quant *planmodel.RelationshipQuantifier) *RelationshipQuantifier {
+	if quant == nil {
+		return nil
+	}
+	return &RelationshipQuantifier{Min: quant.Min, Max: quant.Max}
+}
+
+func bindingMatchesPredicates(binding pathBinding, texts []planmodel.TextContainsPredicate, semantics []planmodel.SemanticSimilarPredicate) bool {
+	for _, pred := range texts {
+		value, ok := bindingValue(binding, pred.Variable, pred.Namespace, pred.Property)
+		if !ok || !strings.Contains(strings.ToLower(fmt.Sprint(value)), strings.ToLower(pred.Query)) {
+			return false
+		}
+	}
+	for _, pred := range semantics {
+		// MVP semantic predicate uses available textual node fields as a local fallback until index-backed GQL search is wired.
+		node, ok := binding.Nodes[pred.Variable]
+		if !ok || !nodeContainsText(node, pred.Query) {
+			return false
+		}
+	}
+	return true
+}
+
+func bindingValue(binding pathBinding, variable, namespace, property string) (any, bool) {
+	if node, ok := binding.Nodes[variable]; ok {
+		return projectNodeField(node, planmodel.ReturnItem{Namespace: namespace, Property: property}), true
+	}
+	if edge, ok := binding.Edges[variable]; ok {
+		return projectEdgeField(edge, planmodel.ReturnItem{Namespace: namespace, Property: property}), true
+	}
+	return nil, false
+}
+
+func nodeContainsText(node execmodel.Node, query string) bool {
+	needle := strings.ToLower(query)
+	for _, m := range []map[string]any{node.Properties, node.Payload, node.Meta} {
+		for _, value := range m {
+			if strings.Contains(strings.ToLower(fmt.Sprint(value)), needle) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func returnKind(ret planmodel.ReturnItem) planmodel.ReturnItemKind {

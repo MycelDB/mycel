@@ -168,7 +168,7 @@ func buildMatchPattern(ctx generated.IMatchPatternContext) (model.MatchPattern, 
 			if err != nil {
 				return model.MatchPattern{}, err
 			}
-			if len(rels) == 1 {
+			if len(rels) == 1 && rel.Quantifier == nil {
 				out.Relationship = &rel
 				out.End = &node
 				continue
@@ -227,6 +227,13 @@ func buildEdgePattern(ctx generated.IEdgePatternContext) (model.RelationshipPatt
 			edge.Labels = append(edge.Labels, nameCtx.IDENTIFIER().GetText())
 		}
 	}
+	if quant := edgeCtx.RelationshipQuantifier(); quant != nil {
+		built, err := buildRelationshipQuantifier(quant)
+		if err != nil {
+			return model.RelationshipPattern{}, err
+		}
+		edge.Quantifier = &built
+	}
 	if props := edgeCtx.PropertyMap(); props != nil {
 		propCtx, ok := props.(*generated.PropertyMapContext)
 		if !ok {
@@ -241,6 +248,25 @@ func buildEdgePattern(ctx generated.IEdgePatternContext) (model.RelationshipPatt
 		}
 	}
 	return edge, nil
+}
+
+func buildRelationshipQuantifier(ctx generated.IRelationshipQuantifierContext) (model.RelationshipQuantifier, error) {
+	quantCtx, ok := ctx.(*generated.RelationshipQuantifierContext)
+	if !ok || len(quantCtx.AllINTEGER()) == 0 {
+		return model.RelationshipQuantifier{}, fmt.Errorf("invalid relationship quantifier")
+	}
+	min, err := strconv.Atoi(quantCtx.INTEGER(0).GetText())
+	if err != nil {
+		return model.RelationshipQuantifier{}, fmt.Errorf("invalid relationship quantifier min: %w", err)
+	}
+	max := min
+	if len(quantCtx.AllINTEGER()) == 2 {
+		max, err = strconv.Atoi(quantCtx.INTEGER(1).GetText())
+		if err != nil {
+			return model.RelationshipQuantifier{}, fmt.Errorf("invalid relationship quantifier max: %w", err)
+		}
+	}
+	return model.RelationshipQuantifier{Min: min, Max: max}, nil
 }
 
 func buildFetchFirstClause(ctx generated.IFetchFirstClauseContext) (model.FetchFirstClause, error) {
@@ -287,15 +313,89 @@ func buildWhereClause(ctx generated.IWhereClauseContext) (model.WhereClause, err
 	if !ok {
 		return model.WhereClause{}, fmt.Errorf("invalid predicate")
 	}
-	where := model.WhereClause{Predicates: make([]model.PropertyComparison, 0, len(predicateCtx.AllPropertyComparison()))}
-	for _, comparison := range predicateCtx.AllPropertyComparison() {
-		built, err := buildPropertyComparison(comparison)
-		if err != nil {
-			return model.WhereClause{}, err
+	where := model.WhereClause{}
+	for _, term := range predicateCtx.AllPredicateTerm() {
+		termCtx, ok := term.(*generated.PredicateTermContext)
+		if !ok {
+			return model.WhereClause{}, fmt.Errorf("invalid predicate term")
 		}
-		where.Predicates = append(where.Predicates, built)
+		if comparison := termCtx.PropertyComparison(); comparison != nil {
+			built, err := buildPropertyComparison(comparison)
+			if err != nil {
+				return model.WhereClause{}, err
+			}
+			where.Predicates = append(where.Predicates, built)
+			continue
+		}
+		if text := termCtx.TextContainsPredicate(); text != nil {
+			built, err := buildTextContainsPredicate(text)
+			if err != nil {
+				return model.WhereClause{}, err
+			}
+			where.TextPredicates = append(where.TextPredicates, built)
+			continue
+		}
+		if semantic := termCtx.SemanticSimilarPredicate(); semantic != nil {
+			built, err := buildSemanticSimilarPredicate(semantic)
+			if err != nil {
+				return model.WhereClause{}, err
+			}
+			where.SemanticPredicates = append(where.SemanticPredicates, built)
+			continue
+		}
 	}
 	return where, nil
+}
+
+func buildTextContainsPredicate(ctx generated.ITextContainsPredicateContext) (model.TextContainsPredicate, error) {
+	textCtx, ok := ctx.(*generated.TextContainsPredicateContext)
+	if !ok || textCtx.PropertyReference() == nil || textCtx.STRING() == nil {
+		return model.TextContainsPredicate{}, fmt.Errorf("invalid text contains predicate")
+	}
+	field, err := buildFieldReference(textCtx.PropertyReference())
+	if err != nil {
+		return model.TextContainsPredicate{}, err
+	}
+	query, err := unquoteString(textCtx.STRING().GetText())
+	if err != nil {
+		return model.TextContainsPredicate{}, err
+	}
+	return model.TextContainsPredicate{Variable: field.Variable, Namespace: field.Namespace, Property: field.Property, Query: query}, nil
+}
+
+func buildSemanticSimilarPredicate(ctx generated.ISemanticSimilarPredicateContext) (model.SemanticSimilarPredicate, error) {
+	semanticCtx, ok := ctx.(*generated.SemanticSimilarPredicateContext)
+	if !ok || semanticCtx.Variable() == nil || semanticCtx.STRING() == nil || semanticCtx.INTEGER() == nil {
+		return model.SemanticSimilarPredicate{}, fmt.Errorf("invalid semantic similar predicate")
+	}
+	variableCtx, ok := semanticCtx.Variable().(*generated.VariableContext)
+	if !ok || variableCtx.IDENTIFIER() == nil {
+		return model.SemanticSimilarPredicate{}, fmt.Errorf("invalid semantic target")
+	}
+	query, err := unquoteString(semanticCtx.STRING().GetText())
+	if err != nil {
+		return model.SemanticSimilarPredicate{}, err
+	}
+	topK, err := strconv.ParseInt(semanticCtx.INTEGER().GetText(), 10, 64)
+	if err != nil {
+		return model.SemanticSimilarPredicate{}, fmt.Errorf("invalid semantic top k: %w", err)
+	}
+	return model.SemanticSimilarPredicate{Variable: variableCtx.IDENTIFIER().GetText(), Query: query, TopK: topK}, nil
+}
+
+type fieldReference struct{ Variable, Namespace, Property string }
+
+func buildFieldReference(ctx generated.IPropertyReferenceContext) (fieldReference, error) {
+	propCtx, ok := ctx.(*generated.PropertyReferenceContext)
+	if !ok || len(propCtx.AllIDENTIFIER()) < 2 || len(propCtx.AllIDENTIFIER()) > 3 {
+		return fieldReference{}, fmt.Errorf("invalid field reference")
+	}
+	field := fieldReference{Variable: propCtx.IDENTIFIER(0).GetText(), Property: propCtx.IDENTIFIER(1).GetText()}
+	if len(propCtx.AllIDENTIFIER()) == 3 {
+		field.Namespace = propCtx.IDENTIFIER(1).GetText()
+		field.Property = propCtx.IDENTIFIER(2).GetText()
+	}
+	return field, nil
 }
 
 func buildPropertyComparison(ctx generated.IPropertyComparisonContext) (model.PropertyComparison, error) {

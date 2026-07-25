@@ -77,7 +77,8 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 	if stmt.FetchFirst != nil {
 		limit = stmt.FetchFirst.Count
 	}
-	if len(pattern.Segments) > 1 {
+	textPredicates, semanticPredicates := planPredicates(stmt.Where)
+	if len(pattern.Segments) > 1 || hasQuantifiedSegment(pattern.Segments) {
 		segments := make([]planmodel.PathSegment, 0, len(pattern.Segments))
 		for i, segment := range pattern.Segments {
 			relProps := propertiesMap(segment.Relationship.Properties)
@@ -103,9 +104,9 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 					}
 				}
 			}
-			segments = append(segments, planmodel.PathSegment{Relationship: planmodel.RelationshipPattern{Variable: segment.Relationship.Variable, Labels: append([]string(nil), segment.Relationship.Labels...), Properties: relProps, Direction: planmodel.RelationshipDirection(segment.Relationship.Direction)}, Node: planmodel.NodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: nodeProps}})
+			segments = append(segments, planmodel.PathSegment{Relationship: planRelationshipPattern(segment.Relationship, relProps), Node: planmodel.NodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: nodeProps}})
 		}
-		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, Limit: limit}}}, nil
+		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, Limit: limit, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
 	}
 	if pattern.Relationship != nil {
 		relProps := propertiesMap(pattern.Relationship.Properties)
@@ -130,25 +131,67 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 			}
 		}
 		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPatternOperation{
-			Start:        planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties},
-			Relationship: planmodel.RelationshipPattern{Variable: pattern.Relationship.Variable, Labels: append([]string(nil), pattern.Relationship.Labels...), Properties: relProps, Direction: planmodel.RelationshipDirection(pattern.Relationship.Direction)},
-			End:          planmodel.NodePattern{Variable: pattern.End.Variable, Labels: append([]string(nil), pattern.End.Labels...), Properties: endProps},
-			Returns:      returns,
-			Limit:        limit,
+			Start:              planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties},
+			Relationship:       planRelationshipPattern(*pattern.Relationship, relProps),
+			End:                planmodel.NodePattern{Variable: pattern.End.Variable, Labels: append([]string(nil), pattern.End.Labels...), Properties: endProps},
+			Returns:            returns,
+			Limit:              limit,
+			TextPredicates:     textPredicates,
+			SemanticPredicates: semanticPredicates,
 		}}}, nil
 	}
 	return planmodel.Plan{
 		AccessMode: a.AccessMode,
 		Operations: []planmodel.Operation{
 			planmodel.QueryNodesOperation{
-				Variable:   pattern.Start.Variable,
-				Labels:     append([]string(nil), pattern.Start.Labels...),
-				Properties: properties,
-				Returns:    returns,
-				Limit:      limit,
+				Variable:           pattern.Start.Variable,
+				Labels:             append([]string(nil), pattern.Start.Labels...),
+				Properties:         properties,
+				Returns:            returns,
+				Limit:              limit,
+				TextPredicates:     textPredicates,
+				SemanticPredicates: semanticPredicates,
 			},
 		},
 	}, nil
+}
+
+func planPredicates(where *ast.WhereClause) ([]planmodel.TextContainsPredicate, []planmodel.SemanticSimilarPredicate) {
+	if where == nil {
+		return nil, nil
+	}
+	texts := make([]planmodel.TextContainsPredicate, 0, len(where.TextPredicates))
+	for _, pred := range where.TextPredicates {
+		texts = append(texts, planmodel.TextContainsPredicate{Variable: pred.Variable, Namespace: pred.Namespace, Property: pred.Property, Query: pred.Query})
+	}
+	semantics := make([]planmodel.SemanticSimilarPredicate, 0, len(where.SemanticPredicates))
+	for _, pred := range where.SemanticPredicates {
+		semantics = append(semantics, planmodel.SemanticSimilarPredicate{Variable: pred.Variable, Query: pred.Query, TopK: pred.TopK})
+	}
+	if len(texts) == 0 {
+		texts = nil
+	}
+	if len(semantics) == 0 {
+		semantics = nil
+	}
+	return texts, semantics
+}
+
+func hasQuantifiedSegment(segments []ast.PathSegment) bool {
+	for _, segment := range segments {
+		if segment.Relationship.Quantifier != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func planRelationshipPattern(rel ast.RelationshipPattern, props map[string]any) planmodel.RelationshipPattern {
+	out := planmodel.RelationshipPattern{Variable: rel.Variable, Labels: append([]string(nil), rel.Labels...), Properties: props, Direction: planmodel.RelationshipDirection(rel.Direction)}
+	if rel.Quantifier != nil {
+		out.Quantifier = &planmodel.RelationshipQuantifier{Min: rel.Quantifier.Min, Max: rel.Quantifier.Max}
+	}
+	return out
 }
 
 func propertiesMap(properties []ast.Property) map[string]any {

@@ -25,31 +25,37 @@ func (InsertNodeOperation) operation() {}
 
 // QueryNodesOperation returns nodes matching optional labels/properties.
 type QueryNodesOperation struct {
-	Variable   string
-	Labels     []string
-	Properties map[string]any
-	Returns    []ReturnItem
-	Limit      int64
+	Variable           string
+	Labels             []string
+	Properties         map[string]any
+	Returns            []ReturnItem
+	Limit              int64
+	TextPredicates     []TextContainsPredicate
+	SemanticPredicates []SemanticSimilarPredicate
 }
 
 func (QueryNodesOperation) operation() {}
 
 // QueryPatternOperation returns rows matching a node-edge-node pattern.
 type QueryPatternOperation struct {
-	Start        NodePattern
-	Relationship RelationshipPattern
-	End          NodePattern
-	Returns      []ReturnItem
-	Limit        int64
+	Start              NodePattern
+	Relationship       RelationshipPattern
+	End                NodePattern
+	Returns            []ReturnItem
+	Limit              int64
+	TextPredicates     []TextContainsPredicate
+	SemanticPredicates []SemanticSimilarPredicate
 }
 
 func (QueryPatternOperation) operation() {}
 
 type QueryPathOperation struct {
-	Start    NodePattern
-	Segments []PathSegment
-	Returns  []ReturnItem
-	Limit    int64
+	Start              NodePattern
+	Segments           []PathSegment
+	Returns            []ReturnItem
+	Limit              int64
+	TextPredicates     []TextContainsPredicate
+	SemanticPredicates []SemanticSimilarPredicate
 }
 
 func (QueryPathOperation) operation() {}
@@ -93,6 +99,12 @@ type RelationshipPattern struct {
 	Labels     []string
 	Properties map[string]any
 	Direction  RelationshipDirection
+	Quantifier *RelationshipQuantifier
+}
+
+type RelationshipQuantifier struct {
+	Min int
+	Max int
 }
 
 type ReturnItemKind string
@@ -107,4 +119,17 @@ type ReturnItem struct {
 	Variable  string
 	Namespace string
 	Property  string
+}
+
+type TextContainsPredicate struct {
+	Variable  string
+	Namespace string
+	Property  string
+	Query     string
+}
+
+type SemanticSimilarPredicate struct {
+	Variable string
+	Query    string
+	TopK     int64
 }

@@ -176,6 +176,64 @@ func TestQueryServiceExecuteGQLReturnsMultiHopPathRows(t *testing.T) {
 	}
 }
 
+func TestQueryServiceExecuteGQLVariableLengthTraversal(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	aID, bID, cID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	for _, node := range []struct{ id, title string }{{aID, "A"}, {bID, "B"}, {cID, "C"}} {
+		if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{NodeId: &node.id, Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": node.title})}}); err != nil {
+			t.Fatalf("CreateNode(%s) error = %v", node.title, err)
+		}
+	}
+	if _, err := graphSvc.CreateEdge(fixture.ctx, &clientv1.CreateEdgeRequest{TransactionId: writeTx, Edge: &clientv1.EdgeCreate{FromNodeId: aID, ToNodeId: bID, Labels: []string{"REFERENCES"}}}); err != nil {
+		t.Fatalf("CreateEdge(a-b) error = %v", err)
+	}
+	if _, err := graphSvc.CreateEdge(fixture.ctx, &clientv1.CreateEdgeRequest{TransactionId: writeTx, Edge: &clientv1.EdgeCreate{FromNodeId: bID, ToNodeId: cID, Labels: []string{"REFERENCES"}}}); err != nil {
+		t.Fatalf("CreateEdge(b-c) error = %v", err)
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (a:Note {title: 'A'})-[:REFERENCES*1..2]->(b:Note) RETURN b.title"})
+	if err != nil {
+		t.Fatalf("ExecuteGQL() error = %v", err)
+	}
+	if len(res.GetResult().GetRows()) != 2 {
+		t.Fatalf("row count = %d, rows=%+v", len(res.GetResult().GetRows()), res.GetResult().GetRows())
+	}
+}
+
+func TestQueryServiceExecuteGQLTextAndSemanticPredicates(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	nodeID := uuid.NewString()
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{NodeId: &nodeID, Labels: []string{"Note"}, Payload: mustStruct(t, map[string]any{"text": "graph memory for family notes"})}}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	for _, query := range []string{
+		"MATCH (n:Note) WHERE TEXT_CONTAINS(n.payload.text, 'family') RETURN n.payload.text",
+		"MATCH (n:Note) WHERE SEMANTIC_SIMILAR(n, 'family', TOP 10) RETURN n.payload.text",
+	} {
+		readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+		res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: query})
+		if err != nil {
+			t.Fatalf("ExecuteGQL(%q) error = %v", query, err)
+		}
+		if len(res.GetResult().GetRows()) != 1 {
+			t.Fatalf("ExecuteGQL(%q) rows=%+v", query, res.GetResult().GetRows())
+		}
+	}
+}
+
 func mustStruct(t *testing.T, values map[string]any) *structpb.Struct {
 	t.Helper()
 	out, err := structpb.NewStruct(values)

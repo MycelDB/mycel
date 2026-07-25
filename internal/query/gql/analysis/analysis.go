@@ -144,6 +144,14 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 				return fmt.Errorf("duplicate variable %q", segment.Node.Variable)
 			}
 			defined[segment.Node.Variable] = struct{}{}
+			if segment.Relationship.Quantifier != nil {
+				if segment.Relationship.Quantifier.Min < 1 || segment.Relationship.Quantifier.Max < segment.Relationship.Quantifier.Min || segment.Relationship.Quantifier.Max > 5 {
+					return fmt.Errorf("relationship quantifier must be within 1..5")
+				}
+				if segment.Relationship.Variable != "" {
+					return fmt.Errorf("relationship variables are not supported on variable-length traversals")
+				}
+			}
 			if segment.Relationship.Variable != "" {
 				if _, exists := defined[segment.Relationship.Variable]; exists {
 					return fmt.Errorf("duplicate variable %q", segment.Relationship.Variable)
@@ -191,8 +199,29 @@ func analyzeMatchStatement(stmt model.MatchStatement) error {
 		return fmt.Errorf("fetch first count must be positive")
 	}
 	if stmt.Where != nil {
-		if len(stmt.Where.Predicates) == 0 {
+		if len(stmt.Where.Predicates) == 0 && len(stmt.Where.TextPredicates) == 0 && len(stmt.Where.SemanticPredicates) == 0 {
 			return fmt.Errorf("where clause requires at least one predicate")
+		}
+		for _, predicate := range stmt.Where.TextPredicates {
+			if _, ok := defined[predicate.Variable]; !ok {
+				return fmt.Errorf("where variable %q is not defined", predicate.Variable)
+			}
+			if predicate.Property == "" || predicate.Query == "" {
+				return fmt.Errorf("text predicate requires field and query")
+			}
+			switch predicate.Namespace {
+			case "", "properties", "payload", "meta":
+			default:
+				return fmt.Errorf("unsupported text predicate namespace %q", predicate.Namespace)
+			}
+		}
+		for _, predicate := range stmt.Where.SemanticPredicates {
+			if _, ok := defined[predicate.Variable]; !ok {
+				return fmt.Errorf("where variable %q is not defined", predicate.Variable)
+			}
+			if predicate.Query == "" || predicate.TopK <= 0 {
+				return fmt.Errorf("semantic predicate requires query and positive top k")
+			}
 		}
 		for _, predicate := range stmt.Where.Predicates {
 			if predicate.Variable == "" {

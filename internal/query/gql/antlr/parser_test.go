@@ -49,6 +49,28 @@ func TestParserParsesMatchCreateRelationship(t *testing.T) {
 	}
 }
 
+func TestParserParsesVariableLengthTraversal(t *testing.T) {
+	tree, err := Parse("MATCH (a:Note)-[:REFERENCES*1..3]->(b:Note) RETURN a, b")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}
+
+func TestParserParsesTextAndSemanticPredicates(t *testing.T) {
+	queries := []string{
+		"MATCH (n:Note) WHERE TEXT_CONTAINS(n.payload.text, 'graph memory') RETURN n",
+		"MATCH (n:Note) WHERE SEMANTIC_SIMILAR(n, 'graph memory', TOP 10) RETURN n",
+	}
+	for _, query := range queries {
+		if tree, err := Parse(query); err != nil || tree == nil {
+			t.Fatalf("Parse(%q) tree=%v error=%v", query, tree, err)
+		}
+	}
+}
+
 func TestParserParsesMultiHopRelationshipPattern(t *testing.T) {
 	tree, err := Parse("MATCH (a:Note)-[:REFERENCES]->(b:Note)-[:MENTIONS]->(c:Concept) RETURN a, b, c")
 	if err != nil {

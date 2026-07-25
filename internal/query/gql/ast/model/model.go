@@ -54,7 +54,9 @@ type FetchFirstClause struct {
 
 // WhereClause represents a conjunction of property predicates.
 type WhereClause struct {
-	Predicates []PropertyComparison
+	Predicates         []PropertyComparison
+	TextPredicates     []TextContainsPredicate
+	SemanticPredicates []SemanticSimilarPredicate
 }
 
 // PropertyComparison represents a variable.property = value predicate.
@@ -62,6 +64,19 @@ type PropertyComparison struct {
 	Variable string
 	Property string
 	Value    Value
+}
+
+type TextContainsPredicate struct {
+	Variable  string
+	Namespace string
+	Property  string
+	Query     string
+}
+
+type SemanticSimilarPredicate struct {
+	Variable string
+	Query    string
+	TopK     int64
 }
 
 type ReturnItemKind string
@@ -108,6 +123,12 @@ type RelationshipPattern struct {
 	Labels     []string
 	Properties []Property
 	Direction  RelationshipDirection
+	Quantifier *RelationshipQuantifier
+}
+
+type RelationshipQuantifier struct {
+	Min int
+	Max int
 }
 
 // NodePattern represents a node pattern inside a GQL statement.

@@ -53,10 +53,10 @@ Desirability values are relative priorities:
 | Return edge | Return a matched relationship, e.g. `RETURN r`. | High | High | Y |
 | Return edge properties | Return scalar edge property projections, e.g. `RETURN r.kind, r.weight`. | High | High | Y |
 | Multi-hop path match | Match chained patterns such as `(a)-[:REFERS_TO]->(b)-[:MENTIONS]->(c)`. | Very High | Very High | Y |
-| Variable-length traversal | Match bounded variable-length paths. | High | Very High | N |
+| Variable-length traversal | Match bounded variable-length paths. | High | Very High | Y |
 | Path binding | Bind a full path, e.g. `MATCH path = (a)-[*]->(b) RETURN path`. | Medium | High | N |
 | Path projection | Return nodes and edges in a matched path. | Medium | High | N |
-| Neighborhood expansion | Query neighbors around matched nodes. | High | Very High | N |
+| Neighborhood expansion | Query neighbors around matched nodes. | High | Very High | Y |
 | Shortest path | Find shortest paths between nodes. | Medium | Medium | N |
 | Standard node `CREATE` alias | Add standard GQL node creation syntax beyond current `INSERT`. | Medium | Medium | N |
 | `SET` property update | Update node or edge properties. | High | High | N |
@@ -71,8 +71,8 @@ Desirability values are relative priorities:
 | List/map literals | Support richer literal values in queries. | Medium | Medium | N |
 | Payload projection | Return `Payload` fields such as primary text or blob references. | High | Very High | Y |
 | Meta projection | Return Mycel-controlled metadata fields. | Medium | Medium | N |
-| Full-text search predicate | Match text payload/properties using a search index. | High | Very High | N |
-| Semantic/vector predicate | Query semantically similar nodes. | Medium | Very High | N |
+| Full-text search predicate | Match text payload/properties using text predicate filtering. | High | Very High | Y |
+| Semantic/vector predicate | Query semantically similar nodes. Initial implementation uses local textual fallback until semantic index pushdown is wired. | Medium | Very High | Y |
 | Template-aware predicates | Filter/query using template or schema information. | Medium | High | N |
 | Degree predicates | Filter by incoming/outgoing edge counts. | Medium | High | N |
 | Explain plan | Show the compiled or optimized query plan. | Medium | Low | N |
@@ -119,6 +119,23 @@ MATCH (n:Note)
 RETURN n.payload.text
 ```
 
+```gql
+MATCH (a:Note)-[:REFERENCES*1..3]->(b:Note)
+RETURN a.title, b.title
+```
+
+```gql
+MATCH (n:Note)
+WHERE TEXT_CONTAINS(n.payload.text, 'graph memory')
+RETURN n
+```
+
+```gql
+MATCH (n:Note)
+WHERE SEMANTIC_SIMILAR(n, 'family notes', TOP 10)
+RETURN n
+```
+
 ## Near-Term Priorities
 
 Near-term priorities should keep the implementation incremental while making GQL useful for real graph workflows:
@@ -146,7 +163,7 @@ Knot PKM needs GQL to model and traverse relationships between notes, concepts, 
 - `NEXT`
 - `PREVIOUS`
 
-For Knot PKM, edge creation, single-hop edge matching, multi-hop path matching, and scalar payload projection are now available. The highest-value remaining areas are neighborhood expansion, variable-length traversal, path projection, and semantic/full-text predicates.
+For Knot PKM, edge creation, single-hop edge matching, multi-hop path matching, neighborhood expansion, bounded variable-length traversal, scalar payload projection, and text/semantic predicate MVPs are now available. The highest-value remaining areas are path binding/projection, index-backed semantic/full-text pushdown, richer result values, and query diagnostics.
 
 ## Related Implementation Plans
 

@@ -48,7 +48,12 @@ relationshipPattern
   ;
 
 edgePattern
-  : LBRACK variable? labelExpression? propertyMap? RBRACK
+  : LBRACK variable? labelExpression? relationshipQuantifier? propertyMap? RBRACK
+  ;
+
+relationshipQuantifier
+  : STAR INTEGER
+  | STAR INTEGER DOT DOT INTEGER
   ;
 
 whereClause
@@ -56,11 +61,25 @@ whereClause
   ;
 
 predicate
-  : propertyComparison (AND propertyComparison)*
+  : predicateTerm (AND predicateTerm)*
+  ;
+
+predicateTerm
+  : propertyComparison
+  | textContainsPredicate
+  | semanticSimilarPredicate
   ;
 
 propertyComparison
   : IDENTIFIER DOT IDENTIFIER EQ value
+  ;
+
+textContainsPredicate
+  : TEXT_CONTAINS LPAREN propertyReference COMMA STRING RPAREN
+  ;
+
+semanticSimilarPredicate
+  : SEMANTIC_SIMILAR LPAREN variable COMMA STRING COMMA TOP INTEGER RPAREN
   ;
 
 returnItem
@@ -129,6 +148,9 @@ ROW    : [Rr] [Oo] [Ww];
 ROWS   : [Rr] [Oo] [Ww] [Ss];
 ONLY   : [Oo] [Nn] [Ll] [Yy];
 AND    : [Aa] [Nn] [Dd];
+TEXT_CONTAINS : [Tt] [Ee] [Xx] [Tt] '_' [Cc] [Oo] [Nn] [Tt] [Aa] [Ii] [Nn] [Ss];
+SEMANTIC_SIMILAR : [Ss] [Ee] [Mm] [Aa] [Nn] [Tt] [Ii] [Cc] '_' [Ss] [Ii] [Mm] [Ii] [Ll] [Aa] [Rr];
+TOP    : [Tt] [Oo] [Pp];
 TRUE   : [Tt] [Rr] [Uu] [Ee];
 FALSE  : [Ff] [Aa] [Ll] [Ss] [Ee];
 NULL   : [Nn] [Uu] [Ll] [Ll];
@@ -143,6 +165,7 @@ COLON  : ':';
 COMMA  : ',';
 DOT    : '.';
 EQ     : '=';
+STAR   : '*';
 MINUS  : '-';
 LT     : '<';
 GT     : '>';
