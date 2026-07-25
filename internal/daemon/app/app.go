@@ -25,6 +25,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/change"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
@@ -188,6 +189,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	sessionService := sessionservice.NewModule()
 	graphService := graphservice.NewModule()
 	blobService := blobservice.NewModule(graphService)
+	schemaService := schemaservice.NewModule("")
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
 		SecretKeyB64: cfg.UserStoreEncryptionKeyB64,
 		MaintenanceConfig: daemonsemantic.MaintenanceConfig{
@@ -226,7 +228,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	})
-	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, graphService, blobService, semanticService, changeService, backupService}); err != nil {
+	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, graphService, schemaService, blobService, semanticService, changeService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}

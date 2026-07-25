@@ -8,7 +8,7 @@ No backwards compatibility with the old template model is required.
 
 ## Tranche 1 — Core schema model and subsystem skeleton
 
-Status: implemented on `improved_gql` as the initial in-memory schema subsystem skeleton. Durable storage and daemon-wide enforcement remain for later tranches.
+Status: implemented on `improved_gql`. The schema subsystem has model validation, in-memory and file-backed stores, a runtime-registered schema module, and a manager interface used by later validation tranches.
 
 ### Work
 
