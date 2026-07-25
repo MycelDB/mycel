@@ -144,3 +144,4 @@ For Knot PKM, edge creation and single-hop edge matching are now available. The 
 - `../implementation/gql-property-return-projection-implementation-plan.md`
 - `../implementation/gql-edge-implementation-plan.md`
 - `../implementation/gql-relationship-create-implementation-plan.md`
+- `../implementation/gql-very-high-feature-implementation-plan.md`
