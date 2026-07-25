@@ -51,17 +51,3 @@ func NewBlobCommand(a *app.App) *cobra.Command {
 	cmd.AddCommand(NewUploadBlobCommand(a), NewGetRawBlobCommand(a), NewDownloadRawBlobCommand(a), NewDeleteRawBlobCommand(a))
 	return cmd
 }
-
-func NewTemplateCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "template", Aliases: []string{"templates"}, Short: "Manage graph templates"}
-	imp := NewAddTemplateCommand(a)
-	imp.Use = "import"
-	imp.Aliases = []string{"add"}
-	imp.Short = "Import templates from a JSON file or stdin"
-	list := NewListTemplatesCommand(a)
-	list.Use = "list"
-	list.Aliases = []string{"ls"}
-	list.Short = "List templates for a space"
-	cmd.AddCommand(imp, list, NewGetTemplateCommand(a), NewFindTemplateCommand(a), NewCreateTemplateCommand(a), NewUpdateTemplateCommand(a), NewArchiveTemplateCommand(a), NewDeleteTemplateCommand(a))
-	return cmd
-}

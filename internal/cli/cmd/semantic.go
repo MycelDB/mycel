@@ -169,7 +169,7 @@ func daemonResolveSemanticIndexID(ctx context.Context, semanticClient clientv1.S
 	return "", fmt.Errorf("semantic index %q not found", raw)
 }
 
-func runDaemonSemanticIndexAdd(cmd *cobra.Command, a *app.App, key string, spaceIDText string, domainRef string, purpose string, source string, endpointRef string, modelRef string, vectorStoreRef string, name string, templateKeys []string, includeProps []string, enabled bool) error {
+func runDaemonSemanticIndexAdd(cmd *cobra.Command, a *app.App, key string, spaceIDText string, domainRef string, purpose string, source string, endpointRef string, modelRef string, vectorStoreRef string, name string, includeProps []string, enabled bool) error {
 	conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 	if err != nil {
 		return err
@@ -196,7 +196,7 @@ func runDaemonSemanticIndexAdd(cmd *cobra.Command, a *app.App, key string, space
 	if err != nil {
 		return err
 	}
-	res, err := adminv1.NewAdminSemanticServiceClient(conn).UpsertSemanticIndex(authCtx, &adminv1.UpsertSemanticIndexRequest{SpaceId: spaceID.String(), DomainId: domainID, Key: key, DisplayName: firstNonEmpty(name, key), Purpose: firstNonEmpty(purpose, string(domainsemantic.SemanticIndexPurposeSearch)), SourcePolicy: &adminv1.SemanticSourcePolicy{Extraction: firstNonEmpty(source, string(domainsemantic.SourceExtractionSubtree)), TemplateKeys: templateKeys, IncludeProps: includeProps}, ModelEndpointId: endpointID, ModelId: modelID, VectorStoreId: vectorStoreID, Enabled: enabled})
+	res, err := adminv1.NewAdminSemanticServiceClient(conn).UpsertSemanticIndex(authCtx, &adminv1.UpsertSemanticIndexRequest{SpaceId: spaceID.String(), DomainId: domainID, Key: key, DisplayName: firstNonEmpty(name, key), Purpose: firstNonEmpty(purpose, string(domainsemantic.SemanticIndexPurposeSearch)), SourcePolicy: &adminv1.SemanticSourcePolicy{Extraction: firstNonEmpty(source, string(domainsemantic.SourceExtractionSubtree)), IncludeProps: includeProps}, ModelEndpointId: endpointID, ModelId: modelID, VectorStoreId: vectorStoreID, Enabled: enabled})
 	if err != nil {
 		return err
 	}
@@ -581,15 +581,14 @@ func isMycelFileVectorStore(stores []domainsemantic.VectorStoreBackend, id domai
 
 func newSemanticIndexAddCommand(a *app.App) *cobra.Command {
 	var spaceIDText, domainRef, purpose, source, endpointRef, modelRef, vectorStoreRef, name string
-	var templateKeys, includeProps []string
+	var includeProps []string
 	var enabled bool
 	cmd := &cobra.Command{Use: "add KEY", Short: "Add or update a semantic index", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		return runDaemonSemanticIndexAdd(cmd, a, args[0], spaceIDText, domainRef, purpose, source, endpointRef, modelRef, vectorStoreRef, name, templateKeys, includeProps, enabled)
+		return runDaemonSemanticIndexAdd(cmd, a, args[0], spaceIDText, domainRef, purpose, source, endpointRef, modelRef, vectorStoreRef, name, includeProps, enabled)
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
 	cmd.Flags().StringVar(&domainRef, "domain", "", "domain key or ID")
 	cmd.Flags().StringVar(&purpose, "purpose", string(domainsemantic.SemanticIndexPurposeSearch), "semantic index purpose")
-	cmd.Flags().StringArrayVar(&templateKeys, "template-key", nil, "template key selected by the source policy")
 	cmd.Flags().StringVar(&source, "source", string(domainsemantic.SourceExtractionSubtree), "source extraction: self or subtree")
 	cmd.Flags().StringArrayVar(&includeProps, "include-prop", nil, "node prop to include in source text")
 	cmd.Flags().StringVar(&endpointRef, "model-endpoint", "", "model endpoint key or ID")

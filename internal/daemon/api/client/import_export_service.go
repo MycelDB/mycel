@@ -11,7 +11,6 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -57,17 +56,6 @@ func (s *ImportExportService) ExportDomain(req *clientv1.ExportDomainRequest, st
 	manifest := &clientv1.DomainExportManifest{Format: format, SpaceId: tx.SpaceID, DomainId: tx.DomainID, BaseRevision: tx.BaseRevision, ExportTime: timestamppb.Now(), Options: req.GetOptions()}
 	if err := stream.Send(&clientv1.ExportDomainResponse{Part: &clientv1.ExportDomainResponse_Manifest{Manifest: manifest}}); err != nil {
 		return err
-	}
-	if req.GetOptions().GetIncludeTemplates() {
-		templates, err := s.spaces.ListVisibleTemplates(ctx, principal.UserID, tx.SpaceID, true, true)
-		if err != nil {
-			return mapTemplateError(err, "export templates")
-		}
-		for _, template := range templates {
-			if err := stream.Send(&clientv1.ExportDomainResponse{Part: &clientv1.ExportDomainResponse_Record{Record: &clientv1.ImportExportRecord{Record: &clientv1.ImportExportRecord_Template{Template: MapTemplateDefinition(template)}}}}); err != nil {
-				return err
-			}
-		}
 	}
 	nodes, err := allExportNodes(ctx, s.graphs, tx)
 	if err != nil {
@@ -206,8 +194,6 @@ func (s *ImportExportService) importRecord(ctx context.Context, tx daemonsession
 			summary.NodesImported++
 		case *clientv1.ImportExportRecord_Edge:
 			summary.EdgesImported++
-		case *clientv1.ImportExportRecord_Template:
-			summary.TemplatesImported++
 		case *clientv1.ImportExportRecord_BlobMetadata:
 			summary.BlobsImported++
 		case *clientv1.ImportExportRecord_BlobChunk:
@@ -250,20 +236,6 @@ func (s *ImportExportService) importRecord(ctx context.Context, tx daemonsession
 			return mapGraphError(err, "import edge")
 		}
 		summary.EdgesImported++
-		return nil
-	case *clientv1.ImportExportRecord_Template:
-		if !metadata.GetOptions().GetIncludeTemplates() {
-			summary.Warnings = append(summary.Warnings, "template record skipped because include_templates=false")
-			return nil
-		}
-		input, err := TemplateImportFromProto(value.Template)
-		if err != nil {
-			return err
-		}
-		if _, err := s.spaces.ImportTemplates(ctx, tx.UserID, tx.SpaceID, []storetemplate.TemplateImport{input}); err != nil {
-			return mapTemplateError(err, "import template")
-		}
-		summary.TemplatesImported++
 		return nil
 	case *clientv1.ImportExportRecord_BlobMetadata:
 		if !metadata.GetOptions().GetIncludeBlobs() {
@@ -388,7 +360,7 @@ func nodeInputFromExportNode(node *clientv1.Node, preserveIDs bool) daegraph.Nod
 	payload := structMap(node.GetPayload())
 	blobID, _ := payload["blob_id"].(string)
 	content, _ := payload["text"].(string)
-	input := daegraph.NodeInput{TemplateID: node.GetTemplateId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: payload, Meta: structMap(node.GetMeta()), BlobID: blobID, Content: content}
+	input := daegraph.NodeInput{Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: payload, Meta: structMap(node.GetMeta()), BlobID: blobID, Content: content}
 	if preserveIDs {
 		input.NodeID = node.GetNodeId()
 	}

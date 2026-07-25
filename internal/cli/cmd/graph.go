@@ -34,7 +34,7 @@ func newGraphBlobNodeCommand(a *app.App) *cobra.Command {
 }
 
 func newGraphBlobNodeCreateCommand(a *app.App) *cobra.Command {
-	var transactionID, nodeID, templateID, propsJSON, propertiesJSON, payloadJSON, metaJSON, declaredMimeType, originalFilename string
+	var transactionID, nodeID, propsJSON, propertiesJSON, payloadJSON, metaJSON, declaredMimeType, originalFilename string
 	var labels []string
 	cmd := &cobra.Command{Use: "create FILE", Short: "Create a blob-backed node in a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		properties, err := protoNodeMap(propertiesJSON, propsJSON)
@@ -70,9 +70,6 @@ func newGraphBlobNodeCreateCommand(a *app.App) *cobra.Command {
 		if nodeID != "" {
 			metadata.NodeId = &nodeID
 		}
-		if templateID != "" {
-			metadata.TemplateId = &templateID
-		}
 		if err := stream.Send(&clientv1.CreateBlobNodeRequest{Part: &clientv1.CreateBlobNodeRequest_Metadata{Metadata: metadata}}); err != nil {
 			return err
 		}
@@ -100,7 +97,6 @@ func newGraphBlobNodeCreateCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&transactionID, "transaction-id", "", "transaction ID")
 	cmd.Flags().StringVar(&nodeID, "node-id", "", "optional node ID")
-	cmd.Flags().StringVar(&templateID, "template-id", "", "optional template ID")
 	cmd.Flags().StringArrayVar(&labels, "label", nil, "node label; repeatable")
 	cmd.Flags().StringVar(&propertiesJSON, "properties-json", "", "node properties as JSON object")
 	cmd.Flags().StringVar(&payloadJSON, "payload-json", "", "node payload as JSON object")
@@ -113,7 +109,7 @@ func newGraphBlobNodeCreateCommand(a *app.App) *cobra.Command {
 }
 
 func newGraphNodeCreateCommand(a *app.App) *cobra.Command {
-	var transactionID, nodeID, templateID, content, propsJSON, propertiesJSON, payloadJSON, metaJSON string
+	var transactionID, nodeID, content, propsJSON, propertiesJSON, payloadJSON, metaJSON string
 	var labels []string
 	cmd := &cobra.Command{Use: "create", Short: "Create a node in a daemon graph transaction", RunE: func(cmd *cobra.Command, args []string) error {
 		properties, payload, meta, err := parseNodeShape(propertiesJSON, propsJSON, payloadJSON, metaJSON, content)
@@ -129,9 +125,6 @@ func newGraphNodeCreateCommand(a *app.App) *cobra.Command {
 		if nodeID != "" {
 			req.Node.NodeId = &nodeID
 		}
-		if templateID != "" {
-			req.Node.TemplateId = &templateID
-		}
 		res, err := clientv1.NewGraphServiceClient(conn).CreateNode(authCtx, req)
 		if err != nil {
 			return err
@@ -140,7 +133,6 @@ func newGraphNodeCreateCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&transactionID, "transaction-id", "", "transaction ID")
 	cmd.Flags().StringVar(&nodeID, "node-id", "", "optional node ID")
-	cmd.Flags().StringVar(&templateID, "template-id", "", "optional template ID")
 	cmd.Flags().StringArrayVar(&labels, "label", nil, "node label; repeatable")
 	cmd.Flags().StringVar(&content, "content", "", "node text payload; deprecated alias for --payload-json")
 	cmd.Flags().StringVar(&propertiesJSON, "properties-json", "", "node properties as JSON object")
@@ -202,7 +194,7 @@ func newGraphNodeListCommand(a *app.App) *cobra.Command {
 }
 
 func newGraphNodeUpdateCommand(a *app.App) *cobra.Command {
-	var transactionID, content, propsJSON, propertiesJSON, payloadJSON, metaJSON, templateID, mask string
+	var transactionID, content, propsJSON, propertiesJSON, payloadJSON, metaJSON, mask string
 	var labels []string
 	cmd := &cobra.Command{Use: "update NODE_ID", Short: "Update a node in a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		properties, payload, meta, err := parseNodeShape(propertiesJSON, propsJSON, payloadJSON, metaJSON, content)
@@ -215,9 +207,6 @@ func newGraphNodeUpdateCommand(a *app.App) *cobra.Command {
 		}
 		defer conn.Close()
 		node := &clientv1.Node{NodeId: args[0], Labels: labels, Payload: payload, Properties: properties, Meta: meta}
-		if templateID != "" {
-			node.TemplateId = &templateID
-		}
 		req := &clientv1.UpdateNodeRequest{TransactionId: transactionID, Node: node, UpdateMask: parseFieldMask(mask)}
 		res, err := clientv1.NewGraphServiceClient(conn).UpdateNode(authCtx, req)
 		if err != nil {
@@ -232,7 +221,6 @@ func newGraphNodeUpdateCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&payloadJSON, "payload-json", "", "node payload as JSON object")
 	cmd.Flags().StringVar(&metaJSON, "meta-json", "", "node metadata as JSON object")
 	cmd.Flags().StringVar(&propsJSON, "props-json", "", "deprecated alias for --properties-json")
-	cmd.Flags().StringVar(&templateID, "template-id", "", "template ID")
 	cmd.Flags().StringVar(&mask, "mask", "", "comma-separated update mask paths, e.g. payload,properties,labels,meta")
 	_ = cmd.MarkFlagRequired("transaction-id")
 	return cmd

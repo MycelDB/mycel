@@ -286,15 +286,6 @@ func (e *queryExecution) nodeMatches(node domaingraph.Node, pattern *clientv1.No
 	if pattern == nil {
 		return true
 	}
-	if pattern.GetTemplateKey() != "" {
-		if node.TemplateID == nil {
-			return false
-		}
-		tmpl, ok := e.templateByID[node.TemplateID.String()]
-		if !ok || tmpl.Key != pattern.GetTemplateKey() {
-			return false
-		}
-	}
 	if len(pattern.GetLabels()) > 0 && !nodeHasLabels(node.Labels, pattern.GetLabels()) {
 		return false
 	}

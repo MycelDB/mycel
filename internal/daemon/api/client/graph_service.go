@@ -133,7 +133,7 @@ func (s *GraphService) CreateBlobNode(stream clientv1.GraphService_CreateBlobNod
 	if blob.OriginalFilename != "" {
 		payload["original_filename"] = filepath.Base(blob.OriginalFilename)
 	}
-	node, err := s.graphs.CreateNode(ctx, tx, daegraph.NodeInput{NodeID: meta.GetNodeId(), TemplateID: meta.GetTemplateId(), Labels: meta.GetLabels(), BlobID: blob.BlobID, Properties: properties, Payload: payload, Meta: structMap(meta.GetMeta())})
+	node, err := s.graphs.CreateNode(ctx, tx, daegraph.NodeInput{NodeID: meta.GetNodeId(), Labels: meta.GetLabels(), BlobID: blob.BlobID, Properties: properties, Payload: payload, Meta: structMap(meta.GetMeta())})
 	if err != nil {
 		return mapGraphError(err, "create blob node")
 	}
@@ -417,15 +417,14 @@ func nodeInputFromProto(node *clientv1.NodeCreate) daegraph.NodeInput {
 	if node == nil {
 		return daegraph.NodeInput{}
 	}
-	return daegraph.NodeInput{NodeID: node.GetNodeId(), TemplateID: node.GetTemplateId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload()), Meta: structMap(node.GetMeta())}
+	return daegraph.NodeInput{NodeID: node.GetNodeId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload()), Meta: structMap(node.GetMeta())}
 }
 
 func updateNodeInputFromProto(node *clientv1.Node) daegraph.UpdateNodeInput {
 	if node == nil {
 		return daegraph.UpdateNodeInput{}
 	}
-	templateID := node.GetTemplateId()
-	return daegraph.UpdateNodeInput{NodeID: node.GetNodeId(), TemplateID: &templateID, Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload()), Meta: structMap(node.GetMeta())}
+	return daegraph.UpdateNodeInput{NodeID: node.GetNodeId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload()), Meta: structMap(node.GetMeta())}
 }
 
 func edgeInputFromProto(edge *clientv1.EdgeCreate) daegraph.EdgeInput {
@@ -458,10 +457,6 @@ func mapProtoNode(node domaingraph.Node) *clientv1.Node {
 		}
 	}
 	out := &clientv1.Node{NodeId: node.ID.String(), DomainId: node.DomainID.String(), Labels: append([]string(nil), node.Labels...), Properties: protoStruct(properties), Payload: protoStruct(payload), Meta: protoStruct(node.Meta), CreateTime: timestamppb.New(node.CreatedAt), UpdateTime: timestamppb.New(node.UpdatedAt)}
-	if node.TemplateID != nil {
-		value := node.TemplateID.String()
-		out.TemplateId = &value
-	}
 	return out
 }
 

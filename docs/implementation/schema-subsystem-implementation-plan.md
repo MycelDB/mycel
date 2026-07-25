@@ -54,7 +54,7 @@ type Manager interface {
 
 ## Tranche 2 — Remove old template implementation
 
-Status: partially implemented on `improved_gql`. File-session template property validation and template child-policy enforcement are bypassed so schema validation can replace them in later tranches while hardcoded `contains` structural checks remain active. Remaining work: remove `TemplateID` from graph/session/API models, delete `internal/graph/template`, and remove daemon/CLI template RPC surfaces after API/proto changes are coordinated.
+Status: partially implemented on `improved_gql`. Public template protos were removed in `mycel-api`; the daemon no longer registers client/admin template RPC services; the CLI template command was removed; graph/query/import/export CLI and daemon paths no longer expose `template_id`, `template_key`, or template import/export records. File-session template property validation and template child-policy enforcement remain bypassed while hardcoded `contains` structural checks remain active. Remaining work: remove the internal `TemplateID` graph/session/storage model, delete `internal/graph/template`, remove template manager plumbing from space/file-session/semantic internals, and update downstream consumers that still use template concepts such as Knot PKM task/template helpers.
 
 ### Work
 

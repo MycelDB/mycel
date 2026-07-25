@@ -16,7 +16,6 @@ import (
 	changestreamservice "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
-	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	"github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
@@ -103,7 +102,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, TemplateManager: adminapi.NewAdminTemplateService(spaceService, adminService), SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
