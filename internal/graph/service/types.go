@@ -70,7 +70,6 @@ const (
 
 type NodeInput struct {
 	NodeID     string
-	TemplateID string
 	Labels     []string
 	Properties map[string]any
 	Payload    map[string]any
@@ -82,7 +81,6 @@ type NodeInput struct {
 
 type UpdateNodeInput struct {
 	NodeID     string
-	TemplateID *string
 	Labels     []string
 	Properties map[string]any
 	Payload    map[string]any

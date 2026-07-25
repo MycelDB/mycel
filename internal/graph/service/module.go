@@ -187,10 +187,6 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Node{}, err
 	}
-	templateID, err := optionalTemplateID(input.TemplateID)
-	if err != nil {
-		return domaingraph.Node{}, err
-	}
 	now := time.Now().UTC()
 	var blobRef *domaingraph.BlobID
 	if strings.TrimSpace(input.BlobID) != "" {
@@ -217,7 +213,7 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	if blobRef != nil {
 		payload["blob_id"] = string(*blobRef)
 	}
-	n := domaingraph.Node{ID: id, DomainID: mustDomainID(tx.DomainID), TemplateID: templateID, Labels: append([]string(nil), input.Labels...), Properties: properties, Payload: payload, Meta: cloneProps(input.Meta), BlobRef: blobRef, Content: input.Content, Props: cloneProps(input.Props), CreatedAt: now, UpdatedAt: now}
+	n := domaingraph.Node{ID: id, DomainID: mustDomainID(tx.DomainID), Labels: append([]string(nil), input.Labels...), Properties: properties, Payload: payload, Meta: cloneProps(input.Meta), BlobRef: blobRef, Content: input.Content, Props: cloneProps(input.Props), CreatedAt: now, UpdatedAt: now}
 	m.stageNode(tx.ID, n)
 	return cloneNode(n), nil
 }
@@ -235,13 +231,6 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 		return domaingraph.Node{}, err
 	}
 	paths := maskSet(input.UpdateMask)
-	if input.TemplateID != nil && (len(paths) == 0 || paths["template_id"]) {
-		templateID, err := optionalTemplateID(*input.TemplateID)
-		if err != nil {
-			return domaingraph.Node{}, err
-		}
-		n.TemplateID = templateID
-	}
 	if input.Labels != nil && (len(paths) == 0 || paths["labels"]) {
 		n.Labels = append([]string(nil), input.Labels...)
 	}
@@ -285,8 +274,7 @@ func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransacti
 	}
 	if _, err := m.node(ctx, tx, id); err == nil {
 		content := input.Content
-		tmpl := input.TemplateID
-		return m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: input.NodeID, TemplateID: &tmpl, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload, Meta: input.Meta, Content: &content, Props: input.Props})
+		return m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: input.NodeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload, Meta: input.Meta, Content: &content, Props: input.Props})
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Node{}, err
 	}
@@ -1111,17 +1099,6 @@ func optionalUUID[T ~[16]byte](value string, name string) (T, error) {
 		return zero, nil
 	}
 	return parseUUID[T](value, name)
-}
-
-func optionalTemplateID(value string) (*domaingraph.TemplateID, error) {
-	if strings.TrimSpace(value) == "" {
-		return nil, nil
-	}
-	id, err := parseUUID[domaingraph.TemplateID](value, "template_id")
-	if err != nil {
-		return nil, err
-	}
-	return &id, nil
 }
 
 func mustDomainID(value string) domaingraph.DomainID {
