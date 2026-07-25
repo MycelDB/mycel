@@ -8,6 +8,8 @@ No backwards compatibility with the old template model is required.
 
 ## Tranche 1 — Core schema model and subsystem skeleton
 
+Status: implemented on `improved_gql` as the initial in-memory schema subsystem skeleton. Durable storage and daemon-wide enforcement remain for later tranches.
+
 ### Work
 
 - Add top-level subsystem package:
