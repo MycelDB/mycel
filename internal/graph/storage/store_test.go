@@ -19,11 +19,10 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open failed: %v", err)
 	}
-	tmpl := graph.TemplateID(uuid.New())
 	createdAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	updatedAt := createdAt.Add(time.Hour)
-	parent := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "parent", Props: map[string]any{"journal_day": 20260102}, CreatedAt: createdAt, UpdatedAt: updatedAt}
-	child := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "child", Props: map[string]any{}}
+	parent := graph.Node{ID: graph.NodeID(uuid.New()), Content: "parent", Props: map[string]any{"journal_day": 20260102}, CreatedAt: createdAt, UpdatedAt: updatedAt}
+	child := graph.Node{ID: graph.NodeID(uuid.New()), Content: "child", Props: map[string]any{}}
 	edgeCreatedAt := createdAt.Add(2 * time.Hour)
 	edgeUpdatedAt := edgeCreatedAt.Add(time.Hour)
 	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: graph.DomainID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"contains", "primary"}, Properties: map[string]any{"order": int64(0), "source": "test"}, Payload: map[string]any{"text": "edge payload"}, Meta: map[string]any{"system": "store-test"}, CreatedAt: edgeCreatedAt, UpdatedAt: edgeUpdatedAt}
@@ -66,10 +65,6 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	gotEdge := children[0]
 	if gotEdge.DomainID != edge.DomainID || !reflect.DeepEqual(gotEdge.Labels, edge.Labels) || !reflect.DeepEqual(gotEdge.Properties, edge.Properties) || !reflect.DeepEqual(gotEdge.Payload, edge.Payload) || !reflect.DeepEqual(gotEdge.Meta, edge.Meta) || !gotEdge.CreatedAt.Equal(edgeCreatedAt) || !gotEdge.UpdatedAt.Equal(edgeUpdatedAt) {
 		t.Fatalf("edge did not round trip through store: got %+v want %+v", gotEdge, edge)
-	}
-	ids, err := store.NodesByTemplate(ctx, tmpl)
-	if err != nil || len(ids) != 2 {
-		t.Fatalf("unexpected template ids=%+v err=%v", ids, err)
 	}
 	journalIDs, err := store.JournalNodesByDayRange(ctx, 20260101, 20260107)
 	if err != nil || len(journalIDs) != 1 || journalIDs[0] != parent.ID {

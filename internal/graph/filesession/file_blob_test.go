@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
@@ -17,7 +16,7 @@ import (
 // pngHeader is a minimal payload http.DetectContentType sniffs as image/png.
 var pngHeader = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R'}
 
-func TestAddBlobNodeDefaultsToSystemBlobTemplate(t *testing.T) {
+func TestAddBlobNodeSetsBlobMetadata(t *testing.T) {
 	ctx := context.Background()
 	sess, _ := newBlobTestSession(t)
 
@@ -32,9 +31,6 @@ func TestAddBlobNodeDefaultsToSystemBlobTemplate(t *testing.T) {
 	}
 	if node.BlobRef == nil {
 		t.Fatal("expected blob ref to be set")
-	}
-	if node.TemplateID == nil {
-		t.Fatal("expected default system blob template to be applied")
 	}
 	if node.Content != "" {
 		t.Fatalf("expected empty content on blob node, got %q", node.Content)
@@ -55,19 +51,6 @@ func TestAddBlobNodeDefaultsToSystemBlobTemplate(t *testing.T) {
 		t.Fatalf("unexpected size_bytes: %v", got)
 	}
 
-	templates, err := sess.ListTemplates(ctx)
-	if err != nil {
-		t.Fatalf("list templates failed: %v", err)
-	}
-	found := false
-	for _, tmpl := range templates {
-		if tmpl.Key == SystemBlobTemplateKey && tmpl.System && tmpl.Children.Allowed {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected system blob template registered, got %+v", templates)
-	}
 }
 
 func TestGetBlobRoundTrip(t *testing.T) {
@@ -200,14 +183,14 @@ func TestUpdateNodePreservesBlobRefAndRejectsInlineContent(t *testing.T) {
 	}
 
 	// Blob nodes can never gain inline content.
-	if _, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: node.ID, TemplateID: node.TemplateID, Content: "inline text", Props: node.Props}); !errors.Is(err, storetemplate.ErrInvalidInput) {
+	if _, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: node.ID, Content: "inline text", Props: node.Props}); !errors.Is(err, errInvalidInput) {
 		t.Fatalf("expected invalid input updating blob node with content, got %v", err)
 	}
 
 	// Prop-only updates (e.g. caption) are fine and preserve the blob ref.
 	props := copyProps(node.Props)
 	props[PropCaption] = "new caption"
-	updated, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: node.ID, TemplateID: node.TemplateID, Props: props})
+	updated, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: node.ID, Props: props})
 	if err != nil {
 		t.Fatalf("update failed: %v", err)
 	}
@@ -265,7 +248,7 @@ func TestAddBlobNodeRequiresReaderAndWriteAccess(t *testing.T) {
 	if _, err := sess.AddBlobNode(ctx, sessionapi.AddBlobNodeInput{}); err == nil {
 		t.Fatal("expected error without reader")
 	}
-	readOnly := New(fs.graphsDir, fs.blobsDir, fs.spaceID, fs.templateManager, sessionapi.Permissions{Read: true}, fs.errors)
+	readOnly := New(fs.graphsDir, fs.blobsDir, fs.spaceID, sessionapi.Permissions{Read: true}, fs.errors)
 	defer readOnly.Close()
 	if _, err := readOnly.AddBlobNode(ctx, sessionapi.AddBlobNodeInput{Reader: bytes.NewReader(pngHeader)}); !errors.Is(err, fs.errors.Unauthorized) {
 		t.Fatalf("expected unauthorized, got %v", err)
@@ -371,19 +354,14 @@ func newBlobTestSessionWithConfig(t *testing.T, cfg Config) (sessionapi.Session,
 	graphsDir := t.TempDir()
 	blobsDir := t.TempDir()
 	prepareSpaceDir(t, graphsDir, spaceID)
-	manager := storetemplate.NewManager()
-	if err := manager.Init(context.Background(), t.TempDir()); err != nil {
-		t.Fatalf("init template manager failed: %v", err)
-	}
-	sess := NewConfig(graphsDir, blobsDir, spaceID, manager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}, cfg)
+	sess := NewConfig(graphsDir, blobsDir, spaceID, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}, cfg)
 	return sess, sess.(*FileSession)
 }
 
-// newSessionLike opens a new session over the same directories and template
-// manager as an existing session.
+// newSessionLike opens a new session over the same directories as an existing session.
 func newSessionLike(t *testing.T, fs *FileSession) sessionapi.Session {
 	t.Helper()
-	return New(fs.graphsDir, fs.blobsDir, fs.spaceID, fs.templateManager, fs.permissions, fs.errors)
+	return New(fs.graphsDir, fs.blobsDir, fs.spaceID, fs.permissions, fs.errors)
 }
 
 func TestTransactionAddBlobNodeCommit(t *testing.T) {
@@ -474,10 +452,10 @@ func TestTransactionAddBlobNodeConflictCleansPromotedBlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tx add blob failed: %v", err)
 	}
-	if _, err := tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "tx", Properties: map[string]any{}}); err != nil {
+	if _, err := tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, Content: "tx", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("tx update seed failed: %v", err)
 	}
-	if _, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, TemplateID: seed.TemplateID, Content: "advance revision", Properties: map[string]any{}}); err != nil {
+	if _, err := sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: seed.ID, Content: "advance revision", Properties: map[string]any{}}); err != nil {
 		t.Fatalf("advance revision failed: %v", err)
 	}
 	if err := tx.Commit(ctx); err == nil {

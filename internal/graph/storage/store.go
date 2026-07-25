@@ -35,7 +35,6 @@ type LocalStore struct {
 	edgeRecords      map[graph.EdgeID]graph.Edge
 	nodeMeta         map[graph.NodeID]NodeMeta
 	edgeMeta         map[graph.EdgeID]EdgeMeta
-	nodesByTemplate  map[graph.TemplateID]map[graph.NodeID]struct{}
 	nodesByDomain    map[graph.DomainID]map[graph.NodeID]struct{}
 	containsChildren map[graph.NodeID][]graph.EdgeID
 	containsParent   map[graph.NodeID]graph.EdgeID
@@ -190,7 +189,6 @@ func (s *LocalStore) resetIndexes() {
 	s.edgeRecords = map[graph.EdgeID]graph.Edge{}
 	s.nodeMeta = map[graph.NodeID]NodeMeta{}
 	s.edgeMeta = map[graph.EdgeID]EdgeMeta{}
-	s.nodesByTemplate = map[graph.TemplateID]map[graph.NodeID]struct{}{}
 	s.nodesByDomain = map[graph.DomainID]map[graph.NodeID]struct{}{}
 	s.containsChildren = map[graph.NodeID][]graph.EdgeID{}
 	s.containsParent = map[graph.NodeID]graph.EdgeID{}
@@ -318,17 +316,6 @@ func (s *LocalStore) Parent(ctx context.Context, childID graph.NodeID) (*graph.E
 	e := cloneEdge(s.edgeRecords[id])
 	return &e, ctx.Err()
 }
-func (s *LocalStore) NodesByTemplate(ctx context.Context, tid graph.TemplateID) ([]graph.NodeID, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	set := s.nodesByTemplate[tid]
-	out := make([]graph.NodeID, 0, len(set))
-	for id := range set {
-		out = append(out, id)
-	}
-	return out, ctx.Err()
-}
-
 func (s *LocalStore) NodesByDomain(ctx context.Context, domainID graph.DomainID) ([]graph.NodeID, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -366,12 +353,9 @@ func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
 		s.removeNodeIndexes(old)
 	}
 	s.nodeRecords[n.ID] = cloneNode(n)
-	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, TemplateID: n.TemplateID, DomainID: n.DomainID, Location: loc}
+	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, DomainID: n.DomainID, Location: loc}
 	if n.DomainID != uuid.Nil {
 		ensureNodeSet(s.nodesByDomain, n.DomainID)[n.ID] = struct{}{}
-	}
-	if n.TemplateID != nil {
-		ensureNodeSet(s.nodesByTemplate, *n.TemplateID)[n.ID] = struct{}{}
 	}
 	propsForIndex := n.Properties
 	if len(propsForIndex) == 0 {
@@ -397,9 +381,6 @@ func (s *LocalStore) removeNodeIndexes(n graph.Node) {
 		if len(s.nodesByDomain[n.DomainID]) == 0 {
 			delete(s.nodesByDomain, n.DomainID)
 		}
-	}
-	if n.TemplateID != nil {
-		delete(s.nodesByTemplate[*n.TemplateID], n.ID)
 	}
 	propsForIndex := n.Properties
 	if len(propsForIndex) == 0 {

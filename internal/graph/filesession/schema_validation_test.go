@@ -70,14 +70,12 @@ func newSchemaValidationSession(t *testing.T, mode schemamodel.SchemaMode) (sess
 	domainID := graph.DomainID(uuid.New())
 	graphsDir := t.TempDir()
 	prepareSpaceDir(t, graphsDir, spaceID)
-	tmplID := graph.TemplateID(uuid.New())
-	templateManager := hierarchyTemplateManager{templates: map[graph.TemplateID]graph.Template{tmplID: {ID: tmplID, SpaceID: spaceID, Key: "entry", Version: "1", Properties: graph.PropertyPolicy{AllowExtra: true}}}}
 	store := storage.NewMemoryStore()
 	manager := schemaservice.NewManager(store)
 	if err := manager.PutDomainSchema(ctx, schemaForValidation(domainID, mode)); err != nil {
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
-	sess := NewConfig(graphsDir, t.TempDir(), spaceID, templateManager, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}, Config{DomainID: domainID, SchemaManager: manager})
+	sess := NewConfig(graphsDir, t.TempDir(), spaceID, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{Closed: errors.New("closed"), NotFound: errors.New("not found"), Unauthorized: errors.New("unauthorized"), Conflict: errors.New("conflict")}, Config{DomainID: domainID, SchemaManager: manager})
 	t.Cleanup(func() { _ = sess.Close() })
 	return sess, domainID
 }

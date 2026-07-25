@@ -11,42 +11,28 @@ import (
 )
 
 type fakeExecutor struct {
-	nodes     []graph.Node
-	edges     []graph.Edge
-	templates []graph.Template
+	nodes []graph.Node
+	edges []graph.Edge
 }
 
 func (f fakeExecutor) ListNodes(ctx context.Context) ([]graph.Node, error) { return f.nodes, nil }
 func (f fakeExecutor) ListEdges(ctx context.Context) ([]graph.Edge, error) { return f.edges, nil }
-func (f fakeExecutor) ListTemplates(ctx context.Context) ([]graph.Template, error) {
-	return f.templates, nil
-}
-
 func TestQueryLatestJournalEntriesViaContainsEdges(t *testing.T) {
 	ctx := context.Background()
 	today := localDate(time.Now())
 	yesterday := today.AddDate(0, 0, -1)
 	outsideRange := today.AddDate(0, 0, -7)
 
-	journalTemplateID := graph.TemplateID(uuid.New())
-	entryTemplateID := graph.TemplateID(uuid.New())
-	attachmentTemplateID := graph.TemplateID(uuid.New())
-	templates := []graph.Template{
-		{ID: journalTemplateID, Key: "logseq.journal", Children: graph.ChildPolicy{Allowed: true, Order: &graph.ChildOrderPolicy{Mode: graph.ChildOrderModeEdgeProperty, Property: "order", Direction: graph.SortDirectionAsc}}},
-		{ID: entryTemplateID, Key: "logseq.journal_entry", Children: graph.ChildPolicy{Allowed: true, Order: &graph.ChildOrderPolicy{Mode: graph.ChildOrderModeEdgeProperty, Property: "order", Direction: graph.SortDirectionAsc}}},
-		{ID: attachmentTemplateID, Key: "attachment"},
-	}
+	journalToday := graph.Node{ID: graph.NodeID(uuid.New()), Labels: []string{"logseq.journal"}, Props: map[string]any{"journal_date": today.Format("2006-01-02")}}
+	journalYesterday := graph.Node{ID: graph.NodeID(uuid.New()), Labels: []string{"logseq.journal"}, Props: map[string]any{"journal_date": yesterday.Format("2006-01-02")}}
+	journalOld := graph.Node{ID: graph.NodeID(uuid.New()), Labels: []string{"logseq.journal"}, Props: map[string]any{"journal_date": outsideRange.Format("2006-01-02")}}
 
-	journalToday := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &journalTemplateID, Props: map[string]any{"journal_date": today.Format("2006-01-02")}}
-	journalYesterday := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &journalTemplateID, Props: map[string]any{"journal_date": yesterday.Format("2006-01-02")}}
-	journalOld := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &journalTemplateID, Props: map[string]any{"journal_date": outsideRange.Format("2006-01-02")}}
-
-	todayEntryA := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &entryTemplateID, Content: "today A"}
-	todayEntryB := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &entryTemplateID, Content: "today B"}
-	todayEntryA1 := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &entryTemplateID, Content: "today A.1"}
-	todayAttachment := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &attachmentTemplateID, Content: "attachment"}
-	yesterdayEntry := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &entryTemplateID, Content: "yesterday"}
-	oldEntry := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &entryTemplateID, Content: "old"}
+	todayEntryA := graph.Node{ID: graph.NodeID(uuid.New()), Labels: []string{"logseq.journal_entry"}, Content: "today A"}
+	todayEntryB := graph.Node{ID: graph.NodeID(uuid.New()), Labels: []string{"logseq.journal_entry"}, Content: "today B"}
+	todayEntryA1 := graph.Node{ID: graph.NodeID(uuid.New()), Labels: []string{"logseq.journal_entry"}, Content: "today A.1"}
+	todayAttachment := graph.Node{ID: graph.NodeID(uuid.New()), Labels: []string{"attachment"}, Content: "attachment"}
+	yesterdayEntry := graph.Node{ID: graph.NodeID(uuid.New()), Labels: []string{"logseq.journal_entry"}, Content: "yesterday"}
+	oldEntry := graph.Node{ID: graph.NodeID(uuid.New()), Labels: []string{"logseq.journal_entry"}, Content: "old"}
 
 	edges := []graph.Edge{
 		contains(journalToday.ID, todayEntryB.ID, 1),
@@ -58,8 +44,7 @@ func TestQueryLatestJournalEntriesViaContainsEdges(t *testing.T) {
 	}
 
 	rows, err := q.NewBuilder(fakeExecutor{
-		templates: templates,
-		edges:     edges,
+		edges: edges,
 		nodes: []graph.Node{
 			journalOld, oldEntry,
 			journalYesterday, yesterdayEntry,

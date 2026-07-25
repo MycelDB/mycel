@@ -10,7 +10,6 @@ import (
 	"github.com/myceldb/mycel/internal/blob/storage"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/graph/query"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 )
 
@@ -159,13 +158,6 @@ func (o txOverlay) delta() ([]graph.Node, []graph.Edge, []graph.NodeID, []graph.
 
 func (tx *fileTx) Query() *query.Builder { return query.NewBuilder(tx) }
 
-func (tx *fileTx) ListTemplates(ctx context.Context) ([]graph.Template, error) {
-	if err := tx.ensureOpen(ctx); err != nil {
-		return nil, err
-	}
-	return tx.session.ListTemplates(ctx)
-}
-
 func (tx *fileTx) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (graph.Node, error) {
 	if err := tx.ensureWritable(ctx); err != nil {
 		return graph.Node{}, err
@@ -182,9 +174,9 @@ func (tx *fileTx) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (grap
 		nodeID = *in.ID
 	}
 	if findNodeIndex(nodes, nodeID) >= 0 {
-		return graph.Node{}, fmt.Errorf("%w: node already exists", storetemplate.ErrInvalidInput)
+		return graph.Node{}, fmt.Errorf("%w: node already exists", errInvalidInput)
 	}
-	n, err := tx.session.buildNode(ctx, nodes, nodeID, in.TemplateID, in.Content, in.Properties)
+	n, err := tx.session.buildNode(ctx, nodeID, in.Content, in.Properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -217,7 +209,7 @@ func (tx *fileTx) AddBlobNode(ctx context.Context, in sessionapi.AddBlobNodeInpu
 		if blobErr == nil {
 			_ = blobs.Discard(ctx, staged)
 		}
-		return graph.Node{}, fmt.Errorf("%w: node already exists", storetemplate.ErrInvalidInput)
+		return graph.Node{}, fmt.Errorf("%w: node already exists", errInvalidInput)
 	}
 	tx.overlay.addedNodes[node.ID] = node
 	tx.stagedBlobs = append(tx.stagedBlobs, txStagedBlob{staged: staged, blobID: staged.ID, nodeID: node.ID, existing: staged.Existing()})
@@ -254,13 +246,13 @@ func (tx *fileTx) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeInput)
 		return graph.Node{}, tx.session.errors.NotFound
 	}
 	if nodes[idx].BlobRef != nil && in.Content != "" {
-		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", storetemplate.ErrInvalidInput)
+		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", errInvalidInput)
 	}
 	properties := in.Properties
 	if properties == nil {
 		properties = in.Props
 	}
-	n, err := tx.session.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, properties)
+	n, err := tx.session.buildNode(ctx, in.ID, in.Content, properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -318,10 +310,10 @@ func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.
 	}
 	parentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
 	if len(parentIndexes) == 0 {
-		return fail(fmt.Errorf("%w: cannot insert a sibling for a root node", storetemplate.ErrInvalidInput))
+		return fail(fmt.Errorf("%w: cannot insert a sibling for a root node", errInvalidInput))
 	}
 	if len(parentIndexes) > 1 {
-		return fail(fmt.Errorf("%w: node has multiple contains parents", storetemplate.ErrInvalidInput))
+		return fail(fmt.Errorf("%w: node has multiple contains parents", errInvalidInput))
 	}
 	parentID := edges[parentIndexes[0]].FromID
 	childEdgeIndexes := orderedContainsEdgeIndexes(edges, parentID)
@@ -339,7 +331,7 @@ func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.
 		}
 	}
 	if currentOrder < 0 {
-		return fail(fmt.Errorf("%w: node is not contained by parent", storetemplate.ErrInvalidInput))
+		return fail(fmt.Errorf("%w: node is not contained by parent", errInvalidInput))
 	}
 	insertOrder := currentOrder + 1
 	createdOrder := previousOrder + childOrderStep
@@ -352,11 +344,11 @@ func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.
 			createdOrder = previousOrder + (nextOrder-previousOrder)/2
 		}
 	}
-	updated, err := tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: in.NodeID, TemplateID: nodes[idx].TemplateID, Content: in.Content, Props: in.Props})
+	updated, err := tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: in.NodeID, Content: in.Content, Props: in.Props})
 	if err != nil {
 		return fail(err)
 	}
-	sibling, err := tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.SiblingID, TemplateID: in.SiblingTemplateID, Content: in.SiblingContent, Props: in.SiblingProps})
+	sibling, err := tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.SiblingID, Content: in.SiblingContent, Props: in.SiblingProps})
 	if err != nil {
 		return fail(err)
 	}
@@ -369,12 +361,12 @@ func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.
 
 func (tx *fileTx) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
-		return tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Properties})
+		return tx.AddNode(ctx, sessionapi.AddNodeInput{Content: in.Content, Props: in.Properties})
 	}
 	if _, err := tx.GetNode(ctx, *in.ID); err == nil {
-		return tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Properties})
+		return tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, Content: in.Content, Props: in.Properties})
 	}
-	return tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Properties})
+	return tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.ID, Content: in.Content, Props: in.Properties})
 }
 
 func (tx *fileTx) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (graph.Edge, error) {
@@ -408,7 +400,7 @@ func (tx *fileTx) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (grap
 		edgeID = *in.ID
 	}
 	if findEdgeIndex(edges, edgeID) >= 0 {
-		return graph.Edge{}, fmt.Errorf("%w: edge already exists", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: edge already exists", errInvalidInput)
 	}
 	now := time.Now().UTC()
 	e := graph.Edge{ID: edgeID, DomainID: tx.session.domainID, FromID: in.FromID, ToID: in.ToID, Labels: append([]string(nil), in.Labels...), Properties: copyProps(in.Properties), Payload: copyProps(in.Payload), Meta: copyProps(in.Meta), CreatedAt: now, UpdatedAt: now}
@@ -541,7 +533,7 @@ func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInpu
 		return graph.Edge{}, fmt.Errorf("%w: new_parent_id is required", tx.session.errors.NotFound)
 	}
 	if in.Order != nil && *in.Order < 0 {
-		return graph.Edge{}, fmt.Errorf("%w: order must be non-negative", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: order must be non-negative", errInvalidInput)
 	}
 	nodes, err := tx.ListNodes(ctx)
 	if err != nil {
@@ -556,10 +548,10 @@ func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInpu
 		return graph.Edge{}, fmt.Errorf("%w: new parent not found", tx.session.errors.NotFound)
 	}
 	if in.NodeID == in.NewParentID {
-		return graph.Edge{}, fmt.Errorf("%w: cannot move a node under itself", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: cannot move a node under itself", errInvalidInput)
 	}
 	if node.DomainID != uuid.Nil && newParent.DomainID != uuid.Nil && node.DomainID != newParent.DomainID {
-		return graph.Edge{}, fmt.Errorf("%w: contains edges cannot cross domains", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: contains edges cannot cross domains", errInvalidInput)
 	}
 	edges, err := tx.ListEdges(ctx)
 	if err != nil {
@@ -568,10 +560,10 @@ func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInpu
 	originalEdges := cloneEdges(edges)
 	oldParentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
 	if len(oldParentIndexes) > 1 {
-		return graph.Edge{}, fmt.Errorf("%w: node has multiple contains parents", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: node has multiple contains parents", errInvalidInput)
 	}
 	if containsPath(edges, in.NodeID, in.NewParentID) {
-		return graph.Edge{}, fmt.Errorf("%w: move would create a contains cycle", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: move would create a contains cycle", errInvalidInput)
 	}
 	// Template child-policy validation is intentionally bypassed during the
 	// schema subsystem migration. Structural contains checks above remain in
@@ -895,7 +887,7 @@ func (tx *fileTx) validateFinalGraph(ctx context.Context, nodes []graph.Node, ed
 	nodeByID := make(map[graph.NodeID]graph.Node, len(nodes))
 	for _, node := range nodes {
 		if _, exists := nodeByID[node.ID]; exists {
-			return fmt.Errorf("%w: duplicate node %s", storetemplate.ErrInvalidInput, node.ID)
+			return fmt.Errorf("%w: duplicate node %s", errInvalidInput, node.ID)
 		}
 		nodeByID[node.ID] = node
 	}
@@ -903,7 +895,7 @@ func (tx *fileTx) validateFinalGraph(ctx context.Context, nodes []graph.Node, ed
 	containsParent := map[graph.NodeID]graph.EdgeID{}
 	for _, edge := range edges {
 		if _, exists := edgeByID[edge.ID]; exists {
-			return fmt.Errorf("%w: duplicate edge %s", storetemplate.ErrInvalidInput, edge.ID)
+			return fmt.Errorf("%w: duplicate edge %s", errInvalidInput, edge.ID)
 		}
 		edgeByID[edge.ID] = struct{}{}
 		from, fromOK := nodeByID[edge.FromID]
@@ -915,14 +907,14 @@ func (tx *fileTx) validateFinalGraph(ctx context.Context, nodes []graph.Node, ed
 			continue
 		}
 		if edge.FromID == edge.ToID {
-			return fmt.Errorf("%w: contains edge cannot target itself", storetemplate.ErrInvalidInput)
+			return fmt.Errorf("%w: contains edge cannot target itself", errInvalidInput)
 		}
 		if existing, ok := containsParent[edge.ToID]; ok && existing != edge.ID {
-			return fmt.Errorf("%w: node already has a contains parent", storetemplate.ErrInvalidInput)
+			return fmt.Errorf("%w: node already has a contains parent", errInvalidInput)
 		}
 		containsParent[edge.ToID] = edge.ID
 		if containsPath(edges, edge.ToID, edge.FromID) {
-			return fmt.Errorf("%w: contains edge would create a cycle", storetemplate.ErrInvalidInput)
+			return fmt.Errorf("%w: contains edge would create a cycle", errInvalidInput)
 		}
 		_ = from
 		_ = to

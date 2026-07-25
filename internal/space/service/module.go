@@ -16,7 +16,6 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/routing"
 	"github.com/myceldb/mycel/internal/graph/model"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
@@ -62,7 +61,6 @@ func hostRaftPartitionCount(host runtime.Host) uint32 {
 type Module struct {
 	spaces               storespaces.Manager
 	domains              storedomains.Manager
-	templates            storetemplate.Manager
 	access               acl.Manager
 	dataDir              string
 	gate                 *quiesce.Gate
@@ -103,17 +101,12 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if err := domains.Init(ctx, metaDir); err != nil {
 		return runtime.Abort(ModuleName, "store", "failed to open domain store", err)
 	}
-	templates := storetemplate.NewManager()
-	if err := templates.Init(ctx, filepath.Join(host.DataDir(), "templates")); err != nil {
-		return runtime.Abort(ModuleName, "store", "failed to open template store", err)
-	}
 	accessMgr := acl.NewManager()
 	if err := accessMgr.Init(ctx, metaDir); err != nil {
 		return runtime.Abort(ModuleName, "store", "failed to open access store", err)
 	}
 	m.spaces = spaces
 	m.domains = domains
-	m.templates = templates
 	m.access = accessMgr
 	m.dataDir = host.DataDir()
 	if provider, ok := host.(runtime.WALProvider); ok {
@@ -143,12 +136,6 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			}
 			if err := registry.Register(recordTypeDeleteSpace, wal.ApplierFunc(m.applyDeleteSpace)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register space delete WAL applier", err)
-			}
-			if err := registry.Register(recordTypePutTemplate, wal.ApplierFunc(m.applyPutTemplate)); err != nil {
-				return runtime.Abort(ModuleName, "wal", "register template put WAL applier", err)
-			}
-			if err := registry.Register(recordTypeDeleteTemplate, wal.ApplierFunc(m.applyDeleteTemplate)); err != nil {
-				return runtime.Abort(ModuleName, "wal", "register template delete WAL applier", err)
 			}
 		}
 	}
@@ -332,9 +319,6 @@ func (m *Module) DeleteSpace(ctx context.Context, spaceID string) error {
 			return err
 		}
 		if err := m.access.DeleteForSpace(ctx, id); err != nil {
-			return err
-		}
-		if err := m.templates.DeleteForSpace(ctx, id); err != nil {
 			return err
 		}
 		if err := m.spaces.DeleteByID(ctx, id); err != nil {
@@ -989,325 +973,6 @@ func (m *Module) resolveDomain(ctx context.Context, spaceID domainspace.SpaceID,
 	return domain, nil
 }
 
-func (m *Module) ListTemplates(ctx context.Context, spaceID string, includeSystem bool, includeArchived bool) ([]graph.Template, error) {
-	id, err := parseSpaceID(spaceID)
-	if err != nil {
-		return nil, err
-	}
-	if m.raftGroups != nil {
-		sp, err := m.GetLocalRaftSpace(ctx, id.String())
-		if err != nil {
-			return nil, err
-		}
-		templates, err := m.templates.ListBySpace(ctx, sp.SpaceID)
-		if err != nil {
-			return nil, mapTemplateStoreError(err)
-		}
-		out := make([]graph.Template, 0, len(templates))
-		for _, template := range templates {
-			if template.System && !includeSystem {
-				continue
-			}
-			if template.State == graph.TemplateStateArchived && !includeArchived {
-				continue
-			}
-			out = append(out, template)
-		}
-		return out, nil
-	}
-	return routing.ForSpaceValue[[]graph.Template](m.partitionExec, ctx, id.String(), func(ctx context.Context) ([]graph.Template, error) {
-		sp, err := m.GetSpace(ctx, id.String())
-		if err != nil {
-			return nil, err
-		}
-		templates, err := m.templates.ListBySpace(ctx, sp.SpaceID)
-		if err != nil {
-			return nil, mapTemplateStoreError(err)
-		}
-		out := make([]graph.Template, 0, len(templates))
-		for _, template := range templates {
-			if template.System && !includeSystem {
-				continue
-			}
-			if template.State == graph.TemplateStateArchived && !includeArchived {
-				continue
-			}
-			out = append(out, template)
-		}
-		return out, nil
-	})
-}
-
-func (m *Module) GetTemplate(ctx context.Context, spaceID string, templateID string) (graph.Template, error) {
-	spaceUUID, err := parseSpaceID(spaceID)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	if m.raftGroups != nil {
-		sp, err := m.GetLocalRaftSpace(ctx, spaceUUID.String())
-		if err != nil {
-			return graph.Template{}, err
-		}
-		id, err := parseTemplateID(templateID)
-		if err != nil {
-			return graph.Template{}, err
-		}
-		template, err := m.templates.GetByID(ctx, id)
-		if err != nil {
-			return graph.Template{}, mapTemplateStoreError(err)
-		}
-		if template.SpaceID != sp.SpaceID {
-			return graph.Template{}, ErrSpaceNotFound
-		}
-		return template, nil
-	}
-	return routing.ForSpaceValue[graph.Template](m.partitionExec, ctx, spaceUUID.String(), func(ctx context.Context) (graph.Template, error) {
-		sp, err := m.GetSpace(ctx, spaceUUID.String())
-		if err != nil {
-			return graph.Template{}, err
-		}
-		id, err := parseTemplateID(templateID)
-		if err != nil {
-			return graph.Template{}, err
-		}
-		template, err := m.templates.GetByID(ctx, id)
-		if err != nil {
-			return graph.Template{}, mapTemplateStoreError(err)
-		}
-		if template.SpaceID != sp.SpaceID {
-			return graph.Template{}, ErrSpaceNotFound
-		}
-		return template, nil
-	})
-}
-
-func (m *Module) ListVisibleTemplates(ctx context.Context, userID string, spaceID string, includeSystem bool, includeArchived bool) ([]graph.Template, error) {
-	uid, err := parseUserID(userID)
-	if err != nil {
-		return nil, err
-	}
-	sp, err := m.GetSpace(ctx, spaceID)
-	if err != nil {
-		return nil, err
-	}
-	canRead, err := m.canRead(ctx, uid, sp)
-	if err != nil {
-		return nil, err
-	}
-	if !canRead {
-		return nil, ErrSpaceNotFound
-	}
-	templates, err := m.templates.ListBySpace(ctx, sp.SpaceID)
-	if err != nil {
-		return nil, mapTemplateStoreError(err)
-	}
-	out := make([]graph.Template, 0, len(templates))
-	for _, template := range templates {
-		if template.System && !includeSystem {
-			continue
-		}
-		if template.State == graph.TemplateStateArchived && !includeArchived {
-			continue
-		}
-		out = append(out, template)
-	}
-	return out, nil
-}
-
-func (m *Module) GetVisibleTemplate(ctx context.Context, userID string, spaceID string, templateID string) (graph.Template, error) {
-	uid, sp, err := m.requireSpaceRead(ctx, userID, spaceID)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	_ = uid
-	id, err := parseTemplateID(templateID)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	template, err := m.templates.GetByID(ctx, id)
-	if err != nil {
-		return graph.Template{}, mapTemplateStoreError(err)
-	}
-	if template.SpaceID != sp.SpaceID {
-		return graph.Template{}, ErrSpaceNotFound
-	}
-	return template, nil
-}
-
-func (m *Module) FindVisibleTemplate(ctx context.Context, userID string, spaceID string, key string, version string) (graph.Template, error) {
-	_, sp, err := m.requireSpaceRead(ctx, userID, spaceID)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	template, err := m.templates.Find(ctx, sp.SpaceID, key, version)
-	if err != nil {
-		return graph.Template{}, mapTemplateStoreError(err)
-	}
-	return template, nil
-}
-
-func (m *Module) CreateTemplate(ctx context.Context, userID string, spaceID string, template storetemplate.TemplateImport) (graph.Template, error) {
-	release, err := m.enterWrite(ctx)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	defer release()
-	_, sp, err := m.requireSpaceAdmin(ctx, userID, spaceID)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	if m.wal == nil && m.raftGroups == nil {
-		created, err := m.templates.Import(ctx, sp.SpaceID, storetemplate.ImportDocument{SchemaVersion: 1, Templates: []storetemplate.TemplateImport{template}})
-		if err != nil {
-			return graph.Template{}, mapTemplateStoreError(err)
-		}
-		if len(created) != 1 {
-			return graph.Template{}, fmt.Errorf("%w: template create returned no template", ErrInvalidInput)
-		}
-		return created[0], nil
-	}
-	if _, err := m.templates.Find(ctx, sp.SpaceID, template.Key, template.Version); err == nil {
-		return graph.Template{}, mapTemplateStoreError(storetemplate.ErrDuplicateTemplateVersion)
-	} else if err != nil && !errors.Is(err, storetemplate.ErrTemplateNotFound) {
-		return graph.Template{}, mapTemplateStoreError(err)
-	}
-	return m.commitTemplatePut(ctx, templateFromImport(sp.SpaceID, template))
-}
-
-func (m *Module) UpdateTemplate(ctx context.Context, userID string, spaceID string, templateID string, displayName *string, description *string) (graph.Template, error) {
-	release, err := m.enterWrite(ctx)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	defer release()
-	_, sp, err := m.requireSpaceAdmin(ctx, userID, spaceID)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	id, err := parseTemplateID(templateID)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	existing, err := m.templates.GetByID(ctx, id)
-	if err != nil {
-		return graph.Template{}, mapTemplateStoreError(err)
-	}
-	if existing.SpaceID != sp.SpaceID {
-		return graph.Template{}, ErrSpaceNotFound
-	}
-	if m.wal == nil && m.raftGroups == nil {
-		return m.templates.Update(ctx, storetemplate.UpdateInput{TemplateID: id, DisplayName: displayName, Description: description})
-	}
-	updated := existing
-	if displayName != nil {
-		updated.DisplayName = strings.TrimSpace(*displayName)
-	}
-	if description != nil {
-		updated.Description = strings.TrimSpace(*description)
-	}
-	return m.commitTemplatePut(ctx, updated)
-}
-
-func (m *Module) ArchiveTemplate(ctx context.Context, userID string, spaceID string, templateID string) (graph.Template, error) {
-	release, err := m.enterWrite(ctx)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	defer release()
-	_, sp, err := m.requireSpaceAdmin(ctx, userID, spaceID)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	id, err := parseTemplateID(templateID)
-	if err != nil {
-		return graph.Template{}, err
-	}
-	existing, err := m.templates.GetByID(ctx, id)
-	if err != nil {
-		return graph.Template{}, mapTemplateStoreError(err)
-	}
-	if existing.SpaceID != sp.SpaceID {
-		return graph.Template{}, ErrSpaceNotFound
-	}
-	if m.wal == nil && m.raftGroups == nil {
-		return m.templates.Archive(ctx, id)
-	}
-	updated := existing
-	updated.State = graph.TemplateStateArchived
-	return m.commitTemplatePut(ctx, updated)
-}
-
-func (m *Module) DeleteTemplate(ctx context.Context, userID string, spaceID string, templateID string) error {
-	release, err := m.enterWrite(ctx)
-	if err != nil {
-		return err
-	}
-	defer release()
-	_, sp, err := m.requireSpaceAdmin(ctx, userID, spaceID)
-	if err != nil {
-		return err
-	}
-	id, err := parseTemplateID(templateID)
-	if err != nil {
-		return err
-	}
-	existing, err := m.templates.GetByID(ctx, id)
-	if err != nil {
-		return mapTemplateStoreError(err)
-	}
-	if existing.SpaceID != sp.SpaceID {
-		return ErrSpaceNotFound
-	}
-	if m.wal == nil && m.raftGroups == nil {
-		if err := m.templates.DeleteByID(ctx, id); err != nil {
-			return mapTemplateStoreError(err)
-		}
-		return nil
-	}
-	return m.commitTemplateDelete(ctx, existing)
-}
-
-func (m *Module) ImportTemplates(ctx context.Context, userID string, spaceID string, templates []storetemplate.TemplateImport) ([]graph.Template, error) {
-	release, err := m.enterWrite(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	_, sp, err := m.requireSpaceAdmin(ctx, userID, spaceID)
-	if err != nil {
-		return nil, err
-	}
-	if m.wal == nil && m.raftGroups == nil {
-		created, err := m.templates.Import(ctx, sp.SpaceID, storetemplate.ImportDocument{SchemaVersion: 1, Templates: templates})
-		if err != nil {
-			return nil, mapTemplateStoreError(err)
-		}
-		return created, nil
-	}
-	out := make([]graph.Template, 0, len(templates))
-	seen := map[string]struct{}{}
-	for _, in := range templates {
-		key := strings.ToLower(strings.TrimSpace(in.Key)) + "@" + strings.TrimSpace(in.Version)
-		if _, ok := seen[key]; ok {
-			return nil, mapTemplateStoreError(storetemplate.ErrDuplicateTemplateVersion)
-		}
-		seen[key] = struct{}{}
-		if _, err := m.templates.Find(ctx, sp.SpaceID, in.Key, in.Version); err == nil {
-			return nil, mapTemplateStoreError(storetemplate.ErrDuplicateTemplateVersion)
-		} else if err != nil && !errors.Is(err, storetemplate.ErrTemplateNotFound) {
-			return nil, mapTemplateStoreError(err)
-		}
-	}
-	for _, in := range templates {
-		created, err := m.commitTemplatePut(ctx, templateFromImport(sp.SpaceID, in))
-		if err != nil {
-			return nil, mapTemplateStoreError(err)
-		}
-		out = append(out, created)
-	}
-	return out, nil
-}
-
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 	if err := m.requireLocalWriteAllowed(); err != nil {
 		return nil, err
@@ -1367,16 +1032,6 @@ func (m *Module) requireSpaceAdmin(ctx context.Context, userID string, spaceID s
 	return uid, sp, nil
 }
 
-func mapTemplateStoreError(err error) error {
-	if errors.Is(err, storetemplate.ErrTemplateNotFound) {
-		return ErrSpaceNotFound
-	}
-	if errors.Is(err, storetemplate.ErrInvalidInput) || errors.Is(err, storetemplate.ErrDuplicateTemplateVersion) {
-		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
-	}
-	return err
-}
-
 func (m *Module) canRead(ctx context.Context, userID identity.UserID, sp domainspace.Space) (bool, error) {
 	if sp.OwnerID == userID {
 		return true, nil
@@ -1399,14 +1054,6 @@ func parseUserID(userID string) (identity.UserID, error) {
 	return id, nil
 }
 
-func parseTemplateID(templateID string) (graph.TemplateID, error) {
-	id, err := uuid.Parse(strings.TrimSpace(templateID))
-	if err != nil || id == uuid.Nil {
-		return uuid.Nil, fmt.Errorf("%w: template_id is required", ErrInvalidInput)
-	}
-	return id, nil
-}
-
 func parseSpaceID(spaceID string) (domainspace.SpaceID, error) {
 	id, err := uuid.Parse(strings.TrimSpace(spaceID))
 	if err != nil || id == uuid.Nil {
@@ -1418,13 +1065,13 @@ func parseSpaceID(spaceID string) (domainspace.SpaceID, error) {
 func isArchived(sp domainspace.Space) bool { return strings.EqualFold(sp.Status, "archived") }
 
 func ownerCapabilities() []string {
-	return []string{"CAPABILITY_SPACE_READ", "CAPABILITY_SPACE_UPDATE", "CAPABILITY_SPACE_MANAGE_ACCESS", "CAPABILITY_SPACE_ARCHIVE", "CAPABILITY_SPACE_DELETE", "CAPABILITY_DOMAIN_READ", "CAPABILITY_DOMAIN_CREATE", "CAPABILITY_DOMAIN_UPDATE", "CAPABILITY_DOMAIN_DELETE", "CAPABILITY_GRAPH_READ", "CAPABILITY_GRAPH_WRITE", "CAPABILITY_GRAPH_DELETE", "CAPABILITY_TEMPLATE_READ", "CAPABILITY_TEMPLATE_MANAGE", "CAPABILITY_BLOB_READ", "CAPABILITY_BLOB_WRITE", "CAPABILITY_BLOB_DELETE", "CAPABILITY_METADATA_READ", "CAPABILITY_METADATA_WRITE", "CAPABILITY_QUERY_RUN", "CAPABILITY_SEMANTIC_SEARCH"}
+	return []string{"CAPABILITY_SPACE_READ", "CAPABILITY_SPACE_UPDATE", "CAPABILITY_SPACE_MANAGE_ACCESS", "CAPABILITY_SPACE_ARCHIVE", "CAPABILITY_SPACE_DELETE", "CAPABILITY_DOMAIN_READ", "CAPABILITY_DOMAIN_CREATE", "CAPABILITY_DOMAIN_UPDATE", "CAPABILITY_DOMAIN_DELETE", "CAPABILITY_GRAPH_READ", "CAPABILITY_GRAPH_WRITE", "CAPABILITY_GRAPH_DELETE", "CAPABILITY_BLOB_READ", "CAPABILITY_BLOB_WRITE", "CAPABILITY_BLOB_DELETE", "CAPABILITY_METADATA_READ", "CAPABILITY_METADATA_WRITE", "CAPABILITY_QUERY_RUN", "CAPABILITY_SEMANTIC_SEARCH"}
 }
 func writerCapabilities() []string {
-	return []string{"CAPABILITY_SPACE_READ", "CAPABILITY_DOMAIN_READ", "CAPABILITY_GRAPH_READ", "CAPABILITY_GRAPH_WRITE", "CAPABILITY_TEMPLATE_READ", "CAPABILITY_BLOB_READ", "CAPABILITY_BLOB_WRITE", "CAPABILITY_METADATA_READ", "CAPABILITY_METADATA_WRITE", "CAPABILITY_QUERY_RUN", "CAPABILITY_SEMANTIC_SEARCH"}
+	return []string{"CAPABILITY_SPACE_READ", "CAPABILITY_DOMAIN_READ", "CAPABILITY_GRAPH_READ", "CAPABILITY_GRAPH_WRITE", "CAPABILITY_BLOB_READ", "CAPABILITY_BLOB_WRITE", "CAPABILITY_METADATA_READ", "CAPABILITY_METADATA_WRITE", "CAPABILITY_QUERY_RUN", "CAPABILITY_SEMANTIC_SEARCH"}
 }
 func readerCapabilities() []string {
-	return []string{"CAPABILITY_SPACE_READ", "CAPABILITY_DOMAIN_READ", "CAPABILITY_GRAPH_READ", "CAPABILITY_TEMPLATE_READ", "CAPABILITY_BLOB_READ", "CAPABILITY_METADATA_READ", "CAPABILITY_QUERY_RUN", "CAPABILITY_SEMANTIC_SEARCH"}
+	return []string{"CAPABILITY_SPACE_READ", "CAPABILITY_DOMAIN_READ", "CAPABILITY_GRAPH_READ", "CAPABILITY_BLOB_READ", "CAPABILITY_METADATA_READ", "CAPABILITY_QUERY_RUN", "CAPABILITY_SEMANTIC_SEARCH"}
 }
 
 func ensureDir(path string, perm os.FileMode) (bool, error) {

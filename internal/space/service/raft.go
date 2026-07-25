@@ -66,10 +66,6 @@ func (m *Module) applySpaceMetadataRaftCommand(ctx context.Context, apply consen
 		return m.applyUpdateDomain(ctx, rec)
 	case recordTypeDeleteDomain:
 		return m.applyDeleteDomain(ctx, rec)
-	case recordTypePutTemplate:
-		return m.applyPutTemplate(ctx, rec)
-	case recordTypeDeleteTemplate:
-		return m.applyDeleteTemplate(ctx, rec)
 	default:
 		return fmt.Errorf("unsupported space raft record type %s", cmd.RecordType)
 	}

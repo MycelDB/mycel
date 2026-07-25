@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 )
 
@@ -143,7 +142,7 @@ func setChildPosition(edges []graph.Edge, parentID graph.NodeID, childID graph.N
 		}
 	}
 	if currentPos < 0 {
-		return graph.Edge{}, fmt.Errorf("%w: child is not contained by parent", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: child is not contained by parent", errInvalidInput)
 	}
 	movedIndex := indexes[currentPos]
 	indexes = append(indexes[:currentPos], indexes[currentPos+1:]...)
@@ -166,24 +165,24 @@ func validateCompleteChildOrder(edges []graph.Edge, parentID graph.NodeID, child
 	for _, edgeIndex := range orderedContainsEdgeIndexes(edges, parentID) {
 		childID := edges[edgeIndex].ToID
 		if _, exists := childEdgeByID[childID]; exists {
-			return nil, fmt.Errorf("%w: duplicate contains child %s", storetemplate.ErrInvalidInput, childID)
+			return nil, fmt.Errorf("%w: duplicate contains child %s", errInvalidInput, childID)
 		}
 		childEdgeByID[childID] = edgeIndex
 	}
 	if len(childIDs) != len(childEdgeByID) {
-		return nil, fmt.Errorf("%w: child_ids must include exactly all children", storetemplate.ErrInvalidInput)
+		return nil, fmt.Errorf("%w: child_ids must include exactly all children", errInvalidInput)
 	}
 	seen := map[graph.NodeID]struct{}{}
 	for _, childID := range childIDs {
 		if childID == uuid.Nil {
-			return nil, fmt.Errorf("%w: child_id is required", storetemplate.ErrInvalidInput)
+			return nil, fmt.Errorf("%w: child_id is required", errInvalidInput)
 		}
 		if _, duplicate := seen[childID]; duplicate {
-			return nil, fmt.Errorf("%w: duplicate child_id %s", storetemplate.ErrInvalidInput, childID)
+			return nil, fmt.Errorf("%w: duplicate child_id %s", errInvalidInput, childID)
 		}
 		seen[childID] = struct{}{}
 		if _, ok := childEdgeByID[childID]; !ok {
-			return nil, fmt.Errorf("%w: child_id %s is not contained by parent", storetemplate.ErrInvalidInput, childID)
+			return nil, fmt.Errorf("%w: child_id %s is not contained by parent", errInvalidInput, childID)
 		}
 	}
 	return childEdgeByID, nil

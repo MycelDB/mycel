@@ -16,7 +16,6 @@ import (
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/graph/query"
 	"github.com/myceldb/mycel/internal/graph/storage"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
@@ -24,6 +23,8 @@ import (
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
+
+var errInvalidInput = errors.New("invalid input")
 
 // Config carries runtime knobs for the file-backed session implementation.
 type Config struct {
@@ -40,23 +41,23 @@ type Config struct {
 }
 
 // New opens the default file-backed session implementation.
-func New(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true}
+func New(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, permissions sessionapi.Permissions, errs sessionapi.Errors) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, permissions: permissions, errors: errs, closeStore: true}
 }
 
 // NewWithStore opens a session that borrows an engine-owned graph store.
-func NewWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, store: store}
+func NewWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, permissions: permissions, errors: errs, store: store}
 }
 
 // NewWithStoreConfig opens a session that borrows an engine-owned graph store.
-func NewWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink, schemaManager: cfg.SchemaManager}
+func NewWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore, cfg Config) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink, schemaManager: cfg.SchemaManager}
 }
 
 // NewConfig opens the default file-backed session implementation.
-func NewConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink, schemaManager: cfg.SchemaManager}
+func NewConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, permissions sessionapi.Permissions, errs sessionapi.Errors, cfg Config) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink, schemaManager: cfg.SchemaManager}
 }
 
 // FileSession is the default file-backed Session implementation.
@@ -65,7 +66,6 @@ type FileSession struct {
 	blobsDir                  string
 	spaceID                   domainspace.SpaceID
 	domainID                  graph.DomainID
-	templateManager           storetemplate.Manager
 	permissions               sessionapi.Permissions
 	errors                    sessionapi.Errors
 	store                     *graphstorage.LocalStore
@@ -87,32 +87,6 @@ type FileSession struct {
 // Query starts a programmatic graph query over this session.
 func (s *FileSession) Query() *query.Builder { return query.NewBuilder(s) }
 
-func (s *FileSession) ImportTemplates(ctx context.Context, in sessionapi.ImportTemplatesInput) ([]graph.Template, error) {
-	if err := s.ensureOpen(ctx); err != nil {
-		return nil, err
-	}
-	if err := s.ensureSpaceLive(); err != nil {
-		return nil, err
-	}
-	if err := s.ensureAdmin(); err != nil {
-		return nil, err
-	}
-	return s.templateManager.Import(ctx, s.spaceID, in.Document)
-}
-
-func (s *FileSession) ListTemplates(ctx context.Context) ([]graph.Template, error) {
-	if err := s.ensureOpen(ctx); err != nil {
-		return nil, err
-	}
-	if err := s.ensureSpaceLive(); err != nil {
-		return nil, err
-	}
-	if err := s.ensureRead(); err != nil {
-		return nil, err
-	}
-	return s.templateManager.ListBySpace(ctx, s.spaceID)
-}
-
 func (s *FileSession) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
@@ -123,10 +97,6 @@ func (s *FileSession) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (
 	if err := s.ensureWrite(); err != nil {
 		return graph.Node{}, err
 	}
-	nodes, err := s.readNodes()
-	if err != nil {
-		return graph.Node{}, err
-	}
 	nodeID, err := newGraphUUID()
 	if err != nil {
 		return graph.Node{}, err
@@ -134,7 +104,7 @@ func (s *FileSession) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (
 	if in.ID != nil {
 		nodeID = *in.ID
 	}
-	n, err := s.buildNode(ctx, nodes, nodeID, in.TemplateID, in.Content, in.Properties)
+	n, err := s.buildNode(ctx, nodeID, in.Content, in.Properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -191,13 +161,13 @@ func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeIn
 	}
 	// A node has inline text content or blob content, never both.
 	if nodes[idx].BlobRef != nil && in.Content != "" {
-		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", storetemplate.ErrInvalidInput)
+		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", errInvalidInput)
 	}
 	properties := in.Properties
 	if properties == nil {
 		properties = in.Props
 	}
-	n, err := s.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, properties)
+	n, err := s.buildNode(ctx, in.ID, in.Content, properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -241,7 +211,7 @@ func (s *FileSession) UpdateNodeAndCreateSibling(ctx context.Context, in session
 
 func (s *FileSession) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
-		return s.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Properties})
+		return s.AddNode(ctx, sessionapi.AddNodeInput{Content: in.Content, Props: in.Properties})
 	}
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
@@ -257,9 +227,9 @@ func (s *FileSession) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeIn
 		return graph.Node{}, err
 	}
 	if findNodeIndex(nodes, *in.ID) >= 0 {
-		return s.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Properties})
+		return s.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, Content: in.Content, Props: in.Properties})
 	}
-	n, err := s.buildNode(ctx, nodes, *in.ID, in.TemplateID, in.Content, in.Properties)
+	n, err := s.buildNode(ctx, *in.ID, in.Content, in.Properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -761,17 +731,13 @@ func (s *FileSession) releaseUnreferencedBlobs(ctx context.Context, store *graph
 	}
 }
 
-func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID graph.NodeID, templateID *graph.TemplateID, content string, inputProps map[string]any) (graph.Node, error) {
+func (s *FileSession) buildNode(ctx context.Context, nodeID graph.NodeID, content string, inputProps map[string]any) (graph.Node, error) {
 	if nodeID == uuid.Nil {
 		return graph.Node{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
 	}
 	props := copyProps(inputProps)
-	// Template validation is intentionally bypassed as part of the schema
-	// subsystem migration. Tranche 3 will replace this with schema-aware node
-	// validation at the graph service boundary.
 	_ = ctx
-	_ = templateID
-	node := graph.Node{ID: nodeID, DomainID: s.domainID, TemplateID: templateID, Content: content, Props: props}
+	node := graph.Node{ID: nodeID, DomainID: s.domainID, Content: content, Props: props}
 	if content != "" {
 		node.Payload = map[string]any{"text": content}
 	}
@@ -792,7 +758,7 @@ func (s *FileSession) validateSchemaNode(ctx context.Context, node graph.Node) e
 	if result.Valid() {
 		return nil
 	}
-	return fmt.Errorf("%w: schema validation failed: %s", storetemplate.ErrInvalidInput, formatSchemaIssues(result.Issues))
+	return fmt.Errorf("%w: schema validation failed: %s", errInvalidInput, formatSchemaIssues(result.Issues))
 }
 
 func (s *FileSession) validateSchemaEdge(ctx context.Context, edge graph.Edge, from graph.Node, to graph.Node) error {
@@ -806,7 +772,7 @@ func (s *FileSession) validateSchemaEdge(ctx context.Context, edge graph.Edge, f
 	if result.Valid() {
 		return nil
 	}
-	return fmt.Errorf("%w: schema validation failed: %s", storetemplate.ErrInvalidInput, formatSchemaIssues(result.Issues))
+	return fmt.Errorf("%w: schema validation failed: %s", errInvalidInput, formatSchemaIssues(result.Issues))
 }
 
 func formatSchemaIssues(issues []schemaservice.ValidationIssue) string {
@@ -847,18 +813,18 @@ func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to g
 		return nil
 	}
 	if from.ID == to.ID {
-		return fmt.Errorf("%w: contains edge cannot target itself", storetemplate.ErrInvalidInput)
+		return fmt.Errorf("%w: contains edge cannot target itself", errInvalidInput)
 	}
 	if from.DomainID != uuid.Nil && to.DomainID != uuid.Nil && from.DomainID != to.DomainID {
-		return fmt.Errorf("%w: contains edges cannot cross domains", storetemplate.ErrInvalidInput)
+		return fmt.Errorf("%w: contains edges cannot cross domains", errInvalidInput)
 	}
 	for _, edge := range edges {
 		if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.ToID == to.ID {
-			return fmt.Errorf("%w: node already has a contains parent", storetemplate.ErrInvalidInput)
+			return fmt.Errorf("%w: node already has a contains parent", errInvalidInput)
 		}
 	}
 	if containsPath(edges, to.ID, from.ID) {
-		return fmt.Errorf("%w: contains edge would create a cycle", storetemplate.ErrInvalidInput)
+		return fmt.Errorf("%w: contains edge would create a cycle", errInvalidInput)
 	}
 	return nil
 }

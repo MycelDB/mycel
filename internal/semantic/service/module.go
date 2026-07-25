@@ -23,7 +23,6 @@ import (
 	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
 	"github.com/myceldb/mycel/internal/graph/filesession"
 	"github.com/myceldb/mycel/internal/graph/model"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
@@ -808,11 +807,7 @@ func (m *Module) isSemanticDisabledDomain(ctx context.Context, domainID graph.Do
 }
 
 func (m *Module) graphReader(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (sessionapi.Session, error) {
-	templates := storetemplate.NewManager()
-	if err := templates.Init(ctx, filepath.Join(m.dataDir, "templates")); err != nil {
-		return nil, err
-	}
-	return filesession.NewConfig(filepath.Join(m.dataDir, "graphs"), filepath.Join(m.dataDir, "blobs"), spaceID, templates, sessionapi.Permissions{Read: true, Admin: true}, sessionapi.Errors{Closed: fmt.Errorf("session closed"), NotFound: fmt.Errorf("not found"), Unauthorized: fmt.Errorf("unauthorized"), Conflict: fmt.Errorf("conflict")}, filesession.Config{DomainID: domainID}), nil
+	return filesession.NewConfig(filepath.Join(m.dataDir, "graphs"), filepath.Join(m.dataDir, "blobs"), spaceID, sessionapi.Permissions{Read: true, Admin: true}, sessionapi.Errors{Closed: fmt.Errorf("session closed"), NotFound: fmt.Errorf("not found"), Unauthorized: fmt.Errorf("unauthorized"), Conflict: fmt.Errorf("conflict")}, filesession.Config{DomainID: domainID}), nil
 }
 
 func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID, mgr storesemantic.SpaceManager) (semanticbackfill.Runner, error) {

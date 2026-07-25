@@ -28,12 +28,7 @@ const (
 func encodeNode(node graph.Node) ([]byte, error) {
 	var b bytes.Buffer
 	writeUUID(&b, node.ID)
-	if node.TemplateID == nil {
-		b.WriteByte(0)
-	} else {
-		b.WriteByte(1)
-		writeUUID(&b, *node.TemplateID)
-	}
+	b.WriteByte(0) // legacy template-id presence flag; always absent after schema migration.
 	writeString(&b, node.Content)
 	writeTime(&b, node.CreatedAt)
 	writeTime(&b, node.UpdatedAt)
@@ -139,7 +134,7 @@ func readDomainID(r *bytes.Reader) (graph.DomainID, error) {
 }
 
 func decodeNode(payload []byte) (graph.Node, error) {
-	id, templateID, content, r, err := decodeNodePrefix(payload)
+	id, content, r, err := decodeNodePrefix(payload)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -182,7 +177,7 @@ func decodeNode(payload []byte) (graph.Node, error) {
 					}
 				}
 				if r.Len() == 0 {
-					return graph.Node{ID: graph.NodeID(id), DomainID: domainID, TemplateID: templateID, Labels: labels, Properties: properties, Payload: payload, Meta: meta, BlobRef: blobRef, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+					return graph.Node{ID: graph.NodeID(id), DomainID: domainID, Labels: labels, Properties: properties, Payload: payload, Meta: meta, BlobRef: blobRef, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 				}
 			}
 		}
@@ -198,33 +193,29 @@ func decodeNode(payload []byte) (graph.Node, error) {
 	if r.Len() != 0 {
 		return graph.Node{}, fmt.Errorf("%w: trailing node payload bytes", ErrUnsupported)
 	}
-	return graph.Node{ID: graph.NodeID(id), TemplateID: templateID, Content: content, Props: props}, nil
+	return graph.Node{ID: graph.NodeID(id), Content: content, Props: props}, nil
 }
 
-func decodeNodePrefix(payload []byte) (uuid.UUID, *graph.TemplateID, string, *bytes.Reader, error) {
+func decodeNodePrefix(payload []byte) (uuid.UUID, string, *bytes.Reader, error) {
 	r := bytes.NewReader(payload)
 	id, err := readUUID(r)
 	if err != nil {
-		return uuid.Nil, nil, "", nil, err
+		return uuid.Nil, "", nil, err
 	}
-	hasTemplate, err := r.ReadByte()
+	hasLegacyTemplate, err := r.ReadByte()
 	if err != nil {
-		return uuid.Nil, nil, "", nil, err
+		return uuid.Nil, "", nil, err
 	}
-	var templateID *graph.TemplateID
-	if hasTemplate == 1 {
-		tid, err := readUUID(r)
-		if err != nil {
-			return uuid.Nil, nil, "", nil, err
+	if hasLegacyTemplate == 1 {
+		if _, err := readUUID(r); err != nil {
+			return uuid.Nil, "", nil, err
 		}
-		gtid := graph.TemplateID(tid)
-		templateID = &gtid
 	}
 	content, err := readString(r)
 	if err != nil {
-		return uuid.Nil, nil, "", nil, err
+		return uuid.Nil, "", nil, err
 	}
-	return id, templateID, content, r, nil
+	return id, content, r, nil
 }
 
 func peekInt64(payload []byte) int64 {

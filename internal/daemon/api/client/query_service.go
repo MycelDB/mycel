@@ -65,11 +65,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, mapGraphError(err, "query list edges")
 	}
-	templates, err := s.spaces.ListVisibleTemplates(ctx, principal.UserID, tx.SpaceID, true, true)
-	if err != nil {
-		return nil, mapSessionError(err, "query list templates")
-	}
-	exec := newQueryExecution(nodes, edges, templates)
+	exec := newQueryExecution(nodes, edges)
 	rows, err := exec.match(req.GetQuery().GetMatch(), req.GetQuery().GetWhere())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -227,7 +223,6 @@ func (s *QueryService) allEdges(ctx context.Context, tx daemonsession.GraphTrans
 type queryExecution struct {
 	nodes        []domaingraph.Node
 	edges        []domaingraph.Edge
-	templateByID map[string]domaingraph.Template
 	nodeByID     map[string]domaingraph.Node
 	outEdgesByID map[string][]domaingraph.Edge
 	inEdgesByID  map[string][]domaingraph.Edge
@@ -239,11 +234,8 @@ type queryRowState struct {
 	orderByChild  map[string]any
 }
 
-func newQueryExecution(nodes []domaingraph.Node, edges []domaingraph.Edge, templates []domaingraph.Template) *queryExecution {
-	exec := &queryExecution{nodes: nodes, edges: edges, templateByID: map[string]domaingraph.Template{}, nodeByID: map[string]domaingraph.Node{}, outEdgesByID: map[string][]domaingraph.Edge{}, inEdgesByID: map[string][]domaingraph.Edge{}}
-	for _, tmpl := range templates {
-		exec.templateByID[tmpl.ID.String()] = tmpl
-	}
+func newQueryExecution(nodes []domaingraph.Node, edges []domaingraph.Edge) *queryExecution {
+	exec := &queryExecution{nodes: nodes, edges: edges, nodeByID: map[string]domaingraph.Node{}, outEdgesByID: map[string][]domaingraph.Edge{}, inEdgesByID: map[string][]domaingraph.Edge{}}
 	for _, node := range nodes {
 		exec.nodeByID[node.ID.String()] = node
 	}

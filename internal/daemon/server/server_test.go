@@ -27,7 +27,6 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
 	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
@@ -192,35 +191,6 @@ func (fakeSpaceManager) UpdateDomain(context.Context, string, daemonspace.Update
 	return graph.Domain{}, nil
 }
 func (fakeSpaceManager) DeleteDomain(context.Context, string, string, string) error { return nil }
-func (fakeSpaceManager) ListTemplates(context.Context, string, bool, bool) ([]graph.Template, error) {
-	return []graph.Template{{ID: uuid.MustParse("00000000-0000-0000-0000-000000000005"), SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Key: "note", Version: "1.0.0", DisplayName: "Note", State: graph.TemplateStateActive}}, nil
-}
-func (fakeSpaceManager) GetTemplate(context.Context, string, string) (graph.Template, error) {
-	return graph.Template{}, daemonspace.ErrSpaceNotFound
-}
-func (fakeSpaceManager) ListVisibleTemplates(context.Context, string, string, bool, bool) ([]graph.Template, error) {
-	return []graph.Template{{ID: uuid.MustParse("00000000-0000-0000-0000-000000000005"), SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Key: "note", Version: "1.0.0", DisplayName: "Note", State: graph.TemplateStateActive}}, nil
-}
-func (fakeSpaceManager) GetVisibleTemplate(context.Context, string, string, string) (graph.Template, error) {
-	return graph.Template{}, daemonspace.ErrSpaceNotFound
-}
-func (fakeSpaceManager) FindVisibleTemplate(context.Context, string, string, string, string) (graph.Template, error) {
-	return graph.Template{}, daemonspace.ErrSpaceNotFound
-}
-func (fakeSpaceManager) CreateTemplate(context.Context, string, string, storetemplate.TemplateImport) (graph.Template, error) {
-	return graph.Template{}, nil
-}
-func (fakeSpaceManager) UpdateTemplate(context.Context, string, string, string, *string, *string) (graph.Template, error) {
-	return graph.Template{}, nil
-}
-func (fakeSpaceManager) ArchiveTemplate(context.Context, string, string, string) (graph.Template, error) {
-	return graph.Template{}, nil
-}
-func (fakeSpaceManager) DeleteTemplate(context.Context, string, string, string) error { return nil }
-func (fakeSpaceManager) ImportTemplates(context.Context, string, string, []storetemplate.TemplateImport) ([]graph.Template, error) {
-	return nil, nil
-}
-
 func TestServerRegistersProtectedAdminOperatorService(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

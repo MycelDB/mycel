@@ -8,8 +8,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/internal/graph/model"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -248,85 +246,6 @@ func TestModuleWALDeleteSpaceAppendsAndApplies(t *testing.T) {
 	}
 	if applied, err := progress.AppliedLSN(ctx); err != nil || applied != 2 {
 		t.Fatalf("AppliedLSN() = %v, %v; want 2", applied, err)
-	}
-}
-
-func TestModuleWALTemplateMutationsAppendAndApply(t *testing.T) {
-	ctx := context.Background()
-	dataDir := t.TempDir()
-	walManager, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal"), SegmentBytes: 1024 * 1024})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer walManager.Close()
-	progress := wal.NewFileProgressStore(filepath.Join(dataDir, "meta", "wal", "progress.json"))
-	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default(), WALValue: walManager, RegistryValue: wal.NewRegistry(), ProgressValue: progress, WaiterValue: wal.NewApplyWaiter()}
-	m := NewModule()
-	if result := m.Init(ctx, rt); !result.OK {
-		t.Fatalf("init failed: %v", result.Error)
-	}
-	owner := uuid.New()
-	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerUserID: owner})
-	if err != nil {
-		t.Fatalf("CreateSpace() error = %v", err)
-	}
-	created, err := m.CreateTemplate(ctx, owner.String(), sp.SpaceID.String(), storetemplate.TemplateImport{Key: "note", Version: "1.0.0", DisplayName: "Note"})
-	if err != nil {
-		t.Fatalf("CreateTemplate() error = %v", err)
-	}
-	name := "Updated Note"
-	updated, err := m.UpdateTemplate(ctx, owner.String(), sp.SpaceID.String(), created.ID.String(), &name, nil)
-	if err != nil {
-		t.Fatalf("UpdateTemplate() error = %v", err)
-	}
-	if updated.DisplayName != name {
-		t.Fatalf("updated=%#v", updated)
-	}
-	archived, err := m.ArchiveTemplate(ctx, owner.String(), sp.SpaceID.String(), created.ID.String())
-	if err != nil {
-		t.Fatalf("ArchiveTemplate() error = %v", err)
-	}
-	if archived.State != graph.TemplateStateArchived {
-		t.Fatalf("archived=%#v", archived)
-	}
-	if err := m.DeleteTemplate(ctx, owner.String(), sp.SpaceID.String(), created.ID.String()); err != nil {
-		t.Fatalf("DeleteTemplate() error = %v", err)
-	}
-	if got := walManager.LastCommittedLSN(); got != 5 {
-		t.Fatalf("LastCommittedLSN() = %v, want 5", got)
-	}
-	if applied, err := progress.AppliedLSN(ctx); err != nil || applied != 5 {
-		t.Fatalf("AppliedLSN() = %v, %v; want 5", applied, err)
-	}
-}
-
-func TestModuleWALImportTemplatesAppendsAndApplies(t *testing.T) {
-	ctx := context.Background()
-	dataDir := t.TempDir()
-	walManager, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal"), SegmentBytes: 1024 * 1024})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer walManager.Close()
-	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default(), WALValue: walManager, RegistryValue: wal.NewRegistry(), ProgressValue: wal.NewFileProgressStore(filepath.Join(dataDir, "meta", "wal", "progress.json")), WaiterValue: wal.NewApplyWaiter()}
-	m := NewModule()
-	if result := m.Init(ctx, rt); !result.OK {
-		t.Fatalf("init failed: %v", result.Error)
-	}
-	owner := uuid.New()
-	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerUserID: owner})
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := m.ImportTemplates(ctx, owner.String(), sp.SpaceID.String(), []storetemplate.TemplateImport{{Key: "a", Version: "1.0.0"}, {Key: "b", Version: "1.0.0"}})
-	if err != nil {
-		t.Fatalf("ImportTemplates() error = %v", err)
-	}
-	if len(created) != 2 {
-		t.Fatalf("created=%#v", created)
-	}
-	if got := walManager.LastCommittedLSN(); got != 3 {
-		t.Fatalf("LastCommittedLSN() = %v, want 3", got)
 	}
 }
 
