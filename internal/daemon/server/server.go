@@ -149,6 +149,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	adminv1.RegisterAdminSemanticServiceServer(grpcServer, adminapi.NewAdminSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
 	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.OperatorManager))
 	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
+	if cfg.SchemaManager != nil {
+		adminv1.RegisterAdminSchemaServiceServer(grpcServer, adminapi.NewAdminSchemaService(cfg.SchemaManager))
+	}
 	if cfg.ClusteringManager != nil {
 		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups))
 	}
@@ -163,6 +166,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	clientv1.RegisterGraphServiceServer(grpcServer, clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager))
 	clientv1.RegisterBlobServiceServer(grpcServer, clientapi.NewBlobService(cfg.BlobManager, cfg.SpaceManager))
 	clientv1.RegisterQueryServiceServer(grpcServer, clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager))
+	if cfg.SchemaManager != nil {
+		clientv1.RegisterSchemaServiceServer(grpcServer, clientapi.NewSchemaService(cfg.SchemaManager))
+	}
 	clientv1.RegisterImportExportServiceServer(grpcServer, clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager))
 	clientv1.RegisterMetadataCatalogServiceServer(grpcServer, clientapi.NewMetadataCatalogService(cfg.SessionManager, cfg.GraphManager))
 	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager))

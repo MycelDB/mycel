@@ -82,6 +82,11 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: semantic service is not registered\n")
 		return 1
 	}
+	schemaService, ok := daemonruntime.ServiceAs[*schemaservice.Module](rt, schemaservice.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: schema service is not registered\n")
+		return 1
+	}
 	changeService, ok := daemonruntime.ServiceAs[*changestreamservice.Module](rt, changestreamservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: change stream service is not registered\n")
