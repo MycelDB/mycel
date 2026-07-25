@@ -2,12 +2,14 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
@@ -15,6 +17,7 @@ import (
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
 	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -29,10 +32,16 @@ type QueryService struct {
 	sessions daemonsession.Manager
 	graphs   daegraph.Manager
 	spaces   daemonspace.Manager
+	schemas  schemaservice.Manager
 }
 
 func NewQueryService(sessions daemonsession.Manager, graphs daegraph.Manager, spaces daemonspace.Manager) *QueryService {
 	return &QueryService{sessions: sessions, graphs: graphs, spaces: spaces}
+}
+
+func (s *QueryService) WithSchemaManager(manager schemaservice.Manager) *QueryService {
+	s.schemas = manager
+	return s
 }
 
 func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest) (*clientv1.ExecuteQueryResponse, error) {
@@ -117,7 +126,11 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if tx.State != daemonsession.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
-	plan, err := gql.Compile(req.GetQuery())
+	schemaCtx, err := s.schemaContext(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := gql.CompileWithSchema(req.GetQuery(), schemaCtx)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -154,7 +167,11 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	if tx.State != daemonsession.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
-	scriptPlan, err := gql.CompileScript(req.GetScript())
+	schemaCtx, err := s.schemaContext(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	scriptPlan, err := gql.CompileScriptWithSchema(req.GetScript(), schemaCtx)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -186,6 +203,24 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 		mergeQueryResult(aggregate, result)
 	}
 	return &clientv1.ExecuteGQLScriptResponse{Statements: statementResults, Result: aggregate}, nil
+}
+
+func (s *QueryService) schemaContext(ctx context.Context, tx daemonsession.GraphTransaction) (analysis.SchemaContext, error) {
+	if s.schemas == nil || strings.TrimSpace(tx.DomainID) == "" {
+		return analysis.SchemaContext{}, nil
+	}
+	domainID, err := uuid.Parse(tx.DomainID)
+	if err != nil {
+		return analysis.SchemaContext{}, status.Error(codes.InvalidArgument, "invalid transaction domain id")
+	}
+	schemaDoc, err := s.schemas.GetDomainSchema(ctx, domaingraph.DomainID(domainID))
+	if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+		return analysis.SchemaContext{}, nil
+	}
+	if err != nil {
+		return analysis.SchemaContext{}, status.Errorf(codes.Internal, "load domain schema: %v", err)
+	}
+	return analysis.SchemaContext{Schema: &schemaDoc}, nil
 }
 
 func (s *QueryService) allNodes(ctx context.Context, tx daemonsession.GraphTransaction) ([]domaingraph.Node, error) {

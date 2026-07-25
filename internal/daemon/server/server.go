@@ -26,6 +26,7 @@ import (
 	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
 	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -46,6 +47,7 @@ type Config struct {
 	GraphManager            daegraph.Manager
 	BlobManager             daemonblob.Manager
 	SemanticManager         daemonsemantic.Manager
+	SchemaManager           schemaservice.Manager
 	ChangeManager           daemonchange.Manager
 	TokenManager            *daemonauth.TokenManager
 	Quiesce                 *quiesce.Coordinator
@@ -160,7 +162,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	clientv1.RegisterTransactionServiceServer(grpcServer, clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.ChangeManager, cfg.SpaceManager))
 	clientv1.RegisterGraphServiceServer(grpcServer, clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager))
 	clientv1.RegisterBlobServiceServer(grpcServer, clientapi.NewBlobService(cfg.BlobManager, cfg.SpaceManager))
-	clientv1.RegisterQueryServiceServer(grpcServer, clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager))
+	clientv1.RegisterQueryServiceServer(grpcServer, clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager))
 	clientv1.RegisterImportExportServiceServer(grpcServer, clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager))
 	clientv1.RegisterMetadataCatalogServiceServer(grpcServer, clientapi.NewMetadataCatalogService(cfg.SessionManager, cfg.GraphManager))
 	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager))

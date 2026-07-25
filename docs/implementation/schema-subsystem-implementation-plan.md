@@ -124,7 +124,7 @@ Status: implemented for core graph service and file-session hierarchy behavior o
 
 ## Tranche 5 — GQL schema integration
 
-Status: partially implemented on `improved_gql`. GQL semantic analysis accepts an optional `SchemaContext` and validates node labels, edge labels, node property/payload/meta projections and predicates, relationship properties, and relationship create endpoint constraints in strict mode while preserving schema-free and permissive behavior. Compile helpers now expose schema-aware entry points. Remaining work: wire daemon `ExecuteGQL`/script calls to load the transaction domain schema, carry schema metadata into plans for future optimization, improve warn-mode diagnostics, and extend validation as new GQL syntactic forms are added.
+Status: implemented on `improved_gql` for current GQL compile and daemon execution paths. GQL semantic analysis accepts an optional `SchemaContext` and validates node labels, edge labels, node property/payload/meta projections and predicates, relationship properties, and relationship create endpoint constraints in strict mode while preserving schema-free and permissive behavior. Compile helpers expose schema-aware entry points, and daemon `ExecuteGQL`/`ExecuteGQLScript` load the transaction domain schema before compiling. Remaining future work: carry schema metadata into plans for optimization, improve warn-mode diagnostics, and extend validation as new GQL syntactic forms are added.
 
 ### Work
 
