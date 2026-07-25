@@ -150,6 +150,8 @@ Status: implemented on `improved_gql` for current GQL compile and daemon executi
 
 ## Tranche 6 — Query API retrofit
 
+Status: implemented on `improved_gql` for the current structured `ExecuteQuery` path. Structured `GraphQuery` requests load the transaction domain schema and validate node labels, edge labels, property predicates, order expressions, and traversal endpoint constraints in strict mode while preserving no-schema/permissive behavior. Import paths already enter through graph service create/update methods, so strict schema mutation validation applies when the daemon graph service has a schema manager; the import/export API has no schema metadata fields, so exports do not include schema identity/version yet. Warn-mode diagnostics are not surfaced because current query/import responses do not include a diagnostics field.
+
 ### Work
 
 - Retrofit existing graph query APIs to use schema metadata when supplied:

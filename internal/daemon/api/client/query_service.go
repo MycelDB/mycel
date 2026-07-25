@@ -66,6 +66,13 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if !domaingraph.DomainBroadSearchable(domain) {
 		return nil, status.Error(codes.FailedPrecondition, "domain is excluded from broad query execution")
 	}
+	schemaCtx, err := s.schemaContext(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateStructuredGraphQueryWithSchema(req.GetQuery(), schemaCtx); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	nodes, err := s.allNodes(ctx, tx)
 	if err != nil {
 		return nil, mapGraphError(err, "query list nodes")

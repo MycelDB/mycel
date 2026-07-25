@@ -13,6 +13,46 @@ import (
 	"github.com/myceldb/mycel/internal/schema/storage"
 )
 
+func TestQueryServiceExecuteQueryUsesStrictDomainSchema(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	manager := schemaManagerForQueryTest(t, fixture.domainID, schemamodel.SchemaModeStrict)
+	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+
+	cases := []struct {
+		name  string
+		query *clientv1.GraphQuery
+		want  string
+	}{
+		{name: "node label", query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Missing"}}}}, want: "unknown node label"},
+		{name: "edge label", query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "a", Labels: []string{"Person"}}, Steps: []*clientv1.TraversalStep{{Direction: clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, EdgeKind: "MISSING", Target: &clientv1.NodePattern{Alias: "b", Labels: []string{"Person"}}}}}}, want: "unknown edge label"},
+		{name: "property", query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "p", Labels: []string{"Person"}}}, Where: &clientv1.Expr{Expr: &clientv1.Expr_PropertyExists{PropertyExists: &clientv1.PropertyExistsExpr{Alias: "p", Name: "missing"}}}}, want: "unknown properties field"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: tx, Query: tc.query})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ExecuteQuery() error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestQueryServiceExecuteQueryAllowsUnknownsWithoutSchemaOrInPermissiveMode(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	query := &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Missing"}}}}
+
+	if _, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: tx, Query: query}); err != nil {
+		t.Fatalf("schema-free ExecuteQuery() error = %v", err)
+	}
+
+	manager := schemaManagerForQueryTest(t, fixture.domainID, schemamodel.SchemaModePermissive)
+	if _, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: tx, Query: query}); err != nil {
+		t.Fatalf("permissive ExecuteQuery() error = %v", err)
+	}
+}
+
 func TestQueryServiceExecuteGQLUsesStrictDomainSchema(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	manager := schemaManagerForQueryTest(t, fixture.domainID, schemamodel.SchemaModeStrict)
