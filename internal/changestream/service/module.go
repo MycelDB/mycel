@@ -31,6 +31,7 @@ type Module struct {
 	loaded       map[string]bool
 	subscribers  map[string]map[string]chan Event
 	gate         *quiesce.Gate
+	observers    []func(context.Context, Event)
 }
 
 func NewModule() *Module {
@@ -135,6 +136,15 @@ func (m *Module) Subscribe(ctx context.Context, input SubscribeInput) (*Subscrip
 	return &Subscription{Events: ch, Cancel: cancel}, nil
 }
 
+func (m *Module) AddObserver(observer func(context.Context, Event)) {
+	if observer == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.observers = append(m.observers, observer)
+}
+
 func (m *Module) PublishCommit(ctx context.Context, commit daemonsession.TransactionCommit, changes []GraphChange) {
 	release, err := m.enterWrite(ctx)
 	if err != nil {
@@ -166,7 +176,11 @@ func (m *Module) PublishCommit(ctx context.Context, commit daemonsession.Transac
 	for _, ch := range m.subscribers[key] {
 		subs = append(subs, ch)
 	}
+	observers := append([]func(context.Context, Event){}, m.observers...)
 	m.mu.Unlock()
+	for _, observer := range observers {
+		observer(ctx, cloneEvent(event))
+	}
 	for _, ch := range subs {
 		safeOfferEvent(ch, cloneEvent(event))
 	}
