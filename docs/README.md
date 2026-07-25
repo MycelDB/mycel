@@ -14,6 +14,10 @@ Current schema direction:
 - `design/schema-subsystem.md` records the original design for the domain-scoped Schema subsystem replacing graph templates.
 - `implementation/schema-subsystem-implementation-plan.md` breaks the schema/template replacement and Knot PKM refactor into testable tranches.
 
+Current automation direction:
+
+- `design/graph-automations.md` describes event-driven GQL-conditioned AI graph automations across V1, V2, and V3.
+
 Current subsystem/runtime architecture direction:
 
 - `design/subsystem-runtime-architecture.md` describes the target approach: top-level subsystems own service behavior, shared runtime packages define lifecycle/quiesce/health contracts, and the daemon acts as the composition root.
