@@ -17,6 +17,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/query"
 	"github.com/myceldb/mycel/internal/graph/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
@@ -809,22 +810,38 @@ func applyNodeShape(node *graph.Node, labels []string, properties, payload, meta
 }
 
 func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to graph.Node, labels []string, edges []graph.Edge) error {
-	if !hasEdgeLabel(labels, "contains") {
+	hierarchy, err := s.hierarchyPolicyForLabels(ctx, labels)
+	if err != nil {
+		return err
+	}
+	if hierarchy == nil {
 		return nil
 	}
 	if from.ID == to.ID {
-		return fmt.Errorf("%w: contains edge cannot target itself", errInvalidInput)
+		return fmt.Errorf("%w: hierarchy edge cannot target itself", errInvalidInput)
 	}
-	if from.DomainID != uuid.Nil && to.DomainID != uuid.Nil && from.DomainID != to.DomainID {
-		return fmt.Errorf("%w: contains edges cannot cross domains", errInvalidInput)
+	if hierarchy.SameDomain && from.DomainID != uuid.Nil && to.DomainID != uuid.Nil && from.DomainID != to.DomainID {
+		return fmt.Errorf("%w: hierarchy edges cannot cross domains", errInvalidInput)
 	}
-	for _, edge := range edges {
-		if graph.EdgeHasLabels(edge, []string{"contains"}) && edge.ToID == to.ID {
-			return fmt.Errorf("%w: node already has a contains parent", errInvalidInput)
+	if hierarchy.SingleParent {
+		for _, edge := range edges {
+			edgeHierarchy, err := s.hierarchyPolicyForLabels(ctx, edge.Labels)
+			if err != nil {
+				return err
+			}
+			if edgeHierarchy != nil && edge.ToID == to.ID {
+				return fmt.Errorf("%w: node already has a hierarchy parent", errInvalidInput)
+			}
 		}
 	}
-	if containsPath(edges, to.ID, from.ID) {
-		return fmt.Errorf("%w: contains edge would create a cycle", errInvalidInput)
+	if hierarchy.Acyclic {
+		cycle, err := containsPathWithPolicy(ctx, s, edges, to.ID, from.ID)
+		if err != nil {
+			return err
+		}
+		if cycle {
+			return fmt.Errorf("%w: hierarchy edge would create a cycle", errInvalidInput)
+		}
 	}
 	return nil
 }
@@ -839,6 +856,70 @@ func (s *FileSession) validateIncidentContains(ctx context.Context, node graph.N
 		}
 	}
 	return nil
+}
+
+func (s *FileSession) hierarchyPolicyForLabels(ctx context.Context, labels []string) (*schemamodel.HierarchyPolicy, error) {
+	if s.schemaManager == nil {
+		if hasEdgeLabel(labels, "contains") {
+			return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
+		}
+		return nil, nil
+	}
+	matchedSchema := false
+	for _, label := range labels {
+		types, err := s.schemaManager.ResolveEdgeLabel(ctx, s.domainID, label)
+		if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+			if hasEdgeLabel(labels, "contains") {
+				return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
+			}
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(types) > 0 {
+			matchedSchema = true
+		}
+		for _, typ := range types {
+			if typ.Hierarchy != nil && typ.Hierarchy.Enabled {
+				policy := *typ.Hierarchy
+				return &policy, nil
+			}
+		}
+	}
+	if matchedSchema {
+		return nil, nil
+	}
+	if hasEdgeLabel(labels, "contains") {
+		return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
+	}
+	return nil, nil
+}
+
+func containsPathWithPolicy(ctx context.Context, s *FileSession, edges []graph.Edge, from graph.NodeID, target graph.NodeID) (bool, error) {
+	seen := map[graph.NodeID]struct{}{}
+	queue := []graph.NodeID{from}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if id == target {
+			return true, nil
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		for _, edge := range edges {
+			policy, err := s.hierarchyPolicyForLabels(ctx, edge.Labels)
+			if err != nil {
+				return false, err
+			}
+			if policy != nil && edge.FromID == id {
+				queue = append(queue, edge.ToID)
+			}
+		}
+	}
+	return false, nil
 }
 
 func containsPath(edges []graph.Edge, from graph.NodeID, target graph.NodeID) bool {

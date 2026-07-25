@@ -20,6 +20,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/storage"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -96,6 +97,47 @@ func (m *Module) validateSchemaNode(ctx context.Context, node domaingraph.Node) 
 		return nil
 	}
 	return fmt.Errorf("%w: schema validation failed: %s", ErrInvalidInput, formatSchemaIssues(result.Issues))
+}
+
+func (m *Module) hierarchyPolicyForLabels(ctx context.Context, domainID domaingraph.DomainID, labels []string) (*schemamodel.HierarchyPolicy, error) {
+	m.mu.Lock()
+	manager := m.schemaManager
+	m.mu.Unlock()
+	if manager == nil {
+		if hasEdgeLabel(labels, "contains") {
+			return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
+		}
+		return nil, nil
+	}
+	matchedSchema := false
+	for _, label := range labels {
+		types, err := manager.ResolveEdgeLabel(ctx, domainID, label)
+		if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+			if hasEdgeLabel(labels, "contains") {
+				return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
+			}
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(types) > 0 {
+			matchedSchema = true
+		}
+		for _, typ := range types {
+			if typ.Hierarchy != nil && typ.Hierarchy.Enabled {
+				policy := *typ.Hierarchy
+				return &policy, nil
+			}
+		}
+	}
+	if matchedSchema {
+		return nil, nil
+	}
+	if hasEdgeLabel(labels, "contains") {
+		return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
+	}
+	return nil, nil
 }
 
 func (m *Module) validateSchemaEdge(ctx context.Context, edge domaingraph.Edge, from domaingraph.Node, to domaingraph.Node) error {
@@ -498,11 +540,27 @@ func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Edge{}, err
 	}
-	if hasEdgeLabel(labels, "contains") {
-		if existing, err := m.parentEdge(ctx, tx, toID); err != nil {
-			return domaingraph.Edge{}, err
-		} else if existing != nil {
-			return domaingraph.Edge{}, fmt.Errorf("%w: child already has a contains parent", ErrInvalidInput)
+	hierarchy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), labels)
+	if err != nil {
+		return domaingraph.Edge{}, err
+	}
+	if hierarchy != nil {
+		if hierarchy.SameDomain && (from.DomainID != mustDomainID(tx.DomainID) || to.DomainID != mustDomainID(tx.DomainID)) {
+			return domaingraph.Edge{}, fmt.Errorf("%w: hierarchy edge endpoints must be in transaction domain", ErrInvalidInput)
+		}
+		if hierarchy.SingleParent {
+			if existing, err := m.parentEdge(ctx, tx, toID); err != nil {
+				return domaingraph.Edge{}, err
+			} else if existing != nil {
+				return domaingraph.Edge{}, fmt.Errorf("%w: child already has a hierarchy parent", ErrInvalidInput)
+			}
+		}
+		if hierarchy.Acyclic {
+			if hasPath, err := m.hierarchyPathExists(ctx, tx, toID, fromID); err != nil {
+				return domaingraph.Edge{}, err
+			} else if hasPath {
+				return domaingraph.Edge{}, fmt.Errorf("%w: hierarchy edge would create a cycle", ErrInvalidInput)
+			}
 		}
 	}
 	now := time.Now().UTC()
@@ -1062,13 +1120,48 @@ func (m *Module) edge(ctx context.Context, tx daemonsession.GraphTransaction, id
 	return cloneEdge(edge), nil
 }
 
+func (m *Module) hierarchyPathExists(ctx context.Context, tx daemonsession.GraphTransaction, from domaingraph.NodeID, target domaingraph.NodeID) (bool, error) {
+	edges, _, err := m.ListEdges(ctx, tx, 0, "")
+	if err != nil {
+		return false, err
+	}
+	seen := map[domaingraph.NodeID]struct{}{}
+	queue := []domaingraph.NodeID{from}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if id == target {
+			return true, nil
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		for _, edge := range edges {
+			policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
+			if err != nil {
+				return false, err
+			}
+			if policy == nil || edge.FromID != id {
+				continue
+			}
+			queue = append(queue, edge.ToID)
+		}
+	}
+	return false, nil
+}
+
 func (m *Module) parentEdge(ctx context.Context, tx daemonsession.GraphTransaction, childID domaingraph.NodeID) (*domaingraph.Edge, error) {
 	edges, _, err := m.ListEdges(ctx, tx, 0, "")
 	if err != nil {
 		return nil, err
 	}
 	for _, edge := range edges {
-		if domaingraph.EdgeHasLabels(edge, []string{"contains"}) && edge.ToID == childID {
+		policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if policy != nil && edge.ToID == childID {
 			copy := cloneEdge(edge)
 			return &copy, nil
 		}

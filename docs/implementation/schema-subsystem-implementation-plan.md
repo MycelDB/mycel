@@ -102,6 +102,8 @@ Status: implemented on `improved_gql` for core graph mutation paths. File-backed
 
 ## Tranche 4 — Schema-aware hierarchy policy
 
+Status: partially implemented on `improved_gql`. Edge creation in graph service and file sessions now consults schema edge `HierarchyPolicy` to decide whether hierarchy structural rules apply. If no schema exists, the legacy `contains` label still behaves as the default hierarchy edge. If a schema defines `contains` without hierarchy enabled, `contains` is treated as a normal edge. Move/reorder helper APIs still create and navigate the reserved `contains` hierarchy edge and will need broader schema-driven naming/policy work if/when multiple hierarchy edge types are supported.
+
 ### Work
 
 - Define reserved `contains` edge type via schema.
