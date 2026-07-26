@@ -166,9 +166,9 @@ Replicate schema changes consistently in clustered Mycel deployments.
 
 - Add WAL record types:
   - schema put
-  - schema delete
+- Schema delete is not currently exposed by the public schema API or storage interface. Do not add a delete WAL record unless schema deletion is reintroduced as a supported lifecycle operation.
 - Register schema WAL appliers in the schema service module.
-- On schema put/delete, append logical WAL record before applying local durable state when WAL is enabled.
+- On schema put, append a logical WAL record before applying local durable state when WAL is enabled.
 - WAL apply path should:
   - persist GWL source record
   - compile GWL
@@ -178,7 +178,7 @@ Replicate schema changes consistently in clustered Mycel deployments.
 
 ### Acceptance
 
-- Schema put/delete survives restart through WAL-backed state.
+- Schema put survives restart through WAL-backed state.
 - WAL replay rebuilds schema storage and validation cache.
 - Cluster mode does not leave schema state local-only.
 

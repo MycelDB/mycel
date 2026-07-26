@@ -57,7 +57,6 @@ Management owns schema lifecycle for domains:
 type SchemaManager interface {
     PutSchema(ctx context.Context, domainID graph.DomainID, source SchemaSource) (SchemaRecord, error)
     GetSchema(ctx context.Context, domainID graph.DomainID) (SchemaRecord, error)
-    DeleteSchema(ctx context.Context, domainID graph.DomainID) error
     ListSchemas(ctx context.Context, filter SchemaFilter) ([]SchemaRecord, error)
 }
 ```
@@ -229,9 +228,10 @@ Current schema storage is file-backed JSON under the daemon data directory. The 
 Schema changes should become logical WAL/cluster operations so a cluster consistently applies schema updates:
 
 - put schema source for domain
-- delete schema for domain
 
-Each logical operation should be replayable by parsing/compiling the GWL source and updating storage/cache.
+Schema deletion is intentionally not part of the current public API/storage contract. If schema deletion is reintroduced, it should get its own logical WAL operation and cache invalidation path.
+
+Each logical put operation should be replayable by parsing/compiling the GWL source and updating storage/cache.
 
 ## API behavior
 
