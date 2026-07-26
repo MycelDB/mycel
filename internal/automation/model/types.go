@@ -34,15 +34,54 @@ type Definition struct {
 	Input     Input          `json:"input"`
 	Model     Model          `json:"model,omitempty"`
 	Prompt    string         `json:"prompt"`
-	Output    Output         `json:"output"`
+	Output    Output         `json:"output,omitempty"`
+	Workflow  *Workflow      `json:"workflow,omitempty"`
 	Safety    Safety         `json:"safety,omitempty"`
 	CreatedAt time.Time      `json:"created_at,omitempty"`
 	UpdatedAt time.Time      `json:"updated_at,omitempty"`
 }
 
+type Workflow struct {
+	Steps []WorkflowStep `json:"steps"`
+}
+
+type WorkflowStep struct {
+	ID          string            `json:"id"`
+	Kind        string            `json:"kind"`
+	DependsOn   []string          `json:"dependsOn,omitempty"`
+	Condition   Condition         `json:"condition,omitempty"`
+	Input       Input             `json:"input,omitempty"`
+	Model       Model             `json:"model,omitempty"`
+	Prompt      string            `json:"prompt,omitempty"`
+	Output      Output            `json:"output,omitempty"`
+	Approval    string            `json:"approval,omitempty"`
+	Tool        string            `json:"tool,omitempty"`
+	ToolInput   map[string]string `json:"toolInput,omitempty"`
+	MaxAttempts int               `json:"maxAttempts,omitempty"`
+}
+
+const (
+	WorkflowStepCondition = "condition"
+	WorkflowStepRender    = "render"
+	WorkflowStepLLM       = "llm"
+	WorkflowStepAction    = "action"
+	WorkflowStepProposal  = "proposal"
+	WorkflowStepTool      = "tool"
+)
+
 type Trigger struct {
-	Events []string `json:"events"`
-	Labels []string `json:"labels,omitempty"`
+	Events   []string         `json:"events,omitempty"`
+	Labels   []string         `json:"labels,omitempty"`
+	Schedule *ScheduleTrigger `json:"schedule,omitempty"`
+	Scan     *ScanTrigger     `json:"scan,omitempty"`
+}
+
+type ScheduleTrigger struct {
+	Interval string `json:"interval"`
+}
+
+type ScanTrigger struct {
+	GQL string `json:"gql"`
 }
 
 type Condition struct {
@@ -128,6 +167,58 @@ type Invocation struct {
 	NextAttemptAt      time.Time      `json:"next_attempt_at,omitempty"`
 	CreatedAt          time.Time      `json:"created_at,omitempty"`
 	UpdatedAt          time.Time      `json:"updated_at,omitempty"`
+}
+
+type WorkflowInstance struct {
+	ID                string         `json:"id"`
+	DomainID          graph.DomainID `json:"domain_id"`
+	AutomationID      string         `json:"automation_id"`
+	AutomationVersion int            `json:"automation_version"`
+	InvocationID      string         `json:"invocation_id,omitempty"`
+	ChangedElementID  string         `json:"changed_element_id,omitempty"`
+	Status            string         `json:"status"`
+	CreatedAt         time.Time      `json:"created_at,omitempty"`
+	UpdatedAt         time.Time      `json:"updated_at,omitempty"`
+	CompletedAt       time.Time      `json:"completed_at,omitempty"`
+}
+
+type Proposal struct {
+	ID         string         `json:"id"`
+	DomainID   graph.DomainID `json:"domain_id"`
+	InstanceID string         `json:"instance_id,omitempty"`
+	StepID     string         `json:"step_id,omitempty"`
+	Status     string         `json:"status"`
+	Actions    []Action       `json:"actions,omitempty"`
+	Summary    string         `json:"summary,omitempty"`
+	Reviewer   string         `json:"reviewer,omitempty"`
+	CreatedAt  time.Time      `json:"created_at,omitempty"`
+	UpdatedAt  time.Time      `json:"updated_at,omitempty"`
+}
+
+type Policy struct {
+	DomainID         graph.DomainID `json:"domain_id"`
+	MaxWorkflowSteps int            `json:"max_workflow_steps,omitempty"`
+	MaxToolCalls     int            `json:"max_tool_calls,omitempty"`
+	MaxProviderCalls int            `json:"max_provider_calls,omitempty"`
+	RequireApproval  bool           `json:"require_approval,omitempty"`
+	MaxTokensPerRun  int64          `json:"max_tokens_per_run,omitempty"`
+	MaxCostPerRun    float64        `json:"max_cost_per_run,omitempty"`
+	AllowCrossDomain bool           `json:"allow_cross_domain,omitempty"`
+	AllowedTools     []string       `json:"allowed_tools,omitempty"`
+}
+
+type WorkflowStepRun struct {
+	ID                string         `json:"id"`
+	DomainID          graph.DomainID `json:"domain_id"`
+	InstanceID        string         `json:"instance_id"`
+	StepID            string         `json:"step_id"`
+	AttemptNumber     int            `json:"attempt_number"`
+	Status            string         `json:"status"`
+	RenderedInputHash string         `json:"rendered_input_hash,omitempty"`
+	OutputHash        string         `json:"output_hash,omitempty"`
+	Error             string         `json:"error,omitempty"`
+	StartedAt         time.Time      `json:"started_at,omitempty"`
+	CompletedAt       time.Time      `json:"completed_at,omitempty"`
 }
 
 type Run struct {

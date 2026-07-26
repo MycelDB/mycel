@@ -102,6 +102,40 @@ A richer visual authoring experience remains future work.
 - Worker controls include `MYCELD_AUTOMATION_WORKER_ENABLED`, `MYCELD_AUTOMATION_WORKER_INTERVAL`, `MYCELD_AUTOMATION_WORKER_BATCH_SIZE`, and `MYCELD_AUTOMATION_WORKER_CONCURRENCY`.
 - Safety ceilings include `MYCELD_AUTOMATION_MAX_TOKENS_PER_RUN` and `MYCELD_AUTOMATION_MAX_COST_PER_RUN`.
 
+## V3 workflows
+
+V3 adds a workflow definition shape for constrained multi-step automations. A workflow is still declarative JSON, but instead of a single `output.actions` block it has ordered/dependent steps:
+
+```json
+{
+  "id": "enrich_research_note",
+  "status": "disabled",
+  "on": {"events": ["node.created"], "labels": ["ResearchNote"]},
+  "workflow": {
+    "steps": [
+      {"id": "summarize", "kind": "llm"},
+      {"id": "search_related", "kind": "tool", "tool": "debug.echo", "dependsOn": ["summarize"]},
+      {"id": "propose_links", "kind": "proposal", "dependsOn": ["search_related"], "approval": "required"}
+    ]
+  }
+}
+```
+
+Workflow validation enforces unique step IDs, known step kinds, known dependencies, and acyclic dependency graphs. Initial runtime support persists workflow instances and pending step runs for runnable steps. Proposal and policy records are also persisted internally so later APIs/UI can expose approval queues and budget/policy management.
+
+A full example lives at `examples/automations/research_note_workflow.json`.
+
+V3 schedule and scan triggers are also modeled:
+
+```json
+"on": {
+  "schedule": {"interval": "1h"},
+  "scan": {"gql": "MATCH (n:Page) RETURN n LIMIT 100"}
+}
+```
+
+Scans must be bounded with `LIMIT`.
+
 ## Storage
 
 File-backed automation state is stored under the daemon data directory:
@@ -111,5 +145,10 @@ automations/
   definitions/<domain-id>/<automation-id>.json
   invocations/<domain-id>/<yyyy-mm-dd>/<invocation-id>.json
   runs/<domain-id>/<yyyy-mm-dd>/<run-id>.json
+  workflow-instances/<domain-id>/<yyyy-mm-dd>/<instance-id>.json
+  workflow-steps/<domain-id>/<yyyy-mm-dd>/<step-run-id>.json
+  proposals/<domain-id>/<yyyy-mm-dd>/<proposal-id>.json
+  policies/<domain-id>.json
+  schedule-checkpoints/<domain-id>/<automation-id>.json
 ```
 

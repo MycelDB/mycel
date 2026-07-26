@@ -92,6 +92,9 @@ func (m *AutomationManager) ValidateAutomation(ctx context.Context, domainID gra
 	if err := automation.ValidateDefinition(def); err != nil {
 		return def, err
 	}
+	if err := m.enforcePolicy(ctx, def); err != nil {
+		return def, err
+	}
 	return def, ctx.Err()
 }
 
@@ -272,6 +275,24 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			inv.SkipReason = err.Error()
 			inv.UpdatedAt = m.now()
 			_ = m.store.PutInvocation(ctx, inv)
+			continue
+		}
+		if def.Workflow != nil {
+			_, err := m.startWorkflowInstance(ctx, def, inv)
+			now := m.now()
+			if err != nil {
+				inv.Status = "failed"
+				inv.SkipReason = err.Error()
+				inv.UpdatedAt = now
+			} else {
+				inv.Status = "succeeded"
+				inv.UpdatedAt = now
+			}
+			if err := m.store.PutInvocation(ctx, inv); err != nil {
+				return processed, mapStoreError(err)
+			}
+			m.recordMetric(inv.Status)
+			processed++
 			continue
 		}
 		run, err := m.executeInvocation(ctx, def, inv)

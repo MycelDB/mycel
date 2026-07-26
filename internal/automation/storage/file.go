@@ -214,6 +214,209 @@ func (s *FileStore) GetRun(ctx context.Context, domainID graph.DomainID, runID s
 	return out, nil
 }
 
+func (s *FileStore) PutProposal(ctx context.Context, proposal automation.Proposal) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	day := proposal.CreatedAt.Format("2006-01-02")
+	if day == "0001-01-01" {
+		day = "undated"
+	}
+	return writeJSONAtomic(filepath.Join(s.root, "proposals", proposal.DomainID.String(), day, safeName(proposal.ID)+".json"), proposal)
+}
+
+func (s *FileStore) GetProposal(ctx context.Context, domainID graph.DomainID, id string) (automation.Proposal, error) {
+	items, err := s.ListProposals(ctx, domainID, "", 0)
+	if err != nil {
+		return automation.Proposal{}, err
+	}
+	for _, item := range items {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return automation.Proposal{}, ErrNotFound
+}
+
+func (s *FileStore) ListProposals(ctx context.Context, domainID graph.DomainID, status string, limit int) ([]automation.Proposal, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(s.root, "proposals", domainID.String())
+	out := []automation.Proposal{}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		var proposal automation.Proposal
+		if err := readJSON(path, &proposal); err != nil {
+			return err
+		}
+		if status == "" || proposal.Status == status {
+			out = append(out, proposal)
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *FileStore) PutPolicy(ctx context.Context, policy automation.Policy) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeJSONAtomic(filepath.Join(s.root, "policies", policy.DomainID.String()+".json"), policy)
+}
+
+func (s *FileStore) GetPolicy(ctx context.Context, domainID graph.DomainID) (automation.Policy, error) {
+	if err := ctx.Err(); err != nil {
+		return automation.Policy{}, err
+	}
+	var out automation.Policy
+	if err := readJSON(filepath.Join(s.root, "policies", domainID.String()+".json"), &out); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, ErrNotFound
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *FileStore) PutScheduleCheckpoint(ctx context.Context, checkpoint ScheduleCheckpoint) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeJSONAtomic(filepath.Join(s.root, "schedule-checkpoints", checkpoint.DomainID.String(), safeName(checkpoint.AutomationID)+".json"), checkpoint)
+}
+
+func (s *FileStore) GetScheduleCheckpoint(ctx context.Context, domainID graph.DomainID, automationID string) (ScheduleCheckpoint, error) {
+	if err := ctx.Err(); err != nil {
+		return ScheduleCheckpoint{}, err
+	}
+	var out ScheduleCheckpoint
+	if err := readJSON(filepath.Join(s.root, "schedule-checkpoints", domainID.String(), safeName(automationID)+".json"), &out); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, ErrNotFound
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *FileStore) PutWorkflowInstance(ctx context.Context, instance automation.WorkflowInstance) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	day := instance.CreatedAt.Format("2006-01-02")
+	if day == "0001-01-01" {
+		day = "undated"
+	}
+	return writeJSONAtomic(filepath.Join(s.root, "workflow-instances", instance.DomainID.String(), day, safeName(instance.ID)+".json"), instance)
+}
+
+func (s *FileStore) GetWorkflowInstance(ctx context.Context, domainID graph.DomainID, id string) (automation.WorkflowInstance, error) {
+	items, err := s.ListWorkflowInstances(ctx, domainID, "", 0)
+	if err != nil {
+		return automation.WorkflowInstance{}, err
+	}
+	for _, item := range items {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return automation.WorkflowInstance{}, ErrNotFound
+}
+
+func (s *FileStore) ListWorkflowInstances(ctx context.Context, domainID graph.DomainID, status string, limit int) ([]automation.WorkflowInstance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(s.root, "workflow-instances", domainID.String())
+	out := []automation.WorkflowInstance{}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		var inst automation.WorkflowInstance
+		if err := readJSON(path, &inst); err != nil {
+			return err
+		}
+		if status == "" || inst.Status == status {
+			out = append(out, inst)
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *FileStore) PutWorkflowStepRun(ctx context.Context, run automation.WorkflowStepRun) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	day := run.StartedAt.Format("2006-01-02")
+	if day == "0001-01-01" {
+		day = "undated"
+	}
+	return writeJSONAtomic(filepath.Join(s.root, "workflow-steps", run.DomainID.String(), day, safeName(run.ID)+".json"), run)
+}
+
+func (s *FileStore) ListWorkflowStepRuns(ctx context.Context, domainID graph.DomainID, instanceID string) ([]automation.WorkflowStepRun, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(s.root, "workflow-steps", domainID.String())
+	out := []automation.WorkflowStepRun{}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		var run automation.WorkflowStepRun
+		if err := readJSON(path, &run); err != nil {
+			return err
+		}
+		if instanceID == "" || run.InstanceID == instanceID {
+			out = append(out, run)
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
+	return out, nil
+}
+
 func (s *FileStore) PutSuccessfulInputIndex(ctx context.Context, record SuccessfulInputIndex) error {
 	if err := ctx.Err(); err != nil {
 		return err

@@ -41,6 +41,41 @@ func TestValidateDefinitionAcceptsJSONOutputAndGraphActions(t *testing.T) {
 	}
 }
 
+func TestValidateDefinitionAcceptsScheduledWorkflow(t *testing.T) {
+	def := baseDefinition()
+	def.Trigger = Trigger{Schedule: &ScheduleTrigger{Interval: "1h"}, Scan: &ScanTrigger{GQL: "MATCH (n:Page) RETURN n LIMIT 10"}}
+	def.Prompt = ""
+	def.Output = Output{}
+	def.Workflow = &Workflow{Steps: []WorkflowStep{{ID: "echo", Kind: WorkflowStepTool, Tool: "debug.echo"}}}
+	if err := ValidateDefinition(def); err != nil {
+		t.Fatalf("ValidateDefinition() error = %v", err)
+	}
+}
+
+func TestValidateDefinitionRejectsUnboundedScan(t *testing.T) {
+	def := baseDefinition()
+	def.Trigger.Scan = &ScanTrigger{GQL: "MATCH (n:Page) RETURN n"}
+	assertValidationError(t, def, "scan.gql")
+}
+
+func TestValidateDefinitionAcceptsWorkflow(t *testing.T) {
+	def := baseDefinition()
+	def.Prompt = ""
+	def.Output = Output{}
+	def.Workflow = &Workflow{Steps: []WorkflowStep{{ID: "summarize", Kind: WorkflowStepLLM}, {ID: "act", Kind: WorkflowStepAction, DependsOn: []string{"summarize"}}}}
+	if err := ValidateDefinition(def); err != nil {
+		t.Fatalf("ValidateDefinition() error = %v", err)
+	}
+}
+
+func TestValidateDefinitionRejectsWorkflowCycle(t *testing.T) {
+	def := baseDefinition()
+	def.Prompt = ""
+	def.Output = Output{}
+	def.Workflow = &Workflow{Steps: []WorkflowStep{{ID: "a", Kind: WorkflowStepLLM, DependsOn: []string{"b"}}, {ID: "b", Kind: WorkflowStepAction, DependsOn: []string{"a"}}}}
+	assertValidationError(t, def, "cycle")
+}
+
 func TestValidateDefinitionRejectsUnanchoredCondition(t *testing.T) {
 	def := baseDefinition()
 	def.Condition.GQL = "MATCH (n:Page) RETURN n"

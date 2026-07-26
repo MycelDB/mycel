@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const defaultMaxActions = 10
@@ -16,14 +17,25 @@ func ValidateDefinition(def Definition) error {
 	if def.Status != StatusEnabled && def.Status != StatusDisabled {
 		return fmt.Errorf("automation status must be enabled or disabled")
 	}
-	if len(def.Trigger.Events) == 0 {
-		return fmt.Errorf("automation trigger must include at least one event")
+	if len(def.Trigger.Events) == 0 && def.Trigger.Schedule == nil {
+		return fmt.Errorf("automation trigger must include at least one event or schedule")
 	}
 	for _, event := range def.Trigger.Events {
 		switch event {
 		case EventNodeCreated, EventNodeUpdated:
 		default:
 			return fmt.Errorf("unsupported automation event %q", event)
+		}
+	}
+	if def.Trigger.Schedule != nil {
+		if _, err := time.ParseDuration(strings.TrimSpace(def.Trigger.Schedule.Interval)); err != nil {
+			return fmt.Errorf("automation schedule.interval must be a valid duration")
+		}
+	}
+	if def.Trigger.Scan != nil {
+		gql := strings.TrimSpace(strings.ToLower(def.Trigger.Scan.GQL))
+		if gql == "" || !strings.Contains(gql, " limit ") {
+			return fmt.Errorf("automation scan.gql must be bounded with LIMIT")
 		}
 	}
 	if strings.TrimSpace(def.Condition.GQL) == "" {
@@ -38,10 +50,70 @@ func ValidateDefinition(def Definition) error {
 	if err := validateModel(def.Model); err != nil {
 		return err
 	}
+	if def.Workflow != nil {
+		return validateWorkflow(*def.Workflow)
+	}
 	if strings.TrimSpace(def.Prompt) == "" {
 		return fmt.Errorf("automation prompt is required")
 	}
 	return validateOutput(def.Output, def.Safety)
+}
+
+func validateWorkflow(workflow Workflow) error {
+	if len(workflow.Steps) == 0 {
+		return fmt.Errorf("automation workflow.steps must include at least one step")
+	}
+	if len(workflow.Steps) > 50 {
+		return fmt.Errorf("automation workflow.steps exceeds maximum of 50")
+	}
+	seen := map[string]WorkflowStep{}
+	for _, step := range workflow.Steps {
+		step.ID = strings.TrimSpace(step.ID)
+		if step.ID == "" {
+			return fmt.Errorf("automation workflow step id is required")
+		}
+		if _, exists := seen[step.ID]; exists {
+			return fmt.Errorf("duplicate workflow step id %q", step.ID)
+		}
+		switch strings.TrimSpace(step.Kind) {
+		case WorkflowStepCondition, WorkflowStepRender, WorkflowStepLLM, WorkflowStepAction, WorkflowStepProposal, WorkflowStepTool:
+		default:
+			return fmt.Errorf("unsupported workflow step kind %q", step.Kind)
+		}
+		if strings.TrimSpace(step.Kind) == WorkflowStepTool && strings.TrimSpace(step.Tool) == "" {
+			return fmt.Errorf("workflow tool step %q requires tool", step.ID)
+		}
+		seen[step.ID] = step
+	}
+	visiting, visited := map[string]bool{}, map[string]bool{}
+	var visit func(string) error
+	visit = func(id string) error {
+		if visited[id] {
+			return nil
+		}
+		if visiting[id] {
+			return fmt.Errorf("workflow dependency cycle at %q", id)
+		}
+		visiting[id] = true
+		for _, dep := range seen[id].DependsOn {
+			dep = strings.TrimSpace(dep)
+			if _, ok := seen[dep]; !ok {
+				return fmt.Errorf("workflow step %q depends on unknown step %q", id, dep)
+			}
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		visiting[id] = false
+		visited[id] = true
+		return nil
+	}
+	for id := range seen {
+		if err := visit(id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateInput(input Input) error {

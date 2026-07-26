@@ -106,6 +106,7 @@ func (m *Module) Start(ctx context.Context) error {
 				sem := make(chan struct{}, m.worker.Concurrency)
 				var batchWG sync.WaitGroup
 				for _, domainID := range domains {
+					_, _ = m.ProcessScheduled(workerCtx, domainID, m.worker.BatchSize)
 					sem <- struct{}{}
 					batchWG.Add(1)
 					go func(domainID graph.DomainID) {

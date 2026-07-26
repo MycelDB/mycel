@@ -25,6 +25,25 @@ type Store interface {
 	GetRun(ctx context.Context, domainID graph.DomainID, runID string) (automation.Run, error)
 	PutSuccessfulInputIndex(ctx context.Context, record SuccessfulInputIndex) error
 	GetSuccessfulInputIndex(ctx context.Context, domainID graph.DomainID, automationID string, version int, changedElementID string, inputHash string) (SuccessfulInputIndex, error)
+	PutWorkflowInstance(ctx context.Context, instance automation.WorkflowInstance) error
+	GetWorkflowInstance(ctx context.Context, domainID graph.DomainID, id string) (automation.WorkflowInstance, error)
+	ListWorkflowInstances(ctx context.Context, domainID graph.DomainID, status string, limit int) ([]automation.WorkflowInstance, error)
+	PutWorkflowStepRun(ctx context.Context, run automation.WorkflowStepRun) error
+	ListWorkflowStepRuns(ctx context.Context, domainID graph.DomainID, instanceID string) ([]automation.WorkflowStepRun, error)
+	PutScheduleCheckpoint(ctx context.Context, checkpoint ScheduleCheckpoint) error
+	GetScheduleCheckpoint(ctx context.Context, domainID graph.DomainID, automationID string) (ScheduleCheckpoint, error)
+	PutProposal(ctx context.Context, proposal automation.Proposal) error
+	GetProposal(ctx context.Context, domainID graph.DomainID, id string) (automation.Proposal, error)
+	ListProposals(ctx context.Context, domainID graph.DomainID, status string, limit int) ([]automation.Proposal, error)
+	PutPolicy(ctx context.Context, policy automation.Policy) error
+	GetPolicy(ctx context.Context, domainID graph.DomainID) (automation.Policy, error)
+}
+
+type ScheduleCheckpoint struct {
+	DomainID     graph.DomainID `json:"domain_id"`
+	AutomationID string         `json:"automation_id"`
+	LastRunAt    string         `json:"last_run_at"`
+	UpdatedAt    string         `json:"updated_at"`
 }
 
 type SuccessfulInputIndex struct {
