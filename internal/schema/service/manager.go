@@ -235,11 +235,11 @@ func (m *SchemaManager) ValidateEdge(ctx context.Context, domainID graph.DomainI
 			validateFields(value.Mode, &result, "properties", et.Properties, edge.Properties)
 			validateFields(value.Mode, &result, "payload", et.Payload, edge.Payload)
 			validateFields(value.Mode, &result, "meta", et.Meta, edge.Meta)
-			if !endpointMatches(value, et.From, from) {
-				result.add(value.Mode, "from", fmt.Sprintf("edge %q does not allow source node labels %v", label, from.Labels))
+			if !endpointMatchesCompiled(compiled, et.From, from) {
+				result.add(value.Mode, "from", fmt.Sprintf("edge %q does not allow source node", label))
 			}
-			if !endpointMatches(value, et.To, to) {
-				result.add(value.Mode, "to", fmt.Sprintf("edge %q does not allow target node labels %v", label, to.Labels))
+			if !endpointMatchesCompiled(compiled, et.To, to) {
+				result.add(value.Mode, "to", fmt.Sprintf("edge %q does not allow target node", label))
 			}
 		}
 	}
@@ -370,6 +370,28 @@ func findEdgeTypes(value schema.DomainSchema, label string) ([]schema.EdgeType, 
 		}
 	}
 	return out, len(out) > 0
+}
+
+func endpointMatchesCompiled(compiled *schemacompile.CompiledSchema, spec schema.EndpointSpec, node graph.Node) bool {
+	if len(spec.NodeTypes) == 0 && len(spec.Labels) == 0 {
+		return true
+	}
+	for _, label := range node.Labels {
+		if contains(spec.Labels, label) {
+			return true
+		}
+	}
+	for _, nt := range schemacompile.NodeTypesFor(compiled, node) {
+		if contains(spec.NodeTypes, nt.Name) {
+			return true
+		}
+		for _, label := range nt.Labels {
+			if contains(spec.Labels, label) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func endpointMatches(value schema.DomainSchema, spec schema.EndpointSpec, node graph.Node) bool {
