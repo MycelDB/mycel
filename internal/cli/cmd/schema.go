@@ -15,7 +15,7 @@ import (
 
 func NewSchemaCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "schema", Short: "Manage domain schemas"}
-	cmd.AddCommand(newSchemaGetCommand(a), newSchemaPutCommand(a), newSchemaValidateCommand(a), newSchemaCompileCommand(a))
+	cmd.AddCommand(newSchemaGetCommand(a), newSchemaPutCommand(a), newSchemaDeleteCommand(a), newSchemaValidateCommand(a), newSchemaCompileCommand(a))
 	return cmd
 }
 
@@ -61,6 +61,22 @@ func newSchemaPutCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&domainID, "domain", "", "domain UUID")
 	cmd.Flags().StringVar(&format, "format", "auto", "schema input format: auto, gwl")
+	_ = cmd.MarkFlagRequired("domain")
+	return cmd
+}
+
+func newSchemaDeleteCommand(a *app.App) *cobra.Command {
+	var domainID string
+	cmd := &cobra.Command{Use: "delete", Short: "Delete a domain schema", RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		_, err = clientv1.NewSchemaServiceClient(conn).DeleteDomainSchema(authCtx, &clientv1.DeleteDomainSchemaRequest{DomainId: domainID})
+		return err
+	}}
+	cmd.Flags().StringVar(&domainID, "domain", "", "domain UUID")
 	_ = cmd.MarkFlagRequired("domain")
 	return cmd
 }

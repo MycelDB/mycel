@@ -1,0 +1,226 @@
+syntax = "proto3";
+
+package mycel.admin.v1;
+
+// AdminClusterService exposes operator-facing cluster management and
+// diagnostics. It is distinct from the internal daemon-to-daemon clustering
+// backend API: these methods are intended for authenticated administrators and
+// must not expose plaintext join tokens except in the create/add-node response.
+service AdminClusterService {
+  // GetClusterStatus returns the local daemon's current cluster identity,
+  // lifecycle state, and known topology/peer view.
+  rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse);
+
+  // ListClusterMembers returns the authoritative admission/membership view.
+  // Token hashes and plaintext token values are never returned.
+  rpc ListClusterMembers(ListClusterMembersRequest) returns (ListClusterMembersResponse);
+
+  // GetClusterHealth returns an operator-oriented aggregate cluster health summary.
+  rpc GetClusterHealth(GetClusterHealthRequest) returns (GetClusterHealthResponse);
+
+  // GetClusterRuntimeStatus returns engine-aware clustering runtime status.
+  rpc GetClusterRuntimeStatus(GetClusterRuntimeStatusRequest) returns (GetClusterRuntimeStatusResponse);
+
+  // ListRaftGroups returns read-only status for the local daemon's Raft groups.
+  rpc ListRaftGroups(ListRaftGroupsRequest) returns (ListRaftGroupsResponse);
+
+  // LookupSpaceRoute returns the Raft partition and replica set for a space ID.
+  rpc LookupSpaceRoute(LookupSpaceRouteRequest) returns (LookupSpaceRouteResponse);
+}
+
+// ClusterEngine describes the clustering engine implementation.
+enum ClusterEngine {
+  CLUSTER_ENGINE_UNSPECIFIED = 0;
+  CLUSTER_ENGINE_RAFT = 1;
+}
+
+// RaftGroupKind describes a Raft group's routing role.
+enum RaftGroupKind {
+  RAFT_GROUP_KIND_UNSPECIFIED = 0;
+  RAFT_GROUP_KIND_SYSTEM = 1;
+  RAFT_GROUP_KIND_PARTITION = 2;
+}
+
+// RaftGroupHealth describes MVP local health for a Raft group.
+enum RaftGroupHealth {
+  RAFT_GROUP_HEALTH_UNSPECIFIED = 0;
+  RAFT_GROUP_HEALTH_UNKNOWN = 1;
+  RAFT_GROUP_HEALTH_HEALTHY = 2;
+  RAFT_GROUP_HEALTH_NO_LEADER = 3;
+}
+
+// ClusterMode describes the local daemon clustering mode.
+enum ClusterMode {
+  CLUSTER_MODE_UNSPECIFIED = 0;
+  CLUSTER_MODE_STANDALONE = 1;
+  CLUSTER_MODE_CLUSTERED = 2;
+}
+
+// ClusterNodeState describes the local node lifecycle state exposed to operators.
+enum ClusterNodeState {
+  CLUSTER_NODE_STATE_UNSPECIFIED = 0;
+  CLUSTER_NODE_STATE_INITIALIZING = 1;
+  CLUSTER_NODE_STATE_STANDALONE = 2;
+  CLUSTER_NODE_STATE_CLUSTERED = 3;
+  CLUSTER_NODE_STATE_DISCOVERING = 4;
+  CLUSTER_NODE_STATE_ACTIVE = 5;
+  CLUSTER_NODE_STATE_DEGRADED = 6;
+  CLUSTER_NODE_STATE_STOPPED = 7;
+  CLUSTER_NODE_STATE_FAILED = 8;
+}
+
+// ClusterPeerState is the local view of a peer's cluster participation.
+enum ClusterPeerState {
+  CLUSTER_PEER_STATE_UNSPECIFIED = 0;
+  CLUSTER_PEER_STATE_SELF = 1;
+  CLUSTER_PEER_STATE_SEED = 2;
+  CLUSTER_PEER_STATE_ACTIVE = 3;
+  CLUSTER_PEER_STATE_UNREACHABLE = 4;
+  CLUSTER_PEER_STATE_PENDING = 5;
+  CLUSTER_PEER_STATE_REJECTED = 6;
+  CLUSTER_PEER_STATE_REMOVED = 7;
+}
+
+// ClusterPeerSource describes how a topology peer entry was learned.
+enum ClusterPeerSource {
+  CLUSTER_PEER_SOURCE_UNSPECIFIED = 0;
+  CLUSTER_PEER_SOURCE_SELF = 1;
+  CLUSTER_PEER_SOURCE_SEED = 2;
+  CLUSTER_PEER_SOURCE_DISCOVERED = 3;
+  CLUSTER_PEER_SOURCE_MANUAL = 4;
+}
+
+// ClusterMemberState is the authoritative admission state of a member.
+enum ClusterMemberState {
+  CLUSTER_MEMBER_STATE_UNSPECIFIED = 0;
+  CLUSTER_MEMBER_STATE_PENDING = 1;
+  CLUSTER_MEMBER_STATE_ACTIVE = 2;
+  CLUSTER_MEMBER_STATE_REJECTED = 3;
+  CLUSTER_MEMBER_STATE_REMOVED = 4;
+}
+
+enum ClusterReplicationCatchupState {
+  CLUSTER_REPLICATION_CATCHUP_STATE_UNSPECIFIED = 0;
+  CLUSTER_REPLICATION_CATCHUP_STATE_UNKNOWN = 1;
+  CLUSTER_REPLICATION_CATCHUP_STATE_STREAMING = 2;
+  CLUSTER_REPLICATION_CATCHUP_STATE_CAUGHT_UP = 3;
+  CLUSTER_REPLICATION_CATCHUP_STATE_RETRYING = 4;
+  CLUSTER_REPLICATION_CATCHUP_STATE_SNAPSHOT_REQUIRED = 5;
+  CLUSTER_REPLICATION_CATCHUP_STATE_ERROR = 6;
+}
+
+message GetClusterRuntimeStatusRequest {}
+
+message GetClusterRuntimeStatusResponse {
+  ClusterEngine engine = 1;
+  string cluster_name = 2;
+  uint32 raft_node_count = 3;
+  uint32 raft_partition_count = 4;
+  uint32 raft_replica_factor = 5;
+  uint64 local_raft_node_id = 6;
+  repeated string raft_node_addrs = 7;
+  int32 raft_group_count = 8;
+  int32 raft_groups_with_leader = 9;
+}
+
+message ListRaftGroupsRequest {}
+
+message ListRaftGroupsResponse {
+  repeated RaftGroupStatus groups = 1;
+}
+
+message RaftGroupStatus {
+  string group_id = 1;
+  RaftGroupKind kind = 2;
+  uint32 partition_id = 3;
+  uint64 local_node_id = 4;
+  uint64 leader_node_id = 5;
+  uint64 preferred_leader_node_id = 6;
+  repeated uint64 replica_node_ids = 7;
+  RaftGroupHealth health = 8;
+  uint64 term = 9;
+  uint64 commit_index = 10;
+  uint64 applied_index = 11;
+  uint64 apply_lag = 12;
+}
+
+message LookupSpaceRouteRequest {
+  string space_id = 1;
+}
+
+message LookupSpaceRouteResponse {
+  string space_id = 1;
+  uint32 partition_id = 2;
+  uint64 leader_node_id = 3;
+  repeated uint64 replica_node_ids = 4;
+}
+
+message GetClusterStatusRequest {}
+
+message GetClusterStatusResponse {
+  ClusterLocalNode node = 1;
+  ClusterInfo cluster = 2;
+  repeated ClusterPeer peers = 3;
+}
+
+message ClusterLocalNode {
+  string node_id = 1;
+  string node_name = 2;
+  ClusterNodeState state = 3;
+  bool admitted = 4;
+  bool bootstrap = 5;
+  string backend_advertise_addr = 6;
+  string node_public_key_fingerprint = 7;
+}
+
+message ClusterInfo {
+  string cluster_id = 1;
+  string cluster_name = 2;
+  ClusterMode mode = 3;
+}
+
+message ClusterPeer {
+  string node_id = 1;
+  string node_name = 2;
+  string cluster_id = 3;
+  string cluster_name = 4;
+  string backend_advertise_addr = 5;
+  ClusterPeerState state = 6;
+  ClusterPeerSource source = 7;
+  string last_seen_at = 8;
+}
+
+message ListClusterMembersRequest {}
+
+message ListClusterMembersResponse {
+  string cluster_id = 1;
+  string cluster_name = 2;
+  repeated ClusterMember members = 3;
+}
+
+message ClusterMember {
+  string node_name = 1;
+  string node_id = 2;
+  ClusterMemberState state = 3;
+  string backend_advertise_addr = 4;
+  string role = 5;
+  bool cluster_bootstrap = 6;
+  string node_public_key_fingerprint = 7;
+  string token_id = 8;
+  string token_expires_at = 9;
+  string token_consumed_at = 10;
+  string token_revoked_at = 11;
+  string created_at = 12;
+  string updated_at = 13;
+  string joined_at = 14;
+}
+
+message GetClusterHealthRequest {}
+
+message GetClusterHealthResponse {
+  string status = 1;
+  repeated string warnings = 2;
+  int32 active_members = 3;
+  int32 pending_members = 4;
+  int32 unreachable_peers = 5;
+}

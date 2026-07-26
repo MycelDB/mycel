@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package mycel.admin.v1;
+
+import "mycel/client/v1/semantic.proto";
+
+
+// AdminSemanticService manages semantic index configuration through the
+// operator-facing Admin API. Provider credentials/policies and maintenance are
+// handled by separate Admin Inference and Admin Semantic Maintenance services.
+service AdminSemanticService {
+  rpc ListSemanticIndexes(AdminSemanticServiceListSemanticIndexesRequest) returns (AdminSemanticServiceListSemanticIndexesResponse);
+  rpc UpsertSemanticIndex(UpsertSemanticIndexRequest) returns (UpsertSemanticIndexResponse);
+  rpc DeleteSemanticIndex(DeleteSemanticIndexRequest) returns (DeleteSemanticIndexResponse);
+}
+
+message AdminSemanticServiceListSemanticIndexesRequest {
+  string space_id = 1;
+  string domain_id = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+  bool include_disabled = 5;
+}
+
+message AdminSemanticServiceListSemanticIndexesResponse {
+  repeated mycel.client.v1.SemanticIndex indexes = 1;
+  string next_page_token = 2;
+}
+
+message UpsertSemanticIndexRequest {
+  // Optional. If set, updates the existing index with this id. If omitted,
+  // key+space+domain determine idempotent upsert behavior.
+  string semantic_index_id = 1;
+
+  string space_id = 2;
+  string domain_id = 3;
+  string key = 4;
+  string display_name = 5;
+  string purpose = 6;
+
+  SemanticSourcePolicy source_policy = 7;
+
+  string model_endpoint_id = 8;
+  string model_id = 9;
+  string vector_store_id = 10;
+
+  bool enabled = 11;
+}
+
+message UpsertSemanticIndexResponse {
+  mycel.client.v1.SemanticIndex index = 1;
+}
+
+message DeleteSemanticIndexRequest {
+  string space_id = 1;
+  string semantic_index_id = 2;
+  bool purge_vectors = 3;
+  bool purge_references = 4;
+}
+
+message DeleteSemanticIndexResponse {
+  string semantic_index_id = 1;
+  int32 credential_grants_deleted = 2;
+  int32 inference_policies_deleted = 3;
+  bool vectors_purged = 4;
+  int32 policy_decisions_deleted = 5;
+}
+
+message SemanticSourcePolicy {
+  string extraction = 1;
+  repeated string include_props = 3;
+  optional int32 max_depth = 4;
+  int32 minimum_text_length = 5;
+}

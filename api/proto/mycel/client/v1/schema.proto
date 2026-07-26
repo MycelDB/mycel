@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package mycel.client.v1;
+
+// SchemaService manages domain-scoped graph schemas.
+service SchemaService {
+  rpc GetDomainSchema(GetDomainSchemaRequest) returns (GetDomainSchemaResponse);
+  rpc PutDomainSchema(PutDomainSchemaRequest) returns (PutDomainSchemaResponse);
+  rpc DeleteDomainSchema(DeleteDomainSchemaRequest) returns (DeleteDomainSchemaResponse);
+  rpc ValidateSchema(ValidateSchemaRequest) returns (ValidateSchemaResponse);
+  rpc ValidateGraph(ValidateGraphRequest) returns (ValidateGraphResponse);
+}
+
+message GetDomainSchemaRequest {
+  string domain_id = 1;
+}
+
+message GetDomainSchemaResponse {
+  string gwl = 1;
+}
+
+message PutDomainSchemaRequest {
+  string domain_id = 1;
+  string gwl = 2;
+}
+
+message PutDomainSchemaResponse {
+  string gwl = 1;
+}
+
+message DeleteDomainSchemaRequest {
+  string domain_id = 1;
+}
+
+message DeleteDomainSchemaResponse {}
+
+message ValidateSchemaRequest {
+  string gwl = 1;
+}
+
+message ValidateSchemaResponse {
+  bool valid = 1;
+  repeated SchemaValidationIssue issues = 2;
+}
+
+message ValidateGraphRequest {
+  string domain_id = 1;
+  string graph_json = 2;
+}
+
+message ValidateGraphResponse {
+  bool valid = 1;
+  repeated SchemaValidationIssue issues = 2;
+}
+
+message SchemaValidationIssue {
+  string severity = 1;
+  string path = 2;
+  string message = 3;
+}

@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package mycel.admin.v1;
+
+// AdminBackupService manages daemon backup policy and manual backup runs.
+service AdminBackupService {
+  rpc GetBackupPolicy(GetBackupPolicyRequest) returns (GetBackupPolicyResponse);
+  rpc UpdateBackupPolicy(UpdateBackupPolicyRequest) returns (UpdateBackupPolicyResponse);
+  rpc TriggerBackup(TriggerBackupRequest) returns (TriggerBackupResponse);
+  rpc GetBackupStatus(GetBackupStatusRequest) returns (GetBackupStatusResponse);
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);
+  rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse);
+}
+
+// BackupArchiveFormat identifies the archive/container format used for a backup.
+enum BackupArchiveFormat {
+  BACKUP_ARCHIVE_FORMAT_UNSPECIFIED = 0;
+  BACKUP_ARCHIVE_FORMAT_ZIP = 1;
+  BACKUP_ARCHIVE_FORMAT_TAR = 2;
+  BACKUP_ARCHIVE_FORMAT_TAR_GZ = 3;
+  BACKUP_ARCHIVE_FORMAT_TAR_ZST = 4;
+}
+
+message BackupPolicy {
+  bool enabled = 1;
+  string backup_dir = 2;
+  // Interval schedule period in whole hours. Used when schedule_kind is empty or "interval".
+  int32 interval_hours = 3;
+  int32 retention_count = 4;
+  bool include_logs = 5;
+  // Deprecated legacy archive/compression format string, for example "zip".
+  string compression = 6 [deprecated = true];
+  int64 quiesce_drain_timeout_seconds = 7;
+  int64 backup_timeout_seconds = 8;
+  int64 retry_after_seconds = 9;
+  int32 status_history_limit = 10;
+  bool allow_reads_during_backup = 11;
+  // Schedule kind: "interval", "daily", or "weekly". Empty means "interval" for compatibility.
+  string schedule_kind = 12;
+  // Wall-clock time for daily/weekly schedules in HH:MM 24-hour format.
+  string time_of_day = 13;
+  // IANA timezone for wall-clock schedules, for example "UTC" or "America/Toronto".
+  string timezone = 14;
+  // Weekdays for weekly schedules, where 0=Sunday through 6=Saturday.
+  repeated int32 weekdays = 15;
+  // Whether the daemon should run a missed calendar schedule after restart.
+  bool run_missed = 16;
+  // Archive format. UNSPECIFIED means ZIP for compatibility.
+  BackupArchiveFormat archive_format = 17;
+}
+
+message BackupStatus {
+  string backup_id = 1;
+  string state = 2;
+  string started_at = 3;
+  string completed_at = 4;
+  string archive_path = 5;
+  string manifest_path = 6;
+  string error = 7;
+  repeated QuiesceParticipantStatus participants = 8;
+  string last_success_at = 9;
+  string next_run_at = 10;
+}
+
+message BackupSummary {
+  string backup_id = 1;
+  string archive_name = 2;
+  string created_at = 3;
+  string completed_at = 4;
+  int64 size_bytes = 5;
+  string checksum_sha256 = 6;
+  // Deprecated legacy archive/compression format string, for example "zip".
+  string compression = 7 [deprecated = true];
+  bool include_logs = 8;
+  BackupArchiveFormat archive_format = 9;
+}
+
+message QuiesceStatus {
+  repeated QuiesceParticipantStatus participants = 1;
+}
+
+message QuiesceParticipantStatus {
+  string name = 1;
+  bool quiesced = 2;
+  int32 active = 3;
+  string reason = 4;
+  string mode = 5;
+  string source = 6;
+  string since = 7;
+  string last_error = 8;
+}
+
+message GetBackupPolicyRequest {}
+
+message GetBackupPolicyResponse {
+  BackupPolicy policy = 1;
+}
+
+message UpdateBackupPolicyRequest {
+  BackupPolicy policy = 1;
+}
+
+message UpdateBackupPolicyResponse {
+  BackupPolicy policy = 1;
+}
+
+message TriggerBackupRequest {
+  string reason = 1;
+}
+
+message TriggerBackupResponse {
+  BackupStatus status = 1;
+  BackupSummary backup = 2;
+}
+
+message GetBackupStatusRequest {}
+
+message GetBackupStatusResponse {
+  BackupStatus status = 1;
+  QuiesceStatus quiesce = 2;
+}
+
+message ListBackupsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListBackupsResponse {
+  repeated BackupSummary backups = 1;
+  string next_page_token = 2;
+}
+
+message DeleteBackupRequest {
+  string backup_id = 1;
+}
+
+message DeleteBackupResponse {
+  string backup_id = 1;
+}

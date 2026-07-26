@@ -1,0 +1,163 @@
+syntax = "proto3";
+
+package mycel.client.v1;
+
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "mycel/common/v1/access.proto";
+
+
+// DomainService manages client-visible domains inside a space. Domains are
+// flat partitions within a space. Graph sessions and graph operations are
+// domain-scoped.
+service DomainService {
+  // ListDomains lists domains visible to the authenticated caller in a space.
+  rpc ListDomains(ListDomainsRequest) returns (ListDomainsResponse);
+
+  // GetDomain returns one visible domain by id.
+  rpc GetDomain(GetDomainRequest) returns (GetDomainResponse);
+
+  // CreateDomain creates a new non-system domain in a space.
+  rpc CreateDomain(CreateDomainRequest) returns (CreateDomainResponse);
+
+  // UpdateDomain updates mutable domain metadata.
+  rpc UpdateDomain(UpdateDomainRequest) returns (UpdateDomainResponse);
+
+  // DeleteDomain deletes a domain and all graph content contained in it.
+  rpc DeleteDomain(DeleteDomainRequest) returns (DeleteDomainResponse);
+}
+
+message ListDomainsRequest {
+  string space_id = 1;
+
+  // Maximum number of domains to return. The daemon may cap this value.
+  int32 page_size = 2;
+
+  // Opaque continuation token returned by a previous list call.
+  string page_token = 3;
+
+  // Include system/internal domains when true. This flag only takes effect for
+  // callers with admin/system visibility.
+  bool include_system = 4;
+}
+
+message ListDomainsResponse {
+  repeated Domain domains = 1;
+  string next_page_token = 2;
+}
+
+message GetDomainRequest {
+  string space_id = 1;
+  string domain_id = 2;
+  string key = 3;
+}
+
+message GetDomainResponse {
+  Domain domain = 1;
+}
+
+message CreateDomainRequest {
+  string space_id = 1;
+  string name = 2;
+  string description = 3;
+  string key = 4;
+  DomainDiscoveryMode discovery_mode = 5;
+  DomainSearchMode search_mode = 6;
+  DomainSemanticMode semantic_mode = 7;
+  bool read_only = 8;
+}
+
+message CreateDomainResponse {
+  Domain domain = 1;
+}
+
+message UpdateDomainRequest {
+  string space_id = 1;
+  string domain_id = 2;
+
+  // Updated domain metadata. Implementations should ignore immutable fields in
+  // this resource and apply only fields listed in update_mask.
+  Domain domain = 3;
+
+  // Mutable field paths currently include "name", "description",
+  // "discovery_mode", "search_mode", "semantic_mode", and "read_only".
+  // The default domain name cannot be changed.
+  google.protobuf.FieldMask update_mask = 4;
+}
+
+message UpdateDomainResponse {
+  Domain domain = 1;
+}
+
+message DeleteDomainRequest {
+  string space_id = 1;
+  string domain_id = 2;
+}
+
+message DeleteDomainResponse {}
+
+// Domain is the client-visible representation of a Mycel domain.
+message Domain {
+  string space_id = 1;
+  string domain_id = 2;
+  string name = 3;
+  string description = 4;
+  DomainState state = 5;
+
+  // The default domain is created automatically with each space, is named
+  // "default", cannot be renamed, and cannot be deleted.
+  bool default = 6;
+
+  // System/internal domains are hidden from normal clients unless the caller has
+  // admin/system visibility.
+  bool system = 7;
+
+  google.protobuf.Timestamp create_time = 8;
+  google.protobuf.Timestamp update_time = 9;
+
+  // Access currently effective for the authenticated caller. This is advisory
+  // for client UI; the daemon still enforces authorization on each request.
+  mycel.common.v1.EffectiveAccess caller_access = 10;
+
+  // Stable human-readable key unique within the space.
+  string key = 11;
+
+  // Controls whether the domain participates in broad discovery operations.
+  DomainDiscoveryMode discovery_mode = 12;
+
+  // Controls whether the domain participates in graph query/search operations.
+  DomainSearchMode search_mode = 13;
+
+  // Controls whether the domain participates in semantic indexing and search.
+  DomainSemanticMode semantic_mode = 14;
+
+  // Read-only domains reject normal client/user graph mutations. Admin/import
+  // paths may still replace or update read-only domains.
+  bool read_only = 15;
+}
+
+enum DomainDiscoveryMode {
+  DOMAIN_DISCOVERY_MODE_UNSPECIFIED = 0;
+  DOMAIN_DISCOVERY_MODE_NORMAL = 1;
+  DOMAIN_DISCOVERY_MODE_EXPLICIT_ONLY = 2;
+  DOMAIN_DISCOVERY_MODE_HIDDEN = 3;
+}
+
+enum DomainSearchMode {
+  DOMAIN_SEARCH_MODE_UNSPECIFIED = 0;
+  DOMAIN_SEARCH_MODE_NORMAL = 1;
+  DOMAIN_SEARCH_MODE_EXPLICIT_ONLY = 2;
+  DOMAIN_SEARCH_MODE_DISABLED = 3;
+}
+
+enum DomainSemanticMode {
+  DOMAIN_SEMANTIC_MODE_UNSPECIFIED = 0;
+  DOMAIN_SEMANTIC_MODE_NORMAL = 1;
+  DOMAIN_SEMANTIC_MODE_EXPLICIT_ONLY = 2;
+  DOMAIN_SEMANTIC_MODE_DISABLED = 3;
+}
+
+enum DomainState {
+  DOMAIN_STATE_UNSPECIFIED = 0;
+  DOMAIN_STATE_ACTIVE = 1;
+}

@@ -1,0 +1,257 @@
+syntax = "proto3";
+
+package mycel.client.v1;
+
+import "google/protobuf/struct.proto";
+import "mycel/client/v1/graph.proto";
+
+
+// QueryService provides transaction-scoped structured graph queries.
+service QueryService {
+  // ExecuteQuery executes a read-only structured graph query inside a
+  // transaction snapshot.
+  rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);
+
+  // ExecuteGQL executes textual Mycel GQL inside an existing transaction.
+  rpc ExecuteGQL(ExecuteGQLRequest) returns (ExecuteGQLResponse);
+
+  // ExecuteGQLScript executes multiple semicolon-separated Mycel GQL statements.
+  rpc ExecuteGQLScript(ExecuteGQLScriptRequest) returns (ExecuteGQLScriptResponse);
+}
+
+message ExecuteQueryRequest {
+  string transaction_id = 1;
+  GraphQuery query = 2;
+
+  // Maximum number of rows to return. The daemon may cap this value.
+  int32 page_size = 3;
+
+  // Opaque continuation token returned by a previous query call.
+  string page_token = 4;
+}
+
+message ExecuteQueryResponse {
+  repeated QueryRow rows = 1;
+  string next_page_token = 2;
+
+  // Normalized result envelope shared with textual GQL responses.
+  QueryResult result = 3;
+}
+
+message ExecuteGQLRequest {
+  string transaction_id = 1;
+  string query = 2;
+  map<string, google.protobuf.Value> params = 3;
+  int32 page_size = 4;
+  string page_token = 5;
+}
+
+message ExecuteGQLResponse {
+  QueryResult result = 1;
+}
+
+message ExecuteGQLScriptRequest {
+  string transaction_id = 1;
+  string script = 2;
+  map<string, google.protobuf.Value> params = 3;
+  bool stop_on_error = 4;
+  int32 page_size = 5;
+}
+
+message ExecuteGQLScriptResponse {
+  repeated GQLStatementResult statements = 1;
+  QueryResult result = 2;
+}
+
+message GQLStatementResult {
+  int32 index = 1;
+  string statement = 2;
+  bool success = 3;
+  QueryResult result = 4;
+  string error = 5;
+}
+
+message QueryResult {
+  repeated QueryRow rows = 1;
+  ResultGraph graph = 2;
+  QueryCounters counters = 3;
+  string next_page_token = 4;
+}
+
+message ResultGraph {
+  repeated Node nodes = 1;
+  repeated Edge edges = 2;
+}
+
+message QueryCounters {
+  int32 rows_returned = 1;
+  int32 nodes_inserted = 2;
+  int32 nodes_updated = 3;
+  int32 nodes_deleted = 4;
+  int32 edges_inserted = 5;
+  int32 edges_deleted = 6;
+}
+
+message GraphQuery {
+  GraphPattern match = 1;
+  optional Expr where = 2;
+  repeated ReturnProjection returns = 3;
+  repeated OrderSpec order_by = 4;
+
+  // Optional row limit. A value of 0 means no explicit query-level limit; daemon
+  // policy may still impose limits.
+  int32 limit = 5;
+}
+
+// GraphPattern describes a single linear graph traversal pattern.
+message GraphPattern {
+  NodePattern start = 1;
+  repeated TraversalStep steps = 2;
+}
+
+message NodePattern {
+  string alias = 1;
+
+
+  // Required labels for the matched node.
+  repeated string labels = 3;
+}
+
+message TraversalStep {
+  TraversalDirection direction = 1;
+  string edge_kind = 2;
+  DepthSpec depth = 3;
+  NodePattern target = 4;
+}
+
+enum TraversalDirection {
+  TRAVERSAL_DIRECTION_UNSPECIFIED = 0;
+  TRAVERSAL_DIRECTION_OUT = 1;
+  TRAVERSAL_DIRECTION_IN = 2;
+}
+
+message DepthSpec {
+  int32 min_depth = 1;
+
+  // -1 means unbounded.
+  int32 max_depth = 2;
+}
+
+message Expr {
+  oneof expr {
+    BetweenExpr between = 1;
+    AndExpr and = 2;
+    HasTagExpr has_tag = 3;
+    PropertyExistsExpr property_exists = 4;
+    PropertyEqualsExpr property_equals = 5;
+  }
+}
+
+message BetweenExpr {
+  ValueExpr value = 1;
+  ValueExpr low = 2;
+  ValueExpr high = 3;
+}
+
+message AndExpr {
+  repeated Expr exprs = 1;
+}
+
+// HasTagExpr matches nodes whose user properties include the tag. The daemon
+// applies Mycel tag normalization rules before evaluating the predicate.
+message HasTagExpr {
+  string alias = 1;
+  string tag = 2;
+}
+
+// PropertyExistsExpr matches nodes whose user properties contain name. The
+// daemon applies Mycel property-name normalization rules.
+message PropertyExistsExpr {
+  string alias = 1;
+  string name = 2;
+}
+
+// PropertyEqualsExpr matches nodes whose user property name equals value.
+// Supported values are string, number, and boolean.
+message PropertyEqualsExpr {
+  string alias = 1;
+  string name = 2;
+  google.protobuf.Value value = 3;
+}
+
+message ValueExpr {
+  oneof expr {
+    PropExpr prop = 1;
+    LiteralExpr literal = 2;
+    DateExpr date = 3;
+    CurrentDateExpr current_date = 4;
+  }
+}
+
+message PropExpr {
+  string alias = 1;
+  string name = 2;
+}
+
+message LiteralExpr {
+  google.protobuf.Value value = 1;
+}
+
+message DateExpr {
+  // Calendar date literal in YYYY-MM-DD form.
+  string value = 1;
+
+  // Optional signed day offset applied after evaluating the date.
+  int32 offset_days = 2;
+}
+
+message CurrentDateExpr {
+  // Optional signed day offset applied after evaluating the current date.
+  int32 offset_days = 1;
+}
+
+message ReturnProjection {
+  string alias = 1;
+  string output_name = 2;
+  ReturnProjectionKind kind = 3;
+}
+
+enum ReturnProjectionKind {
+  RETURN_PROJECTION_KIND_UNSPECIFIED = 0;
+  RETURN_PROJECTION_KIND_NODE = 1;
+  RETURN_PROJECTION_KIND_TREE = 2;
+  RETURN_PROJECTION_KIND_SCALAR = 3;
+}
+
+message OrderSpec {
+  ValueExpr value = 1;
+  SortDirection direction = 2;
+}
+
+enum SortDirection {
+  SORT_DIRECTION_UNSPECIFIED = 0;
+  SORT_DIRECTION_ASC = 1;
+  SORT_DIRECTION_DESC = 2;
+}
+
+message QueryRow {
+  map<string, QueryValue> fields = 1;
+}
+
+message QueryValue {
+  oneof value {
+    Node node = 1;
+    Tree tree = 2;
+    google.protobuf.Value scalar = 3;
+    Edge edge = 4;
+  }
+}
+
+message Tree {
+  repeated TreeNode roots = 1;
+}
+
+message TreeNode {
+  Node node = 1;
+  repeated TreeNode children = 2;
+}

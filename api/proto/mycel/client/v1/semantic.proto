@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package mycel.client.v1;
+
+import "mycel/client/v1/graph.proto";
+
+
+// SemanticService exposes client-facing semantic search. Semantic index
+// creation/configuration, provider credentials, policies, maintenance, and
+// backfill controls belong to the Admin API.
+service SemanticService {
+  // ListSemanticIndexes lists searchable semantic indexes available to the
+  // authenticated caller for a space/domain.
+  rpc ListSemanticIndexes(ListSemanticIndexesRequest) returns (ListSemanticIndexesResponse);
+
+  // SemanticSearch searches committed semantic index state for a space/domain.
+  rpc SemanticSearch(SemanticSearchRequest) returns (SemanticSearchResponse);
+}
+
+message ListSemanticIndexesRequest {
+  string space_id = 1;
+  string domain_id = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListSemanticIndexesResponse {
+  repeated SemanticIndex indexes = 1;
+  string next_page_token = 2;
+}
+
+message SemanticSearchRequest {
+  string space_id = 1;
+  string domain_id = 2;
+
+  // Optional. If omitted, the daemon uses the default searchable semantic index
+  // for the domain when one is available.
+  optional string semantic_index_id = 3;
+
+  string query = 4;
+  int32 limit = 5;
+
+  // Optional minimum score threshold. Score meaning is index/model dependent but
+  // higher scores should represent more relevant results.
+  optional double min_score = 6;
+}
+
+message SemanticSearchResponse {
+  repeated SemanticSearchResult results = 1;
+
+  // Non-fatal search warnings such as stale index state, unavailable vector
+  // spaces, or skipped providers. Warnings must not include secrets.
+  repeated string warnings = 2;
+}
+
+message SemanticSearchResult {
+  string node_id = 1;
+  double score = 2;
+
+  // Included for client convenience. Result visibility still requires graph.read
+  // and semantic.search authorization.
+  Node node = 3;
+
+  repeated string matched_chunk_ids = 4;
+  string snippet = 5;
+}
+
+message SemanticIndex {
+  string semantic_index_id = 1;
+  string key = 2;
+  string display_name = 3;
+  string description = 4;
+  string space_id = 5;
+  string domain_id = 6;
+
+  // Safe display labels only. Provider secrets, credential ids, and raw policy
+  // internals are intentionally not exposed through the Client API.
+  string model_label = 7;
+  string vector_store_label = 8;
+
+  SemanticIndexState state = 9;
+}
+
+enum SemanticIndexState {
+  SEMANTIC_INDEX_STATE_UNSPECIFIED = 0;
+  SEMANTIC_INDEX_STATE_ACTIVE = 1;
+  SEMANTIC_INDEX_STATE_BUILDING = 2;
+  SEMANTIC_INDEX_STATE_STALE = 3;
+  SEMANTIC_INDEX_STATE_DISABLED = 4;
+  SEMANTIC_INDEX_STATE_ERROR = 5;
+}

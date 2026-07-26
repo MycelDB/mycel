@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
@@ -38,6 +39,20 @@ func (s *AdminSchemaService) GetDomainSchema(ctx context.Context, req *adminv1.G
 	return &adminv1.GetDomainSchemaResponse{Gwl: value.SourceGWL}, nil
 }
 
+func (s *AdminSchemaService) DeleteDomainSchema(ctx context.Context, req *adminv1.DeleteDomainSchemaRequest) (*adminv1.DeleteDomainSchemaResponse, error) {
+	if _, err := principalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	domainID, err := uuid.Parse(req.GetDomainId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "domain_id must be a UUID")
+	}
+	if err := s.schemas.DeleteDomainSchema(ctx, graph.DomainID(domainID)); err != nil {
+		return nil, mapAdminSchemaError(err)
+	}
+	return &adminv1.DeleteDomainSchemaResponse{}, nil
+}
+
 func (s *AdminSchemaService) ValidateSchema(ctx context.Context, req *adminv1.ValidateSchemaRequest) (*adminv1.ValidateSchemaResponse, error) {
 	if _, err := principalFromContext(ctx); err != nil {
 		return nil, err
@@ -56,4 +71,9 @@ func (s *AdminSchemaService) ValidateSchema(ctx context.Context, req *adminv1.Va
 	return &adminv1.ValidateSchemaResponse{Valid: true}, nil
 }
 
-func mapAdminSchemaError(err error) error { return status.Error(codes.Internal, err.Error()) }
+func mapAdminSchemaError(err error) error {
+	if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+		return status.Error(codes.NotFound, "schema not found")
+	}
+	return status.Error(codes.Internal, err.Error())
+}

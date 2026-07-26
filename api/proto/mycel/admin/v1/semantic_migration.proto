@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package mycel.admin.v1;
+
+
+// AdminSemanticMigrationService migrates legacy semantic/embedding resources to
+// the daemon semantic/inference control plane.
+service AdminSemanticMigrationService {
+  rpc MigrateLegacyEmbeddings(MigrateLegacyEmbeddingsRequest) returns (MigrateLegacyEmbeddingsResponse);
+}
+
+message MigrateLegacyEmbeddingsRequest {
+  string space_id = 1;
+  string domain_id = 2;
+
+  // Optional. Defaults to the space owner when omitted.
+  string owner_user_id = 3;
+
+  // Optional legacy profile UUID or name.
+  string profile_ref = 4;
+
+  bool allow_background_use = 5;
+  bool add_allow_policy = 6;
+  bool strict = 7;
+  bool dry_run = 8;
+  int32 limit = 9;
+}
+
+message MigrateLegacyEmbeddingsResponse {
+  int32 profiles_seen = 1;
+  int32 profiles_migrated = 2;
+  int32 profiles_skipped = 3;
+  bool dry_run = 4;
+  repeated string endpoint_ids = 5;
+  repeated string model_ids = 6;
+  repeated string credential_ids = 7;
+  repeated string semantic_index_ids = 8;
+  repeated string credential_grant_ids = 9;
+  repeated string policy_ids = 10;
+  repeated string warnings = 11;
+}

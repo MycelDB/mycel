@@ -58,6 +58,20 @@ func (s *SchemaService) PutDomainSchema(ctx context.Context, req *clientv1.PutDo
 	return &clientv1.PutDomainSchemaResponse{Gwl: stored.SourceGWL}, nil
 }
 
+func (s *SchemaService) DeleteDomainSchema(ctx context.Context, req *clientv1.DeleteDomainSchemaRequest) (*clientv1.DeleteDomainSchemaResponse, error) {
+	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	domainID, err := parseDomainID(req.GetDomainId())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.schemas.DeleteDomainSchema(ctx, domainID); err != nil {
+		return nil, mapSchemaError(err)
+	}
+	return &clientv1.DeleteDomainSchemaResponse{}, nil
+}
+
 func (s *SchemaService) ValidateSchema(ctx context.Context, req *clientv1.ValidateSchemaRequest) (*clientv1.ValidateSchemaResponse, error) {
 	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
 		return nil, err

@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package mycel.admin.v1;
+
+import "mycel/client/v1/automation.proto";
+
+// AdminAutomationService exposes operator access to graph automation definitions and run history.
+service AdminAutomationService {
+  rpc ValidateAutomation(ValidateAutomationRequest) returns (ValidateAutomationResponse);
+  rpc CreateAutomation(CreateAutomationRequest) returns (CreateAutomationResponse);
+  rpc UpdateAutomation(UpdateAutomationRequest) returns (UpdateAutomationResponse);
+  rpc DeleteAutomation(DeleteAutomationRequest) returns (DeleteAutomationResponse);
+  rpc GetAutomation(GetAutomationRequest) returns (GetAutomationResponse);
+  rpc ListAutomations(ListAutomationsRequest) returns (ListAutomationsResponse);
+  rpc EnableAutomation(EnableAutomationRequest) returns (EnableAutomationResponse);
+  rpc DisableAutomation(DisableAutomationRequest) returns (DisableAutomationResponse);
+  rpc ListAutomationInvocations(ListAutomationInvocationsRequest) returns (ListAutomationInvocationsResponse);
+  rpc GetAutomationRun(GetAutomationRunRequest) returns (GetAutomationRunResponse);
+  rpc RetryAutomationInvocation(RetryAutomationInvocationRequest) returns (RetryAutomationInvocationResponse);
+  rpc CancelAutomationInvocation(CancelAutomationInvocationRequest) returns (CancelAutomationInvocationResponse);
+}
+
+message ValidateAutomationRequest {
+  string domain_id = 1;
+  string definition_json = 2;
+}
+
+message ValidateAutomationResponse {
+  bool valid = 1;
+  string error = 2;
+  string normalized_definition_json = 3;
+}
+
+message CreateAutomationRequest {
+  string domain_id = 1;
+  string definition_json = 2;
+}
+
+message UpdateAutomationRequest {
+  string domain_id = 1;
+  string automation_id = 2;
+  string definition_json = 3;
+}
+
+message DeleteAutomationRequest {
+  string domain_id = 1;
+  string automation_id = 2;
+}
+
+message DeleteAutomationResponse {}
+
+message GetAutomationRequest {
+  string domain_id = 1;
+  string automation_id = 2;
+}
+
+message ListAutomationsRequest {
+  string domain_id = 1;
+  string status = 2;
+}
+
+message ListAutomationsResponse {
+  repeated mycel.client.v1.AutomationDefinitionSummary automations = 1;
+}
+
+message EnableAutomationRequest {
+  string domain_id = 1;
+  string automation_id = 2;
+}
+
+message DisableAutomationRequest {
+  string domain_id = 1;
+  string automation_id = 2;
+}
+
+message CreateAutomationResponse {
+  string definition_json = 1;
+}
+
+message UpdateAutomationResponse {
+  string definition_json = 1;
+}
+
+message GetAutomationResponse {
+  string definition_json = 1;
+}
+
+message EnableAutomationResponse {
+  string definition_json = 1;
+}
+
+message DisableAutomationResponse {
+  string definition_json = 1;
+}
+
+message ListAutomationInvocationsRequest {
+  string domain_id = 1;
+  string automation_id = 2;
+  string status = 3;
+  int32 limit = 4;
+}
+
+message ListAutomationInvocationsResponse {
+  repeated mycel.client.v1.AutomationInvocationSummary invocations = 1;
+}
+
+message GetAutomationRunRequest {
+  string domain_id = 1;
+  string run_id = 2;
+}
+
+message GetAutomationRunResponse {
+  string run_json = 1;
+}
+
+message RetryAutomationInvocationRequest {
+  string domain_id = 1;
+  string invocation_id = 2;
+}
+
+message RetryAutomationInvocationResponse {
+  mycel.client.v1.AutomationInvocationSummary invocation = 1;
+}
+
+message CancelAutomationInvocationRequest {
+  string domain_id = 1;
+  string invocation_id = 2;
+}
+
+message CancelAutomationInvocationResponse {
+  mycel.client.v1.AutomationInvocationSummary invocation = 1;
+}

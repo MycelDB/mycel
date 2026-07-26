@@ -33,6 +33,15 @@ func (c *validationCache) put(domainID graph.DomainID, compiled *schemacompile.C
 	c.byHash[compiled.Hash] = compiled
 }
 
+func (c *validationCache) delete(domainID graph.DomainID) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.byDomain, domainID)
+}
+
 func (c *validationCache) get(domainID graph.DomainID) (*schemacompile.CompiledSchema, bool) {
 	if c == nil {
 		return nil, false

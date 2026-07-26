@@ -104,6 +104,18 @@ func (s *FileStore) PutDomainSchema(ctx context.Context, value schema.DomainSche
 	return os.Rename(tmpName, path)
 }
 
+func (s *FileStore) DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Remove(s.path(domainID)); errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *FileStore) path(domainID graph.DomainID) string {
 	return filepath.Join(s.dir, domainID.String()+".json")
 }

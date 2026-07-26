@@ -15,6 +15,7 @@ var ErrNotFound = errors.New("schema not found")
 type Store interface {
 	GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schema.DomainSchema, error)
 	PutDomainSchema(ctx context.Context, schema schema.DomainSchema) error
+	DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error
 	ListDomainSchemas(ctx context.Context) ([]schema.DomainSchema, error)
 }
 
@@ -65,6 +66,19 @@ func (s *MemoryStore) PutDomainSchema(ctx context.Context, value schema.DomainSc
 		s.schemas = map[graph.DomainID]schema.DomainSchema{}
 	}
 	s.schemas[value.DomainID] = cloneSchema(value)
+	return nil
+}
+
+func (s *MemoryStore) DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.schemas[domainID]; !ok {
+		return ErrNotFound
+	}
+	delete(s.schemas, domainID)
 	return nil
 }
 

@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package mycel.admin.v1;
+
+import "mycel/client/v1/schema.proto";
+
+// AdminSchemaService exposes operator read/validation access to domain schemas.
+service AdminSchemaService {
+  rpc GetDomainSchema(GetDomainSchemaRequest) returns (GetDomainSchemaResponse);
+  rpc DeleteDomainSchema(DeleteDomainSchemaRequest) returns (DeleteDomainSchemaResponse);
+  rpc ValidateSchema(ValidateSchemaRequest) returns (ValidateSchemaResponse);
+}
+
+message GetDomainSchemaRequest {
+  string domain_id = 1;
+}
+
+message GetDomainSchemaResponse {
+  string gwl = 1;
+}
+
+message DeleteDomainSchemaRequest {
+  string domain_id = 1;
+}
+
+message DeleteDomainSchemaResponse {}
+
+message ValidateSchemaRequest {
+  string gwl = 1;
+}
+
+message ValidateSchemaResponse {
+  bool valid = 1;
+  repeated mycel.client.v1.SchemaValidationIssue issues = 2;
+}

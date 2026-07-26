@@ -51,6 +51,7 @@ func (r ValidationResult) Valid() bool {
 type Manager interface {
 	GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schema.DomainSchema, error)
 	PutDomainSchema(ctx context.Context, schema schema.DomainSchema) error
+	DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error
 	ValidateNode(ctx context.Context, domainID graph.DomainID, node graph.Node) (ValidationResult, error)
 	ValidateEdge(ctx context.Context, domainID graph.DomainID, edge graph.Edge, from graph.Node, to graph.Node) (ValidationResult, error)
 	PutDomainSchemaGWL(ctx context.Context, domainID graph.DomainID, source string) error
@@ -123,6 +124,10 @@ func (m *SchemaManager) PutDomainSchema(ctx context.Context, value schema.Domain
 	return m.commitDomainSchema(ctx, value)
 }
 
+func (m *SchemaManager) DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error {
+	return m.commitDeleteDomainSchema(ctx, domainID)
+}
+
 func (m *SchemaManager) applyDomainSchema(ctx context.Context, value schema.DomainSchema) error {
 	compiled, err := schemacompile.Compile(value)
 	if err != nil {
@@ -132,6 +137,14 @@ func (m *SchemaManager) applyDomainSchema(ctx context.Context, value schema.Doma
 		return err
 	}
 	m.cache.put(value.DomainID, compiled)
+	return nil
+}
+
+func (m *SchemaManager) applyDeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error {
+	if err := m.store.DeleteDomainSchema(ctx, domainID); err != nil {
+		return err
+	}
+	m.cache.delete(domainID)
 	return nil
 }
 

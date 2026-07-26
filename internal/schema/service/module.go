@@ -35,6 +35,9 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 			if err := registry.Register(recordTypeSchemaPut, wal.ApplierFunc(m.SchemaManager.applySchemaPut)); err != nil {
 				return coreruntime.Abort(ModuleName, "wal", "register schema put WAL applier", err)
 			}
+			if err := registry.Register(recordTypeSchemaDelete, wal.ApplierFunc(m.SchemaManager.applySchemaDelete)); err != nil {
+				return coreruntime.Abort(ModuleName, "wal", "register schema delete WAL applier", err)
+			}
 		}
 	}
 	if err := m.SchemaManager.WarmCache(ctx); err != nil {
