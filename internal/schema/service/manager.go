@@ -15,6 +15,7 @@ import (
 	"github.com/myceldb/mycel/internal/schema/dsl"
 	schema "github.com/myceldb/mycel/internal/schema/model"
 	"github.com/myceldb/mycel/internal/schema/storage"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 var ErrSchemaNotFound = storage.ErrNotFound
@@ -58,9 +59,12 @@ type Manager interface {
 }
 
 type SchemaManager struct {
-	store storage.Store
-	now   func() time.Time
-	cache *validationCache
+	store       storage.Store
+	now         func() time.Time
+	cache       *validationCache
+	wal         *wal.Manager
+	walProgress wal.AppliedLSNStore
+	walWaiter   *wal.ApplyWaiter
 }
 
 func NewManager(store storage.Store) *SchemaManager {
@@ -114,6 +118,15 @@ func (m *SchemaManager) PutDomainSchema(ctx context.Context, value schema.Domain
 	}
 	if value.SourceHash == "" && value.SourceGWL != "" {
 		value.SourceHash = schemacompile.SourceHash(value.SourceGWL)
+	}
+	_ = compiled
+	return m.commitDomainSchema(ctx, value)
+}
+
+func (m *SchemaManager) applyDomainSchema(ctx context.Context, value schema.DomainSchema) error {
+	compiled, err := schemacompile.Compile(value)
+	if err != nil {
+		return err
 	}
 	if err := m.store.PutDomainSchema(ctx, value); err != nil {
 		return err
