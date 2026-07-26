@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/schema/dsl"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	"google.golang.org/grpc/codes"
@@ -36,11 +37,7 @@ func (s *SchemaService) GetDomainSchema(ctx context.Context, req *clientv1.GetDo
 	if err != nil {
 		return nil, mapSchemaError(err)
 	}
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-	return &clientv1.GetDomainSchemaResponse{SchemaJson: string(data)}, nil
+	return &clientv1.GetDomainSchemaResponse{Gwl: value.SourceGWL}, nil
 }
 
 func (s *SchemaService) PutDomainSchema(ctx context.Context, req *clientv1.PutDomainSchemaRequest) (*clientv1.PutDomainSchemaResponse, error) {
@@ -51,32 +48,41 @@ func (s *SchemaService) PutDomainSchema(ctx context.Context, req *clientv1.PutDo
 	if err != nil {
 		return nil, err
 	}
-	value, err := decodeSchemaJSON(req.GetSchemaJson())
-	if err != nil {
-		return nil, err
-	}
-	value.DomainID = domainID
-	if err := s.schemas.PutDomainSchema(ctx, value); err != nil {
+	if err := s.schemas.PutDomainSchemaGWL(ctx, domainID, req.GetGwl()); err != nil {
 		return nil, mapSchemaError(err)
 	}
 	stored, err := s.schemas.GetDomainSchema(ctx, domainID)
 	if err != nil {
 		return nil, mapSchemaError(err)
 	}
-	data, err := json.MarshalIndent(stored, "", "  ")
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+	return &clientv1.PutDomainSchemaResponse{Gwl: stored.SourceGWL}, nil
+}
+
+func (s *SchemaService) DeleteDomainSchema(ctx context.Context, req *clientv1.DeleteDomainSchemaRequest) (*clientv1.DeleteDomainSchemaResponse, error) {
+	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
+		return nil, err
 	}
-	return &clientv1.PutDomainSchemaResponse{SchemaJson: string(data)}, nil
+	domainID, err := parseDomainID(req.GetDomainId())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.schemas.DeleteDomainSchema(ctx, domainID); err != nil {
+		return nil, mapSchemaError(err)
+	}
+	return &clientv1.DeleteDomainSchemaResponse{}, nil
 }
 
 func (s *SchemaService) ValidateSchema(ctx context.Context, req *clientv1.ValidateSchemaRequest) (*clientv1.ValidateSchemaResponse, error) {
 	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
 		return nil, err
 	}
-	value, err := decodeSchemaJSON(req.GetSchemaJson())
+	value, err := dsl.Parse(req.GetGwl())
 	if err != nil {
 		return &clientv1.ValidateSchemaResponse{Valid: false, Issues: []*clientv1.SchemaValidationIssue{{Severity: "error", Message: err.Error()}}}, nil
+	}
+	if value.DomainID == uuid.Nil {
+		value.DomainID = graph.DomainID(uuid.Nil)
+		value.DomainID[15] = 1
 	}
 	if err := schemamodel.Validate(value); err != nil {
 		return &clientv1.ValidateSchemaResponse{Valid: false, Issues: []*clientv1.SchemaValidationIssue{{Severity: "error", Message: err.Error()}}}, nil
@@ -135,13 +141,6 @@ func (s *SchemaService) ValidateGraph(ctx context.Context, req *clientv1.Validat
 	return &clientv1.ValidateGraphResponse{Valid: len(issues) == 0, Issues: issues}, nil
 }
 
-func decodeSchemaJSON(value string) (schemamodel.DomainSchema, error) {
-	var out schemamodel.DomainSchema
-	if err := json.Unmarshal([]byte(value), &out); err != nil {
-		return out, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid schema JSON: %v", err))
-	}
-	return out.Normalize(), nil
-}
 func parseDomainID(value string) (graph.DomainID, error) {
 	id, err := uuid.Parse(value)
 	if err != nil {

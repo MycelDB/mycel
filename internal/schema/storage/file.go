@@ -39,6 +39,35 @@ func (s *FileStore) GetDomainSchema(ctx context.Context, domainID graph.DomainID
 	return value.Normalize(), nil
 }
 
+func (s *FileStore) ListDomainSchemas(ctx context.Context) ([]schema.DomainSchema, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(s.dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := []schema.DomainSchema{}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var value schema.DomainSchema
+		if err := json.Unmarshal(data, &value); err != nil {
+			return nil, fmt.Errorf("decode schema %s: %w", entry.Name(), err)
+		}
+		out = append(out, value.Normalize())
+	}
+	return out, nil
+}
+
 func (s *FileStore) PutDomainSchema(ctx context.Context, value schema.DomainSchema) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -73,6 +102,18 @@ func (s *FileStore) PutDomainSchema(ctx context.Context, value schema.DomainSche
 		return err
 	}
 	return os.Rename(tmpName, path)
+}
+
+func (s *FileStore) DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Remove(s.path(domainID)); errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *FileStore) path(domainID graph.DomainID) string {

@@ -105,7 +105,7 @@ func validateFields(scope string, fields []FieldSpec) error {
 		}
 		seen[name] = struct{}{}
 		switch field.Type {
-		case FieldTypeString, FieldTypeInt, FieldTypeFloat, FieldTypeBool, FieldTypeDateTime, FieldTypeEnum:
+		case FieldTypeString, FieldTypeInt, FieldTypeFloat, FieldTypeBool, FieldTypeDateTime, FieldTypeDate, FieldTypeObject, FieldTypeMap, FieldTypeJSON, FieldTypeEnum:
 		default:
 			return fmt.Errorf("%s field %q has invalid type %q", scope, name, field.Type)
 		}

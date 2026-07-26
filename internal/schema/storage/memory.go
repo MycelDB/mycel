@@ -15,6 +15,8 @@ var ErrNotFound = errors.New("schema not found")
 type Store interface {
 	GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schema.DomainSchema, error)
 	PutDomainSchema(ctx context.Context, schema schema.DomainSchema) error
+	DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error
+	ListDomainSchemas(ctx context.Context) ([]schema.DomainSchema, error)
 }
 
 // MemoryStore is an in-memory schema store suitable for daemon tests and the
@@ -41,6 +43,19 @@ func (s *MemoryStore) GetDomainSchema(ctx context.Context, domainID graph.Domain
 	return cloneSchema(value), nil
 }
 
+func (s *MemoryStore) ListDomainSchemas(ctx context.Context) ([]schema.DomainSchema, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]schema.DomainSchema, 0, len(s.schemas))
+	for _, value := range s.schemas {
+		out = append(out, cloneSchema(value))
+	}
+	return out, nil
+}
+
 func (s *MemoryStore) PutDomainSchema(ctx context.Context, value schema.DomainSchema) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -51,6 +66,19 @@ func (s *MemoryStore) PutDomainSchema(ctx context.Context, value schema.DomainSc
 		s.schemas = map[graph.DomainID]schema.DomainSchema{}
 	}
 	s.schemas[value.DomainID] = cloneSchema(value)
+	return nil
+}
+
+func (s *MemoryStore) DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.schemas[domainID]; !ok {
+		return ErrNotFound
+	}
+	delete(s.schemas, domainID)
 	return nil
 }
 

@@ -30,6 +30,41 @@ func TestManagerPutGetDomainSchema(t *testing.T) {
 	}
 }
 
+func TestPutDomainSchemaGWLAndValidateExtendedTypes(t *testing.T) {
+	ctx := context.Background()
+	domainID := graph.DomainID(uuid.New())
+	mgr := NewManager(storage.NewMemoryStore())
+	source := `schema "PKM" version "1" mode strict
+node Journal {
+  record_type: enum pkm.journal required
+  journal_date: date required
+  properties: object required
+}`
+	if err := mgr.PutDomainSchemaGWL(ctx, domainID, source); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mgr.GetDomainSchema(ctx, domainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SourceGWL != source || got.SourceHash == "" {
+		t.Fatalf("source not persisted: %+v", got)
+	}
+	valid := graph.Node{Properties: map[string]any{"record_type": "pkm.journal", "journal_date": "2026-07-26", "properties": map[string]any{}}}
+	res, err := mgr.ValidateNode(ctx, domainID, valid)
+	if err != nil || !res.Valid() {
+		t.Fatalf("valid node rejected: res=%+v err=%v", res, err)
+	}
+	invalid := graph.Node{Properties: map[string]any{"record_type": "pkm.journal", "journal_date": "2026-7-26", "properties": "bad"}}
+	res, err = mgr.ValidateNode(ctx, domainID, invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Valid() {
+		t.Fatalf("invalid node accepted: %+v", res)
+	}
+}
+
 func TestSchemaValidationRejectsDuplicateLabels(t *testing.T) {
 	domainID := uuid.New()
 	mgr := NewManager(storage.NewMemoryStore())
