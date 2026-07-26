@@ -94,35 +94,13 @@ func RenderDomainsTable(domains []graph.Domain) {
 	t.Render()
 }
 
-func RenderClientTemplatesTable(templates []*clientv1.Template) {
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"Template ID", "Key", "Version", "Display Name", "State", "System"})
-	for _, tmpl := range templates {
-		t.AppendRow(table.Row{tmpl.GetTemplateId(), tmpl.GetKey(), tmpl.GetVersion(), tmpl.GetDisplayName(), tmpl.GetState().String(), tmpl.GetSystem()})
-	}
-	t.Render()
-}
-
-func RenderTemplatesTable(templates []graph.Template) {
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"Template ID", "Key", "Version", "Display Name", "System"})
-	for _, tmpl := range templates {
-		t.AppendRow(table.Row{tmpl.ID, tmpl.Key, tmpl.Version, tmpl.DisplayName, tmpl.System})
-	}
-	t.Render()
-}
-
 func RenderNodesTable(nodes []graph.Node) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"Node ID", "Template ID", "Content"})
+	t.AppendHeader(table.Row{"Node ID", "Content"})
 	for _, node := range nodes {
-		t.AppendRow(table.Row{node.ID, templateIDValue(node.TemplateID), previewValue(node.Content, 100)})
+		t.AppendRow(table.Row{node.ID, previewValue(node.Content, 100)})
 	}
 	t.Render()
 }
@@ -165,13 +143,6 @@ func stringPtrValue(value *string) string {
 		return ""
 	}
 	return *value
-}
-
-func templateIDValue(value *graph.TemplateID) string {
-	if value == nil {
-		return ""
-	}
-	return value.String()
 }
 
 func previewValue(value string, limit int) string {

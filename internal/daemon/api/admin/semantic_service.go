@@ -366,7 +366,7 @@ func sourcePolicyFromProto(in *adminv1.SemanticSourcePolicy) (domainsemantic.Sem
 	if extraction != domainsemantic.SourceExtractionSelf && extraction != domainsemantic.SourceExtractionSubtree {
 		return domainsemantic.SemanticSourcePolicy{}, status.Error(codes.InvalidArgument, "source_policy.extraction must be self or subtree")
 	}
-	out := domainsemantic.SemanticSourcePolicy{Extraction: extraction, TemplateKeys: append([]string(nil), in.GetTemplateKeys()...), IncludeProps: append([]string(nil), in.GetIncludeProps()...), MinimumTextLength: int(in.GetMinimumTextLength())}
+	out := domainsemantic.SemanticSourcePolicy{Extraction: extraction, IncludeProps: append([]string(nil), in.GetIncludeProps()...), MinimumTextLength: int(in.GetMinimumTextLength())}
 	if in.MaxDepth != nil {
 		v := int(in.GetMaxDepth())
 		out.MaxDepth = &v

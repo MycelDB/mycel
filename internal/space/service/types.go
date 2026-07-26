@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/myceldb/mycel/internal/graph/model"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
@@ -29,16 +28,6 @@ type Manager interface {
 	CreateDomain(ctx context.Context, userID string, input CreateDomainInput) (graph.Domain, error)
 	UpdateDomain(ctx context.Context, userID string, input UpdateDomainInput) (graph.Domain, error)
 	DeleteDomain(ctx context.Context, userID string, spaceID string, domainID string) error
-	ListTemplates(ctx context.Context, spaceID string, includeSystem bool, includeArchived bool) ([]graph.Template, error)
-	GetTemplate(ctx context.Context, spaceID string, templateID string) (graph.Template, error)
-	ListVisibleTemplates(ctx context.Context, userID string, spaceID string, includeSystem bool, includeArchived bool) ([]graph.Template, error)
-	GetVisibleTemplate(ctx context.Context, userID string, spaceID string, templateID string) (graph.Template, error)
-	FindVisibleTemplate(ctx context.Context, userID string, spaceID string, key string, version string) (graph.Template, error)
-	CreateTemplate(ctx context.Context, userID string, spaceID string, template storetemplate.TemplateImport) (graph.Template, error)
-	UpdateTemplate(ctx context.Context, userID string, spaceID string, templateID string, displayName *string, description *string) (graph.Template, error)
-	ArchiveTemplate(ctx context.Context, userID string, spaceID string, templateID string) (graph.Template, error)
-	DeleteTemplate(ctx context.Context, userID string, spaceID string, templateID string) error
-	ImportTemplates(ctx context.Context, userID string, spaceID string, templates []storetemplate.TemplateImport) ([]graph.Template, error)
 }
 
 type CreateSpaceInput struct {

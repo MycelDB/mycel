@@ -21,8 +21,6 @@ const (
 	recordTypeDeleteDomain                 wal.RecordType = "space.domain.delete.v1"
 	recordTypeGrantSpaceUser               wal.RecordType = "space.acl.grant.v1"
 	recordTypeDeleteSpace                  wal.RecordType = "space.delete.v1"
-	recordTypePutTemplate                  wal.RecordType = "space.template.put.v1"
-	recordTypeDeleteTemplate               wal.RecordType = "space.template.delete.v1"
 )
 
 type createSpaceWithDefaultDomainRecord struct {
@@ -50,15 +48,6 @@ type grantSpaceUserRecord struct {
 
 type deleteSpaceRecord struct {
 	SpaceID domainspace.SpaceID `json:"space_id"`
-}
-
-type putTemplateRecord struct {
-	Template graph.Template `json:"template"`
-}
-
-type deleteTemplateRecord struct {
-	TemplateID graph.TemplateID    `json:"template_id"`
-	SpaceID    domainspace.SpaceID `json:"space_id"`
 }
 
 func (m *Module) buildCreateSpaceRecord(input CreateSpaceInput) createSpaceWithDefaultDomainRecord {
@@ -150,27 +139,7 @@ func (m *Module) applyDeleteSpace(ctx context.Context, rec wal.Record) error {
 	if err := m.access.DeleteForSpace(ctx, payload.SpaceID); err != nil {
 		return err
 	}
-	if err := m.templates.DeleteForSpace(ctx, payload.SpaceID); err != nil {
-		return err
-	}
 	return m.spaces.ApplyDelete(ctx, payload.SpaceID)
-}
-
-func (m *Module) applyPutTemplate(ctx context.Context, rec wal.Record) error {
-	var payload putTemplateRecord
-	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
-		return err
-	}
-	_, err := m.templates.ApplyPut(ctx, payload.Template)
-	return err
-}
-
-func (m *Module) applyDeleteTemplate(ctx context.Context, rec wal.Record) error {
-	var payload deleteTemplateRecord
-	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
-		return err
-	}
-	return m.templates.ApplyDelete(ctx, payload.TemplateID)
 }
 
 func (m *Module) applyCreateSpaceRecord(ctx context.Context, payload createSpaceWithDefaultDomainRecord) (domainspace.Space, graph.Domain, error) {

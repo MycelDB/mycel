@@ -14,15 +14,7 @@ import (
 	"github.com/myceldb/mycel/internal/blob/storage"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/graph/storage"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
-)
-
-// System blob template identity. It is the fallback template applied by
-// AddBlobNode when no TemplateID is supplied, so every blob node is typed.
-const (
-	SystemBlobTemplateKey     = "blob"
-	SystemBlobTemplateVersion = "1.0.0"
 )
 
 // Auto-populated blob metadata property names.
@@ -86,15 +78,7 @@ func (s *FileSession) AddBlobNode(ctx context.Context, in sessionapi.AddBlobNode
 
 func (s *FileSession) stageBlobNode(ctx context.Context, in sessionapi.AddBlobNodeInput, nodes []graph.Node) (graph.Node, blobstorage.StagedBlob, error) {
 	if in.Reader == nil {
-		return graph.Node{}, blobstorage.StagedBlob{}, fmt.Errorf("%w: reader is required", storetemplate.ErrInvalidInput)
-	}
-	templateID := in.TemplateID
-	if templateID == nil {
-		id, err := s.ensureSystemBlobTemplate(ctx)
-		if err != nil {
-			return graph.Node{}, blobstorage.StagedBlob{}, err
-		}
-		templateID = &id
+		return graph.Node{}, blobstorage.StagedBlob{}, fmt.Errorf("%w: reader is required", errInvalidInput)
 	}
 	blobs, err := s.blobStore()
 	if err != nil {
@@ -132,15 +116,31 @@ func (s *FileSession) stageBlobNode(ctx context.Context, in sessionapi.AddBlobNo
 	if in.OriginalFilename != "" {
 		props[PropOriginalFilename] = filepath.Base(in.OriginalFilename)
 	}
-	node, err := s.buildNode(ctx, nodes, nodeID, templateID, "", props)
+	node, err := s.buildNode(ctx, nodeID, "", props)
 	if err != nil {
 		_ = blobs.Discard(ctx, staged)
 		return graph.Node{}, blobstorage.StagedBlob{}, err
 	}
 	node.BlobRef = &staged.ID
+	if node.Payload == nil {
+		node.Payload = map[string]any{}
+	}
+	node.Payload["blob_id"] = string(staged.ID)
+	node.Payload[PropMimeType] = mimeType
+	node.Payload[PropSizeBytes] = staged.SizeBytes
+	if in.DeclaredMimeType != "" {
+		node.Payload[PropDeclaredMimeType] = in.DeclaredMimeType
+	}
+	if in.OriginalFilename != "" {
+		node.Payload[PropOriginalFilename] = filepath.Base(in.OriginalFilename)
+	}
 	now := time.Now().UTC()
 	node.CreatedAt = now
 	node.UpdatedAt = now
+	if err := s.validateSchemaNode(ctx, node); err != nil {
+		_ = blobs.Discard(ctx, staged)
+		return graph.Node{}, blobstorage.StagedBlob{}, err
+	}
 	return node, staged, nil
 }
 
@@ -239,65 +239,6 @@ func (s *FileSession) sweepOrphanBlobs(ctx context.Context) {
 			continue
 		}
 		_ = s.blobs.Delete(ctx, id)
-	}
-}
-
-// ensureSystemBlobTemplate resolves the system blob template for the space,
-// importing it on first use.
-func (s *FileSession) ensureSystemBlobTemplate(ctx context.Context) (graph.TemplateID, error) {
-	t, err := s.templateManager.Find(ctx, s.spaceID, SystemBlobTemplateKey, SystemBlobTemplateVersion)
-	if err == nil {
-		return t.ID, nil
-	}
-	if !errors.Is(err, storetemplate.ErrTemplateNotFound) {
-		return graph.TemplateID{}, err
-	}
-	created, err := s.templateManager.Import(ctx, s.spaceID, systemBlobTemplateDocument())
-	if err != nil {
-		if errors.Is(err, storetemplate.ErrDuplicateTemplateVersion) {
-			// Lost a registration race; the template exists now.
-			t, findErr := s.templateManager.Find(ctx, s.spaceID, SystemBlobTemplateKey, SystemBlobTemplateVersion)
-			if findErr != nil {
-				return graph.TemplateID{}, findErr
-			}
-			return t.ID, nil
-		}
-		return graph.TemplateID{}, err
-	}
-	for _, t := range created {
-		if t.Key == SystemBlobTemplateKey {
-			return t.ID, nil
-		}
-	}
-	return graph.TemplateID{}, fmt.Errorf("system blob template import returned no template")
-}
-
-func systemBlobTemplateDocument() storetemplate.ImportDocument {
-	return storetemplate.ImportDocument{
-		SchemaVersion: 1,
-		Templates: []storetemplate.TemplateImport{
-			{
-				Key:         SystemBlobTemplateKey,
-				Version:     SystemBlobTemplateVersion,
-				DisplayName: "Blob",
-				Description: "Binary content stored in the space blob store (images, PDFs, audio, ...). Children act as annotations.",
-				System:      true,
-				Properties: storetemplate.PropertyPolicyImport{
-					AllowExtra: true,
-					Allowed: []storetemplate.TemplatePropertyImport{
-						{Name: PropMimeType, Type: graph.PropertyTypeString, Description: "MIME type sniffed from content"},
-						{Name: PropDeclaredMimeType, Type: graph.PropertyTypeString, Description: "MIME type declared by the uploader"},
-						{Name: PropOriginalFilename, Type: graph.PropertyTypeString, Description: "Original filename as uploaded"},
-						{Name: PropSizeBytes, Type: graph.PropertyTypeNumber, Description: "Blob size in bytes"},
-						{Name: PropCaption, Type: graph.PropertyTypeString, Description: "Caption text for the blob"},
-						{Name: PropAltText, Type: graph.PropertyTypeString, Description: "Alternative text for accessibility"},
-					},
-				},
-				// Any child template is allowed so annotations can be attached
-				// as a subtree under the blob node.
-				Children: storetemplate.ChildPolicyImport{Allowed: true},
-			},
-		},
 	}
 }
 

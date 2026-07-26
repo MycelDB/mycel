@@ -12,7 +12,6 @@ import (
 type Executor interface {
 	ListNodes(ctx context.Context) ([]graph.Node, error)
 	ListEdges(ctx context.Context) ([]graph.Edge, error)
-	ListTemplates(ctx context.Context) ([]graph.Template, error)
 }
 
 // Direction is a sort direction.
@@ -85,11 +84,7 @@ func (b *Builder) Execute(ctx context.Context) (*ResultSet, error) {
 	if err != nil {
 		return nil, err
 	}
-	templates, err := b.executor.ListTemplates(ctx)
-	if err != nil {
-		return nil, err
-	}
-	state := newExecutionState(nodes, edges, templates)
+	state := newExecutionState(nodes, edges)
 	rows := []executionRow{}
 	for _, n := range nodes {
 		if !state.nodeMatches(n, *b.pattern.start) {
@@ -158,25 +153,20 @@ type containsChild struct {
 }
 
 type executionState struct {
-	templateByID     map[graph.TemplateID]graph.Template
 	nodeByID         map[graph.NodeID]graph.Node
 	childrenByParent map[graph.NodeID][]containsChild
 }
 
-func newExecutionState(nodes []graph.Node, edges []graph.Edge, templates []graph.Template) executionState {
+func newExecutionState(nodes []graph.Node, edges []graph.Edge) executionState {
 	state := executionState{
-		templateByID:     map[graph.TemplateID]graph.Template{},
 		nodeByID:         map[graph.NodeID]graph.Node{},
 		childrenByParent: map[graph.NodeID][]containsChild{},
-	}
-	for _, tmpl := range templates {
-		state.templateByID[tmpl.ID] = tmpl
 	}
 	for _, n := range nodes {
 		state.nodeByID[n.ID] = n
 	}
 	for _, edge := range edges {
-		if edge.Kind != graph.EdgeKindContains {
+		if !graph.EdgeHasLabels(edge, []string{"contains"}) {
 			continue
 		}
 		child, ok := state.nodeByID[edge.ToID]
@@ -263,43 +253,24 @@ func (s executionState) nodeMatches(node graph.Node, pattern nodePattern) bool {
 	if pattern.templateKey == "" {
 		return true
 	}
-	if node.TemplateID == nil {
-		return false
+	if len(node.Labels) == 0 {
+		return true
 	}
-	tmpl, ok := s.templateByID[*node.TemplateID]
-	return ok && tmpl.Key == pattern.templateKey
+	return graph.HasLabels(node, []string{pattern.templateKey})
 }
 
 func (s executionState) sortChildren(parent graph.Node, children []containsChild) {
-	if parent.TemplateID == nil {
-		return
-	}
-	tmpl, ok := s.templateByID[*parent.TemplateID]
-	if !ok || tmpl.Children.Order == nil || tmpl.Children.Order.Mode != graph.ChildOrderModeEdgeProperty {
-		return
-	}
-	desc := tmpl.Children.Order.Direction == graph.SortDirectionDesc
 	sort.SliceStable(children, func(i, j int) bool {
-		cmp, err := compareValues(children[i].edge.Props[tmpl.Children.Order.Property], children[j].edge.Props[tmpl.Children.Order.Property])
+		cmp, err := compareValues(children[i].edge.Properties["order"], children[j].edge.Properties["order"])
 		if err != nil || cmp == 0 {
 			return false
-		}
-		if desc {
-			return cmp > 0
 		}
 		return cmp < 0
 	})
 }
 
 func (s executionState) edgeOrderForParent(parent graph.Node, edge graph.Edge) any {
-	if parent.TemplateID == nil {
-		return nil
-	}
-	tmpl, ok := s.templateByID[*parent.TemplateID]
-	if !ok || tmpl.Children.Order == nil || tmpl.Children.Order.Mode != graph.ChildOrderModeEdgeProperty {
-		return nil
-	}
-	return edge.Props[tmpl.Children.Order.Property]
+	return edge.Properties["order"]
 }
 
 func dedupeNodes(nodes []graph.Node) []graph.Node {

@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
-	graph "github.com/myceldb/mycel/internal/graph/model"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	"github.com/myceldb/mycel/internal/space/access"
@@ -97,21 +96,6 @@ func TestRaftStateMachineAppliesSpaceMetadataCommands(t *testing.T) {
 		t.Fatalf("DomainEffectiveAccess() = %+v, %v; want capabilities", access, err)
 	}
 
-	template := graph.Template{ID: uuid.New(), SpaceID: spaceID, Key: "note", Version: "1.0.0", DisplayName: "Note", State: graph.TemplateStateActive}
-	putTemplateCmd := mustSpaceRaftCommand(t, spaceID, recordTypePutTemplate, putTemplateRecord{Template: template}, "put-template-1")
-	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 4, RaftTerm: 1}, putTemplateCmd); err != nil {
-		t.Fatalf("apply put template command: %v", err)
-	}
-	if _, err := m.GetTemplate(ctx, spaceID.String(), template.ID.String()); err != nil {
-		t.Fatalf("GetTemplate() after raft apply error = %v", err)
-	}
-	deleteTemplateCmd := mustSpaceRaftCommand(t, spaceID, recordTypeDeleteTemplate, deleteTemplateRecord{TemplateID: template.ID, SpaceID: spaceID}, "delete-template-1")
-	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 5, RaftTerm: 1}, deleteTemplateCmd); err != nil {
-		t.Fatalf("apply delete template command: %v", err)
-	}
-	if _, err := m.GetTemplate(ctx, spaceID.String(), template.ID.String()); err == nil {
-		t.Fatal("expected template to be deleted")
-	}
 }
 
 func TestBuildPhase8SpaceMetadataRaftCommands(t *testing.T) {
@@ -135,12 +119,6 @@ func TestBuildPhase8SpaceMetadataRaftCommands(t *testing.T) {
 		}},
 		{"delete-domain", string(recordTypeDeleteDomain), func() (consensus.RaftCommand, error) {
 			return m.buildDeleteDomainRaftCommand(deleteDomainRecord{DomainID: domainRecord.Domain.ID, SpaceID: spaceID}, 64, "domain-delete-1")
-		}},
-		{"put-template", string(recordTypePutTemplate), func() (consensus.RaftCommand, error) {
-			return m.buildPutTemplateRaftCommand(putTemplateRecord{Template: graph.Template{ID: uuid.New(), SpaceID: spaceID, Key: "note", Version: "1.0.0", State: graph.TemplateStateActive}}, 64, "template-put-1")
-		}},
-		{"delete-template", string(recordTypeDeleteTemplate), func() (consensus.RaftCommand, error) {
-			return m.buildDeleteTemplateRaftCommand(deleteTemplateRecord{TemplateID: uuid.New(), SpaceID: spaceID}, 64, "template-delete-1")
 		}},
 	}
 	for _, tc := range commands {

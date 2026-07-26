@@ -119,19 +119,21 @@ func (s *GraphService) CreateBlobNode(stream clientv1.GraphService_CreateBlobNod
 	if err != nil {
 		return mapBlobError(err, "upload blob node content")
 	}
-	props := structMap(meta.GetProps())
-	if props == nil {
-		props = map[string]any{}
+	properties := structMap(meta.GetProperties())
+	payload := structMap(meta.GetPayload())
+	if payload == nil {
+		payload = map[string]any{}
 	}
-	props["mime_type"] = blob.MimeType
-	props["size_bytes"] = blob.SizeBytes
+	payload["blob_id"] = blob.BlobID
+	payload["mime_type"] = blob.MimeType
+	payload["size_bytes"] = blob.SizeBytes
 	if blob.DeclaredMimeType != "" {
-		props["declared_mime_type"] = blob.DeclaredMimeType
+		payload["declared_mime_type"] = blob.DeclaredMimeType
 	}
 	if blob.OriginalFilename != "" {
-		props["original_filename"] = filepath.Base(blob.OriginalFilename)
+		payload["original_filename"] = filepath.Base(blob.OriginalFilename)
 	}
-	node, err := s.graphs.CreateNode(ctx, tx, daegraph.NodeInput{NodeID: meta.GetNodeId(), TemplateID: meta.GetTemplateId(), BlobID: blob.BlobID, Props: props})
+	node, err := s.graphs.CreateNode(ctx, tx, daegraph.NodeInput{NodeID: meta.GetNodeId(), Labels: meta.GetLabels(), BlobID: blob.BlobID, Properties: properties, Payload: payload, Meta: structMap(meta.GetMeta())})
 	if err != nil {
 		return mapGraphError(err, "create blob node")
 	}
@@ -415,48 +417,51 @@ func nodeInputFromProto(node *clientv1.NodeCreate) daegraph.NodeInput {
 	if node == nil {
 		return daegraph.NodeInput{}
 	}
-	return daegraph.NodeInput{NodeID: node.GetNodeId(), TemplateID: node.GetTemplateId(), Content: node.GetContent(), Props: structMap(node.GetProps())}
+	return daegraph.NodeInput{NodeID: node.GetNodeId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload()), Meta: structMap(node.GetMeta())}
 }
 
 func updateNodeInputFromProto(node *clientv1.Node) daegraph.UpdateNodeInput {
 	if node == nil {
 		return daegraph.UpdateNodeInput{}
 	}
-	templateID := node.GetTemplateId()
-	content := node.GetContent()
-	return daegraph.UpdateNodeInput{NodeID: node.GetNodeId(), TemplateID: &templateID, Content: &content, Props: structMap(node.GetProps())}
+	return daegraph.UpdateNodeInput{NodeID: node.GetNodeId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload()), Meta: structMap(node.GetMeta())}
 }
 
 func edgeInputFromProto(edge *clientv1.EdgeCreate) daegraph.EdgeInput {
 	if edge == nil {
 		return daegraph.EdgeInput{}
 	}
-	return daegraph.EdgeInput{EdgeID: edge.GetEdgeId(), FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Kind: edge.GetKind(), Props: structMap(edge.GetProps())}
+	return daegraph.EdgeInput{EdgeID: edge.GetEdgeId(), FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload()), Meta: structMap(edge.GetMeta())}
 }
 
 func updateEdgeInputFromProto(edge *clientv1.Edge) daegraph.UpdateEdgeInput {
 	if edge == nil {
 		return daegraph.UpdateEdgeInput{}
 	}
-	kind := edge.GetKind()
-	return daegraph.UpdateEdgeInput{EdgeID: edge.GetEdgeId(), Kind: &kind, Props: structMap(edge.GetProps())}
+	return daegraph.UpdateEdgeInput{EdgeID: edge.GetEdgeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload()), Meta: structMap(edge.GetMeta())}
 }
 
 func mapProtoNode(node domaingraph.Node) *clientv1.Node {
-	out := &clientv1.Node{NodeId: node.ID.String(), DomainId: node.DomainID.String(), Content: node.Content, Props: protoStruct(node.Props), CreateTime: timestamppb.New(node.CreatedAt), UpdateTime: timestamppb.New(node.UpdatedAt)}
-	if node.TemplateID != nil {
-		value := node.TemplateID.String()
-		out.TemplateId = &value
+	properties := node.Properties
+	if properties == nil {
+		properties = node.Props
 	}
-	if node.BlobRef != nil {
-		value := string(*node.BlobRef)
-		out.BlobId = &value
+	payload := node.Payload
+	if payload == nil {
+		payload = map[string]any{}
+		if node.Content != "" {
+			payload["text"] = node.Content
+		}
+		if node.BlobRef != nil {
+			payload["blob_id"] = string(*node.BlobRef)
+		}
 	}
+	out := &clientv1.Node{NodeId: node.ID.String(), DomainId: node.DomainID.String(), Labels: append([]string(nil), node.Labels...), Properties: protoStruct(properties), Payload: protoStruct(payload), Meta: protoStruct(node.Meta), CreateTime: timestamppb.New(node.CreatedAt), UpdateTime: timestamppb.New(node.UpdatedAt)}
 	return out
 }
 
 func mapProtoEdge(edge domaingraph.Edge) *clientv1.Edge {
-	return &clientv1.Edge{EdgeId: edge.ID.String(), FromNodeId: edge.FromID.String(), ToNodeId: edge.ToID.String(), Kind: string(edge.Kind), Props: protoStruct(edge.Props)}
+	return &clientv1.Edge{EdgeId: edge.ID.String(), DomainId: edge.DomainID.String(), FromNodeId: edge.FromID.String(), ToNodeId: edge.ToID.String(), Labels: append([]string(nil), edge.Labels...), Properties: protoStruct(edge.Properties), Payload: protoStruct(edge.Payload), Meta: protoStruct(edge.Meta), CreateTime: timestamppb.New(edge.CreatedAt), UpdateTime: timestamppb.New(edge.UpdatedAt)}
 }
 
 func structMap(value *structpb.Struct) map[string]any {

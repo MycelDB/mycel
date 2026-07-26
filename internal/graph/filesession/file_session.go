@@ -2,7 +2,6 @@ package filesession
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,13 +16,16 @@ import (
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/graph/query"
 	"github.com/myceldb/mycel/internal/graph/storage"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
+
+var errInvalidInput = errors.New("invalid input")
 
 // Config carries runtime knobs for the file-backed session implementation.
 type Config struct {
@@ -36,26 +38,27 @@ type Config struct {
 	DomainID                  graph.DomainID
 	AdvancedSemanticEnabled   bool
 	GraphChangeSink           graphchange.Sink
+	SchemaManager             schemaservice.Manager
 }
 
 // New opens the default file-backed session implementation.
-func New(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true}
+func New(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, permissions sessionapi.Permissions, errs sessionapi.Errors) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, permissions: permissions, errors: errs, closeStore: true}
 }
 
 // NewWithStore opens a session that borrows an engine-owned graph store.
-func NewWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, templateManager: templateManager, permissions: permissions, errors: errs, store: store}
+func NewWithStore(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, permissions: permissions, errors: errs, store: store}
 }
 
 // NewWithStoreConfig opens a session that borrows an engine-owned graph store.
-func NewWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink}
+func NewWithStoreConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, permissions sessionapi.Permissions, errs sessionapi.Errors, store *graphstorage.LocalStore, cfg Config) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, permissions: permissions, errors: errs, store: store, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink, schemaManager: cfg.SchemaManager}
 }
 
 // NewConfig opens the default file-backed session implementation.
-func NewConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, templateManager storetemplate.Manager, permissions sessionapi.Permissions, errs sessionapi.Errors, cfg Config) sessionapi.Session {
-	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, templateManager: templateManager, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink}
+func NewConfig(graphsDir string, blobsDir string, spaceID domainspace.SpaceID, permissions sessionapi.Permissions, errs sessionapi.Errors, cfg Config) sessionapi.Session {
+	return &FileSession{graphsDir: graphsDir, blobsDir: blobsDir, spaceID: spaceID, domainID: cfg.DomainID, permissions: permissions, errors: errs, closeStore: true, blobLimits: cfg.BlobLimits, blobStaleTmpAge: cfg.BlobStaleTmpAge, currentUserID: cfg.CurrentUserID, semanticManager: cfg.SemanticManager, accountingManager: cfg.AccountingManager, userStoreEncryptionKeyB64: cfg.UserStoreEncryptionKeyB64, advancedSemanticEnabled: cfg.AdvancedSemanticEnabled, graphChangeSink: cfg.GraphChangeSink, schemaManager: cfg.SchemaManager}
 }
 
 // FileSession is the default file-backed Session implementation.
@@ -64,7 +67,6 @@ type FileSession struct {
 	blobsDir                  string
 	spaceID                   domainspace.SpaceID
 	domainID                  graph.DomainID
-	templateManager           storetemplate.Manager
 	permissions               sessionapi.Permissions
 	errors                    sessionapi.Errors
 	store                     *graphstorage.LocalStore
@@ -77,6 +79,7 @@ type FileSession struct {
 	userStoreEncryptionKeyB64 string
 	advancedSemanticEnabled   bool
 	graphChangeSink           graphchange.Sink
+	schemaManager             schemaservice.Manager
 	lastGraphChangeSinkErr    error
 	closeStore                bool
 	closed                    bool
@@ -84,32 +87,6 @@ type FileSession struct {
 
 // Query starts a programmatic graph query over this session.
 func (s *FileSession) Query() *query.Builder { return query.NewBuilder(s) }
-
-func (s *FileSession) ImportTemplates(ctx context.Context, in sessionapi.ImportTemplatesInput) ([]graph.Template, error) {
-	if err := s.ensureOpen(ctx); err != nil {
-		return nil, err
-	}
-	if err := s.ensureSpaceLive(); err != nil {
-		return nil, err
-	}
-	if err := s.ensureAdmin(); err != nil {
-		return nil, err
-	}
-	return s.templateManager.Import(ctx, s.spaceID, in.Document)
-}
-
-func (s *FileSession) ListTemplates(ctx context.Context) ([]graph.Template, error) {
-	if err := s.ensureOpen(ctx); err != nil {
-		return nil, err
-	}
-	if err := s.ensureSpaceLive(); err != nil {
-		return nil, err
-	}
-	if err := s.ensureRead(); err != nil {
-		return nil, err
-	}
-	return s.templateManager.ListBySpace(ctx, s.spaceID)
-}
 
 func (s *FileSession) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (graph.Node, error) {
 	if err := s.ensureOpen(ctx); err != nil {
@@ -121,10 +98,6 @@ func (s *FileSession) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (
 	if err := s.ensureWrite(); err != nil {
 		return graph.Node{}, err
 	}
-	nodes, err := s.readNodes()
-	if err != nil {
-		return graph.Node{}, err
-	}
 	nodeID, err := newGraphUUID()
 	if err != nil {
 		return graph.Node{}, err
@@ -132,13 +105,17 @@ func (s *FileSession) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (
 	if in.ID != nil {
 		nodeID = *in.ID
 	}
-	n, err := s.buildNode(ctx, nodes, nodeID, in.TemplateID, in.Content, in.Props)
+	n, err := s.buildNode(ctx, nodeID, in.Content, in.Properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
+	applyNodeShape(&n, in.Labels, in.Properties, in.Payload, in.Meta)
 	now := time.Now().UTC()
 	n.CreatedAt = now
 	n.UpdatedAt = now
+	if err := s.validateSchemaNode(ctx, n); err != nil {
+		return graph.Node{}, err
+	}
 	if err := s.commitGraph(ctx, []graph.Node{n}, nil, nil, nil); err != nil {
 		return graph.Node{}, err
 	}
@@ -185,12 +162,17 @@ func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeIn
 	}
 	// A node has inline text content or blob content, never both.
 	if nodes[idx].BlobRef != nil && in.Content != "" {
-		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", storetemplate.ErrInvalidInput)
+		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", errInvalidInput)
 	}
-	n, err := s.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, in.Props)
+	properties := in.Properties
+	if properties == nil {
+		properties = in.Props
+	}
+	n, err := s.buildNode(ctx, in.ID, in.Content, properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
+	applyNodeShape(&n, in.Labels, properties, in.Payload, in.Meta)
 	// Updates never touch the blob reference or domain; replacing blob content or
 	// moving domains are separate operations.
 	n.BlobRef = nodes[idx].BlobRef
@@ -200,6 +182,9 @@ func (s *FileSession) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeIn
 		n.CreatedAt = time.Now().UTC()
 	}
 	n.UpdatedAt = time.Now().UTC()
+	if err := s.validateSchemaNode(ctx, n); err != nil {
+		return graph.Node{}, err
+	}
 	candidateNodes := append([]graph.Node(nil), nodes...)
 	candidateNodes[idx] = n
 	edges, err := s.readEdges()
@@ -227,7 +212,7 @@ func (s *FileSession) UpdateNodeAndCreateSibling(ctx context.Context, in session
 
 func (s *FileSession) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
-		return s.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+		return s.AddNode(ctx, sessionapi.AddNodeInput{Content: in.Content, Props: in.Properties})
 	}
 	if err := s.ensureOpen(ctx); err != nil {
 		return graph.Node{}, err
@@ -243,15 +228,18 @@ func (s *FileSession) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeIn
 		return graph.Node{}, err
 	}
 	if findNodeIndex(nodes, *in.ID) >= 0 {
-		return s.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+		return s.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, Content: in.Content, Props: in.Properties})
 	}
-	n, err := s.buildNode(ctx, nodes, *in.ID, in.TemplateID, in.Content, in.Props)
+	n, err := s.buildNode(ctx, *in.ID, in.Content, in.Properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
 	now := time.Now().UTC()
 	n.CreatedAt = now
 	n.UpdatedAt = now
+	if err := s.validateSchemaNode(ctx, n); err != nil {
+		return graph.Node{}, err
+	}
 	if err := s.commitGraph(ctx, []graph.Node{n}, nil, nil, nil); err != nil {
 		return graph.Node{}, err
 	}
@@ -285,7 +273,7 @@ func (s *FileSession) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	if err := s.validateNewEdge(ctx, from, to, in.Kind, edges); err != nil {
+	if err := s.validateNewEdge(ctx, from, to, in.Labels, edges); err != nil {
 		return graph.Edge{}, err
 	}
 	edgeID, err := newGraphUUID()
@@ -295,7 +283,11 @@ func (s *FileSession) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (
 	if in.ID != nil {
 		edgeID = *in.ID
 	}
-	e := graph.Edge{ID: edgeID, FromID: in.FromID, ToID: in.ToID, Kind: in.Kind, Props: copyProps(in.Props)}
+	now := time.Now().UTC()
+	e := graph.Edge{ID: edgeID, DomainID: s.domainID, FromID: in.FromID, ToID: in.ToID, Labels: append([]string(nil), in.Labels...), Properties: copyProps(in.Properties), Payload: copyProps(in.Payload), Meta: copyProps(in.Meta), CreatedAt: now, UpdatedAt: now}
+	if err := s.validateSchemaEdge(ctx, e, from, to); err != nil {
+		return graph.Edge{}, err
+	}
 	if err := s.commitGraph(ctx, nil, []graph.Edge{e}, nil, nil); err != nil {
 		return graph.Edge{}, err
 	}
@@ -401,7 +393,7 @@ func (s *FileSession) DeleteNode(ctx context.Context, in sessionapi.DeleteNodeIn
 	})
 }
 
-func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in sessionapi.DeleteNodeInput) ([]graph.NodeID, []graph.Node, []graph.Edge, error) {
+func (s *FileSession) applyDeleteNode(ctx context.Context, nodes []graph.Node, edges []graph.Edge, in sessionapi.DeleteNodeInput) ([]graph.NodeID, []graph.Node, []graph.Edge, error) {
 	if in.ID == uuid.Nil {
 		return nil, nil, nil, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
 	}
@@ -414,7 +406,11 @@ func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in
 		for changed {
 			changed = false
 			for _, edge := range edges {
-				if edge.Kind != graph.EdgeKindContains {
+				isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+				if !isHierarchy {
 					continue
 				}
 				if _, parentDeleted := deleteIDs[edge.FromID]; parentDeleted {
@@ -427,7 +423,11 @@ func (s *FileSession) applyDeleteNode(nodes []graph.Node, edges []graph.Edge, in
 		}
 	} else {
 		for _, edge := range edges {
-			if edge.Kind == graph.EdgeKindContains && edge.FromID == in.ID {
+			isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if isHierarchy && edge.FromID == in.ID {
 				if s.errors.Conflict != nil {
 					return nil, nil, nil, fmt.Errorf("%w: node has child nodes", s.errors.Conflict)
 				}
@@ -646,10 +646,10 @@ func (s *FileSession) buildGraphChangeEvent(ctx context.Context, store *graphsto
 		}
 		event.NewDomainByNodeID[node.ID] = node.DomainID
 		addDomain(node.DomainID)
-		if parent, err := store.Parent(ctx, node.ID); err == nil && parent != nil {
-			event.OldParentByNodeID[node.ID] = parent.FromID
-		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+		if parent, err := s.storeHierarchyParent(ctx, store, node.ID); err != nil {
 			return graphchange.CommittedEvent{}, err
+		} else if parent != nil {
+			event.OldParentByNodeID[node.ID] = parent.FromID
 		}
 	}
 	for _, id := range deleteNodes {
@@ -661,26 +661,34 @@ func (s *FileSession) buildGraphChangeEvent(ctx context.Context, store *graphsto
 		} else if !errors.Is(err, graphstorage.ErrNotFound) {
 			return graphchange.CommittedEvent{}, err
 		}
-		if parent, err := store.Parent(ctx, id); err == nil && parent != nil {
-			event.OldParentByNodeID[id] = parent.FromID
-		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+		if parent, err := s.storeHierarchyParent(ctx, store, id); err != nil {
 			return graphchange.CommittedEvent{}, err
+		} else if parent != nil {
+			event.OldParentByNodeID[id] = parent.FromID
 		}
 	}
 	for _, edge := range putEdges {
 		change := "added"
 		if old, err := store.GetEdge(ctx, edge.ID); err == nil {
 			change = "updated"
-			if old.Kind == graph.EdgeKindContains && old.ToID == edge.ToID && old.FromID != edge.FromID {
+			oldHierarchy, err := s.isHierarchyEdge(ctx, old)
+			if err != nil {
+				return graphchange.CommittedEvent{}, err
+			}
+			if oldHierarchy && old.ToID == edge.ToID && old.FromID != edge.FromID {
 				event.OldParentByNodeID[old.ToID] = old.FromID
 			}
 		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
 			return graphchange.CommittedEvent{}, err
 		}
-		if edge.Kind == graph.EdgeKindContains {
+		isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+		if err != nil {
+			return graphchange.CommittedEvent{}, err
+		}
+		if isHierarchy {
 			event.NewParentByNodeID[edge.ToID] = edge.FromID
 		}
-		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: change, FromID: edge.FromID, ToID: edge.ToID})
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Labels: append([]string(nil), edge.Labels...), Change: change, FromID: edge.FromID, ToID: edge.ToID})
 	}
 	for _, id := range deleteEdges {
 		edge, err := store.GetEdge(ctx, id)
@@ -690,10 +698,14 @@ func (s *FileSession) buildGraphChangeEvent(ctx context.Context, store *graphsto
 			}
 			return graphchange.CommittedEvent{}, err
 		}
-		if edge.Kind == graph.EdgeKindContains {
+		isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+		if err != nil {
+			return graphchange.CommittedEvent{}, err
+		}
+		if isHierarchy {
 			event.OldParentByNodeID[edge.ToID] = edge.FromID
 		}
-		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Labels: append([]string(nil), edge.Labels...), Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
 	}
 	for id := range domains {
 		event.DomainIDs = append(event.DomainIDs, id)
@@ -740,265 +752,229 @@ func (s *FileSession) releaseUnreferencedBlobs(ctx context.Context, store *graph
 	}
 }
 
-func (s *FileSession) buildNode(ctx context.Context, nodes []graph.Node, nodeID graph.NodeID, templateID *graph.TemplateID, content string, inputProps map[string]any) (graph.Node, error) {
+func (s *FileSession) buildNode(ctx context.Context, nodeID graph.NodeID, content string, inputProps map[string]any) (graph.Node, error) {
 	if nodeID == uuid.Nil {
 		return graph.Node{}, fmt.Errorf("%w: node_id is required", s.errors.NotFound)
 	}
 	props := copyProps(inputProps)
-	if templateID != nil {
-		t, err := s.templateManager.GetByID(ctx, *templateID)
-		if err != nil {
-			if errors.Is(err, storetemplate.ErrTemplateNotFound) {
-				return graph.Node{}, fmt.Errorf("%w: template not found", s.errors.NotFound)
-			}
-			return graph.Node{}, err
-		}
-		if t.SpaceID != s.spaceID {
-			return graph.Node{}, fmt.Errorf("%w: template not found in space", s.errors.NotFound)
-		}
-		if err := validateProps(&props, t); err != nil {
-			return graph.Node{}, err
-		}
+	_ = ctx
+	node := graph.Node{ID: nodeID, DomainID: s.domainID, Content: content, Props: props}
+	if content != "" {
+		node.Payload = map[string]any{"text": content}
 	}
-	return graph.Node{ID: nodeID, DomainID: s.domainID, TemplateID: templateID, Content: content, Props: props}, nil
+	if props != nil {
+		node.Properties = copyProps(props)
+	}
+	return node, nil
 }
 
-func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to graph.Node, kind graph.EdgeKind, edges []graph.Edge) error {
-	if kind != graph.EdgeKindContains {
+func (s *FileSession) validateSchemaNode(ctx context.Context, node graph.Node) error {
+	if s.schemaManager == nil {
+		return nil
+	}
+	result, err := s.schemaManager.ValidateNode(ctx, node.DomainID, node)
+	if err != nil {
+		return err
+	}
+	if result.Valid() {
+		return nil
+	}
+	return fmt.Errorf("%w: schema validation failed: %s", errInvalidInput, formatSchemaIssues(result.Issues))
+}
+
+func (s *FileSession) validateSchemaEdge(ctx context.Context, edge graph.Edge, from graph.Node, to graph.Node) error {
+	if s.schemaManager == nil {
+		return nil
+	}
+	result, err := s.schemaManager.ValidateEdge(ctx, edge.DomainID, edge, from, to)
+	if err != nil {
+		return err
+	}
+	if result.Valid() {
+		return nil
+	}
+	return fmt.Errorf("%w: schema validation failed: %s", errInvalidInput, formatSchemaIssues(result.Issues))
+}
+
+func formatSchemaIssues(issues []schemaservice.ValidationIssue) string {
+	if len(issues) == 0 {
+		return "unknown schema validation error"
+	}
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.Path != "" {
+			parts = append(parts, issue.Path+": "+issue.Message)
+			continue
+		}
+		parts = append(parts, issue.Message)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func applyNodeShape(node *graph.Node, labels []string, properties, payload, meta map[string]any) {
+	if labels != nil {
+		node.Labels = append([]string(nil), labels...)
+	}
+	if properties != nil {
+		node.Properties = copyProps(properties)
+	}
+	if payload != nil {
+		node.Payload = copyProps(payload)
+		if text, ok := payload["text"].(string); ok {
+			node.Content = text
+		}
+	}
+	if meta != nil {
+		node.Meta = copyProps(meta)
+	}
+}
+
+func (s *FileSession) validateNewEdge(ctx context.Context, from graph.Node, to graph.Node, labels []string, edges []graph.Edge) error {
+	hierarchy, err := s.hierarchyPolicyForLabels(ctx, labels)
+	if err != nil {
+		return err
+	}
+	if hierarchy == nil {
 		return nil
 	}
 	if from.ID == to.ID {
-		return fmt.Errorf("%w: contains edge cannot target itself", storetemplate.ErrInvalidInput)
+		return fmt.Errorf("%w: hierarchy edge cannot target itself", errInvalidInput)
 	}
-	if from.DomainID != uuid.Nil && to.DomainID != uuid.Nil && from.DomainID != to.DomainID {
-		return fmt.Errorf("%w: contains edges cannot cross domains", storetemplate.ErrInvalidInput)
+	if hierarchy.SameDomain && from.DomainID != uuid.Nil && to.DomainID != uuid.Nil && from.DomainID != to.DomainID {
+		return fmt.Errorf("%w: hierarchy edges cannot cross domains", errInvalidInput)
 	}
-	for _, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.ToID == to.ID {
-			return fmt.Errorf("%w: node already has a contains parent", storetemplate.ErrInvalidInput)
+	if hierarchy.SingleParent {
+		for _, edge := range edges {
+			edgeHierarchy, err := s.hierarchyPolicyForLabels(ctx, edge.Labels)
+			if err != nil {
+				return err
+			}
+			if edgeHierarchy != nil && edge.ToID == to.ID {
+				return fmt.Errorf("%w: node already has a hierarchy parent", errInvalidInput)
+			}
 		}
 	}
-	if containsPath(edges, to.ID, from.ID) {
-		return fmt.Errorf("%w: contains edge would create a cycle", storetemplate.ErrInvalidInput)
+	if hierarchy.Acyclic {
+		cycle, err := containsPathWithPolicy(ctx, s, edges, to.ID, from.ID)
+		if err != nil {
+			return err
+		}
+		if cycle {
+			return fmt.Errorf("%w: hierarchy edge would create a cycle", errInvalidInput)
+		}
 	}
-	childTemplate, err := s.nodeTemplate(ctx, to, "child")
-	if err != nil {
-		return err
-	}
-	return s.validateChild(ctx, from, childTemplate)
+	return nil
 }
 
 func (s *FileSession) validateIncidentContains(ctx context.Context, node graph.Node, nodes []graph.Node, edges []graph.Edge) error {
-	for _, edge := range edges {
-		if edge.Kind != graph.EdgeKindContains {
-			continue
-		}
-		if edge.FromID == node.ID {
-			child, ok := findNode(nodes, edge.ToID)
-			if !ok {
-				continue
-			}
-			childTemplate, err := s.nodeTemplate(ctx, child, "child")
-			if err != nil {
-				return err
-			}
-			if err := s.validateChild(ctx, node, childTemplate); err != nil {
-				return err
-			}
-		}
-		if edge.ToID == node.ID {
-			parent, ok := findNode(nodes, edge.FromID)
-			if !ok {
-				continue
-			}
-			childTemplate, err := s.nodeTemplate(ctx, node, "child")
-			if err != nil {
-				return err
-			}
-			if err := s.validateChild(ctx, parent, childTemplate); err != nil {
-				return err
-			}
-		}
-	}
 	return nil
 }
 
-func (s *FileSession) nodeTemplate(ctx context.Context, node graph.Node, label string) (*graph.Template, error) {
-	if node.TemplateID == nil {
-		return nil, nil
-	}
-	t, err := s.templateManager.GetByID(ctx, *node.TemplateID)
+func (s *FileSession) storeHierarchyParent(ctx context.Context, store *graphstorage.LocalStore, childID graph.NodeID) (*graph.Edge, error) {
+	edges, err := store.ListEdges(ctx)
 	if err != nil {
-		if errors.Is(err, storetemplate.ErrTemplateNotFound) {
-			return nil, fmt.Errorf("%w: %s template not found", s.errors.NotFound, label)
-		}
 		return nil, err
 	}
-	if t.SpaceID != s.spaceID {
-		return nil, fmt.Errorf("%w: %s template not found in space", s.errors.NotFound, label)
+	for _, edge := range edges {
+		isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+		if err != nil {
+			return nil, err
+		}
+		if isHierarchy && edge.ToID == childID {
+			copy := cloneEdge(edge)
+			return &copy, nil
+		}
 	}
-	return &t, nil
+	return nil, nil
 }
 
-func containsPath(edges []graph.Edge, from graph.NodeID, target graph.NodeID) bool {
-	visited := map[graph.NodeID]struct{}{}
-	var visit func(graph.NodeID) bool
-	visit = func(id graph.NodeID) bool {
-		if id == target {
-			return true
+func (s *FileSession) isHierarchyEdge(ctx context.Context, edge graph.Edge) (bool, error) {
+	policy, err := s.hierarchyPolicyForLabels(ctx, edge.Labels)
+	return policy != nil, err
+}
+
+func (s *FileSession) hierarchyEdgeLabelsForMutation(ctx context.Context) ([]string, error) {
+	if s.schemaManager != nil {
+		schema, err := s.schemaManager.GetDomainSchema(ctx, s.domainID)
+		if err != nil && !errors.Is(err, schemaservice.ErrSchemaNotFound) {
+			return nil, err
 		}
-		if _, ok := visited[id]; ok {
-			return false
-		}
-		visited[id] = struct{}{}
-		for _, edge := range edges {
-			if edge.Kind == graph.EdgeKindContains && edge.FromID == id {
-				if visit(edge.ToID) {
-					return true
+		if err == nil {
+			for _, edgeType := range schema.EdgeTypes {
+				if edgeType.Hierarchy != nil && edgeType.Hierarchy.Enabled {
+					if len(edgeType.Labels) > 0 {
+						return []string{edgeType.Labels[0]}, nil
+					}
+					return []string{edgeType.Name}, nil
 				}
 			}
 		}
-		return false
 	}
-	return visit(from)
+	return []string{"contains"}, nil
 }
 
-func (s *FileSession) validateChild(ctx context.Context, parent graph.Node, childTemplate *graph.Template) error {
-	if parent.TemplateID == nil {
-		return nil
-	}
-	parentTemplate, err := s.templateManager.GetByID(ctx, *parent.TemplateID)
-	if err != nil {
-		if errors.Is(err, storetemplate.ErrTemplateNotFound) {
-			return fmt.Errorf("%w: parent template not found", s.errors.NotFound)
+func (s *FileSession) hierarchyPolicyForLabels(ctx context.Context, labels []string) (*schemamodel.HierarchyPolicy, error) {
+	if s.schemaManager == nil {
+		if hasEdgeLabel(labels, "contains") {
+			return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
 		}
-		return err
+		return nil, nil
 	}
-	if parentTemplate.SpaceID != s.spaceID {
-		return fmt.Errorf("%w: parent template not found in space", s.errors.NotFound)
-	}
-	if !parentTemplate.Children.Allowed {
-		return fmt.Errorf("%w: parent template does not allow children", storetemplate.ErrInvalidInput)
-	}
-	if len(parentTemplate.Children.AllowedTemplates) == 0 {
-		return nil
-	}
-	if childTemplate == nil {
-		return fmt.Errorf("%w: child template is required", storetemplate.ErrInvalidInput)
-	}
-	for _, ref := range parentTemplate.Children.AllowedTemplates {
-		if ref.Key == childTemplate.Key && ref.Version == childTemplate.Version {
-			return nil
-		}
-	}
-	// Application extension nodes are app-level primitives that may be inserted into
-	// existing imported Logseq outlines whose templates predate the extension.
-	// Keep normal template allow-list validation strict for all other cases.
-	// Legacy pkm.* templates are accepted so existing pre-Mycel data can still be
-	// edited before/mid migration.
-	if (strings.HasPrefix(childTemplate.Key, "app.") || strings.HasPrefix(childTemplate.Key, "pkm.")) && strings.HasPrefix(parentTemplate.Key, "logseq.") {
-		return nil
-	}
-	return fmt.Errorf("%w: child template %s@%s is not allowed", storetemplate.ErrInvalidInput, childTemplate.Key, childTemplate.Version)
-}
-
-func validateProps(props *map[string]any, tmpl graph.Template) error {
-	if *props == nil {
-		*props = map[string]any{}
-	}
-	allowed := map[string]graph.TemplateProperty{}
-	for _, prop := range tmpl.Properties.Allowed {
-		allowed[prop.Name] = prop
-		if _, ok := (*props)[prop.Name]; !ok && prop.Default != nil {
-			(*props)[prop.Name] = prop.Default
-		}
-	}
-	for _, name := range tmpl.Properties.Forbidden {
-		if _, ok := (*props)[name]; ok {
-			return fmt.Errorf("%w: property %q is forbidden", storetemplate.ErrInvalidInput, name)
-		}
-	}
-	for name, value := range *props {
-		prop, ok := allowed[name]
-		if !ok {
-			if !tmpl.Properties.AllowExtra {
-				return fmt.Errorf("%w: property %q is not allowed", storetemplate.ErrInvalidInput, name)
+	matchedSchema := false
+	for _, label := range labels {
+		types, err := s.schemaManager.ResolveEdgeLabel(ctx, s.domainID, label)
+		if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+			if hasEdgeLabel(labels, "contains") {
+				return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
 			}
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(types) > 0 {
+			matchedSchema = true
+		}
+		for _, typ := range types {
+			if typ.Hierarchy != nil && typ.Hierarchy.Enabled {
+				policy := *typ.Hierarchy
+				return &policy, nil
+			}
+		}
+	}
+	if matchedSchema {
+		return nil, nil
+	}
+	if hasEdgeLabel(labels, "contains") {
+		return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
+	}
+	return nil, nil
+}
+
+func containsPathWithPolicy(ctx context.Context, s *FileSession, edges []graph.Edge, from graph.NodeID, target graph.NodeID) (bool, error) {
+	seen := map[graph.NodeID]struct{}{}
+	queue := []graph.NodeID{from}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if id == target {
+			return true, nil
+		}
+		if _, ok := seen[id]; ok {
 			continue
 		}
-		if err := validatePropertyValue(prop, value); err != nil {
-			return err
+		seen[id] = struct{}{}
+		for _, edge := range edges {
+			policy, err := s.hierarchyPolicyForLabels(ctx, edge.Labels)
+			if err != nil {
+				return false, err
+			}
+			if policy != nil && edge.FromID == id {
+				queue = append(queue, edge.ToID)
+			}
 		}
 	}
-	for _, prop := range tmpl.Properties.Allowed {
-		if !prop.Required {
-			continue
-		}
-		value, ok := (*props)[prop.Name]
-		if !ok || value == nil {
-			return fmt.Errorf("%w: required property %q is missing", storetemplate.ErrInvalidInput, prop.Name)
-		}
-	}
-	return nil
-}
-
-func validatePropertyValue(prop graph.TemplateProperty, value any) error {
-	if value == nil {
-		return fmt.Errorf("%w: property %q cannot be null", storetemplate.ErrInvalidInput, prop.Name)
-	}
-	valid := false
-	switch prop.Type {
-	case graph.PropertyTypeString:
-		_, valid = value.(string)
-	case graph.PropertyTypeNumber:
-		valid = isNumber(value)
-	case graph.PropertyTypeBool:
-		_, valid = value.(bool)
-	case graph.PropertyTypeObject:
-		_, valid = value.(map[string]any)
-	case graph.PropertyTypeArray:
-		valid = isArray(value)
-	case graph.PropertyTypeDate:
-		valid = isDate(value)
-	default:
-		return fmt.Errorf("%w: unsupported property type %q", storetemplate.ErrInvalidInput, prop.Type)
-	}
-	if !valid {
-		return fmt.Errorf("%w: property %q must be %s", storetemplate.ErrInvalidInput, prop.Name, prop.Type)
-	}
-	return nil
-}
-
-func isArray(value any) bool {
-	if value == nil {
-		return false
-	}
-	kind := reflect.TypeOf(value).Kind()
-	return kind == reflect.Array || kind == reflect.Slice
-}
-
-func isNumber(value any) bool {
-	switch n := value.(type) {
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
-		return true
-	case json.Number:
-		_, err := n.Float64()
-		return err == nil
-	default:
-		return false
-	}
-}
-
-func isDate(value any) bool {
-	s, ok := value.(string)
-	if !ok {
-		return false
-	}
-	if _, err := time.Parse(time.RFC3339, s); err == nil {
-		return true
-	}
-	_, err := time.Parse("2006-01-02", s)
-	return err == nil
+	return false, nil
 }
 
 func copyProps(in map[string]any) map[string]any {
@@ -1029,7 +1005,7 @@ func changedEdges(original []graph.Edge, candidate []graph.Edge) []graph.Edge {
 }
 
 func edgesEqual(left graph.Edge, right graph.Edge) bool {
-	return left.ID == right.ID && left.FromID == right.FromID && left.ToID == right.ToID && left.Kind == right.Kind && reflect.DeepEqual(left.Props, right.Props)
+	return left.ID == right.ID && left.FromID == right.FromID && left.ToID == right.ToID && reflect.DeepEqual(left.Labels, right.Labels) && reflect.DeepEqual(left.Properties, right.Properties) && reflect.DeepEqual(left.Payload, right.Payload) && reflect.DeepEqual(left.Meta, right.Meta)
 }
 
 func deletedEdges(original []graph.Edge, remaining []graph.Edge) []graph.EdgeID {
@@ -1090,6 +1066,10 @@ func findNodeIndex(nodes []graph.Node, id graph.NodeID) int {
 func cloneNodes(nodes []graph.Node) []graph.Node {
 	out := make([]graph.Node, 0, len(nodes))
 	for _, node := range nodes {
+		node.Labels = append([]string(nil), node.Labels...)
+		node.Properties = copyProps(node.Properties)
+		node.Payload = copyProps(node.Payload)
+		node.Meta = copyProps(node.Meta)
 		node.Props = copyProps(node.Props)
 		out = append(out, node)
 	}
@@ -1099,10 +1079,22 @@ func cloneNodes(nodes []graph.Node) []graph.Node {
 func cloneEdges(edges []graph.Edge) []graph.Edge {
 	out := make([]graph.Edge, 0, len(edges))
 	for _, edge := range edges {
-		edge.Props = copyProps(edge.Props)
+		edge.Labels = append([]string(nil), edge.Labels...)
+		edge.Properties = copyProps(edge.Properties)
+		edge.Payload = copyProps(edge.Payload)
+		edge.Meta = copyProps(edge.Meta)
 		out = append(out, edge)
 	}
 	return out
+}
+
+func hasEdgeLabel(labels []string, label string) bool {
+	for _, candidate := range labels {
+		if candidate == label {
+			return true
+		}
+	}
+	return false
 }
 
 func safeID(id domainspace.SpaceID) string {

@@ -10,7 +10,6 @@ import (
 	"github.com/myceldb/mycel/internal/blob/storage"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/graph/query"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 )
 
@@ -159,13 +158,6 @@ func (o txOverlay) delta() ([]graph.Node, []graph.Edge, []graph.NodeID, []graph.
 
 func (tx *fileTx) Query() *query.Builder { return query.NewBuilder(tx) }
 
-func (tx *fileTx) ListTemplates(ctx context.Context) ([]graph.Template, error) {
-	if err := tx.ensureOpen(ctx); err != nil {
-		return nil, err
-	}
-	return tx.session.ListTemplates(ctx)
-}
-
 func (tx *fileTx) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (graph.Node, error) {
 	if err := tx.ensureWritable(ctx); err != nil {
 		return graph.Node{}, err
@@ -182,15 +174,19 @@ func (tx *fileTx) AddNode(ctx context.Context, in sessionapi.AddNodeInput) (grap
 		nodeID = *in.ID
 	}
 	if findNodeIndex(nodes, nodeID) >= 0 {
-		return graph.Node{}, fmt.Errorf("%w: node already exists", storetemplate.ErrInvalidInput)
+		return graph.Node{}, fmt.Errorf("%w: node already exists", errInvalidInput)
 	}
-	n, err := tx.session.buildNode(ctx, nodes, nodeID, in.TemplateID, in.Content, in.Props)
+	n, err := tx.session.buildNode(ctx, nodeID, in.Content, in.Properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
+	applyNodeShape(&n, in.Labels, in.Properties, in.Payload, in.Meta)
 	now := time.Now().UTC()
 	n.CreatedAt = now
 	n.UpdatedAt = now
+	if err := tx.session.validateSchemaNode(ctx, n); err != nil {
+		return graph.Node{}, err
+	}
 	delete(tx.overlay.deletedNodes, n.ID)
 	tx.overlay.addedNodes[n.ID] = n
 	return cloneNode(n), nil
@@ -213,7 +209,7 @@ func (tx *fileTx) AddBlobNode(ctx context.Context, in sessionapi.AddBlobNodeInpu
 		if blobErr == nil {
 			_ = blobs.Discard(ctx, staged)
 		}
-		return graph.Node{}, fmt.Errorf("%w: node already exists", storetemplate.ErrInvalidInput)
+		return graph.Node{}, fmt.Errorf("%w: node already exists", errInvalidInput)
 	}
 	tx.overlay.addedNodes[node.ID] = node
 	tx.stagedBlobs = append(tx.stagedBlobs, txStagedBlob{staged: staged, blobID: staged.ID, nodeID: node.ID, existing: staged.Existing()})
@@ -250,12 +246,17 @@ func (tx *fileTx) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeInput)
 		return graph.Node{}, tx.session.errors.NotFound
 	}
 	if nodes[idx].BlobRef != nil && in.Content != "" {
-		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", storetemplate.ErrInvalidInput)
+		return graph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content; use props (e.g. caption) or annotation children", errInvalidInput)
 	}
-	n, err := tx.session.buildNode(ctx, nodes, in.ID, in.TemplateID, in.Content, in.Props)
+	properties := in.Properties
+	if properties == nil {
+		properties = in.Props
+	}
+	n, err := tx.session.buildNode(ctx, in.ID, in.Content, properties)
 	if err != nil {
 		return graph.Node{}, err
 	}
+	applyNodeShape(&n, in.Labels, properties, in.Payload, in.Meta)
 	n.BlobRef = nodes[idx].BlobRef
 	n.DomainID = nodes[idx].DomainID
 	n.CreatedAt = nodes[idx].CreatedAt
@@ -263,6 +264,9 @@ func (tx *fileTx) UpdateNode(ctx context.Context, in sessionapi.UpdateNodeInput)
 		n.CreatedAt = time.Now().UTC()
 	}
 	n.UpdatedAt = time.Now().UTC()
+	if err := tx.session.validateSchemaNode(ctx, n); err != nil {
+		return graph.Node{}, err
+	}
 	candidateNodes := cloneNodes(nodes)
 	candidateNodes[idx] = n
 	edges, err := tx.ListEdges(ctx)
@@ -304,15 +308,21 @@ func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.
 	if err != nil {
 		return fail(err)
 	}
-	parentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
+	parentIndexes, err := tx.session.hierarchyParentEdgeIndexes(ctx, edges, in.NodeID)
+	if err != nil {
+		return fail(err)
+	}
 	if len(parentIndexes) == 0 {
-		return fail(fmt.Errorf("%w: cannot insert a sibling for a root node", storetemplate.ErrInvalidInput))
+		return fail(fmt.Errorf("%w: cannot insert a sibling for a root node", errInvalidInput))
 	}
 	if len(parentIndexes) > 1 {
-		return fail(fmt.Errorf("%w: node has multiple contains parents", storetemplate.ErrInvalidInput))
+		return fail(fmt.Errorf("%w: node has multiple contains parents", errInvalidInput))
 	}
 	parentID := edges[parentIndexes[0]].FromID
-	childEdgeIndexes := orderedContainsEdgeIndexes(edges, parentID)
+	childEdgeIndexes, err := tx.session.orderedHierarchyEdgeIndexes(ctx, edges, parentID)
+	if err != nil {
+		return fail(err)
+	}
 	currentOrder := -1
 	previousOrder := 0.0
 	for i, edgeIndex := range childEdgeIndexes {
@@ -327,7 +337,7 @@ func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.
 		}
 	}
 	if currentOrder < 0 {
-		return fail(fmt.Errorf("%w: node is not contained by parent", storetemplate.ErrInvalidInput))
+		return fail(fmt.Errorf("%w: node is not contained by parent", errInvalidInput))
 	}
 	insertOrder := currentOrder + 1
 	createdOrder := previousOrder + childOrderStep
@@ -340,15 +350,19 @@ func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.
 			createdOrder = previousOrder + (nextOrder-previousOrder)/2
 		}
 	}
-	updated, err := tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: in.NodeID, TemplateID: nodes[idx].TemplateID, Content: in.Content, Props: in.Props})
+	updated, err := tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: in.NodeID, Content: in.Content, Props: in.Props})
 	if err != nil {
 		return fail(err)
 	}
-	sibling, err := tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.SiblingID, TemplateID: in.SiblingTemplateID, Content: in.SiblingContent, Props: in.SiblingProps})
+	sibling, err := tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.SiblingID, Content: in.SiblingContent, Props: in.SiblingProps})
 	if err != nil {
 		return fail(err)
 	}
-	createdEdge, err := tx.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: parentID, ToID: sibling.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": createdOrder}})
+	hierarchyLabels, err := tx.session.hierarchyEdgeLabelsForMutation(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	createdEdge, err := tx.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: parentID, ToID: sibling.ID, Labels: hierarchyLabels, Properties: map[string]any{"order": createdOrder}})
 	if err != nil {
 		return fail(err)
 	}
@@ -357,12 +371,12 @@ func (tx *fileTx) UpdateNodeAndCreateSibling(ctx context.Context, in sessionapi.
 
 func (tx *fileTx) UpsertNode(ctx context.Context, in sessionapi.UpsertNodeInput) (graph.Node, error) {
 	if in.ID == nil {
-		return tx.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+		return tx.AddNode(ctx, sessionapi.AddNodeInput{Content: in.Content, Props: in.Properties})
 	}
 	if _, err := tx.GetNode(ctx, *in.ID); err == nil {
-		return tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+		return tx.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: *in.ID, Content: in.Content, Props: in.Properties})
 	}
-	return tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.ID, TemplateID: in.TemplateID, Content: in.Content, Props: in.Props})
+	return tx.AddNode(ctx, sessionapi.AddNodeInput{ID: in.ID, Content: in.Content, Props: in.Properties})
 }
 
 func (tx *fileTx) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (graph.Edge, error) {
@@ -385,7 +399,7 @@ func (tx *fileTx) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (grap
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	if err := tx.session.validateNewEdge(ctx, from, to, in.Kind, edges); err != nil {
+	if err := tx.session.validateNewEdge(ctx, from, to, in.Labels, edges); err != nil {
 		return graph.Edge{}, err
 	}
 	edgeID, err := newGraphUUID()
@@ -396,9 +410,13 @@ func (tx *fileTx) AddEdge(ctx context.Context, in sessionapi.AddEdgeInput) (grap
 		edgeID = *in.ID
 	}
 	if findEdgeIndex(edges, edgeID) >= 0 {
-		return graph.Edge{}, fmt.Errorf("%w: edge already exists", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: edge already exists", errInvalidInput)
 	}
-	e := graph.Edge{ID: edgeID, FromID: in.FromID, ToID: in.ToID, Kind: in.Kind, Props: copyProps(in.Props)}
+	now := time.Now().UTC()
+	e := graph.Edge{ID: edgeID, DomainID: tx.session.domainID, FromID: in.FromID, ToID: in.ToID, Labels: append([]string(nil), in.Labels...), Properties: copyProps(in.Properties), Payload: copyProps(in.Payload), Meta: copyProps(in.Meta), CreatedAt: now, UpdatedAt: now}
+	if err := tx.session.validateSchemaEdge(ctx, e, from, to); err != nil {
+		return graph.Edge{}, err
+	}
 	delete(tx.overlay.deletedEdges, e.ID)
 	tx.overlay.addedEdges[e.ID] = e
 	return cloneEdge(e), nil
@@ -425,7 +443,11 @@ func (tx *fileTx) Children(ctx context.Context, parentID graph.NodeID) ([]graph.
 	}
 	out := []graph.Edge{}
 	for _, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.FromID == parentID {
+		isHierarchy, err := tx.session.isHierarchyEdge(ctx, edge)
+		if err != nil {
+			return nil, err
+		}
+		if isHierarchy && edge.FromID == parentID {
 			out = append(out, edge)
 		}
 	}
@@ -449,7 +471,11 @@ func (tx *fileTx) Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge
 		return nil, err
 	}
 	for _, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.ToID == childID {
+		isHierarchy, err := tx.session.isHierarchyEdge(ctx, edge)
+		if err != nil {
+			return nil, err
+		}
+		if isHierarchy && edge.ToID == childID {
 			cloned := cloneEdge(edge)
 			return &cloned, nil
 		}
@@ -481,7 +507,7 @@ func (tx *fileTx) ApplyGraph(ctx context.Context, in sessionapi.ApplyGraphInput)
 		if err != nil {
 			return fail(err)
 		}
-		deletedIDs, _, remainingEdges, err := tx.session.applyDeleteNode(nodesBefore, edgesBefore, del)
+		deletedIDs, _, remainingEdges, err := tx.session.applyDeleteNode(ctx, nodesBefore, edgesBefore, del)
 		if err != nil {
 			return fail(err)
 		}
@@ -525,7 +551,7 @@ func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInpu
 		return graph.Edge{}, fmt.Errorf("%w: new_parent_id is required", tx.session.errors.NotFound)
 	}
 	if in.Order != nil && *in.Order < 0 {
-		return graph.Edge{}, fmt.Errorf("%w: order must be non-negative", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: order must be non-negative", errInvalidInput)
 	}
 	nodes, err := tx.ListNodes(ctx)
 	if err != nil {
@@ -540,30 +566,31 @@ func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInpu
 		return graph.Edge{}, fmt.Errorf("%w: new parent not found", tx.session.errors.NotFound)
 	}
 	if in.NodeID == in.NewParentID {
-		return graph.Edge{}, fmt.Errorf("%w: cannot move a node under itself", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: cannot move a node under itself", errInvalidInput)
 	}
 	if node.DomainID != uuid.Nil && newParent.DomainID != uuid.Nil && node.DomainID != newParent.DomainID {
-		return graph.Edge{}, fmt.Errorf("%w: contains edges cannot cross domains", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: contains edges cannot cross domains", errInvalidInput)
 	}
 	edges, err := tx.ListEdges(ctx)
 	if err != nil {
 		return graph.Edge{}, err
 	}
 	originalEdges := cloneEdges(edges)
-	oldParentIndexes := containsParentEdgeIndexes(edges, in.NodeID)
-	if len(oldParentIndexes) > 1 {
-		return graph.Edge{}, fmt.Errorf("%w: node has multiple contains parents", storetemplate.ErrInvalidInput)
-	}
-	if containsPath(edges, in.NodeID, in.NewParentID) {
-		return graph.Edge{}, fmt.Errorf("%w: move would create a contains cycle", storetemplate.ErrInvalidInput)
-	}
-	childTemplate, err := tx.session.nodeTemplate(ctx, node, "child")
+	oldParentIndexes, err := tx.session.hierarchyParentEdgeIndexes(ctx, edges, in.NodeID)
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	if err := tx.session.validateChild(ctx, newParent, childTemplate); err != nil {
-		return graph.Edge{}, err
+	if len(oldParentIndexes) > 1 {
+		return graph.Edge{}, fmt.Errorf("%w: node has multiple contains parents", errInvalidInput)
 	}
+	if cycle, err := containsPathWithPolicy(ctx, tx.session, edges, in.NodeID, in.NewParentID); err != nil {
+		return graph.Edge{}, err
+	} else if cycle {
+		return graph.Edge{}, fmt.Errorf("%w: move would create a contains cycle", errInvalidInput)
+	}
+	// Template child-policy validation is intentionally bypassed during the
+	// schema subsystem migration. Structural contains checks above remain in
+	// force; schema hierarchy policy will replace this in a later tranche.
 	oldParentID := graph.NodeID(uuid.Nil)
 	if len(oldParentIndexes) == 1 {
 		oldEdge := edges[oldParentIndexes[0]]
@@ -572,7 +599,7 @@ func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInpu
 			if in.Order == nil {
 				return cloneEdge(oldEdge), nil
 			}
-			updated, err := setChildPosition(edges, in.NewParentID, in.NodeID, in.Order)
+			updated, err := tx.session.setChildPosition(ctx, edges, in.NewParentID, in.NodeID, in.Order)
 			if err != nil {
 				return graph.Edge{}, err
 			}
@@ -583,19 +610,29 @@ func (tx *fileTx) MoveSubtree(ctx context.Context, in sessionapi.MoveSubtreeInpu
 		}
 		edges[oldParentIndexes[0]].FromID = in.NewParentID
 		edges[oldParentIndexes[0]].ToID = in.NodeID
-		edges[oldParentIndexes[0]].Kind = graph.EdgeKindContains
-		edges[oldParentIndexes[0]].Props = copyProps(edges[oldParentIndexes[0]].Props)
+		hierarchyLabels, err := tx.session.hierarchyEdgeLabelsForMutation(ctx)
+		if err != nil {
+			return graph.Edge{}, err
+		}
+		edges[oldParentIndexes[0]].Labels = hierarchyLabels
+		edges[oldParentIndexes[0]].Properties = copyProps(edges[oldParentIndexes[0]].Properties)
 	} else {
 		edgeID, err := newGraphUUID()
 		if err != nil {
 			return graph.Edge{}, err
 		}
-		edges = append(edges, graph.Edge{ID: graph.EdgeID(edgeID), FromID: in.NewParentID, ToID: in.NodeID, Kind: graph.EdgeKindContains, Props: map[string]any{}})
+		hierarchyLabels, err := tx.session.hierarchyEdgeLabelsForMutation(ctx)
+		if err != nil {
+			return graph.Edge{}, err
+		}
+		edges = append(edges, graph.Edge{ID: graph.EdgeID(edgeID), FromID: in.NewParentID, ToID: in.NodeID, Labels: hierarchyLabels, Properties: map[string]any{}})
 	}
 	if oldParentID != uuid.Nil {
-		normalizeChildrenOrder(edges, oldParentID)
+		if err := tx.session.normalizeChildrenOrder(ctx, edges, oldParentID); err != nil {
+			return graph.Edge{}, err
+		}
 	}
-	updated, err := setChildPosition(edges, in.NewParentID, in.NodeID, in.Order)
+	updated, err := tx.session.setChildPosition(ctx, edges, in.NewParentID, in.NodeID, in.Order)
 	if err != nil {
 		return graph.Edge{}, err
 	}
@@ -624,7 +661,7 @@ func (tx *fileTx) ReorderChildren(ctx context.Context, in sessionapi.ReorderChil
 		return nil, err
 	}
 	originalEdges := cloneEdges(edges)
-	childEdgeByID, err := validateCompleteChildOrder(edges, in.ParentID, in.ChildIDs)
+	childEdgeByID, err := tx.session.validateCompleteChildOrder(ctx, edges, in.ParentID, in.ChildIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -632,7 +669,7 @@ func (tx *fileTx) ReorderChildren(ctx context.Context, in sessionapi.ReorderChil
 	for order, childID := range in.ChildIDs {
 		edgeIndex := childEdgeByID[childID]
 		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = order * childOrderStep
+		edges[edgeIndex].Properties["order"] = order * childOrderStep
 		updated = append(updated, cloneEdge(edges[edgeIndex]))
 	}
 	for _, edge := range changedEdges(originalEdges, edges) {
@@ -667,7 +704,7 @@ func (tx *fileTx) DeleteNode(ctx context.Context, in sessionapi.DeleteNodeInput)
 	if err != nil {
 		return err
 	}
-	deleteIDs, _, remainingEdges, err := tx.session.applyDeleteNode(nodes, edges, in)
+	deleteIDs, _, remainingEdges, err := tx.session.applyDeleteNode(ctx, nodes, edges, in)
 	if err != nil {
 		return err
 	}
@@ -883,7 +920,7 @@ func (tx *fileTx) validateFinalGraph(ctx context.Context, nodes []graph.Node, ed
 	nodeByID := make(map[graph.NodeID]graph.Node, len(nodes))
 	for _, node := range nodes {
 		if _, exists := nodeByID[node.ID]; exists {
-			return fmt.Errorf("%w: duplicate node %s", storetemplate.ErrInvalidInput, node.ID)
+			return fmt.Errorf("%w: duplicate node %s", errInvalidInput, node.ID)
 		}
 		nodeByID[node.ID] = node
 	}
@@ -891,7 +928,7 @@ func (tx *fileTx) validateFinalGraph(ctx context.Context, nodes []graph.Node, ed
 	containsParent := map[graph.NodeID]graph.EdgeID{}
 	for _, edge := range edges {
 		if _, exists := edgeByID[edge.ID]; exists {
-			return fmt.Errorf("%w: duplicate edge %s", storetemplate.ErrInvalidInput, edge.ID)
+			return fmt.Errorf("%w: duplicate edge %s", errInvalidInput, edge.ID)
 		}
 		edgeByID[edge.ID] = struct{}{}
 		from, fromOK := nodeByID[edge.FromID]
@@ -899,26 +936,27 @@ func (tx *fileTx) validateFinalGraph(ctx context.Context, nodes []graph.Node, ed
 		if !fromOK || !toOK {
 			return fmt.Errorf("%w: edge endpoint not found", tx.session.errors.NotFound)
 		}
-		if edge.Kind != graph.EdgeKindContains {
-			continue
-		}
-		if edge.FromID == edge.ToID {
-			return fmt.Errorf("%w: contains edge cannot target itself", storetemplate.ErrInvalidInput)
-		}
-		if existing, ok := containsParent[edge.ToID]; ok && existing != edge.ID {
-			return fmt.Errorf("%w: node already has a contains parent", storetemplate.ErrInvalidInput)
-		}
-		containsParent[edge.ToID] = edge.ID
-		if containsPath(edges, edge.ToID, edge.FromID) {
-			return fmt.Errorf("%w: contains edge would create a cycle", storetemplate.ErrInvalidInput)
-		}
-		childTemplate, err := tx.session.nodeTemplate(ctx, to, "child")
+		isHierarchy, err := tx.session.isHierarchyEdge(ctx, edge)
 		if err != nil {
 			return err
 		}
-		if err := tx.session.validateChild(ctx, from, childTemplate); err != nil {
-			return err
+		if !isHierarchy {
+			continue
 		}
+		if edge.FromID == edge.ToID {
+			return fmt.Errorf("%w: contains edge cannot target itself", errInvalidInput)
+		}
+		if existing, ok := containsParent[edge.ToID]; ok && existing != edge.ID {
+			return fmt.Errorf("%w: node already has a contains parent", errInvalidInput)
+		}
+		containsParent[edge.ToID] = edge.ID
+		if cycle, err := containsPathWithPolicy(ctx, tx.session, edges, edge.ToID, edge.FromID); err != nil {
+			return err
+		} else if cycle {
+			return fmt.Errorf("%w: contains edge would create a cycle", errInvalidInput)
+		}
+		_ = from
+		_ = to
 	}
 	return nil
 }
@@ -1010,6 +1048,10 @@ func findEdgeIndex(edges []graph.Edge, id graph.EdgeID) int {
 }
 
 func cloneNode(node graph.Node) graph.Node {
+	node.Labels = append([]string(nil), node.Labels...)
+	node.Properties = copyProps(node.Properties)
+	node.Payload = copyProps(node.Payload)
+	node.Meta = copyProps(node.Meta)
 	node.Props = copyProps(node.Props)
 	return node
 }

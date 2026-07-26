@@ -62,11 +62,106 @@ func TestQueryNodesCommandUsesDaemonGRPC(t *testing.T) {
 	row := rows[0].(map[string]any)
 	fields := row["fields"].(map[string]any)
 	nodeValue := fields["node"].(map[string]any)["Value"].(map[string]any)["Node"].(map[string]any)
-	if nodeValue["content"] != "A" {
+	payload := nodeValue["payload"].(map[string]any)
+	if payload["text"] != "A" {
 		t.Fatalf("unexpected query row: %#v raw=%s", nodeValue, out)
 	}
 	out, err = runCLI(t, append(base, "transaction", "commit", tx.GetTransactionId())...)
 	if err != nil {
 		t.Fatalf("commit failed: %v\n%s", err, out)
 	}
+}
+
+func TestQueryGQLWhereCommandUsesDaemonGRPC(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	createTestUser(t, addr, adminPassword, "gql-user", "gql-pass")
+	out, err := runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "space", "add", "GQL Space", "--owner-username", "gql-user")
+	if err != nil {
+		t.Fatalf("space add failed: %v\n%s", err, out)
+	}
+	var createdSpace adminv1.CreateSpaceResponse
+	if err := json.Unmarshal([]byte(out), &createdSpace); err != nil {
+		t.Fatalf("decode space add: %v\n%s", err, out)
+	}
+	spaceID := createdSpace.GetSpace().GetSpaceId()
+	base := []string{"--daemon-addr", addr, "-u", "gql-user", "-p", "gql-pass", "--output", "json"}
+	for _, query := range []string{
+		"INSERT (:Person {firstName: 'Alice', lastName: 'Jones'})",
+		"INSERT (:Person {firstName: 'Alice', lastName: 'Brown'})",
+	} {
+		if out, err = runCLI(t, append(base, "query", "gql", "--space-id", spaceID, query)...); err != nil {
+			t.Fatalf("gql insert failed: %v\n%s", err, out)
+		}
+	}
+	tests := []struct {
+		name     string
+		query    string
+		wantRows int
+	}{
+		{name: "Alice Jones", query: "MATCH (p:Person) WHERE p.firstName = 'Alice' AND p.lastName = 'Jones' RETURN p", wantRows: 1},
+		{name: "Alice", query: "MATCH (p:Person) WHERE p.firstName = 'Alice' RETURN p", wantRows: 2},
+		{name: "John", query: "MATCH (p:Person) WHERE p.firstName = 'John' RETURN p", wantRows: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := runCLI(t, append(base, "query", "gql", "--space-id", spaceID, tt.query)...)
+			if err != nil {
+				t.Fatalf("gql match failed: %v\n%s", err, out)
+			}
+			rows := gqlResultRows(t, out)
+			if len(rows) != tt.wantRows {
+				t.Fatalf("rows = %d, want %d; raw=%s", len(rows), tt.wantRows, out)
+			}
+		})
+	}
+
+	out, err = runCLI(t, append(base, "query", "gql", "--space-id", spaceID, "MATCH (p:Person) WHERE p.firstName = 'Alice' RETURN p.firstName, p.lastName")...)
+	if err != nil {
+		t.Fatalf("gql projection failed: %v\n%s", err, out)
+	}
+	columns := gqlResultColumns(t, out)
+	if len(columns) != 2 || columns[0] != "p.firstName" || columns[1] != "p.lastName" {
+		t.Fatalf("columns = %#v; raw=%s", columns, out)
+	}
+	pairs := map[string]bool{}
+	for _, row := range gqlResultRows(t, out) {
+		fields := row.(map[string]any)
+		first := fields["p.firstName"].(map[string]any)["scalar"]
+		last := fields["p.lastName"].(map[string]any)["scalar"]
+		pairs[first.(string)+" "+last.(string)] = true
+	}
+	if !pairs["Alice Jones"] || !pairs["Alice Brown"] || len(pairs) != 2 {
+		t.Fatalf("projected pairs = %#v; raw=%s", pairs, out)
+	}
+
+	out, err = runCLI(t, append(base, "query", "gql", "--space-id", spaceID, "MATCH (p:Person) WHERE p.firstName = 'Alice' RETURN p.firstName, p.lastName FETCH FIRST 1 ROW ONLY")...)
+	if err != nil {
+		t.Fatalf("gql fetch first failed: %v\n%s", err, out)
+	}
+	if rows := gqlResultRows(t, out); len(rows) != 1 {
+		t.Fatalf("fetch first rows = %d, want 1; raw=%s", len(rows), out)
+	}
+}
+
+func gqlResultColumns(t *testing.T, raw string) []any {
+	t.Helper()
+	var res map[string]any
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatalf("decode gql response: %v\n%s", err, raw)
+	}
+	result, _ := res["result"].(map[string]any)
+	columns, _ := result["Columns"].([]any)
+	return columns
+}
+
+func gqlResultRows(t *testing.T, raw string) []any {
+	t.Helper()
+	var res map[string]any
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatalf("decode gql response: %v\n%s", err, raw)
+	}
+	result, _ := res["result"].(map[string]any)
+	rows, _ := result["Rows"].([]any)
+	return rows
 }

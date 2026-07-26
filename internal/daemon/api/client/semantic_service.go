@@ -102,7 +102,7 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 		if node == nil {
 			continue
 		}
-		out = append(out, &clientv1.SemanticSearchResult{NodeId: item.NodeID.String(), Score: item.Score, Node: node, MatchedChunkIds: []string{item.RecordID.String()}, Snippet: semanticSnippet(node.GetContent())})
+		out = append(out, &clientv1.SemanticSearchResult{NodeId: item.NodeID.String(), Score: item.Score, Node: node, MatchedChunkIds: []string{item.RecordID.String()}, Snippet: semanticSnippet(nodePayloadText(node))})
 	}
 	allWarnings := append([]string{}, result.Warnings...)
 	allWarnings = append(allWarnings, warnings...)
@@ -268,10 +268,18 @@ func semanticIndexDescription(index domainsemantic.SemanticIndex) string {
 	if index.SourcePolicy.Extraction != "" {
 		parts = append(parts, "source="+string(index.SourcePolicy.Extraction))
 	}
-	if len(index.SourcePolicy.TemplateKeys) > 0 {
-		parts = append(parts, "templates="+strings.Join(index.SourcePolicy.TemplateKeys, ","))
+	if len(index.SourcePolicy.RecordTypes) > 0 {
+		parts = append(parts, "record_types="+strings.Join(index.SourcePolicy.RecordTypes, ","))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func nodePayloadText(node *clientv1.Node) string {
+	if node == nil || node.GetPayload() == nil {
+		return ""
+	}
+	value, _ := node.GetPayload().AsMap()["text"].(string)
+	return value
 }
 
 func semanticSnippet(content string) string {

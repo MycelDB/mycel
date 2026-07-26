@@ -28,7 +28,7 @@ func TestREPLSpaceSetUsesDaemon(t *testing.T) {
 	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
 	createTestUser(t, addr, adminPassword, "repl-space", "repl-pass")
-	spaceID := createTemplateTestSpace(t, addr, adminPassword, "repl-space")
+	spaceID, _ := createImportExportTestSpace(t, addr, adminPassword, "repl-space", "REPL Space")
 
 	a := &app.App{DaemonAddr: addr}
 	input := strings.NewReader("login repl-space repl-pass\nspace set " + spaceID + "\nexit\n")

@@ -65,6 +65,19 @@ type SemanticMaintenanceConfig struct {
 	CredentialDefaults         SemanticThrottleConfig
 }
 
+type AutomationConfig struct {
+	Provider          string
+	BaseURL           string
+	APIKey            string
+	Timeout           time.Duration
+	WorkerEnabled     bool
+	WorkerInterval    time.Duration
+	WorkerBatchSize   int
+	MaxTokensPerRun   int64
+	MaxCostPerRun     float64
+	WorkerConcurrency int
+}
+
 type BackupConfig struct {
 	Enabled                bool
 	BackupDir              string
@@ -114,6 +127,7 @@ type Config struct {
 	TLSRequireClientCert      bool
 	AccessTokenTTL            time.Duration
 	SemanticMaintenance       SemanticMaintenanceConfig
+	Automation                AutomationConfig
 	Backup                    BackupConfig
 	WAL                       WALConfig
 	Cluster                   ClusterConfig
@@ -159,6 +173,18 @@ func LoadFromEnv() (Config, error) {
 			RaftReplicaFactor:    parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR"), DefaultClusterRaftReplicaFactor),
 			RaftLocalNodeID:      parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID"), DefaultClusterRaftLocalNodeID),
 			RaftNodeAddrs:        parseCSVEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS")),
+		},
+		Automation: AutomationConfig{
+			Provider:          strings.TrimSpace(os.Getenv("MYCELD_AUTOMATION_PROVIDER")),
+			BaseURL:           strings.TrimSpace(os.Getenv("MYCELD_AUTOMATION_PROVIDER_BASE_URL")),
+			APIKey:            os.Getenv("MYCELD_AUTOMATION_PROVIDER_API_KEY"),
+			Timeout:           parseDurationEnv(os.Getenv("MYCELD_AUTOMATION_PROVIDER_TIMEOUT"), 60*time.Second),
+			WorkerEnabled:     parseBoolEnvDefault(os.Getenv("MYCELD_AUTOMATION_WORKER_ENABLED"), true),
+			WorkerInterval:    parseDurationEnv(os.Getenv("MYCELD_AUTOMATION_WORKER_INTERVAL"), time.Second),
+			WorkerBatchSize:   parseIntEnv(os.Getenv("MYCELD_AUTOMATION_WORKER_BATCH_SIZE"), 25),
+			MaxTokensPerRun:   int64(parseIntEnv(os.Getenv("MYCELD_AUTOMATION_MAX_TOKENS_PER_RUN"), 0)),
+			MaxCostPerRun:     parseFloatEnv(os.Getenv("MYCELD_AUTOMATION_MAX_COST_PER_RUN"), 0),
+			WorkerConcurrency: parseIntEnv(os.Getenv("MYCELD_AUTOMATION_WORKER_CONCURRENCY"), 1),
 		},
 		Backup: BackupConfig{
 			Enabled:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
@@ -438,6 +464,18 @@ func parseIntEnv(value string, fallback int) int {
 		return -1
 	}
 	return i
+}
+
+func parseFloatEnv(value string, fallback float64) float64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return -1
+	}
+	return f
 }
 
 func parseCSVEnv(value string) []string {

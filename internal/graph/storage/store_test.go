@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -18,12 +19,13 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open failed: %v", err)
 	}
-	tmpl := graph.TemplateID(uuid.New())
 	createdAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	updatedAt := createdAt.Add(time.Hour)
-	parent := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "parent", Props: map[string]any{"journal_day": 20260102}, CreatedAt: createdAt, UpdatedAt: updatedAt}
-	child := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "child", Props: map[string]any{}}
-	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 0}}
+	parent := graph.Node{ID: graph.NodeID(uuid.New()), Content: "parent", Props: map[string]any{"journal_day": 20260102}, CreatedAt: createdAt, UpdatedAt: updatedAt}
+	child := graph.Node{ID: graph.NodeID(uuid.New()), Content: "child", Props: map[string]any{}}
+	edgeCreatedAt := createdAt.Add(2 * time.Hour)
+	edgeUpdatedAt := edgeCreatedAt.Add(time.Hour)
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: graph.DomainID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"contains", "primary"}, Properties: map[string]any{"order": int64(0), "source": "test"}, Payload: map[string]any{"text": "edge payload"}, Meta: map[string]any{"system": "store-test"}, CreatedAt: edgeCreatedAt, UpdatedAt: edgeUpdatedAt}
 	tx, err := store.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -60,9 +62,9 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	if err != nil || len(children) != 1 || children[0].ToID != child.ID {
 		t.Fatalf("unexpected children=%+v err=%v", children, err)
 	}
-	ids, err := store.NodesByTemplate(ctx, tmpl)
-	if err != nil || len(ids) != 2 {
-		t.Fatalf("unexpected template ids=%+v err=%v", ids, err)
+	gotEdge := children[0]
+	if gotEdge.DomainID != edge.DomainID || !reflect.DeepEqual(gotEdge.Labels, edge.Labels) || !reflect.DeepEqual(gotEdge.Properties, edge.Properties) || !reflect.DeepEqual(gotEdge.Payload, edge.Payload) || !reflect.DeepEqual(gotEdge.Meta, edge.Meta) || !gotEdge.CreatedAt.Equal(edgeCreatedAt) || !gotEdge.UpdatedAt.Equal(edgeUpdatedAt) {
+		t.Fatalf("edge did not round trip through store: got %+v want %+v", gotEdge, edge)
 	}
 	journalIDs, err := store.JournalNodesByDayRange(ctx, 20260101, 20260107)
 	if err != nil || len(journalIDs) != 1 || journalIDs[0] != parent.ID {
@@ -284,7 +286,7 @@ func TestLocalStoreRejectsEdgeToConcurrentlyDeletedEndpoint(t *testing.T) {
 		t.Fatalf("begin edge tx failed: %v", err)
 	}
 	edgeTx.ExpectRevision(base)
-	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindReferences, Props: map[string]any{}}
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"references"}, Properties: map[string]any{}}
 	if err := edgeTx.PutEdge(edge); err != nil {
 		t.Fatalf("put edge failed: %v", err)
 	}
@@ -323,7 +325,7 @@ func TestLocalStoreRejectsNodeDeleteAfterConcurrentEdgeAdd(t *testing.T) {
 		t.Fatalf("begin edge tx failed: %v", err)
 	}
 	edgeTx.ExpectRevision(base)
-	if err := edgeTx.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindReferences, Props: map[string]any{}}); err != nil {
+	if err := edgeTx.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"references"}, Properties: map[string]any{}}); err != nil {
 		t.Fatalf("put edge failed: %v", err)
 	}
 	if err := edgeTx.Commit(); err != nil {
@@ -357,7 +359,7 @@ func TestLocalStoreRejectsConcurrentContainsParents(t *testing.T) {
 		t.Fatalf("begin first failed: %v", err)
 	}
 	first.ExpectRevision(base)
-	if err := first.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+	if err := first.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parent.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{}}); err != nil {
 		t.Fatalf("put first contains failed: %v", err)
 	}
 	second, err := store.Begin(ctx)
@@ -365,7 +367,7 @@ func TestLocalStoreRejectsConcurrentContainsParents(t *testing.T) {
 		t.Fatalf("begin second failed: %v", err)
 	}
 	second.ExpectRevision(base)
-	if err := second.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: secondParent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+	if err := second.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: secondParent.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{}}); err != nil {
 		t.Fatalf("put second contains failed: %v", err)
 	}
 	if err := first.Commit(); err != nil {
@@ -442,7 +444,7 @@ func TestLocalStoreAllowsEdgeMoveAwayBeforeNodeDelete(t *testing.T) {
 			t.Fatalf("put seed node failed: %v", err)
 		}
 	}
-	if err := seed.PutEdge(graph.Edge{ID: edgeID, FromID: oldParent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+	if err := seed.PutEdge(graph.Edge{ID: edgeID, FromID: oldParent.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{}}); err != nil {
 		t.Fatalf("put seed edge failed: %v", err)
 	}
 	if err := seed.Commit(); err != nil {
@@ -454,7 +456,7 @@ func TestLocalStoreAllowsEdgeMoveAwayBeforeNodeDelete(t *testing.T) {
 		t.Fatalf("begin move/delete failed: %v", err)
 	}
 	tx.ExpectRevision(store.Revision())
-	if err := tx.PutEdge(graph.Edge{ID: edgeID, FromID: newParent.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{}}); err != nil {
+	if err := tx.PutEdge(graph.Edge{ID: edgeID, FromID: newParent.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{}}); err != nil {
 		t.Fatalf("move edge failed: %v", err)
 	}
 	if err := tx.DeleteNode(oldParent.ID); err != nil {

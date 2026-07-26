@@ -1,0 +1,305 @@
+# Schema subsystem implementation plan
+
+## Goal
+
+Replace Mycel templates with a domain-scoped Schema subsystem, retrofit graph APIs and GQL to use it, and refactor Knot PKM to provision and use embedded application schemas.
+
+No backwards compatibility with the old template model is required.
+
+## Tranche 1 — Core schema model and subsystem skeleton
+
+Status: implemented on `improved_gql`. The schema subsystem has model validation, in-memory and file-backed stores, a runtime-registered schema module, and a manager interface used by later validation tranches.
+
+### Work
+
+- Add top-level subsystem package:
+
+```text
+internal/schema/model
+internal/schema/storage
+internal/schema/service
+```
+
+- Define model types:
+  - `DomainSchema`
+  - `SchemaMode`
+  - `NodeType`
+  - `EdgeType`
+  - `FieldSpec`
+  - `EndpointSpec`
+  - `IndexPolicy`
+  - `HierarchyPolicy`
+
+- Add service interface:
+
+```go
+type Manager interface {
+    GetDomainSchema(ctx context.Context, domainID DomainID) (schema.DomainSchema, error)
+    PutDomainSchema(ctx context.Context, schema schema.DomainSchema) error
+    ValidateNode(ctx context.Context, domainID DomainID, node graph.Node) (ValidationResult, error)
+    ValidateEdge(ctx context.Context, domainID DomainID, edge graph.Edge, from graph.Node, to graph.Node) (ValidationResult, error)
+    ResolveNodeLabel(ctx context.Context, domainID DomainID, label string) ([]schema.NodeType, error)
+    ResolveEdgeLabel(ctx context.Context, domainID DomainID, label string) ([]schema.EdgeType, error)
+}
+```
+
+- Add runtime registration/wiring under daemon composition root.
+
+### Tests
+
+- model validation tests for invalid duplicate type names/labels
+- service tests for put/get domain schema
+- validation tests for permissive/warn/strict modes
+- endpoint constraint tests for edge validation
+
+## Tranche 2 — Remove old template implementation
+
+Status: partially implemented on `improved_gql`. Public template protos were removed in `mycel-api`; the daemon no longer registers client/admin template RPC services; the CLI template command was removed; graph/query/import/export CLI and daemon paths no longer expose `template_id`, `template_key`, or template import/export records. Internal daemon graph service node inputs no longer carry `TemplateID` or mutate `graph.Node.TemplateID`. File-session template property validation and template child-policy enforcement remain bypassed while hardcoded `contains` structural checks remain active. Remaining work: remove `TemplateID` from `graph.Node`, session API inputs, file-session inputs/tests, graph storage codec/meta, and query tests; delete `internal/graph/template`; remove template manager plumbing from space/file-session/semantic internals; and update downstream consumers that still use template concepts such as Knot PKM task/template helpers.
+
+### Work
+
+- Delete `internal/graph/template`.
+- Remove `TemplateID` from graph node model and session/API types.
+- Remove template import/list/get API surface.
+- Remove template manager from file session constructors.
+- Replace template child-policy checks with temporary schema no-op until hierarchy policy lands.
+
+### Tests
+
+- `go test ./internal/graph/...`
+- file session tests updated away from template IDs
+- import/export tests updated for schema-free nodes
+- compile tests ensure no references to `TemplateID` or `internal/graph/template`
+
+## Tranche 3 — Schema-aware graph mutation validation
+
+Status: implemented on `improved_gql` for core graph mutation paths. File-backed sessions and the daemon graph service validate node/blob/edge creates and node/edge updates with the schema manager. The daemon runtime registers the schema subsystem before graph service initialization so daemon graph mutations are schema-aware when a domain schema exists. Import/export validation and warning diagnostics remain for later API-focused tranches.
+
+### Work
+
+- Inject schema manager into graph service/session mutation paths.
+- Validate node create/update:
+  - known labels/types in strict mode
+  - property field existence
+  - property value types
+  - payload field existence/types
+  - meta writes only if allowed
+- Validate edge create/update:
+  - known labels/types in strict mode
+  - edge property/payload/meta fields
+  - endpoint node type/label constraints
+
+### Tests
+
+- strict mode rejects unknown node label
+- permissive mode accepts unknown node label
+- strict mode rejects unknown property
+- strict mode rejects wrong property type
+- strict mode accepts valid node
+- strict mode rejects invalid edge endpoint type
+- strict mode accepts valid edge endpoint type
+- update tests validate changed fields only when appropriate
+
+## Tranche 4 — Schema-aware hierarchy policy
+
+Status: implemented for core graph service and file-session hierarchy behavior on `improved_gql`. Edge creation, parent/child lookup, move/reorder helpers, cycle checks, and graph-change parent tracking now consult schema edge `HierarchyPolicy`. If no schema exists, legacy `contains` remains the compatibility fallback hierarchy label. If a schema defines `contains` without hierarchy enabled, `contains` is treated as a normal edge. Move/reorder APIs have no label parameter, so they create the first schema-declared hierarchy edge label when a domain schema exists, otherwise they create legacy `contains`. Remaining hardcoded `contains` references are limited to compatibility fallback/default-label selection, tests, and graph query tree helpers; query helpers do not yet receive schema context and will be migrated during Tranche 5/6 schema-aware query planning.
+
+### Work
+
+- Define reserved `contains` edge type via schema.
+- Move hardcoded contains behavior to schema hierarchy policy lookup:
+  - acyclic
+  - single parent
+  - same domain
+  - order property semantics if needed
+- Keep the label `contains` as the initial reserved hierarchy label.
+
+### Tests
+
+- contains edge enforces same-domain policy
+- contains edge enforces acyclic policy
+- contains edge enforces single-parent policy
+- non-hierarchy edge does not trigger hierarchy rules
+- schema with hierarchy disabled does not enforce hierarchy rules for that label
+
+## Tranche 5 — GQL schema integration
+
+Status: implemented on `improved_gql` for current GQL compile and daemon execution paths. GQL semantic analysis accepts an optional `SchemaContext` and validates node labels, edge labels, node property/payload/meta projections and predicates, relationship properties, and relationship create endpoint constraints in strict mode while preserving schema-free and permissive behavior. Compile helpers expose schema-aware entry points, and daemon `ExecuteGQL`/`ExecuteGQLScript` load the transaction domain schema before compiling. Remaining future work: carry schema metadata into plans for optimization, improve warn-mode diagnostics, and extend validation as new GQL syntactic forms are added.
+
+### Work
+
+- Extend GQL analysis to accept optional schema resolver/context.
+- During analysis, resolve:
+  - node labels to node types
+  - edge labels to edge types
+  - property projections to schema fields
+  - payload projections to schema fields
+  - relationship create endpoint constraints
+- Preserve dynamic behavior based on schema mode.
+- Add schema information to plan where useful for optimization later.
+
+### Tests
+
+- strict schema rejects unknown GQL node label
+- strict schema rejects unknown edge label
+- strict schema rejects unknown property projection
+- strict schema rejects unknown payload projection
+- relationship create validates endpoint constraints
+- permissive schema allows unknown labels/properties
+- existing schema-free GQL tests still pass in permissive/no-schema mode
+
+## Tranche 6 — Query API retrofit
+
+Status: implemented on `improved_gql` for the current structured `ExecuteQuery` path. Structured `GraphQuery` requests load the transaction domain schema and validate node labels, edge labels, property predicates, order expressions, and traversal endpoint constraints in strict mode while preserving no-schema/permissive behavior. Import paths already enter through graph service create/update methods, so strict schema mutation validation applies when the daemon graph service has a schema manager; the import/export API has no schema metadata fields, so exports do not include schema identity/version yet. Warn-mode diagnostics are not surfaced because current query/import responses do not include a diagnostics field.
+
+### Work
+
+- Retrofit existing graph query APIs to use schema metadata when supplied:
+  - validate requested labels/properties in strict mode
+  - validate projected fields
+  - optionally use schema indexing hints
+- Retrofit import/export validation.
+- Add diagnostics/warnings field if warn mode needs API visibility.
+
+### Tests
+
+- graph query rejects unknown label in strict mode
+- graph query warns or accepts in warn/permissive modes
+- import rejects invalid elements in strict mode
+- import accepts valid schema-conforming graph
+- export includes schema identity/version metadata if required
+
+## Tranche 7 — Schema APIs and admin/CLI support
+
+Status: implemented on `improved_gql`. Added client/admin schema service protos, daemon schema services backed by the schema manager, Go/Rust SDK client exposure, CLI `mycel schema get|put|validate|compile` commands, JSON schema document support, and human-authored GWL schema DSL input that compiles to canonical JSON. `ValidateGraph` accepts a JSON graph document with `nodes` and `edges`. Admin UI read-only schema display is implemented in `mycel-admin`. YAML input remains deferred.
+
+### Work
+
+- Add client/admin API methods:
+  - get domain schema
+  - put domain schema
+  - validate schema
+  - validate graph against schema
+- Add CLI commands:
+
+```sh
+mycel schema get --domain ...
+mycel schema put schema.yaml --domain ...
+mycel schema validate schema.yaml
+```
+
+- Add admin UI read-only schema display first; editing can follow later.
+
+### Tests
+
+- API tests for schema get/put/validate
+- CLI command tests
+- admin service conversion tests if UI changes are included
+
+## Tranche 8 — Knot PKM embedded schema
+
+Status: implemented on `improved_gql` for Knot PKM server runtime and importer compatibility. `knot_pkm_server` provisions registration, content, and settings domain schemas through the schema-capable daemon/Go SDK; daemon-backed graph writes preserve schema-era `record_type`/`template_key` metadata for legacy PKM classification paths; server responses, metadata search, journals, tasks, chat, onboarding, and steward flows pass against schema-capable Mycel. `knot_pkm_importer` no longer calls daemon Template APIs when built against the local schema-capable SDK; it provisions a content schema during `init` and writes imported nodes with `record_type` metadata. A temporary synthetic template compatibility shim remains inside Knot PKM server while older internal helper signatures are unwound.
+
+Validation completed:
+
+```sh
+cd knot_pkm/knot_pkm_server && go test ./...
+cd knot_pkm/knot_pkm_importer && go test ./...
+```
+
+### Work
+
+- Add schema source file in `knot_pkm_server`, for example:
+
+```text
+internal/pkmschema/schema.yaml
+```
+
+- Embed with Go `embed`.
+- Add generated constants/helpers package:
+
+```text
+internal/pkmschema/generated
+```
+
+- [x] Copy/provision embedded schemas into Mycel domains during registration/user/domain creation.
+- [x] Replace daemon template provisioning/conversion with schema provisioning plus transitional synthetic-template compatibility in Knot PKM.
+- [x] Migrate importer writes to schema-era `record_type` classification and schema provisioning.
+- [ ] Replace remaining stringly typed labels/properties with generated constants where valuable.
+
+### Tests
+
+- [x] onboarding provisions schema into new domain
+- [x] user domain creation is idempotent
+- [x] existing Knot PKM graph mutations create schema-era classified nodes/edges
+- [x] importer emits schema-era `record_type` nodes and passes against schema-capable SDK
+- [ ] embedded schema parses and validates as a standalone source artifact
+- [ ] generated constants match schema labels/fields
+- [ ] strict-mode domain rejects intentionally invalid PKM graph mutation
+
+## Tranche 9 — Code generation
+
+Status: implemented for initial Knot PKM Go constants on `improved_gql`. `knot_pkm_server` now has a checked-in JSON generator input, a Go generator, generated constants, generator/up-to-date tests, and a `make generate-schema` target. PKM node kind detection has started consuming generated constants for `record_type`, `template_key`, journal fields, and core record types.
+
+### Work
+
+- [x] Add generator input: schema JSON.
+- [x] Generate:
+  - Go constants for record type names
+  - Go constants for edge labels
+  - Go constants for property/payload field names
+- [ ] optional small construction helpers
+- [x] Add make target in `knot_pkm_server`:
+
+```sh
+make generate-schema
+```
+
+- [x] Add test check that generated code is up to date.
+- [ ] Add CI dirty-worktree check after generation.
+
+### Tests
+
+- [x] generator golden-style tests
+- [x] generated schema helper compile tests
+- [x] generated output up-to-date check in Go tests
+- [ ] CI dirty-worktree check after generation
+
+## Tranche 10 — Migration cleanup and docs
+
+Status: implemented for current docs and cleanup on `improved_gql`. Current Knot PKM operator/user docs have been updated away from template-era wording, a schema-era template audit was added, Knot PKM schema provisioning is documented in `knot_pkm_server/docs/schema-provisioning.md`, Mycel public schema/GQL docs were added, the GQL roadmap was updated, and remaining template references are either historical implementation plans or documented legacy/compatibility fields.
+
+### Work
+
+- [x] Remove remaining template references from current Knot PKM operator/user docs.
+- [x] Document Knot PKM schema provisioning.
+- [x] Add schema-era template reference audit.
+- [x] Document schema subsystem in final public Mycel docs.
+- [x] Document GQL schema behavior and modes in final public Mycel docs.
+- [x] Update roadmap/release notes.
+- [x] Decide whether to annotate or leave historical implementation-plan template references.
+
+### Tests
+
+- [x] targeted current-doc search confirms no template-era wording remains in active Knot PKM docs checked in this tranche
+- [x] repo-wide search confirms no old template implementation remains outside documented compatibility/historical areas
+- full test suites:
+
+```sh
+go test ./...
+```
+
+For SDK/admin/Knot PKM repos, run their relevant test suites after API changes.
+
+## Acceptance criteria
+
+- No `internal/graph/template` package remains.
+- No `TemplateID` remains in graph models or public APIs.
+- Domain schema can be stored/retrieved.
+- Strict schema validation applies to graph create/update.
+- GQL uses schema for label/property/payload/edge endpoint validation.
+- Query APIs are schema-aware.
+- Knot PKM provisions embedded schema into new domains.
+- Knot PKM uses generated schema constants/helpers for key graph mutations.
+- `go test ./...` passes in Mycel.
+- Knot PKM server tests pass after refactor.

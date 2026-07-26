@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering/consensus"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 )
@@ -115,34 +114,7 @@ func TestModuleCreateSpaceWithResultUsesRaftProposalWhenEnabled(t *testing.T) {
 	if _, err := m.GetDomainByRef(ctx, result.Space.SpaceID.String(), domain.ID.String()); err == nil {
 		t.Fatal("expected deleted domain to be unavailable")
 	}
-	template, err := m.CreateTemplate(waitCtx, ownerID.String(), result.Space.SpaceID.String(), storetemplate.TemplateImport{Key: "note", Version: "1.0.0", DisplayName: "Note"})
-	if err != nil {
-		t.Fatalf("CreateTemplate() via raft error = %v", err)
-	}
-	updatedTemplateName := "Note Updated"
-	updatedTemplate, err := m.UpdateTemplate(waitCtx, ownerID.String(), result.Space.SpaceID.String(), template.ID.String(), &updatedTemplateName, nil)
-	if err != nil {
-		t.Fatalf("UpdateTemplate() via raft error = %v", err)
-	}
-	if updatedTemplate.DisplayName != updatedTemplateName {
-		t.Fatalf("updated template display_name=%q want %q", updatedTemplate.DisplayName, updatedTemplateName)
-	}
-	if _, err := m.ArchiveTemplate(waitCtx, ownerID.String(), result.Space.SpaceID.String(), template.ID.String()); err != nil {
-		t.Fatalf("ArchiveTemplate() via raft error = %v", err)
-	}
-	if err := m.DeleteTemplate(waitCtx, ownerID.String(), result.Space.SpaceID.String(), template.ID.String()); err != nil {
-		t.Fatalf("DeleteTemplate() via raft error = %v", err)
-	}
-	if _, err := m.GetTemplate(ctx, result.Space.SpaceID.String(), template.ID.String()); err == nil {
-		t.Fatal("expected deleted template to be unavailable")
-	}
-	imported, err := m.ImportTemplates(waitCtx, ownerID.String(), result.Space.SpaceID.String(), []storetemplate.TemplateImport{{Key: "task", Version: "1.0.0"}, {Key: "event", Version: "1.0.0"}})
-	if err != nil {
-		t.Fatalf("ImportTemplates() via raft error = %v", err)
-	}
-	if len(imported) != 2 {
-		t.Fatalf("imported %d templates, want 2", len(imported))
-	}
+
 }
 
 func TestRaftCreateSpaceCommitAndLeaderFailoverHarness(t *testing.T) {

@@ -18,12 +18,8 @@ func TestImportExportDomainCommandsUseDaemonGRPC(t *testing.T) {
 	sourceSpaceID, sourceDomainID := createImportExportTestSpace(t, addr, adminPassword, "impex-user", "Import Source")
 	targetSpaceID, targetDomainID := createImportExportTestSpace(t, addr, adminPassword, "impex-user", "Import Target")
 
-	out, err := runCLI(t, append(base, "template", "create", "note", "--space-id", sourceSpaceID, "--version", "1.0.0", "--display-name", "Note", "--allow-extra")...)
-	if err != nil {
-		t.Fatalf("create source template failed: %v\n%s", err, out)
-	}
 	sourceSessionID, sourceTxID := openImportExportTx(t, base, sourceSpaceID, sourceDomainID, "read-write")
-	out, err = runCLI(t, append(base, "graph", "node", "create", "--transaction-id", sourceTxID, "--content", "A", "--props-json", `{"tags":["exported"]}`)...)
+	out, err := runCLI(t, append(base, "graph", "node", "create", "--transaction-id", sourceTxID, "--content", "A", "--props-json", `{"tags":["exported"]}`)...)
 	if err != nil {
 		t.Fatalf("create source node A failed: %v\n%s", err, out)
 	}
@@ -57,7 +53,7 @@ func TestImportExportDomainCommandsUseDaemonGRPC(t *testing.T) {
 
 	_, exportTxID := openImportExportTx(t, base, sourceSpaceID, sourceDomainID, "read-only")
 	exportPath := filepath.Join(t.TempDir(), "domain.json")
-	out, err = runCLI(t, append(base, "export", "domain", "--transaction-id", exportTxID, "--file", exportPath, "--include-templates", "--include-blobs")...)
+	out, err = runCLI(t, append(base, "export", "domain", "--transaction-id", exportTxID, "--file", exportPath, "--include-blobs")...)
 	if err != nil {
 		t.Fatalf("export domain failed: %v\n%s", err, out)
 	}
@@ -69,8 +65,8 @@ func TestImportExportDomainCommandsUseDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal(raw, &exported); err != nil {
 		t.Fatalf("decode exported document: %v\n%s", err, raw)
 	}
-	if len(exported.Templates) != 1 || len(exported.Nodes) != 3 || len(exported.Edges) != 1 || len(exported.BlobMetadata) != 1 || len(exported.BlobChunks) == 0 {
-		t.Fatalf("unexpected exported document: templates=%d nodes=%d edges=%d blobs=%d chunks=%d raw=%s", len(exported.Templates), len(exported.Nodes), len(exported.Edges), len(exported.BlobMetadata), len(exported.BlobChunks), raw)
+	if len(exported.Nodes) != 3 || len(exported.Edges) != 1 || len(exported.BlobMetadata) != 1 || len(exported.BlobChunks) == 0 {
+		t.Fatalf("unexpected exported document: nodes=%d edges=%d blobs=%d chunks=%d raw=%s", len(exported.Nodes), len(exported.Edges), len(exported.BlobMetadata), len(exported.BlobChunks), raw)
 	}
 
 	staleSessionID, staleTxID := openImportExportTx(t, base, targetSpaceID, targetDomainID, "read-write")
@@ -80,7 +76,7 @@ func TestImportExportDomainCommandsUseDaemonGRPC(t *testing.T) {
 	}
 
 	targetSessionID, targetTxID := staleSessionID, staleTxID
-	out, err = runCLI(t, append(base, "import", "domain", "--transaction-id", targetTxID, "--file", exportPath, "--mode", "replace-domain", "--include-templates", "--include-blobs")...)
+	out, err = runCLI(t, append(base, "import", "domain", "--transaction-id", targetTxID, "--file", exportPath, "--mode", "replace-domain", "--include-blobs")...)
 	if err != nil {
 		t.Fatalf("import domain failed: %v\n%s", err, out)
 	}
@@ -88,7 +84,7 @@ func TestImportExportDomainCommandsUseDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &summary); err != nil {
 		t.Fatalf("decode import summary: %v\n%s", err, out)
 	}
-	if summary.GetTemplatesImported() != 1 || summary.GetNodesImported() != 3 || summary.GetEdgesImported() != 1 || summary.GetBlobsImported() != 1 {
+	if summary.GetNodesImported() != 3 || summary.GetEdgesImported() != 1 || summary.GetBlobsImported() != 1 {
 		t.Fatalf("unexpected import summary: %#v", &summary)
 	}
 	out, err = runCLI(t, append(base, "query", "nodes", "--transaction-id", targetTxID, "--tag", "stale")...)

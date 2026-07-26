@@ -4,7 +4,19 @@ The documentation tree is organized around Mycel architecture, API, operational,
 
 - `design/` contains architecture, API, operational, and design reference documents.
 - `implementation/` contains implementation plans and migration/package plans.
+- `roadmap/` contains product and subsystem roadmaps, including `roadmap/gql-roadmap.md` for the GQL feature roadmap.
 - `makefile_commands.md` summarizes common `make` targets for building, testing, coverage, and running the daemon locally.
+
+Current schema direction:
+
+- `schema-subsystem.md` is the current operator/developer overview for domain-scoped schemas.
+- `gql-schema-behavior.md` documents schema-aware GQL validation and modes.
+- `design/schema-subsystem.md` records the original design for the domain-scoped Schema subsystem replacing graph templates.
+- `implementation/schema-subsystem-implementation-plan.md` breaks the schema/template replacement and Knot PKM refactor into testable tranches.
+
+Current automation direction:
+
+- `design/graph-automations.md` describes event-driven GQL-conditioned AI graph automations across V1, V2, and V3.
 
 Current subsystem/runtime architecture direction:
 

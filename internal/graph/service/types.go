@@ -50,11 +50,13 @@ type CommitResult struct {
 }
 
 type GraphChange struct {
-	Type   ChangeType
-	Node   *domaingraph.Node
-	Edge   *domaingraph.Edge
-	NodeID string
-	EdgeID string
+	Type    ChangeType
+	Node    *domaingraph.Node
+	OldNode *domaingraph.Node
+	Edge    *domaingraph.Edge
+	OldEdge *domaingraph.Edge
+	NodeID  string
+	EdgeID  string
 }
 
 type ChangeType string
@@ -70,7 +72,10 @@ const (
 
 type NodeInput struct {
 	NodeID     string
-	TemplateID string
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	BlobID     string
 	Content    string
 	Props      map[string]any
@@ -78,7 +83,10 @@ type NodeInput struct {
 
 type UpdateNodeInput struct {
 	NodeID     string
-	TemplateID *string
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	Content    *string
 	Props      map[string]any
 	UpdateMask []string
@@ -88,13 +96,17 @@ type EdgeInput struct {
 	EdgeID     string
 	FromNodeID string
 	ToNodeID   string
-	Kind       string
-	Props      map[string]any
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 }
 
 type UpdateEdgeInput struct {
 	EdgeID     string
-	Kind       *string
-	Props      map[string]any
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	UpdateMask []string
 }

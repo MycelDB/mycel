@@ -2,15 +2,22 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/query/gql"
+	"github.com/myceldb/mycel/internal/query/gql/analysis"
+	"github.com/myceldb/mycel/internal/query/gql/execution"
+	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -25,10 +32,16 @@ type QueryService struct {
 	sessions daemonsession.Manager
 	graphs   daegraph.Manager
 	spaces   daemonspace.Manager
+	schemas  schemaservice.Manager
 }
 
 func NewQueryService(sessions daemonsession.Manager, graphs daegraph.Manager, spaces daemonspace.Manager) *QueryService {
 	return &QueryService{sessions: sessions, graphs: graphs, spaces: spaces}
+}
+
+func (s *QueryService) WithSchemaManager(manager schemaservice.Manager) *QueryService {
+	s.schemas = manager
+	return s
 }
 
 func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest) (*clientv1.ExecuteQueryResponse, error) {
@@ -53,6 +66,13 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if !domaingraph.DomainBroadSearchable(domain) {
 		return nil, status.Error(codes.FailedPrecondition, "domain is excluded from broad query execution")
 	}
+	schemaCtx, err := s.schemaContext(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateStructuredGraphQueryWithSchema(req.GetQuery(), schemaCtx); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	nodes, err := s.allNodes(ctx, tx)
 	if err != nil {
 		return nil, mapGraphError(err, "query list nodes")
@@ -61,11 +81,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, mapGraphError(err, "query list edges")
 	}
-	templates, err := s.spaces.ListVisibleTemplates(ctx, principal.UserID, tx.SpaceID, true, true)
-	if err != nil {
-		return nil, mapSessionError(err, "query list templates")
-	}
-	exec := newQueryExecution(nodes, edges, templates)
+	exec := newQueryExecution(nodes, edges)
 	rows, err := exec.match(req.GetQuery().GetMatch(), req.GetQuery().GetWhere())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -95,7 +111,123 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 		}
 		out = append(out, protoRow)
 	}
-	return &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next}, nil
+	result := queryResultFromRows(out, next)
+	return &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result}, nil
+}
+
+func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLRequest) (*clientv1.ExecuteGQLResponse, error) {
+	if strings.TrimSpace(req.GetQuery()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "query is required")
+	}
+	if len(req.GetParams()) > 0 {
+		return nil, status.Error(codes.Unimplemented, "GQL parameters are reserved but not implemented yet")
+	}
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, req.GetTransactionId())
+	if err != nil {
+		return nil, mapSessionError(err, "execute gql")
+	}
+	if tx.State != daemonsession.TransactionStateActive {
+		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
+	}
+	schemaCtx, err := s.schemaContext(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := gql.CompileWithSchema(req.GetQuery(), schemaCtx)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if plan.AccessMode == analysis.ReadWrite && tx.Mode != daemonsession.TransactionModeReadWrite {
+		return nil, status.Error(codes.FailedPrecondition, "GQL query requires a read-write transaction")
+	}
+	execResult, err := execution.Execute(ctx, gqlDaemonGraph{service: s, tx: tx}, plan)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	rows := gqlRowsToProto(execResult)
+	pageRows, next, err := paginateProtoQueryRows(rows, int(req.GetPageSize()), req.GetPageToken())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return &clientv1.ExecuteGQLResponse{Result: queryResultFromRowsWithCounters(pageRows, next, execResult.Counters)}, nil
+}
+
+func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.ExecuteGQLScriptRequest) (*clientv1.ExecuteGQLScriptResponse, error) {
+	if strings.TrimSpace(req.GetScript()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "script is required")
+	}
+	if len(req.GetParams()) > 0 {
+		return nil, status.Error(codes.Unimplemented, "GQL parameters are reserved but not implemented yet")
+	}
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, req.GetTransactionId())
+	if err != nil {
+		return nil, mapSessionError(err, "execute gql script")
+	}
+	if tx.State != daemonsession.TransactionStateActive {
+		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
+	}
+	schemaCtx, err := s.schemaContext(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	scriptPlan, err := gql.CompileScriptWithSchema(req.GetScript(), schemaCtx)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if scriptPlan.AccessMode == analysis.ReadWrite && tx.Mode != daemonsession.TransactionModeReadWrite {
+		return nil, status.Error(codes.FailedPrecondition, "GQL script requires a read-write transaction")
+	}
+	statementResults := []*clientv1.GQLStatementResult{}
+	aggregate := &clientv1.QueryResult{Graph: &clientv1.ResultGraph{}, Counters: &clientv1.QueryCounters{}}
+	for _, statement := range scriptPlan.Statements {
+		execResult, err := execution.Execute(ctx, gqlDaemonGraph{service: s, tx: tx}, statement.Plan)
+		if err != nil {
+			statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: false, Error: err.Error()})
+			if req.GetStopOnError() {
+				break
+			}
+			continue
+		}
+		rows := gqlRowsToProto(execResult)
+		pageRows, next, err := paginateProtoQueryRows(rows, int(req.GetPageSize()), "")
+		if err != nil {
+			statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: false, Error: err.Error()})
+			if req.GetStopOnError() {
+				break
+			}
+			continue
+		}
+		result := queryResultFromRowsWithCounters(pageRows, next, execResult.Counters)
+		statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: true, Result: result})
+		mergeQueryResult(aggregate, result)
+	}
+	return &clientv1.ExecuteGQLScriptResponse{Statements: statementResults, Result: aggregate}, nil
+}
+
+func (s *QueryService) schemaContext(ctx context.Context, tx daemonsession.GraphTransaction) (analysis.SchemaContext, error) {
+	if s.schemas == nil || strings.TrimSpace(tx.DomainID) == "" {
+		return analysis.SchemaContext{}, nil
+	}
+	domainID, err := uuid.Parse(tx.DomainID)
+	if err != nil {
+		return analysis.SchemaContext{}, status.Error(codes.InvalidArgument, "invalid transaction domain id")
+	}
+	schemaDoc, err := s.schemas.GetDomainSchema(ctx, domaingraph.DomainID(domainID))
+	if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+		return analysis.SchemaContext{}, nil
+	}
+	if err != nil {
+		return analysis.SchemaContext{}, status.Errorf(codes.Internal, "load domain schema: %v", err)
+	}
+	return analysis.SchemaContext{Schema: &schemaDoc}, nil
 }
 
 func (s *QueryService) allNodes(ctx context.Context, tx daemonsession.GraphTransaction) ([]domaingraph.Node, error) {
@@ -133,7 +265,6 @@ func (s *QueryService) allEdges(ctx context.Context, tx daemonsession.GraphTrans
 type queryExecution struct {
 	nodes        []domaingraph.Node
 	edges        []domaingraph.Edge
-	templateByID map[string]domaingraph.Template
 	nodeByID     map[string]domaingraph.Node
 	outEdgesByID map[string][]domaingraph.Edge
 	inEdgesByID  map[string][]domaingraph.Edge
@@ -145,11 +276,8 @@ type queryRowState struct {
 	orderByChild  map[string]any
 }
 
-func newQueryExecution(nodes []domaingraph.Node, edges []domaingraph.Edge, templates []domaingraph.Template) *queryExecution {
-	exec := &queryExecution{nodes: nodes, edges: edges, templateByID: map[string]domaingraph.Template{}, nodeByID: map[string]domaingraph.Node{}, outEdgesByID: map[string][]domaingraph.Edge{}, inEdgesByID: map[string][]domaingraph.Edge{}}
-	for _, tmpl := range templates {
-		exec.templateByID[tmpl.ID.String()] = tmpl
-	}
+func newQueryExecution(nodes []domaingraph.Node, edges []domaingraph.Edge) *queryExecution {
+	exec := &queryExecution{nodes: nodes, edges: edges, nodeByID: map[string]domaingraph.Node{}, outEdgesByID: map[string][]domaingraph.Edge{}, inEdgesByID: map[string][]domaingraph.Edge{}}
 	for _, node := range nodes {
 		exec.nodeByID[node.ID.String()] = node
 	}
@@ -189,14 +317,26 @@ func (e *queryExecution) match(pattern *clientv1.GraphPattern, where *clientv1.E
 }
 
 func (e *queryExecution) nodeMatches(node domaingraph.Node, pattern *clientv1.NodePattern) bool {
-	if pattern == nil || pattern.GetTemplateKey() == "" {
+	if pattern == nil {
 		return true
 	}
-	if node.TemplateID == nil {
+	if len(pattern.GetLabels()) > 0 && !nodeHasLabels(node.Labels, pattern.GetLabels()) {
 		return false
 	}
-	tmpl, ok := e.templateByID[node.TemplateID.String()]
-	return ok && tmpl.Key == pattern.GetTemplateKey()
+	return true
+}
+
+func nodeHasLabels(labels []string, required []string) bool {
+	seen := map[string]struct{}{}
+	for _, label := range labels {
+		seen[label] = struct{}{}
+	}
+	for _, label := range required {
+		if _, ok := seen[label]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *queryExecution) applySteps(row *queryRowState, current []domaingraph.Node, steps []*clientv1.TraversalStep) error {
@@ -207,8 +347,8 @@ func (e *queryExecution) applySteps(row *queryRowState, current []domaingraph.No
 		if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_UNSPECIFIED {
 			return fmt.Errorf("traversal direction is required")
 		}
-		kind := strings.TrimSpace(step.GetEdgeKind())
-		if kind == "" {
+		label := strings.TrimSpace(step.GetEdgeKind())
+		if label == "" {
 			return fmt.Errorf("traversal edge_kind is required")
 		}
 		next := []domaingraph.Node{}
@@ -256,9 +396,9 @@ func (e *queryExecution) traverse(row *queryRowState, start domaingraph.Node, st
 				continue
 			}
 			visited[visitKey] = true
-			if edge.Kind == domaingraph.EdgeKindContains && step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT {
+			if domaingraph.EdgeHasLabels(edge, []string{"contains"}) && step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT {
 				row.parentByChild[candidate.ID.String()] = node.ID.String()
-				row.orderByChild[candidate.ID.String()] = edge.Props["order"]
+				row.orderByChild[candidate.ID.String()] = edge.Properties["order"]
 			}
 			if childDepth >= minDepth && (maxDepth < 0 || childDepth <= maxDepth) && e.nodeMatches(candidate, step.GetTarget()) {
 				out = append(out, candidate)
@@ -279,12 +419,12 @@ func (e *queryExecution) stepEdges(node domaingraph.Node, step *clientv1.Travers
 	}
 	out := []domaingraph.Edge{}
 	for _, edge := range edges {
-		if string(edge.Kind) == step.GetEdgeKind() {
+		if domaingraph.EdgeHasLabels(edge, []string{step.GetEdgeKind()}) {
 			out = append(out, edge)
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		return numericOrder(out[i].Props["order"], i) < numericOrder(out[j].Props["order"], j)
+		return numericOrder(out[i].Properties["order"], i) < numericOrder(out[j].Properties["order"], j)
 	})
 	return out
 }
@@ -365,7 +505,14 @@ func (e *queryExecution) hasTag(row *queryRowState, alias string, tag string) (b
 	if err != nil {
 		return false, err
 	}
-	tags, err := domaingraph.NormalizeTagsValue(node.Props[domaingraph.NodePropTags])
+	tagValue := any(nil)
+	if node.Properties != nil {
+		tagValue = node.Properties[domaingraph.NodePropTags]
+	}
+	if tagValue == nil {
+		tagValue = node.Props[domaingraph.NodePropTags]
+	}
+	tags, err := domaingraph.NormalizeTagsValue(tagValue)
 	if err != nil {
 		return false, nil
 	}
@@ -386,11 +533,26 @@ func (e *queryExecution) customProperty(row *queryRowState, alias string, name s
 	if err != nil {
 		return nil, false, err
 	}
-	props, err := domaingraph.NormalizeCustomPropertiesValue(node.Props[domaingraph.NodePropCustomProperties])
-	if err != nil {
-		return nil, false, nil
+	props := node.Properties
+	if props == nil {
+		var err error
+		props, err = domaingraph.NormalizeCustomPropertiesValue(node.Props[domaingraph.NodePropCustomProperties])
+		if err != nil {
+			return nil, false, nil
+		}
 	}
-	value, ok := props[want]
+	value, ok := props[name]
+	if !ok {
+		value, ok = props[want]
+	}
+	if !ok {
+		if nested, err := domaingraph.NormalizeCustomPropertiesValue(props[domaingraph.NodePropCustomProperties]); err == nil {
+			value, ok = nested[name]
+			if !ok {
+				value, ok = nested[want]
+			}
+		}
+	}
 	return value, ok, nil
 }
 
@@ -498,6 +660,242 @@ func propValue(node domaingraph.Node, name string) any {
 		return node.Content
 	}
 	return node.Props[name]
+}
+
+type gqlDaemonGraph struct {
+	service *QueryService
+	tx      daemonsession.GraphTransaction
+}
+
+func (g gqlDaemonGraph) InsertNode(ctx context.Context, node execution.InsertNode) (execmodel.NodeRef, error) {
+	created, err := g.service.graphs.CreateNode(ctx, g.tx, daegraph.NodeInput{Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties)})
+	if err != nil {
+		return execmodel.NodeRef{}, err
+	}
+	return execmodel.NodeRef{ID: created.ID.String()}, nil
+}
+
+func (g gqlDaemonGraph) CreateEdge(ctx context.Context, edge execution.CreateEdge) (execmodel.Edge, error) {
+	created, err := g.service.graphs.CreateEdge(ctx, g.tx, daegraph.EdgeInput{FromNodeID: edge.FromNodeID, ToNodeID: edge.ToNodeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload), Meta: copyMapAny(edge.Meta)})
+	if err != nil {
+		return execmodel.Edge{}, err
+	}
+	return gqlExecEdge(created), nil
+}
+
+func (g gqlDaemonGraph) QueryNodes(ctx context.Context, query execution.QueryNodes) ([]execmodel.Node, error) {
+	nodes, err := g.service.allNodes(ctx, g.tx)
+	if err != nil {
+		return nil, err
+	}
+	out := []execmodel.Node{}
+	for _, node := range nodes {
+		if !nodeMatchesGQLPattern(node, query.Labels, query.Properties) {
+			continue
+		}
+		out = append(out, gqlExecNode(node))
+	}
+	return out, nil
+}
+
+func (g gqlDaemonGraph) QueryPattern(ctx context.Context, query execution.QueryPattern) ([]execution.PatternRow, error) {
+	nodes, err := g.service.allNodes(ctx, g.tx)
+	if err != nil {
+		return nil, err
+	}
+	edges, err := g.service.allEdges(ctx, g.tx)
+	if err != nil {
+		return nil, err
+	}
+	nodeByID := map[string]domaingraph.Node{}
+	for _, node := range nodes {
+		nodeByID[node.ID.String()] = node
+	}
+	out := []execution.PatternRow{}
+	for _, edge := range edges {
+		if !nodeHasLabels(edge.Labels, query.Relationship.Labels) || !nodeHasProperties(edge.Properties, query.Relationship.Properties) {
+			continue
+		}
+		from, fromOK := nodeByID[edge.FromID.String()]
+		to, toOK := nodeByID[edge.ToID.String()]
+		if !fromOK || !toOK {
+			continue
+		}
+		appendIfMatch := func(start, end domaingraph.Node) {
+			if !nodeMatchesGQLPattern(start, query.Start.Labels, query.Start.Properties) || !nodeMatchesGQLPattern(end, query.End.Labels, query.End.Properties) {
+				return
+			}
+			out = append(out, execution.PatternRow{Start: gqlExecNode(start), Edge: gqlExecEdge(edge), End: gqlExecNode(end)})
+		}
+		switch query.Relationship.Direction {
+		case execution.RelationshipIncoming:
+			appendIfMatch(to, from)
+		case execution.RelationshipUndirected:
+			appendIfMatch(from, to)
+			appendIfMatch(to, from)
+		default:
+			appendIfMatch(from, to)
+		}
+		if query.Limit > 0 && int64(len(out)) >= query.Limit {
+			return out[:query.Limit], nil
+		}
+	}
+	return out, nil
+}
+
+func nodeMatchesGQLPattern(node domaingraph.Node, labels []string, properties map[string]any) bool {
+	if id, ok := properties["__id"].(string); ok && node.ID.String() != id {
+		return false
+	}
+	return nodeHasLabels(node.Labels, labels) && nodeHasProperties(node.Properties, properties)
+}
+
+func gqlExecNode(node domaingraph.Node) execmodel.Node {
+	return execmodel.Node{ID: node.ID.String(), DomainID: node.DomainID.String(), Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties), Payload: copyMapAny(node.Payload), Meta: copyMapAny(node.Meta)}
+}
+
+func gqlExecEdge(edge domaingraph.Edge) execmodel.Edge {
+	return execmodel.Edge{ID: edge.ID.String(), DomainID: edge.DomainID.String(), FromID: edge.FromID.String(), ToID: edge.ToID.String(), Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload), Meta: copyMapAny(edge.Meta)}
+}
+
+func nodeHasProperties(values map[string]any, required map[string]any) bool {
+	for key, value := range required {
+		if key == "__id" {
+			continue
+		}
+		if !queryValuesEqual(values[key], value) {
+			return false
+		}
+	}
+	return true
+}
+
+func gqlRowsToProto(result execmodel.Result) []*clientv1.QueryRow {
+	rows := make([]*clientv1.QueryRow, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		fields := map[string]*clientv1.QueryValue{}
+		for name, value := range row {
+			if value.Node != nil {
+				fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Node{Node: gqlNodeToProto(*value.Node)}}
+				continue
+			}
+			if value.Edge != nil {
+				fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Edge{Edge: gqlEdgeToProto(*value.Edge)}}
+				continue
+			}
+			fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Scalar{Scalar: protoValue(value.Scalar)}}
+		}
+		rows = append(rows, &clientv1.QueryRow{Fields: fields})
+	}
+	return rows
+}
+
+func gqlNodeToProto(node execmodel.Node) *clientv1.Node {
+	return &clientv1.Node{NodeId: node.ID, DomainId: node.DomainID, Labels: append([]string(nil), node.Labels...), Properties: protoStruct(node.Properties), Payload: protoStruct(node.Payload), Meta: protoStruct(node.Meta)}
+}
+
+func gqlEdgeToProto(edge execmodel.Edge) *clientv1.Edge {
+	return &clientv1.Edge{EdgeId: edge.ID, DomainId: edge.DomainID, FromNodeId: edge.FromID, ToNodeId: edge.ToID, Labels: append([]string(nil), edge.Labels...), Properties: protoStruct(edge.Properties), Payload: protoStruct(edge.Payload), Meta: protoStruct(edge.Meta)}
+}
+
+func queryResultFromRows(rows []*clientv1.QueryRow, next string) *clientv1.QueryResult {
+	return queryResultFromRowsWithCounters(rows, next, execmodel.Counters{})
+}
+
+func queryResultFromRowsWithCounters(rows []*clientv1.QueryRow, next string, counters execmodel.Counters) *clientv1.QueryResult {
+	return &clientv1.QueryResult{Rows: rows, NextPageToken: next, Graph: graphFromRows(rows), Counters: &clientv1.QueryCounters{RowsReturned: int32(len(rows)), NodesInserted: int32(counters.NodesInserted), EdgesInserted: int32(counters.EdgesInserted)}}
+}
+
+func mergeQueryResult(aggregate *clientv1.QueryResult, result *clientv1.QueryResult) {
+	if aggregate == nil || result == nil {
+		return
+	}
+	if len(result.GetRows()) > 0 {
+		aggregate.Rows = result.GetRows()
+	}
+	aggregate.NextPageToken = result.GetNextPageToken()
+	if aggregate.Counters == nil {
+		aggregate.Counters = &clientv1.QueryCounters{}
+	}
+	if result.GetCounters() != nil {
+		aggregate.Counters.RowsReturned += result.GetCounters().GetRowsReturned()
+		aggregate.Counters.NodesInserted += result.GetCounters().GetNodesInserted()
+		aggregate.Counters.NodesUpdated += result.GetCounters().GetNodesUpdated()
+		aggregate.Counters.NodesDeleted += result.GetCounters().GetNodesDeleted()
+		aggregate.Counters.EdgesInserted += result.GetCounters().GetEdgesInserted()
+		aggregate.Counters.EdgesDeleted += result.GetCounters().GetEdgesDeleted()
+	}
+	if aggregate.Graph == nil {
+		aggregate.Graph = &clientv1.ResultGraph{}
+	}
+	seen := map[string]bool{}
+	for _, node := range aggregate.Graph.GetNodes() {
+		seen[node.GetNodeId()] = true
+	}
+	for _, node := range result.GetGraph().GetNodes() {
+		if seen[node.GetNodeId()] {
+			continue
+		}
+		seen[node.GetNodeId()] = true
+		aggregate.Graph.Nodes = append(aggregate.Graph.Nodes, node)
+	}
+}
+
+func graphFromRows(rows []*clientv1.QueryRow) *clientv1.ResultGraph {
+	seenNodes := map[string]bool{}
+	seenEdges := map[string]bool{}
+	nodes := []*clientv1.Node{}
+	edges := []*clientv1.Edge{}
+	for _, row := range rows {
+		for _, value := range row.GetFields() {
+			if node := value.GetNode(); node != nil && !seenNodes[node.GetNodeId()] {
+				seenNodes[node.GetNodeId()] = true
+				nodes = append(nodes, node)
+			}
+			if edge := value.GetEdge(); edge != nil && !seenEdges[edge.GetEdgeId()] {
+				seenEdges[edge.GetEdgeId()] = true
+				edges = append(edges, edge)
+			}
+		}
+	}
+	return &clientv1.ResultGraph{Nodes: nodes, Edges: edges}
+}
+
+func paginateProtoQueryRows(rows []*clientv1.QueryRow, pageSize int, pageToken string) ([]*clientv1.QueryRow, string, error) {
+	start := 0
+	if strings.TrimSpace(pageToken) != "" {
+		value, err := strconv.Atoi(pageToken)
+		if err != nil || value < 0 {
+			return nil, "", fmt.Errorf("invalid page_token")
+		}
+		start = value
+	}
+	if pageSize <= 0 || pageSize > queryMaxPageSize {
+		pageSize = queryMaxPageSize
+	}
+	if start >= len(rows) {
+		return []*clientv1.QueryRow{}, "", nil
+	}
+	end := start + pageSize
+	if end > len(rows) {
+		end = len(rows)
+	}
+	next := ""
+	if end < len(rows) {
+		next = strconv.Itoa(end)
+	}
+	return rows[start:end], next, nil
+}
+
+func copyMapAny(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func paginateQueryRows(rows []*queryRowState, pageSize int, pageToken string) ([]*queryRowState, string, error) {

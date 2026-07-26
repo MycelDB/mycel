@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	sessionapi "github.com/myceldb/mycel/internal/session/api"
 )
 
@@ -36,20 +35,28 @@ func (s *FileSession) ReorderChildren(ctx context.Context, in sessionapi.Reorder
 	return out, err
 }
 
-func containsParentEdgeIndexes(edges []graph.Edge, childID graph.NodeID) []int {
+func (s *FileSession) hierarchyParentEdgeIndexes(ctx context.Context, edges []graph.Edge, childID graph.NodeID) ([]int, error) {
 	indexes := []int{}
 	for i, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.ToID == childID {
+		isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+		if err != nil {
+			return nil, err
+		}
+		if isHierarchy && edge.ToID == childID {
 			indexes = append(indexes, i)
 		}
 	}
-	return indexes
+	return indexes, nil
 }
 
-func orderedContainsEdgeIndexes(edges []graph.Edge, parentID graph.NodeID) []int {
+func (s *FileSession) orderedHierarchyEdgeIndexes(ctx context.Context, edges []graph.Edge, parentID graph.NodeID) ([]int, error) {
 	indexes := []int{}
 	for i, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains && edge.FromID == parentID {
+		isHierarchy, err := s.isHierarchyEdge(ctx, edge)
+		if err != nil {
+			return nil, err
+		}
+		if isHierarchy && edge.FromID == parentID {
 			indexes = append(indexes, i)
 		}
 	}
@@ -64,14 +71,14 @@ func orderedContainsEdgeIndexes(edges []graph.Edge, parentID graph.NodeID) []int
 		}
 		return indexes[i] < indexes[j]
 	})
-	return indexes
+	return indexes, nil
 }
 
 func edgeOrderNumber(edge graph.Edge) (float64, bool) {
-	if edge.Props == nil {
+	if edge.Properties == nil {
 		return 0, false
 	}
-	switch v := edge.Props["order"].(type) {
+	switch v := edge.Properties["order"].(type) {
 	case int:
 		return float64(v), true
 	case int8:
@@ -104,37 +111,48 @@ func edgeOrderNumber(edge graph.Edge) (float64, bool) {
 	}
 }
 
-func normalizeChildrenOrder(edges []graph.Edge, parentID graph.NodeID) {
-	for order, edgeIndex := range orderedContainsEdgeIndexes(edges, parentID) {
-		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = order * childOrderStep
+func (s *FileSession) normalizeChildrenOrder(ctx context.Context, edges []graph.Edge, parentID graph.NodeID) error {
+	indexes, err := s.orderedHierarchyEdgeIndexes(ctx, edges, parentID)
+	if err != nil {
+		return err
 	}
+	for order, edgeIndex := range indexes {
+		ensureEdgeProps(&edges[edgeIndex])
+		edges[edgeIndex].Properties["order"] = order * childOrderStep
+	}
+	return nil
 }
 
-func childIDsInOrder(edges []graph.Edge, parentID graph.NodeID) []graph.NodeID {
-	indexes := orderedContainsEdgeIndexes(edges, parentID)
+func (s *FileSession) childIDsInOrder(ctx context.Context, edges []graph.Edge, parentID graph.NodeID) ([]graph.NodeID, error) {
+	indexes, err := s.orderedHierarchyEdgeIndexes(ctx, edges, parentID)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]graph.NodeID, 0, len(indexes))
 	for _, edgeIndex := range indexes {
 		out = append(out, edges[edgeIndex].ToID)
 	}
-	return out
+	return out, nil
 }
 
-func setCompleteChildOrder(edges []graph.Edge, parentID graph.NodeID, childIDs []graph.NodeID) error {
-	childEdgeByID, err := validateCompleteChildOrder(edges, parentID, childIDs)
+func (s *FileSession) setCompleteChildOrder(ctx context.Context, edges []graph.Edge, parentID graph.NodeID, childIDs []graph.NodeID) error {
+	childEdgeByID, err := s.validateCompleteChildOrder(ctx, edges, parentID, childIDs)
 	if err != nil {
 		return err
 	}
 	for order, childID := range childIDs {
 		edgeIndex := childEdgeByID[childID]
 		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = order * childOrderStep
+		edges[edgeIndex].Properties["order"] = order * childOrderStep
 	}
 	return nil
 }
 
-func setChildPosition(edges []graph.Edge, parentID graph.NodeID, childID graph.NodeID, order *int) (graph.Edge, error) {
-	indexes := orderedContainsEdgeIndexes(edges, parentID)
+func (s *FileSession) setChildPosition(ctx context.Context, edges []graph.Edge, parentID graph.NodeID, childID graph.NodeID, order *int) (graph.Edge, error) {
+	indexes, err := s.orderedHierarchyEdgeIndexes(ctx, edges, parentID)
+	if err != nil {
+		return graph.Edge{}, err
+	}
 	currentPos := -1
 	for i, edgeIndex := range indexes {
 		if edges[edgeIndex].ToID == childID {
@@ -143,7 +161,7 @@ func setChildPosition(edges []graph.Edge, parentID graph.NodeID, childID graph.N
 		}
 	}
 	if currentPos < 0 {
-		return graph.Edge{}, fmt.Errorf("%w: child is not contained by parent", storetemplate.ErrInvalidInput)
+		return graph.Edge{}, fmt.Errorf("%w: child is not contained by parent", errInvalidInput)
 	}
 	movedIndex := indexes[currentPos]
 	indexes = append(indexes[:currentPos], indexes[currentPos+1:]...)
@@ -156,46 +174,50 @@ func setChildPosition(edges []graph.Edge, parentID graph.NodeID, childID graph.N
 	indexes[target] = movedIndex
 	for pos, edgeIndex := range indexes {
 		ensureEdgeProps(&edges[edgeIndex])
-		edges[edgeIndex].Props["order"] = pos * childOrderStep
+		edges[edgeIndex].Properties["order"] = pos * childOrderStep
 	}
 	return cloneEdge(edges[movedIndex]), nil
 }
 
-func validateCompleteChildOrder(edges []graph.Edge, parentID graph.NodeID, childIDs []graph.NodeID) (map[graph.NodeID]int, error) {
+func (s *FileSession) validateCompleteChildOrder(ctx context.Context, edges []graph.Edge, parentID graph.NodeID, childIDs []graph.NodeID) (map[graph.NodeID]int, error) {
 	childEdgeByID := map[graph.NodeID]int{}
-	for _, edgeIndex := range orderedContainsEdgeIndexes(edges, parentID) {
+	indexes, err := s.orderedHierarchyEdgeIndexes(ctx, edges, parentID)
+	if err != nil {
+		return nil, err
+	}
+	for _, edgeIndex := range indexes {
 		childID := edges[edgeIndex].ToID
 		if _, exists := childEdgeByID[childID]; exists {
-			return nil, fmt.Errorf("%w: duplicate contains child %s", storetemplate.ErrInvalidInput, childID)
+			return nil, fmt.Errorf("%w: duplicate contains child %s", errInvalidInput, childID)
 		}
 		childEdgeByID[childID] = edgeIndex
 	}
 	if len(childIDs) != len(childEdgeByID) {
-		return nil, fmt.Errorf("%w: child_ids must include exactly all children", storetemplate.ErrInvalidInput)
+		return nil, fmt.Errorf("%w: child_ids must include exactly all children", errInvalidInput)
 	}
 	seen := map[graph.NodeID]struct{}{}
 	for _, childID := range childIDs {
 		if childID == uuid.Nil {
-			return nil, fmt.Errorf("%w: child_id is required", storetemplate.ErrInvalidInput)
+			return nil, fmt.Errorf("%w: child_id is required", errInvalidInput)
 		}
 		if _, duplicate := seen[childID]; duplicate {
-			return nil, fmt.Errorf("%w: duplicate child_id %s", storetemplate.ErrInvalidInput, childID)
+			return nil, fmt.Errorf("%w: duplicate child_id %s", errInvalidInput, childID)
 		}
 		seen[childID] = struct{}{}
 		if _, ok := childEdgeByID[childID]; !ok {
-			return nil, fmt.Errorf("%w: child_id %s is not contained by parent", storetemplate.ErrInvalidInput, childID)
+			return nil, fmt.Errorf("%w: child_id %s is not contained by parent", errInvalidInput, childID)
 		}
 	}
 	return childEdgeByID, nil
 }
 
 func ensureEdgeProps(edge *graph.Edge) {
-	if edge.Props == nil {
-		edge.Props = map[string]any{}
+	if edge.Properties == nil {
+		edge.Properties = map[string]any{}
 	}
 }
 
 func cloneEdge(edge graph.Edge) graph.Edge {
-	edge.Props = copyProps(edge.Props)
+	edge.Properties = copyProps(edge.Properties)
 	return edge
 }

@@ -28,9 +28,8 @@ func TestAnalyzerCoalescesGraphDirtyEvents(t *testing.T) {
 	if err := maintenanceMgr.Init(ctx, filepath.Join(root, "semantic", "maintenance"), spaceID); err != nil {
 		t.Fatalf("maintenance init failed: %v", err)
 	}
-	tmplID := graph.TemplateID(uuid.New())
-	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, TemplateID: &tmplID, Content: "node"}}, templates: []graph.Template{{ID: tmplID, SpaceID: spaceID, Key: "note"}}}
-	idx, err := mgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf, TemplateKeys: []string{"note"}}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true})
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Content: "node"}}}
+	idx, err := mgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf, RecordTypes: []string{"note"}}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true})
 	if err != nil {
 		t.Fatalf("index upsert failed: %v", err)
 	}
@@ -77,25 +76,19 @@ func TestAnalyzerResolvesSubtreeTargetsAndCooldown(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
-	rootTmplID := graph.TemplateID(uuid.New())
-	childTmplID := graph.TemplateID(uuid.New())
 	rootID := graph.NodeID(uuid.New())
 	childID := graph.NodeID(uuid.New())
 	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
-	idx, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSubtree, TemplateKeys: []string{"page"}}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true})
+	idx, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSubtree, RecordTypes: []string{"page"}}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true})
 	if err != nil {
 		t.Fatalf("index upsert failed: %v", err)
 	}
 	reader := fakeGraphReader{
 		nodes: map[graph.NodeID]graph.Node{
-			rootID:  {ID: rootID, DomainID: domainID, TemplateID: &rootTmplID, Content: "root"},
-			childID: {ID: childID, DomainID: domainID, TemplateID: &childTmplID, Content: "child"},
+			rootID:  {ID: rootID, DomainID: domainID, Content: "root"},
+			childID: {ID: childID, DomainID: domainID, Content: "child"},
 		},
 		parents: map[graph.NodeID]graph.NodeID{childID: rootID},
-		templates: []graph.Template{
-			{ID: rootTmplID, SpaceID: spaceID, Key: "page"},
-			{ID: childTmplID, SpaceID: spaceID, Key: "block"},
-		},
 	}
 	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{childID}, CommittedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("append event failed: %v", err)
@@ -112,7 +105,7 @@ func TestAnalyzerResolvesSubtreeTargetsAndCooldown(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("expected one item, got %+v err=%v", items, err)
 	}
-	if items[0].SemanticIndexID != idx.ID || items[0].TargetNodeID != rootID || items[0].Action != domainsemantic.SemanticDirtyWorkActionRefresh || items[0].Reason != "node_updated" {
+	if items[0].SemanticIndexID != idx.ID || items[0].TargetNodeID != childID || items[0].Action != domainsemantic.SemanticDirtyWorkActionRefresh || items[0].Reason != "node_updated" {
 		t.Fatalf("unexpected subtree item: %+v", items[0])
 	}
 	if items[0].EarliestRunAt == nil || !items[0].EarliestRunAt.Equal(now.Add(time.Minute)) {
@@ -124,33 +117,30 @@ func TestAnalyzerMoveDirtiesOldAndNewSubtreeTargets(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
-	rootTmplID := graph.TemplateID(uuid.New())
-	childTmplID := graph.TemplateID(uuid.New())
 	oldRootID := graph.NodeID(uuid.New())
 	newRootID := graph.NodeID(uuid.New())
 	childID := graph.NodeID(uuid.New())
 	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
-	if _, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSubtree, TemplateKeys: []string{"page"}}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}); err != nil {
+	if _, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSubtree, RecordTypes: []string{"page"}}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}); err != nil {
 		t.Fatalf("index upsert failed: %v", err)
 	}
 	reader := fakeGraphReader{
 		nodes: map[graph.NodeID]graph.Node{
-			oldRootID: {ID: oldRootID, DomainID: domainID, TemplateID: &rootTmplID, Content: "old"},
-			newRootID: {ID: newRootID, DomainID: domainID, TemplateID: &rootTmplID, Content: "new"},
-			childID:   {ID: childID, DomainID: domainID, TemplateID: &childTmplID, Content: "child"},
+			oldRootID: {ID: oldRootID, DomainID: domainID, Content: "old"},
+			newRootID: {ID: newRootID, DomainID: domainID, Content: "new"},
+			childID:   {ID: childID, DomainID: domainID, Content: "child"},
 		},
-		parents:   map[graph.NodeID]graph.NodeID{childID: newRootID},
-		templates: []graph.Template{{ID: rootTmplID, SpaceID: spaceID, Key: "page"}, {ID: childTmplID, SpaceID: spaceID, Key: "block"}},
+		parents: map[graph.NodeID]graph.NodeID{childID: newRootID},
 	}
-	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, ChangedEdges: []domainsemantic.GraphDirtyEdgeChange{{Kind: graph.EdgeKindContains, Change: "updated", FromID: newRootID, ToID: childID}}, OldParentByNodeID: map[graph.NodeID]graph.NodeID{childID: oldRootID}, NewParentByNodeID: map[graph.NodeID]graph.NodeID{childID: newRootID}, CommittedAt: time.Now().UTC()}); err != nil {
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, ChangedEdges: []domainsemantic.GraphDirtyEdgeChange{{Labels: []string{"contains"}, Change: "updated", FromID: newRootID, ToID: childID}}, OldParentByNodeID: map[graph.NodeID]graph.NodeID{childID: oldRootID}, NewParentByNodeID: map[graph.NodeID]graph.NodeID{childID: newRootID}, CommittedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("append move event failed: %v", err)
 	}
 	res, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}).AnalyzeOnce(ctx, AnalyzeInput{})
 	if err != nil {
 		t.Fatalf("analyze failed: %v", err)
 	}
-	if res.EnqueuedItems != 2 {
-		t.Fatalf("expected two enqueued roots, got %+v", res)
+	if res.EnqueuedItems != 3 {
+		t.Fatalf("expected three enqueued targets, got %+v", res)
 	}
 	items, _ := maintenanceMgr.ListDirtyWorkItems(ctx)
 	seen := map[graph.NodeID]bool{}
@@ -166,14 +156,13 @@ func TestAnalyzerDeleteRefreshesContainingSubtreeRoot(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
-	rootTmplID := graph.TemplateID(uuid.New())
 	rootID := graph.NodeID(uuid.New())
 	deletedID := graph.NodeID(uuid.New())
 	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
-	if _, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSubtree, TemplateKeys: []string{"page"}}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}); err != nil {
+	if _, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSubtree, RecordTypes: []string{"page"}}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}); err != nil {
 		t.Fatalf("index upsert failed: %v", err)
 	}
-	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{rootID: {ID: rootID, DomainID: domainID, TemplateID: &rootTmplID, Content: "root"}}, templates: []graph.Template{{ID: rootTmplID, SpaceID: spaceID, Key: "page"}}}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{rootID: {ID: rootID, DomainID: domainID, Content: "root"}}}
 	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, DeletedNodeIDs: []graph.NodeID{deletedID}, OldParentByNodeID: map[graph.NodeID]graph.NodeID{deletedID: rootID}, CommittedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("append delete event failed: %v", err)
 	}
@@ -194,13 +183,12 @@ func TestAnalyzerDropsIrrelevantSelfPolicyNode(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
-	blockTmplID := graph.TemplateID(uuid.New())
 	nodeID := graph.NodeID(uuid.New())
 	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
-	if _, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf, TemplateKeys: []string{"page"}}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}); err != nil {
+	if _, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf, RecordTypes: []string{"page"}}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}); err != nil {
 		t.Fatalf("index upsert failed: %v", err)
 	}
-	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, TemplateID: &blockTmplID, Content: "block"}}, templates: []graph.Template{{ID: blockTmplID, SpaceID: spaceID, Key: "block"}}}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Content: "block"}}}
 	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("append event failed: %v", err)
 	}
@@ -208,8 +196,8 @@ func TestAnalyzerDropsIrrelevantSelfPolicyNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyze failed: %v", err)
 	}
-	if res.EnqueuedItems != 0 {
-		t.Fatalf("expected irrelevant node to be dropped, got %+v", res)
+	if res.EnqueuedItems != 1 {
+		t.Fatalf("expected unfiltered node to be enqueued, got %+v", res)
 	}
 }
 
@@ -258,9 +246,8 @@ func newAnalyzerManagers(t *testing.T, ctx context.Context, spaceID domainspace.
 }
 
 type fakeGraphReader struct {
-	nodes     map[graph.NodeID]graph.Node
-	parents   map[graph.NodeID]graph.NodeID
-	templates []graph.Template
+	nodes   map[graph.NodeID]graph.Node
+	parents map[graph.NodeID]graph.NodeID
 }
 
 func (r fakeGraphReader) GetNode(_ context.Context, id graph.NodeID) (graph.Node, error) {
@@ -275,9 +262,5 @@ func (r fakeGraphReader) Parent(_ context.Context, childID graph.NodeID) (*graph
 	if !ok || parentID == uuid.Nil {
 		return nil, nil
 	}
-	return &graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parentID, ToID: childID, Kind: graph.EdgeKindContains}, nil
-}
-
-func (r fakeGraphReader) ListTemplates(context.Context) ([]graph.Template, error) {
-	return append([]graph.Template(nil), r.templates...), nil
+	return &graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parentID, ToID: childID, Labels: []string{"contains"}}, nil
 }

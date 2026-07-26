@@ -71,11 +71,7 @@ func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 		}
 		edges = []graph.Edge{}
 	}
-	templates, err := r.Session.ListTemplates(ctx)
-	if err != nil {
-		return Result{}, err
-	}
-	selected := selectRoots(nodes, edges, templates, *index, in.NodeIDs)
+	selected := selectRoots(nodes, edges, *index, in.NodeIDs)
 	if in.Limit > 0 && len(selected) > in.Limit {
 		selected = selected[:in.Limit]
 	}
@@ -341,18 +337,10 @@ func recordBindingMatches(rec domainsemantic.AdvancedEmbeddingRecord, nodeID gra
 		rec.VectorSpaceKey == model.VectorSpaceKey
 }
 
-func selectRoots(nodes []graph.Node, edges []graph.Edge, templates []graph.Template, index domainsemantic.SemanticIndex, explicit []graph.NodeID) []graph.Node {
-	byTemplateID := map[graph.TemplateID]string{}
-	for _, tmpl := range templates {
-		byTemplateID[tmpl.ID] = tmpl.Key
-	}
+func selectRoots(nodes []graph.Node, edges []graph.Edge, index domainsemantic.SemanticIndex, explicit []graph.NodeID) []graph.Node {
 	explicitSet := map[graph.NodeID]bool{}
 	for _, id := range explicit {
 		explicitSet[id] = true
-	}
-	wantedTemplates := map[string]bool{}
-	for _, key := range index.SourcePolicy.TemplateKeys {
-		wantedTemplates[strings.ToLower(strings.TrimSpace(key))] = true
 	}
 	selected := []graph.Node{}
 	for _, node := range nodes {
@@ -361,11 +349,6 @@ func selectRoots(nodes []graph.Node, edges []graph.Edge, templates []graph.Templ
 		}
 		if len(explicitSet) > 0 && !explicitSet[node.ID] {
 			continue
-		}
-		if len(wantedTemplates) > 0 {
-			if node.TemplateID == nil || !wantedTemplates[strings.ToLower(byTemplateID[*node.TemplateID])] {
-				continue
-			}
 		}
 		selected = append(selected, node)
 	}
@@ -379,7 +362,7 @@ func removeNested(nodes []graph.Node, edges []graph.Edge) []graph.Node {
 	}
 	parent := map[graph.NodeID]graph.NodeID{}
 	for _, edge := range edges {
-		if edge.Kind == graph.EdgeKindContains {
+		if graph.EdgeHasLabels(edge, []string{"contains"}) {
 			parent[edge.ToID] = edge.FromID
 		}
 	}

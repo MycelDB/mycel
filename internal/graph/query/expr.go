@@ -43,7 +43,8 @@ func (p PropExpr) evalValue(row evalRow) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("alias %q is not a node", p.Alias)
 	}
-	return n.Props[p.Name], nil
+	value, _ := graph.Property(n, p.Name)
+	return value, nil
 }
 
 // Between checks that value is inclusively between low and high.

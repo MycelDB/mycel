@@ -59,7 +59,7 @@ func TestChangeStreamWatchReceivesCommitEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
-	if _, err := clientv1.NewGraphServiceClient(conn).CreateNode(authCtx, &clientv1.CreateNodeRequest{TransactionId: tx.GetTransaction().GetTransactionId(), Node: &clientv1.NodeCreate{Content: "stream me"}}); err != nil {
+	if _, err := clientv1.NewGraphServiceClient(conn).CreateNode(authCtx, &clientv1.CreateNodeRequest{TransactionId: tx.GetTransaction().GetTransactionId(), Node: &clientv1.NodeCreate{Payload: protoStruct(map[string]any{"text": "stream me"})}}); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
 	commit, err := clientv1.NewTransactionServiceClient(conn).CommitTransaction(authCtx, &clientv1.CommitTransactionRequest{TransactionId: tx.GetTransaction().GetTransactionId()})
@@ -77,7 +77,7 @@ func TestChangeStreamWatchReceivesCommitEvent(t *testing.T) {
 	if len(event.GetChanges()) != 2 {
 		t.Fatalf("unexpected changes: %#v", event.GetChanges())
 	}
-	if event.GetChanges()[0].GetType() != clientv1.ChangeEventType_CHANGE_EVENT_TYPE_NODE_CREATED || event.GetChanges()[0].GetNode().GetContent() != "stream me" {
+	if event.GetChanges()[0].GetType() != clientv1.ChangeEventType_CHANGE_EVENT_TYPE_NODE_CREATED || nodePayloadText(event.GetChanges()[0].GetNode()) != "stream me" {
 		t.Fatalf("expected node-created payload, got %#v", event.GetChanges()[0])
 	}
 	if event.GetChanges()[1].GetType() != clientv1.ChangeEventType_CHANGE_EVENT_TYPE_REVISION_ADVANCED {
@@ -92,7 +92,7 @@ func TestChangeStreamWatchReceivesCommitEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("receive replay: %v", err)
 	}
-	if got := replayed.GetEvent(); got == nil || got.GetRevision() != event.GetRevision() || len(got.GetChanges()) != 1 || got.GetChanges()[0].GetNode().GetContent() != "stream me" {
+	if got := replayed.GetEvent(); got == nil || got.GetRevision() != event.GetRevision() || len(got.GetChanges()) != 1 || nodePayloadText(got.GetChanges()[0].GetNode()) != "stream me" {
 		t.Fatalf("unexpected replay event: %#v", replayed.GetEvent())
 	}
 }

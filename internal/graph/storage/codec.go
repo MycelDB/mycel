@@ -28,12 +28,7 @@ const (
 func encodeNode(node graph.Node) ([]byte, error) {
 	var b bytes.Buffer
 	writeUUID(&b, node.ID)
-	if node.TemplateID == nil {
-		b.WriteByte(0)
-	} else {
-		b.WriteByte(1)
-		writeUUID(&b, *node.TemplateID)
-	}
+	b.WriteByte(0) // legacy template-id presence flag; always absent after schema migration.
 	writeString(&b, node.Content)
 	writeTime(&b, node.CreatedAt)
 	writeTime(&b, node.UpdatedAt)
@@ -46,7 +41,40 @@ func encodeNode(node graph.Node) ([]byte, error) {
 		return nil, err
 	}
 	writeUUID(&b, node.DomainID)
+	writeStringSlice(&b, node.Labels)
+	if err := writeMap(&b, node.Properties); err != nil {
+		return nil, err
+	}
+	if err := writeMap(&b, node.Payload); err != nil {
+		return nil, err
+	}
+	if err := writeMap(&b, node.Meta); err != nil {
+		return nil, err
+	}
 	return b.Bytes(), nil
+}
+
+func writeStringSlice(b *bytes.Buffer, values []string) {
+	_ = binary.Write(b, binary.BigEndian, uint32(len(values)))
+	for _, value := range values {
+		writeString(b, value)
+	}
+}
+
+func readStringSlice(r *bytes.Reader) ([]string, error) {
+	var n uint32
+	if err := binary.Read(r, binary.BigEndian, &n); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, n)
+	for i := uint32(0); i < n; i++ {
+		value, err := readString(r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func writeBlobRef(b *bytes.Buffer, ref *graph.BlobID) error {
@@ -106,7 +134,7 @@ func readDomainID(r *bytes.Reader) (graph.DomainID, error) {
 }
 
 func decodeNode(payload []byte) (graph.Node, error) {
-	id, templateID, content, r, err := decodeNodePrefix(payload)
+	id, content, r, err := decodeNodePrefix(payload)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -125,8 +153,32 @@ func decodeNode(payload []byte) (graph.Node, error) {
 		if err == nil {
 			blobRef, blobErr := readBlobRef(r)
 			domainID, domainErr := readDomainID(r)
-			if blobErr == nil && domainErr == nil && r.Len() == 0 {
-				return graph.Node{ID: graph.NodeID(id), DomainID: domainID, TemplateID: templateID, BlobRef: blobRef, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+			if blobErr == nil && domainErr == nil {
+				labels := []string(nil)
+				properties := map[string]any(nil)
+				payload := map[string]any(nil)
+				meta := map[string]any(nil)
+				if r.Len() > 0 {
+					labels, err = readStringSlice(r)
+					if err != nil {
+						return graph.Node{}, err
+					}
+					properties, err = readMap(r)
+					if err != nil {
+						return graph.Node{}, err
+					}
+					payload, err = readMap(r)
+					if err != nil {
+						return graph.Node{}, err
+					}
+					meta, err = readMap(r)
+					if err != nil {
+						return graph.Node{}, err
+					}
+				}
+				if r.Len() == 0 {
+					return graph.Node{ID: graph.NodeID(id), DomainID: domainID, Labels: labels, Properties: properties, Payload: payload, Meta: meta, BlobRef: blobRef, Content: content, Props: props, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+				}
 			}
 		}
 	}
@@ -141,33 +193,29 @@ func decodeNode(payload []byte) (graph.Node, error) {
 	if r.Len() != 0 {
 		return graph.Node{}, fmt.Errorf("%w: trailing node payload bytes", ErrUnsupported)
 	}
-	return graph.Node{ID: graph.NodeID(id), TemplateID: templateID, Content: content, Props: props}, nil
+	return graph.Node{ID: graph.NodeID(id), Content: content, Props: props}, nil
 }
 
-func decodeNodePrefix(payload []byte) (uuid.UUID, *graph.TemplateID, string, *bytes.Reader, error) {
+func decodeNodePrefix(payload []byte) (uuid.UUID, string, *bytes.Reader, error) {
 	r := bytes.NewReader(payload)
 	id, err := readUUID(r)
 	if err != nil {
-		return uuid.Nil, nil, "", nil, err
+		return uuid.Nil, "", nil, err
 	}
-	hasTemplate, err := r.ReadByte()
+	hasLegacyTemplate, err := r.ReadByte()
 	if err != nil {
-		return uuid.Nil, nil, "", nil, err
+		return uuid.Nil, "", nil, err
 	}
-	var templateID *graph.TemplateID
-	if hasTemplate == 1 {
-		tid, err := readUUID(r)
-		if err != nil {
-			return uuid.Nil, nil, "", nil, err
+	if hasLegacyTemplate == 1 {
+		if _, err := readUUID(r); err != nil {
+			return uuid.Nil, "", nil, err
 		}
-		gtid := graph.TemplateID(tid)
-		templateID = &gtid
 	}
 	content, err := readString(r)
 	if err != nil {
-		return uuid.Nil, nil, "", nil, err
+		return uuid.Nil, "", nil, err
 	}
-	return id, templateID, content, r, nil
+	return id, content, r, nil
 }
 
 func peekInt64(payload []byte) int64 {
@@ -189,18 +237,31 @@ func plausibleUnixNanos(nanos int64) bool {
 func encodeEdge(edge graph.Edge) ([]byte, error) {
 	var b bytes.Buffer
 	writeUUID(&b, edge.ID)
+	writeUUID(&b, edge.DomainID)
 	writeUUID(&b, edge.FromID)
 	writeUUID(&b, edge.ToID)
-	writeString(&b, string(edge.Kind))
-	if err := writeMap(&b, edge.Props); err != nil {
+	writeStringSlice(&b, edge.Labels)
+	if err := writeMap(&b, edge.Properties); err != nil {
 		return nil, err
 	}
+	if err := writeMap(&b, edge.Payload); err != nil {
+		return nil, err
+	}
+	if err := writeMap(&b, edge.Meta); err != nil {
+		return nil, err
+	}
+	writeTime(&b, edge.CreatedAt)
+	writeTime(&b, edge.UpdatedAt)
 	return b.Bytes(), nil
 }
 
 func decodeEdge(payload []byte) (graph.Edge, error) {
 	r := bytes.NewReader(payload)
 	id, err := readUUID(r)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	domainID, err := readUUID(r)
 	if err != nil {
 		return graph.Edge{}, err
 	}
@@ -212,15 +273,31 @@ func decodeEdge(payload []byte) (graph.Edge, error) {
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	kind, err := readString(r)
+	labels, err := readStringSlice(r)
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	props, err := readMap(r)
+	properties, err := readMap(r)
 	if err != nil {
 		return graph.Edge{}, err
 	}
-	return graph.Edge{ID: graph.EdgeID(id), FromID: graph.NodeID(from), ToID: graph.NodeID(to), Kind: graph.EdgeKind(kind), Props: props}, nil
+	edgePayload, err := readMap(r)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	meta, err := readMap(r)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	createdAt, err := readTime(r)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	updatedAt, err := readTime(r)
+	if err != nil {
+		return graph.Edge{}, err
+	}
+	return graph.Edge{ID: graph.EdgeID(id), DomainID: graph.DomainID(domainID), FromID: graph.NodeID(from), ToID: graph.NodeID(to), Labels: labels, Properties: properties, Payload: edgePayload, Meta: meta, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }
 
 func writeUUID(b *bytes.Buffer, id uuid.UUID) { b.Write(id[:]) }

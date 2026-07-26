@@ -7,7 +7,6 @@ import (
 
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/graph/query"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 )
 
@@ -54,36 +53,13 @@ type Permissions struct {
 	Admin bool
 }
 
-// ImportDocument is the JSON import contract for templates.
-type ImportDocument = storetemplate.ImportDocument
-
-// TemplateImport is the JSON representation of a template to import.
-type TemplateImport = storetemplate.TemplateImport
-
-// PropertyPolicyImport defines imported property constraints.
-type PropertyPolicyImport = storetemplate.PropertyPolicyImport
-
-// TemplatePropertyImport defines an imported allowed property.
-type TemplatePropertyImport = storetemplate.TemplatePropertyImport
-
-// ChildPolicyImport defines imported direct-child constraints.
-type ChildPolicyImport = storetemplate.ChildPolicyImport
-
-// ChildOrderPolicyImport defines imported child ordering constraints.
-type ChildOrderPolicyImport = storetemplate.ChildOrderPolicyImport
-
-// TemplateRefImport identifies an imported child-template reference.
-type TemplateRefImport = storetemplate.TemplateRefImport
-
-// ImportTemplatesInput is the session-scoped template import payload.
-type ImportTemplatesInput struct {
-	Document ImportDocument
-}
-
 // AddNodeInput is the write payload used when creating a node.
 type AddNodeInput struct {
 	ID         *graph.NodeID
-	TemplateID *graph.TemplateID
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	Content    string
 	Props      map[string]any
 }
@@ -91,7 +67,10 @@ type AddNodeInput struct {
 // UpsertNodeInput is the write payload used when creating or replacing a node.
 type UpsertNodeInput struct {
 	ID         *graph.NodeID
-	TemplateID *graph.TemplateID
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	Content    string
 	Props      map[string]any
 }
@@ -99,7 +78,10 @@ type UpsertNodeInput struct {
 // UpdateNodeInput is the write payload used when updating an existing node.
 type UpdateNodeInput struct {
 	ID         graph.NodeID
-	TemplateID *graph.TemplateID
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 	Content    string
 	Props      map[string]any
 }
@@ -107,13 +89,12 @@ type UpdateNodeInput struct {
 // UpdateNodeAndCreateSiblingInput updates an existing node and inserts a new
 // sibling immediately after it in one logical mutation.
 type UpdateNodeAndCreateSiblingInput struct {
-	NodeID            graph.NodeID
-	Content           string
-	Props             map[string]any
-	SiblingID         *graph.NodeID
-	SiblingTemplateID *graph.TemplateID
-	SiblingContent    string
-	SiblingProps      map[string]any
+	NodeID         graph.NodeID
+	Content        string
+	Props          map[string]any
+	SiblingID      *graph.NodeID
+	SiblingContent string
+	SiblingProps   map[string]any
 }
 
 // UpdateNodeAndCreateSiblingResult returns both nodes and the created contains edge.
@@ -137,12 +118,9 @@ type DeleteNodeInput struct {
 // content, never both. Text about the blob (caption, alt text, ...) belongs
 // in Props or annotation children.
 //
-// If TemplateID is nil the system blob template is used so every blob node
-// gets baseline metadata validation. The blob metadata props (mime_type,
-// size_bytes, original_filename, declared_mime_type) are auto-populated.
+// Blob metadata props (mime_type, size_bytes, original_filename, declared_mime_type) are auto-populated.
 type AddBlobNodeInput struct {
 	ID               *graph.NodeID
-	TemplateID       *graph.TemplateID
 	Reader           io.Reader // required; streamed, never fully buffered
 	DeclaredMimeType string    // optional; the sniffed type is authoritative
 	OriginalFilename string    // optional
@@ -163,11 +141,13 @@ type GetBlobResult struct {
 
 // AddEdgeInput is the write payload used when creating an edge.
 type AddEdgeInput struct {
-	ID     *graph.EdgeID
-	FromID graph.NodeID
-	ToID   graph.NodeID
-	Kind   graph.EdgeKind
-	Props  map[string]any
+	ID         *graph.EdgeID
+	FromID     graph.NodeID
+	ToID       graph.NodeID
+	Labels     []string
+	Properties map[string]any
+	Payload    map[string]any
+	Meta       map[string]any
 }
 
 // AddGraphInput is a batch write payload containing nodes and edges.
@@ -311,7 +291,6 @@ type TxOptions struct {
 // overlay and durable commit implementation land in later phases.
 type Tx interface {
 	Query() *query.Builder
-	ListTemplates(ctx context.Context) ([]graph.Template, error)
 	AddNode(ctx context.Context, in AddNodeInput) (graph.Node, error)
 	AddBlobNode(ctx context.Context, in AddBlobNodeInput) (graph.Node, error)
 	ListNodes(ctx context.Context) ([]graph.Node, error)
@@ -343,8 +322,6 @@ type Session interface {
 	Begin(ctx context.Context, opts TxOptions) (Tx, error)
 	Tx(ctx context.Context, opts TxOptions, fn func(Tx) error) error
 	Query() *query.Builder
-	ImportTemplates(ctx context.Context, in ImportTemplatesInput) ([]graph.Template, error)
-	ListTemplates(ctx context.Context) ([]graph.Template, error)
 	AddNode(ctx context.Context, in AddNodeInput) (graph.Node, error)
 	AddBlobNode(ctx context.Context, in AddBlobNodeInput) (graph.Node, error)
 	GetBlob(ctx context.Context, in GetBlobInput) (GetBlobResult, error)

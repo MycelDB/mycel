@@ -53,9 +53,9 @@ Those packages are removed or internalized. The root `github.com/myceldb/mycel` 
 **Daemon implementation internals:**
 
 - `internal/daemon/`: runtime, modules, auth, and gRPC service adapters.
-- `internal/graph/model/`: in-process graph records and template policies.
+- `internal/graph/model/`: in-process graph records and schema-era graph model types.
 - `internal/graph/storage/`: graph persistence used by `myceld`.
-- `internal/graph/template/storage/`: graph template catalog persistence.
+- `internal/schema/`: domain schema model, storage, DSL parsing, validation, and service logic.
 - `internal/graph/change/`: neutral graph commit events/sinks used by semantic maintenance.
 - `internal/blob/storage/`: blob persistence used by `myceld`.
 - `internal/graph/filesession/`: file-backed graph session runtime used by `myceld`.

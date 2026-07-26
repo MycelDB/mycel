@@ -19,7 +19,6 @@ import (
 type GraphReader interface {
 	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
 	Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge, error)
-	ListTemplates(ctx context.Context) ([]graph.Template, error)
 }
 
 type Analyzer struct {
@@ -143,11 +142,7 @@ func (a Analyzer) enqueueForEvent(ctx context.Context, index domainsemantic.Sema
 	if a.GraphReader == nil {
 		return 0, fmt.Errorf("graph reader is required")
 	}
-	templateKeyByID, err := a.templateKeyByID(ctx)
-	if err != nil {
-		return 0, err
-	}
-	targets := a.resolveTargets(ctx, index, event, templateKeyByID)
+	targets := a.resolveTargets(ctx, index, event)
 	count := 0
 	for targetID, target := range targets {
 		item := domainsemantic.SemanticDirtyWorkItem{SemanticIndexID: index.ID, SpaceID: index.SpaceID, DomainID: index.DomainID, TargetNodeID: targetID, SourceNodeID: targetID, SourceTxnIDs: []uuid.UUID{event.TxnID}, FirstGraphRevision: event.GraphRevision, LastGraphRevision: event.GraphRevision, Reason: target.Reason, Action: target.Action, Status: domainsemantic.SemanticDirtyWorkStatusPending}
@@ -168,19 +163,7 @@ type resolvedTarget struct {
 	Reason string
 }
 
-func (a Analyzer) templateKeyByID(ctx context.Context) (map[graph.TemplateID]string, error) {
-	templates, err := a.GraphReader.ListTemplates(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := map[graph.TemplateID]string{}
-	for _, tmpl := range templates {
-		out[tmpl.ID] = tmpl.Key
-	}
-	return out, nil
-}
-
-func (a Analyzer) resolveTargets(ctx context.Context, index domainsemantic.SemanticIndex, event domainsemantic.GraphDirtyEvent, templateKeyByID map[graph.TemplateID]string) map[graph.NodeID]resolvedTarget {
+func (a Analyzer) resolveTargets(ctx context.Context, index domainsemantic.SemanticIndex, event domainsemantic.GraphDirtyEvent) map[graph.NodeID]resolvedTarget {
 	out := map[graph.NodeID]resolvedTarget{}
 	add := func(id graph.NodeID, action domainsemantic.SemanticDirtyWorkAction, reason string) {
 		if id == uuid.Nil {
@@ -196,21 +179,21 @@ func (a Analyzer) resolveTargets(ctx context.Context, index domainsemantic.Seman
 	for _, nodeID := range candidateNodeIDs(event) {
 		reason := reasonForEvent(event, nodeID)
 		if containsNode(event.DeletedNodeIDs, nodeID) {
-			if targetID, action, ok := a.deletedTarget(ctx, index, event, nodeID, templateKeyByID); ok {
+			if targetID, action, ok := a.deletedTarget(ctx, index, event, nodeID); ok {
 				add(targetID, action, reason)
 			}
 			continue
 		}
-		if targetID, ok := a.targetForNode(ctx, index, nodeID, templateKeyByID); ok {
+		if targetID, ok := a.targetForNode(ctx, index, nodeID); ok {
 			add(targetID, domainsemantic.SemanticDirtyWorkActionRefresh, reason)
 		}
 		if oldParentID := event.OldParentByNodeID[nodeID]; oldParentID != uuid.Nil {
-			if targetID, ok := a.targetForNode(ctx, index, oldParentID, templateKeyByID); ok {
+			if targetID, ok := a.targetForNode(ctx, index, oldParentID); ok {
 				add(targetID, domainsemantic.SemanticDirtyWorkActionRefresh, reason)
 			}
 		}
 		if newParentID := event.NewParentByNodeID[nodeID]; newParentID != uuid.Nil {
-			if targetID, ok := a.targetForNode(ctx, index, newParentID, templateKeyByID); ok {
+			if targetID, ok := a.targetForNode(ctx, index, newParentID); ok {
 				add(targetID, domainsemantic.SemanticDirtyWorkActionRefresh, reason)
 			}
 		}
@@ -218,18 +201,18 @@ func (a Analyzer) resolveTargets(ctx context.Context, index domainsemantic.Seman
 	return out
 }
 
-func (a Analyzer) targetForNode(ctx context.Context, index domainsemantic.SemanticIndex, nodeID graph.NodeID, templateKeyByID map[graph.TemplateID]string) (graph.NodeID, bool) {
+func (a Analyzer) targetForNode(ctx context.Context, index domainsemantic.SemanticIndex, nodeID graph.NodeID) (graph.NodeID, bool) {
 	node, err := a.GraphReader.GetNode(ctx, nodeID)
 	if err != nil || node.DomainID != index.DomainID {
 		return uuid.Nil, false
 	}
 	if index.SourcePolicy.Extraction == domainsemantic.SourceExtractionSelf || index.SourcePolicy.Extraction == "" {
-		if nodeMatchesPolicy(node, index.SourcePolicy, templateKeyByID) {
+		if nodeMatchesPolicy(node, index.SourcePolicy) {
 			return node.ID, true
 		}
 		return uuid.Nil, false
 	}
-	if nodeMatchesPolicy(node, index.SourcePolicy, templateKeyByID) {
+	if nodeMatchesPolicy(node, index.SourcePolicy) {
 		return node.ID, true
 	}
 	parentID := nodeID
@@ -242,7 +225,7 @@ func (a Analyzer) targetForNode(ctx context.Context, index domainsemantic.Semant
 		if err != nil || parentNode.DomainID != index.DomainID {
 			return uuid.Nil, false
 		}
-		if nodeMatchesPolicy(parentNode, index.SourcePolicy, templateKeyByID) {
+		if nodeMatchesPolicy(parentNode, index.SourcePolicy) {
 			return parentNode.ID, true
 		}
 		parentID = parentNode.ID
@@ -250,94 +233,21 @@ func (a Analyzer) targetForNode(ctx context.Context, index domainsemantic.Semant
 	return uuid.Nil, false
 }
 
-func (a Analyzer) deletedTarget(ctx context.Context, index domainsemantic.SemanticIndex, event domainsemantic.GraphDirtyEvent, nodeID graph.NodeID, templateKeyByID map[graph.TemplateID]string) (graph.NodeID, domainsemantic.SemanticDirtyWorkAction, bool) {
+func (a Analyzer) deletedTarget(ctx context.Context, index domainsemantic.SemanticIndex, event domainsemantic.GraphDirtyEvent, nodeID graph.NodeID) (graph.NodeID, domainsemantic.SemanticDirtyWorkAction, bool) {
 	if index.SourcePolicy.Extraction == domainsemantic.SourceExtractionSelf || index.SourcePolicy.Extraction == "" {
 		return nodeID, domainsemantic.SemanticDirtyWorkActionDelete, true
 	}
 	if oldParentID := event.OldParentByNodeID[nodeID]; oldParentID != uuid.Nil {
-		if targetID, ok := a.targetForNode(ctx, index, oldParentID, templateKeyByID); ok {
+		if targetID, ok := a.targetForNode(ctx, index, oldParentID); ok {
 			return targetID, domainsemantic.SemanticDirtyWorkActionRefresh, true
 		}
 	}
 	return nodeID, domainsemantic.SemanticDirtyWorkActionDelete, true
 }
 
-func nodeMatchesPolicy(node graph.Node, policy domainsemantic.SemanticSourcePolicy, templateKeyByID map[graph.TemplateID]string) bool {
-	if len(policy.TemplateKeys) == 0 {
-		return true
-	}
-	if node.TemplateID == nil {
-		return false
-	}
-	key := templateKeyByID[*node.TemplateID]
-	for _, allowed := range policy.TemplateKeys {
-		if key == allowed {
-			return true
-		}
-	}
-	return false
-}
-
-func analyzerConsumer(indexID domainsemantic.SemanticIndexID) string {
-	return "semantic-analyzer:" + indexID.String()
-}
-
-func maxUint64(a, b uint64) uint64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func eventTouchesDomain(event domainsemantic.GraphDirtyEvent, domainID graph.DomainID) bool {
-	if domainID == uuid.Nil || len(event.DomainIDs) == 0 {
-		return true
-	}
-	for _, id := range event.DomainIDs {
-		if id == domainID {
-			return true
-		}
-	}
-	return false
-}
-
-func candidateNodeIDs(event domainsemantic.GraphDirtyEvent) []graph.NodeID {
-	seen := map[graph.NodeID]bool{}
-	out := []graph.NodeID{}
-	add := func(id graph.NodeID) {
-		if id == uuid.Nil || seen[id] {
-			return
-		}
-		seen[id] = true
-		out = append(out, id)
-	}
-	for _, id := range event.CreatedNodeIDs {
-		add(id)
-	}
-	for _, id := range event.UpdatedNodeIDs {
-		add(id)
-	}
-	for _, id := range event.DeletedNodeIDs {
-		add(id)
-	}
-	for _, edge := range event.ChangedEdges {
-		add(edge.FromID)
-		add(edge.ToID)
-	}
-	return out
-}
-
-func reasonForEvent(event domainsemantic.GraphDirtyEvent, nodeID graph.NodeID) string {
-	if containsNode(event.CreatedNodeIDs, nodeID) {
-		return "node_created"
-	}
-	if containsNode(event.UpdatedNodeIDs, nodeID) {
-		return "node_updated"
-	}
-	if containsNode(event.DeletedNodeIDs, nodeID) {
-		return "node_deleted"
-	}
-	return "node_moved"
+func nodeMatchesPolicy(node graph.Node, policy domainsemantic.SemanticSourcePolicy) bool {
+	// Record-type source filters are currently advisory until semantic source filtering is implemented.
+	return true
 }
 
 func containsNode(values []graph.NodeID, id graph.NodeID) bool {
@@ -614,4 +524,66 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func analyzerConsumer(indexID domainsemantic.SemanticIndexID) string {
+	return "semantic-analyzer:" + indexID.String()
+}
+
+func maxUint64(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func eventTouchesDomain(event domainsemantic.GraphDirtyEvent, domainID graph.DomainID) bool {
+	if domainID == uuid.Nil || len(event.DomainIDs) == 0 {
+		return true
+	}
+	for _, id := range event.DomainIDs {
+		if id == domainID {
+			return true
+		}
+	}
+	return false
+}
+
+func candidateNodeIDs(event domainsemantic.GraphDirtyEvent) []graph.NodeID {
+	seen := map[graph.NodeID]bool{}
+	out := []graph.NodeID{}
+	add := func(id graph.NodeID) {
+		if id == uuid.Nil || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	for _, id := range event.CreatedNodeIDs {
+		add(id)
+	}
+	for _, id := range event.UpdatedNodeIDs {
+		add(id)
+	}
+	for _, id := range event.DeletedNodeIDs {
+		add(id)
+	}
+	for _, edge := range event.ChangedEdges {
+		add(edge.FromID)
+		add(edge.ToID)
+	}
+	return out
+}
+
+func reasonForEvent(event domainsemantic.GraphDirtyEvent, nodeID graph.NodeID) string {
+	if containsNode(event.CreatedNodeIDs, nodeID) {
+		return "node_created"
+	}
+	if containsNode(event.UpdatedNodeIDs, nodeID) {
+		return "node_updated"
+	}
+	if containsNode(event.DeletedNodeIDs, nodeID) {
+		return "node_deleted"
+	}
+	return "node_moved"
 }

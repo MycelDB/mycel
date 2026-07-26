@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 
+	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
 	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
@@ -26,6 +27,7 @@ import (
 	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
 	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -42,11 +44,12 @@ type Config struct {
 	BackupManager           daemonbackup.Manager
 	UserManager             daemonuser.Manager
 	SpaceManager            daemonspace.Manager
-	TemplateManager         adminv1.AdminTemplateServiceServer
 	SessionManager          daemonsession.Manager
 	GraphManager            daegraph.Manager
 	BlobManager             daemonblob.Manager
 	SemanticManager         daemonsemantic.Manager
+	SchemaManager           schemaservice.Manager
+	AutomationManager       automationservice.Manager
 	ChangeManager           daemonchange.Manager
 	TokenManager            *daemonauth.TokenManager
 	Quiesce                 *quiesce.Coordinator
@@ -114,7 +117,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen grpc %s: %w", cfg.Addr, err)
 	}
-	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName: true, clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName: true, clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName: true, clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName: true}
+	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName: true, clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName: true, clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName: true, clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName: true, clusterpb.ClusterBackendService_ExecuteRaftGraphRead_FullMethodName: true, clusterpb.ClusterBackendService_ExecuteRaftSemanticRead_FullMethodName: true}
 	quiesceExempt := defaultQuiesceExemptMethods()
 	for method, exempt := range cfg.QuiesceExempt {
 		quiesceExempt[method] = exempt
@@ -143,14 +146,17 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	adminv1.RegisterAdminOperatorServiceServer(grpcServer, adminapi.NewOperatorService(cfg.OperatorManager))
 	adminv1.RegisterAdminUserServiceServer(grpcServer, adminapi.NewUserService(cfg.UserManager, cfg.OperatorManager, cfg.TokenManager))
 	adminv1.RegisterAdminSpaceServiceServer(grpcServer, adminapi.NewAdminSpaceService(cfg.SpaceManager, cfg.UserManager, cfg.OperatorManager))
-	if cfg.TemplateManager != nil {
-		adminv1.RegisterAdminTemplateServiceServer(grpcServer, cfg.TemplateManager)
-	}
 	adminv1.RegisterAdminDomainServiceServer(grpcServer, adminapi.NewAdminDomainService(cfg.SpaceManager, cfg.OperatorManager))
 	adminv1.RegisterAdminInferenceServiceServer(grpcServer, adminapi.NewAdminInferenceService(cfg.SemanticManager, cfg.OperatorManager))
 	adminv1.RegisterAdminSemanticServiceServer(grpcServer, adminapi.NewAdminSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
 	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.OperatorManager))
 	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
+	if cfg.SchemaManager != nil {
+		adminv1.RegisterAdminSchemaServiceServer(grpcServer, adminapi.NewAdminSchemaService(cfg.SchemaManager))
+	}
+	if cfg.AutomationManager != nil {
+		adminv1.RegisterAdminAutomationServiceServer(grpcServer, adminapi.NewAdminAutomationService(cfg.AutomationManager))
+	}
 	if cfg.ClusteringManager != nil {
 		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups))
 	}
@@ -160,12 +166,17 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	clientv1.RegisterAuthServiceServer(grpcServer, clientapi.NewAuthService(cfg.UserManager, cfg.TokenManager))
 	clientv1.RegisterSpaceServiceServer(grpcServer, clientapi.NewSpaceService(cfg.SpaceManager))
 	clientv1.RegisterDomainServiceServer(grpcServer, clientapi.NewDomainService(cfg.SpaceManager))
-	clientv1.RegisterTemplateServiceServer(grpcServer, clientapi.NewTemplateService(cfg.SpaceManager))
 	clientv1.RegisterSessionServiceServer(grpcServer, clientapi.NewSessionService(cfg.SessionManager, cfg.SpaceManager))
 	clientv1.RegisterTransactionServiceServer(grpcServer, clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.ChangeManager, cfg.SpaceManager))
 	clientv1.RegisterGraphServiceServer(grpcServer, clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager))
 	clientv1.RegisterBlobServiceServer(grpcServer, clientapi.NewBlobService(cfg.BlobManager, cfg.SpaceManager))
-	clientv1.RegisterQueryServiceServer(grpcServer, clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager))
+	clientv1.RegisterQueryServiceServer(grpcServer, clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager))
+	if cfg.SchemaManager != nil {
+		clientv1.RegisterSchemaServiceServer(grpcServer, clientapi.NewSchemaService(cfg.SchemaManager))
+	}
+	if cfg.AutomationManager != nil {
+		clientv1.RegisterAutomationServiceServer(grpcServer, clientapi.NewAutomationService(cfg.AutomationManager))
+	}
 	clientv1.RegisterImportExportServiceServer(grpcServer, clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager))
 	clientv1.RegisterMetadataCatalogServiceServer(grpcServer, clientapi.NewMetadataCatalogService(cfg.SessionManager, cfg.GraphManager))
 	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager))
@@ -175,22 +186,24 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 
 func defaultQuiesceExemptMethods() map[string]bool {
 	return map[string]bool{
-		adminv1.AdminAuthService_LoginOperator_FullMethodName:              true,
-		adminv1.AdminAuthService_RefreshOperator_FullMethodName:            true,
-		adminv1.AdminAuthService_WhoAmI_FullMethodName:                     true,
-		adminv1.AdminBackupService_GetBackupPolicy_FullMethodName:          true,
-		adminv1.AdminBackupService_TriggerBackup_FullMethodName:            true,
-		adminv1.AdminBackupService_GetBackupStatus_FullMethodName:          true,
-		adminv1.AdminBackupService_ListBackups_FullMethodName:              true,
-		adminv1.AdminClusterService_GetClusterHealth_FullMethodName:        true,
-		clusterpb.ClusterBackendService_RegisterNode_FullMethodName:        true,
-		clusterpb.ClusterBackendService_GetClusterView_FullMethodName:      true,
-		clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName:    true,
-		clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true,
-		clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName:      true,
-		clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName: true,
-		clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName:        true,
-		clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName:      true,
+		adminv1.AdminAuthService_LoginOperator_FullMethodName:                  true,
+		adminv1.AdminAuthService_RefreshOperator_FullMethodName:                true,
+		adminv1.AdminAuthService_WhoAmI_FullMethodName:                         true,
+		adminv1.AdminBackupService_GetBackupPolicy_FullMethodName:              true,
+		adminv1.AdminBackupService_TriggerBackup_FullMethodName:                true,
+		adminv1.AdminBackupService_GetBackupStatus_FullMethodName:              true,
+		adminv1.AdminBackupService_ListBackups_FullMethodName:                  true,
+		adminv1.AdminClusterService_GetClusterHealth_FullMethodName:            true,
+		clusterpb.ClusterBackendService_RegisterNode_FullMethodName:            true,
+		clusterpb.ClusterBackendService_GetClusterView_FullMethodName:          true,
+		clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName:        true,
+		clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName:     true,
+		clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName:          true,
+		clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName:     true,
+		clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName:            true,
+		clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName:          true,
+		clusterpb.ClusterBackendService_ExecuteRaftGraphRead_FullMethodName:    true,
+		clusterpb.ClusterBackendService_ExecuteRaftSemanticRead_FullMethodName: true,
 	}
 }
 

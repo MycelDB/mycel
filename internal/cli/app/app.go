@@ -3,12 +3,9 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"strings"
 
 	"github.com/google/uuid"
-	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -60,24 +57,6 @@ func (a *App) Print(v any, text string) error {
 	}
 	fmt.Print(text)
 	return nil
-}
-
-func ReadTemplateDocument(filePath string) (sessionapi.ImportDocument, error) {
-	var raw []byte
-	var err error
-	if filePath == "-" {
-		raw, err = io.ReadAll(os.Stdin)
-	} else {
-		raw, err = os.ReadFile(filePath)
-	}
-	if err != nil {
-		return sessionapi.ImportDocument{}, err
-	}
-	var doc sessionapi.ImportDocument
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return sessionapi.ImportDocument{}, fmt.Errorf("invalid template JSON: %w", err)
-	}
-	return doc, nil
 }
 
 func ParseProps(raw string) (map[string]any, error) {

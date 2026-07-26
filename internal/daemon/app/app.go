@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
+	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	backupservice "github.com/myceldb/mycel/internal/backup/service"
 	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	changestreamservice "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
-	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	"github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/daemon/logging"
@@ -25,6 +25,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/change"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
@@ -82,6 +83,16 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: semantic service is not registered\n")
 		return 1
 	}
+	schemaService, ok := daemonruntime.ServiceAs[*schemaservice.Module](rt, schemaservice.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: schema service is not registered\n")
+		return 1
+	}
+	automationService, ok := daemonruntime.ServiceAs[*automationservice.Module](rt, automationservice.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: automation service is not registered\n")
+		return 1
+	}
 	changeService, ok := daemonruntime.ServiceAs[*changestreamservice.Module](rt, changestreamservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: change stream service is not registered\n")
@@ -102,7 +113,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, TemplateManager: adminapi.NewAdminTemplateService(spaceService, adminService), SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, SchemaManager: schemaService, AutomationManager: automationService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -186,7 +197,15 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	userService := identityservice.NewUserManager()
 	spaceService := spaceservice.NewModule()
 	sessionService := sessionservice.NewModule()
+	schemaService := schemaservice.NewModule("")
 	graphService := graphservice.NewModule()
+	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxTokensPerRun: cfg.Automation.MaxTokensPerRun, MaxCostPerRun: cfg.Automation.MaxCostPerRun, Concurrency: cfg.Automation.WorkerConcurrency})
+	if automationProvider, err := automationProviderFromConfig(cfg); err != nil {
+		_ = rt.Close()
+		return nil, err
+	} else if automationProvider != nil {
+		automationService.WithProvider(automationProvider)
+	}
 	blobService := blobservice.NewModule(graphService)
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
 		SecretKeyB64: cfg.UserStoreEncryptionKeyB64,
@@ -226,10 +245,11 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	})
-	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, graphService, blobService, semanticService, changeService, backupService}); err != nil {
+	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, schemaService, automationService, graphService, blobService, semanticService, changeService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}
+	changeService.AddObserver(automationService.HandleChangeStreamEvent)
 	if raftRuntimeConfigured(cfg) {
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
 			return compositeSystemStateMachine{consensus.NewSystemStateMachine(), identityservice.UserRaftStateMachine{Module: userService}, identityservice.AdminRaftStateMachine{Module: adminService}}

@@ -20,6 +20,8 @@ import (
 	"github.com/myceldb/mycel/internal/graph/storage"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
@@ -33,6 +35,7 @@ type Module struct {
 	stores                 map[string]*graphstorage.LocalStore
 	overlays               map[string]*overlay
 	changeSink             graphchange.Sink
+	schemaManager          schemaservice.Manager
 	lastGraphChangeSinkErr error
 	gate                   *quiesce.Gate
 	wal                    *wal.Manager
@@ -73,6 +76,125 @@ func (m *Module) LastGraphChangeSinkError() error {
 	return m.lastGraphChangeSinkErr
 }
 
+func (m *Module) SetSchemaManager(manager schemaservice.Manager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schemaManager = manager
+}
+
+func (m *Module) validateSchemaNode(ctx context.Context, node domaingraph.Node) error {
+	m.mu.Lock()
+	manager := m.schemaManager
+	m.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	result, err := manager.ValidateNode(ctx, node.DomainID, node)
+	if err != nil {
+		return err
+	}
+	if result.Valid() {
+		return nil
+	}
+	return fmt.Errorf("%w: schema validation failed: %s", ErrInvalidInput, formatSchemaIssues(result.Issues))
+}
+
+func (m *Module) hierarchyEdgeLabelsForMutation(ctx context.Context, domainID domaingraph.DomainID) ([]string, error) {
+	m.mu.Lock()
+	manager := m.schemaManager
+	m.mu.Unlock()
+	if manager != nil {
+		schema, err := manager.GetDomainSchema(ctx, domainID)
+		if err != nil && !errors.Is(err, schemaservice.ErrSchemaNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			for _, edgeType := range schema.EdgeTypes {
+				if edgeType.Hierarchy != nil && edgeType.Hierarchy.Enabled {
+					if len(edgeType.Labels) > 0 {
+						return []string{edgeType.Labels[0]}, nil
+					}
+					return []string{edgeType.Name}, nil
+				}
+			}
+		}
+	}
+	return []string{"contains"}, nil
+}
+
+func (m *Module) hierarchyPolicyForLabels(ctx context.Context, domainID domaingraph.DomainID, labels []string) (*schemamodel.HierarchyPolicy, error) {
+	m.mu.Lock()
+	manager := m.schemaManager
+	m.mu.Unlock()
+	if manager == nil {
+		if hasEdgeLabel(labels, "contains") {
+			return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
+		}
+		return nil, nil
+	}
+	matchedSchema := false
+	for _, label := range labels {
+		types, err := manager.ResolveEdgeLabel(ctx, domainID, label)
+		if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+			if hasEdgeLabel(labels, "contains") {
+				return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
+			}
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(types) > 0 {
+			matchedSchema = true
+		}
+		for _, typ := range types {
+			if typ.Hierarchy != nil && typ.Hierarchy.Enabled {
+				policy := *typ.Hierarchy
+				return &policy, nil
+			}
+		}
+	}
+	if matchedSchema {
+		return nil, nil
+	}
+	if hasEdgeLabel(labels, "contains") {
+		return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
+	}
+	return nil, nil
+}
+
+func (m *Module) validateSchemaEdge(ctx context.Context, edge domaingraph.Edge, from domaingraph.Node, to domaingraph.Node) error {
+	m.mu.Lock()
+	manager := m.schemaManager
+	m.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	result, err := manager.ValidateEdge(ctx, edge.DomainID, edge, from, to)
+	if err != nil {
+		return err
+	}
+	if result.Valid() {
+		return nil
+	}
+	return fmt.Errorf("%w: schema validation failed: %s", ErrInvalidInput, formatSchemaIssues(result.Issues))
+}
+
+func formatSchemaIssues(issues []schemaservice.ValidationIssue) string {
+	if len(issues) == 0 {
+		return "unknown schema validation error"
+	}
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.Path != "" {
+			parts = append(parts, issue.Path+": "+issue.Message)
+			continue
+		}
+		parts = append(parts, issue.Message)
+	}
+	return strings.Join(parts, "; ")
+}
+
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	m.dataDir = filepath.Join(host.DataDir(), "graphs")
 	if err := os.MkdirAll(m.dataDir, 0o700); err != nil {
@@ -88,6 +210,13 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
 	m.loadRaftAppliedCommands()
+	if lookup, ok := host.(runtime.ServiceLookup); ok {
+		if schemaSvc, ok := lookup.Service(schemaservice.ModuleName); ok {
+			if manager, ok := schemaSvc.(schemaservice.Manager); ok {
+				m.schemaManager = manager
+			}
+		}
+	}
 	if provider, ok := host.(runtime.WALProvider); ok {
 		m.wal = provider.WALManager()
 		m.walProgress = provider.WALProgressStore()
@@ -187,10 +316,6 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Node{}, err
 	}
-	templateID, err := optionalTemplateID(input.TemplateID)
-	if err != nil {
-		return domaingraph.Node{}, err
-	}
 	now := time.Now().UTC()
 	var blobRef *domaingraph.BlobID
 	if strings.TrimSpace(input.BlobID) != "" {
@@ -203,7 +328,24 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 		}
 		blobRef = &blobID
 	}
-	n := domaingraph.Node{ID: id, DomainID: mustDomainID(tx.DomainID), TemplateID: templateID, BlobRef: blobRef, Content: input.Content, Props: cloneProps(input.Props), CreatedAt: now, UpdatedAt: now}
+	properties := cloneProps(input.Properties)
+	if properties == nil && input.Props != nil {
+		properties = cloneProps(input.Props)
+	}
+	payload := cloneProps(input.Payload)
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if strings.TrimSpace(input.Content) != "" {
+		payload["text"] = input.Content
+	}
+	if blobRef != nil {
+		payload["blob_id"] = string(*blobRef)
+	}
+	n := domaingraph.Node{ID: id, DomainID: mustDomainID(tx.DomainID), Labels: append([]string(nil), input.Labels...), Properties: properties, Payload: payload, Meta: cloneProps(input.Meta), BlobRef: blobRef, Content: input.Content, Props: cloneProps(input.Props), CreatedAt: now, UpdatedAt: now}
+	if err := m.validateSchemaNode(ctx, n); err != nil {
+		return domaingraph.Node{}, err
+	}
 	m.stageNode(tx.ID, n)
 	return cloneNode(n), nil
 }
@@ -221,23 +363,38 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 		return domaingraph.Node{}, err
 	}
 	paths := maskSet(input.UpdateMask)
-	if input.TemplateID != nil && (len(paths) == 0 || paths["template_id"]) {
-		templateID, err := optionalTemplateID(*input.TemplateID)
-		if err != nil {
-			return domaingraph.Node{}, err
-		}
-		n.TemplateID = templateID
+	if input.Labels != nil && (len(paths) == 0 || paths["labels"]) {
+		n.Labels = append([]string(nil), input.Labels...)
+	}
+	if input.Properties != nil && (len(paths) == 0 || paths["properties"]) {
+		n.Properties = cloneProps(input.Properties)
+	}
+	if input.Payload != nil && (len(paths) == 0 || paths["payload"]) {
+		n.Payload = cloneProps(input.Payload)
+	}
+	if input.Meta != nil && (len(paths) == 0 || paths["meta"]) {
+		n.Meta = cloneProps(input.Meta)
 	}
 	if input.Content != nil && (len(paths) == 0 || paths["content"]) {
 		if n.BlobRef != nil && *input.Content != "" {
 			return domaingraph.Node{}, fmt.Errorf("%w: blob nodes cannot have inline content", ErrInvalidInput)
 		}
 		n.Content = *input.Content
+		if n.Payload == nil {
+			n.Payload = map[string]any{}
+		}
+		n.Payload["text"] = *input.Content
 	}
 	if input.Props != nil && (len(paths) == 0 || paths["props"]) {
 		n.Props = cloneProps(input.Props)
+		if n.Properties == nil {
+			n.Properties = cloneProps(input.Props)
+		}
 	}
 	n.UpdatedAt = time.Now().UTC()
+	if err := m.validateSchemaNode(ctx, n); err != nil {
+		return domaingraph.Node{}, err
+	}
 	m.stageNode(tx.ID, n)
 	return cloneNode(n), nil
 }
@@ -252,8 +409,7 @@ func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransacti
 	}
 	if _, err := m.node(ctx, tx, id); err == nil {
 		content := input.Content
-		tmpl := input.TemplateID
-		return m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: input.NodeID, TemplateID: &tmpl, Content: &content, Props: input.Props})
+		return m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: input.NodeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload, Meta: input.Meta, Content: &content, Props: input.Props})
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Node{}, err
 	}
@@ -390,29 +546,51 @@ func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err != nil {
 		return domaingraph.Edge{}, err
 	}
-	kind := domaingraph.EdgeKind(strings.TrimSpace(input.Kind))
-	if kind == "" {
-		return domaingraph.Edge{}, fmt.Errorf("%w: edge kind is required", ErrInvalidInput)
-	}
-	if _, err := m.node(ctx, tx, fromID); err != nil {
+	labels := normalizeLabels(input.Labels)
+	from, err := m.node(ctx, tx, fromID)
+	if err != nil {
 		return domaingraph.Edge{}, fmt.Errorf("%w: from node: %v", ErrInvalidInput, err)
 	}
-	if _, err := m.node(ctx, tx, toID); err != nil {
+	to, err := m.node(ctx, tx, toID)
+	if err != nil {
 		return domaingraph.Edge{}, fmt.Errorf("%w: to node: %v", ErrInvalidInput, err)
+	}
+	if from.DomainID != mustDomainID(tx.DomainID) || to.DomainID != mustDomainID(tx.DomainID) {
+		return domaingraph.Edge{}, fmt.Errorf("%w: edge endpoints must be in transaction domain", ErrInvalidInput)
 	}
 	if _, err := m.edge(ctx, tx, id); err == nil {
 		return domaingraph.Edge{}, fmt.Errorf("%w: edge already exists", ErrInvalidInput)
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Edge{}, err
 	}
-	if kind == domaingraph.EdgeKindContains {
-		if existing, err := m.parentEdge(ctx, tx, toID); err != nil {
-			return domaingraph.Edge{}, err
-		} else if existing != nil {
-			return domaingraph.Edge{}, fmt.Errorf("%w: child already has a contains parent", ErrInvalidInput)
+	hierarchy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), labels)
+	if err != nil {
+		return domaingraph.Edge{}, err
+	}
+	if hierarchy != nil {
+		if hierarchy.SameDomain && (from.DomainID != mustDomainID(tx.DomainID) || to.DomainID != mustDomainID(tx.DomainID)) {
+			return domaingraph.Edge{}, fmt.Errorf("%w: hierarchy edge endpoints must be in transaction domain", ErrInvalidInput)
+		}
+		if hierarchy.SingleParent {
+			if existing, err := m.parentEdge(ctx, tx, toID); err != nil {
+				return domaingraph.Edge{}, err
+			} else if existing != nil {
+				return domaingraph.Edge{}, fmt.Errorf("%w: child already has a hierarchy parent", ErrInvalidInput)
+			}
+		}
+		if hierarchy.Acyclic {
+			if hasPath, err := m.hierarchyPathExists(ctx, tx, toID, fromID); err != nil {
+				return domaingraph.Edge{}, err
+			} else if hasPath {
+				return domaingraph.Edge{}, fmt.Errorf("%w: hierarchy edge would create a cycle", ErrInvalidInput)
+			}
 		}
 	}
-	e := domaingraph.Edge{ID: id, FromID: fromID, ToID: toID, Kind: kind, Props: cloneProps(input.Props)}
+	now := time.Now().UTC()
+	e := domaingraph.Edge{ID: id, DomainID: mustDomainID(tx.DomainID), FromID: fromID, ToID: toID, Labels: labels, Properties: cloneProps(input.Properties), Payload: cloneProps(input.Payload), Meta: cloneProps(input.Meta), CreatedAt: now, UpdatedAt: now}
+	if err := m.validateSchemaEdge(ctx, e, from, to); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	m.stageEdge(tx.ID, e)
 	return cloneEdge(e), nil
 }
@@ -430,11 +608,29 @@ func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 		return domaingraph.Edge{}, err
 	}
 	paths := maskSet(input.UpdateMask)
-	if input.Kind != nil && (len(paths) == 0 || paths["kind"]) {
-		e.Kind = domaingraph.EdgeKind(strings.TrimSpace(*input.Kind))
+	if input.Labels != nil && (len(paths) == 0 || paths["labels"]) {
+		e.Labels = normalizeLabels(input.Labels)
 	}
-	if input.Props != nil && (len(paths) == 0 || paths["props"]) {
-		e.Props = cloneProps(input.Props)
+	if input.Properties != nil && (len(paths) == 0 || paths["properties"]) {
+		e.Properties = cloneProps(input.Properties)
+	}
+	if input.Payload != nil && (len(paths) == 0 || paths["payload"]) {
+		e.Payload = cloneProps(input.Payload)
+	}
+	if input.Meta != nil && (len(paths) == 0 || paths["meta"]) {
+		e.Meta = cloneProps(input.Meta)
+	}
+	e.UpdatedAt = time.Now().UTC()
+	from, err := m.node(ctx, tx, e.FromID)
+	if err != nil {
+		return domaingraph.Edge{}, fmt.Errorf("%w: from node: %v", ErrInvalidInput, err)
+	}
+	to, err := m.node(ctx, tx, e.ToID)
+	if err != nil {
+		return domaingraph.Edge{}, fmt.Errorf("%w: to node: %v", ErrInvalidInput, err)
+	}
+	if err := m.validateSchemaEdge(ctx, e, from, to); err != nil {
+		return domaingraph.Edge{}, err
 	}
 	m.stageEdge(tx.ID, e)
 	return cloneEdge(e), nil
@@ -477,7 +673,11 @@ func (m *Module) ListChildren(ctx context.Context, tx daemonsession.GraphTransac
 	}
 	out := []domaingraph.Edge{}
 	for _, edge := range edges {
-		if edge.Kind == domaingraph.EdgeKindContains && edge.FromID == parentID {
+		policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if policy != nil && edge.FromID == parentID {
 			out = append(out, edge)
 		}
 	}
@@ -531,7 +731,7 @@ func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransact
 		return domaingraph.Edge{}, err
 	} else if existing != nil {
 		edgeID = existing.ID
-		props = cloneProps(existing.Props)
+		props = cloneProps(existing.Properties)
 		m.stageEdgeDelete(tx.ID, existing.ID)
 	}
 	if edgeID == uuid.Nil {
@@ -547,7 +747,12 @@ func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransact
 		children, _ := m.ListChildren(ctx, tx, parentID.String())
 		props["order"] = len(children) * childOrderStep
 	}
-	e := domaingraph.Edge{ID: edgeID, FromID: parentID, ToID: childID, Kind: domaingraph.EdgeKindContains, Props: props}
+	labels, err := m.hierarchyEdgeLabelsForMutation(ctx, mustDomainID(tx.DomainID))
+	if err != nil {
+		return domaingraph.Edge{}, err
+	}
+	now := time.Now().UTC()
+	e := domaingraph.Edge{ID: edgeID, DomainID: mustDomainID(tx.DomainID), FromID: parentID, ToID: childID, Labels: labels, Properties: props, CreatedAt: now, UpdatedAt: now}
 	m.stageEdge(tx.ID, e)
 	return cloneEdge(e), nil
 }
@@ -573,8 +778,8 @@ func (m *Module) ReorderChildren(ctx context.Context, tx daemonsession.GraphTran
 		if !ok {
 			return nil, fmt.Errorf("%w: child_node_ids must include every existing child exactly once", ErrInvalidInput)
 		}
-		edge.Props = cloneProps(edge.Props)
-		edge.Props["order"] = i * childOrderStep
+		edge.Properties = cloneProps(edge.Properties)
+		edge.Properties["order"] = i * childOrderStep
 		m.stageEdge(tx.ID, edge)
 		out = append(out, cloneEdge(edge))
 	}
@@ -772,10 +977,10 @@ func (m *Module) graphChangeEvent(ctx context.Context, tx daemonsession.GraphTra
 			return graphchange.CommittedEvent{}, mapStorageError(err)
 		}
 		event.NewDomainByNodeID[node.ID] = node.DomainID
-		if parent, err := store.Parent(ctx, node.ID); err == nil && parent != nil {
+		if parent, err := m.storeHierarchyParent(ctx, store, domainID, node.ID); err != nil {
+			return graphchange.CommittedEvent{}, err
+		} else if parent != nil {
 			event.OldParentByNodeID[node.ID] = parent.FromID
-		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
-			return graphchange.CommittedEvent{}, mapStorageError(err)
 		}
 	}
 	for _, id := range sortedNodeIDs(snapshot.deleteNodes) {
@@ -786,26 +991,34 @@ func (m *Module) graphChangeEvent(ctx context.Context, tx daemonsession.GraphTra
 		} else if !errors.Is(err, graphstorage.ErrNotFound) {
 			return graphchange.CommittedEvent{}, mapStorageError(err)
 		}
-		if parent, err := store.Parent(ctx, id); err == nil && parent != nil {
+		if parent, err := m.storeHierarchyParent(ctx, store, domainID, id); err != nil {
+			return graphchange.CommittedEvent{}, err
+		} else if parent != nil {
 			event.OldParentByNodeID[id] = parent.FromID
-		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
-			return graphchange.CommittedEvent{}, mapStorageError(err)
 		}
 	}
 	for _, edge := range sortedEdges(snapshot.putEdges) {
 		change := "added"
 		if old, err := store.GetEdge(ctx, edge.ID); err == nil {
 			change = "updated"
-			if old.Kind == domaingraph.EdgeKindContains && old.ToID == edge.ToID && old.FromID != edge.FromID {
+			oldHierarchy, err := m.hierarchyPolicyForLabels(ctx, domainID, old.Labels)
+			if err != nil {
+				return graphchange.CommittedEvent{}, err
+			}
+			if oldHierarchy != nil && old.ToID == edge.ToID && old.FromID != edge.FromID {
 				event.OldParentByNodeID[old.ToID] = old.FromID
 			}
 		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
 			return graphchange.CommittedEvent{}, mapStorageError(err)
 		}
-		if edge.Kind == domaingraph.EdgeKindContains {
+		hierarchy, err := m.hierarchyPolicyForLabels(ctx, domainID, edge.Labels)
+		if err != nil {
+			return graphchange.CommittedEvent{}, err
+		}
+		if hierarchy != nil {
 			event.NewParentByNodeID[edge.ToID] = edge.FromID
 		}
-		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: change, FromID: edge.FromID, ToID: edge.ToID})
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Labels: append([]string(nil), edge.Labels...), Change: change, FromID: edge.FromID, ToID: edge.ToID})
 	}
 	for _, id := range sortedEdgeIDs(snapshot.deleteEdges) {
 		edge, err := store.GetEdge(ctx, id)
@@ -815,10 +1028,14 @@ func (m *Module) graphChangeEvent(ctx context.Context, tx daemonsession.GraphTra
 			}
 			return graphchange.CommittedEvent{}, mapStorageError(err)
 		}
-		if edge.Kind == domaingraph.EdgeKindContains {
+		hierarchy, err := m.hierarchyPolicyForLabels(ctx, domainID, edge.Labels)
+		if err != nil {
+			return graphchange.CommittedEvent{}, err
+		}
+		if hierarchy != nil {
 			event.OldParentByNodeID[edge.ToID] = edge.FromID
 		}
-		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Kind: edge.Kind, Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
+		event.ChangedEdges = append(event.ChangedEdges, graphchange.EdgeChange{EdgeID: edge.ID, Labels: append([]string(nil), edge.Labels...), Change: "removed", FromID: edge.FromID, ToID: edge.ToID})
 	}
 	return event, nil
 }
@@ -827,23 +1044,31 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 	changes := []GraphChange{}
 	for _, node := range sortedNodes(snapshot.putNodes) {
 		changeType := ChangeTypeNodeUpdated
-		if _, err := store.GetNode(ctx, node.ID); errors.Is(err, graphstorage.ErrNotFound) {
+		var oldCopy *domaingraph.Node
+		if old, err := store.GetNode(ctx, node.ID); errors.Is(err, graphstorage.ErrNotFound) {
 			changeType = ChangeTypeNodeCreated
 		} else if err != nil {
 			return nil, mapStorageError(err)
+		} else {
+			copy := cloneNode(old)
+			oldCopy = &copy
 		}
 		copy := cloneNode(node)
-		changes = append(changes, GraphChange{Type: changeType, Node: &copy, NodeID: node.ID.String()})
+		changes = append(changes, GraphChange{Type: changeType, Node: &copy, OldNode: oldCopy, NodeID: node.ID.String()})
 	}
 	for _, edge := range sortedEdges(snapshot.putEdges) {
 		changeType := ChangeTypeEdgeUpdated
-		if _, err := store.GetEdge(ctx, edge.ID); errors.Is(err, graphstorage.ErrNotFound) {
+		var oldCopy *domaingraph.Edge
+		if old, err := store.GetEdge(ctx, edge.ID); errors.Is(err, graphstorage.ErrNotFound) {
 			changeType = ChangeTypeEdgeCreated
 		} else if err != nil {
 			return nil, mapStorageError(err)
+		} else {
+			copy := cloneEdge(old)
+			oldCopy = &copy
 		}
 		copy := cloneEdge(edge)
-		changes = append(changes, GraphChange{Type: changeType, Edge: &copy, EdgeID: edge.ID.String()})
+		changes = append(changes, GraphChange{Type: changeType, Edge: &copy, OldEdge: oldCopy, EdgeID: edge.ID.String()})
 	}
 	for _, id := range sortedNodeIDs(snapshot.deleteNodes) {
 		changes = append(changes, GraphChange{Type: ChangeTypeNodeDeleted, NodeID: id.String()})
@@ -946,13 +1171,66 @@ func (m *Module) edge(ctx context.Context, tx daemonsession.GraphTransaction, id
 	return cloneEdge(edge), nil
 }
 
+func (m *Module) storeHierarchyParent(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, childID domaingraph.NodeID) (*domaingraph.Edge, error) {
+	edges, err := store.ListEdges(ctx)
+	if err != nil {
+		return nil, mapStorageError(err)
+	}
+	for _, edge := range edges {
+		policy, err := m.hierarchyPolicyForLabels(ctx, domainID, edge.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if policy != nil && edge.ToID == childID {
+			copy := cloneEdge(edge)
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *Module) hierarchyPathExists(ctx context.Context, tx daemonsession.GraphTransaction, from domaingraph.NodeID, target domaingraph.NodeID) (bool, error) {
+	edges, _, err := m.ListEdges(ctx, tx, 0, "")
+	if err != nil {
+		return false, err
+	}
+	seen := map[domaingraph.NodeID]struct{}{}
+	queue := []domaingraph.NodeID{from}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if id == target {
+			return true, nil
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		for _, edge := range edges {
+			policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
+			if err != nil {
+				return false, err
+			}
+			if policy == nil || edge.FromID != id {
+				continue
+			}
+			queue = append(queue, edge.ToID)
+		}
+	}
+	return false, nil
+}
+
 func (m *Module) parentEdge(ctx context.Context, tx daemonsession.GraphTransaction, childID domaingraph.NodeID) (*domaingraph.Edge, error) {
 	edges, _, err := m.ListEdges(ctx, tx, 0, "")
 	if err != nil {
 		return nil, err
 	}
 	for _, edge := range edges {
-		if edge.Kind == domaingraph.EdgeKindContains && edge.ToID == childID {
+		policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if policy != nil && edge.ToID == childID {
 			copy := cloneEdge(edge)
 			return &copy, nil
 		}
@@ -1069,24 +1347,46 @@ func optionalUUID[T ~[16]byte](value string, name string) (T, error) {
 	return parseUUID[T](value, name)
 }
 
-func optionalTemplateID(value string) (*domaingraph.TemplateID, error) {
-	if strings.TrimSpace(value) == "" {
-		return nil, nil
-	}
-	id, err := parseUUID[domaingraph.TemplateID](value, "template_id")
-	if err != nil {
-		return nil, err
-	}
-	return &id, nil
-}
-
 func mustDomainID(value string) domaingraph.DomainID {
 	id, _ := uuid.Parse(value)
 	return domaingraph.DomainID(id)
 }
 
-func cloneNode(n domaingraph.Node) domaingraph.Node { n.Props = cloneProps(n.Props); return n }
-func cloneEdge(e domaingraph.Edge) domaingraph.Edge { e.Props = cloneProps(e.Props); return e }
+func cloneNode(n domaingraph.Node) domaingraph.Node {
+	n.Labels = append([]string(nil), n.Labels...)
+	n.Properties = cloneProps(n.Properties)
+	n.Payload = cloneProps(n.Payload)
+	n.Meta = cloneProps(n.Meta)
+	n.Props = cloneProps(n.Props)
+	return n
+}
+func cloneEdge(e domaingraph.Edge) domaingraph.Edge {
+	e.Labels = append([]string(nil), e.Labels...)
+	e.Properties = cloneProps(e.Properties)
+	e.Payload = cloneProps(e.Payload)
+	e.Meta = cloneProps(e.Meta)
+	return e
+}
+
+func normalizeLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label != "" {
+			out = append(out, label)
+		}
+	}
+	return out
+}
+
+func hasEdgeLabel(labels []string, label string) bool {
+	for _, candidate := range labels {
+		if candidate == label {
+			return true
+		}
+	}
+	return false
+}
 func cloneProps(in map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range in {
@@ -1205,7 +1505,7 @@ func maskSet(paths []string) map[string]bool {
 }
 
 func edgeOrder(edge domaingraph.Edge, fallback int) int {
-	if value, ok := intProp(edge.Props["order"]); ok {
+	if value, ok := intProp(edge.Properties["order"]); ok {
 		return value
 	}
 	return fallback * childOrderStep

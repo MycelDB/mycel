@@ -2,6 +2,7 @@ package graphstorage
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 	"time"
 
@@ -10,8 +11,7 @@ import (
 )
 
 func TestDecodeNodeSupportsLegacyPayloadWithoutTimestamps(t *testing.T) {
-	tmpl := graph.TemplateID(uuid.New())
-	node := graph.Node{ID: graph.NodeID(uuid.New()), TemplateID: &tmpl, Content: "legacy", Props: map[string]any{"journal_day": 20260102}}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), Content: "legacy", Props: map[string]any{"journal_day": 20260102}}
 
 	payload, err := encodeLegacyNodeWithoutTimestamps(node)
 	if err != nil {
@@ -21,7 +21,7 @@ func TestDecodeNodeSupportsLegacyPayloadWithoutTimestamps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode legacy node failed: %v", err)
 	}
-	if got.ID != node.ID || got.TemplateID == nil || *got.TemplateID != tmpl || got.Content != node.Content {
+	if got.ID != node.ID || got.Content != node.Content {
 		t.Fatalf("unexpected decoded node: %+v", got)
 	}
 	if got.Props["journal_day"] != int64(20260102) || !got.CreatedAt.IsZero() || !got.UpdatedAt.IsZero() {
@@ -29,17 +29,68 @@ func TestDecodeNodeSupportsLegacyPayloadWithoutTimestamps(t *testing.T) {
 	}
 }
 
-func TestNodeCodecRoundTripWithBlobRef(t *testing.T) {
-	tmpl := graph.TemplateID(uuid.New())
-	blobID := graph.BlobID("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3")
+func TestNodeCodecRoundTripWithNewShape(t *testing.T) {
 	node := graph.Node{
 		ID:         graph.NodeID(uuid.New()),
-		TemplateID: &tmpl,
-		BlobRef:    &blobID,
-		Content:    "caption",
-		Props:      map[string]any{"mime_type": "image/png", "size_bytes": int64(42)},
+		DomainID:   graph.DomainID(uuid.New()),
+		Labels:     []string{"Person", "Employee"},
+		Properties: map[string]any{"name": "Alice", "age": int64(42)},
+		Payload:    map[string]any{"text": "profile"},
+		Meta:       map[string]any{"summary": "person profile"},
 		CreatedAt:  time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
-		UpdatedAt:  time.Date(2026, 1, 2, 3, 4, 6, 0, time.UTC),
+		UpdatedAt:  time.Date(2026, 1, 2, 4, 5, 6, 0, time.UTC),
+	}
+	encoded, err := encodeNode(node)
+	if err != nil {
+		t.Fatalf("encodeNode: %v", err)
+	}
+	got, err := decodeNode(encoded)
+	if err != nil {
+		t.Fatalf("decodeNode: %v", err)
+	}
+	if !reflect.DeepEqual(got.Labels, node.Labels) || !reflect.DeepEqual(got.Properties, node.Properties) || !reflect.DeepEqual(got.Payload, node.Payload) || !reflect.DeepEqual(got.Meta, node.Meta) {
+		t.Fatalf("new node shape mismatch: got %+v want %+v", got, node)
+	}
+}
+
+func TestEdgeCodecRoundTripWithNewShape(t *testing.T) {
+	edge := graph.Edge{
+		ID:         graph.EdgeID(uuid.New()),
+		DomainID:   graph.DomainID(uuid.New()),
+		FromID:     graph.NodeID(uuid.New()),
+		ToID:       graph.NodeID(uuid.New()),
+		Labels:     []string{"REFERENCES", "CITES"},
+		Properties: map[string]any{"confidence": 0.92, "source": "manual"},
+		Payload:    map[string]any{"text": "relationship annotation", "blob_id": "blob_1"},
+		Meta:       map[string]any{"created_by": "user_1"},
+		CreatedAt:  time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC),
+		UpdatedAt:  time.Date(2026, 2, 3, 5, 6, 7, 0, time.UTC),
+	}
+	encoded, err := encodeEdge(edge)
+	if err != nil {
+		t.Fatalf("encodeEdge: %v", err)
+	}
+	got, err := decodeEdge(encoded)
+	if err != nil {
+		t.Fatalf("decodeEdge: %v", err)
+	}
+	if got.ID != edge.ID || got.DomainID != edge.DomainID || got.FromID != edge.FromID || got.ToID != edge.ToID || !got.CreatedAt.Equal(edge.CreatedAt) || !got.UpdatedAt.Equal(edge.UpdatedAt) {
+		t.Fatalf("edge identity/connectivity mismatch: got %+v want %+v", got, edge)
+	}
+	if !reflect.DeepEqual(got.Labels, edge.Labels) || !reflect.DeepEqual(got.Properties, edge.Properties) || !reflect.DeepEqual(got.Payload, edge.Payload) || !reflect.DeepEqual(got.Meta, edge.Meta) {
+		t.Fatalf("edge shape mismatch: got %+v want %+v", got, edge)
+	}
+}
+
+func TestNodeCodecRoundTripWithBlobRef(t *testing.T) {
+	blobID := graph.BlobID("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3")
+	node := graph.Node{
+		ID:        graph.NodeID(uuid.New()),
+		BlobRef:   &blobID,
+		Content:   "caption",
+		Props:     map[string]any{"mime_type": "image/png", "size_bytes": int64(42)},
+		CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 1, 2, 3, 4, 6, 0, time.UTC),
 	}
 	payload, err := encodeNode(node)
 	if err != nil {
@@ -94,12 +145,7 @@ func TestDecodeNodeSupportsPreBlobRecords(t *testing.T) {
 func encodePreBlobNode(node graph.Node) ([]byte, error) {
 	var b bytes.Buffer
 	writeUUID(&b, node.ID)
-	if node.TemplateID == nil {
-		b.WriteByte(0)
-	} else {
-		b.WriteByte(1)
-		writeUUID(&b, *node.TemplateID)
-	}
+	b.WriteByte(0)
 	writeString(&b, node.Content)
 	writeTime(&b, node.CreatedAt)
 	writeTime(&b, node.UpdatedAt)
@@ -112,12 +158,7 @@ func encodePreBlobNode(node graph.Node) ([]byte, error) {
 func encodeLegacyNodeWithoutTimestamps(node graph.Node) ([]byte, error) {
 	var b bytes.Buffer
 	writeUUID(&b, node.ID)
-	if node.TemplateID == nil {
-		b.WriteByte(0)
-	} else {
-		b.WriteByte(1)
-		writeUUID(&b, *node.TemplateID)
-	}
+	b.WriteByte(0)
 	writeString(&b, node.Content)
 	if err := writeMap(&b, node.Props); err != nil {
 		return nil, err

@@ -1,0 +1,42 @@
+{
+  "id": "summarize_page",
+  "name": "Summarize page",
+  "version": 1,
+  "status": "disabled",
+  "on": {
+    "events": ["node.created", "node.updated"],
+    "labels": ["Page"]
+  },
+  "condition": {
+    "gql": "MATCH (changed:Page) RETURN changed"
+  },
+  "input": {
+    "target": "changed",
+    "fields": ["properties.title", "payload.text"]
+  },
+  "model": {
+    "provider": "default",
+    "model": "default"
+  },
+  "prompt": "Summarize this page in concise markdown.",
+  "output": {
+    "mode": "text",
+    "actions": [
+      {
+        "update_node": {
+          "target": "changed",
+          "set": {
+            "payload.summaryMarkdown": "$result.text"
+          }
+        }
+      }
+    ]
+  },
+  "safety": {
+    "ignoreSelfWrites": true,
+    "idempotency": {
+      "inputHashFields": ["properties.title", "payload.text"],
+      "skipIfOutputUnchanged": true
+    }
+  }
+}

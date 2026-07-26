@@ -204,7 +204,7 @@ func TestSpaceManagerUpsertsScopedSemanticResources(t *testing.T) {
 		Key:             "Notes-Search",
 		Name:            "Notes Search",
 		Purpose:         domainsemantic.SemanticIndexPurposeSearch,
-		SourcePolicy:    domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSubtree, TemplateKeys: []string{"logseq.page"}},
+		SourcePolicy:    domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSubtree, RecordTypes: []string{"logseq.page"}},
 		ModelEndpointID: modelEndpointID,
 		ModelID:         modelID,
 		VectorStoreID:   vectorStoreID,

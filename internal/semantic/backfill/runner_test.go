@@ -12,7 +12,6 @@ import (
 	"github.com/myceldb/mycel/internal/graph/filesession"
 	"github.com/myceldb/mycel/internal/graph/model"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
-	storetemplate "github.com/myceldb/mycel/internal/graph/template/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
 	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
@@ -54,14 +53,14 @@ func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	if result.GeneratedCount != 0 || result.SkippedCount != 1 || len(env.connector.calls) != 1 {
 		t.Fatalf("expected current hash skip without connector call, result=%+v calls=%+v", result, env.connector.calls)
 	}
-	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: root.ID, TemplateID: root.TemplateID, Content: "changed root", Props: root.Props}); err != nil {
+	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: root.ID, Content: "changed root", Props: root.Props}); err != nil {
 		t.Fatalf("update root failed: %v", err)
 	}
 	result, err = env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
 	if err != nil || result.GeneratedCount != 1 || len(env.connector.calls) != 2 {
 		t.Fatalf("expected changed source to regenerate, result=%+v calls=%+v err=%v", result, env.connector.calls, err)
 	}
-	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: root.ID, TemplateID: root.TemplateID, Content: "root note", Props: root.Props}); err != nil {
+	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: root.ID, Content: "root note", Props: root.Props}); err != nil {
 		t.Fatalf("restore root failed: %v", err)
 	}
 	result, err = env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
@@ -183,7 +182,6 @@ type backfillTestEnv struct {
 	vector    vectorstore.MycelFileBackend
 	connector *fakeConnector
 	runner    Runner
-	template  graph.Template
 	index     domainsemantic.SemanticIndex
 	grant     domainsemantic.CredentialGrant
 }
@@ -206,15 +204,7 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	if err := store.Close(); err != nil {
 		t.Fatalf("close graph store failed: %v", err)
 	}
-	tmplMgr := storetemplate.NewManager()
-	if err := tmplMgr.Init(ctx, filepath.Join(root, "meta", "templates")); err != nil {
-		t.Fatalf("template init failed: %v", err)
-	}
-	sess := filesession.NewWithStoreConfig(filepath.Join(root, "graphs"), filepath.Join(root, "blobs"), spaceID, tmplMgr, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{NotFound: errNotFound{}}, nil, filesession.Config{CurrentUserID: userID, DomainID: domainID})
-	templates, err := sess.ImportTemplates(ctx, sessionapi.ImportTemplatesInput{Document: sessionapi.ImportDocument{SchemaVersion: 1, Templates: []sessionapi.TemplateImport{{Key: "note", Version: "1.0.0", DisplayName: "Note", Children: sessionapi.ChildPolicyImport{Allowed: true, AllowedTemplates: []sessionapi.TemplateRefImport{{Key: "note", Version: "1.0.0"}}}}}}})
-	if err != nil {
-		t.Fatalf("import templates failed: %v", err)
-	}
+	sess := filesession.NewWithStoreConfig(filepath.Join(root, "graphs"), filepath.Join(root, "blobs"), spaceID, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{NotFound: errNotFound{}}, nil, filesession.Config{CurrentUserID: userID, DomainID: domainID})
 	globalMgr := storesemantic.NewGlobalManager()
 	if err := globalMgr.Init(ctx, filepath.Join(root, "meta")); err != nil {
 		t.Fatalf("global init failed: %v", err)
@@ -244,7 +234,7 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	if _, err := globalMgr.UpsertCredential(ctx, domainsemantic.InferenceCredential{ID: credentialID, Key: "cred", Name: "Credential", ModelEndpointID: endpointID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: userID.String(), AuthType: domainsemantic.AuthModeNone, Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("credential upsert failed: %v", err)
 	}
-	index, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "notes", Name: "Notes", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{TemplateKeys: []string{"note"}, Extraction: domainsemantic.SourceExtractionSubtree}, ModelEndpointID: endpointID, ModelID: modelID, ModelEndpointCapabilityID: capID, VectorStoreID: storeID, Enabled: true})
+	index, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "notes", Name: "Notes", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{RecordTypes: []string{"note"}, Extraction: domainsemantic.SourceExtractionSubtree}, ModelEndpointID: endpointID, ModelID: modelID, ModelEndpointCapabilityID: capID, VectorStoreID: storeID, Enabled: true})
 	if err != nil {
 		t.Fatalf("index upsert failed: %v", err)
 	}
@@ -257,7 +247,7 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	}
 	connector := &fakeConnector{}
 	vector := vectorstore.MycelFileBackend{GraphsDir: filepath.Join(root, "graphs")}
-	env := &backfillTestEnv{spaceID: spaceID, domainID: domainID, userID: userID, sess: sess, globalMgr: globalMgr, spaceMgr: spaceMgr, vector: vector, connector: connector, template: templates[0], index: index, grant: grant}
+	env := &backfillTestEnv{spaceID: spaceID, domainID: domainID, userID: userID, sess: sess, globalMgr: globalMgr, spaceMgr: spaceMgr, vector: vector, connector: connector, index: index, grant: grant}
 	env.runner = Runner{Session: sess, GlobalManager: globalMgr, SpaceManager: spaceMgr, Connector: connector, VectorBackend: vector}
 	return env
 }
@@ -265,15 +255,15 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 func (e *backfillTestEnv) addRootWithChild(t *testing.T, rootText, childText string) (graph.Node, graph.Node) {
 	t.Helper()
 	ctx := context.Background()
-	root, err := e.sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &e.template.ID, Content: rootText})
+	root, err := e.sess.AddNode(ctx, sessionapi.AddNodeInput{Content: rootText})
 	if err != nil {
 		t.Fatalf("add root failed: %v", err)
 	}
-	child, err := e.sess.AddNode(ctx, sessionapi.AddNodeInput{TemplateID: &e.template.ID, Content: childText})
+	child, err := e.sess.AddNode(ctx, sessionapi.AddNodeInput{Content: childText})
 	if err != nil {
 		t.Fatalf("add child failed: %v", err)
 	}
-	if _, err := e.sess.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: root.ID, ToID: child.ID, Kind: graph.EdgeKindContains, Props: map[string]any{"order": 1}}); err != nil {
+	if _, err := e.sess.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: root.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{"order": 1}}); err != nil {
 		t.Fatalf("add edge failed: %v", err)
 	}
 	return root, child

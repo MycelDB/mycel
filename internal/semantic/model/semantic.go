@@ -318,7 +318,7 @@ type InferencePolicy struct {
 // SemanticSourcePolicy selects roots and describes source assembly for a semantic index.
 type SemanticSourcePolicy struct {
 	RootQuery         string           `json:"root_query,omitempty"`
-	TemplateKeys      []string         `json:"template_keys,omitempty"`
+	RecordTypes       []string         `json:"record_types,omitempty"`
 	Extraction        SourceExtraction `json:"extraction"`
 	IncludeProps      []string         `json:"include_props,omitempty"`
 	MaxDepth          *int             `json:"max_depth,omitempty"`
@@ -370,11 +370,11 @@ type AdvancedEmbeddingRecord struct {
 }
 
 type GraphDirtyEdgeChange struct {
-	EdgeID graph.EdgeID   `json:"edge_id"`
-	Kind   graph.EdgeKind `json:"kind,omitempty"`
-	Change string         `json:"change"`
-	FromID graph.NodeID   `json:"from_id,omitempty"`
-	ToID   graph.NodeID   `json:"to_id,omitempty"`
+	EdgeID graph.EdgeID `json:"edge_id"`
+	Labels []string     `json:"labels,omitempty"`
+	Change string       `json:"change"`
+	FromID graph.NodeID `json:"from_id,omitempty"`
+	ToID   graph.NodeID `json:"to_id,omitempty"`
 }
 
 // GraphDirtyEvent records one raw graph transaction that may affect semantic indexes.

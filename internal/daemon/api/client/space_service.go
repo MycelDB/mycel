@@ -103,7 +103,7 @@ func MapSpace(sp domainspace.Space, access daemonspace.EffectiveAccess) *clientv
 	if strings.EqualFold(sp.Status, "archived") {
 		state = clientv1.SpaceState_SPACE_STATE_ARCHIVED
 	}
-	return &clientv1.Space{SpaceId: sp.SpaceID.String(), Name: sp.Name, Owner: &commonv1.Principal{Type: commonv1.PrincipalType_PRINCIPAL_TYPE_USER, Id: sp.OwnerID.String()}, State: state, CreateTime: timestampOrNil(sp.CreatedAt), UpdateTime: timestampOrNil(sp.UpdatedAt), CallerAccess: &commonv1.EffectiveAccess{Roles: roles, Capabilities: capabilities}, TemplateUsage: clientv1.SpaceTemplateUsage_SPACE_TEMPLATE_USAGE_OPTIONAL}
+	return &clientv1.Space{SpaceId: sp.SpaceID.String(), Name: sp.Name, Owner: &commonv1.Principal{Type: commonv1.PrincipalType_PRINCIPAL_TYPE_USER, Id: sp.OwnerID.String()}, State: state, CreateTime: timestampOrNil(sp.CreatedAt), UpdateTime: timestampOrNil(sp.UpdatedAt), CallerAccess: &commonv1.EffectiveAccess{Roles: roles, Capabilities: capabilities}}
 }
 
 func mapSpaceError(err error, action string) error {
