@@ -50,6 +50,25 @@ edge hasTask from Note to Task {
 	}
 }
 
+func TestParseExtendedFieldTypes(t *testing.T) {
+	got, err := Parse(`schema "PKM" version "1" mode strict domain 00000000-0000-0000-0000-000000000001
+node Journal {
+  journal_date: date required
+  properties: object required
+  metadata?: json optional
+}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := got.NodeTypes[0].Properties
+	if fields[0].Type != schema.FieldTypeDate || fields[1].Type != schema.FieldTypeObject || fields[2].Type != schema.FieldTypeJSON {
+		t.Fatalf("unexpected field types: %+v", fields)
+	}
+	if err := schema.Validate(got); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestParseSchemaDSLErrorIncludesLine(t *testing.T) {
 	_, err := Parse("node Note {\n  broken\n}")
 	if err == nil {

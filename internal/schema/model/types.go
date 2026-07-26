@@ -29,21 +29,27 @@ const (
 	FieldTypeFloat    FieldType = "float"
 	FieldTypeBool     FieldType = "bool"
 	FieldTypeDateTime FieldType = "datetime"
+	FieldTypeDate     FieldType = "date"
+	FieldTypeObject   FieldType = "object"
+	FieldTypeMap      FieldType = "map"
+	FieldTypeJSON     FieldType = "json"
 	FieldTypeEnum     FieldType = "enum"
 )
 
 // DomainSchema is the active graph schema for a domain.
 type DomainSchema struct {
-	ID        SchemaID
-	DomainID  graph.DomainID
-	Name      string
-	Version   string
-	Mode      SchemaMode
-	NodeTypes []NodeType
-	EdgeTypes []EdgeType
-	Policies  SchemaPolicies
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID         SchemaID
+	DomainID   graph.DomainID
+	Name       string
+	Version    string
+	Mode       SchemaMode
+	NodeTypes  []NodeType
+	EdgeTypes  []EdgeType
+	Policies   SchemaPolicies
+	SourceGWL  string
+	SourceHash string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 type NodeType struct {

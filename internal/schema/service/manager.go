@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	schemacompile "github.com/myceldb/mycel/internal/schema/compile"
+	"github.com/myceldb/mycel/internal/schema/dsl"
 	schema "github.com/myceldb/mycel/internal/schema/model"
 	"github.com/myceldb/mycel/internal/schema/storage"
 )
@@ -49,6 +52,7 @@ type Manager interface {
 	PutDomainSchema(ctx context.Context, schema schema.DomainSchema) error
 	ValidateNode(ctx context.Context, domainID graph.DomainID, node graph.Node) (ValidationResult, error)
 	ValidateEdge(ctx context.Context, domainID graph.DomainID, edge graph.Edge, from graph.Node, to graph.Node) (ValidationResult, error)
+	PutDomainSchemaGWL(ctx context.Context, domainID graph.DomainID, source string) error
 	ResolveNodeLabel(ctx context.Context, domainID graph.DomainID, label string) ([]schema.NodeType, error)
 	ResolveEdgeLabel(ctx context.Context, domainID graph.DomainID, label string) ([]schema.EdgeType, error)
 }
@@ -56,14 +60,42 @@ type Manager interface {
 type SchemaManager struct {
 	store storage.Store
 	now   func() time.Time
+	cache *validationCache
 }
 
 func NewManager(store storage.Store) *SchemaManager {
-	return &SchemaManager{store: store, now: func() time.Time { return time.Now().UTC() }}
+	m := &SchemaManager{store: store, now: func() time.Time { return time.Now().UTC() }, cache: newValidationCache()}
+	return m
+}
+
+func (m *SchemaManager) WarmCache(ctx context.Context) error {
+	items, err := m.store.ListDomainSchemas(ctx)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		compiled, err := schemacompile.Compile(item)
+		if err != nil {
+			return err
+		}
+		m.cache.put(item.DomainID, compiled)
+	}
+	return nil
 }
 
 func (m *SchemaManager) GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schema.DomainSchema, error) {
 	return m.store.GetDomainSchema(ctx, domainID)
+}
+
+func (m *SchemaManager) PutDomainSchemaGWL(ctx context.Context, domainID graph.DomainID, source string) error {
+	value, err := dsl.Parse(source)
+	if err != nil {
+		return err
+	}
+	value.DomainID = domainID
+	value.SourceGWL = source
+	value.SourceHash = schemacompile.SourceHash(source)
+	return m.PutDomainSchema(ctx, value)
 }
 
 func (m *SchemaManager) PutDomainSchema(ctx context.Context, value schema.DomainSchema) error {
@@ -76,10 +108,18 @@ func (m *SchemaManager) PutDomainSchema(ctx context.Context, value schema.Domain
 		value.CreatedAt = now
 	}
 	value.UpdatedAt = now
-	if err := schema.Validate(value); err != nil {
+	compiled, err := schemacompile.Compile(value)
+	if err != nil {
 		return err
 	}
-	return m.store.PutDomainSchema(ctx, value)
+	if value.SourceHash == "" && value.SourceGWL != "" {
+		value.SourceHash = schemacompile.SourceHash(value.SourceGWL)
+	}
+	if err := m.store.PutDomainSchema(ctx, value); err != nil {
+		return err
+	}
+	m.cache.put(value.DomainID, compiled)
+	return nil
 }
 
 func (m *SchemaManager) ResolveNodeLabel(ctx context.Context, domainID graph.DomainID, label string) ([]schema.NodeType, error) {
@@ -112,25 +152,49 @@ func (m *SchemaManager) ResolveEdgeLabel(ctx context.Context, domainID graph.Dom
 	return matches, nil
 }
 
-func (m *SchemaManager) ValidateNode(ctx context.Context, domainID graph.DomainID, node graph.Node) (ValidationResult, error) {
+func (m *SchemaManager) compiledFor(ctx context.Context, domainID graph.DomainID) (*schemacompile.CompiledSchema, error) {
+	if compiled, ok := m.cache.get(domainID); ok {
+		return compiled, nil
+	}
 	value, err := m.store.GetDomainSchema(ctx, domainID)
+	if err != nil {
+		return nil, err
+	}
+	compiled, err := schemacompile.Compile(value)
+	if err != nil {
+		return nil, err
+	}
+	m.cache.put(domainID, compiled)
+	return compiled, nil
+}
+
+func (m *SchemaManager) ValidateNode(ctx context.Context, domainID graph.DomainID, node graph.Node) (ValidationResult, error) {
+	compiled, err := m.compiledFor(ctx, domainID)
 	if errors.Is(err, storage.ErrNotFound) {
 		return ValidationResult{Mode: schema.SchemaModePermissive}, nil
 	}
 	if err != nil {
 		return ValidationResult{}, err
 	}
-	value = value.Normalize()
+	value := compiled.Schema
 	result := ValidationResult{Mode: value.Mode}
-	if len(node.Labels) == 0 {
+	matched := schemacompile.NodeTypesFor(compiled, node)
+	if len(node.Labels) == 0 && len(matched) == 0 {
 		return result, nil
 	}
 	for _, label := range node.Labels {
-		if _, ok := findNodeTypes(value, label); !ok {
+		if _, ok := compiled.NodeTypesByLabel[label]; !ok {
 			result.add(value.Mode, "labels", fmt.Sprintf("unknown node label %q", label))
 		}
 	}
-	for _, nt := range matchingNodeTypes(value, node.Labels) {
+	if rt, ok := graph.Property(node, "record_type"); ok {
+		if str, ok := rt.(string); ok {
+			if compiled.NodeTypesByRecordType[str] == nil {
+				result.add(value.Mode, "properties.record_type", fmt.Sprintf("unknown record_type %q", str))
+			}
+		}
+	}
+	for _, nt := range matched {
 		validateFields(value.Mode, &result, "properties", nt.Properties, node.Properties)
 		validateFields(value.Mode, &result, "payload", nt.Payload, node.Payload)
 		validateFields(value.Mode, &result, "meta", nt.Meta, node.Meta)
@@ -139,17 +203,17 @@ func (m *SchemaManager) ValidateNode(ctx context.Context, domainID graph.DomainI
 }
 
 func (m *SchemaManager) ValidateEdge(ctx context.Context, domainID graph.DomainID, edge graph.Edge, from graph.Node, to graph.Node) (ValidationResult, error) {
-	value, err := m.store.GetDomainSchema(ctx, domainID)
+	compiled, err := m.compiledFor(ctx, domainID)
 	if errors.Is(err, storage.ErrNotFound) {
 		return ValidationResult{Mode: schema.SchemaModePermissive}, nil
 	}
 	if err != nil {
 		return ValidationResult{}, err
 	}
-	value = value.Normalize()
+	value := compiled.Schema
 	result := ValidationResult{Mode: value.Mode}
 	for _, label := range edge.Labels {
-		types, ok := findEdgeTypes(value, label)
+		types, ok := compiled.EdgeTypesByLabel[label]
 		if !ok {
 			result.add(value.Mode, "labels", fmt.Sprintf("unknown edge label %q", label))
 			continue
@@ -229,6 +293,14 @@ func scalarMatches(t schema.FieldType, value any, enumValues []string) bool {
 	case schema.FieldTypeString, schema.FieldTypeDateTime:
 		_, ok := value.(string)
 		return ok
+	case schema.FieldTypeDate:
+		str, ok := value.(string)
+		return ok && regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(str)
+	case schema.FieldTypeObject, schema.FieldTypeMap:
+		_, ok := value.(map[string]any)
+		return ok
+	case schema.FieldTypeJSON:
+		return true
 	case schema.FieldTypeInt:
 		switch value.(type) {
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
