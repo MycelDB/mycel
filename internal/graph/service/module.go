@@ -1044,23 +1044,31 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 	changes := []GraphChange{}
 	for _, node := range sortedNodes(snapshot.putNodes) {
 		changeType := ChangeTypeNodeUpdated
-		if _, err := store.GetNode(ctx, node.ID); errors.Is(err, graphstorage.ErrNotFound) {
+		var oldCopy *domaingraph.Node
+		if old, err := store.GetNode(ctx, node.ID); errors.Is(err, graphstorage.ErrNotFound) {
 			changeType = ChangeTypeNodeCreated
 		} else if err != nil {
 			return nil, mapStorageError(err)
+		} else {
+			copy := cloneNode(old)
+			oldCopy = &copy
 		}
 		copy := cloneNode(node)
-		changes = append(changes, GraphChange{Type: changeType, Node: &copy, NodeID: node.ID.String()})
+		changes = append(changes, GraphChange{Type: changeType, Node: &copy, OldNode: oldCopy, NodeID: node.ID.String()})
 	}
 	for _, edge := range sortedEdges(snapshot.putEdges) {
 		changeType := ChangeTypeEdgeUpdated
-		if _, err := store.GetEdge(ctx, edge.ID); errors.Is(err, graphstorage.ErrNotFound) {
+		var oldCopy *domaingraph.Edge
+		if old, err := store.GetEdge(ctx, edge.ID); errors.Is(err, graphstorage.ErrNotFound) {
 			changeType = ChangeTypeEdgeCreated
 		} else if err != nil {
 			return nil, mapStorageError(err)
+		} else {
+			copy := cloneEdge(old)
+			oldCopy = &copy
 		}
 		copy := cloneEdge(edge)
-		changes = append(changes, GraphChange{Type: changeType, Edge: &copy, EdgeID: edge.ID.String()})
+		changes = append(changes, GraphChange{Type: changeType, Edge: &copy, OldEdge: oldCopy, EdgeID: edge.ID.String()})
 	}
 	for _, id := range sortedNodeIDs(snapshot.deleteNodes) {
 		changes = append(changes, GraphChange{Type: ChangeTypeNodeDeleted, NodeID: id.String()})

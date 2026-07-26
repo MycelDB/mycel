@@ -59,7 +59,7 @@ func TestExecutorExecutesQueryNodesPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if !reflect.DeepEqual(graph.queried, []QueryNodes{{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}}}) {
+	if !reflect.DeepEqual(graph.queried, []QueryNodes{{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice", "lastName": "Jones"}}}) {
 		t.Fatalf("queried = %#v", graph.queried)
 	}
 	if len(result.Rows) != 1 || result.Rows[0]["p"].Node == nil || result.Rows[0]["p"].Node.ID != "node-1" {

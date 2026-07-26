@@ -9,17 +9,21 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/automation/accounting"
 	automation "github.com/myceldb/mycel/internal/automation/model"
+	"github.com/myceldb/mycel/internal/automation/provider"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	changestream "github.com/myceldb/mycel/internal/changestream/service"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
 
 var ErrAutomationNotFound = errors.New("automation not found")
 
 type Manager interface {
+	ValidateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error)
 	CreateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error)
 	UpdateAutomation(ctx context.Context, domainID graph.DomainID, id string, rawJSON string) (automation.Definition, error)
 	DeleteAutomation(ctx context.Context, domainID graph.DomainID, id string) error
@@ -29,19 +33,31 @@ type Manager interface {
 	SetAutomationStatus(ctx context.Context, domainID graph.DomainID, id string, status string) (automation.Definition, error)
 	ListInvocations(ctx context.Context, domainID graph.DomainID, filter storage.InvocationFilter) ([]automation.Invocation, error)
 	GetRun(ctx context.Context, domainID graph.DomainID, runID string) (automation.Run, error)
+	RetryInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error)
+	CancelInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error)
 	HandleChangeStreamEvent(ctx context.Context, event changestream.Event)
 	ProcessPending(ctx context.Context, domainID graph.DomainID, limit int) (int, error)
 }
 
 type AutomationManager struct {
-	store    storage.Store
-	now      func() time.Time
-	sessions sessionservice.Manager
-	graphs   graphservice.Manager
+	store            storage.Store
+	now              func() time.Time
+	sessions         sessionservice.Manager
+	graphs           graphservice.Manager
+	schemas          schemaservice.Manager
+	provider         provider.Provider
+	accounting       accounting.Estimator
+	maxTokensPerRun  int64
+	maxCostPerRun    float64
+	metricsProcessed int64
+	metricsSucceeded int64
+	metricsSkipped   int64
+	metricsFailed    int64
+	metricsRetryable int64
 }
 
 func NewManager(store storage.Store) *AutomationManager {
-	return &AutomationManager{store: store, now: func() time.Time { return time.Now().UTC() }}
+	return &AutomationManager{store: store, now: func() time.Time { return time.Now().UTC() }, accounting: accounting.DefaultEstimator()}
 }
 
 func (m *AutomationManager) WithGraphRuntime(sessions sessionservice.Manager, graphs graphservice.Manager) *AutomationManager {
@@ -50,7 +66,23 @@ func (m *AutomationManager) WithGraphRuntime(sessions sessionservice.Manager, gr
 	return m
 }
 
-func (m *AutomationManager) CreateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error) {
+func (m *AutomationManager) WithProvider(provider provider.Provider) *AutomationManager {
+	m.provider = provider
+	return m
+}
+
+func (m *AutomationManager) WithSchemaManager(schemas schemaservice.Manager) *AutomationManager {
+	m.schemas = schemas
+	return m
+}
+
+func (m *AutomationManager) WithRunCeilings(maxTokens int64, maxCost float64) *AutomationManager {
+	m.maxTokensPerRun = maxTokens
+	m.maxCostPerRun = maxCost
+	return m
+}
+
+func (m *AutomationManager) ValidateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error) {
 	def, err := decodeDefinition(rawJSON)
 	if err != nil {
 		return def, err
@@ -58,6 +90,14 @@ func (m *AutomationManager) CreateAutomation(ctx context.Context, domainID graph
 	def.DomainID = domainID
 	def = def.Normalize()
 	if err := automation.ValidateDefinition(def); err != nil {
+		return def, err
+	}
+	return def, ctx.Err()
+}
+
+func (m *AutomationManager) CreateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error) {
+	def, err := m.ValidateAutomation(ctx, domainID, rawJSON)
+	if err != nil {
 		return def, err
 	}
 	if _, err := m.store.GetDefinition(ctx, domainID, def.ID); err == nil {
@@ -156,6 +196,36 @@ func (m *AutomationManager) GetRun(ctx context.Context, domainID graph.DomainID,
 	return run, mapStoreError(err)
 }
 
+func (m *AutomationManager) RetryInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error) {
+	inv, err := m.store.GetInvocation(ctx, domainID, strings.TrimSpace(invocationID))
+	if err != nil {
+		return inv, mapStoreError(err)
+	}
+	inv.Status = "pending"
+	inv.SkipReason = ""
+	inv.NextAttemptAt = time.Time{}
+	inv.UpdatedAt = m.now()
+	if err := m.store.PutInvocation(ctx, inv); err != nil {
+		return inv, mapStoreError(err)
+	}
+	return inv, nil
+}
+
+func (m *AutomationManager) CancelInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error) {
+	inv, err := m.store.GetInvocation(ctx, domainID, strings.TrimSpace(invocationID))
+	if err != nil {
+		return inv, mapStoreError(err)
+	}
+	inv.Status = "cancelled"
+	inv.SkipReason = "cancelled"
+	inv.NextAttemptAt = time.Time{}
+	inv.UpdatedAt = m.now()
+	if err := m.store.PutInvocation(ctx, inv); err != nil {
+		return inv, mapStoreError(err)
+	}
+	return inv, nil
+}
+
 func (m *AutomationManager) HandleChangeStreamEvent(ctx context.Context, event changestream.Event) {
 	domainUUID, err := uuid.Parse(event.DomainID)
 	if err != nil {
@@ -178,14 +248,19 @@ func (m *AutomationManager) HandleChangeStreamEvent(ctx context.Context, event c
 			if generatedByAutomation(change.Node, def.ID) {
 				continue
 			}
-			inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, SpaceID: event.SpaceID, AutomationID: def.ID, AutomationVersion: def.Version, EventID: event.EventID, ChangedElementID: change.NodeID, ChangedElementKind: "node", EventType: eventType, Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
+			var oldNode *graph.Node
+			if change.OldNode != nil {
+				copy := *change.OldNode
+				oldNode = &copy
+			}
+			inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, SpaceID: event.SpaceID, AutomationID: def.ID, AutomationVersion: def.Version, EventID: event.EventID, ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType, Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
 			_ = m.store.PutInvocation(ctx, inv)
 		}
 	}
 }
 
 func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.DomainID, limit int) (int, error) {
-	items, err := m.store.ListInvocations(ctx, domainID, storage.InvocationFilter{Status: "pending", Limit: limit})
+	items, err := m.pendingInvocations(ctx, domainID, limit)
 	if err != nil {
 		return 0, mapStoreError(err)
 	}
@@ -201,13 +276,25 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 		}
 		run, err := m.executeInvocation(ctx, def, inv)
 		if err != nil {
-			inv.Status = "failed"
+			now := m.now()
+			inv.AttemptCount++
 			inv.SkipReason = err.Error()
-			inv.UpdatedAt = m.now()
-			run = automation.Run{ID: uuid.NewString(), DomainID: domainID, InvocationID: inv.ID, AttemptNumber: 1, Status: "failed", Error: err.Error(), StartedAt: inv.UpdatedAt, CompletedAt: inv.UpdatedAt}
+			inv.UpdatedAt = now
+			if inv.AttemptCount < maxAttempts(def) && retryableAutomationError(err) {
+				inv.Status = "retryable"
+				inv.NextAttemptAt = now.Add(retryBackoff(inv.AttemptCount))
+			} else {
+				inv.Status = "failed"
+			}
+			run = automation.Run{ID: uuid.NewString(), DomainID: domainID, InvocationID: inv.ID, AttemptNumber: inv.AttemptCount, Status: inv.Status, Error: err.Error(), StartedAt: now, CompletedAt: now}
 		} else {
+			inv.AttemptCount++
+			inv.NextAttemptAt = time.Time{}
 			inv.InputHash = run.RenderedInputHash
 			inv.Status = run.Status
+			if run.Status == "skipped" && run.Error != "" {
+				inv.SkipReason = run.Error
+			}
 			inv.UpdatedAt = run.CompletedAt
 		}
 		if err := m.store.PutInvocation(ctx, inv); err != nil {
@@ -216,6 +303,10 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 		if err := m.store.PutRun(ctx, run); err != nil {
 			return processed, mapStoreError(err)
 		}
+		if err := m.recordSuccessfulInputHash(ctx, inv, run); err != nil {
+			return processed, err
+		}
+		m.recordMetric(inv.Status)
 		processed++
 	}
 	return processed, nil

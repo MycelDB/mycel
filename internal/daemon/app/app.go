@@ -199,7 +199,13 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
 	graphService := graphservice.NewModule()
-	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService)
+	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxTokensPerRun: cfg.Automation.MaxTokensPerRun, MaxCostPerRun: cfg.Automation.MaxCostPerRun, Concurrency: cfg.Automation.WorkerConcurrency})
+	if automationProvider, err := automationProviderFromConfig(cfg); err != nil {
+		_ = rt.Close()
+		return nil, err
+	} else if automationProvider != nil {
+		automationService.WithProvider(automationProvider)
+	}
 	blobService := blobservice.NewModule(graphService)
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
 		SecretKeyB64: cfg.UserStoreEncryptionKeyB64,

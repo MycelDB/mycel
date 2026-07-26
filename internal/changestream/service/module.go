@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
@@ -325,11 +326,12 @@ func cloneGraphChanges(in []GraphChange) []GraphChange {
 	for _, change := range in {
 		copy := change
 		if change.Node != nil {
-			node := *change.Node
-			if change.Node.Props != nil {
-				node.Props = cloneMap(change.Node.Props)
-			}
+			node := cloneNode(*change.Node)
 			copy.Node = &node
+		}
+		if change.OldNode != nil {
+			node := cloneNode(*change.OldNode)
+			copy.OldNode = &node
 		}
 		if change.Edge != nil {
 			edge := *change.Edge
@@ -339,12 +341,33 @@ func cloneGraphChanges(in []GraphChange) []GraphChange {
 			edge.Meta = cloneMap(change.Edge.Meta)
 			copy.Edge = &edge
 		}
+		if change.OldEdge != nil {
+			edge := *change.OldEdge
+			edge.Labels = append([]string(nil), change.OldEdge.Labels...)
+			edge.Properties = cloneMap(change.OldEdge.Properties)
+			edge.Payload = cloneMap(change.OldEdge.Payload)
+			edge.Meta = cloneMap(change.OldEdge.Meta)
+			copy.OldEdge = &edge
+		}
 		out = append(out, copy)
 	}
 	return out
 }
 
+func cloneNode(in domaingraph.Node) domaingraph.Node {
+	out := in
+	out.Labels = append([]string(nil), in.Labels...)
+	out.Properties = cloneMap(in.Properties)
+	out.Payload = cloneMap(in.Payload)
+	out.Meta = cloneMap(in.Meta)
+	out.Props = cloneMap(in.Props)
+	return out
+}
+
 func cloneMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
 	out := make(map[string]any, len(in))
 	for key, value := range in {
 		out[key] = value

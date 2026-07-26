@@ -27,6 +27,22 @@ func NewAdminAutomationService(automations automationservice.Manager) *AdminAuto
 	return &AdminAutomationService{automations: automations}
 }
 
+func (s *AdminAutomationService) ValidateAutomation(ctx context.Context, req *adminv1.ValidateAutomationRequest) (*adminv1.ValidateAutomationResponse, error) {
+	domainID, err := parseAdminAutomationDomainID(req.GetDomainId())
+	if err != nil {
+		return nil, err
+	}
+	def, err := s.automations.ValidateAutomation(ctx, domainID, req.GetDefinitionJson())
+	if err != nil {
+		return &adminv1.ValidateAutomationResponse{Valid: false, Error: err.Error()}, nil
+	}
+	jsonText, err := adminAutomationDefinitionJSON(def)
+	if err != nil {
+		return nil, err
+	}
+	return &adminv1.ValidateAutomationResponse{Valid: true, NormalizedDefinitionJson: jsonText}, nil
+}
+
 func (s *AdminAutomationService) CreateAutomation(ctx context.Context, req *adminv1.CreateAutomationRequest) (*adminv1.CreateAutomationResponse, error) {
 	domainID, err := parseAdminAutomationDomainID(req.GetDomainId())
 	if err != nil {
@@ -156,6 +172,30 @@ func (s *AdminAutomationService) GetAutomationRun(ctx context.Context, req *admi
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &adminv1.GetAutomationRunResponse{RunJson: string(data)}, nil
+}
+
+func (s *AdminAutomationService) RetryAutomationInvocation(ctx context.Context, req *adminv1.RetryAutomationInvocationRequest) (*adminv1.RetryAutomationInvocationResponse, error) {
+	domainID, err := parseAdminAutomationDomainID(req.GetDomainId())
+	if err != nil {
+		return nil, err
+	}
+	inv, err := s.automations.RetryInvocation(ctx, domainID, req.GetInvocationId())
+	if err != nil {
+		return nil, mapAdminAutomationError(err)
+	}
+	return &adminv1.RetryAutomationInvocationResponse{Invocation: adminInvocationSummary(inv)}, nil
+}
+
+func (s *AdminAutomationService) CancelAutomationInvocation(ctx context.Context, req *adminv1.CancelAutomationInvocationRequest) (*adminv1.CancelAutomationInvocationResponse, error) {
+	domainID, err := parseAdminAutomationDomainID(req.GetDomainId())
+	if err != nil {
+		return nil, err
+	}
+	inv, err := s.automations.CancelInvocation(ctx, domainID, req.GetInvocationId())
+	if err != nil {
+		return nil, mapAdminAutomationError(err)
+	}
+	return &adminv1.CancelAutomationInvocationResponse{Invocation: adminInvocationSummary(inv)}, nil
 }
 
 func adminAutomationDefinitionJSON(def automationmodel.Definition) (string, error) {

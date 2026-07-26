@@ -10,6 +10,7 @@ An automation is similar to a stored procedure in that it is defined close to th
 - it is asynchronous
 - it may call external AI/LLM providers
 - it produces auditable graph mutations
+- it records token usage and estimated LLM cost for provider-backed runs
 - it should be constrained and schema-aware rather than arbitrary imperative code
 
 The primary use cases are derived content, enrichment, classification, summarization, extraction, and multimodal understanding.
@@ -71,6 +72,14 @@ A durable record that an automation was considered or executed for a specific gr
 
 A concrete execution attempt that may call an AI model and apply graph mutations.
 
+### Token usage
+
+Provider-reported or locally estimated token counts for an AI call. At minimum this includes input tokens, output tokens, and total tokens. When available it can also include cached input tokens, reasoning tokens, tool-call tokens, provider request IDs, and provider-specific usage metadata.
+
+### Cost record
+
+An audit record derived from run token usage, provider, model, and pricing metadata. Cost records are estimates unless reconciled against provider billing exports. They are used for per-run audit, per-domain accounting, budgets, and operational alerts.
+
 ## High-level flow
 
 ```text
@@ -85,6 +94,8 @@ GQL condition evaluated with changed element bound
 input rendered from changed element and graph context
         ↓
 AI/LLM call made asynchronously
+        ↓
+token usage and estimated cost recorded
         ↓
 result validated/transformed
         ↓
@@ -225,7 +236,7 @@ Supported input kinds over time:
 - images/audio/video for multimodal models
 - neighborhood/path context
 
-Rendering should be deterministic and auditable. The rendered input or its hash should be recorded with the run.
+Rendering should be deterministic and auditable. The rendered input or its hash should be recorded with the run. For provider-backed runs, the rendered input is also the basis for prompt/input token accounting.
 
 ## Output and actions
 
@@ -257,6 +268,7 @@ Required execution properties:
 - rate limiting
 - cancellation/disable support
 - audit history
+- token usage and estimated cost accounting for every provider-backed attempt
 - no unbounded recursive trigger loops
 
 ## Loop prevention
@@ -295,6 +307,7 @@ V1 should focus on the highest-value safe subset.
 - update configured field on changed node
 - async execution
 - audit records
+- provider token usage and estimated cost records
 - retry/failure state
 - self-loop prevention
 
@@ -333,15 +346,17 @@ output:
 - no synchronous execution
 - no graph-wide scans
 
-## V2: graph context, structured output, and multimodal input
+## V2: graph context, structured output, accounting, and multimodal input
 
-V2 expands automations from simple node enrichment to graph-aware AI workflows.
+V2 expands automations from simple node enrichment to graph-aware AI workflows. Because V2 introduces real provider-backed generation, token and cost accounting are required V2 capabilities rather than a later enhancement.
 
 ### Capabilities
 
 - edge-created and edge-updated triggers
 - context GQL around changed node/edge
 - structured JSON output with schema validation
+- token accounting for every LLM invocation attempt
+- estimated cost accounting by provider/model/pricing version
 - create related nodes/edges
 - update matched context nodes/edges
 - multimodal blob rendering for images and documents
@@ -459,6 +474,7 @@ V3 should require stronger policy controls:
 - approval gates
 - workflow timeouts
 - tenant isolation
+- token and cost budgets
 - detailed audit logs
 
 ## Security and permissions
@@ -477,7 +493,7 @@ Required controls:
 - permission checks during condition evaluation
 - permission checks during graph mutations
 - secret isolation for model providers/tools
-- audit log of prompt, model, inputs, outputs, and writes
+- audit log of prompt, model, inputs, outputs, token usage, estimated costs, and writes
 - redaction policy for sensitive payload fields
 
 ## Storage model
@@ -503,6 +519,21 @@ Invocation/run fields:
 - input hash
 - rendered input hash or stored input reference
 - model/provider
+- provider request ID when available
+- token usage:
+  - input tokens
+  - output tokens
+  - total tokens
+  - cached input tokens when available
+  - reasoning tokens when available
+  - provider-specific sanitized usage metadata
+- estimated cost:
+  - input cost
+  - output cost
+  - total cost
+  - currency
+  - pricing source/version
+  - cost estimation status, e.g. `estimated`, `provider_reported`, or `unavailable`
 - output hash
 - actions attempted
 - graph mutation transaction ID

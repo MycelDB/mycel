@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
+	automationmodel "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/cli/app"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"github.com/spf13/cobra"
@@ -12,8 +14,26 @@ import (
 
 func NewAutomationCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "automation", Short: "Manage graph automations"}
-	cmd.AddCommand(newAutomationPutCommand(a), newAutomationListCommand(a), newAutomationGetCommand(a), newAutomationEnableCommand(a), newAutomationDisableCommand(a), newAutomationDeleteCommand(a), newAutomationRunsCommand(a))
+	cmd.AddCommand(newAutomationValidateCommand(), newAutomationPutCommand(a), newAutomationListCommand(a), newAutomationGetCommand(a), newAutomationEnableCommand(a), newAutomationDisableCommand(a), newAutomationDeleteCommand(a), newAutomationRunsCommand(a), newAutomationRunGetCommand(a), newAutomationInvocationCommand(a))
 	return cmd
+}
+
+func newAutomationValidateCommand() *cobra.Command {
+	return &cobra.Command{Use: "validate automation.json", Short: "Validate an automation definition locally", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		data, err := os.ReadFile(args[0])
+		if err != nil {
+			return err
+		}
+		var def automationmodel.Definition
+		if err := json.Unmarshal(data, &def); err != nil {
+			return err
+		}
+		if err := automationmodel.ValidateDefinition(def); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "valid")
+		return nil
+	}}
 }
 
 func newAutomationPutCommand(a *app.App) *cobra.Command {
@@ -120,6 +140,66 @@ func automationIDCommand(a *app.App, use, short string, run func(clientv1.Automa
 			return err
 		}
 		fmt.Println(text)
+		return nil
+	}}
+	cmd.Flags().StringVar(&domainID, "domain", "", "domain UUID")
+	_ = cmd.MarkFlagRequired("domain")
+	return cmd
+}
+
+func newAutomationRunGetCommand(a *app.App) *cobra.Command {
+	var domainID string
+	cmd := &cobra.Command{Use: "run get <run-id>", Short: "Get an automation run detail record", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		if args[0] != "get" {
+			return fmt.Errorf("unknown run subcommand %q", args[0])
+		}
+		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := clientv1.NewAutomationServiceClient(conn).GetAutomationRun(authCtx, &clientv1.GetAutomationRunRequest{DomainId: domainID, RunId: args[1]})
+		if err != nil {
+			return err
+		}
+		fmt.Println(res.GetRunJson())
+		return nil
+	}}
+	cmd.Flags().StringVar(&domainID, "domain", "", "domain UUID")
+	_ = cmd.MarkFlagRequired("domain")
+	return cmd
+}
+
+func newAutomationInvocationCommand(a *app.App) *cobra.Command {
+	cmd := &cobra.Command{Use: "invocation", Short: "Manage automation invocations"}
+	cmd.AddCommand(newAutomationInvocationActionCommand(a, "retry"), newAutomationInvocationActionCommand(a, "cancel"))
+	return cmd
+}
+
+func newAutomationInvocationActionCommand(a *app.App, action string) *cobra.Command {
+	var domainID string
+	cmd := &cobra.Command{Use: action + " <invocation-id>", Short: action + " an automation invocation", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		client := clientv1.NewAutomationServiceClient(conn)
+		var status string
+		if action == "retry" {
+			res, err := client.RetryAutomationInvocation(authCtx, &clientv1.RetryAutomationInvocationRequest{DomainId: domainID, InvocationId: args[0]})
+			if err != nil {
+				return err
+			}
+			status = res.GetInvocation().GetStatus()
+		} else {
+			res, err := client.CancelAutomationInvocation(authCtx, &clientv1.CancelAutomationInvocationRequest{DomainId: domainID, InvocationId: args[0]})
+			if err != nil {
+				return err
+			}
+			status = res.GetInvocation().GetStatus()
+		}
+		fmt.Println(status)
 		return nil
 	}}
 	cmd.Flags().StringVar(&domainID, "domain", "", "domain UUID")

@@ -6,13 +6,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/automation/provider"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
 
 const ModuleName = "automation"
+
+type WorkerConfig struct {
+	Enabled         bool
+	Interval        time.Duration
+	BatchSize       int
+	MaxTokensPerRun int64
+	MaxCostPerRun   float64
+	Concurrency     int
+}
 
 type Module struct {
 	*AutomationManager
@@ -21,13 +33,42 @@ type Module struct {
 	wg       sync.WaitGroup
 	sessions sessionservice.Manager
 	graphs   graphservice.Manager
+	schemas  schemaservice.Manager
+	provider provider.Provider
+	worker   WorkerConfig
 }
 
-func NewModule(dataDir string) *Module { return &Module{dataDir: dataDir} }
+func NewModule(dataDir string) *Module {
+	return &Module{dataDir: dataDir, worker: WorkerConfig{Enabled: true, Interval: time.Second, BatchSize: 25, Concurrency: 1}}
+}
 
 func (m *Module) WithGraphRuntime(sessions sessionservice.Manager, graphs graphservice.Manager) *Module {
 	m.sessions = sessions
 	m.graphs = graphs
+	return m
+}
+
+func (m *Module) WithSchemaManager(schemas schemaservice.Manager) *Module {
+	m.schemas = schemas
+	return m
+}
+
+func (m *Module) WithProvider(provider provider.Provider) *Module {
+	m.provider = provider
+	return m
+}
+
+func (m *Module) WithWorkerConfig(cfg WorkerConfig) *Module {
+	if cfg.Interval <= 0 {
+		cfg.Interval = time.Second
+	}
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 25
+	}
+	if cfg.Concurrency <= 0 {
+		cfg.Concurrency = 1
+	}
+	m.worker = cfg
 	return m
 }
 
@@ -38,12 +79,12 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 	if dataDir == "" && host != nil {
 		dataDir = filepath.Join(host.DataDir(), "automations")
 	}
-	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs)
+	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaManager(m.schemas).WithProvider(m.provider).WithRunCeilings(m.worker.MaxTokensPerRun, m.worker.MaxCostPerRun)
 	return coreruntime.OK(ModuleName)
 }
 
 func (m *Module) Start(ctx context.Context) error {
-	if m.AutomationManager == nil || m.cancel != nil {
+	if m.AutomationManager == nil || m.cancel != nil || !m.worker.Enabled {
 		return nil
 	}
 	workerCtx, cancel := context.WithCancel(ctx)
@@ -51,7 +92,7 @@ func (m *Module) Start(ctx context.Context) error {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(m.worker.Interval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -62,9 +103,18 @@ func (m *Module) Start(ctx context.Context) error {
 				if err != nil {
 					continue
 				}
+				sem := make(chan struct{}, m.worker.Concurrency)
+				var batchWG sync.WaitGroup
 				for _, domainID := range domains {
-					_, _ = m.ProcessPending(workerCtx, domainID, 25)
+					sem <- struct{}{}
+					batchWG.Add(1)
+					go func(domainID graph.DomainID) {
+						defer batchWG.Done()
+						defer func() { <-sem }()
+						_, _ = m.ProcessPending(workerCtx, domainID, m.worker.BatchSize)
+					}(domainID)
 				}
+				batchWG.Wait()
 			}
 		}
 	}()

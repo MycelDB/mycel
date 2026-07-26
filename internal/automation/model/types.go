@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -13,6 +14,13 @@ const (
 
 	EventNodeCreated = "node.created"
 	EventNodeUpdated = "node.updated"
+
+	InputModeFields   = "fields"
+	InputModeMarkdown = "markdown"
+	InputModeTemplate = "template"
+
+	OutputModeText = "text"
+	OutputModeJSON = "json"
 )
 
 type Definition struct {
@@ -42,22 +50,30 @@ type Condition struct {
 }
 
 type Input struct {
-	Target string   `json:"target"`
-	Fields []string `json:"fields"`
+	Target   string   `json:"target,omitempty"`
+	Fields   []string `json:"fields,omitempty"`
+	Mode     string   `json:"mode,omitempty"`
+	Template string   `json:"template,omitempty"`
 }
 
 type Model struct {
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
+	Provider        string   `json:"provider,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
+	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
 }
 
 type Output struct {
-	Mode    string   `json:"mode"`
-	Actions []Action `json:"actions"`
+	Mode    string          `json:"mode"`
+	Schema  json.RawMessage `json:"schema,omitempty"`
+	Actions []Action        `json:"actions"`
 }
 
 type Action struct {
 	UpdateNode *UpdateNodeAction `json:"update_node,omitempty"`
+	CreateNode *CreateNodeAction `json:"create_node,omitempty"`
+	CreateEdge *EdgeAction       `json:"create_edge,omitempty"`
+	UpsertEdge *EdgeAction       `json:"upsert_edge,omitempty"`
 }
 
 type UpdateNodeAction struct {
@@ -65,9 +81,28 @@ type UpdateNodeAction struct {
 	Set    map[string]string `json:"set"`
 }
 
+type CreateNodeAction struct {
+	As         string            `json:"as,omitempty"`
+	Labels     []string          `json:"labels,omitempty"`
+	Properties map[string]string `json:"properties,omitempty"`
+	Payload    map[string]string `json:"payload,omitempty"`
+	ForEach    string            `json:"for_each,omitempty"`
+	UpsertKey  []string          `json:"upsert_key,omitempty"`
+}
+
+type EdgeAction struct {
+	From       string            `json:"from"`
+	To         string            `json:"to"`
+	Label      string            `json:"label"`
+	Properties map[string]string `json:"properties,omitempty"`
+	ForEach    string            `json:"for_each,omitempty"`
+}
+
 type Safety struct {
 	IgnoreSelfWrites bool        `json:"ignoreSelfWrites"`
 	Idempotency      Idempotency `json:"idempotency,omitempty"`
+	MaxActionItems   int         `json:"maxActionItems,omitempty"`
+	MaxAttempts      int         `json:"maxAttempts,omitempty"`
 }
 
 type Idempotency struct {
@@ -84,10 +119,13 @@ type Invocation struct {
 	EventID            string         `json:"event_id"`
 	ChangedElementID   string         `json:"changed_element_id"`
 	ChangedElementKind string         `json:"changed_element_kind"`
+	OldNode            *graph.Node    `json:"old_node,omitempty"`
 	EventType          string         `json:"event_type"`
 	InputHash          string         `json:"input_hash,omitempty"`
 	Status             string         `json:"status"`
 	SkipReason         string         `json:"skip_reason,omitempty"`
+	AttemptCount       int            `json:"attempt_count,omitempty"`
+	NextAttemptAt      time.Time      `json:"next_attempt_at,omitempty"`
 	CreatedAt          time.Time      `json:"created_at,omitempty"`
 	UpdatedAt          time.Time      `json:"updated_at,omitempty"`
 }
@@ -102,10 +140,33 @@ type Run struct {
 	Provider          string         `json:"provider,omitempty"`
 	Model             string         `json:"model,omitempty"`
 	OutputHash        string         `json:"output_hash,omitempty"`
+	ProviderRequestID string         `json:"provider_request_id,omitempty"`
+	Usage             TokenUsage     `json:"usage,omitempty"`
+	Cost              CostEstimate   `json:"cost,omitempty"`
+	ActionFingerprint string         `json:"action_fingerprint,omitempty"`
 	MutationID        string         `json:"mutation_id,omitempty"`
 	Error             string         `json:"error,omitempty"`
 	StartedAt         time.Time      `json:"started_at,omitempty"`
 	CompletedAt       time.Time      `json:"completed_at,omitempty"`
+}
+
+type CostEstimate struct {
+	InputCost      float64 `json:"input_cost,omitempty"`
+	OutputCost     float64 `json:"output_cost,omitempty"`
+	TotalCost      float64 `json:"total_cost,omitempty"`
+	Currency       string  `json:"currency,omitempty"`
+	PricingVersion string  `json:"pricing_version,omitempty"`
+	Status         string  `json:"status,omitempty"`
+}
+
+type TokenUsage struct {
+	InputTokens       int64          `json:"input_tokens,omitempty"`
+	OutputTokens      int64          `json:"output_tokens,omitempty"`
+	TotalTokens       int64          `json:"total_tokens,omitempty"`
+	CachedInputTokens int64          `json:"cached_input_tokens,omitempty"`
+	ReasoningTokens   int64          `json:"reasoning_tokens,omitempty"`
+	Status            string         `json:"status,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
 }
 
 func (d Definition) Normalize() Definition {
@@ -119,9 +180,17 @@ func (d Definition) Normalize() Definition {
 		d.Status = StatusDisabled
 	}
 	d.Input.Target = firstNonEmpty(strings.TrimSpace(d.Input.Target), "changed")
+	d.Input.Mode = strings.ToLower(strings.TrimSpace(d.Input.Mode))
+	if d.Input.Mode == "" {
+		if strings.TrimSpace(d.Input.Template) != "" {
+			d.Input.Mode = InputModeTemplate
+		} else {
+			d.Input.Mode = InputModeFields
+		}
+	}
 	d.Output.Mode = strings.ToLower(strings.TrimSpace(d.Output.Mode))
 	if d.Output.Mode == "" {
-		d.Output.Mode = "text"
+		d.Output.Mode = OutputModeText
 	}
 	for i := range d.Trigger.Events {
 		d.Trigger.Events[i] = strings.ToLower(strings.TrimSpace(d.Trigger.Events[i]))

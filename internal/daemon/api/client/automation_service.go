@@ -25,6 +25,25 @@ func NewAutomationService(automations automationservice.Manager) *AutomationServ
 	return &AutomationService{automations: automations}
 }
 
+func (s *AutomationService) ValidateAutomation(ctx context.Context, req *clientv1.ValidateAutomationRequest) (*clientv1.ValidateAutomationResponse, error) {
+	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	domainID, err := parseDomainID(req.GetDomainId())
+	if err != nil {
+		return nil, err
+	}
+	def, err := s.automations.ValidateAutomation(ctx, domainID, req.GetDefinitionJson())
+	if err != nil {
+		return &clientv1.ValidateAutomationResponse{Valid: false, Error: err.Error()}, nil
+	}
+	jsonText, err := automationDefinitionJSON(def)
+	if err != nil {
+		return nil, err
+	}
+	return &clientv1.ValidateAutomationResponse{Valid: true, NormalizedDefinitionJson: jsonText}, nil
+}
+
 func (s *AutomationService) CreateAutomation(ctx context.Context, req *clientv1.CreateAutomationRequest) (*clientv1.CreateAutomationResponse, error) {
 	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
 		return nil, err
@@ -189,6 +208,36 @@ func (s *AutomationService) GetAutomationRun(ctx context.Context, req *clientv1.
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &clientv1.GetAutomationRunResponse{RunJson: string(data)}, nil
+}
+
+func (s *AutomationService) RetryAutomationInvocation(ctx context.Context, req *clientv1.RetryAutomationInvocationRequest) (*clientv1.RetryAutomationInvocationResponse, error) {
+	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	domainID, err := parseDomainID(req.GetDomainId())
+	if err != nil {
+		return nil, err
+	}
+	inv, err := s.automations.RetryInvocation(ctx, domainID, req.GetInvocationId())
+	if err != nil {
+		return nil, mapAutomationError(err)
+	}
+	return &clientv1.RetryAutomationInvocationResponse{Invocation: invocationSummary(inv)}, nil
+}
+
+func (s *AutomationService) CancelAutomationInvocation(ctx context.Context, req *clientv1.CancelAutomationInvocationRequest) (*clientv1.CancelAutomationInvocationResponse, error) {
+	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	domainID, err := parseDomainID(req.GetDomainId())
+	if err != nil {
+		return nil, err
+	}
+	inv, err := s.automations.CancelInvocation(ctx, domainID, req.GetInvocationId())
+	if err != nil {
+		return nil, mapAutomationError(err)
+	}
+	return &clientv1.CancelAutomationInvocationResponse{Invocation: invocationSummary(inv)}, nil
 }
 
 func automationDefinitionJSON(def automationmodel.Definition) (string, error) {

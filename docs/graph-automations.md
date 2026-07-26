@@ -87,7 +87,9 @@ mycel automation runs --domain <domain-uuid> --automation summarize_page --limit
 
 ## Admin API and UI
 
-The daemon exposes client and admin automation services. The initial mycel-admin integration provides Tauri commands and service wrappers for listing definitions, enabling/disabling, and inspecting invocation/run history. A richer visual authoring experience remains future work.
+The daemon exposes client and admin automation services. `mycel-admin` includes an **Automations** tab on the space detail page that lists domain automations, toggles enabled/disabled state, shows definition JSON, lists recent invocations, and opens run detail JSON including token/cost/action metadata.
+
+A richer visual authoring experience remains future work.
 
 ## Operational notes
 
@@ -95,7 +97,10 @@ The daemon exposes client and admin automation services. The initial mycel-admin
 - V1 workers poll pending invocations and record durable run status.
 - Self-generated writes are tagged in node metadata and are ignored by the same automation by default.
 - V1 only updates a configured field on the changed node.
-- Provider-backed generation is not finalized yet; the execution path currently uses deterministic text output so ingestion, auditing, and mutation behavior can be validated before provider/cost controls land.
+- Provider-backed generation is configured with `MYCELD_AUTOMATION_PROVIDER` (`openai`, `openai-compatible`, `fake`, or empty/`none`).
+- Provider-backed runs record token usage and estimated cost when usage/pricing are available.
+- Worker controls include `MYCELD_AUTOMATION_WORKER_ENABLED`, `MYCELD_AUTOMATION_WORKER_INTERVAL`, `MYCELD_AUTOMATION_WORKER_BATCH_SIZE`, and `MYCELD_AUTOMATION_WORKER_CONCURRENCY`.
+- Safety ceilings include `MYCELD_AUTOMATION_MAX_TOKENS_PER_RUN` and `MYCELD_AUTOMATION_MAX_COST_PER_RUN`.
 
 ## Storage
 

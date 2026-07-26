@@ -214,8 +214,33 @@ func (s *FileStore) GetRun(ctx context.Context, domainID graph.DomainID, runID s
 	return out, nil
 }
 
+func (s *FileStore) PutSuccessfulInputIndex(ctx context.Context, record SuccessfulInputIndex) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeJSONAtomic(s.successfulInputIndexPath(record.DomainID, record.AutomationID, record.Version, record.ChangedElementID, record.InputHash), record)
+}
+
+func (s *FileStore) GetSuccessfulInputIndex(ctx context.Context, domainID graph.DomainID, automationID string, version int, changedElementID string, inputHash string) (SuccessfulInputIndex, error) {
+	if err := ctx.Err(); err != nil {
+		return SuccessfulInputIndex{}, err
+	}
+	var out SuccessfulInputIndex
+	if err := readJSON(s.successfulInputIndexPath(domainID, automationID, version, changedElementID, inputHash), &out); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, ErrNotFound
+		}
+		return out, err
+	}
+	return out, nil
+}
+
 func (s *FileStore) definitionPath(domainID graph.DomainID, id string) string {
 	return filepath.Join(s.root, "definitions", domainID.String(), safeName(id)+".json")
+}
+
+func (s *FileStore) successfulInputIndexPath(domainID graph.DomainID, automationID string, version int, changedElementID string, inputHash string) string {
+	return filepath.Join(s.root, "indexes", "successful-input", domainID.String(), safeName(automationID), fmt.Sprintf("v%d", version), safeName(changedElementID), safeName(inputHash)+".json")
 }
 
 func safeName(value string) string {

@@ -7,11 +7,11 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"strings"
-
+	"github.com/myceldb/mycel/internal/automation/actions"
 	automation "github.com/myceldb/mycel/internal/automation/model"
-	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	autooutput "github.com/myceldb/mycel/internal/automation/output"
+	"github.com/myceldb/mycel/internal/automation/provider"
+	"github.com/myceldb/mycel/internal/automation/render"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
 
@@ -21,10 +21,19 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	now := m.now()
 	run := automation.Run{ID: newRunID(), DomainID: inv.DomainID, InvocationID: inv.ID, AttemptNumber: 1, Status: "running", Provider: def.Model.Provider, Model: def.Model.Model, StartedAt: now}
 	if m.sessions == nil || m.graphs == nil {
+		result, err := render.Render(def.Input, render.Context{})
+		if err != nil {
+			return run, err
+		}
+		run.RenderedInputHash = result.Hash
+		output, err := m.generateText(ctx, def, result.Text, &run)
+		if err != nil {
+			return run, err
+		}
 		run.Status = "succeeded"
 		run.CompletedAt = now
-		sum := sha256.Sum256([]byte(strings.Join(def.Input.Fields, "\n")))
-		run.RenderedInputHash = hex.EncodeToString(sum[:])
+		outSum := sha256.Sum256([]byte(output))
+		run.OutputHash = hex.EncodeToString(outSum[:])
 		return run, nil
 	}
 	sess, err := m.sessions.OpenSession(ctx, sessionservice.OpenSessionInput{UserID: automationActor, SpaceID: inv.SpaceID, DomainID: inv.DomainID.String()})
@@ -40,25 +49,58 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
 		return run, err
 	}
-	rendered := renderNodeFields(node, def.Input.Fields)
-	sum := sha256.Sum256([]byte(rendered))
-	run.RenderedInputHash = hex.EncodeToString(sum[:])
-	output := synthesizeTextOutput(def, rendered)
-	updated, changed, err := applyTextOutput(node, def, output, run.ID)
+	condition, err := m.evaluateCondition(ctx, tx, def, node, inv.OldNode)
+	if err != nil {
+		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		return run, err
+	} else if !condition.Matched {
+		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		run.Status = "skipped"
+		run.Error = conditionFalseReason
+		run.CompletedAt = m.now()
+		return run, nil
+	}
+	rendered, err := render.Render(def.Input, render.Context{Changed: node, Old: inv.OldNode, Aliases: condition.Aliases})
 	if err != nil {
 		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
 		return run, err
 	}
-	if !changed {
+	run.RenderedInputHash = rendered.Hash
+	if def.Safety.Idempotency.SkipIfOutputUnchanged {
+		duplicate, err := m.hasSuccessfulInputHash(ctx, inv, rendered.Hash)
+		if err != nil {
+			_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+			return run, err
+		}
+		if duplicate {
+			_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+			run.Status = "skipped"
+			run.Error = skipReasonDuplicateInput
+			run.CompletedAt = m.now()
+			return run, nil
+		}
+	}
+	output, err := m.generateText(ctx, def, rendered.Text, &run)
+	if err != nil {
+		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		return run, err
+	}
+	parsed, err := autooutput.Parse(def.Output.Mode, def.Output.Schema, output)
+	if err != nil {
+		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		return run, err
+	}
+	run.ActionFingerprint = actionFingerprint(def, parsed)
+	summary, err := (actions.Engine{Graphs: m.graphs}).Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, Changed: node, Result: parsed})
+	if err != nil {
+		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		return run, err
+	}
+	if !summary.Changed {
 		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
 		run.Status = "skipped"
 		run.CompletedAt = m.now()
 		return run, nil
-	}
-	_, err = m.graphs.UpdateNode(ctx, tx, graphservice.UpdateNodeInput{NodeID: updated.ID.String(), Labels: updated.Labels, Properties: updated.Properties, Payload: updated.Payload, Meta: updated.Meta, Content: &updated.Content, Props: updated.Props})
-	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
-		return run, err
 	}
 	graphCommit, err := m.graphs.CommitTransactionGraph(ctx, tx)
 	if err != nil {
@@ -78,77 +120,32 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 
 func newRunID() string { return uuid.NewString() }
 
-func renderNodeFields(node graph.Node, fields []string) string {
-	var b strings.Builder
-	for _, field := range fields {
-		field = strings.TrimSpace(field)
-		if field == "" {
-			continue
-		}
-		b.WriteString("# " + field + "\n")
-		b.WriteString(fmt.Sprint(readNodePath(node, field)))
-		b.WriteString("\n\n")
+func (m *AutomationManager) generateText(ctx context.Context, def automation.Definition, rendered string, run *automation.Run) (string, error) {
+	p := m.provider
+	if p == nil {
+		run.Usage = automation.TokenUsage{Status: provider.UsageStatusUnavailable}
+		return "", provider.ErrUnavailable
 	}
-	return b.String()
-}
-
-func synthesizeTextOutput(def automation.Definition, rendered string) string {
-	// Phase 5 wires the full action path; provider-backed generation can replace this deterministic placeholder.
-	return strings.TrimSpace(def.Prompt + "\n\n" + rendered)
-}
-
-func applyTextOutput(node graph.Node, def automation.Definition, output string, runID string) (graph.Node, bool, error) {
-	if len(def.Output.Actions) != 1 || def.Output.Actions[0].UpdateNode == nil {
-		return node, false, fmt.Errorf("missing update_node action")
+	resp, err := p.GenerateText(ctx, provider.Request{Provider: def.Model.Provider, Model: def.Model.Model, Prompt: def.Prompt, Input: rendered, Temperature: def.Model.Temperature, MaxOutputTokens: def.Model.MaxOutputTokens})
+	if err != nil {
+		return "", err
 	}
-	for path := range def.Output.Actions[0].UpdateNode.Set {
-		current := fmt.Sprint(readNodePath(node, path))
-		if current == output {
-			return node, false, nil
-		}
-		writeNodePath(&node, path, output)
-		if node.Meta == nil {
-			node.Meta = map[string]any{}
-		}
-		node.Meta["automation"] = map[string]any{"run_id": runID, "automation_id": def.ID, "generated": true, "depth": 1}
-		return node, true, nil
+	run.ProviderRequestID = resp.ProviderRequestID
+	usageStatus := resp.Usage.Status
+	if usageStatus == "" {
+		usageStatus = provider.UsageStatusUnavailable
 	}
-	return node, false, fmt.Errorf("missing output field path")
-}
-
-func readNodePath(node graph.Node, path string) any {
-	switch {
-	case path == "content":
-		return node.Content
-	case strings.HasPrefix(path, "props."):
-		return node.Props[strings.TrimPrefix(path, "props.")]
-	case strings.HasPrefix(path, "properties."):
-		return node.Properties[strings.TrimPrefix(path, "properties.")]
-	case strings.HasPrefix(path, "payload."):
-		return node.Payload[strings.TrimPrefix(path, "payload.")]
-	default:
-		return ""
+	totalTokens := resp.Usage.TotalTokens
+	if totalTokens == 0 && (resp.Usage.InputTokens != 0 || resp.Usage.OutputTokens != 0) {
+		totalTokens = resp.Usage.InputTokens + resp.Usage.OutputTokens
 	}
-}
-
-func writeNodePath(node *graph.Node, path string, value any) {
-	switch {
-	case path == "content":
-		node.Content = fmt.Sprint(value)
-	case strings.HasPrefix(path, "props."):
-		if node.Props == nil {
-			node.Props = map[string]any{}
-		}
-		node.Props[strings.TrimPrefix(path, "props.")] = value
-	case strings.HasPrefix(path, "properties."):
-		if node.Properties == nil {
-			node.Properties = map[string]any{}
-		}
-		node.Properties[strings.TrimPrefix(path, "properties.")] = value
-	case strings.HasPrefix(path, "payload."):
-		if node.Payload == nil {
-			node.Payload = map[string]any{}
-		}
-		node.Payload[strings.TrimPrefix(path, "payload.")] = value
+	run.Usage = automation.TokenUsage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: totalTokens, CachedInputTokens: resp.Usage.CachedInputTokens, ReasoningTokens: resp.Usage.ReasoningTokens, Status: usageStatus, Metadata: resp.Usage.Metadata}
+	run.Cost = m.accounting.Estimate(def.Model.Provider, def.Model.Model, run.Usage)
+	if m.maxTokensPerRun > 0 && run.Usage.TotalTokens > m.maxTokensPerRun {
+		return "", fmt.Errorf("automation token ceiling exceeded: %d > %d", run.Usage.TotalTokens, m.maxTokensPerRun)
 	}
+	if m.maxCostPerRun > 0 && run.Cost.TotalCost > m.maxCostPerRun {
+		return "", fmt.Errorf("automation cost ceiling exceeded: %.6f > %.6f", run.Cost.TotalCost, m.maxCostPerRun)
+	}
+	return resp.Text, nil
 }

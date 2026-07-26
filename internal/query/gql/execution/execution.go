@@ -27,6 +27,7 @@ type CreateEdge struct {
 }
 
 type QueryNodes struct {
+	Variable   string
 	Labels     []string
 	Properties map[string]any
 	Limit      int64
@@ -40,6 +41,7 @@ type QueryPattern struct {
 }
 
 type QueryNodePattern struct {
+	Variable   string
 	Labels     []string
 	Properties map[string]any
 }
@@ -124,7 +126,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 			}
 			bindings := []map[string]execmodel.Node{{}}
 			for _, match := range op.Matches {
-				nodes, err := e.graph.QueryNodes(ctx, QueryNodes{Labels: append([]string(nil), match.Labels...), Properties: copyProperties(match.Properties)})
+				nodes, err := e.graph.QueryNodes(ctx, QueryNodes{Variable: match.Variable, Labels: append([]string(nil), match.Labels...), Properties: copyProperties(match.Properties)})
 				if err != nil {
 					return execmodel.Result{}, err
 				}
@@ -157,7 +159,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				return execmodel.Result{}, fmt.Errorf("query path requires read-only access mode")
 			}
 			bindings := []pathBinding{}
-			starts, err := e.graph.QueryNodes(ctx, QueryNodes{Labels: append([]string(nil), op.Start.Labels...), Properties: copyProperties(op.Start.Properties)})
+			starts, err := e.graph.QueryNodes(ctx, QueryNodes{Variable: op.Start.Variable, Labels: append([]string(nil), op.Start.Labels...), Properties: copyProperties(op.Start.Properties)})
 			if err != nil {
 				return execmodel.Result{}, err
 			}
@@ -239,9 +241,9 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				return execmodel.Result{}, fmt.Errorf("query pattern requires read-only access mode")
 			}
 			rows, err := e.graph.QueryPattern(ctx, QueryPattern{
-				Start:        QueryNodePattern{Labels: append([]string(nil), op.Start.Labels...), Properties: copyProperties(op.Start.Properties)},
+				Start:        QueryNodePattern{Variable: op.Start.Variable, Labels: append([]string(nil), op.Start.Labels...), Properties: copyProperties(op.Start.Properties)},
 				Relationship: QueryRelationshipPattern{Labels: append([]string(nil), op.Relationship.Labels...), Properties: copyProperties(op.Relationship.Properties), Direction: RelationshipDirection(op.Relationship.Direction), Quantifier: executionQuantifier(op.Relationship.Quantifier)},
-				End:          QueryNodePattern{Labels: append([]string(nil), op.End.Labels...), Properties: copyProperties(op.End.Properties)},
+				End:          QueryNodePattern{Variable: op.End.Variable, Labels: append([]string(nil), op.End.Labels...), Properties: copyProperties(op.End.Properties)},
 				Limit:        op.Limit,
 			})
 			if err != nil {
@@ -300,7 +302,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 			if plan.AccessMode != analysis.ReadOnly {
 				return execmodel.Result{}, fmt.Errorf("query nodes requires read-only access mode")
 			}
-			nodes, err := e.graph.QueryNodes(ctx, QueryNodes{Labels: append([]string(nil), op.Labels...), Properties: copyProperties(op.Properties), Limit: op.Limit})
+			nodes, err := e.graph.QueryNodes(ctx, QueryNodes{Variable: op.Variable, Labels: append([]string(nil), op.Labels...), Properties: copyProperties(op.Properties), Limit: op.Limit})
 			if err != nil {
 				return execmodel.Result{}, err
 			}
@@ -340,14 +342,14 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 func (e executor) expandSegment(ctx context.Context, current execmodel.Node, segment planmodel.PathSegment) ([]PatternRow, error) {
 	quant := segment.Relationship.Quantifier
 	if quant == nil {
-		return e.graph.QueryPattern(ctx, QueryPattern{Start: QueryNodePattern{Properties: map[string]any{"__id": current.ID}}, Relationship: QueryRelationshipPattern{Labels: append([]string(nil), segment.Relationship.Labels...), Properties: copyProperties(segment.Relationship.Properties), Direction: RelationshipDirection(segment.Relationship.Direction)}, End: QueryNodePattern{Labels: append([]string(nil), segment.Node.Labels...), Properties: copyProperties(segment.Node.Properties)}})
+		return e.graph.QueryPattern(ctx, QueryPattern{Start: QueryNodePattern{Properties: map[string]any{"__id": current.ID}}, Relationship: QueryRelationshipPattern{Labels: append([]string(nil), segment.Relationship.Labels...), Properties: copyProperties(segment.Relationship.Properties), Direction: RelationshipDirection(segment.Relationship.Direction)}, End: QueryNodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: copyProperties(segment.Node.Properties)}})
 	}
 	frontier := []execmodel.Node{current}
 	out := []PatternRow{}
 	for depth := 1; depth <= quant.Max; depth++ {
 		next := []execmodel.Node{}
 		for _, node := range frontier {
-			rows, err := e.graph.QueryPattern(ctx, QueryPattern{Start: QueryNodePattern{Properties: map[string]any{"__id": node.ID}}, Relationship: QueryRelationshipPattern{Labels: append([]string(nil), segment.Relationship.Labels...), Properties: copyProperties(segment.Relationship.Properties), Direction: RelationshipDirection(segment.Relationship.Direction)}, End: QueryNodePattern{}})
+			rows, err := e.graph.QueryPattern(ctx, QueryPattern{Start: QueryNodePattern{Properties: map[string]any{"__id": node.ID}}, Relationship: QueryRelationshipPattern{Labels: append([]string(nil), segment.Relationship.Labels...), Properties: copyProperties(segment.Relationship.Properties), Direction: RelationshipDirection(segment.Relationship.Direction)}, End: QueryNodePattern{Variable: segment.Node.Variable}})
 			if err != nil {
 				return nil, err
 			}
