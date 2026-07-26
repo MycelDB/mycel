@@ -59,6 +59,33 @@ func TestGraphServiceEdgeUsesLabelsPropertiesPayloadAndMeta(t *testing.T) {
 	}
 }
 
+func TestQueryServiceExecuteGQLComparisonPredicates(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	for _, query := range []string{
+		"INSERT (:Person {name: 'Elizabeth II', role: 'Monarch', birthYear: 1926})",
+		"INSERT (:Person {name: 'Charles III', role: 'Monarch', birthYear: 1948})",
+		"INSERT (:Person {name: 'William', birthYear: 1982})",
+	} {
+		if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query}); err != nil {
+			t.Fatalf("insert query %q: %v", query, err)
+		}
+	}
+	if _, err := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces).CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (p:Person) WHERE p.role = 'Monarch' AND p.birthYear > 1940 RETURN p.name, p.birthYear"})
+	if err != nil {
+		t.Fatalf("comparison query: %v", err)
+	}
+	rows := res.GetResult().GetRows()
+	if len(rows) != 1 || rows[0].GetFields()["p.name"].GetScalar().GetStringValue() != "Charles III" {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+}
+
 func TestQueryServiceExecuteGQLCreatesRelationshipFromMatchedNodes(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)

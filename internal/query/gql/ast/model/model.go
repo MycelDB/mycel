@@ -63,8 +63,20 @@ type WhereClause struct {
 type PropertyComparison struct {
 	Variable string
 	Property string
+	Operator ComparisonOperator
 	Value    Value
 }
+
+type ComparisonOperator string
+
+const (
+	ComparisonEqual              ComparisonOperator = "="
+	ComparisonNotEqual           ComparisonOperator = "!="
+	ComparisonLessThan           ComparisonOperator = "<"
+	ComparisonLessThanOrEqual    ComparisonOperator = "<="
+	ComparisonGreaterThan        ComparisonOperator = ">"
+	ComparisonGreaterThanOrEqual ComparisonOperator = ">="
+)
 
 type TextContainsPredicate struct {
 	Variable  string

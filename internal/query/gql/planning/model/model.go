@@ -25,37 +25,40 @@ func (InsertNodeOperation) operation() {}
 
 // QueryNodesOperation returns nodes matching optional labels/properties.
 type QueryNodesOperation struct {
-	Variable           string
-	Labels             []string
-	Properties         map[string]any
-	Returns            []ReturnItem
-	Limit              int64
-	TextPredicates     []TextContainsPredicate
-	SemanticPredicates []SemanticSimilarPredicate
+	Variable             string
+	Labels               []string
+	Properties           map[string]any
+	Returns              []ReturnItem
+	Limit                int64
+	ComparisonPredicates []ComparisonPredicate
+	TextPredicates       []TextContainsPredicate
+	SemanticPredicates   []SemanticSimilarPredicate
 }
 
 func (QueryNodesOperation) operation() {}
 
 // QueryPatternOperation returns rows matching a node-edge-node pattern.
 type QueryPatternOperation struct {
-	Start              NodePattern
-	Relationship       RelationshipPattern
-	End                NodePattern
-	Returns            []ReturnItem
-	Limit              int64
-	TextPredicates     []TextContainsPredicate
-	SemanticPredicates []SemanticSimilarPredicate
+	Start                NodePattern
+	Relationship         RelationshipPattern
+	End                  NodePattern
+	Returns              []ReturnItem
+	Limit                int64
+	ComparisonPredicates []ComparisonPredicate
+	TextPredicates       []TextContainsPredicate
+	SemanticPredicates   []SemanticSimilarPredicate
 }
 
 func (QueryPatternOperation) operation() {}
 
 type QueryPathOperation struct {
-	Start              NodePattern
-	Segments           []PathSegment
-	Returns            []ReturnItem
-	Limit              int64
-	TextPredicates     []TextContainsPredicate
-	SemanticPredicates []SemanticSimilarPredicate
+	Start                NodePattern
+	Segments             []PathSegment
+	Returns              []ReturnItem
+	Limit                int64
+	ComparisonPredicates []ComparisonPredicate
+	TextPredicates       []TextContainsPredicate
+	SemanticPredicates   []SemanticSimilarPredicate
 }
 
 func (QueryPathOperation) operation() {}
@@ -120,6 +123,24 @@ type ReturnItem struct {
 	Namespace string
 	Property  string
 }
+
+type ComparisonPredicate struct {
+	Variable string
+	Property string
+	Operator ComparisonOperator
+	Value    any
+}
+
+type ComparisonOperator string
+
+const (
+	ComparisonEqual              ComparisonOperator = "="
+	ComparisonNotEqual           ComparisonOperator = "!="
+	ComparisonLessThan           ComparisonOperator = "<"
+	ComparisonLessThanOrEqual    ComparisonOperator = "<="
+	ComparisonGreaterThan        ComparisonOperator = ">"
+	ComparisonGreaterThanOrEqual ComparisonOperator = ">="
+)
 
 type TextContainsPredicate struct {
 	Variable  string

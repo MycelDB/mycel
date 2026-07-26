@@ -205,7 +205,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				result.Columns = append(result.Columns, returnColumn(ret))
 			}
 			for _, binding := range bindings {
-				if !bindingMatchesPredicates(binding, op.TextPredicates, op.SemanticPredicates) {
+				if !bindingMatchesPredicates(binding, op.ComparisonPredicates, op.TextPredicates, op.SemanticPredicates) {
 					continue
 				}
 				row := execmodel.Row{}
@@ -260,7 +260,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				if op.Relationship.Variable != "" {
 					binding.Edges[op.Relationship.Variable] = matched.Edge
 				}
-				if !bindingMatchesPredicates(binding, op.TextPredicates, op.SemanticPredicates) {
+				if !bindingMatchesPredicates(binding, op.ComparisonPredicates, op.TextPredicates, op.SemanticPredicates) {
 					continue
 				}
 				row := execmodel.Row{}
@@ -314,7 +314,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 			}
 			for _, node := range nodes {
 				binding := pathBinding{Nodes: map[string]execmodel.Node{op.Variable: node}, Edges: map[string]execmodel.Edge{}}
-				if !bindingMatchesPredicates(binding, op.TextPredicates, op.SemanticPredicates) {
+				if !bindingMatchesPredicates(binding, op.ComparisonPredicates, op.TextPredicates, op.SemanticPredicates) {
 					continue
 				}
 				row := execmodel.Row{}
@@ -398,7 +398,13 @@ func executionQuantifier(quant *planmodel.RelationshipQuantifier) *RelationshipQ
 	return &RelationshipQuantifier{Min: quant.Min, Max: quant.Max}
 }
 
-func bindingMatchesPredicates(binding pathBinding, texts []planmodel.TextContainsPredicate, semantics []planmodel.SemanticSimilarPredicate) bool {
+func bindingMatchesPredicates(binding pathBinding, comparisons []planmodel.ComparisonPredicate, texts []planmodel.TextContainsPredicate, semantics []planmodel.SemanticSimilarPredicate) bool {
+	for _, pred := range comparisons {
+		value, ok := bindingValue(binding, pred.Variable, "", pred.Property)
+		if !ok || !compareValues(value, pred.Operator, pred.Value) {
+			return false
+		}
+	}
 	for _, pred := range texts {
 		value, ok := bindingValue(binding, pred.Variable, pred.Namespace, pred.Property)
 		if !ok || !strings.Contains(strings.ToLower(fmt.Sprint(value)), strings.ToLower(pred.Query)) {
@@ -423,6 +429,60 @@ func bindingValue(binding pathBinding, variable, namespace, property string) (an
 		return projectEdgeField(edge, planmodel.ReturnItem{Namespace: namespace, Property: property}), true
 	}
 	return nil, false
+}
+
+func compareValues(left any, op planmodel.ComparisonOperator, right any) bool {
+	if op == planmodel.ComparisonEqual {
+		return fmt.Sprint(left) == fmt.Sprint(right)
+	}
+	if op == planmodel.ComparisonNotEqual {
+		return fmt.Sprint(left) != fmt.Sprint(right)
+	}
+	leftNum, leftOK := numericValue(left)
+	rightNum, rightOK := numericValue(right)
+	if leftOK && rightOK {
+		switch op {
+		case planmodel.ComparisonLessThan:
+			return leftNum < rightNum
+		case planmodel.ComparisonLessThanOrEqual:
+			return leftNum <= rightNum
+		case planmodel.ComparisonGreaterThan:
+			return leftNum > rightNum
+		case planmodel.ComparisonGreaterThanOrEqual:
+			return leftNum >= rightNum
+		}
+	}
+	leftString := fmt.Sprint(left)
+	rightString := fmt.Sprint(right)
+	switch op {
+	case planmodel.ComparisonLessThan:
+		return leftString < rightString
+	case planmodel.ComparisonLessThanOrEqual:
+		return leftString <= rightString
+	case planmodel.ComparisonGreaterThan:
+		return leftString > rightString
+	case planmodel.ComparisonGreaterThanOrEqual:
+		return leftString >= rightString
+	default:
+		return false
+	}
+}
+
+func numericValue(value any) (float64, bool) {
+	switch v := value.(type) {
+	case int:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case float32:
+		return float64(v), true
+	case float64:
+		return v, true
+	default:
+		return 0, false
+	}
 }
 
 func nodeContainsText(node execmodel.Node, query string) bool {

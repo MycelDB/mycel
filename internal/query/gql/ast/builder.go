@@ -400,14 +400,41 @@ func buildFieldReference(ctx generated.IPropertyReferenceContext) (fieldReferenc
 
 func buildPropertyComparison(ctx generated.IPropertyComparisonContext) (model.PropertyComparison, error) {
 	comparisonCtx, ok := ctx.(*generated.PropertyComparisonContext)
-	if !ok || len(comparisonCtx.AllIDENTIFIER()) != 2 || comparisonCtx.Value() == nil {
+	if !ok || len(comparisonCtx.AllIDENTIFIER()) != 2 || comparisonCtx.ComparisonOperator() == nil || comparisonCtx.Value() == nil {
 		return model.PropertyComparison{}, fmt.Errorf("invalid property comparison")
 	}
 	value, err := buildValue(comparisonCtx.Value())
 	if err != nil {
 		return model.PropertyComparison{}, err
 	}
-	return model.PropertyComparison{Variable: comparisonCtx.IDENTIFIER(0).GetText(), Property: comparisonCtx.IDENTIFIER(1).GetText(), Value: value}, nil
+	operator, err := buildComparisonOperator(comparisonCtx.ComparisonOperator())
+	if err != nil {
+		return model.PropertyComparison{}, err
+	}
+	return model.PropertyComparison{Variable: comparisonCtx.IDENTIFIER(0).GetText(), Property: comparisonCtx.IDENTIFIER(1).GetText(), Operator: operator, Value: value}, nil
+}
+
+func buildComparisonOperator(ctx generated.IComparisonOperatorContext) (model.ComparisonOperator, error) {
+	opCtx, ok := ctx.(*generated.ComparisonOperatorContext)
+	if !ok {
+		return "", fmt.Errorf("invalid comparison operator")
+	}
+	switch {
+	case opCtx.EQ() != nil:
+		return "", nil
+	case opCtx.NEQ() != nil:
+		return model.ComparisonNotEqual, nil
+	case opCtx.LT() != nil:
+		return model.ComparisonLessThan, nil
+	case opCtx.LTE() != nil:
+		return model.ComparisonLessThanOrEqual, nil
+	case opCtx.GT() != nil:
+		return model.ComparisonGreaterThan, nil
+	case opCtx.GTE() != nil:
+		return model.ComparisonGreaterThanOrEqual, nil
+	default:
+		return "", fmt.Errorf("unsupported comparison operator")
+	}
 }
 
 func buildNodePattern(ctx generated.INodePatternContext) (model.NodePattern, error) {

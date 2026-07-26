@@ -71,7 +71,16 @@ predicateTerm
   ;
 
 propertyComparison
-  : IDENTIFIER DOT IDENTIFIER EQ value
+  : IDENTIFIER DOT IDENTIFIER comparisonOperator value
+  ;
+
+comparisonOperator
+  : EQ
+  | NEQ
+  | LT
+  | LTE
+  | GT
+  | GTE
   ;
 
 textContainsPredicate
@@ -165,6 +174,9 @@ COLON  : ':';
 COMMA  : ',';
 DOT    : '.';
 EQ     : '=';
+NEQ    : '<>' | '!=';
+LTE    : '<=';
+GTE    : '>=';
 STAR   : '*';
 MINUS  : '-';
 LT     : '<';

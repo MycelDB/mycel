@@ -55,7 +55,7 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 	properties := propertiesMap(pattern.Start.Properties)
 	if stmt.Where != nil {
 		for _, predicate := range stmt.Where.Predicates {
-			if predicate.Variable != pattern.Start.Variable {
+			if predicate.Variable != pattern.Start.Variable || !isEqualityOperator(predicate.Operator) {
 				continue
 			}
 			value := predicate.Value.Value
@@ -77,7 +77,7 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 	if stmt.FetchFirst != nil {
 		limit = stmt.FetchFirst.Count
 	}
-	textPredicates, semanticPredicates := planPredicates(stmt.Where)
+	comparisonPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where)
 	if len(pattern.Segments) > 1 || hasQuantifiedSegment(pattern.Segments) {
 		segments := make([]planmodel.PathSegment, 0, len(pattern.Segments))
 		for i, segment := range pattern.Segments {
@@ -85,6 +85,9 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 			nodeProps := propertiesMap(segment.Node.Properties)
 			if stmt.Where != nil {
 				for _, predicate := range stmt.Where.Predicates {
+					if !isEqualityOperator(predicate.Operator) {
+						continue
+					}
 					value := predicate.Value.Value
 					switch predicate.Variable {
 					case segment.Relationship.Variable:
@@ -106,13 +109,16 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 			}
 			segments = append(segments, planmodel.PathSegment{Relationship: planRelationshipPattern(segment.Relationship, relProps), Node: planmodel.NodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: nodeProps}})
 		}
-		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, Limit: limit, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
+		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
 	}
 	if pattern.Relationship != nil {
 		relProps := propertiesMap(pattern.Relationship.Properties)
 		endProps := propertiesMap(pattern.End.Properties)
 		if stmt.Where != nil {
 			for _, predicate := range stmt.Where.Predicates {
+				if !isEqualityOperator(predicate.Operator) {
+					continue
+				}
 				value := predicate.Value.Value
 				switch predicate.Variable {
 				case pattern.Start.Variable:
@@ -131,34 +137,47 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 			}
 		}
 		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPatternOperation{
-			Start:              planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties},
-			Relationship:       planRelationshipPattern(*pattern.Relationship, relProps),
-			End:                planmodel.NodePattern{Variable: pattern.End.Variable, Labels: append([]string(nil), pattern.End.Labels...), Properties: endProps},
-			Returns:            returns,
-			Limit:              limit,
-			TextPredicates:     textPredicates,
-			SemanticPredicates: semanticPredicates,
+			Start:                planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties},
+			Relationship:         planRelationshipPattern(*pattern.Relationship, relProps),
+			End:                  planmodel.NodePattern{Variable: pattern.End.Variable, Labels: append([]string(nil), pattern.End.Labels...), Properties: endProps},
+			Returns:              returns,
+			Limit:                limit,
+			ComparisonPredicates: comparisonPredicates,
+			TextPredicates:       textPredicates,
+			SemanticPredicates:   semanticPredicates,
 		}}}, nil
 	}
 	return planmodel.Plan{
 		AccessMode: a.AccessMode,
 		Operations: []planmodel.Operation{
 			planmodel.QueryNodesOperation{
-				Variable:           pattern.Start.Variable,
-				Labels:             append([]string(nil), pattern.Start.Labels...),
-				Properties:         properties,
-				Returns:            returns,
-				Limit:              limit,
-				TextPredicates:     textPredicates,
-				SemanticPredicates: semanticPredicates,
+				Variable:             pattern.Start.Variable,
+				Labels:               append([]string(nil), pattern.Start.Labels...),
+				Properties:           properties,
+				Returns:              returns,
+				Limit:                limit,
+				ComparisonPredicates: comparisonPredicates,
+				TextPredicates:       textPredicates,
+				SemanticPredicates:   semanticPredicates,
 			},
 		},
 	}, nil
 }
 
-func planPredicates(where *ast.WhereClause) ([]planmodel.TextContainsPredicate, []planmodel.SemanticSimilarPredicate) {
+func isEqualityOperator(op ast.ComparisonOperator) bool {
+	return op == "" || op == ast.ComparisonEqual
+}
+
+func planPredicates(where *ast.WhereClause) ([]planmodel.ComparisonPredicate, []planmodel.TextContainsPredicate, []planmodel.SemanticSimilarPredicate) {
 	if where == nil {
-		return nil, nil
+		return nil, nil, nil
+	}
+	comparisons := make([]planmodel.ComparisonPredicate, 0, len(where.Predicates))
+	for _, pred := range where.Predicates {
+		if isEqualityOperator(pred.Operator) {
+			continue
+		}
+		comparisons = append(comparisons, planmodel.ComparisonPredicate{Variable: pred.Variable, Property: pred.Property, Operator: planmodel.ComparisonOperator(pred.Operator), Value: pred.Value.Value})
 	}
 	texts := make([]planmodel.TextContainsPredicate, 0, len(where.TextPredicates))
 	for _, pred := range where.TextPredicates {
@@ -168,13 +187,16 @@ func planPredicates(where *ast.WhereClause) ([]planmodel.TextContainsPredicate, 
 	for _, pred := range where.SemanticPredicates {
 		semantics = append(semantics, planmodel.SemanticSimilarPredicate{Variable: pred.Variable, Query: pred.Query, TopK: pred.TopK})
 	}
+	if len(comparisons) == 0 {
+		comparisons = nil
+	}
 	if len(texts) == 0 {
 		texts = nil
 	}
 	if len(semantics) == 0 {
 		semantics = nil
 	}
-	return texts, semantics
+	return comparisons, texts, semantics
 }
 
 func hasQuantifiedSegment(segments []ast.PathSegment) bool {
