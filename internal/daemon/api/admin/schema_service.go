@@ -2,13 +2,12 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/schema/dsl"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	"google.golang.org/grpc/codes"
@@ -36,20 +35,20 @@ func (s *AdminSchemaService) GetDomainSchema(ctx context.Context, req *adminv1.G
 	if err != nil {
 		return nil, mapAdminSchemaError(err)
 	}
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-	return &adminv1.GetDomainSchemaResponse{SchemaJson: string(data)}, nil
+	return &adminv1.GetDomainSchemaResponse{Gwl: value.SourceGWL}, nil
 }
 
 func (s *AdminSchemaService) ValidateSchema(ctx context.Context, req *adminv1.ValidateSchemaRequest) (*adminv1.ValidateSchemaResponse, error) {
 	if _, err := principalFromContext(ctx); err != nil {
 		return nil, err
 	}
-	var value schemamodel.DomainSchema
-	if err := json.Unmarshal([]byte(req.GetSchemaJson()), &value); err != nil {
-		return &adminv1.ValidateSchemaResponse{Valid: false, Issues: []*clientv1.SchemaValidationIssue{{Severity: "error", Message: fmt.Sprintf("invalid schema JSON: %v", err)}}}, nil
+	value, err := dsl.Parse(req.GetGwl())
+	if err != nil {
+		return &adminv1.ValidateSchemaResponse{Valid: false, Issues: []*clientv1.SchemaValidationIssue{{Severity: "error", Message: err.Error()}}}, nil
+	}
+	if value.DomainID == uuid.Nil {
+		value.DomainID = graph.DomainID(uuid.Nil)
+		value.DomainID[15] = 1
 	}
 	if err := schemamodel.Validate(value.Normalize()); err != nil {
 		return &adminv1.ValidateSchemaResponse{Valid: false, Issues: []*clientv1.SchemaValidationIssue{{Severity: "error", Message: err.Error()}}}, nil
