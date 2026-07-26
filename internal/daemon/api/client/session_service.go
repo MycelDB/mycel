@@ -254,9 +254,17 @@ func changeStreamChangesFromGraph(changes []daegraph.GraphChange) []daemonchange
 			copy := *change.Node
 			mapped.Node = &copy
 		}
+		if change.OldNode != nil {
+			copy := *change.OldNode
+			mapped.OldNode = &copy
+		}
 		if change.Edge != nil {
 			copy := *change.Edge
 			mapped.Edge = &copy
+		}
+		if change.OldEdge != nil {
+			copy := *change.OldEdge
+			mapped.OldEdge = &copy
 		}
 		out = append(out, mapped)
 	}

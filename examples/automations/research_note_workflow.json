@@ -1,0 +1,50 @@
+{
+  "id": "enrich_research_note",
+  "name": "Enrich research note",
+  "version": 1,
+  "status": "disabled",
+  "on": {
+    "events": ["node.created"],
+    "labels": ["ResearchNote"]
+  },
+  "workflow": {
+    "steps": [
+      {
+        "id": "summarize",
+        "kind": "llm",
+        "condition": {
+          "gql": "MATCH (changed:ResearchNote) RETURN changed"
+        },
+        "input": {
+          "target": "changed",
+          "mode": "markdown",
+          "fields": ["properties.title", "payload.text"]
+        },
+        "prompt": "Summarize this research note and identify key claims.",
+        "output": {
+          "mode": "json",
+          "schema": {
+            "type": "object",
+            "required": ["summary", "claims"]
+          },
+          "actions": []
+        }
+      },
+      {
+        "id": "search_related",
+        "kind": "tool",
+        "tool": "debug.echo",
+        "dependsOn": ["summarize"],
+        "toolInput": {
+          "claims": "$steps.summarize.output.claims"
+        }
+      },
+      {
+        "id": "propose_links",
+        "kind": "proposal",
+        "dependsOn": ["search_related"],
+        "approval": "required"
+      }
+    ]
+  }
+}

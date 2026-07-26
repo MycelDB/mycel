@@ -44,11 +44,13 @@ type Event struct {
 }
 
 type GraphChange struct {
-	Type   ChangeType
-	Node   *domaingraph.Node
-	Edge   *domaingraph.Edge
-	NodeID string
-	EdgeID string
+	Type    ChangeType
+	Node    *domaingraph.Node
+	OldNode *domaingraph.Node
+	Edge    *domaingraph.Edge
+	OldEdge *domaingraph.Edge
+	NodeID  string
+	EdgeID  string
 }
 
 type ChangeType string

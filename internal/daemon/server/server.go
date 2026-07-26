@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 
+	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
 	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
@@ -48,6 +49,7 @@ type Config struct {
 	BlobManager             daemonblob.Manager
 	SemanticManager         daemonsemantic.Manager
 	SchemaManager           schemaservice.Manager
+	AutomationManager       automationservice.Manager
 	ChangeManager           daemonchange.Manager
 	TokenManager            *daemonauth.TokenManager
 	Quiesce                 *quiesce.Coordinator
@@ -152,6 +154,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if cfg.SchemaManager != nil {
 		adminv1.RegisterAdminSchemaServiceServer(grpcServer, adminapi.NewAdminSchemaService(cfg.SchemaManager))
 	}
+	if cfg.AutomationManager != nil {
+		adminv1.RegisterAdminAutomationServiceServer(grpcServer, adminapi.NewAdminAutomationService(cfg.AutomationManager))
+	}
 	if cfg.ClusteringManager != nil {
 		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups))
 	}
@@ -168,6 +173,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	clientv1.RegisterQueryServiceServer(grpcServer, clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager))
 	if cfg.SchemaManager != nil {
 		clientv1.RegisterSchemaServiceServer(grpcServer, clientapi.NewSchemaService(cfg.SchemaManager))
+	}
+	if cfg.AutomationManager != nil {
+		clientv1.RegisterAutomationServiceServer(grpcServer, clientapi.NewAutomationService(cfg.AutomationManager))
 	}
 	clientv1.RegisterImportExportServiceServer(grpcServer, clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager))
 	clientv1.RegisterMetadataCatalogServiceServer(grpcServer, clientapi.NewMetadataCatalogService(cfg.SessionManager, cfg.GraphManager))
