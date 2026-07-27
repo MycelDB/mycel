@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering/backend"
@@ -15,39 +16,53 @@ type compositePartitionStateMachine []consensus.StateMachine
 type compositeSystemStateMachine []consensus.StateMachine
 
 func (s compositeSystemStateMachine) ApplyCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {
-	var lastErr error
+	var lastUnsupported error
 	for _, sm := range s {
 		if sm == nil {
 			continue
 		}
 		if err := sm.ApplyCommand(ctx, apply, cmd); err == nil {
 			return nil
+		} else if isUnsupportedRaftRecordType(err, cmd.RecordType) {
+			lastUnsupported = err
+			continue
 		} else {
-			lastErr = err
+			return err
 		}
 	}
-	if lastErr != nil {
-		return lastErr
+	if lastUnsupported != nil {
+		return lastUnsupported
 	}
 	return fmt.Errorf("no system state machine configured")
 }
 
 func (s compositePartitionStateMachine) ApplyCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {
-	var lastErr error
+	var lastUnsupported error
 	for _, sm := range s {
 		if sm == nil {
 			continue
 		}
 		if err := sm.ApplyCommand(ctx, apply, cmd); err == nil {
 			return nil
+		} else if isUnsupportedRaftRecordType(err, cmd.RecordType) {
+			lastUnsupported = err
+			continue
 		} else {
-			lastErr = err
+			return err
 		}
 	}
-	if lastErr != nil {
-		return lastErr
+	if lastUnsupported != nil {
+		return lastUnsupported
 	}
 	return fmt.Errorf("no partition state machine configured")
+}
+
+func isUnsupportedRaftRecordType(err error, recordType any) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "unsupported") && strings.Contains(msg, "raft record type") && strings.Contains(msg, fmt.Sprint(recordType))
 }
 
 func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, systemStateMachine func() consensus.StateMachine, partitionStateMachine func(uint32) consensus.StateMachine) error {
