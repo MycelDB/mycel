@@ -36,10 +36,17 @@ validate-gql-grammar: antlr-jar
 	rm -rf $$tmpdir
 
 generate-gql-parser: antlr-jar
-	@command -v java >/dev/null 2>&1 || (echo "java is required to run ANTLR. Install a JRE/JDK and retry." && exit 1)
-	rm -rf $(GQL_GENERATED_DIR)
-	mkdir -p $(GQL_GENERATED_DIR)
-	cd $(GQL_GRAMMAR_DIR) && java -jar ../../../../$(ANTLR_JAR) -Dlanguage=Go -visitor -no-listener -package generated -o generated MycelGQL.g4
+	@set -eu; \
+	rm -rf $(GQL_GENERATED_DIR); \
+	mkdir -p $(GQL_GENERATED_DIR); \
+	if command -v java >/dev/null 2>&1 && java -version >/dev/null 2>&1; then \
+		cd $(GQL_GRAMMAR_DIR) && java -jar ../../../../$(ANTLR_JAR) -Dlanguage=Go -visitor -no-listener -package generated -o generated MycelGQL.g4; \
+	elif command -v docker >/dev/null 2>&1; then \
+		docker run --rm -u "$$(id -u):$$(id -g)" -v "$$(pwd):/work" -w /work $(ANTLR_DOCKER_IMAGE) sh -c 'cd $(GQL_GRAMMAR_DIR) && java -jar ../../../../$(ANTLR_JAR) -Dlanguage=Go -visitor -no-listener -package generated -o generated MycelGQL.g4'; \
+	else \
+		echo "java or docker is required to run ANTLR. Install a JRE/JDK or Docker and retry."; \
+		exit 1; \
+	fi
 	gofmt -w $(GQL_GENERATED_DIR)
 
 generate-gql-parser-docker: antlr-jar
@@ -55,18 +62,18 @@ check-daemon-only:
 check-public-surface:
 	scripts/check-public-surface.sh
 
-test: generate-proto check-daemon-only check-public-surface
+test: generate-proto generate-gql-parser check-daemon-only check-public-surface
 	go test ./...
 
-test-verbose: generate-proto check-daemon-only check-public-surface
+test-verbose: generate-proto generate-gql-parser check-daemon-only check-public-surface
 	go test -v -count=1 -cover -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
 test-watch:
 	@command -v watchexec >/dev/null 2>&1 || (echo "watchexec is required. Install with: brew install watchexec" && exit 1)
-	watchexec -e go,sh -- "make generate-proto && scripts/check-daemon-only.sh && scripts/check-public-surface.sh && go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
+	watchexec -e go,sh -- "make generate-proto generate-gql-parser && scripts/check-daemon-only.sh && scripts/check-public-surface.sh && go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
 
-coverage: generate-proto check-daemon-only check-public-surface
+coverage: generate-proto generate-gql-parser check-daemon-only check-public-surface
 	mkdir -p $(COVERAGE_DIR)
 	go test ./... -coverprofile=$(COVERAGE_OUT)
 	go tool cover -func=$(COVERAGE_OUT)
@@ -75,7 +82,7 @@ coverage-html: coverage
 	go tool cover -html=$(COVERAGE_OUT) -o $(COVERAGE_HTML)
 	@echo "Coverage HTML written to $(COVERAGE_HTML)"
 
-daemon-coverage: generate-proto
+daemon-coverage: generate-proto generate-gql-parser
 	mkdir -p $(COVERAGE_DIR)
 	go test ./internal/daemon/... -coverprofile=$(DAEMON_COVERAGE_OUT)
 	go tool cover -func=$(DAEMON_COVERAGE_OUT)
@@ -87,7 +94,7 @@ daemon-coverage-html: daemon-coverage
 coverage-clean:
 	rm -rf $(COVERAGE_DIR)
 
-build: generate-proto check-daemon-only check-public-surface build-cli build-daemon
+build: generate-proto generate-gql-parser check-daemon-only check-public-surface build-cli build-daemon
 
 build-cli:
 	go build -o bin/$(CLI_BINARY) ./cmd/mycel
