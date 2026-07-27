@@ -19,6 +19,7 @@ jobs:
           repository: MycelDB/mycel-api
           ref: develop
           path: mycel-api
+          token: ${{ secrets.MYCELDB_GITHUB_TOKEN }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: mycel/go.mod
