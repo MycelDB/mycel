@@ -87,7 +87,7 @@ func (s *SystemStateMachine) ApplyCommand(ctx context.Context, apply ApplyContex
 		}
 		s.metadata.Nodes[node.NodeID] = node
 	default:
-		return fmt.Errorf("unsupported system record type %s", cmd.RecordType)
+		return fmt.Errorf("unsupported system raft record type %s", cmd.RecordType)
 	}
 	return nil
 }

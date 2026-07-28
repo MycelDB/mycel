@@ -45,3 +45,22 @@ func TestCompositePartitionStateMachineSkipsUnsupportedRecordTypes(t *testing.T)
 		t.Fatal("expected matching state machine to be applied")
 	}
 }
+
+func TestCompositeSystemStateMachineSkipsUnsupportedSystemRecordTypes(t *testing.T) {
+	cmd := consensus.NewCommand(consensus.CommandScopeSystem, wal.RecordType("identity.admin.session.put.v1"), []byte(`{}`), "cmd-1")
+	applied := false
+	sm := compositeSystemStateMachine{
+		consensus.NewSystemStateMachine(),
+		consensus.StateMachineFunc(func(context.Context, consensus.ApplyContext, consensus.RaftCommand) error {
+			applied = true
+			return nil
+		}),
+	}
+
+	if err := sm.ApplyCommand(context.Background(), consensus.ApplyContext{}, cmd); err != nil {
+		t.Fatalf("ApplyCommand() error = %v", err)
+	}
+	if !applied {
+		t.Fatal("expected matching system state machine to be applied")
+	}
+}
