@@ -159,7 +159,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	logger.Info("log directory ready", "path", logDir, "created", logDirCreated)
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
-	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken}, logger)
+	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken, RaftMode: raftRuntimeConfigured(cfg), RaftLocalNodeID: uint64(cfg.Cluster.RaftLocalNodeID), RaftNodeCount: cfg.Cluster.RaftNodeCount}, logger)
 	if err != nil {
 		_ = rt.Close()
 		return nil, fmt.Errorf("initialize clustering: %w", err)
@@ -251,8 +251,9 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	}
 	changeService.AddObserver(automationService.HandleChangeStreamEvent)
 	if raftRuntimeConfigured(cfg) {
+		systemMetadataSM := consensus.NewSystemStateMachine()
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
-			return compositeSystemStateMachine{consensus.NewSystemStateMachine(), identityservice.UserRaftStateMachine{Module: userService}, identityservice.AdminRaftStateMachine{Module: adminService}}
+			return compositeSystemStateMachine{systemMetadataSM, identityservice.UserRaftStateMachine{Module: userService}, identityservice.AdminRaftStateMachine{Module: adminService}}
 		}, func(partitionID uint32) consensus.StateMachine {
 			partitionCount := uint32(cfg.Cluster.RaftPartitionCount)
 			return compositePartitionStateMachine{
@@ -274,6 +275,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		userService.EnableExperimentalRaft(rt.RaftGroups)
 		adminService.EnableExperimentalRaft(rt.RaftGroups)
+		startSystemMetadataBootstrap(ctx, rt, systemMetadataSM)
 	}
 	clusterManager.SetBackendBlobPayloadProvider(blobservice.BackendPayloadProvider{Module: blobService})
 	clusterManager.SetBackendSpaceReader(spaceService)

@@ -6,9 +6,38 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/daemon/config"
+	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/wal"
 )
+
+func TestReconcileSystemMetadataBootstrapsSingleNodeRaft(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{DataDir: t.TempDir(), NodeName: "node-a", Cluster: config.ClusterConfig{Name: "dev", BackendAdvertiseAddr: "127.0.0.1:19093", RaftNodeCount: 1, RaftPartitionCount: 4, RaftReplicaFactor: 1, RaftLocalNodeID: 1}}
+	rt := daemonruntime.New(cfg, nil, "", nil)
+	mgr, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, RaftMode: true, RaftLocalNodeID: 1, RaftNodeCount: 1}, nil)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	rt.ClusterManager = mgr
+	sm := consensus.NewSystemStateMachine()
+	if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine { return sm }, nil); err != nil {
+		t.Fatalf("initializeExperimentalRaft() error = %v", err)
+	}
+	defer rt.RaftGroups.Stop()
+	if err := reconcileSystemMetadata(ctx, rt, sm); err != nil {
+		t.Fatalf("reconcileSystemMetadata() error = %v", err)
+	}
+	meta := sm.Metadata()
+	if meta.ClusterID == "" || meta.ClusterName != "dev" || len(meta.Nodes) != 1 {
+		t.Fatalf("unexpected metadata: %#v", meta)
+	}
+	if mgr.Identity().ClusterID != meta.ClusterID || !mgr.Identity().ClusterAdmitted || !mgr.Identity().ClusterBootstrap {
+		t.Fatalf("manager identity not admitted from metadata: %#v meta=%#v", mgr.Identity(), meta)
+	}
+}
 
 func TestCompositePartitionStateMachineContinuesOnlyUnsupportedRecordTypes(t *testing.T) {
 	cmd := consensus.NewCommand(consensus.CommandScopeSpacePartition, wal.RecordType("graph.commit.v1"), []byte(`{}`), "cmd-1")

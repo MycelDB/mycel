@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -68,6 +69,39 @@ func TestSystemStateMachineRejectsDuplicateRaftNodeID(t *testing.T) {
 	payload.Nodes[1].RaftNodeID = payload.Nodes[0].RaftNodeID
 	if _, err := buildBootstrapMetadata(payload); err == nil {
 		t.Fatal("expected duplicate raft node id to fail")
+	}
+}
+
+func TestSystemStateMachineRejectsBlankClusterIDInAppliedBootstrapPayload(t *testing.T) {
+	payload := testBootstrapPayload()
+	payload.ClusterID = ""
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	cmd := NewCommand(CommandScopeSystem, SystemRecordBootstrapMetadata, data, "bootstrap-blank-cluster")
+	if err := NewSystemStateMachine().ApplyCommand(context.Background(), ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err == nil {
+		t.Fatal("expected blank cluster_id in applied bootstrap payload to fail")
+	}
+}
+
+func TestBootstrapMetadataCommandGeneratesSharedClusterID(t *testing.T) {
+	payload := testBootstrapPayload()
+	payload.ClusterID = ""
+	cmd, err := NewBootstrapMetadataCommand(payload, "bootstrap-generated-id")
+	if err != nil {
+		t.Fatalf("NewBootstrapMetadataCommand() error = %v", err)
+	}
+	sm1 := NewSystemStateMachine()
+	sm2 := NewSystemStateMachine()
+	if err := sm1.ApplyCommand(context.Background(), ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err != nil {
+		t.Fatalf("sm1 ApplyCommand() error = %v", err)
+	}
+	if err := sm2.ApplyCommand(context.Background(), ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err != nil {
+		t.Fatalf("sm2 ApplyCommand() error = %v", err)
+	}
+	if sm1.Metadata().ClusterID == "" || sm1.Metadata().ClusterID != sm2.Metadata().ClusterID {
+		t.Fatalf("generated cluster id should be shared by command payload: sm1=%q sm2=%q", sm1.Metadata().ClusterID, sm2.Metadata().ClusterID)
 	}
 }
 

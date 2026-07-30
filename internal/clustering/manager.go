@@ -2,8 +2,10 @@ package clustering
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering/backend"
@@ -153,6 +155,88 @@ func (m *Manager) Registration() *registration.Handler {
 		return nil
 	}
 	return m.registration
+}
+
+func (m *Manager) ApplySystemMetadata(ctx context.Context, meta consensus.SystemMetadata, raftNodeID consensus.NodeID) error {
+	if m == nil {
+		return fmt.Errorf("clustering manager is required")
+	}
+	if strings.TrimSpace(meta.ClusterID) == "" {
+		return fmt.Errorf("system metadata cluster_id is required")
+	}
+	node, ok := systemNodeForRaftNode(meta, raftNodeID)
+	if !ok {
+		return fmt.Errorf("system metadata has no node for raft node id %d", raftNodeID)
+	}
+	id := m.identity
+	if strings.TrimSpace(id.ClusterID) != "" && id.ClusterID != meta.ClusterID {
+		return fmt.Errorf("local cluster_id %s conflicts with system metadata cluster_id %s", id.ClusterID, meta.ClusterID)
+	}
+	if strings.TrimSpace(id.NodeID) != "" && id.NodeID != node.NodeID {
+		return fmt.Errorf("local node_id %s conflicts with system metadata node_id %s for raft node id %d", id.NodeID, node.NodeID, raftNodeID)
+	}
+	if strings.TrimSpace(id.BackendAdvertiseAddr) != "" && strings.TrimSpace(node.BackendAdvertiseAddr) != "" && strings.TrimSpace(id.BackendAdvertiseAddr) != strings.TrimSpace(node.BackendAdvertiseAddr) {
+		return fmt.Errorf("local backend advertise addr %s conflicts with system metadata addr %s", id.BackendAdvertiseAddr, node.BackendAdvertiseAddr)
+	}
+	now := time.Now().UTC()
+	id.NodeID = node.NodeID
+	if strings.TrimSpace(id.NodeName) == "" {
+		id.NodeName = node.NodeName
+	}
+	id.ClusterID = meta.ClusterID
+	if strings.TrimSpace(meta.ClusterName) != "" {
+		id.ClusterName = meta.ClusterName
+	}
+	if strings.TrimSpace(id.BackendAdvertiseAddr) == "" {
+		id.BackendAdvertiseAddr = node.BackendAdvertiseAddr
+	}
+	id.ClusterAdmitted = true
+	id.ClusterBootstrap = raftNodeID == 1
+	id.UpdatedAt = now
+	if err := ValidateIdentity(id); err != nil {
+		return err
+	}
+	if err := writeIdentity(filepath.Join(ClusteringDir(m.dataDir), nodeFileName), id); err != nil {
+		return err
+	}
+	if err := WriteLocalState(m.dataDir, NodeStateClustered, now); err != nil {
+		return err
+	}
+	if err := WritePeers(m.dataDir, id, nil, now); err != nil {
+		return err
+	}
+	m.identity = id
+	m.state = NodeStateClustered
+	self := selfPeer(id)
+	if m.topology != nil {
+		if err := m.topology.Upsert(ctx, self); err != nil {
+			return err
+		}
+	}
+	m.membership = membership.NewFileStore(membership.Path(m.dataDir), id.ClusterID, id.ClusterName)
+	joined := now
+	if err := m.membership.UpsertMember(ctx, membership.Member{NodeName: id.NodeName, NodeID: id.NodeID, State: membership.MemberStateActive, BackendAdvertiseAddr: id.BackendAdvertiseAddr, Role: "member", ClusterBootstrap: id.ClusterBootstrap, NodePublicKeyFingerprint: id.NodePublicKeyFingerprint, CreatedAt: id.CreatedAt, UpdatedAt: now, JoinedAt: &joined}); err != nil {
+		return err
+	}
+	if m.backend != nil {
+		m.backend.Identity = id
+		m.backend.State = m.state
+		m.backend.Membership = m.membership
+	}
+	if m.registration != nil {
+		m.registration.Identity = id
+		m.registration.State = m.state
+	}
+	return nil
+}
+
+func systemNodeForRaftNode(meta consensus.SystemMetadata, raftNodeID consensus.NodeID) (consensus.SystemNode, bool) {
+	for _, node := range meta.Nodes {
+		if node.RaftNodeID == uint64(raftNodeID) {
+			return node, true
+		}
+	}
+	return consensus.SystemNode{}, false
 }
 
 func selfPeer(id model.NodeIdentity) model.Peer {

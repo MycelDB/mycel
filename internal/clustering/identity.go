@@ -17,7 +17,15 @@ type Options struct {
 	BackendAdvertiseAddr     string
 	BackendAuthToken         string
 	NodePublicKeyFingerprint string
-	Now                      func() time.Time
+
+	// RaftMode makes local identity a cache of authoritative system Raft
+	// metadata. Fresh raft-mode identities are pending until system metadata is
+	// committed and applied.
+	RaftMode        bool
+	RaftLocalNodeID uint64
+	RaftNodeCount   int
+
+	Now func() time.Time
 }
 
 type LocalNode struct {

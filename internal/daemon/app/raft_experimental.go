@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
@@ -128,4 +130,121 @@ func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, 
 		rt.Logger.Info("experimental raft groups started", "local_node_id", cfg.RaftLocalNodeID, "node_count", cfg.RaftNodeCount, "partition_count", cfg.RaftPartitionCount, "group_count", groups.GroupCount())
 	}
 	return nil
+}
+
+func startSystemMetadataBootstrap(ctx context.Context, rt *daemonruntime.Runtime, sm *consensus.SystemStateMachine) {
+	if rt == nil || sm == nil || rt.RaftGroups == nil {
+		return
+	}
+	run := func() error {
+		return reconcileSystemMetadata(ctx, rt, sm)
+	}
+	if rt.Config.Cluster.RaftNodeCount == 1 {
+		if err := run(); err != nil && rt.Logger != nil {
+			rt.Logger.Error("system raft metadata bootstrap failed", "error", err)
+		}
+		return
+	}
+	go func() {
+		if err := run(); err != nil && rt.Logger != nil {
+			rt.Logger.Error("system raft metadata bootstrap failed", "error", err)
+		}
+	}()
+}
+
+func reconcileSystemMetadata(ctx context.Context, rt *daemonruntime.Runtime, sm *consensus.SystemStateMachine) error {
+	cfg := rt.Config.Cluster
+	group, ok := rt.RaftGroups.Group(consensus.SystemGroupID)
+	if !ok || group == nil {
+		return fmt.Errorf("system raft group is not available")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if consensus.NodeID(cfg.RaftLocalNodeID) == 1 && strings.TrimSpace(sm.Metadata().ClusterID) == "" {
+		if err := consensus.WaitUntil(waitCtx, 50*time.Millisecond, func() bool { return group.Leader() != 0 }); err != nil {
+			return fmt.Errorf("wait for system raft leader: %w", err)
+		}
+		if strings.TrimSpace(sm.Metadata().ClusterID) == "" {
+			payload, err := bootstrapMetadataPayloadFromConfig(rt)
+			if err != nil {
+				return err
+			}
+			cmd, err := consensus.NewBootstrapMetadataCommand(payload, "system-bootstrap-"+uuid.NewString())
+			if err != nil {
+				return err
+			}
+			if _, err := group.Propose(waitCtx, cmd); err != nil {
+				return fmt.Errorf("propose system bootstrap metadata: %w", err)
+			}
+		}
+	}
+	meta, err := consensus.WaitForSystemMetadata(waitCtx, sm, 50*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("wait for system metadata: %w", err)
+	}
+	cfgCheck, err := bootstrapConfigFromRuntime(rt)
+	if err != nil {
+		return err
+	}
+	if err := consensus.ValidateSystemMetadataAgainstBootstrapConfig(meta, cfgCheck); err != nil {
+		return err
+	}
+	if rt.ClusterManager != nil {
+		if err := rt.ClusterManager.ApplySystemMetadata(ctx, meta, consensus.NodeID(cfg.RaftLocalNodeID)); err != nil {
+			return err
+		}
+		identity := rt.ClusterManager.Identity()
+		rt.NodeIdentity = &identity
+		rt.NodeState = rt.ClusterManager.State()
+	}
+	if blobModule, ok := daemonruntime.ServiceAs[*blobservice.Module](rt, blobservice.ModuleName); ok && blobModule != nil {
+		blobModule.SetRaftClusterID(meta.ClusterID)
+	}
+	if rt.Logger != nil {
+		rt.Logger.Info("system raft metadata applied", "cluster_id", meta.ClusterID, "cluster_name", meta.ClusterName, "local_raft_node_id", cfg.RaftLocalNodeID)
+	}
+	return nil
+}
+
+func bootstrapMetadataPayloadFromConfig(rt *daemonruntime.Runtime) (consensus.BootstrapMetadataPayload, error) {
+	cfg, err := bootstrapConfigFromRuntime(rt)
+	if err != nil {
+		return consensus.BootstrapMetadataPayload{}, err
+	}
+	return consensus.BootstrapMetadataPayload{ClusterName: cfg.ClusterName, BootstrapEpoch: "1", NodeCount: cfg.NodeCount, PartitionCount: cfg.PartitionCount, ReplicaFactor: cfg.ReplicaFactor, Nodes: cfg.Nodes}, nil
+}
+
+func bootstrapConfigFromRuntime(rt *daemonruntime.Runtime) (consensus.BootstrapConfig, error) {
+	if rt == nil {
+		return consensus.BootstrapConfig{}, fmt.Errorf("runtime is required")
+	}
+	cfg := rt.Config.Cluster
+	nodeCount := cfg.RaftNodeCount
+	if nodeCount <= 0 {
+		nodeCount = 1
+	}
+	partitionCount := cfg.RaftPartitionCount
+	if partitionCount <= 0 {
+		partitionCount = 1
+	}
+	replicaFactor := cfg.RaftReplicaFactor
+	if replicaFactor <= 0 {
+		replicaFactor = 1
+	}
+	nodes := make([]consensus.SystemNode, 0, nodeCount)
+	for i := 1; i <= nodeCount; i++ {
+		addr := ""
+		if i-1 < len(cfg.RaftNodeAddrs) {
+			addr = strings.TrimSpace(cfg.RaftNodeAddrs[i-1])
+		}
+		if i == cfg.RaftLocalNodeID && addr == "" {
+			addr = strings.TrimSpace(cfg.BackendAdvertiseAddr)
+		}
+		nodeName := fmt.Sprintf("node-%d", i)
+		if i == cfg.RaftLocalNodeID && strings.TrimSpace(rt.Config.NodeName) != "" {
+			nodeName = strings.TrimSpace(rt.Config.NodeName)
+		}
+		nodes = append(nodes, consensus.SystemNode{NodeID: fmt.Sprintf("node_%d", i), RaftNodeID: uint64(i), NodeName: nodeName, BackendAdvertiseAddr: addr})
+	}
+	return consensus.BootstrapConfig{ClusterName: strings.TrimSpace(cfg.Name), NodeCount: nodeCount, PartitionCount: partitionCount, ReplicaFactor: replicaFactor, Nodes: nodes}, nil
 }

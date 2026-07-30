@@ -83,7 +83,7 @@ func StartMultiGroup(ctx context.Context, opts MultiGroupOptions) (*MultiGroup, 
 	if err != nil {
 		return nil, err
 	}
-	system, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: opts.NodeID, Peers: opts.PeerNodeIDs, PartitionCount: opts.PartitionCount, StateMachine: opts.StateMachines.SystemStateMachine(), Transport: opts.Transport, ElectionTick: opts.ElectionTick, HeartbeatTick: opts.HeartbeatTick, Storage: systemStorage})
+	system, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: opts.NodeID, Peers: opts.PeerNodeIDs, PartitionCount: opts.PartitionCount, StateMachine: opts.StateMachines.SystemStateMachine(), Transport: opts.Transport, ElectionTick: opts.ElectionTick, HeartbeatTick: opts.HeartbeatTick, Storage: systemStorage, ReplayCommittedEntries: true})
 	if err != nil {
 		return nil, err
 	}

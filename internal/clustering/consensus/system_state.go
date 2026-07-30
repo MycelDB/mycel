@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/wal"
@@ -146,6 +147,9 @@ func (s *SystemStateMachine) RestoreSnapshot(data []byte) error {
 }
 
 func NewBootstrapMetadataCommand(payload BootstrapMetadataPayload, commandID string) (RaftCommand, error) {
+	if strings.TrimSpace(payload.ClusterID) == "" {
+		payload.ClusterID = "cluster_" + uuid.NewString()
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return RaftCommand{}, err
@@ -157,9 +161,26 @@ func NewBootstrapMetadataCommand(payload BootstrapMetadataPayload, commandID str
 	return cmd, nil
 }
 
+func WaitForSystemMetadata(ctx context.Context, sm *SystemStateMachine, interval time.Duration) (SystemMetadata, error) {
+	if sm == nil {
+		return SystemMetadata{}, fmt.Errorf("system state machine is required")
+	}
+	if interval <= 0 {
+		interval = 20 * time.Millisecond
+	}
+	var meta SystemMetadata
+	if err := WaitUntil(ctx, interval, func() bool {
+		meta = sm.Metadata()
+		return strings.TrimSpace(meta.ClusterID) != ""
+	}); err != nil {
+		return SystemMetadata{}, err
+	}
+	return meta, nil
+}
+
 func buildBootstrapMetadata(payload BootstrapMetadataPayload) (SystemMetadata, error) {
 	if strings.TrimSpace(payload.ClusterID) == "" {
-		payload.ClusterID = "cluster_" + uuid.NewString()
+		return SystemMetadata{}, fmt.Errorf("cluster_id is required")
 	}
 	if !strings.HasPrefix(payload.ClusterID, "cluster_") {
 		return SystemMetadata{}, fmt.Errorf("cluster_id must have cluster_ prefix")

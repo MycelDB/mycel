@@ -38,8 +38,12 @@ func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs 
 	m.raftNodeAddrs = append([]string(nil), addrs...)
 	m.raftBackendAuthToken = token
 	if len(clusterID) > 0 {
-		m.raftClusterID = clusterID[0]
+		m.SetRaftClusterID(clusterID[0])
 	}
+}
+
+func (m *Module) SetRaftClusterID(clusterID string) {
+	m.raftClusterID = clusterID
 }
 
 func (m *Module) proposeBlobRaftCommand(ctx context.Context, cmd consensus.RaftCommand) error {

@@ -14,8 +14,8 @@ func ValidateIdentity(id NodeIdentity) error {
 	if strings.TrimSpace(id.NodeID) == "" {
 		return fmt.Errorf("clustering node_id is required")
 	}
-	if strings.TrimSpace(id.ClusterID) == "" {
-		return fmt.Errorf("clustering cluster_id is required")
+	if strings.TrimSpace(id.ClusterID) == "" && (id.ClusterAdmitted || id.ClusterBootstrap) {
+		return fmt.Errorf("clustering cluster_id is required for admitted nodes")
 	}
 	if id.CreatedAt.IsZero() {
 		return fmt.Errorf("clustering created_at is required")

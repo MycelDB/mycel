@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 )
 
 func TestLoadOrCreateBootstrapWritesAdmissionFields(t *testing.T) {
@@ -55,6 +58,94 @@ func TestLoadOrCreateCreatesAndPreservesIdentity(t *testing.T) {
 	}
 	if second.Identity.NodeID != first.Identity.NodeID || second.Identity.ClusterID != first.Identity.ClusterID {
 		t.Fatalf("ids changed: first=%#v second=%#v", first.Identity, second.Identity)
+	}
+}
+
+func TestLoadOrCreateRaftModeCreatesPendingIdentity(t *testing.T) {
+	ctx := context.Background()
+	clusterIDs := map[string]bool{}
+	for i := 1; i <= 3; i++ {
+		node, err := LoadOrCreate(ctx, Options{DataDir: t.TempDir(), NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", RaftMode: true, RaftLocalNodeID: uint64(i), RaftNodeCount: 3})
+		if err != nil {
+			t.Fatalf("LoadOrCreate(%d): %v", i, err)
+		}
+		if node.Identity.ClusterID != "" || node.Identity.ClusterAdmitted || node.Identity.ClusterBootstrap {
+			t.Fatalf("raft-mode identity should be pending, got %#v", node.Identity)
+		}
+		if node.Identity.NodeID != "node_"+strconv.Itoa(i) {
+			t.Fatalf("node_id=%q want deterministic raft node id", node.Identity.NodeID)
+		}
+		if node.State != NodeStateInitializing {
+			t.Fatalf("state=%s want %s", node.State, NodeStateInitializing)
+		}
+		clusterIDs[node.Identity.ClusterID] = true
+	}
+	if len(clusterIDs) != 1 || !clusterIDs[""] {
+		t.Fatalf("raft-mode fresh identities should not generate cluster IDs: %#v", clusterIDs)
+	}
+}
+
+func TestLoadOrCreateRaftModeConvertsExistingUnadmittedIdentityToPending(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	standalone, err := LoadOrCreate(ctx, Options{DataDir: dir})
+	if err != nil {
+		t.Fatalf("standalone LoadOrCreate: %v", err)
+	}
+	if standalone.Identity.ClusterID == "" || standalone.Identity.NodeID == "node_2" || standalone.Identity.ClusterAdmitted {
+		t.Fatalf("unexpected standalone baseline: %#v", standalone.Identity)
+	}
+	raft, err := LoadOrCreate(ctx, Options{DataDir: dir, ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9094", RaftMode: true, RaftLocalNodeID: 2, RaftNodeCount: 3})
+	if err != nil {
+		t.Fatalf("raft LoadOrCreate: %v", err)
+	}
+	if raft.Identity.ClusterID != "" || raft.Identity.NodeID != "node_2" || raft.Identity.ClusterAdmitted || raft.Identity.ClusterBootstrap {
+		t.Fatalf("existing unadmitted identity not converted to pending raft cache: %#v", raft.Identity)
+	}
+}
+
+func TestLoadOrCreateRaftModeTreatsExistingAdmittedIdentityAsUnvalidatedCache(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	clustered, err := LoadOrCreate(ctx, Options{DataDir: dir, NodeName: "old", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9094"})
+	if err != nil {
+		t.Fatalf("clustered LoadOrCreate: %v", err)
+	}
+	if clustered.Identity.ClusterID == "" || !clustered.Identity.ClusterAdmitted {
+		t.Fatalf("unexpected clustered baseline: %#v", clustered.Identity)
+	}
+	raft, err := LoadOrCreate(ctx, Options{DataDir: dir, ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9094", RaftMode: true, RaftLocalNodeID: 2, RaftNodeCount: 3})
+	if err != nil {
+		t.Fatalf("raft LoadOrCreate: %v", err)
+	}
+	if raft.Identity.ClusterID != clustered.Identity.ClusterID || raft.Identity.ClusterAdmitted || raft.Identity.ClusterBootstrap || raft.State != NodeStateInitializing {
+		t.Fatalf("existing admitted identity should become unvalidated raft cache retaining cluster_id: %#v state=%s", raft.Identity, raft.State)
+	}
+}
+
+func TestManagerApplySystemMetadataCachesAuthoritativeIdentity(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	mgr, err := NewManager(ctx, Options{DataDir: dir, NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", RaftMode: true, RaftLocalNodeID: 1, RaftNodeCount: 3}, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if mgr.Identity().ClusterID != "" || mgr.IsAdmitted() {
+		t.Fatalf("expected pending manager identity: %#v", mgr.Identity())
+	}
+	meta := consensus.SystemMetadata{ClusterID: "cluster_authoritative", ClusterName: "dev", NodeCount: 3, PartitionCount: 64, ReplicaFactor: 3, Nodes: map[string]consensus.SystemNode{"node_1": {NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"}}, Placement: map[uint32]consensus.PartitionPlacement{}}
+	if err := mgr.ApplySystemMetadata(ctx, meta, 1); err != nil {
+		t.Fatalf("ApplySystemMetadata: %v", err)
+	}
+	if mgr.Identity().ClusterID != "cluster_authoritative" || !mgr.Identity().ClusterAdmitted || !mgr.Identity().ClusterBootstrap || mgr.State() != NodeStateClustered {
+		t.Fatalf("metadata not cached in manager identity/state: identity=%#v state=%s", mgr.Identity(), mgr.State())
+	}
+	second, err := LoadOrCreate(ctx, Options{DataDir: dir, NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", RaftMode: true, RaftLocalNodeID: 1, RaftNodeCount: 3})
+	if err != nil {
+		t.Fatalf("reload LoadOrCreate: %v", err)
+	}
+	if second.Identity.ClusterID != "cluster_authoritative" || second.Identity.ClusterAdmitted || second.State != NodeStateInitializing {
+		t.Fatalf("authoritative identity cache should reload as unvalidated pending raft cache: %#v state=%s", second.Identity, second.State)
 	}
 }
 
