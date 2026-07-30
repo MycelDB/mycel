@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -95,7 +96,11 @@ func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, 
 		}
 		return nil, false
 	})}
-	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: consensus.NodeID(cfg.RaftLocalNodeID), PeerNodeIDs: peers, PartitionCount: uint32(cfg.RaftPartitionCount), Transport: transport, StateMachines: factory})
+	storageDir := ""
+	if strings.TrimSpace(rt.Config.DataDir) != "" {
+		storageDir = filepath.Join(rt.Config.DataDir, "meta", "raft")
+	}
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: consensus.NodeID(cfg.RaftLocalNodeID), PeerNodeIDs: peers, PartitionCount: uint32(cfg.RaftPartitionCount), Transport: transport, StateMachines: factory, StorageDir: storageDir})
 	if err != nil {
 		return fmt.Errorf("start experimental raft groups: %w", err)
 	}

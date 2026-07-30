@@ -3,6 +3,7 @@ package consensus
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -42,6 +43,11 @@ type MultiGroupOptions struct {
 	StateMachines  StateMachineFactory
 	ElectionTick   int
 	HeartbeatTick  int
+
+	// StorageDir enables durable raft storage for the system group. Partition
+	// groups remain in-memory until their state-machine recovery semantics are
+	// completed.
+	StorageDir string
 }
 
 type StateMachineFactory interface {
@@ -73,7 +79,11 @@ func StartMultiGroup(ctx context.Context, opts MultiGroupOptions) (*MultiGroup, 
 		return nil, fmt.Errorf("node id, peers, partition count, transport, and state machines are required")
 	}
 	mg := &MultiGroup{nodeID: opts.NodeID, peerNodeIDs: append([]NodeID(nil), opts.PeerNodeIDs...), partitionCount: opts.PartitionCount, groups: map[GroupID]*Group{}, preferred: map[GroupID]NodeID{}}
-	system, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: opts.NodeID, Peers: opts.PeerNodeIDs, PartitionCount: opts.PartitionCount, StateMachine: opts.StateMachines.SystemStateMachine(), Transport: opts.Transport, ElectionTick: opts.ElectionTick, HeartbeatTick: opts.HeartbeatTick})
+	systemStorage, err := systemGroupStorage(opts.StorageDir)
+	if err != nil {
+		return nil, err
+	}
+	system, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: opts.NodeID, Peers: opts.PeerNodeIDs, PartitionCount: opts.PartitionCount, StateMachine: opts.StateMachines.SystemStateMachine(), Transport: opts.Transport, ElectionTick: opts.ElectionTick, HeartbeatTick: opts.HeartbeatTick, Storage: systemStorage})
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +107,13 @@ func StartMultiGroup(ctx context.Context, opts MultiGroupOptions) (*MultiGroup, 
 		mg.preferred[gid] = preferred
 	}
 	return mg, nil
+}
+
+func systemGroupStorage(root string) (raftStorage, error) {
+	if root == "" {
+		return nil, nil
+	}
+	return NewPersistentStorage(filepath.Join(root, string(SystemGroupID)))
 }
 
 func (m *MultiGroup) Stop() {

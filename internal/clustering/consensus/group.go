@@ -26,7 +26,7 @@ type Group struct {
 	nodeID         NodeID
 	partitionCount uint32
 	node           raft.Node
-	storage        *raft.MemoryStorage
+	storage        raftStorage
 	transport      Transport
 	sm             StateMachine
 
@@ -60,13 +60,31 @@ type GroupOptions struct {
 	Transport      Transport
 	ElectionTick   int
 	HeartbeatTick  int
+
+	// Storage optionally supplies durable raft storage. When nil, StartGroup uses
+	// in-memory storage for tests and non-durable experimental groups.
+	Storage raftStorage
+
+	// ReplayCommittedEntries rebuilds a volatile state machine by replaying
+	// committed entries from Storage before raft restarts. Enable this only for
+	// state machines whose ApplyCommand path is safe to replay into a fresh
+	// in-memory instance.
+	ReplayCommittedEntries bool
 }
 
 func StartGroup(ctx context.Context, opts GroupOptions) (*Group, error) {
 	if opts.ID == "" || opts.NodeID == 0 || len(opts.Peers) == 0 || opts.StateMachine == nil || opts.Transport == nil {
 		return nil, fmt.Errorf("group id, node id, peers, state machine, and transport are required")
 	}
-	storage := raft.NewMemoryStorage()
+	storage := opts.Storage
+	if storage == nil {
+		storage = raft.NewMemoryStorage()
+	}
+	if opts.ReplayCommittedEntries {
+		if err := replayCommittedEntries(ctx, storage, opts.StateMachine, opts.PartitionCount); err != nil {
+			return nil, fmt.Errorf("replay committed raft entries: %w", err)
+		}
+	}
 	peers := make([]raft.Peer, 0, len(opts.Peers))
 	for _, peer := range opts.Peers {
 		if peer == 0 {
@@ -84,9 +102,69 @@ func StartGroup(ctx context.Context, opts GroupOptions) (*Group, error) {
 	}
 	cfg := &raft.Config{ID: uint64(opts.NodeID), ElectionTick: electionTick, HeartbeatTick: heartbeatTick, Storage: storage, MaxSizePerMsg: 1024 * 1024, MaxInflightMsgs: 256}
 	ctx, cancel := context.WithCancel(ctx)
-	g := &Group{id: opts.ID, nodeID: opts.NodeID, partitionCount: opts.PartitionCount, node: raft.StartNode(cfg, peers), storage: storage, transport: opts.Transport, sm: opts.StateMachine, ctx: ctx, cancel: cancel, done: make(chan struct{}), waiters: map[string]chan proposalOutcome{}}
+	var node raft.Node
+	if hasPersistentRaftState(storage) {
+		node = raft.RestartNode(cfg)
+	} else {
+		node = raft.StartNode(cfg, peers)
+	}
+	g := &Group{id: opts.ID, nodeID: opts.NodeID, partitionCount: opts.PartitionCount, node: node, storage: storage, transport: opts.Transport, sm: opts.StateMachine, ctx: ctx, cancel: cancel, done: make(chan struct{}), waiters: map[string]chan proposalOutcome{}}
 	go g.run()
 	return g, nil
+}
+
+func hasPersistentRaftState(storage raftStorage) bool {
+	hs, _, err := storage.InitialState()
+	if err == nil && !raft.IsEmptyHardState(hs) {
+		return true
+	}
+	last, err := storage.LastIndex()
+	return err == nil && last > 0
+}
+
+func replayCommittedEntries(ctx context.Context, storage raftStorage, sm StateMachine, partitionCount uint32) error {
+	hs, _, err := storage.InitialState()
+	if err != nil {
+		return err
+	}
+	if hs.Commit == 0 {
+		return nil
+	}
+	first, err := storage.FirstIndex()
+	if err != nil {
+		return err
+	}
+	last, err := storage.LastIndex()
+	if err != nil {
+		return err
+	}
+	commit := hs.Commit
+	if commit > last {
+		commit = last
+	}
+	if commit < first {
+		return nil
+	}
+	entries, err := storage.Entries(first, commit+1, ^uint64(0))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Type != raftpb.EntryNormal || len(entry.Data) == 0 {
+			continue
+		}
+		cmd, err := DecodeCommand(entry.Data)
+		if err != nil {
+			return err
+		}
+		if err := cmd.Validate(partitionCount); err != nil {
+			return err
+		}
+		if err := sm.ApplyCommand(ctx, ApplyContext{RaftIndex: entry.Index, RaftTerm: entry.Term}, cmd); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (g *Group) Stop() {
@@ -149,8 +227,17 @@ func (g *Group) run() {
 		case <-g.ctx.Done():
 			return
 		case rd := <-g.node.Ready():
+			if !raft.IsEmptySnap(rd.Snapshot) {
+				if err := g.storage.ApplySnapshot(rd.Snapshot); err != nil {
+					g.failWaiters(fmt.Errorf("apply raft snapshot: %w", err))
+					return
+				}
+			}
 			if !raft.IsEmptyHardState(rd.HardState) {
-				_ = g.storage.SetHardState(rd.HardState)
+				if err := g.storage.SetHardState(rd.HardState); err != nil {
+					g.failWaiters(fmt.Errorf("persist raft hard state: %w", err))
+					return
+				}
 				g.mu.Lock()
 				if rd.HardState.Term != 0 {
 					g.term = rd.HardState.Term
@@ -161,7 +248,10 @@ func (g *Group) run() {
 				g.mu.Unlock()
 			}
 			if len(rd.Entries) > 0 {
-				_ = g.storage.Append(rd.Entries)
+				if err := g.storage.Append(rd.Entries); err != nil {
+					g.failWaiters(fmt.Errorf("persist raft entries: %w", err))
+					return
+				}
 			}
 			g.transport.Send(g.ctx, g.id, g.nodeID, rd.Messages)
 			for _, entry := range rd.CommittedEntries {
@@ -207,6 +297,16 @@ func (g *Group) completeWaiter(commandID string, out proposalOutcome) {
 }
 
 func (g *Group) forgetWaiter(commandID string, out proposalOutcome) { g.completeWaiter(commandID, out) }
+
+func (g *Group) failWaiters(err error) {
+	g.mu.Lock()
+	waiters := g.waiters
+	g.waiters = map[string]chan proposalOutcome{}
+	g.mu.Unlock()
+	for _, ch := range waiters {
+		ch <- proposalOutcome{err: err}
+	}
+}
 
 func WaitUntil(ctx context.Context, interval time.Duration, fn func() bool) error {
 	ticker := time.NewTicker(interval)

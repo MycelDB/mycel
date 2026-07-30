@@ -12,10 +12,12 @@ func testBootstrapPayload() BootstrapMetadataPayload {
 		NodeCount:      3,
 		PartitionCount: 64,
 		ReplicaFactor:  3,
+		ClusterName:    "test-cluster",
+		BootstrapEpoch: "epoch-1",
 		Nodes: []SystemNode{
-			{NodeID: "node_00000000-0000-0000-0000-000000000001", NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:19093"},
-			{NodeID: "node_00000000-0000-0000-0000-000000000002", NodeName: "node-b", BackendAdvertiseAddr: "127.0.0.1:19094"},
-			{NodeID: "node_00000000-0000-0000-0000-000000000003", NodeName: "node-c", BackendAdvertiseAddr: "127.0.0.1:19095"},
+			{NodeID: "node_00000000-0000-0000-0000-000000000001", RaftNodeID: 1, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:19093"},
+			{NodeID: "node_00000000-0000-0000-0000-000000000002", RaftNodeID: 2, NodeName: "node-b", BackendAdvertiseAddr: "127.0.0.1:19094"},
+			{NodeID: "node_00000000-0000-0000-0000-000000000003", RaftNodeID: 3, NodeName: "node-c", BackendAdvertiseAddr: "127.0.0.1:19095"},
 		},
 	}
 }
@@ -43,6 +45,29 @@ func TestSystemStateMachineBootstrapMetadata(t *testing.T) {
 	p1 := meta.Placement[1]
 	if p1.PreferredLeader != "node_00000000-0000-0000-0000-000000000002" {
 		t.Fatalf("unexpected partition 1 leader: %+v", p1)
+	}
+}
+
+func TestValidateSystemMetadataAgainstBootstrapConfig(t *testing.T) {
+	meta, err := buildBootstrapMetadata(testBootstrapPayload())
+	if err != nil {
+		t.Fatalf("buildBootstrapMetadata() error = %v", err)
+	}
+	cfg := BootstrapConfig{ClusterID: meta.ClusterID, ClusterName: "test-cluster", NodeCount: 3, PartitionCount: 64, ReplicaFactor: 3, Nodes: testBootstrapPayload().Nodes}
+	if err := ValidateSystemMetadataAgainstBootstrapConfig(meta, cfg); err != nil {
+		t.Fatalf("ValidateSystemMetadataAgainstBootstrapConfig() error = %v", err)
+	}
+	cfg.PartitionCount = 32
+	if err := ValidateSystemMetadataAgainstBootstrapConfig(meta, cfg); err == nil {
+		t.Fatal("expected partition count mismatch")
+	}
+}
+
+func TestSystemStateMachineRejectsDuplicateRaftNodeID(t *testing.T) {
+	payload := testBootstrapPayload()
+	payload.Nodes[1].RaftNodeID = payload.Nodes[0].RaftNodeID
+	if _, err := buildBootstrapMetadata(payload); err == nil {
+		t.Fatal("expected duplicate raft node id to fail")
 	}
 }
 
@@ -78,6 +103,52 @@ func TestSystemStateMachineRejectsInvalidBootstrap(t *testing.T) {
 	sm := NewSystemStateMachine()
 	if err := sm.ApplyCommand(context.Background(), ApplyContext{RaftIndex: 1}, cmd); err == nil {
 		t.Fatal("expected invalid bootstrap metadata to fail")
+	}
+}
+
+func TestSystemMetadataReplaysFromPersistentRaftStorage(t *testing.T) {
+	ctx := context.Background()
+	transport := newMemoryTransport()
+	dir := t.TempDir()
+	store, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("NewPersistentStorage() error = %v", err)
+	}
+	sm := NewSystemStateMachine()
+	g, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: 1, Peers: []NodeID{1}, PartitionCount: 64, StateMachine: sm, Transport: transport, ElectionTick: 5, HeartbeatTick: 1, Storage: store})
+	if err != nil {
+		t.Fatalf("StartGroup() error = %v", err)
+	}
+	transport.register(g)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := g.Campaign(waitCtx); err != nil {
+		t.Fatalf("Campaign() error = %v", err)
+	}
+	if err := WaitUntil(waitCtx, 10*time.Millisecond, func() bool { g.Tick(); return g.Leader() == 1 }); err != nil {
+		t.Fatalf("leader election timed out: %v", err)
+	}
+	cmd, err := NewBootstrapMetadataCommand(testBootstrapPayload(), "bootstrap-persistent-1")
+	if err != nil {
+		t.Fatalf("NewBootstrapMetadataCommand() error = %v", err)
+	}
+	if _, err := g.Propose(waitCtx, cmd); err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+	g.Stop()
+
+	reopened, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("reopen NewPersistentStorage() error = %v", err)
+	}
+	replayed := NewSystemStateMachine()
+	g2, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: 1, Peers: []NodeID{1}, PartitionCount: 64, StateMachine: replayed, Transport: transport, ElectionTick: 5, HeartbeatTick: 1, Storage: reopened, ReplayCommittedEntries: true})
+	if err != nil {
+		t.Fatalf("restart StartGroup() error = %v", err)
+	}
+	g2.Stop()
+	if replayed.Metadata().ClusterID != testBootstrapPayload().ClusterID {
+		t.Fatalf("replayed metadata cluster_id=%q want %q", replayed.Metadata().ClusterID, testBootstrapPayload().ClusterID)
 	}
 }
 
