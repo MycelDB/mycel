@@ -29,6 +29,7 @@ Current subsystem/runtime architecture direction:
 Current clustering direction:
 
 - `design/authoritative-system-raft-cluster-metadata.md` proposes making the system Raft group the source of truth for cluster identity, membership, and placement metadata.
+- `implementation/authoritative-system-raft-cluster-metadata-implementation-plan.md` breaks the authoritative system Raft metadata work into testable phases.
 - `design/space-partitioned-raft-clustering.md` describes the space-partitioned `etcd/raft` clustering architecture.
 - `implementation/space-partitioned-raft-clustering-implementation-plan.md` records the Raft migration phases.
 - `implementation/remove-static-primary-leftovers-implementation-plan.md` tracks final cleanup of legacy static-primary artifacts.
