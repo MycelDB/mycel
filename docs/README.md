@@ -28,6 +28,7 @@ Current subsystem/runtime architecture direction:
 
 Current clustering direction:
 
+- `design/clustering-replication-reliability.md` is the seed document for the broader clustering and replication reliability effort.
 - `design/authoritative-system-raft-cluster-metadata.md` describes the system Raft group as the source of truth for cluster identity, membership, and placement metadata.
 - `implementation/authoritative-system-raft-cluster-metadata-implementation-plan.md` breaks the authoritative system Raft metadata work into testable phases.
 - `operations/raft-cluster-operations.md` documents operator checks, readiness blockers, restart/PVC replacement procedures, and cluster ID mismatch recovery guidance.
