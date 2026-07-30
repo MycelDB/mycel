@@ -2,9 +2,11 @@
 
 ## Status
 
-Design proposal for `improved_clustering`.
+Implemented through compose and local K3s validation on the `improved_clustering` branch.
 
-This document proposes making the **system Raft group** the source of truth for MycelDB cluster identity, membership, and placement metadata. It intentionally skips the simpler interim approach of configuring a static `MYCELD_CLUSTER_ID`; the long-term replicated metadata model should be implemented directly.
+This document describes making the **system Raft group** the source of truth for MycelDB cluster identity, membership, and placement metadata. It intentionally skips the simpler interim approach of configuring a static `MYCELD_CLUSTER_ID`; the long-term replicated metadata model is implemented directly.
+
+Operator procedures are documented in `docs/operations/raft-cluster-operations.md`.
 
 ## Motivation
 
@@ -291,7 +293,7 @@ A TCP port-open probe is insufficient for client readiness.
 
 Client readiness must include cluster metadata validation.
 
-A node with a mismatched or missing cluster identity must not be selected by the client service.
+A node with a mismatched or missing cluster identity must not be selected by the client service. The current Kubernetes manifests use an exec readiness probe that requires the local identity cache to contain an authoritative cluster ID, `cluster_admitted=true`, and local state `clustered`. This is intentionally stricter than a TCP-open probe, though a future gRPC readiness endpoint should expose the full readiness blocker model directly.
 
 ### Parallel startup
 
@@ -369,17 +371,19 @@ If partition groups must start before metadata for implementation reasons, they 
 
 ## Durable raft storage prerequisite
 
-Authoritative system metadata requires durable raft storage.
+Authoritative system metadata requires durable raft storage. The implementation persists hard state, entries, snapshots, and conf state for the system group under:
 
-The current daemon raft startup must stop using memory-only raft storage for the system group. At minimum:
+```text
+<data-dir>/meta/raft/system/
+```
 
-- hard state is persisted;
-- entries are persisted;
-- snapshots are persisted;
-- system metadata can be restored after process restart;
-- metadata is not regenerated if logs exist.
+K3s restart validation also proved that partition raft groups need durable raft consensus storage. Partition groups now persist raft state under:
 
-Without this, the system metadata cannot be the source of truth.
+```text
+<data-dir>/meta/raft/space-partition-<n>/
+```
+
+This prevents restarted or replacement pods from receiving committed-index heartbeats for partition groups whose local raft log was empty.
 
 ## Migration from current behavior
 

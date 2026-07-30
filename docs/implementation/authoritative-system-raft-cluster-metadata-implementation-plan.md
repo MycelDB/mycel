@@ -485,6 +485,17 @@ Make the new behavior understandable and safe to operate.
 - Docs reflect actual startup/readiness behavior.
 - Operators know what readiness blockers mean.
 
+### Validation notes
+
+Phase 9 documentation is captured in:
+
+- `docs/design/authoritative-system-raft-cluster-metadata.md`
+- `docs/operations/raft-cluster-operations.md`
+- `docs/README.md`
+- `orchestration/knot_pkm_k3s/README.md`
+
+The operator guidance documents cluster-safe readiness expectations, healthy cluster checks, rolling restart validation, one-PVC replacement/rejoin validation, and cluster ID mismatch recovery rules.
+
 ## Phase 10 — CI strategy
 
 ### Goals
