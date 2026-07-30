@@ -133,12 +133,19 @@ func TestManagerApplySystemMetadataCachesAuthoritativeIdentity(t *testing.T) {
 	if mgr.Identity().ClusterID != "" || mgr.IsAdmitted() {
 		t.Fatalf("expected pending manager identity: %#v", mgr.Identity())
 	}
-	meta := consensus.SystemMetadata{ClusterID: "cluster_authoritative", ClusterName: "dev", NodeCount: 3, PartitionCount: 64, ReplicaFactor: 3, Nodes: map[string]consensus.SystemNode{"node_1": {NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"}}, Placement: map[uint32]consensus.PartitionPlacement{}}
+	meta := consensus.SystemMetadata{ClusterID: "cluster_authoritative", ClusterName: "dev", NodeCount: 3, PartitionCount: 64, ReplicaFactor: 3, Nodes: map[string]consensus.SystemNode{"node_1": {NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"}, "node_2": {NodeID: "node_2", RaftNodeID: 2, NodeName: "node-b", BackendAdvertiseAddr: "127.0.0.1:9094"}, "node_3": {NodeID: "node_3", RaftNodeID: 3, NodeName: "node-c", BackendAdvertiseAddr: "127.0.0.1:9095"}}, Placement: map[uint32]consensus.PartitionPlacement{}}
 	if err := mgr.ApplySystemMetadata(ctx, meta, 1); err != nil {
 		t.Fatalf("ApplySystemMetadata: %v", err)
 	}
 	if mgr.Identity().ClusterID != "cluster_authoritative" || !mgr.Identity().ClusterAdmitted || !mgr.Identity().ClusterBootstrap || mgr.State() != NodeStateInitializing {
 		t.Fatalf("metadata not cached in manager identity/state: identity=%#v state=%s", mgr.Identity(), mgr.State())
+	}
+	members, err := mgr.Membership().Load(ctx)
+	if err != nil {
+		t.Fatalf("load membership: %v", err)
+	}
+	if len(members.Members) != 3 {
+		t.Fatalf("expected authoritative metadata to populate 3 membership rows, got %#v", members.Members)
 	}
 	if err := mgr.MarkPartitionGroupsStarted(64, 64); err != nil {
 		t.Fatalf("MarkPartitionGroupsStarted: %v", err)

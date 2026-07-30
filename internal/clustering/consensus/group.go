@@ -273,6 +273,32 @@ func (g *Group) applyEntry(entry raftpb.Entry) {
 		g.appliedIndex = entry.Index
 	}
 	g.mu.Unlock()
+	if entry.Type == raftpb.EntryConfChange || entry.Type == raftpb.EntryConfChangeV2 {
+		var cc raftpb.ConfChangeI
+		if entry.Type == raftpb.EntryConfChange {
+			var v1 raftpb.ConfChange
+			if err := v1.Unmarshal(entry.Data); err != nil {
+				g.failWaiters(fmt.Errorf("decode raft conf change: %w", err))
+				return
+			}
+			cc = v1
+		} else {
+			var v2 raftpb.ConfChangeV2
+			if err := v2.Unmarshal(entry.Data); err != nil {
+				g.failWaiters(fmt.Errorf("decode raft conf change v2: %w", err))
+				return
+			}
+			cc = v2
+		}
+		cs := g.node.ApplyConfChange(cc)
+		if store, ok := g.storage.(interface{ SetConfState(raftpb.ConfState) error }); ok {
+			if err := store.SetConfState(*cs); err != nil {
+				g.failWaiters(fmt.Errorf("persist raft conf state: %w", err))
+				return
+			}
+		}
+		return
+	}
 	if entry.Type != raftpb.EntryNormal || len(entry.Data) == 0 {
 		return
 	}

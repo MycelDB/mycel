@@ -70,7 +70,7 @@ func TestAdminClusterServiceHealthUsesMetadataReadiness(t *testing.T) {
 	if res.GetStatus() != "unhealthy" || !containsString(res.GetWarnings(), "system metadata not applied") {
 		t.Fatalf("expected metadata readiness unhealthy warning, got %#v", res)
 	}
-	meta := consensus.SystemMetadata{ClusterID: "cluster_authoritative", ClusterName: "dev", NodeCount: 3, PartitionCount: 16, ReplicaFactor: 3, Nodes: map[string]consensus.SystemNode{"node_1": {NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"}}, Placement: map[uint32]consensus.PartitionPlacement{}}
+	meta := consensus.SystemMetadata{ClusterID: "cluster_authoritative", ClusterName: "dev", NodeCount: 3, PartitionCount: 16, ReplicaFactor: 3, Nodes: map[string]consensus.SystemNode{"node_1": {NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"}, "node_2": {NodeID: "node_2", RaftNodeID: 2, NodeName: "node-b", BackendAdvertiseAddr: "127.0.0.1:9094"}, "node_3": {NodeID: "node_3", RaftNodeID: 3, NodeName: "node-c", BackendAdvertiseAddr: "127.0.0.1:9095"}}, Placement: map[uint32]consensus.PartitionPlacement{}}
 	if err := mgr.ApplySystemMetadata(context.Background(), meta, 1); err != nil {
 		t.Fatalf("ApplySystemMetadata() error = %v", err)
 	}
@@ -81,8 +81,8 @@ func TestAdminClusterServiceHealthUsesMetadataReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetClusterHealth() after apply error = %v", err)
 	}
-	if res.GetStatus() != "degraded" || !containsString(res.GetWarnings(), "active member count 1 is below expected 3") {
-		t.Fatalf("expected expected-member warning after metadata apply, got %#v", res)
+	if res.GetStatus() != "healthy" {
+		t.Fatalf("expected healthy after metadata apply and partition groups started, got %#v", res)
 	}
 }
 

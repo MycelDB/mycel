@@ -261,9 +261,27 @@ func (m *Manager) ApplySystemMetadata(ctx context.Context, meta consensus.System
 		}
 	}
 	m.membership = membership.NewFileStore(membership.Path(m.dataDir), id.ClusterID, id.ClusterName)
-	joined := now
-	if err := m.membership.UpsertMember(ctx, membership.Member{NodeName: id.NodeName, NodeID: id.NodeID, State: membership.MemberStateActive, BackendAdvertiseAddr: id.BackendAdvertiseAddr, Role: "member", ClusterBootstrap: id.ClusterBootstrap, NodePublicKeyFingerprint: id.NodePublicKeyFingerprint, CreatedAt: id.CreatedAt, UpdatedAt: now, JoinedAt: &joined}); err != nil {
-		return err
+	for _, metaNode := range meta.Nodes {
+		memberCreatedAt := now
+		nodeID := metaNode.NodeID
+		member := membership.Member{NodeName: metaNode.NodeName, NodeID: nodeID, State: membership.MemberStateActive, BackendAdvertiseAddr: metaNode.BackendAdvertiseAddr, Role: "member", ClusterBootstrap: metaNode.RaftNodeID == 1, CreatedAt: memberCreatedAt, UpdatedAt: now}
+		if nodeID == id.NodeID {
+			member.NodeName = id.NodeName
+			member.BackendAdvertiseAddr = id.BackendAdvertiseAddr
+			member.NodePublicKeyFingerprint = id.NodePublicKeyFingerprint
+			member.CreatedAt = id.CreatedAt
+		}
+		joined := now
+		member.JoinedAt = &joined
+		if err := m.membership.UpsertMember(ctx, member); err != nil {
+			return err
+		}
+		if m.topology != nil && nodeID != id.NodeID {
+			seen := now
+			if err := m.topology.Upsert(ctx, model.Peer{NodeID: metaNode.NodeID, NodeName: metaNode.NodeName, ClusterID: meta.ClusterID, ClusterName: meta.ClusterName, BackendAdvertiseAddr: metaNode.BackendAdvertiseAddr, State: model.PeerStateActive, Source: model.PeerSourceDiscovered, LastSeenAt: &seen}); err != nil {
+				return err
+			}
+		}
 	}
 	if m.backend != nil {
 		m.backend.Identity = id
