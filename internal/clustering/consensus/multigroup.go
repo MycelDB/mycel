@@ -44,9 +44,9 @@ type MultiGroupOptions struct {
 	ElectionTick   int
 	HeartbeatTick  int
 
-	// StorageDir enables durable raft storage for the system group. Partition
-	// groups remain in-memory until their state-machine recovery semantics are
-	// completed.
+	// StorageDir enables durable raft storage for all raft groups. The system
+	// group stores metadata under StorageDir/system; partition groups store
+	// consensus metadata under StorageDir/<partition-group-id>.
 	StorageDir string
 
 	// DeferPartitionGroups starts only the system group. Partition groups must be
@@ -80,13 +80,14 @@ type MultiGroup struct {
 	heartbeatTick  int
 	groups         map[GroupID]*Group
 	preferred      map[GroupID]NodeID
+	storageDir     string
 }
 
 func StartMultiGroup(ctx context.Context, opts MultiGroupOptions) (*MultiGroup, error) {
 	if opts.NodeID == 0 || len(opts.PeerNodeIDs) == 0 || opts.PartitionCount == 0 || opts.Transport == nil || opts.StateMachines == nil {
 		return nil, fmt.Errorf("node id, peers, partition count, transport, and state machines are required")
 	}
-	mg := &MultiGroup{nodeID: opts.NodeID, peerNodeIDs: append([]NodeID(nil), opts.PeerNodeIDs...), partitionCount: opts.PartitionCount, transport: opts.Transport, stateMachines: opts.StateMachines, electionTick: opts.ElectionTick, heartbeatTick: opts.HeartbeatTick, groups: map[GroupID]*Group{}, preferred: map[GroupID]NodeID{}}
+	mg := &MultiGroup{nodeID: opts.NodeID, peerNodeIDs: append([]NodeID(nil), opts.PeerNodeIDs...), partitionCount: opts.PartitionCount, transport: opts.Transport, stateMachines: opts.StateMachines, electionTick: opts.ElectionTick, heartbeatTick: opts.HeartbeatTick, groups: map[GroupID]*Group{}, preferred: map[GroupID]NodeID{}, storageDir: opts.StorageDir}
 	systemStorage, err := systemGroupStorage(opts.StorageDir)
 	if err != nil {
 		return nil, err
@@ -154,7 +155,11 @@ func (m *MultiGroup) StartPartitionGroups(ctx context.Context, meta SystemMetada
 				return err
 			}
 		}
-		g, err := StartGroup(ctx, GroupOptions{ID: gid, NodeID: m.nodeID, Peers: replicas, PartitionCount: partitionCount, StateMachine: m.stateMachines.PartitionStateMachine(p), Transport: m.transport, ElectionTick: m.electionTick, HeartbeatTick: m.heartbeatTick})
+		storage, err := partitionGroupStorage(m.storageDir, gid)
+		if err != nil {
+			return err
+		}
+		g, err := StartGroup(ctx, GroupOptions{ID: gid, NodeID: m.nodeID, Peers: replicas, PartitionCount: partitionCount, StateMachine: m.stateMachines.PartitionStateMachine(p), Transport: m.transport, ElectionTick: m.electionTick, HeartbeatTick: m.heartbeatTick, Storage: storage, ReplayCommittedEntries: storage != nil})
 		if err != nil {
 			return err
 		}
@@ -221,10 +226,18 @@ func preferredLeaderFromSystemMetadata(meta SystemMetadata, partitionID uint32) 
 }
 
 func systemGroupStorage(root string) (raftStorage, error) {
+	return groupStorage(root, SystemGroupID)
+}
+
+func partitionGroupStorage(root string, groupID GroupID) (raftStorage, error) {
+	return groupStorage(root, groupID)
+}
+
+func groupStorage(root string, groupID GroupID) (raftStorage, error) {
 	if root == "" {
 		return nil, nil
 	}
-	return NewPersistentStorage(filepath.Join(root, string(SystemGroupID)))
+	return NewPersistentStorage(filepath.Join(root, string(groupID)))
 }
 
 func (m *MultiGroup) Stop() {

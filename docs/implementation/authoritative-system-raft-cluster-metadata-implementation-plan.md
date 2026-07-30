@@ -454,6 +454,13 @@ mycel cluster status # via each pod/service endpoint
 - Client service selects only metadata-validated pods.
 - Misconfigured pod is not Ready.
 
+### Validation notes
+
+- Local validation uses k3d (`knotbase-dev`) with a locally imported Mycel image built from this branch.
+- Phase 8 exposed that partition raft groups also need durable consensus storage. System metadata was durable, but in-memory partition groups could panic after restart or PVC replacement when receiving heartbeats with a committed index beyond their local log.
+- The implementation now creates durable storage for partition groups under `<data-dir>/meta/raft/<partition-group-id>` and guards stale heartbeats whose commit index is beyond the local last index while a replacement catches up.
+- K3s validation covers fresh bootstrap, StatefulSet rolling restart, and one-pod PVC deletion/rejoin.
+
 ## Phase 9 — Documentation and operator guidance
 
 ### Goals

@@ -174,7 +174,15 @@ func (g *Group) Stop() {
 
 func (g *Group) Tick() { g.node.Tick() }
 
-func (g *Group) Step(ctx context.Context, msg raftpb.Message) error { return g.node.Step(ctx, msg) }
+func (g *Group) Step(ctx context.Context, msg raftpb.Message) error {
+	if msg.Type == raftpb.MsgHeartbeat && msg.Commit > 0 && g.storage != nil {
+		last, err := g.storage.LastIndex()
+		if err == nil && msg.Commit > last {
+			msg.Commit = last
+		}
+	}
+	return g.node.Step(ctx, msg)
+}
 
 func (g *Group) Leader() NodeID {
 	g.mu.Lock()

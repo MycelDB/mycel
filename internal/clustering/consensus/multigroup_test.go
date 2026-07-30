@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -85,6 +86,30 @@ func TestStartMultiGroupDefersPartitionsUntilSystemMetadata(t *testing.T) {
 	}
 	if p3.PreferredLeader != 1 {
 		t.Fatalf("partition 3 preferred leader=%d want 1 from metadata placement", p3.PreferredLeader)
+	}
+}
+
+func TestStartPartitionGroupsCreatesPersistentPartitionStorage(t *testing.T) {
+	transport := newMemoryTransport()
+	factory := StateMachineFactoryFunc{System: func() StateMachine { return NewSystemStateMachine() }, Partition: func(partitionID uint32) StateMachine { return &MemoryStateMachine{} }}
+	storageDir := t.TempDir()
+	mg, err := StartMultiGroup(context.Background(), MultiGroupOptions{NodeID: 1, PeerNodeIDs: []NodeID{1, 2, 3}, PartitionCount: 2, Transport: transport, StateMachines: factory, ElectionTick: 5, HeartbeatTick: 1, StorageDir: storageDir, DeferPartitionGroups: true})
+	if err != nil {
+		t.Fatalf("StartMultiGroup() error = %v", err)
+	}
+	defer mg.Stop()
+	meta, err := buildBootstrapMetadata(BootstrapMetadataPayload{ClusterID: "cluster_00000000-0000-0000-0000-000000000101", NodeCount: 3, PartitionCount: 2, ReplicaFactor: 3, Nodes: []SystemNode{{NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a"}, {NodeID: "node_2", RaftNodeID: 2, NodeName: "node-b"}, {NodeID: "node_3", RaftNodeID: 3, NodeName: "node-c"}}})
+	if err != nil {
+		t.Fatalf("buildBootstrapMetadata() error = %v", err)
+	}
+	if err := mg.StartPartitionGroups(context.Background(), meta); err != nil {
+		t.Fatalf("StartPartitionGroups() error = %v", err)
+	}
+	if _, err := NewPersistentStorage(filepath.Join(storageDir, string(PartitionGroupID(0)))); err != nil {
+		t.Fatalf("partition 0 storage was not initialized: %v", err)
+	}
+	if _, err := NewPersistentStorage(filepath.Join(storageDir, string(PartitionGroupID(1)))); err != nil {
+		t.Fatalf("partition 1 storage was not initialized: %v", err)
 	}
 }
 

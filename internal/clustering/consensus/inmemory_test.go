@@ -58,6 +58,19 @@ func (t *memoryTransport) Send(ctx context.Context, groupID GroupID, from NodeID
 	}
 }
 
+func TestGroupStepCapsHeartbeatCommitPastLocalLastIndex(t *testing.T) {
+	transport := newMemoryTransport()
+	g, err := StartGroup(context.Background(), GroupOptions{ID: "test", NodeID: 3, Peers: []NodeID{1, 2, 3}, PartitionCount: 64, StateMachine: &MemoryStateMachine{}, Transport: transport, ElectionTick: 50, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("StartGroup() error = %v", err)
+	}
+	defer g.Stop()
+	if err := g.Step(context.Background(), raftpb.Message{Type: raftpb.MsgHeartbeat, From: 1, To: 3, Term: 2, Commit: 10}); err != nil {
+		t.Fatalf("Step() error = %v", err)
+	}
+	time.Sleep(25 * time.Millisecond)
+}
+
 type memoryCluster struct {
 	transport *memoryTransport
 	groups    map[NodeID]*Group
