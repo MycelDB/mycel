@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-compose-cluster coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
+.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-compose-cluster test-k3s-cluster coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -73,6 +73,9 @@ test-watch:
 	@command -v watchexec >/dev/null 2>&1 || (echo "watchexec is required. Install with: brew install watchexec" && exit 1)
 	watchexec -e go,sh -- "make generate-proto generate-gql-parser && scripts/check-daemon-only.sh && scripts/check-public-surface.sh && go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
 
+test-cluster-identity: generate-proto generate-gql-parser
+	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/cli/cmd -count=1
+
 test-compose-cluster:
 	cd ../../knot_pkm/knot_pkm_server && $(MAKE) compose-reset compose-up
 	./scripts/validateComposeClusterIdentity.sh
@@ -80,6 +83,9 @@ test-compose-cluster:
 	cd ../../knot_pkm/knot_pkm_server && docker compose -f compose.dev.yml up -d --wait myceld-a myceld-b myceld-c knot-pkm-server
 	./scripts/validateComposeClusterIdentity.sh
 	MYCEL_COMPOSE_VALIDATE_SOURCE=files ./scripts/validateComposeClusterIdentity.sh
+
+test-k3s-cluster:
+	./scripts/testK3sCluster.sh
 
 coverage: generate-proto generate-gql-parser check-daemon-only check-public-surface
 	mkdir -p $(COVERAGE_DIR)

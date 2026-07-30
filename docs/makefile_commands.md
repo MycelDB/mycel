@@ -12,6 +12,9 @@ Run these commands from the `mycel/` directory.
 ## Tests
 
 - `make test` — regenerate protobuf stubs, run boundary checks, and run `go test ./...`.
+- `make test-cluster-identity` — run the fast in-process clustering/readiness/CLI regression suite used to guard authoritative Raft metadata behavior.
+- `make test-compose-cluster` — destructive local compose validation for fresh bootstrap and restart identity stability. Requires the sibling `../../knot_pkm/knot_pkm_server` checkout and Docker.
+- `make test-k3s-cluster` — destructive local K3s/k3d validation for fresh bootstrap, rolling restart, and one-PVC replacement/rejoin. Requires Docker, `kubectl`, and preferably `k3d`; creates/uses the `knotbase-dev` k3d cluster by default.
 - `make test-verbose` — regenerate protobuf stubs, run checks, run verbose tests with coverage, and print function coverage.
 - `make test-watch` — rerun generation, checks, and verbose coverage tests when Go or shell files change. Requires `watchexec`.
 

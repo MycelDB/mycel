@@ -518,6 +518,18 @@ Prevent regressions without making every CI run require K3s.
 - Fast tests cover metadata logic.
 - Slow tests are documented and runnable before release.
 
+### Validation notes
+
+Phase 10 adds explicit validation targets:
+
+```sh
+make test-cluster-identity
+make test-compose-cluster
+make test-k3s-cluster
+```
+
+`test-cluster-identity` is the fast in-process guard and is suitable for normal pre-merge validation. `test-compose-cluster` and `test-k3s-cluster` are destructive local/pre-release targets. The K3s target builds the current checkout into a local image, imports it into k3d when available, deploys the Mycel StatefulSet resources, and validates fresh bootstrap, rolling restart, and one-PVC replacement/rejoin.
+
 ## Cross-repository change matrix
 
 | Repo | Expected changes |
@@ -553,10 +565,9 @@ make compose-up
 # then run mycel/scripts/validateRaftClusterIdentity.sh if added
 ```
 
-K3s, if implemented:
+K3s:
 
 ```sh
-# exact commands depend on chosen local K3s/k3d setup
 make test-k3s-cluster
 ```
 

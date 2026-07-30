@@ -185,4 +185,30 @@ Compose validation:
 make test-compose-cluster
 ```
 
-Local k3d validation uses a locally built image imported into the k3d cluster, then runs fresh bootstrap, rolling restart, and one-PVC replacement checks.
+Fast cluster identity guard:
+
+```sh
+make test-cluster-identity
+```
+
+Compose validation:
+
+```sh
+make test-compose-cluster
+```
+
+K3s/k3d validation:
+
+```sh
+make test-k3s-cluster
+```
+
+`make test-k3s-cluster` builds a local image from the current checkout, imports it into the `knotbase-dev` k3d cluster when available, deploys the Mycel StatefulSet resources, and validates fresh bootstrap, rolling restart, and one-PVC replacement/rejoin. It is destructive to the target namespace. Useful overrides:
+
+```sh
+MYCEL_K3S_CLUSTER=knotbase-dev \
+MYCEL_K3S_NAMESPACE=knotbase-dev \
+MYCEL_K3S_IMAGE=myceldb/mycel:k3s-local \
+MYCEL_K3S_RESET=true \
+make test-k3s-cluster
+```
