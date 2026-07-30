@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering/backend"
@@ -18,14 +19,18 @@ import (
 )
 
 type Manager struct {
-	identity     model.NodeIdentity
-	state        model.NodeState
+	mu        sync.RWMutex
+	identity  model.NodeIdentity
+	state     model.NodeState
+	readiness ClusterReadiness
+
 	topology     *topology.Registry
 	membership   *membership.FileStore
 	registration *registration.Handler
 	backend      *backend.Service
 	logger       *slog.Logger
 	dataDir      string
+	raftMode     bool
 }
 
 func NewManager(ctx context.Context, opts Options, logger *slog.Logger) (*Manager, error) {
@@ -47,7 +52,8 @@ func NewManager(ctx context.Context, opts Options, logger *slog.Logger) (*Manage
 			return nil, err
 		}
 	}
-	m := &Manager{identity: local.Identity, state: local.State, topology: registry, membership: membershipStore, logger: logger, dataDir: opts.DataDir}
+	readiness := initialReadiness(local.Identity, local.State, opts)
+	m := &Manager{identity: local.Identity, state: local.State, readiness: readiness, topology: registry, membership: membershipStore, logger: logger, dataDir: opts.DataDir, raftMode: opts.RaftMode}
 	m.backend = backend.NewService(m.identity, m.state, registry).WithMembership(membershipStore)
 	m.registration = &registration.Handler{Topology: registry, Client: registration.BackendAdapter{Client: backend.Client{AuthToken: opts.BackendAuthToken}}, Identity: m.identity, State: m.state, Interval: 5 * time.Second, Timeout: 2 * time.Second, Logger: logger}
 	return m, nil
@@ -72,12 +78,16 @@ func (m *Manager) Identity() model.NodeIdentity {
 	if m == nil {
 		return model.NodeIdentity{}
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.identity
 }
 func (m *Manager) State() model.NodeState {
 	if m == nil {
 		return ""
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.state
 }
 func (m *Manager) Topology() *topology.Registry {
@@ -98,6 +108,8 @@ func (m *Manager) IsAdmitted() bool {
 	if m == nil {
 		return false
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.identity.ClusterAdmitted
 }
 
@@ -105,6 +117,8 @@ func (m *Manager) IsBootstrap() bool {
 	if m == nil {
 		return false
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.identity.ClusterBootstrap
 }
 
@@ -157,6 +171,33 @@ func (m *Manager) Registration() *registration.Handler {
 	return m.registration
 }
 
+func (m *Manager) Readiness() ClusterReadiness {
+	if m == nil {
+		return ClusterReadiness{ReadinessBlockers: []string{"clustering manager is not available"}}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := m.readiness
+	out.ReadinessBlockers = append([]string(nil), out.ReadinessBlockers...)
+	return out
+}
+
+func (m *Manager) SetReadinessBlocker(blocker string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.readiness = m.readiness.withBlocker(blocker)
+	m.state = NodeStateInitializing
+	if m.backend != nil {
+		m.backend.State = m.state
+	}
+	if m.registration != nil {
+		m.registration.State = m.state
+	}
+}
+
 func (m *Manager) ApplySystemMetadata(ctx context.Context, meta consensus.SystemMetadata, raftNodeID consensus.NodeID) error {
 	if m == nil {
 		return fmt.Errorf("clustering manager is required")
@@ -168,7 +209,9 @@ func (m *Manager) ApplySystemMetadata(ctx context.Context, meta consensus.System
 	if !ok {
 		return fmt.Errorf("system metadata has no node for raft node id %d", raftNodeID)
 	}
+	m.mu.RLock()
 	id := m.identity
+	m.mu.RUnlock()
 	if strings.TrimSpace(id.ClusterID) != "" && id.ClusterID != meta.ClusterID {
 		return fmt.Errorf("local cluster_id %s conflicts with system metadata cluster_id %s", id.ClusterID, meta.ClusterID)
 	}
@@ -199,14 +242,18 @@ func (m *Manager) ApplySystemMetadata(ctx context.Context, meta consensus.System
 	if err := writeIdentity(filepath.Join(ClusteringDir(m.dataDir), nodeFileName), id); err != nil {
 		return err
 	}
-	if err := WriteLocalState(m.dataDir, NodeStateClustered, now); err != nil {
+	if err := WriteLocalState(m.dataDir, NodeStateInitializing, now); err != nil {
 		return err
 	}
 	if err := WritePeers(m.dataDir, id, nil, now); err != nil {
 		return err
 	}
+	readiness := ClusterReadiness{ClientReady: false, MetadataApplied: true, MetadataValidated: true, PartitionGroupsStarted: false, AuthoritativeClusterID: meta.ClusterID, LocalClusterID: id.ClusterID, ExpectedMemberCount: meta.NodeCount, ReadinessBlockers: []string{"partition groups are not started"}}
+	m.mu.Lock()
 	m.identity = id
-	m.state = NodeStateClustered
+	m.state = NodeStateInitializing
+	m.readiness = readiness
+	m.mu.Unlock()
 	self := selfPeer(id)
 	if m.topology != nil {
 		if err := m.topology.Upsert(ctx, self); err != nil {
@@ -220,14 +267,71 @@ func (m *Manager) ApplySystemMetadata(ctx context.Context, meta consensus.System
 	}
 	if m.backend != nil {
 		m.backend.Identity = id
-		m.backend.State = m.state
+		m.backend.State = NodeStateInitializing
 		m.backend.Membership = m.membership
 	}
 	if m.registration != nil {
 		m.registration.Identity = id
-		m.registration.State = m.state
+		m.registration.State = NodeStateInitializing
 	}
 	return nil
+}
+
+func (m *Manager) MarkPartitionGroupsStarted(actual int, expected int) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.readiness.PartitionGroupsStarted = actual >= expected
+	m.readiness.ClientReady = m.readiness.MetadataApplied && m.readiness.MetadataValidated && m.readiness.PartitionGroupsStarted
+	m.readiness.ReadinessBlockers = removeReadinessBlocker(m.readiness.ReadinessBlockers, "partition groups are not started")
+	if !m.readiness.PartitionGroupsStarted {
+		m.readiness = m.readiness.withBlocker(fmt.Sprintf("partition groups not started: got %d expected %d", actual, expected))
+	}
+	if m.readiness.ClientReady {
+		m.state = NodeStateClustered
+		if m.backend != nil {
+			m.backend.State = m.state
+		}
+		if m.registration != nil {
+			m.registration.State = m.state
+		}
+		return WriteLocalState(m.dataDir, NodeStateClustered, time.Now().UTC())
+	}
+	return nil
+}
+
+func removeReadinessBlocker(blockers []string, blocker string) []string {
+	out := blockers[:0]
+	for _, existing := range blockers {
+		if existing != blocker {
+			out = append(out, existing)
+		}
+	}
+	return out
+}
+
+func initialReadiness(id model.NodeIdentity, state model.NodeState, opts Options) ClusterReadiness {
+	out := ClusterReadiness{LocalClusterID: id.ClusterID, ExpectedMemberCount: opts.RaftNodeCount}
+	if !opts.RaftMode {
+		out.ClientReady = state == NodeStateStandalone || state == NodeStateClustered
+		out.MetadataApplied = true
+		out.MetadataValidated = true
+		out.PartitionGroupsStarted = true
+		out.AuthoritativeClusterID = id.ClusterID
+		return out
+	}
+	out.MetadataApplied = strings.TrimSpace(id.ClusterID) != "" && id.ClusterAdmitted
+	out.MetadataValidated = false
+	out.PartitionGroupsStarted = false
+	out.ClientReady = false
+	if !out.MetadataApplied {
+		out = out.withBlocker("system metadata not applied")
+	} else {
+		out = out.withBlocker("system metadata not validated")
+	}
+	return out
 }
 
 func systemNodeForRaftNode(meta consensus.SystemMetadata, raftNodeID consensus.NodeID) (consensus.SystemNode, bool) {

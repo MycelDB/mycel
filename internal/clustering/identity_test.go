@@ -137,8 +137,14 @@ func TestManagerApplySystemMetadataCachesAuthoritativeIdentity(t *testing.T) {
 	if err := mgr.ApplySystemMetadata(ctx, meta, 1); err != nil {
 		t.Fatalf("ApplySystemMetadata: %v", err)
 	}
-	if mgr.Identity().ClusterID != "cluster_authoritative" || !mgr.Identity().ClusterAdmitted || !mgr.Identity().ClusterBootstrap || mgr.State() != NodeStateClustered {
+	if mgr.Identity().ClusterID != "cluster_authoritative" || !mgr.Identity().ClusterAdmitted || !mgr.Identity().ClusterBootstrap || mgr.State() != NodeStateInitializing {
 		t.Fatalf("metadata not cached in manager identity/state: identity=%#v state=%s", mgr.Identity(), mgr.State())
+	}
+	if err := mgr.MarkPartitionGroupsStarted(64, 64); err != nil {
+		t.Fatalf("MarkPartitionGroupsStarted: %v", err)
+	}
+	if mgr.State() != NodeStateClustered || !mgr.Readiness().ClientReady {
+		t.Fatalf("partition-ready manager state/readiness mismatch: state=%s readiness=%#v", mgr.State(), mgr.Readiness())
 	}
 	second, err := LoadOrCreate(ctx, Options{DataDir: dir, NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", RaftMode: true, RaftLocalNodeID: 1, RaftNodeCount: 3})
 	if err != nil {

@@ -48,6 +48,10 @@ type MultiGroupOptions struct {
 	// groups remain in-memory until their state-machine recovery semantics are
 	// completed.
 	StorageDir string
+
+	// DeferPartitionGroups starts only the system group. Partition groups must be
+	// started later from committed system metadata.
+	DeferPartitionGroups bool
 }
 
 type StateMachineFactory interface {
@@ -70,6 +74,10 @@ type MultiGroup struct {
 	nodeID         NodeID
 	peerNodeIDs    []NodeID
 	partitionCount uint32
+	transport      Transport
+	stateMachines  StateMachineFactory
+	electionTick   int
+	heartbeatTick  int
 	groups         map[GroupID]*Group
 	preferred      map[GroupID]NodeID
 }
@@ -78,7 +86,7 @@ func StartMultiGroup(ctx context.Context, opts MultiGroupOptions) (*MultiGroup, 
 	if opts.NodeID == 0 || len(opts.PeerNodeIDs) == 0 || opts.PartitionCount == 0 || opts.Transport == nil || opts.StateMachines == nil {
 		return nil, fmt.Errorf("node id, peers, partition count, transport, and state machines are required")
 	}
-	mg := &MultiGroup{nodeID: opts.NodeID, peerNodeIDs: append([]NodeID(nil), opts.PeerNodeIDs...), partitionCount: opts.PartitionCount, groups: map[GroupID]*Group{}, preferred: map[GroupID]NodeID{}}
+	mg := &MultiGroup{nodeID: opts.NodeID, peerNodeIDs: append([]NodeID(nil), opts.PeerNodeIDs...), partitionCount: opts.PartitionCount, transport: opts.Transport, stateMachines: opts.StateMachines, electionTick: opts.ElectionTick, heartbeatTick: opts.HeartbeatTick, groups: map[GroupID]*Group{}, preferred: map[GroupID]NodeID{}}
 	systemStorage, err := systemGroupStorage(opts.StorageDir)
 	if err != nil {
 		return nil, err
@@ -91,22 +99,125 @@ func StartMultiGroup(ctx context.Context, opts MultiGroupOptions) (*MultiGroup, 
 	if len(opts.PeerNodeIDs) > 0 {
 		mg.preferred[SystemGroupID] = opts.PeerNodeIDs[0]
 	}
-	for p := uint32(0); p < opts.PartitionCount; p++ {
-		gid := PartitionGroupID(p)
-		preferred, err := PreferredLeaderNode(p, opts.PeerNodeIDs)
-		if err != nil {
+	if !opts.DeferPartitionGroups {
+		if err := mg.StartPartitionGroups(ctx, SystemMetadata{NodeCount: len(opts.PeerNodeIDs), PartitionCount: int(opts.PartitionCount), ReplicaFactor: len(opts.PeerNodeIDs)}); err != nil {
 			mg.Stop()
 			return nil, err
 		}
-		g, err := StartGroup(ctx, GroupOptions{ID: gid, NodeID: opts.NodeID, Peers: opts.PeerNodeIDs, PartitionCount: opts.PartitionCount, StateMachine: opts.StateMachines.PartitionStateMachine(p), Transport: opts.Transport, ElectionTick: opts.ElectionTick, HeartbeatTick: opts.HeartbeatTick})
-		if err != nil {
-			mg.Stop()
-			return nil, err
-		}
-		mg.groups[gid] = g
-		mg.preferred[gid] = preferred
 	}
 	return mg, nil
+}
+
+func (m *MultiGroup) StartPartitionGroups(ctx context.Context, meta SystemMetadata) error {
+	if m == nil {
+		return fmt.Errorf("multi group is required")
+	}
+	peers := raftNodeIDsFromSystemMetadata(meta)
+	if len(peers) == 0 {
+		m.mu.RLock()
+		peers = append([]NodeID(nil), m.peerNodeIDs...)
+		m.mu.RUnlock()
+	}
+	partitionCount := uint32(meta.PartitionCount)
+	if partitionCount == 0 {
+		m.mu.RLock()
+		partitionCount = m.partitionCount
+		m.mu.RUnlock()
+	}
+	if partitionCount == 0 {
+		return fmt.Errorf("partition count is required")
+	}
+	if len(peers) == 0 {
+		return fmt.Errorf("raft peers are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.peerNodeIDs = append([]NodeID(nil), peers...)
+	m.partitionCount = partitionCount
+	for p := uint32(0); p < partitionCount; p++ {
+		gid := PartitionGroupID(p)
+		if _, exists := m.groups[gid]; exists {
+			continue
+		}
+		replicas := replicaNodeIDsForPartition(meta, p)
+		if len(replicas) == 0 {
+			replicas = peers
+		}
+		if !containsNodeID(replicas, m.nodeID) {
+			continue
+		}
+		preferred := preferredLeaderFromSystemMetadata(meta, p)
+		if preferred == 0 {
+			var err error
+			preferred, err = PreferredLeaderNode(p, replicas)
+			if err != nil {
+				return err
+			}
+		}
+		g, err := StartGroup(ctx, GroupOptions{ID: gid, NodeID: m.nodeID, Peers: replicas, PartitionCount: partitionCount, StateMachine: m.stateMachines.PartitionStateMachine(p), Transport: m.transport, ElectionTick: m.electionTick, HeartbeatTick: m.heartbeatTick})
+		if err != nil {
+			return err
+		}
+		m.groups[gid] = g
+		m.preferred[gid] = preferred
+	}
+	return nil
+}
+
+func replicaNodeIDsForPartition(meta SystemMetadata, partitionID uint32) []NodeID {
+	placement, ok := meta.Placement[partitionID]
+	if !ok || len(placement.ReplicaNodeIDs) == 0 {
+		return nil
+	}
+	out := make([]NodeID, 0, len(placement.ReplicaNodeIDs))
+	seen := map[NodeID]bool{}
+	for _, nodeID := range placement.ReplicaNodeIDs {
+		node, ok := meta.Nodes[nodeID]
+		if !ok || node.RaftNodeID == 0 {
+			continue
+		}
+		raftID := NodeID(node.RaftNodeID)
+		if !seen[raftID] {
+			out = append(out, raftID)
+			seen[raftID] = true
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func containsNodeID(nodes []NodeID, want NodeID) bool {
+	for _, node := range nodes {
+		if node == want {
+			return true
+		}
+	}
+	return false
+}
+
+func raftNodeIDsFromSystemMetadata(meta SystemMetadata) []NodeID {
+	if len(meta.Nodes) == 0 {
+		return nil
+	}
+	out := make([]NodeID, 0, len(meta.Nodes))
+	for _, node := range meta.Nodes {
+		if node.RaftNodeID != 0 {
+			out = append(out, NodeID(node.RaftNodeID))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func preferredLeaderFromSystemMetadata(meta SystemMetadata, partitionID uint32) NodeID {
+	placement, ok := meta.Placement[partitionID]
+	if !ok || placement.PreferredLeader == "" {
+		return 0
+	}
+	if node, ok := meta.Nodes[placement.PreferredLeader]; ok {
+		return NodeID(node.RaftNodeID)
+	}
+	return 0
 }
 
 func systemGroupStorage(root string) (raftStorage, error) {

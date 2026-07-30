@@ -37,6 +37,31 @@ func TestReconcileSystemMetadataBootstrapsSingleNodeRaft(t *testing.T) {
 	if mgr.Identity().ClusterID != meta.ClusterID || !mgr.Identity().ClusterAdmitted || !mgr.Identity().ClusterBootstrap {
 		t.Fatalf("manager identity not admitted from metadata: %#v meta=%#v", mgr.Identity(), meta)
 	}
+	if !mgr.Readiness().ClientReady || !mgr.Readiness().PartitionGroupsStarted {
+		t.Fatalf("manager not marked ready after partition startup: %#v", mgr.Readiness())
+	}
+}
+
+func TestExpectedLocalPartitionGroupsUsesPlacement(t *testing.T) {
+	meta := consensus.SystemMetadata{
+		ClusterID:      "cluster_test",
+		NodeCount:      3,
+		PartitionCount: 3,
+		ReplicaFactor:  2,
+		Nodes: map[string]consensus.SystemNode{
+			"node_1": {NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a"},
+			"node_2": {NodeID: "node_2", RaftNodeID: 2, NodeName: "node-b"},
+			"node_3": {NodeID: "node_3", RaftNodeID: 3, NodeName: "node-c"},
+		},
+		Placement: map[uint32]consensus.PartitionPlacement{
+			0: {PartitionID: 0, ReplicaNodeIDs: []string{"node_1", "node_2"}, PreferredLeader: "node_1"},
+			1: {PartitionID: 1, ReplicaNodeIDs: []string{"node_2", "node_3"}, PreferredLeader: "node_2"},
+			2: {PartitionID: 2, ReplicaNodeIDs: []string{"node_3", "node_1"}, PreferredLeader: "node_3"},
+		},
+	}
+	if got := expectedLocalPartitionGroups(meta, 3); got != 2 {
+		t.Fatalf("expectedLocalPartitionGroups(node3)=%d want 2", got)
+	}
 }
 
 func TestCompositePartitionStateMachineContinuesOnlyUnsupportedRecordTypes(t *testing.T) {

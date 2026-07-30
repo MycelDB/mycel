@@ -137,14 +137,41 @@ func (s *AdminClusterService) GetClusterHealth(ctx context.Context, req *adminv1
 	if pending > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d pending member(s)", pending))
 	}
+	readiness := s.cluster.Readiness()
+	if readiness.ExpectedMemberCount > 0 && active > 0 && int(active) < readiness.ExpectedMemberCount {
+		warnings = append(warnings, fmt.Sprintf("active member count %d is below expected %d", active, readiness.ExpectedMemberCount))
+	}
+	if s.raftGroups != nil {
+		if g, ok := s.raftGroups.Group(consensus.SystemGroupID); !ok || g == nil || g.Leader() == 0 {
+			warnings = append(warnings, "system raft group has no leader")
+		}
+	}
+	for _, blocker := range readiness.ReadinessBlockers {
+		warnings = append(warnings, blocker)
+	}
 	if !s.cluster.IsAdmitted() {
 		warnings = append(warnings, "local node is not admitted")
+	}
+	if readiness.MetadataApplied && readiness.AuthoritativeClusterID != "" && readiness.LocalClusterID != "" && readiness.AuthoritativeClusterID != readiness.LocalClusterID {
+		warnings = append(warnings, "local cluster_id does not match authoritative system metadata")
+	}
+	if readiness.MetadataApplied && !readiness.MetadataValidated {
+		warnings = append(warnings, "system metadata is not validated")
+	}
+	if readiness.MetadataValidated && !readiness.PartitionGroupsStarted {
+		warnings = append(warnings, "partition groups are not started")
+	}
+	if !readiness.MetadataApplied {
+		warnings = append(warnings, "system metadata is not applied")
+	}
+	if s.cluster.State() == model.NodeStateInitializing {
+		warnings = append(warnings, "local node is initializing")
 	}
 	health := "healthy"
 	if len(warnings) > 0 {
 		health = "degraded"
 	}
-	if !s.cluster.IsAdmitted() {
+	if !s.cluster.IsAdmitted() || !readiness.ClientReady {
 		health = "unhealthy"
 	}
 	return &adminv1.GetClusterHealthResponse{Status: health, Warnings: warnings, ActiveMembers: active, PendingMembers: pending, UnreachablePeers: unreachable}, nil

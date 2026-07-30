@@ -102,7 +102,7 @@ func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, 
 	if strings.TrimSpace(rt.Config.DataDir) != "" {
 		storageDir = filepath.Join(rt.Config.DataDir, "meta", "raft")
 	}
-	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: consensus.NodeID(cfg.RaftLocalNodeID), PeerNodeIDs: peers, PartitionCount: uint32(cfg.RaftPartitionCount), Transport: transport, StateMachines: factory, StorageDir: storageDir})
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: consensus.NodeID(cfg.RaftLocalNodeID), PeerNodeIDs: peers, PartitionCount: uint32(cfg.RaftPartitionCount), Transport: transport, StateMachines: factory, StorageDir: storageDir, DeferPartitionGroups: true})
 	if err != nil {
 		return fmt.Errorf("start experimental raft groups: %w", err)
 	}
@@ -136,20 +136,21 @@ func startSystemMetadataBootstrap(ctx context.Context, rt *daemonruntime.Runtime
 	if rt == nil || sm == nil || rt.RaftGroups == nil {
 		return
 	}
-	run := func() error {
-		return reconcileSystemMetadata(ctx, rt, sm)
+	run := func() {
+		if err := reconcileSystemMetadata(ctx, rt, sm); err != nil {
+			if rt.ClusterManager != nil {
+				rt.ClusterManager.SetReadinessBlocker(err.Error())
+			}
+			if rt.Logger != nil {
+				rt.Logger.Error("system raft metadata bootstrap failed", "error", err)
+			}
+		}
 	}
 	if rt.Config.Cluster.RaftNodeCount == 1 {
-		if err := run(); err != nil && rt.Logger != nil {
-			rt.Logger.Error("system raft metadata bootstrap failed", "error", err)
-		}
+		run()
 		return
 	}
-	go func() {
-		if err := run(); err != nil && rt.Logger != nil {
-			rt.Logger.Error("system raft metadata bootstrap failed", "error", err)
-		}
-	}()
+	go run()
 }
 
 func reconcileSystemMetadata(ctx context.Context, rt *daemonruntime.Runtime, sm *consensus.SystemStateMachine) error {
@@ -187,7 +188,23 @@ func reconcileSystemMetadata(ctx context.Context, rt *daemonruntime.Runtime, sm 
 		return err
 	}
 	if err := consensus.ValidateSystemMetadataAgainstBootstrapConfig(meta, cfgCheck); err != nil {
+		if rt.ClusterManager != nil {
+			rt.ClusterManager.SetReadinessBlocker("system metadata validation failed: " + err.Error())
+		}
 		return err
+	}
+	if rt.RaftGroups != nil {
+		if err := rt.RaftGroups.StartPartitionGroups(ctx, meta); err != nil {
+			if rt.ClusterManager != nil {
+				rt.ClusterManager.SetReadinessBlocker("partition groups not started: " + err.Error())
+			}
+			return fmt.Errorf("start partition groups from system metadata: %w", err)
+		}
+		if registrar, ok := rt.RaftRouter.(interface{ Register(*consensus.Group) }); ok {
+			for _, group := range rt.RaftGroups.Groups() {
+				registrar.Register(group)
+			}
+		}
 	}
 	if rt.ClusterManager != nil {
 		if err := rt.ClusterManager.ApplySystemMetadata(ctx, meta, consensus.NodeID(cfg.RaftLocalNodeID)); err != nil {
@@ -200,10 +217,41 @@ func reconcileSystemMetadata(ctx context.Context, rt *daemonruntime.Runtime, sm 
 	if blobModule, ok := daemonruntime.ServiceAs[*blobservice.Module](rt, blobservice.ModuleName); ok && blobModule != nil {
 		blobModule.SetRaftClusterID(meta.ClusterID)
 	}
+	if rt.ClusterManager != nil && rt.RaftGroups != nil {
+		expected := expectedLocalPartitionGroups(meta, consensus.NodeID(cfg.RaftLocalNodeID))
+		actual := rt.RaftGroups.GroupCount() - 1
+		if err := rt.ClusterManager.MarkPartitionGroupsStarted(actual, expected); err != nil {
+			return err
+		}
+	}
 	if rt.Logger != nil {
 		rt.Logger.Info("system raft metadata applied", "cluster_id", meta.ClusterID, "cluster_name", meta.ClusterName, "local_raft_node_id", cfg.RaftLocalNodeID)
 	}
 	return nil
+}
+
+func expectedLocalPartitionGroups(meta consensus.SystemMetadata, raftNodeID consensus.NodeID) int {
+	if meta.PartitionCount <= 0 {
+		return 0
+	}
+	if len(meta.Placement) == 0 {
+		return meta.PartitionCount
+	}
+	count := 0
+	for p := uint32(0); p < uint32(meta.PartitionCount); p++ {
+		placement, ok := meta.Placement[p]
+		if !ok || len(placement.ReplicaNodeIDs) == 0 {
+			count++
+			continue
+		}
+		for _, nodeID := range placement.ReplicaNodeIDs {
+			if node, ok := meta.Nodes[nodeID]; ok && node.RaftNodeID == uint64(raftNodeID) {
+				count++
+				break
+			}
+		}
+	}
+	return count
 }
 
 func bootstrapMetadataPayloadFromConfig(rt *daemonruntime.Runtime) (consensus.BootstrapMetadataPayload, error) {

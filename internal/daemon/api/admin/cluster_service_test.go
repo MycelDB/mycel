@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
@@ -54,6 +55,44 @@ func TestAdminClusterServiceGetStatus(t *testing.T) {
 	if len(res.GetPeers()) == 0 || res.GetPeers()[0].GetState() != adminv1.ClusterPeerState_CLUSTER_PEER_STATE_SELF {
 		t.Fatalf("expected self peer, got %#v", res.GetPeers())
 	}
+}
+
+func TestAdminClusterServiceHealthUsesMetadataReadiness(t *testing.T) {
+	mgr, err := clustering.NewManager(context.Background(), clustering.Options{DataDir: t.TempDir(), NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", RaftMode: true, RaftLocalNodeID: 1, RaftNodeCount: 3}, nil)
+	if err != nil {
+		t.Fatalf("new raft manager: %v", err)
+	}
+	svc := NewAdminClusterService(mgr, clusterAuthz{allow: true})
+	res, err := svc.GetClusterHealth(authenticatedClusterContext(), &adminv1.GetClusterHealthRequest{})
+	if err != nil {
+		t.Fatalf("GetClusterHealth() error = %v", err)
+	}
+	if res.GetStatus() != "unhealthy" || !containsString(res.GetWarnings(), "system metadata not applied") {
+		t.Fatalf("expected metadata readiness unhealthy warning, got %#v", res)
+	}
+	meta := consensus.SystemMetadata{ClusterID: "cluster_authoritative", ClusterName: "dev", NodeCount: 3, PartitionCount: 16, ReplicaFactor: 3, Nodes: map[string]consensus.SystemNode{"node_1": {NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"}}, Placement: map[uint32]consensus.PartitionPlacement{}}
+	if err := mgr.ApplySystemMetadata(context.Background(), meta, 1); err != nil {
+		t.Fatalf("ApplySystemMetadata() error = %v", err)
+	}
+	if err := mgr.MarkPartitionGroupsStarted(16, 16); err != nil {
+		t.Fatalf("MarkPartitionGroupsStarted() error = %v", err)
+	}
+	res, err = svc.GetClusterHealth(authenticatedClusterContext(), &adminv1.GetClusterHealthRequest{})
+	if err != nil {
+		t.Fatalf("GetClusterHealth() after apply error = %v", err)
+	}
+	if res.GetStatus() != "degraded" || !containsString(res.GetWarnings(), "active member count 1 is below expected 3") {
+		t.Fatalf("expected expected-member warning after metadata apply, got %#v", res)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAdminClusterServiceRuntimeStatusAndSpaceRoute(t *testing.T) {
