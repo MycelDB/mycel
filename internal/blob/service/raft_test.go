@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,8 @@ import (
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestBlobRaftDedupeSurvivesRestart(t *testing.T) {
@@ -426,6 +429,92 @@ func TestBlobRaftStateMachineRejectsMetadataWithoutPayload(t *testing.T) {
 	}
 	if err := (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err == nil {
 		t.Fatal("ApplyCommand() error = nil, want missing payload error")
+	}
+}
+
+func TestBlobRaftDeleteFailsClosedWithoutDeletingPayloadWhenNoLeader(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule(nil)
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := uuid.NewString()
+	meta, err := m.UploadBlob(ctx, UploadInput{SpaceID: spaceID, Reader: bytes.NewReader([]byte("safe delete"))})
+	if err != nil {
+		t.Fatalf("UploadBlob() error = %v", err)
+	}
+	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return nil, false })}
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 4, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine { return RaftStateMachine{Module: m, PartitionCount: 4} }}, ElectionTick: 50, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("StartMultiGroup() error = %v", err)
+	}
+	defer groups.Stop()
+	m.EnableExperimentalRaft(groups, 4)
+	if _, err := m.DeleteBlob(ctx, spaceID, meta.BlobID); status.Code(err) != codes.Unavailable {
+		t.Fatalf("DeleteBlob() error = %v, want Unavailable", err)
+	}
+	_, r, err := m.OpenBlob(ctx, spaceID, meta.BlobID)
+	if err != nil {
+		t.Fatalf("OpenBlob() after failed raft delete error = %v", err)
+	}
+	r.Close()
+}
+
+func TestBlobRaftMetaDeleteApplyRejectsReferencedPayload(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule(fakeRefCounter{count: 1})
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := uuid.NewString()
+	meta, err := m.UploadBlob(ctx, UploadInput{SpaceID: spaceID, Reader: bytes.NewReader([]byte("referenced"))})
+	if err != nil {
+		t.Fatalf("UploadBlob() error = %v", err)
+	}
+	payload, err := jsonMarshal(blobMetaDeleteRecord{SpaceID: spaceID, BlobID: meta.BlobID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.EnableExperimentalRaft(nil, 64)
+	cmd, err := m.buildBlobRaftCommand(spaceID, recordTypeBlobMetaDelete, payload, "blob-delete-referenced")
+	if err != nil {
+		t.Fatalf("buildBlobRaftCommand() error = %v", err)
+	}
+	if err := (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); !errors.Is(err, ErrReferenced) {
+		t.Fatalf("ApplyCommand() error = %v, want ErrReferenced", err)
+	}
+	_, r, err := m.OpenBlob(ctx, spaceID, meta.BlobID)
+	if err != nil {
+		t.Fatalf("OpenBlob() after rejected delete error = %v", err)
+	}
+	r.Close()
+}
+
+func TestBlobRaftMetaDeleteApplyRemovesPayload(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule(nil)
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := uuid.NewString()
+	meta, err := m.UploadBlob(ctx, UploadInput{SpaceID: spaceID, Reader: bytes.NewReader([]byte("delete apply"))})
+	if err != nil {
+		t.Fatalf("UploadBlob() error = %v", err)
+	}
+	payload, err := jsonMarshal(blobMetaDeleteRecord{SpaceID: spaceID, BlobID: meta.BlobID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.EnableExperimentalRaft(nil, 64)
+	cmd, err := m.buildBlobRaftCommand(spaceID, recordTypeBlobMetaDelete, payload, "blob-delete-apply")
+	if err != nil {
+		t.Fatalf("buildBlobRaftCommand() error = %v", err)
+	}
+	if err := (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err != nil {
+		t.Fatalf("ApplyCommand() error = %v", err)
+	}
+	if _, _, err := m.OpenBlob(ctx, spaceID, meta.BlobID); err == nil {
+		t.Fatal("OpenBlob() error = nil, want deleted payload")
 	}
 }
 

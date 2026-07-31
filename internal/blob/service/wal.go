@@ -3,7 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 
+	"github.com/google/uuid"
+	blobstorage "github.com/myceldb/mycel/internal/blob/storage"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
@@ -38,11 +43,15 @@ func (m *Module) applyBlobMetaDelete(ctx context.Context, rec wal.Record) error 
 }
 
 func (m *Module) commitMetaPutRaft(ctx context.Context, meta BlobMeta) (BlobMeta, error) {
-	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: descriptorFromMeta(meta)})
+	desc := descriptorFromMeta(meta)
+	if err := m.ensureRaftPayloadWritePolicy(ctx, desc); err != nil {
+		return BlobMeta{}, err
+	}
+	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: desc})
 	if err != nil {
 		return BlobMeta{}, err
 	}
-	cmd, err := m.buildBlobRaftCommand(meta.SpaceID, recordTypeBlobMetaPut, payload, "blob-meta-put-"+meta.SpaceID+"-"+meta.BlobID)
+	cmd, err := m.buildBlobRaftCommand(meta.SpaceID, recordTypeBlobMetaPut, payload, "blob-meta-put-"+meta.SpaceID+"-"+meta.BlobID+"-"+uuid.NewString())
 	if err != nil {
 		return BlobMeta{}, err
 	}
@@ -78,7 +87,7 @@ func (m *Module) commitMetaDeleteRaft(ctx context.Context, spaceID string, blobI
 	if err != nil {
 		return err
 	}
-	cmd, err := m.buildBlobRaftCommand(spaceID, recordTypeBlobMetaDelete, payload, "blob-meta-delete-"+spaceID+"-"+blobID)
+	cmd, err := m.buildBlobRaftCommand(spaceID, recordTypeBlobMetaDelete, payload, "blob-meta-delete-"+spaceID+"-"+blobID+"-"+uuid.NewString())
 	if err != nil {
 		return err
 	}
@@ -120,6 +129,24 @@ func (m *Module) applyMetaPut(ctx context.Context, meta BlobMeta) error {
 func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, blobID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if m.refCounter != nil {
+		count, err := m.refCounter.BlobRefCount(ctx, spaceID, blobID)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			return fmt.Errorf("%w: %s has %d graph references", ErrReferenced, blobID, count)
+		}
+	}
+	if id := domaingraph.BlobID(blobID); id != "" {
+		store, err := m.store(spaceID)
+		if err != nil {
+			return err
+		}
+		if err := store.Delete(ctx, id); err != nil && !errors.Is(err, blobstorage.ErrNotFound) {
+			return mapStorageError(err)
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

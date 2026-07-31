@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/google/uuid"
+	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
+	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	"github.com/myceldb/mycel/internal/schema/storage"
@@ -98,7 +101,7 @@ func TestModuleSchemaHierarchyMoveUsesSchemaLabel(t *testing.T) {
 	if err := manager.PutDomainSchema(ctx, schemaForGraphServiceWithHierarchyLabel(uuid.MustParse(domainID), schemamodel.SchemaModeStrict, "PARENT_OF")); err != nil {
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
-	m := NewModule()
+	m := newSchemaValidationGraphModule(t, ctx)
 	m.SetSchemaManager(manager)
 	tx := graphTx(uuid.NewString(), domainID, 0)
 	root, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "root"}})
@@ -135,9 +138,18 @@ func newSchemaValidatedModule(t *testing.T, mode schemamodel.SchemaMode) (*Modul
 	if err := manager.PutDomainSchema(ctx, schemaForGraphService(uuid.MustParse(domainID), mode)); err != nil {
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
-	m := NewModule()
+	m := newSchemaValidationGraphModule(t, ctx)
 	m.SetSchemaManager(manager)
 	return m, graphTx(uuid.NewString(), domainID, 0)
+}
+
+func newSchemaValidationGraphModule(t *testing.T, ctx context.Context) *Module {
+	t.Helper()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init graph module failed: %v", result.Error)
+	}
+	return m
 }
 
 func schemaForGraphService(domainID uuid.UUID, mode schemamodel.SchemaMode) schemamodel.DomainSchema {

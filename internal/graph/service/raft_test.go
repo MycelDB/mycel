@@ -20,8 +20,35 @@ import (
 
 type denyingLocalWriteHost struct{ daemonruntime.Host }
 
+type fakeBlobReferenceChecker struct{ err error }
+
+func (f fakeBlobReferenceChecker) EnsureBlobReference(ctx context.Context, spaceID string, blobID string) error {
+	return f.err
+}
+
 func (h *denyingLocalWriteHost) RequireLocalWriteAllowed() error {
 	return status.Error(codes.Unavailable, "local writes denied")
+}
+
+func TestGraphCommitRejectsUnavailableBlobReference(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	m.SetBlobReferenceChecker(fakeBlobReferenceChecker{err: status.Error(codes.NotFound, "blob missing")})
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	tx := graphTx(spaceID, domainID, 0)
+	if _, err := m.CreateNode(ctx, tx, NodeInput{BlobID: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CommitTransactionGraph() error = %v, want FailedPrecondition", err)
+	}
+	if rev, err := m.CurrentRevision(ctx, spaceID); err != nil || rev != 0 {
+		t.Fatalf("CurrentRevision() = %d, %v; want 0, nil", rev, err)
+	}
 }
 
 func TestGraphRaftCommandIDUsesIdempotencyMetadata(t *testing.T) {

@@ -25,6 +25,8 @@ import (
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const childOrderStep = 1000
@@ -36,6 +38,7 @@ type Module struct {
 	overlays               map[string]*overlay
 	changeSink             graphchange.Sink
 	schemaManager          schemaservice.Manager
+	blobRefs               BlobReferenceChecker
 	lastGraphChangeSinkErr error
 	gate                   *quiesce.Gate
 	wal                    *wal.Manager
@@ -76,10 +79,43 @@ func (m *Module) LastGraphChangeSinkError() error {
 	return m.lastGraphChangeSinkErr
 }
 
+type BlobReferenceChecker interface {
+	EnsureBlobReference(ctx context.Context, spaceID string, blobID string) error
+}
+
 func (m *Module) SetSchemaManager(manager schemaservice.Manager) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.schemaManager = manager
+}
+
+func (m *Module) SetBlobReferenceChecker(checker BlobReferenceChecker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.blobRefs = checker
+}
+
+func (m *Module) validateBlobReferences(ctx context.Context, spaceID string, nodes []domaingraph.Node) error {
+	m.mu.Lock()
+	checker := m.blobRefs
+	m.mu.Unlock()
+	if checker == nil {
+		return nil
+	}
+	seen := map[domaingraph.BlobID]struct{}{}
+	for _, node := range nodes {
+		if node.BlobRef == nil || strings.TrimSpace(string(*node.BlobRef)) == "" {
+			continue
+		}
+		if _, ok := seen[*node.BlobRef]; ok {
+			continue
+		}
+		seen[*node.BlobRef] = struct{}{}
+		if err := checker.EnsureBlobReference(ctx, spaceID, string(*node.BlobRef)); err != nil {
+			return status.Errorf(codes.FailedPrecondition, "blob reference %s is not available cluster-wide: %v", *node.BlobRef, err)
+		}
+	}
+	return nil
 }
 
 func (m *Module) validateSchemaNode(ctx context.Context, node domaingraph.Node) error {
@@ -869,6 +905,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		return CommitResult{}, err
 	}
 	record := graphCommitRecordFromSnapshot(tx, snapshot)
+	if err := m.validateBlobReferences(ctx, tx.SpaceID, record.PutNodes); err != nil {
+		return CommitResult{}, err
+	}
 	var committedRevision int64
 	var info graphstorage.CommitInfo
 	if m.raftGroups != nil {

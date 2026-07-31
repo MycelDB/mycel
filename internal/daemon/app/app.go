@@ -249,6 +249,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		_ = rt.Close()
 		return nil, err
 	}
+	graphService.SetBlobReferenceChecker(blobService)
 	changeService.AddObserver(automationService.HandleChangeStreamEvent)
 	if raftRuntimeConfigured(cfg) {
 		systemMetadataSM := consensus.NewSystemStateMachine()

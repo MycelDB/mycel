@@ -28,8 +28,8 @@ The guardrail test `internal/clustering/consensus/raft_record_coverage_test.go` 
 | `space.acl.grant.v1` | Space ACL | Partition raft | Covered | D1 verify | Verify ACL route/owner behavior. |
 | `space.delete.v1` | Space | Partition raft | Covered | D1 verify | Delete space now has partition raft command/apply coverage; continue hardening replay and multi-node tests. |
 | `graph.commit.v1` | Graph | Partition raft | Covered | D0 verify | Phase A added fail-closed boundaries; Phase D should verify no durable bypass remains. |
-| `blob.meta.put.v1` | Blob metadata | Partition raft | Covered | D3 verify | Metadata path exists; payload safety policy still required. |
-| `blob.meta.delete.v1` | Blob metadata | Partition raft | Covered | D3 verify | Metadata path exists; payload safety policy still required. |
+| `blob.meta.put.v1` | Blob metadata | Partition raft | Covered | D3 verify | Metadata path uses partition raft in raft mode; apply verifies/materializes payload before exposing metadata. |
+| `blob.meta.delete.v1` | Blob metadata | Partition raft | Covered | D3 verify | Metadata delete uses partition raft in raft mode; payload deletion occurs from raft/WAL apply after graph references are rechecked, not before consensus. |
 | `schema.put.v1` | Schema | Partition raft | Covered | D2 verify | Schema writes now route through partition raft in raft mode; continue graph-validation consistency tests. |
 | `schema.delete.v1` | Schema | Partition raft | Covered | D2 verify | Schema deletes now route through partition raft in raft mode; continue replay/idempotency tests. |
 | `semantic.global.mutation.v1` | Semantic global config | System raft or fail-closed | Gap | D4 | Currently WAL/local; decide authoritative ownership. |
@@ -48,7 +48,7 @@ The guardrail test covers declared `wal.RecordType` values. D0 also needs manual
 - raft metadata/log/snapshot storage under `meta/raft/`;
 - clustering identity/cache files under `meta/clustering/`;
 - graph segment files and overlay lifecycle;
-- blob payload files;
+- blob payload files — D3 classifies these as payload-replicated/catch-up verified in raft mode: the raft metadata command is authoritative and followers must have or fetch/checksum the payload before applying `blob.meta.put.v1`;
 - semantic/vector index files;
 - automation stores and run/audit artifacts;
 - change stream checkpoints;

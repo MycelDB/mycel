@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress on `improved_clustering`. D0 is complete; D1/D2 have initial raft command coverage and focused tests; implementation tranches D3-D8 remain.
+In progress on `improved_clustering`. D0 is complete; D1/D2/D3 have initial raft command coverage and focused tests; implementation tranches D4-D8 remain.
 
 ## Goal
 
@@ -124,6 +124,12 @@ Initial D2 implementation is in place: schema put/delete use partition raft in r
 - Graph validation cannot depend on pod-local schema state in raft mode.
 
 ## Phase D3 — Blob metadata and payload safety
+
+### Status
+
+Initial D3 implementation is in place: blob metadata put/delete use partition raft in raft mode, metadata apply verifies/materializes payloads before exposing metadata, raft blob proposals fail closed without a leader, raft deletes no longer remove local payloads before consensus commits, raft delete apply rechecks graph references, and graph commits validate blob references through the blob subsystem before committing blob nodes.
+
+V1 payload policy is **payload replicated/catch-up verified**: the proposer must have a local payload and, for configured multi-node raft deployments, authoritative cluster ID plus remote backend addresses must be available so followers can fetch and checksum-verify payloads while applying `blob.meta.put.v1`.
 
 ### Tasks
 

@@ -108,6 +108,9 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 	if strings.TrimSpace(record.SpaceID) != strings.TrimSpace(cmd.SpaceID) {
 		return fmt.Errorf("graph raft command space_id mismatch: command=%s payload=%s", cmd.SpaceID, record.SpaceID)
 	}
+	if err := m.validateBlobReferences(ctx, record.SpaceID, record.PutNodes); err != nil {
+		return err
+	}
 	_, _, err := m.applyGraphCommitRecord(ctx, record)
 	if err != nil {
 		return err
