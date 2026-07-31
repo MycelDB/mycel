@@ -333,6 +333,9 @@ func (c ClusterConfig) Validate() error {
 				return err
 			}
 		}
+		if nodeCount > 1 && strings.TrimSpace(c.BackendAuthToken) == "" {
+			return fmt.Errorf("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN is required for multi-node raft clusters")
+		}
 	}
 	return nil
 }

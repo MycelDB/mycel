@@ -136,6 +136,20 @@ Important fields:
 
 A group with `leader_node_id=0` or `health=no_leader` cannot safely accept writes for that group. During startup or rolling restart this may be transient; if it persists, check peer reachability, backend auth, and raft transport logs.
 
+## Backend auth policy
+
+Multi-node raft deployments must set `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN` to the same non-empty secret on every pod/node. Myceld fails configuration validation when `MYCELD_CLUSTER_RAFT_NODE_ADDRS` describes a multi-node raft cluster and the backend auth token is empty.
+
+Use a generated secret, for example:
+
+```sh
+openssl rand -base64 32
+```
+
+Static V1 clusters do not support coordinated token rotation yet. To rotate, update all node configuration/secrets together and perform a controlled restart. During mismatched rotation, peers with the old/new token mix will reject internode RPCs and raft transport diagnostics will show `auth_failures`.
+
+Single-node raft/dev deployments may omit the token, but production clustered deployments should not.
+
 ## Raft transport diagnostics
 
 `GetClusterRuntimeStatus` exposes aggregate raft transport diagnostics under `raft_transport`:

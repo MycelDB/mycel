@@ -232,6 +232,10 @@ This tranche does not implement full leader forwarding or strong read-index read
 
 ## Phase A5 — Backend auth enforcement and negative coverage
 
+### Status
+
+Implemented on `improved_clustering`: multi-node raft config now requires `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN`, backend unary/stream auth is test-covered across the cluster backend RPC surface, missing/wrong raft transport tokens are covered, and operations guidance documents mandatory token policy and diagnostics.
+
 ### Goals
 
 Internode/backend RPCs in cluster mode must require the configured backend auth token, and failures must be obvious.
