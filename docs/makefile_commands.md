@@ -14,7 +14,7 @@ Run these commands from the `mycel/` directory.
 - `make test` — regenerate protobuf stubs, run boundary checks, and run `go test ./...`.
 - `make test-cluster-identity` — run the fast in-process clustering/readiness/CLI regression suite used to guard authoritative Raft metadata behavior.
 - `make test-phase-a` — run the fast Phase A release-gate suite covering readiness/admin fields, raft group/transport diagnostics, backend auth, and raft-mode graph fail-closed behavior.
-- `make test-compose-cluster` — destructive local compose validation for fresh bootstrap and restart identity stability. Requires the sibling `../../knot_pkm/knot_pkm_server` checkout and Docker.
+- `make test-compose-cluster` — destructive local compose validation for fresh bootstrap and restart identity stability. Requires the sibling `../../knot_pkm/knot_pkm_server` checkout and Docker. The target supplies a default compose-only `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN` if the environment does not set one.
 - `make test-k3s-cluster` — destructive local K3s/k3d validation for fresh bootstrap, rolling restart, and one-PVC replacement/rejoin. Requires Docker, `kubectl`, and preferably `k3d`; creates/uses the `knotbase-dev` k3d cluster by default.
 - `make test-cluster-release-gate` — full pre-release clustering gate: `make test`, destructive compose validation, and destructive K3s validation.
 - `make test-verbose` — regenerate protobuf stubs, run checks, run verbose tests with coverage, and print function coverage.

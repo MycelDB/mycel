@@ -82,10 +82,10 @@ test-phase-a: generate-proto generate-gql-parser
 test-cluster-release-gate: test test-compose-cluster test-k3s-cluster
 
 test-compose-cluster:
-	cd ../../knot_pkm/knot_pkm_server && $(MAKE) compose-reset compose-up
+	cd ../../knot_pkm/knot_pkm_server && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" $(MAKE) compose-reset compose-up
 	./scripts/validateComposeClusterIdentity.sh
-	cd ../../knot_pkm/knot_pkm_server && docker compose -f compose.dev.yml restart myceld-a myceld-b myceld-c
-	cd ../../knot_pkm/knot_pkm_server && docker compose -f compose.dev.yml up -d --wait myceld-a myceld-b myceld-c knot-pkm-server
+	cd ../../knot_pkm/knot_pkm_server && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f compose.dev.yml restart myceld-a myceld-b myceld-c
+	cd ../../knot_pkm/knot_pkm_server && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f compose.dev.yml up -d --wait myceld-a myceld-b myceld-c knot-pkm-server
 	./scripts/validateComposeClusterIdentity.sh
 	MYCEL_COMPOSE_VALIDATE_SOURCE=files ./scripts/validateComposeClusterIdentity.sh
 
