@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Phase A fail-closed/observability work is complete; Phase D is the next reliability tranche from `docs/design/clustering-replication-reliability.md`.
+In progress on `improved_clustering`. D0 has an initial WAL record inventory and guardrail test; implementation tranches D1-D8 remain.
 
 ## Goal
 
@@ -47,9 +47,13 @@ This table is the starting audit map. D0 must confirm it against code before imp
 
 ## Phase D0 — Coverage inventory and guardrails
 
+### Status
+
+Initial implementation complete. See `phase-d-raft-record-coverage-inventory.md` and `internal/clustering/consensus/raft_record_coverage_test.go`. Remaining D0 work is to expand the inventory beyond WAL record types to durable stores that do not declare `wal.RecordType` constants.
+
 ### Tasks
 
-- Add a documented inventory under this plan or a generated/maintained table listing:
+- [x] Add a documented inventory under this plan or a generated/maintained table listing:
   - record type / store path;
   - subsystem owner;
   - raft scope: system, space partition, derived local, unsupported;
@@ -57,9 +61,9 @@ This table is the starting audit map. D0 must confirm it against code before imp
   - apply path;
   - read consistency assumptions;
   - tests.
-- Add a lightweight static or unit test that fails when a WAL record type is registered but not classified. This can start as an explicit allowlist in a test, not generated code.
-- Add a common cluster-mode helper/interface where useful so subsystems can fail closed when their raft executor is absent.
-- Update `docs/design/clustering-replication-reliability.md` to reference this detailed Phase D plan.
+- [x] Add a lightweight static or unit test that fails when a WAL record type is registered but not classified. This can start as an explicit allowlist in a test, not generated code.
+- [ ] Add a common cluster-mode helper/interface where useful so subsystems can fail closed when their raft executor is absent.
+- [x] Update `docs/design/clustering-replication-reliability.md` to reference this detailed Phase D plan.
 
 ### Acceptance
 

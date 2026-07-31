@@ -33,6 +33,7 @@ Current clustering direction:
 - `implementation/authoritative-system-raft-cluster-metadata-implementation-plan.md` breaks the authoritative system Raft metadata work into testable phases.
 - `implementation/phase-a-fail-closed-observability-implementation-plan.md` records the completed Phase A fail-closed and observability work from the broader reliability seed document.
 - `implementation/phase-d-raft-command-coverage-implementation-plan.md` details the next reliability tranche: explicit raft-mode ownership for every durable subsystem record.
+- `implementation/phase-d-raft-record-coverage-inventory.md` tracks the D0 record coverage inventory and current raft-mode classification for WAL record types.
 - `operations/raft-cluster-operations.md` documents operator checks, Phase A/pre-release validation gates, readiness blockers, restart/PVC replacement procedures, and cluster ID mismatch recovery guidance.
 - `design/space-partitioned-raft-clustering.md` describes the space-partitioned `etcd/raft` clustering architecture.
 - `implementation/space-partitioned-raft-clustering-implementation-plan.md` records the Raft migration phases.
