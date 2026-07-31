@@ -405,12 +405,14 @@ func raftGroupStatusToProto(st consensus.GroupStatus, replicas []uint64) *adminv
 		partitionID = *st.PartitionID
 	}
 	health := adminv1.RaftGroupHealth_RAFT_GROUP_HEALTH_HEALTHY
+	healthReason := ""
 	if st.Leader == 0 {
 		health = adminv1.RaftGroupHealth_RAFT_GROUP_HEALTH_NO_LEADER
+		healthReason = "raft group has no leader"
 	}
 	applyLag := uint64(0)
 	if st.CommitIndex > st.AppliedIndex {
 		applyLag = st.CommitIndex - st.AppliedIndex
 	}
-	return &adminv1.RaftGroupStatus{GroupId: string(st.GroupID), Kind: kind, PartitionId: partitionID, LocalNodeId: uint64(st.NodeID), LeaderNodeId: uint64(st.Leader), PreferredLeaderNodeId: uint64(st.PreferredLeader), ReplicaNodeIds: append([]uint64(nil), replicas...), Health: health, Term: st.Term, CommitIndex: st.CommitIndex, AppliedIndex: st.AppliedIndex, ApplyLag: applyLag}
+	return &adminv1.RaftGroupStatus{GroupId: string(st.GroupID), Kind: kind, PartitionId: partitionID, LocalNodeId: uint64(st.NodeID), LeaderNodeId: uint64(st.Leader), PreferredLeaderNodeId: uint64(st.PreferredLeader), ReplicaNodeIds: append([]uint64(nil), replicas...), Health: health, HealthReason: healthReason, Term: st.Term, CommitIndex: st.CommitIndex, AppliedIndex: st.AppliedIndex, ApplyLag: applyLag, LastIndex: st.LastIndex, SnapshotIndex: st.SnapshotIndex}
 }

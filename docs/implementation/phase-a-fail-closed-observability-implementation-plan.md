@@ -100,6 +100,10 @@ Expose the readiness model that already exists internally so operators and autom
 
 ## Phase A2 — Complete raft group diagnostics
 
+### Status
+
+Implemented on `improved_clustering` with additive admin proto fields for `last_index`, `snapshot_index`, and `health_reason`, daemon status population, CLI `cluster raft-groups`, tests, and operations documentation updates.
+
 ### Goals
 
 Operators should be able to inspect local raft group status deeply enough to diagnose no-leader, lagging apply, and restart/catch-up issues.

@@ -42,7 +42,16 @@ func TestStartMultiGroupStartsSystemAndPartitions(t *testing.T) {
 	if len(status) != 65 {
 		t.Fatalf("status count=%d want 65", len(status))
 	}
+	var system GroupStatus
 	var p0, p1 GroupStatus
+	for _, st := range status {
+		if st.GroupID == SystemGroupID {
+			system = st
+		}
+	}
+	if system.LastIndex == 0 {
+		t.Fatalf("expected system group last index diagnostic, got %#v", system)
+	}
 	for _, st := range status {
 		if st.PartitionID != nil && *st.PartitionID == 0 {
 			p0 = st

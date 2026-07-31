@@ -21,6 +21,9 @@ func NewClusterCommand(a *app.App) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{Use: "health", Short: "Show aggregate cluster health", RunE: func(cmd *cobra.Command, args []string) error {
 		return runClusterHealth(cmd.Context(), a)
 	}})
+	cmd.AddCommand(&cobra.Command{Use: "raft-groups", Short: "List local Raft group diagnostics", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterRaftGroups(cmd.Context(), a)
+	}})
 	return cmd
 }
 
@@ -90,6 +93,28 @@ type clusterMembersOutput struct {
 	Members     []clusterMemberOutput `json:"members"`
 }
 
+type raftGroupOutput struct {
+	GroupID               string   `json:"group_id"`
+	Kind                  string   `json:"kind"`
+	PartitionID           uint32   `json:"partition_id,omitempty"`
+	LocalNodeID           uint64   `json:"local_node_id"`
+	LeaderNodeID          uint64   `json:"leader_node_id,omitempty"`
+	PreferredLeaderNodeID uint64   `json:"preferred_leader_node_id,omitempty"`
+	ReplicaNodeIDs        []uint64 `json:"replica_node_ids,omitempty"`
+	Health                string   `json:"health"`
+	HealthReason          string   `json:"health_reason,omitempty"`
+	Term                  uint64   `json:"term"`
+	CommitIndex           uint64   `json:"commit_index"`
+	AppliedIndex          uint64   `json:"applied_index"`
+	ApplyLag              uint64   `json:"apply_lag"`
+	LastIndex             uint64   `json:"last_index"`
+	SnapshotIndex         uint64   `json:"snapshot_index,omitempty"`
+}
+
+type raftGroupsOutput struct {
+	Groups []raftGroupOutput `json:"groups"`
+}
+
 func runClusterStatus(ctx context.Context, a *app.App) error {
 	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
 	if err != nil {
@@ -144,6 +169,30 @@ func runClusterHealth(ctx context.Context, a *app.App) error {
 	return a.Print(res, text)
 }
 
+func runClusterRaftGroups(ctx context.Context, a *app.App) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).ListRaftGroups(authCtx, &adminv1.ListRaftGroupsRequest{})
+	if err != nil {
+		return fmt.Errorf("list raft groups: %w", err)
+	}
+	out := raftGroupsOutput{Groups: []raftGroupOutput{}}
+	lines := []string{}
+	for _, group := range res.GetGroups() {
+		item := raftGroupOutput{GroupID: group.GetGroupId(), Kind: raftGroupKindText(group.GetKind()), PartitionID: group.GetPartitionId(), LocalNodeID: group.GetLocalNodeId(), LeaderNodeID: group.GetLeaderNodeId(), PreferredLeaderNodeID: group.GetPreferredLeaderNodeId(), ReplicaNodeIDs: append([]uint64(nil), group.GetReplicaNodeIds()...), Health: raftGroupHealthText(group.GetHealth()), HealthReason: group.GetHealthReason(), Term: group.GetTerm(), CommitIndex: group.GetCommitIndex(), AppliedIndex: group.GetAppliedIndex(), ApplyLag: group.GetApplyLag(), LastIndex: group.GetLastIndex(), SnapshotIndex: group.GetSnapshotIndex()}
+		out.Groups = append(out.Groups, item)
+		line := fmt.Sprintf("%s\t%s\thealth=%s leader=%d term=%d commit=%d applied=%d lag=%d last=%d snapshot=%d", item.Kind, item.GroupID, item.Health, item.LeaderNodeID, item.Term, item.CommitIndex, item.AppliedIndex, item.ApplyLag, item.LastIndex, item.SnapshotIndex)
+		if item.HealthReason != "" {
+			line += " reason=" + item.HealthReason
+		}
+		lines = append(lines, line+"\n")
+	}
+	return a.Print(out, strings.Join(lines, ""))
+}
+
 func runClusterMembers(ctx context.Context, a *app.App) error {
 	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
 	if err != nil {
@@ -178,6 +227,12 @@ func peerSourceText(v adminv1.ClusterPeerSource) string {
 }
 func memberStateText(v adminv1.ClusterMemberState) string {
 	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_member_state_")
+}
+func raftGroupKindText(v adminv1.RaftGroupKind) string {
+	return strings.TrimPrefix(strings.ToLower(v.String()), "raft_group_kind_")
+}
+func raftGroupHealthText(v adminv1.RaftGroupHealth) string {
+	return strings.TrimPrefix(strings.ToLower(v.String()), "raft_group_health_")
 }
 func replicationCatchupText(v adminv1.ClusterReplicationCatchupState) string {
 	return strings.TrimPrefix(strings.ToLower(v.String()), "cluster_replication_catchup_state_")

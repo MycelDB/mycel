@@ -33,6 +33,8 @@ type GroupStatus struct {
 	Term            uint64
 	CommitIndex     uint64
 	AppliedIndex    uint64
+	LastIndex       uint64
+	SnapshotIndex   uint64
 }
 
 type MultiGroupOptions struct {
@@ -274,7 +276,8 @@ func (m *MultiGroup) Status() []GroupStatus {
 	out := make([]GroupStatus, 0, len(m.groups))
 	for id, g := range m.groups {
 		term, commitIndex, appliedIndex := g.Progress()
-		st := GroupStatus{GroupID: id, NodeID: m.nodeID, Leader: g.Leader(), PreferredLeader: m.preferred[id], Term: term, CommitIndex: commitIndex, AppliedIndex: appliedIndex}
+		lastIndex, snapshotIndex := g.StorageProgress()
+		st := GroupStatus{GroupID: id, NodeID: m.nodeID, Leader: g.Leader(), PreferredLeader: m.preferred[id], Term: term, CommitIndex: commitIndex, AppliedIndex: appliedIndex, LastIndex: lastIndex, SnapshotIndex: snapshotIndex}
 		for p := uint32(0); p < m.partitionCount; p++ {
 			if id == PartitionGroupID(p) {
 				pp := p

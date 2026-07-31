@@ -196,6 +196,19 @@ func (g *Group) Progress() (term uint64, commitIndex uint64, appliedIndex uint64
 	return g.term, g.commitIndex, g.appliedIndex
 }
 
+func (g *Group) StorageProgress() (lastIndex uint64, snapshotIndex uint64) {
+	if g == nil || g.storage == nil {
+		return 0, 0
+	}
+	if last, err := g.storage.LastIndex(); err == nil {
+		lastIndex = last
+	}
+	if snap, err := g.storage.Snapshot(); err == nil {
+		snapshotIndex = snap.Metadata.Index
+	}
+	return lastIndex, snapshotIndex
+}
+
 func (g *Group) Campaign(ctx context.Context) error { return g.node.Campaign(ctx) }
 
 func (g *Group) Propose(ctx context.Context, cmd RaftCommand) (ProposalResult, error) {

@@ -110,6 +110,32 @@ The admin cluster status and health APIs expose a `readiness` object:
 
 Use the readiness object before reading logs. Logs are still useful for root cause, but the API should identify common blockers such as missing metadata, validation failures, and partition startup delays.
 
+## Raft group diagnostics
+
+Use the raft group diagnostics command to inspect local group health:
+
+```sh
+mycel --daemon-addr <host:9091> -u <admin> -p <password> cluster raft-groups
+mycel --daemon-addr <host:9091> -u <admin> -p <password> --output json cluster raft-groups
+```
+
+Important fields:
+
+| Field | Meaning |
+| --- | --- |
+| `group_id` | Raft group name, e.g. `system` or `space-partition-0`. |
+| `kind` | `system` or `partition`. |
+| `leader_node_id` | Current local view of the leader; `0` means no known leader. |
+| `health` / `health_reason` | Local group health summary and reason. |
+| `term` | Current raft term seen locally. |
+| `commit_index` | Highest committed raft log index known locally. |
+| `applied_index` | Highest committed index applied to the local state machine. |
+| `apply_lag` | `commit_index - applied_index`; sustained non-zero lag means apply is behind. |
+| `last_index` | Highest local raft log index. |
+| `snapshot_index` | Snapshot index, when a snapshot is available. |
+
+A group with `leader_node_id=0` or `health=no_leader` cannot safely accept writes for that group. During startup or rolling restart this may be transient; if it persists, check peer reachability, backend auth, and raft transport logs.
+
 ## Readiness blockers and recovery
 
 ### `system metadata not applied`

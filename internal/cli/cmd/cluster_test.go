@@ -29,6 +29,23 @@ func TestClusterStatusCommandUsesAdminAPI(t *testing.T) {
 	}
 }
 
+func TestClusterRaftGroupsCommandUsesAdminAPI(t *testing.T) {
+	_, addr, password, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+
+	out, err := runCLI(t, "--daemon-addr", addr, "--username", "admin", "--password", password, "--output", "json", "cluster", "raft-groups")
+	if err != nil {
+		t.Fatalf("cluster raft-groups failed: %v\n%s", err, out)
+	}
+	var groups raftGroupsOutput
+	if err := json.Unmarshal([]byte(out), &groups); err != nil {
+		t.Fatalf("decode raft groups: %v output=%s", err, out)
+	}
+	if groups.Groups == nil {
+		t.Fatalf("expected groups array in output: %s", out)
+	}
+}
+
 func TestClusterCommandRequiresAdminCredentials(t *testing.T) {
 	_, addr, _, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
