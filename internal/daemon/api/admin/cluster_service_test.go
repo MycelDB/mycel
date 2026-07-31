@@ -55,6 +55,9 @@ func TestAdminClusterServiceGetStatus(t *testing.T) {
 	if len(res.GetPeers()) == 0 || res.GetPeers()[0].GetState() != adminv1.ClusterPeerState_CLUSTER_PEER_STATE_SELF {
 		t.Fatalf("expected self peer, got %#v", res.GetPeers())
 	}
+	if !res.GetReadiness().GetClientReady() || !res.GetReadiness().GetMetadataApplied() || !res.GetReadiness().GetMetadataValidated() || !res.GetReadiness().GetPartitionGroupsStarted() {
+		t.Fatalf("expected standalone manager to be client-ready, got %#v", res.GetReadiness())
+	}
 }
 
 func TestAdminClusterServiceHealthUsesMetadataReadiness(t *testing.T) {
@@ -70,6 +73,9 @@ func TestAdminClusterServiceHealthUsesMetadataReadiness(t *testing.T) {
 	if res.GetStatus() != "unhealthy" || !containsString(res.GetWarnings(), "system metadata not applied") {
 		t.Fatalf("expected metadata readiness unhealthy warning, got %#v", res)
 	}
+	if res.GetReadiness().GetClientReady() || res.GetReadiness().GetMetadataApplied() || !containsString(res.GetReadiness().GetReadinessBlockers(), "system metadata not applied") {
+		t.Fatalf("expected readiness payload to expose metadata blocker, got %#v", res.GetReadiness())
+	}
 	meta := consensus.SystemMetadata{ClusterID: "cluster_authoritative", ClusterName: "dev", NodeCount: 3, PartitionCount: 16, ReplicaFactor: 3, Nodes: map[string]consensus.SystemNode{"node_1": {NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"}, "node_2": {NodeID: "node_2", RaftNodeID: 2, NodeName: "node-b", BackendAdvertiseAddr: "127.0.0.1:9094"}, "node_3": {NodeID: "node_3", RaftNodeID: 3, NodeName: "node-c", BackendAdvertiseAddr: "127.0.0.1:9095"}}, Placement: map[uint32]consensus.PartitionPlacement{}}
 	if err := mgr.ApplySystemMetadata(context.Background(), meta, 1); err != nil {
 		t.Fatalf("ApplySystemMetadata() error = %v", err)
@@ -83,6 +89,12 @@ func TestAdminClusterServiceHealthUsesMetadataReadiness(t *testing.T) {
 	}
 	if res.GetStatus() != "healthy" {
 		t.Fatalf("expected healthy after metadata apply and partition groups started, got %#v", res)
+	}
+	if !res.GetReadiness().GetClientReady() || !res.GetReadiness().GetMetadataApplied() || !res.GetReadiness().GetMetadataValidated() || !res.GetReadiness().GetPartitionGroupsStarted() {
+		t.Fatalf("expected healthy readiness payload, got %#v", res.GetReadiness())
+	}
+	if res.GetReadiness().GetAuthoritativeClusterId() != "cluster_authoritative" || res.GetReadiness().GetLocalClusterId() != "cluster_authoritative" || res.GetReadiness().GetExpectedMemberCount() != 3 {
+		t.Fatalf("unexpected readiness identity/count fields: %#v", res.GetReadiness())
 	}
 }
 

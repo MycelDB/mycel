@@ -174,7 +174,11 @@ func (s *AdminClusterService) GetClusterHealth(ctx context.Context, req *adminv1
 	if !s.cluster.IsAdmitted() || !readiness.ClientReady {
 		health = "unhealthy"
 	}
-	return &adminv1.GetClusterHealthResponse{Status: health, Warnings: warnings, ActiveMembers: active, PendingMembers: pending, UnreachablePeers: unreachable}, nil
+	return &adminv1.GetClusterHealthResponse{Status: health, Warnings: warnings, ActiveMembers: active, PendingMembers: pending, UnreachablePeers: unreachable, Readiness: clusterReadinessToProto(readiness)}, nil
+}
+
+func clusterReadinessToProto(readiness clustering.ClusterReadiness) *adminv1.ClusterReadiness {
+	return &adminv1.ClusterReadiness{ClientReady: readiness.ClientReady, MetadataApplied: readiness.MetadataApplied, MetadataValidated: readiness.MetadataValidated, PartitionGroupsStarted: readiness.PartitionGroupsStarted, AuthoritativeClusterId: readiness.AuthoritativeClusterID, LocalClusterId: readiness.LocalClusterID, ExpectedMemberCount: int32(readiness.ExpectedMemberCount), ReadinessBlockers: append([]string(nil), readiness.ReadinessBlockers...)}
 }
 
 func firstNonEmptyCluster(values ...string) string {
@@ -200,6 +204,7 @@ func (s *AdminClusterService) GetClusterStatus(ctx context.Context, req *adminv1
 			peers = append(peers, clusterPeerToProto(peer))
 		}
 	}
+	readiness := s.cluster.Readiness()
 	return &adminv1.GetClusterStatusResponse{
 		Node: &adminv1.ClusterLocalNode{
 			NodeId:                   identity.NodeID,
@@ -215,7 +220,8 @@ func (s *AdminClusterService) GetClusterStatus(ctx context.Context, req *adminv1
 			ClusterName: identity.ClusterName,
 			Mode:        clusterModeFromNodeState(s.cluster.State()),
 		},
-		Peers: peers,
+		Peers:     peers,
+		Readiness: clusterReadinessToProto(readiness),
 	}, nil
 }
 

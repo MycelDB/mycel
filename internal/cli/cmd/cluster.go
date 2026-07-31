@@ -25,9 +25,10 @@ func NewClusterCommand(a *app.App) *cobra.Command {
 }
 
 type clusterStatusOutput struct {
-	Node    clusterNodeOutput   `json:"node"`
-	Cluster clusterInfoOutput   `json:"cluster"`
-	Peers   []clusterPeerOutput `json:"peers"`
+	Node      clusterNodeOutput      `json:"node"`
+	Cluster   clusterInfoOutput      `json:"cluster"`
+	Peers     []clusterPeerOutput    `json:"peers"`
+	Readiness clusterReadinessOutput `json:"readiness,omitempty"`
 }
 
 type clusterNodeOutput struct {
@@ -54,6 +55,17 @@ type clusterPeerOutput struct {
 	State                string `json:"state"`
 	Source               string `json:"source"`
 	LastSeenAt           string `json:"last_seen_at,omitempty"`
+}
+
+type clusterReadinessOutput struct {
+	ClientReady            bool     `json:"client_ready"`
+	MetadataApplied        bool     `json:"metadata_applied"`
+	MetadataValidated      bool     `json:"metadata_validated"`
+	PartitionGroupsStarted bool     `json:"partition_groups_started"`
+	AuthoritativeClusterID string   `json:"authoritative_cluster_id,omitempty"`
+	LocalClusterID         string   `json:"local_cluster_id,omitempty"`
+	ExpectedMemberCount    int32    `json:"expected_member_count,omitempty"`
+	ReadinessBlockers      []string `json:"readiness_blockers,omitempty"`
 }
 
 type clusterMemberOutput struct {
@@ -90,15 +102,25 @@ func runClusterStatus(ctx context.Context, a *app.App) error {
 	}
 	node := res.GetNode()
 	cluster := res.GetCluster()
-	out := clusterStatusOutput{Node: clusterNodeOutput{NodeID: node.GetNodeId(), Name: node.GetNodeName(), State: nodeStateText(node.GetState()), Admitted: node.GetAdmitted(), Bootstrap: node.GetBootstrap(), BackendAdvertiseAddr: node.GetBackendAdvertiseAddr()}, Cluster: clusterInfoOutput{ClusterID: cluster.GetClusterId(), ClusterName: cluster.GetClusterName(), Mode: clusterModeText(cluster.GetMode())}}
+	out := clusterStatusOutput{Node: clusterNodeOutput{NodeID: node.GetNodeId(), Name: node.GetNodeName(), State: nodeStateText(node.GetState()), Admitted: node.GetAdmitted(), Bootstrap: node.GetBootstrap(), BackendAdvertiseAddr: node.GetBackendAdvertiseAddr()}, Cluster: clusterInfoOutput{ClusterID: cluster.GetClusterId(), ClusterName: cluster.GetClusterName(), Mode: clusterModeText(cluster.GetMode())}, Readiness: clusterReadinessFromProto(res.GetReadiness())}
 	for _, p := range res.GetPeers() {
 		out.Peers = append(out.Peers, clusterPeerOutput{NodeID: p.GetNodeId(), NodeName: p.GetNodeName(), ClusterID: p.GetClusterId(), ClusterName: p.GetClusterName(), BackendAdvertiseAddr: p.GetBackendAdvertiseAddr(), State: peerStateText(p.GetState()), Source: peerSourceText(p.GetSource()), LastSeenAt: p.GetLastSeenAt()})
 	}
-	lines := []string{fmt.Sprintf("node=%s name=%s state=%s cluster=%s mode=%s\n", out.Node.NodeID, out.Node.Name, out.Node.State, out.Cluster.ClusterName, out.Cluster.Mode)}
+	lines := []string{fmt.Sprintf("node=%s name=%s state=%s cluster=%s mode=%s client_ready=%t metadata_applied=%t metadata_validated=%t partitions_started=%t\n", out.Node.NodeID, out.Node.Name, out.Node.State, out.Cluster.ClusterName, out.Cluster.Mode, out.Readiness.ClientReady, out.Readiness.MetadataApplied, out.Readiness.MetadataValidated, out.Readiness.PartitionGroupsStarted)}
+	for _, blocker := range out.Readiness.ReadinessBlockers {
+		lines = append(lines, "readiness_blocker: "+blocker+"\n")
+	}
 	for _, p := range out.Peers {
 		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\n", p.State, p.NodeName, p.BackendAdvertiseAddr, p.Source))
 	}
 	return a.Print(out, strings.Join(lines, ""))
+}
+
+func clusterReadinessFromProto(readiness *adminv1.ClusterReadiness) clusterReadinessOutput {
+	if readiness == nil {
+		return clusterReadinessOutput{}
+	}
+	return clusterReadinessOutput{ClientReady: readiness.GetClientReady(), MetadataApplied: readiness.GetMetadataApplied(), MetadataValidated: readiness.GetMetadataValidated(), PartitionGroupsStarted: readiness.GetPartitionGroupsStarted(), AuthoritativeClusterID: readiness.GetAuthoritativeClusterId(), LocalClusterID: readiness.GetLocalClusterId(), ExpectedMemberCount: readiness.GetExpectedMemberCount(), ReadinessBlockers: append([]string(nil), readiness.GetReadinessBlockers()...)}
 }
 
 func runClusterHealth(ctx context.Context, a *app.App) error {
@@ -111,7 +133,11 @@ func runClusterHealth(ctx context.Context, a *app.App) error {
 	if err != nil {
 		return fmt.Errorf("get cluster health: %w", err)
 	}
-	text := fmt.Sprintf("status=%s active=%d pending=%d unreachable=%d\n", res.GetStatus(), res.GetActiveMembers(), res.GetPendingMembers(), res.GetUnreachablePeers())
+	readiness := res.GetReadiness()
+	text := fmt.Sprintf("status=%s active=%d pending=%d unreachable=%d client_ready=%t metadata_applied=%t metadata_validated=%t partitions_started=%t\n", res.GetStatus(), res.GetActiveMembers(), res.GetPendingMembers(), res.GetUnreachablePeers(), readiness.GetClientReady(), readiness.GetMetadataApplied(), readiness.GetMetadataValidated(), readiness.GetPartitionGroupsStarted())
+	for _, blocker := range readiness.GetReadinessBlockers() {
+		text += "readiness_blocker: " + blocker + "\n"
+	}
 	for _, warning := range res.GetWarnings() {
 		text += "warning: " + warning + "\n"
 	}

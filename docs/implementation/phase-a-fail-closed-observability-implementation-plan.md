@@ -53,6 +53,10 @@ Out of scope:
 
 ## Phase A1 — Surface cluster readiness through admin APIs and CLI
 
+### Status
+
+Implemented on `improved_clustering` with additive admin proto fields, daemon response population, CLI JSON/text output, tests, and operations documentation updates.
+
 ### Goals
 
 Expose the readiness model that already exists internally so operators and automation can tell why a node is or is not client-ready.

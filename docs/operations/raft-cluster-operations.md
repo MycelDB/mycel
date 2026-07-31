@@ -42,6 +42,11 @@ Expected three-node static cluster properties:
 - every node reports the same non-empty `cluster.cluster_id`;
 - every node reports `node.state = clustered`;
 - every node reports `node.admitted = true`;
+- `readiness.client_ready = true`;
+- `readiness.metadata_applied = true`;
+- `readiness.metadata_validated = true`;
+- `readiness.partition_groups_started = true`;
+- `readiness.authoritative_cluster_id` matches `readiness.local_cluster_id`;
 - `cluster.health.status = healthy`;
 - `active_members = 3` for a three-node cluster.
 
@@ -87,6 +92,23 @@ kubectl -n knotbase-dev rollout status statefulset/myceld --timeout=10m
 ```
 
 Then validate cluster status and health on all pods. The cluster ID must remain unchanged.
+
+## Readiness fields
+
+The admin cluster status and health APIs expose a `readiness` object:
+
+| Field | Meaning |
+| --- | --- |
+| `client_ready` | The node is safe for client traffic. |
+| `metadata_applied` | The node has applied authoritative system Raft metadata. |
+| `metadata_validated` | The metadata matches local bootstrap config and identity cache. |
+| `partition_groups_started` | Partition raft groups have started from authoritative placement. |
+| `authoritative_cluster_id` | Cluster ID from system Raft metadata. |
+| `local_cluster_id` | Cluster ID cached in local identity files. |
+| `expected_member_count` | Static cluster member count from authoritative metadata/config. |
+| `readiness_blockers` | Operator-facing reasons that `client_ready` is false. |
+
+Use the readiness object before reading logs. Logs are still useful for root cause, but the API should identify common blockers such as missing metadata, validation failures, and partition startup delays.
 
 ## Readiness blockers and recovery
 
