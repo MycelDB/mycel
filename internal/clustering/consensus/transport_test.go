@@ -7,6 +7,8 @@ import (
 
 	"github.com/myceldb/mycel/internal/wal"
 	raftpb "go.etcd.io/raft/v3/raftpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestMessageEnvelopeRoundTrip(t *testing.T) {
@@ -21,6 +23,43 @@ func TestMessageEnvelopeRoundTrip(t *testing.T) {
 	}
 	if got.Type != msg.Type || got.From != msg.From || got.To != msg.To || got.Term != msg.Term || got.Index != msg.Index {
 		t.Fatalf("decoded message mismatch got=%+v want=%+v", got, msg)
+	}
+}
+
+type failingMessageSender struct{ err error }
+
+func (s failingMessageSender) SendRaftMessage(ctx context.Context, env MessageEnvelope) error {
+	return s.err
+}
+
+func TestRoutedTransportDiagnosticsMissingSender(t *testing.T) {
+	diagnostics := NewTransportDiagnostics(nil)
+	transport := RoutedTransport{Diagnostics: diagnostics, Resolver: ResolverFunc(func(nodeID NodeID) (MessageSender, bool) { return nil, false })}
+	transport.Send(context.Background(), "system", 1, []raftpb.Message{{Type: raftpb.MsgHeartbeat, From: 1, To: 2}})
+	snapshot := diagnostics.Snapshot()
+	if snapshot.SendAttempts != 1 || snapshot.SendFailures != 1 || snapshot.MissingSenderFailures != 1 {
+		t.Fatalf("unexpected diagnostics: %#v", snapshot)
+	}
+	if snapshot.LastGroupID != "system" || snapshot.LastSourceNodeID != 1 || snapshot.LastTargetNodeID != 2 || snapshot.LastMessageType != raftpb.MsgHeartbeat.String() {
+		t.Fatalf("unexpected last failure context: %#v", snapshot)
+	}
+	if len(snapshot.Targets) != 1 || snapshot.Targets[0].MissingSenderFailures != 1 {
+		t.Fatalf("unexpected target diagnostics: %#v", snapshot.Targets)
+	}
+}
+
+func TestRoutedTransportDiagnosticsAuthFailure(t *testing.T) {
+	diagnostics := NewTransportDiagnostics(nil)
+	transport := RoutedTransport{Diagnostics: diagnostics, Resolver: ResolverFunc(func(nodeID NodeID) (MessageSender, bool) {
+		return failingMessageSender{err: status.Error(codes.Unauthenticated, "cluster backend authentication required")}, true
+	})}
+	transport.Send(context.Background(), "system", 1, []raftpb.Message{{Type: raftpb.MsgApp, From: 1, To: 2}})
+	snapshot := diagnostics.Snapshot()
+	if snapshot.SendAttempts != 1 || snapshot.SendFailures != 1 || snapshot.AuthFailures != 1 || snapshot.LastFailureReason != "auth_failure" {
+		t.Fatalf("unexpected diagnostics: %#v", snapshot)
+	}
+	if len(snapshot.Targets) != 1 || snapshot.Targets[0].AuthFailures != 1 {
+		t.Fatalf("unexpected target diagnostics: %#v", snapshot.Targets)
 	}
 }
 

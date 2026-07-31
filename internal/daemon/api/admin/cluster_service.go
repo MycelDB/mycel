@@ -28,12 +28,13 @@ type WALStatusProvider interface {
 
 type AdminClusterService struct {
 	adminv1.UnimplementedAdminClusterServiceServer
-	cluster         *clustering.Manager
-	authorizer      OperatorAuthorizer
-	walStatus       WALStatusProvider
-	checkpointStore *wal.CheckpointStore
-	clusterConfig   daemonconfig.ClusterConfig
-	raftGroups      *consensus.MultiGroup
+	cluster                  *clustering.Manager
+	authorizer               OperatorAuthorizer
+	walStatus                WALStatusProvider
+	checkpointStore          *wal.CheckpointStore
+	clusterConfig            daemonconfig.ClusterConfig
+	raftGroups               *consensus.MultiGroup
+	raftTransportDiagnostics *consensus.TransportDiagnostics
 }
 
 func NewAdminClusterService(cluster *clustering.Manager, authorizer OperatorAuthorizer) *AdminClusterService {
@@ -46,9 +47,12 @@ func (s *AdminClusterService) WithWALStatus(provider WALStatusProvider, checkpoi
 	return s
 }
 
-func (s *AdminClusterService) WithClusterRuntime(cfg daemonconfig.ClusterConfig, groups *consensus.MultiGroup) *AdminClusterService {
+func (s *AdminClusterService) WithClusterRuntime(cfg daemonconfig.ClusterConfig, groups *consensus.MultiGroup, diagnostics ...*consensus.TransportDiagnostics) *AdminClusterService {
 	s.clusterConfig = cfg
 	s.raftGroups = groups
+	if len(diagnostics) > 0 {
+		s.raftTransportDiagnostics = diagnostics[0]
+	}
 	return s
 }
 
@@ -66,6 +70,7 @@ func (s *AdminClusterService) GetClusterRuntimeStatus(ctx context.Context, req *
 			}
 		}
 	}
+	out.RaftTransport = raftTransportDiagnosticsToProto(s.raftTransportDiagnostics)
 	return out, nil
 }
 
@@ -384,6 +389,18 @@ func formatOptionalClusterTime(t *time.Time) string {
 		return ""
 	}
 	return formatClusterTime(*t)
+}
+
+func raftTransportDiagnosticsToProto(diagnostics *consensus.TransportDiagnostics) *adminv1.RaftTransportDiagnostics {
+	if diagnostics == nil {
+		return nil
+	}
+	snapshot := diagnostics.Snapshot()
+	out := &adminv1.RaftTransportDiagnostics{SendAttempts: snapshot.SendAttempts, SendFailures: snapshot.SendFailures, AuthFailures: snapshot.AuthFailures, MissingSenderFailures: snapshot.MissingSenderFailures, LastErrorAt: formatClusterTime(snapshot.LastErrorAt), LastError: snapshot.LastError, LastFailureReason: snapshot.LastFailureReason, LastGroupId: string(snapshot.LastGroupID), LastSourceNodeId: uint64(snapshot.LastSourceNodeID), LastTargetNodeId: uint64(snapshot.LastTargetNodeID), LastMessageType: snapshot.LastMessageType}
+	for _, target := range snapshot.Targets {
+		out.Targets = append(out.Targets, &adminv1.RaftTransportTargetDiagnostics{GroupId: string(target.GroupID), TargetNodeId: uint64(target.TargetNodeID), SendAttempts: target.SendAttempts, SendFailures: target.SendFailures, AuthFailures: target.AuthFailures, MissingSenderFailures: target.MissingSenderFailures, LastErrorAt: formatClusterTime(target.LastErrorAt), LastError: target.LastError, LastFailureReason: target.LastFailureReason, LastMessageType: target.LastMessageType})
+	}
+	return out
 }
 
 func raftReplicaNodeIDs(nodeCount int) []uint64 {

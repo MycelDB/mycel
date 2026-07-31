@@ -88,7 +88,8 @@ func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, 
 		System:    systemStateMachine,
 		Partition: partitionStateMachine,
 	}
-	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) {
+	diagnostics := consensus.NewTransportDiagnostics(rt.Logger)
+	transport := consensus.RoutedTransport{Diagnostics: diagnostics, Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) {
 		if nodeID == consensus.NodeID(cfg.RaftLocalNodeID) {
 			return router, true
 		}
@@ -110,6 +111,7 @@ func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, 
 		router.Register(group)
 	}
 	rt.RaftRouter = router
+	rt.RaftTransportDiagnostics = diagnostics
 	if rt.ClusterManager != nil {
 		rt.ClusterManager.SetBackendRaftRouter(router)
 	}

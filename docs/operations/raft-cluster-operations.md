@@ -136,6 +136,28 @@ Important fields:
 
 A group with `leader_node_id=0` or `health=no_leader` cannot safely accept writes for that group. During startup or rolling restart this may be transient; if it persists, check peer reachability, backend auth, and raft transport logs.
 
+## Raft transport diagnostics
+
+`GetClusterRuntimeStatus` exposes aggregate raft transport diagnostics under `raft_transport`:
+
+| Field | Meaning |
+| --- | --- |
+| `send_attempts` | Raft messages the local node attempted to send. |
+| `send_failures` | Failed raft message sends. |
+| `auth_failures` | Send failures caused by backend authentication/authorization rejection. |
+| `missing_sender_failures` | Sends where the target node had no configured sender/address. |
+| `last_error_at` / `last_error` | Last transport failure time and sanitized error text. |
+| `last_group_id`, `last_source_node_id`, `last_target_node_id`, `last_message_type` | Context for the most recent failure. |
+| `targets[]` | Per group/target-node counters and last failure context. |
+
+Transport failures are also logged with group ID, source node, target node, raft message type, reason, and sanitized error text. Logs and diagnostics must not include backend auth tokens.
+
+Common causes:
+
+- `missing_sender_failures`: `MYCELD_CLUSTER_RAFT_NODE_ADDRS` is missing an entry, has the wrong order, or names a peer that is not part of the static V1 cluster.
+- connection/refused/DNS errors in `last_error`: pod/service DNS mismatch, peer pod not ready, network policy/firewall, or backend port not serving.
+- `auth_failures`: `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN` differs between pods, is missing on one side, or was rotated inconsistently.
+
 ## Graph operation fail-closed behavior
 
 In raft mode, graph operations do not fall back to local file state when the node cannot prove a safe raft route:

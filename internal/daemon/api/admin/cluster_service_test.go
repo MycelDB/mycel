@@ -9,6 +9,7 @@ import (
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	raftpb "go.etcd.io/raft/v3/raftpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -122,7 +123,10 @@ func TestRaftGroupStatusToProtoIncludesStorageDiagnostics(t *testing.T) {
 }
 
 func TestAdminClusterServiceRuntimeStatusAndSpaceRoute(t *testing.T) {
-	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithClusterRuntime(daemonconfig.ClusterConfig{Name: "dev", RaftNodeCount: 3, RaftPartitionCount: 16, RaftReplicaFactor: 3, RaftLocalNodeID: 2, RaftNodeAddrs: []string{"a:9091", "b:9091", "c:9091"}}, nil)
+	diagnostics := consensus.NewTransportDiagnostics(nil)
+	transport := consensus.RoutedTransport{Diagnostics: diagnostics, Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return nil, false })}
+	transport.Send(context.Background(), "system", 2, []raftpb.Message{{Type: raftpb.MsgHeartbeat, From: 2, To: 3}})
+	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithClusterRuntime(daemonconfig.ClusterConfig{Name: "dev", RaftNodeCount: 3, RaftPartitionCount: 16, RaftReplicaFactor: 3, RaftLocalNodeID: 2, RaftNodeAddrs: []string{"a:9091", "b:9091", "c:9091"}}, nil, diagnostics)
 	ctx := authenticatedClusterContext()
 	res, err := svc.GetClusterRuntimeStatus(ctx, &adminv1.GetClusterRuntimeStatusRequest{})
 	if err != nil {
@@ -130,6 +134,9 @@ func TestAdminClusterServiceRuntimeStatusAndSpaceRoute(t *testing.T) {
 	}
 	if res.GetEngine() != adminv1.ClusterEngine_CLUSTER_ENGINE_RAFT || res.GetRaftPartitionCount() != 16 || res.GetLocalRaftNodeId() != 2 || len(res.GetRaftNodeAddrs()) != 3 {
 		t.Fatalf("unexpected runtime status: %#v", res)
+	}
+	if res.GetRaftTransport().GetSendAttempts() != 1 || res.GetRaftTransport().GetMissingSenderFailures() != 1 || res.GetRaftTransport().GetLastTargetNodeId() != 3 {
+		t.Fatalf("unexpected transport diagnostics: %#v", res.GetRaftTransport())
 	}
 	route, err := svc.LookupSpaceRoute(ctx, &adminv1.LookupSpaceRouteRequest{SpaceId: "490851b9-0038-4afc-b1f0-d1bd9e829bc8"})
 	if err != nil {

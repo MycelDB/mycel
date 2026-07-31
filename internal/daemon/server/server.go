@@ -37,33 +37,34 @@ import (
 )
 
 type Config struct {
-	Addr                    string
-	AdminLister             daemonadmin.AdminLister
-	AdminAuthenticator      daemonadmin.OperatorAuthManager
-	OperatorManager         daemonadmin.OperatorManager
-	BackupManager           daemonbackup.Manager
-	UserManager             daemonuser.Manager
-	SpaceManager            daemonspace.Manager
-	SessionManager          daemonsession.Manager
-	GraphManager            daegraph.Manager
-	BlobManager             daemonblob.Manager
-	SemanticManager         daemonsemantic.Manager
-	SchemaManager           schemaservice.Manager
-	AutomationManager       automationservice.Manager
-	ChangeManager           daemonchange.Manager
-	TokenManager            *daemonauth.TokenManager
-	Quiesce                 *quiesce.Coordinator
-	IngressGate             *quiesce.Gate
-	QuiesceExempt           map[string]bool
-	Logger                  *slog.Logger
-	TLSConfig               *tls.Config
-	ClusterBackendAuthToken string
-	ClusteringManager       *clustering.Manager
-	ClusteringServer        clusterpb.ClusterBackendServiceServer
-	WALStatus               adminapi.WALStatusProvider
-	WALCheckpoint           *wal.CheckpointStore
-	ClusterConfig           daemonconfig.ClusterConfig
-	RaftGroups              *consensus.MultiGroup
+	Addr                     string
+	AdminLister              daemonadmin.AdminLister
+	AdminAuthenticator       daemonadmin.OperatorAuthManager
+	OperatorManager          daemonadmin.OperatorManager
+	BackupManager            daemonbackup.Manager
+	UserManager              daemonuser.Manager
+	SpaceManager             daemonspace.Manager
+	SessionManager           daemonsession.Manager
+	GraphManager             daegraph.Manager
+	BlobManager              daemonblob.Manager
+	SemanticManager          daemonsemantic.Manager
+	SchemaManager            schemaservice.Manager
+	AutomationManager        automationservice.Manager
+	ChangeManager            daemonchange.Manager
+	TokenManager             *daemonauth.TokenManager
+	Quiesce                  *quiesce.Coordinator
+	IngressGate              *quiesce.Gate
+	QuiesceExempt            map[string]bool
+	Logger                   *slog.Logger
+	TLSConfig                *tls.Config
+	ClusterBackendAuthToken  string
+	ClusteringManager        *clustering.Manager
+	ClusteringServer         clusterpb.ClusterBackendServiceServer
+	WALStatus                adminapi.WALStatusProvider
+	WALCheckpoint            *wal.CheckpointStore
+	ClusterConfig            daemonconfig.ClusterConfig
+	RaftGroups               *consensus.MultiGroup
+	RaftTransportDiagnostics *consensus.TransportDiagnostics
 }
 
 type Server struct {
@@ -158,7 +159,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		adminv1.RegisterAdminAutomationServiceServer(grpcServer, adminapi.NewAdminAutomationService(cfg.AutomationManager))
 	}
 	if cfg.ClusteringManager != nil {
-		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups))
+		adminv1.RegisterAdminClusterServiceServer(grpcServer, adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups, cfg.RaftTransportDiagnostics))
 	}
 	if cfg.BackupManager != nil {
 		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.OperatorManager))

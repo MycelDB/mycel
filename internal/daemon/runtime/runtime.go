@@ -53,8 +53,9 @@ type Runtime struct {
 	WALCheckpoint *wal.CheckpointStore
 	WALWaiter     *wal.ApplyWaiter
 
-	RaftGroups *consensus.MultiGroup
-	RaftRouter consensus.MessageSender
+	RaftGroups               *consensus.MultiGroup
+	RaftRouter               consensus.MessageSender
+	RaftTransportDiagnostics *consensus.TransportDiagnostics
 
 	LogPath string
 

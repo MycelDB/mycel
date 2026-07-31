@@ -146,6 +146,10 @@ Operators should be able to inspect local raft group status deeply enough to dia
 
 ## Phase A3 — Make raft transport errors visible
 
+### Status
+
+Implemented on `improved_clustering` with raft transport diagnostics counters, per-group/target last-error details, failure logging without token values, admin runtime status exposure, and missing/wrong backend auth coverage for raft transport.
+
 ### Goals
 
 Raft/internode message delivery failures must not disappear silently.
