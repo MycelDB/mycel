@@ -2,7 +2,7 @@
 
 ## Status
 
-Initial D0 inventory. This document classifies known WAL/durable record types so new records cannot be added without an explicit raft-mode consistency decision.
+Initial D0 inventory, updated through D4. This document classifies known WAL/durable record types so new records cannot be added without an explicit raft-mode consistency decision.
 
 The guardrail test `internal/clustering/consensus/raft_record_coverage_test.go` discovers `wal.RecordType` declarations under `internal/` and fails if a record type is missing from the Phase D classification allowlist.
 
@@ -11,7 +11,7 @@ The guardrail test `internal/clustering/consensus/raft_record_coverage_test.go` 
 - **Covered**: a raft propose/apply path exists and Phase D only needs verification or hardening tests.
 - **Gap**: the record currently has local/WAL behavior or incomplete raft coverage and must be handled in a later Phase D tranche.
 - **Derived/local**: authoritative source is elsewhere; local state must be rebuildable and documented. No current records are classified this way yet.
-- **Unsupported/fail-closed**: the feature must reject clustered writes until raft ownership is implemented. No current records are finalized this way yet.
+- **Unsupported/fail-closed**: the feature must reject clustered writes until raft ownership is implemented, or the record belongs to legacy code that is not configured in the raft-mode daemon runtime.
 
 ## Inventory
 
@@ -32,12 +32,12 @@ The guardrail test `internal/clustering/consensus/raft_record_coverage_test.go` 
 | `blob.meta.delete.v1` | Blob metadata | Partition raft | Covered | D3 verify | Metadata delete uses partition raft in raft mode; payload deletion occurs from raft/WAL apply after graph references are rechecked, not before consensus. |
 | `schema.put.v1` | Schema | Partition raft | Covered | D2 verify | Schema writes now route through partition raft in raft mode; continue graph-validation consistency tests. |
 | `schema.delete.v1` | Schema | Partition raft | Covered | D2 verify | Schema deletes now route through partition raft in raft mode; continue replay/idempotency tests. |
-| `semantic.global.mutation.v1` | Semantic global config | System raft or fail-closed | Gap | D4 | Currently WAL/local; decide authoritative ownership. |
+| `semantic.global.mutation.v1` | Semantic global config | System raft | Covered | D4 verify | Global semantic config/credential/policy writes now route through system raft in raft mode. |
 | `semantic.space.mutation.v1` | Semantic space config | Partition raft | Covered | D4 verify | Partition raft path exists; verify no gaps and read semantics. |
 | `semantic.maintenance.mutation.v1` | Semantic maintenance | Partition raft | Covered | D4 verify | Partition raft path exists; classify authoritative vs derived details. |
-| `semantic.accounting.mutation.v1` | Semantic accounting | System raft, partition raft, derived, or fail-closed | Gap | D4 | Decide if accounting is authoritative/audit or derived telemetry. |
-| `embedding.provider_key.put.v1` | Embedding provider keys | System raft or semantic global | Gap | D4 | Credentials/config must not diverge silently. |
-| `embedding.provider_key.delete.v1` | Embedding provider keys | System raft or semantic global | Gap | D4 | Credentials/config must not diverge silently. |
+| `semantic.accounting.mutation.v1` | Semantic accounting/audit | System raft | Covered | D4 verify | Usage accounting is treated as authoritative append-only audit and routes through system raft in raft mode. |
+| `embedding.provider_key.put.v1` | Legacy embedding provider keys | Legacy unsupported in raft daemon | Unsupported/fail-closed | D4 | Superseded by semantic global credentials/config; this legacy WAL store is not configured by the raft-mode daemon runtime. |
+| `embedding.provider_key.delete.v1` | Legacy embedding provider keys | Legacy unsupported in raft daemon | Unsupported/fail-closed | D4 | Superseded by semantic global credentials/config; this legacy WAL store is not configured by the raft-mode daemon runtime. |
 | `daemon.backup.policy.update.v1` | Backup policy | System raft | Gap | D5 | Policy/config should be cluster-wide. Execution should be leader/single-runner. |
 | `daemon.backup.delete.v1` | Backup catalog/delete | System raft | Gap | D5 | Deletion/retention behavior must not diverge silently. |
 
@@ -49,7 +49,7 @@ The guardrail test covers declared `wal.RecordType` values. D0 also needs manual
 - clustering identity/cache files under `meta/clustering/`;
 - graph segment files and overlay lifecycle;
 - blob payload files — D3 classifies these as payload-replicated/catch-up verified in raft mode: the raft metadata command is authoritative and followers must have or fetch/checksum the payload before applying `blob.meta.put.v1`;
-- semantic/vector index files;
+- semantic/vector index files — D4 classifies semantic global configuration and accounting as system-raft authoritative; semantic space configuration and maintenance as partition-raft authoritative; vector index files remain derived/local and rebuildable from graph plus semantic configuration;
 - automation stores and run/audit artifacts;
 - change stream checkpoints;
 - backup catalog/output files;

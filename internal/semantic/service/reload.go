@@ -25,7 +25,7 @@ func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
 	defer m.mu.Unlock()
 	m.globalBase = global
 	m.accountingBase = acct
-	if m.wal != nil {
+	if m.wal != nil || m.raftGroups != nil {
 		m.global = &walGlobalManager{inner: global, module: m}
 		m.accounting = &walAccountingManager{inner: acct, module: m}
 	} else {

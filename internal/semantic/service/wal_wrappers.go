@@ -38,12 +38,21 @@ func (m *Module) commitSemanticMutation(ctx context.Context, typ wal.RecordType,
 	if err != nil {
 		return err
 	}
-	if m.raftGroups != nil && typ == recordTypeSemanticSpace {
-		cmd, err := m.buildSemanticSpaceRaftCommand(rec, payload, "semantic-space-"+rec.SpaceID.String()+"-"+rec.Kind+"-"+uuid.NewString())
-		if err != nil {
-			return err
+	if m.raftGroups != nil {
+		switch typ {
+		case recordTypeSemanticGlobal:
+			cmd, err := m.buildSemanticGlobalRaftCommand(rec, payload, "semantic-global-"+rec.Kind+"-"+uuid.NewString())
+			if err != nil {
+				return err
+			}
+			return m.proposeSemanticSystemRaftCommand(ctx, cmd)
+		case recordTypeSemanticSpace:
+			cmd, err := m.buildSemanticSpaceRaftCommand(rec, payload, "semantic-space-"+rec.SpaceID.String()+"-"+rec.Kind+"-"+uuid.NewString())
+			if err != nil {
+				return err
+			}
+			return m.proposeSemanticRaftCommand(ctx, cmd)
 		}
-		return m.proposeSemanticRaftCommand(ctx, cmd)
 	}
 	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: typ, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
 	if err != nil {
