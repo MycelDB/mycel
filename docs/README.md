@@ -31,6 +31,7 @@ Current clustering direction:
 - `design/clustering-replication-reliability.md` is the seed document for the broader clustering and replication reliability effort.
 - `design/authoritative-system-raft-cluster-metadata.md` describes the system Raft group as the source of truth for cluster identity, membership, and placement metadata.
 - `implementation/authoritative-system-raft-cluster-metadata-implementation-plan.md` breaks the authoritative system Raft metadata work into testable phases.
+- `implementation/phase-a-fail-closed-observability-implementation-plan.md` plans the remaining Phase A fail-closed and observability work from the broader reliability seed document.
 - `operations/raft-cluster-operations.md` documents operator checks, readiness blockers, restart/PVC replacement procedures, and cluster ID mismatch recovery guidance.
 - `design/space-partitioned-raft-clustering.md` describes the space-partitioned `etcd/raft` clustering architecture.
 - `implementation/space-partitioned-raft-clustering-implementation-plan.md` records the Raft migration phases.
