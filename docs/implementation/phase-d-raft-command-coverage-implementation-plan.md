@@ -1,0 +1,247 @@
+# Phase D — Raft Command Coverage Implementation Plan
+
+## Status
+
+Planned. Phase A fail-closed/observability work is complete; Phase D is the next reliability tranche from `docs/design/clustering-replication-reliability.md`.
+
+## Goal
+
+Every durable, user-visible subsystem must have an explicit raft-mode consistency model. In multi-node raft mode, no durable user-visible state may be silently written only to one pod unless it is explicitly documented as derived/rebuildable or intentionally unsupported and fail-closed.
+
+## Non-goals
+
+- Do not implement arbitrary-pod client routing here; that is Phase E.
+- Do not implement strong read-index semantics here except where needed to validate raft command coverage; that is Phase F.
+- Do not build divergence repair tooling here; that is Phase G.
+- Do not commit generated API/SDK code unless explicitly approved.
+
+## Design rules
+
+1. **Prefer raft ownership over local WAL in clustered mode.** If `MYCELD_CLUSTER_RAFT_NODE_ADDRS` configures a multi-node raft cluster, durable subsystem writes must use system raft or the deterministic partition raft group.
+2. **Fail closed for gaps.** If a subsystem is not safe in raft mode yet, writes must return an explicit retryable/failed-precondition error rather than using local WAL/file state.
+3. **Classify derived state explicitly.** Rebuildable caches may remain local, but their authoritative inputs/checkpoints/config must be raft-owned or disabled.
+4. **Keep subsystem ownership.** Service behavior remains under each subsystem package; daemon remains the composition root.
+5. **Make command coverage auditable.** Each WAL/durable record type must appear in a coverage inventory with owner, scope, apply path, tests, and status.
+
+## Current known record inventory
+
+This table is the starting audit map. D0 must confirm it against code before implementation begins.
+
+| Subsystem | Record / state | Current known state | Phase D target |
+| --- | --- | --- | --- |
+| Cluster metadata | system metadata/bootstrap | System raft authoritative for static V1 | Keep; add coverage inventory/tests. |
+| Admin identity | `identity.admin.put.v1`, `identity.admin.session.put.v1` | System raft apply/propose paths exist | Verify all admin durable writes use system raft in raft mode. |
+| User identity | `identity.user.put.v1`, `identity.user.session.put.v1` | System raft apply/propose paths exist | Verify all user durable writes use system raft in raft mode. |
+| Spaces/domains/ACL | `space.create_with_default_domain.v1`, `space.domain.create.v1`, `space.domain.update.v1`, `space.domain.delete.v1`, `space.acl.grant.v1` | Partition raft paths exist | Verify all writes use partition raft; close gaps. |
+| Spaces | `space.delete.v1` | WAL record exists; raft apply coverage appears absent from `applySpaceMetadataRaftCommand` | Add partition raft support or fail closed in raft mode. |
+| Graph | `graph.commit.v1` | Partition raft commit path exists; Phase A fail-closed added | Verify every graph mutation reaches commit path and no local durable bypass remains. |
+| Blob metadata | `blob.meta.put.v1`, `blob.meta.delete.v1` | Partition raft metadata paths exist | Verify metadata routes/proposals; document payload model and add negative tests. |
+| Blob payloads | payload files/content | Payload availability is separate from metadata | Define V1 policy: shared/object-backed, replicated, or fail closed when payload missing. |
+| Schema | `schema.put.v1`, `schema.delete.v1` | WAL records exist; raft coverage not established | High priority: schema must be raft-owned or cluster-mode writes fail closed. |
+| Semantic global config | `semantic.global.mutation.v1` | WAL path; only space semantic mutations appear rafted | Decide system raft vs unsupported/fail-closed. |
+| Semantic space config/checkpoints | `semantic.space.mutation.v1`, `semantic.maintenance.mutation.v1`, `semantic.accounting.mutation.v1` | Some partition raft coverage for space/maintenance; accounting/global gaps likely | Classify authoritative vs derived; raft authoritative records or fail closed. |
+| Embedding provider keys | `embedding.provider_key.put.v1`, `embedding.provider_key.delete.v1` | WAL-backed store | Decide system raft or integrate with semantic global config; must not diverge silently. |
+| Backup | `daemon.backup.policy.update.v1`, `daemon.backup.delete.v1` | WAL-backed | Policy/config should be system raft; execution should be single-runner/leader-owned or fail closed. |
+| Change streams | checkpoints/events | Existing subsystem has durable/local behavior | Events should derive from committed raft changes; checkpoints need explicit model. |
+| Automations | definitions/runs/audit | Persistent user-visible automation state exists outside this inventory | Audit stores; raft definitions/audit or leader-owned scheduler. |
+
+## Phase D0 — Coverage inventory and guardrails
+
+### Tasks
+
+- Add a documented inventory under this plan or a generated/maintained table listing:
+  - record type / store path;
+  - subsystem owner;
+  - raft scope: system, space partition, derived local, unsupported;
+  - propose path;
+  - apply path;
+  - read consistency assumptions;
+  - tests.
+- Add a lightweight static or unit test that fails when a WAL record type is registered but not classified. This can start as an explicit allowlist in a test, not generated code.
+- Add a common cluster-mode helper/interface where useful so subsystems can fail closed when their raft executor is absent.
+- Update `docs/design/clustering-replication-reliability.md` to reference this detailed Phase D plan.
+
+### Acceptance
+
+- Every known WAL record type has a classification.
+- New record types require an explicit consistency classification before tests pass.
+
+## Phase D1 — Space/domain/ACL closure
+
+### Why first
+
+Spaces/domains/ACL decide ownership and validation context for graph/schema/semantic operations. Gaps here undermine every later subsystem.
+
+### Tasks
+
+- Confirm all space/domain/ACL write APIs use raft paths in raft mode.
+- Add partition raft command support for `space.delete.v1`, or fail closed in raft mode if delete is not supported yet.
+- Verify domain create/update/delete commands are idempotent and replay-safe.
+- Verify ACL/grant behavior is partition-owned and consistent across replicas.
+- Add tests for no-leader/missing-group failures returning clear unavailable/failed-precondition errors.
+
+### Acceptance
+
+- No space/domain/ACL write commits to local WAL only in multi-node raft mode.
+- Space/domain/ACL raft apply survives restart/replay in component tests.
+
+## Phase D2 — Schema subsystem raft ownership
+
+### Why high priority
+
+Schema affects graph validation. If schemas diverge per pod, graph writes can pass validation on one pod and fail on another.
+
+### Tasks
+
+- Decide ownership: likely partition raft by domain/space ownership; system raft only if schemas are global.
+- Add raft command builders/apply paths for:
+  - `schema.put.v1`;
+  - `schema.delete.v1`.
+- Route schema writes through raft in raft mode.
+- Make schema writes fail closed if partition group/leader is unavailable.
+- Ensure graph schema validation reads from a schema view consistent with the transaction/space/domain route, or document the V1 boundary until Phase F.
+- Add tests:
+  - schema create/update/delete replicates in an in-process multi-node harness;
+  - graph validation sees the same schema after raft apply;
+  - no-leader schema write fails closed;
+  - local WAL path remains valid in standalone mode.
+
+### Acceptance
+
+- Schema state cannot silently diverge across raft pods.
+- Graph validation cannot depend on pod-local schema state in raft mode.
+
+## Phase D3 — Blob metadata and payload safety
+
+### Tasks
+
+- Verify `blob.meta.put.v1` and `blob.meta.delete.v1` always use partition raft in raft mode.
+- Confirm metadata apply is idempotent and replay-safe.
+- Define V1 payload policy:
+  1. shared/object-backed payload store, or
+  2. payload replicated/catch-up verified, or
+  3. blob operations fail closed in multi-node raft unless payload safety is configured.
+- Ensure a graph node cannot commit a blob reference that only exists on one pod unless payload access is safe cluster-wide.
+- Add tests for:
+  - blob metadata replication;
+  - missing payload failure mode;
+  - backend payload forwarding/auth behavior;
+  - restart/replay metadata consistency.
+
+### Acceptance
+
+- Blob metadata is raft-owned.
+- Blob payload availability has an explicit enforced policy; no silent metadata/payload split-brain.
+
+## Phase D4 — Semantic and embedding configuration classification
+
+### Tasks
+
+- Split semantic state into:
+  - authoritative configuration/credentials/policies/checkpoints;
+  - derived/rebuildable vector/index data;
+  - accounting/audit records.
+- Decide raft scope for each authoritative record:
+  - global records likely system raft;
+  - space records likely partition raft.
+- Add or complete raft command coverage for:
+  - `semantic.global.mutation.v1`;
+  - `semantic.space.mutation.v1`;
+  - `semantic.maintenance.mutation.v1`;
+  - `semantic.accounting.mutation.v1`, if authoritative;
+  - `embedding.provider_key.put.v1` / `delete.v1`, if still separate from semantic global config.
+- For derived vector data, document freshness and rebuild behavior; ensure search responses do not imply stronger guarantees than provided.
+- Add tests for rafted semantic config replication and derived-local rebuildability assumptions.
+
+### Acceptance
+
+- Authoritative semantic/embedding config cannot diverge silently.
+- Derived semantic/index data is explicitly documented and operationally rebuildable.
+
+## Phase D5 — Backup, automation, and change-stream ownership
+
+### Backup
+
+- Raft backup policy/config through system raft.
+- Ensure backup execution is leader-elected or single-runner; non-leaders should not independently execute the same scheduled backup.
+- Define retention/delete behavior under raft.
+
+### Automations
+
+- Audit automation definitions, invocations, run state, outputs, and audit records.
+- Raft definitions/audit records or mark automation worker execution as leader-owned.
+- Ensure workers do not execute the same durable invocation on multiple pods unless designed to be idempotent.
+
+### Change streams
+
+- Define committed raft change source for graph events.
+- Decide checkpoint ownership: system raft, partition raft, or client-owned external checkpoint.
+- Ensure checkpoint writes do not diverge per pod in raft mode.
+
+### Acceptance
+
+- Backup, automation, and change-stream durable state have explicit raft-mode behavior or fail closed.
+
+## Phase D6 — Composite state-machine coverage and unknown command hardening
+
+### Tasks
+
+- Add tests around `compositeSystemStateMachine` and `compositePartitionStateMachine` to prove every classified record type is accepted by exactly one intended subsystem apply path.
+- Unknown record types should fail loudly with group/scope/record context.
+- Add metrics/logs for unsupported raft record types so operational failures are diagnosable.
+- Consider a startup self-check that compares the registered/classified raft record set against subsystem capabilities.
+
+### Acceptance
+
+- A missing raft command handler is caught by tests before release.
+- Runtime unsupported-record errors are actionable.
+
+## Phase D7 — Multi-subsystem integration tests
+
+### Tests
+
+- Create a space/domain/schema, then graph records that require that schema; verify replicas converge.
+- Create blob metadata/payload and graph blob node; verify reads from all active replicas or documented safe failure.
+- Configure semantic policy/index, write graph data, run/search derived index; verify authoritative config convergence.
+- Restart all nodes after multi-subsystem writes; verify state reload/replay convergence.
+- Delete/update records for each covered subsystem and verify replay/idempotency.
+
+### Acceptance
+
+- Multi-subsystem workflows do not diverge after restart or follower catch-up.
+
+## Phase D8 — Documentation and release gate updates
+
+### Tasks
+
+- Update `docs/design/clustering-replication-reliability.md` Phase D status.
+- Update operations docs with unsupported/fail-closed subsystem behavior that remains after D.
+- Add `make test-phase-d` once focused tests exist.
+- Extend `make test-cluster-release-gate` only after the tests are stable enough for pre-release use.
+
+### Acceptance
+
+- Operators know which subsystem features are supported in multi-node raft mode.
+- Release gates prove Phase D coverage without requiring every PR to run destructive clusters.
+
+## Suggested implementation order
+
+1. D0 inventory and guardrail test.
+2. D1 space/domain/ACL closure, especially `space.delete.v1` decision.
+3. D2 schema raft ownership.
+4. D3 blob metadata/payload policy.
+5. D4 semantic/embedding classification and raft gaps.
+6. D5 backup/automation/change-stream ownership.
+7. D6 command-handler hardening.
+8. D7/D8 integration tests and docs/release gates.
+
+## Definition of done
+
+Phase D is complete when:
+
+- every durable record type is classified;
+- every user-visible durable write in raft mode uses system/partition raft or fails closed;
+- derived/local-only state is documented and rebuildable;
+- subsystem raft apply paths are replay-safe and idempotent;
+- multi-subsystem tests prove convergence after restart;
+- operator docs clearly identify remaining unsupported cluster-mode features, if any.

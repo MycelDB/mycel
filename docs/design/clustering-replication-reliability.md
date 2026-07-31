@@ -428,6 +428,8 @@ Acceptance:
 
 ### Phase D — Complete raft command coverage
 
+Detailed plan: `../implementation/phase-d-raft-command-coverage-implementation-plan.md`.
+
 Goals:
 
 - all durable daemon state has an explicit raft-mode owner.
