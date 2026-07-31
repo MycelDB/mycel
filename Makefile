@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-compose-cluster test-k3s-cluster coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
+.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-cluster-release-gate test-compose-cluster test-k3s-cluster coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -75,6 +75,11 @@ test-watch:
 
 test-cluster-identity: generate-proto generate-gql-parser
 	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/cli/cmd -count=1
+
+test-phase-a: generate-proto generate-gql-parser
+	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/daemon/api/client ./internal/daemon/config ./internal/daemon/runtime ./internal/daemon/server ./internal/graph/service ./internal/cli/cmd -count=1
+
+test-cluster-release-gate: test test-compose-cluster test-k3s-cluster
 
 test-compose-cluster:
 	cd ../../knot_pkm/knot_pkm_server && $(MAKE) compose-reset compose-up

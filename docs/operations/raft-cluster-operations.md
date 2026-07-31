@@ -68,6 +68,32 @@ for pod in myceld-0 myceld-1 myceld-2; do
 done
 ```
 
+## Pre-release validation gates
+
+Run the fast Phase A gate during normal development and before review:
+
+```sh
+cd mycel
+make test-phase-a
+go test ./...
+```
+
+Before publishing a clustering-capable image or release, also run the destructive local cluster gates:
+
+```sh
+cd mycel
+make test-compose-cluster
+make test-k3s-cluster
+```
+
+Or use the bundled release gate:
+
+```sh
+make test-cluster-release-gate
+```
+
+`make test-compose-cluster` resets the sibling compose environment under `../../knot_pkm/knot_pkm_server`. `make test-k3s-cluster` resets/reuses the local K3s/k3d environment. Treat both as manual/pre-release checks, not default per-PR CI.
+
 ## Normal Kubernetes operations
 
 ### Rolling restart

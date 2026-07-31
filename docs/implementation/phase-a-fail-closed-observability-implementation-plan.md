@@ -268,6 +268,10 @@ Internode/backend RPCs in cluster mode must require the configured backend auth 
 
 ## Phase A6 — Documentation, validation, and release gates
 
+### Status
+
+Implemented on `improved_clustering`: Phase A docs and operator guidance are synchronized with implemented readiness/diagnostics/fail-closed/backend-auth behavior, `make test-phase-a` provides a fast focused gate for normal CI/developer use, and `make test-cluster-release-gate` documents the destructive pre-release compose/K3s validation bundle.
+
 ### Goals
 
 Make Phase A residual behavior easy to verify before release without requiring every CI run to create a cluster.
@@ -291,16 +295,22 @@ Make Phase A residual behavior easy to verify before release without requiring e
 Required before merging this phase:
 
 ```sh
-make test-cluster-identity
+make test-phase-a
 go test ./...
 make test-compose-cluster
 make test-k3s-cluster
 ```
 
+Equivalent pre-release shortcut:
+
+```sh
+make test-cluster-release-gate
+```
+
 For documentation-only changes, at minimum:
 
 ```sh
-go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/cli/cmd -count=1
+make test-phase-a
 ```
 
 ### Acceptance criteria
