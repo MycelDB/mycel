@@ -136,6 +136,18 @@ Important fields:
 
 A group with `leader_node_id=0` or `health=no_leader` cannot safely accept writes for that group. During startup or rolling restart this may be transient; if it persists, check peer reachability, backend auth, and raft transport logs.
 
+## Graph operation fail-closed behavior
+
+In raft mode, graph operations do not fall back to local file state when the node cannot prove a safe raft route:
+
+- graph reads and transaction base revision lookup require a known partition leader;
+- backend local graph reads reject mismatched `space_id` values and reject requests that reach a non-leader node;
+- graph mutations require the local node to be the target partition leader before local validation/staging;
+- graph commits/proposals return retryable unavailable errors when the partition group is missing or leaderless;
+- clustered local write paths reject subsystem mutation if the subsystem has not been wired to a raft executor.
+
+Until full leader/session routing and linearizable read-index support are implemented, clients may see retryable `Unavailable` errors during leader changes or when they contact a non-leader pod for graph mutations. Retry via a healthy/ready endpoint or route to the partition leader when operator tooling exposes that route.
+
 ## Readiness blockers and recovery
 
 ### `system metadata not applied`

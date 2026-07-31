@@ -13,8 +13,16 @@ import (
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
+
+type denyingLocalWriteHost struct{ daemonruntime.Host }
+
+func (h *denyingLocalWriteHost) RequireLocalWriteAllowed() error {
+	return status.Error(codes.Unavailable, "local writes denied")
+}
 
 func TestGraphRaftCommandIDUsesIdempotencyMetadata(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("idempotency-key", "commit-123"))
@@ -122,6 +130,12 @@ func TestExecuteLocalRaftGraphReadChildrenAndParent(t *testing.T) {
 	readTx := graphTx(spaceID, domainID, 1)
 	req := raftReadRequest("list_children", readTx)
 	req.ID = parent.ID.String()
+	mismatchReq := req
+	mismatchReq.SpaceID = uuid.NewString()
+	mismatchPayload, _ := json.Marshal(mismatchReq)
+	if _, err := m.ExecuteLocalRaftGraphRead(ctx, spaceID, mismatchPayload); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("ExecuteLocalRaftGraphRead(space mismatch) code = %v, err=%v; want InvalidArgument", status.Code(err), err)
+	}
 	payload, _ := json.Marshal(req)
 	resPayload, err := m.ExecuteLocalRaftGraphRead(ctx, spaceID, payload)
 	if err != nil {
@@ -227,6 +241,57 @@ func TestGraphRaftStateMachineDedupesCommandID(t *testing.T) {
 	}
 }
 
+func TestGraphMutationsFailClosedWhenLocalWritesRejected(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	host := &denyingLocalWriteHost{Host: daemonruntime.Host{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}}
+	if result := m.Init(ctx, host); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "blocked", Props: map[string]any{}}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("CreateNode() code = %v, err=%v; want Unavailable", status.Code(err), err)
+	}
+}
+
+func TestGraphRaftOperationsFailClosedWithoutLeader(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	seedTx := graphTx(spaceID, domainID, 0)
+	seed, err := m.CreateNode(ctx, seedTx, NodeInput{Content: "stale-local", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("seed CreateNode() error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, seedTx); err != nil {
+		t.Fatalf("seed CommitTransactionGraph() error = %v", err)
+	}
+	router := consensus.NewLocalMessageRouter()
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 4, Transport: consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return router, true })}, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine { return RaftStateMachine{Module: m, PartitionCount: 4} }}, ElectionTick: 10, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("StartMultiGroup() error = %v", err)
+	}
+	defer groups.Stop()
+	for _, g := range groups.Groups() {
+		router.Register(g)
+	}
+	m.EnableExperimentalRaft(groups, 4)
+	readTx := graphTx(spaceID, domainID, 1)
+	if _, err := m.GetNode(ctx, readTx, seed.ID.String()); status.Code(err) != codes.Unavailable {
+		t.Fatalf("GetNode() code = %v, err=%v; want Unavailable", status.Code(err), err)
+	}
+	if _, err := m.CurrentRevision(ctx, spaceID); status.Code(err) != codes.Unavailable {
+		t.Fatalf("CurrentRevision() code = %v, err=%v; want Unavailable", status.Code(err), err)
+	}
+	if _, err := m.CreateEdge(ctx, readTx, EdgeInput{FromNodeID: seed.ID.String(), ToNodeID: uuid.NewString(), Labels: []string{"contains"}}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("CreateEdge() code = %v, err=%v; want Unavailable", status.Code(err), err)
+	}
+}
+
 func TestGraphRaftCommitReplicatesAcrossThreeNodes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -302,19 +367,29 @@ func TestGraphRaftCommitReplicatesAcrossThreeNodes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("leader not elected: %v", err)
 	}
+	writer := consensus.NodeID(0)
+	for _, mg := range groupsByNode {
+		if g, ok := mg.Group(consensus.PartitionGroupID(probe.PartitionID)); ok && g.Leader() != 0 {
+			writer = g.Leader()
+			break
+		}
+	}
+	if writer == 0 {
+		t.Fatal("partition leader not found")
+	}
 	domainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
-	node, err := modules[1].CreateNode(ctx, tx, NodeInput{Content: "replicated", Props: map[string]any{}})
+	node, err := modules[writer].CreateNode(ctx, tx, NodeInput{Content: "replicated", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
-	if _, err := modules[1].CommitTransactionGraph(ctx, tx); err != nil {
+	if _, err := modules[writer].CommitTransactionGraph(ctx, tx); err != nil {
 		t.Fatalf("CommitTransactionGraph() error = %v", err)
 	}
 	readTx := graphTx(spaceID, domainID, 1)
 	for id, m := range modules {
 		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
-			got, err := m.GetNode(ctx, readTx, node.ID.String())
+			got, err := m.node(ctx, readTx, node.ID)
 			return err == nil && got.Content == "replicated"
 		}); err != nil {
 			t.Fatalf("node %d did not apply replicated graph commit: %v", id, err)
@@ -412,9 +487,9 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	if err := consensus.TickUntil(ctx, 20*time.Millisecond, tickActive, func() bool { l := leaderForPartition(); return l != 0 && l != oldLeader }); err != nil {
 		t.Fatalf("new leader not elected after stopping %d: %v", oldLeader, err)
 	}
-	writer := consensus.NodeID(1)
-	if writer == oldLeader {
-		writer = 2
+	writer := leaderForPartition()
+	if writer == 0 {
+		t.Fatal("new partition leader not found")
 	}
 	domainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
@@ -431,7 +506,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 			continue
 		}
 		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
-			got, err := m.GetNode(ctx, readTx, node.ID.String())
+			got, err := m.node(ctx, readTx, node.ID)
 			return err == nil && got.Content == "after failover"
 		}); err != nil {
 			t.Fatalf("node %d did not apply post-failover commit: %v", id, err)

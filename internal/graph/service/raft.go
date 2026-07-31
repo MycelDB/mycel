@@ -61,10 +61,16 @@ func (m *Module) proposeGraphRaftCommand(ctx context.Context, cmd consensus.Raft
 	}
 	group, ok := m.raftGroups.Group(consensus.PartitionGroupID(cmd.PartitionID))
 	if !ok || group == nil {
-		return fmt.Errorf("raft partition group %d is not available", cmd.PartitionID)
+		return raftGraphUnavailable("raft partition group %d is not available", cmd.PartitionID)
+	}
+	if group.Leader() == 0 {
+		return raftGraphUnavailable("raft partition group %d has no leader", cmd.PartitionID)
 	}
 	_, err := group.Propose(ctx, cmd)
-	return err
+	if err != nil {
+		return raftGraphUnavailable("raft graph proposal for partition %d failed: %v", cmd.PartitionID, err)
+	}
+	return nil
 }
 
 func (m *Module) buildGraphCommitRaftCommand(record graphCommitRecord, partitionCount uint32, commandID string) (consensus.RaftCommand, error) {

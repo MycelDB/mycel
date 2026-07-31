@@ -22,6 +22,7 @@ type SnapshotReloadable interface {
 }
 
 var _ coreruntime.Host = (*Runtime)(nil)
+var _ coreruntime.LocalWriteGate = (*Runtime)(nil)
 var _ coreruntime.QuiesceRegistrar = (*Runtime)(nil)
 var _ coreruntime.QuiesceCoordinatorProvider = (*Runtime)(nil)
 var _ coreruntime.WALProvider = (*Runtime)(nil)

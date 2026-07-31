@@ -183,6 +183,10 @@ Raft/internode message delivery failures must not disappear silently.
 
 ## Phase A4 — Fail closed for graph operations when route/leader/quorum is unavailable
 
+### Status
+
+Implemented on `improved_clustering` for the V1 boundary: raft-mode graph reads/revision lookup now require a known partition leader, backend local reads verify they reached the partition leader and matching space, raft-mode graph mutations require the local partition leader before local validation/staging, raft proposals fail clearly without a leader, and clustered local write paths reject unwired subsystem executors.
+
 ### Goals
 
 In raft mode, graph operations must not silently fall back to unsafe local state when a safe raft path is unavailable.

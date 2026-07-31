@@ -223,6 +223,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		m.walWaiter = provider.WALWaiterStore()
 	}
 	m.writeAllowed = func() error { return nil }
+	if gate, ok := host.(runtime.LocalWriteGate); ok {
+		m.writeAllowed = gate.RequireLocalWriteAllowed
+	}
 	if provider, ok := host.(runtime.WALProvider); ok {
 		if registry := provider.WALRegistryStore(); registry != nil {
 			if err := registry.Register(recordTypeGraphCommit, wal.ApplierFunc(m.applyGraphCommit)); err != nil {
@@ -301,6 +304,9 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
+	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return domaingraph.Node{}, err
+	}
 	id, err := optionalUUID[domaingraph.NodeID](input.NodeID, "node_id")
 	if err != nil {
 		return domaingraph.Node{}, err
@@ -354,6 +360,9 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
+	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return domaingraph.Node{}, err
+	}
 	id, err := parseUUID[domaingraph.NodeID](input.NodeID, "node_id")
 	if err != nil {
 		return domaingraph.Node{}, err
@@ -400,6 +409,12 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 }
 
 func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransaction, input NodeInput) (domaingraph.Node, error) {
+	if err := ensureWritable(tx); err != nil {
+		return domaingraph.Node{}, err
+	}
+	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return domaingraph.Node{}, err
+	}
 	if strings.TrimSpace(input.NodeID) == "" {
 		return m.CreateNode(ctx, tx, input)
 	}
@@ -418,6 +433,9 @@ func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransacti
 
 func (m *Module) DeleteNode(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string, recursive bool) ([]string, []string, error) {
 	if err := ensureWritable(tx); err != nil {
+		return nil, nil, err
+	}
+	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return nil, nil, err
 	}
 	id, err := parseUUID[domaingraph.NodeID](nodeID, "node_id")
@@ -528,6 +546,9 @@ func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
+	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	id, err := optionalUUID[domaingraph.EdgeID](input.EdgeID, "edge_id")
 	if err != nil {
 		return domaingraph.Edge{}, err
@@ -599,6 +620,9 @@ func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
+	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	id, err := parseUUID[domaingraph.EdgeID](input.EdgeID, "edge_id")
 	if err != nil {
 		return domaingraph.Edge{}, err
@@ -638,6 +662,9 @@ func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 
 func (m *Module) DeleteEdge(ctx context.Context, tx daemonsession.GraphTransaction, edgeID string) (string, error) {
 	if err := ensureWritable(tx); err != nil {
+		return "", err
+	}
+	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return "", err
 	}
 	id, err := parseUUID[domaingraph.EdgeID](edgeID, "edge_id")
@@ -708,6 +735,9 @@ func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransact
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
+	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	childID, err := parseUUID[domaingraph.NodeID](nodeID, "node_id")
 	if err != nil {
 		return domaingraph.Edge{}, err
@@ -761,6 +791,9 @@ func (m *Module) ReorderChildren(ctx context.Context, tx daemonsession.GraphTran
 	if err := ensureWritable(tx); err != nil {
 		return nil, err
 	}
+	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return nil, err
+	}
 	children, err := m.ListChildren(ctx, tx, parentNodeID)
 	if err != nil {
 		return nil, err
@@ -787,6 +820,16 @@ func (m *Module) ReorderChildren(ctx context.Context, tx daemonsession.GraphTran
 }
 
 func (m *Module) CurrentRevision(ctx context.Context, spaceID string) (int64, error) {
+	if leader, forward, err := m.shouldForwardRaftGraphRead(spaceID); err != nil {
+		return 0, err
+	} else if forward {
+		req := raftGraphReadRequest{Op: "current_revision", SpaceID: spaceID}
+		var res raftGraphRevisionResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return 0, err
+		}
+		return res.Revision, nil
+	}
 	store, err := m.store(ctx, spaceID)
 	if err != nil {
 		return 0, err

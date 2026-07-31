@@ -32,6 +32,13 @@ type QuiesceCoordinatorProvider interface {
 	QuiesceCoordinator() *quiesce.Coordinator
 }
 
+// LocalWriteGate is implemented by hosts that can decide whether subsystem
+// local mutation paths are safe. Clustered runtimes use this to fail closed
+// when a subsystem has not been wired to its Raft executor yet.
+type LocalWriteGate interface {
+	RequireLocalWriteAllowed() error
+}
+
 // WALProvider is implemented by hosts that expose WAL infrastructure to
 // services that own WAL-backed state.
 type WALProvider interface {

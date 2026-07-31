@@ -263,6 +263,15 @@ func (m *MultiGroup) Tick() {
 	}
 }
 
+func (m *MultiGroup) NodeID() NodeID {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.nodeID
+}
+
 func (m *MultiGroup) Group(id GroupID) (*Group, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

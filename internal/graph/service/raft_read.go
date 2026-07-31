@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/backend"
@@ -11,6 +12,8 @@ import (
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type raftGraphReadRequest struct {
@@ -43,6 +46,10 @@ type raftGraphEdgesResponse struct {
 	NextPageToken string             `json:"next_page_token"`
 }
 
+type raftGraphRevisionResponse struct {
+	Revision int64 `json:"revision"`
+}
+
 func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs []string, token string) {
 	m.raftLocalNode = local
 	m.raftNodeAddrs = append([]string(nil), addrs...)
@@ -50,26 +57,62 @@ func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs 
 }
 
 func (m *Module) shouldForwardRaftGraphRead(spaceID string) (consensus.NodeID, bool, error) {
-	if m.raftGroups == nil || m.raftLocalNode == 0 {
-		return 0, false, nil
+	leader, local, err := m.raftGraphRoute(spaceID)
+	if err != nil || leader == 0 {
+		return 0, false, err
+	}
+	return leader, leader != local, nil
+}
+
+func (m *Module) requireLocalRaftGraphWriteRoute(spaceID string) error {
+	if m.raftGroups == nil {
+		return m.requireLocalWriteAllowed()
+	}
+	leader, local, err := m.raftGraphRoute(spaceID)
+	if err != nil || leader == 0 {
+		return err
+	}
+	if leader != local {
+		return raftGraphUnavailable("raft graph write for space %s is not local to partition leader %d", spaceID, leader)
+	}
+	return nil
+}
+
+func (m *Module) raftGraphRoute(spaceID string) (leader consensus.NodeID, local consensus.NodeID, err error) {
+	if m.raftGroups == nil {
+		return 0, 0, nil
+	}
+	local = m.raftLocalNode
+	if local == 0 {
+		local = m.raftGroups.NodeID()
+	}
+	if local == 0 {
+		return 0, 0, raftGraphUnavailable("raft graph routing is not configured")
 	}
 	if m.raftPartitionCount == 0 {
-		return 0, false, fmt.Errorf("raft partition count is not configured")
+		return 0, 0, raftGraphUnavailable("raft partition count is not configured")
 	}
 	parsed, err := uuid.Parse(spaceID)
 	if err != nil {
-		return 0, false, err
+		return 0, 0, err
 	}
-	cmd, err := consensus.NewSpaceCommand(domainspace.SpaceID(parsed), m.raftPartitionCount, recordTypeGraphCommit, nil, "read-route")
+	cmd, err := consensus.NewSpaceCommand(domainspace.SpaceID(parsed), m.raftPartitionCount, recordTypeGraphCommit, nil, "graph-route")
 	if err != nil {
-		return 0, false, err
+		return 0, 0, err
 	}
 	g, ok := m.raftGroups.Group(consensus.PartitionGroupID(cmd.PartitionID))
 	if !ok || g == nil {
-		return 0, false, fmt.Errorf("raft partition group %d is not available", cmd.PartitionID)
+		return 0, 0, raftGraphUnavailable("raft partition group %d is not available", cmd.PartitionID)
 	}
-	leader := g.Leader()
-	return leader, leader != 0 && leader != m.raftLocalNode, nil
+	leader = g.Leader()
+	if leader == 0 {
+		return 0, 0, raftGraphUnavailable("raft partition group %d has no leader", cmd.PartitionID)
+	}
+	return leader, local, nil
+}
+
+func raftGraphUnavailable(format string, args ...any) error {
+	return status.Errorf(codes.Unavailable, format, args...)
 }
 
 func (m *Module) forwardRaftGraphRead(ctx context.Context, leader consensus.NodeID, req raftGraphReadRequest, out any) error {
@@ -95,6 +138,14 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 	}
 	if req.SpaceID == "" {
 		req.SpaceID = spaceID
+	}
+	if strings.TrimSpace(req.SpaceID) != strings.TrimSpace(spaceID) {
+		return nil, status.Error(codes.InvalidArgument, "raft graph read space_id mismatch")
+	}
+	if leader, local, err := m.raftGraphRoute(req.SpaceID); err != nil {
+		return nil, err
+	} else if leader != 0 && leader != local {
+		return nil, raftGraphUnavailable("raft graph read for space %s reached non-leader node %d; leader is %d", req.SpaceID, local, leader)
 	}
 	tx := req.toTx()
 	saved := m.raftGroups
@@ -137,6 +188,12 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 			return nil, err
 		}
 		return json.Marshal(raftGraphOptionalEdgeResponse{Edge: e})
+	case "current_revision":
+		revision, err := m.CurrentRevision(ctx, req.SpaceID)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftGraphRevisionResponse{Revision: revision})
 	default:
 		return nil, fmt.Errorf("unsupported raft graph read op %q", req.Op)
 	}
