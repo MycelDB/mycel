@@ -314,7 +314,7 @@ func (m *Module) DeleteSpace(ctx context.Context, spaceID string) error {
 	if err != nil {
 		return err
 	}
-	if m.wal == nil {
+	if m.wal == nil && m.raftGroups == nil {
 		if err := m.domains.DeleteForSpace(ctx, id); err != nil {
 			return err
 		}
@@ -333,27 +333,38 @@ func (m *Module) DeleteSpace(ctx context.Context, spaceID string) error {
 		} else if !exists {
 			return ErrSpaceNotFound
 		}
-		payload, err := json.Marshal(deleteSpaceRecord{SpaceID: id})
-		if err != nil {
-			return err
-		}
-		lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeDeleteSpace, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
-		if err != nil {
-			return err
-		}
-		if err := m.wal.Sync(ctx, lsn); err != nil {
-			return err
-		}
-		if err := m.applyDeleteSpace(ctx, wal.Record{Payload: payload}); err != nil {
-			return err
-		}
-		if m.walProgress != nil {
-			if err := m.walProgress.SetAppliedLSN(ctx, lsn); err != nil {
+		record := deleteSpaceRecord{SpaceID: id}
+		if m.raftGroups != nil {
+			cmd, err := m.buildDeleteSpaceRaftCommand(record, m.partitionCount, newInternalCommandID("space-delete"))
+			if err != nil {
 				return err
 			}
-		}
-		if m.walWaiter != nil {
-			m.walWaiter.SetApplied(lsn)
+			if err := m.proposeSpaceMetadataCommand(ctx, cmd); err != nil {
+				return err
+			}
+		} else {
+			payload, err := json.Marshal(record)
+			if err != nil {
+				return err
+			}
+			lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeDeleteSpace, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+			if err != nil {
+				return err
+			}
+			if err := m.wal.Sync(ctx, lsn); err != nil {
+				return err
+			}
+			if err := m.applyDeleteSpace(ctx, wal.Record{Payload: payload}); err != nil {
+				return err
+			}
+			if m.walProgress != nil {
+				if err := m.walProgress.SetAppliedLSN(ctx, lsn); err != nil {
+					return err
+				}
+			}
+			if m.walWaiter != nil {
+				m.walWaiter.SetApplied(lsn)
+			}
 		}
 	}
 	if m.dataDir != "" {

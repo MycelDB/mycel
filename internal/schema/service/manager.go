@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	schemacompile "github.com/myceldb/mycel/internal/schema/compile"
 	"github.com/myceldb/mycel/internal/schema/dsl"
@@ -60,12 +61,14 @@ type Manager interface {
 }
 
 type SchemaManager struct {
-	store       storage.Store
-	now         func() time.Time
-	cache       *validationCache
-	wal         *wal.Manager
-	walProgress wal.AppliedLSNStore
-	walWaiter   *wal.ApplyWaiter
+	store              storage.Store
+	now                func() time.Time
+	cache              *validationCache
+	wal                *wal.Manager
+	walProgress        wal.AppliedLSNStore
+	walWaiter          *wal.ApplyWaiter
+	raftGroups         *consensus.MultiGroup
+	raftPartitionCount uint32
 }
 
 func NewManager(store storage.Store) *SchemaManager {

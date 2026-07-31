@@ -258,6 +258,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 			partitionCount := uint32(cfg.Cluster.RaftPartitionCount)
 			return compositePartitionStateMachine{
 				spaceservice.RaftStateMachine{Module: spaceService, PartitionCount: partitionCount},
+				schemaservice.RaftStateMachine{Manager: schemaService.SchemaManager, PartitionCount: partitionCount},
 				graphservice.RaftStateMachine{Module: graphService, PartitionCount: partitionCount},
 				blobservice.RaftStateMachine{Module: blobService, PartitionCount: partitionCount},
 				daemonsemantic.RaftStateMachine{Module: semanticService, PartitionCount: partitionCount},
@@ -267,6 +268,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 			return nil, err
 		}
 		spaceService.EnableExperimentalRaft(rt.RaftGroups, consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
+		schemaService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		graphService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		graphService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		blobService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))

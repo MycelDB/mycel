@@ -26,12 +26,12 @@ The guardrail test `internal/clustering/consensus/raft_record_coverage_test.go` 
 | `space.domain.update.v1` | Domain | Partition raft | Covered | D1 verify | Verify idempotency and replay. |
 | `space.domain.delete.v1` | Domain | Partition raft | Covered | D1 verify | Verify idempotency and replay. |
 | `space.acl.grant.v1` | Space ACL | Partition raft | Covered | D1 verify | Verify ACL route/owner behavior. |
-| `space.delete.v1` | Space | Partition raft | Gap | D1 | WAL record exists; `applySpaceMetadataRaftCommand` does not currently handle it. Add raft support or fail closed. |
+| `space.delete.v1` | Space | Partition raft | Covered | D1 verify | Delete space now has partition raft command/apply coverage; continue hardening replay and multi-node tests. |
 | `graph.commit.v1` | Graph | Partition raft | Covered | D0 verify | Phase A added fail-closed boundaries; Phase D should verify no durable bypass remains. |
 | `blob.meta.put.v1` | Blob metadata | Partition raft | Covered | D3 verify | Metadata path exists; payload safety policy still required. |
 | `blob.meta.delete.v1` | Blob metadata | Partition raft | Covered | D3 verify | Metadata path exists; payload safety policy still required. |
-| `schema.put.v1` | Schema | Partition raft | Gap | D2 | Schema affects graph validation and must be raft-owned or fail closed in clustered mode. |
-| `schema.delete.v1` | Schema | Partition raft | Gap | D2 | Same as schema put. |
+| `schema.put.v1` | Schema | Partition raft | Covered | D2 verify | Schema writes now route through partition raft in raft mode; continue graph-validation consistency tests. |
+| `schema.delete.v1` | Schema | Partition raft | Covered | D2 verify | Schema deletes now route through partition raft in raft mode; continue replay/idempotency tests. |
 | `semantic.global.mutation.v1` | Semantic global config | System raft or fail-closed | Gap | D4 | Currently WAL/local; decide authoritative ownership. |
 | `semantic.space.mutation.v1` | Semantic space config | Partition raft | Covered | D4 verify | Partition raft path exists; verify no gaps and read semantics. |
 | `semantic.maintenance.mutation.v1` | Semantic maintenance | Partition raft | Covered | D4 verify | Partition raft path exists; classify authoritative vs derived details. |

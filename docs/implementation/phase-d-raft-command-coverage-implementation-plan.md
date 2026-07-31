@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress on `improved_clustering`. D0 has an initial WAL record inventory and guardrail test; implementation tranches D1-D8 remain.
+In progress on `improved_clustering`. D0 is complete; D1/D2 have initial raft command coverage and focused tests; implementation tranches D3-D8 remain.
 
 ## Goal
 
@@ -33,11 +33,11 @@ This table is the starting audit map. D0 must confirm it against code before imp
 | Admin identity | `identity.admin.put.v1`, `identity.admin.session.put.v1` | System raft apply/propose paths exist | Verify all admin durable writes use system raft in raft mode. |
 | User identity | `identity.user.put.v1`, `identity.user.session.put.v1` | System raft apply/propose paths exist | Verify all user durable writes use system raft in raft mode. |
 | Spaces/domains/ACL | `space.create_with_default_domain.v1`, `space.domain.create.v1`, `space.domain.update.v1`, `space.domain.delete.v1`, `space.acl.grant.v1` | Partition raft paths exist | Verify all writes use partition raft; close gaps. |
-| Spaces | `space.delete.v1` | WAL record exists; raft apply coverage appears absent from `applySpaceMetadataRaftCommand` | Add partition raft support or fail closed in raft mode. |
+| Spaces | `space.delete.v1` | Initial partition raft coverage added in D1 | Continue multi-node validation and idempotency hardening. |
 | Graph | `graph.commit.v1` | Partition raft commit path exists; Phase A fail-closed added | Verify every graph mutation reaches commit path and no local durable bypass remains. |
 | Blob metadata | `blob.meta.put.v1`, `blob.meta.delete.v1` | Partition raft metadata paths exist | Verify metadata routes/proposals; document payload model and add negative tests. |
 | Blob payloads | payload files/content | Payload availability is separate from metadata | Define V1 policy: shared/object-backed, replicated, or fail closed when payload missing. |
-| Schema | `schema.put.v1`, `schema.delete.v1` | WAL records exist; raft coverage not established | High priority: schema must be raft-owned or cluster-mode writes fail closed. |
+| Schema | `schema.put.v1`, `schema.delete.v1` | Initial partition raft coverage added in D2 | Continue graph-validation consistency validation. |
 | Semantic global config | `semantic.global.mutation.v1` | WAL path; only space semantic mutations appear rafted | Decide system raft vs unsupported/fail-closed. |
 | Semantic space config/checkpoints | `semantic.space.mutation.v1`, `semantic.maintenance.mutation.v1`, `semantic.accounting.mutation.v1` | Some partition raft coverage for space/maintenance; accounting/global gaps likely | Classify authoritative vs derived; raft authoritative records or fail closed. |
 | Embedding provider keys | `embedding.provider_key.put.v1`, `embedding.provider_key.delete.v1` | WAL-backed store | Decide system raft or integrate with semantic global config; must not diverge silently. |
@@ -76,6 +76,10 @@ Initial implementation complete. See `phase-d-raft-record-coverage-inventory.md`
 
 Spaces/domains/ACL decide ownership and validation context for graph/schema/semantic operations. Gaps here undermine every later subsystem.
 
+### Status
+
+Initial D1 implementation is in place: space/domain/ACL raft paths now include `space.delete.v1`, and metadata proposals fail closed when a partition group or leader is unavailable.
+
 ### Tasks
 
 - Confirm all space/domain/ACL write APIs use raft paths in raft mode.
@@ -94,6 +98,10 @@ Spaces/domains/ACL decide ownership and validation context for graph/schema/sema
 ### Why high priority
 
 Schema affects graph validation. If schemas diverge per pod, graph writes can pass validation on one pod and fail on another.
+
+### Status
+
+Initial D2 implementation is in place: schema put/delete use partition raft in raft mode, keyed by domain ID for the V1 domain-owned schema boundary, and fail closed when the partition group or leader is unavailable.
 
 ### Tasks
 

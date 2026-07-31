@@ -36,3 +36,7 @@ func (m *Module) buildUpdateDomainRaftCommand(record updateDomainRecord, partiti
 func (m *Module) buildDeleteDomainRaftCommand(record deleteDomainRecord, partitionCount uint32, commandID string) (consensus.RaftCommand, error) {
 	return buildSpaceMetadataRaftCommand(record.SpaceID, partitionCount, recordTypeDeleteDomain, record, commandID)
 }
+
+func (m *Module) buildDeleteSpaceRaftCommand(record deleteSpaceRecord, partitionCount uint32, commandID string) (consensus.RaftCommand, error) {
+	return buildSpaceMetadataRaftCommand(record.SpaceID, partitionCount, recordTypeDeleteSpace, record, commandID)
+}
