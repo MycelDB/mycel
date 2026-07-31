@@ -80,6 +80,7 @@ MYCELD_CLUSTER_RAFT_PARTITION_COUNT=64
 MYCELD_CLUSTER_RAFT_REPLICA_FACTOR=3
 MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID=1
 MYCELD_CLUSTER_RAFT_NODE_ADDRS=127.0.0.1:9101,127.0.0.1:9102,127.0.0.1:9103 # index = node_id - 1
+MYCELD_CLUSTER_BACKEND_AUTH_TOKEN=<shared-generated-secret>
 ```
 
-The Raft sizing values and node address map are bootstrap-time cluster settings and should be treated as immutable after cluster bootstrap.
+The Raft sizing values and node address map are bootstrap-time cluster settings and should be treated as immutable after cluster bootstrap. Multi-node Raft clusters also require a non-empty shared backend auth token for internode RPCs.
