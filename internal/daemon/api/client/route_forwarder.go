@@ -21,6 +21,7 @@ import (
 // requests to the node that owns the in-flight session/transaction state.
 type ClientRequestRouter interface {
 	ForwardUnary(ctx context.Context, operation string, sessionID string, transactionID string, req proto.Message, res proto.Message) (bool, error)
+	ForwardUnaryToNode(ctx context.Context, operation string, target consensus.NodeID, sessionID string, transactionID string, req proto.Message, res proto.Message) (bool, error)
 	EnsureLocalSession(ctx context.Context, sessionID string) error
 	EnsureLocalTransaction(ctx context.Context, transactionID string) error
 }
@@ -67,6 +68,13 @@ func (r *BackendClientRequestRouter) ForwardUnary(ctx context.Context, operation
 	if err != nil {
 		r.recordRouteFailure(operation, sessionID, transactionID, target, err)
 		return false, err
+	}
+	return r.ForwardUnaryToNode(ctx, operation, target, sessionID, transactionID, req, res)
+}
+
+func (r *BackendClientRequestRouter) ForwardUnaryToNode(ctx context.Context, operation string, target consensus.NodeID, sessionID string, transactionID string, req proto.Message, res proto.Message) (bool, error) {
+	if r == nil || !r.Enabled {
+		return false, nil
 	}
 	if target == 0 || target == r.LocalNode {
 		r.recordLocalDecision()

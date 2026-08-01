@@ -178,6 +178,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		clientRouter = clientapi.NewBackendClientRequestRouter(clientRoutingEnabled(cfg.ClusterConfig, identity.ClusterID), identity.ClusterID, localNode, cfg.ClusterConfig.RaftNodeAddrs, cfg.ClusterBackendAuthToken)
 	}
 	sessionAPI := clientapi.NewSessionService(cfg.SessionManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
+	if provider, ok := cfg.GraphManager.(clientapi.GraphWriteRouteProvider); ok {
+		sessionAPI.WithGraphWriteRouteProvider(provider)
+	}
 	transactionAPI := clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.ChangeManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	graphAPI := clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager).WithClientRequestRouter(clientRouter)
 	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithClientRequestRouter(clientRouter)

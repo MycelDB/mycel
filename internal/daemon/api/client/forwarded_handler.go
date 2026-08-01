@@ -26,6 +26,8 @@ func (h ForwardedClientHandler) HandleForwardedClientRequest(ctx context.Context
 	}
 	ctx = forwardedContext(ctx, req.Principal)
 	switch req.Operation {
+	case clientv1.SessionService_OpenSession_FullMethodName:
+		return h.handleSessionOpen(ctx, req)
 	case clientv1.SessionService_GetSession_FullMethodName:
 		return h.handleSessionGet(ctx, req)
 	case clientv1.SessionService_HeartbeatSession_FullMethodName:
@@ -102,6 +104,21 @@ func encodeForwarded(msg proto.Message) (clusterbackend.ForwardedClientResponse,
 		return clusterbackend.ForwardedClientResponse{}, status.Errorf(codes.Internal, "encode forwarded response: %v", err)
 	}
 	return clusterbackend.ForwardedClientResponse{PayloadType: clusterbackend.PayloadTypeProto, Payload: payload}, nil
+}
+
+func (h ForwardedClientHandler) handleSessionOpen(ctx context.Context, in clusterbackend.ForwardedClientRequest) (clusterbackend.ForwardedClientResponse, error) {
+	if h.Sessions == nil {
+		return clusterbackend.ForwardedClientResponse{}, status.Error(codes.FailedPrecondition, "session service is not configured")
+	}
+	req := &clientv1.OpenSessionRequest{}
+	if err := decodeForwarded(in.Payload, req); err != nil {
+		return clusterbackend.ForwardedClientResponse{}, err
+	}
+	res, err := h.Sessions.OpenSession(ctx, req)
+	if err != nil {
+		return clusterbackend.ForwardedClientResponse{}, err
+	}
+	return encodeForwarded(res)
 }
 
 func (h ForwardedClientHandler) handleSessionGet(ctx context.Context, in clusterbackend.ForwardedClientRequest) (clusterbackend.ForwardedClientResponse, error) {

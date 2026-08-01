@@ -334,7 +334,7 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Node{}, err
 	}
 	id, err := optionalUUID[domaingraph.NodeID](input.NodeID, "node_id")
@@ -392,7 +392,7 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Node{}, err
 	}
 	id, err := parseUUID[domaingraph.NodeID](input.NodeID, "node_id")
@@ -446,7 +446,7 @@ func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Node{}, err
 	}
 	if strings.TrimSpace(input.NodeID) == "" {
@@ -469,7 +469,7 @@ func (m *Module) DeleteNode(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return nil, nil, err
 	}
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return nil, nil, err
 	}
 	id, err := parseUUID[domaingraph.NodeID](nodeID, "node_id")
@@ -578,7 +578,7 @@ func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Edge{}, err
 	}
 	id, err := optionalUUID[domaingraph.EdgeID](input.EdgeID, "edge_id")
@@ -654,7 +654,7 @@ func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Edge{}, err
 	}
 	id, err := parseUUID[domaingraph.EdgeID](input.EdgeID, "edge_id")
@@ -700,7 +700,7 @@ func (m *Module) DeleteEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := ensureWritable(tx); err != nil {
 		return "", err
 	}
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return "", err
 	}
 	id, err := parseUUID[domaingraph.EdgeID](edgeID, "edge_id")
@@ -762,7 +762,7 @@ func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransact
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Edge{}, err
 	}
 	childID, err := parseUUID[domaingraph.NodeID](nodeID, "node_id")
@@ -822,7 +822,7 @@ func (m *Module) ReorderChildren(ctx context.Context, tx daemonsession.GraphTran
 	if err := ensureWritable(tx); err != nil {
 		return nil, err
 	}
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return nil, err
 	}
 	children, err := m.ListChildren(ctx, tx, parentNodeID)
@@ -883,7 +883,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	if tx.Mode == daemonsession.TransactionModeReadOnly {
 		return CommitResult{}, nil
 	}
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return CommitResult{}, err
 	}
 	release, err := m.enterWrite(ctx)
@@ -1425,7 +1425,7 @@ func (m *Module) parentEdgeLocal(ctx context.Context, tx daemonsession.GraphTran
 }
 
 func (m *Module) stageNode(ctx context.Context, tx daemonsession.GraphTransaction, node domaingraph.Node) error {
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -1438,7 +1438,7 @@ func (m *Module) stageNode(ctx context.Context, tx daemonsession.GraphTransactio
 }
 
 func (m *Module) stageNodeDelete(ctx context.Context, tx daemonsession.GraphTransaction, id domaingraph.NodeID) error {
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -1451,7 +1451,7 @@ func (m *Module) stageNodeDelete(ctx context.Context, tx daemonsession.GraphTran
 }
 
 func (m *Module) stageEdge(ctx context.Context, tx daemonsession.GraphTransaction, edge domaingraph.Edge) error {
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -1464,7 +1464,7 @@ func (m *Module) stageEdge(ctx context.Context, tx daemonsession.GraphTransactio
 }
 
 func (m *Module) stageEdgeDelete(ctx context.Context, tx daemonsession.GraphTransaction, id domaingraph.EdgeID) error {
-	if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
 	m.mu.Lock()

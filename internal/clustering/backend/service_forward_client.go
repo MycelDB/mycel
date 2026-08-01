@@ -93,7 +93,7 @@ func (s *Service) ForwardClientRequest(ctx context.Context, req *clusterpb.Forwa
 		s.recordForwardClientFailure(req, err)
 		return nil, err
 	}
-	if req.GetSessionId() == "" && req.GetTransactionId() == "" {
+	if req.GetSessionId() == "" && req.GetTransactionId() == "" && !strings.HasSuffix(req.GetOperation(), "/OpenSession") {
 		err := status.Error(codes.InvalidArgument, "session_id or transaction_id is required")
 		s.recordForwardClientFailure(req, err)
 		return nil, err

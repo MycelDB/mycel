@@ -82,9 +82,6 @@ func (m *Module) proposeGraphRaftCommand(ctx context.Context, cmd consensus.Raft
 	if local == 0 {
 		return raftGraphUnavailable("raft graph local node id is not configured")
 	}
-	if leader != local {
-		return raftGraphUnavailable("raft graph write for partition %d is not local to partition leader %d", cmd.PartitionID, leader)
-	}
 	_, err := group.Propose(ctx, cmd)
 	if err != nil {
 		return raftGraphUnavailable("raft graph proposal for partition %d failed: %v", cmd.PartitionID, err)

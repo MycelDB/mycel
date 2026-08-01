@@ -6,6 +6,7 @@ import (
 	"time"
 
 	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
@@ -17,13 +18,18 @@ import (
 
 type SessionService struct {
 	clientv1.UnimplementedSessionServiceServer
-	sessions daemonsession.Manager
-	spaces   daemonspace.Manager
-	router   ClientRequestRouter
+	sessions         daemonsession.Manager
+	spaces           daemonspace.Manager
+	graphWriteRouter GraphWriteRouteProvider
+	router           ClientRequestRouter
 }
 
 func NewSessionService(sessions daemonsession.Manager, spaces daemonspace.Manager) *SessionService {
 	return &SessionService{sessions: sessions, spaces: spaces}
+}
+
+type GraphWriteRouteProvider interface {
+	GraphWriteRoute(ctx context.Context, spaceID string) (leader consensus.NodeID, local consensus.NodeID, err error)
 }
 
 func (s *SessionService) WithClientRequestRouter(router ClientRequestRouter) *SessionService {
@@ -31,10 +37,28 @@ func (s *SessionService) WithClientRequestRouter(router ClientRequestRouter) *Se
 	return s
 }
 
+func (s *SessionService) WithGraphWriteRouteProvider(provider GraphWriteRouteProvider) *SessionService {
+	s.graphWriteRouter = provider
+	return s
+}
+
 func (s *SessionService) OpenSession(ctx context.Context, req *clientv1.OpenSessionRequest) (*clientv1.OpenSessionResponse, error) {
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if s.router != nil && s.graphWriteRouter != nil {
+		leader, local, err := s.graphWriteRouter.GraphWriteRoute(ctx, req.GetSpaceId())
+		if err != nil {
+			return nil, mapGraphError(err, "open session graph write route")
+		}
+		if leader != 0 && local != 0 && leader != local {
+			res := &clientv1.OpenSessionResponse{}
+			forwarded, err := s.router.ForwardUnaryToNode(ctx, clientv1.SessionService_OpenSession_FullMethodName, leader, "", "", req, res)
+			if forwarded || err != nil {
+				return res, err
+			}
+		}
 	}
 	// Validate that the caller can see the requested domain before minting a daemon session handle.
 	if _, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, req.GetSpaceId(), req.GetDomainId(), ""); err != nil {
@@ -187,7 +211,11 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 		}
 	}
 	if input.Mode == daemonsession.TransactionModeReadWrite && s.graphs != nil {
-		if checker, ok := s.graphs.(TransactionGraphWriteLeaderChecker); ok {
+		if router, ok := s.graphs.(GraphWriteRouteProvider); ok {
+			if _, _, err := router.GraphWriteRoute(ctx, session.SpaceID); err != nil {
+				return nil, mapGraphError(err, "begin transaction write route")
+			}
+		} else if checker, ok := s.graphs.(TransactionGraphWriteLeaderChecker); ok {
 			if err := checker.RequireLocalGraphWriteLeader(ctx, session.SpaceID); err != nil {
 				return nil, mapGraphError(err, "begin transaction write route")
 			}

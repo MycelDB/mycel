@@ -542,14 +542,23 @@ func TestGraphRaftCommitReplicatesAcrossThreeNodes(t *testing.T) {
 	modules[nonWriter].overlay(nonLeaderTx.ID).putNodes[nonLeaderNode.ID] = nonLeaderNode
 	modules[nonWriter].overlays[nonLeaderTx.ID].opCount++
 	modules[nonWriter].mu.Unlock()
-	if _, _, err := modules[nonWriter].ListNodes(ctx, nonLeaderTx, 0, ""); status.Code(err) != codes.Unavailable {
-		t.Fatalf("non-leader read-write ListNodes() code=%v want Unavailable (err=%v)", status.Code(err), err)
+	if _, _, err := modules[nonWriter].ListNodes(ctx, nonLeaderTx, 0, ""); err != nil {
+		t.Fatalf("non-leader read-write ListNodes() error = %v", err)
 	}
-	if _, err := modules[nonWriter].CommitTransactionGraph(ctx, nonLeaderTx); status.Code(err) != codes.Unavailable {
-		t.Fatalf("non-leader CommitTransactionGraph() code=%v want Unavailable (err=%v)", status.Code(err), err)
+	if _, err := modules[nonWriter].CommitTransactionGraph(ctx, nonLeaderTx); err != nil {
+		t.Fatalf("non-leader CommitTransactionGraph() error = %v", err)
 	}
-	if modules[nonWriter].overlays[nonLeaderTx.ID] == nil {
-		t.Fatal("non-leader commit should fail before deleting transaction overlay")
+	if modules[nonWriter].overlays[nonLeaderTx.ID] != nil {
+		t.Fatal("non-leader commit should delete transaction overlay after follower proposal is applied")
+	}
+	readNonLeaderTx := graphTx(spaceID, domainID, 1)
+	for id, m := range modules {
+		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+			_, err := m.GetNode(ctx, readNonLeaderTx, nonLeaderNode.ID.String())
+			return err == nil
+		}); err != nil {
+			t.Fatalf("node %d did not apply non-leader commit: %v", id, err)
+		}
 	}
 	tx := graphTx(spaceID, domainID, 0)
 	node, err := modules[writer].CreateNode(ctx, tx, NodeInput{Content: "replicated", Props: map[string]any{}})

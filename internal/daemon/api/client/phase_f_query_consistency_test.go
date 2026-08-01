@@ -13,6 +13,7 @@ import (
 	clusterbackend "github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/model"
+	"github.com/myceldb/mycel/internal/clustering/routing"
 	"github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
@@ -26,7 +27,111 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
+
+func TestGraphWriteTransactionThroughNonLeaderIngressRoutesSessionToPartitionLeader(t *testing.T) {
+	cluster := newPhaseFQueryCluster(t)
+	defer cluster.stop()
+
+	leader, userID, spaceID, domainID := cluster.createSpaceOnPartitionLeader(t)
+	ingress := cluster.nodeOtherThan(leader.id)
+	ctx := auth.ContextWithPrincipal(cluster.ctx, auth.Principal{Kind: auth.PrincipalKindUser, UserID: userID, Username: "raft-write-routing-user"})
+
+	opened, err := ingress.sessionsAPI.OpenSession(ctx, &clientv1.OpenSessionRequest{SpaceId: spaceID, DomainId: domainID})
+	if err != nil {
+		t.Fatalf("OpenSession(non-leader ingress) error = %v", err)
+	}
+	sessionID := opened.GetSession().GetSessionId()
+	sessionHome, ok, err := routing.ParseSessionHomeNode(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("ParseSessionHomeNode(%q)=(%d,%v,%v), want routed session", sessionID, sessionHome, ok, err)
+	}
+	if sessionHome != leader.id {
+		t.Fatalf("OpenSession routed session home=%d, want graph partition leader %d", sessionHome, leader.id)
+	}
+
+	writeTx, err := ingress.transactionsAPI.BeginTransaction(ctx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE})
+	if err != nil {
+		t.Fatalf("BeginTransaction(non-leader ingress) error = %v", err)
+	}
+	txID := writeTx.GetTransaction().GetTransactionId()
+	txHome, ok, err := routing.ParseTransactionHomeNode(txID)
+	if err != nil || !ok {
+		t.Fatalf("ParseTransactionHomeNode(%q)=(%d,%v,%v), want routed transaction", txID, txHome, ok, err)
+	}
+	if txHome != leader.id {
+		t.Fatalf("BeginTransaction routed tx home=%d, want graph partition leader %d", txHome, leader.id)
+	}
+
+	parent, err := ingress.graphsAPI.CreateNode(ctx, &clientv1.CreateNodeRequest{TransactionId: txID, Node: &clientv1.NodeCreate{NodeId: ptr(uuid.NewString()), Labels: []string{"Folder"}, Properties: mustStruct(t, map[string]any{"name": "parent"})}})
+	if err != nil {
+		t.Fatalf("CreateNode(parent) via non-leader ingress error = %v", err)
+	}
+	child, err := ingress.graphsAPI.CreateNode(ctx, &clientv1.CreateNodeRequest{TransactionId: txID, Node: &clientv1.NodeCreate{NodeId: ptr(uuid.NewString()), Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"name": "child"})}})
+	if err != nil {
+		t.Fatalf("CreateNode(child) via non-leader ingress error = %v", err)
+	}
+	sibling, err := ingress.graphsAPI.UpsertNode(ctx, &clientv1.UpsertNodeRequest{TransactionId: txID, Node: &clientv1.NodeCreate{NodeId: ptr(uuid.NewString()), Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"name": "sibling"})}})
+	if err != nil {
+		t.Fatalf("UpsertNode(sibling) via non-leader ingress error = %v", err)
+	}
+	if _, err := ingress.graphsAPI.UpdateNode(ctx, &clientv1.UpdateNodeRequest{TransactionId: txID, Node: &clientv1.Node{NodeId: parent.GetNode().GetNodeId(), Labels: []string{"Folder", "Updated"}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}}}); err != nil {
+		t.Fatalf("UpdateNode via non-leader ingress error = %v", err)
+	}
+	link, err := ingress.graphsAPI.CreateEdge(ctx, &clientv1.CreateEdgeRequest{TransactionId: txID, Edge: &clientv1.EdgeCreate{FromNodeId: parent.GetNode().GetNodeId(), ToNodeId: child.GetNode().GetNodeId(), Labels: []string{"related"}, Properties: mustStruct(t, map[string]any{"kind": "initial"})}})
+	if err != nil {
+		t.Fatalf("CreateEdge via non-leader ingress error = %v", err)
+	}
+	if _, err := ingress.graphsAPI.UpdateEdge(ctx, &clientv1.UpdateEdgeRequest{TransactionId: txID, Edge: &clientv1.Edge{EdgeId: link.GetEdge().GetEdgeId(), Properties: mustStruct(t, map[string]any{"kind": "updated"})}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"properties"}}}); err != nil {
+		t.Fatalf("UpdateEdge via non-leader ingress error = %v", err)
+	}
+	if _, err := ingress.graphsAPI.DeleteEdge(ctx, &clientv1.DeleteEdgeRequest{TransactionId: txID, EdgeId: link.GetEdge().GetEdgeId()}); err != nil {
+		t.Fatalf("DeleteEdge via non-leader ingress error = %v", err)
+	}
+	if _, err := ingress.graphsAPI.MoveSubtree(ctx, &clientv1.MoveSubtreeRequest{TransactionId: txID, NodeId: child.GetNode().GetNodeId(), NewParentNodeId: parent.GetNode().GetNodeId()}); err != nil {
+		t.Fatalf("MoveSubtree(child) via non-leader ingress error = %v", err)
+	}
+	if _, err := ingress.graphsAPI.MoveSubtree(ctx, &clientv1.MoveSubtreeRequest{TransactionId: txID, NodeId: sibling.GetNode().GetNodeId(), NewParentNodeId: parent.GetNode().GetNodeId()}); err != nil {
+		t.Fatalf("MoveSubtree(sibling) via non-leader ingress error = %v", err)
+	}
+	if _, err := ingress.graphsAPI.ReorderChildren(ctx, &clientv1.ReorderChildrenRequest{TransactionId: txID, ParentNodeId: parent.GetNode().GetNodeId(), ChildNodeIds: []string{sibling.GetNode().GetNodeId(), child.GetNode().GetNodeId()}}); err != nil {
+		t.Fatalf("ReorderChildren via non-leader ingress error = %v", err)
+	}
+	if _, err := ingress.transactionsAPI.CommitTransaction(ctx, &clientv1.CommitTransactionRequest{TransactionId: txID}); err != nil {
+		t.Fatalf("CommitTransaction via non-leader ingress error = %v", err)
+	}
+
+	batchTx, err := ingress.transactionsAPI.BeginTransaction(ctx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE})
+	if err != nil {
+		t.Fatalf("BeginTransaction(batch) via non-leader ingress error = %v", err)
+	}
+	batchNodeID := uuid.NewString()
+	if _, err := ingress.graphsAPI.ApplyGraphOperations(ctx, &clientv1.ApplyGraphOperationsRequest{TransactionId: batchTx.GetTransaction().GetTransactionId(), Operations: []*clientv1.GraphOperation{
+		{Operation: &clientv1.GraphOperation_CreateNode{CreateNode: &clientv1.NodeCreate{NodeId: &batchNodeID, Labels: []string{"Batch"}, Properties: mustStruct(t, map[string]any{"name": "batch"})}}},
+		{Operation: &clientv1.GraphOperation_UpdateNode{UpdateNode: &clientv1.NodeUpdate{Node: &clientv1.Node{NodeId: batchNodeID, Labels: []string{"Batch", "Updated"}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}}}}},
+	}}); err != nil {
+		t.Fatalf("ApplyGraphOperations via non-leader ingress error = %v", err)
+	}
+	if _, err := ingress.transactionsAPI.CommitTransaction(ctx, &clientv1.CommitTransactionRequest{TransactionId: batchTx.GetTransaction().GetTransactionId()}); err != nil {
+		t.Fatalf("CommitTransaction(batch) via non-leader ingress error = %v", err)
+	}
+
+	readTx, err := ingress.transactionsAPI.BeginTransaction(ctx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY})
+	if err != nil {
+		t.Fatalf("BeginTransaction(read) via non-leader ingress error = %v", err)
+	}
+	got, err := ingress.graphsAPI.GetNode(ctx, &clientv1.GetNodeRequest{TransactionId: readTx.GetTransaction().GetTransactionId(), NodeId: batchNodeID})
+	if err != nil {
+		t.Fatalf("GetNode(batch) via non-leader ingress error = %v", err)
+	}
+	if got.GetNode().GetNodeId() != batchNodeID {
+		t.Fatalf("GetNode(batch)=%q, want %q", got.GetNode().GetNodeId(), batchNodeID)
+	}
+	if diag := ingress.router.Diagnostics(); diag.ForwardSuccesses == 0 || diag.ForwardFailures != 0 {
+		t.Fatalf("ingress router diagnostics after write routing = %#v", diag)
+	}
+}
 
 func TestPhaseFQueryThroughNonHomeIngressRoutesToLeaderStrongRead(t *testing.T) {
 	cluster := newPhaseFQueryCluster(t)
@@ -190,7 +295,7 @@ func newPhaseFQueryCluster(t *testing.T) *phaseFQueryCluster {
 			t.Fatalf("init graphs node %d: %v", id, result.Error)
 		}
 		n := &phaseFQueryNode{id: id, spaces: spaces, sessions: sessions, graphs: graphs}
-		n.sessionsAPI = NewSessionService(sessions, spaces)
+		n.sessionsAPI = NewSessionService(sessions, spaces).WithGraphWriteRouteProvider(graphs)
 		n.transactionsAPI = NewTransactionService(sessions, graphs, spaces)
 		n.graphsAPI = NewGraphService(sessions, graphs)
 		n.queryAPI = NewQueryService(sessions, graphs, spaces)
@@ -358,6 +463,8 @@ func startPhaseFQueryBackend(t *testing.T, node *phaseFQueryNode) (string, func(
 		}
 	}
 }
+
+func ptr[T any](v T) *T { return &v }
 
 type ioDiscard struct{}
 

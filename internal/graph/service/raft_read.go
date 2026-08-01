@@ -115,7 +115,7 @@ func (m *Module) shouldForwardRaftGraphRead(spaceID string) (consensus.NodeID, b
 
 func (m *Module) shouldForwardRaftGraphTransactionRead(tx daemonsession.GraphTransaction) (consensus.NodeID, bool, error) {
 	if tx.Mode == daemonsession.TransactionModeReadWrite {
-		if err := m.requireLocalRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 			return 0, false, err
 		}
 		return 0, false, nil
@@ -125,6 +125,21 @@ func (m *Module) shouldForwardRaftGraphTransactionRead(tx daemonsession.GraphTra
 
 func (m *Module) RequireLocalGraphWriteLeader(ctx context.Context, spaceID string) error {
 	return m.requireLocalRaftGraphWriteRoute(spaceID)
+}
+
+func (m *Module) GraphWriteRoute(ctx context.Context, spaceID string) (consensus.NodeID, consensus.NodeID, error) {
+	return m.raftGraphRoute(spaceID)
+}
+
+func (m *Module) requireRaftGraphWriteRoute(spaceID string) error {
+	if m.raftGroups == nil {
+		return m.requireLocalWriteAllowed()
+	}
+	leader, _, err := m.raftGraphRoute(spaceID)
+	if err != nil || leader == 0 {
+		return err
+	}
+	return nil
 }
 
 func (m *Module) requireLocalRaftGraphWriteRoute(spaceID string) error {

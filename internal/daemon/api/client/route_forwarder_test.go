@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 
 	clusterbackend "github.com/myceldb/mycel/internal/clustering/backend"
@@ -57,6 +58,17 @@ func TestBackendClientRequestRouterForwardsUnaryToRemoteHome(t *testing.T) {
 	diag := router.Diagnostics()
 	if diag.ForwardAttempts != 1 || diag.ForwardSuccesses != 1 || diag.ForwardFailures != 0 || diag.LocalNode != 1 || !diag.Enabled {
 		t.Fatalf("Diagnostics()=%#v", diag)
+	}
+}
+
+func TestBackendClientRequestRouterRejectsStreamingRemoteTransactionWithActionableError(t *testing.T) {
+	router := NewBackendClientRequestRouter(true, "cluster_a", consensus.NodeID(1), []string{"local", "remote"}, "")
+	err := router.EnsureLocalTransaction(context.Background(), "tx.2.00000000-0000-0000-0000-000000000002")
+	if !errors.Is(err, routing.ErrRouteUnavailable) {
+		t.Fatalf("EnsureLocalTransaction() err=%v, want route unavailable", err)
+	}
+	if got := err.Error(); !strings.Contains(got, "stream forwarding for remote-home transaction requests is not yet supported") || !strings.Contains(got, "home_node=2") || !strings.Contains(got, "local_node=1") {
+		t.Fatalf("EnsureLocalTransaction() error %q is not actionable", got)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
@@ -84,11 +85,16 @@ type fakeClientRequestRouter struct {
 }
 
 func (r *fakeClientRequestRouter) ForwardUnary(ctx context.Context, operation string, sessionID string, transactionID string, req proto.Message, res proto.Message) (bool, error) {
+	return r.ForwardUnaryToNode(ctx, operation, 2, sessionID, transactionID, req, res)
+}
+func (r *fakeClientRequestRouter) ForwardUnaryToNode(ctx context.Context, operation string, target consensus.NodeID, sessionID string, transactionID string, req proto.Message, res proto.Message) (bool, error) {
 	r.operation = operation
 	r.sessionID = sessionID
 	r.transactionID = transactionID
 	r.forwarded = true
 	switch out := res.(type) {
+	case *clientv1.OpenSessionResponse:
+		out.Session = &clientv1.GraphSession{SessionId: "s.2.00000000-0000-0000-0000-000000000003", State: clientv1.SessionState_SESSION_STATE_ACTIVE}
 	case *clientv1.GetSessionResponse:
 		out.Session = &clientv1.GraphSession{SessionId: sessionID, State: clientv1.SessionState_SESSION_STATE_ACTIVE}
 	case *clientv1.GetTransactionResponse:
