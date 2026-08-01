@@ -10,6 +10,9 @@ import (
 )
 
 func (m *AutomationManager) CreateProposal(ctx context.Context, domainID graph.DomainID, instanceID, stepID string, actions []automation.Action, summary string) (automation.Proposal, error) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return automation.Proposal{}, err
+	}
 	now := m.now()
 	proposal := automation.Proposal{ID: uuid.NewString(), DomainID: domainID, InstanceID: instanceID, StepID: stepID, Status: "pending", Actions: actions, Summary: summary, CreatedAt: now, UpdatedAt: now}
 	if err := m.store.PutProposal(ctx, proposal); err != nil {
@@ -32,6 +35,9 @@ func (m *AutomationManager) RejectProposal(ctx context.Context, domainID graph.D
 }
 
 func (m *AutomationManager) setProposalStatus(ctx context.Context, domainID graph.DomainID, id, status, reviewer string) (automation.Proposal, error) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return automation.Proposal{}, err
+	}
 	proposal, err := m.store.GetProposal(ctx, domainID, id)
 	if err != nil {
 		return proposal, mapStoreError(err)

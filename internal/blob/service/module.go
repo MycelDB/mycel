@@ -216,13 +216,6 @@ func (m *Module) DeleteBlob(ctx context.Context, spaceID string, blobID string) 
 			return "", fmt.Errorf("%w: %s has %d graph references", ErrReferenced, meta.BlobID, count)
 		}
 	}
-	store, err := m.store(meta.SpaceID)
-	if err != nil {
-		return "", err
-	}
-	if err := store.Delete(ctx, domaingraph.BlobID(meta.BlobID)); err != nil {
-		return "", mapStorageError(err)
-	}
 	if m.raftGroups != nil {
 		if err := m.commitMetaDeleteRaft(ctx, meta.SpaceID, meta.BlobID); err != nil {
 			return "", err

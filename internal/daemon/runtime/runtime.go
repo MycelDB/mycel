@@ -22,6 +22,8 @@ type SnapshotReloadable interface {
 }
 
 var _ coreruntime.Host = (*Runtime)(nil)
+var _ coreruntime.LocalWriteGate = (*Runtime)(nil)
+var _ coreruntime.LocalRouteIdentityProvider = (*Runtime)(nil)
 var _ coreruntime.QuiesceRegistrar = (*Runtime)(nil)
 var _ coreruntime.QuiesceCoordinatorProvider = (*Runtime)(nil)
 var _ coreruntime.WALProvider = (*Runtime)(nil)
@@ -52,8 +54,9 @@ type Runtime struct {
 	WALCheckpoint *wal.CheckpointStore
 	WALWaiter     *wal.ApplyWaiter
 
-	RaftGroups *consensus.MultiGroup
-	RaftRouter consensus.MessageSender
+	RaftGroups               *consensus.MultiGroup
+	RaftRouter               consensus.MessageSender
+	RaftTransportDiagnostics *consensus.TransportDiagnostics
 
 	LogPath string
 
@@ -70,6 +73,29 @@ func New(cfg config.Config, logger *slog.Logger, logPath string, close func() er
 		LogPath:        logPath,
 		close:          close,
 	}
+}
+
+func (r *Runtime) LocalRouteIdentity() coreruntime.LocalRouteIdentity {
+	if r == nil {
+		return coreruntime.LocalRouteIdentity{}
+	}
+	out := coreruntime.LocalRouteIdentity{RaftMode: routeIdentityRaftMode(r.Config), BackendAdvertiseAddr: r.Config.Cluster.BackendAdvertiseAddr, RaftNodeAddrs: append([]string(nil), r.Config.Cluster.RaftNodeAddrs...)}
+	if out.RaftMode {
+		out.RaftNodeID = uint64(r.Config.Cluster.RaftLocalNodeID)
+	}
+	if r.NodeIdentity != nil {
+		out.NodeID = r.NodeIdentity.NodeID
+		out.NodeName = r.NodeIdentity.NodeName
+		out.ClusterID = r.NodeIdentity.ClusterID
+		if r.NodeIdentity.BackendAdvertiseAddr != "" {
+			out.BackendAdvertiseAddr = r.NodeIdentity.BackendAdvertiseAddr
+		}
+	}
+	return out
+}
+
+func routeIdentityRaftMode(cfg config.Config) bool {
+	return len(cfg.Cluster.RaftNodeAddrs) > 0 || cfg.Cluster.RaftNodeCount == 1
 }
 
 func (r *Runtime) ReloadAfterSnapshot(ctx context.Context) error {

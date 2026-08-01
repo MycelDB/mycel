@@ -33,6 +33,7 @@ type QueryService struct {
 	graphs   daegraph.Manager
 	spaces   daemonspace.Manager
 	schemas  schemaservice.Manager
+	router   ClientRequestRouter
 }
 
 func NewQueryService(sessions daemonsession.Manager, graphs daegraph.Manager, spaces daemonspace.Manager) *QueryService {
@@ -44,7 +45,22 @@ func (s *QueryService) WithSchemaManager(manager schemaservice.Manager) *QuerySe
 	return s
 }
 
+func (s *QueryService) WithClientRequestRouter(router ClientRequestRouter) *QueryService {
+	s.router = router
+	return s
+}
+
 func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest) (*clientv1.ExecuteQueryResponse, error) {
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.ExecuteQueryResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.QueryService_ExecuteQuery_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -73,11 +89,12 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err := validateStructuredGraphQueryWithSchema(req.GetQuery(), schemaCtx); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	nodes, err := s.allNodes(ctx, tx)
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	nodes, err := s.allNodes(readCtx, tx)
 	if err != nil {
 		return nil, mapGraphError(err, "query list nodes")
 	}
-	edges, err := s.allEdges(ctx, tx)
+	edges, err := s.allEdges(readCtx, tx)
 	if err != nil {
 		return nil, mapGraphError(err, "query list edges")
 	}
@@ -112,10 +129,20 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 		out = append(out, protoRow)
 	}
 	result := queryResultFromRows(out, next)
-	return &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result}, nil
+	return &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
 func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLRequest) (*clientv1.ExecuteGQLResponse, error) {
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.ExecuteGQLResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.QueryService_ExecuteGQL_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	if strings.TrimSpace(req.GetQuery()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "query is required")
 	}
@@ -144,19 +171,30 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if plan.AccessMode == analysis.ReadWrite && tx.Mode != daemonsession.TransactionModeReadWrite {
 		return nil, status.Error(codes.FailedPrecondition, "GQL query requires a read-write transaction")
 	}
-	execResult, err := execution.Execute(ctx, gqlDaemonGraph{service: s, tx: tx}, plan)
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	execResult, err := execution.Execute(readCtx, gqlDaemonGraph{service: s, tx: tx}, plan)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapGQLExecutionError(err)
 	}
 	rows := gqlRowsToProto(execResult)
 	pageRows, next, err := paginateProtoQueryRows(rows, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &clientv1.ExecuteGQLResponse{Result: queryResultFromRowsWithCounters(pageRows, next, execResult.Counters)}, nil
+	return &clientv1.ExecuteGQLResponse{Result: queryResultFromRowsWithCounters(pageRows, next, execResult.Counters), ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
 func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.ExecuteGQLScriptRequest) (*clientv1.ExecuteGQLScriptResponse, error) {
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.ExecuteGQLScriptResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.QueryService_ExecuteGQLScript_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	if strings.TrimSpace(req.GetScript()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "script is required")
 	}
@@ -185,12 +223,13 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	if scriptPlan.AccessMode == analysis.ReadWrite && tx.Mode != daemonsession.TransactionModeReadWrite {
 		return nil, status.Error(codes.FailedPrecondition, "GQL script requires a read-write transaction")
 	}
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
 	statementResults := []*clientv1.GQLStatementResult{}
 	aggregate := &clientv1.QueryResult{Graph: &clientv1.ResultGraph{}, Counters: &clientv1.QueryCounters{}}
 	for _, statement := range scriptPlan.Statements {
-		execResult, err := execution.Execute(ctx, gqlDaemonGraph{service: s, tx: tx}, statement.Plan)
+		execResult, err := execution.Execute(readCtx, gqlDaemonGraph{service: s, tx: tx}, statement.Plan)
 		if err != nil {
-			statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: false, Error: err.Error()})
+			statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: false, Error: mapGQLExecutionError(err).Error(), ReadMetadata: protoReadMetadata(recorder.Summary())})
 			if req.GetStopOnError() {
 				break
 			}
@@ -206,10 +245,17 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 			continue
 		}
 		result := queryResultFromRowsWithCounters(pageRows, next, execResult.Counters)
-		statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: true, Result: result})
+		statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: true, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary())})
 		mergeQueryResult(aggregate, result)
 	}
-	return &clientv1.ExecuteGQLScriptResponse{Statements: statementResults, Result: aggregate}, nil
+	return &clientv1.ExecuteGQLScriptResponse{Statements: statementResults, Result: aggregate, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
+}
+
+func mapGQLExecutionError(err error) error {
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
+	return status.Error(codes.InvalidArgument, err.Error())
 }
 
 func (s *QueryService) schemaContext(ctx context.Context, tx daemonsession.GraphTransaction) (analysis.SchemaContext, error) {

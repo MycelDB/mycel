@@ -41,6 +41,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.Cluster.RaftNodeCount != DefaultClusterRaftNodeCount || cfg.Cluster.RaftPartitionCount != DefaultClusterRaftPartitionCount || cfg.Cluster.RaftReplicaFactor != DefaultClusterRaftReplicaFactor || cfg.Cluster.RaftLocalNodeID != DefaultClusterRaftLocalNodeID {
 		t.Fatalf("unexpected cluster raft defaults: %+v", cfg.Cluster)
 	}
+	if cfg.Cluster.RaftCompactionMode != DefaultClusterRaftCompactionMode || cfg.Cluster.RaftSnapshotEntries != 0 || cfg.Cluster.RaftSnapshotInterval != 0 || cfg.Cluster.RaftSnapshotMaxLogBytes != 0 || cfg.Cluster.RaftSnapshotMinRetainEntries != 0 {
+		t.Fatalf("unexpected cluster raft compaction defaults: %+v", cfg.Cluster)
+	}
 }
 
 func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
@@ -50,6 +53,7 @@ func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 	t.Setenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR", "3")
 	t.Setenv("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID", "4")
 	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS", "127.0.0.1:9101,127.0.0.1:9102,127.0.0.1:9103,127.0.0.1:9104,127.0.0.1:9105")
+	t.Setenv("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN", "test-cluster-token")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -63,12 +67,56 @@ func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvRaftCompactionOverrides(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_CLUSTER_RAFT_COMPACTION_MODE", "conservative")
+	t.Setenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_ENTRIES", "1000")
+	t.Setenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_INTERVAL", "10m")
+	t.Setenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MAX_LOG_BYTES", "1048576")
+	t.Setenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MIN_RETAIN_ENTRIES", "128")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.Cluster.RaftCompactionMode != "conservative" || cfg.Cluster.RaftSnapshotEntries != 1000 || cfg.Cluster.RaftSnapshotInterval != 10*time.Minute || cfg.Cluster.RaftSnapshotMaxLogBytes != 1048576 || cfg.Cluster.RaftSnapshotMinRetainEntries != 128 {
+		t.Fatalf("unexpected raft compaction overrides: %+v", cfg.Cluster)
+	}
+}
+
+func TestLoadFromEnvRaftCompactionModeValidation(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_CLUSTER_RAFT_COMPACTION_MODE", "auto")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected invalid raft compaction mode to fail")
+	}
+}
+
 func TestLoadFromEnvRaftNodeAddrsValidation(t *testing.T) {
 	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
 	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_COUNT", "3")
 	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS", "127.0.0.1:9101,127.0.0.1:9102")
 	if _, err := LoadFromEnv(); err == nil {
 		t.Fatal("expected raft node address count mismatch to fail")
+	}
+}
+
+func TestLoadFromEnvRaftNodeAddrsRequireBackendAuthToken(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_COUNT", "3")
+	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS", "127.0.0.1:9101,127.0.0.1:9102,127.0.0.1:9103")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected multi-node raft cluster without backend auth token to fail")
+	}
+}
+
+func TestLoadFromEnvSingleNodeRaftAllowsEmptyBackendAuthToken(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_COUNT", "1")
+	t.Setenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR", "1")
+	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS", "127.0.0.1:9101")
+	if _, err := LoadFromEnv(); err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
 }
 

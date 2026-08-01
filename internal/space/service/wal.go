@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -139,7 +141,13 @@ func (m *Module) applyDeleteSpace(ctx context.Context, rec wal.Record) error {
 	if err := m.access.DeleteForSpace(ctx, payload.SpaceID); err != nil {
 		return err
 	}
-	return m.spaces.ApplyDelete(ctx, payload.SpaceID)
+	if err := m.spaces.ApplyDelete(ctx, payload.SpaceID); err != nil {
+		return err
+	}
+	if m.dataDir != "" {
+		_ = os.RemoveAll(filepath.Join(m.dataDir, "graphs", payload.SpaceID.String()))
+	}
+	return nil
 }
 
 func (m *Module) applyCreateSpaceRecord(ctx context.Context, payload createSpaceWithDefaultDomainRecord) (domainspace.Space, graph.Domain, error) {

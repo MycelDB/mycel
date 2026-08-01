@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
@@ -85,8 +86,30 @@ var _ Service = testModule{}
 var _ Starter = lifecycleService{}
 var _ coreruntime.Host = (*Runtime)(nil)
 var _ coreruntime.QuiesceRegistrar = (*Runtime)(nil)
+var _ coreruntime.LocalRouteIdentityProvider = (*Runtime)(nil)
 var _ coreruntime.WALProvider = (*Runtime)(nil)
 var _ Stopper = lifecycleService{}
+
+func TestRuntimeLocalRouteIdentity(t *testing.T) {
+	rt := New(config.Config{Cluster: config.ClusterConfig{RaftLocalNodeID: 1, BackendAdvertiseAddr: "127.0.0.1:9093", RaftNodeAddrs: []string{"a", "b"}}}, slog.New(slog.NewTextHandler(io.Discard, nil)), "", nil)
+	rt.NodeIdentity = &model.NodeIdentity{NodeID: "node_2", NodeName: "node-b", ClusterID: "cluster-1", BackendAdvertiseAddr: "127.0.0.1:19093"}
+	got := rt.LocalRouteIdentity()
+	if got.NodeID != "node_2" || got.NodeName != "node-b" || got.ClusterID != "cluster-1" || !got.RaftMode || got.RaftNodeID != 1 || got.BackendAdvertiseAddr != "127.0.0.1:19093" {
+		t.Fatalf("LocalRouteIdentity() = %#v", got)
+	}
+	got.RaftNodeAddrs[0] = "mutated"
+	if rt.Config.Cluster.RaftNodeAddrs[0] == "mutated" {
+		t.Fatal("LocalRouteIdentity leaked raft node address slice")
+	}
+}
+
+func TestRuntimeLocalRouteIdentityStandaloneDoesNotAdvertiseRaftNode(t *testing.T) {
+	rt := New(config.Config{Cluster: config.ClusterConfig{RaftLocalNodeID: 1, RaftNodeCount: 3}}, slog.New(slog.NewTextHandler(io.Discard, nil)), "", nil)
+	got := rt.LocalRouteIdentity()
+	if got.RaftMode || got.RaftNodeID != 0 {
+		t.Fatalf("LocalRouteIdentity()=%#v, want non-raft identity", got)
+	}
+}
 
 func TestRuntimeInitServicesRegistersByName(t *testing.T) {
 	rt := New(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), "/tmp/myceld.log", nil)

@@ -366,11 +366,14 @@ func (m *Module) BeginMutation(ctx context.Context) (context.Context, func(), er
 }
 
 func (m *Module) GlobalManager() storesemantic.GlobalManager {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.wal != nil || m.raftGroups != nil {
+		return m.global
+	}
 	// Semantic admin/provisioning commands are still being migrated to daemon APIs.
 	// Reload the file-backed global manager on demand so client semantic search can
 	// observe metadata written by those embedded/admin workflows without a daemon restart.
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	mgr := storesemantic.NewGlobalManager()
 	if err := mgr.Init(context.Background(), filepath.Join(m.dataDir, "meta")); err == nil {
 		m.global = mgr

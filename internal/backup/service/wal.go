@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/wal"
@@ -32,7 +33,7 @@ func (m *Module) applyBackupPolicyUpdate(ctx context.Context, rec wal.Record) er
 	m.mu.Lock()
 	m.policy = updated
 	m.mu.Unlock()
-	return nil
+	return m.reconcileSchedulerForPolicy(context.Background(), updated)
 }
 
 func (m *Module) applyBackupDelete(ctx context.Context, rec wal.Record) error {
@@ -40,7 +41,10 @@ func (m *Module) applyBackupDelete(ctx context.Context, rec wal.Record) error {
 	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
 		return err
 	}
-	return m.manager.DeleteBackup(ctx, payload.BackupID)
+	if err := m.manager.DeleteBackup(ctx, payload.BackupID); err != nil && !errors.Is(err, backupcore.ErrBackupNotFound) {
+		return err
+	}
+	return nil
 }
 
 func (m *Module) commitWAL(ctx context.Context, typ wal.RecordType, payload any) error {

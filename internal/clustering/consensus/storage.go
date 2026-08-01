@@ -14,10 +14,11 @@ import (
 )
 
 type PersistentStorage struct {
-	mu      sync.Mutex
-	dir     string
-	memory  raftStorage
-	entries []raftpb.Entry
+	mu        sync.Mutex
+	dir       string
+	memory    raftStorage
+	entries   []raftpb.Entry
+	confState raftpb.ConfState
 }
 
 type raftStorage interface {
@@ -52,7 +53,14 @@ func NewPersistentStorage(dir string) (*PersistentStorage, error) {
 func (s *PersistentStorage) InitialState() (raftpb.HardState, raftpb.ConfState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.memory.InitialState()
+	hs, cs, err := s.memory.InitialState()
+	if err != nil {
+		return hs, cs, err
+	}
+	if len(s.confState.Voters) > 0 || len(s.confState.Learners) > 0 || len(s.confState.VotersOutgoing) > 0 || len(s.confState.LearnersNext) > 0 {
+		cs = s.confState
+	}
+	return hs, cs, nil
 }
 func (s *PersistentStorage) Entries(lo, hi, maxSize uint64) ([]raftpb.Entry, error) {
 	s.mu.Lock()
@@ -111,7 +119,11 @@ func (s *PersistentStorage) ApplySnapshot(snap raftpb.Snapshot) error {
 		return err
 	}
 	s.entries = nil
+	s.confState = snap.Metadata.ConfState
 	if err := writeProtoAtomic(filepath.Join(s.dir, "snapshot.pb"), &snap); err != nil {
+		return err
+	}
+	if err := writeProtoAtomic(filepath.Join(s.dir, "conf_state.pb"), &s.confState); err != nil {
 		return err
 	}
 	return writeEntriesAtomic(filepath.Join(s.dir, "entries.pb"), s.entries)
@@ -124,7 +136,13 @@ func (s *PersistentStorage) CreateSnapshot(i uint64, cs *raftpb.ConfState, data 
 	if err != nil {
 		return raftpb.Snapshot{}, err
 	}
+	if cs != nil {
+		s.confState = *cs
+	}
 	if err := writeProtoAtomic(filepath.Join(s.dir, "snapshot.pb"), &snap); err != nil {
+		return raftpb.Snapshot{}, err
+	}
+	if err := writeProtoAtomic(filepath.Join(s.dir, "conf_state.pb"), &s.confState); err != nil {
 		return raftpb.Snapshot{}, err
 	}
 	return snap, nil
@@ -142,7 +160,21 @@ func (s *PersistentStorage) Compact(compactIndex uint64) error {
 	return writeEntriesAtomic(filepath.Join(s.dir, "entries.pb"), s.entries)
 }
 
+func (s *PersistentStorage) SetConfState(cs raftpb.ConfState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.confState = cs
+	return writeProtoAtomic(filepath.Join(s.dir, "conf_state.pb"), &s.confState)
+}
+
 func (s *PersistentStorage) load() error {
+	if data, err := os.ReadFile(filepath.Join(s.dir, "conf_state.pb")); err == nil && len(data) > 0 {
+		if err := s.confState.Unmarshal(data); err != nil {
+			return err
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if data, err := os.ReadFile(filepath.Join(s.dir, "snapshot.pb")); err == nil && len(data) > 0 {
 		var snap raftpb.Snapshot
 		if err := snap.Unmarshal(data); err != nil {

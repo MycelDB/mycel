@@ -12,6 +12,9 @@ import (
 )
 
 func (m *AutomationManager) ProcessScheduled(ctx context.Context, domainID graph.DomainID, limit int) (int, error) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return 0, err
+	}
 	defs, err := m.ListAutomations(ctx, domainID, automation.StatusEnabled)
 	if err != nil {
 		return 0, err

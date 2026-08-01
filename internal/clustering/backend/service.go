@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering/consensus"
@@ -17,15 +18,19 @@ import (
 
 type Service struct {
 	clusterpb.UnimplementedClusterBackendServiceServer
-	Identity            model.NodeIdentity
-	State               model.NodeState
-	Topology            *topology.Registry
-	Membership          *membership.FileStore
-	BlobPayloadProvider BlobPayloadProvider
-	RaftRouter          consensus.MessageSender
-	SpaceReader         SpaceReader
-	GraphReader         any
-	SemanticReader      any
+	Identity               model.NodeIdentity
+	State                  model.NodeState
+	Topology               *topology.Registry
+	Membership             *membership.FileStore
+	BlobPayloadProvider    BlobPayloadProvider
+	RaftRouter             consensus.MessageSender
+	SpaceReader            SpaceReader
+	GraphReader            any
+	SemanticReader         any
+	ClientRequestForwarder ForwardedClientRequestHandler
+
+	forwardMu          sync.Mutex
+	forwardDiagnostics ForwardClientDiagnostics
 }
 
 func NewService(identity model.NodeIdentity, state model.NodeState, registry *topology.Registry) *Service {

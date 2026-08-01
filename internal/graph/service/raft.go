@@ -9,12 +9,20 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/metadata"
 )
 
 type RaftStateMachine struct {
 	Module         *Module
+	PartitionID    uint32
 	PartitionCount uint32
+}
+
+func (s RaftStateMachine) RaftStateMachineName() string { return "graph" }
+
+func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope, recordType wal.RecordType) bool {
+	return scope == consensus.CommandScopeSpacePartition && recordType == recordTypeGraphCommit
 }
 
 func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {
@@ -61,10 +69,24 @@ func (m *Module) proposeGraphRaftCommand(ctx context.Context, cmd consensus.Raft
 	}
 	group, ok := m.raftGroups.Group(consensus.PartitionGroupID(cmd.PartitionID))
 	if !ok || group == nil {
-		return fmt.Errorf("raft partition group %d is not available", cmd.PartitionID)
+		return raftGraphUnavailable("raft partition group %d is not available", cmd.PartitionID)
+	}
+	leader := group.Leader()
+	if leader == 0 {
+		return raftGraphUnavailable("raft partition group %d has no leader", cmd.PartitionID)
+	}
+	local := m.raftLocalNode
+	if local == 0 && m.raftGroups != nil {
+		local = m.raftGroups.NodeID()
+	}
+	if local == 0 {
+		return raftGraphUnavailable("raft graph local node id is not configured")
 	}
 	_, err := group.Propose(ctx, cmd)
-	return err
+	if err != nil {
+		return raftGraphUnavailable("raft graph proposal for partition %d failed: %v", cmd.PartitionID, err)
+	}
+	return nil
 }
 
 func (m *Module) buildGraphCommitRaftCommand(record graphCommitRecord, partitionCount uint32, commandID string) (consensus.RaftCommand, error) {
@@ -101,6 +123,9 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 	}
 	if strings.TrimSpace(record.SpaceID) != strings.TrimSpace(cmd.SpaceID) {
 		return fmt.Errorf("graph raft command space_id mismatch: command=%s payload=%s", cmd.SpaceID, record.SpaceID)
+	}
+	if err := m.validateBlobReferences(ctx, record.SpaceID, record.PutNodes); err != nil {
+		return err
 	}
 	_, _, err := m.applyGraphCommitRecord(ctx, record)
 	if err != nil {

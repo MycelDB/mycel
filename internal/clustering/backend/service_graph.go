@@ -22,6 +22,9 @@ func (s *Service) ExecuteRaftGraphRead(ctx context.Context, req *clusterpb.Execu
 	}
 	payload, err := reader.ExecuteLocalRaftGraphRead(ctx, req.GetSpaceId(), req.GetPayload())
 	if err != nil {
+		if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+			return nil, err
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &clusterpb.ExecuteRaftGraphReadResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Payload: payload}, nil

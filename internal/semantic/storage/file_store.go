@@ -233,7 +233,9 @@ func (m *globalManager) UpsertModelEndpoint(ctx context.Context, endpoint domain
 	if endpoint.CreatedAt.IsZero() {
 		endpoint.CreatedAt = now
 	}
-	endpoint.UpdatedAt = now
+	if endpoint.UpdatedAt.IsZero() {
+		endpoint.UpdatedAt = now
+	}
 	for i, existing := range m.endpoints.ModelEndpoints {
 		if normalizeKey(existing.Key) == endpoint.Key {
 			endpoint.ID = existing.ID
@@ -272,7 +274,9 @@ func (m *globalManager) UpsertModel(ctx context.Context, model domainsemantic.In
 	if model.CreatedAt.IsZero() {
 		model.CreatedAt = now
 	}
-	model.UpdatedAt = now
+	if model.UpdatedAt.IsZero() {
+		model.UpdatedAt = now
+	}
 	for i, existing := range m.models.Models {
 		if normalizeKey(existing.Key) == model.Key {
 			model.ID = existing.ID
@@ -307,7 +311,9 @@ func (m *globalManager) UpsertModelEndpointCapability(ctx context.Context, capab
 	if capability.CreatedAt.IsZero() {
 		capability.CreatedAt = now
 	}
-	capability.UpdatedAt = now
+	if capability.UpdatedAt.IsZero() {
+		capability.UpdatedAt = now
+	}
 	for i, existing := range m.capabilities.Capabilities {
 		if existing.ModelEndpointID == capability.ModelEndpointID && existing.ModelID == capability.ModelID && existing.Operation == capability.Operation {
 			capability.ID = existing.ID
@@ -346,7 +352,9 @@ func (m *globalManager) UpsertVectorStore(ctx context.Context, vectorStore domai
 	if vectorStore.CreatedAt.IsZero() {
 		vectorStore.CreatedAt = now
 	}
-	vectorStore.UpdatedAt = now
+	if vectorStore.UpdatedAt.IsZero() {
+		vectorStore.UpdatedAt = now
+	}
 	for i, existing := range m.vectorStores.VectorStores {
 		if normalizeKey(existing.Key) == vectorStore.Key {
 			vectorStore.ID = existing.ID
@@ -381,7 +389,9 @@ func (m *globalManager) UpsertSecret(ctx context.Context, secret domainsemantic.
 	if secret.CreatedAt.IsZero() {
 		secret.CreatedAt = now
 	}
-	secret.UpdatedAt = now
+	if secret.UpdatedAt.IsZero() {
+		secret.UpdatedAt = now
+	}
 	for i, existing := range m.secrets.Secrets {
 		if existing.ID == secret.ID {
 			secret.CreatedAt = existing.CreatedAt
@@ -422,7 +432,9 @@ func (m *globalManager) UpsertCredential(ctx context.Context, credential domains
 	if credential.CreatedAt.IsZero() {
 		credential.CreatedAt = now
 	}
-	credential.UpdatedAt = now
+	if credential.UpdatedAt.IsZero() {
+		credential.UpdatedAt = now
+	}
 	for i, existing := range m.credentials.Credentials {
 		if normalizeKey(existing.Key) == credential.Key {
 			credential.ID = existing.ID
@@ -621,7 +633,9 @@ func (m *spaceManager) UpsertSemanticIndex(ctx context.Context, index domainsema
 	if index.CreatedAt.IsZero() {
 		index.CreatedAt = now
 	}
-	index.UpdatedAt = now
+	if index.UpdatedAt.IsZero() {
+		index.UpdatedAt = now
+	}
 	for i, existing := range m.indexes.Indexes {
 		if existing.SpaceID == index.SpaceID && existing.DomainID == index.DomainID && normalizeKey(existing.Key) == index.Key {
 			index.ID = existing.ID

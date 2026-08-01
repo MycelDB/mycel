@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,8 +40,20 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 			return LocalNode{State: NodeStateFailed}, err
 		}
 		now := nowFn().UTC()
-		clustered := strings.TrimSpace(opts.ClusterName) != "" || strings.TrimSpace(opts.BackendAdvertiseAddr) != ""
-		id = NodeIdentity{Version: NodeIdentityVersion, NodeID: "node_" + uuid.NewString(), NodeName: strings.TrimSpace(opts.NodeName), ClusterID: "cluster_" + uuid.NewString(), ClusterName: strings.TrimSpace(opts.ClusterName), BackendAdvertiseAddr: strings.TrimSpace(opts.BackendAdvertiseAddr), ClusterAdmitted: clustered, ClusterBootstrap: clustered, NodePublicKeyFingerprint: strings.TrimSpace(opts.NodePublicKeyFingerprint), CreatedAt: now, UpdatedAt: now}
+		clustered := strings.TrimSpace(opts.ClusterName) != "" || strings.TrimSpace(opts.BackendAdvertiseAddr) != "" || opts.RaftMode
+		nodeID := "node_" + uuid.NewString()
+		if opts.RaftMode && opts.RaftLocalNodeID > 0 {
+			nodeID = "node_" + strconv.FormatUint(opts.RaftLocalNodeID, 10)
+		}
+		clusterID := "cluster_" + uuid.NewString()
+		clusterAdmitted := clustered
+		clusterBootstrap := clustered
+		if opts.RaftMode {
+			clusterID = ""
+			clusterAdmitted = false
+			clusterBootstrap = false
+		}
+		id = NodeIdentity{Version: NodeIdentityVersion, NodeID: nodeID, NodeName: strings.TrimSpace(opts.NodeName), ClusterID: clusterID, ClusterName: strings.TrimSpace(opts.ClusterName), BackendAdvertiseAddr: strings.TrimSpace(opts.BackendAdvertiseAddr), ClusterAdmitted: clusterAdmitted, ClusterBootstrap: clusterBootstrap, NodePublicKeyFingerprint: strings.TrimSpace(opts.NodePublicKeyFingerprint), CreatedAt: now, UpdatedAt: now}
 		if err := ValidateIdentity(id); err != nil {
 			return LocalNode{State: NodeStateFailed}, err
 		}
@@ -60,6 +73,30 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 		return LocalNode{State: NodeStateFailed}, err
 	}
 	changed := false
+	wasAdmitted := id.ClusterAdmitted
+	if opts.RaftMode {
+		if !wasAdmitted {
+			if id.ClusterID != "" {
+				id.ClusterID = ""
+				changed = true
+			}
+			if opts.RaftLocalNodeID > 0 {
+				raftNodeID := "node_" + strconv.FormatUint(opts.RaftLocalNodeID, 10)
+				if id.NodeID != raftNodeID {
+					id.NodeID = raftNodeID
+					changed = true
+				}
+			}
+		}
+		if id.ClusterAdmitted {
+			id.ClusterAdmitted = false
+			changed = true
+		}
+		if id.ClusterBootstrap {
+			id.ClusterBootstrap = false
+			changed = true
+		}
+	}
 	if v := strings.TrimSpace(opts.NodeName); v != "" && id.NodeName != v {
 		id.NodeName = v
 		changed = true
@@ -97,7 +134,13 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 }
 
 func stateFor(id NodeIdentity) NodeState {
+	if strings.TrimSpace(id.ClusterID) == "" && !id.ClusterAdmitted {
+		return NodeStateInitializing
+	}
 	if strings.TrimSpace(id.ClusterName) != "" || strings.TrimSpace(id.BackendAdvertiseAddr) != "" {
+		if !id.ClusterAdmitted {
+			return NodeStateInitializing
+		}
 		return NodeStateClustered
 	}
 	return NodeStateStandalone

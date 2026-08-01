@@ -43,6 +43,13 @@ func (m *Module) commitAccountingMutation(ctx context.Context, rec accountingMut
 	if err != nil {
 		return err
 	}
+	if m.raftGroups != nil {
+		cmd, err := m.buildSemanticAccountingRaftCommand(rec, p, "semantic-accounting-"+rec.Kind+"-"+uuid.NewString())
+		if err != nil {
+			return err
+		}
+		return m.proposeSemanticSystemRaftCommand(ctx, cmd)
+	}
 	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeSemanticAccounting, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: p})
 	if err != nil {
 		return err

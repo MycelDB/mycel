@@ -54,6 +54,7 @@ type AutomationManager struct {
 	metricsSkipped   int64
 	metricsFailed    int64
 	metricsRetryable int64
+	writeAllowed     func() error
 }
 
 func NewManager(store storage.Store) *AutomationManager {
@@ -82,6 +83,18 @@ func (m *AutomationManager) WithRunCeilings(maxTokens int64, maxCost float64) *A
 	return m
 }
 
+func (m *AutomationManager) WithWriteAllowed(fn func() error) *AutomationManager {
+	m.writeAllowed = fn
+	return m
+}
+
+func (m *AutomationManager) requireWriteAllowed() error {
+	if m.writeAllowed == nil {
+		return nil
+	}
+	return m.writeAllowed()
+}
+
 func (m *AutomationManager) ValidateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error) {
 	def, err := decodeDefinition(rawJSON)
 	if err != nil {
@@ -99,6 +112,9 @@ func (m *AutomationManager) ValidateAutomation(ctx context.Context, domainID gra
 }
 
 func (m *AutomationManager) CreateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return automation.Definition{}, err
+	}
 	def, err := m.ValidateAutomation(ctx, domainID, rawJSON)
 	if err != nil {
 		return def, err
@@ -118,6 +134,9 @@ func (m *AutomationManager) CreateAutomation(ctx context.Context, domainID graph
 }
 
 func (m *AutomationManager) UpdateAutomation(ctx context.Context, domainID graph.DomainID, id string, rawJSON string) (automation.Definition, error) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return automation.Definition{}, err
+	}
 	current, err := m.store.GetDefinition(ctx, domainID, id)
 	if err != nil {
 		return automation.Definition{}, mapStoreError(err)
@@ -141,6 +160,9 @@ func (m *AutomationManager) UpdateAutomation(ctx context.Context, domainID graph
 }
 
 func (m *AutomationManager) DeleteAutomation(ctx context.Context, domainID graph.DomainID, id string) error {
+	if err := m.requireWriteAllowed(); err != nil {
+		return err
+	}
 	return mapStoreError(m.store.DeleteDefinition(ctx, domainID, strings.TrimSpace(id)))
 }
 
@@ -173,6 +195,9 @@ func (m *AutomationManager) ListAutomations(ctx context.Context, domainID graph.
 }
 
 func (m *AutomationManager) SetAutomationStatus(ctx context.Context, domainID graph.DomainID, id string, status string) (automation.Definition, error) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return automation.Definition{}, err
+	}
 	status = strings.TrimSpace(strings.ToLower(status))
 	if status != automation.StatusEnabled && status != automation.StatusDisabled {
 		return automation.Definition{}, fmt.Errorf("invalid automation status %q", status)
@@ -200,6 +225,9 @@ func (m *AutomationManager) GetRun(ctx context.Context, domainID graph.DomainID,
 }
 
 func (m *AutomationManager) RetryInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return automation.Invocation{}, err
+	}
 	inv, err := m.store.GetInvocation(ctx, domainID, strings.TrimSpace(invocationID))
 	if err != nil {
 		return inv, mapStoreError(err)
@@ -215,6 +243,9 @@ func (m *AutomationManager) RetryInvocation(ctx context.Context, domainID graph.
 }
 
 func (m *AutomationManager) CancelInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return automation.Invocation{}, err
+	}
 	inv, err := m.store.GetInvocation(ctx, domainID, strings.TrimSpace(invocationID))
 	if err != nil {
 		return inv, mapStoreError(err)
@@ -230,6 +261,9 @@ func (m *AutomationManager) CancelInvocation(ctx context.Context, domainID graph
 }
 
 func (m *AutomationManager) HandleChangeStreamEvent(ctx context.Context, event changestream.Event) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return
+	}
 	domainUUID, err := uuid.Parse(event.DomainID)
 	if err != nil {
 		return
@@ -263,6 +297,9 @@ func (m *AutomationManager) HandleChangeStreamEvent(ctx context.Context, event c
 }
 
 func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.DomainID, limit int) (int, error) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return 0, err
+	}
 	items, err := m.pendingInvocations(ctx, domainID, limit)
 	if err != nil {
 		return 0, mapStoreError(err)

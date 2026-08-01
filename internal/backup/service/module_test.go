@@ -11,11 +11,112 @@ import (
 	"time"
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	daemonconfig "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestBackupRaftStateMachineAppliesPolicyAndDelete(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	writeBackupFixture(t, dataDir)
+	rt := testRuntimeWithDataDir(t, dataDir, daemonconfig.BackupConfig{Enabled: false})
+	m := NewModule()
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("Init() error=%v", result.Error)
+	}
+	m.PrepareExperimentalRaftMode()
+	defer m.Stop(ctx)
+	backupDir := filepath.Join(t.TempDir(), "backups")
+	policy := backupcore.Policy{Enabled: true, BackupDir: backupDir, Interval: time.Hour, RetentionCount: 2, Compression: "zip", QuiesceDrainTimeout: time.Second, BackupTimeout: time.Minute, RetryAfter: time.Second, StatusHistoryLimit: 2}
+	payload, err := json.Marshal(backupPolicyRecord{Policy: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := m.buildBackupRaftCommand(recordTypeBackupPolicyUpdate, payload, "backup-policy-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (RaftStateMachine{Module: m}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err != nil {
+		t.Fatalf("ApplyCommand(policy) error=%v", err)
+	}
+	if got := m.Policy(); !got.Enabled || got.BackupDir != backupDir {
+		t.Fatalf("policy=%#v want enabled backup_dir %s", got, backupDir)
+	}
+	if !m.Running() {
+		t.Fatal("raft replayed enabled policy should start scheduler but skip work until leadership")
+	}
+	manifest := backupcore.Manifest{Version: backupcore.ManifestVersion, BackupID: "backup-raft", ArchiveName: "backup-raft.zip", CreatedAt: time.Now(), CompletedAt: time.Now(), Policy: backupcore.PolicySummary{Compression: "zip"}}
+	writeBackupManifest(t, backupDir, manifest, []byte("zip"))
+	deletePayload, err := json.Marshal(backupDeleteRecord{BackupID: manifest.BackupID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteCmd, err := m.buildBackupRaftCommand(recordTypeBackupDelete, deletePayload, "backup-delete-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (RaftStateMachine{Module: m}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, deleteCmd); err != nil {
+		t.Fatalf("ApplyCommand(delete) error=%v", err)
+	}
+	backups, err := m.ListBackups(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("backups=%#v want none", backups)
+	}
+}
+
+func TestBackupRaftPolicyFailsClosedWithoutSystemLeader(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	rt := testRuntime(t, daemonconfig.BackupConfig{Enabled: false})
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("Init() error=%v", result.Error)
+	}
+	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return nil, false })}
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 4, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return RaftStateMachine{Module: m} }, Partition: func(uint32) consensus.StateMachine { return &consensus.MemoryStateMachine{} }}, ElectionTick: 50, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer groups.Stop()
+	m.EnableExperimentalRaft(groups)
+	_, err = m.UpdatePolicy(ctx, backupcore.Policy{Enabled: true, BackupDir: t.TempDir(), Interval: time.Hour, RetentionCount: 2, Compression: "zip"})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("UpdatePolicy() error=%v, want Unavailable", err)
+	}
+}
+
+func TestBackupRaftSchedulerRunsOnlyOnSystemLeader(t *testing.T) {
+	m := NewModule()
+	rt := testRuntime(t, daemonconfig.BackupConfig{Enabled: true, BackupDir: t.TempDir(), Interval: time.Hour, RetentionCount: 2, Compression: "zip", QuiesceDrainTimeout: time.Second, BackupTimeout: time.Minute, RetryAfter: time.Second, StatusHistoryLimit: 2})
+	writeBackupFixture(t, rt.Config.DataDir)
+	if result := m.Init(context.Background(), rt); !result.OK {
+		t.Fatalf("Init() error=%v", result.Error)
+	}
+	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return nil, false })}
+	groups, err := consensus.StartMultiGroup(context.Background(), consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 4, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return RaftStateMachine{Module: m} }, Partition: func(uint32) consensus.StateMachine { return &consensus.MemoryStateMachine{} }}, ElectionTick: 50, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer groups.Stop()
+	m.EnableExperimentalRaft(groups)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error=%v", err)
+	}
+	defer m.Stop(context.Background())
+	if !m.Running() {
+		t.Fatal("scheduler should be running and skipping work until leadership")
+	}
+	if m.systemRaftLeader() {
+		t.Fatal("unexpected system leader")
+	}
+}
 
 func TestBackupServiceWALPolicyUpdateAndDelete(t *testing.T) {
 	ctx := context.Background()
@@ -395,6 +496,23 @@ func testRuntimeWithDataDir(t *testing.T, dataDir string, backup daemonconfig.Ba
 	cfg := daemonconfig.Config{DataDir: dataDir, Mode: daemonconfig.DefaultMode, LogLevel: daemonconfig.DefaultLogLevel, LogFormat: daemonconfig.DefaultLogFormat, GRPCAddr: "127.0.0.1:0", Backup: backup}
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 	return daemonruntime.New(cfg, logger, "", nil)
+}
+
+func writeBackupManifest(t *testing.T, backupDir string, manifest backupcore.Manifest, archive []byte) {
+	t.Helper()
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, manifest.BackupID+".manifest.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, manifest.ArchiveName), archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeBackupFixture(t *testing.T, dataDir string) {

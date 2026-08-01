@@ -12,9 +12,152 @@ import (
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
+	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestSemanticRaftStateMachineAppliesGlobalAndAccountingMutations(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	sm := RaftStateMachine{Module: m, PartitionCount: 64}
+	vectorStore := semanticVectorStore("global-raft")
+	globalRec := semanticMutationRecord{Kind: "vector_store.upsert", Payload: raw(vectorStore)}
+	globalPayload, err := json.Marshal(globalRec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalCmd, err := m.buildSemanticGlobalRaftCommand(globalRec, globalPayload, "semantic-global-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, globalCmd); err != nil {
+		t.Fatalf("apply global command: %v", err)
+	}
+	stores, err := m.globalBase.ListVectorStores(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasVectorStoreKey(stores, vectorStore.Key) {
+		t.Fatalf("vector stores=%#v want key %q", stores, vectorStore.Key)
+	}
+
+	usage := semanticUsageEvent()
+	acctRec := accountingMutationRecord{Kind: "usage.append", Payload: raw(usage)}
+	acctPayload, err := json.Marshal(acctRec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acctCmd, err := m.buildSemanticAccountingRaftCommand(acctRec, acctPayload, "semantic-accounting-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, acctCmd); err != nil {
+		t.Fatalf("apply accounting command: %v", err)
+	}
+	events, err := m.accountingBase.List(ctx, storeaccounting.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].ID != usage.ID {
+		t.Fatalf("events=%#v want %s", events, usage.ID)
+	}
+}
+
+func TestSemanticGlobalAndAccountingUseSystemRaftWhenEnabled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wm, err := wal.Open(ctx, wal.Options{Dir: t.TempDir(), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewModule()
+	host := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default(), WAL: wm, WALRegistry: wal.NewRegistry(), WALWaiter: wal.NewApplyWaiter()}
+	if result := m.Init(ctx, host); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	router := consensus.NewLocalMessageRouter()
+	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return router, true })}
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 4, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return RaftStateMachine{Module: m, PartitionCount: 4} }, Partition: func(uint32) consensus.StateMachine { return &consensus.MemoryStateMachine{} }}, ElectionTick: 5, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer groups.Stop()
+	for _, g := range groups.Groups() {
+		router.Register(g)
+	}
+	m.EnableExperimentalRaft(groups, 4)
+	systemGroup, _ := groups.Group(consensus.SystemGroupID)
+	if err := consensus.TickUntil(ctx, 10*time.Millisecond, groups.Tick, func() bool { return systemGroup.Leader() == 1 }); err != nil {
+		t.Fatal(err)
+	}
+	vectorStore := semanticVectorStore("global-system-raft")
+	vectorStore.ID = uuid.Nil
+	storedVectorStore, err := m.GlobalManager().UpsertVectorStore(ctx, vectorStore)
+	if err != nil {
+		t.Fatalf("UpsertVectorStore() error = %v", err)
+	}
+	if storedVectorStore.ID == uuid.Nil || storedVectorStore.CreatedAt.IsZero() || storedVectorStore.UpdatedAt.IsZero() {
+		t.Fatalf("UpsertVectorStore() returned non-canonical value: %+v", storedVectorStore)
+	}
+	stores, err := m.globalBase.ListVectorStores(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasVectorStoreKey(stores, vectorStore.Key) {
+		t.Fatalf("vector stores=%#v want key %q", stores, vectorStore.Key)
+	}
+	secret, err := m.GlobalManager().UpsertSecret(ctx, domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerSystem, OwnerID: "system", Kind: domainsemantic.SecretKindExternalRef, ExternalRef: "env://MYCEL_TEST_KEY"})
+	if err != nil {
+		t.Fatalf("UpsertSecret() error = %v", err)
+	}
+	if secret.ID == uuid.Nil || secret.CreatedAt.IsZero() || secret.UpdatedAt.IsZero() {
+		t.Fatalf("UpsertSecret() returned non-canonical value: %+v", secret)
+	}
+	credential, err := m.GlobalManager().UpsertCredential(ctx, domainsemantic.InferenceCredential{Key: "test-credential", ModelEndpointID: uuid.New(), OwnerType: domainsemantic.CredentialOwnerSystem, OwnerID: "system", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secret.ID})
+	if err != nil {
+		t.Fatalf("UpsertCredential() error = %v", err)
+	}
+	if credential.ID == uuid.Nil || credential.SecretRef != secret.ID || credential.Status != domainsemantic.CredentialStatusActive || credential.CreatedAt.IsZero() || credential.UpdatedAt.IsZero() {
+		t.Fatalf("UpsertCredential() returned non-canonical value: %+v", credential)
+	}
+	usage := semanticUsageEvent()
+	if _, err := m.accounting.Append(ctx, usage); err != nil {
+		t.Fatalf("accounting Append() error = %v", err)
+	}
+	events, err := m.accountingBase.List(ctx, storeaccounting.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].ID != usage.ID {
+		t.Fatalf("events=%#v want %s", events, usage.ID)
+	}
+}
+
+func TestSemanticGlobalRaftFailsClosedWithoutSystemLeader(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return nil, false })}
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 4, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return RaftStateMachine{Module: m, PartitionCount: 4} }, Partition: func(uint32) consensus.StateMachine { return &consensus.MemoryStateMachine{} }}, ElectionTick: 50, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer groups.Stop()
+	m.EnableExperimentalRaft(groups, 4)
+	rec := semanticMutationRecord{Kind: "vector_store.upsert", Payload: raw(semanticVectorStore("no-leader"))}
+	if err := m.commitSemanticMutation(ctx, recordTypeSemanticGlobal, rec); status.Code(err) != codes.Unavailable {
+		t.Fatalf("commitSemanticMutation() error = %v, want Unavailable", err)
+	}
+}
 
 func TestSemanticRaftStateMachineAppliesMaintenanceMutation(t *testing.T) {
 	ctx := context.Background()
@@ -493,8 +636,13 @@ func TestSemanticSpaceManagerUsesRaftWhenEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := semanticIndex(spaceID)
-	if _, err := mgr.UpsertSemanticIndex(ctx, idx); err != nil {
+	idx.ID = uuid.Nil
+	storedIndex, err := mgr.UpsertSemanticIndex(ctx, idx)
+	if err != nil {
 		t.Fatalf("UpsertSemanticIndex() error = %v", err)
+	}
+	if storedIndex.ID == uuid.Nil || storedIndex.CreatedAt.IsZero() || storedIndex.UpdatedAt.IsZero() {
+		t.Fatalf("UpsertSemanticIndex() returned non-canonical value: %+v", storedIndex)
 	}
 	mgr, err = m.SpaceManager(ctx, spaceID)
 	if err != nil {
@@ -504,8 +652,8 @@ func TestSemanticSpaceManagerUsesRaftWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(indexes) != 1 || indexes[0].ID != idx.ID {
-		t.Fatalf("indexes=%#v want %s", indexes, idx.ID)
+	if len(indexes) != 1 || indexes[0].ID != storedIndex.ID {
+		t.Fatalf("indexes=%#v want %s", indexes, storedIndex.ID)
 	}
 }
 
@@ -516,4 +664,22 @@ func semanticIndex(spaceID domainspace.SpaceID) domainsemantic.SemanticIndex {
 
 func semanticDirtyEvent(spaceID domainspace.SpaceID) domainsemantic.GraphDirtyEvent {
 	return domainsemantic.GraphDirtyEvent{ID: domainsemantic.GraphDirtyEventID(uuid.New()), TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graphmodel.DomainID{graphmodel.DomainID(uuid.New())}, CommittedAt: time.Now().UTC()}
+}
+
+func semanticVectorStore(key string) domainsemantic.VectorStoreBackend {
+	now := time.Now().UTC()
+	return domainsemantic.VectorStoreBackend{ID: domainsemantic.VectorStoreID(uuid.New()), Key: key, Name: key, Type: domainsemantic.VectorStoreMycelFile, Config: map[string]any{}, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}
+}
+
+func hasVectorStoreKey(stores []domainsemantic.VectorStoreBackend, key string) bool {
+	for _, store := range stores {
+		if store.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticUsageEvent() domainsemantic.InferenceUsageEvent {
+	return domainsemantic.InferenceUsageEvent{ID: domainsemantic.InferenceUsageEventID(uuid.New()), CreatedAt: time.Now().UTC(), Status: "success", Operation: string(domainsemantic.OperationEmbeddings), TotalTokens: 7}
 }

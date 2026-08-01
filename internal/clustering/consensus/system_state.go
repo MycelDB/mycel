@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/wal"
@@ -19,6 +20,8 @@ const (
 
 type SystemMetadata struct {
 	ClusterID      string                        `json:"cluster_id"`
+	ClusterName    string                        `json:"cluster_name,omitempty"`
+	BootstrapEpoch string                        `json:"bootstrap_epoch,omitempty"`
 	NodeCount      int                           `json:"node_count"`
 	PartitionCount int                           `json:"partition_count"`
 	ReplicaFactor  int                           `json:"replica_factor"`
@@ -28,6 +31,7 @@ type SystemMetadata struct {
 
 type SystemNode struct {
 	NodeID               string `json:"node_id"`
+	RaftNodeID           uint64 `json:"raft_node_id,omitempty"`
 	NodeName             string `json:"node_name"`
 	ClientAdvertiseAddr  string `json:"client_advertise_addr,omitempty"`
 	BackendAdvertiseAddr string `json:"backend_advertise_addr,omitempty"`
@@ -41,10 +45,21 @@ type PartitionPlacement struct {
 
 type BootstrapMetadataPayload struct {
 	ClusterID      string       `json:"cluster_id"`
+	ClusterName    string       `json:"cluster_name,omitempty"`
+	BootstrapEpoch string       `json:"bootstrap_epoch,omitempty"`
 	NodeCount      int          `json:"node_count"`
 	PartitionCount int          `json:"partition_count"`
 	ReplicaFactor  int          `json:"replica_factor"`
 	Nodes          []SystemNode `json:"nodes"`
+}
+
+type BootstrapConfig struct {
+	ClusterID      string
+	ClusterName    string
+	NodeCount      int
+	PartitionCount int
+	ReplicaFactor  int
+	Nodes          []SystemNode
 }
 
 type SystemStateMachine struct {
@@ -54,6 +69,20 @@ type SystemStateMachine struct {
 
 func NewSystemStateMachine() *SystemStateMachine {
 	return &SystemStateMachine{metadata: SystemMetadata{Nodes: map[string]SystemNode{}, Placement: map[uint32]PartitionPlacement{}}}
+}
+
+func (s *SystemStateMachine) RaftStateMachineName() string { return "system.metadata" }
+
+func (s *SystemStateMachine) SupportsRaftCommandRecord(scope CommandScope, recordType wal.RecordType) bool {
+	if scope != CommandScopeSystem {
+		return false
+	}
+	switch recordType {
+	case SystemRecordBootstrapMetadata, SystemRecordRegisterNode:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *SystemStateMachine) ApplyCommand(ctx context.Context, apply ApplyContext, cmd RaftCommand) error {
@@ -132,6 +161,9 @@ func (s *SystemStateMachine) RestoreSnapshot(data []byte) error {
 }
 
 func NewBootstrapMetadataCommand(payload BootstrapMetadataPayload, commandID string) (RaftCommand, error) {
+	if strings.TrimSpace(payload.ClusterID) == "" {
+		payload.ClusterID = "cluster_" + uuid.NewString()
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return RaftCommand{}, err
@@ -143,9 +175,26 @@ func NewBootstrapMetadataCommand(payload BootstrapMetadataPayload, commandID str
 	return cmd, nil
 }
 
+func WaitForSystemMetadata(ctx context.Context, sm *SystemStateMachine, interval time.Duration) (SystemMetadata, error) {
+	if sm == nil {
+		return SystemMetadata{}, fmt.Errorf("system state machine is required")
+	}
+	if interval <= 0 {
+		interval = 20 * time.Millisecond
+	}
+	var meta SystemMetadata
+	if err := WaitUntil(ctx, interval, func() bool {
+		meta = sm.Metadata()
+		return strings.TrimSpace(meta.ClusterID) != ""
+	}); err != nil {
+		return SystemMetadata{}, err
+	}
+	return meta, nil
+}
+
 func buildBootstrapMetadata(payload BootstrapMetadataPayload) (SystemMetadata, error) {
 	if strings.TrimSpace(payload.ClusterID) == "" {
-		payload.ClusterID = "cluster_" + uuid.NewString()
+		return SystemMetadata{}, fmt.Errorf("cluster_id is required")
 	}
 	if !strings.HasPrefix(payload.ClusterID, "cluster_") {
 		return SystemMetadata{}, fmt.Errorf("cluster_id must have cluster_ prefix")
@@ -167,13 +216,25 @@ func buildBootstrapMetadata(payload BootstrapMetadataPayload) (SystemMetadata, e
 	}
 	nodes := map[string]SystemNode{}
 	ordered := append([]SystemNode(nil), payload.Nodes...)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].NodeID < ordered[j].NodeID })
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].RaftNodeID != 0 && ordered[j].RaftNodeID != 0 && ordered[i].RaftNodeID != ordered[j].RaftNodeID {
+			return ordered[i].RaftNodeID < ordered[j].RaftNodeID
+		}
+		return ordered[i].NodeID < ordered[j].NodeID
+	})
+	raftNodeIDs := map[uint64]string{}
 	for _, node := range ordered {
 		if err := validateSystemNode(node); err != nil {
 			return SystemMetadata{}, err
 		}
 		if _, exists := nodes[node.NodeID]; exists {
 			return SystemMetadata{}, fmt.Errorf("duplicate node_id %s", node.NodeID)
+		}
+		if node.RaftNodeID != 0 {
+			if existing := raftNodeIDs[node.RaftNodeID]; existing != "" {
+				return SystemMetadata{}, fmt.Errorf("duplicate raft_node_id %d for nodes %s and %s", node.RaftNodeID, existing, node.NodeID)
+			}
+			raftNodeIDs[node.RaftNodeID] = node.NodeID
 		}
 		nodes[node.NodeID] = node
 	}
@@ -185,7 +246,46 @@ func buildBootstrapMetadata(payload BootstrapMetadataPayload) (SystemMetadata, e
 		}
 		placement[uint32(p)] = PartitionPlacement{PartitionID: uint32(p), ReplicaNodeIDs: replicas, PreferredLeader: ordered[p%len(ordered)].NodeID}
 	}
-	return SystemMetadata{ClusterID: payload.ClusterID, NodeCount: payload.NodeCount, PartitionCount: payload.PartitionCount, ReplicaFactor: payload.ReplicaFactor, Nodes: nodes, Placement: placement}, nil
+	return SystemMetadata{ClusterID: payload.ClusterID, ClusterName: strings.TrimSpace(payload.ClusterName), BootstrapEpoch: strings.TrimSpace(payload.BootstrapEpoch), NodeCount: payload.NodeCount, PartitionCount: payload.PartitionCount, ReplicaFactor: payload.ReplicaFactor, Nodes: nodes, Placement: placement}, nil
+}
+
+func ValidateSystemMetadataAgainstBootstrapConfig(meta SystemMetadata, cfg BootstrapConfig) error {
+	if strings.TrimSpace(meta.ClusterID) == "" {
+		return fmt.Errorf("system metadata cluster_id is required")
+	}
+	if strings.TrimSpace(cfg.ClusterID) != "" && meta.ClusterID != strings.TrimSpace(cfg.ClusterID) {
+		return fmt.Errorf("cluster_id mismatch: metadata %s config %s", meta.ClusterID, strings.TrimSpace(cfg.ClusterID))
+	}
+	if strings.TrimSpace(cfg.ClusterName) != "" && strings.TrimSpace(meta.ClusterName) != strings.TrimSpace(cfg.ClusterName) {
+		return fmt.Errorf("cluster_name mismatch: metadata %s config %s", meta.ClusterName, strings.TrimSpace(cfg.ClusterName))
+	}
+	if cfg.NodeCount > 0 && meta.NodeCount != cfg.NodeCount {
+		return fmt.Errorf("node_count mismatch: metadata %d config %d", meta.NodeCount, cfg.NodeCount)
+	}
+	if cfg.PartitionCount > 0 && meta.PartitionCount != cfg.PartitionCount {
+		return fmt.Errorf("partition_count mismatch: metadata %d config %d", meta.PartitionCount, cfg.PartitionCount)
+	}
+	if cfg.ReplicaFactor > 0 && meta.ReplicaFactor != cfg.ReplicaFactor {
+		return fmt.Errorf("replica_factor mismatch: metadata %d config %d", meta.ReplicaFactor, cfg.ReplicaFactor)
+	}
+	if len(cfg.Nodes) > 0 {
+		if len(meta.Nodes) != len(cfg.Nodes) {
+			return fmt.Errorf("node metadata count mismatch: metadata %d config %d", len(meta.Nodes), len(cfg.Nodes))
+		}
+		for _, want := range cfg.Nodes {
+			got, ok := meta.Nodes[want.NodeID]
+			if !ok {
+				return fmt.Errorf("node %s missing from system metadata", want.NodeID)
+			}
+			if want.RaftNodeID != 0 && got.RaftNodeID != want.RaftNodeID {
+				return fmt.Errorf("raft_node_id mismatch for %s: metadata %d config %d", want.NodeID, got.RaftNodeID, want.RaftNodeID)
+			}
+			if strings.TrimSpace(want.BackendAdvertiseAddr) != "" && strings.TrimSpace(got.BackendAdvertiseAddr) != strings.TrimSpace(want.BackendAdvertiseAddr) {
+				return fmt.Errorf("backend_advertise_addr mismatch for %s: metadata %s config %s", want.NodeID, got.BackendAdvertiseAddr, want.BackendAdvertiseAddr)
+			}
+		}
+	}
+	return nil
 }
 
 func validateSystemNode(node SystemNode) error {

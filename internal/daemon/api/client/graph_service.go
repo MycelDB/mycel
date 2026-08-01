@@ -23,6 +23,7 @@ type GraphService struct {
 	sessions daemonsession.Manager
 	graphs   daegraph.Manager
 	blobs    daemonblob.Manager
+	router   ClientRequestRouter
 }
 
 func NewGraphService(sessions daemonsession.Manager, graphs daegraph.Manager, blobs ...daemonblob.Manager) *GraphService {
@@ -33,24 +34,51 @@ func NewGraphService(sessions daemonsession.Manager, graphs daegraph.Manager, bl
 	return &GraphService{sessions: sessions, graphs: graphs, blobs: blobManager}
 }
 
+func (s *GraphService) WithClientRequestRouter(router ClientRequestRouter) *GraphService {
+	s.router = router
+	return s
+}
+
 func (s *GraphService) GetNode(ctx context.Context, req *clientv1.GetNodeRequest) (*clientv1.GetNodeResponse, error) {
-	tx, err := s.transaction(ctx, req.GetTransactionId())
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.GetNodeResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_GetNode_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	node, err := s.graphs.GetNode(ctx, tx, req.GetNodeId())
+	node, err := s.graphs.GetNode(readCtx, tx, req.GetNodeId())
 	if err != nil {
 		return nil, mapGraphError(err, "get node")
 	}
-	return &clientv1.GetNodeResponse{Node: mapProtoNode(node)}, nil
+	return &clientv1.GetNodeResponse{Node: mapProtoNode(node), ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
 func (s *GraphService) ListNodes(ctx context.Context, req *clientv1.ListNodesRequest) (*clientv1.ListNodesResponse, error) {
-	tx, err := s.transaction(ctx, req.GetTransactionId())
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.ListNodesResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_ListNodes_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	nodes, next, err := s.graphs.ListNodes(ctx, tx, int(req.GetPageSize()), req.GetPageToken())
+	nodes, next, err := s.graphs.ListNodes(readCtx, tx, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
 		return nil, mapGraphError(err, "list nodes")
 	}
@@ -58,10 +86,17 @@ func (s *GraphService) ListNodes(ctx context.Context, req *clientv1.ListNodesReq
 	for _, node := range nodes {
 		out = append(out, mapProtoNode(node))
 	}
-	return &clientv1.ListNodesResponse{Nodes: out, NextPageToken: next}, nil
+	return &clientv1.ListNodesResponse{Nodes: out, NextPageToken: next, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
 func (s *GraphService) CreateNode(ctx context.Context, req *clientv1.CreateNodeRequest) (*clientv1.CreateNodeResponse, error) {
+	if s.router != nil {
+		res := &clientv1.CreateNodeResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_CreateNode_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
@@ -91,6 +126,11 @@ func (s *GraphService) CreateBlobNode(stream clientv1.GraphService_CreateBlobNod
 		if m := req.GetMetadata(); m != nil {
 			if meta != nil {
 				return status.Error(codes.InvalidArgument, "blob node metadata must be sent once")
+			}
+			if s.router != nil {
+				if err := s.router.EnsureLocalTransaction(ctx, m.GetTransactionId()); err != nil {
+					return err
+				}
 			}
 			meta = m
 			continue
@@ -141,6 +181,13 @@ func (s *GraphService) CreateBlobNode(stream clientv1.GraphService_CreateBlobNod
 }
 
 func (s *GraphService) UpdateNode(ctx context.Context, req *clientv1.UpdateNodeRequest) (*clientv1.UpdateNodeResponse, error) {
+	if s.router != nil {
+		res := &clientv1.UpdateNodeResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_UpdateNode_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
@@ -157,6 +204,13 @@ func (s *GraphService) UpdateNode(ctx context.Context, req *clientv1.UpdateNodeR
 }
 
 func (s *GraphService) UpsertNode(ctx context.Context, req *clientv1.UpsertNodeRequest) (*clientv1.UpsertNodeResponse, error) {
+	if s.router != nil {
+		res := &clientv1.UpsertNodeResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_UpsertNode_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
@@ -169,6 +223,13 @@ func (s *GraphService) UpsertNode(ctx context.Context, req *clientv1.UpsertNodeR
 }
 
 func (s *GraphService) DeleteNode(ctx context.Context, req *clientv1.DeleteNodeRequest) (*clientv1.DeleteNodeResponse, error) {
+	if s.router != nil {
+		res := &clientv1.DeleteNodeResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_DeleteNode_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
@@ -181,23 +242,45 @@ func (s *GraphService) DeleteNode(ctx context.Context, req *clientv1.DeleteNodeR
 }
 
 func (s *GraphService) GetEdge(ctx context.Context, req *clientv1.GetEdgeRequest) (*clientv1.GetEdgeResponse, error) {
-	tx, err := s.transaction(ctx, req.GetTransactionId())
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.GetEdgeResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_GetEdge_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	edge, err := s.graphs.GetEdge(ctx, tx, req.GetEdgeId())
+	edge, err := s.graphs.GetEdge(readCtx, tx, req.GetEdgeId())
 	if err != nil {
 		return nil, mapGraphError(err, "get edge")
 	}
-	return &clientv1.GetEdgeResponse{Edge: mapProtoEdge(edge)}, nil
+	return &clientv1.GetEdgeResponse{Edge: mapProtoEdge(edge), ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
 func (s *GraphService) ListEdges(ctx context.Context, req *clientv1.ListEdgesRequest) (*clientv1.ListEdgesResponse, error) {
-	tx, err := s.transaction(ctx, req.GetTransactionId())
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.ListEdgesResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_ListEdges_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	edges, next, err := s.graphs.ListEdges(ctx, tx, int(req.GetPageSize()), req.GetPageToken())
+	edges, next, err := s.graphs.ListEdges(readCtx, tx, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
 		return nil, mapGraphError(err, "list edges")
 	}
@@ -205,10 +288,17 @@ func (s *GraphService) ListEdges(ctx context.Context, req *clientv1.ListEdgesReq
 	for _, edge := range edges {
 		out = append(out, mapProtoEdge(edge))
 	}
-	return &clientv1.ListEdgesResponse{Edges: out, NextPageToken: next}, nil
+	return &clientv1.ListEdgesResponse{Edges: out, NextPageToken: next, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
 func (s *GraphService) CreateEdge(ctx context.Context, req *clientv1.CreateEdgeRequest) (*clientv1.CreateEdgeResponse, error) {
+	if s.router != nil {
+		res := &clientv1.CreateEdgeResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_CreateEdge_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
@@ -221,6 +311,13 @@ func (s *GraphService) CreateEdge(ctx context.Context, req *clientv1.CreateEdgeR
 }
 
 func (s *GraphService) UpdateEdge(ctx context.Context, req *clientv1.UpdateEdgeRequest) (*clientv1.UpdateEdgeResponse, error) {
+	if s.router != nil {
+		res := &clientv1.UpdateEdgeResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_UpdateEdge_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
@@ -237,6 +334,13 @@ func (s *GraphService) UpdateEdge(ctx context.Context, req *clientv1.UpdateEdgeR
 }
 
 func (s *GraphService) DeleteEdge(ctx context.Context, req *clientv1.DeleteEdgeRequest) (*clientv1.DeleteEdgeResponse, error) {
+	if s.router != nil {
+		res := &clientv1.DeleteEdgeResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_DeleteEdge_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
@@ -249,11 +353,22 @@ func (s *GraphService) DeleteEdge(ctx context.Context, req *clientv1.DeleteEdgeR
 }
 
 func (s *GraphService) ListChildren(ctx context.Context, req *clientv1.ListChildrenRequest) (*clientv1.ListChildrenResponse, error) {
-	tx, err := s.transaction(ctx, req.GetTransactionId())
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.ListChildrenResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_ListChildren_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	edges, err := s.graphs.ListChildren(ctx, tx, req.GetParentNodeId())
+	edges, err := s.graphs.ListChildren(readCtx, tx, req.GetParentNodeId())
 	if err != nil {
 		return nil, mapGraphError(err, "list children")
 	}
@@ -261,19 +376,30 @@ func (s *GraphService) ListChildren(ctx context.Context, req *clientv1.ListChild
 	for _, edge := range edges {
 		out = append(out, mapProtoEdge(edge))
 	}
-	return &clientv1.ListChildrenResponse{ContainsEdges: out}, nil
+	return &clientv1.ListChildrenResponse{ContainsEdges: out, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
 func (s *GraphService) GetParent(ctx context.Context, req *clientv1.GetParentRequest) (*clientv1.GetParentResponse, error) {
-	tx, err := s.transaction(ctx, req.GetTransactionId())
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.GetParentResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_GetParent_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	edge, err := s.graphs.GetParent(ctx, tx, req.GetChildNodeId())
+	edge, err := s.graphs.GetParent(readCtx, tx, req.GetChildNodeId())
 	if err != nil {
 		return nil, mapGraphError(err, "get parent")
 	}
-	res := &clientv1.GetParentResponse{}
+	res := &clientv1.GetParentResponse{ReadMetadata: protoReadMetadata(recorder.Summary())}
 	if edge != nil {
 		res.ContainsEdge = mapProtoEdge(*edge)
 	}
@@ -281,6 +407,13 @@ func (s *GraphService) GetParent(ctx context.Context, req *clientv1.GetParentReq
 }
 
 func (s *GraphService) MoveSubtree(ctx context.Context, req *clientv1.MoveSubtreeRequest) (*clientv1.MoveSubtreeResponse, error) {
+	if s.router != nil {
+		res := &clientv1.MoveSubtreeResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_MoveSubtree_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
@@ -297,6 +430,13 @@ func (s *GraphService) MoveSubtree(ctx context.Context, req *clientv1.MoveSubtre
 }
 
 func (s *GraphService) ReorderChildren(ctx context.Context, req *clientv1.ReorderChildrenRequest) (*clientv1.ReorderChildrenResponse, error) {
+	if s.router != nil {
+		res := &clientv1.ReorderChildrenResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_ReorderChildren_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
@@ -313,6 +453,13 @@ func (s *GraphService) ReorderChildren(ctx context.Context, req *clientv1.Reorde
 }
 
 func (s *GraphService) ApplyGraphOperations(ctx context.Context, req *clientv1.ApplyGraphOperationsRequest) (*clientv1.ApplyGraphOperationsResponse, error) {
+	if s.router != nil {
+		res := &clientv1.ApplyGraphOperationsResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_ApplyGraphOperations_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err

@@ -25,6 +25,8 @@ import (
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const childOrderStep = 1000
@@ -36,6 +38,7 @@ type Module struct {
 	overlays               map[string]*overlay
 	changeSink             graphchange.Sink
 	schemaManager          schemaservice.Manager
+	blobRefs               BlobReferenceChecker
 	lastGraphChangeSinkErr error
 	gate                   *quiesce.Gate
 	wal                    *wal.Manager
@@ -76,10 +79,43 @@ func (m *Module) LastGraphChangeSinkError() error {
 	return m.lastGraphChangeSinkErr
 }
 
+type BlobReferenceChecker interface {
+	EnsureBlobReference(ctx context.Context, spaceID string, blobID string) error
+}
+
 func (m *Module) SetSchemaManager(manager schemaservice.Manager) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.schemaManager = manager
+}
+
+func (m *Module) SetBlobReferenceChecker(checker BlobReferenceChecker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.blobRefs = checker
+}
+
+func (m *Module) validateBlobReferences(ctx context.Context, spaceID string, nodes []domaingraph.Node) error {
+	m.mu.Lock()
+	checker := m.blobRefs
+	m.mu.Unlock()
+	if checker == nil {
+		return nil
+	}
+	seen := map[domaingraph.BlobID]struct{}{}
+	for _, node := range nodes {
+		if node.BlobRef == nil || strings.TrimSpace(string(*node.BlobRef)) == "" {
+			continue
+		}
+		if _, ok := seen[*node.BlobRef]; ok {
+			continue
+		}
+		seen[*node.BlobRef] = struct{}{}
+		if err := checker.EnsureBlobReference(ctx, spaceID, string(*node.BlobRef)); err != nil {
+			return status.Errorf(codes.FailedPrecondition, "blob reference %s is not available cluster-wide: %v", *node.BlobRef, err)
+		}
+	}
+	return nil
 }
 
 func (m *Module) validateSchemaNode(ctx context.Context, node domaingraph.Node) error {
@@ -223,6 +259,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		m.walWaiter = provider.WALWaiterStore()
 	}
 	m.writeAllowed = func() error { return nil }
+	if gate, ok := host.(runtime.LocalWriteGate); ok {
+		m.writeAllowed = gate.RequireLocalWriteAllowed
+	}
 	if provider, ok := host.(runtime.WALProvider); ok {
 		if registry := provider.WALRegistryStore(); registry != nil {
 			if err := registry.Register(recordTypeGraphCommit, wal.ApplierFunc(m.applyGraphCommit)); err != nil {
@@ -252,7 +291,7 @@ func (m *Module) GetNode(ctx context.Context, tx daemonsession.GraphTransaction,
 	if err != nil {
 		return domaingraph.Node{}, err
 	}
-	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
 		return domaingraph.Node{}, err
 	} else if forward {
 		req := raftReadRequest("get_node", tx)
@@ -263,6 +302,9 @@ func (m *Module) GetNode(ctx context.Context, tx daemonsession.GraphTransaction,
 		}
 		return res.Node, nil
 	}
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
+		return domaingraph.Node{}, err
+	}
 	return m.node(ctx, tx, id)
 }
 
@@ -270,7 +312,7 @@ func (m *Module) ListNodes(ctx context.Context, tx daemonsession.GraphTransactio
 	if err := ensureReadable(tx); err != nil {
 		return nil, "", err
 	}
-	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
 		return nil, "", err
 	} else if forward {
 		req := raftReadRequest("list_nodes", tx)
@@ -282,23 +324,17 @@ func (m *Module) ListNodes(ctx context.Context, tx daemonsession.GraphTransactio
 		}
 		return res.Nodes, res.NextPageToken, nil
 	}
-	store, err := m.store(ctx, tx.SpaceID)
-	if err != nil {
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
 		return nil, "", err
 	}
-	base, err := store.ListNodesByDomain(ctx, mustDomainID(tx.DomainID))
-	if err != nil {
-		return nil, "", mapStorageError(err)
-	}
-	m.mu.Lock()
-	o := m.overlays[tx.ID]
-	merged := mergeNodes(base, o, mustDomainID(tx.DomainID))
-	m.mu.Unlock()
-	return paginateNodes(merged, pageSize, pageToken)
+	return m.listNodesLocal(ctx, tx, pageSize, pageToken)
 }
 
 func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransaction, input NodeInput) (domaingraph.Node, error) {
 	if err := ensureWritable(tx); err != nil {
+		return domaingraph.Node{}, err
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Node{}, err
 	}
 	id, err := optionalUUID[domaingraph.NodeID](input.NodeID, "node_id")
@@ -346,12 +382,17 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := m.validateSchemaNode(ctx, n); err != nil {
 		return domaingraph.Node{}, err
 	}
-	m.stageNode(tx.ID, n)
+	if err := m.stageNode(ctx, tx, n); err != nil {
+		return domaingraph.Node{}, err
+	}
 	return cloneNode(n), nil
 }
 
 func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransaction, input UpdateNodeInput) (domaingraph.Node, error) {
 	if err := ensureWritable(tx); err != nil {
+		return domaingraph.Node{}, err
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Node{}, err
 	}
 	id, err := parseUUID[domaingraph.NodeID](input.NodeID, "node_id")
@@ -395,11 +436,19 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := m.validateSchemaNode(ctx, n); err != nil {
 		return domaingraph.Node{}, err
 	}
-	m.stageNode(tx.ID, n)
+	if err := m.stageNode(ctx, tx, n); err != nil {
+		return domaingraph.Node{}, err
+	}
 	return cloneNode(n), nil
 }
 
 func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransaction, input NodeInput) (domaingraph.Node, error) {
+	if err := ensureWritable(tx); err != nil {
+		return domaingraph.Node{}, err
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return domaingraph.Node{}, err
+	}
 	if strings.TrimSpace(input.NodeID) == "" {
 		return m.CreateNode(ctx, tx, input)
 	}
@@ -418,6 +467,9 @@ func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransacti
 
 func (m *Module) DeleteNode(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string, recursive bool) ([]string, []string, error) {
 	if err := ensureWritable(tx); err != nil {
+		return nil, nil, err
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return nil, nil, err
 	}
 	id, err := parseUUID[domaingraph.NodeID](nodeID, "node_id")
@@ -459,13 +511,17 @@ func (m *Module) DeleteNode(ctx context.Context, tx daemonsession.GraphTransacti
 		_, fromDeleted := nodeSet[edge.FromID]
 		_, toDeleted := nodeSet[edge.ToID]
 		if fromDeleted || toDeleted {
-			m.stageEdgeDelete(tx.ID, edge.ID)
+			if err := m.stageEdgeDelete(ctx, tx, edge.ID); err != nil {
+				return nil, nil, err
+			}
 			deletedEdges = append(deletedEdges, edge.ID.String())
 		}
 	}
 	deletedNodes := []string{}
 	for _, id := range nodesToDelete {
-		m.stageNodeDelete(tx.ID, id)
+		if err := m.stageNodeDelete(ctx, tx, id); err != nil {
+			return nil, nil, err
+		}
 		deletedNodes = append(deletedNodes, id.String())
 	}
 	return deletedNodes, deletedEdges, nil
@@ -479,7 +535,7 @@ func (m *Module) GetEdge(ctx context.Context, tx daemonsession.GraphTransaction,
 	if err != nil {
 		return domaingraph.Edge{}, err
 	}
-	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
 		return domaingraph.Edge{}, err
 	} else if forward {
 		req := raftReadRequest("get_edge", tx)
@@ -490,6 +546,9 @@ func (m *Module) GetEdge(ctx context.Context, tx daemonsession.GraphTransaction,
 		}
 		return res.Edge, nil
 	}
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	return m.edge(ctx, tx, id)
 }
 
@@ -497,7 +556,7 @@ func (m *Module) ListEdges(ctx context.Context, tx daemonsession.GraphTransactio
 	if err := ensureReadable(tx); err != nil {
 		return nil, "", err
 	}
-	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
 		return nil, "", err
 	} else if forward {
 		req := raftReadRequest("list_edges", tx)
@@ -509,23 +568,17 @@ func (m *Module) ListEdges(ctx context.Context, tx daemonsession.GraphTransactio
 		}
 		return res.Edges, res.NextPageToken, nil
 	}
-	store, err := m.store(ctx, tx.SpaceID)
-	if err != nil {
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
 		return nil, "", err
 	}
-	base, err := store.ListEdges(ctx)
-	if err != nil {
-		return nil, "", mapStorageError(err)
-	}
-	m.mu.Lock()
-	o := m.overlays[tx.ID]
-	merged := mergeEdges(base, o)
-	m.mu.Unlock()
-	return paginateEdges(merged, pageSize, pageToken)
+	return m.listEdgesLocal(ctx, tx, pageSize, pageToken)
 }
 
 func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransaction, input EdgeInput) (domaingraph.Edge, error) {
 	if err := ensureWritable(tx); err != nil {
+		return domaingraph.Edge{}, err
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Edge{}, err
 	}
 	id, err := optionalUUID[domaingraph.EdgeID](input.EdgeID, "edge_id")
@@ -591,12 +644,17 @@ func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := m.validateSchemaEdge(ctx, e, from, to); err != nil {
 		return domaingraph.Edge{}, err
 	}
-	m.stageEdge(tx.ID, e)
+	if err := m.stageEdge(ctx, tx, e); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	return cloneEdge(e), nil
 }
 
 func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransaction, input UpdateEdgeInput) (domaingraph.Edge, error) {
 	if err := ensureWritable(tx); err != nil {
+		return domaingraph.Edge{}, err
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Edge{}, err
 	}
 	id, err := parseUUID[domaingraph.EdgeID](input.EdgeID, "edge_id")
@@ -632,12 +690,17 @@ func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := m.validateSchemaEdge(ctx, e, from, to); err != nil {
 		return domaingraph.Edge{}, err
 	}
-	m.stageEdge(tx.ID, e)
+	if err := m.stageEdge(ctx, tx, e); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	return cloneEdge(e), nil
 }
 
 func (m *Module) DeleteEdge(ctx context.Context, tx daemonsession.GraphTransaction, edgeID string) (string, error) {
 	if err := ensureWritable(tx); err != nil {
+		return "", err
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return "", err
 	}
 	id, err := parseUUID[domaingraph.EdgeID](edgeID, "edge_id")
@@ -647,16 +710,17 @@ func (m *Module) DeleteEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if _, err := m.edge(ctx, tx, id); err != nil {
 		return "", err
 	}
-	m.stageEdgeDelete(tx.ID, id)
+	if err := m.stageEdgeDelete(ctx, tx, id); err != nil {
+		return "", err
+	}
 	return id.String(), nil
 }
 
 func (m *Module) ListChildren(ctx context.Context, tx daemonsession.GraphTransaction, parentNodeID string) ([]domaingraph.Edge, error) {
-	parentID, err := parseUUID[domaingraph.NodeID](parentNodeID, "parent_node_id")
-	if err != nil {
+	if err := ensureReadable(tx); err != nil {
 		return nil, err
 	}
-	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
 		return nil, err
 	} else if forward {
 		req := raftReadRequest("list_children", tx)
@@ -667,30 +731,17 @@ func (m *Module) ListChildren(ctx context.Context, tx daemonsession.GraphTransac
 		}
 		return res.Edges, nil
 	}
-	edges, _, err := m.ListEdges(ctx, tx, 0, "")
-	if err != nil {
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
 		return nil, err
 	}
-	out := []domaingraph.Edge{}
-	for _, edge := range edges {
-		policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
-		if err != nil {
-			return nil, err
-		}
-		if policy != nil && edge.FromID == parentID {
-			out = append(out, edge)
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool { return edgeOrder(out[i], i) < edgeOrder(out[j], j) })
-	return out, nil
+	return m.listChildrenLocal(ctx, tx, parentNodeID)
 }
 
 func (m *Module) GetParent(ctx context.Context, tx daemonsession.GraphTransaction, childNodeID string) (*domaingraph.Edge, error) {
-	childID, err := parseUUID[domaingraph.NodeID](childNodeID, "child_node_id")
-	if err != nil {
+	if err := ensureReadable(tx); err != nil {
 		return nil, err
 	}
-	if leader, forward, err := m.shouldForwardRaftGraphRead(tx.SpaceID); err != nil {
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
 		return nil, err
 	} else if forward {
 		req := raftReadRequest("get_parent", tx)
@@ -701,11 +752,17 @@ func (m *Module) GetParent(ctx context.Context, tx daemonsession.GraphTransactio
 		}
 		return res.Edge, nil
 	}
-	return m.parentEdge(ctx, tx, childID)
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
+		return nil, err
+	}
+	return m.parentEdgeLocal(ctx, tx, childNodeID)
 }
 
 func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string, newParentNodeID string, order *int32) (domaingraph.Edge, error) {
 	if err := ensureWritable(tx); err != nil {
+		return domaingraph.Edge{}, err
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Edge{}, err
 	}
 	childID, err := parseUUID[domaingraph.NodeID](nodeID, "node_id")
@@ -732,7 +789,9 @@ func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransact
 	} else if existing != nil {
 		edgeID = existing.ID
 		props = cloneProps(existing.Properties)
-		m.stageEdgeDelete(tx.ID, existing.ID)
+		if err := m.stageEdgeDelete(ctx, tx, existing.ID); err != nil {
+			return domaingraph.Edge{}, err
+		}
 	}
 	if edgeID == uuid.Nil {
 		newID, err := graphstorage.NewUUIDv7()
@@ -753,12 +812,17 @@ func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransact
 	}
 	now := time.Now().UTC()
 	e := domaingraph.Edge{ID: edgeID, DomainID: mustDomainID(tx.DomainID), FromID: parentID, ToID: childID, Labels: labels, Properties: props, CreatedAt: now, UpdatedAt: now}
-	m.stageEdge(tx.ID, e)
+	if err := m.stageEdge(ctx, tx, e); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	return cloneEdge(e), nil
 }
 
 func (m *Module) ReorderChildren(ctx context.Context, tx daemonsession.GraphTransaction, parentNodeID string, childNodeIDs []string) ([]domaingraph.Edge, error) {
 	if err := ensureWritable(tx); err != nil {
+		return nil, err
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return nil, err
 	}
 	children, err := m.ListChildren(ctx, tx, parentNodeID)
@@ -780,23 +844,47 @@ func (m *Module) ReorderChildren(ctx context.Context, tx daemonsession.GraphTran
 		}
 		edge.Properties = cloneProps(edge.Properties)
 		edge.Properties["order"] = i * childOrderStep
-		m.stageEdge(tx.ID, edge)
+		if err := m.stageEdge(ctx, tx, edge); err != nil {
+			return nil, err
+		}
 		out = append(out, cloneEdge(edge))
 	}
 	return out, nil
 }
 
 func (m *Module) CurrentRevision(ctx context.Context, spaceID string) (int64, error) {
+	if leader, forward, err := m.shouldForwardRaftGraphRead(spaceID); err != nil {
+		return 0, err
+	} else if forward {
+		req := raftGraphReadRequest{Op: "current_revision", SpaceID: spaceID}
+		var res raftGraphRevisionResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return 0, err
+		}
+		return res.Revision, nil
+	}
+	read, err := m.strongGraphRead(ctx, spaceID)
+	if err != nil {
+		return 0, err
+	}
 	store, err := m.store(ctx, spaceID)
 	if err != nil {
 		return 0, err
 	}
-	return int64(store.Revision()), nil
+	revision := int64(store.Revision())
+	if read != nil {
+		read.ObservedRevision = revision
+		RecordStrongReadContext(ctx, read)
+	}
+	return revision, nil
 }
 
 func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.GraphTransaction) (CommitResult, error) {
 	if tx.Mode == daemonsession.TransactionModeReadOnly {
 		return CommitResult{}, nil
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return CommitResult{}, err
 	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
@@ -813,6 +901,17 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	snapshot := o.clone()
 	delete(m.overlays, tx.ID)
 	m.mu.Unlock()
+	restoreOverlay := true
+	defer func() {
+		if !restoreOverlay {
+			return
+		}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.overlays[tx.ID] == nil {
+			m.overlays[tx.ID] = snapshot.clone()
+		}
+	}()
 	store, err := m.store(ctx, tx.SpaceID)
 	if err != nil {
 		return CommitResult{}, err
@@ -826,6 +925,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		return CommitResult{}, err
 	}
 	record := graphCommitRecordFromSnapshot(tx, snapshot)
+	if err := m.validateBlobReferences(ctx, tx.SpaceID, record.PutNodes); err != nil {
+		return CommitResult{}, err
+	}
 	var committedRevision int64
 	var info graphstorage.CommitInfo
 	if m.raftGroups != nil {
@@ -836,10 +938,12 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		if err := m.proposeGraphRaftCommand(ctx, cmd); err != nil {
 			return CommitResult{}, err
 		}
-		committedRevision, err = m.CurrentRevision(ctx, tx.SpaceID)
-		if err != nil {
-			return CommitResult{}, err
-		}
+		// proposeGraphRaftCommand returns only after the local partition leader has
+		// applied the committed graph command. Reading the local store revision here
+		// avoids a second leader/read-index check that can fail during an immediate
+		// post-commit leader change even though the write is already committed and
+		// applied locally.
+		committedRevision = int64(store.Revision())
 		info = graphstorage.CommitInfo{TxnID: uuid.New(), NextRevision: uint64(committedRevision)}
 	} else if m.wal == nil {
 		storageTx, err := store.Begin(ctx)
@@ -897,6 +1001,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		}
 		info = graphstorage.CommitInfo{TxnID: uuid.New(), NextRevision: uint64(committedRevision)}
 	}
+	restoreOverlay = false
 	m.notifyGraphChangeSink(ctx, info, graphEvent)
 	return CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}, nil
 }
@@ -1090,9 +1195,27 @@ func (m *Module) BlobRefCount(ctx context.Context, spaceID string, blobID string
 	if _, err := id.Bytes(); err != nil {
 		return 0, fmt.Errorf("%w: invalid blob_id", ErrInvalidInput)
 	}
+	if leader, forward, err := m.shouldForwardRaftGraphRead(spaceID); err != nil {
+		return 0, err
+	} else if forward {
+		req := raftGraphReadRequest{Op: "blob_ref_count", SpaceID: spaceID, ID: blobID}
+		var res raftGraphCountResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return 0, err
+		}
+		return res.Count, nil
+	}
+	read, err := m.strongGraphRead(ctx, spaceID)
+	if err != nil {
+		return 0, err
+	}
 	store, err := m.store(ctx, spaceID)
 	if err != nil {
 		return 0, err
+	}
+	if read != nil {
+		read.ObservedRevision = int64(store.Revision())
+		RecordStrongReadContext(ctx, read)
 	}
 	count, err := store.BlobRefCount(ctx, id)
 	if err != nil {
@@ -1220,8 +1343,71 @@ func (m *Module) hierarchyPathExists(ctx context.Context, tx daemonsession.Graph
 	return false, nil
 }
 
+func (m *Module) listNodesLocal(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Node, string, error) {
+	store, err := m.store(ctx, tx.SpaceID)
+	if err != nil {
+		return nil, "", err
+	}
+	base, err := store.ListNodesByDomain(ctx, mustDomainID(tx.DomainID))
+	if err != nil {
+		return nil, "", mapStorageError(err)
+	}
+	m.mu.Lock()
+	o := m.overlays[tx.ID]
+	merged := mergeNodes(base, o, mustDomainID(tx.DomainID))
+	m.mu.Unlock()
+	return paginateNodes(merged, pageSize, pageToken)
+}
+
+func (m *Module) listEdgesLocal(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error) {
+	store, err := m.store(ctx, tx.SpaceID)
+	if err != nil {
+		return nil, "", err
+	}
+	base, err := store.ListEdges(ctx)
+	if err != nil {
+		return nil, "", mapStorageError(err)
+	}
+	m.mu.Lock()
+	o := m.overlays[tx.ID]
+	merged := mergeEdges(base, o)
+	m.mu.Unlock()
+	return paginateEdges(merged, pageSize, pageToken)
+}
+
+func (m *Module) listChildrenLocal(ctx context.Context, tx daemonsession.GraphTransaction, parentNodeID string) ([]domaingraph.Edge, error) {
+	parentID, err := parseUUID[domaingraph.NodeID](parentNodeID, "parent_node_id")
+	if err != nil {
+		return nil, err
+	}
+	edges, _, err := m.listEdgesLocal(ctx, tx, 0, "")
+	if err != nil {
+		return nil, err
+	}
+	out := []domaingraph.Edge{}
+	for _, edge := range edges {
+		policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
+		if err != nil {
+			return nil, err
+		}
+		if policy != nil && edge.FromID == parentID {
+			out = append(out, edge)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return edgeOrder(out[i], i) < edgeOrder(out[j], j) })
+	return out, nil
+}
+
 func (m *Module) parentEdge(ctx context.Context, tx daemonsession.GraphTransaction, childID domaingraph.NodeID) (*domaingraph.Edge, error) {
-	edges, _, err := m.ListEdges(ctx, tx, 0, "")
+	return m.parentEdgeLocal(ctx, tx, childID.String())
+}
+
+func (m *Module) parentEdgeLocal(ctx context.Context, tx daemonsession.GraphTransaction, childNodeID string) (*domaingraph.Edge, error) {
+	childID, err := parseUUID[domaingraph.NodeID](childNodeID, "child_node_id")
+	if err != nil {
+		return nil, err
+	}
+	edges, _, err := m.listEdgesLocal(ctx, tx, 0, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1238,40 +1424,56 @@ func (m *Module) parentEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	return nil, nil
 }
 
-func (m *Module) stageNode(txID string, node domaingraph.Node) {
+func (m *Module) stageNode(ctx context.Context, tx daemonsession.GraphTransaction, node domaingraph.Node) error {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	o := m.overlay(txID)
+	o := m.overlay(tx.ID)
 	delete(o.deleteNodes, node.ID)
 	o.putNodes[node.ID] = cloneNode(node)
 	o.opCount++
+	return nil
 }
 
-func (m *Module) stageNodeDelete(txID string, id domaingraph.NodeID) {
+func (m *Module) stageNodeDelete(ctx context.Context, tx daemonsession.GraphTransaction, id domaingraph.NodeID) error {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	o := m.overlay(txID)
+	o := m.overlay(tx.ID)
 	delete(o.putNodes, id)
 	o.deleteNodes[id] = struct{}{}
 	o.opCount++
+	return nil
 }
 
-func (m *Module) stageEdge(txID string, edge domaingraph.Edge) {
+func (m *Module) stageEdge(ctx context.Context, tx daemonsession.GraphTransaction, edge domaingraph.Edge) error {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	o := m.overlay(txID)
+	o := m.overlay(tx.ID)
 	delete(o.deleteEdges, edge.ID)
 	o.putEdges[edge.ID] = cloneEdge(edge)
 	o.opCount++
+	return nil
 }
 
-func (m *Module) stageEdgeDelete(txID string, id domaingraph.EdgeID) {
+func (m *Module) stageEdgeDelete(ctx context.Context, tx daemonsession.GraphTransaction, id domaingraph.EdgeID) error {
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	o := m.overlay(txID)
+	o := m.overlay(tx.ID)
 	delete(o.putEdges, id)
 	o.deleteEdges[id] = struct{}{}
 	o.opCount++
+	return nil
 }
 
 func (m *Module) overlay(txID string) *overlay {

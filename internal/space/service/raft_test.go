@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -12,6 +13,8 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	"github.com/myceldb/mycel/internal/space/access"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestBuildCreateSpaceRaftCommand(t *testing.T) {
@@ -96,6 +99,13 @@ func TestRaftStateMachineAppliesSpaceMetadataCommands(t *testing.T) {
 		t.Fatalf("DomainEffectiveAccess() = %+v, %v; want capabilities", access, err)
 	}
 
+	deleteCmd := mustSpaceRaftCommand(t, spaceID, recordTypeDeleteSpace, deleteSpaceRecord{SpaceID: spaceID}, "space-delete-1")
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 4, RaftTerm: 1}, deleteCmd); err != nil {
+		t.Fatalf("apply delete space command: %v", err)
+	}
+	if _, err := m.GetSpace(ctx, spaceID.String()); !errors.Is(err, ErrSpaceNotFound) {
+		t.Fatalf("GetSpace() after delete error = %v, want ErrSpaceNotFound", err)
+	}
 }
 
 func TestBuildPhase8SpaceMetadataRaftCommands(t *testing.T) {
@@ -120,6 +130,9 @@ func TestBuildPhase8SpaceMetadataRaftCommands(t *testing.T) {
 		{"delete-domain", string(recordTypeDeleteDomain), func() (consensus.RaftCommand, error) {
 			return m.buildDeleteDomainRaftCommand(deleteDomainRecord{DomainID: domainRecord.Domain.ID, SpaceID: spaceID}, 64, "domain-delete-1")
 		}},
+		{"delete-space", string(recordTypeDeleteSpace), func() (consensus.RaftCommand, error) {
+			return m.buildDeleteSpaceRaftCommand(deleteSpaceRecord{SpaceID: spaceID}, 64, "space-delete-1")
+		}},
 	}
 	for _, tc := range commands {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,6 +147,30 @@ func TestBuildPhase8SpaceMetadataRaftCommands(t *testing.T) {
 				t.Fatalf("Validate() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestSpaceMetadataRaftProposalFailsClosedWithoutLeader(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return nil, false })}
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 64, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine { return RaftStateMachine{Module: m, PartitionCount: 64} }}, ElectionTick: 50, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("StartMultiGroup() error = %v", err)
+	}
+	defer groups.Stop()
+	m.EnableExperimentalRaft(groups, 1, nil, "")
+	spaceID := uuid.New()
+	cmd, err := m.buildDeleteSpaceRaftCommand(deleteSpaceRecord{SpaceID: spaceID}, 64, "space-delete-no-leader")
+	if err != nil {
+		t.Fatalf("build delete space command: %v", err)
+	}
+	if err := m.proposeSpaceMetadataCommand(ctx, cmd); status.Code(err) != codes.Unavailable {
+		t.Fatalf("proposeSpaceMetadataCommand() error = %v, want Unavailable", err)
 	}
 }
 

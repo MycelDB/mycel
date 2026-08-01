@@ -48,6 +48,28 @@ func TestPersistentStorageRecoversHardStateAndEntries(t *testing.T) {
 	}
 }
 
+func TestPersistentStorageRecoversConfState(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("NewPersistentStorage() error = %v", err)
+	}
+	if err := store.SetConfState(raftpb.ConfState{Voters: []uint64{1, 2, 3}}); err != nil {
+		t.Fatalf("SetConfState() error = %v", err)
+	}
+	reopened, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("reopen NewPersistentStorage() error = %v", err)
+	}
+	_, cs, err := reopened.InitialState()
+	if err != nil {
+		t.Fatalf("InitialState() error = %v", err)
+	}
+	if len(cs.Voters) != 3 || cs.Voters[0] != 1 || cs.Voters[1] != 2 || cs.Voters[2] != 3 {
+		t.Fatalf("unexpected conf state: %+v", cs)
+	}
+}
+
 func TestPersistentStorageRecoversSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewPersistentStorage(dir)

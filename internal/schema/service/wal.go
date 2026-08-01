@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	schema "github.com/myceldb/mycel/internal/schema/model"
 	"github.com/myceldb/mycel/internal/wal"
@@ -47,10 +48,18 @@ func (m *SchemaManager) applySchemaDelete(ctx context.Context, rec wal.Record) e
 }
 
 func (m *SchemaManager) commitDomainSchema(ctx context.Context, value schema.DomainSchema) error {
-	if m.wal == nil {
+	if m.wal == nil && m.raftGroups == nil {
 		return m.applyDomainSchema(ctx, value)
 	}
-	payload, err := json.Marshal(schemaPutRecord{Schema: value})
+	record := schemaPutRecord{Schema: value}
+	if m.raftGroups != nil {
+		cmd, err := m.buildSchemaPutRaftCommand(record, m.raftPartitionCount, "schema-put-"+value.DomainID.String()+"-"+uuid.NewString())
+		if err != nil {
+			return err
+		}
+		return m.proposeSchemaRaftCommand(ctx, cmd)
+	}
+	payload, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
@@ -80,10 +89,18 @@ func (m *SchemaManager) commitDomainSchema(ctx context.Context, value schema.Dom
 }
 
 func (m *SchemaManager) commitDeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error {
-	if m.wal == nil {
+	if m.wal == nil && m.raftGroups == nil {
 		return m.applyDeleteDomainSchema(ctx, domainID)
 	}
-	payload, err := json.Marshal(schemaDeleteRecord{DomainID: domainID})
+	record := schemaDeleteRecord{DomainID: domainID}
+	if m.raftGroups != nil {
+		cmd, err := m.buildSchemaDeleteRaftCommand(record, m.raftPartitionCount, "schema-delete-"+domainID.String()+"-"+uuid.NewString())
+		if err != nil {
+			return err
+		}
+		return m.proposeSchemaRaftCommand(ctx, cmd)
+	}
+	payload, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}

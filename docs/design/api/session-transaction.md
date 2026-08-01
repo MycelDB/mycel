@@ -149,7 +149,7 @@ Supported v1 modes:
 - read-only
 - read-write
 
-A read-only transaction represents a consistent read snapshot.
+A read-only transaction is a linearizable current-read context in the current daemon implementation. It records a `base_revision` when it begins, but reads may observe newer committed revisions because the graph store is latest-state oriented rather than historical MVCC.
 
 A read-write transaction buffers mutations until commit.
 
@@ -171,7 +171,7 @@ Transactions cannot span multiple domains in v1.
 base_revision
 ```
 
-The base revision identifies the domain revision from which the transaction began. This is useful for consistency, diagnostics, connector correctness, optimistic concurrency, cache validation, and future replication/oplog integration.
+The base revision identifies the domain revision observed when the transaction began. In raft mode this value is obtained through the graph manager's strong read path. For read-only transactions it is a freshness floor and diagnostic/cache-validation value, not a promise of repeatable historical snapshot isolation.
 
 `CommitTransaction` returns:
 
@@ -219,7 +219,7 @@ A session may have multiple active transactions.
 
 The daemon is responsible for locking and concurrency control. Recommended v1 semantics:
 
-- read-only transactions are snapshot reads
+- read-only transactions are linearizable current-read contexts and may observe commits newer than `base_revision`
 - read-write transactions buffer mutations
 - commits are serialized per domain
 - commit checks the transaction base revision and detects conflicts
@@ -259,7 +259,7 @@ Read-only transactions are closed, not committed.
 
 `CloseTransaction` is safe for connectors:
 
-- read-only transaction: closes/releases snapshot resources
+- read-only transaction: closes/releases read context resources
 - read-write transaction with uncommitted mutations: rolls back and closes
 
 `CloseTransaction` should be idempotent from a client perspective.
@@ -361,6 +361,7 @@ The CLI now uses daemon gRPC and standard-user credentials for session and trans
 - Session ownership is tied to the authenticated user principal.
 - `OpenSession` validates that the caller can see the target space/domain through the daemon space module.
 - Session/transaction lifecycle state is in-memory and therefore reset by daemon restart.
+- Read-only transactions do not pin historical graph snapshots in V1; they perform current committed reads through graph read consistency rules.
 - Read-write transaction commit persists staged daemon `GraphService` operations first, then advances daemon lifecycle revision metadata with the graph `operation_count`.
 - Closing a session closes read-only transactions and rolls back active read-write transactions.
 

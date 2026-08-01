@@ -43,6 +43,7 @@ const (
 	DefaultClusterRaftPartitionCount        = 64
 	DefaultClusterRaftReplicaFactor         = 3
 	DefaultClusterRaftLocalNodeID           = 1
+	DefaultClusterRaftCompactionMode        = "off"
 )
 
 type SemanticThrottleConfig struct {
@@ -100,15 +101,20 @@ type WALConfig struct {
 }
 
 type ClusterConfig struct {
-	Name                 string
-	BackendAdvertiseAddr string
-	BackendAuthToken     string
-	DiscoveryInterval    time.Duration
-	RaftNodeCount        int
-	RaftPartitionCount   int
-	RaftReplicaFactor    int
-	RaftLocalNodeID      int
-	RaftNodeAddrs        []string
+	Name                         string
+	BackendAdvertiseAddr         string
+	BackendAuthToken             string
+	DiscoveryInterval            time.Duration
+	RaftNodeCount                int
+	RaftPartitionCount           int
+	RaftReplicaFactor            int
+	RaftLocalNodeID              int
+	RaftNodeAddrs                []string
+	RaftCompactionMode           string
+	RaftSnapshotEntries          int
+	RaftSnapshotInterval         time.Duration
+	RaftSnapshotMaxLogBytes      int64
+	RaftSnapshotMinRetainEntries int
 }
 
 type Config struct {
@@ -164,15 +170,20 @@ func LoadFromEnv() (Config, error) {
 			SyncPolicy:   valueOrDefault(os.Getenv("MYCELD_WAL_SYNC_POLICY"), DefaultWALSyncPolicy),
 		},
 		Cluster: ClusterConfig{
-			Name:                 strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
-			BackendAdvertiseAddr: strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR")),
-			BackendAuthToken:     strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN")),
-			DiscoveryInterval:    parseDurationEnv(os.Getenv("MYCELD_CLUSTER_DISCOVERY_INTERVAL"), DefaultClusterDiscoveryInterval),
-			RaftNodeCount:        parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_COUNT"), DefaultClusterRaftNodeCount),
-			RaftPartitionCount:   parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_PARTITION_COUNT"), DefaultClusterRaftPartitionCount),
-			RaftReplicaFactor:    parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR"), DefaultClusterRaftReplicaFactor),
-			RaftLocalNodeID:      parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID"), DefaultClusterRaftLocalNodeID),
-			RaftNodeAddrs:        parseCSVEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS")),
+			Name:                         strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
+			BackendAdvertiseAddr:         strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR")),
+			BackendAuthToken:             strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN")),
+			DiscoveryInterval:            parseDurationEnv(os.Getenv("MYCELD_CLUSTER_DISCOVERY_INTERVAL"), DefaultClusterDiscoveryInterval),
+			RaftNodeCount:                parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_COUNT"), DefaultClusterRaftNodeCount),
+			RaftPartitionCount:           parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_PARTITION_COUNT"), DefaultClusterRaftPartitionCount),
+			RaftReplicaFactor:            parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR"), DefaultClusterRaftReplicaFactor),
+			RaftLocalNodeID:              parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID"), DefaultClusterRaftLocalNodeID),
+			RaftNodeAddrs:                parseCSVEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS")),
+			RaftCompactionMode:           valueOrDefault(os.Getenv("MYCELD_CLUSTER_RAFT_COMPACTION_MODE"), DefaultClusterRaftCompactionMode),
+			RaftSnapshotEntries:          parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_ENTRIES"), 0),
+			RaftSnapshotInterval:         parseDurationEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_INTERVAL"), 0),
+			RaftSnapshotMaxLogBytes:      int64(parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MAX_LOG_BYTES"), 0)),
+			RaftSnapshotMinRetainEntries: parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MIN_RETAIN_ENTRIES"), 0),
 		},
 		Automation: AutomationConfig{
 			Provider:          strings.TrimSpace(os.Getenv("MYCELD_AUTOMATION_PROVIDER")),
@@ -324,6 +335,27 @@ func (c ClusterConfig) Validate() error {
 	if localNodeID <= 0 || localNodeID > nodeCount {
 		return fmt.Errorf("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID must be between 1 and MYCELD_CLUSTER_RAFT_NODE_COUNT")
 	}
+	mode := strings.ToLower(strings.TrimSpace(c.RaftCompactionMode))
+	if mode == "" {
+		mode = DefaultClusterRaftCompactionMode
+	}
+	switch mode {
+	case "off", "conservative":
+	default:
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_COMPACTION_MODE must be off or conservative")
+	}
+	if c.RaftSnapshotEntries < 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_SNAPSHOT_ENTRIES must be positive")
+	}
+	if c.RaftSnapshotInterval < 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_SNAPSHOT_INTERVAL must be positive")
+	}
+	if c.RaftSnapshotMaxLogBytes < 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_SNAPSHOT_MAX_LOG_BYTES must be positive")
+	}
+	if c.RaftSnapshotMinRetainEntries < 0 {
+		return fmt.Errorf("MYCELD_CLUSTER_RAFT_SNAPSHOT_MIN_RETAIN_ENTRIES must be positive")
+	}
 	if len(c.RaftNodeAddrs) > 0 {
 		if len(c.RaftNodeAddrs) != nodeCount {
 			return fmt.Errorf("MYCELD_CLUSTER_RAFT_NODE_ADDRS must contain one host:port per raft node")
@@ -332,6 +364,9 @@ func (c ClusterConfig) Validate() error {
 			if err := validateClusterAddr("MYCELD_CLUSTER_RAFT_NODE_ADDRS", addr); err != nil {
 				return err
 			}
+		}
+		if nodeCount > 1 && strings.TrimSpace(c.BackendAuthToken) == "" {
+			return fmt.Errorf("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN is required for multi-node raft clusters")
 		}
 	}
 	return nil
