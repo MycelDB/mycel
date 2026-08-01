@@ -9,7 +9,19 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestProcessScheduledFailsClosedWhenWritesDisallowed(t *testing.T) {
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithWriteAllowed(func() error {
+		return status.Error(codes.Unavailable, "local writes disabled")
+	})
+	_, err := mgr.ProcessScheduled(context.Background(), graph.DomainID(uuid.New()), 10)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("ProcessScheduled() error = %v, want Unavailable", err)
+	}
+}
 
 func TestProcessScheduledCreatesInvocation(t *testing.T) {
 	store := storage.NewFileStore(t.TempDir())

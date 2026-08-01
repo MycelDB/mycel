@@ -21,18 +21,35 @@ type MetadataCatalogService struct {
 	clientv1.UnimplementedMetadataCatalogServiceServer
 	sessions daemonsession.Manager
 	graphs   daegraph.Manager
+	router   ClientRequestRouter
 }
 
 func NewMetadataCatalogService(sessions daemonsession.Manager, graphs daegraph.Manager) *MetadataCatalogService {
 	return &MetadataCatalogService{sessions: sessions, graphs: graphs}
 }
 
+func (s *MetadataCatalogService) WithClientRequestRouter(router ClientRequestRouter) *MetadataCatalogService {
+	s.router = router
+	return s
+}
+
 func (s *MetadataCatalogService) ListTags(ctx context.Context, req *clientv1.ListTagsRequest) (*clientv1.ListTagsResponse, error) {
-	tx, err := s.readableTransaction(ctx, req.GetTransactionId())
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.ListTagsResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.MetadataCatalogService_ListTags_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	tx, err := s.readableTransaction(readCtx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	nodes, err := allExportNodes(ctx, s.graphs, tx)
+	nodes, err := allExportNodes(readCtx, s.graphs, tx)
 	if err != nil {
 		return nil, mapGraphError(err, "list metadata tags")
 	}
@@ -67,15 +84,26 @@ func (s *MetadataCatalogService) ListTags(ctx context.Context, req *clientv1.Lis
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &clientv1.ListTagsResponse{Tags: page, NextPageToken: next}, nil
+	return &clientv1.ListTagsResponse{Tags: page, NextPageToken: next, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
 func (s *MetadataCatalogService) ListPropertyNames(ctx context.Context, req *clientv1.ListPropertyNamesRequest) (*clientv1.ListPropertyNamesResponse, error) {
-	tx, err := s.readableTransaction(ctx, req.GetTransactionId())
+	if err := rejectUnsupportedStaleRead(req.GetReadOptions()); err != nil {
+		return nil, err
+	}
+	if s.router != nil {
+		res := &clientv1.ListPropertyNamesResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.MetadataCatalogService_ListPropertyNames_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
+	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	tx, err := s.readableTransaction(readCtx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	nodes, err := allExportNodes(ctx, s.graphs, tx)
+	nodes, err := allExportNodes(readCtx, s.graphs, tx)
 	if err != nil {
 		return nil, mapGraphError(err, "list metadata properties")
 	}
@@ -110,7 +138,7 @@ func (s *MetadataCatalogService) ListPropertyNames(ctx context.Context, req *cli
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &clientv1.ListPropertyNamesResponse{Properties: page, NextPageToken: next}, nil
+	return &clientv1.ListPropertyNamesResponse{Properties: page, NextPageToken: next, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
 func (s *MetadataCatalogService) readableTransaction(ctx context.Context, transactionID string) (daemonsession.GraphTransaction, error) {

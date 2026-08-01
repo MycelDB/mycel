@@ -71,6 +71,20 @@ func NewSystemStateMachine() *SystemStateMachine {
 	return &SystemStateMachine{metadata: SystemMetadata{Nodes: map[string]SystemNode{}, Placement: map[uint32]PartitionPlacement{}}}
 }
 
+func (s *SystemStateMachine) RaftStateMachineName() string { return "system.metadata" }
+
+func (s *SystemStateMachine) SupportsRaftCommandRecord(scope CommandScope, recordType wal.RecordType) bool {
+	if scope != CommandScopeSystem {
+		return false
+	}
+	switch recordType {
+	case SystemRecordBootstrapMetadata, SystemRecordRegisterNode:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *SystemStateMachine) ApplyCommand(ctx context.Context, apply ApplyContext, cmd RaftCommand) error {
 	if err := cmd.Validate(0); err != nil {
 		return err

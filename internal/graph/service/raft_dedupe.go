@@ -39,6 +39,12 @@ func (m *Module) rememberRaftAppliedCommand(ctx context.Context, commandID strin
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
 	m.raftAppliedCommands[commandID] = struct{}{}
+	m.mu.Unlock()
+	return m.persistRaftAppliedCommands(ctx)
+}
+
+func (m *Module) persistRaftAppliedCommands(ctx context.Context) error {
+	m.mu.Lock()
 	ids := make([]string, 0, len(m.raftAppliedCommands))
 	for id := range m.raftAppliedCommands {
 		ids = append(ids, id)

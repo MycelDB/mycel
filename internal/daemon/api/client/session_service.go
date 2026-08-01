@@ -19,10 +19,16 @@ type SessionService struct {
 	clientv1.UnimplementedSessionServiceServer
 	sessions daemonsession.Manager
 	spaces   daemonspace.Manager
+	router   ClientRequestRouter
 }
 
 func NewSessionService(sessions daemonsession.Manager, spaces daemonspace.Manager) *SessionService {
 	return &SessionService{sessions: sessions, spaces: spaces}
+}
+
+func (s *SessionService) WithClientRequestRouter(router ClientRequestRouter) *SessionService {
+	s.router = router
+	return s
 }
 
 func (s *SessionService) OpenSession(ctx context.Context, req *clientv1.OpenSessionRequest) (*clientv1.OpenSessionResponse, error) {
@@ -46,6 +52,13 @@ func (s *SessionService) OpenSession(ctx context.Context, req *clientv1.OpenSess
 }
 
 func (s *SessionService) GetSession(ctx context.Context, req *clientv1.GetSessionRequest) (*clientv1.GetSessionResponse, error) {
+	if s.router != nil {
+		res := &clientv1.GetSessionResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.SessionService_GetSession_FullMethodName, req.GetSessionId(), "", req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -58,6 +71,13 @@ func (s *SessionService) GetSession(ctx context.Context, req *clientv1.GetSessio
 }
 
 func (s *SessionService) HeartbeatSession(ctx context.Context, req *clientv1.HeartbeatSessionRequest) (*clientv1.HeartbeatSessionResponse, error) {
+	if s.router != nil {
+		res := &clientv1.HeartbeatSessionResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.SessionService_HeartbeatSession_FullMethodName, req.GetSessionId(), "", req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -74,6 +94,13 @@ func (s *SessionService) HeartbeatSession(ctx context.Context, req *clientv1.Hea
 }
 
 func (s *SessionService) CloseSession(ctx context.Context, req *clientv1.CloseSessionRequest) (*clientv1.CloseSessionResponse, error) {
+	if s.router != nil {
+		res := &clientv1.CloseSessionResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.SessionService_CloseSession_FullMethodName, req.GetSessionId(), "", req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -91,6 +118,10 @@ type TransactionGraphCommitter interface {
 	DiscardTransactionGraph(ctx context.Context, transactionID string)
 }
 
+type TransactionGraphWriteLeaderChecker interface {
+	RequireLocalGraphWriteLeader(ctx context.Context, spaceID string) error
+}
+
 type TransactionChangePublisher interface {
 	PublishCommit(ctx context.Context, commit daemonsession.TransactionCommit, changes []daemonchange.GraphChange)
 }
@@ -101,6 +132,7 @@ type TransactionService struct {
 	spaces    daemonspace.Manager
 	graphs    TransactionGraphCommitter
 	publisher TransactionChangePublisher
+	router    ClientRequestRouter
 }
 
 func NewTransactionService(sessions daemonsession.Manager, args ...any) *TransactionService {
@@ -119,7 +151,19 @@ func NewTransactionService(sessions daemonsession.Manager, args ...any) *Transac
 	return service
 }
 
+func (s *TransactionService) WithClientRequestRouter(router ClientRequestRouter) *TransactionService {
+	s.router = router
+	return s
+}
+
 func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1.BeginTransactionRequest) (*clientv1.BeginTransactionResponse, error) {
+	if s.router != nil {
+		res := &clientv1.BeginTransactionResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.TransactionService_BeginTransaction_FullMethodName, req.GetSessionId(), "", req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -142,6 +186,13 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 			return nil, status.Error(codes.FailedPrecondition, "domain is read-only")
 		}
 	}
+	if input.Mode == daemonsession.TransactionModeReadWrite && s.graphs != nil {
+		if checker, ok := s.graphs.(TransactionGraphWriteLeaderChecker); ok {
+			if err := checker.RequireLocalGraphWriteLeader(ctx, session.SpaceID); err != nil {
+				return nil, mapGraphError(err, "begin transaction write route")
+			}
+		}
+	}
 	if s.graphs != nil {
 		baseRevision, err := s.graphs.CurrentRevision(ctx, session.SpaceID)
 		if err != nil {
@@ -157,6 +208,13 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 }
 
 func (s *TransactionService) GetTransaction(ctx context.Context, req *clientv1.GetTransactionRequest) (*clientv1.GetTransactionResponse, error) {
+	if s.router != nil {
+		res := &clientv1.GetTransactionResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.TransactionService_GetTransaction_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -169,6 +227,13 @@ func (s *TransactionService) GetTransaction(ctx context.Context, req *clientv1.G
 }
 
 func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv1.CommitTransactionRequest) (*clientv1.CommitTransactionResponse, error) {
+	if s.router != nil {
+		res := &clientv1.CommitTransactionResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.TransactionService_CommitTransaction_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -201,6 +266,13 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 }
 
 func (s *TransactionService) RollbackTransaction(ctx context.Context, req *clientv1.RollbackTransactionRequest) (*clientv1.RollbackTransactionResponse, error) {
+	if s.router != nil {
+		res := &clientv1.RollbackTransactionResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.TransactionService_RollbackTransaction_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -216,6 +288,13 @@ func (s *TransactionService) RollbackTransaction(ctx context.Context, req *clien
 }
 
 func (s *TransactionService) CloseTransaction(ctx context.Context, req *clientv1.CloseTransactionRequest) (*clientv1.CloseTransactionResponse, error) {
+	if s.router != nil {
+		res := &clientv1.CloseTransactionResponse{}
+		forwarded, err := s.router.ForwardUnary(ctx, clientv1.TransactionService_CloseTransaction_FullMethodName, "", req.GetTransactionId(), req, res)
+		if forwarded || err != nil {
+			return res, err
+		}
+	}
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err

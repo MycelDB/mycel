@@ -58,7 +58,7 @@ If import fails, the importer rolls back the transaction.
 
 `ImportExportService` includes:
 
-- export domain graph data from a transaction snapshot
+- export domain graph data from a transaction read context
 - import domain graph data into a read-write transaction
 - Mycel-native structured import/export streams
 - Mycel-native JSON/NDJSON encoded streams
@@ -142,7 +142,7 @@ The JSON document shape is intentionally simple for the MVP:
 - `APPEND`, basic `UPSERT`, and `REPLACE_DOMAIN` modes are supported for graph records.
 - Raw JSON chunks, NDJSON chunks, and semantic-index export are not yet implemented.
 - Import mutates only the transaction overlay; callers still commit or roll back through `TransactionService`.
-- Export reads the active transaction snapshot, including read-your-writes for read-write transactions.
+- Export reads through the active transaction. Read-write transactions include read-your-writes from their overlay; read-only exports use the current committed graph read path and may observe commits newer than `base_revision`.
 
 ## Transaction scoping
 
@@ -164,7 +164,7 @@ The transaction determines:
 
 - space
 - domain
-- snapshot/base revision for export
+- read context/base revision for export
 - mutation buffer for import
 - authorization context
 
@@ -172,7 +172,7 @@ Commit/rollback remains separate and is handled by `TransactionService`.
 
 ## ExportDomain
 
-Exports graph/domain data from a transaction snapshot.
+Exports graph/domain data from a transaction read context. In V1 this is not a historical repeatable snapshot for read-only transactions; it reads current committed graph state through the graph read consistency path. Use a read-write transaction when the export must include staged writes.
 
 Request:
 
@@ -376,7 +376,7 @@ Suggested mappings:
 
 Import mutations occur inside a transaction. Once committed, the transaction becomes normal durable graph state and replicates according to mesh replication rules.
 
-Export reads from the daemon's transaction snapshot. In mesh mode, different daemons may expose different freshness depending on replication state.
+Export reads through the daemon's transaction graph read path. In raft mode, read-only exports route to strong committed graph reads; read-write exports stay on the transaction home node and include staged overlay data. Read-only exports do not pin an MVCC snapshot in V1.
 
 ## Open questions
 

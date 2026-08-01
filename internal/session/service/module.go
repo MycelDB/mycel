@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/clustering/routing"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
@@ -18,16 +20,19 @@ const (
 )
 
 type Module struct {
-	mu           sync.Mutex
-	sessions     map[string]GraphSession
-	transactions map[string]GraphTransaction
-	revisions    map[string]int64
-	commits      map[string]TransactionCommit
-	gate         *quiesce.Gate
+	mu                sync.Mutex
+	sessions          map[string]GraphSession
+	transactions      map[string]GraphTransaction
+	sessionRoutes     map[string]SessionRouteRecord
+	transactionRoutes map[string]TransactionRouteRecord
+	revisions         map[string]int64
+	commits           map[string]TransactionCommit
+	localHomeNodeID   consensus.NodeID
+	gate              *quiesce.Gate
 }
 
 func NewModule() *Module {
-	return &Module{sessions: map[string]GraphSession{}, transactions: map[string]GraphTransaction{}, revisions: map[string]int64{}, commits: map[string]TransactionCommit{}, gate: quiesce.NewGate(ModuleName)}
+	return &Module{sessions: map[string]GraphSession{}, transactions: map[string]GraphTransaction{}, sessionRoutes: map[string]SessionRouteRecord{}, transactionRoutes: map[string]TransactionRouteRecord{}, revisions: map[string]int64{}, commits: map[string]TransactionCommit{}, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -39,6 +44,12 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.transactions == nil {
 		m.transactions = map[string]GraphTransaction{}
 	}
+	if m.sessionRoutes == nil {
+		m.sessionRoutes = map[string]SessionRouteRecord{}
+	}
+	if m.transactionRoutes == nil {
+		m.transactionRoutes = map[string]TransactionRouteRecord{}
+	}
 	if m.revisions == nil {
 		m.revisions = map[string]int64{}
 	}
@@ -47,6 +58,12 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if identityProvider, ok := host.(runtime.LocalRouteIdentityProvider); ok {
+		identity := identityProvider.LocalRouteIdentity()
+		if identity.RaftMode {
+			m.localHomeNodeID = consensus.NodeID(identity.RaftNodeID)
+		}
 	}
 	if registrar, ok := host.(runtime.QuiesceRegistrar); ok {
 		if err := registrar.RegisterQuiesceParticipant(m.gate); err != nil {
@@ -73,14 +90,18 @@ func (m *Module) OpenSession(ctx context.Context, input OpenSessionInput) (Graph
 	}
 	idle := normalizeTimeout(input.IdleTimeout)
 	now := time.Now().UTC()
-	s := GraphSession{ID: uuid.NewString(), UserID: strings.TrimSpace(input.UserID), SpaceID: strings.TrimSpace(input.SpaceID), DomainID: strings.TrimSpace(input.DomainID), State: SessionStateActive, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(idle)}
+	s := GraphSession{ID: routing.NewSessionID(m.localHomeNodeID), UserID: strings.TrimSpace(input.UserID), SpaceID: strings.TrimSpace(input.SpaceID), DomainID: strings.TrimSpace(input.DomainID), HomeNodeID: m.localHomeNodeID, State: SessionStateActive, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(idle)}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessions[s.ID] = s
+	m.sessionRoutes[s.ID] = sessionRouteFromSession(s, now)
 	return s, nil
 }
 
 func (m *Module) GetSession(ctx context.Context, userID string, sessionID string) (GraphSession, error) {
+	if err := m.requireLocalSessionHome(sessionID); err != nil {
+		return GraphSession{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return GraphSession{}, err
 	}
@@ -94,6 +115,9 @@ func (m *Module) GetSession(ctx context.Context, userID string, sessionID string
 }
 
 func (m *Module) HeartbeatSession(ctx context.Context, userID string, sessionID string, extension time.Duration) (GraphSession, error) {
+	if err := m.requireLocalSessionHome(sessionID); err != nil {
+		return GraphSession{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return GraphSession{}, err
@@ -115,17 +139,22 @@ func (m *Module) HeartbeatSession(ctx context.Context, userID string, sessionID 
 	s.LastSeen = now
 	s.ExpiresAt = now.Add(normalizeTimeout(extension))
 	m.sessions[s.ID] = s
+	m.sessionRoutes[s.ID] = sessionRouteFromSession(s, now)
 	for id, tx := range m.transactions {
 		if tx.SessionID == s.ID && tx.State == TransactionStateActive {
 			tx.LastSeen = now
 			tx.ExpiresAt = s.ExpiresAt
 			m.transactions[id] = tx
+			m.transactionRoutes[id] = transactionRouteFromTransaction(tx, now)
 		}
 	}
 	return s, nil
 }
 
 func (m *Module) CloseSession(ctx context.Context, userID string, sessionID string) (GraphSession, error) {
+	if err := m.requireLocalSessionHome(sessionID); err != nil {
+		return GraphSession{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return GraphSession{}, err
@@ -146,6 +175,7 @@ func (m *Module) CloseSession(ctx context.Context, userID string, sessionID stri
 		s.LastSeen = now
 		m.sessions[s.ID] = s
 	}
+	m.sessionRoutes[s.ID] = sessionRouteFromSession(s, now)
 	for id, tx := range m.transactions {
 		if tx.SessionID != s.ID || tx.State != TransactionStateActive {
 			continue
@@ -157,11 +187,15 @@ func (m *Module) CloseSession(ctx context.Context, userID string, sessionID stri
 			tx.State = TransactionStateClosed
 		}
 		m.transactions[id] = tx
+		m.transactionRoutes[id] = transactionRouteFromTransaction(tx, now)
 	}
 	return s, nil
 }
 
 func (m *Module) BeginTransaction(ctx context.Context, input BeginTransactionInput) (GraphTransaction, error) {
+	if err := m.requireLocalSessionHome(input.SessionID); err != nil {
+		return GraphTransaction{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return GraphTransaction{}, err
@@ -185,16 +219,21 @@ func (m *Module) BeginTransaction(ctx context.Context, input BeginTransactionInp
 	now := time.Now().UTC()
 	s.LastSeen = now
 	m.sessions[s.ID] = s
+	m.sessionRoutes[s.ID] = sessionRouteFromSession(s, now)
 	baseRevision := m.revisions[revisionKey(s.SpaceID, s.DomainID)]
 	if input.BaseRevision != nil && *input.BaseRevision > baseRevision {
 		baseRevision = *input.BaseRevision
 	}
-	tx := GraphTransaction{ID: uuid.NewString(), SessionID: s.ID, UserID: s.UserID, SpaceID: s.SpaceID, DomainID: s.DomainID, Mode: input.Mode, State: TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: s.ExpiresAt}
+	tx := GraphTransaction{ID: routing.NewTransactionID(s.HomeNodeID), SessionID: s.ID, UserID: s.UserID, SpaceID: s.SpaceID, DomainID: s.DomainID, HomeNodeID: s.HomeNodeID, Mode: input.Mode, State: TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: s.ExpiresAt}
 	m.transactions[tx.ID] = tx
+	m.transactionRoutes[tx.ID] = transactionRouteFromTransaction(tx, now)
 	return tx, nil
 }
 
 func (m *Module) GetTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error) {
+	if err := m.requireLocalTransactionHome(transactionID); err != nil {
+		return GraphTransaction{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return GraphTransaction{}, err
 	}
@@ -212,6 +251,9 @@ func (m *Module) CommitTransactionAtRevision(ctx context.Context, userID string,
 }
 
 func (m *Module) commitTransaction(ctx context.Context, userID string, transactionID string, operationCount int32, committedRevision int64) (TransactionCommit, error) {
+	if err := m.requireLocalTransactionHome(transactionID); err != nil {
+		return TransactionCommit{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return TransactionCommit{}, err
@@ -246,12 +288,16 @@ func (m *Module) commitTransaction(ctx context.Context, userID string, transacti
 	tx.State = TransactionStateCommitted
 	tx.LastSeen = now
 	m.transactions[tx.ID] = tx
+	m.transactionRoutes[tx.ID] = transactionRouteFromTransaction(tx, now)
 	commit := TransactionCommit{ID: uuid.NewString(), TransactionID: tx.ID, SessionID: tx.SessionID, UserID: tx.UserID, SpaceID: tx.SpaceID, DomainID: tx.DomainID, BaseRevision: tx.BaseRevision, CommittedRevision: committedRevision, OperationCount: operationCount, CommittedAt: now}
 	m.commits[commit.ID] = commit
 	return commit, nil
 }
 
 func (m *Module) RollbackTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error) {
+	if err := m.requireLocalTransactionHome(transactionID); err != nil {
+		return GraphTransaction{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return GraphTransaction{}, err
@@ -267,14 +313,19 @@ func (m *Module) RollbackTransaction(ctx context.Context, userID string, transac
 		return GraphTransaction{}, err
 	}
 	if tx.State == TransactionStateActive {
+		now := time.Now().UTC()
 		tx.State = TransactionStateRolledBack
-		tx.LastSeen = time.Now().UTC()
+		tx.LastSeen = now
 		m.transactions[tx.ID] = tx
+		m.transactionRoutes[tx.ID] = transactionRouteFromTransaction(tx, now)
 	}
 	return tx, nil
 }
 
 func (m *Module) CloseTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error) {
+	if err := m.requireLocalTransactionHome(transactionID); err != nil {
+		return GraphTransaction{}, err
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return GraphTransaction{}, err
@@ -290,13 +341,15 @@ func (m *Module) CloseTransaction(ctx context.Context, userID string, transactio
 		return GraphTransaction{}, err
 	}
 	if tx.State == TransactionStateActive {
+		now := time.Now().UTC()
 		if tx.Mode == TransactionModeReadWrite {
 			tx.State = TransactionStateRolledBack
 		} else {
 			tx.State = TransactionStateClosed
 		}
-		tx.LastSeen = time.Now().UTC()
+		tx.LastSeen = now
 		m.transactions[tx.ID] = tx
+		m.transactionRoutes[tx.ID] = transactionRouteFromTransaction(tx, now)
 	}
 	return tx, nil
 }
@@ -324,12 +377,15 @@ func (m *Module) getSessionLocked(userID string, sessionID string) (GraphSession
 		return GraphSession{}, ErrUnauthorized
 	}
 	if s.State == SessionStateActive && !s.ExpiresAt.IsZero() && !time.Now().UTC().Before(s.ExpiresAt) {
+		now := time.Now().UTC()
 		s.State = SessionStateExpired
 		m.sessions[s.ID] = s
+		m.sessionRoutes[s.ID] = sessionRouteFromSession(s, now)
 		for id, tx := range m.transactions {
 			if tx.SessionID == s.ID && tx.State == TransactionStateActive {
 				tx.State = TransactionStateExpired
 				m.transactions[id] = tx
+				m.transactionRoutes[id] = transactionRouteFromTransaction(tx, now)
 			}
 		}
 	}
@@ -348,10 +404,101 @@ func (m *Module) getTransactionLocked(userID string, transactionID string) (Grap
 		return GraphTransaction{}, ErrUnauthorized
 	}
 	if tx.State == TransactionStateActive && !tx.ExpiresAt.IsZero() && !time.Now().UTC().Before(tx.ExpiresAt) {
+		now := time.Now().UTC()
 		tx.State = TransactionStateExpired
 		m.transactions[tx.ID] = tx
+		m.transactionRoutes[tx.ID] = transactionRouteFromTransaction(tx, now)
 	}
 	return tx, nil
+}
+
+func (m *Module) SessionRoute(sessionID string) (SessionRouteRecord, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.sessionRoutes[strings.TrimSpace(sessionID)]
+	return record, ok
+}
+
+func (m *Module) TransactionRoute(transactionID string) (TransactionRouteRecord, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.transactionRoutes[strings.TrimSpace(transactionID)]
+	return record, ok
+}
+
+func (m *Module) RouteDiagnostics() RouteDiagnostics {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := RouteDiagnostics{LocalHomeNodeID: m.localHomeNodeID, SessionRoutes: len(m.sessionRoutes), TransactionRoutes: len(m.transactionRoutes)}
+	for _, route := range m.sessionRoutes {
+		if route.HomeNodeID == m.localHomeNodeID {
+			out.LocalSessionRoutes++
+			if route.State == SessionStateActive {
+				out.ActiveLocalSessions++
+			}
+		} else {
+			out.RemoteSessionRoutes++
+			if route.State == SessionStateActive {
+				out.ActiveRemoteSessions++
+			}
+		}
+	}
+	for _, route := range m.transactionRoutes {
+		if route.HomeNodeID == m.localHomeNodeID {
+			out.LocalTransactionRoutes++
+			if route.State == TransactionStateActive {
+				out.ActiveLocalTransactions++
+			}
+		} else {
+			out.RemoteTransactionRoutes++
+			if route.State == TransactionStateActive {
+				out.ActiveRemoteTransactions++
+			}
+		}
+	}
+	return out
+}
+
+func (m *Module) requireLocalSessionHome(sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" || m.localHomeNodeID == 0 {
+		return nil
+	}
+	home, ok, err := routing.ParseSessionHomeNode(sessionID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	if !ok {
+		return routing.NewUnknownSessionHome("session id does not encode home node", routing.WithLocalNode(m.localHomeNodeID))
+	}
+	if home != m.localHomeNodeID {
+		return routing.NewSessionHomeMismatch("session belongs to another home node", routing.WithHomeNode(home), routing.WithLocalNode(m.localHomeNodeID), routing.WithTargetNode(home))
+	}
+	return nil
+}
+
+func (m *Module) requireLocalTransactionHome(transactionID string) error {
+	if strings.TrimSpace(transactionID) == "" || m.localHomeNodeID == 0 {
+		return nil
+	}
+	home, ok, err := routing.ParseTransactionHomeNode(transactionID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	if !ok {
+		return routing.NewUnknownSessionHome("transaction id does not encode home node", routing.WithLocalNode(m.localHomeNodeID))
+	}
+	if home != m.localHomeNodeID {
+		return routing.NewSessionHomeMismatch("transaction belongs to another home node", routing.WithHomeNode(home), routing.WithLocalNode(m.localHomeNodeID), routing.WithTargetNode(home))
+	}
+	return nil
+}
+
+func sessionRouteFromSession(s GraphSession, updatedAt time.Time) SessionRouteRecord {
+	return SessionRouteRecord{SessionID: s.ID, UserID: s.UserID, SpaceID: s.SpaceID, DomainID: s.DomainID, HomeNodeID: s.HomeNodeID, State: s.State, CreatedAt: s.CreatedAt, UpdatedAt: updatedAt, ExpiresAt: s.ExpiresAt}
+}
+
+func transactionRouteFromTransaction(tx GraphTransaction, updatedAt time.Time) TransactionRouteRecord {
+	return TransactionRouteRecord{TransactionID: tx.ID, SessionID: tx.SessionID, UserID: tx.UserID, SpaceID: tx.SpaceID, DomainID: tx.DomainID, HomeNodeID: tx.HomeNodeID, State: tx.State, CreatedAt: tx.CreatedAt, UpdatedAt: updatedAt, ExpiresAt: tx.ExpiresAt}
 }
 
 func normalizeTimeout(value time.Duration) time.Duration {

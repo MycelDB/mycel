@@ -2,7 +2,17 @@
 
 ## Status
 
-Urgent design investigation and implementation plan. MycelDB raft clustering is not production-safe until the required correctness, deployment, and validation work in this document is complete.
+Urgent design investigation and implementation plan. MycelDB raft clustering is significantly hardened on `improved_clustering`, but existing divergent PVCs still require controlled forensic migration and future subsystem snapshot/compaction hardening remains outside the current V1 guarantee.
+
+Phase status on `improved_clustering`:
+
+- Phase A fail-closed/observability work is complete and has focused gates.
+- Phase B durable raft runtime is partially complete for V1: daemon group startup uses file-backed raft storage under `<data-dir>/meta/raft`, hard state/entries/snapshots are persisted, groups restart from persisted state, committed entries replay into state machines, generic snapshot restore exists for snapshot-capable state machines, system metadata snapshot-only restart/catch-up is tested, and restart/rejoin gates exist. Phase B2 now has initial subsystem snapshot contracts for current composite children, including blob payload fail-closed validation and semantic derived-state boundaries. Automatic production compaction remains off until lagging-follower snapshot-install coverage, stronger atomic restore, and destructive soak gates are complete. See `../implementation/phase-b-durable-raft-runtime-audit.md` and the follow-up plan in `../implementation/phase-b2-subsystem-snapshot-recovery-implementation-plan.md`.
+- Phase C authoritative system raft metadata is implemented for the static V1 bootstrap model.
+- Phase D raft command ownership/coverage is complete for its initial scope: durable WAL record types are classified, covered subsystem writes route through system/partition raft or fail closed, backup/automation/change-stream raft-mode behavior is explicit, composite state-machine dispatch is hardened, multi-subsystem restart/convergence coverage exists, and `make test-phase-d` is available.
+- Phase E leader/session/transaction routing is complete for V1: session and transaction IDs encode home nodes in raft mode, unary session/transaction/graph/query/metadata-catalog requests route to the home node or fail closed, read-write transactions require local graph-partition leadership, home-node loss semantics are explicit, routing diagnostics exist, and `make test-phase-e` is available.
+- Phase F read consistency is complete for V1: committed/read-only graph and graph-derived query/metadata reads use leader read-index/apply barriers by default, read-only transactions are explicit current-read contexts, read metadata is exposed, stale reads are rejected by default, read-index diagnostics are visible, and `make test-phase-f` is available.
+- Phase G divergence detection/repair tooling is complete for V1: deterministic local graph checksums, local/admin/backend diagnostics, cluster consistency reports, destructive Compose/K3s data-plane validation, forensic export/diff tooling, manual repair workflows, `make test-phase-g`, release-gate inclusion, and optional soak validation are available.
 
 ## Context
 
@@ -86,13 +96,13 @@ The code has a system raft state machine for bootstrap metadata and node registr
 
 That means the intended raft metadata model may exist in code but not be the actual production authority.
 
-### H3 — Raft group storage is not durable enough for restart/recovery
+### H3 — Raft group storage and snapshot recovery must be durable enough for restart/recovery
 
-The raft implementation currently uses in-memory raft storage for groups. There is file-backed persistent storage code, but the daemon raft runtime does not appear to wire it as the authoritative group log/hard-state/snapshot storage.
+This hypothesis was valid for the original incident investigation but is now partly stale. The daemon raft runtime now wires file-backed storage for system and partition groups under `<data-dir>/meta/raft`, and the raft `Ready` loop persists snapshots, hard state, and entries before sending messages or applying committed entries.
 
-If raft logs are memory-only while graph segments are persisted locally, a restart can leave persisted graph data and raft state inconsistent. Even if this is not the only cause of the current divergence, it prevents reliable replicated-state-machine semantics.
+Current V1 recovery is improved but still not a complete production compaction story: generic snapshot plumbing exists, system metadata snapshot-only restart/catch-up is tested, and current composite children now have initial snapshot/restore contracts. A long-gap follower catch-up after log compaction for graph/space/blob/schema/semantic groups still requires broader lagging-follower install tests, stronger atomic restore, and destructive forced-snapshot soak validation before automatic compaction is enabled.
 
-Required conclusion: raft log/hard-state/snapshots must be durable and must be treated as the source of replicated truth.
+Required conclusion: raft log/hard-state/snapshots must remain durable, and a future Phase B2 must make snapshots restore every durable subsystem state machine before subsystem-wide log compaction/snapshot-only catch-up is advertised as complete.
 
 ### H4 — Graph writes may not be fully covered or consistently routed through raft
 
@@ -213,36 +223,32 @@ Required V1 guarantees:
 
 #### `OpenSession`
 
-In raft mode, `OpenSession` must return a session with an explicit home node or route token, or the service must guarantee all future calls for that session reach the same home node.
+In raft mode, `OpenSession` returns a session ID with an encoded home node (`s.<node>.<uuid>`). Future calls for that session are routed by the daemon, not by Kubernetes affinity.
 
-Minimum V1:
+Implemented V1:
 
-- response includes server-side metadata internally mapping `session_id -> home_node_id`;
-- any node receiving a session RPC either serves it if local or forwards to the home node;
-- if home node is unavailable, in-flight sessions fail with a retryable/session-lost error.
+- the session subsystem records `session_id -> home_node_id` locally and exposes local diagnostics;
+- any node receiving a unary session RPC either serves it if local or forwards to the encoded home node;
+- if the home node is unavailable, in-flight sessions fail with a retryable route error;
+- if the home node is reachable but no longer has the in-flight state, the session is treated as lost/not found and callers must open a new session.
 
 #### `BeginTransaction`
 
-A transaction is created on the session home node in V1.
+A transaction is created on the session home node in V1 and receives an encoded transaction ID (`tx.<node>.<uuid>`).
 
 Guarantees:
 
-- read-only transaction uses a safe committed revision;
-- read-write transaction stages local overlay on the home node;
+- read-only transaction records the current committed base revision available through the graph manager; in Phase F V1 it is a linearizable current-read context, not a pinned historical snapshot;
+- read-write transaction stages its overlay on the home node only if that node is currently the graph partition leader for the target space;
 - transaction response records base revision;
-- future operations are routed to transaction home.
+- future unary graph/query/metadata operations are routed to transaction home;
+- if the home node is unavailable or has lost in-flight state, the transaction fails closed rather than being recreated on another pod.
 
 #### `ListNodes` / `GetNode`
 
-In raft mode, committed graph reads must be leader/read-index consistent for the relevant partition/domain.
+In raft mode, committed graph reads must be leader/read-index consistent for the relevant partition/domain. Phase E V1 routes read-only/committed graph reads to the partition leader where available, and Phase F adds the read-index/apply barrier before local committed graph state is served.
 
-Inside a read-write transaction, reads must include the transaction overlay. Therefore V1 should route the whole transaction to its home node and ensure that home node either:
-
-- performs safe leader reads and overlays local changes, or
-- forwards to leader with overlay context, or
-- requires the home node to be the relevant leader for write transactions.
-
-Do not silently fall back to local stale reads.
+Inside a read-write transaction, reads must include the transaction overlay. Phase E V1 routes the whole transaction to its home node and requires the home node to remain the relevant partition leader for write transactions. If leadership changes, read/write/commit paths fail closed instead of forwarding away from the overlay or silently falling back to local stale reads.
 
 #### `ApplyGraphOperations` / graph mutations
 
@@ -250,9 +256,10 @@ Mutations are staged in the transaction overlay. On commit, the overlay is conve
 
 Guarantees:
 
-- edge endpoint validation is performed against a consistent snapshot plus overlay;
-- the parent node cannot be visible on one pod but missing for validation on another authoritative write path;
-- commit is accepted only by the partition leader or forwarded to it.
+- edge endpoint validation is performed on the transaction home node against that node's committed state plus overlay;
+- read-write mutation staging requires local partition leadership, so a non-leader pod cannot validate/mutate local-only overlay state;
+- the parent node cannot be visible on one ingress pod and then validated through a different local-only transaction overlay;
+- commit is accepted only while the transaction home node remains the partition leader.
 
 #### `CommitTransaction`
 
@@ -268,11 +275,11 @@ If quorum or leader is unavailable, commit fails closed. It must not write local
 
 ## Kubernetes deployment design
 
-### Current ClusterIP-over-all-pods service is unsafe as the primary correctness mechanism
+### ClusterIP-over-all-pods service is not a correctness mechanism by itself
 
 A ClusterIP selecting all pods can be used only if MycelDB itself guarantees routing/forwarding/read consistency. Kubernetes service affinity is not a database consistency model.
 
-Until MycelDB has robust leader routing and session home-node forwarding, applications must not rely on a load-balanced `myceld` service over all pods for writes.
+After Phase E/F/G V1, session- and transaction-scoped unary workflows can enter through any ready pod and either route to the home node or fail closed with a documented route/session error, committed graph/query/metadata reads use leader read-index/apply barriers by default, and operators have consistency-report/forensic tooling plus destructive Compose/K3s data-plane gates. This improves arbitrary-pod safety for V1 workflows, but broad production multi-pod exposure still excludes known-divergent PVC reuse and subsystem snapshot-only catch-up after compaction until the remaining Phase B subsystem snapshot gap is closed.
 
 ### Recommended service model by maturity
 
@@ -297,7 +304,7 @@ Clients should connect to a router/leader-aware endpoint, not arbitrary pods.
 
 #### Long-term model
 
-Any pod may receive client traffic only if it can safely route every request to the correct raft leader or session home node. Readiness must remove pods that cannot route safely.
+Any pod may receive client traffic only if it can safely route every request to the correct raft leader or session home node and satisfy the configured read-consistency guarantee. Readiness must remove pods that cannot route safely.
 
 ### Session affinity
 
@@ -387,23 +394,37 @@ Acceptance:
 
 ### Phase B — Durable raft runtime
 
+Status: partially complete for V1. Detailed audit: `../implementation/phase-b-durable-raft-runtime-audit.md`. Follow-up subsystem snapshot plan: `../implementation/phase-b2-subsystem-snapshot-recovery-implementation-plan.md`.
+
 Goals:
 
 - make raft logs/hard state/snapshots durable;
 - make raft the source of replicated truth.
 
-Tasks:
+Implemented V1 coverage:
 
-- Wire persistent raft storage into daemon group startup.
-- Persist hard state, entries, and snapshots per group.
-- Add snapshot creation/restoration for system and partition state machines.
-- Ensure graph/space/blob/schema/semantic state can be recovered from raft log/snapshot.
-- Add restart tests proving no graph divergence after restart.
+- persistent raft storage is wired into daemon group startup under `<data-dir>/meta/raft`;
+- hard state, entries, snapshots, and conf state are persisted per group;
+- existing groups restart with `raft.RestartNode` when persisted raft state exists;
+- committed raft log entries replay into fresh state machines on restart;
+- snapshot-capable state machines can create/restore raft snapshot payloads;
+- startup and raft `Ready` snapshot installation restore non-empty state-machine snapshot data and fail closed when a restorer is unavailable;
+- storage tests cover hard state, entries, conf state, snapshots, compaction, and reload;
+- system metadata tests prove snapshot-only restart and lagging-follower snapshot installation;
+- multi-subsystem restart tests prove representative space/schema/graph/semantic convergence;
+- Compose/K3s destructive gates validate data-plane behavior after restart and K3s single-PVC replacement/rejoin.
 
-Acceptance:
+Remaining gap:
 
-- stop all pods, restart all pods, graph counts/checksums converge;
-- PVC loss for one follower triggers catch-up/snapshot, not independent cluster bootstrap.
+- generic snapshot restore is wired for snapshot-capable state machines, but partition subsystem snapshot formats/restore hooks are not defined;
+- automatic snapshot creation/compaction policy is not enabled for production subsystem groups;
+- long-gap follower catch-up after log compaction or snapshot-only recovery is completed for system metadata tests, but not yet for every partition subsystem.
+
+Acceptance status:
+
+- restart/rejoin behavior is covered for current un-compacted-log/local-store V1 scenarios;
+- PVC replacement is covered by the K3s gate for current V1 scenarios;
+- subsystem-wide snapshot-only catch-up after compaction remains future Phase B2 work.
 
 ### Phase C — Authoritative cluster identity and bootstrap
 
@@ -450,27 +471,35 @@ Acceptance:
 
 ### Phase E — Leader routing and session/transaction routing
 
-Goals:
+Status: complete for V1. Detailed plan: `../implementation/phase-e-leader-session-transaction-routing-implementation-plan.md`.
 
-- clients may connect to any ready pod without violating correctness;
-- in-flight session/transaction workflows are routed safely.
+Implemented guarantees:
 
-Tasks:
+- raft-mode session IDs and transaction IDs encode a home node (`s.<node>.<uuid>` and `tx.<node>.<uuid>`);
+- unary session, transaction, graph, query, and metadata-catalog requests route to the encoded home node through the daemon-internal backend forwarding RPC;
+- missing, legacy, malformed, conflicting, or unreachable route metadata fails closed instead of using local fallback state;
+- in-flight sessions and transaction overlays remain home-node local in V1;
+- home-node loss returns retryable route errors or documented session-lost/not-found errors; committed state remains safe and can be accessed through a new session;
+- read-write transactions require the home node to be the local graph partition leader before staging, reading overlays, or committing;
+- leader changes during active read-write transactions fail safely and preserve the transaction state for explicit retry/rollback handling;
+- committed/read-only graph reads route to the partition leader and, after Phase F, use read-index/apply barriers by default;
+- local routing diagnostics and the focused `make test-phase-e` gate cover the V1 behavior.
 
-- Add partition leader resolver APIs usable by all services.
-- Implement forward-to-leader for writes.
-- Implement safe leader/read-index reads.
-- Add session home-node mapping.
-- Route `session_id` and `transaction_id` operations to home node.
-- Decide failover semantics for in-flight sessions: V1 can fail in-flight transactions on home-node loss; committed state remains safe.
-- Consider embedding route/home metadata in session/transaction IDs or storing it in a rafted session directory.
+Remaining boundaries:
+
+- streaming `CreateBlobNode` and import/export streams fail closed for remote-home transaction IDs in V1;
+- non-session subsystem writes remain Phase D fail-closed or explicitly raft-owned rather than generally forwarded;
+- Phase F is complete for the V1 formal read-index/linearizable-read model;
+- Phase G is complete for V1 divergence diagnostics, forensic tooling, manual repair workflows, and focused/destructive gates.
 
 Acceptance:
 
-- `OpenSession` on pod A, graph read on pod B, graph write on pod C either succeeds through routing or fails with a documented retryable route/session error;
-- no operation validates against stale local graph state.
+- `OpenSession` on pod A, graph read/write/query through pod B/C either succeeds through routing or fails with a documented retryable route/session error;
+- no operation validates against stale local graph state when a safer route is required.
 
 ### Phase F — Read consistency model
+
+Status: complete for V1. Detailed plan: `../implementation/phase-f-read-consistency-model-implementation-plan.md`. F0 contract/inventory: `../implementation/phase-f-read-consistency-inventory.md`.
 
 Goals:
 
@@ -490,24 +519,35 @@ Acceptance:
 
 ### Phase G — Divergence detection and repair tooling
 
+Status: complete for V1. Detailed plan: `../implementation/phase-g-divergence-detection-repair-implementation-plan.md`.
+
 Goals:
 
 - detect divergence early;
 - provide safe forensic and repair tools.
 
-Tasks:
+Implemented V1 coverage:
 
-- Add per-space/domain revision comparison across pods.
-- Add graph checksums per domain/partition/revision.
-- Add node/edge count diagnostics by domain and partition.
-- Add raft applied index/commit index per group/pod.
-- Add admin command/API for cluster consistency report.
-- Add export/diff tooling for divergent graph recovery.
+- deterministic local latest-state graph revision/count/checksum diagnostics;
+- local admin API/CLI diagnostics;
+- authenticated backend peer collection;
+- cluster consistency report and `consistent`/`lagging`/`divergent`/`degraded`/`unknown` classification;
+- real Compose/K3s pod-to-pod graph write/read/query/consistency validation;
+- bounded local forensic export and entity-level diff tooling;
+- manual repair workflows and read-only planning helper;
+- `make test-phase-g` and release-gate inclusion;
+- optional `make test-cluster-soak`.
 
-Acceptance:
+V1 boundaries:
 
-- operators can see whether all replicas agree on a domain;
-- repair tools can identify superset/conflict cases before data is discarded.
+- latest-state evidence only; no historical/common-revision diff;
+- no automatic merge/delete/overwrite/rebalance;
+- no automatic all-pages forensic export aggregation for very large domains.
+
+Acceptance status:
+
+- operators can see whether expected replicas agree on a domain;
+- repair workflows can identify identical, strict-superset, incomplete-evidence, and conflict cases before data is discarded.
 
 ## Diagnostics to add
 
@@ -627,23 +667,28 @@ Pass condition: clients must never observe a parent node from one pod and then f
 
 ## Recommended immediate decisions
 
-1. Treat raft mode as experimental/unsafe for production-like Knot PKM until this plan is implemented and validated.
-2. Run Knot PKM against one authoritative Mycel pod or one replica.
-3. Preserve current divergent PVCs for forensic analysis.
-4. Do not attempt automatic multi-pod data merge without graph-aware diff tooling.
-5. Prioritize fail-closed readiness/diagnostics before adding more raft features.
-6. Prioritize durable raft storage and cluster identity validation before advertising multi-node deployment as supported.
+1. Treat the current V1 raft mode as cluster-safe only within the documented A/C/D/E/F/G boundaries and after the focused plus destructive release gates pass.
+2. Keep existing known-divergent PVCs pinned to the known-good pod until a controlled snapshot/export/import migration is executed.
+3. Preserve divergent PVCs for forensic analysis; do not roll a fixed image over them expecting automatic repair.
+4. Use Phase G forensic export/diff and manual repair workflows before discarding or importing divergent data.
+5. Prioritize Phase B2 subsystem snapshot-recovery hardening before relying on compaction/snapshot-only follower catch-up for all durable partition state in long-running clusters.
 
 ## Definition of done
 
-MycelDB clustering is not considered reliable until all of the following are true:
+Current V1 clustering reliability requires all of the following:
 
 - all pods in a raft deployment report the same cluster ID;
-- raft state survives restart;
+- raft state survives normal restart with persisted storage;
 - every durable user-visible subsystem has an explicit raft-mode consistency model;
-- graph writes are quorum-replicated and verified on all replicas;
+- graph writes are quorum-replicated and verified on all expected replicas;
 - reads are leader/read-index consistent by default;
-- sessions/transactions are either routed or replicated;
+- sessions/transactions are either routed or fail closed with documented home-node loss semantics;
 - Kubernetes readiness fails closed for unsafe nodes;
-- diagnostics can prove per-domain graph convergence;
-- K3s tests reproduce the Knot PKM journal workflow across load-balanced pods without divergence or missing-edge endpoint errors.
+- diagnostics can prove per-domain latest-state graph convergence;
+- Compose/K3s tests reproduce load-balanced graph write/read/query workflows without divergence or missing-edge endpoint errors.
+
+Future full-production hardening additionally requires:
+
+- subsystem-specific snapshot restore and snapshot-only follower catch-up after log compaction for every durable partition subsystem;
+- broader long-running soak coverage under mixed workload and rolling failures;
+- operator-approved repair/import workflows for any existing divergent PVC set.

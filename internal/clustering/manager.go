@@ -24,13 +24,14 @@ type Manager struct {
 	state     model.NodeState
 	readiness ClusterReadiness
 
-	topology     *topology.Registry
-	membership   *membership.FileStore
-	registration *registration.Handler
-	backend      *backend.Service
-	logger       *slog.Logger
-	dataDir      string
-	raftMode     bool
+	topology       *topology.Registry
+	membership     *membership.FileStore
+	registration   *registration.Handler
+	backend        *backend.Service
+	logger         *slog.Logger
+	dataDir        string
+	raftMode       bool
+	systemMetadata consensus.SystemMetadata
 }
 
 func NewManager(ctx context.Context, opts Options, logger *slog.Logger) (*Manager, error) {
@@ -104,6 +105,15 @@ func (m *Manager) Membership() *membership.FileStore {
 	return m.membership
 }
 
+func (m *Manager) SystemMetadata() consensus.SystemMetadata {
+	if m == nil {
+		return consensus.SystemMetadata{}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneSystemMetadata(m.systemMetadata)
+}
+
 func (m *Manager) IsAdmitted() bool {
 	if m == nil {
 		return false
@@ -162,6 +172,13 @@ func (m *Manager) SetBackendBlobPayloadProvider(provider backend.BlobPayloadProv
 		return
 	}
 	m.backend.WithBlobPayloadProvider(provider)
+}
+
+func (m *Manager) SetBackendClientRequestForwarder(handler backend.ForwardedClientRequestHandler) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithClientRequestForwarder(handler)
 }
 
 func (m *Manager) Registration() *registration.Handler {
@@ -253,6 +270,7 @@ func (m *Manager) ApplySystemMetadata(ctx context.Context, meta consensus.System
 	m.identity = id
 	m.state = NodeStateInitializing
 	m.readiness = readiness
+	m.systemMetadata = cloneSystemMetadata(meta)
 	m.mu.Unlock()
 	self := selfPeer(id)
 	if m.topology != nil {
@@ -348,6 +366,25 @@ func initialReadiness(id model.NodeIdentity, state model.NodeState, opts Options
 		out = out.withBlocker("system metadata not applied")
 	} else {
 		out = out.withBlocker("system metadata not validated")
+	}
+	return out
+}
+
+func cloneSystemMetadata(meta consensus.SystemMetadata) consensus.SystemMetadata {
+	out := meta
+	if meta.Nodes != nil {
+		out.Nodes = make(map[string]consensus.SystemNode, len(meta.Nodes))
+		for k, v := range meta.Nodes {
+			out.Nodes[k] = v
+		}
+	}
+	if meta.Placement != nil {
+		out.Placement = make(map[uint32]consensus.PartitionPlacement, len(meta.Placement))
+		for k, v := range meta.Placement {
+			vv := v
+			vv.ReplicaNodeIDs = append([]string(nil), v.ReplicaNodeIDs...)
+			out.Placement[k] = vv
+		}
 	}
 	return out
 }

@@ -54,6 +54,16 @@ service ClusterBackendService {
   // ExecuteRaftSemanticRead forwards a semantic space read to a partition leader.
   // The request/response payloads are daemon-internal JSON envelopes.
   rpc ExecuteRaftSemanticRead(ExecuteRaftSemanticReadRequest) returns (ExecuteRaftSemanticReadResponse);
+
+  // ForwardClientRequest forwards a daemon client API request to the node that
+  // owns the in-flight session/transaction state. The request/response payloads
+  // are daemon-internal protobuf or JSON envelopes selected by operation.
+  rpc ForwardClientRequest(ForwardClientRequestRequest) returns (ForwardClientRequestResponse);
+
+  // GetLocalGraphConsistency collects local latest-state graph consistency
+  // diagnostics from a peer. The payload is a daemon-internal JSON-encoded
+  // LocalGraphStats envelope produced by the graph subsystem.
+  rpc GetLocalGraphConsistency(GetLocalGraphConsistencyRequest) returns (GetLocalGraphConsistencyResponse);
 }
 
 // ClusterProtocolVersion identifies the backend protocol shape used by a node.
@@ -292,6 +302,52 @@ message ExecuteRaftSemanticReadRequest {
 message ExecuteRaftSemanticReadResponse {
   ClusterProtocolVersion protocol_version = 1;
   bytes payload = 2;
+}
+
+message ForwardedPrincipal {
+  string kind = 1;
+  string operator_id = 2;
+  string user_id = 3;
+  string auth_session_id = 4;
+  string username = 5;
+  string created_at = 6;
+}
+
+message ForwardClientRequestRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string operation = 2;
+  string session_id = 3;
+  string transaction_id = 4;
+  uint64 requester_node_id = 5;
+  uint64 target_node_id = 6;
+  ForwardedPrincipal principal = 7;
+  string payload_type = 8;
+  bytes payload = 9;
+  string request_id = 10;
+  string cluster_id = 11;
+}
+
+message ForwardClientRequestResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string payload_type = 2;
+  bytes payload = 3;
+}
+
+message GetLocalGraphConsistencyRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  uint64 requester_node_id = 3;
+  string space_id = 4;
+  string domain_id = 5;
+}
+
+message GetLocalGraphConsistencyResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string node_id = 3;
+  string node_name = 4;
+  uint64 raft_node_id = 5;
+  bytes payload = 6;
 }
 
 message ClusterMember {

@@ -16,7 +16,22 @@ import (
 
 type RaftStateMachine struct {
 	Manager        *SchemaManager
+	PartitionID    uint32
 	PartitionCount uint32
+}
+
+func (s RaftStateMachine) RaftStateMachineName() string { return "schema" }
+
+func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope, recordType wal.RecordType) bool {
+	if scope != consensus.CommandScopeSpacePartition {
+		return false
+	}
+	switch recordType {
+	case recordTypeSchemaPut, recordTypeSchemaDelete:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {

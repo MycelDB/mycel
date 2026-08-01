@@ -14,6 +14,7 @@ import (
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -26,6 +27,14 @@ type WALStatusProvider interface {
 	RetainedRange(ctx context.Context) (wal.RetainedRange, error)
 }
 
+type LocalGraphConsistencyProvider interface {
+	LocalGraphConsistencyStats(ctx context.Context, spaceID string, domainID string) (graphservice.LocalGraphStats, error)
+}
+
+type LocalGraphForensicExportProvider interface {
+	LocalGraphForensicExport(ctx context.Context, spaceID string, domainID string, opts graphservice.LocalGraphForensicExportOptions) (graphservice.LocalGraphForensicExport, error)
+}
+
 type AdminClusterService struct {
 	adminv1.UnimplementedAdminClusterServiceServer
 	cluster                  *clustering.Manager
@@ -35,6 +44,9 @@ type AdminClusterService struct {
 	clusterConfig            daemonconfig.ClusterConfig
 	raftGroups               *consensus.MultiGroup
 	raftTransportDiagnostics *consensus.TransportDiagnostics
+	graphConsistency         LocalGraphConsistencyProvider
+	graphForensicExport      LocalGraphForensicExportProvider
+	graphPeerCollector       GraphConsistencyPeerCollector
 }
 
 func NewAdminClusterService(cluster *clustering.Manager, authorizer OperatorAuthorizer) *AdminClusterService {
@@ -53,6 +65,21 @@ func (s *AdminClusterService) WithClusterRuntime(cfg daemonconfig.ClusterConfig,
 	if len(diagnostics) > 0 {
 		s.raftTransportDiagnostics = diagnostics[0]
 	}
+	return s
+}
+
+func (s *AdminClusterService) WithGraphConsistency(provider LocalGraphConsistencyProvider) *AdminClusterService {
+	s.graphConsistency = provider
+	return s
+}
+
+func (s *AdminClusterService) WithGraphForensicExport(provider LocalGraphForensicExportProvider) *AdminClusterService {
+	s.graphForensicExport = provider
+	return s
+}
+
+func (s *AdminClusterService) WithGraphConsistencyPeerCollector(collector GraphConsistencyPeerCollector) *AdminClusterService {
+	s.graphPeerCollector = collector
 	return s
 }
 
@@ -108,6 +135,30 @@ func (s *AdminClusterService) LookupSpaceRoute(ctx context.Context, req *adminv1
 		}
 	}
 	return &adminv1.LookupSpaceRouteResponse{SpaceId: strings.TrimSpace(req.GetSpaceId()), PartitionId: pid.Uint32(), LeaderNodeId: uint64(leader), ReplicaNodeIds: raftReplicaNodeIDs(s.clusterConfig.RaftNodeCount)}, nil
+}
+
+func (s *AdminClusterService) GetLocalGraphConsistency(ctx context.Context, req *adminv1.GetLocalGraphConsistencyRequest) (*adminv1.GetLocalGraphConsistencyResponse, error) {
+	if _, err := principalFromContext(ctx); err != nil {
+		return nil, err
+	}
+	if s.graphConsistency == nil {
+		return nil, status.Error(codes.FailedPrecondition, "graph consistency diagnostics are not configured")
+	}
+	stats, err := s.graphConsistency.LocalGraphConsistencyStats(ctx, req.GetSpaceId(), req.GetDomainId())
+	if err != nil {
+		return nil, err
+	}
+	out := &adminv1.GetLocalGraphConsistencyResponse{Stats: localGraphConsistencyStatsToProto(stats)}
+	if s.raftGroups != nil && s.clusterConfig.RaftPartitionCount > 0 {
+		if st, ok := raftGroupStatusByID(s.raftGroups, consensus.PartitionGroupID(stats.PartitionID)); ok {
+			out.RaftGroup = raftGroupStatusToProto(st, raftReplicaNodeIDs(s.clusterConfig.RaftNodeCount))
+		} else {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("raft partition group %d is not available", stats.PartitionID))
+		}
+	} else if s.raftGroups == nil {
+		out.Warnings = append(out.Warnings, "raft groups are not configured; report is local-only")
+	}
+	return out, nil
 }
 
 func (s *AdminClusterService) GetClusterHealth(ctx context.Context, req *adminv1.GetClusterHealthRequest) (*adminv1.GetClusterHealthResponse, error) {
@@ -414,6 +465,18 @@ func raftReplicaNodeIDs(nodeCount int) []uint64 {
 	return out
 }
 
+func raftGroupStatusByID(groups *consensus.MultiGroup, id consensus.GroupID) (consensus.GroupStatus, bool) {
+	if groups == nil {
+		return consensus.GroupStatus{}, false
+	}
+	for _, st := range groups.Status() {
+		if st.GroupID == id {
+			return st, true
+		}
+	}
+	return consensus.GroupStatus{}, false
+}
+
 func raftGroupStatusToProto(st consensus.GroupStatus, replicas []uint64) *adminv1.RaftGroupStatus {
 	kind := adminv1.RaftGroupKind_RAFT_GROUP_KIND_SYSTEM
 	partitionID := uint32(0)
@@ -431,5 +494,13 @@ func raftGroupStatusToProto(st consensus.GroupStatus, replicas []uint64) *adminv
 	if st.CommitIndex > st.AppliedIndex {
 		applyLag = st.CommitIndex - st.AppliedIndex
 	}
-	return &adminv1.RaftGroupStatus{GroupId: string(st.GroupID), Kind: kind, PartitionId: partitionID, LocalNodeId: uint64(st.NodeID), LeaderNodeId: uint64(st.Leader), PreferredLeaderNodeId: uint64(st.PreferredLeader), ReplicaNodeIds: append([]uint64(nil), replicas...), Health: health, HealthReason: healthReason, Term: st.Term, CommitIndex: st.CommitIndex, AppliedIndex: st.AppliedIndex, ApplyLag: applyLag, LastIndex: st.LastIndex, SnapshotIndex: st.SnapshotIndex}
+	return &adminv1.RaftGroupStatus{GroupId: string(st.GroupID), Kind: kind, PartitionId: partitionID, LocalNodeId: uint64(st.NodeID), LeaderNodeId: uint64(st.Leader), PreferredLeaderNodeId: uint64(st.PreferredLeader), ReplicaNodeIds: append([]uint64(nil), replicas...), Health: health, HealthReason: healthReason, Term: st.Term, CommitIndex: st.CommitIndex, AppliedIndex: st.AppliedIndex, ApplyLag: applyLag, LastIndex: st.LastIndex, SnapshotIndex: st.SnapshotIndex, ReadDiagnostics: raftReadDiagnosticsToProto(st.ReadDiagnostics)}
+}
+
+func raftReadDiagnosticsToProto(in consensus.ReadDiagnostics) *adminv1.RaftReadDiagnostics {
+	return &adminv1.RaftReadDiagnostics{ReadIndexAttempts: in.ReadIndexAttempts, ReadIndexSuccesses: in.ReadIndexSuccesses, ReadIndexFailures: in.ReadIndexFailures, ReadIndexTimeouts: in.ReadIndexTimeouts, ReadIndexNoLeader: in.ReadIndexNoLeader, ReadIndexNotLeader: in.ReadIndexNotLeader, ApplyWaitFailures: in.ApplyWaitFailures, LastFailureAt: formatClusterTime(in.LastFailureAt), LastFailureReason: in.LastFailureReason, LastReadIndex: in.LastReadIndex, LastAppliedWaitIndex: in.LastAppliedWaitIndex, LastAppliedWaitSuccess: in.LastAppliedWaitSuccess, LastAppliedWaitMillis: in.LastAppliedWaitDuration.Milliseconds()}
+}
+
+func localGraphConsistencyStatsToProto(stats graphservice.LocalGraphStats) *adminv1.LocalGraphConsistencyStats {
+	return &adminv1.LocalGraphConsistencyStats{SpaceId: stats.SpaceID, DomainId: stats.DomainID, PartitionId: stats.PartitionID, Revision: stats.Revision, NodeCount: uint64(stats.NodeCount), EdgeCount: uint64(stats.EdgeCount), NodeChecksum: stats.NodeChecksum, EdgeChecksum: stats.EdgeChecksum, GraphChecksum: stats.GraphChecksum, ChecksumAlgorithm: stats.ChecksumAlgorithm, CollectedAt: formatClusterTime(stats.CollectedAt), Source: stats.Source}
 }

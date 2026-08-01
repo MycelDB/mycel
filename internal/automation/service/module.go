@@ -80,11 +80,17 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 		dataDir = filepath.Join(host.DataDir(), "automations")
 	}
 	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaManager(m.schemas).WithProvider(m.provider).WithRunCeilings(m.worker.MaxTokensPerRun, m.worker.MaxCostPerRun)
+	if gate, ok := host.(coreruntime.LocalWriteGate); ok {
+		m.AutomationManager.WithWriteAllowed(gate.RequireLocalWriteAllowed)
+	}
 	return coreruntime.OK(ModuleName)
 }
 
 func (m *Module) Start(ctx context.Context) error {
 	if m.AutomationManager == nil || m.cancel != nil || !m.worker.Enabled {
+		return nil
+	}
+	if err := m.AutomationManager.requireWriteAllowed(); err != nil {
 		return nil
 	}
 	workerCtx, cancel := context.WithCancel(ctx)

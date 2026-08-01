@@ -12,6 +12,8 @@ import (
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type testHost struct {
@@ -31,6 +33,22 @@ func (h testHost) RegisterQuiesceParticipant(p quiesce.Participant) error {
 
 var _ runtime.Host = testHost{}
 var _ runtime.QuiesceRegistrar = testHost{}
+
+func TestModuleRaftModeFailsClosedForSubscriptionsAndSkipsLocalHistory(t *testing.T) {
+	ctx := context.Background()
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	m := NewModule()
+	initChangeStreamModule(t, m, t.TempDir())
+	m.EnableExperimentalRaftMode()
+	if _, err := m.Subscribe(ctx, SubscribeInput{SpaceID: spaceID, DomainID: domainID}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("Subscribe() error = %v, want Unavailable", err)
+	}
+	m.PublishCommit(ctx, commitForTest(spaceID, domainID, 1), nil)
+	if got := m.CurrentRevision(spaceID, domainID); got != 0 {
+		t.Fatalf("CurrentRevision() = %d, want 0 in raft mode", got)
+	}
+}
 
 func TestModuleQuiesceSkipsPublishCommit(t *testing.T) {
 	ctx := context.Background()

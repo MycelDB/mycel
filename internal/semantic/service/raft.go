@@ -16,7 +16,22 @@ import (
 
 type RaftStateMachine struct {
 	Module         *Module
+	System         bool
+	PartitionID    uint32
 	PartitionCount uint32
+}
+
+func (s RaftStateMachine) RaftStateMachineName() string { return "semantic" }
+
+func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope, recordType wal.RecordType) bool {
+	switch recordType {
+	case recordTypeSemanticGlobal, recordTypeSemanticAccounting:
+		return scope == consensus.CommandScopeSystem
+	case recordTypeSemanticSpace, recordTypeSemanticMaintenance:
+		return scope == consensus.CommandScopeSpacePartition
+	default:
+		return false
+	}
 }
 
 func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {

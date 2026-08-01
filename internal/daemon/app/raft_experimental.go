@@ -2,9 +2,13 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,36 +16,87 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 type compositePartitionStateMachine []consensus.StateMachine
 
 type compositeSystemStateMachine []consensus.StateMachine
 
+type raftRecordSupporter interface {
+	SupportsRaftCommandRecord(consensus.CommandScope, wal.RecordType) bool
+}
+
+type namedRaftStateMachine interface {
+	RaftStateMachineName() string
+}
+
+type raftSnapshotNeutral interface {
+	RaftSnapshotNeutral() bool
+}
+
+type compositeRaftSnapshotEnvelope struct {
+	Version     uint                         `json:"version"`
+	GroupKind   string                       `json:"group_kind"`
+	PartitionID *uint32                      `json:"partition_id,omitempty"`
+	Children    []compositeRaftSnapshotChild `json:"children"`
+}
+
+type compositeRaftSnapshotChild struct {
+	Name     string `json:"name"`
+	Payload  []byte `json:"payload"`
+	Checksum string `json:"checksum"`
+}
+
+const compositeRaftSnapshotVersion uint = 1
+
+var unsupportedRaftRecordApplyErrors atomic.Uint64
+var ambiguousRaftRecordApplyErrors atomic.Uint64
+
 func (s compositeSystemStateMachine) ApplyCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {
-	var lastUnsupported error
-	for _, sm := range s {
-		if sm == nil {
-			continue
-		}
-		if err := sm.ApplyCommand(ctx, apply, cmd); err == nil {
-			return nil
-		} else if isUnsupportedRaftRecordType(err, cmd.RecordType) {
-			lastUnsupported = err
-			continue
-		} else {
-			return err
-		}
-	}
-	if lastUnsupported != nil {
-		return lastUnsupported
-	}
-	return fmt.Errorf("no system state machine configured")
+	return applyCompositeRaftCommand(ctx, apply, cmd, "system", []consensus.StateMachine(s))
 }
 
 func (s compositePartitionStateMachine) ApplyCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {
+	return applyCompositeRaftCommand(ctx, apply, cmd, "partition", []consensus.StateMachine(s))
+}
+
+func (s compositeSystemStateMachine) Snapshot() ([]byte, error) {
+	return snapshotCompositeRaftStateMachine("system", nil, []consensus.StateMachine(s))
+}
+
+func (s compositeSystemStateMachine) RestoreSnapshot(data []byte) error {
+	return restoreCompositeRaftStateMachine("system", data, []consensus.StateMachine(s))
+}
+
+func (s compositePartitionStateMachine) Snapshot() ([]byte, error) {
+	return snapshotCompositeRaftStateMachine("partition", nil, []consensus.StateMachine(s))
+}
+
+func (s compositePartitionStateMachine) RestoreSnapshot(data []byte) error {
+	return restoreCompositeRaftStateMachine("partition", data, []consensus.StateMachine(s))
+}
+
+func applyCompositeRaftCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand, kind string, sms []consensus.StateMachine) error {
+	matches, hasSupportMetadata := matchingRaftStateMachines(cmd, sms)
+	if hasSupportMetadata {
+		switch len(matches) {
+		case 0:
+			unsupportedRaftRecordApplyErrors.Add(1)
+			return fmt.Errorf("unsupported %s raft command: %s: no state machine handler", kind, raftCommandContext(cmd))
+		case 1:
+			if err := matches[0].StateMachine.ApplyCommand(ctx, apply, cmd); err != nil {
+				return fmt.Errorf("%s raft command apply failed: %s handler=%s: %w", kind, raftCommandContext(cmd), matches[0].Name, err)
+			}
+			return nil
+		default:
+			ambiguousRaftRecordApplyErrors.Add(1)
+			return fmt.Errorf("ambiguous %s raft command: %s handlers=%v", kind, raftCommandContext(cmd), raftHandlerNames(matches))
+		}
+	}
+
 	var lastUnsupported error
-	for _, sm := range s {
+	for _, sm := range sms {
 		if sm == nil {
 			continue
 		}
@@ -54,10 +109,156 @@ func (s compositePartitionStateMachine) ApplyCommand(ctx context.Context, apply 
 			return err
 		}
 	}
+	unsupportedRaftRecordApplyErrors.Add(1)
 	if lastUnsupported != nil {
-		return lastUnsupported
+		return fmt.Errorf("unsupported %s raft command: %s: %w", kind, raftCommandContext(cmd), lastUnsupported)
 	}
-	return fmt.Errorf("no partition state machine configured")
+	return fmt.Errorf("no %s state machine configured for raft command: %s", kind, raftCommandContext(cmd))
+}
+
+type raftStateMachineMatch struct {
+	Name string
+	consensus.StateMachine
+}
+
+func matchingRaftStateMachines(cmd consensus.RaftCommand, sms []consensus.StateMachine) ([]raftStateMachineMatch, bool) {
+	matches := []raftStateMachineMatch{}
+	hasSupportMetadata := false
+	for idx, sm := range sms {
+		if sm == nil {
+			continue
+		}
+		supporter, ok := sm.(raftRecordSupporter)
+		if !ok {
+			continue
+		}
+		hasSupportMetadata = true
+		if supporter.SupportsRaftCommandRecord(cmd.Scope, cmd.RecordType) {
+			matches = append(matches, raftStateMachineMatch{Name: raftStateMachineName(idx, sm), StateMachine: sm})
+		}
+	}
+	return matches, hasSupportMetadata
+}
+
+func raftStateMachineName(idx int, sm consensus.StateMachine) string {
+	if named, ok := sm.(namedRaftStateMachine); ok {
+		if name := strings.TrimSpace(named.RaftStateMachineName()); name != "" {
+			return name
+		}
+	}
+	return fmt.Sprintf("state_machine_%d", idx)
+}
+
+func raftHandlerNames(matches []raftStateMachineMatch) []string {
+	out := make([]string, 0, len(matches))
+	for _, match := range matches {
+		out = append(out, match.Name)
+	}
+	return out
+}
+
+func snapshotCompositeRaftStateMachine(groupKind string, partitionID *uint32, sms []consensus.StateMachine) ([]byte, error) {
+	envelope := compositeRaftSnapshotEnvelope{Version: compositeRaftSnapshotVersion, GroupKind: groupKind, PartitionID: partitionID, Children: make([]compositeRaftSnapshotChild, 0, len(sms))}
+	seen := map[string]struct{}{}
+	for idx, sm := range sms {
+		if sm == nil {
+			continue
+		}
+		name := raftStateMachineName(idx, sm)
+		if _, exists := seen[name]; exists {
+			return nil, fmt.Errorf("duplicate %s raft snapshot child %q", groupKind, name)
+		}
+		seen[name] = struct{}{}
+		if neutral, ok := sm.(raftSnapshotNeutral); ok && neutral.RaftSnapshotNeutral() {
+			continue
+		}
+		snapshotter, ok := sm.(consensus.StateMachineSnapshotter)
+		if !ok {
+			return nil, fmt.Errorf("%s raft snapshot child %q cannot create snapshots", groupKind, name)
+		}
+		payload, err := snapshotter.Snapshot()
+		if err != nil {
+			return nil, fmt.Errorf("%s raft snapshot child %q snapshot failed: %w", groupKind, name, err)
+		}
+		envelope.Children = append(envelope.Children, compositeRaftSnapshotChild{Name: name, Payload: append([]byte(nil), payload...), Checksum: snapshotChecksum(payload)})
+	}
+	return json.Marshal(envelope)
+}
+
+func restoreCompositeRaftStateMachine(groupKind string, data []byte, sms []consensus.StateMachine) error {
+	var envelope compositeRaftSnapshotEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return fmt.Errorf("decode %s raft snapshot envelope: %w", groupKind, err)
+	}
+	if envelope.Version != compositeRaftSnapshotVersion {
+		return fmt.Errorf("unsupported %s raft snapshot version %d", groupKind, envelope.Version)
+	}
+	if envelope.GroupKind != groupKind {
+		return fmt.Errorf("snapshot group kind %q does not match %q", envelope.GroupKind, groupKind)
+	}
+	children := map[string]compositeRaftSnapshotChild{}
+	for _, child := range envelope.Children {
+		name := strings.TrimSpace(child.Name)
+		if name == "" {
+			return fmt.Errorf("%s raft snapshot child name is required", groupKind)
+		}
+		if _, exists := children[name]; exists {
+			return fmt.Errorf("duplicate %s raft snapshot child %q", groupKind, name)
+		}
+		if got := snapshotChecksum(child.Payload); child.Checksum != got {
+			return fmt.Errorf("%s raft snapshot child %q checksum mismatch", groupKind, name)
+		}
+		children[name] = child
+	}
+	type restoreTarget struct {
+		name     string
+		payload  []byte
+		restorer consensus.StateMachineSnapshotRestorer
+	}
+	targets := []restoreTarget{}
+	seen := map[string]struct{}{}
+	for idx, sm := range sms {
+		if sm == nil {
+			continue
+		}
+		name := raftStateMachineName(idx, sm)
+		if _, exists := seen[name]; exists {
+			return fmt.Errorf("duplicate %s raft snapshot child %q", groupKind, name)
+		}
+		seen[name] = struct{}{}
+		if neutral, ok := sm.(raftSnapshotNeutral); ok && neutral.RaftSnapshotNeutral() {
+			delete(children, name)
+			continue
+		}
+		child, ok := children[name]
+		if !ok {
+			return fmt.Errorf("%s raft snapshot missing child %q", groupKind, name)
+		}
+		restorer, ok := sm.(consensus.StateMachineSnapshotRestorer)
+		if !ok {
+			return fmt.Errorf("%s raft snapshot child %q cannot restore snapshots", groupKind, name)
+		}
+		targets = append(targets, restoreTarget{name: name, payload: child.Payload, restorer: restorer})
+		delete(children, name)
+	}
+	for name := range children {
+		return fmt.Errorf("%s raft snapshot has unknown child %q", groupKind, name)
+	}
+	for _, target := range targets {
+		if err := target.restorer.RestoreSnapshot(target.payload); err != nil {
+			return fmt.Errorf("%s raft snapshot child %q restore failed: %w", groupKind, target.name, err)
+		}
+	}
+	return nil
+}
+
+func snapshotChecksum(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func raftCommandContext(cmd consensus.RaftCommand) string {
+	return fmt.Sprintf("scope=%s partition_id=%d space_id=%q record_type=%s command_id=%q", cmd.Scope, cmd.PartitionID, cmd.SpaceID, cmd.RecordType, cmd.CommandID)
 }
 
 func isUnsupportedRaftRecordType(err error, recordType any) bool {

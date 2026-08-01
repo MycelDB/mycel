@@ -186,6 +186,185 @@ func TestSystemMetadataReplaysFromSingleNodePersistentRaftStorage(t *testing.T) 
 	}
 }
 
+func TestSystemMetadataRestoresFromPersistentRaftSnapshotOnlyOnRestart(t *testing.T) {
+	ctx := context.Background()
+	transport := newMemoryTransport()
+	dir := t.TempDir()
+	store, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("NewPersistentStorage() error = %v", err)
+	}
+	sm := NewSystemStateMachine()
+	g, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: 1, Peers: []NodeID{1}, PartitionCount: 64, StateMachine: sm, Transport: transport, ElectionTick: 5, HeartbeatTick: 1, Storage: store})
+	if err != nil {
+		t.Fatalf("StartGroup() error = %v", err)
+	}
+	transport.register(g)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := g.Campaign(waitCtx); err != nil {
+		t.Fatalf("Campaign() error = %v", err)
+	}
+	if err := WaitUntil(waitCtx, 10*time.Millisecond, func() bool { g.Tick(); return g.Leader() == 1 }); err != nil {
+		t.Fatalf("leader election timed out: %v", err)
+	}
+	cmd, err := NewBootstrapMetadataCommand(testBootstrapPayload(), "bootstrap-snapshot-restart")
+	if err != nil {
+		t.Fatalf("NewBootstrapMetadataCommand() error = %v", err)
+	}
+	if _, err := g.Propose(waitCtx, cmd); err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+	var snapshotIndex uint64
+	if err := WaitUntil(waitCtx, 10*time.Millisecond, func() bool {
+		_, _, applied := g.Progress()
+		if applied == 0 || sm.Metadata().ClusterID == "" {
+			return false
+		}
+		var err error
+		snapshotIndex, err = g.CreateSnapshot(0, true)
+		return err == nil && snapshotIndex > 0
+	}); err != nil {
+		t.Fatalf("create snapshot timed out: %v", err)
+	}
+	snap, err := store.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if got := snap.Metadata.ConfState.Voters; len(got) != 1 || got[0] != 1 {
+		t.Fatalf("snapshot voters=%v want [1]", got)
+	}
+	g.Stop()
+
+	reopened, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("reopen NewPersistentStorage() error = %v", err)
+	}
+	restored := NewSystemStateMachine()
+	g2, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: 1, Peers: []NodeID{1}, PartitionCount: 64, StateMachine: restored, Transport: transport, ElectionTick: 5, HeartbeatTick: 1, Storage: reopened, ReplayCommittedEntries: true})
+	if err != nil {
+		t.Fatalf("restart StartGroup() error = %v", err)
+	}
+	defer g2.Stop()
+	if restored.Metadata().ClusterID != testBootstrapPayload().ClusterID {
+		t.Fatalf("restored metadata cluster_id=%q want %q", restored.Metadata().ClusterID, testBootstrapPayload().ClusterID)
+	}
+	_, _, applied := g2.Progress()
+	if applied < snapshotIndex {
+		t.Fatalf("restart applied index=%d want at least snapshot index=%d", applied, snapshotIndex)
+	}
+}
+
+func TestSystemMetadataInstallsRaftSnapshotForLaggingFollower(t *testing.T) {
+	transport := newMemoryTransport()
+	ctx := context.Background()
+	groups := map[NodeID]*Group{}
+	sms := map[NodeID]*SystemStateMachine{}
+	peers := []NodeID{1, 2, 3}
+	stopTick := make(chan struct{})
+	defer close(stopTick)
+	defer func() {
+		for _, g := range groups {
+			g.Stop()
+		}
+	}()
+	for _, id := range peers {
+		store, err := NewPersistentStorage(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewPersistentStorage(%d) error = %v", id, err)
+		}
+		sm := NewSystemStateMachine()
+		g, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: id, Peers: peers, PartitionCount: 64, StateMachine: sm, Transport: transport, ElectionTick: 5, HeartbeatTick: 1, Storage: store})
+		if err != nil {
+			t.Fatalf("StartGroup(%d) error = %v", id, err)
+		}
+		groups[id] = g
+		sms[id] = sm
+		transport.register(g)
+	}
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopTick:
+				return
+			case <-ticker.C:
+				for _, g := range groups {
+					g.Tick()
+				}
+			}
+		}
+	}()
+	leader := func() *Group {
+		counts := map[NodeID]int{}
+		for _, g := range groups {
+			if l := g.Leader(); l != 0 {
+				counts[l]++
+			}
+		}
+		for id, count := range counts {
+			if count >= 2 {
+				return groups[id]
+			}
+		}
+		return nil
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := WaitUntil(waitCtx, 20*time.Millisecond, func() bool { return leader() != nil }); err != nil {
+		t.Fatalf("leader election timed out: %v", err)
+	}
+	leaderGroup := leader()
+	laggingID := NodeID(0)
+	for _, id := range peers {
+		if id != leaderGroup.nodeID {
+			laggingID = id
+			break
+		}
+	}
+	activeFollowerID := NodeID(0)
+	for _, id := range peers {
+		if id != leaderGroup.nodeID && id != laggingID {
+			activeFollowerID = id
+			break
+		}
+	}
+	transport.mu.Lock()
+	transport.drop[laggingID] = true
+	transport.mu.Unlock()
+
+	cmd, err := NewBootstrapMetadataCommand(testBootstrapPayload(), "bootstrap-snapshot-lagging-follower")
+	if err != nil {
+		t.Fatalf("NewBootstrapMetadataCommand() error = %v", err)
+	}
+	if _, err := leaderGroup.Propose(waitCtx, cmd); err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+	if err := WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		return sms[leaderGroup.nodeID].Metadata().ClusterID != "" && sms[activeFollowerID].Metadata().ClusterID != ""
+	}); err != nil {
+		t.Fatalf("metadata did not apply on quorum while follower was lagging: %v", err)
+	}
+	if _, err := leaderGroup.CreateSnapshot(0, true); err != nil {
+		t.Fatalf("CreateSnapshot() error = %v", err)
+	}
+	transport.mu.Lock()
+	delete(transport.drop, laggingID)
+	transport.mu.Unlock()
+
+	if err := WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		return sms[laggingID].Metadata().ClusterID == testBootstrapPayload().ClusterID
+	}); err != nil {
+		t.Fatalf("lagging follower did not install raft snapshot: %v", err)
+	}
+	_, _, applied := groups[laggingID].Progress()
+	_, leaderSnapshot := leaderGroup.StorageProgress()
+	if applied < leaderSnapshot {
+		t.Fatalf("lagging follower applied index=%d want at least leader snapshot index=%d", applied, leaderSnapshot)
+	}
+}
+
 func TestSystemMetadataCommitsThroughThreeNodePersistentRaft(t *testing.T) {
 	transport := newMemoryTransport()
 	ctx := context.Background()

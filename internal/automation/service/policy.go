@@ -11,6 +11,9 @@ import (
 )
 
 func (m *AutomationManager) PutPolicy(ctx context.Context, policy automation.Policy) (automation.Policy, error) {
+	if err := m.requireWriteAllowed(); err != nil {
+		return policy, err
+	}
 	if policy.DomainID == (graph.DomainID{}) {
 		return policy, fmt.Errorf("policy domain_id is required")
 	}

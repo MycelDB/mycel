@@ -24,14 +24,25 @@ type ImportExportService struct {
 	graphs   daegraph.Manager
 	blobs    daemonblob.Manager
 	spaces   daemonspace.Manager
+	router   ClientRequestRouter
 }
 
 func NewImportExportService(sessions daemonsession.Manager, graphs daegraph.Manager, blobs daemonblob.Manager, spaces daemonspace.Manager) *ImportExportService {
 	return &ImportExportService{sessions: sessions, graphs: graphs, blobs: blobs, spaces: spaces}
 }
 
+func (s *ImportExportService) WithClientRequestRouter(router ClientRequestRouter) *ImportExportService {
+	s.router = router
+	return s
+}
+
 func (s *ImportExportService) ExportDomain(req *clientv1.ExportDomainRequest, stream clientv1.ImportExportService_ExportDomainServer) error {
 	ctx := stream.Context()
+	if s.router != nil {
+		if err := s.router.EnsureLocalTransaction(ctx, req.GetTransactionId()); err != nil {
+			return err
+		}
+	}
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return err
@@ -173,6 +184,11 @@ func (s *ImportExportService) importTransaction(ctx context.Context, userID stri
 	}
 	if mode == clientv1.DomainImportMode_DOMAIN_IMPORT_MODE_REPLACE_DOMAIN {
 		// Handled once after transaction validation in ImportDomain.
+	}
+	if s.router != nil {
+		if err := s.router.EnsureLocalTransaction(ctx, metadata.GetTransactionId()); err != nil {
+			return daemonsession.GraphTransaction{}, err
+		}
 	}
 	tx, err := s.sessions.GetTransaction(ctx, userID, metadata.GetTransactionId())
 	if err != nil {

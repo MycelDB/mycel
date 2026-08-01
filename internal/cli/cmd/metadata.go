@@ -17,7 +17,7 @@ func NewMetadataCommand(a *app.App) *cobra.Command {
 func NewMetadataTagsCommand(a *app.App) *cobra.Command {
 	var transactionID, pageToken string
 	var pageSize int32
-	cmd := &cobra.Command{Use: "tags", Short: "List known tags in a transaction snapshot", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "tags", Short: "List known tags in a transaction read context", RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
 		if err != nil {
 			return err
@@ -48,7 +48,7 @@ func NewMetadataTagsCommand(a *app.App) *cobra.Command {
 func NewMetadataPropertiesCommand(a *app.App) *cobra.Command {
 	var transactionID, pageToken string
 	var pageSize int32
-	cmd := &cobra.Command{Use: "properties", Aliases: []string{"props"}, Short: "List known custom property names in a transaction snapshot", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "properties", Aliases: []string{"props"}, Short: "List known custom property names in a transaction read context", RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
 		if err != nil {
 			return err

@@ -32,9 +32,19 @@ Current clustering direction:
 - `design/authoritative-system-raft-cluster-metadata.md` describes the system Raft group as the source of truth for cluster identity, membership, and placement metadata.
 - `implementation/authoritative-system-raft-cluster-metadata-implementation-plan.md` breaks the authoritative system Raft metadata work into testable phases.
 - `implementation/phase-a-fail-closed-observability-implementation-plan.md` records the completed Phase A fail-closed and observability work from the broader reliability seed document.
-- `implementation/phase-d-raft-command-coverage-implementation-plan.md` details the next reliability tranche: explicit raft-mode ownership for every durable subsystem record.
+- `implementation/phase-b-durable-raft-runtime-audit.md` records the Phase B audit: persistent raft storage, generic snapshot restore for snapshot-capable state machines, system metadata snapshot catch-up tests, and restart/rejoin validation are implemented for V1, while subsystem-specific partition snapshot formats remain a future hardening gap.
+- `implementation/phase-b2-subsystem-snapshot-recovery-implementation-plan.md` plans the follow-up subsystem snapshot recovery work needed before broad production raft log compaction/snapshot-only partition catch-up.
+- `implementation/phase-b2-subsystem-snapshot-inventory.md` records the B2.0 subsystem snapshot classification and B2.1 composite snapshot contract implications.
+- `implementation/phase-d-raft-command-coverage-implementation-plan.md` details explicit raft-mode ownership for every durable subsystem record.
 - `implementation/phase-d-raft-record-coverage-inventory.md` tracks the D0 record coverage inventory and current raft-mode classification for WAL record types.
-- `operations/raft-cluster-operations.md` documents operator checks, Phase A/pre-release validation gates, readiness blockers, restart/PVC replacement procedures, and cluster ID mismatch recovery guidance.
+- `implementation/phase-e-leader-session-transaction-routing-implementation-plan.md` records the completed V1 session/transaction home-node routing work and remaining streaming/local-overlay boundaries.
+- `implementation/phase-f-read-consistency-model-implementation-plan.md` records the completed V1 read-consistency tranche: raft read-index/strong-read semantics, read-only transaction semantics, read metadata, stale-read rejection, diagnostics, and focused Phase F gates.
+- `implementation/phase-f-read-consistency-inventory.md` records the F0 read-consistency contract and graph/query/backend read-path inventory with F1-F7 updates.
+- `implementation/phase-g-divergence-detection-repair-implementation-plan.md` records the completed V1 reliability tranche: deterministic graph checksums, cluster consistency reports, real pod-to-pod data-plane gates, forensic diff/export, manual repair workflows, and Phase G gates.
+- `implementation/phase-g-divergence-detection-inventory.md` records the G0 inventory of graph storage APIs, raft/admin metadata, import/export capabilities, diff inputs, and current pinned-pod migration evidence.
+- `operations/raft-cluster-operations.md` documents operator checks, Phase A/D/E/F/G pre-release validation gates, readiness blockers, client routing behavior, restart/PVC replacement procedures, and cluster ID mismatch recovery guidance.
+- `operations/raft-cluster-manual-repair-workflows.md` documents Phase G7 manual recovery workflows for pinned-pod migration, strict-superset evidence, and conflict recovery without automatic merge.
+- `operations/raft-cluster-test-matrix.md` lists the Raft-related focused, full-suite, Compose, and K3s tests used to validate cluster behavior before release.
 - `design/space-partitioned-raft-clustering.md` describes the space-partitioned `etcd/raft` clustering architecture.
 - `implementation/space-partitioned-raft-clustering-implementation-plan.md` records the Raft migration phases.
 - `implementation/remove-static-primary-leftovers-implementation-plan.md` tracks final cleanup of legacy static-primary artifacts.

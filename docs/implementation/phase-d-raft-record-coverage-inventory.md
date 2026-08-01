@@ -2,9 +2,9 @@
 
 ## Status
 
-Initial D0 inventory, updated through D4. This document classifies known WAL/durable record types so new records cannot be added without an explicit raft-mode consistency decision.
+Initial D0 inventory, updated through D6. This document classifies known WAL/durable record types so new records cannot be added without an explicit raft-mode consistency decision.
 
-The guardrail test `internal/clustering/consensus/raft_record_coverage_test.go` discovers `wal.RecordType` declarations under `internal/` and fails if a record type is missing from the Phase D classification allowlist.
+The guardrail test `internal/clustering/consensus/raft_record_coverage_test.go` discovers `wal.RecordType` declarations under `internal/` and fails if a record type is missing from the Phase D classification allowlist. D6 also adds composite raft dispatch tests so covered system/partition records must be owned by exactly one intended subsystem handler, and unknown or duplicate handlers fail with actionable scope/record/command context.
 
 ## Classification values
 
@@ -38,27 +38,25 @@ The guardrail test `internal/clustering/consensus/raft_record_coverage_test.go` 
 | `semantic.accounting.mutation.v1` | Semantic accounting/audit | System raft | Covered | D4 verify | Usage accounting is treated as authoritative append-only audit and routes through system raft in raft mode. |
 | `embedding.provider_key.put.v1` | Legacy embedding provider keys | Legacy unsupported in raft daemon | Unsupported/fail-closed | D4 | Superseded by semantic global credentials/config; this legacy WAL store is not configured by the raft-mode daemon runtime. |
 | `embedding.provider_key.delete.v1` | Legacy embedding provider keys | Legacy unsupported in raft daemon | Unsupported/fail-closed | D4 | Superseded by semantic global credentials/config; this legacy WAL store is not configured by the raft-mode daemon runtime. |
-| `daemon.backup.policy.update.v1` | Backup policy | System raft | Gap | D5 | Policy/config should be cluster-wide. Execution should be leader/single-runner. |
-| `daemon.backup.delete.v1` | Backup catalog/delete | System raft | Gap | D5 | Deletion/retention behavior must not diverge silently. |
+| `daemon.backup.policy.update.v1` | Backup policy | System raft | Covered | D5 verify | Backup policy/config routes through system raft in raft mode; scheduled execution is system-leader-only. |
+| `daemon.backup.delete.v1` | Backup catalog/delete | System raft | Covered | D5 verify | Backup delete routes through system raft in raft mode; retention/delete behavior applies from committed system commands. |
 
-## Non-WAL durable state requiring D0 follow-up
+## Non-WAL durable state classification
 
-The guardrail test covers declared `wal.RecordType` values. D0 also needs manual inventory of durable state that is not represented as a WAL record type, including:
+The guardrail test covers declared `wal.RecordType` values. Phase D also manually classifies durable state that is not represented as a WAL record type:
 
 - raft metadata/log/snapshot storage under `meta/raft/`;
 - clustering identity/cache files under `meta/clustering/`;
 - graph segment files and overlay lifecycle;
 - blob payload files — D3 classifies these as payload-replicated/catch-up verified in raft mode: the raft metadata command is authoritative and followers must have or fetch/checksum the payload before applying `blob.meta.put.v1`;
 - semantic/vector index files — D4 classifies semantic global configuration and accounting as system-raft authoritative; semantic space configuration and maintenance as partition-raft authoritative; vector index files remain derived/local and rebuildable from graph plus semantic configuration;
-- automation stores and run/audit artifacts;
-- change stream checkpoints;
-- backup catalog/output files;
-- any generated or embedded credential stores.
+- automation stores and run/audit artifacts — D5 classifies automation definitions, invocations, run state, output records, and schedule checkpoints as unsupported/fail-closed in raft mode until raft ownership or leader-owned scheduling is implemented;
+- change stream checkpoints — D5 classifies change-stream durable history/checkpoints as derived/local and unsupported for raft-mode subscription; raft-mode publish skips local durable history until committed raft graph changes drive a cluster-safe stream source;
+- backup catalog/output files — D5 classifies backup policy/delete as system-raft authoritative while archive creation remains system-leader-only execution output;
+- generated daemon stubs and embedded credential stores — generated daemon stubs are local build artifacts, not authoritative runtime state; embedded credential stores must be classified when introduced.
 
-These must be added to this inventory or a follow-up table before Phase D is considered complete.
+## Post-D follow-up tasks
 
-## Next D0 tasks
-
-1. Extend the guardrail to registered stores that do not declare a `wal.RecordType`, where feasible.
-2. Add a `make test-phase-d` target after the first tranche-specific tests exist.
-3. Keep this inventory in sync when D1-D5 close gaps or intentionally classify state as derived/local or unsupported/fail-closed.
+1. Extend automated guardrails to registered stores that do not declare a `wal.RecordType`, where feasible.
+2. Keep `make test-phase-d` in sync as Phase E/F/G add routing, read consistency, and repair coverage.
+3. Keep this inventory in sync when later phases close remaining unsupported/fail-closed areas or intentionally classify state as derived/local.

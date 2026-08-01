@@ -182,6 +182,16 @@ The transaction determines:
 
 Graph/query operations target `transaction_id`, not `session_id`.
 
+## Read metadata
+
+Read responses for node/edge get/list and hierarchy helpers include optional `read_metadata`.
+
+- `consistency = "strong"` means raft mode served the read after a leader read-index/apply barrier and includes raft group, leader node, read index, applied index, and observed revision where available.
+- `consistency = "overlay"` means the read came from a read-write transaction context and includes staged transaction overlay state.
+- `consistency = "stale"` is reserved for explicit stale reads; stale reads are not enabled by default.
+
+Read requests also carry optional `read_options`. `allow_stale=true` is rejected by the current daemon because no stale-read daemon config/implementation is enabled. Default reads remain strong or overlay. The daemon must not report `strong` in raft mode unless it has a read-index/apply proof.
+
 ## Node model
 
 A node is generic so applications can model pages, blocks, journals, tasks, and other concepts through templates and properties.

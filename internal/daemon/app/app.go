@@ -252,17 +252,18 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	graphService.SetBlobReferenceChecker(blobService)
 	changeService.AddObserver(automationService.HandleChangeStreamEvent)
 	if raftRuntimeConfigured(cfg) {
+		backupService.PrepareExperimentalRaftMode()
 		systemMetadataSM := consensus.NewSystemStateMachine()
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
-			return compositeSystemStateMachine{systemMetadataSM, identityservice.UserRaftStateMachine{Module: userService}, identityservice.AdminRaftStateMachine{Module: adminService}, daemonsemantic.RaftStateMachine{Module: semanticService, PartitionCount: uint32(cfg.Cluster.RaftPartitionCount)}}
+			return compositeSystemStateMachine{systemMetadataSM, identityservice.UserRaftStateMachine{Module: userService}, identityservice.AdminRaftStateMachine{Module: adminService}, backupservice.RaftStateMachine{Module: backupService}, daemonsemantic.RaftStateMachine{Module: semanticService, System: true, PartitionCount: uint32(cfg.Cluster.RaftPartitionCount)}}
 		}, func(partitionID uint32) consensus.StateMachine {
 			partitionCount := uint32(cfg.Cluster.RaftPartitionCount)
 			return compositePartitionStateMachine{
-				spaceservice.RaftStateMachine{Module: spaceService, PartitionCount: partitionCount},
-				schemaservice.RaftStateMachine{Manager: schemaService.SchemaManager, PartitionCount: partitionCount},
-				graphservice.RaftStateMachine{Module: graphService, PartitionCount: partitionCount},
-				blobservice.RaftStateMachine{Module: blobService, PartitionCount: partitionCount},
-				daemonsemantic.RaftStateMachine{Module: semanticService, PartitionCount: partitionCount},
+				spaceservice.RaftStateMachine{Module: spaceService, PartitionID: partitionID, PartitionCount: partitionCount},
+				schemaservice.RaftStateMachine{Manager: schemaService.SchemaManager, PartitionID: partitionID, PartitionCount: partitionCount},
+				graphservice.RaftStateMachine{Module: graphService, PartitionID: partitionID, PartitionCount: partitionCount},
+				blobservice.RaftStateMachine{Module: blobService, PartitionID: partitionID, PartitionCount: partitionCount},
+				daemonsemantic.RaftStateMachine{Module: semanticService, PartitionID: partitionID, PartitionCount: partitionCount},
 			}
 		}); err != nil {
 			_ = rt.Close()
@@ -276,6 +277,8 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		blobService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken, identity.ClusterID)
 		semanticService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
+		backupService.EnableExperimentalRaft(rt.RaftGroups)
+		changeService.EnableExperimentalRaftMode()
 		userService.EnableExperimentalRaft(rt.RaftGroups)
 		adminService.EnableExperimentalRaft(rt.RaftGroups)
 		startSystemMetadataBootstrap(ctx, rt, systemMetadataSM)

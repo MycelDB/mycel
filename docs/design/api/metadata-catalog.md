@@ -22,9 +22,9 @@ docs/design/api/query.md
 
 `MetadataCatalogService` is a small transaction-scoped Client API for metadata discovery.
 
-The current daemon implementation scans the active graph transaction snapshot, including staged writes in read-write transactions.
+The current daemon implementation scans the active graph transaction read context, including staged writes in read-write transactions.
 
-It lists known canonical tags and custom property names visible in a transaction snapshot.
+It lists known canonical tags and custom property names visible through that transaction context. Read-only transactions use current committed graph reads in V1 rather than pinned historical snapshots.
 
 Metadata filtering/search belongs in `QueryService`, not this service, so graph relationships and metadata predicates can be composed in a single query.
 
@@ -86,14 +86,14 @@ The transaction determines:
 
 - space
 - domain
-- read snapshot/base revision
+- read context/base revision
 - authorization context
 
-The service should read from the transaction snapshot. Ideally this includes staged writes in a read-write transaction. If the initial implementation can only read committed metadata indexes, that should be documented as an implementation limitation rather than changing the API shape.
+The service should read through the transaction graph read path. This includes staged writes in a read-write transaction. For read-only transactions, V1 reads current committed graph state through the graph read consistency path and may observe commits newer than `base_revision`. Responses include optional `read_metadata` with `strong` read-index/apply proof details or `overlay` context where applicable. Requests include optional `read_options`; `allow_stale=true` is rejected by the current daemon because no stale-read daemon config/implementation is enabled.
 
 ## ListTags
 
-Lists known canonical tags visible in the transaction snapshot.
+Lists known canonical tags visible through the transaction read context.
 
 Suggested request:
 
@@ -127,7 +127,7 @@ message TagSummary {
 
 ## ListPropertyNames
 
-Lists known canonical custom property names visible in the transaction snapshot.
+Lists known canonical custom property names visible through the transaction read context.
 
 Suggested request:
 
@@ -207,7 +207,7 @@ Suggested mappings:
 
 ## Mesh implications
 
-Metadata catalog results are derived from graph node props in a transaction snapshot. Catalog requests are not replicated.
+Metadata catalog results are derived from graph node props visible through the transaction graph read path. Catalog requests are not replicated.
 
 Committed graph mutations and replicated metadata indexes determine what catalog results a daemon can return for a replicated domain.
 

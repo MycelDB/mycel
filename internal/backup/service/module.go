@@ -8,9 +8,12 @@ import (
 	"time"
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ runtime.Starter = (*Module)(nil)
@@ -35,6 +38,8 @@ type Module struct {
 	checkpoint   *wal.CheckpointStore
 	waiter       *wal.ApplyWaiter
 	writeAllowed func() error
+	raftGroups   *consensus.MultiGroup
+	raftEnabled  bool
 	config       Config
 }
 
@@ -76,7 +81,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			}
 		}
 	}
-	m.writeAllowed = func() error { return nil }
+	if gate, ok := host.(runtime.LocalWriteGate); ok {
+		m.writeAllowed = gate.RequireLocalWriteAllowed
+	} else {
+		m.writeAllowed = func() error { return nil }
+	}
 	if logger := host.Log(); logger != nil {
 		if policy.Enabled {
 			logger.Info("backup service configured", "backup_dir", policy.BackupDir, "schedule_kind", policy.ScheduleKind, "interval", policy.Interval.String(), "retention_count", policy.RetentionCount, "compression", policy.Compression)
@@ -88,6 +97,14 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 }
 
 func (m *Module) Start(ctx context.Context) error {
+	if !m.policy.Enabled {
+		return nil
+	}
+	if !m.raftMode() {
+		if err := m.requireLocalWriteAllowed(); err != nil {
+			return nil
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.startLocked(ctx)
@@ -144,13 +161,19 @@ func (m *Module) Policy() backupcore.Policy {
 }
 
 func (m *Module) UpdatePolicy(ctx context.Context, policy backupcore.Policy) (backupcore.Policy, error) {
-	if err := m.requireLocalWriteAllowed(); err != nil {
-		return backupcore.Policy{}, err
+	if !m.raftMode() {
+		if err := m.requireLocalWriteAllowed(); err != nil {
+			return backupcore.Policy{}, err
+		}
 	}
 	if m.manager == nil {
 		return backupcore.Policy{}, nil
 	}
-	if m.wal != nil {
+	if m.raftMode() {
+		if err := m.commitRaft(ctx, recordTypeBackupPolicyUpdate, backupPolicyRecord{Policy: policy}); err != nil {
+			return backupcore.Policy{}, err
+		}
+	} else if m.wal != nil {
 		if err := m.commitWAL(ctx, recordTypeBackupPolicyUpdate, backupPolicyRecord{Policy: policy}); err != nil {
 			return backupcore.Policy{}, err
 		}
@@ -160,8 +183,14 @@ func (m *Module) UpdatePolicy(ctx context.Context, policy backupcore.Policy) (ba
 			return backupcore.Policy{}, err
 		}
 		m.policy = updated
+		if err := m.reconcileSchedulerForPolicy(context.Background(), updated); err != nil {
+			return backupcore.Policy{}, err
+		}
 	}
-	updated := m.manager.Policy()
+	return m.manager.Policy(), nil
+}
+
+func (m *Module) reconcileSchedulerForPolicy(ctx context.Context, policy backupcore.Policy) error {
 	m.mu.Lock()
 	running := m.running
 	if running {
@@ -178,14 +207,20 @@ func (m *Module) UpdatePolicy(ctx context.Context, policy backupcore.Policy) (ba
 		m.startedAt = time.Time{}
 		m.nextRunAt = time.Time{}
 	}
-	if updated.Enabled {
-		if err := m.startLocked(context.Background()); err != nil {
+	if policy.Enabled {
+		if !m.raftMode() {
+			if err := m.requireLocalWriteAllowed(); err != nil {
+				m.mu.Unlock()
+				return nil
+			}
+		}
+		if err := m.startLocked(ctx); err != nil {
 			m.mu.Unlock()
-			return backupcore.Policy{}, err
+			return err
 		}
 	}
 	m.mu.Unlock()
-	return updated, nil
+	return nil
 }
 
 func (m *Module) RunStatus() backupcore.RunStatus {
@@ -204,8 +239,13 @@ func (m *Module) ListBackups(ctx context.Context) ([]backupcore.Manifest, error)
 }
 
 func (m *Module) DeleteBackup(ctx context.Context, backupID string) error {
-	if err := m.requireLocalWriteAllowed(); err != nil {
-		return err
+	if !m.raftMode() {
+		if err := m.requireLocalWriteAllowed(); err != nil {
+			return err
+		}
+	}
+	if m.raftMode() {
+		return m.commitRaft(ctx, recordTypeBackupDelete, backupDeleteRecord{BackupID: backupID})
 	}
 	if m.wal != nil {
 		return m.commitWAL(ctx, recordTypeBackupDelete, backupDeleteRecord{BackupID: backupID})
@@ -214,8 +254,13 @@ func (m *Module) DeleteBackup(ctx context.Context, backupID string) error {
 }
 
 func (m *Module) Trigger(ctx context.Context, input backupcore.TriggerInput) (backupcore.TriggerResult, error) {
-	if err := m.requireLocalWriteAllowed(); err != nil {
-		return backupcore.TriggerResult{}, err
+	if m.raftMode() && !m.systemRaftLeader() {
+		return backupcore.TriggerResult{}, status.Error(codes.FailedPrecondition, "backup trigger requires system raft leadership")
+	}
+	if !m.raftMode() {
+		if err := m.requireLocalWriteAllowed(); err != nil {
+			return backupcore.TriggerResult{}, err
+		}
 	}
 	result, err := m.triggerWithWALCheckpoint(ctx, input)
 	if err == nil {
@@ -370,6 +415,10 @@ func (m *Module) schedulerLoop(ctx context.Context) {
 		}
 		var err error
 		if m.Policy().Enabled {
+			if m.raftMode() && !m.systemRaftLeader() {
+				m.setNextRun(time.Now().UTC())
+				continue
+			}
 			_, err = m.triggerWithWALCheckpoint(ctx, backupcore.TriggerInput{Source: "scheduler", Reason: "scheduled backup"})
 		}
 		if err != nil && ctx.Err() == nil {

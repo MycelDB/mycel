@@ -16,6 +16,8 @@ import (
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -32,6 +34,7 @@ type Module struct {
 	loaded       map[string]bool
 	subscribers  map[string]map[string]chan Event
 	gate         *quiesce.Gate
+	raftMode     bool
 	observers    []func(context.Context, Event)
 }
 
@@ -40,6 +43,8 @@ func NewModule() *Module {
 }
 
 func (m *Module) Name() string { return ModuleName }
+
+func (m *Module) EnableExperimentalRaftMode() { m.raftMode = true }
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	if m.historyLimit <= 0 {
@@ -86,6 +91,9 @@ func (m *Module) CurrentRevision(spaceID string, domainID string) int64 {
 func (m *Module) Subscribe(ctx context.Context, input SubscribeInput) (*Subscription, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if m.raftMode {
+		return nil, status.Error(codes.Unavailable, "change streams are not yet supported in raft mode")
 	}
 	spaceID := strings.TrimSpace(input.SpaceID)
 	domainID := strings.TrimSpace(input.DomainID)
@@ -147,6 +155,9 @@ func (m *Module) AddObserver(observer func(context.Context, Event)) {
 }
 
 func (m *Module) PublishCommit(ctx context.Context, commit daemonsession.TransactionCommit, changes []GraphChange) {
+	if m.raftMode {
+		return
+	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return

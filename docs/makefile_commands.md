@@ -11,12 +11,19 @@ Run these commands from the `mycel/` directory.
 
 ## Tests
 
+For the full Raft-focused test matrix and destructive cluster gate details, see `operations/raft-cluster-test-matrix.md`.
+
 - `make test` — regenerate protobuf stubs, run boundary checks, and run `go test ./...`.
 - `make test-cluster-identity` — run the fast in-process clustering/readiness/CLI regression suite used to guard authoritative Raft metadata behavior.
 - `make test-phase-a` — run the fast Phase A release-gate suite covering readiness/admin fields, raft group/transport diagnostics, backend auth, and raft-mode graph fail-closed behavior.
-- `make test-compose-cluster` — destructive local compose validation for fresh bootstrap and restart identity stability. Requires the sibling `../../knot_pkm/knot_pkm_server` checkout and Docker. The target supplies a default compose-only `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN` if the environment does not set one.
-- `make test-k3s-cluster` — destructive local K3s/k3d validation for fresh bootstrap, rolling restart, and one-PVC replacement/rejoin. Requires Docker, `kubectl`, and preferably `k3d`; creates/uses the `knotbase-dev` k3d cluster by default.
-- `make test-cluster-release-gate` — full pre-release clustering gate: `make test`, destructive compose validation, and destructive K3s validation.
+- `make test-phase-d` — run the focused Phase D raft command coverage suite, including record classification guardrails, composite state-machine dispatch hardening, D5 fail-closed behavior, and multi-subsystem raft restart/convergence tests.
+- `make test-phase-e` — run the focused Phase E routing suite covering session/transaction home-node routing, forwarded client requests, cross-node transaction-overlay workflows, home-node loss/session-lost behavior, backend auth rejection, and leader-change commit safety.
+- `make test-phase-f` — run the focused Phase F read-consistency suite covering consensus read-index barriers, graph strong reads, query/metadata read inheritance, read metadata, stale-read rejection, and admin/CLI read diagnostics.
+- `make test-phase-g` — run the focused Phase G diagnostics/forensics suite covering local graph checksums, local admin diagnostics, backend peer collection, consistency classification, forensic export/diff, CLI output, script syntax, and manual-repair planning guardrails.
+- `make test-compose-cluster` — destructive local compose validation for fresh bootstrap, real pod-to-pod graph write/read/query/consistency, restart data-plane stability, and persisted identity stability. Requires the sibling `../../knot_pkm/knot_pkm_server` checkout and Docker. The target supplies a default compose-only `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN` if the environment does not set one.
+- `make test-k3s-cluster` — destructive local K3s/k3d validation for fresh bootstrap, real pod-to-pod graph write/read/query/consistency, rolling restart, and one-PVC replacement/rejoin with data-plane revalidation. Requires Docker, `kubectl`, and preferably `k3d`; creates/uses the `knotbase-dev` k3d cluster by default.
+- `make test-cluster-release-gate` — full pre-release clustering gate: `make test`, `make test-phase-d`, `make test-phase-e`, `make test-phase-f`, `make test-phase-g`, destructive compose validation, and destructive K3s validation.
+- `make test-cluster-soak` — optional longer destructive Compose soak using repeated identity/data-plane validation and periodic `myceld` restarts. It supports `MYCEL_CLUSTER_SOAK_WRITES`; reserved forced snapshot/PVC replacement flags fail closed until a safe admin harness exists. It is not part of default CI or the release gate.
 - `make test-verbose` — regenerate protobuf stubs, run checks, run verbose tests with coverage, and print function coverage.
 - `make test-watch` — rerun generation, checks, and verbose coverage tests when Go or shell files change. Requires `watchexec`.
 
@@ -86,3 +93,15 @@ MYCELD_CLUSTER_BACKEND_AUTH_TOKEN=<shared-generated-secret>
 ```
 
 The Raft sizing values and node address map are bootstrap-time cluster settings and should be treated as immutable after cluster bootstrap. Multi-node Raft clusters also require a non-empty shared backend auth token for internode RPCs.
+
+Raft compaction remains off by default while subsystem snapshot recovery hardening continues:
+
+```bash
+MYCELD_CLUSTER_RAFT_COMPACTION_MODE=off
+MYCELD_CLUSTER_RAFT_SNAPSHOT_ENTRIES=0
+MYCELD_CLUSTER_RAFT_SNAPSHOT_INTERVAL=0s
+MYCELD_CLUSTER_RAFT_SNAPSHOT_MAX_LOG_BYTES=0
+MYCELD_CLUSTER_RAFT_SNAPSHOT_MIN_RETAIN_ENTRIES=0
+```
+
+The daemon parses and validates these knobs, but no automatic production compaction loop is enabled yet.

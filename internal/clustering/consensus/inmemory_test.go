@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -69,6 +70,21 @@ func TestGroupStepCapsHeartbeatCommitPastLocalLastIndex(t *testing.T) {
 		t.Fatalf("Step() error = %v", err)
 	}
 	time.Sleep(25 * time.Millisecond)
+}
+
+type blockingStateMachine struct {
+	entered chan ApplyContext
+	release chan struct{}
+}
+
+func (s *blockingStateMachine) ApplyCommand(ctx context.Context, apply ApplyContext, cmd RaftCommand) error {
+	s.entered <- apply
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 type memoryCluster struct {
@@ -201,5 +217,157 @@ func TestInMemoryRaftGroupUnavailableWithoutQuorum(t *testing.T) {
 	cmd := NewCommand(CommandScopeSystem, wal.RecordType("system.test"), []byte(`{"ok":true}`), "cmd-no-quorum")
 	if _, err := leader.Propose(proposalCtx, cmd); err == nil {
 		t.Fatal("expected proposal without quorum to fail")
+	}
+}
+
+func TestGroupLinearizableReadSucceedsOnLeader(t *testing.T) {
+	cluster := newMemoryCluster(t)
+	defer cluster.close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := WaitUntil(ctx, 20*time.Millisecond, func() bool { return cluster.leader() != nil }); err != nil {
+		t.Fatalf("leader election timed out: %v", err)
+	}
+	leader := cluster.leader()
+	cmd := NewCommand(CommandScopeSystem, wal.RecordType("system.test"), []byte(`{"ok":true}`), "cmd-before-read")
+	proposal, err := leader.Propose(ctx, cmd)
+	if err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+	read, err := leader.LinearizableRead(ctx)
+	if err != nil {
+		t.Fatalf("LinearizableRead() error = %v", err)
+	}
+	if read.Index < proposal.Index || read.Term == 0 {
+		t.Fatalf("LinearizableRead()=%#v proposal=%#v", read, proposal)
+	}
+	_, _, applied := leader.Progress()
+	if applied < read.Index {
+		t.Fatalf("applied=%d readIndex=%d; read returned before apply", applied, read.Index)
+	}
+	diag := leader.ReadDiagnostics()
+	if diag.ReadIndexAttempts != 1 || diag.ReadIndexSuccesses != 1 || diag.ReadIndexFailures != 0 || diag.LastReadIndex != read.Index || diag.LastAppliedWaitSuccess != read.Index {
+		t.Fatalf("ReadDiagnostics()=%#v", diag)
+	}
+}
+
+func TestGroupLinearizableReadRejectsFollowerAndNoLeader(t *testing.T) {
+	transport := newMemoryTransport()
+	noLeader, err := StartGroup(context.Background(), GroupOptions{ID: "test", NodeID: 1, Peers: []NodeID{1, 2, 3}, PartitionCount: 64, StateMachine: &MemoryStateMachine{}, Transport: transport, ElectionTick: 50, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("StartGroup() error = %v", err)
+	}
+	defer noLeader.Stop()
+	if _, err := noLeader.LinearizableRead(context.Background()); !errors.Is(err, ErrNoLeader) {
+		t.Fatalf("LinearizableRead(no leader) error=%v want ErrNoLeader", err)
+	}
+	if diag := noLeader.ReadDiagnostics(); diag.ReadIndexNoLeader != 1 || diag.ReadIndexFailures != 1 {
+		t.Fatalf("no leader ReadDiagnostics()=%#v", diag)
+	}
+
+	cluster := newMemoryCluster(t)
+	defer cluster.close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := WaitUntil(ctx, 20*time.Millisecond, func() bool { return cluster.leader() != nil }); err != nil {
+		t.Fatalf("leader election timed out: %v", err)
+	}
+	leader := cluster.leader()
+	var follower *Group
+	for id, g := range cluster.groups {
+		if id != leader.nodeID {
+			follower = g
+			break
+		}
+	}
+	if follower == nil {
+		t.Fatal("expected follower")
+	}
+	if err := WaitUntil(ctx, 20*time.Millisecond, func() bool { return follower.Leader() == leader.nodeID }); err != nil {
+		t.Fatalf("follower did not learn leader: %v", err)
+	}
+	if _, err := follower.LinearizableRead(ctx); !errors.Is(err, ErrNotLeader) {
+		t.Fatalf("LinearizableRead(follower) error=%v want ErrNotLeader", err)
+	}
+	if diag := follower.ReadDiagnostics(); diag.ReadIndexNotLeader != 1 || diag.ReadIndexFailures != 1 {
+		t.Fatalf("follower ReadDiagnostics()=%#v", diag)
+	}
+}
+
+func TestGroupWaitAppliedWaitsForStateMachineApplyCompletion(t *testing.T) {
+	ctx := context.Background()
+	transport := newMemoryTransport()
+	sm := &blockingStateMachine{entered: make(chan ApplyContext, 1), release: make(chan struct{})}
+	g, err := StartGroup(ctx, GroupOptions{ID: "test", NodeID: 1, Peers: []NodeID{1}, PartitionCount: 64, StateMachine: sm, Transport: transport, ElectionTick: 5, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("StartGroup() error = %v", err)
+	}
+	defer g.Stop()
+	transport.register(g)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := g.Campaign(waitCtx); err != nil {
+		t.Fatalf("Campaign() error = %v", err)
+	}
+	if err := WaitUntil(waitCtx, 10*time.Millisecond, func() bool { g.Tick(); return g.Leader() == 1 }); err != nil {
+		t.Fatalf("leader election timed out: %v", err)
+	}
+	proposeErr := make(chan error, 1)
+	go func() {
+		_, err := g.Propose(waitCtx, NewCommand(CommandScopeSystem, wal.RecordType("system.test"), []byte(`{"ok":true}`), "cmd-blocked-apply"))
+		proposeErr <- err
+	}()
+	var apply ApplyContext
+	select {
+	case apply = <-sm.entered:
+	case <-waitCtx.Done():
+		t.Fatalf("state machine apply did not start: %v", waitCtx.Err())
+	}
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer shortCancel()
+	if err := g.WaitApplied(shortCtx, apply.RaftIndex); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitApplied() while apply blocked error=%v want DeadlineExceeded", err)
+	}
+	close(sm.release)
+	if err := <-proposeErr; err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+	if err := g.WaitApplied(waitCtx, apply.RaftIndex); err != nil {
+		t.Fatalf("WaitApplied() after apply release error=%v", err)
+	}
+}
+
+func TestGroupLinearizableReadWithoutQuorumTimesOutAndCleansWaiter(t *testing.T) {
+	cluster := newMemoryCluster(t)
+	defer cluster.close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := WaitUntil(ctx, 20*time.Millisecond, func() bool { return cluster.leader() != nil }); err != nil {
+		t.Fatalf("leader election timed out: %v", err)
+	}
+	leader := cluster.leader()
+	stopped := 0
+	for id, g := range cluster.groups {
+		if id == leader.nodeID || stopped >= 2 {
+			continue
+		}
+		cluster.transport.unregister(id)
+		g.Stop()
+		delete(cluster.groups, id)
+		stopped++
+	}
+	readCtx, readCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer readCancel()
+	if _, err := leader.LinearizableRead(readCtx); err == nil {
+		t.Fatal("expected LinearizableRead without quorum to fail")
+	}
+	leader.mu.Lock()
+	waiters := len(leader.readWaiters)
+	leader.mu.Unlock()
+	if waiters != 0 {
+		t.Fatalf("read waiters after timeout=%d want 0", waiters)
+	}
+	if diag := leader.ReadDiagnostics(); diag.ReadIndexAttempts != 1 || diag.ReadIndexFailures != 1 || diag.ReadIndexTimeouts != 1 {
+		t.Fatalf("ReadDiagnostics()=%#v", diag)
 	}
 }

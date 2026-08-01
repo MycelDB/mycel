@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 )
 
 const ModuleName = "session"
@@ -71,14 +73,15 @@ const (
 )
 
 type GraphSession struct {
-	ID        string
-	UserID    string
-	SpaceID   string
-	DomainID  string
-	State     SessionState
-	CreatedAt time.Time
-	LastSeen  time.Time
-	ExpiresAt time.Time
+	ID         string
+	UserID     string
+	SpaceID    string
+	DomainID   string
+	HomeNodeID consensus.NodeID
+	State      SessionState
+	CreatedAt  time.Time
+	LastSeen   time.Time
+	ExpiresAt  time.Time
 }
 
 type GraphTransaction struct {
@@ -87,12 +90,58 @@ type GraphTransaction struct {
 	UserID       string
 	SpaceID      string
 	DomainID     string
+	HomeNodeID   consensus.NodeID
 	Mode         TransactionMode
 	State        TransactionState
 	BaseRevision int64
 	CreatedAt    time.Time
 	LastSeen     time.Time
 	ExpiresAt    time.Time
+}
+
+type SessionRouteRecord struct {
+	SessionID  string
+	UserID     string
+	SpaceID    string
+	DomainID   string
+	HomeNodeID consensus.NodeID
+	State      SessionState
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	ExpiresAt  time.Time
+}
+
+type TransactionRouteRecord struct {
+	TransactionID string
+	SessionID     string
+	UserID        string
+	SpaceID       string
+	DomainID      string
+	HomeNodeID    consensus.NodeID
+	State         TransactionState
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	ExpiresAt     time.Time
+}
+
+type RouteDiagnostics struct {
+	LocalHomeNodeID          consensus.NodeID
+	SessionRoutes            int
+	TransactionRoutes        int
+	LocalSessionRoutes       int
+	RemoteSessionRoutes      int
+	LocalTransactionRoutes   int
+	RemoteTransactionRoutes  int
+	ActiveLocalSessions      int
+	ActiveRemoteSessions     int
+	ActiveLocalTransactions  int
+	ActiveRemoteTransactions int
+}
+
+type RouteInspector interface {
+	SessionRoute(sessionID string) (SessionRouteRecord, bool)
+	TransactionRoute(transactionID string) (TransactionRouteRecord, bool)
+	RouteDiagnostics() RouteDiagnostics
 }
 
 type TransactionCommit struct {

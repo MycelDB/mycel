@@ -12,6 +12,8 @@ BUILD_IMAGE="${MYCEL_K3S_BUILD_IMAGE:-true}"
 IMPORT_IMAGE="${MYCEL_K3S_IMPORT_IMAGE:-auto}"
 ADMIN_USERNAME="${MYCELD_BOOTSTRAP_ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD="${MYCELD_BOOTSTRAP_ADMIN_PASSWORD:-admin-password}"
+DATA_PLANE_STATE="$(mktemp)"
+trap 'rm -f "$DATA_PLANE_STATE"' EXIT
 
 if [[ ! -d "$ORCH_DIR" ]]; then
   echo "orchestration directory not found: $ORCH_DIR" >&2
@@ -108,6 +110,16 @@ validate_cluster() {
     "$ROOT_DIR/scripts/validateK3sClusterIdentity.sh"
 }
 
+validate_data_plane() {
+  local create_if_missing="${1:-true}"
+  MYCEL_K3S_NAMESPACE="$NAMESPACE" \
+  MYCEL_K3S_DATA_PLANE_STATE="$DATA_PLANE_STATE" \
+  MYCEL_DATA_PLANE_CREATE_IF_MISSING="$create_if_missing" \
+  MYCELD_BOOTSTRAP_ADMIN_USERNAME="$ADMIN_USERNAME" \
+  MYCELD_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+    "$ROOT_DIR/scripts/validateK3sClusterDataPlane.sh"
+}
+
 rolling_restart() {
   kubectl -n "$NAMESPACE" rollout restart statefulset/myceld
   kubectl -n "$NAMESPACE" rollout status statefulset/myceld --timeout=10m
@@ -132,13 +144,16 @@ apply_myceld_manifests
 
 echo "== fresh bootstrap validation =="
 validate_cluster
+validate_data_plane true
 
 echo "== rolling restart validation =="
 rolling_restart
 validate_cluster
+validate_data_plane false
 
 echo "== single PVC replacement/rejoin validation =="
 replace_last_pvc
 validate_cluster
+validate_data_plane false
 
 echo "K3s cluster validation passed"

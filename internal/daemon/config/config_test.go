@@ -41,6 +41,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.Cluster.RaftNodeCount != DefaultClusterRaftNodeCount || cfg.Cluster.RaftPartitionCount != DefaultClusterRaftPartitionCount || cfg.Cluster.RaftReplicaFactor != DefaultClusterRaftReplicaFactor || cfg.Cluster.RaftLocalNodeID != DefaultClusterRaftLocalNodeID {
 		t.Fatalf("unexpected cluster raft defaults: %+v", cfg.Cluster)
 	}
+	if cfg.Cluster.RaftCompactionMode != DefaultClusterRaftCompactionMode || cfg.Cluster.RaftSnapshotEntries != 0 || cfg.Cluster.RaftSnapshotInterval != 0 || cfg.Cluster.RaftSnapshotMaxLogBytes != 0 || cfg.Cluster.RaftSnapshotMinRetainEntries != 0 {
+		t.Fatalf("unexpected cluster raft compaction defaults: %+v", cfg.Cluster)
+	}
 }
 
 func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
@@ -61,6 +64,31 @@ func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 	}
 	if len(cfg.Cluster.RaftNodeAddrs) != 5 || cfg.Cluster.RaftNodeAddrs[3] != "127.0.0.1:9104" {
 		t.Fatalf("unexpected raft node addrs: %+v", cfg.Cluster.RaftNodeAddrs)
+	}
+}
+
+func TestLoadFromEnvRaftCompactionOverrides(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_CLUSTER_RAFT_COMPACTION_MODE", "conservative")
+	t.Setenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_ENTRIES", "1000")
+	t.Setenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_INTERVAL", "10m")
+	t.Setenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MAX_LOG_BYTES", "1048576")
+	t.Setenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MIN_RETAIN_ENTRIES", "128")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.Cluster.RaftCompactionMode != "conservative" || cfg.Cluster.RaftSnapshotEntries != 1000 || cfg.Cluster.RaftSnapshotInterval != 10*time.Minute || cfg.Cluster.RaftSnapshotMaxLogBytes != 1048576 || cfg.Cluster.RaftSnapshotMinRetainEntries != 128 {
+		t.Fatalf("unexpected raft compaction overrides: %+v", cfg.Cluster)
+	}
+}
+
+func TestLoadFromEnvRaftCompactionModeValidation(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_CLUSTER_RAFT_COMPACTION_MODE", "auto")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected invalid raft compaction mode to fail")
 	}
 }
 

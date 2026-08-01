@@ -38,8 +38,8 @@ var phaseDRaftRecordCoverage = map[string]raftRecordCoverage{
 	"semantic.accounting.mutation.v1":     {Subsystem: "semantic accounting", Scope: "system raft", Status: "covered", Tranche: "D4 verify"},
 	"embedding.provider_key.put.v1":       {Subsystem: "embedding", Scope: "legacy unsupported in raft daemon", Status: "unsupported/fail-closed", Tranche: "D4"},
 	"embedding.provider_key.delete.v1":    {Subsystem: "embedding", Scope: "legacy unsupported in raft daemon", Status: "unsupported/fail-closed", Tranche: "D4"},
-	"daemon.backup.policy.update.v1":      {Subsystem: "backup", Scope: "system raft", Status: "gap", Tranche: "D5"},
-	"daemon.backup.delete.v1":             {Subsystem: "backup", Scope: "system raft", Status: "gap", Tranche: "D5"},
+	"daemon.backup.policy.update.v1":      {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "D5 verify"},
+	"daemon.backup.delete.v1":             {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "D5 verify"},
 }
 
 func TestPhaseDRaftRecordCoverageClassifiesAllRecordTypes(t *testing.T) {

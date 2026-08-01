@@ -21,6 +21,20 @@ type userSessionPutRecord struct {
 
 type RaftStateMachine struct{ Module *Module }
 
+func (s RaftStateMachine) RaftStateMachineName() string { return "identity.user" }
+
+func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope, recordType wal.RecordType) bool {
+	if scope != consensus.CommandScopeSystem {
+		return false
+	}
+	switch recordType {
+	case recordTypeUserPut, recordTypeUserSessionPut:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {
 	if s.Module == nil {
 		return nil

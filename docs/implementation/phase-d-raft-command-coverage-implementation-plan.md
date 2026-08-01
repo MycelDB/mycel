@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress on `improved_clustering`. D0 is complete; D1/D2/D3/D4 have initial raft command coverage and focused tests; implementation tranches D5-D8 remain.
+Phase D is implemented on `improved_clustering` through D8: durable record types are classified, covered writes route through raft or fail closed, composite dispatch is hardened, multi-subsystem integration coverage exists, and a focused `make test-phase-d` release gate is available.
 
 ## Goal
 
@@ -41,7 +41,7 @@ This table is the starting audit map. D0 must confirm it against code before imp
 | Semantic global config | `semantic.global.mutation.v1` | Initial system raft coverage added in D4 | Continue multi-node/system replay validation. |
 | Semantic space config/checkpoints/accounting | `semantic.space.mutation.v1`, `semantic.maintenance.mutation.v1`, `semantic.accounting.mutation.v1` | Space/maintenance use partition raft; accounting uses system raft | Continue authoritative-vs-derived validation and operational docs. |
 | Embedding provider keys | `embedding.provider_key.put.v1`, `embedding.provider_key.delete.v1` | Legacy WAL-backed store superseded by semantic global credentials | Keep out of raft-mode daemon runtime; remove or migrate legacy API surface later. |
-| Backup | `daemon.backup.policy.update.v1`, `daemon.backup.delete.v1` | WAL-backed | Policy/config should be system raft; execution should be single-runner/leader-owned or fail closed. |
+| Backup | `daemon.backup.policy.update.v1`, `daemon.backup.delete.v1` | Initial system raft coverage added in D5 | Continue multi-node execution/replay validation. |
 | Change streams | checkpoints/events | Existing subsystem has durable/local behavior | Events should derive from committed raft changes; checkpoints need explicit model. |
 | Automations | definitions/runs/audit | Persistent user-visible automation state exists outside this inventory | Audit stores; raft definitions/audit or leader-owned scheduler. |
 
@@ -184,6 +184,10 @@ Derived vector/index data remains local/rebuildable from graph plus semantic con
 
 ## Phase D5 — Backup, automation, and change-stream ownership
 
+### Status
+
+Initial D5 implementation is in place: backup policy/delete records route through system raft in raft mode, backup scheduler/manual execution is system-leader-only, automation durable writes/workers fail closed in raft mode until raft ownership or leader-owned scheduling is implemented, and change-stream durable history/subscriptions are disabled in raft mode because cluster-safe streams require a committed raft graph change source.
+
 ### Backup
 
 - Raft backup policy/config through system raft.
@@ -208,6 +212,10 @@ Derived vector/index data remains local/rebuildable from graph plus semantic con
 
 ## Phase D6 — Composite state-machine coverage and unknown command hardening
 
+### Status
+
+Initial D6 implementation is in place: composite raft state machines use explicit subsystem support metadata, reject records with zero or multiple handlers before apply, include scope/partition/space/record/command context in unknown-record errors, and increment counters for unsupported/ambiguous composite dispatch failures. Focused tests prove current system and partition record ownership maps to exactly one intended handler.
+
 ### Tasks
 
 - Add tests around `compositeSystemStateMachine` and `compositePartitionStateMachine` to prove every classified record type is accepted by exactly one intended subsystem apply path.
@@ -222,6 +230,10 @@ Derived vector/index data remains local/rebuildable from graph plus semantic con
 
 ## Phase D7 — Multi-subsystem integration tests
 
+### Status
+
+Initial D7 coverage is in place. `internal/daemon/app` now runs a three-node in-process raft integration that creates a space/default domain, applies schema, commits schema-validated graph data, updates graph data, applies semantic global configuration, deletes semantic configuration, restarts all nodes with persistent raft storage, and verifies convergence after reload/replay. Existing focused blob raft tests cover three-node blob metadata replication and payload fetch/materialization safety.
+
 ### Tests
 
 - Create a space/domain/schema, then graph records that require that schema; verify replicas converge.
@@ -235,6 +247,10 @@ Derived vector/index data remains local/rebuildable from graph plus semantic con
 - Multi-subsystem workflows do not diverge after restart or follower catch-up.
 
 ## Phase D8 — Documentation and release gate updates
+
+### Status
+
+D8 documentation and release-gate updates are in place. `make test-phase-d` runs the focused Phase D raft coverage/integration suite, and `make test-cluster-release-gate` includes it before destructive compose/K3s validation.
 
 ### Tasks
 
@@ -258,6 +274,8 @@ Derived vector/index data remains local/rebuildable from graph plus semantic con
 6. D5 backup/automation/change-stream ownership.
 7. D6 command-handler hardening.
 8. D7/D8 integration tests and docs/release gates.
+
+All suggested implementation-order items are complete for the initial Phase D scope.
 
 ## Definition of done
 

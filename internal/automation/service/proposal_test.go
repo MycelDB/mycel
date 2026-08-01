@@ -7,7 +7,22 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestProposalWritesFailClosedWhenWritesDisallowed(t *testing.T) {
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithWriteAllowed(func() error {
+		return status.Error(codes.Unavailable, "local writes disabled")
+	})
+	domainID := graph.DomainID(uuid.New())
+	if _, err := mgr.CreateProposal(context.Background(), domainID, "inst", "step", nil, "summary"); status.Code(err) != codes.Unavailable {
+		t.Fatalf("CreateProposal() error = %v, want Unavailable", err)
+	}
+	if _, err := mgr.ApproveProposal(context.Background(), domainID, "missing", "reviewer"); status.Code(err) != codes.Unavailable {
+		t.Fatalf("ApproveProposal() error = %v, want Unavailable", err)
+	}
+}
 
 func TestProposalApproveReject(t *testing.T) {
 	mgr := NewManager(storage.NewFileStore(t.TempDir()))

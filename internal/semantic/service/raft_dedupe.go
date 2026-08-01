@@ -48,11 +48,11 @@ func (m *Module) rememberRaftAppliedCommand(ctx context.Context, commandID strin
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
 	m.raftAppliedCommands[commandID] = struct{}{}
-	ids := make([]string, 0, len(m.raftAppliedCommands))
-	for id := range m.raftAppliedCommands {
-		ids = append(ids, id)
-	}
 	m.mu.Unlock()
+	return m.persistRaftAppliedCommands(ctx)
+}
+
+func (m *Module) persistRaftAppliedCommands(ctx context.Context) error {
 	if m.dataDir == "" {
 		return nil
 	}
@@ -61,6 +61,12 @@ func (m *Module) rememberRaftAppliedCommand(ctx context.Context, commandID strin
 		return ctx.Err()
 	default:
 	}
+	m.mu.Lock()
+	ids := make([]string, 0, len(m.raftAppliedCommands))
+	for id := range m.raftAppliedCommands {
+		ids = append(ids, id)
+	}
+	m.mu.Unlock()
 	payload, err := json.MarshalIndent(ids, "", "  ")
 	if err != nil {
 		return err

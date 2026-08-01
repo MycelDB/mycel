@@ -9,12 +9,20 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/metadata"
 )
 
 type RaftStateMachine struct {
 	Module         *Module
+	PartitionID    uint32
 	PartitionCount uint32
+}
+
+func (s RaftStateMachine) RaftStateMachineName() string { return "graph" }
+
+func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope, recordType wal.RecordType) bool {
+	return scope == consensus.CommandScopeSpacePartition && recordType == recordTypeGraphCommit
 }
 
 func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {
@@ -63,8 +71,19 @@ func (m *Module) proposeGraphRaftCommand(ctx context.Context, cmd consensus.Raft
 	if !ok || group == nil {
 		return raftGraphUnavailable("raft partition group %d is not available", cmd.PartitionID)
 	}
-	if group.Leader() == 0 {
+	leader := group.Leader()
+	if leader == 0 {
 		return raftGraphUnavailable("raft partition group %d has no leader", cmd.PartitionID)
+	}
+	local := m.raftLocalNode
+	if local == 0 && m.raftGroups != nil {
+		local = m.raftGroups.NodeID()
+	}
+	if local == 0 {
+		return raftGraphUnavailable("raft graph local node id is not configured")
+	}
+	if leader != local {
+		return raftGraphUnavailable("raft graph write for partition %d is not local to partition leader %d", cmd.PartitionID, leader)
 	}
 	_, err := group.Propose(ctx, cmd)
 	if err != nil {
