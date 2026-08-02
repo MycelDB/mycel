@@ -24,6 +24,7 @@ These reset local Docker Compose and K3s/k3d resources.
 
 ```sh
 make test-compose-cluster
+make test-compose-user-backup-restore
 make test-k3s-cluster
 ```
 
@@ -56,6 +57,7 @@ This expands to:
 | `make test-phase-f` | Focused read-consistency suite | Read-index barriers, graph strong reads, query/metadata consistency, read metadata, stale-read rejection, admin/CLI read diagnostics, and backend status preservation. |
 | `make test-phase-g` | Focused divergence diagnostics/forensics suite | Local checksums, admin diagnostics, backend peer collection, consistency classification, forensic export/diff, CLI output, script syntax, and manual repair guardrails. |
 | `make test-compose-cluster` | Destructive Docker Compose validation | Fresh bootstrap, shared cluster identity, health/readiness, real pod-to-pod graph write/read/query/consistency validation, restart data-plane stability, and persisted file-source identity validation. |
+| `make test-compose-user-backup-restore` | Destructive Docker Compose backup/restore validation | Creates three user-scoped fixtures, exports and validates per-user backups, wipes/recreates the cluster, restores into a fresh cluster, and verifies spaces/domains/graph/blob payloads through every node. |
 | `make test-k3s-cluster` | Destructive K3s/k3d validation | Fresh bootstrap, shared cluster identity, real pod-to-pod graph write/read/query/consistency validation, rolling restart, and one-PVC replacement/rejoin with data-plane revalidation. |
 | `make test-cluster-release-gate` | Full pre-release cluster gate | All normal tests, Phase D/E/F/G gates, then Compose and K3s destructive validations. |
 | `make test-cluster-soak` | Optional long-running destructive Compose soak | Repeated identity/data-plane validation with periodic daemon restarts; supports `MYCEL_CLUSTER_SOAK_WRITES`; forced snapshot/PVC replacement flags currently fail closed until a safe admin harness exists. |
