@@ -13,16 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout daemon
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: mycel
           fetch-depth: 0
 
       - name: Checkout API protos
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: MycelDB/mycel-api
-          ref: ${{ github.ref_name }}
+          ref: v0.5.0
           path: mycel-api
           # GITHUB_TOKEN is scoped to this repository and cannot read sibling
           # private repos. Use a fine-grained PAT with read-only Contents access
