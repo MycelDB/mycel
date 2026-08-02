@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
@@ -248,8 +250,8 @@ func (s *ImportExportService) importRecord(ctx context.Context, tx daemonsession
 				return nil
 			}
 		}
-		if _, err := s.graphs.CreateEdge(ctx, tx, input); err != nil {
-			return mapGraphError(err, "import edge")
+		if _, err := s.createImportEdge(ctx, tx, input); err != nil {
+			return mapGraphError(err, fmt.Sprintf("import edge %s from %s to %s", input.EdgeID, input.FromNodeID, input.ToNodeID))
 		}
 		summary.EdgesImported++
 		return nil
@@ -339,6 +341,26 @@ func (s *ImportExportService) exportBlobs(ctx context.Context, spaceID string, n
 	return nil
 }
 
+func (s *ImportExportService) createImportEdge(ctx context.Context, tx daemonsession.GraphTransaction, input daegraph.EdgeInput) (domaingraph.Edge, error) {
+	var lastErr error
+	for attempt := 0; attempt < 40; attempt++ {
+		edge, err := s.graphs.CreateEdge(ctx, tx, input)
+		if err == nil {
+			return edge, nil
+		}
+		lastErr = err
+		if !strings.Contains(err.Error(), "graph entity not found") {
+			return domaingraph.Edge{}, err
+		}
+		select {
+		case <-ctx.Done():
+			return domaingraph.Edge{}, ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	return domaingraph.Edge{}, lastErr
+}
+
 func (s *ImportExportService) replaceDomain(ctx context.Context, tx daemonsession.GraphTransaction, summary *clientv1.ImportSummary) error {
 	edges, err := allExportEdges(ctx, s.graphs, tx)
 	if err != nil {
@@ -376,6 +398,12 @@ func nodeInputFromExportNode(node *clientv1.Node, preserveIDs bool) daegraph.Nod
 	payload := structMap(node.GetPayload())
 	blobID, _ := payload["blob_id"].(string)
 	content, _ := payload["text"].(string)
+	if blobID != "" {
+		// Blob-backed nodes may still carry descriptive text in their payload, but
+		// graph creation treats Content as mutually exclusive with BlobID. Preserve
+		// the payload verbatim and avoid replaying text as inline content.
+		content = ""
+	}
 	input := daegraph.NodeInput{Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: payload, Meta: structMap(node.GetMeta()), BlobID: blobID, Content: content}
 	if preserveIDs {
 		input.NodeID = node.GetNodeId()
@@ -399,7 +427,11 @@ func allExportNodes(ctx context.Context, graphs daegraph.Manager, tx daemonsessi
 		if err != nil {
 			return nil, err
 		}
-		all = append(all, nodes...)
+		for _, node := range nodes {
+			if node.DomainID.String() == tx.DomainID {
+				all = append(all, node)
+			}
+		}
 		if next == "" {
 			return all, nil
 		}
@@ -415,7 +447,11 @@ func allExportEdges(ctx context.Context, graphs daegraph.Manager, tx daemonsessi
 		if err != nil {
 			return nil, err
 		}
-		all = append(all, edges...)
+		for _, edge := range edges {
+			if edge.DomainID.String() == tx.DomainID {
+				all = append(all, edge)
+			}
+		}
 		if next == "" {
 			return all, nil
 		}

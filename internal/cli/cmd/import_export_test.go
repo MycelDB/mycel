@@ -39,13 +39,21 @@ func TestImportExportDomainCommandsUseDaemonGRPC(t *testing.T) {
 	if err := os.WriteFile(blobPath, []byte("hello blob"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err = runCLI(t, append(base, "graph", "blob-node", "create", blobPath, "--transaction-id", sourceTxID, "--mime-type", "text/plain", "--props-json", `{"tags":["blob-exported"]}`)...)
+	out, err = runCLI(t, append(base, "graph", "blob-node", "create", blobPath, "--transaction-id", sourceTxID, "--mime-type", "text/plain", "--props-json", `{"tags":["blob-exported"]}`, "--payload-json", `{"text":"blob node caption"}`)...)
 	if err != nil {
 		t.Fatalf("create source blob node failed: %v\n%s", err, out)
+	}
+	var blobNode clientv1.CreateBlobNodeResponse
+	if err := json.Unmarshal([]byte(out), &blobNode); err != nil {
+		t.Fatalf("decode blob node: %v\n%s", err, out)
 	}
 	out, err = runCLI(t, append(base, "graph", "edge", "create", "--transaction-id", sourceTxID, "--from", nodeA.GetNodeId(), "--to", nodeC.GetNodeId(), "--kind", "contains", "--props-json", `{"order":0}`)...)
 	if err != nil {
 		t.Fatalf("create source edge failed: %v\n%s", err, out)
+	}
+	out, err = runCLI(t, append(base, "graph", "edge", "create", "--transaction-id", sourceTxID, "--from", nodeC.GetNodeId(), "--to", blobNode.GetNode().GetNodeId(), "--kind", "contains", "--props-json", `{"order":1}`)...)
+	if err != nil {
+		t.Fatalf("create source blob edge failed: %v\n%s", err, out)
 	}
 	if out, err = runCLI(t, append(base, "transaction", "commit", sourceTxID)...); err != nil {
 		t.Fatalf("commit source failed: %v\n%s", err, out)
@@ -65,7 +73,7 @@ func TestImportExportDomainCommandsUseDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal(raw, &exported); err != nil {
 		t.Fatalf("decode exported document: %v\n%s", err, raw)
 	}
-	if len(exported.Nodes) != 3 || len(exported.Edges) != 1 || len(exported.BlobMetadata) != 1 || len(exported.BlobChunks) == 0 {
+	if len(exported.Nodes) != 3 || len(exported.Edges) != 2 || len(exported.BlobMetadata) != 1 || len(exported.BlobChunks) == 0 {
 		t.Fatalf("unexpected exported document: nodes=%d edges=%d blobs=%d chunks=%d raw=%s", len(exported.Nodes), len(exported.Edges), len(exported.BlobMetadata), len(exported.BlobChunks), raw)
 	}
 
@@ -84,7 +92,7 @@ func TestImportExportDomainCommandsUseDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &summary); err != nil {
 		t.Fatalf("decode import summary: %v\n%s", err, out)
 	}
-	if summary.GetNodesImported() != 3 || summary.GetEdgesImported() != 1 || summary.GetBlobsImported() != 1 {
+	if summary.GetNodesImported() != 3 || summary.GetEdgesImported() != 2 || summary.GetBlobsImported() != 1 {
 		t.Fatalf("unexpected import summary: %#v", &summary)
 	}
 	out, err = runCLI(t, append(base, "query", "nodes", "--transaction-id", targetTxID, "--tag", "stale")...)

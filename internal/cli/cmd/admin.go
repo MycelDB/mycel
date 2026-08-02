@@ -20,7 +20,7 @@ func NewAdminCommand(a *app.App) *cobra.Command {
 	list.Use = "list"
 	list.Aliases = []string{"ls"}
 	list.Short = "List daemon admins"
-	cmd.AddCommand(list, NewGetAdminCommand(a), NewFindAdminCommand(a), NewCreateAdminCommand(a), NewUpdateAdminCommand(a), NewDisableAdminCommand(a), NewEnableAdminCommand(a), NewDeleteAdminCommand(a), NewAdminPasswordCommand(a), NewAdminRoleCommand(a), NewAdminCapabilityCommand(a), NewAdminSessionCommand(a), NewAdminDomainCommand(a), NewAdminBackupCommand(a))
+	cmd.AddCommand(list, NewGetAdminCommand(a), NewFindAdminCommand(a), NewCreateAdminCommand(a), NewUpdateAdminCommand(a), NewDisableAdminCommand(a), NewEnableAdminCommand(a), NewDeleteAdminCommand(a), NewAdminPasswordCommand(a), NewAdminRoleCommand(a), NewAdminCapabilityCommand(a), NewAdminSessionCommand(a), NewAdminDomainCommand(a), NewAdminBackupCommand(a), NewAdminUserBackupCommand(a))
 	return cmd
 }
 
