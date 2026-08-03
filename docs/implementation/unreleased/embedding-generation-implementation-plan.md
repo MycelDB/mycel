@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation plan for the daemon-owned semantic embedding generation pipeline described in [embedding-package.md](embedding-package.md).
+Implementation plan for the daemon-owned semantic embedding generation pipeline described in [embedding-package.md](../../design/semantic/embedding-package.md).
 
 Initial implementation slices completed:
 

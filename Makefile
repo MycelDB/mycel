@@ -73,6 +73,9 @@ test-watch:
 	@command -v watchexec >/dev/null 2>&1 || (echo "watchexec is required. Install with: brew install watchexec" && exit 1)
 	watchexec -e go,sh -- "make generate-proto generate-gql-parser && scripts/check-daemon-only.sh && scripts/check-public-surface.sh && go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
 
+docs-check:
+	python3 scripts/checkDocs.py
+
 test-cluster-identity: generate-proto generate-gql-parser
 	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/cli/cmd -count=1
 

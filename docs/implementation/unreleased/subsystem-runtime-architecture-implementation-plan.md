@@ -4,7 +4,7 @@
 
 Proposed.
 
-This plan implements the architecture described in [Subsystem Runtime Architecture](../design/subsystem-runtime-architecture.md). The migration is intentionally phased so each phase leaves the system compiling, tested, and operational.
+This plan implements the architecture described in [Subsystem Runtime Architecture](../../design/runtime/subsystem-runtime-architecture.md). The migration is intentionally phased so each phase leaves the system compiling, tested, and operational.
 
 ## Acceptance criteria
 

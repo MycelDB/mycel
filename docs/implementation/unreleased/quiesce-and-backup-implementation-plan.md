@@ -4,7 +4,7 @@
 
 Proposed.
 
-This plan implements the behavior described in [Quiesce and Backup Design](quiesce-and-backup.md). It depends on the cross-cutting daemon lifecycle model described in [Daemon Service Interfaces Design](daemon-service-interfaces.md) and should be coordinated with [Daemon Service Interfaces Implementation Plan](daemon-service-interfaces-implementation-plan.md). Work is split into phases so the quiesce foundation can be validated before adding scheduled backups.
+This plan implements the behavior described in [Quiesce and Backup Design](../../design/backup-restore/quiesce-and-backup.md). It depends on the cross-cutting daemon lifecycle model described in [Daemon Service Interfaces Design](../../design/runtime/daemon-service-interfaces.md) and should be coordinated with [Daemon Service Interfaces Implementation Plan](daemon-service-interfaces-implementation-plan.md). Work is split into phases so the quiesce foundation can be validated before adding scheduled backups.
 
 ## Acceptance criteria
 

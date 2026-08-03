@@ -4,9 +4,9 @@
 
 Implemented daemon-backed MVP.
 
-This document defines daemon-owned quiescing and periodic backup behavior for Mycel. The implemented daemon produces consistent backups of `MYCELD_DATA_DIR` without logging users out or requiring application processes to open Mycel storage directly. Public control is exposed through `mycel.admin.v1.AdminBackupService` and the `mycel admin backup` CLI; see [Admin Backup API](admin/backup.md).
+This document defines daemon-owned quiescing and periodic backup behavior for Mycel. The implemented daemon produces consistent backups of `MYCELD_DATA_DIR` without logging users out or requiring application processes to open Mycel storage directly. Public control is exposed through `mycel.admin.v1.AdminBackupService` and the `mycel admin backup` CLI; see [Admin Backup API](../admin/backup.md).
 
-Service lifecycle and capability interfaces used by this design are defined in [Daemon Service Interfaces Design](daemon-service-interfaces.md).
+Service lifecycle and capability interfaces used by this design are defined in [Daemon Service Interfaces Design](../runtime/daemon-service-interfaces.md).
 
 ## Goals
 

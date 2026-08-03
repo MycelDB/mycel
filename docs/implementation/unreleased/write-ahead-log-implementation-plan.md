@@ -4,7 +4,7 @@
 
 Proposed.
 
-This plan implements [Write-Ahead Log Design](write-ahead-log.md). The first milestone is single-node crash recovery and a durable mutation pipeline. The design should be kept replication-ready, but leader election, read replicas, and quorum commit are intentionally out of scope for this plan.
+This plan implements [Write-Ahead Log Design](../../design/persistence/write-ahead-log.md). The first milestone is single-node crash recovery and a durable mutation pipeline. The design should be kept replication-ready, but leader election, read replicas, and quorum commit are intentionally out of scope for this plan.
 
 ## Acceptance criteria
 
@@ -460,7 +460,7 @@ Document the actual implementation for operators and future developers.
 
 ### Tasks
 
-1. Update [Write-Ahead Log Design](write-ahead-log.md) if implementation differs.
+1. Update [Write-Ahead Log Design](../../design/persistence/write-ahead-log.md) if implementation differs.
 2. Add operational documentation covering:
    - WAL directory layout
    - durability policy

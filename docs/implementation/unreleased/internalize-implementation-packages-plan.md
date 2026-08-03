@@ -21,7 +21,7 @@ github.com/myceldb/mycel-go-sdk
 github.com/myceldb/mycel-api/api/proto/... (for SDK/code generation)
 ```
 
-This plan builds on [Mycel Public Go Surface Audit](public-surface-audit.md).
+This plan builds on [Mycel Public Go Surface Audit](../../design/runtime/public-surface-audit.md).
 
 ## Non-goals
 
