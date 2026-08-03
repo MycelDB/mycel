@@ -51,22 +51,35 @@ mycel admin backup cluster validate --backup-set /backups/mycel/<backup-set-id>
 
 ## Backup set layout
 
-A successful cluster backup creates a backup set directory:
+A successful cluster backup produces one logical backup set. The logical layout
+is:
 
 ```text
-/backups/mycel/
-  backup-set-20260803T183500Z-cluster_7d42d6ab/
-    backup-set.json
-    myceld-0/
-      mycel-system-20260803T183500Z-myceld-0-backup-set-20260803T183500Z-cluster_7d42d6ab.tar.zst
-      mycel-system-20260803T183500Z-myceld-0-backup-set-20260803T183500Z-cluster_7d42d6ab.manifest.json
-    myceld-1/
-      mycel-system-20260803T183500Z-myceld-1-backup-set-20260803T183500Z-cluster_7d42d6ab.tar.zst
-      mycel-system-20260803T183500Z-myceld-1-backup-set-20260803T183500Z-cluster_7d42d6ab.manifest.json
-    myceld-2/
-      mycel-system-20260803T183500Z-myceld-2-backup-set-20260803T183500Z-cluster_7d42d6ab.tar.zst
-      mycel-system-20260803T183500Z-myceld-2-backup-set-20260803T183500Z-cluster_7d42d6ab.manifest.json
+backup-set-20260803T183500Z-cluster_7d42d6ab/
+  backup-set.json
+  myceld-0/
+    mycel-system-20260803T183500Z-myceld-0-backup-set-20260803T183500Z-cluster_7d42d6ab.tar.zst
+    mycel-system-20260803T183500Z-myceld-0-backup-set-20260803T183500Z-cluster_7d42d6ab.manifest.json
+  myceld-1/
+    mycel-system-20260803T183500Z-myceld-1-backup-set-20260803T183500Z-cluster_7d42d6ab.tar.zst
+    mycel-system-20260803T183500Z-myceld-1-backup-set-20260803T183500Z-cluster_7d42d6ab.manifest.json
+  myceld-2/
+    mycel-system-20260803T183500Z-myceld-2-backup-set-20260803T183500Z-cluster_7d42d6ab.tar.zst
+    mycel-system-20260803T183500Z-myceld-2-backup-set-20260803T183500Z-cluster_7d42d6ab.manifest.json
 ```
+
+The physical location of those files is deployment-specific. In most production
+Kubernetes deployments, each pod writes its archive and per-pod manifest to a
+mounted backup volume or object-store gateway path, not to the data PVC itself.
+The coordinator records the actual per-pod artifact URI/path in `backup-set.json`.
+An operator or backup controller may later copy the artifacts into the logical
+parent directory shown above for transport, retention, or local restore.
+
+The backup destination must be outside `MYCELD_DATA_DIR`; it may be a shared
+ReadWriteMany volume, a per-pod mounted backup volume, or an object-store sync
+mount. The initial design does not require all pods to write to the same mounted
+filesystem as long as the final backup-set manifest contains every artifact and
+checksum.
 
 Filename format:
 
@@ -82,8 +95,9 @@ Where:
 - `<backup_set_id>` is stable for the whole cluster backup.
 - `<archive_ext>` is `zip`, `tar`, `tar.gz`, or `tar.zst`.
 
-The pod name in the filename is required so copied archives remain identifiable
-outside the directory layout.
+The pod name in the filename is required so archives remain identifiable after
+they are copied between mounted backup volumes, object storage, operator
+workstations, and restore pods.
 
 ## Backup set manifest
 
@@ -116,7 +130,9 @@ It should include:
       "node_id": "node_1",
       "ordinal": 0,
       "archive_name": "mycel-system-20260803T183500Z-myceld-0-backup-set-20260803T183500Z-cluster_7d42d6ab.tar.zst",
+      "archive_uri": "file:///mnt/mycel-backups/myceld-0/mycel-system-20260803T183500Z-myceld-0-backup-set-20260803T183500Z-cluster_7d42d6ab.tar.zst",
       "manifest_name": "mycel-system-20260803T183500Z-myceld-0-backup-set-20260803T183500Z-cluster_7d42d6ab.manifest.json",
+      "manifest_uri": "file:///mnt/mycel-backups/myceld-0/mycel-system-20260803T183500Z-myceld-0-backup-set-20260803T183500Z-cluster_7d42d6ab.manifest.json",
       "size_bytes": 123456,
       "checksum_sha256": "...",
       "applied_indexes": {
@@ -147,7 +163,8 @@ Cluster backup fails before quiesce unless every required precondition is met:
 - no node reports stale, divergent, or unsafe local state;
 - no cluster backup is already running;
 - no incompatible quiesce/recovery/migration operation is active;
-- backup destination exists, is writable, and has enough space when measurable;
+- each pod's configured backup destination exists, is mounted, is writable, and
+  has enough space when measurable;
 - pod ordinal to raft node ID mapping matches the committed cluster metadata.
 
 No partial backup is reported as successful. If any expected node cannot
@@ -213,17 +230,19 @@ quiesce lease is released.
 
 ## Local archive creation
 
-Each pod creates a local archive of its own daemon data directory after the
-backup barrier is satisfied. Archive creation remains node-local because the data
-directory/PVC is node-local.
+Each pod creates an archive of its own daemon data directory after the backup
+barrier is satisfied. Archive creation remains node-local because the data
+directory/PVC is node-local, but the archive output should be written to the
+pod's configured backup destination, typically a mounted backup volume or
+object-store gateway path outside the data PVC.
 
 Each pod returns:
 
 - pod name;
 - raft node ID;
 - ordinal;
-- archive path/name;
-- manifest path/name;
+- archive URI/path/name;
+- manifest URI/path/name;
 - size;
 - SHA-256 checksum;
 - applied raft indexes at archive time;
@@ -253,13 +272,16 @@ Full-system restore remains offline. The operator should:
 
 1. stop the target StatefulSet;
 2. create fresh empty PVCs;
-3. restore each pod archive into the matching ordinal PVC:
+3. make each pod archive available to a restore pod/job, usually by mounting the
+   backup volume or copying the archive from object storage to the restore
+   environment;
+4. restore each pod archive into the matching ordinal PVC:
    - `myceld-0` archive to `myceld-0` PVC;
    - `myceld-1` archive to `myceld-1` PVC;
    - `myceld-2` archive to `myceld-2` PVC;
-4. recreate required deployment secrets from the operator's secret manager;
-5. start the StatefulSet;
-6. validate cluster identity, health, graph data, blob payloads, and login.
+5. recreate required deployment secrets from the operator's secret manager;
+6. start the StatefulSet;
+7. validate cluster identity, health, graph data, blob payloads, and login.
 
 The backup-set manifest is used to verify that the operator restored the correct
 archive to the correct ordinal.

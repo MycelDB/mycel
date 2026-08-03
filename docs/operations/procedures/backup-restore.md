@@ -25,7 +25,9 @@ into the corresponding empty data directory/PVC, then start `myceld` against the
 restored data. In a multi-pod StatefulSet, capture one system backup per pod and
 restore each archive to the matching ordinal PVC. The proposed production design
 for coordinating this safely across the whole cluster is documented in
-[Cluster system backup](../../design/backup-restore/cluster-system-backup.md).
+[Cluster system backup](../../design/backup-restore/cluster-system-backup.md),
+and the end-to-end operator flow is described in
+[Cluster system backup and restore](cluster-system-backup-restore.md).
 
 The destructive K3s validation gate is:
 
