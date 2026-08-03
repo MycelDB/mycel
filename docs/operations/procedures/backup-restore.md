@@ -23,7 +23,9 @@ mycel --daemon-addr <pod-or-node>:9091 \
 Full-system restore is offline-only: stop `myceld`, restore the archive contents
 into the corresponding empty data directory/PVC, then start `myceld` against the
 restored data. In a multi-pod StatefulSet, capture one system backup per pod and
-restore each archive to the matching ordinal PVC.
+restore each archive to the matching ordinal PVC. The proposed production design
+for coordinating this safely across the whole cluster is documented in
+[Cluster system backup](../../design/backup-restore/cluster-system-backup.md).
 
 The destructive K3s validation gate is:
 
