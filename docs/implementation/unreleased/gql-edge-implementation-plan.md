@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add first-class edge support to MycelDB's graph model and GQL subset. Edges should become node-like graph elements with labels, properties, payload, and metadata, plus connectivity between two nodes.
+Add first-class edge support to mycel's graph model and GQL subset. Edges should become node-like graph elements with labels, properties, payload, and metadata, plus connectivity between two nodes.
 
 Target edge shape:
 
@@ -28,7 +28,7 @@ Compatibility with old persisted revisions is not required for this branch. Exis
 - Edges are first-class graph elements, structurally similar to nodes.
 - Edge connectivity is represented by `FromID` and `ToID`.
 - Edge classification uses open-ended `Labels []string`, not a predefined `EdgeKind` enum.
-- MycelDB core should not define a closed set of edge types.
+- mycel core should not define a closed set of edge types.
 - Any hierarchy/containment semantics should move to domain/template/subsystem policy or reserved system-label handling, not a general global edge-kind enum.
 - Edge `Properties` are user/domain-defined queryable values.
 - Edge `Payload` can hold primary text/blob/reference payload for relationship annotations.
@@ -63,7 +63,7 @@ or a Mycel initial subset equivalent if `CREATE`/multi-match is deferred.
 
 ## Phase 1 — Model and API shape
 
-Update MycelDB and API contracts:
+Update mycel and API contracts:
 
 - `mycel/internal/graph/model/edge.go`
 - `mycel-api/api/proto/mycel/client/v1/graph.proto`
@@ -206,7 +206,7 @@ Potential Knot PKM edge labels include domain conventions such as:
 - `NEXT`
 - `PREVIOUS`
 
-These are Knot PKM conventions, not MycelDB predefined core types.
+These are Knot PKM conventions, not mycel predefined core types.
 
 ## Validation
 

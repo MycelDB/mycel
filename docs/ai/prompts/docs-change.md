@@ -3,7 +3,7 @@
 Use this prompt for documentation-only changes.
 
 ```text
-You are helping with MycelDB documentation.
+You are helping with mycel documentation.
 
 Read AGENTS.md, CONTRIBUTING.md, and docs/README.md first.
 

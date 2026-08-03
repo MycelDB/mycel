@@ -1,9 +1,9 @@
-# Contributing to MycelDB
+# Contributing to mycel
 
-Thank you for contributing to MycelDB. This guide describes the expectations for
+Thank you for contributing to mycel. This guide describes the expectations for
 issues, pull requests, tests, documentation, licensing, and AI-assisted work.
 
-MycelDB is preparing for an open-source release under the Apache License 2.0.
+mycel is preparing for an open-source release under the Apache License 2.0.
 The guidance below follows common practices used by Apache-licensed projects:
 clear issue discussion, small reviewable pull requests, contributor ownership of
 submitted work, explicit licensing expectations, and reproducible validation.
@@ -17,7 +17,7 @@ not fit the project direction.
 
 ## Licensing and contribution rights
 
-MycelDB is intended to be released under the Apache License, Version 2.0. By
+mycel is intended to be released under the Apache License, Version 2.0. By
 submitting a contribution, you agree that your contribution may be distributed
 under the same license.
 
@@ -203,5 +203,5 @@ documentation, compatibility, safety, or project scope. Approval of a PR does
 not guarantee immediate merge; maintainers may batch or sequence changes around
 release, migration, or operational risk.
 
-Thank you for helping make MycelDB reliable, understandable, and safe to
+Thank you for helping make mycel reliable, understandable, and safe to
 operate.

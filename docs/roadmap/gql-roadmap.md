@@ -1,10 +1,10 @@
 # GQL Roadmap
 
-This document tracks the MycelDB GQL feature roadmap. It is intentionally product-facing rather than a detailed implementation plan: implementation details should live in `docs/implementation/` and link back here when appropriate.
+This document tracks the mycel GQL feature roadmap. It is intentionally product-facing rather than a detailed implementation plan: implementation details should live in `docs/implementation/` and link back here when appropriate.
 
 ## Scope
 
-MycelDB GQL aims to provide a graph-native query language for nodes, edges, paths, projections, filtering, mutation, diagnostics, and higher-level application use cases such as Knot PKM.
+mycel GQL aims to provide a graph-native query language for nodes, edges, paths, projections, filtering, mutation, diagnostics, and higher-level application use cases such as Knot PKM.
 
 The current implemented subset is intentionally small and focused on node insertion, node matching, relationship matching, relationship creation between matched nodes, property filtering, scalar projection, and row limiting.
 

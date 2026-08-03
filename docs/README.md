@@ -1,13 +1,13 @@
-# MycelDB Documentation
+# mycel Documentation
 
-MycelDB is a daemon-first graph data system with user identity, spaces/domains,
+mycel is a daemon-first graph data system with user identity, spaces/domains,
 transactional graph operations, blob-backed nodes, schema validation, semantic
 indexing, automation hooks, and raft-based clustering.
 
 This directory is organized by audience and intent:
 
 - [Design](design/README.md) explains the current system architecture and major subsystems.
-- [Operations](operations/README.md) explains how to run, operate, validate, and recover MycelDB.
+- [Operations](operations/README.md) explains how to run, operate, validate, and recover mycel.
 - [Implementation](implementation/README.md) archives implementation plans by release.
 - [AI prompt templates](ai/README.md) provide optional reusable prompts for contributors.
 - [Roadmap](roadmap/gql-roadmap.md) tracks forward-looking product and GQL work.

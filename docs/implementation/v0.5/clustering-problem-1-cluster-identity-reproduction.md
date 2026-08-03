@@ -6,7 +6,7 @@ Problem 1 from `docs/design/clustering-replication-reliability.md` is reproducib
 
 Even when all three daemons are configured with the same cluster name, raft node count, raft node addresses, and distinct raft local node IDs, each daemon creates its own local `cluster_id` and reports itself as a healthy one-member cluster.
 
-This means the deployment is not bootstrapping one authoritative MycelDB cluster identity. It is starting three locally bootstrapped cluster identities next to each other, while the experimental raft runtime separately starts raft groups from environment-provided numeric node IDs and addresses.
+This means the deployment is not bootstrapping one authoritative mycel cluster identity. It is starting three locally bootstrapped cluster identities next to each other, while the experimental raft runtime separately starts raft groups from environment-provided numeric node IDs and addresses.
 
 ## Reproduction environment
 

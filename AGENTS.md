@@ -4,7 +4,7 @@ Instructions for AI coding agents working in this repository.
 
 ## Project overview
 
-MycelDB is a daemon-first graph data system written in Go. The daemon owns
+mycel is a daemon-first graph data system written in Go. The daemon owns
 identity, sessions, spaces/domains, graph transactions, blobs, schemas,
 semantic indexing, automation, backup/restore, and raft clustering.
 

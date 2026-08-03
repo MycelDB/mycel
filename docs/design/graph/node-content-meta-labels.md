@@ -292,7 +292,7 @@ should disappear once `Labels` is first-class.
 
 ## Project impact
 
-### MycelDB projects
+### mycel projects
 
 - `mycel-api`: update protobuf contracts for graph/session/query/change-stream messages.
 - `mycel`: update generated stubs, domain graph model, storage, graph service, query service, session API, import/export, semantic maintenance/backfill, change streams, CLI, and tests.

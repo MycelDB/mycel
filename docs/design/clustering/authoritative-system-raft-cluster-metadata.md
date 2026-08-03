@@ -4,7 +4,7 @@
 
 Implemented through compose and local K3s validation on the `improved_clustering` branch.
 
-This document describes making the **system Raft group** the source of truth for MycelDB cluster identity, membership, and placement metadata. It intentionally skips the simpler interim approach of configuring a static `MYCELD_CLUSTER_ID`; the long-term replicated metadata model is implemented directly.
+This document describes making the **system Raft group** the source of truth for mycel cluster identity, membership, and placement metadata. It intentionally skips the simpler interim approach of configuring a static `MYCELD_CLUSTER_ID`; the long-term replicated metadata model is implemented directly.
 
 Operator procedures are documented in `docs/operations/raft-cluster-operations.md`.
 
@@ -48,7 +48,7 @@ This is a split-brain bootstrap problem. A replicated database must have one aut
 
 ## Core idea
 
-A MycelDB raft cluster has one authoritative system metadata record replicated through the system Raft group.
+A mycel raft cluster has one authoritative system metadata record replicated through the system Raft group.
 
 That metadata contains at minimum:
 

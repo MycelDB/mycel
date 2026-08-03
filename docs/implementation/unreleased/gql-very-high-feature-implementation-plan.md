@@ -2,7 +2,7 @@
 
 ## Goal
 
-Provide a feature-by-feature implementation and test plan for every roadmap feature marked **Very High** in either the general MycelDB desirability column or the Knot PKM desirability column.
+Provide a feature-by-feature implementation and test plan for every roadmap feature marked **Very High** in either the general mycel desirability column or the Knot PKM desirability column.
 
 This document includes already implemented features so we can verify coverage and keep regressions visible as GQL evolves.
 

@@ -4,7 +4,7 @@ Use this prompt to ask an AI assistant for a pre-review of a diff. This does not
 replace maintainer review.
 
 ```text
-You are reviewing a MycelDB pull request.
+You are reviewing a mycel pull request.
 
 Read AGENTS.md and CONTRIBUTING.md first.
 

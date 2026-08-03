@@ -1,6 +1,6 @@
 # Backup and Restore Procedures
 
-MycelDB currently has two backup/restore-oriented surfaces:
+mycel currently has two backup/restore-oriented surfaces:
 
 1. Admin backup policy/status operations for daemon-owned backups.
 2. User-scoped backup/restore through `mycel admin user-backup` for explicit

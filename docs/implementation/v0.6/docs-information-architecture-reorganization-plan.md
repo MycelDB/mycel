@@ -2,11 +2,11 @@
 
 ## Goal
 
-Reorganize `docs/` so MycelDB documentation is easier to navigate by audience and intent:
+Reorganize `docs/` so mycel documentation is easier to navigate by audience and intent:
 
 - `docs/README.md` becomes a concise table of contents and feature map.
 - `docs/design/` explains the current system design from the top down.
-- `docs/operations/` explains how to run, operate, validate, and recover MycelDB.
+- `docs/operations/` explains how to run, operate, validate, and recover mycel.
 - `docs/implementation/` becomes an archival, release-grouped record of implementation plans.
 
 The reorganization should improve discoverability without losing historical implementation context or breaking common links unnecessarily.
@@ -187,7 +187,7 @@ Status: complete.
 Create or rewrite the master index documents first:
 
 1. `docs/README.md`
-   - brief MycelDB feature overview
+   - brief mycel feature overview
    - audience guide
    - links to `design/`, `operations/`, `implementation/`, `roadmap/`
    - quick links for common tasks
@@ -469,7 +469,7 @@ Optional follow-ups after the first reorganization lands:
 
 - `docs/README.md` is a clear entrypoint and table of contents.
 - `docs/design/README.md` links to a high-level system overview and component docs.
-- `docs/design/system-overview.md` explains major MycelDB components and relationships.
+- `docs/design/system-overview.md` explains major mycel components and relationships.
 - `docs/operations/README.md` explains operations scope and links to CLI/procedure indexes.
 - `docs/operations/cli/README.md` lists top-level CLI commands.
 - `docs/operations/procedures/README.md` lists operator procedures.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Urgent design investigation and implementation plan. MycelDB raft clustering is significantly hardened on `improved_clustering`, but existing divergent PVCs still require controlled forensic migration and future subsystem snapshot/compaction hardening remains outside the current V1 guarantee.
+Urgent design investigation and implementation plan. mycel raft clustering is significantly hardened on `improved_clustering`, but existing divergent PVCs still require controlled forensic migration and future subsystem snapshot/compaction hardening remains outside the current V1 guarantee.
 
 Phase status on `improved_clustering`:
 
@@ -34,7 +34,7 @@ MYCELD_CLUSTER_RAFT_NODE_ADDRS=myceld-0.myceld-headless:9091,myceld-1.myceld-hea
 
 Each pod derives `MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID` from its StatefulSet ordinal.
 
-The Kubernetes `myceld` ClusterIP service selects all three pods. The current orchestration uses `sessionAffinity: ClientIP`, but this is not a correctness boundary. It does not make MycelDB replicated, does not prove that all pods share the same cluster identity, and does not make daemon-local sessions portable across pods.
+The Kubernetes `myceld` ClusterIP service selects all three pods. The current orchestration uses `sessionAffinity: ClientIP`, but this is not a correctness boundary. It does not make mycel replicated, does not prove that all pods share the same cluster identity, and does not make daemon-local sessions portable across pods.
 
 ## Observed failure
 
@@ -169,7 +169,7 @@ Required conclusion: raft-mode readiness must be correctness-aware.
 
 ## Correctness model proposal
 
-MycelDB must explicitly support two modes before Kubernetes deployments can be safe.
+mycel must explicitly support two modes before Kubernetes deployments can be safe.
 
 ### Mode 1 — Standalone
 
@@ -277,7 +277,7 @@ If quorum or leader is unavailable, commit fails closed. It must not write local
 
 ### ClusterIP-over-all-pods service is not a correctness mechanism by itself
 
-A ClusterIP selecting all pods can be used only if MycelDB itself guarantees routing/forwarding/read consistency. Kubernetes service affinity is not a database consistency model.
+A ClusterIP selecting all pods can be used only if mycel itself guarantees routing/forwarding/read consistency. Kubernetes service affinity is not a database consistency model.
 
 After Phase E/F/G V1, session- and transaction-scoped unary workflows can enter through any ready pod and either route to the home node or fail closed with a documented route/session error, committed graph/query/metadata reads use leader read-index/apply barriers by default, and operators have consistency-report/forensic tooling plus destructive Compose/K3s data-plane gates. This improves arbitrary-pod safety for V1 workflows, but broad production multi-pod exposure still excludes known-divergent PVC reuse and subsystem snapshot-only catch-up after compaction until the remaining Phase B subsystem snapshot gap is closed.
 

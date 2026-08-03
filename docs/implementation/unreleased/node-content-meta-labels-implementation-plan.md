@@ -26,7 +26,7 @@ Backward compatibility is not required. Each tranche should leave its own reposi
 
 Create aligned branches named `node_modif` in each affected repository before implementation begins:
 
-### MycelDB repositories
+### mycel repositories
 
 - `mycel-api`
 - `mycel`
@@ -354,7 +354,7 @@ go test ./...
 cargo test
 ```
 
-## Tranche 11 — Benchmarks and docs in MycelDB projects
+## Tranche 11 — Benchmarks and docs in mycel projects
 
 Status: implemented for `mycel-bench`; fixture/workload node creation now writes text to `payload.text` and benchmark tags/properties to `properties`. `mycel-www` currently has no tracked site content in this checkout, so no docs changes were required there.
 

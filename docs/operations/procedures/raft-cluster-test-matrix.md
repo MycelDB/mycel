@@ -1,6 +1,6 @@
 # Raft Cluster Test Matrix
 
-This document summarizes the Raft-related tests and validation gates used to prove MycelDB cluster behavior before publishing or deploying a clustering-capable image.
+This document summarizes the Raft-related tests and validation gates used to prove mycel cluster behavior before publishing or deploying a clustering-capable image.
 
 Run commands from the `mycel/` directory unless noted otherwise.
 

@@ -1,6 +1,6 @@
 # Design Documentation
 
-Design docs describe the current MycelDB architecture and the major subsystems
+Design docs describe the current mycel architecture and the major subsystems
 that make up the daemon. Start with the [system overview](system-overview.md),
 then use the component indexes below for detail.
 

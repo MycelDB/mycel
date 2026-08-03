@@ -3,7 +3,7 @@
 Use this prompt to investigate a local or CI failure.
 
 ```text
-You are helping debug a MycelDB CI failure.
+You are helping debug a mycel CI failure.
 
 Read AGENTS.md and CONTRIBUTING.md first.
 

@@ -1,6 +1,6 @@
 # Raft Cluster Manual Repair Workflows
 
-Phase G repair workflows are manual and evidence-driven. MycelDB does not automatically merge, delete, overwrite, rebalance, or repair divergent PVCs during daemon startup.
+Phase G repair workflows are manual and evidence-driven. mycel does not automatically merge, delete, overwrite, rebalance, or repair divergent PVCs during daemon startup.
 
 Use these workflows only after writes are stopped and every PVC has been snapshotted.
 

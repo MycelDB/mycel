@@ -2,7 +2,7 @@
 
 ## Scope
 
-This guide covers the current static multi-node Raft deployment model for MycelDB. It assumes the authoritative system Raft metadata work is enabled in the daemon image.
+This guide covers the current static multi-node Raft deployment model for mycel. It assumes the authoritative system Raft metadata work is enabled in the daemon image.
 
 Standalone mode remains local and self-owned. Multi-node Raft mode is different: local files are caches only, and the system Raft metadata record is the authority for cluster identity, membership, partition count, replica factor, and placement.
 

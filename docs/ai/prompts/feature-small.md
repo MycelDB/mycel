@@ -3,7 +3,7 @@
 Use this prompt for a small, reviewable feature or behavior addition.
 
 ```text
-You are helping with MycelDB, a daemon-first graph data system written in Go.
+You are helping with mycel, a daemon-first graph data system written in Go.
 
 Read AGENTS.md and CONTRIBUTING.md first.
 

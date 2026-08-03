@@ -1,12 +1,12 @@
-# MycelDB
+# mycel
 
-Daemon and CLI for MycelDB graph spaces.
+Daemon and CLI for mycel graph spaces.
 
 Module path: `github.com/myceldb/mycel`.
 
 ## Runtime model
 
-MycelDB v2 is daemon-first and is being refactored to be daemon-only:
+mycel v2 is daemon-first and is being refactored to be daemon-only:
 
 ```text
 myceld owns the data directory

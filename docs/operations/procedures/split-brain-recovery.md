@@ -1,6 +1,6 @@
 # Split-Brain Recovery Procedure
 
-This procedure is for operator-selected trusted-source recovery. MycelDB does
+This procedure is for operator-selected trusted-source recovery. mycel does
 not automatically repair divergent PVCs or choose an authoritative pod.
 
 ## High-level workflow

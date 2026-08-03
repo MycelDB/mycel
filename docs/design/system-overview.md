@@ -1,9 +1,9 @@
-# MycelDB System Overview
+# mycel System Overview
 
-MycelDB is a daemon-centered graph database and knowledge substrate. The daemon
+mycel is a daemon-centered graph database and knowledge substrate. The daemon
 owns identity, authorization, graph sessions, transactions, storage, semantic
 maintenance, backup coordination, and cluster membership. Clients interact with
-MycelDB through gRPC APIs and the `mycel` CLI rather than embedding storage
+mycel through gRPC APIs and the `mycel` CLI rather than embedding storage
 packages directly.
 
 ## Major components
@@ -88,7 +88,7 @@ See [backup and restore](backup-restore/README.md) and [operations procedures](.
 
 ### Clustering and raft ownership
 
-Clustered MycelDB uses system raft metadata as the authoritative source for
+Clustered mycel uses system raft metadata as the authoritative source for
 cluster identity, membership, and partition placement. Durable user-visible
 writes in raft mode must be raft-owned, derived/rebuildable, or fail closed.
 Committed reads default to strong/read-index semantics. Diagnostics and manual

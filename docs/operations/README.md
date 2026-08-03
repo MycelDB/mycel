@@ -1,6 +1,6 @@
 # Operations Documentation
 
-Operations docs explain how to run, validate, troubleshoot, and recover MycelDB.
+Operations docs explain how to run, validate, troubleshoot, and recover mycel.
 They are task-oriented and should be preferred over implementation plans for
 operator procedures.
 
