@@ -20,25 +20,27 @@ var _ runtime.StatusReporter = (*Module)(nil)
 var _ Manager = (*Module)(nil)
 
 type Module struct {
-	mu           sync.Mutex
-	manager      *backupcore.Manager
-	policy       backupcore.Policy
-	logger       *slog.Logger
-	runCtx       context.Context
-	cancel       context.CancelFunc
-	running      bool
-	startedAt    time.Time
-	nextRunAt    time.Time
-	lastError    string
-	wg           sync.WaitGroup
-	wal          *wal.Manager
-	progress     wal.AppliedLSNStore
-	checkpoint   *wal.CheckpointStore
-	waiter       *wal.ApplyWaiter
-	writeAllowed func() error
-	raftGroups   *consensus.MultiGroup
-	raftEnabled  bool
-	config       Config
+	mu                    sync.Mutex
+	manager               *backupcore.Manager
+	policy                backupcore.Policy
+	logger                *slog.Logger
+	runCtx                context.Context
+	cancel                context.CancelFunc
+	running               bool
+	startedAt             time.Time
+	nextRunAt             time.Time
+	lastError             string
+	wg                    sync.WaitGroup
+	wal                   *wal.Manager
+	progress              wal.AppliedLSNStore
+	checkpoint            *wal.CheckpointStore
+	waiter                *wal.ApplyWaiter
+	writeAllowed          func() error
+	raftGroups            *consensus.MultiGroup
+	raftEnabled           bool
+	config                Config
+	activeClusterBackupID string
+	clusterBackups        map[string]clusterBackupRun
 }
 
 func NewModule(config ...Config) *Module {
@@ -76,6 +78,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			}
 			if err := registry.Register(recordTypeBackupDelete, wal.ApplierFunc(m.applyBackupDelete)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register backup delete WAL applier", err)
+			}
+			for typ, applier := range m.clusterBackupWALAppliers() {
+				if err := registry.Register(typ, applier); err != nil {
+					return runtime.Abort(ModuleName, "wal", "register cluster backup WAL applier", err)
+				}
 			}
 		}
 	}

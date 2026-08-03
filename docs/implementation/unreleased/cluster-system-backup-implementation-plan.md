@@ -184,6 +184,18 @@ mycel-system-<utc_timestamp>-<pod_name>-<backup_set_id>.manifest.json
 
 ### Phase 0 — Inventory and exact API decision
 
+Status: complete for the first implementation tranche.
+
+Decisions:
+
+- Future public RPCs should live on the existing `AdminBackupService` under the
+  `admin backup cluster` CLI namespace unless API review requires a split.
+- Restore remains offline/operator-driven and out of daemon RPC scope.
+- Backup-set manifest V1 is implemented internally with per-pod artifact
+  URI/path fields so archives may live on per-pod backup mounts or object-store
+  gateway paths.
+- No generated public SDK/API code is committed in this tranche.
+
 Deliverables:
 
 - Confirm `mycel-api` proto additions and package naming.
@@ -205,6 +217,15 @@ git diff --check
 ```
 
 ### Phase 1 — Backup-set manifest package
+
+Status: complete for V1 internal manifest validation.
+
+Implemented files:
+
+```text
+internal/backup/cluster/manifest.go
+internal/backup/cluster/manifest_test.go
+```
 
 Add a focused package for backup-set metadata and validation.
 
@@ -238,6 +259,19 @@ go test ./internal/backup/cluster
 
 ### Phase 2 — Cluster backup raft state machine records
 
+Status: complete for internal lifecycle records and snapshot/replay state.
+
+Implemented files:
+
+```text
+internal/backup/service/cluster_backup.go
+internal/backup/service/cluster_backup_test.go
+internal/backup/service/raft.go
+internal/backup/service/raft_snapshot.go
+internal/backup/service/raft_snapshot_test.go
+internal/backup/service/wal.go
+```
+
 Extend the backup subsystem's raft integration to track cluster backup runs.
 
 Implement:
@@ -262,6 +296,16 @@ make test-phase-d
 ```
 
 ### Phase 3 — Cluster precheck collector
+
+Status: complete for the initial fail-closed precheck evaluator. Later phases
+will wire this to concrete backend peer RPCs and coordinator execution.
+
+Implemented files:
+
+```text
+internal/backup/service/cluster_precheck.go
+internal/backup/service/cluster_backup_test.go
+```
 
 Add a coordinator precheck that fails before quiesce unless the cluster is safe.
 

@@ -93,7 +93,7 @@ test-phase-f: generate-proto generate-gql-parser
 
 test-phase-g: generate-proto generate-gql-parser
 	go test ./internal/graph/service ./internal/daemon/api/admin ./internal/clustering/backend ./internal/daemon/server ./internal/cli/cmd -count=1
-	bash -n scripts/validateComposeClusterDataPlane.sh scripts/validateK3sClusterDataPlane.sh scripts/testK3sCluster.sh scripts/testClusterSoak.sh scripts/testComposeUserBackupRestore.sh scripts/planGraphRepairWorkflow.sh
+	bash -n scripts/validateComposeClusterDataPlane.sh scripts/validateK3sClusterDataPlane.sh scripts/testK3sCluster.sh scripts/testClusterSoak.sh scripts/testComposeUserBackupRestore.sh scripts/testK3sSystemBackupRestore.sh scripts/planGraphRepairWorkflow.sh
 	@set -e; tmp="$$(mktemp)"; \
 	printf '%s\n' '{"node_summary":{"only_in_left":1,"only_in_right":0,"differing":0},"edge_summary":{"only_in_left":0,"only_in_right":0,"differing":0},"warnings":["one or both exports are truncated; diff only covers included entities"],"truncated":false}' > "$$tmp"; \
 	scripts/planGraphRepairWorkflow.sh --workflow classify-diff --i-have-snapshots --source-node pinned-good --diff "$$tmp" --authoritative-side left | grep -q incomplete_evidence; \
