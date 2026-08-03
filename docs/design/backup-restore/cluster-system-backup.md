@@ -7,6 +7,8 @@ that receives the request. A production full-system cluster backup needs a
 cluster coordinator so operators can create one complete, auditable backup set
 for all StatefulSet ordinals/PVCs.
 
+Implementation plan: [Cluster system backup implementation plan](../../implementation/unreleased/cluster-system-backup-implementation-plan.md).
+
 ## Goals
 
 - Provide a single operator command that creates a complete cluster backup set.
