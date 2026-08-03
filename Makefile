@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-compose-cluster test-k3s-cluster test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
+.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-compose-cluster test-k3s-cluster test-k3s-system-backup-restore test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -103,7 +103,7 @@ test-phase-g: generate-proto generate-gql-parser
 	grep -q -- --i-have-snapshots /tmp/mycel-g7-no-snap.out; \
 	rm -f "$$tmp" /tmp/mycel-g7-no-snap.out
 
-test-cluster-release-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-compose-cluster test-k3s-cluster
+test-cluster-release-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-compose-cluster test-k3s-cluster test-k3s-system-backup-restore
 
 test-compose-cluster:
 	cd ../../knot_pkm/knot_pkm_server && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" $(MAKE) compose-reset compose-up
@@ -120,6 +120,9 @@ test-compose-cluster:
 
 test-k3s-cluster:
 	./scripts/testK3sCluster.sh
+
+test-k3s-system-backup-restore:
+	./scripts/testK3sSystemBackupRestore.sh
 
 test-compose-user-backup-restore:
 	./scripts/testComposeUserBackupRestore.sh

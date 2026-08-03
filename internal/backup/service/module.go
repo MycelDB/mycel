@@ -12,8 +12,6 @@ import (
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 var _ runtime.Starter = (*Module)(nil)
@@ -254,9 +252,10 @@ func (m *Module) DeleteBackup(ctx context.Context, backupID string) error {
 }
 
 func (m *Module) Trigger(ctx context.Context, input backupcore.TriggerInput) (backupcore.TriggerResult, error) {
-	if m.raftMode() && !m.systemRaftLeader() {
-		return backupcore.TriggerResult{}, status.Error(codes.FailedPrecondition, "backup trigger requires system raft leadership")
-	}
+	// A manual backup trigger is an operator-requested local archive of this
+	// daemon's data directory. Policy/delete records remain raft-owned in raft
+	// mode, while archive creation must be available on every StatefulSet ordinal
+	// so operators can capture and later restore a complete multi-PVC system.
 	if !m.raftMode() {
 		if err := m.requireLocalWriteAllowed(); err != nil {
 			return backupcore.TriggerResult{}, err

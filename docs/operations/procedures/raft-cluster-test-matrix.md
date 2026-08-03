@@ -26,6 +26,7 @@ These reset local Docker Compose and K3s/k3d resources.
 make test-compose-cluster
 make test-compose-user-backup-restore
 make test-k3s-cluster
+make test-k3s-system-backup-restore
 ```
 
 ### Full release gate
@@ -43,6 +44,7 @@ This expands to:
 5. `make test-phase-g`
 6. `make test-compose-cluster`
 7. `make test-k3s-cluster`
+8. `make test-k3s-system-backup-restore`
 
 `make test` regenerates daemon protobuf stubs and the GQL parser, runs daemon-only/public-surface boundary checks, then runs `go test ./...`.
 
@@ -59,7 +61,8 @@ This expands to:
 | `make test-compose-cluster` | Destructive Docker Compose validation | Fresh bootstrap, shared cluster identity, health/readiness, real pod-to-pod graph write/read/query/consistency validation, restart data-plane stability, and persisted file-source identity validation. |
 | `make test-compose-user-backup-restore` | Destructive Docker Compose backup/restore validation | Creates three user-scoped fixtures, exports and validates per-user backups, wipes/recreates the cluster, restores into a fresh cluster, and verifies spaces/domains/graph/blob payloads through every node. |
 | `make test-k3s-cluster` | Destructive K3s/k3d validation | Fresh bootstrap, shared cluster identity, real pod-to-pod graph write/read/query/consistency validation, rolling restart, and one-PVC replacement/rejoin with data-plane revalidation. |
-| `make test-cluster-release-gate` | Full pre-release cluster gate | All normal tests, Phase D/E/F/G gates, then Compose and K3s destructive validations. |
+| `make test-k3s-system-backup-restore` | Destructive K3s/k3d system backup/restore validation | Creates graph/blob data, captures one daemon system backup archive per pod, wipes namespace/PVCs, restores each ordinal archive into fresh PVCs, restarts the StatefulSet, and verifies graph/blob payloads through every pod. |
+| `make test-cluster-release-gate` | Full pre-release cluster gate | All normal tests, Phase D/E/F/G gates, then Compose and K3s destructive validations including system backup/restore. |
 | `make test-cluster-soak` | Optional long-running destructive Compose soak | Repeated identity/data-plane validation with periodic daemon restarts; supports `MYCEL_CLUSTER_SOAK_WRITES`; forced snapshot/PVC replacement flags currently fail closed until a safe admin harness exists. |
 
 ## Optional snapshot soak flags
