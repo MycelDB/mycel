@@ -9,6 +9,7 @@ This directory is organized by audience and intent:
 - [Design](design/README.md) explains the current system architecture and major subsystems.
 - [Operations](operations/README.md) explains how to run, operate, validate, and recover MycelDB.
 - [Implementation](implementation/README.md) archives implementation plans by release.
+- [AI prompt templates](ai/README.md) provide optional reusable prompts for contributors.
 - [Roadmap](roadmap/gql-roadmap.md) tracks forward-looking product and GQL work.
 
 ## Quick links
@@ -23,6 +24,7 @@ This directory is organized by audience and intent:
 | Validate release/cluster behavior | [Raft cluster test matrix](operations/procedures/raft-cluster-test-matrix.md) |
 | Plan split-brain recovery | [Split-brain recovery](operations/procedures/split-brain-recovery.md) |
 | Review shipped implementation plans | [Implementation archive](implementation/README.md) |
+| Use AI assistance consistently | [AI prompt templates](ai/README.md) |
 
 ## Feature areas
 

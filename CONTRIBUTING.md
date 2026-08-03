@@ -185,6 +185,8 @@ must follow the same project standards as any other contribution, including
 [AGENTS.md](AGENTS.md), applicable tests, documentation checks, and licensing
 requirements.
 
+Optional reusable prompts are available in [docs/ai/README.md](docs/ai/README.md).
+
 Recommended practice when using AI:
 
 - provide the agent with project guidance from `AGENTS.md`;
