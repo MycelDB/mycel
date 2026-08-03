@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
+	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -171,6 +173,56 @@ func TestClusterBackupPrecheckRejectsActiveBackup(t *testing.T) {
 	if result.OK || !strings.Contains(strings.Join(result.Failures, "\n"), "already active") {
 		t.Fatalf("result=%#v, want active backup failure", result)
 	}
+}
+
+func TestClusterBackupLocalBarriersRequireRaftGroups(t *testing.T) {
+	m := newInitializedBackupModule(t)
+	if _, err := m.LocalRaftBackupBarriers(); err == nil || !strings.Contains(err.Error(), "raft groups") {
+		t.Fatalf("LocalRaftBackupBarriers() error=%v, want raft groups", err)
+	}
+	if _, err := m.WaitLocalRaftBackupBarriers(context.Background(), map[string]uint64{"system": 1}); err == nil || !strings.Contains(err.Error(), "raft groups") {
+		t.Fatalf("WaitLocalRaftBackupBarriers() error=%v, want raft groups", err)
+	}
+}
+
+func TestClusterBackupDestinationMustBeOutsideDataDir(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := validateLocalClusterBackupDestination(dataDir, filepath.Join(dataDir, "backups")); err == nil || !strings.Contains(err.Error(), "outside data dir") {
+		t.Fatalf("validateLocalClusterBackupDestination() error=%v, want outside data dir", err)
+	}
+}
+
+func TestClusterBackupLocalArchiveRequestRequiresRecordedMembershipAndBarriers(t *testing.T) {
+	m := newInitializedBackupModule(t)
+	m.restoreClusterBackupState("backup-set-1", map[string]clusterBackupRun{"backup-set-1": {BackupSetID: "backup-set-1", ClusterID: "cluster-1", Phase: clusterBackupPhaseBarrierWait, Expected: []clusterBackupExpectedNode{{PodName: "myceld-0", NodeID: "node_1", Ordinal: 0, RaftNodeID: 1}}, Barriers: map[string]uint64{"system": 10}}})
+	valid := backendArchiveInputForTest()
+	if err := m.validateRecordedLocalClusterBackupRequest(valid, map[string]uint64{"system": 10}); err != nil {
+		t.Fatalf("validateRecordedLocalClusterBackupRequest(valid) error=%v", err)
+	}
+	wrongSet := valid
+	wrongSet.BackupSetID = "backup-set-2"
+	if err := m.validateRecordedLocalClusterBackupRequest(wrongSet, map[string]uint64{"system": 10}); err == nil || !strings.Contains(err.Error(), "not recorded") {
+		t.Fatalf("wrong backup set error=%v, want not recorded", err)
+	}
+	wrongOrdinal := valid
+	wrongOrdinal.Ordinal = 1
+	if err := m.validateRecordedLocalClusterBackupRequest(wrongOrdinal, map[string]uint64{"system": 10}); err == nil || !strings.Contains(err.Error(), "ordinal") {
+		t.Fatalf("wrong ordinal error=%v, want ordinal", err)
+	}
+	if err := m.validateRecordedLocalClusterBackupRequest(valid, map[string]uint64{"system": 9}); err == nil || !strings.Contains(err.Error(), "want recorded barrier") {
+		t.Fatalf("stale barrier error=%v, want recorded barrier", err)
+	}
+}
+
+func TestClusterBackupBarriersRejectDuplicates(t *testing.T) {
+	_, err := clusterBackupBarriersFromInput([]backend.BackupRaftBarrier{{GroupID: "system", Index: 1}, {GroupID: "system", Index: 2}})
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("clusterBackupBarriersFromInput() error=%v, want duplicate", err)
+	}
+}
+
+func backendArchiveInputForTest() backend.CreateLocalBackupArchiveInput {
+	return backend.CreateLocalBackupArchiveInput{ClusterID: "cluster-1", BackupSetID: "backup-set-1", PodName: "myceld-0", NodeID: "node_1", RaftNodeID: 1, Ordinal: 0}
 }
 
 func applyClusterRecord(t *testing.T, ctx context.Context, m *Module, typ wal.RecordType, payload any, id string) {

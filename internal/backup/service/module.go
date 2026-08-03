@@ -39,6 +39,9 @@ type Module struct {
 	raftGroups            *consensus.MultiGroup
 	raftEnabled           bool
 	config                Config
+	quiesce               *quiesce.Coordinator
+	dataDir               string
+	localIdentity         runtime.LocalRouteIdentity
 	activeClusterBackupID string
 	clusterBackups        map[string]clusterBackupRun
 }
@@ -62,6 +65,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	var quiesceCoordinator *quiesce.Coordinator
 	if provider, ok := host.(runtime.QuiesceCoordinatorProvider); ok {
 		quiesceCoordinator = provider.QuiesceCoordinator()
+	}
+	m.quiesce = quiesceCoordinator
+	m.dataDir = host.DataDir()
+	if provider, ok := host.(runtime.LocalRouteIdentityProvider); ok {
+		m.localIdentity = provider.LocalRouteIdentity()
 	}
 	m.manager = backupcore.NewManager(backupcore.ManagerConfig{DataDir: host.DataDir(), Policy: policy, Logger: host.Log(), Quiesce: quiesceCoordinator})
 	policy = m.manager.Policy()

@@ -118,7 +118,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen grpc %s: %w", cfg.Addr, err)
 	}
-	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName: true, clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName: true, clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName: true, clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName: true, clusterpb.ClusterBackendService_ExecuteRaftGraphRead_FullMethodName: true, clusterpb.ClusterBackendService_ExecuteRaftSemanticRead_FullMethodName: true, clusterpb.ClusterBackendService_ForwardClientRequest_FullMethodName: true, clusterpb.ClusterBackendService_GetLocalGraphConsistency_FullMethodName: true}
+	publicMethods := defaultPublicMethods()
 	quiesceExempt := defaultQuiesceExemptMethods()
 	for method, exempt := range cfg.QuiesceExempt {
 		quiesceExempt[method] = exempt
@@ -214,6 +214,28 @@ func clientRoutingEnabled(cfg daemonconfig.ClusterConfig, clusterID string) bool
 	return clusterID != "" && cfg.RaftLocalNodeID > 0 && (len(cfg.RaftNodeAddrs) > 0 || cfg.RaftNodeCount == 1)
 }
 
+func defaultPublicMethods() map[string]bool {
+	return map[string]bool{
+		adminv1.AdminAuthService_LoginOperator_FullMethodName:                   true,
+		adminv1.AdminAuthService_RefreshOperator_FullMethodName:                 true,
+		clientv1.AuthService_Login_FullMethodName:                               true,
+		clientv1.AuthService_Refresh_FullMethodName:                             true,
+		clusterpb.ClusterBackendService_RegisterNode_FullMethodName:             true,
+		clusterpb.ClusterBackendService_GetClusterView_FullMethodName:           true,
+		clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName:         true,
+		clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName:      true,
+		clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName:           true,
+		clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName:      true,
+		clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName:             true,
+		clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName:           true,
+		clusterpb.ClusterBackendService_ExecuteRaftGraphRead_FullMethodName:     true,
+		clusterpb.ClusterBackendService_ExecuteRaftSemanticRead_FullMethodName:  true,
+		clusterpb.ClusterBackendService_ForwardClientRequest_FullMethodName:     true,
+		clusterpb.ClusterBackendService_GetLocalGraphConsistency_FullMethodName: true,
+		clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName: true,
+	}
+}
+
 func defaultQuiesceExemptMethods() map[string]bool {
 	return map[string]bool{
 		adminv1.AdminAuthService_LoginOperator_FullMethodName:                   true,
@@ -236,6 +258,7 @@ func defaultQuiesceExemptMethods() map[string]bool {
 		clusterpb.ClusterBackendService_ExecuteRaftSemanticRead_FullMethodName:  true,
 		clusterpb.ClusterBackendService_ForwardClientRequest_FullMethodName:     true,
 		clusterpb.ClusterBackendService_GetLocalGraphConsistency_FullMethodName: true,
+		clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName: true,
 	}
 }
 

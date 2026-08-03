@@ -284,6 +284,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		startSystemMetadataBootstrap(ctx, rt, systemMetadataSM)
 	}
 	clusterManager.SetBackendBlobPayloadProvider(blobservice.BackendPayloadProvider{Module: blobService})
+	clusterManager.SetBackendClusterBackupProvider(backupService)
 	clusterManager.SetBackendSpaceReader(spaceService)
 	clusterManager.SetBackendGraphReader(graphService)
 	clusterManager.SetBackendSemanticReader(semanticService)

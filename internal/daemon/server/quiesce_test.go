@@ -10,6 +10,7 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
@@ -68,6 +69,20 @@ func TestDefaultQuiesceExemptsAdminAuthRefresh(t *testing.T) {
 		if !exempt[method] {
 			t.Fatalf("method %s is not quiesce-exempt", method)
 		}
+	}
+}
+
+func TestDefaultQuiesceExemptsClusterBackupArchiveRPC(t *testing.T) {
+	exempt := defaultQuiesceExemptMethods()
+	if !exempt[clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName] {
+		t.Fatalf("method %s is not quiesce-exempt", clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName)
+	}
+}
+
+func TestDefaultPublicMethodsAllowsClusterBackupArchiveRPC(t *testing.T) {
+	public := defaultPublicMethods()
+	if !public[clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName] {
+		t.Fatalf("method %s is not public for backend-token-only calls", clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName)
 	}
 }
 

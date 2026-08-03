@@ -64,6 +64,12 @@ service ClusterBackendService {
   // diagnostics from a peer. The payload is a daemon-internal JSON-encoded
   // LocalGraphStats envelope produced by the graph subsystem.
   rpc GetLocalGraphConsistency(GetLocalGraphConsistencyRequest) returns (GetLocalGraphConsistencyResponse);
+
+  // CreateLocalBackupArchive asks a peer to quiesce locally, wait for supplied
+  // raft barriers, and create a local daemon data-directory archive for one
+  // cluster backup set. The archive is written to the peer's configured or
+  // requested backup destination and remains a node-local artifact.
+  rpc CreateLocalBackupArchive(CreateLocalBackupArchiveRequest) returns (CreateLocalBackupArchiveResponse);
 }
 
 // ClusterProtocolVersion identifies the backend protocol shape used by a node.
@@ -348,6 +354,43 @@ message GetLocalGraphConsistencyResponse {
   string node_name = 4;
   uint64 raft_node_id = 5;
   bytes payload = 6;
+}
+
+message BackupRaftBarrier {
+  string group_id = 1;
+  uint64 index = 2;
+}
+
+message CreateLocalBackupArchiveRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  uint64 requester_node_id = 3;
+  string backup_set_id = 4;
+  string reason = 5;
+  string pod_name = 6;
+  string node_id = 7;
+  uint64 raft_node_id = 8;
+  int32 ordinal = 9;
+  string output_dir = 10;
+  string archive_format = 11;
+  string utc_timestamp = 12;
+  repeated BackupRaftBarrier barriers = 13;
+}
+
+message CreateLocalBackupArchiveResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string pod_name = 3;
+  string node_id = 4;
+  uint64 raft_node_id = 5;
+  int32 ordinal = 6;
+  string archive_name = 7;
+  string archive_uri = 8;
+  string manifest_name = 9;
+  string manifest_uri = 10;
+  int64 size_bytes = 11;
+  string checksum_sha256 = 12;
+  map<string, uint64> applied_indexes = 13;
 }
 
 message ClusterMember {

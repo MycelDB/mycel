@@ -342,6 +342,17 @@ make test-phase-g
 
 ### Phase 4 — Cluster-wide quiesce epoch
 
+Status: complete for backend/local archive execution. Coordinator fan-out and
+public operator entrypoints are in later phases.
+
+Implemented files:
+
+```text
+internal/backup/service/cluster_execution.go
+internal/backup/service/module.go
+internal/clustering/backend/service_backup.go
+```
+
 Extend quiesce handling so a cluster backup can create one raft-recorded quiesce
 epoch across all nodes.
 
@@ -367,11 +378,22 @@ Acceptance criteria:
 Validation:
 
 ```sh
-go test ./internal/daemon/quiesce ./internal/daemon/runtime ./internal/backup/service
+go test ./internal/runtime/quiesce ./internal/daemon/runtime ./internal/backup/service
 make test-phase-f
 ```
 
 ### Phase 5 — Raft backup barrier
+
+Status: complete for local barrier collection/wait helpers and backend archive
+request enforcement. Coordinator fan-out and failure-state wiring are in Phase 7.
+
+Implemented files:
+
+```text
+internal/backup/service/cluster_execution.go
+internal/backup/service/cluster_backup.go
+internal/backup/cluster/manifest.go
+```
 
 After quiesce, record target raft indexes and wait until every expected node has
 applied the required barrier.
@@ -398,6 +420,19 @@ make test-phase-f
 ```
 
 ### Phase 6 — Backend RPC for local archive creation
+
+Status: complete for the internal backend RPC/client/provider surface and local
+archive creation implementation.
+
+Implemented files:
+
+```text
+internal/clustering/proto/mycel/cluster/v1/backend.proto
+internal/clustering/backend/service_backup.go
+internal/clustering/backend/client_backup.go
+internal/backup/service/cluster_execution.go
+internal/backup/manager.go
+```
 
 Add an internal/backend RPC or equivalent peer call that asks each node to create
 its local archive for a backup set.
