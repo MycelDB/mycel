@@ -72,6 +72,35 @@ type captureClusterBackupProvider struct {
 	result CreateLocalBackupArchiveResult
 }
 
+func (p *captureClusterBackupProvider) CheckLocalClusterBackupReadiness(ctx context.Context, in CreateLocalBackupArchiveInput) (map[string]uint64, map[string]uint64, error) {
+	p.input = in
+	return map[string]uint64{"system": 1}, map[string]uint64{"system": 1}, nil
+}
+
+func (p *captureClusterBackupProvider) AcquireLocalClusterBackupQuiesce(ctx context.Context, in CreateLocalBackupArchiveInput) error {
+	_ = ctx
+	p.input = in
+	return nil
+}
+
+func (p *captureClusterBackupProvider) ReleaseLocalClusterBackupQuiesce(ctx context.Context, in CreateLocalBackupArchiveInput) error {
+	_ = ctx
+	p.input = in
+	return nil
+}
+
+func (p *captureClusterBackupProvider) AcquireLocalRaftBackupFreeze(ctx context.Context, in CreateLocalBackupArchiveInput) (BackupRaftFreeze, error) {
+	_ = ctx
+	p.input = in
+	return BackupRaftFreeze{LeaseID: "lease-1", AcquiredAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute), Groups: map[string]BackupRaftFreezeGroup{"system": {GroupID: "system", BarrierIndex: 1, AppliedIndex: 1}}}, nil
+}
+
+func (p *captureClusterBackupProvider) ReleaseLocalRaftBackupFreeze(ctx context.Context, in CreateLocalBackupArchiveInput) error {
+	_ = ctx
+	p.input = in
+	return nil
+}
+
 func (p *captureClusterBackupProvider) CreateLocalClusterBackupArchive(ctx context.Context, in CreateLocalBackupArchiveInput) (CreateLocalBackupArchiveResult, error) {
 	_ = ctx
 	p.input = in

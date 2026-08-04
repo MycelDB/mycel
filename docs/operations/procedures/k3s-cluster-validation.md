@@ -18,10 +18,11 @@ Run the full-system backup/restore K3s gate with:
 make test-k3s-system-backup-restore
 ```
 
-This gate creates graph/blob data, captures a daemon system backup archive from
-each pod, wipes the namespace including PVCs, restores each ordinal's archive
-into fresh PVCs, restarts the StatefulSet, and verifies the restored graph/blob
-data through every pod.
+This release-gate validation creates graph/blob data, runs one coordinated
+cluster system backup, requires raft freeze/checkpoint evidence in
+`backup-set.json`, wipes the namespace including PVCs, restores each ordinal's
+archive into fresh PVCs, restarts the StatefulSet, and verifies the restored
+cluster health plus graph/blob data through every pod.
 
 See [Raft cluster test matrix](raft-cluster-test-matrix.md) for the broader gate
 sequence.

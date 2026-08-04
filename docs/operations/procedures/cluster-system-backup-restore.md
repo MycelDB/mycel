@@ -2,10 +2,11 @@
 
 ## Status
 
-Target operator procedure for the coordinated cluster backup design. The current
-implemented K3s validation still triggers per-pod backups directly, but the
-production operator workflow should be one cluster backup command coordinated by
-system raft. See [Cluster system backup design](../../design/backup-restore/cluster-system-backup.md).
+Operator procedure for coordinated full-cluster backup sets and offline restore.
+The implemented backup command coordinates backup intent, quiesce, raft barriers,
+a raft freeze/checkpoint archive window, per-pod archive creation, and
+`backup-set.json` through system raft. See
+[Cluster system backup design](../../design/backup-restore/cluster-system-backup.md).
 
 ## What a cluster backup contains
 
@@ -15,7 +16,8 @@ StatefulSet it contains:
 - one `backup-set.json` file;
 - one daemon data archive per pod/PVC;
 - one per-pod daemon backup manifest per archive;
-- checksums and ordinal mapping for every archive.
+- checksums and ordinal mapping for every archive;
+- raft freeze/checkpoint evidence for every expected pod and raft barrier.
 
 Example logical layout:
 
@@ -61,6 +63,7 @@ Recommended evidence:
 
 - cluster status and health output before backup;
 - raft group status/barrier indexes;
+- raft freeze/checkpoint evidence from `backup-set.json`;
 - checksums for every archive;
 - non-sensitive fingerprints of Kubernetes Secrets;
 - application-side configuration needed by clients such as Knot PKM.
@@ -129,12 +132,17 @@ Expected coordinator behavior:
 2. check preconditions;
 3. enter cluster-wide backup quiesce;
 4. establish raft backup barriers;
-5. ask every pod to create its local archive on its mounted backup destination;
-6. validate per-pod manifests/checksums;
-7. write and commit `backup-set.json`;
-8. release quiesce.
+5. acquire TTL-bound raft freeze/checkpoint leases on every expected pod;
+6. while freezes are held, flush local raft storage and ask every pod to create
+   its local archive on its mounted backup destination;
+7. release all raft freeze leases;
+8. only after raft is unfrozen, record node results through system raft;
+9. validate per-pod manifests/checksums;
+10. write `backup-set.json` and commit successful completion;
+11. release quiesce.
 
-No partial backup set should be reported as successful.
+No partial backup set should be reported as successful. The coordinator must not
+write system raft records while the raft freeze is held.
 
 ### 4. Copy or retain the backup set
 
@@ -167,6 +175,8 @@ Validation should reject:
 - duplicate ordinal/pod entries;
 - checksum mismatches;
 - archive filename pod names that do not match manifest ordinals;
+- missing or inconsistent raft freeze/checkpoint evidence when raft barriers are
+  present;
 - incomplete/degraded backup sets.
 
 ## Restore procedure
@@ -185,6 +195,11 @@ Prepare a target cluster with the same intended StatefulSet shape:
 - same `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` if encrypted user-store data needs
   it;
 - compatible backend auth/TLS configuration.
+
+The current same-cluster restore mechanism restores raw raft metadata/storage
+from each ordinal archive. That is why the source backup must include coherent
+raft freeze evidence and why archives must be restored to the same ordinal
+mapping recorded in `backup-set.json`.
 
 ### 2. Stop the target StatefulSet
 
@@ -285,7 +300,9 @@ Then validate application data:
 - blob payloads download and match expected checksums/content;
 - application services such as Knot PKM can connect with their restored config.
 
-The destructive local validation target is:
+The destructive local validation target uses the coordinated cluster backup
+command, requires raft freeze evidence in `backup-set.json`, and then restores
+each pod archive to its matching ordinal PVC:
 
 ```sh
 make test-k3s-system-backup-restore
@@ -299,3 +316,15 @@ make test-k3s-system-backup-restore
 - Do not reuse old divergent PVCs as restore targets.
 - Do not store secret values in the backup-set manifest.
 - Keep original backup artifacts immutable after validation.
+- Raft freeze leases are TTL-bound and self-expiring. If the coordinator dies or
+  loses connectivity while freezes are held, pods release local raft mutation
+  locks when the lease expires; operators should treat that backup set as failed
+  unless a successful `backup-set.json` exists and validates.
+- If release RPCs fail, wait for TTL expiry before retrying a cluster backup or
+  declaring the cluster safe for another maintenance operation.
+- Raw raft metadata/storage restore is the current same-cluster offline restore
+  mechanism. A future subsystem-snapshot plus system-raft bootstrap format may
+  supersede raw raft-log restore, but it is not automatic today.
+- The restore workflow does not choose an authoritative node or repair divergent
+  PVCs. Operators must restore the complete validated backup set into fresh
+  ordinal-matched PVCs.

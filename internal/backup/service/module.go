@@ -43,7 +43,12 @@ type Module struct {
 	dataDir               string
 	localIdentity         runtime.LocalRouteIdentity
 	activeClusterBackupID string
-	clusterBackups        map[string]clusterBackupRun
+	clusterBackups          map[string]clusterBackupRun
+	clusterBackupLeases     map[string]*quiesce.CompositeLease
+	clusterBackupFreeze     map[string]*clusterBackupFreezeLease
+	clusterBackendClient    backendClient
+	clusterNodeAddrs      []string
+	clusterLocalRaftNode  consensus.NodeID
 }
 
 func NewModule(config ...Config) *Module {

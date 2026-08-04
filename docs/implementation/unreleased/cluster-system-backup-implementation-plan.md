@@ -2,15 +2,15 @@
 
 ## Status
 
-Proposed. This plan implements the coordinated full-cluster backup design in
+Complete for the initial coordinated full-cluster backup implementation. This
+plan implements the coordinated full-cluster backup design in
 [Cluster system backup](../../design/backup-restore/cluster-system-backup.md)
 and the target operator workflow in
 [Cluster system backup and restore](../../operations/procedures/cluster-system-backup-restore.md).
 
-The current implementation has local daemon backup archives and a destructive
-K3s validation that manually triggers one backup per pod. This plan replaces the
-manual orchestration with a system-raft-backed cluster backup coordinator and a
-backup-set manifest.
+The implementation replaces manual per-pod orchestration with a
+system-raft-backed cluster backup coordinator, a backup-set manifest, and a
+raft freeze/checkpoint archive window.
 
 ## Goals
 
@@ -474,6 +474,16 @@ go test ./internal/clustering/backend ./internal/backup/...
 
 ### Phase 7 — Coordinator execution and backup-set manifest write
 
+Status: complete for the initial daemon coordinator.
+
+Implemented files:
+
+```text
+internal/backup/service/cluster_coordinator.go
+internal/backup/service/cluster_backup.go
+internal/backup/cluster/manifest.go
+```
+
 Implement coordinator orchestration:
 
 1. commit request;
@@ -509,6 +519,16 @@ make test-phase-g
 
 ### Phase 8 — Admin API and CLI
 
+Status: complete for the initial AdminBackupService RPCs and CLI commands.
+
+Implemented files:
+
+```text
+mycel-api/api/proto/mycel/admin/v1/backup.proto
+internal/daemon/api/admin/backup_service.go
+internal/cli/cmd/backup.go
+```
+
 Add operator-facing command support.
 
 CLI commands:
@@ -535,6 +555,14 @@ make docs-check
 ```
 
 ### Phase 9 — K3s destructive validation update
+
+Status: complete for the script path; destructive execution remains operator-run.
+
+Implemented file:
+
+```text
+scripts/testK3sSystemBackupRestore.sh
+```
 
 Update `scripts/testK3sSystemBackupRestore.sh` to use one coordinated cluster
 backup command instead of invoking local backup on each pod.
@@ -567,6 +595,8 @@ make test-k3s-system-backup-restore
 
 ### Phase 10 — Documentation and operational polish
 
+Status: complete for command/procedure updates in this tranche.
+
 Update:
 
 - [Cluster system backup design](../../design/backup-restore/cluster-system-backup.md)
@@ -590,6 +620,9 @@ git diff --check
 - The whole cluster is quiesced before filesystem archive creation.
 - Raft barriers are recorded and all expected nodes reach them before archive
   creation.
+- Raft freeze/checkpoint leases are acquired before local archive creation,
+  recorded in `backup-set.json`, and released before node results or terminal
+  state are committed through system raft.
 - Backup archive filenames include UTC date and pod name.
 - `backup-set.json` records pod/ordinal/archive/checksum mapping.
 - Restore validation rejects missing, duplicated, mismatched, or incomplete
@@ -618,6 +651,7 @@ git diff --check
 | --- | --- |
 | Cluster stays quiesced after failure | Commit terminal failed/aborted state and always release quiesce in deferred cleanup. Add failure-path tests. |
 | Backup set spans inconsistent raft indexes | Establish raft barriers after quiesce and require every expected node to apply them. |
+| Raw raft storage mutates while archives are created | Acquire TTL-bound raft freeze/checkpoint leases, flush local raft storage, archive while frozen, and reject restore-mode manifests without freeze evidence. |
 | One pod writes archive to the wrong destination | Validate backup destination per pod and record artifact URI/checksum in manifest. |
 | Operator restores archives to wrong ordinals | Include pod name in filenames and validate ordinal mapping before restore. |
 | Partial backup mistaken for complete | No degraded mode; `complete=true` only after all expected node results validate. |

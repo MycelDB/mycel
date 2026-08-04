@@ -6,4 +6,5 @@ before treating any plan here as authoritative current behavior.
 
 ## Backup and restore
 
-- [Cluster system backup implementation plan](cluster-system-backup-implementation-plan.md)
+- [Cluster system backup implementation plan](cluster-system-backup-implementation-plan.md) — complete for the initial coordinated backup set path.
+- [Cluster system backup raft freeze implementation plan](cluster-system-backup-raft-freeze-implementation-plan.md) — complete through RF6 for raft-storage-safe archive capture and release-gate docs.

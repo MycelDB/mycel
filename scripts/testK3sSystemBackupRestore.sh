@@ -15,7 +15,7 @@ DAEMON_ADDR="${MYCELD_DAEMON_ADDR:-127.0.0.1:9091}"
 PODS_CSV="${MYCEL_K3S_PODS:-myceld-0,myceld-1,myceld-2}"
 BACKUP_DIR="${MYCEL_K3S_SYSTEM_BACKUP_DIR:-/tmp/mycel-system-backups}"
 WAIT_TIMEOUT="${MYCEL_K3S_VALIDATE_WAIT_TIMEOUT:-5m}"
-CLI_TIMEOUT_SECONDS="${MYCEL_K3S_CLI_TIMEOUT:-30}"
+CLI_TIMEOUT_SECONDS="${MYCEL_K3S_CLI_TIMEOUT:-300}"
 VALIDATION_TIMEOUT_SECONDS="${MYCEL_K3S_SYSTEM_BACKUP_RESTORE_TIMEOUT:-240}"
 VALIDATION_INTERVAL_SECONDS="${MYCEL_K3S_SYSTEM_BACKUP_RESTORE_INTERVAL:-4}"
 USER_STORE_KEY_B64="${MYCELD_USER_STORE_ENCRYPTION_KEY_B64:-$(openssl rand -base64 32)}"
@@ -372,24 +372,39 @@ validate_fixture() {
 }
 
 capture_backups() {
-  local pod raw archive checksum dest manifest
+  local pod raw
   for pod in "${PODS[@]}"; do
     pod="$(trim "$pod")"
     [[ -n "$pod" ]] || continue
-    echo "Capturing system backup from $pod" >&2
     kubectl -n "$NAMESPACE" exec "$pod" -- sh -c "rm -rf '$BACKUP_DIR' && mkdir -p '$BACKUP_DIR'"
     admin_cli "$pod" admin backup policy set --disabled --dir "$BACKUP_DIR" --archive-format tar --keep 5 --interval-hours 24 --schedule interval --quiesce-timeout 30s --backup-timeout 5m --retry-after 1m --history-limit 10 >/dev/null
-    raw="$(admin_cli "$pod" admin backup trigger --reason "k3s system backup restore test")"
-    archive="$(printf '%s\n' "$raw" | json_get 'backup.archive_name')"
-    checksum="$(printf '%s\n' "$raw" | json_get 'backup.checksum_sha256')"
+  done
+  echo "Capturing coordinated cluster system backup" >&2
+  raw="$(admin_cli "${PODS[0]}" admin backup cluster trigger --reason "k3s system backup restore test" --output-dir "$BACKUP_DIR" --archive-format tar)"
+  RAW_JSON="$raw" BACKUP_DIR="$BACKUP_DIR" TMP_BACKUPS="$TMP_DIR/backups" NAMESPACE="$NAMESPACE" python3 <<'PY' > "$TMP_DIR/backup_nodes.tsv"
+import json, os
+raw = json.loads(os.environ["RAW_JSON"])
+backup_dir = os.environ["BACKUP_DIR"]
+for node in raw["status"].get("nodes", []):
+    print("\t".join([node["pod_name"], node["archive_name"], node["manifest_name"], node["checksum_sha256"]]))
+PY
+  local archive checksum dest manifest manifest_name
+  while IFS=$'\t' read -r pod archive manifest_name checksum; do
+    [[ -n "$pod" && -n "$archive" ]] || continue
     mkdir -p "$TMP_DIR/backups/$pod"
     dest="$TMP_DIR/backups/$pod/$archive"
-    manifest="$TMP_DIR/backups/$pod/${archive%.tar}.manifest.json"
+    manifest="$TMP_DIR/backups/$pod/$manifest_name"
     kubectl -n "$NAMESPACE" cp "$pod:$BACKUP_DIR/$archive" "$dest"
-    kubectl -n "$NAMESPACE" cp "$pod:$BACKUP_DIR/${archive%.tar}.manifest.json" "$manifest"
+    kubectl -n "$NAMESPACE" cp "$pod:$BACKUP_DIR/$manifest_name" "$manifest"
+    if [[ "$pod" != "${PODS[0]}" ]]; then
+      kubectl -n "$NAMESPACE" cp "$dest" "${PODS[0]}:$BACKUP_DIR/$archive"
+      kubectl -n "$NAMESPACE" cp "$manifest" "${PODS[0]}:$BACKUP_DIR/$manifest_name"
+    fi
     verify_sha256 "$dest" "$checksum"
     printf '%s\t%s\n' "$pod" "$dest" >> "$TMP_DIR/backups.tsv"
-  done
+  done < "$TMP_DIR/backup_nodes.tsv"
+  kubectl -n "$NAMESPACE" cp "${PODS[0]}:$BACKUP_DIR/backup-set.json" "$TMP_DIR/backups/backup-set.json"
+  admin_cli "${PODS[0]}" admin backup cluster validate --backup-set "$BACKUP_DIR" >/dev/null
 }
 
 create_restore_pvcs() {

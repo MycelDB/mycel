@@ -74,15 +74,28 @@ func TestDefaultQuiesceExemptsAdminAuthRefresh(t *testing.T) {
 
 func TestDefaultQuiesceExemptsClusterBackupArchiveRPC(t *testing.T) {
 	exempt := defaultQuiesceExemptMethods()
-	if !exempt[clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName] {
-		t.Fatalf("method %s is not quiesce-exempt", clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName)
+	for _, method := range []string{clusterpb.ClusterBackendService_CheckLocalBackupReadiness_FullMethodName, clusterpb.ClusterBackendService_AcquireLocalBackupQuiesce_FullMethodName, clusterpb.ClusterBackendService_ReleaseLocalBackupQuiesce_FullMethodName, clusterpb.ClusterBackendService_AcquireLocalRaftBackupFreeze_FullMethodName, clusterpb.ClusterBackendService_ReleaseLocalRaftBackupFreeze_FullMethodName, clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName} {
+		if !exempt[method] {
+			t.Fatalf("method %s is not quiesce-exempt", method)
+		}
+	}
+}
+
+func TestDefaultQuiesceExemptsAdminClusterBackupRPCs(t *testing.T) {
+	exempt := defaultQuiesceExemptMethods()
+	for _, method := range []string{adminv1.AdminBackupService_TriggerClusterBackup_FullMethodName, adminv1.AdminBackupService_GetClusterBackupStatus_FullMethodName, adminv1.AdminBackupService_ListClusterBackups_FullMethodName, adminv1.AdminBackupService_ValidateClusterBackupSet_FullMethodName} {
+		if !exempt[method] {
+			t.Fatalf("method %s is not quiesce-exempt", method)
+		}
 	}
 }
 
 func TestDefaultPublicMethodsAllowsClusterBackupArchiveRPC(t *testing.T) {
 	public := defaultPublicMethods()
-	if !public[clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName] {
-		t.Fatalf("method %s is not public for backend-token-only calls", clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName)
+	for _, method := range []string{clusterpb.ClusterBackendService_CheckLocalBackupReadiness_FullMethodName, clusterpb.ClusterBackendService_AcquireLocalBackupQuiesce_FullMethodName, clusterpb.ClusterBackendService_ReleaseLocalBackupQuiesce_FullMethodName, clusterpb.ClusterBackendService_AcquireLocalRaftBackupFreeze_FullMethodName, clusterpb.ClusterBackendService_ReleaseLocalRaftBackupFreeze_FullMethodName, clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName} {
+		if !public[method] {
+			t.Fatalf("method %s is not public for backend-token-only calls", method)
+		}
 	}
 }
 

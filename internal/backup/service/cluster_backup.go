@@ -266,6 +266,7 @@ func (m *Module) applyClusterBackupComplete(ctx context.Context, rec wal.Record)
 	if m.activeClusterBackupID == backupSetID {
 		m.activeClusterBackupID = ""
 	}
+	m.releaseClusterBackupLeaseLocked(backupSetID)
 	return nil
 }
 
@@ -303,7 +304,16 @@ func (m *Module) applyClusterBackupFailure(ctx context.Context, rec wal.Record, 
 	if m.activeClusterBackupID == backupSetID {
 		m.activeClusterBackupID = ""
 	}
+	m.releaseClusterBackupLeaseLocked(backupSetID)
 	return nil
+}
+
+func (m *Module) releaseClusterBackupLeaseLocked(backupSetID string) {
+	lease := m.clusterBackupLeases[backupSetID]
+	delete(m.clusterBackupLeases, backupSetID)
+	if lease != nil {
+		go func() { _ = lease.Release(context.Background()) }()
+	}
 }
 
 func validateNodeArtifactAgainstExpected(run clusterBackupRun, artifact clusterbackup.NodeArtifact) error {
@@ -351,6 +361,15 @@ func validateCompletionManifest(run clusterBackupRun, manifest clusterbackup.Man
 		}
 		if result.ArchiveName != node.ArchiveName || result.ChecksumSHA256 != node.ChecksumSHA256 || result.SizeBytes != node.SizeBytes {
 			return fmt.Errorf("manifest node %s does not match recorded node result", node.PodName)
+		}
+		for groupID, barrier := range run.Barriers {
+			applied, ok := node.AppliedIndexes[groupID]
+			if !ok {
+				return fmt.Errorf("manifest node %s missing applied index for raft barrier %s", node.PodName, groupID)
+			}
+			if applied < barrier {
+				return fmt.Errorf("manifest node %s applied index for raft barrier %s is %d, want at least %d", node.PodName, groupID, applied, barrier)
+			}
 		}
 	}
 	return nil
@@ -411,6 +430,7 @@ func cloneClusterBackupRuns(in map[string]clusterBackupRun) map[string]clusterBa
 			v.NodeResults = make(map[string]clusterbackup.NodeArtifact, len(v.NodeResults))
 			for nk, nv := range in[k].NodeResults {
 				nv.AppliedIndexes = cloneStringUint64Map(nv.AppliedIndexes)
+				nv.RaftFreeze.Groups = cloneRaftFreezeGroups(nv.RaftFreeze.Groups)
 				v.NodeResults[nk] = nv
 			}
 		}
@@ -420,6 +440,7 @@ func cloneClusterBackupRuns(in map[string]clusterBackupRun) map[string]clusterBa
 			manifest.Nodes = append([]clusterbackup.NodeArtifact(nil), manifest.Nodes...)
 			for i := range manifest.Nodes {
 				manifest.Nodes[i].AppliedIndexes = cloneStringUint64Map(manifest.Nodes[i].AppliedIndexes)
+				manifest.Nodes[i].RaftFreeze.Groups = cloneRaftFreezeGroups(manifest.Nodes[i].RaftFreeze.Groups)
 			}
 			v.Manifest = &manifest
 		}
@@ -427,6 +448,17 @@ func cloneClusterBackupRuns(in map[string]clusterBackupRun) map[string]clusterBa
 			failure := *v.Failure
 			v.Failure = &failure
 		}
+		out[k] = v
+	}
+	return out
+}
+
+func cloneRaftFreezeGroups(in map[string]clusterbackup.RaftFreezeGroup) map[string]clusterbackup.RaftFreezeGroup {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]clusterbackup.RaftFreezeGroup, len(in))
+	for k, v := range in {
 		out[k] = v
 	}
 	return out

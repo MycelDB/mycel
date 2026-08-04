@@ -31,6 +31,10 @@ make test-k3s-system-backup-restore
 
 ### Full release gate
 
+The destructive K3s system backup/restore test is included in the release gate
+because the coordinated backup path now records raft freeze/checkpoint evidence
+and has passed the RF5 destructive restore proof.
+
 ```sh
 make test-cluster-release-gate
 ```
@@ -61,8 +65,8 @@ This expands to:
 | `make test-compose-cluster` | Destructive Docker Compose validation | Fresh bootstrap, shared cluster identity, health/readiness, real pod-to-pod graph write/read/query/consistency validation, restart data-plane stability, and persisted file-source identity validation. |
 | `make test-compose-user-backup-restore` | Destructive Docker Compose backup/restore validation | Creates three user-scoped fixtures, exports and validates per-user backups, wipes/recreates the cluster, restores into a fresh cluster, and verifies spaces/domains/graph/blob payloads through every node. |
 | `make test-k3s-cluster` | Destructive K3s/k3d validation | Fresh bootstrap, shared cluster identity, real pod-to-pod graph write/read/query/consistency validation, rolling restart, and one-PVC replacement/rejoin with data-plane revalidation. |
-| `make test-k3s-system-backup-restore` | Destructive K3s/k3d system backup/restore validation | Creates graph/blob data, captures one daemon system backup archive per pod, wipes namespace/PVCs, restores each ordinal archive into fresh PVCs, restarts the StatefulSet, and verifies graph/blob payloads through every pod. |
-| `make test-cluster-release-gate` | Full pre-release cluster gate | All normal tests, Phase D/E/F/G gates, then Compose and K3s destructive validations including system backup/restore. |
+| `make test-k3s-system-backup-restore` | Destructive K3s/k3d system backup/restore validation | Creates graph/blob data, runs one coordinated cluster system backup, requires raft freeze/checkpoint evidence, wipes namespace/PVCs, restores each ordinal archive into fresh PVCs, restarts the StatefulSet, and verifies cluster health plus graph/blob payloads through every pod. |
+| `make test-cluster-release-gate` | Full pre-release cluster gate | All normal tests, Phase D/E/F/G gates, then Compose and K3s destructive validations including the raft-storage-safe system backup/restore gate. |
 | `make test-cluster-soak` | Optional long-running destructive Compose soak | Repeated identity/data-plane validation with periodic daemon restarts; supports `MYCEL_CLUSTER_SOAK_WRITES`; forced snapshot/PVC replacement flags currently fail closed until a safe admin harness exists. |
 
 ## Optional snapshot soak flags

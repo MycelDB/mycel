@@ -35,6 +35,7 @@ type Manifest struct {
 	Complete      bool                     `json:"complete"`
 	State         string                   `json:"state"`
 	Reason        string                   `json:"reason,omitempty"`
+	ManifestURI   string                   `json:"manifest_uri,omitempty"`
 	ExpectedNodes int                      `json:"expected_nodes"`
 	Image         string                   `json:"image,omitempty"`
 	Namespace     string                   `json:"namespace,omitempty"`
@@ -47,17 +48,37 @@ type Manifest struct {
 
 // NodeArtifact describes one pod/PVC archive in a backup set.
 type NodeArtifact struct {
-	PodName        string            `json:"pod_name"`
-	NodeID         string            `json:"node_id"`
-	Ordinal        int               `json:"ordinal"`
-	RaftNodeID     uint64            `json:"raft_node_id,omitempty"`
-	ArchiveName    string            `json:"archive_name"`
-	ArchiveURI     string            `json:"archive_uri,omitempty"`
-	ManifestName   string            `json:"manifest_name"`
-	ManifestURI    string            `json:"manifest_uri,omitempty"`
-	SizeBytes      int64             `json:"size_bytes"`
-	ChecksumSHA256 string            `json:"checksum_sha256"`
-	AppliedIndexes map[string]uint64 `json:"applied_indexes,omitempty"`
+	PodName        string             `json:"pod_name"`
+	NodeID         string             `json:"node_id"`
+	Ordinal        int                `json:"ordinal"`
+	RaftNodeID     uint64             `json:"raft_node_id,omitempty"`
+	ArchiveName    string             `json:"archive_name"`
+	ArchiveURI     string             `json:"archive_uri,omitempty"`
+	ManifestName   string             `json:"manifest_name"`
+	ManifestURI    string             `json:"manifest_uri,omitempty"`
+	SizeBytes      int64              `json:"size_bytes"`
+	ChecksumSHA256 string             `json:"checksum_sha256"`
+	AppliedIndexes map[string]uint64  `json:"applied_indexes,omitempty"`
+	RaftFreeze     RaftFreezeEvidence `json:"raft_freeze,omitempty"`
+}
+
+type RaftFreezeEvidence struct {
+	LeaseID    string                     `json:"lease_id,omitempty"`
+	AcquiredAt time.Time                  `json:"acquired_at,omitempty"`
+	ReleasedAt time.Time                  `json:"released_at,omitempty"`
+	ExpiresAt  time.Time                  `json:"expires_at,omitempty"`
+	Groups     map[string]RaftFreezeGroup `json:"groups,omitempty"`
+}
+
+type RaftFreezeGroup struct {
+	GroupID       string `json:"group_id,omitempty"`
+	BarrierIndex  uint64 `json:"barrier_index"`
+	AppliedIndex  uint64 `json:"applied_index"`
+	CommitIndex   uint64 `json:"commit_index,omitempty"`
+	Term          uint64 `json:"term,omitempty"`
+	LastIndex     uint64 `json:"last_index,omitempty"`
+	SnapshotIndex uint64 `json:"snapshot_index,omitempty"`
+	Leader        uint64 `json:"leader,omitempty"`
 }
 
 type ValidationMode int
@@ -234,6 +255,48 @@ func Validate(m Manifest, mode ValidationMode) error {
 		if node.ManifestURI != "" && !validArtifactURI(node.ManifestURI) {
 			problems = append(problems, prefix+": manifest_uri is invalid")
 		}
+		if mode == ValidationModeRestore && len(m.RaftBarriers) > 0 {
+			if strings.TrimSpace(node.RaftFreeze.LeaseID) == "" {
+				problems = append(problems, prefix+": raft_freeze.lease_id is required for restore")
+			}
+			if node.RaftFreeze.AcquiredAt.IsZero() {
+				problems = append(problems, prefix+": raft_freeze.acquired_at is required for restore")
+			}
+			if node.RaftFreeze.ExpiresAt.IsZero() {
+				problems = append(problems, prefix+": raft_freeze.expires_at is required for restore")
+			}
+			if !node.RaftFreeze.AcquiredAt.IsZero() && !node.RaftFreeze.ExpiresAt.IsZero() && !node.RaftFreeze.ExpiresAt.After(node.RaftFreeze.AcquiredAt) {
+				problems = append(problems, prefix+": raft_freeze.expires_at must be after acquired_at")
+			}
+			if node.RaftFreeze.ReleasedAt.IsZero() {
+				problems = append(problems, prefix+": raft_freeze.released_at is required for restore")
+			}
+			if len(node.RaftFreeze.Groups) != len(m.RaftBarriers) {
+				problems = append(problems, prefix+": raft_freeze.groups must cover all raft barriers")
+			}
+			for groupID, barrier := range m.RaftBarriers {
+				freezeGroup, ok := node.RaftFreeze.Groups[groupID]
+				if !ok {
+					problems = append(problems, prefix+": raft_freeze missing group "+groupID)
+					continue
+				}
+				if freezeGroup.GroupID != "" && freezeGroup.GroupID != groupID {
+					problems = append(problems, prefix+": raft_freeze group key does not match group_id for "+groupID)
+				}
+				if freezeGroup.BarrierIndex != barrier {
+					problems = append(problems, fmt.Sprintf("%s: raft_freeze group %s barrier_index=%d want %d", prefix, groupID, freezeGroup.BarrierIndex, barrier))
+				}
+				if freezeGroup.AppliedIndex < barrier {
+					problems = append(problems, fmt.Sprintf("%s: raft_freeze group %s applied_index=%d below barrier %d", prefix, groupID, freezeGroup.AppliedIndex, barrier))
+				}
+				if freezeGroup.CommitIndex != 0 && freezeGroup.CommitIndex < barrier {
+					problems = append(problems, fmt.Sprintf("%s: raft_freeze group %s commit_index=%d below barrier %d", prefix, groupID, freezeGroup.CommitIndex, barrier))
+				}
+				if freezeGroup.LastIndex != 0 && freezeGroup.LastIndex < barrier {
+					problems = append(problems, fmt.Sprintf("%s: raft_freeze group %s last_index=%d below barrier %d", prefix, groupID, freezeGroup.LastIndex, barrier))
+				}
+			}
+		}
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid cluster backup manifest: %s", strings.Join(problems, "; "))
@@ -245,7 +308,7 @@ func Validate(m Manifest, mode ValidationMode) error {
 // file:// URIs in the manifest. Non-file URIs are ignored because their bytes
 // are resolved by the deployment-specific storage layer.
 func ValidateArchiveFiles(ctx context.Context, m Manifest) error {
-	if err := Validate(m, ValidationModeBackupSet); err != nil {
+	if err := Validate(m, ValidationModeRestore); err != nil {
 		return err
 	}
 	for _, node := range m.Nodes {

@@ -2,12 +2,14 @@
 
 ## Status
 
-Proposed. The current daemon backup command creates a local archive for the node
-that receives the request. A production full-system cluster backup needs a
-cluster coordinator so operators can create one complete, auditable backup set
-for all StatefulSet ordinals/PVCs.
+Implemented for the initial coordinated full-system cluster backup path. The
+cluster backup command creates one complete, auditable backup set for all
+StatefulSet ordinals/PVCs and captures raw raft metadata/storage under a
+TTL-bound raft freeze/checkpoint window.
 
 Implementation plan: [Cluster system backup implementation plan](../../implementation/unreleased/cluster-system-backup-implementation-plan.md).
+
+Raft freeze/checkpoint follow-up plan: [Cluster system backup raft freeze implementation plan](../../implementation/unreleased/cluster-system-backup-raft-freeze-implementation-plan.md).
 
 ## Goals
 
@@ -16,6 +18,8 @@ Implementation plan: [Cluster system backup implementation plan](../../implement
 - Quiesce the whole cluster before local pod archives are created.
 - Use system raft to coordinate backup intent, phase transitions, barriers, and
   completion/failure state.
+- Capture raft metadata/storage from a coherent backup checkpoint rather than
+  while raft files can still mutate.
 - Produce one archive and manifest per pod/PVC, plus one backup-set manifest.
 - Make pod/ordinal restore mapping explicit and machine-readable.
 - Include UTC date and pod name in backup archive filenames.
@@ -31,7 +35,7 @@ Implementation plan: [Cluster system backup implementation plan](../../implement
 
 ## Operator command shape
 
-Proposed command:
+Command:
 
 ```sh
 mycel admin backup cluster trigger \
@@ -140,6 +144,32 @@ It should include:
       "applied_indexes": {
         "system": 123,
         "partition:<space_id>": 456
+      },
+      "raft_freeze": {
+        "lease_id": "raft-freeze-backup-set-...-myceld-0-...",
+        "acquired_at": "2026-08-03T18:35:04Z",
+        "released_at": "2026-08-03T18:35:39Z",
+        "expires_at": "2026-08-03T18:45:04Z",
+        "groups": {
+          "system": {
+            "group_id": "system",
+            "barrier_index": 123,
+            "applied_index": 123,
+            "commit_index": 123,
+            "last_index": 123,
+            "term": 4,
+            "leader": 1
+          },
+          "partition:<space_id>": {
+            "group_id": "partition:<space_id>",
+            "barrier_index": 456,
+            "applied_index": 456,
+            "commit_index": 456,
+            "last_index": 456,
+            "term": 4,
+            "leader": 1
+          }
+        }
       }
     }
   ]
@@ -230,13 +260,53 @@ archives are created.
 If any node cannot reach the barrier before timeout, the backup fails and the
 quiesce lease is released.
 
+## Raft storage freeze and checkpoint
+
+The implemented cluster backup path treats the freeze/checkpoint window as part
+of the production backup contract. The backup barrier is necessary but not
+sufficient for raw filesystem archives.
+Even after user-visible writes are quiesced, raft can continue ticking, electing,
+advancing terms, and updating implementation storage such as `hard_state.pb`,
+`entries.pb`, and `conf_state.pb`. A backup set that copies those files while
+they mutate can validate successfully as tar/checksum artifacts but restore into
+an unstable raft cluster.
+
+Cluster backup therefore needs a short raft-storage-safe archive window:
+
+1. use system raft while unfrozen to record request, precheck, quiesce, and
+   barrier state;
+2. verify every expected node has reached the barrier and that every raft group
+   has linearizable quorum evidence;
+3. acquire a local raft backup freeze lease on every expected node;
+4. while the freeze is held, stop raft storage mutation for the covered groups
+   by pausing raft ticking/network advancement or by holding a storage-level
+   backup lock, then flush/fsync the storage checkpoint;
+5. create local pod/PVC archives while the freeze is held;
+6. release all freeze leases before committing node results, manifest state, or
+   terminal success/failure through system raft.
+
+The coordinator must not perform system-raft writes while the raft freeze is
+held. Node archive results are collected in memory/RPC responses during the
+freeze window and recorded through system raft only after all freeze leases are
+released. Freeze leases must be TTL-based and self-expiring so coordinator death
+cannot leave a cluster permanently frozen.
+
+The initial freeze scope is the daemon's local raft implementation storage for
+all local raft groups. The lease is TTL-bound and self-expiring: if the
+coordinator dies, local raft mutation resumes after expiry and the incomplete
+backup run must be treated as failed. Future implementations may replace raw
+raft-log restore with subsystem snapshots plus a system-raft bootstrap manifest,
+but the current same-cluster offline restore model requires coherent raft
+metadata/storage in each ordinal archive.
+
 ## Local archive creation
 
 Each pod creates an archive of its own daemon data directory after the backup
-barrier is satisfied. Archive creation remains node-local because the data
-directory/PVC is node-local, but the archive output should be written to the
-pod's configured backup destination, typically a mounted backup volume or
-object-store gateway path outside the data PVC.
+barrier is satisfied and after its local raft freeze/checkpoint lease is active.
+Archive creation remains node-local because the data directory/PVC is node-local,
+but the archive output should be written to the pod's configured backup
+destination, typically a mounted backup volume or object-store gateway path
+outside the data PVC.
 
 Each pod returns:
 
@@ -258,12 +328,14 @@ for the active backup set.
 
 If any step fails:
 
-1. commit failed/aborted state through system raft;
-2. include the failing phase and reason;
-3. release cluster-wide quiesce;
-4. preserve any partial local archives as failed evidence if they were already
+1. release any raft freeze leases first, using best-effort cleanup and TTL
+   expiry as a safety net;
+2. commit failed/aborted state through system raft after raft is unfrozen;
+3. include the failing phase and reason;
+4. release cluster-wide quiesce;
+5. preserve any partial local archives as failed evidence if they were already
    created;
-5. do not write a successful `backup-set.json`.
+6. do not write a successful `backup-set.json`.
 
 A future cleanup command may remove failed partial archives, but cleanup should
 be explicit and auditable.
@@ -295,13 +367,15 @@ archive to the correct ordinal.
 - Archive checksums are required.
 - Backup-set validation should reject missing, duplicated, or mismatched pod
   archives.
+- Backup-set validation rejects manifests that do not include raft freeze
+  checkpoint evidence for every expected pod when raft barriers are present.
 - Restore tooling should fail if the backup-set cluster ID or ordinal mapping is
   inconsistent with the selected restore operation.
 
 ## Validation expectations
 
-The destructive K3s validation should evolve from per-pod manual trigger to a
-single coordinated command:
+The destructive K3s validation is part of the cluster release gate now that the
+coordinated backup path captures raft freeze/checkpoint evidence:
 
 ```sh
 make test-k3s-system-backup-restore
@@ -312,7 +386,8 @@ Expected validation behavior:
 1. create a three-pod cluster;
 2. create users, graph data, and blob-backed graph nodes;
 3. run one cluster backup command;
-4. verify one archive/manifest per pod plus `backup-set.json`;
+4. verify one archive/manifest per pod plus `backup-set.json`, including raft
+   freeze checkpoint evidence;
 5. wipe namespace/PVCs;
 6. restore each ordinal from the backup set;
 7. restart the StatefulSet;

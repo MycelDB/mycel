@@ -278,6 +278,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		semanticService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		backupService.EnableExperimentalRaft(rt.RaftGroups)
+		backupService.EnableClusterBackupNetworking(uint64(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		changeService.EnableExperimentalRaftMode()
 		userService.EnableExperimentalRaft(rt.RaftGroups)
 		adminService.EnableExperimentalRaft(rt.RaftGroups)
