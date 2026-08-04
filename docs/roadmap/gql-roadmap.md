@@ -167,8 +167,8 @@ For Knot PKM, edge creation, single-hop edge matching, multi-hop path matching, 
 
 ## Related Implementation Plans
 
-- `../implementation/gql-where-implementation-plan.md`
-- `../implementation/gql-property-return-projection-implementation-plan.md`
-- `../implementation/gql-edge-implementation-plan.md`
-- `../implementation/gql-relationship-create-implementation-plan.md`
-- `../implementation/gql-very-high-feature-implementation-plan.md`
+- `../implementation/v0.4/gql-where-implementation-plan.md`
+- `../implementation/v0.4/gql-property-return-projection-implementation-plan.md`
+- `../implementation/v0.4/gql-edge-implementation-plan.md`
+- `../implementation/v0.4/gql-relationship-create-implementation-plan.md`
+- `../implementation/v0.4/gql-very-high-feature-implementation-plan.md`

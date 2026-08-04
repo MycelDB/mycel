@@ -2,7 +2,7 @@
 
 Graph automations are domain-scoped, asynchronous rules that react to committed graph changes. V1 supports constrained node automations: `node.created` / `node.updated` triggers, label prefilters, a `changed`-anchored GQL condition, text rendering from the changed node, and a single changed-node field update action.
 
-See the design document at `docs/design/graph-automations.md` and the implementation plan at `docs/implementation/graph-automations-v1-implementation-plan.md`.
+See the design document at `docs/design/graph-automations.md` and the implementation plan at `docs/implementation/v0.4/graph-automations-v1-implementation-plan.md`.
 
 ## V1 definition format
 

@@ -14,6 +14,9 @@ Use:
 
 | Bucket | Contents |
 | --- | --- |
+| [v0.2](v0.2/README.md) | Daemon foundation, semantic embedding generation, package-boundary, quiesce, and node-local backup plans. |
+| [v0.3](v0.3/README.md) | Distributed runtime, raft clustering, service lifecycle, subsystem package, and WAL plans. |
+| [v0.4](v0.4/README.md) | Schema, GQL, graph automation, GWL schema management, and node content metadata plans. |
 | [v0.5](v0.5/README.md) | Raft reliability, read consistency, divergence diagnostics, subsystem snapshots, and clustering hardening plans. |
 | [v0.6](v0.6/README.md) | User-scoped backup/restore tooling and documentation reorganization work. |
-| [unreleased](unreleased/README.md) | Plans not yet assigned to a release or retained for future cleanup. |
+| [unreleased](unreleased/README.md) | Plans not yet assigned to a tagged release or retained for future cleanup. |

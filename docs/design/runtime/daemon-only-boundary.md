@@ -18,9 +18,9 @@ This module supports binaries, not an embedded application library:
 - `cmd/myceld`: the daemon process and sole owner of the data directory.
 - `cmd/mycel`: operator/user CLI that connects to `myceld` over gRPC.
 
-The former public `domain/**`, `query`, and `store/**` implementation packages have moved under `internal/`; see [Internalize Mycel Implementation Packages Plan](../../implementation/unreleased/internalize-implementation-packages-plan.md). Further internal namespace cleanup is tracked in [Internal Bounded-Context Package Plan](../../implementation/unreleased/internal-bounded-context-package-plan.md).
+The former public `domain/**`, `query`, and `store/**` implementation packages have moved under `internal/`; see [Internalize Mycel Implementation Packages Plan](../../implementation/v0.2/internalize-implementation-packages-plan.md). Further internal namespace cleanup is tracked in [Internal Bounded-Context Package Plan](../../implementation/v0.2/internal-bounded-context-package-plan.md).
 
-Daemon service lifecycle/capability interfaces are specified in [Daemon Service Interfaces Design](daemon-service-interfaces.md), with phased delivery tracked in [Daemon Service Interfaces Implementation Plan](../../implementation/unreleased/daemon-service-interfaces-implementation-plan.md). Daemon-owned backup and service quiescing are specified in [Quiesce and Backup Design](../backup-restore/quiesce-and-backup.md), with phased delivery tracked in [Quiesce and Backup Implementation Plan](../../implementation/unreleased/quiesce-and-backup-implementation-plan.md).
+Daemon service lifecycle/capability interfaces are specified in [Daemon Service Interfaces Design](daemon-service-interfaces.md), with phased delivery tracked in [Daemon Service Interfaces Implementation Plan](../../implementation/v0.3/daemon-service-interfaces-implementation-plan.md). Daemon-owned backup and service quiescing are specified in [Quiesce and Backup Design](../backup-restore/quiesce-and-backup.md), with phased delivery tracked in [Quiesce and Backup Implementation Plan](../../implementation/v0.2/quiesce-and-backup-implementation-plan.md).
 
 ## Go package boundary
 
