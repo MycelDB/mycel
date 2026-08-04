@@ -174,6 +174,13 @@ func (m *Manager) SetBackendBlobPayloadProvider(provider backend.BlobPayloadProv
 	m.backend.WithBlobPayloadProvider(provider)
 }
 
+func (m *Manager) SetBackendClusterBackupProvider(provider backend.ClusterBackupProvider) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithClusterBackupProvider(provider)
+}
+
 func (m *Manager) SetBackendClientRequestForwarder(handler backend.ForwardedClientRequestHandler) {
 	if m == nil || m.backend == nil {
 		return

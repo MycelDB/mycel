@@ -111,6 +111,41 @@ func TestManagerDeleteBackupRejectsEscapingManifestArchiveName(t *testing.T) {
 	}
 }
 
+func TestManagerCreateLocalArchiveUsesCustomNamesAndDestination(t *testing.T) {
+	dataDir := fixtureDataDir(t)
+	backupDir := t.TempDir()
+	customDir := t.TempDir()
+	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir, ArchiveFormat: ArchiveFormatZip, IncludeLogs: false}, Version: "test-version", Now: fixedClock()})
+	res, err := mgr.CreateLocalArchive(context.Background(), LocalArchiveInput{BackupID: "mycel-system-20260803T183500Z-myceld-0-backup-set-1", ArchiveName: "mycel-system-20260803T183500Z-myceld-0-backup-set-1.tar.zst", BackupDir: customDir, ArchiveFormat: string(ArchiveFormatTarZst), Source: "cluster-backup", Reason: "test", CreatedAt: fixedClock()()})
+	if err != nil {
+		t.Fatalf("CreateLocalArchive() error = %v", err)
+	}
+	if filepath.Base(res.ArchivePath) != "mycel-system-20260803T183500Z-myceld-0-backup-set-1.tar.zst" {
+		t.Fatalf("archive path=%s", res.ArchivePath)
+	}
+	archiveDir, err := os.Stat(filepath.Dir(res.ArchivePath))
+	if err != nil {
+		t.Fatalf("stat archive dir: %v", err)
+	}
+	customDirInfo, err := os.Stat(customDir)
+	if err != nil {
+		t.Fatalf("stat custom dir: %v", err)
+	}
+	if !os.SameFile(archiveDir, customDirInfo) {
+		t.Fatalf("archive path=%s, want dir %s", res.ArchivePath, customDir)
+	}
+	if filepath.Base(res.ManifestPath) != "mycel-system-20260803T183500Z-myceld-0-backup-set-1.manifest.json" {
+		t.Fatalf("manifest path=%s", res.ManifestPath)
+	}
+	manifest := readManifest(t, res.ManifestPath)
+	if manifest.BackupID != res.BackupID || manifest.ArchiveName != filepath.Base(res.ArchivePath) || manifest.Policy.ArchiveFormat != string(ArchiveFormatTarZst) {
+		t.Fatalf("unexpected manifest: %#v", manifest)
+	}
+	if _, err := os.Stat(filepath.Join(backupDir, filepath.Base(res.ArchivePath))); !os.IsNotExist(err) {
+		t.Fatalf("archive unexpectedly written to policy backup dir: %v", err)
+	}
+}
+
 func TestManagerCreatesArchiveManifestAndChecksum(t *testing.T) {
 	dataDir := fixtureDataDir(t)
 	backupDir := t.TempDir()

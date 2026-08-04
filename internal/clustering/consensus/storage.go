@@ -167,6 +167,34 @@ func (s *PersistentStorage) SetConfState(cs raftpb.ConfState) error {
 	return writeProtoAtomic(filepath.Join(s.dir, "conf_state.pb"), &s.confState)
 }
 
+func (s *PersistentStorage) Flush() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, name := range []string{"hard_state.pb", "entries.pb", "conf_state.pb", "snapshot.pb"} {
+		path := filepath.Join(s.dir, name)
+		f, err := os.Open(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	dir, err := os.Open(s.dir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
 func (s *PersistentStorage) load() error {
 	if data, err := os.ReadFile(filepath.Join(s.dir, "conf_state.pb")); err == nil && len(data) > 0 {
 		if err := s.confState.Unmarshal(data); err != nil {

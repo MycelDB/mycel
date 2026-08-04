@@ -8,12 +8,14 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 )
 
-const backupRaftSnapshotVersion = 1
+const backupRaftSnapshotVersion = 2
 
 type backupRaftSnapshot struct {
-	Version int               `json:"version"`
-	Policy  backupcore.Policy `json:"policy"`
-	Runtime backupRuntimeNote `json:"runtime"`
+	Version               int                         `json:"version"`
+	Policy                backupcore.Policy           `json:"policy"`
+	Runtime               backupRuntimeNote           `json:"runtime"`
+	ActiveClusterBackupID string                      `json:"active_cluster_backup_id,omitempty"`
+	ClusterBackups        map[string]clusterBackupRun `json:"cluster_backups,omitempty"`
 }
 
 type backupRuntimeNote struct {
@@ -26,7 +28,12 @@ func (s RaftStateMachine) Snapshot() ([]byte, error) {
 	if s.Module != nil && s.Module.manager != nil {
 		policy = s.Module.Policy()
 	}
-	return json.Marshal(backupRaftSnapshot{Version: backupRaftSnapshotVersion, Policy: policy, Runtime: backupRuntimeNote{RunningExecutions: "excluded_local_only", CompletedArchives: "local_artifacts_not_authoritative"}})
+	activeID := ""
+	clusterBackups := map[string]clusterBackupRun(nil)
+	if s.Module != nil {
+		activeID, clusterBackups = s.Module.clusterBackupSnapshot()
+	}
+	return json.Marshal(backupRaftSnapshot{Version: backupRaftSnapshotVersion, Policy: policy, Runtime: backupRuntimeNote{RunningExecutions: "excluded_local_only", CompletedArchives: "local_artifacts_not_authoritative"}, ActiveClusterBackupID: activeID, ClusterBackups: clusterBackups})
 }
 
 func (s RaftStateMachine) RestoreSnapshot(data []byte) error {
@@ -37,7 +44,7 @@ func (s RaftStateMachine) RestoreSnapshot(data []byte) error {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return err
 	}
-	if snap.Version != backupRaftSnapshotVersion {
+	if snap.Version != 1 && snap.Version != backupRaftSnapshotVersion {
 		return fmt.Errorf("unsupported backup raft snapshot version %d", snap.Version)
 	}
 	if s.Module.manager == nil {
@@ -51,5 +58,10 @@ func (s RaftStateMachine) RestoreSnapshot(data []byte) error {
 	s.Module.policy = updated
 	s.Module.lastError = ""
 	s.Module.mu.Unlock()
+	if snap.Version >= 2 {
+		s.Module.restoreClusterBackupState(snap.ActiveClusterBackupID, snap.ClusterBackups)
+	} else {
+		s.Module.restoreClusterBackupState("", nil)
+	}
 	return s.Module.reconcileSchedulerForPolicy(context.Background(), updated)
 }

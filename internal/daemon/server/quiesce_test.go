@@ -10,6 +10,7 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
@@ -67,6 +68,33 @@ func TestDefaultQuiesceExemptsAdminAuthRefresh(t *testing.T) {
 	for _, method := range []string{adminv1.AdminAuthService_LoginOperator_FullMethodName, adminv1.AdminAuthService_RefreshOperator_FullMethodName, adminv1.AdminAuthService_WhoAmI_FullMethodName} {
 		if !exempt[method] {
 			t.Fatalf("method %s is not quiesce-exempt", method)
+		}
+	}
+}
+
+func TestDefaultQuiesceExemptsClusterBackupArchiveRPC(t *testing.T) {
+	exempt := defaultQuiesceExemptMethods()
+	for _, method := range []string{clusterpb.ClusterBackendService_CheckLocalBackupReadiness_FullMethodName, clusterpb.ClusterBackendService_AcquireLocalBackupQuiesce_FullMethodName, clusterpb.ClusterBackendService_ReleaseLocalBackupQuiesce_FullMethodName, clusterpb.ClusterBackendService_AcquireLocalRaftBackupFreeze_FullMethodName, clusterpb.ClusterBackendService_ReleaseLocalRaftBackupFreeze_FullMethodName, clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName} {
+		if !exempt[method] {
+			t.Fatalf("method %s is not quiesce-exempt", method)
+		}
+	}
+}
+
+func TestDefaultQuiesceExemptsAdminClusterBackupRPCs(t *testing.T) {
+	exempt := defaultQuiesceExemptMethods()
+	for _, method := range []string{adminv1.AdminBackupService_TriggerClusterBackup_FullMethodName, adminv1.AdminBackupService_GetClusterBackupStatus_FullMethodName, adminv1.AdminBackupService_ListClusterBackups_FullMethodName, adminv1.AdminBackupService_ValidateClusterBackupSet_FullMethodName} {
+		if !exempt[method] {
+			t.Fatalf("method %s is not quiesce-exempt", method)
+		}
+	}
+}
+
+func TestDefaultPublicMethodsAllowsClusterBackupArchiveRPC(t *testing.T) {
+	public := defaultPublicMethods()
+	for _, method := range []string{clusterpb.ClusterBackendService_CheckLocalBackupReadiness_FullMethodName, clusterpb.ClusterBackendService_AcquireLocalBackupQuiesce_FullMethodName, clusterpb.ClusterBackendService_ReleaseLocalBackupQuiesce_FullMethodName, clusterpb.ClusterBackendService_AcquireLocalRaftBackupFreeze_FullMethodName, clusterpb.ClusterBackendService_ReleaseLocalRaftBackupFreeze_FullMethodName, clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName} {
+		if !public[method] {
+			t.Fatalf("method %s is not public for backend-token-only calls", method)
 		}
 	}
 }

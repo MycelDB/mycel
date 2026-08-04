@@ -12,8 +12,6 @@ import (
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 var _ runtime.Starter = (*Module)(nil)
@@ -22,25 +20,35 @@ var _ runtime.StatusReporter = (*Module)(nil)
 var _ Manager = (*Module)(nil)
 
 type Module struct {
-	mu           sync.Mutex
-	manager      *backupcore.Manager
-	policy       backupcore.Policy
-	logger       *slog.Logger
-	runCtx       context.Context
-	cancel       context.CancelFunc
-	running      bool
-	startedAt    time.Time
-	nextRunAt    time.Time
-	lastError    string
-	wg           sync.WaitGroup
-	wal          *wal.Manager
-	progress     wal.AppliedLSNStore
-	checkpoint   *wal.CheckpointStore
-	waiter       *wal.ApplyWaiter
-	writeAllowed func() error
-	raftGroups   *consensus.MultiGroup
-	raftEnabled  bool
-	config       Config
+	mu                    sync.Mutex
+	manager               *backupcore.Manager
+	policy                backupcore.Policy
+	logger                *slog.Logger
+	runCtx                context.Context
+	cancel                context.CancelFunc
+	running               bool
+	startedAt             time.Time
+	nextRunAt             time.Time
+	lastError             string
+	wg                    sync.WaitGroup
+	wal                   *wal.Manager
+	progress              wal.AppliedLSNStore
+	checkpoint            *wal.CheckpointStore
+	waiter                *wal.ApplyWaiter
+	writeAllowed          func() error
+	raftGroups            *consensus.MultiGroup
+	raftEnabled           bool
+	config                Config
+	quiesce               *quiesce.Coordinator
+	dataDir               string
+	localIdentity         runtime.LocalRouteIdentity
+	activeClusterBackupID string
+	clusterBackups          map[string]clusterBackupRun
+	clusterBackupLeases     map[string]*quiesce.CompositeLease
+	clusterBackupFreeze     map[string]*clusterBackupFreezeLease
+	clusterBackendClient    backendClient
+	clusterNodeAddrs      []string
+	clusterLocalRaftNode  consensus.NodeID
 }
 
 func NewModule(config ...Config) *Module {
@@ -63,6 +71,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if provider, ok := host.(runtime.QuiesceCoordinatorProvider); ok {
 		quiesceCoordinator = provider.QuiesceCoordinator()
 	}
+	m.quiesce = quiesceCoordinator
+	m.dataDir = host.DataDir()
+	if provider, ok := host.(runtime.LocalRouteIdentityProvider); ok {
+		m.localIdentity = provider.LocalRouteIdentity()
+	}
 	m.manager = backupcore.NewManager(backupcore.ManagerConfig{DataDir: host.DataDir(), Policy: policy, Logger: host.Log(), Quiesce: quiesceCoordinator})
 	policy = m.manager.Policy()
 	m.policy = policy
@@ -78,6 +91,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			}
 			if err := registry.Register(recordTypeBackupDelete, wal.ApplierFunc(m.applyBackupDelete)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register backup delete WAL applier", err)
+			}
+			for typ, applier := range m.clusterBackupWALAppliers() {
+				if err := registry.Register(typ, applier); err != nil {
+					return runtime.Abort(ModuleName, "wal", "register cluster backup WAL applier", err)
+				}
 			}
 		}
 	}
@@ -254,9 +272,10 @@ func (m *Module) DeleteBackup(ctx context.Context, backupID string) error {
 }
 
 func (m *Module) Trigger(ctx context.Context, input backupcore.TriggerInput) (backupcore.TriggerResult, error) {
-	if m.raftMode() && !m.systemRaftLeader() {
-		return backupcore.TriggerResult{}, status.Error(codes.FailedPrecondition, "backup trigger requires system raft leadership")
-	}
+	// A manual backup trigger is an operator-requested local archive of this
+	// daemon's data directory. Policy/delete records remain raft-owned in raft
+	// mode, while archive creation must be available on every StatefulSet ordinal
+	// so operators can capture and later restore a complete multi-PVC system.
 	if !m.raftMode() {
 		if err := m.requireLocalWriteAllowed(); err != nil {
 			return backupcore.TriggerResult{}, err

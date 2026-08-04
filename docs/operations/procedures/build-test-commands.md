@@ -11,7 +11,7 @@ Run these commands from the `mycel/` directory.
 
 ## Tests
 
-For the full Raft-focused test matrix and destructive cluster gate details, see `operations/raft-cluster-test-matrix.md`.
+For the full Raft-focused test matrix and destructive cluster gate details, see `raft-cluster-test-matrix.md`.
 
 - `make test` — regenerate protobuf stubs, run boundary checks, and run `go test ./...`.
 - `make test-cluster-identity` — run the fast in-process clustering/readiness/CLI regression suite used to guard authoritative Raft metadata behavior.
@@ -22,7 +22,8 @@ For the full Raft-focused test matrix and destructive cluster gate details, see 
 - `make test-phase-g` — run the focused Phase G diagnostics/forensics suite covering local graph checksums, local admin diagnostics, backend peer collection, consistency classification, forensic export/diff, CLI output, script syntax, and manual-repair planning guardrails.
 - `make test-compose-cluster` — destructive local compose validation for fresh bootstrap, real pod-to-pod graph write/read/query/consistency, restart data-plane stability, and persisted identity stability. Requires the sibling `../../knot_pkm/knot_pkm_server` checkout and Docker. The target supplies a default compose-only `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN` if the environment does not set one.
 - `make test-k3s-cluster` — destructive local K3s/k3d validation for fresh bootstrap, real pod-to-pod graph write/read/query/consistency, rolling restart, and one-PVC replacement/rejoin with data-plane revalidation. Requires Docker, `kubectl`, and preferably `k3d`; creates/uses the `knotbase-dev` k3d cluster by default.
-- `make test-cluster-release-gate` — full pre-release clustering gate: `make test`, `make test-phase-d`, `make test-phase-e`, `make test-phase-f`, `make test-phase-g`, destructive compose validation, and destructive K3s validation.
+- `make test-k3s-system-backup-restore` — destructive local K3s/k3d validation for coordinated full-system cluster backup sets: creates graph/blob data, runs one cluster backup command, requires raft freeze/checkpoint evidence, wipes the namespace/PVCs, restores each ordinal's archive into fresh PVCs, restarts the StatefulSet, and verifies cluster health plus graph/blob data through every pod.
+- `make test-cluster-release-gate` — full pre-release clustering gate: `make test`, `make test-phase-d`, `make test-phase-e`, `make test-phase-f`, `make test-phase-g`, destructive compose validation, destructive K3s validation, and the raft-storage-safe destructive K3s system backup/restore validation.
 - `make test-cluster-soak` — optional longer destructive Compose soak using repeated identity/data-plane validation and periodic `myceld` restarts. It supports `MYCEL_CLUSTER_SOAK_WRITES`; reserved forced snapshot/PVC replacement flags fail closed until a safe admin harness exists. It is not part of default CI or the release gate.
 - `make test-verbose` — regenerate protobuf stubs, run checks, run verbose tests with coverage, and print function coverage.
 - `make test-watch` — rerun generation, checks, and verbose coverage tests when Go or shell files change. Requires `watchexec`.

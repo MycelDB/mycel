@@ -64,6 +64,32 @@ service ClusterBackendService {
   // diagnostics from a peer. The payload is a daemon-internal JSON-encoded
   // LocalGraphStats envelope produced by the graph subsystem.
   rpc GetLocalGraphConsistency(GetLocalGraphConsistencyRequest) returns (GetLocalGraphConsistencyResponse);
+
+  // CheckLocalBackupReadiness validates local membership, destination safety,
+  // and raft apply evidence before the coordinator quiesces the cluster.
+  rpc CheckLocalBackupReadiness(CheckLocalBackupReadinessRequest) returns (CheckLocalBackupReadinessResponse);
+
+  // AcquireLocalBackupQuiesce asks a peer to close local ingress and drain
+  // mutating work for one active cluster backup. The lease is held until
+  // ReleaseLocalBackupQuiesce is called or the daemon exits.
+  rpc AcquireLocalBackupQuiesce(AcquireLocalBackupQuiesceRequest) returns (AcquireLocalBackupQuiesceResponse);
+
+  // ReleaseLocalBackupQuiesce releases a local cluster-backup quiesce lease.
+  rpc ReleaseLocalBackupQuiesce(ReleaseLocalBackupQuiesceRequest) returns (ReleaseLocalBackupQuiesceResponse);
+
+  // AcquireLocalRaftBackupFreeze freezes local raft storage mutation for the
+  // active backup set after recorded barriers are applied. The coordinator must
+  // release this lease before recording node results through system raft.
+  rpc AcquireLocalRaftBackupFreeze(AcquireLocalRaftBackupFreezeRequest) returns (AcquireLocalRaftBackupFreezeResponse);
+
+  // ReleaseLocalRaftBackupFreeze releases a previously acquired raft freeze.
+  rpc ReleaseLocalRaftBackupFreeze(ReleaseLocalRaftBackupFreezeRequest) returns (ReleaseLocalRaftBackupFreezeResponse);
+
+  // CreateLocalBackupArchive asks a peer to create a local daemon data-directory
+  // archive for one cluster backup set while a matching raft freeze lease is
+  // held. The archive is written to the peer's configured or requested backup
+  // destination and remains a node-local artifact.
+  rpc CreateLocalBackupArchive(CreateLocalBackupArchiveRequest) returns (CreateLocalBackupArchiveResponse);
 }
 
 // ClusterProtocolVersion identifies the backend protocol shape used by a node.
@@ -348,6 +374,164 @@ message GetLocalGraphConsistencyResponse {
   string node_name = 4;
   uint64 raft_node_id = 5;
   bytes payload = 6;
+}
+
+message BackupRaftBarrier {
+  string group_id = 1;
+  uint64 index = 2;
+}
+
+message CheckLocalBackupReadinessRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  uint64 requester_node_id = 3;
+  string backup_set_id = 4;
+  string reason = 5;
+  string pod_name = 6;
+  string node_id = 7;
+  uint64 raft_node_id = 8;
+  int32 ordinal = 9;
+  string output_dir = 10;
+  string archive_format = 11;
+}
+
+message CheckLocalBackupReadinessResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string backup_set_id = 3;
+  string pod_name = 4;
+  map<string, uint64> applied_indexes = 5;
+  map<string, uint64> commit_indexes = 6;
+}
+
+message AcquireLocalBackupQuiesceRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  uint64 requester_node_id = 3;
+  string backup_set_id = 4;
+  string reason = 5;
+  string pod_name = 6;
+  string node_id = 7;
+  uint64 raft_node_id = 8;
+  int32 ordinal = 9;
+}
+
+message AcquireLocalBackupQuiesceResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string backup_set_id = 3;
+  string pod_name = 4;
+}
+
+message ReleaseLocalBackupQuiesceRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  uint64 requester_node_id = 3;
+  string backup_set_id = 4;
+  string pod_name = 5;
+  string node_id = 6;
+  uint64 raft_node_id = 7;
+  int32 ordinal = 8;
+}
+
+message ReleaseLocalBackupQuiesceResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string backup_set_id = 3;
+  string pod_name = 4;
+}
+
+message AcquireLocalRaftBackupFreezeRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  uint64 requester_node_id = 3;
+  string backup_set_id = 4;
+  string reason = 5;
+  string pod_name = 6;
+  string node_id = 7;
+  uint64 raft_node_id = 8;
+  int32 ordinal = 9;
+  repeated BackupRaftBarrier barriers = 10;
+  int64 ttl_seconds = 11;
+}
+
+message AcquireLocalRaftBackupFreezeResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string backup_set_id = 3;
+  string pod_name = 4;
+  string lease_id = 5;
+  string acquired_at = 6;
+  string expires_at = 7;
+  map<string, BackupRaftFreezeGroup> groups = 8;
+}
+
+message ReleaseLocalRaftBackupFreezeRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  uint64 requester_node_id = 3;
+  string backup_set_id = 4;
+  string pod_name = 5;
+  string node_id = 6;
+  uint64 raft_node_id = 7;
+  int32 ordinal = 8;
+  string lease_id = 9;
+}
+
+message ReleaseLocalRaftBackupFreezeResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string backup_set_id = 3;
+  string pod_name = 4;
+}
+
+message BackupRaftFreezeGroup {
+  string group_id = 1;
+  uint64 barrier_index = 2;
+  uint64 applied_index = 3;
+  uint64 commit_index = 4;
+  uint64 term = 5;
+  uint64 last_index = 6;
+  uint64 snapshot_index = 7;
+  uint64 leader = 8;
+}
+
+message CreateLocalBackupArchiveRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  uint64 requester_node_id = 3;
+  string backup_set_id = 4;
+  string reason = 5;
+  string pod_name = 6;
+  string node_id = 7;
+  uint64 raft_node_id = 8;
+  int32 ordinal = 9;
+  string output_dir = 10;
+  string archive_format = 11;
+  string utc_timestamp = 12;
+  repeated BackupRaftBarrier barriers = 13;
+  string raft_freeze_lease_id = 14;
+}
+
+message CreateLocalBackupArchiveResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  string cluster_id = 2;
+  string pod_name = 3;
+  string node_id = 4;
+  uint64 raft_node_id = 5;
+  int32 ordinal = 6;
+  string archive_name = 7;
+  string archive_uri = 8;
+  string manifest_name = 9;
+  string manifest_uri = 10;
+  int64 size_bytes = 11;
+  string checksum_sha256 = 12;
+  map<string, uint64> applied_indexes = 13;
+  string raft_freeze_lease_id = 14;
+  string raft_freeze_acquired_at = 15;
+  string raft_freeze_released_at = 16;
+  string raft_freeze_expires_at = 17;
+  map<string, BackupRaftFreezeGroup> raft_freeze_groups = 18;
 }
 
 message ClusterMember {
