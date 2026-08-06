@@ -300,9 +300,12 @@ func newPhaseFQueryCluster(t *testing.T) *phaseFQueryCluster {
 		n.graphsAPI = NewGraphService(sessions, graphs)
 		n.queryAPI = NewQueryService(sessions, graphs, spaces)
 		n.metadataAPI = NewMetadataCatalogService(sessions, graphs)
+		// Keep the election timeout comfortably above the synthetic tick cadence so
+		// loaded CI runs do not spuriously churn leaders between route discovery and
+		// the read-index barrier under test.
 		groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: id, PeerNodeIDs: peers, PartitionCount: cluster.partitionCount, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine {
 			return daegraph.RaftStateMachine{Module: graphs, PartitionCount: cluster.partitionCount}
-		}}, ElectionTick: 5, HeartbeatTick: 1})
+		}}, ElectionTick: 50, HeartbeatTick: 1})
 		if err != nil {
 			t.Fatalf("StartMultiGroup(%d) error = %v", id, err)
 		}
