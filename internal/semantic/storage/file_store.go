@@ -974,6 +974,9 @@ func (m *maintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domai
 	if item.CreatedAt.IsZero() {
 		item.CreatedAt = now
 	}
+	if item.Generation <= 0 {
+		item.Generation = 1
+	}
 	if item.Status == domainsemantic.SemanticDirtyWorkStatusPending {
 		item.ClaimedBy = ""
 		item.ClaimedUntil = nil
@@ -985,6 +988,10 @@ func (m *maintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domai
 		if existing.SemanticIndexID == item.SemanticIndexID && existing.TargetNodeID == item.TargetNodeID {
 			item.ID = existing.ID
 			item.CreatedAt = existing.CreatedAt
+			item.Generation = existing.Generation + 1
+			if item.Generation <= 0 {
+				item.Generation = 1
+			}
 			if existing.FirstGraphRevision != 0 && (item.FirstGraphRevision == 0 || existing.FirstGraphRevision < item.FirstGraphRevision) {
 				item.FirstGraphRevision = existing.FirstGraphRevision
 			}
@@ -1044,6 +1051,9 @@ func (m *maintenanceManager) ClaimReadyWork(ctx context.Context, in ClaimReadyWo
 		if !workItemReady(item, now) {
 			continue
 		}
+		if item.Generation <= 0 {
+			item.Generation = 1
+		}
 		item.Status = domainsemantic.SemanticDirtyWorkStatusRunning
 		item.Attempts++
 		item.ClaimedBy = claimedBy
@@ -1078,6 +1088,12 @@ func (m *maintenanceManager) CompleteWork(ctx context.Context, id uuid.UUID, res
 		if item.ID != id {
 			continue
 		}
+		if result.Generation > 0 && item.Generation != result.Generation {
+			return nil
+		}
+		if workItemTerminal(item.Status) {
+			return nil
+		}
 		item.Status = domainsemantic.SemanticDirtyWorkStatusComplete
 		item.ClaimedBy = ""
 		item.ClaimedUntil = nil
@@ -1092,7 +1108,7 @@ func (m *maintenanceManager) CompleteWork(ctx context.Context, id uuid.UUID, res
 		m.dirtyQueue.Items[i] = item
 		return persistJSON(m.workStatePath(), m.dirtyQueue)
 	}
-	return ErrNotFound
+	return nil
 }
 
 func (m *maintenanceManager) FailWork(ctx context.Context, id uuid.UUID, failure WorkFailure) error {
@@ -1111,6 +1127,12 @@ func (m *maintenanceManager) FailWork(ctx context.Context, id uuid.UUID, failure
 	for i, item := range m.dirtyQueue.Items {
 		if item.ID != id {
 			continue
+		}
+		if failure.Generation > 0 && item.Generation != failure.Generation {
+			return nil
+		}
+		if workItemTerminal(item.Status) {
+			return nil
 		}
 		if failure.Retryable {
 			item.Status = domainsemantic.SemanticDirtyWorkStatusPending
@@ -1131,7 +1153,11 @@ func (m *maintenanceManager) FailWork(ctx context.Context, id uuid.UUID, failure
 		m.dirtyQueue.Items[i] = item
 		return persistJSON(m.workStatePath(), m.dirtyQueue)
 	}
-	return ErrNotFound
+	return nil
+}
+
+func workItemTerminal(status domainsemantic.SemanticDirtyWorkStatus) bool {
+	return status == domainsemantic.SemanticDirtyWorkStatusComplete || status == domainsemantic.SemanticDirtyWorkStatusFailed || status == domainsemantic.SemanticDirtyWorkStatusCancelled
 }
 
 func workItemReady(item domainsemantic.SemanticDirtyWorkItem, now time.Time) bool {

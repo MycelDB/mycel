@@ -72,16 +72,18 @@ type ClaimReadyWorkInput struct {
 
 // WorkResult marks a claimed work item complete.
 type WorkResult struct {
-	CompletedAt time.Time
+	CompletedAt time.Time `json:"completed_at,omitempty"`
+	Generation  int       `json:"generation,omitempty"`
 }
 
 // WorkFailure marks a claimed work item failed or retryable.
 type WorkFailure struct {
-	FailedAt  time.Time
-	Category  string
-	Message   string
-	Retryable bool
-	NextRunAt *time.Time
+	FailedAt   time.Time  `json:"failed_at,omitempty"`
+	Category   string     `json:"category,omitempty"`
+	Message    string     `json:"message,omitempty"`
+	Retryable  bool       `json:"retryable,omitempty"`
+	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
+	Generation int        `json:"generation,omitempty"`
 }
 
 // MaintenanceManager stores dynamic semantic background-processing state under

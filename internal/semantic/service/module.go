@@ -25,6 +25,8 @@ import (
 	"github.com/myceldb/mycel/internal/graph/model"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
@@ -56,6 +58,7 @@ type Module struct {
 	accountingBase       storeaccounting.Manager
 	spaces               map[domainspace.SpaceID]storesemantic.SpaceManager
 	maintenanceConfig    MaintenanceConfig
+	schemaManager        SchemaManager
 	logger               *slog.Logger
 	maintenanceCancel    context.CancelFunc
 	maintenanceWG        sync.WaitGroup
@@ -92,7 +95,7 @@ func NewModule(config ...Config) *Module {
 		cfg = config[0]
 	}
 
-	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, gate: quiesce.NewGate(ModuleName), secretKeyB64: cfg.SecretKeyB64, maintenanceConfig: cfg.MaintenanceConfig}
+	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, gate: quiesce.NewGate(ModuleName), secretKeyB64: cfg.SecretKeyB64, maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -704,7 +707,42 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, SkipIndex: m.skipSemanticDisabledIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+}
+
+func (m *Module) schemaDirtyCooldownForTarget(reader semanticmaintenance.GraphReader) func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error) {
+	if m.schemaManager == nil || reader == nil {
+		return nil
+	}
+	return func(ctx context.Context, index domainsemantic.SemanticIndex, targetID graph.NodeID, fallback time.Duration) (time.Duration, error) {
+		node, err := reader.GetNode(ctx, targetID)
+		if err != nil {
+			return fallback, nil
+		}
+		schema, err := m.schemaManager.GetDomainSchema(ctx, index.DomainID)
+		if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+			return fallback, nil
+		}
+		if err != nil {
+			return fallback, err
+		}
+		if cooldown := semanticCooldownForNode(schema, node); cooldown > 0 {
+			return cooldown, nil
+		}
+		return fallback, nil
+	}
+}
+
+func semanticCooldownForNode(schema schemamodel.DomainSchema, node graph.Node) time.Duration {
+	for _, nodeType := range schema.Normalize().NodeTypes {
+		if !nodeType.Indexing.Semantic || nodeType.Indexing.SemanticDirtyCooldown <= 0 || len(nodeType.Labels) == 0 {
+			continue
+		}
+		if graph.HasLabels(node, nodeType.Labels) {
+			return nodeType.Indexing.SemanticDirtyCooldown
+		}
+	}
+	return 0
 }
 
 func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error) {

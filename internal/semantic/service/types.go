@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/identity/model"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	semanticmigration "github.com/myceldb/mycel/internal/semantic/migration"
@@ -38,9 +39,14 @@ type MaintenanceConfig struct {
 	CredentialDefaults         ThrottleConfig
 }
 
+type SchemaManager interface {
+	GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schemamodel.DomainSchema, error)
+}
+
 type Config struct {
 	SecretKeyB64      string
 	MaintenanceConfig MaintenanceConfig
+	SchemaManager     SchemaManager
 }
 
 type Manager interface {

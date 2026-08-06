@@ -113,6 +113,81 @@ func TestAnalyzerResolvesSubtreeTargetsAndCooldown(t *testing.T) {
 	}
 }
 
+func TestAnalyzerUsesTargetCooldownOverride(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	if _, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}); err != nil {
+		t.Fatalf("index upsert failed: %v", err)
+	}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Content: "content"}}}
+	now := time.Now().UTC()
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: now}); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	baseCooldown := time.Minute
+	overrideCooldown := 3 * time.Minute
+	_, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: baseCooldown, DirtyCooldownForTarget: func(_ context.Context, _ domainsemantic.SemanticIndex, targetID graph.NodeID, fallback time.Duration) (time.Duration, error) {
+		if targetID != nodeID || fallback != baseCooldown {
+			t.Fatalf("unexpected resolver input target=%s fallback=%s", targetID, fallback)
+		}
+		return overrideCooldown, nil
+	}}).AnalyzeOnce(ctx, AnalyzeInput{Now: now})
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 1 || items[0].EarliestRunAt == nil {
+		t.Fatalf("unexpected items: %+v err=%v", items, err)
+	}
+	if !items[0].EarliestRunAt.Equal(now.Add(overrideCooldown)) {
+		t.Fatalf("expected override cooldown %s, got %+v", overrideCooldown, items[0].EarliestRunAt)
+	}
+}
+
+func TestAnalyzerRepeatedDirtyEventsPushOutCooldown(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	if _, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}); err != nil {
+		t.Fatalf("index upsert failed: %v", err)
+	}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Content: "content"}}}
+	firstNow := time.Now().UTC()
+	cooldown := time.Minute
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: firstNow}); err != nil {
+		t.Fatalf("append first event: %v", err)
+	}
+	if _, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: cooldown}).AnalyzeOnce(ctx, AnalyzeInput{Now: firstNow}); err != nil {
+		t.Fatalf("first analyze failed: %v", err)
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 1 || items[0].EarliestRunAt == nil {
+		t.Fatalf("unexpected first items: %+v err=%v", items, err)
+	}
+	firstItem := items[0]
+
+	secondNow := firstNow.Add(30 * time.Second)
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 2, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: secondNow}); err != nil {
+		t.Fatalf("append second event: %v", err)
+	}
+	if _, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: cooldown}).AnalyzeOnce(ctx, AnalyzeInput{Now: secondNow}); err != nil {
+		t.Fatalf("second analyze failed: %v", err)
+	}
+	items, err = maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("unexpected second items: %+v err=%v", items, err)
+	}
+	secondItem := items[0]
+	if secondItem.ID != firstItem.ID || secondItem.Generation <= firstItem.Generation || secondItem.EarliestRunAt == nil || !secondItem.EarliestRunAt.Equal(secondNow.Add(cooldown)) {
+		t.Fatalf("cooldown not pushed out: first=%+v second=%+v", firstItem, secondItem)
+	}
+}
+
 func TestAnalyzerMoveDirtiesOldAndNewSubtreeTargets(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

@@ -257,13 +257,13 @@ Process ready semantic work items asynchronously and idempotently.
 ### Tasks
 
 - Add worker in `internal/semantic/maintenance`.
-- Add daemon config. Default dirty cooldown is 60s and is configurable at the system level:
+- Add daemon config. Default dirty cooldown is 120s and is configurable at the system level:
 
 ```yaml
 semantic:
   maintenance:
     enabled: true
-    dirty_cooldown: 60s
+    dirty_cooldown: 120s
     analyzer_interval: 5s
     worker_interval: 5s
     worker_count: 2
@@ -410,7 +410,7 @@ For phases that affect daemon behavior, also run daemon integration tests and se
 - Sink failure does not fail graph commits.
 - Dirty event append happens synchronously after graph commit with explicit failure handling.
 - Sink failures mark semantic maintenance degraded and are surfaced through status/Admin APIs.
-- Default dirty cooldown is 60s and configurable at the system level.
+- Default dirty cooldown is 120s and configurable at the system level.
 - Throttling starts conservative and is applied at global, provider, model/capability, credential, and credential-grant scopes.
 
 ## Admin API recommendation

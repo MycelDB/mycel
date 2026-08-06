@@ -92,10 +92,11 @@ type EndpointSpec struct {
 }
 
 type IndexPolicy struct {
-	Enabled  bool
-	Fields   []string
-	FullText bool
-	Semantic bool
+	Enabled               bool
+	Fields                []string
+	FullText              bool
+	Semantic              bool
+	SemanticDirtyCooldown time.Duration
 }
 
 type HierarchyPolicy struct {
