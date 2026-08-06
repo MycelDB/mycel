@@ -429,6 +429,7 @@ type SemanticDirtyWorkItem struct {
 	Action             SemanticDirtyWorkAction `json:"action"`
 	Status             SemanticDirtyWorkStatus `json:"status"`
 	EarliestRunAt      *time.Time              `json:"earliest_run_at,omitempty"`
+	Generation         int                     `json:"generation,omitempty"`
 	Attempts           int                     `json:"attempts,omitempty"`
 	ClaimedBy          string                  `json:"claimed_by,omitempty"`
 	ClaimedUntil       *time.Time              `json:"claimed_until,omitempty"`

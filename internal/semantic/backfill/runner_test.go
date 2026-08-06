@@ -93,6 +93,37 @@ func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	}
 }
 
+func TestRunnerTombstonesCurrentVectorWhenSourceBecomesEmpty(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root, child := env.addRootWithChild(t, "root note", "child note")
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
+	if err != nil || result.GeneratedCount != 1 || len(env.connector.calls) != 1 {
+		t.Fatalf("initial backfill result=%+v calls=%+v err=%v", result, env.connector.calls, err)
+	}
+	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: root.ID, Content: "   ", Props: root.Props}); err != nil {
+		t.Fatalf("empty root update failed: %v", err)
+	}
+	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: child.ID, Content: "\n\t  ", Props: child.Props}); err != nil {
+		t.Fatalf("empty child update failed: %v", err)
+	}
+
+	result, err = env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
+	if err != nil {
+		t.Fatalf("empty-source backfill failed: %v", err)
+	}
+	if result.GeneratedCount != 0 || result.SkippedCount != 1 || len(env.connector.calls) != 1 {
+		t.Fatalf("expected empty source skip without provider call, result=%+v calls=%+v", result, env.connector.calls)
+	}
+	search, err := env.vector.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticIndexID: env.index.ID, Query: []float64{1, 0, 0}, Limit: 10, MinScore: 0.5})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(search) != 0 {
+		t.Fatalf("expected tombstoned vector to be absent from search results, got %+v", search)
+	}
+}
+
 func TestRunnerAccountingAttributesBackfillToCredentialOwner(t *testing.T) {
 	ctx := context.Background()
 	env := newBackfillTestEnv(t)

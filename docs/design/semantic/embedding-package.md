@@ -385,7 +385,7 @@ Example configuration shape:
 semantic:
   maintenance:
     enabled: true
-    dirty_cooldown: 60s
+    dirty_cooldown: 120s
     analyzer_interval: 5s
     worker_interval: 5s
     worker_count: 2
@@ -403,7 +403,7 @@ semantic:
       max_tokens_per_minute: 50000
 ```
 
-The default dirty cooldown is 60 seconds and configurable at the system level.
+The default dirty cooldown is 120 seconds and configurable at the system level. Schema indexing policy may override the cooldown for schema-selected semantic content.
 
 Effective throttling should be the strictest active limit across global, provider, model/capability, credential, and credential-grant scopes.
 

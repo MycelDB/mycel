@@ -14,6 +14,7 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
@@ -190,6 +191,58 @@ func TestSemanticRaftStateMachineAppliesMaintenanceMutation(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].ID != event.ID {
 		t.Fatalf("events=%#v want %s", events, event.ID)
+	}
+}
+
+func TestSemanticRaftStateMachineMissingWorkCompleteIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	workID := uuid.New()
+	rec := maintenanceMutationRecord{Kind: "work.complete", SpaceID: spaceID, Payload: raw(struct {
+		ID     uuid.UUID                `json:"id"`
+		Result storesemantic.WorkResult `json:"result"`
+	}{ID: workID})}
+	payload, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.EnableExperimentalRaft(nil, 64)
+	cmd, err := m.buildSemanticMaintenanceRaftCommand(rec, payload, "semantic-maintenance-missing-work-complete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err != nil {
+		t.Fatalf("ApplyCommand() error = %v, want nil", err)
+	}
+}
+
+func TestSemanticRaftStateMachineMissingWorkFailIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	workID := uuid.New()
+	rec := maintenanceMutationRecord{Kind: "work.fail", SpaceID: spaceID, Payload: raw(struct {
+		ID      uuid.UUID                 `json:"id"`
+		Failure storesemantic.WorkFailure `json:"failure"`
+	}{ID: workID, Failure: storesemantic.WorkFailure{Category: "stale", Message: "missing"}})}
+	payload, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.EnableExperimentalRaft(nil, 64)
+	cmd, err := m.buildSemanticMaintenanceRaftCommand(rec, payload, "semantic-maintenance-missing-work-fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err != nil {
+		t.Fatalf("ApplyCommand() error = %v, want nil", err)
 	}
 }
 
