@@ -76,7 +76,7 @@ func TestModuleDurableReplayIncludesGraphPayload(t *testing.T) {
 
 	m := NewModule()
 	initChangeStreamModule(t, m, dataDir)
-	m.PublishCommit(ctx, commitForTest(spaceID, domainID, 1), []GraphChange{{Type: ChangeTypeNodeCreated, NodeID: nodeID.String(), Node: &domaingraph.Node{ID: domaingraph.NodeID(nodeID), DomainID: domaingraph.DomainID(uuid.MustParse(domainID)), Content: "durable", Props: map[string]any{"tag": "replay"}, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}}})
+	m.PublishCommit(ctx, commitForTest(spaceID, domainID, 1), []GraphChange{{Type: ChangeTypeNodeCreated, NodeID: nodeID.String(), Node: &domaingraph.Node{ID: domaingraph.NodeID(nodeID), DomainID: domaingraph.DomainID(uuid.MustParse(domainID)), Content: "durable", Props: map[string]any{"tag": "replay"}, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, AffectedNodeIDs: []string{nodeID.String()}, ChangedFields: []string{"content"}}})
 
 	restarted := NewModule()
 	initChangeStreamModule(t, restarted, dataDir)
@@ -96,6 +96,9 @@ func TestModuleDurableReplayIncludesGraphPayload(t *testing.T) {
 		}
 		if event.Changes[0].Type != ChangeTypeNodeCreated || event.Changes[0].Node == nil || event.Changes[0].Node.Content != "durable" {
 			t.Fatalf("unexpected graph change: %#v", event.Changes[0])
+		}
+		if len(event.Changes[0].AffectedNodeIDs) != 1 || event.Changes[0].AffectedNodeIDs[0] != nodeID.String() || len(event.Changes[0].ChangedFields) != 1 || event.Changes[0].ChangedFields[0] != "content" {
+			t.Fatalf("canonical change details were not replayed: %#v", event.Changes[0])
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for replay event")

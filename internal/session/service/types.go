@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 )
 
 const ModuleName = "session"
@@ -37,6 +38,7 @@ type OpenSessionInput struct {
 	SpaceID     string
 	DomainID    string
 	IdleTimeout time.Duration
+	Origin      graphchange.OriginMetadata
 }
 
 type BeginTransactionInput struct {
@@ -44,6 +46,7 @@ type BeginTransactionInput struct {
 	SessionID    string
 	Mode         TransactionMode
 	BaseRevision *int64
+	Origin       graphchange.OriginMetadata
 }
 
 type SessionState string
@@ -79,6 +82,7 @@ type GraphSession struct {
 	DomainID   string
 	HomeNodeID consensus.NodeID
 	State      SessionState
+	Origin     graphchange.OriginMetadata
 	CreatedAt  time.Time
 	LastSeen   time.Time
 	ExpiresAt  time.Time
@@ -94,6 +98,7 @@ type GraphTransaction struct {
 	Mode         TransactionMode
 	State        TransactionState
 	BaseRevision int64
+	Origin       graphchange.OriginMetadata
 	CreatedAt    time.Time
 	LastSeen     time.Time
 	ExpiresAt    time.Time
@@ -154,5 +159,6 @@ type TransactionCommit struct {
 	BaseRevision      int64
 	CommittedRevision int64
 	OperationCount    int32
+	Origin            graphchange.OriginMetadata
 	CommittedAt       time.Time
 }

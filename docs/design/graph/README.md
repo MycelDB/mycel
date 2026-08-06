@@ -5,6 +5,7 @@ schema validation.
 
 - [Client graph API](../api/graph.md)
 - [Client query API](../api/query.md)
+- [Graph-change notification subsystem](graph-change-notification.md)
 - [Node content/meta/labels](node-content-meta-labels.md)
 - [GQL schema behavior](../schema/gql-schema-behavior.md)
 - [GQL roadmap](../../roadmap/gql-roadmap.md)

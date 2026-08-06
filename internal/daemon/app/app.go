@@ -23,6 +23,7 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
 	"github.com/myceldb/mycel/internal/graph/change"
+	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
@@ -199,6 +200,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
 	graphService := graphservice.NewModule()
+	graphNotificationService := graphnotification.NewModule()
 	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxTokensPerRun: cfg.Automation.MaxTokensPerRun, MaxCostPerRun: cfg.Automation.MaxCostPerRun, Concurrency: cfg.Automation.WorkerConcurrency})
 	if automationProvider, err := automationProviderFromConfig(cfg); err != nil {
 		_ = rt.Close()
@@ -246,11 +248,14 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	})
-	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, schemaService, automationService, graphService, blobService, semanticService, changeService, backupService}); err != nil {
+	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, semanticService, changeService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}
 	graphService.SetBlobReferenceChecker(blobService)
+	graphNotificationService.WithLeaderGate(func(ctx context.Context, event graphchange.CommittedEvent) error {
+		return graphService.RequireLocalGraphWriteLeader(ctx, event.SpaceID.String())
+	})
 	changeService.AddObserver(automationService.HandleChangeStreamEvent)
 	if raftRuntimeConfigured(cfg) {
 		backupService.PrepareExperimentalRaftMode()
@@ -300,13 +305,14 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		logger.Info("wal recovery complete", "applied_lsn", applied, "last_committed_lsn", rt.WAL.LastCommittedLSN(), "duration", time.Since(started))
 	}
 	// Local WAL durability and recovery remain active above; clustered operation is Raft-only.
-	graphService.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
+	semanticSink := graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)
 		if err != nil {
 			return err
 		}
 		return appender.OnGraphCommitted(ctx, event)
-	}))
+	})
+	graphService.SetChangeSink(graphchange.MultiSink{graphNotificationService, semanticSink})
 	if err := rt.StartServices(ctx); err != nil {
 		_ = rt.Close()
 		return nil, err

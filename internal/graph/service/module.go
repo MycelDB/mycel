@@ -1002,6 +1002,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		info = graphstorage.CommitInfo{TxnID: uuid.New(), NextRevision: uint64(committedRevision)}
 	}
 	restoreOverlay = false
+	graphEvent.Changes = changes
 	m.notifyGraphChangeSink(ctx, info, graphEvent)
 	return CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}, nil
 }
@@ -1040,7 +1041,10 @@ func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.Co
 		return
 	}
 	event.TxnID = info.TxnID
+	event.TransactionID = info.TxnID
 	event.GraphRevision = info.NextRevision
+	event.Revision = info.NextRevision
+	event.Normalize()
 	if err := sink.OnGraphCommitted(ctx, event); err != nil {
 		m.mu.Lock()
 		m.lastGraphChangeSinkErr = err
@@ -1060,7 +1064,9 @@ func (m *Module) graphChangeEvent(ctx context.Context, tx daemonsession.GraphTra
 	domainID := mustDomainID(tx.DomainID)
 	event := graphchange.CommittedEvent{
 		SpaceID:           domainspace.SpaceID(spaceID),
+		DomainID:          domainID,
 		DomainIDs:         []domaingraph.DomainID{domainID},
+		Origin:            tx.Origin,
 		CreatedNodeIDs:    []domaingraph.NodeID{},
 		UpdatedNodeIDs:    []domaingraph.NodeID{},
 		DeletedNodeIDs:    []domaingraph.NodeID{},
@@ -1159,11 +1165,12 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 			oldCopy = &copy
 		}
 		copy := cloneNode(node)
-		changes = append(changes, GraphChange{Type: changeType, Node: &copy, OldNode: oldCopy, NodeID: node.ID.String()})
+		changes = append(changes, GraphChange{Type: changeType, Node: &copy, OldNode: oldCopy, NodeID: node.ID.String(), AffectedNodeIDs: []string{node.ID.String()}})
 	}
 	for _, edge := range sortedEdges(snapshot.putEdges) {
 		changeType := ChangeTypeEdgeUpdated
 		var oldCopy *domaingraph.Edge
+		affectedNodeIDs := []string{edge.FromID.String(), edge.ToID.String()}
 		if old, err := store.GetEdge(ctx, edge.ID); errors.Is(err, graphstorage.ErrNotFound) {
 			changeType = ChangeTypeEdgeCreated
 		} else if err != nil {
@@ -1171,15 +1178,31 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 		} else {
 			copy := cloneEdge(old)
 			oldCopy = &copy
+			affectedNodeIDs = appendUniqueStrings(affectedNodeIDs, old.FromID.String(), old.ToID.String())
 		}
 		copy := cloneEdge(edge)
-		changes = append(changes, GraphChange{Type: changeType, Edge: &copy, OldEdge: oldCopy, EdgeID: edge.ID.String()})
+		changes = append(changes, GraphChange{Type: changeType, Edge: &copy, OldEdge: oldCopy, EdgeID: edge.ID.String(), AffectedNodeIDs: affectedNodeIDs, AffectedEdgeIDs: []string{edge.ID.String()}})
 	}
 	for _, id := range sortedNodeIDs(snapshot.deleteNodes) {
-		changes = append(changes, GraphChange{Type: ChangeTypeNodeDeleted, NodeID: id.String()})
+		var oldCopy *domaingraph.Node
+		if old, err := store.GetNode(ctx, id); err == nil {
+			copy := cloneNode(old)
+			oldCopy = &copy
+		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+			return nil, mapStorageError(err)
+		}
+		changes = append(changes, GraphChange{Type: ChangeTypeNodeDeleted, OldNode: oldCopy, NodeID: id.String(), AffectedNodeIDs: []string{id.String()}})
 	}
 	for _, id := range sortedEdgeIDs(snapshot.deleteEdges) {
-		changes = append(changes, GraphChange{Type: ChangeTypeEdgeDeleted, EdgeID: id.String()})
+		change := GraphChange{Type: ChangeTypeEdgeDeleted, EdgeID: id.String(), AffectedEdgeIDs: []string{id.String()}}
+		if old, err := store.GetEdge(ctx, id); err == nil {
+			copy := cloneEdge(old)
+			change.OldEdge = &copy
+			change.AffectedNodeIDs = appendUniqueStrings(change.AffectedNodeIDs, old.FromID.String(), old.ToID.String())
+		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+			return nil, mapStorageError(err)
+		}
+		changes = append(changes, change)
 	}
 	return changes, nil
 }
@@ -1568,6 +1591,25 @@ func cloneEdge(e domaingraph.Edge) domaingraph.Edge {
 	e.Payload = cloneProps(e.Payload)
 	e.Meta = cloneProps(e.Meta)
 	return e
+}
+
+func appendUniqueStrings(values []string, candidates ...string) []string {
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		seen := false
+		for _, existing := range values {
+			if existing == candidate {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			values = append(values, candidate)
+		}
+	}
+	return values
 }
 
 func normalizeLabels(labels []string) []string {

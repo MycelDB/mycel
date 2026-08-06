@@ -340,40 +340,12 @@ func (s *TransactionService) CloseTransaction(ctx context.Context, req *clientv1
 func changeStreamChangesFromGraph(changes []daegraph.GraphChange) []daemonchange.GraphChange {
 	out := make([]daemonchange.GraphChange, 0, len(changes))
 	for _, change := range changes {
-		mapped := daemonchange.GraphChange{NodeID: change.NodeID, EdgeID: change.EdgeID}
 		switch change.Type {
-		case daegraph.ChangeTypeNodeCreated:
-			mapped.Type = daemonchange.ChangeTypeNodeCreated
-		case daegraph.ChangeTypeNodeUpdated:
-			mapped.Type = daemonchange.ChangeTypeNodeUpdated
-		case daegraph.ChangeTypeNodeDeleted:
-			mapped.Type = daemonchange.ChangeTypeNodeDeleted
-		case daegraph.ChangeTypeEdgeCreated:
-			mapped.Type = daemonchange.ChangeTypeEdgeCreated
-		case daegraph.ChangeTypeEdgeUpdated:
-			mapped.Type = daemonchange.ChangeTypeEdgeUpdated
-		case daegraph.ChangeTypeEdgeDeleted:
-			mapped.Type = daemonchange.ChangeTypeEdgeDeleted
+		case daegraph.ChangeTypeNodeCreated, daegraph.ChangeTypeNodeUpdated, daegraph.ChangeTypeNodeDeleted, daegraph.ChangeTypeEdgeCreated, daegraph.ChangeTypeEdgeUpdated, daegraph.ChangeTypeEdgeDeleted:
+			out = append(out, change)
 		default:
 			continue
 		}
-		if change.Node != nil {
-			copy := *change.Node
-			mapped.Node = &copy
-		}
-		if change.OldNode != nil {
-			copy := *change.OldNode
-			mapped.OldNode = &copy
-		}
-		if change.Edge != nil {
-			copy := *change.Edge
-			mapped.Edge = &copy
-		}
-		if change.OldEdge != nil {
-			copy := *change.OldEdge
-			mapped.OldEdge = &copy
-		}
-		out = append(out, mapped)
 	}
 	return out
 }

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 )
 
@@ -43,24 +43,16 @@ type Event struct {
 	Changes   []GraphChange
 }
 
-type GraphChange struct {
-	Type    ChangeType
-	Node    *domaingraph.Node
-	OldNode *domaingraph.Node
-	Edge    *domaingraph.Edge
-	OldEdge *domaingraph.Edge
-	NodeID  string
-	EdgeID  string
-}
+type GraphChange = graphchange.Change
 
-type ChangeType string
+type ChangeType = graphchange.ChangeType
 
 const (
-	ChangeTypeNodeCreated      ChangeType = "node_created"
-	ChangeTypeNodeUpdated      ChangeType = "node_updated"
-	ChangeTypeNodeDeleted      ChangeType = "node_deleted"
-	ChangeTypeEdgeCreated      ChangeType = "edge_created"
-	ChangeTypeEdgeUpdated      ChangeType = "edge_updated"
-	ChangeTypeEdgeDeleted      ChangeType = "edge_deleted"
-	ChangeTypeRevisionAdvanced ChangeType = "revision_advanced"
+	ChangeTypeNodeCreated      = graphchange.ChangeTypeNodeCreated
+	ChangeTypeNodeUpdated      = graphchange.ChangeTypeNodeUpdated
+	ChangeTypeNodeDeleted      = graphchange.ChangeTypeNodeDeleted
+	ChangeTypeEdgeCreated      = graphchange.ChangeTypeEdgeCreated
+	ChangeTypeEdgeUpdated      = graphchange.ChangeTypeEdgeUpdated
+	ChangeTypeEdgeDeleted      = graphchange.ChangeTypeEdgeDeleted
+	ChangeTypeRevisionAdvanced = graphchange.ChangeTypeRevisionAdvanced
 )
