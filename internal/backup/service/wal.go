@@ -12,6 +12,14 @@ import (
 const (
 	recordTypeBackupPolicyUpdate wal.RecordType = "daemon.backup.policy.update.v1"
 	recordTypeBackupDelete       wal.RecordType = "daemon.backup.delete.v1"
+
+	recordTypeClusterBackupRequest    wal.RecordType = "daemon.backup.cluster.request.v1"
+	recordTypeClusterBackupPhase      wal.RecordType = "daemon.backup.cluster.phase.v1"
+	recordTypeClusterBackupBarrier    wal.RecordType = "daemon.backup.cluster.barrier.v1"
+	recordTypeClusterBackupNodeResult wal.RecordType = "daemon.backup.cluster.node_result.v1"
+	recordTypeClusterBackupComplete   wal.RecordType = "daemon.backup.cluster.complete.v1"
+	recordTypeClusterBackupFail       wal.RecordType = "daemon.backup.cluster.fail.v1"
+	recordTypeClusterBackupAbort      wal.RecordType = "daemon.backup.cluster.abort.v1"
 )
 
 type backupPolicyRecord struct {
@@ -47,6 +55,22 @@ func (m *Module) applyBackupDelete(ctx context.Context, rec wal.Record) error {
 	return nil
 }
 
+func (m *Module) clusterBackupWALAppliers() map[wal.RecordType]wal.Applier {
+	return map[wal.RecordType]wal.Applier{
+		recordTypeClusterBackupRequest:    wal.ApplierFunc(m.applyClusterBackupRequest),
+		recordTypeClusterBackupPhase:      wal.ApplierFunc(m.applyClusterBackupPhase),
+		recordTypeClusterBackupBarrier:    wal.ApplierFunc(m.applyClusterBackupBarrier),
+		recordTypeClusterBackupNodeResult: wal.ApplierFunc(m.applyClusterBackupNodeResult),
+		recordTypeClusterBackupComplete:   wal.ApplierFunc(m.applyClusterBackupComplete),
+		recordTypeClusterBackupFail: wal.ApplierFunc(func(ctx context.Context, rec wal.Record) error {
+			return m.applyClusterBackupFailure(ctx, rec, clusterBackupPhaseFailed)
+		}),
+		recordTypeClusterBackupAbort: wal.ApplierFunc(func(ctx context.Context, rec wal.Record) error {
+			return m.applyClusterBackupFailure(ctx, rec, clusterBackupPhaseAborted)
+		}),
+	}
+}
+
 func (m *Module) commitWAL(ctx context.Context, typ wal.RecordType, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -60,9 +84,13 @@ func (m *Module) commitWAL(ctx context.Context, typ wal.RecordType, payload any)
 		return err
 	}
 	if typ == recordTypeBackupPolicyUpdate {
-		err = m.applyBackupPolicyUpdate(ctx, wal.Record{Payload: raw})
+		err = m.applyBackupPolicyUpdate(ctx, wal.Record{Type: typ, Payload: raw})
+	} else if typ == recordTypeBackupDelete {
+		err = m.applyBackupDelete(ctx, wal.Record{Type: typ, Payload: raw})
+	} else if applier, ok := m.clusterBackupWALAppliers()[typ]; ok {
+		err = applier.ApplyWAL(ctx, wal.Record{Type: typ, Payload: raw})
 	} else {
-		err = m.applyBackupDelete(ctx, wal.Record{Payload: raw})
+		err = errors.New("unsupported backup WAL record type")
 	}
 	if err != nil {
 		return err

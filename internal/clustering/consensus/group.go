@@ -61,6 +61,7 @@ type Group struct {
 	done   chan struct{}
 
 	mu              sync.Mutex
+	backupMu        sync.RWMutex
 	leader          NodeID
 	term            uint64
 	commitIndex     uint64
@@ -272,6 +273,74 @@ func (g *Group) Progress() (term uint64, commitIndex uint64, appliedIndex uint64
 	return g.term, g.commitIndex, g.appliedIndex
 }
 
+type BackupCheckpoint struct {
+	GroupID       GroupID
+	NodeID        NodeID
+	Leader        NodeID
+	Term          uint64
+	BarrierIndex  uint64
+	CommitIndex   uint64
+	AppliedIndex  uint64
+	LastIndex     uint64
+	SnapshotIndex uint64
+	FrozenAt      time.Time
+}
+
+type BackupFreezeLease struct {
+	Checkpoint BackupCheckpoint
+	release    func()
+	once       sync.Once
+}
+
+func (l *BackupFreezeLease) Release() {
+	if l == nil {
+		return
+	}
+	l.once.Do(func() {
+		if l.release != nil {
+			l.release()
+		}
+	})
+}
+
+func (g *Group) AcquireBackupFreeze(ctx context.Context, barrier uint64) (*BackupFreezeLease, error) {
+	if g == nil || g.storage == nil {
+		return nil, fmt.Errorf("raft group and storage are required")
+	}
+	if err := g.WaitApplied(ctx, barrier); err != nil {
+		return nil, err
+	}
+	locked := make(chan struct{})
+	go func() {
+		g.backupMu.Lock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-ctx.Done():
+		go func() {
+			<-locked
+			g.backupMu.Unlock()
+		}()
+		return nil, ctx.Err()
+	}
+	if flusher, ok := g.storage.(interface{ Flush() error }); ok {
+		if err := flusher.Flush(); err != nil {
+			g.backupMu.Unlock()
+			return nil, err
+		}
+	}
+	term, commit, applied := g.Progress()
+	last, snap := g.StorageProgress()
+	if applied < barrier {
+		g.backupMu.Unlock()
+		return nil, fmt.Errorf("raft group %s applied index %d is behind backup barrier %d", g.id, applied, barrier)
+	}
+	lease := &BackupFreezeLease{Checkpoint: BackupCheckpoint{GroupID: g.id, NodeID: g.nodeID, Leader: g.Leader(), Term: term, BarrierIndex: barrier, CommitIndex: commit, AppliedIndex: applied, LastIndex: last, SnapshotIndex: snap, FrozenAt: time.Now().UTC()}}
+	lease.release = g.backupMu.Unlock
+	return lease, nil
+}
+
 func (g *Group) StorageProgress() (lastIndex uint64, snapshotIndex uint64) {
 	if g == nil || g.storage == nil {
 		return 0, 0
@@ -454,56 +523,65 @@ func (g *Group) run() {
 		case <-g.ctx.Done():
 			return
 		case rd := <-g.node.Ready():
-			if rd.SoftState != nil {
-				g.mu.Lock()
-				g.leader = NodeID(rd.SoftState.Lead)
-				localLeader := g.leader == g.nodeID
-				g.mu.Unlock()
-				if !localLeader {
-					g.failReadWaiters(ErrNotLeader)
-				}
+			if !g.processReady(rd) {
+				return
 			}
-			if !raft.IsEmptySnap(rd.Snapshot) {
-				if err := g.storage.ApplySnapshot(rd.Snapshot); err != nil {
-					g.failWaiters(fmt.Errorf("apply raft snapshot: %w", err))
-					return
-				}
-				if err := restoreStateMachineSnapshot(g.sm, rd.Snapshot); err != nil {
-					g.failWaiters(err)
-					return
-				}
-				g.markApplied(rd.Snapshot.Metadata.Index)
-			}
-			if !raft.IsEmptyHardState(rd.HardState) {
-				if err := g.storage.SetHardState(rd.HardState); err != nil {
-					g.failWaiters(fmt.Errorf("persist raft hard state: %w", err))
-					return
-				}
-				g.mu.Lock()
-				if rd.HardState.Term != 0 {
-					g.term = rd.HardState.Term
-				}
-				if rd.HardState.Commit != 0 {
-					g.commitIndex = rd.HardState.Commit
-				}
-				g.mu.Unlock()
-			}
-			if len(rd.Entries) > 0 {
-				if err := g.storage.Append(rd.Entries); err != nil {
-					g.failWaiters(fmt.Errorf("persist raft entries: %w", err))
-					return
-				}
-			}
-			g.transport.Send(g.ctx, g.id, g.nodeID, rd.Messages)
-			for _, entry := range rd.CommittedEntries {
-				g.applyEntry(entry)
-			}
-			for _, readState := range rd.ReadStates {
-				g.completeReadWaiter(string(readState.RequestCtx), readIndexOutcome{result: ReadBarrierResult{Index: readState.Index, Term: g.currentTerm()}})
-			}
-			g.node.Advance()
 		}
 	}
+}
+
+func (g *Group) processReady(rd raft.Ready) bool {
+	g.backupMu.RLock()
+	defer g.backupMu.RUnlock()
+	if rd.SoftState != nil {
+		g.mu.Lock()
+		g.leader = NodeID(rd.SoftState.Lead)
+		localLeader := g.leader == g.nodeID
+		g.mu.Unlock()
+		if !localLeader {
+			g.failReadWaiters(ErrNotLeader)
+		}
+	}
+	if !raft.IsEmptySnap(rd.Snapshot) {
+		if err := g.storage.ApplySnapshot(rd.Snapshot); err != nil {
+			g.failWaiters(fmt.Errorf("apply raft snapshot: %w", err))
+			return false
+		}
+		if err := restoreStateMachineSnapshot(g.sm, rd.Snapshot); err != nil {
+			g.failWaiters(err)
+			return false
+		}
+		g.markApplied(rd.Snapshot.Metadata.Index)
+	}
+	if !raft.IsEmptyHardState(rd.HardState) {
+		if err := g.storage.SetHardState(rd.HardState); err != nil {
+			g.failWaiters(fmt.Errorf("persist raft hard state: %w", err))
+			return false
+		}
+		g.mu.Lock()
+		if rd.HardState.Term != 0 {
+			g.term = rd.HardState.Term
+		}
+		if rd.HardState.Commit != 0 {
+			g.commitIndex = rd.HardState.Commit
+		}
+		g.mu.Unlock()
+	}
+	if len(rd.Entries) > 0 {
+		if err := g.storage.Append(rd.Entries); err != nil {
+			g.failWaiters(fmt.Errorf("persist raft entries: %w", err))
+			return false
+		}
+	}
+	g.transport.Send(g.ctx, g.id, g.nodeID, rd.Messages)
+	for _, entry := range rd.CommittedEntries {
+		g.applyEntry(entry)
+	}
+	for _, readState := range rd.ReadStates {
+		g.completeReadWaiter(string(readState.RequestCtx), readIndexOutcome{result: ReadBarrierResult{Index: readState.Index, Term: g.currentTerm()}})
+	}
+	g.node.Advance()
+	return true
 }
 
 func (g *Group) applyEntry(entry raftpb.Entry) {

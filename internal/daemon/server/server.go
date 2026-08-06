@@ -118,7 +118,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen grpc %s: %w", cfg.Addr, err)
 	}
-	publicMethods := map[string]bool{adminv1.AdminAuthService_LoginOperator_FullMethodName: true, adminv1.AdminAuthService_RefreshOperator_FullMethodName: true, clientv1.AuthService_Login_FullMethodName: true, clientv1.AuthService_Refresh_FullMethodName: true, clusterpb.ClusterBackendService_RegisterNode_FullMethodName: true, clusterpb.ClusterBackendService_GetClusterView_FullMethodName: true, clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName: true, clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName: true, clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName: true, clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName: true, clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName: true, clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName: true, clusterpb.ClusterBackendService_ExecuteRaftGraphRead_FullMethodName: true, clusterpb.ClusterBackendService_ExecuteRaftSemanticRead_FullMethodName: true, clusterpb.ClusterBackendService_ForwardClientRequest_FullMethodName: true, clusterpb.ClusterBackendService_GetLocalGraphConsistency_FullMethodName: true}
+	publicMethods := defaultPublicMethods()
 	quiesceExempt := defaultQuiesceExemptMethods()
 	for method, exempt := range cfg.QuiesceExempt {
 		quiesceExempt[method] = exempt
@@ -169,7 +169,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		adminv1.RegisterAdminClusterServiceServer(grpcServer, clusterAdmin)
 	}
 	if cfg.BackupManager != nil {
-		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.OperatorManager))
+		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.OperatorManager).WithClusterRuntime(cfg.ClusteringManager, cfg.ClusterConfig))
 	}
 	var clientRouter clientapi.ClientRequestRouter
 	localNode := consensus.NodeID(cfg.ClusterConfig.RaftLocalNodeID)
@@ -214,28 +214,65 @@ func clientRoutingEnabled(cfg daemonconfig.ClusterConfig, clusterID string) bool
 	return clusterID != "" && cfg.RaftLocalNodeID > 0 && (len(cfg.RaftNodeAddrs) > 0 || cfg.RaftNodeCount == 1)
 }
 
+func defaultPublicMethods() map[string]bool {
+	return map[string]bool{
+		adminv1.AdminAuthService_LoginOperator_FullMethodName:                       true,
+		adminv1.AdminAuthService_RefreshOperator_FullMethodName:                     true,
+		clientv1.AuthService_Login_FullMethodName:                                   true,
+		clientv1.AuthService_Refresh_FullMethodName:                                 true,
+		clusterpb.ClusterBackendService_RegisterNode_FullMethodName:                 true,
+		clusterpb.ClusterBackendService_GetClusterView_FullMethodName:               true,
+		clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName:             true,
+		clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName:          true,
+		clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName:               true,
+		clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName:          true,
+		clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName:                 true,
+		clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName:               true,
+		clusterpb.ClusterBackendService_ExecuteRaftGraphRead_FullMethodName:         true,
+		clusterpb.ClusterBackendService_ExecuteRaftSemanticRead_FullMethodName:      true,
+		clusterpb.ClusterBackendService_ForwardClientRequest_FullMethodName:         true,
+		clusterpb.ClusterBackendService_GetLocalGraphConsistency_FullMethodName:     true,
+		clusterpb.ClusterBackendService_CheckLocalBackupReadiness_FullMethodName:    true,
+		clusterpb.ClusterBackendService_AcquireLocalBackupQuiesce_FullMethodName:    true,
+		clusterpb.ClusterBackendService_ReleaseLocalBackupQuiesce_FullMethodName:    true,
+		clusterpb.ClusterBackendService_AcquireLocalRaftBackupFreeze_FullMethodName: true,
+		clusterpb.ClusterBackendService_ReleaseLocalRaftBackupFreeze_FullMethodName: true,
+		clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName:     true,
+	}
+}
+
 func defaultQuiesceExemptMethods() map[string]bool {
 	return map[string]bool{
-		adminv1.AdminAuthService_LoginOperator_FullMethodName:                   true,
-		adminv1.AdminAuthService_RefreshOperator_FullMethodName:                 true,
-		adminv1.AdminAuthService_WhoAmI_FullMethodName:                          true,
-		adminv1.AdminBackupService_GetBackupPolicy_FullMethodName:               true,
-		adminv1.AdminBackupService_TriggerBackup_FullMethodName:                 true,
-		adminv1.AdminBackupService_GetBackupStatus_FullMethodName:               true,
-		adminv1.AdminBackupService_ListBackups_FullMethodName:                   true,
-		adminv1.AdminClusterService_GetClusterHealth_FullMethodName:             true,
-		clusterpb.ClusterBackendService_RegisterNode_FullMethodName:             true,
-		clusterpb.ClusterBackendService_GetClusterView_FullMethodName:           true,
-		clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName:         true,
-		clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName:      true,
-		clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName:           true,
-		clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName:      true,
-		clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName:             true,
-		clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName:           true,
-		clusterpb.ClusterBackendService_ExecuteRaftGraphRead_FullMethodName:     true,
-		clusterpb.ClusterBackendService_ExecuteRaftSemanticRead_FullMethodName:  true,
-		clusterpb.ClusterBackendService_ForwardClientRequest_FullMethodName:     true,
-		clusterpb.ClusterBackendService_GetLocalGraphConsistency_FullMethodName: true,
+		adminv1.AdminAuthService_LoginOperator_FullMethodName:                       true,
+		adminv1.AdminAuthService_RefreshOperator_FullMethodName:                     true,
+		adminv1.AdminAuthService_WhoAmI_FullMethodName:                              true,
+		adminv1.AdminBackupService_GetBackupPolicy_FullMethodName:                   true,
+		adminv1.AdminBackupService_TriggerBackup_FullMethodName:                     true,
+		adminv1.AdminBackupService_GetBackupStatus_FullMethodName:                   true,
+		adminv1.AdminBackupService_ListBackups_FullMethodName:                       true,
+		adminv1.AdminBackupService_TriggerClusterBackup_FullMethodName:              true,
+		adminv1.AdminBackupService_GetClusterBackupStatus_FullMethodName:            true,
+		adminv1.AdminBackupService_ListClusterBackups_FullMethodName:                true,
+		adminv1.AdminBackupService_ValidateClusterBackupSet_FullMethodName:          true,
+		adminv1.AdminClusterService_GetClusterHealth_FullMethodName:                 true,
+		clusterpb.ClusterBackendService_RegisterNode_FullMethodName:                 true,
+		clusterpb.ClusterBackendService_GetClusterView_FullMethodName:               true,
+		clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName:             true,
+		clusterpb.ClusterBackendService_WatchClusterUpdates_FullMethodName:          true,
+		clusterpb.ClusterBackendService_GetBlobPayload_FullMethodName:               true,
+		clusterpb.ClusterBackendService_DeliverRaftMessages_FullMethodName:          true,
+		clusterpb.ClusterBackendService_GetRaftSpace_FullMethodName:                 true,
+		clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName:               true,
+		clusterpb.ClusterBackendService_ExecuteRaftGraphRead_FullMethodName:         true,
+		clusterpb.ClusterBackendService_ExecuteRaftSemanticRead_FullMethodName:      true,
+		clusterpb.ClusterBackendService_ForwardClientRequest_FullMethodName:         true,
+		clusterpb.ClusterBackendService_GetLocalGraphConsistency_FullMethodName:     true,
+		clusterpb.ClusterBackendService_CheckLocalBackupReadiness_FullMethodName:    true,
+		clusterpb.ClusterBackendService_AcquireLocalBackupQuiesce_FullMethodName:    true,
+		clusterpb.ClusterBackendService_ReleaseLocalBackupQuiesce_FullMethodName:    true,
+		clusterpb.ClusterBackendService_AcquireLocalRaftBackupFreeze_FullMethodName: true,
+		clusterpb.ClusterBackendService_ReleaseLocalRaftBackupFreeze_FullMethodName: true,
+		clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName:     true,
 	}
 }
 

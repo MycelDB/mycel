@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-compose-cluster test-k3s-cluster test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
+.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-compose-cluster test-k3s-cluster test-k3s-system-backup-restore test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -73,6 +73,9 @@ test-watch:
 	@command -v watchexec >/dev/null 2>&1 || (echo "watchexec is required. Install with: brew install watchexec" && exit 1)
 	watchexec -e go,sh -- "make generate-proto generate-gql-parser && scripts/check-daemon-only.sh && scripts/check-public-surface.sh && go test -v -count=1 -cover -coverprofile=coverage.out ./... && go tool cover -func=coverage.out"
 
+docs-check:
+	python3 scripts/checkDocs.py
+
 test-cluster-identity: generate-proto generate-gql-parser
 	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/cli/cmd -count=1
 
@@ -90,7 +93,7 @@ test-phase-f: generate-proto generate-gql-parser
 
 test-phase-g: generate-proto generate-gql-parser
 	go test ./internal/graph/service ./internal/daemon/api/admin ./internal/clustering/backend ./internal/daemon/server ./internal/cli/cmd -count=1
-	bash -n scripts/validateComposeClusterDataPlane.sh scripts/validateK3sClusterDataPlane.sh scripts/testK3sCluster.sh scripts/testClusterSoak.sh scripts/testComposeUserBackupRestore.sh scripts/planGraphRepairWorkflow.sh
+	bash -n scripts/validateComposeClusterDataPlane.sh scripts/validateK3sClusterDataPlane.sh scripts/testK3sCluster.sh scripts/testClusterSoak.sh scripts/testComposeUserBackupRestore.sh scripts/testK3sSystemBackupRestore.sh scripts/planGraphRepairWorkflow.sh
 	@set -e; tmp="$$(mktemp)"; \
 	printf '%s\n' '{"node_summary":{"only_in_left":1,"only_in_right":0,"differing":0},"edge_summary":{"only_in_left":0,"only_in_right":0,"differing":0},"warnings":["one or both exports are truncated; diff only covers included entities"],"truncated":false}' > "$$tmp"; \
 	scripts/planGraphRepairWorkflow.sh --workflow classify-diff --i-have-snapshots --source-node pinned-good --diff "$$tmp" --authoritative-side left | grep -q incomplete_evidence; \
@@ -100,7 +103,7 @@ test-phase-g: generate-proto generate-gql-parser
 	grep -q -- --i-have-snapshots /tmp/mycel-g7-no-snap.out; \
 	rm -f "$$tmp" /tmp/mycel-g7-no-snap.out
 
-test-cluster-release-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-compose-cluster test-k3s-cluster
+test-cluster-release-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-compose-cluster test-k3s-cluster test-k3s-system-backup-restore
 
 test-compose-cluster:
 	cd ../../knot_pkm/knot_pkm_server && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" $(MAKE) compose-reset compose-up
@@ -117,6 +120,9 @@ test-compose-cluster:
 
 test-k3s-cluster:
 	./scripts/testK3sCluster.sh
+
+test-k3s-system-backup-restore:
+	./scripts/testK3sSystemBackupRestore.sh
 
 test-compose-user-backup-restore:
 	./scripts/testComposeUserBackupRestore.sh

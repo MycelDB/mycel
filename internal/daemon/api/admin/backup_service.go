@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
+	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
+	"github.com/myceldb/mycel/internal/clustering"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
+	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
@@ -18,15 +23,29 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type clusterBackupManager interface {
+	TriggerClusterBackup(context.Context, daemonbackup.TriggerClusterBackupInput) (daemonbackup.ClusterBackupRunStatus, error)
+	ClusterBackupStatus(string) (daemonbackup.ClusterBackupRunStatus, error)
+	ListClusterBackups() []daemonbackup.ClusterBackupRunStatus
+}
+
 type AdminBackupService struct {
 	adminv1.UnimplementedAdminBackupServiceServer
-	manager    daemonbackup.Manager
-	quiesce    *quiesce.Coordinator
-	authorizer OperatorAuthorizer
+	manager       daemonbackup.Manager
+	quiesce       *quiesce.Coordinator
+	cluster       *clustering.Manager
+	clusterConfig daemonconfig.ClusterConfig
+	authorizer    OperatorAuthorizer
 }
 
 func NewAdminBackupService(manager daemonbackup.Manager, quiesce *quiesce.Coordinator, authorizer OperatorAuthorizer) *AdminBackupService {
 	return &AdminBackupService{manager: manager, quiesce: quiesce, authorizer: authorizer}
+}
+
+func (s *AdminBackupService) WithClusterRuntime(cluster *clustering.Manager, cfg daemonconfig.ClusterConfig) *AdminBackupService {
+	s.cluster = cluster
+	s.clusterConfig = cfg
+	return s
 }
 
 func (s *AdminBackupService) GetBackupPolicy(ctx context.Context, req *adminv1.GetBackupPolicyRequest) (*adminv1.GetBackupPolicyResponse, error) {
@@ -112,6 +131,84 @@ func (s *AdminBackupService) DeleteBackup(ctx context.Context, req *adminv1.Dele
 	return &adminv1.DeleteBackupResponse{BackupId: req.GetBackupId()}, nil
 }
 
+func (s *AdminBackupService) TriggerClusterBackup(ctx context.Context, req *adminv1.TriggerClusterBackupRequest) (*adminv1.TriggerClusterBackupResponse, error) {
+	principal, err := s.requireBackupManage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nodes, clusterID, err := s.clusterBackupNodes()
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	clusterManager, ok := s.manager.(clusterBackupManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
+	}
+	st, err := clusterManager.TriggerClusterBackup(ctx, daemonbackup.TriggerClusterBackupInput{Reason: firstNonEmptyAdmin(req.GetReason(), "cluster system backup by "+principal.OperatorID), OutputDir: req.GetOutputDir(), ArchiveFormat: archiveFormatFromProto(req.GetArchiveFormat()), ClusterID: clusterID, Nodes: nodes})
+	if err != nil {
+		return nil, mapBackupError(err, "trigger cluster backup")
+	}
+	return &adminv1.TriggerClusterBackupResponse{Status: mapClusterBackupStatus(st), BackupSet: mapClusterBackupSetSummary(st)}, nil
+}
+
+func (s *AdminBackupService) GetClusterBackupStatus(ctx context.Context, req *adminv1.GetClusterBackupStatusRequest) (*adminv1.GetClusterBackupStatusResponse, error) {
+	if _, err := s.requireBackupManage(ctx); err != nil {
+		return nil, err
+	}
+	clusterManager, ok := s.manager.(clusterBackupManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
+	}
+	st, err := clusterManager.ClusterBackupStatus(req.GetBackupSetId())
+	if err != nil {
+		return nil, mapBackupError(err, "get cluster backup status")
+	}
+	return &adminv1.GetClusterBackupStatusResponse{Status: mapClusterBackupStatus(st)}, nil
+}
+
+func (s *AdminBackupService) ListClusterBackups(ctx context.Context, req *adminv1.ListClusterBackupsRequest) (*adminv1.ListClusterBackupsResponse, error) {
+	if _, err := s.requireBackupManage(ctx); err != nil {
+		return nil, err
+	}
+	clusterManager, ok := s.manager.(clusterBackupManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
+	}
+	statuses := clusterManager.ListClusterBackups()
+	items := make([]*adminv1.ClusterBackupSetSummary, 0, len(statuses))
+	for _, st := range statuses {
+		items = append(items, mapClusterBackupSetSummary(st))
+	}
+	pageSize := normalizePageSize(req.GetPageSize())
+	offset, err := parsePageToken(req.GetPageToken())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if offset > len(items) {
+		return nil, status.Error(codes.InvalidArgument, "page_token offset is beyond the cluster backup list")
+	}
+	end := offset + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	next := ""
+	if end < len(items) {
+		next = strconv.Itoa(end)
+	}
+	return &adminv1.ListClusterBackupsResponse{BackupSets: items[offset:end], NextPageToken: next}, nil
+}
+
+func (s *AdminBackupService) ValidateClusterBackupSet(ctx context.Context, req *adminv1.ValidateClusterBackupSetRequest) (*adminv1.ValidateClusterBackupSetResponse, error) {
+	if _, err := s.requireBackupManage(ctx); err != nil {
+		return nil, err
+	}
+	manifest, err := daemonbackup.ValidateClusterBackupSet(ctx, req.GetBackupSetPath())
+	if err != nil {
+		return &adminv1.ValidateClusterBackupSetResponse{Valid: false, Errors: []string{err.Error()}}, nil
+	}
+	return &adminv1.ValidateClusterBackupSetResponse{Valid: true, BackupSet: mapClusterManifestSummary(manifest)}, nil
+}
+
 func (s *AdminBackupService) requireBackupManage(ctx context.Context) (daemonauth.Principal, error) {
 	principal, err := principalFromContext(ctx)
 	if err != nil {
@@ -173,6 +270,85 @@ func backupPolicyFromProto(policy *adminv1.BackupPolicy) backupcore.Policy {
 
 func mapBackupSummary(manifest backupcore.Manifest) *adminv1.BackupSummary {
 	return &adminv1.BackupSummary{BackupId: manifest.BackupID, ArchiveName: manifest.ArchiveName, CreatedAt: formatBackupTime(manifest.CreatedAt), CompletedAt: formatBackupTime(manifest.CompletedAt), SizeBytes: manifest.SizeBytes, ChecksumSha256: manifest.ChecksumSHA256, Compression: manifest.Policy.Compression, ArchiveFormat: archiveFormatToProto(backupcore.ArchiveFormat(manifest.Policy.ArchiveFormat)), IncludeLogs: manifest.Policy.IncludeLogs}
+}
+
+func (s *AdminBackupService) clusterBackupNodes() ([]daemonbackup.ClusterBackupNode, string, error) {
+	if s.cluster == nil {
+		return nil, "", fmt.Errorf("clustering manager is not configured")
+	}
+	meta := s.cluster.SystemMetadata()
+	clusterID := firstNonEmptyAdmin(meta.ClusterID, s.cluster.Identity().ClusterID)
+	if strings.TrimSpace(clusterID) == "" {
+		return nil, "", fmt.Errorf("cluster_id is not available")
+	}
+	nodes := make([]daemonbackup.ClusterBackupNode, 0, len(meta.Nodes))
+	for _, node := range meta.Nodes {
+		podName := podNameFromBackendAdvertiseAddr(node.BackendAdvertiseAddr)
+		if podName == "" {
+			podName = node.NodeName
+		}
+		ordinal := ordinalFromPodName(podName)
+		if ordinal < 0 {
+			ordinal = len(nodes)
+		}
+		nodes = append(nodes, daemonbackup.ClusterBackupNode{PodName: podName, NodeID: node.NodeID, Ordinal: ordinal, RaftNodeID: node.RaftNodeID, BackendAdvertiseAddr: node.BackendAdvertiseAddr})
+	}
+	if len(nodes) == 0 {
+		return nil, "", fmt.Errorf("authoritative cluster membership is not available")
+	}
+	if s.clusterConfig.RaftNodeCount > 0 && len(nodes) != s.clusterConfig.RaftNodeCount {
+		return nil, "", fmt.Errorf("authoritative cluster membership has %d nodes, expected %d", len(nodes), s.clusterConfig.RaftNodeCount)
+	}
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Ordinal < nodes[j].Ordinal })
+	return nodes, clusterID, nil
+}
+
+var podOrdinalPattern = regexp.MustCompile(`-(\d+)$`)
+
+func podNameFromBackendAdvertiseAddr(addr string) string {
+	host := strings.TrimSpace(addr)
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	}
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	if i := strings.Index(host, "."); i >= 0 {
+		host = host[:i]
+	}
+	return strings.TrimSpace(host)
+}
+
+func ordinalFromPodName(name string) int {
+	match := podOrdinalPattern.FindStringSubmatch(strings.TrimSpace(name))
+	if len(match) != 2 {
+		return -1
+	}
+	ordinal, err := strconv.Atoi(match[1])
+	if err != nil {
+		return -1
+	}
+	return ordinal
+}
+
+func mapClusterBackupStatus(st daemonbackup.ClusterBackupRunStatus) *adminv1.ClusterBackupStatus {
+	return &adminv1.ClusterBackupStatus{BackupSetId: st.BackupSetID, State: st.Phase, ClusterId: st.ClusterID, Reason: st.Reason, CreatedAt: formatBackupTime(st.CreatedAt), UpdatedAt: formatBackupTime(st.UpdatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodes: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(st.Nodes), FailedPhase: st.FailurePhase, Error: st.Error, RaftBarriers: st.Barriers}
+}
+
+func mapClusterBackupSetSummary(st daemonbackup.ClusterBackupRunStatus) *adminv1.ClusterBackupSetSummary {
+	return &adminv1.ClusterBackupSetSummary{BackupSetId: st.BackupSetID, State: st.Phase, ClusterId: st.ClusterID, CreatedAt: formatBackupTime(st.CreatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodes: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(st.Nodes)}
+}
+
+func mapClusterManifestSummary(manifest clusterbackup.Manifest) *adminv1.ClusterBackupSetSummary {
+	return &adminv1.ClusterBackupSetSummary{BackupSetId: manifest.BackupSetID, State: manifest.State, ClusterId: manifest.ClusterID, CreatedAt: formatBackupTime(manifest.CreatedAt), CompletedAt: formatBackupTime(manifest.CompletedAt), ExpectedNodes: int32(manifest.ExpectedNodes), ManifestUri: manifest.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(manifest.Nodes)}
+}
+
+func mapClusterBackupNodeArtifacts(nodes []clusterbackup.NodeArtifact) []*adminv1.ClusterBackupNodeArtifact {
+	out := make([]*adminv1.ClusterBackupNodeArtifact, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, &adminv1.ClusterBackupNodeArtifact{PodName: node.PodName, NodeId: node.NodeID, Ordinal: int32(node.Ordinal), RaftNodeId: node.RaftNodeID, ArchiveName: node.ArchiveName, ArchiveUri: node.ArchiveURI, ManifestName: node.ManifestName, ManifestUri: node.ManifestURI, SizeBytes: node.SizeBytes, ChecksumSha256: node.ChecksumSHA256, AppliedIndexes: node.AppliedIndexes})
+	}
+	return out
 }
 
 func archiveFormatToProto(format backupcore.ArchiveFormat) adminv1.BackupArchiveFormat {
