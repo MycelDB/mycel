@@ -28,6 +28,7 @@ type Service struct {
 	GraphReader            any
 	SemanticReader         any
 	ClientRequestForwarder ForwardedClientRequestHandler
+	ClusterBackupProvider  ClusterBackupProvider
 
 	forwardMu          sync.Mutex
 	forwardDiagnostics ForwardClientDiagnostics

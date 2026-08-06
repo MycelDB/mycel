@@ -52,6 +52,16 @@ type TriggerInput struct {
 	Reason string
 }
 
+type LocalArchiveInput struct {
+	BackupID      string
+	ArchiveName   string
+	BackupDir     string
+	ArchiveFormat string
+	Source        string
+	Reason        string
+	CreatedAt     time.Time
+}
+
 type TriggerResult struct {
 	BackupID     string
 	ArchivePath  string
@@ -294,8 +304,43 @@ func (m *Manager) finishRun(result TriggerResult, err error) {
 	}
 }
 
-func (m *Manager) run(ctx context.Context, backupID string, started time.Time, input TriggerInput) (TriggerResult, error) {
+func (m *Manager) CreateLocalArchive(ctx context.Context, input LocalArchiveInput) (TriggerResult, error) {
+	if err := ctx.Err(); err != nil {
+		return TriggerResult{}, err
+	}
+	backupID := strings.TrimSpace(input.BackupID)
+	if backupID == "" || strings.ContainsAny(backupID, `/\\`) {
+		return TriggerResult{}, fmt.Errorf("backup_id is required")
+	}
+	started := input.CreatedAt.UTC()
+	if started.IsZero() {
+		started = m.now().UTC()
+	}
+	if !m.beginRun(backupID, started) {
+		return TriggerResult{}, ErrBackupRunning
+	}
 	policy := m.Policy()
+	if strings.TrimSpace(input.BackupDir) != "" {
+		policy.BackupDir = strings.TrimSpace(input.BackupDir)
+	}
+	if strings.TrimSpace(input.ArchiveFormat) != "" {
+		policy.ArchiveFormat = ArchiveFormat(strings.TrimSpace(input.ArchiveFormat))
+	}
+	result, err := m.createArchiveWithPolicy(ctx, backupID, started, TriggerInput{Source: input.Source, Reason: input.Reason}, strings.TrimSpace(input.ArchiveName), false, policy)
+	m.finishRun(result, err)
+	return result, err
+}
+
+func (m *Manager) run(ctx context.Context, backupID string, started time.Time, input TriggerInput) (TriggerResult, error) {
+	return m.createArchive(ctx, backupID, started, input, "", true)
+}
+
+func (m *Manager) createArchive(ctx context.Context, backupID string, started time.Time, input TriggerInput, archiveNameOverride string, acquireQuiesce bool) (TriggerResult, error) {
+	return m.createArchiveWithPolicy(ctx, backupID, started, input, archiveNameOverride, acquireQuiesce, m.Policy())
+}
+
+func (m *Manager) createArchiveWithPolicy(ctx context.Context, backupID string, started time.Time, input TriggerInput, archiveNameOverride string, acquireQuiesce bool, policy Policy) (TriggerResult, error) {
+	policy = EffectivePolicy(m.dataDir, policy)
 	archiveExt, err := ArchiveExtension(policy.ArchiveFormat)
 	if err != nil {
 		return TriggerResult{}, err
@@ -312,7 +357,7 @@ func (m *Manager) run(ctx context.Context, backupID string, started time.Time, i
 	defer cancel()
 
 	var lease *quiesce.CompositeLease
-	if m.quiesce != nil {
+	if acquireQuiesce && m.quiesce != nil {
 		quiesceCtx := runCtx
 		quiesceCancel := func() {}
 		if policy.QuiesceDrainTimeout > 0 {
@@ -338,6 +383,15 @@ func (m *Manager) run(ctx context.Context, backupID string, started time.Time, i
 	}
 
 	archiveName := backupID + archiveExt
+	if archiveNameOverride != "" {
+		if filepath.Base(archiveNameOverride) != archiveNameOverride {
+			return TriggerResult{}, fmt.Errorf("archive_name must be a base name")
+		}
+		if !strings.HasSuffix(archiveNameOverride, archiveExt) {
+			return TriggerResult{}, fmt.Errorf("archive_name must end with %s", archiveExt)
+		}
+		archiveName = archiveNameOverride
+	}
 	archivePath := filepath.Join(backupDir, archiveName)
 	archiveTmp := archivePath + ".tmp"
 	defer os.Remove(archiveTmp)

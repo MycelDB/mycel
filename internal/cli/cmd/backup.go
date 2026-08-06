@@ -18,7 +18,9 @@ func NewAdminBackupCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "backup", Short: "Manage daemon backups"}
 	policy := &cobra.Command{Use: "policy", Short: "Manage backup policy"}
 	policy.AddCommand(NewAdminBackupPolicyGetCommand(a), NewAdminBackupPolicySetCommand(a))
-	cmd.AddCommand(policy, NewAdminBackupTriggerCommand(a), NewAdminBackupStatusCommand(a), NewAdminBackupListCommand(a), NewAdminBackupDeleteCommand(a))
+	cluster := &cobra.Command{Use: "cluster", Short: "Manage coordinated cluster backup sets"}
+	cluster.AddCommand(NewAdminBackupClusterTriggerCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterValidateCommand(a))
+	cmd.AddCommand(policy, cluster, NewAdminBackupTriggerCommand(a), NewAdminBackupStatusCommand(a), NewAdminBackupListCommand(a), NewAdminBackupDeleteCommand(a))
 	return cmd
 }
 
@@ -252,6 +254,114 @@ func NewAdminBackupDeleteCommand(a *app.App) *cobra.Command {
 		}
 		return a.Print(res, fmt.Sprintf("backup deleted: %s\n", res.GetBackupId()))
 	}}
+	return cmd
+}
+
+func NewAdminBackupClusterTriggerCommand(a *app.App) *cobra.Command {
+	var reason, outputDir, archiveFormat string
+	cmd := &cobra.Command{Use: "trigger", Short: "Trigger a coordinated cluster backup", RunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(outputDir) == "" {
+			return fmt.Errorf("--output-dir is required")
+		}
+		format, err := parseBackupArchiveFormat(archiveFormat)
+		if err != nil {
+			return err
+		}
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer closeConn()
+		res, err := client.TriggerClusterBackup(authCtx, &adminv1.TriggerClusterBackupRequest{Reason: reason, OutputDir: outputDir, ArchiveFormat: format})
+		if err != nil {
+			return backupCLIError("trigger cluster backup", err)
+		}
+		if a.Output == "json" {
+			return a.Print(res, "")
+		}
+		st := res.GetStatus()
+		return a.Print(res, fmt.Sprintf("cluster backup triggered: %s\nstate: %s\nmanifest: %s\n", st.GetBackupSetId(), st.GetState(), st.GetManifestUri()))
+	}}
+	cmd.Flags().StringVar(&reason, "reason", "", "backup reason")
+	cmd.Flags().StringVar(&outputDir, "output-dir", "", "cluster backup output directory mounted on each pod")
+	cmd.Flags().StringVar(&archiveFormat, "archive-format", "tar.zst", "backup archive format: zip, tar, tar.gz, or tar.zst")
+	return cmd
+}
+
+func NewAdminBackupClusterStatusCommand(a *app.App) *cobra.Command {
+	return &cobra.Command{Use: "status [BACKUP_SET_ID]", Short: "Show cluster backup status", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer closeConn()
+		backupSetID := ""
+		if len(args) > 0 {
+			backupSetID = args[0]
+		}
+		res, err := client.GetClusterBackupStatus(authCtx, &adminv1.GetClusterBackupStatusRequest{BackupSetId: backupSetID})
+		if err != nil {
+			return backupCLIError("get cluster backup status", err)
+		}
+		if a.Output == "json" {
+			return a.Print(res, "")
+		}
+		st := res.GetStatus()
+		return a.Print(res, fmt.Sprintf("cluster backup status: %s\nbackup_set_id: %s\ncluster_id: %s\nmanifest: %s\nerror: %s\n", st.GetState(), st.GetBackupSetId(), st.GetClusterId(), st.GetManifestUri(), st.GetError()))
+	}}
+}
+
+func NewAdminBackupClusterListCommand(a *app.App) *cobra.Command {
+	var pageSize int32
+	var pageToken string
+	cmd := &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List cluster backup sets", RunE: func(cmd *cobra.Command, args []string) error {
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer closeConn()
+		res, err := client.ListClusterBackups(authCtx, &adminv1.ListClusterBackupsRequest{PageSize: pageSize, PageToken: pageToken})
+		if err != nil {
+			return backupCLIError("list cluster backups", err)
+		}
+		if a.Output == "json" {
+			return a.Print(res, "")
+		}
+		var b strings.Builder
+		for _, backup := range res.GetBackupSets() {
+			fmt.Fprintf(&b, "%s\t%s\t%d nodes\n", backup.GetBackupSetId(), backup.GetState(), backup.GetExpectedNodes())
+		}
+		return a.Print(res.GetBackupSets(), b.String())
+	}}
+	cmd.Flags().Int32Var(&pageSize, "page-size", 0, "page size")
+	cmd.Flags().StringVar(&pageToken, "page-token", "", "page token")
+	return cmd
+}
+
+func NewAdminBackupClusterValidateCommand(a *app.App) *cobra.Command {
+	var backupSetPath string
+	cmd := &cobra.Command{Use: "validate", Short: "Validate a cluster backup set", RunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(backupSetPath) == "" {
+			return fmt.Errorf("--backup-set is required")
+		}
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer closeConn()
+		res, err := client.ValidateClusterBackupSet(authCtx, &adminv1.ValidateClusterBackupSetRequest{BackupSetPath: backupSetPath})
+		if err != nil {
+			return backupCLIError("validate cluster backup set", err)
+		}
+		if a.Output == "json" {
+			return a.Print(res, "")
+		}
+		if !res.GetValid() {
+			return a.Print(res, fmt.Sprintf("cluster backup set invalid: %s\n", strings.Join(res.GetErrors(), "; ")))
+		}
+		return a.Print(res, fmt.Sprintf("cluster backup set valid: %s\n", res.GetBackupSet().GetBackupSetId()))
+	}}
+	cmd.Flags().StringVar(&backupSetPath, "backup-set", "", "backup-set directory or backup-set.json path")
 	return cmd
 }
 

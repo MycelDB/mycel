@@ -14,9 +14,9 @@ github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/inference.proto
 
 `AdminInferenceService` manages daemon inference catalog/configuration resources used by semantic indexes and semantic search.
 
-MycelDB owns semantic and embedding infrastructure: embedding model endpoints, embedding model definitions, vector stores, semantic indexes, embedding credentials/grants/policies, and semantic search execution. MycelDB may understand connector types such as `openai-compatible` or `ollama`, but only for operations MycelDB owns, primarily `embeddings`.
+mycel owns semantic and embedding infrastructure: embedding model endpoints, embedding model definitions, vector stores, semantic indexes, embedding credentials/grants/policies, and semantic search execution. mycel may understand connector types such as `openai-compatible` or `ollama`, but only for operations mycel owns, primarily `embeddings`.
 
-MycelDB does not own application chat catalogs, chat prompts, chat tools, conversation UX, or browser-user chat credentials. Applications such as Knot PKM own chat orchestration and may maintain their own chat catalog while using MycelDB for embeddings and semantic search.
+mycel does not own application chat catalogs, chat prompts, chat tools, conversation UX, or browser-user chat credentials. Applications such as Knot PKM own chat orchestration and may maintain their own chat catalog while using mycel for embeddings and semantic search.
 
 The MVP moves inference package application, safe resource discovery, credentials, credential grants, and inference policies behind daemon gRPC so semantic provisioning and semantic execution can be controlled through the daemon.
 
@@ -76,11 +76,11 @@ Daemon-backed package application:
   inference package apply examples/inference/standard-openai-embeddings.json
 ```
 
-Example packages live under `examples/inference/`. MycelDB examples should focus on semantic/embedding resources, for example:
+Example packages live under `examples/inference/`. mycel examples should focus on semantic/embedding resources, for example:
 
 - `standard-openai-embeddings.json`
 
-Chat catalogs/packages belong in applications such as Knot PKM, not in MycelDB.
+Chat catalogs/packages belong in applications such as Knot PKM, not in mycel.
 
 Daemon-backed discovery:
 
