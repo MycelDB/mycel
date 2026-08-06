@@ -8,6 +8,7 @@ import (
 	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -192,7 +193,7 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 	if err != nil {
 		return nil, err
 	}
-	input := daemonsession.BeginTransactionInput{UserID: principal.UserID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode())}
+	input := daemonsession.BeginTransactionInput{UserID: principal.UserID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode()), Origin: graphchange.OriginMetadata{OperationID: req.GetOperationId()}}
 	var session daemonsession.GraphSession
 	if s.graphs != nil || s.spaces != nil {
 		var err error
@@ -355,11 +356,11 @@ func mapGraphSession(session daemonsession.GraphSession) *clientv1.GraphSession 
 }
 
 func mapGraphTransaction(tx daemonsession.GraphTransaction) *clientv1.GraphTransaction {
-	return &clientv1.GraphTransaction{TransactionId: tx.ID, SessionId: tx.SessionID, SpaceId: tx.SpaceID, DomainId: tx.DomainID, Mode: transactionModeToProto(tx.Mode), State: transactionStateToProto(tx.State), BaseRevision: tx.BaseRevision, CreateTime: timestamppb.New(tx.CreatedAt), LastSeenTime: timestamppb.New(tx.LastSeen), ExpireTime: timestamppb.New(tx.ExpiresAt)}
+	return &clientv1.GraphTransaction{TransactionId: tx.ID, SessionId: tx.SessionID, SpaceId: tx.SpaceID, DomainId: tx.DomainID, Mode: transactionModeToProto(tx.Mode), State: transactionStateToProto(tx.State), BaseRevision: tx.BaseRevision, CreateTime: timestamppb.New(tx.CreatedAt), LastSeenTime: timestamppb.New(tx.LastSeen), ExpireTime: timestamppb.New(tx.ExpiresAt), OperationId: tx.Origin.OperationID}
 }
 
 func mapTransactionCommit(commit daemonsession.TransactionCommit) *clientv1.TransactionCommit {
-	return &clientv1.TransactionCommit{CommitId: commit.ID, TransactionId: commit.TransactionID, SessionId: commit.SessionID, SpaceId: commit.SpaceID, DomainId: commit.DomainID, BaseRevision: commit.BaseRevision, CommittedRevision: commit.CommittedRevision, OperationCount: commit.OperationCount, CommitTime: timestamppb.New(commit.CommittedAt)}
+	return &clientv1.TransactionCommit{CommitId: commit.ID, TransactionId: commit.TransactionID, SessionId: commit.SessionID, SpaceId: commit.SpaceID, DomainId: commit.DomainID, BaseRevision: commit.BaseRevision, CommittedRevision: commit.CommittedRevision, OperationCount: commit.OperationCount, CommitTime: timestamppb.New(commit.CommittedAt), OperationId: commit.Origin.OperationID}
 }
 
 func sessionStateToProto(state daemonsession.SessionState) clientv1.SessionState {

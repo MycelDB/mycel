@@ -228,6 +228,11 @@ func (m *Module) BeginTransaction(ctx context.Context, input BeginTransactionInp
 		baseRevision = *input.BaseRevision
 	}
 	origin := mergeOrigin(s.Origin, input.Origin)
+	operationID, err := normalizeOperationID(origin.OperationID)
+	if err != nil {
+		return GraphTransaction{}, err
+	}
+	origin.OperationID = operationID
 	origin.UserID = s.UserID
 	origin.SessionID = s.ID
 	txID := routing.NewTransactionID(s.HomeNodeID)
@@ -511,6 +516,17 @@ func sessionRouteFromSession(s GraphSession, updatedAt time.Time) SessionRouteRe
 
 func transactionRouteFromTransaction(tx GraphTransaction, updatedAt time.Time) TransactionRouteRecord {
 	return TransactionRouteRecord{TransactionID: tx.ID, SessionID: tx.SessionID, UserID: tx.UserID, SpaceID: tx.SpaceID, DomainID: tx.DomainID, HomeNodeID: tx.HomeNodeID, State: tx.State, CreatedAt: tx.CreatedAt, UpdatedAt: updatedAt, ExpiresAt: tx.ExpiresAt}
+}
+
+func normalizeOperationID(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return uuid.NewString(), nil
+	}
+	if _, err := uuid.Parse(value); err != nil {
+		return "", fmt.Errorf("%w: operation_id must be a UUID", ErrInvalidInput)
+	}
+	return value, nil
 }
 
 func mergeOrigin(sessionOrigin graphchange.OriginMetadata, txOrigin graphchange.OriginMetadata) graphchange.OriginMetadata {

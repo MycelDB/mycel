@@ -301,8 +301,9 @@ Exit criteria:
 ## Phase GCN6 — Origin metadata plumbing
 
 Status: implemented for internal session/transaction models and committed graph
-events. Public protobuf/API origin fields remain pending explicit mycel-api
-schema work.
+events. Public API support is implemented as minimal
+`BeginTransactionRequest.operation_id`, returned on `GraphTransaction` and
+`TransactionCommit`; broader public origin fields remain future work.
 
 Goal: attach origin metadata to committed graph events.
 

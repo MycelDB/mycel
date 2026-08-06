@@ -96,11 +96,12 @@ func TestModuleOriginMetadataFlowsFromSessionToTransactionCommit(t *testing.T) {
 	if opened.Origin.ClientID != "knotpkm" || opened.Origin.ClientInstanceID != "tab-1" || opened.Origin.UserID != "user-1" {
 		t.Fatalf("session origin = %#v", opened.Origin)
 	}
-	tx, err := m.BeginTransaction(ctx, BeginTransactionInput{UserID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: "tx-op", Label: "editor-save", SessionID: "spoofed", TransactionID: "spoofed"}})
+	operationID := uuid.NewString()
+	tx, err := m.BeginTransaction(ctx, BeginTransactionInput{UserID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: operationID, Label: "editor-save", SessionID: "spoofed", TransactionID: "spoofed"}})
 	if err != nil {
 		t.Fatalf("BeginTransaction() error = %v", err)
 	}
-	if tx.Origin.ClientID != "knotpkm" || tx.Origin.ClientInstanceID != "tab-1" || tx.Origin.OperationID != "tx-op" || tx.Origin.Label != "editor-save" || tx.Origin.UserID != "user-1" || tx.Origin.SessionID != opened.ID || tx.Origin.TransactionID != tx.ID {
+	if tx.Origin.ClientID != "knotpkm" || tx.Origin.ClientInstanceID != "tab-1" || tx.Origin.OperationID != operationID || tx.Origin.Label != "editor-save" || tx.Origin.UserID != "user-1" || tx.Origin.SessionID != opened.ID || tx.Origin.TransactionID != tx.ID {
 		t.Fatalf("transaction origin = %#v", tx.Origin)
 	}
 	commit, err := m.CommitTransaction(ctx, "user-1", tx.ID, 1)
@@ -109,6 +110,28 @@ func TestModuleOriginMetadataFlowsFromSessionToTransactionCommit(t *testing.T) {
 	}
 	if commit.Origin != tx.Origin {
 		t.Fatalf("commit origin = %#v, want %#v", commit.Origin, tx.Origin)
+	}
+}
+
+func TestModuleGeneratesAndValidatesOperationID(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	opened, err := m.OpenSession(ctx, OpenSessionInput{UserID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString()})
+	if err != nil {
+		t.Fatalf("OpenSession() error = %v", err)
+	}
+	generated, err := m.BeginTransaction(ctx, BeginTransactionInput{UserID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	if err != nil {
+		t.Fatalf("BeginTransaction() error = %v", err)
+	}
+	if _, err := uuid.Parse(generated.Origin.OperationID); err != nil {
+		t.Fatalf("generated operation id %q is not a UUID: %v", generated.Origin.OperationID, err)
+	}
+	if _, err := m.BeginTransaction(ctx, BeginTransactionInput{UserID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: "not-a-uuid"}}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("BeginTransaction(invalid operation) error = %v, want ErrInvalidInput", err)
 	}
 }
 

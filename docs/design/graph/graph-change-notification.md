@@ -392,27 +392,24 @@ retention, integrity, and authorization requirements.
 
 ## Origin metadata
 
-V1 should accept origin metadata on both session and transaction creation.
-Session origin identifies the long-lived client/app instance. Transaction origin
-identifies the specific user action or mutation batch.
+V1 exposes a minimal public operation reference and keeps the broader origin
+model internal. Clients may provide `BeginTransactionRequest.operation_id` as a
+UUID string for the logical write operation. If omitted, the daemon generates a
+UUID and returns it on `GraphTransaction.operation_id` and
+`TransactionCommit.operation_id`.
 
-Initial write API targets:
+The notification subsystem stores the operation ID in resolved origin metadata
+and echoes it in committed events. The server also enriches internal origin
+metadata with trusted server-side fields such as user ID, session ID, and
+transaction ID.
 
-- `OpenSessionRequest.origin` for stable client identity;
-- `BeginTransactionRequest.origin` for per-operation identity.
-
-The notification subsystem echoes resolved origin metadata in committed events
-when available. Transaction origin overrides or supplements session origin for the
-fields it provides. The server enriches origin metadata with trusted server-side
-fields such as user ID, session ID, and transaction ID.
-
-Suggested fields:
+Internal origin fields:
 
 ```text
-client_id
-client_instance_id
-operation_id
-label
+operation_id        // public, client-provided or server-generated UUID
+client_id           // internal/future
+client_instance_id  // internal/future
+label               // internal/future
 user_id             // server-populated
 session_id          // server-populated
 transaction_id      // server-populated
