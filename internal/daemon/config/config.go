@@ -16,7 +16,7 @@ const (
 	DefaultLogFormat                        = "text"
 	DefaultGRPCAddr                         = "127.0.0.1:9091"
 	DefaultBootstrapAdminUsername           = "admin"
-	DefaultSemanticDirtyCooldown            = 60 * time.Second
+	DefaultSemanticDirtyCooldown            = 120 * time.Second
 	DefaultSemanticAnalyzerInterval         = 5 * time.Second
 	DefaultSemanticWorkerInterval           = 5 * time.Second
 	DefaultSemanticWorkerCount              = 2

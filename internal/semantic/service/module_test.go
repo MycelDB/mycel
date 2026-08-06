@@ -13,6 +13,7 @@ import (
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	daemonconfig "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -64,6 +65,35 @@ func TestPhase8BackupWaitsForSemanticWorkAndBlocksManualMutation(t *testing.T) {
 	}
 	if err := m.PurgeVectorIndex(ctx, domainspace.SpaceID(uuid.New()), uuid.New()); err != nil {
 		t.Fatalf("semantic mutation after release failed: %v", err)
+	}
+}
+
+func TestSchemaDirtyCooldownForTargetUsesSemanticIndexingPolicy(t *testing.T) {
+	ctx := context.Background()
+	domainID := graph.DomainID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	cooldown := 5 * time.Minute
+	m := NewModule(Config{SchemaManager: fakeSchemaManager{schema: schemamodel.DomainSchema{
+		DomainID: domainID,
+		NodeTypes: []schemamodel.NodeType{{
+			Name:   "Doc",
+			Labels: []string{"doc"},
+			Indexing: schemamodel.IndexPolicy{
+				Semantic:              true,
+				SemanticDirtyCooldown: cooldown,
+			},
+		}},
+	}}})
+	resolver := m.schemaDirtyCooldownForTarget(fakeServiceGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Labels: []string{"doc"}}}})
+	if resolver == nil {
+		t.Fatal("expected resolver")
+	}
+	got, err := resolver(ctx, domainsemantic.SemanticIndex{DomainID: domainID}, nodeID, time.Minute)
+	if err != nil {
+		t.Fatalf("resolver failed: %v", err)
+	}
+	if got != cooldown {
+		t.Fatalf("cooldown = %s, want %s", got, cooldown)
 	}
 }
 
@@ -240,4 +270,31 @@ func waitForStats(t *testing.T, m *Module, ok func(MaintenanceStats) bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("condition not met; stats=%+v", m.MaintenanceStats())
+}
+
+type fakeSchemaManager struct {
+	schema schemamodel.DomainSchema
+	err    error
+}
+
+func (m fakeSchemaManager) GetDomainSchema(context.Context, graph.DomainID) (schemamodel.DomainSchema, error) {
+	if m.err != nil {
+		return schemamodel.DomainSchema{}, m.err
+	}
+	return m.schema, nil
+}
+
+type fakeServiceGraphReader struct {
+	nodes map[graph.NodeID]graph.Node
+}
+
+func (r fakeServiceGraphReader) GetNode(_ context.Context, id graph.NodeID) (graph.Node, error) {
+	if node, ok := r.nodes[id]; ok {
+		return node, nil
+	}
+	return graph.Node{}, context.Canceled
+}
+
+func (r fakeServiceGraphReader) Parent(context.Context, graph.NodeID) (*graph.Edge, error) {
+	return nil, nil
 }

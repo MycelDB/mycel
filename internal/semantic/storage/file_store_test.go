@@ -378,6 +378,138 @@ func TestMaintenanceManagerPersistsDirtyEventsAndWork(t *testing.T) {
 	}
 }
 
+func TestMaintenanceManagerCompleteMissingWorkIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	if err := mgr.CompleteWork(ctx, uuid.New(), WorkResult{CompletedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CompleteWork() error = %v, want nil", err)
+	}
+}
+
+func TestMaintenanceManagerFailMissingWorkIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	if err := mgr.FailWork(ctx, uuid.New(), WorkFailure{FailedAt: time.Now().UTC(), Category: "stale", Message: "missing"}); err != nil {
+		t.Fatalf("FailWork() error = %v, want nil", err)
+	}
+}
+
+func TestMaintenanceManagerStaleGenerationTerminalWorkIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	now := time.Now().UTC()
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	first, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, EarliestRunAt: &now})
+	if err != nil {
+		t.Fatalf("upsert first work: %v", err)
+	}
+	claimed, err := mgr.ClaimReadyWork(ctx, ClaimReadyWorkInput{Now: now, Limit: 1, LeaseDuration: time.Minute, ClaimedBy: "worker-1"})
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim first work: claimed=%+v err=%v", claimed, err)
+	}
+	later := now.Add(2 * time.Minute)
+	updated, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, EarliestRunAt: &later})
+	if err != nil {
+		t.Fatalf("upsert updated work: %v", err)
+	}
+	if updated.ID != first.ID || updated.Generation <= claimed[0].Generation || updated.Status != domainsemantic.SemanticDirtyWorkStatusPending {
+		t.Fatalf("unexpected updated work: first=%+v claimed=%+v updated=%+v", first, claimed[0], updated)
+	}
+
+	if err := mgr.CompleteWork(ctx, claimed[0].ID, WorkResult{Generation: claimed[0].Generation, CompletedAt: now.Add(time.Second)}); err != nil {
+		t.Fatalf("stale CompleteWork() error = %v", err)
+	}
+	if err := mgr.FailWork(ctx, claimed[0].ID, WorkFailure{Generation: claimed[0].Generation, FailedAt: now.Add(time.Second), Category: "stale", Message: "old failure"}); err != nil {
+		t.Fatalf("stale FailWork() error = %v", err)
+	}
+	items, err := mgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+	if got := items[0]; got.Status != domainsemantic.SemanticDirtyWorkStatusPending || got.Generation != updated.Generation || got.CompletedAt != nil || got.FailedAt != nil || got.EarliestRunAt == nil || !got.EarliestRunAt.Equal(later) {
+		t.Fatalf("newer pending work was not preserved: %+v", got)
+	}
+}
+
+func TestMaintenanceManagerClaimReadyWorkRespectsEarliestRunAt(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	now := time.Now().UTC()
+	notBefore := now.Add(time.Minute)
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	if _, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, EarliestRunAt: &notBefore}); err != nil {
+		t.Fatalf("upsert work: %v", err)
+	}
+
+	claimed, err := mgr.ClaimReadyWork(ctx, ClaimReadyWorkInput{Now: now, Limit: 1, LeaseDuration: time.Minute, ClaimedBy: "worker"})
+	if err != nil {
+		t.Fatalf("claim before cooldown: %v", err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("claimed before cooldown: %+v", claimed)
+	}
+	claimed, err = mgr.ClaimReadyWork(ctx, ClaimReadyWorkInput{Now: notBefore, Limit: 1, LeaseDuration: time.Minute, ClaimedBy: "worker"})
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim at cooldown: claimed=%+v err=%v", claimed, err)
+	}
+}
+
+func TestMaintenanceManagerRepeatedUpsertPushesOutCooldown(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	now := time.Now().UTC()
+	firstRun := now.Add(time.Minute)
+	secondRun := now.Add(2 * time.Minute)
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	first, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, EarliestRunAt: &firstRun})
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	second, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, EarliestRunAt: &secondRun})
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if second.ID != first.ID || second.Generation <= first.Generation || second.EarliestRunAt == nil || !second.EarliestRunAt.Equal(secondRun) {
+		t.Fatalf("cooldown not pushed out: first=%+v second=%+v", first, second)
+	}
+	claimed, err := mgr.ClaimReadyWork(ctx, ClaimReadyWorkInput{Now: firstRun, Limit: 1, LeaseDuration: time.Minute, ClaimedBy: "worker"})
+	if err != nil {
+		t.Fatalf("claim at first cooldown: %v", err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("claimed at obsolete first cooldown: %+v", claimed)
+	}
+}
+
 func TestMaintenanceManagerReclaimsExpiredLeases(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

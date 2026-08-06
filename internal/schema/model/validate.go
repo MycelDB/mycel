@@ -43,6 +43,9 @@ func Validate(s DomainSchema) error {
 		if err := validateFields("node type "+nt.Name+" meta", nt.Meta); err != nil {
 			return err
 		}
+		if nt.Indexing.SemanticDirtyCooldown < 0 {
+			return fmt.Errorf("node type %s semantic dirty cooldown must be non-negative", nt.Name)
+		}
 	}
 	edgeTypes := map[string]struct{}{}
 	edgeLabels := map[string]string{}
@@ -74,6 +77,9 @@ func Validate(s DomainSchema) error {
 		}
 		if err := validateFields("edge type "+et.Name+" meta", et.Meta); err != nil {
 			return err
+		}
+		if et.Indexing.SemanticDirtyCooldown < 0 {
+			return fmt.Errorf("edge type %s semantic dirty cooldown must be non-negative", et.Name)
 		}
 	}
 	return nil

@@ -22,11 +22,12 @@ type GraphReader interface {
 }
 
 type Analyzer struct {
-	SpaceManager       storesemantic.SpaceManager
-	MaintenanceManager storesemantic.MaintenanceManager
-	GraphReader        GraphReader
-	DirtyCooldown      time.Duration
-	SkipIndex          func(context.Context, domainsemantic.SemanticIndex) (bool, error)
+	SpaceManager           storesemantic.SpaceManager
+	MaintenanceManager     storesemantic.MaintenanceManager
+	GraphReader            GraphReader
+	DirtyCooldown          time.Duration
+	DirtyCooldownForTarget func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error)
+	SkipIndex              func(context.Context, domainsemantic.SemanticIndex) (bool, error)
 }
 
 type AnalyzeInput struct {
@@ -146,8 +147,16 @@ func (a Analyzer) enqueueForEvent(ctx context.Context, index domainsemantic.Sema
 	count := 0
 	for targetID, target := range targets {
 		item := domainsemantic.SemanticDirtyWorkItem{SemanticIndexID: index.ID, SpaceID: index.SpaceID, DomainID: index.DomainID, TargetNodeID: targetID, SourceNodeID: targetID, SourceTxnIDs: []uuid.UUID{event.TxnID}, FirstGraphRevision: event.GraphRevision, LastGraphRevision: event.GraphRevision, Reason: target.Reason, Action: target.Action, Status: domainsemantic.SemanticDirtyWorkStatusPending}
-		if a.DirtyCooldown > 0 {
-			runAt := now.Add(a.DirtyCooldown)
+		cooldown := a.DirtyCooldown
+		if a.DirtyCooldownForTarget != nil {
+			resolved, err := a.DirtyCooldownForTarget(ctx, index, targetID, cooldown)
+			if err != nil {
+				return count, err
+			}
+			cooldown = resolved
+		}
+		if cooldown > 0 {
+			runAt := now.Add(cooldown)
 			item.EarliestRunAt = &runAt
 		}
 		if _, err := a.MaintenanceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
@@ -370,7 +379,7 @@ func (w Worker) processItem(ctx context.Context, item domainsemantic.SemanticDir
 		}
 		if skip {
 			result.Completed++
-			if completeErr := w.MaintenanceManager.CompleteWork(ctx, item.ID, storesemantic.WorkResult{}); completeErr != nil {
+			if completeErr := w.MaintenanceManager.CompleteWork(ctx, item.ID, storesemantic.WorkResult{Generation: item.Generation}); completeErr != nil {
 				return result, completeErr
 			}
 			return result, nil
@@ -380,6 +389,7 @@ func (w Worker) processItem(ctx context.Context, item domainsemantic.SemanticDir
 	if err != nil {
 		result.Failed++
 		failure := w.classifyFailure(err, item, cfg, time.Now().UTC())
+		failure.Generation = item.Generation
 		w.logFailure(item, failure)
 		if failErr := w.MaintenanceManager.FailWork(ctx, item.ID, failure); failErr != nil {
 			return result, failErr
@@ -387,7 +397,7 @@ func (w Worker) processItem(ctx context.Context, item domainsemantic.SemanticDir
 		return result, nil
 	}
 	result.Completed++
-	if completeErr := w.MaintenanceManager.CompleteWork(ctx, item.ID, storesemantic.WorkResult{}); completeErr != nil {
+	if completeErr := w.MaintenanceManager.CompleteWork(ctx, item.ID, storesemantic.WorkResult{Generation: item.Generation}); completeErr != nil {
 		return result, completeErr
 	}
 	return result, nil

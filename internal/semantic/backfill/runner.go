@@ -103,15 +103,21 @@ func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIn
 		mode = domainembedding.SourceModeSubtree
 	}
 	source := embedding.AssembleSource(embedding.SourceInput{Root: root, Nodes: nodes, Edges: edges, Mode: mode, IncludeProps: index.SourcePolicy.IncludeProps, MaxDepth: index.SourcePolicy.MaxDepth})
+	records, err := r.listVectorRecords(ctx, index, model)
+	if err != nil {
+		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
+	}
+	latest := latestCurrentBindingRecord(records, root.ID, string(mode), index, model, cap)
 	if strings.TrimSpace(source.Text) == "" || len(source.Text) < index.SourcePolicy.MinimumTextLength {
+		if latest != nil && !latest.Tombstone {
+			if _, err := r.VectorBackend.Delete(ctx, vectorstore.DeleteInput{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, NodeID: root.ID, SourceMode: string(mode), VectorStoreID: index.VectorStoreID, TargetRecordID: latest.ID, Reason: "source_below_minimum_text_length", ModelEndpointID: latest.ModelEndpointID, ModelID: latest.ModelID, ModelEndpointCapID: latest.ModelEndpointCapabilityID, CredentialID: latest.CredentialID, CredentialGrantID: latest.CredentialGrantID, PolicyDecisionID: latest.PolicyDecisionID, CreatedAt: time.Now().UTC()}); err != nil {
+				return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
+			}
+		}
 		return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "source text below minimum length"}, nil
 	}
 	if !force {
-		records, err := r.listVectorRecords(ctx, index, model)
-		if err != nil {
-			return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
-		}
-		if latest := latestCurrentBindingRecord(records, root.ID, string(mode), index, model, cap); latest != nil && !latest.Tombstone && latest.SourceHash == source.Hash {
+		if latest != nil && !latest.Tombstone && latest.SourceHash == source.Hash {
 			return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "current source hash already embedded"}, nil
 		}
 	}
