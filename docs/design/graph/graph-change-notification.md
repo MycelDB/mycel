@@ -56,15 +56,11 @@ conversation, but the implementation should use consumer/handler terminology.
 
 ## Current related code
 
-The repository already contains overlapping graph-change structures:
-
-- `internal/graph/change.CommittedEvent` and `graphchange.Sink`;
-- `internal/graph/service.GraphChange` in graph commit results;
-- `internal/changestream/service.GraphChange` for the current change-stream
-  subsystem.
-
-The graph-change notification design should make `internal/graph/change` the
-canonical internal graph-change model and migrate duplicate structures toward it.
+The implemented model uses `internal/graph/change.CommittedEvent` and
+`graphchange.Sink` as the canonical internal graph-change vocabulary.
+`internal/graph/service.GraphChange` is an alias of the canonical change type for
+commit-result compatibility. The former duplicate internal changestream service
+vocabulary was removed on the `add_callbacks` branch.
 
 ## Canonical graph-change model
 
@@ -469,39 +465,38 @@ behavior:
 For consumers that require strict processing, use ordered delivery per
 space/domain/partition and checkpoint after each handled revision.
 
-## Relationship to existing change streams
+## Relationship to public graph-change watch
 
-The existing Client Change Stream API is a public streaming surface. It should
-become a consumer or adapter of the graph-change notification subsystem rather
-than owning a separate graph-change vocabulary.
+The old public Client Change Stream API has been replaced by
+`GraphChangeService.WatchGraphChanges`. The public watch service is an adapter on
+top of the graph-change notification subsystem rather than a separate owner of a
+graph-change vocabulary.
 
-Migration target:
+Current target:
 
 ```text
 graph service
   -> graph-change notification subsystem
       -> internal consumers
-      -> Client Change Stream API adapter
+      -> GraphChangeService.WatchGraphChanges adapter
       -> future GraphQL subscription adapter
 ```
 
-## Consolidation plan
+## Consolidation status
 
-A safe implementation plan should avoid a large rewrite:
+The `add_callbacks` branch has completed the V1 consolidation:
 
-1. Extend `internal/graph/change` with canonical `Change`, `ChangeType`,
-   projection, filter, and origin structures.
-2. Make graph service produce canonical committed events and canonical per-object
-   changes.
-3. Adapt `internal/graph/service.CommitResult` to use the canonical change type
-   or an alias.
-4. Adapt `internal/changestream/service` to consume/adapt canonical graph-change
-   events instead of defining a duplicate `GraphChange` vocabulary.
-5. Add the graph-change notification subsystem registration API and internal
-   delivery loop.
-6. Move cache/derived-state consumers onto the registration API.
-7. Later, design public streaming and GraphQL subscription surfaces on top of the
-   same subsystem.
+1. `internal/graph/change` defines canonical `Change`, `ChangeType`, projection,
+   filter, and origin structures.
+2. Graph service produces canonical committed events and per-object changes.
+3. `internal/graph/service.CommitResult` uses the canonical change type through
+   an alias.
+4. The legacy internal `internal/changestream/service` module and transaction
+   `PublishCommit` plumbing were removed.
+5. The graph-change notification subsystem registration API, replay log, and
+   delivery loop are implemented.
+6. Automation and public graph-change watch consume the notification subsystem.
+7. GraphQL subscriptions remain a future adapter on top of the same subsystem.
 
 ## Affected node IDs
 

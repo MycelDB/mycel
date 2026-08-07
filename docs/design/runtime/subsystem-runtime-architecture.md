@@ -112,7 +112,7 @@ internal/graph/service.Manager
 internal/semantic/service.IndexManager
 internal/semantic/service.MaintenanceService
 internal/session/service.Manager
-internal/changestream/service.StreamService
+internal/graph/notification.Manager
 ```
 
 The exact type name can vary, but new subsystem service packages should prefer clear names such as `Manager`, `Service`, `Indexer`, or `Scheduler` over daemon-oriented `Module`.
@@ -193,8 +193,8 @@ internal/session/
   api/
   service/
 
-internal/changestream/
-  service/
+internal/graph/
+  notification/
 
 internal/backup/
   service/

@@ -1,6 +1,8 @@
 # add_callbacks Parking-Lot Implementation Plan
 
-Status: parked on `add_callbacks`.
+Status: parked on `add_callbacks`; downstream compatibility, example docs,
+integration notes, and current-doc cleanup have a follow-up pass recorded in
+[`add-callbacks-integration-notes.md`](add-callbacks-integration-notes.md).
 
 This plan captures the remaining non-blocking work after the graph-change
 notification, operation correlation, public graph-change watch API, SDK helper,

@@ -134,6 +134,47 @@ On a gap, clients should invalidate/rebuild their local derived state and then
 reconnect from an appropriate checkpoint. The daemon does not automatically skip
 ahead after a gap.
 
+## Client lifecycle pattern
+
+Consumers that maintain derived state should persist their last processed event
+revision outside the stream process. A typical lifecycle is:
+
+1. Open `WatchGraphChanges` with `include_current = true` and no
+   `after_revision` for an initial checkpoint, or with the last persisted
+   revision as `after_revision` after reconnecting.
+2. For each `event`, update derived state and then persist `event.revision` as
+   the new checkpoint.
+3. To ignore a write issued by the same client workflow, generate an
+   `operation_id` before `BeginTransaction`, pass it on the begin request, and
+   compare it with `event.origin.operation_id` in watch events. This is only
+   correlation metadata; it is not authorization, idempotency, replay
+   protection, or ordering.
+4. If a `gap` is received, invalidate or rebuild derived state from the current
+   authoritative graph and reconnect from a fresh checkpoint. The daemon does
+   not automatically skip ahead after a gap.
+
+Pseudo-code:
+
+```text
+operation_id = new_uuid_v4()
+tx = BeginTransaction(session_id, read_write, operation_id)
+# write graph changes, then commit
+CommitTransaction(tx.transaction_id)
+
+last_revision = load_checkpoint()
+stream = WatchGraphChanges(space_id, domain_id, after_revision=last_revision)
+for message in stream:
+  if message.event:
+    if message.event.origin.operation_id == operation_id:
+      continue # own write; optional client policy
+    apply_to_cache(message.event)
+    save_checkpoint(message.event.revision)
+  if message.gap:
+    rebuild_cache_from_graph()
+    save_checkpoint(message.gap.current_revision)
+    reconnect()
+```
+
 ## CLI
 
 ```sh
