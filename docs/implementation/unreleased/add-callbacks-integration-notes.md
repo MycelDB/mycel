@@ -8,12 +8,12 @@ and final validation.
 
 ## Branches
 
-Current coordinated branches before this follow-up documentation pass:
+Coordinated branch heads from this follow-up pass:
 
-- `mycel-api/add_callbacks`: `3be68b4 Clarify graph change watch checkpoint and field filters`
-- `mycel/add_callbacks`: `71891a0 Document add_callbacks parking lot`
-- `mycel-go-sdk/add_callbacks`: `7d5aa39 Regenerate graph change comments`
-- `mycel-rust-sdk/add_callbacks`: `96c20f8 Update API submodule after graph change comments`
+- `mycel-api/add_callbacks`: `87d77a5 Document graph change watch migration`
+- `mycel/add_callbacks`: current notes commit; see `git log -1` on the branch
+- `mycel-go-sdk/add_callbacks`: `dc2f311 Add graph change watch lifecycle example`
+- `mycel-rust-sdk/add_callbacks`: `6c3430e Add graph change watch lifecycle example`
 - `mycel-bench/add_callbacks`: `9f7c617 Update graph change watch benchmark references`
 
 ## Breaking API migration
