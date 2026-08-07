@@ -93,7 +93,7 @@ func printChangeStreamMessage(msg *clientv1.WatchGraphChangesResponse) {
 		return
 	}
 	if event := msg.GetEvent(); event != nil {
-		fmt.Printf("event\trevision=%d\tcommit=%s\ttransaction=%s\tchanges=%d\n", event.GetRevision(), event.GetCommitId(), event.GetTransactionId(), len(event.GetChanges()))
+		fmt.Printf("event\trevision=%d\ttransaction=%s\tchanges=%d\n", event.GetRevision(), event.GetTransactionId(), len(event.GetChanges()))
 		for _, change := range event.GetChanges() {
 			fmt.Printf("change\t%s", change.GetType().String())
 			if nodeID := change.GetNodeId(); nodeID != "" {

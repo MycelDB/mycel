@@ -244,7 +244,7 @@ func graphChangeRegistrationProjection(requested graphchange.Projection, filter 
 
 func mapGraphChangeEvent(event graphchange.CommittedEvent, filter graphChangeFilter, projection graphchange.Projection) *clientv1.GraphChangeEvent {
 	event.Normalize()
-	out := &clientv1.GraphChangeEvent{EventId: event.ID.String(), SpaceId: event.SpaceID.String(), DomainId: event.DomainID.String(), Revision: uint64ToInt64(event.Revision), CommitId: uuidString(event.CommitID), TransactionId: firstNonEmptyString(event.Origin.TransactionID, uuidString(event.TransactionID)), CommitTime: timestamppb.New(event.CommittedAt)}
+	out := &clientv1.GraphChangeEvent{EventId: event.ID.String(), SpaceId: event.SpaceID.String(), DomainId: event.DomainID.String(), Revision: uint64ToInt64(event.Revision), TransactionId: firstNonEmptyString(event.Origin.TransactionID, uuidString(event.TransactionID)), CommitTime: timestamppb.New(event.CommittedAt)}
 	if projection.IncludeOrigin {
 		out.Origin = mapGraphChangeOrigin(event.Origin)
 	}
