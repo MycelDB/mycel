@@ -178,7 +178,11 @@ func (s *FileStore) ApplyPut(ctx context.Context, user User) (User, error) {
 			return user, s.write(doc)
 		}
 		if strings.EqualFold(existing.Username, user.Username) {
-			return User{}, ErrDuplicateUser
+			// ApplyPut replays authoritative WAL/Raft state. If a local store already
+			// contains the username under a different ID, converge to the replayed
+			// record instead of failing startup with ErrDuplicateUser.
+			doc.Users[i] = user
+			return user, s.write(doc)
 		}
 	}
 	doc.Users = append(doc.Users, user)
