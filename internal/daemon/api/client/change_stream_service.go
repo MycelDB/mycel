@@ -24,10 +24,16 @@ type GraphChangeService struct {
 	clientv1.UnimplementedGraphChangeServiceServer
 	notifications graphnotification.Manager
 	spaces        daemonspace.Manager
+	leaderChecker TransactionGraphWriteLeaderChecker
 }
 
 func NewGraphChangeService(notifications graphnotification.Manager, spaces daemonspace.Manager) *GraphChangeService {
 	return &GraphChangeService{notifications: notifications, spaces: spaces}
+}
+
+func (s *GraphChangeService) WithGraphWriteLeaderChecker(checker TransactionGraphWriteLeaderChecker) *GraphChangeService {
+	s.leaderChecker = checker
+	return s
 }
 
 func (s *GraphChangeService) WatchGraphChanges(req *clientv1.WatchGraphChangesRequest, stream clientv1.GraphChangeService_WatchGraphChangesServer) error {
@@ -47,6 +53,11 @@ func (s *GraphChangeService) WatchGraphChanges(req *clientv1.WatchGraphChangesRe
 	if _, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, spaceID, domainID, ""); err != nil {
 		return mapDomainError(err, "watch graph changes")
 	}
+	if s.leaderChecker != nil {
+		if err := s.leaderChecker.RequireLocalGraphWriteLeader(ctx, spaceID); err != nil {
+			return mapGraphError(err, "watch graph changes route")
+		}
+	}
 	var after *uint64
 	if req.AfterRevision != nil {
 		value := req.GetAfterRevision()
@@ -57,6 +68,8 @@ func (s *GraphChangeService) WatchGraphChanges(req *clientv1.WatchGraphChangesRe
 		after = &converted
 	}
 	consumer := newGraphChangeStreamConsumer(ctx)
+	requestedProjection := graphChangeProjectionFromProto(req.GetProjection())
+	registrationProjection := graphChangeRegistrationProjection(requestedProjection, req.GetFilter())
 	registration, err := s.notifications.RegisterConsumer(ctx, graphnotification.ConsumerSpec{
 		ConsumerName: "public-graph-change-stream",
 		Scope: graphchange.Scope{
@@ -70,7 +83,7 @@ func (s *GraphChangeService) WatchGraphChanges(req *clientv1.WatchGraphChangesRe
 			Labels:     append([]string(nil), req.GetFilter().GetLabels()...),
 			Fields:     append([]string(nil), req.GetFilter().GetChangedFields()...),
 		},
-		Projection: graphChangeProjectionFromProto(req.GetProjection()),
+		Projection: registrationProjection,
 		Start:      graphnotification.StartPosition{AfterRevision: after},
 	}, consumer)
 	if err != nil {
@@ -99,7 +112,7 @@ func (s *GraphChangeService) WatchGraphChanges(req *clientv1.WatchGraphChangesRe
 			}
 			return nil
 		case event := <-consumer.events:
-			protoEvent := mapGraphChangeEvent(event, filter)
+			protoEvent := mapGraphChangeEvent(event, filter, requestedProjection)
 			if protoEvent == nil || len(protoEvent.GetChanges()) == 0 {
 				continue
 			}
@@ -150,6 +163,7 @@ type graphChangeFilter struct {
 	eventTypes    map[clientv1.GraphChangeType]bool
 	nodeIDs       map[string]bool
 	edgeIDs       map[string]bool
+	labels        map[string]bool
 	changedFields map[string]bool
 }
 
@@ -157,7 +171,7 @@ func graphChangeFilterFromProto(filter *clientv1.GraphChangeFilter) graphChangeF
 	if filter == nil {
 		return graphChangeFilter{}
 	}
-	out := graphChangeFilter{eventTypes: map[clientv1.GraphChangeType]bool{}, nodeIDs: stringBoolMap(filter.GetNodeIds()), edgeIDs: stringBoolMap(filter.GetEdgeIds()), changedFields: stringBoolMap(filter.GetChangedFields())}
+	out := graphChangeFilter{eventTypes: map[clientv1.GraphChangeType]bool{}, nodeIDs: stringBoolMap(filter.GetNodeIds()), edgeIDs: stringBoolMap(filter.GetEdgeIds()), labels: stringBoolMap(filter.GetLabels()), changedFields: stringBoolMap(filter.GetChangedFields())}
 	for _, value := range filter.GetEventTypes() {
 		if value != clientv1.GraphChangeType_GRAPH_CHANGE_TYPE_UNSPECIFIED {
 			out.eventTypes[value] = true
@@ -206,31 +220,71 @@ func graphChangeProjectionFromProto(projection *clientv1.GraphChangeProjection) 
 	}
 }
 
-func mapGraphChangeEvent(event graphchange.CommittedEvent, filter graphChangeFilter) *clientv1.GraphChangeEvent {
+func graphChangeRegistrationProjection(requested graphchange.Projection, filter *clientv1.GraphChangeFilter) graphchange.Projection {
+	out := requested
+	if filter != nil {
+		if len(filter.GetNodeIds()) > 0 {
+			out.IncludeAffectedNodeIDs = true
+		}
+		if len(filter.GetEdgeIds()) > 0 {
+			out.IncludeAffectedEdgeIDs = true
+		}
+		if len(filter.GetChangedFields()) > 0 {
+			out.IncludeChangedFields = true
+		}
+		if len(filter.GetLabels()) > 0 {
+			out.IncludeOldNodeSnapshot = true
+			out.IncludeNewNodeSnapshot = true
+			out.IncludeOldEdgeSnapshot = true
+			out.IncludeNewEdgeSnapshot = true
+		}
+	}
+	return out
+}
+
+func mapGraphChangeEvent(event graphchange.CommittedEvent, filter graphChangeFilter, projection graphchange.Projection) *clientv1.GraphChangeEvent {
 	event.Normalize()
-	out := &clientv1.GraphChangeEvent{EventId: event.ID.String(), SpaceId: event.SpaceID.String(), DomainId: event.DomainID.String(), Revision: uint64ToInt64(event.Revision), CommitId: uuidString(event.CommitID), TransactionId: uuidString(event.TransactionID), CommitTime: timestamppb.New(event.CommittedAt), Origin: mapGraphChangeOrigin(event.Origin), AffectedNodeIds: graphNodeIDsToStrings(event.AffectedNodeIDs), AffectedEdgeIds: graphEdgeIDsToStrings(event.AffectedEdgeIDs)}
+	out := &clientv1.GraphChangeEvent{EventId: event.ID.String(), SpaceId: event.SpaceID.String(), DomainId: event.DomainID.String(), Revision: uint64ToInt64(event.Revision), CommitId: uuidString(event.CommitID), TransactionId: firstNonEmptyString(event.Origin.TransactionID, uuidString(event.TransactionID)), CommitTime: timestamppb.New(event.CommittedAt)}
+	if projection.IncludeOrigin {
+		out.Origin = mapGraphChangeOrigin(event.Origin)
+	}
+	if projection.IncludeAffectedNodeIDs {
+		out.AffectedNodeIds = graphNodeIDsToStrings(event.AffectedNodeIDs)
+	}
+	if projection.IncludeAffectedEdgeIDs {
+		out.AffectedEdgeIds = graphEdgeIDsToStrings(event.AffectedEdgeIDs)
+	}
 	for _, change := range event.Changes {
 		mappedType := mapGraphChangeType(change.Type)
 		if mappedType == clientv1.GraphChangeType_GRAPH_CHANGE_TYPE_UNSPECIFIED || !filter.matchesType(mappedType) || !filter.matchesChange(change) {
 			continue
 		}
-		out.Changes = append(out.Changes, mapGraphObjectChange(change, mappedType))
+		out.Changes = append(out.Changes, mapGraphObjectChange(change, mappedType, projection))
 	}
 	return out
 }
 
-func mapGraphObjectChange(change graphchange.Change, mappedType clientv1.GraphChangeType) *clientv1.GraphObjectChange {
-	out := &clientv1.GraphObjectChange{Type: mappedType, NodeId: change.NodeID, EdgeId: change.EdgeID, AffectedNodeIds: append([]string(nil), change.AffectedNodeIDs...), AffectedEdgeIds: append([]string(nil), change.AffectedEdgeIDs...), ChangedFields: append([]string(nil), change.ChangedFields...)}
-	if change.OldNode != nil {
+func mapGraphObjectChange(change graphchange.Change, mappedType clientv1.GraphChangeType, projection graphchange.Projection) *clientv1.GraphObjectChange {
+	out := &clientv1.GraphObjectChange{Type: mappedType, NodeId: change.NodeID, EdgeId: change.EdgeID}
+	if projection.IncludeAffectedNodeIDs {
+		out.AffectedNodeIds = append([]string(nil), change.AffectedNodeIDs...)
+	}
+	if projection.IncludeAffectedEdgeIDs {
+		out.AffectedEdgeIds = append([]string(nil), change.AffectedEdgeIDs...)
+	}
+	if projection.IncludeChangedFields {
+		out.ChangedFields = append([]string(nil), change.ChangedFields...)
+	}
+	if projection.IncludeOldNodeSnapshot && change.OldNode != nil {
 		out.OldNode = mapProtoNode(*change.OldNode)
 	}
-	if change.Node != nil {
+	if projection.IncludeNewNodeSnapshot && change.Node != nil {
 		out.NewNode = mapProtoNode(*change.Node)
 	}
-	if change.OldEdge != nil {
+	if projection.IncludeOldEdgeSnapshot && change.OldEdge != nil {
 		out.OldEdge = mapProtoEdge(*change.OldEdge)
 	}
-	if change.Edge != nil {
+	if projection.IncludeNewEdgeSnapshot && change.Edge != nil {
 		out.NewEdge = mapProtoEdge(*change.Edge)
 	}
 	return out
@@ -282,7 +336,35 @@ func (f graphChangeFilter) matchesChange(change graphchange.Change) bool {
 	if len(f.changedFields) > 0 && !matchesAnyValue(f.changedFields, "", change.ChangedFields) {
 		return false
 	}
+	if len(f.labels) > 0 && !changeHasAnyLabel(change, f.labels) {
+		return false
+	}
 	return true
+}
+
+func changeHasAnyLabel(change graphchange.Change, want map[string]bool) bool {
+	if change.Node != nil && labelsMatchAny(change.Node.Labels, want) {
+		return true
+	}
+	if change.OldNode != nil && labelsMatchAny(change.OldNode.Labels, want) {
+		return true
+	}
+	if change.Edge != nil && labelsMatchAny(change.Edge.Labels, want) {
+		return true
+	}
+	if change.OldEdge != nil && labelsMatchAny(change.OldEdge.Labels, want) {
+		return true
+	}
+	return false
+}
+
+func labelsMatchAny(labels []string, want map[string]bool) bool {
+	for _, label := range labels {
+		if want[label] {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesAnyValue(want map[string]bool, primary string, values []string) bool {

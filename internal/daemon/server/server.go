@@ -211,7 +211,11 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	clientv1.RegisterImportExportServiceServer(grpcServer, importExportAPI)
 	clientv1.RegisterMetadataCatalogServiceServer(grpcServer, metadataCatalogAPI)
 	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager))
-	clientv1.RegisterGraphChangeServiceServer(grpcServer, clientapi.NewGraphChangeService(cfg.GraphChangeManager, cfg.SpaceManager))
+	graphChangeAPI := clientapi.NewGraphChangeService(cfg.GraphChangeManager, cfg.SpaceManager)
+	if checker, ok := cfg.GraphManager.(clientapi.TransactionGraphWriteLeaderChecker); ok {
+		graphChangeAPI.WithGraphWriteLeaderChecker(checker)
+	}
+	clientv1.RegisterGraphChangeServiceServer(grpcServer, graphChangeAPI)
 	return &Server{grpcServer: grpcServer, listener: listener, logger: cfg.Logger}, nil
 }
 

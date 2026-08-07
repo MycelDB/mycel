@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/myceldb/mycel/internal/cli/app"
@@ -47,6 +49,9 @@ func NewChangeStreamWatchCommand(a *app.App) *cobra.Command {
 		seen := 0
 		for {
 			msg, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}

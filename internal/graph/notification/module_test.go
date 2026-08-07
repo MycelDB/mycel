@@ -161,6 +161,37 @@ func TestRegisterConsumerReplaysAndReportsGap(t *testing.T) {
 	}
 }
 
+func TestRegisterConsumerReportsGapWhenHistoryCompactedToEmpty(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	m.SetRetentionForTest(100, time.Nanosecond)
+	if result := m.Init(ctx, testHost{dataDir: t.TempDir()}); !result.OK {
+		t.Fatalf("Init() error = %v", result.Error)
+	}
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	old := committedEvent(spaceID, domainID, 1, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()})
+	old.CommittedAt = time.Now().UTC().Add(-time.Hour)
+	if err := m.OnGraphCommitted(ctx, old); err != nil {
+		t.Fatalf("OnGraphCommitted() error = %v", err)
+	}
+	if current, err := m.CurrentRevision(ctx, spaceID, domainID); err != nil || current != 1 {
+		t.Fatalf("CurrentRevision() = %d, %v; want 1", current, err)
+	}
+	after := uint64(0)
+	consumer := newRecordingConsumer()
+	reg, err := m.RegisterConsumer(ctx, ConsumerSpec{ConsumerName: "cache-gap-empty", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}, Start: StartPosition{AfterRevision: &after}}, consumer)
+	if err != nil {
+		t.Fatalf("RegisterConsumer() error = %v", err)
+	}
+	defer reg.Close()
+	consumer.wait(t)
+	_, gaps := consumer.snapshot()
+	if len(gaps) != 1 || gaps[0].CurrentRevision != 1 || gaps[0].OldestAvailableRevision != 2 {
+		t.Fatalf("gap = %+v", gaps)
+	}
+}
+
 func TestLeaderGatePreventsFollowerDelivery(t *testing.T) {
 	ctx := context.Background()
 	m := initTestModule(t)

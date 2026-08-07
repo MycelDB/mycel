@@ -206,7 +206,7 @@ func (m *Module) RegisterConsumer(ctx context.Context, spec ConsumerSpec, consum
 		return nil, fmt.Errorf("%w: scope space_id and domain_id are required", ErrInvalidInput)
 	}
 	id := uuid.NewString()
-	reg := &registration{module: m, id: id, spec: spec, consumer: consumer, ch: make(chan graphchange.CommittedEvent, defaultDeliveryBuffer), done: make(chan struct{})}
+	reg := &registration{module: m, id: id, spec: spec, consumer: consumer, done: make(chan struct{})}
 
 	m.mu.Lock()
 	if err := m.loadHistoryLocked(key, spec.Scope.SpaceID, spec.Scope.DomainID); err != nil {
@@ -220,10 +220,18 @@ func (m *Module) RegisterConsumer(ctx context.Context, spec ConsumerSpec, consum
 		if events := m.history[key]; len(events) > 0 {
 			oldest = eventRevision(events[0])
 		}
-		if oldest > 0 && *spec.Start.AfterRevision < oldest-1 {
-			value := graphchange.Gap{SpaceID: spec.Scope.SpaceID, DomainID: spec.Scope.DomainID, RequestedAfterRevision: *spec.Start.AfterRevision, OldestAvailableRevision: oldest, CurrentRevision: m.current[key]}
+		current := m.current[key]
+		switch {
+		case oldest > 0 && *spec.Start.AfterRevision < oldest-1:
+			value := graphchange.Gap{SpaceID: spec.Scope.SpaceID, DomainID: spec.Scope.DomainID, RequestedAfterRevision: *spec.Start.AfterRevision, OldestAvailableRevision: oldest, CurrentRevision: current}
 			gap = &value
-		} else {
+		case oldest == 0 && current > *spec.Start.AfterRevision:
+			value := graphchange.Gap{SpaceID: spec.Scope.SpaceID, DomainID: spec.Scope.DomainID, RequestedAfterRevision: *spec.Start.AfterRevision, CurrentRevision: current}
+			if current < ^uint64(0) {
+				value.OldestAvailableRevision = current + 1
+			}
+			gap = &value
+		default:
 			for _, event := range m.history[key] {
 				if eventRevision(event) > *spec.Start.AfterRevision && matchesSpec(event, spec) {
 					replay = append(replay, event.ApplyProjection(spec.Projection))
@@ -231,17 +239,20 @@ func (m *Module) RegisterConsumer(ctx context.Context, spec ConsumerSpec, consum
 			}
 		}
 	}
-	m.registrations[id] = reg
+	reg.ch = make(chan graphchange.CommittedEvent, defaultDeliveryBuffer+len(replay))
+	for _, event := range replay {
+		reg.ch <- event
+	}
+	if gap == nil {
+		m.registrations[id] = reg
+	}
 	m.mu.Unlock()
 
-	go reg.run()
 	if gap != nil {
 		go reg.deliverGap(*gap)
-	} else {
-		for _, event := range replay {
-			reg.offer(event)
-		}
+		return reg, nil
 	}
+	go reg.run()
 	return reg, nil
 }
 
@@ -334,6 +345,7 @@ func (r *registration) offer(event graphchange.CommittedEvent) {
 		r.module.mu.Lock()
 		r.module.diagnostics.EventsDropped++
 		r.module.mu.Unlock()
+		go r.deliverGap(graphchange.Gap{SpaceID: event.SpaceID.String(), DomainID: event.DomainID.String(), CurrentRevision: eventRevision(event)})
 	}
 }
 
