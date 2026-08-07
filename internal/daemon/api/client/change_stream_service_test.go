@@ -1,15 +1,52 @@
 package client
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
+
+func TestWatchGraphChangesFailsClosedWhenLocalNodeIsNotGraphLeader(t *testing.T) {
+	spaceModule, _, userID, spaceID, domainID := initSessionServiceTestModules(t)
+	svc := NewGraphChangeService(graphnotification.NewModule(), spaceModule).WithGraphWriteLeaderChecker(fakeGraphChangeLeaderChecker{err: status.Error(codes.Unavailable, "not local graph leader")})
+	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: userID, Username: "alice"})
+	err := svc.WatchGraphChanges(&clientv1.WatchGraphChangesRequest{SpaceId: spaceID, DomainId: domainID}, fakeGraphChangeWatchServer{ctx: ctx})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("WatchGraphChanges() error = %v, want Unavailable", err)
+	}
+}
+
+type fakeGraphChangeLeaderChecker struct{ err error }
+
+func (f fakeGraphChangeLeaderChecker) RequireLocalGraphWriteLeader(ctx context.Context, spaceID string) error {
+	return f.err
+}
+
+type fakeGraphChangeWatchServer struct {
+	grpc.ServerStream
+	ctx  context.Context
+	sent []*clientv1.WatchGraphChangesResponse
+}
+
+func (s fakeGraphChangeWatchServer) Send(msg *clientv1.WatchGraphChangesResponse) error { return nil }
+func (s fakeGraphChangeWatchServer) Context() context.Context                           { return s.ctx }
+func (s fakeGraphChangeWatchServer) SetHeader(metadata.MD) error                        { return nil }
+func (s fakeGraphChangeWatchServer) SendHeader(metadata.MD) error                       { return nil }
+func (s fakeGraphChangeWatchServer) SetTrailer(metadata.MD)                             {}
+func (s fakeGraphChangeWatchServer) SendMsg(any) error                                  { return nil }
+func (s fakeGraphChangeWatchServer) RecvMsg(any) error                                  { return nil }
 
 func TestMapGraphChangeEventFiltersBeforeApplyingProjection(t *testing.T) {
 	spaceID := uuid.New()
