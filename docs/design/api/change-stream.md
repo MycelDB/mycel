@@ -51,7 +51,9 @@ is older than retained graph-change history, the daemon sends `GraphChangeGap` a
 closes the stream successfully.
 
 `include_current` asks the daemon to send a checkpoint with the current observed
-revision before subsequent stream messages.
+revision before subsequent stream messages. If `after_revision` is also set,
+replayed events after that revision may follow the checkpoint even when their
+revision is less than or equal to the checkpoint revision.
 
 ## Response
 
@@ -112,7 +114,9 @@ message GraphObjectChange {
 ```
 
 Old/new snapshots are projection-controlled. Compact consumers should usually use
-affected IDs and changed fields instead of full snapshots.
+affected IDs and changed fields instead of full snapshots. Changed fields are
+best-effort: producers that cannot determine field-level changes may omit them,
+and field filters only match events that include changed field names.
 
 ## Gap behavior
 

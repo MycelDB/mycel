@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -67,6 +68,18 @@ func (s *GraphChangeService) WatchGraphChanges(req *clientv1.WatchGraphChangesRe
 		converted := uint64(value)
 		after = &converted
 	}
+	if req.GetIncludeCurrent() {
+		current, err := s.notifications.CurrentRevision(ctx, spaceID, domainID)
+		if err != nil {
+			return mapGraphChangeError(err, "current graph change revision")
+		}
+		if err := stream.Send(&clientv1.WatchGraphChangesResponse{Message: &clientv1.WatchGraphChangesResponse_Checkpoint{Checkpoint: &clientv1.GraphChangeCheckpoint{SpaceId: spaceID, DomainId: domainID, CurrentRevision: uint64ToInt64(current), CheckpointTime: timestamppb.Now()}}}); err != nil {
+			return err
+		}
+		if after == nil {
+			after = &current
+		}
+	}
 	consumer := newGraphChangeStreamConsumer(ctx)
 	requestedProjection := graphChangeProjectionFromProto(req.GetProjection())
 	registrationProjection := graphChangeRegistrationProjection(requestedProjection, req.GetFilter())
@@ -90,15 +103,6 @@ func (s *GraphChangeService) WatchGraphChanges(req *clientv1.WatchGraphChangesRe
 		return mapGraphChangeError(err, "register graph change stream")
 	}
 	defer registration.Close()
-	if req.GetIncludeCurrent() {
-		current, err := s.notifications.CurrentRevision(ctx, spaceID, domainID)
-		if err != nil {
-			return mapGraphChangeError(err, "current graph change revision")
-		}
-		if err := stream.Send(&clientv1.WatchGraphChangesResponse{Message: &clientv1.WatchGraphChangesResponse_Checkpoint{Checkpoint: &clientv1.GraphChangeCheckpoint{SpaceId: spaceID, DomainId: domainID, CurrentRevision: uint64ToInt64(current), CheckpointTime: timestamppb.Now()}}}); err != nil {
-			return err
-		}
-	}
 	filter := graphChangeFilterFromProto(req.GetFilter())
 	heartbeats := time.NewTicker(graphChangeHeartbeatInterval)
 	defer heartbeats.Stop()
@@ -248,20 +252,42 @@ func mapGraphChangeEvent(event graphchange.CommittedEvent, filter graphChangeFil
 	if projection.IncludeOrigin {
 		out.Origin = mapGraphChangeOrigin(event.Origin)
 	}
-	if projection.IncludeAffectedNodeIDs {
-		out.AffectedNodeIds = graphNodeIDsToStrings(event.AffectedNodeIDs)
-	}
-	if projection.IncludeAffectedEdgeIDs {
-		out.AffectedEdgeIds = graphEdgeIDsToStrings(event.AffectedEdgeIDs)
-	}
+	affectedNodeIDs := map[string]bool{}
+	affectedEdgeIDs := map[string]bool{}
 	for _, change := range event.Changes {
 		mappedType := mapGraphChangeType(change.Type)
 		if mappedType == clientv1.GraphChangeType_GRAPH_CHANGE_TYPE_UNSPECIFIED || !filter.matchesType(mappedType) || !filter.matchesChange(change) {
 			continue
 		}
+		collectGraphObjectAffectedIDs(change, affectedNodeIDs, affectedEdgeIDs)
 		out.Changes = append(out.Changes, mapGraphObjectChange(change, mappedType, projection))
 	}
+	if projection.IncludeAffectedNodeIDs {
+		out.AffectedNodeIds = sortedStringSet(affectedNodeIDs)
+	}
+	if projection.IncludeAffectedEdgeIDs {
+		out.AffectedEdgeIds = sortedStringSet(affectedEdgeIDs)
+	}
 	return out
+}
+
+func collectGraphObjectAffectedIDs(change graphchange.Change, nodeIDs map[string]bool, edgeIDs map[string]bool) {
+	if strings.TrimSpace(change.NodeID) != "" {
+		nodeIDs[change.NodeID] = true
+	}
+	if strings.TrimSpace(change.EdgeID) != "" {
+		edgeIDs[change.EdgeID] = true
+	}
+	for _, id := range change.AffectedNodeIDs {
+		if strings.TrimSpace(id) != "" {
+			nodeIDs[id] = true
+		}
+	}
+	for _, id := range change.AffectedEdgeIDs {
+		if strings.TrimSpace(id) != "" {
+			edgeIDs[id] = true
+		}
+	}
 }
 
 func mapGraphObjectChange(change graphchange.Change, mappedType clientv1.GraphChangeType, projection graphchange.Projection) *clientv1.GraphObjectChange {
@@ -387,6 +413,15 @@ func stringBoolMap(values []string) map[string]bool {
 			out[value] = true
 		}
 	}
+	return out
+}
+
+func sortedStringSet(values map[string]bool) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Strings(out)
 	return out
 }
 

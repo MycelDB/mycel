@@ -79,6 +79,34 @@ func TestMapGraphChangeEventFiltersBeforeApplyingProjection(t *testing.T) {
 	}
 }
 
+func TestMapGraphChangeEventRecomputesEnvelopeAffectedIDsAfterFiltering(t *testing.T) {
+	spaceID := uuid.New()
+	domainID := uuid.New()
+	matchingID := uuid.New()
+	otherID := uuid.New()
+	event := graphchange.CommittedEvent{
+		ID:          uuid.New(),
+		SpaceID:     domainspace.SpaceID(spaceID),
+		DomainID:    graph.DomainID(domainID),
+		Revision:    8,
+		CommittedAt: time.Now().UTC(),
+		Changes: []graphchange.Change{
+			{Type: graphchange.ChangeTypeNodeUpdated, NodeID: matchingID.String(), Node: &graph.Node{ID: graph.NodeID(matchingID), Labels: []string{"Note"}}, AffectedNodeIDs: []string{matchingID.String()}},
+			{Type: graphchange.ChangeTypeNodeUpdated, NodeID: otherID.String(), Node: &graph.Node{ID: graph.NodeID(otherID), Labels: []string{"Task"}}, AffectedNodeIDs: []string{otherID.String()}},
+		},
+	}
+	filter := graphChangeFilterFromProto(&clientv1.GraphChangeFilter{Labels: []string{"Note"}})
+	projection := graphchange.Projection{IncludeRevision: true, IncludeAffectedNodeIDs: true, IncludeNewNodeSnapshot: true}
+
+	mapped := mapGraphChangeEvent(event, filter, projection)
+	if mapped == nil || len(mapped.GetChanges()) != 1 || mapped.GetChanges()[0].GetNodeId() != matchingID.String() {
+		t.Fatalf("expected only matching label change, got %#v", mapped)
+	}
+	if got := mapped.GetAffectedNodeIds(); len(got) != 1 || got[0] != matchingID.String() {
+		t.Fatalf("envelope affected node IDs leaked filtered changes: %#v", got)
+	}
+}
+
 func TestMapGraphChangeEventPrunesLabelFilteredChanges(t *testing.T) {
 	spaceID := uuid.New()
 	domainID := uuid.New()
