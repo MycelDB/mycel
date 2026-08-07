@@ -40,7 +40,7 @@ func TestChangeStreamWatchReceivesCommitEvent(t *testing.T) {
 	if !strings.Contains(cliOut, "checkpoint") {
 		t.Fatalf("expected checkpoint JSON from change-stream CLI, got %s", cliOut)
 	}
-	stream, err := clientv1.NewChangeStreamServiceClient(conn).WatchDomainChanges(authCtx, &clientv1.WatchDomainChangesRequest{SpaceId: spaceID, DomainId: domainID, IncludeCurrent: true})
+	stream, err := clientv1.NewGraphChangeServiceClient(conn).WatchGraphChanges(authCtx, &clientv1.WatchGraphChangesRequest{SpaceId: spaceID, DomainId: domainID, IncludeCurrent: true, Projection: &clientv1.GraphChangeProjection{IncludeOrigin: true, IncludeAffectedNodeIds: true, IncludeAffectedEdgeIds: true, IncludeChangedFields: true, IncludeNewNodeSnapshot: true, IncludeNewEdgeSnapshot: true}})
 	if err != nil {
 		t.Fatalf("watch domain changes: %v", err)
 	}
@@ -71,20 +71,17 @@ func TestChangeStreamWatchReceivesCommitEvent(t *testing.T) {
 		t.Fatalf("receive commit event: %v", err)
 	}
 	event := msg.GetEvent()
-	if event == nil || event.GetRevision() != commit.GetCommit().GetCommittedRevision() || event.GetCommitId() != commit.GetCommit().GetCommitId() {
+	if event == nil || event.GetRevision() != commit.GetCommit().GetCommittedRevision() || event.GetOrigin().GetOperationId() != commit.GetCommit().GetOperationId() {
 		t.Fatalf("unexpected event %#v commit %#v", event, commit.GetCommit())
 	}
-	if len(event.GetChanges()) != 2 {
+	if len(event.GetChanges()) != 1 {
 		t.Fatalf("unexpected changes: %#v", event.GetChanges())
 	}
-	if event.GetChanges()[0].GetType() != clientv1.ChangeEventType_CHANGE_EVENT_TYPE_NODE_CREATED || nodePayloadText(event.GetChanges()[0].GetNode()) != "stream me" {
+	if event.GetChanges()[0].GetType() != clientv1.GraphChangeType_GRAPH_CHANGE_TYPE_NODE_CREATED || nodePayloadText(event.GetChanges()[0].GetNewNode()) != "stream me" {
 		t.Fatalf("expected node-created payload, got %#v", event.GetChanges()[0])
 	}
-	if event.GetChanges()[1].GetType() != clientv1.ChangeEventType_CHANGE_EVENT_TYPE_REVISION_ADVANCED {
-		t.Fatalf("expected revision-advanced marker, got %#v", event.GetChanges()[1])
-	}
 	resumeAfter := int64(0)
-	replay, err := clientv1.NewChangeStreamServiceClient(conn).WatchDomainChanges(authCtx, &clientv1.WatchDomainChangesRequest{SpaceId: spaceID, DomainId: domainID, AfterRevision: &resumeAfter, EventTypes: []clientv1.ChangeEventType{clientv1.ChangeEventType_CHANGE_EVENT_TYPE_NODE_CREATED}})
+	replay, err := clientv1.NewGraphChangeServiceClient(conn).WatchGraphChanges(authCtx, &clientv1.WatchGraphChangesRequest{SpaceId: spaceID, DomainId: domainID, AfterRevision: &resumeAfter, Filter: &clientv1.GraphChangeFilter{EventTypes: []clientv1.GraphChangeType{clientv1.GraphChangeType_GRAPH_CHANGE_TYPE_NODE_CREATED}}, Projection: &clientv1.GraphChangeProjection{IncludeNewNodeSnapshot: true}})
 	if err != nil {
 		t.Fatalf("watch replay: %v", err)
 	}
@@ -92,7 +89,7 @@ func TestChangeStreamWatchReceivesCommitEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("receive replay: %v", err)
 	}
-	if got := replayed.GetEvent(); got == nil || got.GetRevision() != event.GetRevision() || len(got.GetChanges()) != 1 || nodePayloadText(got.GetChanges()[0].GetNode()) != "stream me" {
+	if got := replayed.GetEvent(); got == nil || got.GetRevision() != event.GetRevision() || len(got.GetChanges()) != 1 || nodePayloadText(got.GetChanges()[0].GetNewNode()) != "stream me" {
 		t.Fatalf("unexpected replay event: %#v", replayed.GetEvent())
 	}
 }

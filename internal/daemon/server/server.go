@@ -23,6 +23,7 @@ import (
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
+	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
 	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
@@ -46,6 +47,7 @@ type Config struct {
 	SpaceManager             daemonspace.Manager
 	SessionManager           daemonsession.Manager
 	GraphManager             daegraph.Manager
+	GraphChangeManager       graphnotification.Manager
 	BlobManager              daemonblob.Manager
 	SemanticManager          daemonsemantic.Manager
 	SchemaManager            schemaservice.Manager
@@ -103,6 +105,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	}
 	if cfg.SemanticManager == nil {
 		return nil, fmt.Errorf("semantic manager is required")
+	}
+	if cfg.GraphChangeManager == nil {
+		return nil, fmt.Errorf("graph change manager is required")
 	}
 	if cfg.ChangeManager == nil {
 		return nil, fmt.Errorf("change stream manager is required")
@@ -206,7 +211,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	clientv1.RegisterImportExportServiceServer(grpcServer, importExportAPI)
 	clientv1.RegisterMetadataCatalogServiceServer(grpcServer, metadataCatalogAPI)
 	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager))
-	clientv1.RegisterChangeStreamServiceServer(grpcServer, clientapi.NewChangeStreamService(cfg.ChangeManager, cfg.SpaceManager))
+	clientv1.RegisterGraphChangeServiceServer(grpcServer, clientapi.NewGraphChangeService(cfg.GraphChangeManager, cfg.SpaceManager))
 	return &Server{grpcServer: grpcServer, listener: listener, logger: cfg.Logger}, nil
 }
 

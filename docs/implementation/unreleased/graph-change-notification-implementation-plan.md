@@ -6,11 +6,9 @@ Draft implementation plan for the `add_callbacks` branch. This plan implements
 the internal graph-change notification subsystem described in
 [`docs/design/graph/graph-change-notification.md`](../../design/graph/graph-change-notification.md).
 
-Status: implemented through GCN10 for the internal notification subsystem. Public streaming and GraphQL subscription work remain follow-up plans.
+Status: implemented through GCN10 for the internal notification subsystem. The `add_callbacks` branch also adds the lower-level public `GraphChangeService.WatchGraphChanges` API backed by the internal notification subsystem. GraphQL subscription work remains a follow-up plan.
 
-This plan intentionally excludes public streaming and GraphQL subscription work.
-Those surfaces should be designed and implemented after the internal committed
-change model and consumer registration path are stable.
+This plan intentionally excludes GraphQL subscription work. That surface should be designed and implemented after the internal committed change model and public graph-change watch path are stable.
 
 ## Goals
 
@@ -73,13 +71,15 @@ internal/graph/service/module.go           // notifyGraphChangeSink, graphChange
 internal/graph/filesession/file_session.go // graph-change sink path for file sessions
 ```
 
-Existing public change stream implementation to keep compatible:
+Legacy public change stream implementation replaced by `GraphChangeService.WatchGraphChanges`:
 
 ```text
-internal/changestream/service/
+internal/graph/notification/
 internal/daemon/api/client/change_stream_service.go
 internal/cli/cmd/change_stream.go
 ```
+
+The old internal `internal/changestream/service/` module remains temporarily for automation and transition-only local observers.
 
 ## Phase GCN0 — Inventory and compatibility tests
 
@@ -204,8 +204,7 @@ Tasks:
    events. Prefer accepting a transaction-level canonical event if practical.
 3. Keep public protobuf mapping unchanged for this phase.
 4. Keep CLI output unchanged.
-5. Add compatibility tests proving current `WatchDomainChanges` payloads are
-   unchanged.
+5. Replace public `WatchDomainChanges` compatibility tests with graph-change watch tests once the old public API is deleted.
 
 Expected validation:
 

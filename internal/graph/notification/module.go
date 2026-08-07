@@ -34,6 +34,11 @@ type Registrar interface {
 	RegisterConsumer(ctx context.Context, spec ConsumerSpec, consumer Consumer) (Registration, error)
 }
 
+type Manager interface {
+	Registrar
+	CurrentRevision(ctx context.Context, spaceID string, domainID string) (uint64, error)
+}
+
 type Registration interface {
 	Close() error
 }
@@ -164,6 +169,27 @@ func (m *Module) Diagnostics() Diagnostics {
 	return out
 }
 
+func (m *Module) CurrentRevision(ctx context.Context, spaceID string, domainID string) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	domainID = strings.TrimSpace(domainID)
+	key := scopeKey(spaceID, domainID)
+	if key == "" {
+		return 0, fmt.Errorf("%w: space_id and domain_id are required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dataDir == "" {
+		m.dataDir = filepath.Join(os.TempDir(), "mycel-graph-change-notification")
+	}
+	if err := m.loadHistoryLocked(key, spaceID, domainID); err != nil {
+		return 0, err
+	}
+	return m.current[key], nil
+}
+
 func (m *Module) RegisterConsumer(ctx context.Context, spec ConsumerSpec, consumer Consumer) (Registration, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -222,6 +248,9 @@ func (m *Module) RegisterConsumer(ctx context.Context, spec ConsumerSpec, consum
 func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.CommittedEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if event.ID == uuid.Nil {
+		event.ID = uuid.New()
 	}
 	event.Normalize()
 	if event.Empty() {
