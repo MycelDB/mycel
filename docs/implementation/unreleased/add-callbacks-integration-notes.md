@@ -14,6 +14,7 @@ Current coordinated branches before this follow-up documentation pass:
 - `mycel/add_callbacks`: `71891a0 Document add_callbacks parking lot`
 - `mycel-go-sdk/add_callbacks`: `7d5aa39 Regenerate graph change comments`
 - `mycel-rust-sdk/add_callbacks`: `96c20f8 Update API submodule after graph change comments`
+- `mycel-bench/add_callbacks`: `9f7c617 Update graph change watch benchmark references`
 
 ## Breaking API migration
 
@@ -86,7 +87,7 @@ Result:
 - No downstream application code usages were found in Knot PKM or orchestration.
 - `mycel-bench/docs/perf-test-plan.md` contained benchmark-plan references to
   `WatchDomainChanges`; those were updated to
-  `GraphChangeService.WatchGraphChanges`.
+  `GraphChangeService.WatchGraphChanges` on `mycel-bench/add_callbacks`.
 
 ## Client examples
 
