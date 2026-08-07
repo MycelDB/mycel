@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
-	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
@@ -145,12 +144,8 @@ func TestServerNewRegistersIngressGateWithCoordinator(t *testing.T) {
 	if result := graphNotificationModule.Init(ctx, rt); !result.OK {
 		t.Fatalf("graph change notification init failed: %v", result.Error)
 	}
-	changeModule := daemonchange.NewModule()
-	if result := changeModule.Init(ctx, rt); !result.OK {
-		t.Fatalf("change init failed: %v", result.Error)
-	}
 
-	srv, err := New(Config{Addr: "127.0.0.1:0", AdminLister: fakeOperatorManager{}, AdminAuthenticator: fakeOperatorManager{}, OperatorManager: fakeOperatorManager{}, UserManager: fakeUserManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, Quiesce: coordinator})
+	srv, err := New(Config{Addr: "127.0.0.1:0", AdminLister: fakeOperatorManager{}, AdminAuthenticator: fakeOperatorManager{}, OperatorManager: fakeOperatorManager{}, UserManager: fakeUserManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, Quiesce: coordinator})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

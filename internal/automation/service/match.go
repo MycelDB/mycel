@@ -5,15 +5,15 @@ import (
 	"strings"
 
 	automation "github.com/myceldb/mycel/internal/automation/model"
-	changestream "github.com/myceldb/mycel/internal/changestream/service"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 )
 
-func automationEventType(changeType changestream.ChangeType) string {
+func automationEventType(changeType graphchange.ChangeType) string {
 	switch changeType {
-	case changestream.ChangeTypeNodeCreated:
+	case graphchange.ChangeTypeNodeCreated:
 		return automation.EventNodeCreated
-	case changestream.ChangeTypeNodeUpdated:
+	case graphchange.ChangeTypeNodeUpdated:
 		return automation.EventNodeUpdated
 	default:
 		return ""

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
@@ -147,17 +146,12 @@ type TransactionGraphWriteLeaderChecker interface {
 	RequireLocalGraphWriteLeader(ctx context.Context, spaceID string) error
 }
 
-type TransactionChangePublisher interface {
-	PublishCommit(ctx context.Context, commit daemonsession.TransactionCommit, changes []daemonchange.GraphChange)
-}
-
 type TransactionService struct {
 	clientv1.UnimplementedTransactionServiceServer
-	sessions  daemonsession.Manager
-	spaces    daemonspace.Manager
-	graphs    TransactionGraphCommitter
-	publisher TransactionChangePublisher
-	router    ClientRequestRouter
+	sessions daemonsession.Manager
+	spaces   daemonspace.Manager
+	graphs   TransactionGraphCommitter
+	router   ClientRequestRouter
 }
 
 func NewTransactionService(sessions daemonsession.Manager, args ...any) *TransactionService {
@@ -165,9 +159,6 @@ func NewTransactionService(sessions daemonsession.Manager, args ...any) *Transac
 	for _, arg := range args {
 		if graphCommitter, ok := arg.(TransactionGraphCommitter); ok {
 			service.graphs = graphCommitter
-		}
-		if publisher, ok := arg.(TransactionChangePublisher); ok {
-			service.publisher = publisher
 		}
 		if spaces, ok := arg.(daemonspace.Manager); ok {
 			service.spaces = spaces
@@ -288,9 +279,6 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 	if err != nil {
 		return nil, mapSessionError(err, "commit transaction")
 	}
-	if s.publisher != nil {
-		s.publisher.PublishCommit(commitCtx, commit, changeStreamChangesFromGraph(graphCommit.Changes))
-	}
 	return &clientv1.CommitTransactionResponse{Commit: mapTransactionCommit(commit)}, nil
 }
 
@@ -336,19 +324,6 @@ func (s *TransactionService) CloseTransaction(ctx context.Context, req *clientv1
 		return nil, mapSessionError(err, "close transaction")
 	}
 	return &clientv1.CloseTransactionResponse{Transaction: mapGraphTransaction(tx)}, nil
-}
-
-func changeStreamChangesFromGraph(changes []daegraph.GraphChange) []daemonchange.GraphChange {
-	out := make([]daemonchange.GraphChange, 0, len(changes))
-	for _, change := range changes {
-		switch change.Type {
-		case daegraph.ChangeTypeNodeCreated, daegraph.ChangeTypeNodeUpdated, daegraph.ChangeTypeNodeDeleted, daegraph.ChangeTypeEdgeCreated, daegraph.ChangeTypeEdgeUpdated, daegraph.ChangeTypeEdgeDeleted:
-			out = append(out, change)
-		default:
-			continue
-		}
-	}
-	return out
 }
 
 func mapGraphSession(session daemonsession.GraphSession) *clientv1.GraphSession {

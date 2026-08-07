@@ -54,6 +54,7 @@ type ConsumerSpec struct {
 	Filter       graphchange.Filter
 	Projection   graphchange.Projection
 	Start        StartPosition
+	Lossless     bool
 }
 
 type StartPosition struct {
@@ -94,6 +95,10 @@ type registration struct {
 	ch       chan graphchange.CommittedEvent
 	done     chan struct{}
 	once     sync.Once
+}
+
+type currentState struct {
+	CurrentRevision uint64 `json:"current_revision"`
 }
 
 func NewModule() *Module {
@@ -202,20 +207,22 @@ func (m *Module) RegisterConsumer(ctx context.Context, spec ConsumerSpec, consum
 		return nil, fmt.Errorf("%w: consumer_name is required", ErrInvalidInput)
 	}
 	key := scopeKey(spec.Scope.SpaceID, spec.Scope.DomainID)
-	if key == "" {
-		return nil, fmt.Errorf("%w: scope space_id and domain_id are required", ErrInvalidInput)
+	if key == "" && spec.Start.AfterRevision != nil {
+		return nil, fmt.Errorf("%w: scoped space_id and domain_id are required for replay", ErrInvalidInput)
 	}
 	id := uuid.NewString()
 	reg := &registration{module: m, id: id, spec: spec, consumer: consumer, done: make(chan struct{})}
 
 	m.mu.Lock()
-	if err := m.loadHistoryLocked(key, spec.Scope.SpaceID, spec.Scope.DomainID); err != nil {
-		m.mu.Unlock()
-		return nil, err
+	if key != "" {
+		if err := m.loadHistoryLocked(key, spec.Scope.SpaceID, spec.Scope.DomainID); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
 	}
 	replay := []graphchange.CommittedEvent{}
 	var gap *graphchange.Gap
-	if spec.Start.AfterRevision != nil {
+	if key != "" && spec.Start.AfterRevision != nil {
 		oldest := uint64(0)
 		if events := m.history[key]; len(events) > 0 {
 			oldest = eventRevision(events[0])
@@ -342,6 +349,10 @@ func (r *registration) offer(event graphchange.CommittedEvent) {
 	case r.ch <- event:
 		return
 	default:
+		if r.spec.Lossless {
+			go r.deliver(event)
+			return
+		}
 		r.module.mu.Lock()
 		r.module.diagnostics.EventsDropped++
 		r.module.mu.Unlock()
@@ -415,6 +426,11 @@ func (m *Module) loadHistoryLocked(key, spaceID, domainID string) error {
 	path := m.eventLogPath(spaceID, domainID)
 	file, err := os.Open(path)
 	if os.IsNotExist(err) {
+		if state, err := m.loadCurrentState(spaceID, domainID); err != nil {
+			return err
+		} else if state.CurrentRevision > m.current[key] {
+			m.current[key] = state.CurrentRevision
+		}
 		return nil
 	}
 	if err != nil {
@@ -441,6 +457,11 @@ func (m *Module) loadHistoryLocked(key, spaceID, domainID string) error {
 	}
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+	if state, err := m.loadCurrentState(spaceID, domainID); err != nil {
+		return err
+	} else if state.CurrentRevision > m.current[key] {
+		m.current[key] = state.CurrentRevision
 	}
 	m.compactHistoryLocked(key)
 	return nil
@@ -491,11 +512,51 @@ func (m *Module) persistHistoryLocked(key, spaceID, domainID string) error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	return m.persistCurrentState(spaceID, domainID, currentState{CurrentRevision: m.current[key]})
+}
+
+func (m *Module) loadCurrentState(spaceID, domainID string) (currentState, error) {
+	var state currentState
+	raw, err := os.ReadFile(m.currentStatePath(spaceID, domainID))
+	if os.IsNotExist(err) {
+		return state, nil
+	}
+	if err != nil {
+		return state, err
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return state, nil
+	}
+	return state, json.Unmarshal(raw, &state)
+}
+
+func (m *Module) persistCurrentState(spaceID, domainID string, state currentState) error {
+	path := m.currentStatePath(spaceID, domainID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
 	return nil
 }
 
 func (m *Module) eventLogPath(spaceID, domainID string) string {
 	return filepath.Join(m.dataDir, safeSegment(spaceID), safeSegment(domainID)+".jsonl")
+}
+
+func (m *Module) currentStatePath(spaceID, domainID string) string {
+	return filepath.Join(m.dataDir, safeSegment(spaceID), safeSegment(domainID)+".state.json")
 }
 
 func matchesSpec(event graphchange.CommittedEvent, spec ConsumerSpec) bool {

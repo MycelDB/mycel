@@ -13,7 +13,6 @@ import (
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
-	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
@@ -52,7 +51,6 @@ type Config struct {
 	SemanticManager          daemonsemantic.Manager
 	SchemaManager            schemaservice.Manager
 	AutomationManager        automationservice.Manager
-	ChangeManager            daemonchange.Manager
 	TokenManager             *daemonauth.TokenManager
 	Quiesce                  *quiesce.Coordinator
 	IngressGate              *quiesce.Gate
@@ -108,9 +106,6 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	}
 	if cfg.GraphChangeManager == nil {
 		return nil, fmt.Errorf("graph change manager is required")
-	}
-	if cfg.ChangeManager == nil {
-		return nil, fmt.Errorf("change stream manager is required")
 	}
 	if cfg.TokenManager == nil {
 		var err error
@@ -186,7 +181,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if provider, ok := cfg.GraphManager.(clientapi.GraphWriteRouteProvider); ok {
 		sessionAPI.WithGraphWriteRouteProvider(provider)
 	}
-	transactionAPI := clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.ChangeManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
+	transactionAPI := clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	graphAPI := clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager).WithClientRequestRouter(clientRouter)
 	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithClientRequestRouter(clientRouter)
 	importExportAPI := clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)

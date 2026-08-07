@@ -18,7 +18,6 @@ import (
 
 	"github.com/google/uuid"
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
-	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/clustering"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
@@ -208,9 +207,7 @@ func TestServerRegistersProtectedAdminOperatorService(t *testing.T) {
 	semanticModule.Init(ctx, rt)
 	graphNotificationModule := graphnotification.NewModule()
 	graphNotificationModule.Init(ctx, rt)
-	changeModule := daemonchange.NewModule()
-	changeModule.Init(ctx, rt)
-	srv, errCh, err := Start(ctx, Config{Addr: "127.0.0.1:0", AdminLister: manager, AdminAuthenticator: manager, OperatorManager: manager, UserManager: fakeUserManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, TokenManager: tokens})
+	srv, errCh, err := Start(ctx, Config{Addr: "127.0.0.1:0", AdminLister: manager, AdminAuthenticator: manager, OperatorManager: manager, UserManager: fakeUserManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, TokenManager: tokens})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -377,9 +374,7 @@ func testServerConfig(t *testing.T, ctx context.Context) Config {
 	semanticModule.Init(ctx, rt)
 	graphNotificationModule := graphnotification.NewModule()
 	graphNotificationModule.Init(ctx, rt)
-	changeModule := daemonchange.NewModule()
-	changeModule.Init(ctx, rt)
-	return Config{Addr: "127.0.0.1:0", AdminLister: manager, AdminAuthenticator: manager, OperatorManager: manager, UserManager: fakeUserManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, ChangeManager: changeModule, TokenManager: tokens}
+	return Config{Addr: "127.0.0.1:0", AdminLister: manager, AdminAuthenticator: manager, OperatorManager: manager, UserManager: fakeUserManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, TokenManager: tokens}
 }
 
 func writeTestCA(t *testing.T, dir string) (*x509.Certificate, *rsa.PrivateKey, string) {

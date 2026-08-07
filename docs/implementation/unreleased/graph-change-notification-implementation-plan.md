@@ -56,12 +56,11 @@ Canonical starting point:
 internal/graph/change/graphchange.go
 ```
 
-Existing overlapping structures:
+Existing graph-change structures:
 
 ```text
 internal/graph/change.CommittedEvent
-internal/graph/service.GraphChange
-internal/changestream/service.GraphChange
+internal/graph/service.GraphChange // alias of canonical graphchange.Change
 ```
 
 Existing graph commit notification points:
@@ -79,7 +78,7 @@ internal/daemon/api/client/change_stream_service.go
 internal/cli/cmd/change_stream.go
 ```
 
-The old internal `internal/changestream/service/` module remains temporarily for automation and transition-only local observers.
+The old internal `internal/changestream/service/` module was removed on `add_callbacks`; automation now consumes the graph-change notification subsystem directly.
 
 ## Phase GCN0 — Inventory and compatibility tests
 
@@ -101,7 +100,7 @@ Tasks:
 Expected validation:
 
 ```sh
-go test ./internal/graph/change ./internal/graph/service ./internal/graph/filesession ./internal/changestream/service ./internal/daemon/api/client ./internal/cli/cmd
+go test ./internal/graph/change ./internal/graph/service ./internal/graph/filesession ./internal/graph/notification ./internal/daemon/api/client ./internal/cli/cmd
 ```
 
 Exit criteria:
@@ -190,32 +189,31 @@ Exit criteria:
 - Existing client graph/query/session tests pass.
 - No public API/protobuf changes yet.
 
-## Phase GCN3 — Change stream consumes canonical graph changes
+## Phase GCN3 — Remove legacy change-stream duplication
 
 Status: implemented.
 
-Goal: remove or alias duplicate change-stream graph-change structures.
+Goal: remove duplicate change-stream graph-change structures and route public/internal consumers through the canonical graph-change model.
 
 Tasks:
 
-1. Replace `internal/changestream/service.GraphChange` and `ChangeType` with
-   canonical aliases or direct `graphchange` imports.
-2. Update `PublishCommit` to accept canonical changes or canonical committed
-   events. Prefer accepting a transaction-level canonical event if practical.
-3. Keep public protobuf mapping unchanged for this phase.
-4. Keep CLI output unchanged.
-5. Replace public `WatchDomainChanges` compatibility tests with graph-change watch tests once the old public API is deleted.
+1. Replace legacy duplicate graph-change structures with `internal/graph/change` canonical types.
+2. Delete the old public `WatchDomainChanges` surface in favor of `GraphChangeService.WatchGraphChanges`.
+3. Move automation from the old internal change-stream observer onto the graph-change notification consumer API.
+4. Remove the old internal `internal/changestream/service` module and transaction `PublishCommit` plumbing.
+5. Keep CLI compatibility through `change-stream`/`changes` aliases backed by the new graph-change watch RPC.
 
 Expected validation:
 
 ```sh
-go test ./internal/changestream/service ./internal/daemon/api/client ./internal/cli/cmd
+go test ./internal/graph/notification ./internal/daemon/api/client ./internal/cli/cmd
 ```
 
 Exit criteria:
 
-- Current client change stream behavior remains compatible.
-- Internal duplicate change structures are reduced or aliased.
+- Public graph-change watch behavior is covered by tests.
+- Automation consumes graph-change notifications directly.
+- Legacy changestream package and publisher wiring are removed.
 
 ## Phase GCN4 — Notification subsystem skeleton
 
@@ -356,7 +354,7 @@ Tasks:
 Expected validation:
 
 ```sh
-go test ./internal/daemon/app ./internal/daemon/runtime ./internal/graph/service ./internal/automation/service ./internal/changestream/service
+go test ./internal/daemon/app ./internal/daemon/runtime ./internal/graph/service ./internal/automation/service ./internal/graph/notification
 ```
 
 Exit criteria:
@@ -462,7 +460,7 @@ validation grows from focused to full:
 
 ```sh
 go test ./internal/graph/change ./internal/graph/notification
-go test ./internal/graph/service ./internal/changestream/service
+go test ./internal/graph/service ./internal/graph/notification
 go test ./internal/daemon/api/client ./internal/cli/cmd
 go test ./...
 make docs-check

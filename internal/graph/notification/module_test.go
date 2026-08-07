@@ -163,9 +163,10 @@ func TestRegisterConsumerReplaysAndReportsGap(t *testing.T) {
 
 func TestRegisterConsumerReportsGapWhenHistoryCompactedToEmpty(t *testing.T) {
 	ctx := context.Background()
+	dataDir := t.TempDir()
 	m := NewModule()
 	m.SetRetentionForTest(100, time.Nanosecond)
-	if result := m.Init(ctx, testHost{dataDir: t.TempDir()}); !result.OK {
+	if result := m.Init(ctx, testHost{dataDir: dataDir}); !result.OK {
 		t.Fatalf("Init() error = %v", result.Error)
 	}
 	spaceID := uuid.NewString()
@@ -178,9 +179,17 @@ func TestRegisterConsumerReportsGapWhenHistoryCompactedToEmpty(t *testing.T) {
 	if current, err := m.CurrentRevision(ctx, spaceID, domainID); err != nil || current != 1 {
 		t.Fatalf("CurrentRevision() = %d, %v; want 1", current, err)
 	}
+	restarted := NewModule()
+	restarted.SetRetentionForTest(100, time.Nanosecond)
+	if result := restarted.Init(ctx, testHost{dataDir: dataDir}); !result.OK {
+		t.Fatalf("Init(restarted) error = %v", result.Error)
+	}
+	if current, err := restarted.CurrentRevision(ctx, spaceID, domainID); err != nil || current != 1 {
+		t.Fatalf("CurrentRevision(restarted) = %d, %v; want 1", current, err)
+	}
 	after := uint64(0)
 	consumer := newRecordingConsumer()
-	reg, err := m.RegisterConsumer(ctx, ConsumerSpec{ConsumerName: "cache-gap-empty", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}, Start: StartPosition{AfterRevision: &after}}, consumer)
+	reg, err := restarted.RegisterConsumer(ctx, ConsumerSpec{ConsumerName: "cache-gap-empty", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}, Start: StartPosition{AfterRevision: &after}}, consumer)
 	if err != nil {
 		t.Fatalf("RegisterConsumer() error = %v", err)
 	}
