@@ -356,6 +356,34 @@ func TestUserSessionSystemRaftReplicatesAcrossThreeNodes(t *testing.T) {
 	}
 }
 
+func TestUserRaftReplayConvergesUsernameConflict(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatal(result.Error)
+	}
+	existing := User{ID: "old-user", Username: "alice", State: UserStateActive, PasswordHash: "old-hash", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if _, err := m.store.ApplyPut(ctx, existing); err != nil {
+		t.Fatalf("seed existing user: %v", err)
+	}
+	replayed := User{ID: "raft-user", Username: "alice", State: UserStateActive, PasswordHash: "raft-hash", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	cmd, err := m.buildUserPutRaftCommand(replayed, "identity-user-put-replay-conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (RaftStateMachine{Module: m}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 10, RaftTerm: 2}, cmd); err != nil {
+		t.Fatalf("raft replay username conflict should converge, got: %v", err)
+	}
+	got, err := m.FindUser(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "raft-user" {
+		t.Fatalf("UserID=%q want raft-user", got.ID)
+	}
+}
+
 func TestUserRaftDedupeSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
