@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/graph/adjacency"
 	"github.com/myceldb/mycel/internal/graph/model"
 )
 
@@ -38,6 +39,7 @@ type LocalStore struct {
 	nodesByDomain    map[graph.DomainID]map[graph.NodeID]struct{}
 	containsChildren map[graph.NodeID][]graph.EdgeID
 	containsParent   map[graph.NodeID]graph.EdgeID
+	edgeIndex        adjacency.EdgeIndex
 	journalDay       map[int]map[graph.NodeID]struct{}
 	blobRefs         map[graph.BlobID]map[graph.NodeID]struct{}
 	revision         uint64
@@ -192,6 +194,7 @@ func (s *LocalStore) resetIndexes() {
 	s.nodesByDomain = map[graph.DomainID]map[graph.NodeID]struct{}{}
 	s.containsChildren = map[graph.NodeID][]graph.EdgeID{}
 	s.containsParent = map[graph.NodeID]graph.EdgeID{}
+	s.edgeIndex = adjacency.NewMemoryEdgeIndex()
 	s.journalDay = map[int]map[graph.NodeID]struct{}{}
 	s.blobRefs = map[graph.BlobID]map[graph.NodeID]struct{}{}
 	s.nodeModRev = map[graph.NodeID]uint64{}
@@ -292,6 +295,42 @@ func (s *LocalStore) ListEdges(ctx context.Context) ([]graph.Edge, error) {
 		out = append(out, cloneEdge(e))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
+	return out, ctx.Err()
+}
+func (s *LocalStore) IncomingEdges(ctx context.Context, nodeID graph.NodeID) ([]graph.Edge, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return nil, err
+	}
+	ids, err := s.edgeIndex.Incoming(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]graph.Edge, 0, len(ids))
+	for _, id := range ids {
+		if e, ok := s.edgeRecords[id]; ok {
+			out = append(out, cloneEdge(e))
+		}
+	}
+	return out, ctx.Err()
+}
+func (s *LocalStore) OutgoingEdges(ctx context.Context, nodeID graph.NodeID) ([]graph.Edge, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return nil, err
+	}
+	ids, err := s.edgeIndex.Outgoing(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]graph.Edge, 0, len(ids))
+	for _, id := range ids {
+		if e, ok := s.edgeRecords[id]; ok {
+			out = append(out, cloneEdge(e))
+		}
+	}
 	return out, ctx.Err()
 }
 func (s *LocalStore) Children(ctx context.Context, parentID graph.NodeID) ([]graph.Edge, error) {
@@ -400,8 +439,10 @@ func (s *LocalStore) applyEdgePut(e graph.Edge, loc RecordLocation) {
 	if old, ok := s.edgeRecords[e.ID]; ok {
 		s.removeEdgeIndexes(old)
 	}
-	s.edgeRecords[e.ID] = cloneEdge(e)
+	stored := cloneEdge(e)
+	s.edgeRecords[e.ID] = stored
 	s.edgeMeta[e.ID] = EdgeMeta{ID: e.ID, DomainID: e.DomainID, FromID: e.FromID, ToID: e.ToID, Labels: append([]string(nil), e.Labels...), Location: loc}
+	_ = s.edgeIndex.Put(context.Background(), stored)
 	if graph.EdgeHasLabels(e, []string{"contains"}) {
 		s.containsChildren[e.FromID] = append(s.containsChildren[e.FromID], e.ID)
 		s.containsParent[e.ToID] = e.ID
@@ -416,6 +457,7 @@ func (s *LocalStore) applyEdgeDelete(id graph.EdgeID, loc RecordLocation) {
 	s.edgeMeta[id] = EdgeMeta{ID: id, Deleted: true, Location: loc}
 }
 func (s *LocalStore) removeEdgeIndexes(e graph.Edge) {
+	_ = s.edgeIndex.Delete(context.Background(), e)
 	if graph.EdgeHasLabels(e, []string{"contains"}) {
 		ids := s.containsChildren[e.FromID]
 		out := ids[:0]

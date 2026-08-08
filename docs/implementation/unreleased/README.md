@@ -14,6 +14,7 @@ assigned to a tagged release bucket.
 
 ## Graph/change notification
 
+- [Graph adjacency index implementation plan](graph-adjacency-index-implementation-plan.md) — derived per-space in-memory adjacency index for faster hierarchy validation and Logseq-shaped imports.
 - [Graph-change notification implementation plan](graph-change-notification-implementation-plan.md) — internal committed graph-change model, process-local consumer registrations, projection, replay, and raft-safe notification delivery.
 - [add_callbacks parking-lot implementation plan](add-callbacks-parking-lot-implementation-plan.md) — remaining downstream compatibility, examples, integration notes, and final validation work after parking the coordinated graph-change watch/operation-correlation branches.
 - [add_callbacks integration notes](add-callbacks-integration-notes.md) — breaking API migration notes, operation ID semantics, downstream compatibility result, example locations, and validation checklist for the coordinated branches.

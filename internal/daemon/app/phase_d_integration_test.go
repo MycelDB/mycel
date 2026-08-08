@@ -30,6 +30,7 @@ type phaseDIntegrationCluster struct {
 	partitionCount uint32
 	peers          []consensus.NodeID
 	dataDirs       map[consensus.NodeID]string
+	semanticConfig semanticservice.Config
 	nodes          map[consensus.NodeID]*phaseDIntegrationNode
 	routers        map[consensus.NodeID]*consensus.LocalMessageRouter
 	transport      consensus.RoutedTransport
@@ -176,7 +177,7 @@ func (c *phaseDIntegrationCluster) newNode(ctx context.Context, t *testing.T, id
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	host := &runtimetest.Runtime{Config: runtimetest.Config{DataDir: dataDir, Cluster: runtimetest.ClusterConfig{RaftPartitionCount: int(c.partitionCount)}}, LoggerValue: logger}
-	node := &phaseDIntegrationNode{id: id, dataDir: dataDir, space: spaceservice.NewModule(), schema: schemaservice.NewModule(""), graph: graphservice.NewModule(), blob: blobservice.NewModule(nil), semantic: semanticservice.NewModule()}
+	node := &phaseDIntegrationNode{id: id, dataDir: dataDir, space: spaceservice.NewModule(), schema: schemaservice.NewModule(""), graph: graphservice.NewModule(), blob: blobservice.NewModule(nil), semantic: semanticservice.NewModule(c.semanticConfig)}
 	if result := node.space.Init(ctx, host); !result.OK {
 		t.Fatalf("space Init(%d): %v", id, result.Error)
 	}
