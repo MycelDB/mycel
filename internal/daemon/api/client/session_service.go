@@ -5,9 +5,9 @@ import (
 	"errors"
 	"time"
 
-	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -146,17 +146,12 @@ type TransactionGraphWriteLeaderChecker interface {
 	RequireLocalGraphWriteLeader(ctx context.Context, spaceID string) error
 }
 
-type TransactionChangePublisher interface {
-	PublishCommit(ctx context.Context, commit daemonsession.TransactionCommit, changes []daemonchange.GraphChange)
-}
-
 type TransactionService struct {
 	clientv1.UnimplementedTransactionServiceServer
-	sessions  daemonsession.Manager
-	spaces    daemonspace.Manager
-	graphs    TransactionGraphCommitter
-	publisher TransactionChangePublisher
-	router    ClientRequestRouter
+	sessions daemonsession.Manager
+	spaces   daemonspace.Manager
+	graphs   TransactionGraphCommitter
+	router   ClientRequestRouter
 }
 
 func NewTransactionService(sessions daemonsession.Manager, args ...any) *TransactionService {
@@ -164,9 +159,6 @@ func NewTransactionService(sessions daemonsession.Manager, args ...any) *Transac
 	for _, arg := range args {
 		if graphCommitter, ok := arg.(TransactionGraphCommitter); ok {
 			service.graphs = graphCommitter
-		}
-		if publisher, ok := arg.(TransactionChangePublisher); ok {
-			service.publisher = publisher
 		}
 		if spaces, ok := arg.(daemonspace.Manager); ok {
 			service.spaces = spaces
@@ -192,7 +184,7 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 	if err != nil {
 		return nil, err
 	}
-	input := daemonsession.BeginTransactionInput{UserID: principal.UserID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode())}
+	input := daemonsession.BeginTransactionInput{UserID: principal.UserID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode()), Origin: graphchange.OriginMetadata{OperationID: req.GetOperationId()}}
 	var session daemonsession.GraphSession
 	if s.graphs != nil || s.spaces != nil {
 		var err error
@@ -287,9 +279,6 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 	if err != nil {
 		return nil, mapSessionError(err, "commit transaction")
 	}
-	if s.publisher != nil {
-		s.publisher.PublishCommit(commitCtx, commit, changeStreamChangesFromGraph(graphCommit.Changes))
-	}
 	return &clientv1.CommitTransactionResponse{Commit: mapTransactionCommit(commit)}, nil
 }
 
@@ -337,57 +326,16 @@ func (s *TransactionService) CloseTransaction(ctx context.Context, req *clientv1
 	return &clientv1.CloseTransactionResponse{Transaction: mapGraphTransaction(tx)}, nil
 }
 
-func changeStreamChangesFromGraph(changes []daegraph.GraphChange) []daemonchange.GraphChange {
-	out := make([]daemonchange.GraphChange, 0, len(changes))
-	for _, change := range changes {
-		mapped := daemonchange.GraphChange{NodeID: change.NodeID, EdgeID: change.EdgeID}
-		switch change.Type {
-		case daegraph.ChangeTypeNodeCreated:
-			mapped.Type = daemonchange.ChangeTypeNodeCreated
-		case daegraph.ChangeTypeNodeUpdated:
-			mapped.Type = daemonchange.ChangeTypeNodeUpdated
-		case daegraph.ChangeTypeNodeDeleted:
-			mapped.Type = daemonchange.ChangeTypeNodeDeleted
-		case daegraph.ChangeTypeEdgeCreated:
-			mapped.Type = daemonchange.ChangeTypeEdgeCreated
-		case daegraph.ChangeTypeEdgeUpdated:
-			mapped.Type = daemonchange.ChangeTypeEdgeUpdated
-		case daegraph.ChangeTypeEdgeDeleted:
-			mapped.Type = daemonchange.ChangeTypeEdgeDeleted
-		default:
-			continue
-		}
-		if change.Node != nil {
-			copy := *change.Node
-			mapped.Node = &copy
-		}
-		if change.OldNode != nil {
-			copy := *change.OldNode
-			mapped.OldNode = &copy
-		}
-		if change.Edge != nil {
-			copy := *change.Edge
-			mapped.Edge = &copy
-		}
-		if change.OldEdge != nil {
-			copy := *change.OldEdge
-			mapped.OldEdge = &copy
-		}
-		out = append(out, mapped)
-	}
-	return out
-}
-
 func mapGraphSession(session daemonsession.GraphSession) *clientv1.GraphSession {
 	return &clientv1.GraphSession{SessionId: session.ID, SpaceId: session.SpaceID, DomainId: session.DomainID, State: sessionStateToProto(session.State), CreateTime: timestamppb.New(session.CreatedAt), LastSeenTime: timestamppb.New(session.LastSeen), ExpireTime: timestamppb.New(session.ExpiresAt)}
 }
 
 func mapGraphTransaction(tx daemonsession.GraphTransaction) *clientv1.GraphTransaction {
-	return &clientv1.GraphTransaction{TransactionId: tx.ID, SessionId: tx.SessionID, SpaceId: tx.SpaceID, DomainId: tx.DomainID, Mode: transactionModeToProto(tx.Mode), State: transactionStateToProto(tx.State), BaseRevision: tx.BaseRevision, CreateTime: timestamppb.New(tx.CreatedAt), LastSeenTime: timestamppb.New(tx.LastSeen), ExpireTime: timestamppb.New(tx.ExpiresAt)}
+	return &clientv1.GraphTransaction{TransactionId: tx.ID, SessionId: tx.SessionID, SpaceId: tx.SpaceID, DomainId: tx.DomainID, Mode: transactionModeToProto(tx.Mode), State: transactionStateToProto(tx.State), BaseRevision: tx.BaseRevision, CreateTime: timestamppb.New(tx.CreatedAt), LastSeenTime: timestamppb.New(tx.LastSeen), ExpireTime: timestamppb.New(tx.ExpiresAt), OperationId: tx.Origin.OperationID}
 }
 
 func mapTransactionCommit(commit daemonsession.TransactionCommit) *clientv1.TransactionCommit {
-	return &clientv1.TransactionCommit{CommitId: commit.ID, TransactionId: commit.TransactionID, SessionId: commit.SessionID, SpaceId: commit.SpaceID, DomainId: commit.DomainID, BaseRevision: commit.BaseRevision, CommittedRevision: commit.CommittedRevision, OperationCount: commit.OperationCount, CommitTime: timestamppb.New(commit.CommittedAt)}
+	return &clientv1.TransactionCommit{CommitId: commit.ID, TransactionId: commit.TransactionID, SessionId: commit.SessionID, SpaceId: commit.SpaceID, DomainId: commit.DomainID, BaseRevision: commit.BaseRevision, CommittedRevision: commit.CommittedRevision, OperationCount: commit.OperationCount, CommitTime: timestamppb.New(commit.CommittedAt), OperationId: commit.Origin.OperationID}
 }
 
 func sessionStateToProto(state daemonsession.SessionState) clientv1.SessionState {

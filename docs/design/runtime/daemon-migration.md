@@ -10,7 +10,7 @@ Mycel has been refactored from an embedded Go library into a daemon process that
 
 The migration is no longer preserving embedded/library runtime support as a public compatibility target. Each phase should keep daemon/API behavior functional while removing local application-owned runtime entrypoints.
 
-Current implementation status on `refactor_daemon` includes daemon initialization, authenticated Admin Auth/Operator/User APIs, CLI admin/user-management commands over daemon gRPC, the daemon-backed Client AuthService for standard users, daemon-backed Client/Admin space APIs, daemon-backed Client DomainService, daemon-backed Client TemplateService, daemon-backed Client Session/Transaction lifecycle services, the daemon-backed Client GraphService MVP, the daemon-backed Client BlobService MVP, the daemon-backed Client QueryService MVP, the daemon-backed Client ImportExportService with structured graph/template/blob and replace-domain support, the daemon-backed Client MetadataCatalogService MVP, the daemon-backed Client SemanticService MVP, the daemon-backed Client ChangeStreamService with durable replay and graph change payloads, the daemon-backed AdminDomainService lookup MVP, the daemon-backed AdminSemanticService index configuration/delete MVP, the daemon-backed AdminSemanticMaintenanceService backfill/maintenance MVP, the daemon-backed AdminSemanticMigrationService legacy embedding migration MVP, the daemon-backed AdminInferenceService package/catalog/credentials/grants/policies/soft-lifecycle plus reference-safe hard-delete MVP, and TLS/mTLS transport hardening for daemon gRPC. See:
+Current implementation status on `refactor_daemon` includes daemon initialization, authenticated Admin Auth/Operator/User APIs, CLI admin/user-management commands over daemon gRPC, the daemon-backed Client AuthService for standard users, daemon-backed Client/Admin space APIs, daemon-backed Client DomainService, daemon-backed Client TemplateService, daemon-backed Client Session/Transaction lifecycle services, the daemon-backed Client GraphService MVP, the daemon-backed Client BlobService MVP, the daemon-backed Client QueryService MVP, the daemon-backed Client ImportExportService with structured graph/template/blob and replace-domain support, the daemon-backed Client MetadataCatalogService MVP, the daemon-backed Client SemanticService MVP, the daemon-backed GraphChangeService with durable replay and graph-change payloads, the daemon-backed AdminDomainService lookup MVP, the daemon-backed AdminSemanticService index configuration/delete MVP, the daemon-backed AdminSemanticMaintenanceService backfill/maintenance MVP, the daemon-backed AdminSemanticMigrationService legacy embedding migration MVP, the daemon-backed AdminInferenceService package/catalog/credentials/grants/policies/soft-lifecycle plus reference-safe hard-delete MVP, and TLS/mTLS transport hardening for daemon gRPC. See:
 
 - [gRPC Admin Auth API](../admin/grpc-admin-auth.md)
 - [gRPC Admin List](../admin/grpc-admin-list.md)
@@ -30,7 +30,7 @@ Current implementation status on `refactor_daemon` includes daemon initializatio
 - [Client Import/Export API](../api/import-export.md)
 - [Client Metadata Catalog API](../api/metadata-catalog.md)
 - [Client Semantic API](../api/semantic.md)
-- [Client Change Stream API](../api/change-stream.md)
+- [Graph Change Watch API](../api/change-stream.md)
 - [Daemon-only boundary](daemon-only-boundary.md)
 
 ## Goals

@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/myceldb/mycel/internal/cli/app"
@@ -12,7 +14,7 @@ import (
 )
 
 func NewChangeStreamCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "change-stream", Aliases: []string{"changes"}, Short: "Watch committed domain changes over daemon gRPC"}
+	cmd := &cobra.Command{Use: "graph-change", Aliases: []string{"change-stream", "changes"}, Short: "Watch committed graph changes over daemon gRPC"}
 	cmd.AddCommand(NewChangeStreamWatchCommand(a))
 	return cmd
 }
@@ -36,17 +38,20 @@ func NewChangeStreamWatchCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		req := &clientv1.WatchDomainChangesRequest{SpaceId: spaceID, DomainId: resolvedDomainID, IncludeCurrent: includeCurrent}
+		req := &clientv1.WatchGraphChangesRequest{SpaceId: spaceID, DomainId: resolvedDomainID, IncludeCurrent: includeCurrent}
 		if afterRevision >= 0 {
 			req.AfterRevision = &afterRevision
 		}
-		stream, err := clientv1.NewChangeStreamServiceClient(conn).WatchDomainChanges(authCtx, req)
+		stream, err := clientv1.NewGraphChangeServiceClient(conn).WatchGraphChanges(authCtx, req)
 		if err != nil {
 			return err
 		}
 		seen := 0
 		for {
 			msg, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}
@@ -74,7 +79,7 @@ func NewChangeStreamWatchCommand(a *app.App) *cobra.Command {
 	return cmd
 }
 
-func printChangeStreamMessage(msg *clientv1.WatchDomainChangesResponse) {
+func printChangeStreamMessage(msg *clientv1.WatchGraphChangesResponse) {
 	if checkpoint := msg.GetCheckpoint(); checkpoint != nil {
 		fmt.Printf("checkpoint\tspace=%s\tdomain=%s\trevision=%d\n", checkpoint.GetSpaceId(), checkpoint.GetDomainId(), checkpoint.GetCurrentRevision())
 		return
@@ -83,19 +88,27 @@ func printChangeStreamMessage(msg *clientv1.WatchDomainChangesResponse) {
 		fmt.Printf("heartbeat\t%s\n", heartbeat.GetHeartbeatTime().AsTime().Format("2006-01-02T15:04:05Z07:00"))
 		return
 	}
+	if gap := msg.GetGap(); gap != nil {
+		fmt.Printf("gap\tspace=%s\tdomain=%s\trequested_after=%d\toldest_available=%d\tcurrent=%d\n", gap.GetSpaceId(), gap.GetDomainId(), gap.GetRequestedAfterRevision(), gap.GetOldestAvailableRevision(), gap.GetCurrentRevision())
+		return
+	}
 	if event := msg.GetEvent(); event != nil {
-		fmt.Printf("event\trevision=%d\tcommit=%s\tchanges=%d\n", event.GetRevision(), event.GetCommitId(), len(event.GetChanges()))
+		fmt.Printf("event\trevision=%d\ttransaction=%s\tchanges=%d\n", event.GetRevision(), event.GetTransactionId(), len(event.GetChanges()))
 		for _, change := range event.GetChanges() {
 			fmt.Printf("change\t%s", change.GetType().String())
-			if node := change.GetNode(); node != nil {
-				fmt.Printf("\tnode=%s", node.GetNodeId())
-			} else if nodeID := change.GetNodeId(); nodeID != "" {
+			if nodeID := change.GetNodeId(); nodeID != "" {
 				fmt.Printf("\tnode=%s", nodeID)
+			} else if node := change.GetNewNode(); node != nil {
+				fmt.Printf("\tnode=%s", node.GetNodeId())
+			} else if node := change.GetOldNode(); node != nil {
+				fmt.Printf("\tnode=%s", node.GetNodeId())
 			}
-			if edge := change.GetEdge(); edge != nil {
-				fmt.Printf("\tedge=%s", edge.GetEdgeId())
-			} else if edgeID := change.GetEdgeId(); edgeID != "" {
+			if edgeID := change.GetEdgeId(); edgeID != "" {
 				fmt.Printf("\tedge=%s", edgeID)
+			} else if edge := change.GetNewEdge(); edge != nil {
+				fmt.Printf("\tedge=%s", edge.GetEdgeId())
+			} else if edge := change.GetOldEdge(); edge != nil {
+				fmt.Printf("\tedge=%s", edge.GetEdgeId())
 			}
 			fmt.Println()
 		}

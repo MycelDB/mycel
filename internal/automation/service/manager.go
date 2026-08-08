@@ -13,7 +13,7 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/provider"
 	"github.com/myceldb/mycel/internal/automation/storage"
-	changestream "github.com/myceldb/mycel/internal/changestream/service"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
@@ -35,7 +35,8 @@ type Manager interface {
 	GetRun(ctx context.Context, domainID graph.DomainID, runID string) (automation.Run, error)
 	RetryInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error)
 	CancelInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error)
-	HandleChangeStreamEvent(ctx context.Context, event changestream.Event)
+	HandleGraphChange(ctx context.Context, event graphchange.CommittedEvent) error
+	HandleGraphChangeGap(ctx context.Context, gap graphchange.Gap) error
 	ProcessPending(ctx context.Context, domainID graph.DomainID, limit int) (int, error)
 }
 
@@ -260,18 +261,18 @@ func (m *AutomationManager) CancelInvocation(ctx context.Context, domainID graph
 	return inv, nil
 }
 
-func (m *AutomationManager) HandleChangeStreamEvent(ctx context.Context, event changestream.Event) {
+func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphchange.CommittedEvent) error {
 	if err := m.requireWriteAllowed(); err != nil {
-		return
+		return err
 	}
-	domainUUID, err := uuid.Parse(event.DomainID)
-	if err != nil {
-		return
+	event.Normalize()
+	if event.DomainID == uuid.Nil {
+		return nil
 	}
-	domainID := graph.DomainID(domainUUID)
+	domainID := graph.DomainID(event.DomainID)
 	defs, err := m.ListAutomations(ctx, domainID, automation.StatusEnabled)
 	if err != nil {
-		return
+		return err
 	}
 	for _, change := range event.Changes {
 		eventType := automationEventType(change.Type)
@@ -290,10 +291,15 @@ func (m *AutomationManager) HandleChangeStreamEvent(ctx context.Context, event c
 				copy := *change.OldNode
 				oldNode = &copy
 			}
-			inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, SpaceID: event.SpaceID, AutomationID: def.ID, AutomationVersion: def.Version, EventID: event.EventID, ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType, Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
+			inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, SpaceID: event.SpaceID.String(), AutomationID: def.ID, AutomationVersion: def.Version, EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType, Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
 			_ = m.store.PutInvocation(ctx, inv)
 		}
 	}
+	return nil
+}
+
+func (m *AutomationManager) HandleGraphChangeGap(ctx context.Context, gap graphchange.Gap) error {
+	return nil
 }
 
 func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.DomainID, limit int) (int, error) {

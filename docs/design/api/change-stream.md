@@ -1,266 +1,185 @@
-# Client Change Stream API
+# Graph Change Watch API
 
-## Status
+`GraphChangeService` is a server-streaming Client API for committed graph changes
+within one space/domain. It replaces the earlier `ChangeStreamService` /
+`WatchDomainChanges` API, which is removed on the `add_callbacks` branch.
 
-Implemented daemon-oriented Client Change Stream API MVP on the `refactor_daemon` branch.
+The API is backed by the internal graph-change notification subsystem and uses the
+same committed graph-change vocabulary intended for future cache invalidation,
+streaming, and GraphQL subscription adapters.
 
-The protobuf source of truth is:
+## Goals
 
-```text
-github.com/myceldb/mycel-api/api/proto/mycel/client/v1/change_stream.proto
-```
+- Stream committed graph changes after graph transactions become durable/visible.
+- Support resume by committed domain revision.
+- Report explicit gaps when requested history is no longer retained.
+- Include client operation correlation metadata (`operation_id`).
+- Support filters and projections so clients can choose compact invalidation
+  events or opt into old/new snapshots.
 
-This document depends on:
+## Non-goals
 
-```text
-docs/design/access-control.md
-docs/design/api/session-transaction.md
-docs/design/api/graph.md
-```
+- No uncommitted transaction operation stream.
+- No webhook/callback registration surface.
+- No automatic repair, merge, conflict resolution, resync, or authoritative-node
+  selection.
+- No idempotency or replay-protection semantics for `operation_id`.
 
-## Purpose
+## Service
 
-`ChangeStreamService` is a server-streaming Client API that lets clients and connectors watch committed changes for a space/domain.
-
-The current daemon implementation uses daemon-local pub/sub plus file-backed bounded history under the daemon data directory. `TransactionService.CommitTransaction` publishes one transaction-level change event after graph commit and session revision advancement.
-
-It streams committed changes observed by the daemon. Replay survives daemon restarts within the configured/compiled history window. It does not stream uncommitted transaction operations.
-
-## Scope
-
-The initial `ChangeStreamService` focuses on domain graph changes:
-
-- committed transaction events
-- node created/updated/deleted
-- edge created/updated/deleted
-- domain revision advancement
-- checkpoints
-- stream heartbeats
-
-The initial service does not include:
-
-- uncommitted transaction operation streams
-- session state streams
-- template/blob/domain metadata changes
-- space-level watches
-- admin/mesh event streams
-
-Those can be added later as separate methods or services.
-
-## Service definition
-
-```protobuf
-service ChangeStreamService {
-  rpc WatchDomainChanges(WatchDomainChangesRequest) returns (stream WatchDomainChangesResponse);
+```proto
+service GraphChangeService {
+  rpc WatchGraphChanges(WatchGraphChangesRequest) returns (stream WatchGraphChangesResponse);
 }
 ```
 
-## CLI
+## Request
 
-Daemon-backed watcher:
-
-```sh
-./bin/mycel --daemon-addr 127.0.0.1:9091 -u alice -p '<password>' \
-  change-stream watch --space-id '<space-id>' --domain default --include-current
-```
-
-For tests/smoke scripts, `--max-events N` stops after N stream messages.
-
-## Current implementation notes
-
-- Streams require standard user bearer auth through the daemon stream interceptor.
-- The daemon validates caller visibility for the requested space/domain before subscribing.
-- `include_current` emits a checkpoint with the daemon's currently observed durable revision.
-- Commit events include per-node/per-edge changes plus a `CHANGE_EVENT_TYPE_REVISION_ADVANCED` marker.
-- Create/update node and edge changes include payloads; delete changes include ids.
-- Resume from `after_revision` is supported against daemon-local bounded file-backed history.
-- If requested resume history has been compacted, the daemon returns `OUT_OF_RANGE`.
-- Heartbeats are emitted periodically on idle streams.
-
-## WatchDomainChanges
-
-Watches committed graph changes for one space/domain.
-
-Request:
-
-```protobuf
-message WatchDomainChangesRequest {
+```proto
+message WatchGraphChangesRequest {
   string space_id = 1;
   string domain_id = 2;
   optional int64 after_revision = 3;
   bool include_current = 4;
-  repeated ChangeEventType event_types = 5;
+  GraphChangeFilter filter = 5;
+  GraphChangeProjection projection = 6;
 }
 ```
 
-Response stream:
+`after_revision` means "send changes after this committed domain revision". If it
+is older than retained graph-change history, the daemon sends `GraphChangeGap` and
+closes the stream successfully.
 
-```protobuf
-message WatchDomainChangesResponse {
+`include_current` asks the daemon to send a checkpoint with the current observed
+revision before subsequent stream messages. If `after_revision` is also set,
+replayed events after that revision may follow the checkpoint even when their
+revision is less than or equal to the checkpoint revision.
+
+## Response
+
+```proto
+message WatchGraphChangesResponse {
   oneof message {
-    ChangeCheckpoint checkpoint = 1;
-    ChangeEvent event = 2;
-    ChangeStreamHeartbeat heartbeat = 3;
+    GraphChangeCheckpoint checkpoint = 1;
+    GraphChangeEvent event = 2;
+    GraphChangeGap gap = 3;
+    GraphChangeHeartbeat heartbeat = 4;
   }
 }
 ```
 
-## Checkpoints
+## Event envelope
 
-A checkpoint reports the daemon's current observed domain revision. The daemon also persists compact checkpoint files beside the event log so restart-time checkpoints reflect the durable stream position.
-
-```protobuf
-message ChangeCheckpoint {
-  string space_id = 1;
-  string domain_id = 2;
-  int64 current_revision = 3;
-  google.protobuf.Timestamp checkpoint_time = 4;
-}
-```
-
-Checkpoints are useful for connector cache startup and synchronization.
-
-When `include_current` is true, the daemon should send a checkpoint before streaming subsequent changes.
-
-## Resume behavior
-
-`after_revision` lets a connector resume from the last seen domain revision:
-
-```text
-WatchDomainChanges(after_revision = last_seen_revision)
-```
-
-The daemon streams events after that revision from its bounded durable history.
-
-If the daemon no longer has sufficient history to resume from the requested revision, it should return:
-
-```text
-OUT_OF_RANGE
-```
-
-This tells the connector to perform a full resync.
-
-## Events
-
-A change event describes one committed transaction/revision event.
-
-```protobuf
-message ChangeEvent {
+```proto
+message GraphChangeEvent {
   string event_id = 1;
   string space_id = 2;
   string domain_id = 3;
   int64 revision = 4;
-  string commit_id = 5;
-  google.protobuf.Timestamp event_time = 6;
-  repeated GraphChange changes = 7;
+  reserved 5;
+  reserved "commit_id";
+  string transaction_id = 6;
+  google.protobuf.Timestamp commit_time = 7;
+  GraphChangeOrigin origin = 8;
+  repeated GraphObjectChange changes = 9;
+  repeated string affected_node_ids = 10;
+  repeated string affected_edge_ids = 11;
 }
 ```
 
-`commit_id` and `revision` connect stream events to committed transaction metadata.
+`operation_id` is exposed through `GraphChangeOrigin` and is correlation metadata
+only. It may be client-provided on `BeginTransactionRequest.operation_id` or
+generated by the daemon when omitted.
 
-A single event may contain multiple graph changes from the same commit.
+`revision`, `transaction_id`, and `operation_id` are the primary correlation
+fields. `commit_id` is intentionally not exposed on graph-change events because
+these events are produced from the committed graph-change path before session
+commit metadata is attached.
 
-## Graph changes
+## Object changes
 
-Graph changes are typed as:
-
-- node created
-- node updated
-- node deleted
-- edge created
-- edge updated
-- edge deleted
-- revision advanced
-
-Create/update events should include full node/edge payloads where practical.
-
-Delete events use ids because the object no longer exists in the current graph state.
-
-```protobuf
-message GraphChange {
-  ChangeEventType type = 1;
-  oneof subject {
-    Node node = 2;
-    Edge edge = 3;
-    string node_id = 4;
-    string edge_id = 5;
-  }
+```proto
+message GraphObjectChange {
+  GraphChangeType type = 1;
+  string node_id = 2;
+  string edge_id = 3;
+  repeated string affected_node_ids = 4;
+  repeated string affected_edge_ids = 5;
+  repeated string changed_fields = 6;
+  Node old_node = 7;
+  Node new_node = 8;
+  Edge old_edge = 9;
+  Edge new_edge = 10;
 }
 ```
 
-## Heartbeats
+Old/new snapshots are projection-controlled. Compact consumers should usually use
+affected IDs and changed fields instead of full snapshots. Changed fields are
+best-effort: producers that cannot determine field-level changes may omit them,
+and field filters only match events that include changed field names.
 
-Long-lived streams should send periodic heartbeats.
+## Gap behavior
 
-```protobuf
-message ChangeStreamHeartbeat {
-  google.protobuf.Timestamp heartbeat_time = 1;
+```proto
+message GraphChangeGap {
+  string space_id = 1;
+  string domain_id = 2;
+  int64 requested_after_revision = 3;
+  int64 oldest_available_revision = 4;
+  int64 current_revision = 5;
 }
 ```
 
-Heartbeats help clients detect stalled streams and keep transport connections alive.
+On a gap, clients should invalidate/rebuild their local derived state and then
+reconnect from an appropriate checkpoint. The daemon does not automatically skip
+ahead after a gap.
 
-## Authorization
+## Client lifecycle pattern
 
-Watching graph changes requires:
+Consumers that maintain derived state should persist their last processed event
+revision outside the stream process. A typical lifecycle is:
+
+1. Open `WatchGraphChanges` with `include_current = true` and no
+   `after_revision` for an initial checkpoint, or with the last persisted
+   revision as `after_revision` after reconnecting.
+2. For each `event`, update derived state and then persist `event.revision` as
+   the new checkpoint.
+3. To ignore a write issued by the same client workflow, generate an
+   `operation_id` before `BeginTransaction`, pass it on the begin request, and
+   compare it with `event.origin.operation_id` in watch events. This is only
+   correlation metadata; it is not authorization, idempotency, replay
+   protection, or ordering.
+4. If a `gap` is received, invalidate or rebuild derived state from the current
+   authoritative graph and reconnect from a fresh checkpoint. The daemon does
+   not automatically skip ahead after a gap.
+
+Pseudo-code:
 
 ```text
-graph.read
+operation_id = new_uuid_v4()
+tx = BeginTransaction(session_id, read_write, operation_id)
+# write graph changes, then commit
+CommitTransaction(tx.transaction_id)
+
+last_revision = load_checkpoint()
+stream = WatchGraphChanges(space_id, domain_id, after_revision=last_revision)
+for message in stream:
+  if message.event:
+    if message.event.origin.operation_id == operation_id:
+      continue # own write; optional client policy
+    apply_to_cache(message.event)
+    save_checkpoint(message.event.revision)
+  if message.gap:
+    rebuild_cache_from_graph()
+    save_checkpoint(message.gap.current_revision)
+    reconnect()
 ```
 
-The stream may include graph payloads, so the daemon must enforce graph visibility for the caller.
+## CLI
 
-If future fine-grained node/subtree access is added, the stream must filter events accordingly.
+```sh
+mycel graph-change watch --space-id <space-id> --domain <domain-id-or-key> --include-current
+```
 
-## Error model
-
-The protobuf does not define custom error messages for this draft. Implementations should use standard gRPC status codes.
-
-Suggested mappings:
-
-| Condition | gRPC status |
-| --- | --- |
-| missing/invalid access token | `UNAUTHENTICATED` |
-| missing graph read capability | `PERMISSION_DENIED` |
-| malformed request | `INVALID_ARGUMENT` |
-| space/domain not found | `NOT_FOUND` |
-| resume revision no longer available | `OUT_OF_RANGE` |
-| stream rate/resource pressure | `RESOURCE_EXHAUSTED` |
-| daemon shutting down/unavailable | `UNAVAILABLE` |
-
-For normal Client API callers, returning `NOT_FOUND` for inaccessible spaces/domains can avoid leaking existence.
-
-## Connector behavior
-
-Connectors should:
-
-- persist the last seen domain revision/checkpoint
-- resume with `after_revision`
-- resync on `OUT_OF_RANGE`
-- process events in revision order
-- update local caches from create/update/delete payloads
-- treat stream heartbeats as liveness signals
-
-## Mesh implications
-
-Streams represent the daemon's local view of committed domain revisions.
-
-In mesh mode:
-
-- stream events should follow domain revision order
-- not all daemons may be equally up-to-date
-- replication-applied commits should appear as committed changes
-- connectors may need to reconnect/resume across daemon endpoints
-
-The detailed mesh consistency model is future design work.
-
-## Future work
-
-Potential future additions:
-
-- `WatchSpaceChanges`
-- template/blob/domain metadata events
-- stream filtering by node id, edge kind, or template
-- compacted event history and snapshot handoff
-- client acknowledgements for managed subscriptions
-- richer conflict/replication metadata
+The legacy command names `change-stream` and `changes` remain CLI aliases while
+the public protobuf service has moved to `GraphChangeService`.

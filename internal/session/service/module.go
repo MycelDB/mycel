@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/routing"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
@@ -90,7 +91,9 @@ func (m *Module) OpenSession(ctx context.Context, input OpenSessionInput) (Graph
 	}
 	idle := normalizeTimeout(input.IdleTimeout)
 	now := time.Now().UTC()
-	s := GraphSession{ID: routing.NewSessionID(m.localHomeNodeID), UserID: strings.TrimSpace(input.UserID), SpaceID: strings.TrimSpace(input.SpaceID), DomainID: strings.TrimSpace(input.DomainID), HomeNodeID: m.localHomeNodeID, State: SessionStateActive, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(idle)}
+	origin := input.Origin
+	origin.UserID = strings.TrimSpace(input.UserID)
+	s := GraphSession{ID: routing.NewSessionID(m.localHomeNodeID), UserID: strings.TrimSpace(input.UserID), SpaceID: strings.TrimSpace(input.SpaceID), DomainID: strings.TrimSpace(input.DomainID), HomeNodeID: m.localHomeNodeID, State: SessionStateActive, Origin: origin, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(idle)}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessions[s.ID] = s
@@ -224,7 +227,17 @@ func (m *Module) BeginTransaction(ctx context.Context, input BeginTransactionInp
 	if input.BaseRevision != nil && *input.BaseRevision > baseRevision {
 		baseRevision = *input.BaseRevision
 	}
-	tx := GraphTransaction{ID: routing.NewTransactionID(s.HomeNodeID), SessionID: s.ID, UserID: s.UserID, SpaceID: s.SpaceID, DomainID: s.DomainID, HomeNodeID: s.HomeNodeID, Mode: input.Mode, State: TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: s.ExpiresAt}
+	origin := mergeOrigin(s.Origin, input.Origin)
+	operationID, err := normalizeOperationID(origin.OperationID)
+	if err != nil {
+		return GraphTransaction{}, err
+	}
+	origin.OperationID = operationID
+	origin.UserID = s.UserID
+	origin.SessionID = s.ID
+	txID := routing.NewTransactionID(s.HomeNodeID)
+	origin.TransactionID = txID
+	tx := GraphTransaction{ID: txID, SessionID: s.ID, UserID: s.UserID, SpaceID: s.SpaceID, DomainID: s.DomainID, HomeNodeID: s.HomeNodeID, Mode: input.Mode, State: TransactionStateActive, BaseRevision: baseRevision, Origin: origin, CreatedAt: now, LastSeen: now, ExpiresAt: s.ExpiresAt}
 	m.transactions[tx.ID] = tx
 	m.transactionRoutes[tx.ID] = transactionRouteFromTransaction(tx, now)
 	return tx, nil
@@ -289,7 +302,11 @@ func (m *Module) commitTransaction(ctx context.Context, userID string, transacti
 	tx.LastSeen = now
 	m.transactions[tx.ID] = tx
 	m.transactionRoutes[tx.ID] = transactionRouteFromTransaction(tx, now)
-	commit := TransactionCommit{ID: uuid.NewString(), TransactionID: tx.ID, SessionID: tx.SessionID, UserID: tx.UserID, SpaceID: tx.SpaceID, DomainID: tx.DomainID, BaseRevision: tx.BaseRevision, CommittedRevision: committedRevision, OperationCount: operationCount, CommittedAt: now}
+	origin := tx.Origin
+	origin.UserID = tx.UserID
+	origin.SessionID = tx.SessionID
+	origin.TransactionID = tx.ID
+	commit := TransactionCommit{ID: uuid.NewString(), TransactionID: tx.ID, SessionID: tx.SessionID, UserID: tx.UserID, SpaceID: tx.SpaceID, DomainID: tx.DomainID, BaseRevision: tx.BaseRevision, CommittedRevision: committedRevision, OperationCount: operationCount, Origin: origin, CommittedAt: now}
 	m.commits[commit.ID] = commit
 	return commit, nil
 }
@@ -499,6 +516,34 @@ func sessionRouteFromSession(s GraphSession, updatedAt time.Time) SessionRouteRe
 
 func transactionRouteFromTransaction(tx GraphTransaction, updatedAt time.Time) TransactionRouteRecord {
 	return TransactionRouteRecord{TransactionID: tx.ID, SessionID: tx.SessionID, UserID: tx.UserID, SpaceID: tx.SpaceID, DomainID: tx.DomainID, HomeNodeID: tx.HomeNodeID, State: tx.State, CreatedAt: tx.CreatedAt, UpdatedAt: updatedAt, ExpiresAt: tx.ExpiresAt}
+}
+
+func normalizeOperationID(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return uuid.NewString(), nil
+	}
+	if _, err := uuid.Parse(value); err != nil {
+		return "", fmt.Errorf("%w: operation_id must be a UUID", ErrInvalidInput)
+	}
+	return value, nil
+}
+
+func mergeOrigin(sessionOrigin graphchange.OriginMetadata, txOrigin graphchange.OriginMetadata) graphchange.OriginMetadata {
+	out := sessionOrigin
+	if txOrigin.ClientID != "" {
+		out.ClientID = txOrigin.ClientID
+	}
+	if txOrigin.ClientInstanceID != "" {
+		out.ClientInstanceID = txOrigin.ClientInstanceID
+	}
+	if txOrigin.OperationID != "" {
+		out.OperationID = txOrigin.OperationID
+	}
+	if txOrigin.Label != "" {
+		out.Label = txOrigin.Label
+	}
+	return out
 }
 
 func normalizeTimeout(value time.Duration) time.Duration {

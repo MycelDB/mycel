@@ -23,7 +23,7 @@ Current subsystem service package paths:
 ```text
 internal/backup/service
 internal/blob/service
-internal/changestream/service
+internal/graph/notification
 internal/graph/service
 internal/identity/service
 internal/identity/service/admin
@@ -76,10 +76,10 @@ Subsystem service tests use lightweight fixtures from `internal/runtime/runtimet
 
 ```sh
 # Subsystem services and tests should not import daemon runtime/config.
-rg 'internal/daemon/(runtime|config)' internal/{backup,blob,changestream,graph,identity,semantic,session,space}/service --glob '*.go'
+rg 'internal/daemon/(runtime|config)' internal/{backup,blob,graph,identity,semantic,session,space}/service internal/graph/notification --glob '*.go'
 
 # Runtime must not import daemon or subsystem packages.
-rg 'internal/(daemon|backup|blob|changestream|graph|identity|semantic|session|space)' internal/runtime --glob '*.go'
+rg 'internal/(daemon|backup|blob|graph|identity|semantic|session|space)' internal/runtime --glob '*.go'
 
 # Removed daemon module/quiesce package imports should not exist in Go source.
 rg 'internal/daemon/(modules|quiesce)' internal --glob '*.go'

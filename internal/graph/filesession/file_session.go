@@ -612,7 +612,10 @@ func (s *FileSession) commitGraphAtRevision(ctx context.Context, putNodes []grap
 	}
 	if s.graphChangeSink != nil && !event.Empty() {
 		event.TxnID = info.TxnID
+		event.TransactionID = info.TxnID
 		event.GraphRevision = info.NextRevision
+		event.Revision = info.NextRevision
+		event.Normalize()
 		if err := s.graphChangeSink.OnGraphCommitted(ctx, event); err != nil {
 			s.lastGraphChangeSinkErr = err
 		} else {
@@ -626,7 +629,7 @@ func (s *FileSession) commitGraphAtRevision(ctx context.Context, putNodes []grap
 func (s *FileSession) LastGraphChangeSinkError() error { return s.lastGraphChangeSinkErr }
 
 func (s *FileSession) buildGraphChangeEvent(ctx context.Context, store *graphstorage.LocalStore, putNodes []graph.Node, putEdges []graph.Edge, deleteNodes []graph.NodeID, deleteEdges []graph.EdgeID) (graphchange.CommittedEvent, error) {
-	event := graphchange.CommittedEvent{SpaceID: s.spaceID, DomainIDs: []graph.DomainID{}, CreatedNodeIDs: []graph.NodeID{}, UpdatedNodeIDs: []graph.NodeID{}, DeletedNodeIDs: []graph.NodeID{}, ChangedEdges: []graphchange.EdgeChange{}, OldParentByNodeID: map[graph.NodeID]graph.NodeID{}, NewParentByNodeID: map[graph.NodeID]graph.NodeID{}, OldDomainByNodeID: map[graph.NodeID]graph.DomainID{}, NewDomainByNodeID: map[graph.NodeID]graph.DomainID{}, CommittedAt: time.Now().UTC()}
+	event := graphchange.CommittedEvent{SpaceID: s.spaceID, DomainID: s.domainID, DomainIDs: []graph.DomainID{}, CreatedNodeIDs: []graph.NodeID{}, UpdatedNodeIDs: []graph.NodeID{}, DeletedNodeIDs: []graph.NodeID{}, ChangedEdges: []graphchange.EdgeChange{}, OldParentByNodeID: map[graph.NodeID]graph.NodeID{}, NewParentByNodeID: map[graph.NodeID]graph.NodeID{}, OldDomainByNodeID: map[graph.NodeID]graph.DomainID{}, NewDomainByNodeID: map[graph.NodeID]graph.DomainID{}, CommittedAt: time.Now().UTC()}
 	domains := map[graph.DomainID]bool{}
 	addDomain := func(id graph.DomainID) {
 		if id != uuid.Nil {

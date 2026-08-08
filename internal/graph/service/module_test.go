@@ -215,6 +215,23 @@ func graphTx(spaceID string, domainID string, baseRevision int64) daemonsession.
 	return daemonsession.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), UserID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: daemonsession.TransactionModeReadWrite, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
 }
 
+func sameStringSet(got []string, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := map[string]int{}
+	for _, value := range got {
+		seen[value]++
+	}
+	for _, value := range want {
+		seen[value]--
+		if seen[value] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func TestModuleGraphChangeSinkFailureDoesNotFailCommit(t *testing.T) {
 	ctx := context.Background()
 	m := newTestGraphModule(t, ctx)
@@ -246,14 +263,20 @@ func TestModuleGraphChangeSinkReceivesPostCommitEvent(t *testing.T) {
 	seen := false
 	m.SetChangeSink(graphchange.SinkFunc(func(_ context.Context, event graphchange.CommittedEvent) error {
 		seen = true
-		if event.TxnID == uuid.Nil {
-			t.Fatalf("expected txn id")
+		if event.TxnID == uuid.Nil || event.TransactionID == uuid.Nil {
+			t.Fatalf("expected txn ids")
 		}
-		if event.GraphRevision == 0 {
-			t.Fatalf("expected graph revision")
+		if event.GraphRevision == 0 || event.Revision == 0 {
+			t.Fatalf("expected graph revision aliases")
 		}
 		if len(event.CreatedNodeIDs) != 1 {
 			t.Fatalf("expected one created node, got %+v", event)
+		}
+		if len(event.Changes) != 1 || event.Changes[0].Type != graphchange.ChangeTypeNodeCreated || event.Changes[0].Node == nil {
+			t.Fatalf("expected canonical created-node change, got %+v", event.Changes)
+		}
+		if len(event.AffectedNodeIDs) != 1 || event.AffectedNodeIDs[0] != event.CreatedNodeIDs[0] {
+			t.Fatalf("affected nodes = %+v, created = %+v", event.AffectedNodeIDs, event.CreatedNodeIDs)
 		}
 		return nil
 	}))
@@ -263,14 +286,86 @@ func TestModuleGraphChangeSinkReceivesPostCommitEvent(t *testing.T) {
 	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "node", Props: map[string]any{}}); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+	commit, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
 		t.Fatalf("commit: %v", err)
+	}
+	if len(commit.Changes) != 1 || commit.Changes[0].Type != graphchange.ChangeTypeNodeCreated || len(commit.Changes[0].AffectedNodeIDs) != 1 {
+		t.Fatalf("commit canonical changes = %+v", commit.Changes)
 	}
 	if !seen {
 		t.Fatalf("expected sink invocation")
 	}
 	if err := m.LastGraphChangeSinkError(); err != nil {
 		t.Fatalf("unexpected sink error: %v", err)
+	}
+}
+
+func TestModuleGraphChangeSinkReceivesTransactionOrigin(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	origin := graphchange.OriginMetadata{ClientID: "knotpkm", ClientInstanceID: "tab-1", OperationID: "save"}
+	seen := false
+	m.SetChangeSink(graphchange.SinkFunc(func(_ context.Context, event graphchange.CommittedEvent) error {
+		seen = true
+		if event.Origin != origin {
+			t.Fatalf("event origin = %#v, want %#v", event.Origin, origin)
+		}
+		return nil
+	}))
+	tx := graphTx(spaceID, domainID, 0)
+	tx.Origin = origin
+	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "node"}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+	if !seen {
+		t.Fatal("sink was not invoked")
+	}
+}
+
+func TestModuleGraphChangeEdgeChangesAffectEndpoints(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+
+	seed := graphTx(spaceID, domainID, 0)
+	from, err := m.CreateNode(ctx, seed, NodeInput{Content: "from", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("create from: %v", err)
+	}
+	to, err := m.CreateNode(ctx, seed, NodeInput{Content: "to", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("create to: %v", err)
+	}
+	edge, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: from.ID.String(), ToNodeID: to.ID.String(), Labels: []string{"related"}})
+	if err != nil {
+		t.Fatalf("create edge: %v", err)
+	}
+	commit, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+	var edgeChange GraphChange
+	for _, change := range commit.Changes {
+		if change.EdgeID == edge.ID.String() {
+			edgeChange = change
+			break
+		}
+	}
+	if edgeChange.Type != ChangeTypeEdgeCreated {
+		t.Fatalf("edge change = %+v", edgeChange)
+	}
+	if !sameStringSet(edgeChange.AffectedNodeIDs, []string{from.ID.String(), to.ID.String()}) {
+		t.Fatalf("edge affected nodes = %+v, want endpoints", edgeChange.AffectedNodeIDs)
+	}
+	if len(edgeChange.AffectedEdgeIDs) != 1 || edgeChange.AffectedEdgeIDs[0] != edge.ID.String() {
+		t.Fatalf("edge affected edges = %+v", edgeChange.AffectedEdgeIDs)
 	}
 }
 

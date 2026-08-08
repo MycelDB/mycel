@@ -13,7 +13,6 @@ import (
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
-	daemonchange "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
@@ -23,6 +22,7 @@ import (
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
+	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
 	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
@@ -46,11 +46,11 @@ type Config struct {
 	SpaceManager             daemonspace.Manager
 	SessionManager           daemonsession.Manager
 	GraphManager             daegraph.Manager
+	GraphChangeManager       graphnotification.Manager
 	BlobManager              daemonblob.Manager
 	SemanticManager          daemonsemantic.Manager
 	SchemaManager            schemaservice.Manager
 	AutomationManager        automationservice.Manager
-	ChangeManager            daemonchange.Manager
 	TokenManager             *daemonauth.TokenManager
 	Quiesce                  *quiesce.Coordinator
 	IngressGate              *quiesce.Gate
@@ -104,8 +104,8 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if cfg.SemanticManager == nil {
 		return nil, fmt.Errorf("semantic manager is required")
 	}
-	if cfg.ChangeManager == nil {
-		return nil, fmt.Errorf("change stream manager is required")
+	if cfg.GraphChangeManager == nil {
+		return nil, fmt.Errorf("graph change manager is required")
 	}
 	if cfg.TokenManager == nil {
 		var err error
@@ -181,7 +181,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if provider, ok := cfg.GraphManager.(clientapi.GraphWriteRouteProvider); ok {
 		sessionAPI.WithGraphWriteRouteProvider(provider)
 	}
-	transactionAPI := clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.ChangeManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
+	transactionAPI := clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	graphAPI := clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager).WithClientRequestRouter(clientRouter)
 	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithClientRequestRouter(clientRouter)
 	importExportAPI := clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
@@ -206,7 +206,11 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	clientv1.RegisterImportExportServiceServer(grpcServer, importExportAPI)
 	clientv1.RegisterMetadataCatalogServiceServer(grpcServer, metadataCatalogAPI)
 	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager))
-	clientv1.RegisterChangeStreamServiceServer(grpcServer, clientapi.NewChangeStreamService(cfg.ChangeManager, cfg.SpaceManager))
+	graphChangeAPI := clientapi.NewGraphChangeService(cfg.GraphChangeManager, cfg.SpaceManager)
+	if checker, ok := cfg.GraphManager.(clientapi.TransactionGraphWriteLeaderChecker); ok {
+		graphChangeAPI.WithGraphWriteLeaderChecker(checker)
+	}
+	clientv1.RegisterGraphChangeServiceServer(grpcServer, graphChangeAPI)
 	return &Server{grpcServer: grpcServer, listener: listener, logger: cfg.Logger}, nil
 }
 
