@@ -276,6 +276,41 @@ func TestAnalyzerDropsIrrelevantSelfPolicyNode(t *testing.T) {
 	}
 }
 
+func TestAnalyzerBatchesDirtyWorkUpserts(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	if _, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "idx", Name: "idx", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}); err != nil {
+		t.Fatalf("index upsert failed: %v", err)
+	}
+	nodes := map[graph.NodeID]graph.Node{}
+	created := []graph.NodeID{}
+	for i := 0; i < 5; i++ {
+		nodeID := graph.NodeID(uuid.New())
+		created = append(created, nodeID)
+		nodes[nodeID] = graph.Node{ID: nodeID, DomainID: domainID, Content: fmt.Sprintf("node %d", i)}
+	}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, CreatedNodeIDs: created, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("append event failed: %v", err)
+	}
+	recordingMgr := &recordingBatchMaintenanceManager{MaintenanceManager: maintenanceMgr}
+	res, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: recordingMgr, GraphReader: fakeGraphReader{nodes: nodes}, MaxBatchSize: 2}).AnalyzeOnce(ctx, AnalyzeInput{})
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	if res.EnqueuedItems != 5 {
+		t.Fatalf("enqueued items = %d, want 5", res.EnqueuedItems)
+	}
+	if recordingMgr.singleCalls != 0 {
+		t.Fatalf("single upsert calls = %d, want 0", recordingMgr.singleCalls)
+	}
+	want := []int{2, 2, 1}
+	if fmt.Sprint(recordingMgr.batchSizes) != fmt.Sprint(want) {
+		t.Fatalf("batch sizes = %v, want %v", recordingMgr.batchSizes, want)
+	}
+}
+
 func TestAnalyzerSkipIndexDoesNotEnqueueDirtyWork(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
@@ -318,6 +353,33 @@ func newAnalyzerManagers(t *testing.T, ctx context.Context, spaceID domainspace.
 		t.Fatalf("maintenance manager init failed: %v", err)
 	}
 	return spaceMgr, maintenanceMgr
+}
+
+type recordingBatchMaintenanceManager struct {
+	storesemantic.MaintenanceManager
+	batchSizes  []int
+	singleCalls int
+}
+
+func (m *recordingBatchMaintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error) {
+	m.singleCalls++
+	return m.MaintenanceManager.UpsertDirtyWorkItem(ctx, item)
+}
+
+func (m *recordingBatchMaintenanceManager) UpsertDirtyWorkItems(ctx context.Context, items []domainsemantic.SemanticDirtyWorkItem) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+	m.batchSizes = append(m.batchSizes, len(items))
+	if batcher, ok := m.MaintenanceManager.(dirtyWorkBatchUpserter); ok {
+		return batcher.UpsertDirtyWorkItems(ctx, items)
+	}
+	out := make([]domainsemantic.SemanticDirtyWorkItem, 0, len(items))
+	for _, item := range items {
+		updated, err := m.MaintenanceManager.UpsertDirtyWorkItem(ctx, item)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, updated)
+	}
+	return out, nil
 }
 
 type fakeGraphReader struct {

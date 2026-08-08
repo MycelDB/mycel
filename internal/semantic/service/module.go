@@ -57,6 +57,7 @@ type Module struct {
 	accounting           storeaccounting.Manager
 	accountingBase       storeaccounting.Manager
 	spaces               map[domainspace.SpaceID]storesemantic.SpaceManager
+	maintenanceManagers  map[domainspace.SpaceID]storesemantic.MaintenanceManager
 	maintenanceConfig    MaintenanceConfig
 	schemaManager        SchemaManager
 	logger               *slog.Logger
@@ -95,7 +96,7 @@ func NewModule(config ...Config) *Module {
 		cfg = config[0]
 	}
 
-	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, gate: quiesce.NewGate(ModuleName), secretKeyB64: cfg.SecretKeyB64, maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager}
+	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, maintenanceManagers: map[domainspace.SpaceID]storesemantic.MaintenanceManager{}, gate: quiesce.NewGate(ModuleName), secretKeyB64: cfg.SecretKeyB64, maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -150,6 +151,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	m.accountingBase = acct
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
+	m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
 	if m.maintenanceConfig == (MaintenanceConfig{}) {
 		m.maintenanceConfig = maintenanceConfigFromHost(host)
 	}
@@ -201,6 +203,7 @@ func (m *Module) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	m.clearMaintenanceManagers()
 	m.mu.Lock()
 	m.maintenanceRunning = false
 	m.maintenanceStarted = time.Time{}
@@ -450,17 +453,48 @@ func (m *Module) ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager,
 }
 
 func (m *Module) MaintenanceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.MaintenanceManager, error) {
-	if spaceID == domainspace.SpaceID(uuid.Nil) {
-		return nil, fmt.Errorf("space_id is required")
-	}
-	mgr := storesemantic.NewMaintenanceManager()
-	if err := mgr.Init(ctx, m.maintenanceDir(spaceID), spaceID); err != nil {
+	mgr, err := m.baseMaintenanceManager(ctx, spaceID)
+	if err != nil {
 		return nil, err
 	}
 	if m.wal != nil || m.raftGroups != nil {
 		return &walMaintenanceManager{inner: mgr, module: m, spaceID: spaceID}, nil
 	}
 	return mgr, nil
+}
+
+func (m *Module) baseMaintenanceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.MaintenanceManager, error) {
+	if spaceID == domainspace.SpaceID(uuid.Nil) {
+		return nil, fmt.Errorf("space_id is required")
+	}
+	m.mu.Lock()
+	if m.maintenanceManagers == nil {
+		m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
+	}
+	if mgr := m.maintenanceManagers[spaceID]; mgr != nil {
+		m.mu.Unlock()
+		return mgr, nil
+	}
+	mgr := storesemantic.NewMaintenanceManager()
+	if err := mgr.Init(ctx, m.maintenanceDir(spaceID), spaceID); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	m.maintenanceManagers[spaceID] = mgr
+	m.mu.Unlock()
+	return mgr, nil
+}
+
+func (m *Module) clearMaintenanceManagers() {
+	m.mu.Lock()
+	managers := m.maintenanceManagers
+	m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
+	m.mu.Unlock()
+	for _, mgr := range managers {
+		if closer, ok := mgr.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}
 }
 
 func (m *Module) maintenanceDir(spaceID domainspace.SpaceID) string {
@@ -707,7 +741,7 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, MaxBatchSize: m.maintenanceConfig.MaxBatchSize, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 }
 
 func (m *Module) schemaDirtyCooldownForTarget(reader semanticmaintenance.GraphReader) func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error) {

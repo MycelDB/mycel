@@ -19,6 +19,10 @@ assigned to a tagged release bucket.
 - [add_callbacks parking-lot implementation plan](add-callbacks-parking-lot-implementation-plan.md) — remaining downstream compatibility, examples, integration notes, and final validation work after parking the coordinated graph-change watch/operation-correlation branches.
 - [add_callbacks integration notes](add-callbacks-integration-notes.md) — breaking API migration notes, operation ID semantics, downstream compatibility result, example locations, and validation checklist for the coordinated branches.
 
+## Semantic maintenance
+
+- [Semantic maintenance loaded state implementation plan](semantic-maintenance-loaded-state-implementation-plan.md) — per-space loaded maintenance managers and in-memory indexes for dirty events, work items, and checkpoints.
+
 ## Admin/UI follow-ups
 
 - [Admin template service and UI implementation plan](admin-template-service-and-ui-implementation-plan.md)
