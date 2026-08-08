@@ -8,22 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
-	"github.com/myceldb/mycel/internal/diagnostics"
 	"go.etcd.io/raft/v3"
 	raftpb "go.etcd.io/raft/v3/raftpb"
 )
 
 type PersistentStorage struct {
-	mu            sync.Mutex
-	dir           string
-	memory        raftStorage
-	entries       []raftpb.Entry
-	confState     raftpb.ConfState
-	diagGroup     GroupID
-	diagNode      NodeID
-	diagSubsystem string
+	mu        sync.Mutex
+	dir       string
+	memory    raftStorage
+	entries   []raftpb.Entry
+	confState raftpb.ConfState
 }
 
 type raftStorage interface {
@@ -53,19 +48,6 @@ func NewPersistentStorage(dir string) (*PersistentStorage, error) {
 		return nil, err
 	}
 	return s, nil
-}
-
-func (s *PersistentStorage) SetDiagnosticsLabels(groupID GroupID, nodeID NodeID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.diagGroup = groupID
-	s.diagNode = nodeID
-}
-
-func (s *PersistentStorage) SetDiagnosticsSubsystem(subsystem string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.diagSubsystem = subsystem
 }
 
 func (s *PersistentStorage) InitialState() (raftpb.HardState, raftpb.ConfState, error) {
@@ -121,53 +103,13 @@ func (s *PersistentStorage) Append(entries []raftpb.Entry) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	diag := diagnostics.CommitTimingEnabled()
-	var started, memoryStarted, reloadStarted, writeStarted time.Time
-	var memoryDuration, reloadDuration, writeDuration time.Duration
-	if diag {
-		started = time.Now()
-		memoryStarted = started
-	}
 	if err := s.memory.Append(entries); err != nil {
 		return err
-	}
-	if diag {
-		memoryDuration = time.Since(memoryStarted)
-		reloadStarted = time.Now()
 	}
 	if err := s.reloadEntriesFromMemory(); err != nil {
 		return err
 	}
-	if diag {
-		reloadDuration = time.Since(reloadStarted)
-		writeStarted = time.Now()
-	}
-	writtenBytes, err := writeEntriesAtomicMeasured(filepath.Join(s.dir, "entries.pb"), s.entries)
-	if diag {
-		writeDuration = time.Since(writeStarted)
-	}
-	if err != nil {
-		return err
-	}
-	if diag {
-		firstIndex, lastIndex := entryIndexRange(s.entries)
-		diagnostics.LogCommitTiming("raft storage append persisted",
-			"subsystem", s.diagSubsystem,
-			"group_id", string(s.diagGroup),
-			"local_node_id", uint64(s.diagNode),
-			"storage_dir", s.dir,
-			"appended_entries", len(entries),
-			"appended_record_types", entryRecordTypes(entries),
-			"retained_entries", len(s.entries),
-			"first_index", firstIndex,
-			"last_index", lastIndex,
-			"written_bytes", writtenBytes,
-			"memory_append_ms", memoryDuration.Milliseconds(),
-			"reload_entries_ms", reloadDuration.Milliseconds(),
-			"write_entries_ms", writeDuration.Milliseconds(),
-			"duration_ms", time.Since(started).Milliseconds())
-	}
-	return nil
+	return writeEntriesAtomic(filepath.Join(s.dir, "entries.pb"), s.entries)
 }
 
 func (s *PersistentStorage) ApplySnapshot(snap raftpb.Snapshot) error {
@@ -296,49 +238,6 @@ func (s *PersistentStorage) load() error {
 	return nil
 }
 
-func entryIndexRange(entries []raftpb.Entry) (uint64, uint64) {
-	if len(entries) == 0 {
-		return 0, 0
-	}
-	return entries[0].Index, entries[len(entries)-1].Index
-}
-
-func entryRecordTypes(entries []raftpb.Entry) []string {
-	if len(entries) == 0 {
-		return nil
-	}
-	out := []string{}
-	seen := map[string]struct{}{}
-	for _, entry := range entries {
-		recordType := ""
-		switch entry.Type {
-		case raftpb.EntryNormal:
-			if len(entry.Data) == 0 {
-				recordType = "entry_normal_empty"
-			} else if cmd, err := DecodeCommand(entry.Data); err == nil {
-				recordType = string(cmd.RecordType)
-			} else {
-				recordType = "entry_normal_decode_error"
-			}
-		case raftpb.EntryConfChange:
-			recordType = "entry_conf_change"
-		case raftpb.EntryConfChangeV2:
-			recordType = "entry_conf_change_v2"
-		default:
-			recordType = entry.Type.String()
-		}
-		if recordType == "" {
-			continue
-		}
-		if _, ok := seen[recordType]; ok {
-			continue
-		}
-		seen[recordType] = struct{}{}
-		out = append(out, recordType)
-	}
-	return out
-}
-
 func (s *PersistentStorage) reloadEntriesFromMemory() error {
 	first, err := s.memory.FirstIndex()
 	if err != nil {
@@ -368,29 +267,21 @@ func writeProtoAtomic(path string, msg interface{ Marshal() ([]byte, error) }) e
 	return writeAtomic(path, data)
 }
 func writeEntriesAtomic(path string, entries []raftpb.Entry) error {
-	_, err := writeEntriesAtomicMeasured(path, entries)
-	return err
-}
-
-func writeEntriesAtomicMeasured(path string, entries []raftpb.Entry) (int, error) {
 	var buf bytes.Buffer
 	if err := binary.Write(&buf, binary.BigEndian, uint64(len(entries))); err != nil {
-		return 0, err
+		return err
 	}
 	for i := range entries {
 		data, err := entries[i].Marshal()
 		if err != nil {
-			return 0, err
+			return err
 		}
 		if err := binary.Write(&buf, binary.BigEndian, uint64(len(data))); err != nil {
-			return 0, err
+			return err
 		}
 		buf.Write(data)
 	}
-	if err := writeAtomic(path, buf.Bytes()); err != nil {
-		return 0, err
-	}
-	return buf.Len(), nil
+	return writeAtomic(path, buf.Bytes())
 }
 func readEntries(path string) ([]raftpb.Entry, error) {
 	data, err := os.ReadFile(path)

@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/myceldb/mycel/internal/diagnostics"
 	"go.etcd.io/raft/v3"
 	raftpb "go.etcd.io/raft/v3/raftpb"
 )
@@ -50,7 +49,6 @@ type ReadDiagnostics struct {
 type Group struct {
 	id             GroupID
 	nodeID         NodeID
-	subsystem      string
 	partitionCount uint32
 	peers          []NodeID
 	node           raft.Node
@@ -117,18 +115,6 @@ func StartGroup(ctx context.Context, opts GroupOptions) (*Group, error) {
 	if storage == nil {
 		storage = raft.NewMemoryStorage()
 	}
-	subsystem := ""
-	if named, ok := opts.StateMachine.(interface{ RaftStateMachineName() string }); ok {
-		subsystem = named.RaftStateMachineName()
-	}
-	if labeler, ok := storage.(interface {
-		SetDiagnosticsLabels(GroupID, NodeID)
-	}); ok {
-		labeler.SetDiagnosticsLabels(opts.ID, opts.NodeID)
-	}
-	if labeler, ok := storage.(interface{ SetDiagnosticsSubsystem(string) }); ok {
-		labeler.SetDiagnosticsSubsystem(subsystem)
-	}
 	initialAppliedIndex := uint64(0)
 	if opts.ReplayCommittedEntries {
 		applied, err := restoreSnapshotAndReplayCommittedEntries(ctx, storage, opts.StateMachine, opts.PartitionCount)
@@ -164,7 +150,7 @@ func StartGroup(ctx context.Context, opts GroupOptions) (*Group, error) {
 	} else {
 		node = raft.StartNode(cfg, peers)
 	}
-	g := &Group{id: opts.ID, nodeID: opts.NodeID, subsystem: subsystem, partitionCount: opts.PartitionCount, peers: append([]NodeID(nil), opts.Peers...), node: node, storage: storage, transport: opts.Transport, sm: opts.StateMachine, ctx: ctx, cancel: cancel, done: make(chan struct{}), term: hs.Term, commitIndex: hs.Commit, appliedIndex: initialAppliedIndex, waiters: map[string]chan proposalOutcome{}, readWaiters: map[string]chan readIndexOutcome{}}
+	g := &Group{id: opts.ID, nodeID: opts.NodeID, partitionCount: opts.PartitionCount, peers: append([]NodeID(nil), opts.Peers...), node: node, storage: storage, transport: opts.Transport, sm: opts.StateMachine, ctx: ctx, cancel: cancel, done: make(chan struct{}), term: hs.Term, commitIndex: hs.Commit, appliedIndex: initialAppliedIndex, waiters: map[string]chan proposalOutcome{}, readWaiters: map[string]chan readIndexOutcome{}}
 	go g.run()
 	return g, nil
 }
@@ -500,11 +486,6 @@ func (g *Group) beginReadIndex(ctx context.Context) (string, chan readIndexOutco
 func (g *Group) Campaign(ctx context.Context) error { return g.node.Campaign(ctx) }
 
 func (g *Group) Propose(ctx context.Context, cmd RaftCommand) (ProposalResult, error) {
-	diag := diagnostics.CommitTimingEnabled()
-	var started time.Time
-	if diag {
-		started = time.Now()
-	}
 	if err := cmd.Validate(g.partitionCount); err != nil {
 		return ProposalResult{}, err
 	}
@@ -519,83 +500,16 @@ func (g *Group) Propose(ctx context.Context, cmd RaftCommand) (ProposalResult, e
 		return ProposalResult{}, fmt.Errorf("duplicate in-flight command_id %q", cmd.CommandID)
 	}
 	g.waiters[cmd.CommandID] = ch
-	waiterCount := len(g.waiters)
-	leader := g.leader
 	g.mu.Unlock()
-	var proposeStarted time.Time
-	if diag {
-		proposeStarted = time.Now()
-	}
 	if err := g.node.Propose(ctx, data); err != nil {
 		g.forgetWaiter(cmd.CommandID, proposalOutcome{err: err})
-		if diag {
-			diagnostics.LogCommitTiming("raft proposal failed before wait",
-				"subsystem", g.subsystem,
-				"group_id", string(g.id),
-				"local_node_id", uint64(g.nodeID),
-				"leader_node_id", uint64(leader),
-				"command_id", cmd.CommandID,
-				"scope", string(cmd.Scope),
-				"record_type", string(cmd.RecordType),
-				"partition_id", cmd.PartitionID,
-				"payload_bytes", len(cmd.Payload),
-				"encoded_bytes", len(data),
-				"inflight_waiters", waiterCount,
-				"node_propose_ms", time.Since(proposeStarted).Milliseconds(),
-				"duration_ms", time.Since(started).Milliseconds(),
-				"error", err.Error())
-		}
 		return ProposalResult{}, err
-	}
-	var nodeProposeDuration time.Duration
-	var waitStarted time.Time
-	if diag {
-		nodeProposeDuration = time.Since(proposeStarted)
-		waitStarted = time.Now()
 	}
 	select {
 	case out := <-ch:
-		if diag {
-			diagnostics.LogCommitTiming("raft proposal completed",
-				"subsystem", g.subsystem,
-				"group_id", string(g.id),
-				"local_node_id", uint64(g.nodeID),
-				"leader_node_id", uint64(leader),
-				"command_id", cmd.CommandID,
-				"scope", string(cmd.Scope),
-				"record_type", string(cmd.RecordType),
-				"partition_id", cmd.PartitionID,
-				"payload_bytes", len(cmd.Payload),
-				"encoded_bytes", len(data),
-				"inflight_waiters", waiterCount,
-				"node_propose_ms", nodeProposeDuration.Milliseconds(),
-				"wait_ms", time.Since(waitStarted).Milliseconds(),
-				"duration_ms", time.Since(started).Milliseconds(),
-				"result_index", out.result.Index,
-				"result_term", out.result.Term,
-				"error", errorString(out.err))
-		}
 		return out.result, out.err
 	case <-ctx.Done():
 		g.forgetWaiter(cmd.CommandID, proposalOutcome{err: ctx.Err()})
-		if diag {
-			diagnostics.LogCommitTiming("raft proposal wait failed",
-				"subsystem", g.subsystem,
-				"group_id", string(g.id),
-				"local_node_id", uint64(g.nodeID),
-				"leader_node_id", uint64(leader),
-				"command_id", cmd.CommandID,
-				"scope", string(cmd.Scope),
-				"record_type", string(cmd.RecordType),
-				"partition_id", cmd.PartitionID,
-				"payload_bytes", len(cmd.Payload),
-				"encoded_bytes", len(data),
-				"inflight_waiters", waiterCount,
-				"node_propose_ms", nodeProposeDuration.Milliseconds(),
-				"wait_ms", time.Since(waitStarted).Milliseconds(),
-				"duration_ms", time.Since(started).Milliseconds(),
-				"error", ctx.Err().Error())
-		}
 		return ProposalResult{}, ctx.Err()
 	}
 }
@@ -617,40 +531,18 @@ func (g *Group) run() {
 }
 
 func (g *Group) processReady(rd raft.Ready) bool {
-	diag := diagnostics.CommitTimingEnabled()
-	var started time.Time
-	var snapshotDuration, hardStateDuration, appendDuration, sendDuration, applyDuration, advanceDuration time.Duration
-	if diag {
-		started = time.Now()
-	}
 	g.backupMu.RLock()
 	defer g.backupMu.RUnlock()
 	if rd.SoftState != nil {
 		g.mu.Lock()
-		previousLeader := g.leader
 		g.leader = NodeID(rd.SoftState.Lead)
 		localLeader := g.leader == g.nodeID
-		currentLeader := g.leader
-		term := g.term
 		g.mu.Unlock()
-		if diag && previousLeader != currentLeader {
-			diagnostics.LogCommitTiming("raft leader changed",
-				"subsystem", g.subsystem,
-				"group_id", string(g.id),
-				"local_node_id", uint64(g.nodeID),
-				"previous_leader_node_id", uint64(previousLeader),
-				"leader_node_id", uint64(currentLeader),
-				"term", term)
-		}
 		if !localLeader {
 			g.failReadWaiters(ErrNotLeader)
 		}
 	}
 	if !raft.IsEmptySnap(rd.Snapshot) {
-		var snapshotStarted time.Time
-		if diag {
-			snapshotStarted = time.Now()
-		}
 		if err := g.storage.ApplySnapshot(rd.Snapshot); err != nil {
 			g.failWaiters(fmt.Errorf("apply raft snapshot: %w", err))
 			return false
@@ -660,15 +552,8 @@ func (g *Group) processReady(rd raft.Ready) bool {
 			return false
 		}
 		g.markApplied(rd.Snapshot.Metadata.Index)
-		if diag {
-			snapshotDuration = time.Since(snapshotStarted)
-		}
 	}
 	if !raft.IsEmptyHardState(rd.HardState) {
-		var hardStarted time.Time
-		if diag {
-			hardStarted = time.Now()
-		}
 		if err := g.storage.SetHardState(rd.HardState); err != nil {
 			g.failWaiters(fmt.Errorf("persist raft hard state: %w", err))
 			return false
@@ -681,76 +566,21 @@ func (g *Group) processReady(rd raft.Ready) bool {
 			g.commitIndex = rd.HardState.Commit
 		}
 		g.mu.Unlock()
-		if diag {
-			hardStateDuration = time.Since(hardStarted)
-		}
 	}
 	if len(rd.Entries) > 0 {
-		var appendStarted time.Time
-		if diag {
-			appendStarted = time.Now()
-		}
 		if err := g.storage.Append(rd.Entries); err != nil {
 			g.failWaiters(fmt.Errorf("persist raft entries: %w", err))
 			return false
 		}
-		if diag {
-			appendDuration = time.Since(appendStarted)
-		}
-	}
-	var sendStarted time.Time
-	if diag {
-		sendStarted = time.Now()
 	}
 	g.transport.Send(g.ctx, g.id, g.nodeID, rd.Messages)
-	if diag {
-		sendDuration = time.Since(sendStarted)
-	}
-	var applyStarted time.Time
-	if diag {
-		applyStarted = time.Now()
-	}
 	for _, entry := range rd.CommittedEntries {
 		g.applyEntry(entry)
-	}
-	if diag {
-		applyDuration = time.Since(applyStarted)
 	}
 	for _, readState := range rd.ReadStates {
 		g.completeReadWaiter(string(readState.RequestCtx), readIndexOutcome{result: ReadBarrierResult{Index: readState.Index, Term: g.currentTerm()}})
 	}
-	var advanceStarted time.Time
-	if diag {
-		advanceStarted = time.Now()
-	}
 	g.node.Advance()
-	if diag {
-		advanceDuration = time.Since(advanceStarted)
-		leader, term, commitIndex, appliedIndex := g.readyDiagnosticsState()
-		diagnostics.LogCommitTiming("raft ready processed",
-			"subsystem", g.subsystem,
-			"group_id", string(g.id),
-			"local_node_id", uint64(g.nodeID),
-			"leader_node_id", uint64(leader),
-			"term", term,
-			"commit_index", commitIndex,
-			"applied_index", appliedIndex,
-			"entries", len(rd.Entries),
-			"entry_record_types", entryRecordTypes(rd.Entries),
-			"committed_entries", len(rd.CommittedEntries),
-			"committed_record_types", entryRecordTypes(rd.CommittedEntries),
-			"messages", len(rd.Messages),
-			"read_states", len(rd.ReadStates),
-			"has_hard_state", !raft.IsEmptyHardState(rd.HardState),
-			"has_snapshot", !raft.IsEmptySnap(rd.Snapshot),
-			"snapshot_ms", snapshotDuration.Milliseconds(),
-			"hard_state_ms", hardStateDuration.Milliseconds(),
-			"append_ms", appendDuration.Milliseconds(),
-			"send_ms", sendDuration.Milliseconds(),
-			"apply_ms", applyDuration.Milliseconds(),
-			"advance_ms", advanceDuration.Milliseconds(),
-			"duration_ms", time.Since(started).Milliseconds())
-	}
 	return true
 }
 
@@ -852,12 +682,6 @@ func (g *Group) currentTerm() uint64 {
 	return g.term
 }
 
-func (g *Group) readyDiagnosticsState() (leader NodeID, term uint64, commitIndex uint64, appliedIndex uint64) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.leader, g.term, g.commitIndex, g.appliedIndex
-}
-
 func (g *Group) completeReadWaiter(readCtx string, out readIndexOutcome) {
 	if readCtx == "" {
 		return
@@ -935,13 +759,6 @@ func (g *Group) recordApplyWaitFailure(index uint64, applyWait time.Duration, er
 	groupID, nodeID, leader, reason := g.id, g.nodeID, g.leader, g.readDiagnostics.LastFailureReason
 	g.mu.Unlock()
 	slog.Default().Warn("raft read apply wait failed", "group_id", string(groupID), "local_node_id", uint64(nodeID), "leader_node_id", uint64(leader), "read_index", index, "duration_ms", applyWait.Milliseconds(), "reason", reason)
-}
-
-func errorString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 func readFailureReason(err error) string {

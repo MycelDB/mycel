@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
-	"github.com/myceldb/mycel/internal/diagnostics"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
@@ -97,7 +96,6 @@ func (m *Module) proposeSemanticSystemRaftCommand(ctx context.Context, cmd conse
 		return status.Error(codes.Unavailable, "semantic raft system group is not available")
 	}
 	if group.Leader() == 0 {
-		diagnostics.LogCommitTiming("semantic raft proposal rejected: no leader", "subsystem", "semantic", "group_id", string(consensus.SystemGroupID), "record_type", string(cmd.RecordType), "scope", string(cmd.Scope), "partition_id", cmd.PartitionID, "command_id", cmd.CommandID)
 		return status.Error(codes.Unavailable, "semantic raft system group has no leader")
 	}
 	if _, err := group.Propose(ctx, cmd); err != nil {
@@ -115,7 +113,6 @@ func (m *Module) proposeSemanticRaftCommand(ctx context.Context, cmd consensus.R
 		return status.Errorf(codes.Unavailable, "semantic raft partition group %d is not available", cmd.PartitionID)
 	}
 	if group.Leader() == 0 {
-		diagnostics.LogCommitTiming("semantic raft proposal rejected: no leader", "subsystem", "semantic", "group_id", string(consensus.PartitionGroupID(cmd.PartitionID)), "record_type", string(cmd.RecordType), "scope", string(cmd.Scope), "partition_id", cmd.PartitionID, "command_id", cmd.CommandID)
 		return status.Errorf(codes.Unavailable, "semantic raft partition group %d has no leader", cmd.PartitionID)
 	}
 	if _, err := group.Propose(ctx, cmd); err != nil {
