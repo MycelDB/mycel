@@ -163,6 +163,32 @@ space_id + domain_id
 
 Transactions cannot span multiple domains in v1.
 
+### Operation correlation
+
+`BeginTransactionRequest.operation_id` lets clients attach a UUID correlation ID
+to a transaction. If the field is omitted, the daemon generates a UUID. If the
+field is present, the daemon validates that it is a UUID string.
+
+The operation ID is echoed on `GraphTransaction.operation_id`,
+`TransactionCommit.operation_id`, and committed graph-change watch events under
+`GraphChangeOrigin.operation_id`. Clients can use it to correlate their own write
+workflow with later notifications, for example to skip cache invalidation work
+for writes they already applied optimistically.
+
+`operation_id` is correlation metadata only. It is not an authorization token,
+idempotency key, replay-protection mechanism, commit ordering guarantee, or
+conflict-detection input.
+
+Connector-level shape:
+
+```text
+operation_id = new_uuid_v4()
+tx = begin_read_write_transaction(session_id, operation_id)
+# graph writes target tx.transaction_id
+commit = commit_transaction(tx.transaction_id)
+assert commit.operation_id == operation_id
+```
+
 ### Revision metadata
 
 `BeginTransaction` returns revision metadata:

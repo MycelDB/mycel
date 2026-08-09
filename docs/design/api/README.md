@@ -12,5 +12,5 @@ Client API docs describe standard user/application gRPC surfaces.
 - [Import/export](import-export.md)
 - [Metadata catalog](metadata-catalog.md)
 - [Semantic](semantic.md)
-- [Change stream](change-stream.md)
+- [Graph change watch](change-stream.md)
 - [Template](template.md)

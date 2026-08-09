@@ -16,6 +16,7 @@ import (
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 	"google.golang.org/grpc/codes"
@@ -220,6 +221,95 @@ func TestRuntimeCloseStopsSemanticMaintenance(t *testing.T) {
 	}
 }
 
+func TestMaintenanceManagerReusesLoadedBasePerSpace(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	rt := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	first, err := m.baseMaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatalf("first base manager failed: %v", err)
+	}
+	second, err := m.baseMaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatalf("second base manager failed: %v", err)
+	}
+	if first != second {
+		t.Fatal("baseMaintenanceManager did not reuse loaded manager for same space")
+	}
+	other, err := m.baseMaintenanceManager(ctx, domainspace.SpaceID(uuid.New()))
+	if err != nil {
+		t.Fatalf("other base manager failed: %v", err)
+	}
+	if other == first {
+		t.Fatal("distinct spaces should not share maintenance managers")
+	}
+}
+
+func TestMaintenanceManagerCacheClearedOnCloseAndReload(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	rt := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	mgr, err := m.baseMaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatalf("base manager failed: %v", err)
+	}
+	if len(m.maintenanceManagers) != 1 {
+		t.Fatalf("manager cache length = %d, want 1", len(m.maintenanceManagers))
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	if len(m.maintenanceManagers) != 0 {
+		t.Fatalf("manager cache length after close = %d, want 0", len(m.maintenanceManagers))
+	}
+	mgr2, err := m.baseMaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatalf("base manager after close failed: %v", err)
+	}
+	if mgr2 == mgr {
+		t.Fatal("base manager should reload after close/reinit")
+	}
+	if err := m.ReloadAfterSnapshot(ctx); err != nil {
+		t.Fatalf("reload after snapshot failed: %v", err)
+	}
+	if len(m.maintenanceManagers) != 0 {
+		t.Fatalf("manager cache length after snapshot reload = %d, want 0", len(m.maintenanceManagers))
+	}
+}
+
+func TestApplyMaintenanceMutationUpsertBatch(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	mgr := storesemantic.NewMaintenanceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("maintenance manager init failed: %v", err)
+	}
+	items := []domainsemantic.SemanticDirtyWorkItem{
+		{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: graph.NodeID(uuid.New())},
+		{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: graph.NodeID(uuid.New())},
+	}
+	if err := applyMaintenanceMutation(ctx, mgr, maintenanceMutationRecord{Kind: "work.upsert_batch", SpaceID: spaceID, Payload: raw(items)}); err != nil {
+		t.Fatalf("apply batch mutation failed: %v", err)
+	}
+	stored, err := mgr.ListDirtyWorkItems(ctx)
+	if err != nil {
+		t.Fatalf("list dirty work failed: %v", err)
+	}
+	if len(stored) != len(items) {
+		t.Fatalf("stored items = %d, want %d: %+v", len(stored), len(items), stored)
+	}
+}
+
 func TestBackfillIndexRejectsSemanticDisabledDomain(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
@@ -288,13 +378,13 @@ type fakeServiceGraphReader struct {
 	nodes map[graph.NodeID]graph.Node
 }
 
-func (r fakeServiceGraphReader) GetNode(_ context.Context, id graph.NodeID) (graph.Node, error) {
+func (r fakeServiceGraphReader) GetNode(_ context.Context, _ graph.DomainID, id graph.NodeID) (graph.Node, error) {
 	if node, ok := r.nodes[id]; ok {
 		return node, nil
 	}
 	return graph.Node{}, context.Canceled
 }
 
-func (r fakeServiceGraphReader) Parent(context.Context, graph.NodeID) (*graph.Edge, error) {
+func (r fakeServiceGraphReader) Parent(context.Context, graph.DomainID, graph.NodeID) (*graph.Edge, error) {
 	return nil, nil
 }

@@ -7,5 +7,5 @@ func TestSemanticProvisioningCLI(t *testing.T) {
 }
 
 func TestSemanticMigrateLegacyEmbeddingsCLI(t *testing.T) {
-	t.Skip("embedded legacy embedding migration setup removed in daemon-only phase 2; daemon migration coverage lives in semantic migration tests")
+	t.Skip("legacy embedding migration window is closed; daemon compatibility coverage lives in admin inference/semantic tests")
 }

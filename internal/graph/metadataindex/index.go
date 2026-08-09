@@ -10,8 +10,38 @@ import (
 	"strings"
 
 	"github.com/myceldb/mycel/internal/graph/model"
-	sessionapi "github.com/myceldb/mycel/internal/session/api"
 )
+
+type TagMatchMode string
+
+const (
+	TagMatchAny TagMatchMode = "any"
+	TagMatchAll TagMatchMode = "all"
+)
+
+type TagSummary struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
+type PropertyOperator string
+
+const (
+	PropertyOperatorExists PropertyOperator = "exists"
+	PropertyOperatorEqual  PropertyOperator = "eq"
+)
+
+type PropertySummary struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+type FindNodesByPropertyInput struct {
+	Name     string
+	Operator PropertyOperator
+	Value    any
+	Limit    int
+}
 
 type valueKey struct {
 	name      string
@@ -46,10 +76,10 @@ func Build(nodes []graph.Node) *Index {
 	return idx
 }
 
-func (idx *Index) TagSummaries() []sessionapi.TagSummary {
-	out := make([]sessionapi.TagSummary, 0, len(idx.tags))
+func (idx *Index) TagSummaries() []TagSummary {
+	out := make([]TagSummary, 0, len(idx.tags))
 	for tag, nodes := range idx.tags {
-		out = append(out, sessionapi.TagSummary{Tag: tag, Count: len(nodes)})
+		out = append(out, TagSummary{Tag: tag, Count: len(nodes)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Count != out[j].Count {
@@ -60,7 +90,7 @@ func (idx *Index) TagSummaries() []sessionapi.TagSummary {
 	return out
 }
 
-func (idx *Index) FindByTags(tags []string, match sessionapi.TagMatchMode, limit int) ([]graph.Node, error) {
+func (idx *Index) FindByTags(tags []string, match TagMatchMode, limit int) ([]graph.Node, error) {
 	normalized, err := graph.NormalizeTagsValue(tags)
 	if err != nil {
 		return nil, err
@@ -69,21 +99,21 @@ func (idx *Index) FindByTags(tags []string, match sessionapi.TagMatchMode, limit
 		return []graph.Node{}, nil
 	}
 	if match == "" {
-		match = sessionapi.TagMatchAny
+		match = TagMatchAny
 	}
-	if match != sessionapi.TagMatchAny && match != sessionapi.TagMatchAll {
+	if match != TagMatchAny && match != TagMatchAll {
 		return nil, fmt.Errorf("unsupported tag match mode %q", match)
 	}
 
 	selected := map[graph.NodeID]struct{}{}
 	switch match {
-	case sessionapi.TagMatchAny:
+	case TagMatchAny:
 		for _, tag := range normalized {
 			for id := range idx.tags[tag] {
 				selected[id] = struct{}{}
 			}
 		}
-	case sessionapi.TagMatchAll:
+	case TagMatchAll:
 		for id := range idx.tags[normalized[0]] {
 			selected[id] = struct{}{}
 		}
@@ -98,10 +128,10 @@ func (idx *Index) FindByTags(tags []string, match sessionapi.TagMatchMode, limit
 	return idx.nodesInOrder(selected, limit), nil
 }
 
-func (idx *Index) PropertySummaries() []sessionapi.PropertySummary {
-	out := make([]sessionapi.PropertySummary, 0, len(idx.properties))
+func (idx *Index) PropertySummaries() []PropertySummary {
+	out := make([]PropertySummary, 0, len(idx.properties))
 	for name, nodes := range idx.properties {
-		out = append(out, sessionapi.PropertySummary{Name: name, Count: len(nodes)})
+		out = append(out, PropertySummary{Name: name, Count: len(nodes)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Count != out[j].Count {
@@ -112,19 +142,19 @@ func (idx *Index) PropertySummaries() []sessionapi.PropertySummary {
 	return out
 }
 
-func (idx *Index) FindByProperty(in sessionapi.FindNodesByPropertyInput) ([]graph.Node, error) {
+func (idx *Index) FindByProperty(in FindNodesByPropertyInput) ([]graph.Node, error) {
 	name, err := graph.NormalizePropertyName(in.Name)
 	if err != nil {
 		return nil, err
 	}
 	operator := in.Operator
 	if operator == "" {
-		operator = sessionapi.PropertyOperatorExists
+		operator = PropertyOperatorExists
 	}
 	switch operator {
-	case sessionapi.PropertyOperatorExists:
+	case PropertyOperatorExists:
 		return idx.nodesInOrder(idx.properties[name], in.Limit), nil
-	case sessionapi.PropertyOperatorEqual:
+	case PropertyOperatorEqual:
 		key, err := propertyValueKey(name, in.Value)
 		if err != nil {
 			return nil, err

@@ -94,6 +94,64 @@ func TestModuleSchemaHierarchyEnabledEnforcesContainsSingleParent(t *testing.T) 
 	}
 }
 
+func TestModuleSchemaHierarchyValidationUsesStagedEdgesForCycleDetection(t *testing.T) {
+	ctx := context.Background()
+	m, tx := newSchemaValidatedModule(t, schemamodel.SchemaModeStrict)
+	manager := schemaservice.NewManager(storage.NewMemoryStore())
+	if err := manager.PutDomainSchema(ctx, schemaForGraphServiceWithContains(uuid.MustParse(tx.DomainID), schemamodel.SchemaModeStrict, true)); err != nil {
+		t.Fatalf("PutDomainSchema() error = %v", err)
+	}
+	m.SetSchemaManager(manager)
+	a, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
+	b, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
+	c, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "C"}})
+	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: a.ID.String(), ToNodeID: b.ID.String(), Labels: []string{"contains"}}); err != nil {
+		t.Fatalf("CreateEdge(a->b) error = %v", err)
+	}
+	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: b.ID.String(), ToNodeID: c.ID.String(), Labels: []string{"contains"}}); err != nil {
+		t.Fatalf("CreateEdge(b->c) error = %v", err)
+	}
+	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: c.ID.String(), ToNodeID: a.ID.String(), Labels: []string{"contains"}}); err == nil {
+		t.Fatalf("expected cycle validation error from staged hierarchy edges")
+	}
+}
+
+func TestModuleSchemaHierarchyValidationIgnoresOverlayDeletedParent(t *testing.T) {
+	ctx := context.Background()
+	m, tx := newSchemaValidatedModule(t, schemamodel.SchemaModeStrict)
+	manager := schemaservice.NewManager(storage.NewMemoryStore())
+	if err := manager.PutDomainSchema(ctx, schemaForGraphServiceWithContains(uuid.MustParse(tx.DomainID), schemamodel.SchemaModeStrict, true)); err != nil {
+		t.Fatalf("PutDomainSchema() error = %v", err)
+	}
+	m.SetSchemaManager(manager)
+	rootA, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
+	rootB, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
+	child, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
+	edge, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: rootA.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}})
+	if err != nil {
+		t.Fatalf("CreateEdge(rootA->child) error = %v", err)
+	}
+	commit, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		t.Fatalf("CommitTransactionGraph(seed) error = %v", err)
+	}
+
+	move := graphTx(tx.SpaceID, tx.DomainID, commit.CommittedRevision)
+	if _, err := m.DeleteEdge(ctx, move, edge.ID.String()); err != nil {
+		t.Fatalf("DeleteEdge(old parent) error = %v", err)
+	}
+	if _, err := m.CreateEdge(ctx, move, EdgeInput{FromNodeID: rootB.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err != nil {
+		t.Fatalf("CreateEdge(new parent) should ignore overlay-deleted parent, got %v", err)
+	}
+	children, err := m.ListChildren(ctx, move, rootB.ID.String())
+	if err != nil {
+		t.Fatalf("ListChildren(new parent) error = %v", err)
+	}
+	if len(children) != 1 || children[0].ToID != child.ID {
+		t.Fatalf("ListChildren(new parent) = %+v, want child", children)
+	}
+}
+
 func TestModuleSchemaHierarchyMoveUsesSchemaLabel(t *testing.T) {
 	ctx := context.Background()
 	domainID := uuid.NewString()

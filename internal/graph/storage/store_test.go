@@ -72,6 +72,145 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	}
 }
 
+func TestLocalStoreIncomingOutgoingEdgesSurviveReopenAndReplacement(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	fromA := graph.Node{ID: graph.NodeID(uuid.New()), Content: "from-a"}
+	fromB := graph.Node{ID: graph.NodeID(uuid.New()), Content: "from-b"}
+	toA := graph.Node{ID: graph.NodeID(uuid.New()), Content: "to-a"}
+	toB := graph.Node{ID: graph.NodeID(uuid.New()), Content: "to-b"}
+	edgeID := graph.EdgeID(uuid.New())
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin seed failed: %v", err)
+	}
+	for _, node := range []graph.Node{fromA, fromB, toA, toB} {
+		if err := seed.PutNode(node); err != nil {
+			t.Fatalf("put seed node failed: %v", err)
+		}
+	}
+	if err := seed.PutEdge(graph.Edge{ID: edgeID, FromID: fromA.ID, ToID: toA.ID, Labels: []string{"references"}, Properties: map[string]any{"phase": "seed"}}); err != nil {
+		t.Fatalf("put seed edge failed: %v", err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed commit failed: %v", err)
+	}
+	assertEndpointEdges(t, ctx, store, fromA.ID, toA.ID, edgeID)
+
+	move, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin move failed: %v", err)
+	}
+	move.ExpectRevision(store.Revision())
+	if err := move.PutEdge(graph.Edge{ID: edgeID, FromID: fromB.ID, ToID: toB.ID, Labels: []string{"references"}, Properties: map[string]any{"phase": "moved"}}); err != nil {
+		t.Fatalf("move edge failed: %v", err)
+	}
+	if err := move.Commit(); err != nil {
+		t.Fatalf("move commit failed: %v", err)
+	}
+	assertNoEndpointEdges(t, ctx, store, fromA.ID, toA.ID)
+	assertEndpointEdges(t, ctx, store, fromB.ID, toB.ID, edgeID)
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	assertNoEndpointEdges(t, ctx, store, fromA.ID, toA.ID)
+	assertEndpointEdges(t, ctx, store, fromB.ID, toB.ID, edgeID)
+
+	incoming, err := store.IncomingEdges(ctx, toB.ID)
+	if err != nil {
+		t.Fatalf("IncomingEdges() error = %v", err)
+	}
+	incoming[0].Properties["phase"] = "mutated"
+	got, err := store.GetEdge(ctx, edgeID)
+	if err != nil {
+		t.Fatalf("GetEdge() error = %v", err)
+	}
+	if got.Properties["phase"] != "moved" {
+		t.Fatalf("IncomingEdges returned mutable edge; stored phase=%v", got.Properties["phase"])
+	}
+}
+
+func TestLocalStoreIncomingOutgoingEdgesRemoveDeletedEdges(t *testing.T) {
+	ctx := context.Background()
+	store, parent, child := newStoreWithParentChild(t, ctx)
+	defer store.Close()
+	edgeID := graph.EdgeID(uuid.New())
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin seed failed: %v", err)
+	}
+	seed.ExpectRevision(store.Revision())
+	if err := seed.PutEdge(graph.Edge{ID: edgeID, FromID: parent.ID, ToID: child.ID, Labels: []string{"references"}}); err != nil {
+		t.Fatalf("put edge failed: %v", err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed commit failed: %v", err)
+	}
+	assertEndpointEdges(t, ctx, store, parent.ID, child.ID, edgeID)
+	deleteTx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin delete failed: %v", err)
+	}
+	deleteTx.ExpectRevision(store.Revision())
+	if err := deleteTx.DeleteEdge(edgeID); err != nil {
+		t.Fatalf("delete edge failed: %v", err)
+	}
+	if err := deleteTx.Commit(); err != nil {
+		t.Fatalf("delete commit failed: %v", err)
+	}
+	assertNoEndpointEdges(t, ctx, store, parent.ID, child.ID)
+}
+
+func assertEndpointEdges(t *testing.T, ctx context.Context, store *LocalStore, from graph.NodeID, to graph.NodeID, edgeID graph.EdgeID) {
+	t.Helper()
+	outgoing, err := store.OutgoingEdges(ctx, from)
+	if err != nil {
+		t.Fatalf("OutgoingEdges() error = %v", err)
+	}
+	if len(outgoing) != 1 || outgoing[0].ID != edgeID || outgoing[0].FromID != from || outgoing[0].ToID != to {
+		t.Fatalf("OutgoingEdges() = %+v, want edge %s %s->%s", outgoing, edgeID, from, to)
+	}
+	incoming, err := store.IncomingEdges(ctx, to)
+	if err != nil {
+		t.Fatalf("IncomingEdges() error = %v", err)
+	}
+	if len(incoming) != 1 || incoming[0].ID != edgeID || incoming[0].FromID != from || incoming[0].ToID != to {
+		t.Fatalf("IncomingEdges() = %+v, want edge %s %s->%s", incoming, edgeID, from, to)
+	}
+}
+
+func assertNoEndpointEdges(t *testing.T, ctx context.Context, store *LocalStore, from graph.NodeID, to graph.NodeID) {
+	t.Helper()
+	outgoing, err := store.OutgoingEdges(ctx, from)
+	if err != nil {
+		t.Fatalf("OutgoingEdges() error = %v", err)
+	}
+	for _, edge := range outgoing {
+		if edge.ToID == to {
+			t.Fatalf("OutgoingEdges(%s) still contains edge to %s: %+v", from, to, outgoing)
+		}
+	}
+	incoming, err := store.IncomingEdges(ctx, to)
+	if err != nil {
+		t.Fatalf("IncomingEdges() error = %v", err)
+	}
+	for _, edge := range incoming {
+		if edge.FromID == from {
+			t.Fatalf("IncomingEdges(%s) still contains edge from %s: %+v", to, from, incoming)
+		}
+	}
+}
+
 func TestLocalStoreIgnoresUncommittedRecords(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

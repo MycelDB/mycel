@@ -83,7 +83,7 @@ test-phase-a: generate-proto generate-gql-parser
 	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/daemon/api/client ./internal/daemon/config ./internal/daemon/runtime ./internal/daemon/server ./internal/graph/service ./internal/cli/cmd -count=1
 
 test-phase-d: generate-proto generate-gql-parser
-	go test ./internal/clustering/consensus ./internal/daemon/app ./internal/space/service ./internal/schema/service ./internal/graph/service ./internal/blob/service ./internal/semantic/service ./internal/backup/service ./internal/automation/service ./internal/changestream/service -count=1
+	go test ./internal/clustering/consensus ./internal/daemon/app ./internal/space/service ./internal/schema/service ./internal/graph/service ./internal/blob/service ./internal/semantic/service ./internal/backup/service ./internal/automation/service ./internal/graph/notification -count=1
 
 test-phase-e: generate-proto generate-gql-parser
 	go test ./internal/clustering/routing ./internal/session/service ./internal/clustering/backend ./internal/daemon/api/client ./internal/graph/service -count=1

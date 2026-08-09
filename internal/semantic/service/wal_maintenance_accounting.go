@@ -116,8 +116,8 @@ func (m *Module) applySemanticMaintenance(ctx context.Context, rec wal.Record) e
 	if err := json.Unmarshal(rec.Payload, &r); err != nil {
 		return err
 	}
-	mgr := storesemantic.NewMaintenanceManager()
-	if err := mgr.Init(ctx, m.maintenanceDir(r.SpaceID), r.SpaceID); err != nil {
+	mgr, err := m.baseMaintenanceManager(ctx, r.SpaceID)
+	if err != nil {
 		return err
 	}
 	return applyMaintenanceMutation(ctx, mgr, r)
@@ -139,7 +139,23 @@ func applyMaintenanceMutation(ctx context.Context, mgr storesemantic.Maintenance
 		_ = json.Unmarshal(r.Payload, &v)
 		_, err := mgr.UpsertDirtyWorkItem(ctx, v)
 		return err
+	case "work.upsert_batch":
+		var items []domainsemantic.SemanticDirtyWorkItem
+		_ = json.Unmarshal(r.Payload, &items)
+		if batcher, ok := mgr.(interface {
+			UpsertDirtyWorkItems(context.Context, []domainsemantic.SemanticDirtyWorkItem) ([]domainsemantic.SemanticDirtyWorkItem, error)
+		}); ok {
+			_, err := batcher.UpsertDirtyWorkItems(ctx, items)
+			return err
+		}
+		for _, item := range items {
+			if _, err := mgr.UpsertDirtyWorkItem(ctx, item); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "work.complete":
+
 		var v struct {
 			ID     uuid.UUID                `json:"id"`
 			Result storesemantic.WorkResult `json:"result"`
@@ -256,6 +272,15 @@ func (w *walMaintenanceManager) UpsertDirtyWorkItem(ctx context.Context, i domai
 		return domainsemantic.SemanticDirtyWorkItem{}, err
 	}
 	return i, nil
+}
+func (w *walMaintenanceManager) UpsertDirtyWorkItems(ctx context.Context, items []domainsemantic.SemanticDirtyWorkItem) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+	if len(items) == 0 {
+		return []domainsemantic.SemanticDirtyWorkItem{}, nil
+	}
+	if err := w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "work.upsert_batch", SpaceID: w.spaceID, Payload: raw(items)}); err != nil {
+		return nil, err
+	}
+	return append([]domainsemantic.SemanticDirtyWorkItem(nil), items...), nil
 }
 func (w *walMaintenanceManager) CompleteWork(ctx context.Context, id uuid.UUID, r storesemantic.WorkResult) error {
 	return w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "work.complete", SpaceID: w.spaceID, Payload: raw(struct {

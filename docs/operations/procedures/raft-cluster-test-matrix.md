@@ -138,7 +138,7 @@ Packages:
 ./internal/semantic/service
 ./internal/backup/service
 ./internal/automation/service
-./internal/changestream/service
+./internal/graph/notification
 ```
 
 Representative named tests:
@@ -384,7 +384,7 @@ Representative tests:
 ./internal/semantic/service
 ./internal/backup/service
 ./internal/automation/service
-./internal/changestream/service
+./internal/graph/notification
 ```
 
 These cover:
@@ -395,7 +395,7 @@ These cover:
 - backend protocol conversion and auth;
 - daemon runtime write gating and readiness;
 - system/user identity raft records;
-- space/schema/blob/semantic/backup/change-stream subsystem raft ownership.
+- space/schema/blob/semantic/backup/graph-notification subsystem raft ownership.
 
 ## Docker Compose cluster gate
 

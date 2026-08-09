@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MycelDB/mycel-api
-          ref: v0.6.0
+          ref: add_callbacks
           path: mycel-api
           token: ${{ secrets.MYCELDB_GITHUB_TOKEN }}
       - uses: actions/setup-go@v5

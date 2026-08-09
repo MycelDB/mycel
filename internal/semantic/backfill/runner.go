@@ -25,8 +25,8 @@ func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
-	if r.Session == nil || r.GlobalManager == nil || r.SpaceManager == nil || r.Connector == nil || r.VectorBackend == nil {
-		return Result{}, fmt.Errorf("session, managers, connector, and vector backend are required")
+	if r.GraphReader == nil || r.GlobalManager == nil || r.SpaceManager == nil || r.Connector == nil || r.VectorBackend == nil {
+		return Result{}, fmt.Errorf("graph reader, managers, connector, and vector backend are required")
 	}
 	indexes, err := r.SpaceManager.ListSemanticIndexes(ctx)
 	if err != nil {
@@ -57,14 +57,14 @@ func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 	if err := r.ensureAllowedPolicy(ctx, *index, endpoint); err != nil {
 		return Result{}, err
 	}
-	nodes, err := r.Session.ListNodes(ctx)
+	nodes, err := r.GraphReader.ListNodes(ctx, index.DomainID)
 	if err != nil {
 		if !isMissingGraphData(err) {
 			return Result{}, err
 		}
 		nodes = []graph.Node{}
 	}
-	edges, err := r.Session.ListEdges(ctx)
+	edges, err := r.GraphReader.ListEdges(ctx, index.DomainID)
 	if err != nil {
 		if !isMissingGraphData(err) {
 			return Result{}, err

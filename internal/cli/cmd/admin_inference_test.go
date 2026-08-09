@@ -7,15 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
-	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
-	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
-	"github.com/myceldb/mycel/internal/identity/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -209,7 +205,7 @@ model_endpoint_capabilities:
 }
 
 func TestAdminSemanticMigrationUsesDaemonGRPC(t *testing.T) {
-	dataDir, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
 	createTestUser(t, addr, adminPassword, "migration-user", "migration-pass")
 	out, err := runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "space", "add", "Migration Space", "--owner-username", "migration-user")
@@ -220,46 +216,9 @@ func TestAdminSemanticMigrationUsesDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &createdSpace); err != nil {
 		t.Fatalf("decode space add: %v\n%s", err, out)
 	}
-	ownerID := identity.UserID(uuid.MustParse(createdSpace.GetSpace().GetOwner().GetId()))
-	embeddings := storeembedding.NewManager()
-	if err := embeddings.Init(context.Background(), filepath.Join(dataDir, "meta", "embedding"), ""); err != nil {
-		t.Fatalf("init legacy embedding store: %v", err)
-	}
-	if _, err := embeddings.AddKey(context.Background(), storeembedding.AddKeyInput{OwnerID: ownerID, ProviderID: "openai", Name: "OpenAI Legacy", APIKey: "sk-test", IsDefault: true}); err != nil {
-		t.Fatalf("add legacy key: %v", err)
-	}
-	seedLegacyEmbeddingProfile(t, filepath.Join(dataDir, "meta", "embedding", "embeddings.json"), ownerID)
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "migrate", "legacy-embeddings", "--space-id", createdSpace.GetSpace().GetSpaceId(), "--domain", "default", "--dry-run")
-	if err != nil {
-		t.Fatalf("semantic migration dry-run failed: %v\n%s", err, out)
-	}
-	var migrated adminv1.MigrateLegacyEmbeddingsResponse
-	if err := json.Unmarshal([]byte(out), &migrated); err != nil {
-		t.Fatalf("decode migration response: %v\n%s", err, out)
-	}
-	if !migrated.GetDryRun() || migrated.GetProfilesSeen() != 1 || migrated.GetProfilesMigrated() != 1 || migrated.GetProfilesSkipped() != 0 {
-		t.Fatalf("unexpected migration response: %#v", &migrated)
-	}
-}
-
-func seedLegacyEmbeddingProfile(t *testing.T, path string, ownerID identity.UserID) {
-	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read legacy embedding fixture: %v", err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("decode legacy embedding fixture: %v", err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	doc["profiles"] = []map[string]any{{"id": uuid.New().String(), "owner_id": ownerID.String(), "name": "Legacy Notes", "provider_id": "openai", "model_id": "openai/text-embedding-3-small", "source_mode": string(domainembedding.SourceModeSelf), "minimum_text_length": 1, "created_at": now, "updated_at": now}}
-	updated, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		t.Fatalf("encode legacy embedding fixture: %v", err)
-	}
-	if err := os.WriteFile(path, updated, 0o644); err != nil {
-		t.Fatalf("write legacy embedding fixture: %v", err)
+	if err == nil || !strings.Contains(err.Error()+out, "legacy embedding migration window is closed") {
+		t.Fatalf("expected closed legacy migration error, err=%v out=%s", err, out)
 	}
 }
 
@@ -300,8 +259,17 @@ func TestAdminSemanticMaintenanceUsesDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &processed); err != nil || processed.GetProcessedItems() != 0 || processed.GetCompletedItems() != 0 || processed.GetFailedItems() != 0 {
 		t.Fatalf("unexpected process result: %#v err=%v out=%s", &processed, err, out)
 	}
-	seededWorkID := seedSemanticMaintenanceWork(t, dataDir, spaceID)
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "list", "--space-id", spaceID)
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "space", "add", "Maintenance Work Space", "--owner-username", "maint-user")
+	if err != nil {
+		t.Fatalf("work space add failed: %v\n%s", err, out)
+	}
+	var createdWorkSpace adminv1.CreateSpaceResponse
+	if err := json.Unmarshal([]byte(out), &createdWorkSpace); err != nil {
+		t.Fatalf("decode work space add: %v\n%s", err, out)
+	}
+	workSpaceID := createdWorkSpace.GetSpace().GetSpaceId()
+	seededWorkID := seedSemanticMaintenanceWork(t, dataDir, workSpaceID)
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "list", "--space-id", workSpaceID)
 	if err != nil {
 		t.Fatalf("semantic maintenance list failed: %v\n%s", err, out)
 	}
@@ -309,7 +277,7 @@ func TestAdminSemanticMaintenanceUsesDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &listed); err != nil || len(listed.GetItems()) != 1 || listed.GetItems()[0].GetWorkItemId() != seededWorkID.String() {
 		t.Fatalf("unexpected work list: %#v err=%v out=%s", &listed, err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "cancel", "--space-id", spaceID, seededWorkID.String())
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "cancel", "--space-id", workSpaceID, seededWorkID.String())
 	if err != nil {
 		t.Fatalf("semantic maintenance cancel failed: %v\n%s", err, out)
 	}
@@ -317,7 +285,7 @@ func TestAdminSemanticMaintenanceUsesDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &cancelled); err != nil || cancelled.GetItem().GetStatus() != string(domainsemantic.SemanticDirtyWorkStatusCancelled) {
 		t.Fatalf("unexpected cancel response: %#v err=%v out=%s", &cancelled, err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "retry", "--space-id", spaceID, seededWorkID.String())
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "maintenance", "retry", "--space-id", workSpaceID, seededWorkID.String())
 	if err != nil {
 		t.Fatalf("semantic maintenance retry failed: %v\n%s", err, out)
 	}

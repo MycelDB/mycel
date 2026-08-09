@@ -1002,6 +1002,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		info = graphstorage.CommitInfo{TxnID: uuid.New(), NextRevision: uint64(committedRevision)}
 	}
 	restoreOverlay = false
+	graphEvent.Changes = changes
 	m.notifyGraphChangeSink(ctx, info, graphEvent)
 	return CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}, nil
 }
@@ -1040,7 +1041,10 @@ func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.Co
 		return
 	}
 	event.TxnID = info.TxnID
+	event.TransactionID = info.TxnID
 	event.GraphRevision = info.NextRevision
+	event.Revision = info.NextRevision
+	event.Normalize()
 	if err := sink.OnGraphCommitted(ctx, event); err != nil {
 		m.mu.Lock()
 		m.lastGraphChangeSinkErr = err
@@ -1060,7 +1064,9 @@ func (m *Module) graphChangeEvent(ctx context.Context, tx daemonsession.GraphTra
 	domainID := mustDomainID(tx.DomainID)
 	event := graphchange.CommittedEvent{
 		SpaceID:           domainspace.SpaceID(spaceID),
+		DomainID:          domainID,
 		DomainIDs:         []domaingraph.DomainID{domainID},
+		Origin:            tx.Origin,
 		CreatedNodeIDs:    []domaingraph.NodeID{},
 		UpdatedNodeIDs:    []domaingraph.NodeID{},
 		DeletedNodeIDs:    []domaingraph.NodeID{},
@@ -1159,11 +1165,12 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 			oldCopy = &copy
 		}
 		copy := cloneNode(node)
-		changes = append(changes, GraphChange{Type: changeType, Node: &copy, OldNode: oldCopy, NodeID: node.ID.String()})
+		changes = append(changes, GraphChange{Type: changeType, Node: &copy, OldNode: oldCopy, NodeID: node.ID.String(), AffectedNodeIDs: []string{node.ID.String()}})
 	}
 	for _, edge := range sortedEdges(snapshot.putEdges) {
 		changeType := ChangeTypeEdgeUpdated
 		var oldCopy *domaingraph.Edge
+		affectedNodeIDs := []string{edge.FromID.String(), edge.ToID.String()}
 		if old, err := store.GetEdge(ctx, edge.ID); errors.Is(err, graphstorage.ErrNotFound) {
 			changeType = ChangeTypeEdgeCreated
 		} else if err != nil {
@@ -1171,15 +1178,31 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 		} else {
 			copy := cloneEdge(old)
 			oldCopy = &copy
+			affectedNodeIDs = appendUniqueStrings(affectedNodeIDs, old.FromID.String(), old.ToID.String())
 		}
 		copy := cloneEdge(edge)
-		changes = append(changes, GraphChange{Type: changeType, Edge: &copy, OldEdge: oldCopy, EdgeID: edge.ID.String()})
+		changes = append(changes, GraphChange{Type: changeType, Edge: &copy, OldEdge: oldCopy, EdgeID: edge.ID.String(), AffectedNodeIDs: affectedNodeIDs, AffectedEdgeIDs: []string{edge.ID.String()}})
 	}
 	for _, id := range sortedNodeIDs(snapshot.deleteNodes) {
-		changes = append(changes, GraphChange{Type: ChangeTypeNodeDeleted, NodeID: id.String()})
+		var oldCopy *domaingraph.Node
+		if old, err := store.GetNode(ctx, id); err == nil {
+			copy := cloneNode(old)
+			oldCopy = &copy
+		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+			return nil, mapStorageError(err)
+		}
+		changes = append(changes, GraphChange{Type: ChangeTypeNodeDeleted, OldNode: oldCopy, NodeID: id.String(), AffectedNodeIDs: []string{id.String()}})
 	}
 	for _, id := range sortedEdgeIDs(snapshot.deleteEdges) {
-		changes = append(changes, GraphChange{Type: ChangeTypeEdgeDeleted, EdgeID: id.String()})
+		change := GraphChange{Type: ChangeTypeEdgeDeleted, EdgeID: id.String(), AffectedEdgeIDs: []string{id.String()}}
+		if old, err := store.GetEdge(ctx, id); err == nil {
+			copy := cloneEdge(old)
+			change.OldEdge = &copy
+			change.AffectedNodeIDs = appendUniqueStrings(change.AffectedNodeIDs, old.FromID.String(), old.ToID.String())
+		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
+			return nil, mapStorageError(err)
+		}
+		changes = append(changes, change)
 	}
 	return changes, nil
 }
@@ -1294,17 +1317,86 @@ func (m *Module) edge(ctx context.Context, tx daemonsession.GraphTransaction, id
 	return cloneEdge(edge), nil
 }
 
+type transactionEdgeView struct {
+	store   *graphstorage.LocalStore
+	overlay *overlay
+}
+
+func (m *Module) transactionEdgeView(ctx context.Context, tx daemonsession.GraphTransaction) (transactionEdgeView, error) {
+	store, err := m.store(ctx, tx.SpaceID)
+	if err != nil {
+		return transactionEdgeView{}, err
+	}
+	m.mu.Lock()
+	var snapshot *overlay
+	if o := m.overlays[tx.ID]; o != nil {
+		snapshot = o.clone()
+	}
+	m.mu.Unlock()
+	return transactionEdgeView{store: store, overlay: snapshot}, nil
+}
+
+func (v transactionEdgeView) incoming(ctx context.Context, nodeID domaingraph.NodeID) ([]domaingraph.Edge, error) {
+	base, err := v.store.IncomingEdges(ctx, nodeID)
+	if err != nil {
+		return nil, mapStorageError(err)
+	}
+	return v.mergeEndpointEdges(base, func(edge domaingraph.Edge) bool { return edge.ToID == nodeID }), nil
+}
+
+func (v transactionEdgeView) outgoing(ctx context.Context, nodeID domaingraph.NodeID) ([]domaingraph.Edge, error) {
+	base, err := v.store.OutgoingEdges(ctx, nodeID)
+	if err != nil {
+		return nil, mapStorageError(err)
+	}
+	return v.mergeEndpointEdges(base, func(edge domaingraph.Edge) bool { return edge.FromID == nodeID }), nil
+}
+
+func (v transactionEdgeView) mergeEndpointEdges(base []domaingraph.Edge, includeOverlay func(domaingraph.Edge) bool) []domaingraph.Edge {
+	if v.overlay == nil {
+		return base
+	}
+	out := make([]domaingraph.Edge, 0, len(base)+len(v.overlay.putEdges))
+	for _, edge := range base {
+		if _, deleted := v.overlay.deleteEdges[edge.ID]; deleted {
+			continue
+		}
+		if _, replaced := v.overlay.putEdges[edge.ID]; replaced {
+			continue
+		}
+		out = append(out, edge)
+	}
+	for _, edge := range v.overlay.putEdges {
+		if includeOverlay(edge) {
+			out = append(out, cloneEdge(edge))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
+	return out
+}
+
+func (m *Module) isHierarchyEdge(ctx context.Context, domainID domaingraph.DomainID, edge domaingraph.Edge) (bool, error) {
+	if edge.DomainID != uuid.Nil && edge.DomainID != domainID {
+		return false, nil
+	}
+	policy, err := m.hierarchyPolicyForLabels(ctx, domainID, edge.Labels)
+	if err != nil {
+		return false, err
+	}
+	return policy != nil, nil
+}
+
 func (m *Module) storeHierarchyParent(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, childID domaingraph.NodeID) (*domaingraph.Edge, error) {
-	edges, err := store.ListEdges(ctx)
+	edges, err := store.IncomingEdges(ctx, childID)
 	if err != nil {
 		return nil, mapStorageError(err)
 	}
 	for _, edge := range edges {
-		policy, err := m.hierarchyPolicyForLabels(ctx, domainID, edge.Labels)
+		hierarchy, err := m.isHierarchyEdge(ctx, domainID, edge)
 		if err != nil {
 			return nil, err
 		}
-		if policy != nil && edge.ToID == childID {
+		if hierarchy {
 			copy := cloneEdge(edge)
 			return &copy, nil
 		}
@@ -1313,10 +1405,11 @@ func (m *Module) storeHierarchyParent(ctx context.Context, store *graphstorage.L
 }
 
 func (m *Module) hierarchyPathExists(ctx context.Context, tx daemonsession.GraphTransaction, from domaingraph.NodeID, target domaingraph.NodeID) (bool, error) {
-	edges, _, err := m.ListEdges(ctx, tx, 0, "")
+	view, err := m.transactionEdgeView(ctx, tx)
 	if err != nil {
 		return false, err
 	}
+	domainID := mustDomainID(tx.DomainID)
 	seen := map[domaingraph.NodeID]struct{}{}
 	queue := []domaingraph.NodeID{from}
 	for len(queue) > 0 {
@@ -1329,12 +1422,16 @@ func (m *Module) hierarchyPathExists(ctx context.Context, tx daemonsession.Graph
 			continue
 		}
 		seen[id] = struct{}{}
+		edges, err := view.outgoing(ctx, id)
+		if err != nil {
+			return false, err
+		}
 		for _, edge := range edges {
-			policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
+			hierarchy, err := m.isHierarchyEdge(ctx, domainID, edge)
 			if err != nil {
 				return false, err
 			}
-			if policy == nil || edge.FromID != id {
+			if !hierarchy {
 				continue
 			}
 			queue = append(queue, edge.ToID)
@@ -1380,17 +1477,22 @@ func (m *Module) listChildrenLocal(ctx context.Context, tx daemonsession.GraphTr
 	if err != nil {
 		return nil, err
 	}
-	edges, _, err := m.listEdgesLocal(ctx, tx, 0, "")
+	view, err := m.transactionEdgeView(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
+	edges, err := view.outgoing(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	domainID := mustDomainID(tx.DomainID)
 	out := []domaingraph.Edge{}
 	for _, edge := range edges {
-		policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
+		hierarchy, err := m.isHierarchyEdge(ctx, domainID, edge)
 		if err != nil {
 			return nil, err
 		}
-		if policy != nil && edge.FromID == parentID {
+		if hierarchy {
 			out = append(out, edge)
 		}
 	}
@@ -1407,16 +1509,21 @@ func (m *Module) parentEdgeLocal(ctx context.Context, tx daemonsession.GraphTran
 	if err != nil {
 		return nil, err
 	}
-	edges, _, err := m.listEdgesLocal(ctx, tx, 0, "")
+	view, err := m.transactionEdgeView(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
+	edges, err := view.incoming(ctx, childID)
+	if err != nil {
+		return nil, err
+	}
+	domainID := mustDomainID(tx.DomainID)
 	for _, edge := range edges {
-		policy, err := m.hierarchyPolicyForLabels(ctx, mustDomainID(tx.DomainID), edge.Labels)
+		hierarchy, err := m.isHierarchyEdge(ctx, domainID, edge)
 		if err != nil {
 			return nil, err
 		}
-		if policy != nil && edge.ToID == childID {
+		if hierarchy {
 			copy := cloneEdge(edge)
 			return &copy, nil
 		}
@@ -1568,6 +1675,25 @@ func cloneEdge(e domaingraph.Edge) domaingraph.Edge {
 	e.Payload = cloneProps(e.Payload)
 	e.Meta = cloneProps(e.Meta)
 	return e
+}
+
+func appendUniqueStrings(values []string, candidates ...string) []string {
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		seen := false
+		for _, existing := range values {
+			if existing == candidate {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			values = append(values, candidate)
+		}
+	}
+	return values
 }
 
 func normalizeLabels(labels []string) []string {

@@ -33,5 +33,6 @@ func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
 		m.accounting = acct
 	}
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
+	m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
 	return nil
 }

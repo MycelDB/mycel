@@ -44,18 +44,19 @@ func TestSessionAndTransactionServicesLifecycle(t *testing.T) {
 		t.Fatalf("HeartbeatSession() error = %v", err)
 	}
 
-	begun, err := txSvc.BeginTransaction(ctx, &clientv1.BeginTransactionRequest{SessionId: opened.GetSession().GetSessionId(), Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE})
+	operationID := uuid.NewString()
+	begun, err := txSvc.BeginTransaction(ctx, &clientv1.BeginTransactionRequest{SessionId: opened.GetSession().GetSessionId(), Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE, OperationId: operationID})
 	if err != nil {
 		t.Fatalf("BeginTransaction() error = %v", err)
 	}
-	if begun.GetTransaction().GetBaseRevision() != 0 || begun.GetTransaction().GetState() != clientv1.TransactionState_TRANSACTION_STATE_ACTIVE {
+	if begun.GetTransaction().GetBaseRevision() != 0 || begun.GetTransaction().GetState() != clientv1.TransactionState_TRANSACTION_STATE_ACTIVE || begun.GetTransaction().GetOperationId() != operationID {
 		t.Fatalf("unexpected transaction: %#v", begun.GetTransaction())
 	}
 	commit, err := txSvc.CommitTransaction(ctx, &clientv1.CommitTransactionRequest{TransactionId: begun.GetTransaction().GetTransactionId()})
 	if err != nil {
 		t.Fatalf("CommitTransaction() error = %v", err)
 	}
-	if commit.GetCommit().GetCommittedRevision() != 1 {
+	if commit.GetCommit().GetCommittedRevision() != 1 || commit.GetCommit().GetOperationId() != operationID {
 		t.Fatalf("unexpected commit: %#v", commit.GetCommit())
 	}
 

@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/filestore"
-	"github.com/myceldb/mycel/internal/graph/model"
+	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
@@ -94,9 +94,10 @@ type maintenanceCheckpointState struct {
 }
 
 type workLogRecord struct {
-	Kind string                               `json:"kind"`
-	At   time.Time                            `json:"at"`
-	Item domainsemantic.SemanticDirtyWorkItem `json:"item"`
+	Kind  string                                 `json:"kind"`
+	At    time.Time                              `json:"at"`
+	Item  domainsemantic.SemanticDirtyWorkItem   `json:"item,omitempty"`
+	Items []domainsemantic.SemanticDirtyWorkItem `json:"items,omitempty"`
 }
 
 type indexStatesState struct {
@@ -572,12 +573,21 @@ type spaceManager struct {
 	policyDecisions policyDecisionsState
 }
 
+type dirtyWorkKey struct {
+	semanticIndexID domainsemantic.SemanticIndexID
+	targetNodeID    graphmodel.NodeID
+}
+
 type maintenanceManager struct {
-	mu          sync.RWMutex
-	location    string
-	spaceID     domainspace.SpaceID
-	dirtyQueue  dirtyQueueState
-	checkpoints maintenanceCheckpointState
+	mu                   sync.RWMutex
+	location             string
+	spaceID              domainspace.SpaceID
+	dirtyQueue           dirtyQueueState
+	checkpoints          maintenanceCheckpointState
+	dirtyEvents          []domainsemantic.GraphDirtyEvent
+	dirtyEventByTxnID    map[uuid.UUID]int
+	checkpointByConsumer map[string]int
+	workItemByKey        map[dirtyWorkKey]int
 }
 
 func (m *spaceManager) Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error {
@@ -839,26 +849,73 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 	if err := loadJSON(m.checkpointsPath(), &m.checkpoints, maintenanceCheckpointState{Checkpoints: []MaintenanceCheckpoint{}}); err != nil {
 		return err
 	}
+	persistRebuiltWork := false
 	if err := loadJSON(m.workStatePath(), &m.dirtyQueue, dirtyQueueState{Items: []domainsemantic.SemanticDirtyWorkItem{}}); err != nil {
-		rebuilt, rebuildErr := readWorkItemsFromLog(m.workEventsPath())
-		if rebuildErr != nil {
-			return err
-		}
-		m.dirtyQueue = dirtyQueueState{Items: rebuilt}
-		return persistJSON(m.workStatePath(), m.dirtyQueue)
+		m.dirtyQueue = dirtyQueueState{Items: []domainsemantic.SemanticDirtyWorkItem{}}
+		persistRebuiltWork = true
 	}
-	if len(m.dirtyQueue.Items) == 0 {
-		rebuilt, err := readWorkItemsFromLog(m.workEventsPath())
-		if err != nil {
-			return err
-		}
-		if len(rebuilt) > 0 {
-			m.dirtyQueue = dirtyQueueState{Items: rebuilt}
-			return persistJSON(m.workStatePath(), m.dirtyQueue)
-		}
+	// The append-only work event log is the durable mutation stream for dirty
+	// work. Replay it on every load so state.json can act as a compacted
+	// snapshot without becoming more authoritative than later log records.
+	rebuilt, err := readWorkItemsFromLog(m.workEventsPath())
+	if err != nil {
+		return err
+	}
+	if len(rebuilt) > 0 {
+		m.dirtyQueue = dirtyQueueState{Items: rebuilt}
+		persistRebuiltWork = true
+	}
+	events, err := readGraphDirtyEvents(m.graphDirtyEventsPath())
+	if err != nil {
+		return err
+	}
+	m.dirtyEvents = events
+	m.rebuildMaintenanceIndexesLocked()
+	if persistRebuiltWork {
+		return persistJSON(m.workStatePath(), m.dirtyQueue)
 	}
 	return nil
 }
+
+func (m *maintenanceManager) rebuildMaintenanceIndexesLocked() {
+	m.rebuildDirtyEventIndexLocked()
+	m.rebuildCheckpointIndexLocked()
+	m.rebuildWorkItemIndexLocked()
+}
+
+func (m *maintenanceManager) rebuildDirtyEventIndexLocked() {
+	m.dirtyEventByTxnID = map[uuid.UUID]int{}
+	for i, event := range m.dirtyEvents {
+		if event.TxnID != uuid.Nil {
+			m.dirtyEventByTxnID[event.TxnID] = i
+		}
+	}
+}
+
+func (m *maintenanceManager) rebuildCheckpointIndexLocked() {
+	m.checkpointByConsumer = map[string]int{}
+	for i, checkpoint := range m.checkpoints.Checkpoints {
+		consumer := strings.TrimSpace(checkpoint.Consumer)
+		if consumer != "" {
+			m.checkpointByConsumer[consumer] = i
+		}
+	}
+}
+
+func (m *maintenanceManager) rebuildWorkItemIndexLocked() {
+	m.workItemByKey = map[dirtyWorkKey]int{}
+	for i, item := range m.dirtyQueue.Items {
+		if item.SemanticIndexID != uuid.Nil && item.TargetNodeID != uuid.Nil {
+			m.workItemByKey[dirtyWorkKey{semanticIndexID: item.SemanticIndexID, targetNodeID: item.TargetNodeID}] = i
+		}
+	}
+}
+
+func cloneMaintenanceCheckpointState(in maintenanceCheckpointState) maintenanceCheckpointState {
+	return maintenanceCheckpointState{Checkpoints: append([]MaintenanceCheckpoint(nil), in.Checkpoints...)}
+}
+
+func (m *maintenanceManager) Close() error { return nil }
 
 func (m *maintenanceManager) AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error) {
 	if err := ctx.Err(); err != nil {
@@ -869,14 +926,8 @@ func (m *maintenanceManager) AppendGraphDirtyEvent(ctx context.Context, event do
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	existing, err := readGraphDirtyEvents(m.graphDirtyEventsPath())
-	if err != nil {
-		return domainsemantic.GraphDirtyEvent{}, err
-	}
-	for _, e := range existing {
-		if e.TxnID == event.TxnID {
-			return e, nil
-		}
+	if idx, ok := m.dirtyEventByTxnID[event.TxnID]; ok && idx >= 0 && idx < len(m.dirtyEvents) {
+		return m.dirtyEvents[idx], nil
 	}
 	if event.ID == uuid.Nil {
 		event.ID = newID()
@@ -899,7 +950,15 @@ func (m *maintenanceManager) AppendGraphDirtyEvent(ctx context.Context, event do
 	if _, err := f.Write(append(raw, '\n')); err != nil {
 		return domainsemantic.GraphDirtyEvent{}, err
 	}
-	return event, f.Sync()
+	if err := f.Sync(); err != nil {
+		return domainsemantic.GraphDirtyEvent{}, err
+	}
+	m.dirtyEvents = append(m.dirtyEvents, event)
+	if m.dirtyEventByTxnID == nil {
+		m.dirtyEventByTxnID = map[uuid.UUID]int{}
+	}
+	m.dirtyEventByTxnID[event.TxnID] = len(m.dirtyEvents) - 1
+	return event, nil
 }
 
 func (m *maintenanceManager) ListGraphDirtyEvents(ctx context.Context) ([]domainsemantic.GraphDirtyEvent, error) {
@@ -908,7 +967,7 @@ func (m *maintenanceManager) ListGraphDirtyEvents(ctx context.Context) ([]domain
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return readGraphDirtyEvents(m.graphDirtyEventsPath())
+	return append([]domainsemantic.GraphDirtyEvent(nil), m.dirtyEvents...), nil
 }
 
 func (m *maintenanceManager) GetCheckpoint(ctx context.Context, consumer string) (MaintenanceCheckpoint, error) {
@@ -921,10 +980,8 @@ func (m *maintenanceManager) GetCheckpoint(ctx context.Context, consumer string)
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for _, checkpoint := range m.checkpoints.Checkpoints {
-		if checkpoint.Consumer == consumer {
-			return checkpoint, nil
-		}
+	if idx, ok := m.checkpointByConsumer[consumer]; ok && idx >= 0 && idx < len(m.checkpoints.Checkpoints) {
+		return m.checkpoints.Checkpoints[idx], nil
 	}
 	return MaintenanceCheckpoint{Consumer: consumer, SpaceID: m.spaceID}, nil
 }
@@ -942,26 +999,83 @@ func (m *maintenanceManager) SaveCheckpoint(ctx context.Context, checkpoint Main
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for i, existing := range m.checkpoints.Checkpoints {
-		if existing.Consumer == checkpoint.Consumer {
-			m.checkpoints.Checkpoints[i] = checkpoint
-			return persistJSON(m.checkpointsPath(), m.checkpoints)
+	if idx, ok := m.checkpointByConsumer[checkpoint.Consumer]; ok && idx >= 0 && idx < len(m.checkpoints.Checkpoints) {
+		updated := cloneMaintenanceCheckpointState(m.checkpoints)
+		updated.Checkpoints[idx] = checkpoint
+		if err := persistJSON(m.checkpointsPath(), updated); err != nil {
+			return err
 		}
+		m.checkpoints = updated
+		m.rebuildCheckpointIndexLocked()
+		return nil
 	}
-	m.checkpoints.Checkpoints = append(m.checkpoints.Checkpoints, checkpoint)
-	return persistJSON(m.checkpointsPath(), m.checkpoints)
+	updated := cloneMaintenanceCheckpointState(m.checkpoints)
+	updated.Checkpoints = append(updated.Checkpoints, checkpoint)
+	if err := persistJSON(m.checkpointsPath(), updated); err != nil {
+		return err
+	}
+	m.checkpoints = updated
+	m.rebuildCheckpointIndexLocked()
+	return nil
 }
 
 func (m *maintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error) {
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.SemanticDirtyWorkItem{}, err
 	}
-	if item.SemanticIndexID == uuid.Nil || item.SpaceID != m.spaceID || item.TargetNodeID == uuid.Nil {
-		return domainsemantic.SemanticDirtyWorkItem{}, fmt.Errorf("%w: semantic_index_id, matching space_id, and target_node_id are required", ErrInvalidInput)
+	if err := m.validateDirtyWorkItem(item); err != nil {
+		return domainsemantic.SemanticDirtyWorkItem{}, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	originalItems := append([]domainsemantic.SemanticDirtyWorkItem(nil), m.dirtyQueue.Items...)
+	originalIndex := cloneDirtyWorkIndex(m.workItemByKey)
+	updated := m.upsertDirtyWorkItemLocked(item, time.Now().UTC())
+	if err := m.appendWorkLogRecord("upsert", updated); err != nil {
+		m.dirtyQueue.Items = originalItems
+		m.workItemByKey = originalIndex
+		return domainsemantic.SemanticDirtyWorkItem{}, err
+	}
+	return updated, nil
+}
+
+func (m *maintenanceManager) UpsertDirtyWorkItems(ctx context.Context, items []domainsemantic.SemanticDirtyWorkItem) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return []domainsemantic.SemanticDirtyWorkItem{}, nil
+	}
+	for _, item := range items {
+		if err := m.validateDirtyWorkItem(item); err != nil {
+			return nil, err
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	originalItems := append([]domainsemantic.SemanticDirtyWorkItem(nil), m.dirtyQueue.Items...)
+	originalIndex := cloneDirtyWorkIndex(m.workItemByKey)
 	now := time.Now().UTC()
+	updated := make([]domainsemantic.SemanticDirtyWorkItem, 0, len(items))
+	for _, item := range items {
+		updated = append(updated, m.upsertDirtyWorkItemLocked(item, now))
+	}
+	if err := m.appendWorkLogBatchRecord("upsert_batch", updated); err != nil {
+		m.dirtyQueue.Items = originalItems
+		m.workItemByKey = originalIndex
+		return nil, err
+	}
+	return updated, nil
+}
+
+func (m *maintenanceManager) validateDirtyWorkItem(item domainsemantic.SemanticDirtyWorkItem) error {
+	if item.SemanticIndexID == uuid.Nil || item.SpaceID != m.spaceID || item.TargetNodeID == uuid.Nil {
+		return fmt.Errorf("%w: semantic_index_id, matching space_id, and target_node_id are required", ErrInvalidInput)
+	}
+	return nil
+}
+
+func (m *maintenanceManager) upsertDirtyWorkItemLocked(item domainsemantic.SemanticDirtyWorkItem, now time.Time) domainsemantic.SemanticDirtyWorkItem {
 	if item.ID == uuid.Nil {
 		item.ID = newID()
 	}
@@ -984,30 +1098,36 @@ func (m *maintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domai
 		item.FailedAt = nil
 	}
 	item.UpdatedAt = now
-	for i, existing := range m.dirtyQueue.Items {
-		if existing.SemanticIndexID == item.SemanticIndexID && existing.TargetNodeID == item.TargetNodeID {
-			item.ID = existing.ID
-			item.CreatedAt = existing.CreatedAt
-			item.Generation = existing.Generation + 1
-			if item.Generation <= 0 {
-				item.Generation = 1
-			}
-			if existing.FirstGraphRevision != 0 && (item.FirstGraphRevision == 0 || existing.FirstGraphRevision < item.FirstGraphRevision) {
-				item.FirstGraphRevision = existing.FirstGraphRevision
-			}
-			item.SourceTxnIDs = mergeTxnIDs(existing.SourceTxnIDs, item.SourceTxnIDs)
-			if err := m.appendWorkLogRecord("upsert", item); err != nil {
-				return domainsemantic.SemanticDirtyWorkItem{}, err
-			}
-			m.dirtyQueue.Items[i] = item
-			return item, persistJSON(m.workStatePath(), m.dirtyQueue)
+	key := dirtyWorkKey{semanticIndexID: item.SemanticIndexID, targetNodeID: item.TargetNodeID}
+	if idx, ok := m.workItemByKey[key]; ok && idx >= 0 && idx < len(m.dirtyQueue.Items) {
+		existing := m.dirtyQueue.Items[idx]
+		item.ID = existing.ID
+		item.CreatedAt = existing.CreatedAt
+		item.Generation = existing.Generation + 1
+		if item.Generation <= 0 {
+			item.Generation = 1
 		}
-	}
-	if err := m.appendWorkLogRecord("upsert", item); err != nil {
-		return domainsemantic.SemanticDirtyWorkItem{}, err
+		if existing.FirstGraphRevision != 0 && (item.FirstGraphRevision == 0 || existing.FirstGraphRevision < item.FirstGraphRevision) {
+			item.FirstGraphRevision = existing.FirstGraphRevision
+		}
+		item.SourceTxnIDs = mergeTxnIDs(existing.SourceTxnIDs, item.SourceTxnIDs)
+		m.dirtyQueue.Items[idx] = item
+		return item
 	}
 	m.dirtyQueue.Items = append(m.dirtyQueue.Items, item)
-	return item, persistJSON(m.workStatePath(), m.dirtyQueue)
+	if m.workItemByKey == nil {
+		m.workItemByKey = map[dirtyWorkKey]int{}
+	}
+	m.workItemByKey[key] = len(m.dirtyQueue.Items) - 1
+	return item
+}
+
+func cloneDirtyWorkIndex(in map[dirtyWorkKey]int) map[dirtyWorkKey]int {
+	out := make(map[dirtyWorkKey]int, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (m *maintenanceManager) ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error) {
@@ -1068,7 +1188,7 @@ func (m *maintenanceManager) ClaimReadyWork(ctx context.Context, in ClaimReadyWo
 	if len(claimed) == 0 {
 		return []domainsemantic.SemanticDirtyWorkItem{}, nil
 	}
-	return claimed, persistJSON(m.workStatePath(), m.dirtyQueue)
+	return claimed, nil
 }
 
 func (m *maintenanceManager) CompleteWork(ctx context.Context, id uuid.UUID, result WorkResult) error {
@@ -1106,7 +1226,7 @@ func (m *maintenanceManager) CompleteWork(ctx context.Context, id uuid.UUID, res
 			return err
 		}
 		m.dirtyQueue.Items[i] = item
-		return persistJSON(m.workStatePath(), m.dirtyQueue)
+		return nil
 	}
 	return nil
 }
@@ -1151,7 +1271,7 @@ func (m *maintenanceManager) FailWork(ctx context.Context, id uuid.UUID, failure
 			return err
 		}
 		m.dirtyQueue.Items[i] = item
-		return persistJSON(m.workStatePath(), m.dirtyQueue)
+		return nil
 	}
 	return nil
 }
@@ -1249,10 +1369,17 @@ func (m *maintenanceManager) checkpointsPath() string {
 }
 
 func (m *maintenanceManager) appendWorkLogRecord(kind string, item domainsemantic.SemanticDirtyWorkItem) error {
-	if err := os.MkdirAll(filepath.Dir(m.workEventsPath()), 0o755); err != nil {
-		return err
+	return m.appendWorkLog(workLogRecord{Kind: kind, At: time.Now().UTC(), Item: item})
+}
+
+func (m *maintenanceManager) appendWorkLogBatchRecord(kind string, items []domainsemantic.SemanticDirtyWorkItem) error {
+	if len(items) == 0 {
+		return nil
 	}
-	record := workLogRecord{Kind: kind, At: time.Now().UTC(), Item: item}
+	return m.appendWorkLog(workLogRecord{Kind: kind, At: time.Now().UTC(), Items: append([]domainsemantic.SemanticDirtyWorkItem(nil), items...)})
+}
+
+func (m *maintenanceManager) appendWorkLog(record workLogRecord) error {
 	raw, err := json.Marshal(record)
 	if err != nil {
 		return err
@@ -1310,16 +1437,21 @@ func readWorkItemsFromLog(path string) ([]domainsemantic.SemanticDirtyWorkItem, 
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			return nil, err
 		}
-		item := record.Item
-		if item.ID == uuid.Nil {
-			continue
+		loggedItems := []domainsemantic.SemanticDirtyWorkItem{record.Item}
+		if record.Kind == "upsert_batch" {
+			loggedItems = record.Items
 		}
-		if pos, ok := index[item.ID]; ok {
-			items[pos] = item
-			continue
+		for _, item := range loggedItems {
+			if item.ID == uuid.Nil {
+				continue
+			}
+			if pos, ok := index[item.ID]; ok {
+				items[pos] = item
+				continue
+			}
+			index[item.ID] = len(items)
+			items = append(items, item)
 		}
-		index[item.ID] = len(items)
-		items = append(items, item)
 	}
 	return items, nil
 }
@@ -1561,7 +1693,7 @@ func validateScope(spaceID domainspace.SpaceID, scope domainsemantic.ProcessingS
 	if scope.SpaceID != spaceID {
 		return fmt.Errorf("%w: scope space_id does not match store", ErrInvalidInput)
 	}
-	if scope.DomainID == graph.DomainID(uuid.Nil) && scope.SemanticIndexID == uuid.Nil && scope.NodeID == uuid.Nil {
+	if scope.DomainID == graphmodel.DomainID(uuid.Nil) && scope.SemanticIndexID == uuid.Nil && scope.NodeID == uuid.Nil {
 		// Space-wide scope is valid.
 		return nil
 	}

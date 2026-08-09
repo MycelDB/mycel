@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,6 +376,198 @@ func TestMaintenanceManagerPersistsDirtyEventsAndWork(t *testing.T) {
 	rebuiltItems, err := rebuilt.ListDirtyWorkItems(ctx)
 	if err != nil || len(rebuiltItems) != 2 {
 		t.Fatalf("unexpected rebuilt items: %+v err=%v", rebuiltItems, err)
+	}
+}
+
+func TestMaintenanceManagerLoadedIndexesAvoidDuplicateDirtyRecords(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	location := t.TempDir()
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, location, spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	txnID := uuid.New()
+	event := domainsemantic.GraphDirtyEvent{TxnID: txnID, GraphRevision: 11, SpaceID: spaceID}
+	first, err := mgr.AppendGraphDirtyEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("append first event failed: %v", err)
+	}
+	second, err := mgr.AppendGraphDirtyEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("append duplicate event failed: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("duplicate append returned different event: first=%s second=%s", first.ID, second.ID)
+	}
+	records, err := readGraphDirtyEvents(filepath.Join(location, graphDirtyEventsDirName, graphDirtyEventsFileName))
+	if err != nil {
+		t.Fatalf("read dirty records failed: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("dirty event file has %d records, want 1", len(records))
+	}
+
+	reloaded := NewMaintenanceManager()
+	if err := reloaded.Init(ctx, location, spaceID); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	third, err := reloaded.AppendGraphDirtyEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("append duplicate after reload failed: %v", err)
+	}
+	if third.ID != first.ID {
+		t.Fatalf("reload duplicate returned different event: got=%s want=%s", third.ID, first.ID)
+	}
+	records, err = readGraphDirtyEvents(filepath.Join(location, graphDirtyEventsDirName, graphDirtyEventsFileName))
+	if err != nil {
+		t.Fatalf("read dirty records after reload failed: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("dirty event file after reload has %d records, want 1", len(records))
+	}
+}
+
+func TestMaintenanceManagerLoadedIndexesForCheckpointAndWorkUpsert(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	location := t.TempDir()
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, location, spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	if err := mgr.SaveCheckpoint(ctx, MaintenanceCheckpoint{Consumer: "analyzer", SpaceID: spaceID, LastGraphRevision: 3}); err != nil {
+		t.Fatalf("save checkpoint failed: %v", err)
+	}
+	if err := mgr.SaveCheckpoint(ctx, MaintenanceCheckpoint{Consumer: "analyzer", SpaceID: spaceID, LastGraphRevision: 9}); err != nil {
+		t.Fatalf("update checkpoint failed: %v", err)
+	}
+	checkpoint, err := mgr.GetCheckpoint(ctx, "analyzer")
+	if err != nil {
+		t.Fatalf("get checkpoint failed: %v", err)
+	}
+	if checkpoint.LastGraphRevision != 9 {
+		t.Fatalf("checkpoint revision = %d, want 9", checkpoint.LastGraphRevision)
+	}
+	firstTxn := uuid.New()
+	secondTxn := uuid.New()
+	first, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, SourceTxnIDs: []uuid.UUID{firstTxn}, FirstGraphRevision: 8, LastGraphRevision: 8})
+	if err != nil {
+		t.Fatalf("first work upsert failed: %v", err)
+	}
+	second, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, SourceTxnIDs: []uuid.UUID{secondTxn}, FirstGraphRevision: 5, LastGraphRevision: 12})
+	if err != nil {
+		t.Fatalf("second work upsert failed: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("work item ID changed across keyed upsert: first=%s second=%s", first.ID, second.ID)
+	}
+	if second.Generation != first.Generation+1 {
+		t.Fatalf("generation = %d, want %d", second.Generation, first.Generation+1)
+	}
+	if second.FirstGraphRevision != 5 || second.LastGraphRevision != 12 {
+		t.Fatalf("unexpected graph revisions: %+v", second)
+	}
+	if len(second.SourceTxnIDs) != 2 {
+		t.Fatalf("source txns = %v, want both txns", second.SourceTxnIDs)
+	}
+
+	reloaded := NewMaintenanceManager()
+	if err := reloaded.Init(ctx, location, spaceID); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	checkpoint, err = reloaded.GetCheckpoint(ctx, "analyzer")
+	if err != nil || checkpoint.LastGraphRevision != 9 {
+		t.Fatalf("unexpected reloaded checkpoint: %+v err=%v", checkpoint, err)
+	}
+	third, err := reloaded.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, LastGraphRevision: 20})
+	if err != nil {
+		t.Fatalf("third work upsert failed: %v", err)
+	}
+	if third.ID != first.ID || third.Generation != second.Generation+1 {
+		t.Fatalf("unexpected reloaded keyed upsert: %+v", third)
+	}
+	items, err := reloaded.ListDirtyWorkItems(ctx)
+	if err != nil {
+		t.Fatalf("list work failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items length = %d, want 1", len(items))
+	}
+}
+
+func TestMaintenanceManagerBatchUpsertDirtyWorkItemsReplaysAfterReload(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	firstNodeID := graph.NodeID(uuid.New())
+	secondNodeID := graph.NodeID(uuid.New())
+	firstTxn := uuid.New()
+	secondTxn := uuid.New()
+	location := t.TempDir()
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, location, spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	batcher, ok := mgr.(interface {
+		UpsertDirtyWorkItems(context.Context, []domainsemantic.SemanticDirtyWorkItem) ([]domainsemantic.SemanticDirtyWorkItem, error)
+	})
+	if !ok {
+		t.Fatal("maintenance manager does not support batch upsert")
+	}
+	updated, err := batcher.UpsertDirtyWorkItems(ctx, []domainsemantic.SemanticDirtyWorkItem{
+		{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: firstNodeID, SourceTxnIDs: []uuid.UUID{firstTxn}, FirstGraphRevision: 10, LastGraphRevision: 10},
+		{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: secondNodeID, LastGraphRevision: 11},
+		{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: firstNodeID, SourceTxnIDs: []uuid.UUID{secondTxn}, FirstGraphRevision: 5, LastGraphRevision: 12},
+	})
+	if err != nil {
+		t.Fatalf("batch upsert failed: %v", err)
+	}
+	if len(updated) != 3 {
+		t.Fatalf("updated length = %d, want 3", len(updated))
+	}
+	items, err := mgr.ListDirtyWorkItems(ctx)
+	if err != nil {
+		t.Fatalf("list work failed: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items length = %d, want 2: %+v", len(items), items)
+	}
+	var first domainsemantic.SemanticDirtyWorkItem
+	for _, item := range items {
+		if item.TargetNodeID == firstNodeID {
+			first = item
+		}
+	}
+	if first.ID == uuid.Nil || first.Generation != 2 || first.FirstGraphRevision != 5 || first.LastGraphRevision != 12 || len(first.SourceTxnIDs) != 2 {
+		t.Fatalf("first item not merged as expected: %+v", first)
+	}
+	raw, err := os.ReadFile(filepath.Join(location, workStateDirName, workEventsFileName))
+	if err != nil {
+		t.Fatalf("read work log failed: %v", err)
+	}
+	if !strings.Contains(string(raw), "upsert_batch") {
+		t.Fatalf("work log did not contain upsert_batch: %s", raw)
+	}
+	reloaded := NewMaintenanceManager()
+	if err := reloaded.Init(ctx, location, spaceID); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	reloadedItems, err := reloaded.ListDirtyWorkItems(ctx)
+	if err != nil {
+		t.Fatalf("list reloaded work failed: %v", err)
+	}
+	if len(reloadedItems) != 2 {
+		t.Fatalf("reloaded item length = %d, want 2: %+v", len(reloadedItems), reloadedItems)
+	}
+	for _, item := range reloadedItems {
+		if item.TargetNodeID == firstNodeID && (item.ID != first.ID || item.Generation != first.Generation || len(item.SourceTxnIDs) != 2) {
+			t.Fatalf("unexpected reloaded first item: %+v want %+v", item, first)
+		}
 	}
 }
 

@@ -10,10 +10,10 @@ import (
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
-	semanticmigration "github.com/myceldb/mycel/internal/semantic/migration"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
+	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -43,10 +43,18 @@ type SchemaManager interface {
 	GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schemamodel.DomainSchema, error)
 }
 
+type GraphReadManager interface {
+	GetNode(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string) (graph.Node, error)
+	ListNodes(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
+	ListEdges(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
+	GetParent(ctx context.Context, tx daemonsession.GraphTransaction, childNodeID string) (*graph.Edge, error)
+}
+
 type Config struct {
 	SecretKeyB64      string
 	MaintenanceConfig MaintenanceConfig
 	SchemaManager     SchemaManager
+	GraphReadManager  GraphReadManager
 }
 
 type Manager interface {
@@ -64,7 +72,6 @@ type Manager interface {
 	AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanticmaintenance.AnalyzeResult, error)
 	ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error)
 	BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error)
-	MigrateLegacyEmbeddings(ctx context.Context, in LegacyMigrationInput) (semanticmigration.LegacyEmbeddingResult, error)
 	ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticIndex, error)
 	Search(ctx context.Context, in SearchInput) (semanticsearch.Result, error)
 }
@@ -133,18 +140,6 @@ type MaintenanceWorkItem struct {
 type ProcessInput struct {
 	SpaceID domainspace.SpaceID
 	Limit   int
-}
-
-type LegacyMigrationInput struct {
-	OwnerUserID        string
-	SpaceID            domainspace.SpaceID
-	DomainID           graph.DomainID
-	ProfileRef         string
-	AllowBackgroundUse bool
-	AddAllowPolicy     bool
-	Strict             bool
-	DryRun             bool
-	Limit              int
 }
 
 type SearchInput struct {

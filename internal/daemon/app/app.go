@@ -14,7 +14,6 @@ import (
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	backupservice "github.com/myceldb/mycel/internal/backup/service"
 	blobservice "github.com/myceldb/mycel/internal/blob/service"
-	changestreamservice "github.com/myceldb/mycel/internal/changestream/service"
 	"github.com/myceldb/mycel/internal/clustering"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/daemon/auth"
@@ -23,6 +22,7 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
 	"github.com/myceldb/mycel/internal/graph/change"
+	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
@@ -73,6 +73,11 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: graph service is not registered\n")
 		return 1
 	}
+	graphNotificationService, ok := daemonruntime.ServiceAs[*graphnotification.Module](rt, graphnotification.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: graph change notification service is not registered\n")
+		return 1
+	}
 	blobService, ok := daemonruntime.ServiceAs[*blobservice.Module](rt, blobservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: blob service is not registered\n")
@@ -93,11 +98,6 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: automation service is not registered\n")
 		return 1
 	}
-	changeService, ok := daemonruntime.ServiceAs[*changestreamservice.Module](rt, changestreamservice.ModuleName)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: change stream service is not registered\n")
-		return 1
-	}
 	backupService, ok := daemonruntime.ServiceAs[*backupservice.Module](rt, backupservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: backup service is not registered\n")
@@ -113,7 +113,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, BlobManager: blobService, SemanticManager: semanticService, SchemaManager: schemaService, AutomationManager: automationService, ChangeManager: changeService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, SemanticManager: semanticService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -199,6 +199,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
 	graphService := graphservice.NewModule()
+	graphNotificationService := graphnotification.NewModule()
 	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxTokensPerRun: cfg.Automation.MaxTokensPerRun, MaxCostPerRun: cfg.Automation.MaxCostPerRun, Concurrency: cfg.Automation.WorkerConcurrency})
 	if automationProvider, err := automationProviderFromConfig(cfg); err != nil {
 		_ = rt.Close()
@@ -208,8 +209,9 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	}
 	blobService := blobservice.NewModule(graphService)
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
-		SecretKeyB64:  cfg.UserStoreEncryptionKeyB64,
-		SchemaManager: schemaService,
+		SecretKeyB64:     cfg.UserStoreEncryptionKeyB64,
+		SchemaManager:    schemaService,
+		GraphReadManager: graphService,
 		MaintenanceConfig: daemonsemantic.MaintenanceConfig{
 			Enabled:                    cfg.SemanticMaintenance.Enabled,
 			DirtyCooldown:              cfg.SemanticMaintenance.DirtyCooldown,
@@ -232,7 +234,6 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 			},
 		},
 	})
-	changeService := changestreamservice.NewModule()
 	backupService := backupservice.NewModule(backupservice.Config{
 		Enabled:                cfg.Backup.Enabled,
 		BackupDir:              cfg.Backup.BackupDir,
@@ -246,12 +247,18 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	})
-	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, schemaService, automationService, graphService, blobService, semanticService, changeService, backupService}); err != nil {
+	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, semanticService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}
 	graphService.SetBlobReferenceChecker(blobService)
-	changeService.AddObserver(automationService.HandleChangeStreamEvent)
+	graphNotificationService.WithLeaderGate(func(ctx context.Context, event graphchange.CommittedEvent) error {
+		return graphService.RequireLocalGraphWriteLeader(ctx, event.SpaceID.String())
+	})
+	if _, err := graphNotificationService.RegisterConsumer(ctx, graphnotification.ConsumerSpec{ConsumerName: "automation", Filter: graphchange.Filter{EventTypes: []graphchange.ChangeType{graphchange.ChangeTypeNodeCreated, graphchange.ChangeTypeNodeUpdated}}, Projection: graphchange.Projection{IncludeRevision: true, IncludeNewNodeSnapshot: true, IncludeOldNodeSnapshot: true}, Lossless: true}, automationService); err != nil {
+		_ = rt.Close()
+		return nil, err
+	}
 	if raftRuntimeConfigured(cfg) {
 		backupService.PrepareExperimentalRaftMode()
 		systemMetadataSM := consensus.NewSystemStateMachine()
@@ -280,7 +287,6 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		backupService.EnableExperimentalRaft(rt.RaftGroups)
 		backupService.EnableClusterBackupNetworking(uint64(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
-		changeService.EnableExperimentalRaftMode()
 		userService.EnableExperimentalRaft(rt.RaftGroups)
 		adminService.EnableExperimentalRaft(rt.RaftGroups)
 		startSystemMetadataBootstrap(ctx, rt, systemMetadataSM)
@@ -300,13 +306,14 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		logger.Info("wal recovery complete", "applied_lsn", applied, "last_committed_lsn", rt.WAL.LastCommittedLSN(), "duration", time.Since(started))
 	}
 	// Local WAL durability and recovery remain active above; clustered operation is Raft-only.
-	graphService.SetChangeSink(graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
+	semanticSink := graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)
 		if err != nil {
 			return err
 		}
 		return appender.OnGraphCommitted(ctx, event)
-	}))
+	})
+	graphService.SetChangeSink(graphchange.MultiSink{graphNotificationService, semanticSink})
 	if err := rt.StartServices(ctx); err != nil {
 		_ = rt.Close()
 		return nil, err
