@@ -8,12 +8,16 @@ import (
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
+type GraphSourceReader interface {
+	ListNodes(ctx context.Context, domainID graph.DomainID) ([]graph.Node, error)
+	ListEdges(ctx context.Context, domainID graph.DomainID) ([]graph.Edge, error)
+}
+
 type Runner struct {
-	Session       sessionapi.Session
+	GraphReader   GraphSourceReader
 	GlobalManager storesemantic.GlobalManager
 	SpaceManager  storesemantic.SpaceManager
 	Connector     ConnectorService

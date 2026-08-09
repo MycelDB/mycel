@@ -387,14 +387,14 @@ type fakeGraphReader struct {
 	parents map[graph.NodeID]graph.NodeID
 }
 
-func (r fakeGraphReader) GetNode(_ context.Context, id graph.NodeID) (graph.Node, error) {
+func (r fakeGraphReader) GetNode(_ context.Context, _ graph.DomainID, id graph.NodeID) (graph.Node, error) {
 	if n, ok := r.nodes[id]; ok {
 		return n, nil
 	}
 	return graph.Node{}, fmt.Errorf("not found")
 }
 
-func (r fakeGraphReader) Parent(_ context.Context, childID graph.NodeID) (*graph.Edge, error) {
+func (r fakeGraphReader) Parent(_ context.Context, _ graph.DomainID, childID graph.NodeID) (*graph.Edge, error) {
 	parentID, ok := r.parents[childID]
 	if !ok || parentID == uuid.Nil {
 		return nil, nil

@@ -2,7 +2,9 @@
 
 ## Status
 
-Implemented daemon-backed MVP for legacy embedding profile migration.
+Closed compatibility surface. The public protobuf service remains available for
+one compatibility window, but the daemon returns a closed-window error and no
+longer contains the legacy embedding-profile reader or migration implementation.
 
 Protobuf source:
 
@@ -16,49 +18,47 @@ github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/semantic_migration.proto
 mycel.admin.v1.AdminSemanticMigrationService
 ```
 
-Implemented RPCs:
+Compatibility RPC:
 
 - `MigrateLegacyEmbeddings`
 
-## Purpose
+## Behavior
 
-Migrates legacy MVP embedding keys/profiles into the daemon semantic/inference control plane:
+`MigrateLegacyEmbeddings` authenticates the operator and then returns:
 
-- model endpoints
-- inference models
-- model endpoint capabilities
-- inline encrypted inference credentials
-- semantic indexes
-- background credential grants
-- optional allow policies
+```text
+FailedPrecondition: legacy embedding migration window is closed; configure inference credentials, grants, policies, and semantic indexes directly
+```
+
+No automatic migration, repair, restore, merge, rebalance, or authoritative-node
+selection is performed.
 
 ## Authorization
 
-Requires an operator bearer token with:
+The compatibility RPC still requires an operator bearer token with:
 
 ```text
 CAPABILITY_SEMANTIC_SEARCH
 ```
 
-## Inputs
+## Replacement path
 
-`MigrateLegacyEmbeddings` accepts:
+Configure current semantic/inference resources directly:
 
-- `space_id`
-- `domain_id`
-- optional `owner_user_id`; defaults to the space owner
-- optional legacy `profile_ref` by UUID or name
-- `allow_background_use`
-- `add_allow_policy`
-- `strict`
-- `dry_run`
-- `limit`
+- model endpoints;
+- inference models and model endpoint capabilities;
+- credentials;
+- credential grants;
+- semantic indexes;
+- inference policies when required.
 
-Inline advanced semantic credentials are encrypted by the daemon and require `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` for non-dry-run migration. `dry_run` validates profiles and legacy keys without writing new semantic resources.
+After configuration, use Admin Semantic Maintenance backfill to generate current
+advanced semantic records.
 
 ## CLI
 
-Daemon mode is used when `--daemon-addr` is supplied:
+The legacy CLI command remains only as a compatibility wrapper around the closed
+RPC:
 
 ```sh
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
@@ -68,20 +68,5 @@ Daemon mode is used when `--daemon-addr` is supplied:
   --dry-run
 ```
 
-Non-dry-run:
-
-```sh
-MYCELD_USER_STORE_ENCRYPTION_KEY_B64='<base64-32-byte-key>' \
-./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
-  semantic migrate legacy-embeddings \
-  --space-id '<space-id>' \
-  --domain default \
-  --allow-background-use \
-  --add-allow-policy
-```
-
-## Limitations
-
-- Currently migrates legacy providers using `openai_embeddings` protocol.
-- Non-dry-run migration requires daemon inline secret encryption configuration.
-- Existing generated legacy vector records are not copied; use Admin Semantic Maintenance backfill after migration to generate advanced semantic records.
+It returns the same closed-window error. Use `inference` and `semantic index`
+commands instead.

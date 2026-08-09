@@ -36,8 +36,6 @@ var phaseDRaftRecordCoverage = map[string]raftRecordCoverage{
 	"semantic.space.mutation.v1":           {Subsystem: "semantic", Scope: "partition raft", Status: "covered", Tranche: "D4 verify"},
 	"semantic.maintenance.mutation.v1":     {Subsystem: "semantic maintenance", Scope: "partition raft", Status: "covered", Tranche: "D4 verify"},
 	"semantic.accounting.mutation.v1":      {Subsystem: "semantic accounting", Scope: "system raft", Status: "covered", Tranche: "D4 verify"},
-	"embedding.provider_key.put.v1":        {Subsystem: "embedding", Scope: "legacy unsupported in raft daemon", Status: "unsupported/fail-closed", Tranche: "D4"},
-	"embedding.provider_key.delete.v1":     {Subsystem: "embedding", Scope: "legacy unsupported in raft daemon", Status: "unsupported/fail-closed", Tranche: "D4"},
 	"daemon.backup.policy.update.v1":       {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "D5 verify"},
 	"daemon.backup.delete.v1":              {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "D5 verify"},
 	"daemon.backup.cluster.request.v1":     {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
@@ -114,7 +112,7 @@ func TestPhaseDRaftRecordCoverageSummary(t *testing.T) {
 	}
 	sort.Strings(covered)
 	sort.Strings(gaps)
-	if len(covered) == 0 || len(gaps) == 0 {
-		t.Fatalf("expected Phase D inventory to include both covered records and planned gaps; covered=%v gaps=%v", covered, gaps)
+	if len(covered) == 0 {
+		t.Fatalf("expected Phase D inventory to include covered records; covered=%v gaps=%v", covered, gaps)
 	}
 }

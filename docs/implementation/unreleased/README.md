@@ -23,6 +23,10 @@ assigned to a tagged release bucket.
 
 - [Semantic maintenance loaded state implementation plan](semantic-maintenance-loaded-state-implementation-plan.md) — per-space loaded maintenance managers and in-memory indexes for dirty events, work items, and checkpoints.
 
+## Cleanup
+
+- [Legacy file-session and embedding migration cleanup implementation plan](legacy-filesession-and-embedding-cleanup-implementation-plan.md) — staged removal plan for `internal/graph/filesession`, `internal/session/api`, legacy embedding migration, and related compatibility surfaces.
+
 ## Admin/UI follow-ups
 
 - [Admin template service and UI implementation plan](admin-template-service-and-ui-implementation-plan.md)

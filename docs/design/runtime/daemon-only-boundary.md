@@ -4,7 +4,7 @@
 
 Daemon-only boundary and phase tracking for removing embedded/library runtime support from Mycel v2.
 
-Mycel is now intended to run as a daemon-owned database process. Applications and tools should communicate with `myceld` through the Admin and Client gRPC APIs. The historical `engine` tree and public `session` packages have been removed; remaining file-session code is internal daemon implementation scaffolding.
+Mycel is now intended to run as a daemon-owned database process. Applications and tools should communicate with `myceld` through the Admin and Client gRPC APIs. The historical `engine` tree, public `session` packages, and legacy internal file-session scaffolding have been removed.
 
 ## Supported public surfaces
 
@@ -84,7 +84,7 @@ This ownership rule includes backups. Operators should use `mycel.admin.v1.Admin
 
 1. **CLI daemon-only cleanup**: remove `EnsureEngine`, embedded auth helpers, and remaining local command paths. Initial cleanup is implemented: the `mycel` binary no longer depends on `engine` or `session` runtime packages, top-level node commands route to daemon graph commands, and embedded-only init/ACL/accounting/legacy embeddings paths now fail with daemon-only guidance.
 2. **Engine removal**: implemented. The public wrapper and remaining `engine/internal` legacy scaffold were deleted; daemon modules own runtime behavior directly.
-3. **Session public package internalization**: implemented. `session/api` moved to `internal/session/api`; public `session` constructors and type aliases were removed; daemon internals call `internal/graph/filesession` directly.
+3. **Session public package internalization and legacy file-session removal**: implemented. Public `session` constructors and type aliases were removed; the later legacy `internal/session/api` and `internal/graph/filesession` scaffolding were also deleted. Daemon internals use subsystem services and storage directly.
 4. **Config cleanup**: implemented. Active CLI config no longer reads embedded `MYCELDB_*` settings or exposes local runtime flags (`--data-dir`, auth TTLs, blob limits, semantic toggles). The CLI uses `MYCEL_CONFIG` for optional CLI config files and `MYCELD_*` for daemon connection/TLS settings.
 5. **Docs and enforcement**: implemented. `scripts/check-daemon-only.sh` is wired into `make test` and `make build`; it fails if the legacy `engine` tree, public `session` package, public embedded imports, legacy `MYCELDB_*` code references, or removed embedded CLI flags are reintroduced.
 6. **Public Go implementation surface internalization**: implemented. `scripts/check-public-surface.sh` is wired into `make test` and `make build`; it fails if public `domain/**`, `store/**`, `query`, or other top-level implementation packages are reintroduced.

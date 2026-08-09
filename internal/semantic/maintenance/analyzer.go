@@ -17,8 +17,8 @@ import (
 )
 
 type GraphReader interface {
-	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
-	Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge, error)
+	GetNode(ctx context.Context, domainID graph.DomainID, id graph.NodeID) (graph.Node, error)
+	Parent(ctx context.Context, domainID graph.DomainID, childID graph.NodeID) (*graph.Edge, error)
 }
 
 type Analyzer struct {
@@ -264,7 +264,7 @@ func (a Analyzer) resolveTargets(ctx context.Context, index domainsemantic.Seman
 }
 
 func (a Analyzer) targetForNode(ctx context.Context, index domainsemantic.SemanticIndex, nodeID graph.NodeID) (graph.NodeID, bool) {
-	node, err := a.GraphReader.GetNode(ctx, nodeID)
+	node, err := a.GraphReader.GetNode(ctx, index.DomainID, nodeID)
 	if err != nil || node.DomainID != index.DomainID {
 		return uuid.Nil, false
 	}
@@ -279,11 +279,11 @@ func (a Analyzer) targetForNode(ctx context.Context, index domainsemantic.Semant
 	}
 	parentID := nodeID
 	for depth := 0; depth < 256; depth++ {
-		parent, err := a.GraphReader.Parent(ctx, parentID)
+		parent, err := a.GraphReader.Parent(ctx, index.DomainID, parentID)
 		if err != nil || parent == nil || parent.FromID == uuid.Nil {
 			return uuid.Nil, false
 		}
-		parentNode, err := a.GraphReader.GetNode(ctx, parent.FromID)
+		parentNode, err := a.GraphReader.GetNode(ctx, index.DomainID, parent.FromID)
 		if err != nil || parentNode.DomainID != index.DomainID {
 			return uuid.Nil, false
 		}

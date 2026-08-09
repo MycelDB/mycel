@@ -67,7 +67,6 @@ Existing graph commit notification points:
 
 ```text
 internal/graph/service/module.go           // notifyGraphChangeSink, graphChangeEvent
-internal/graph/filesession/file_session.go // graph-change sink path for file sessions
 ```
 
 Legacy public change stream implementation replaced by `GraphChangeService.WatchGraphChanges`:
@@ -90,7 +89,6 @@ Tasks:
 
 1. Add focused tests that document current graph-change sink behavior for:
    - graph service commits;
-   - file-session commits;
    - no-op/read-only/rollback paths;
    - sink failure not failing the commit.
 2. Add tests documenting current change-stream replay and `OUT_OF_RANGE` behavior
@@ -100,7 +98,7 @@ Tasks:
 Expected validation:
 
 ```sh
-go test ./internal/graph/change ./internal/graph/service ./internal/graph/filesession ./internal/graph/notification ./internal/daemon/api/client ./internal/cli/cmd
+go test ./internal/graph/change ./internal/graph/service ./internal/graph/notification ./internal/daemon/api/client ./internal/cli/cmd
 ```
 
 Exit criteria:
@@ -149,7 +147,7 @@ Implementation notes:
 Expected validation:
 
 ```sh
-go test ./internal/graph/change ./internal/graph/service ./internal/graph/filesession
+go test ./internal/graph/change ./internal/graph/service
 ```
 
 Exit criteria:

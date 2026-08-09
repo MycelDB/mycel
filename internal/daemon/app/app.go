@@ -209,8 +209,9 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	}
 	blobService := blobservice.NewModule(graphService)
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
-		SecretKeyB64:  cfg.UserStoreEncryptionKeyB64,
-		SchemaManager: schemaService,
+		SecretKeyB64:     cfg.UserStoreEncryptionKeyB64,
+		SchemaManager:    schemaService,
+		GraphReadManager: graphService,
 		MaintenanceConfig: daemonsemantic.MaintenanceConfig{
 			Enabled:                    cfg.SemanticMaintenance.Enabled,
 			DirtyCooldown:              cfg.SemanticMaintenance.DirtyCooldown,

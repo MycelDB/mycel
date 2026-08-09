@@ -378,13 +378,13 @@ type fakeServiceGraphReader struct {
 	nodes map[graph.NodeID]graph.Node
 }
 
-func (r fakeServiceGraphReader) GetNode(_ context.Context, id graph.NodeID) (graph.Node, error) {
+func (r fakeServiceGraphReader) GetNode(_ context.Context, _ graph.DomainID, id graph.NodeID) (graph.Node, error) {
 	if node, ok := r.nodes[id]; ok {
 		return node, nil
 	}
 	return graph.Node{}, context.Canceled
 }
 
-func (r fakeServiceGraphReader) Parent(context.Context, graph.NodeID) (*graph.Edge, error) {
+func (r fakeServiceGraphReader) Parent(context.Context, graph.DomainID, graph.NodeID) (*graph.Edge, error) {
 	return nil, nil
 }

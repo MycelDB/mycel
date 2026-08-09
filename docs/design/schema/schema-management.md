@@ -40,7 +40,6 @@ Graph integration should stay at graph boundaries, for example:
 
 ```text
 internal/graph/service/schema_validation.go
-internal/graph/filesession/schema_validation.go
 ```
 
 or via a small validator interface accepted by graph services.
