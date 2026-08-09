@@ -365,6 +365,7 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 	}
 	m.mu.Lock()
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
+	m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
 	m.mu.Unlock()
 	return nil
 }

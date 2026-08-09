@@ -10,7 +10,7 @@ import (
 )
 
 func newSemanticMigrateCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "migrate", Short: "Migrate legacy semantic resources through daemon gRPC"}
+	cmd := &cobra.Command{Use: "migrate", Short: "Legacy semantic migration commands"}
 	cmd.AddCommand(newSemanticMigrateLegacyEmbeddingsCommand(a))
 	return cmd
 }
@@ -19,7 +19,7 @@ func newSemanticMigrateLegacyEmbeddingsCommand(a *app.App) *cobra.Command {
 	var spaceIDText, domainRef, profileRef, ownerUserID string
 	var limit int
 	var allowBackgroundUse, addAllowPolicy, strict, dryRun bool
-	cmd := &cobra.Command{Use: "legacy-embeddings", Short: "Migrate MVP embedding keys/profiles to semantic resources via daemon gRPC", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "legacy-embeddings", Short: "Deprecated: legacy embedding migration window is closed", Long: "Deprecated: the legacy embedding migration window is closed. Configure inference credentials, grants, policies, and semantic indexes directly.", RunE: func(cmd *cobra.Command, args []string) error {
 		return runDaemonSemanticMigrateLegacyEmbeddings(cmd, a, spaceIDText, domainRef, profileRef, ownerUserID, allowBackgroundUse, addAllowPolicy, strict, dryRun, limit)
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")

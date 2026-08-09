@@ -2,23 +2,19 @@ package backfill
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/internal/graph/filesession"
 	"github.com/myceldb/mycel/internal/graph/model"
-	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	"github.com/myceldb/mycel/internal/identity/model"
 	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	sessionapi "github.com/myceldb/mycel/internal/session/api"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -53,16 +49,12 @@ func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	if result.GeneratedCount != 0 || result.SkippedCount != 1 || len(env.connector.calls) != 1 {
 		t.Fatalf("expected current hash skip without connector call, result=%+v calls=%+v", result, env.connector.calls)
 	}
-	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: root.ID, Content: "changed root", Props: root.Props}); err != nil {
-		t.Fatalf("update root failed: %v", err)
-	}
+	env.graph.UpdateNode(root.ID, "changed root")
 	result, err = env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
 	if err != nil || result.GeneratedCount != 1 || len(env.connector.calls) != 2 {
 		t.Fatalf("expected changed source to regenerate, result=%+v calls=%+v err=%v", result, env.connector.calls, err)
 	}
-	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: root.ID, Content: "root note", Props: root.Props}); err != nil {
-		t.Fatalf("restore root failed: %v", err)
-	}
+	env.graph.UpdateNode(root.ID, "root note")
 	result, err = env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
 	if err != nil || result.GeneratedCount != 1 || len(env.connector.calls) != 3 {
 		t.Fatalf("expected restored historical source to regenerate because latest active hash differs, result=%+v calls=%+v err=%v", result, env.connector.calls, err)
@@ -101,12 +93,8 @@ func TestRunnerTombstonesCurrentVectorWhenSourceBecomesEmpty(t *testing.T) {
 	if err != nil || result.GeneratedCount != 1 || len(env.connector.calls) != 1 {
 		t.Fatalf("initial backfill result=%+v calls=%+v err=%v", result, env.connector.calls, err)
 	}
-	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: root.ID, Content: "   ", Props: root.Props}); err != nil {
-		t.Fatalf("empty root update failed: %v", err)
-	}
-	if _, err := env.sess.UpdateNode(ctx, sessionapi.UpdateNodeInput{ID: child.ID, Content: "\n\t  ", Props: child.Props}); err != nil {
-		t.Fatalf("empty child update failed: %v", err)
-	}
+	env.graph.UpdateNode(root.ID, "   ")
+	env.graph.UpdateNode(child.ID, "\n\t  ")
 
 	result, err = env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
 	if err != nil {
@@ -207,7 +195,7 @@ type backfillTestEnv struct {
 	spaceID   domainspace.SpaceID
 	domainID  graph.DomainID
 	userID    identity.UserID
-	sess      sessionapi.Session
+	graph     *memoryGraphSource
 	globalMgr storesemantic.GlobalManager
 	spaceMgr  storesemantic.SpaceManager
 	vector    vectorstore.MycelFileBackend
@@ -224,18 +212,7 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	userID := identity.UserID(uuid.New())
-	spacePath := filepath.Join(root, "graphs", spaceID.String())
-	if err := os.MkdirAll(spacePath, 0o755); err != nil {
-		t.Fatalf("create space path failed: %v", err)
-	}
-	store, err := graphstorage.Open(ctx, spacePath)
-	if err != nil {
-		t.Fatalf("create graph manifest failed: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("close graph store failed: %v", err)
-	}
-	sess := filesession.NewWithStoreConfig(filepath.Join(root, "graphs"), filepath.Join(root, "blobs"), spaceID, sessionapi.Permissions{Read: true, Write: true, Admin: true}, sessionapi.Errors{NotFound: errNotFound{}}, nil, filesession.Config{CurrentUserID: userID, DomainID: domainID})
+	graphReader := &memoryGraphSource{domainID: domainID}
 	globalMgr := storesemantic.NewGlobalManager()
 	if err := globalMgr.Init(ctx, filepath.Join(root, "meta")); err != nil {
 		t.Fatalf("global init failed: %v", err)
@@ -278,26 +255,64 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	}
 	connector := &fakeConnector{}
 	vector := vectorstore.MycelFileBackend{GraphsDir: filepath.Join(root, "graphs")}
-	env := &backfillTestEnv{spaceID: spaceID, domainID: domainID, userID: userID, sess: sess, globalMgr: globalMgr, spaceMgr: spaceMgr, vector: vector, connector: connector, index: index, grant: grant}
-	env.runner = Runner{Session: sess, GlobalManager: globalMgr, SpaceManager: spaceMgr, Connector: connector, VectorBackend: vector}
+	env := &backfillTestEnv{spaceID: spaceID, domainID: domainID, userID: userID, graph: graphReader, globalMgr: globalMgr, spaceMgr: spaceMgr, vector: vector, connector: connector, index: index, grant: grant}
+	env.runner = Runner{GraphReader: graphReader, GlobalManager: globalMgr, SpaceManager: spaceMgr, Connector: connector, VectorBackend: vector}
 	return env
 }
 
 func (e *backfillTestEnv) addRootWithChild(t *testing.T, rootText, childText string) (graph.Node, graph.Node) {
 	t.Helper()
-	ctx := context.Background()
-	root, err := e.sess.AddNode(ctx, sessionapi.AddNodeInput{Content: rootText})
-	if err != nil {
-		t.Fatalf("add root failed: %v", err)
-	}
-	child, err := e.sess.AddNode(ctx, sessionapi.AddNodeInput{Content: childText})
-	if err != nil {
-		t.Fatalf("add child failed: %v", err)
-	}
-	if _, err := e.sess.AddEdge(ctx, sessionapi.AddEdgeInput{FromID: root.ID, ToID: child.ID, Labels: []string{"contains"}, Properties: map[string]any{"order": 1}}); err != nil {
-		t.Fatalf("add edge failed: %v", err)
-	}
+	root := e.graph.AddNode(rootText)
+	child := e.graph.AddNode(childText)
+	e.graph.AddEdge(root.ID, child.ID)
 	return root, child
+}
+
+type memoryGraphSource struct {
+	domainID graph.DomainID
+	nodes    []graph.Node
+	edges    []graph.Edge
+}
+
+func (s *memoryGraphSource) AddNode(content string) graph.Node {
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: s.domainID, Content: content}
+	s.nodes = append(s.nodes, node)
+	return node
+}
+
+func (s *memoryGraphSource) UpdateNode(id graph.NodeID, content string) {
+	for i := range s.nodes {
+		if s.nodes[i].ID == id {
+			s.nodes[i].Content = content
+			return
+		}
+	}
+}
+
+func (s *memoryGraphSource) AddEdge(fromID, toID graph.NodeID) graph.Edge {
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: s.domainID, FromID: fromID, ToID: toID, Labels: []string{"contains"}, Properties: map[string]any{"order": 1}}
+	s.edges = append(s.edges, edge)
+	return edge
+}
+
+func (s *memoryGraphSource) ListNodes(_ context.Context, domainID graph.DomainID) ([]graph.Node, error) {
+	out := []graph.Node{}
+	for _, node := range s.nodes {
+		if node.DomainID == domainID {
+			out = append(out, node)
+		}
+	}
+	return out, nil
+}
+
+func (s *memoryGraphSource) ListEdges(_ context.Context, domainID graph.DomainID) ([]graph.Edge, error) {
+	out := []graph.Edge{}
+	for _, edge := range s.edges {
+		if edge.DomainID == domainID {
+			out = append(out, edge)
+		}
+	}
+	return out, nil
 }
 
 type fakeConnector struct {
@@ -319,7 +334,3 @@ func (f *fakeProviderConnector) Embed(ctx context.Context, in connectors.Embeddi
 	f.requests = append(f.requests, in)
 	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "provider_reported", ProviderRequestID: "fake-provider-request"}, nil
 }
-
-type errNotFound struct{}
-
-func (errNotFound) Error() string { return "not found" }

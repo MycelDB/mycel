@@ -28,7 +28,7 @@ Implemented:
 
 Credential/secret management, credential grants, and inference policies are implemented separately in [Admin Inference API](inference.md).
 
-Legacy embedding migration is implemented separately in [Admin Semantic Migration API](semantic-migration.md).
+Legacy embedding migration is closed; the compatibility RPC is documented in [Admin Semantic Migration API](semantic-migration.md).
 
 Semantic backfill and maintenance analyze/process are implemented separately in [Admin Semantic Maintenance API](semantic-maintenance.md).
 

@@ -17,8 +17,8 @@ import (
 )
 
 type GraphReader interface {
-	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
-	Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge, error)
+	GetNode(ctx context.Context, domainID graph.DomainID, id graph.NodeID) (graph.Node, error)
+	Parent(ctx context.Context, domainID graph.DomainID, childID graph.NodeID) (*graph.Edge, error)
 }
 
 type Analyzer struct {
@@ -26,9 +26,16 @@ type Analyzer struct {
 	MaintenanceManager     storesemantic.MaintenanceManager
 	GraphReader            GraphReader
 	DirtyCooldown          time.Duration
+	MaxBatchSize           int
 	DirtyCooldownForTarget func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error)
 	SkipIndex              func(context.Context, domainsemantic.SemanticIndex) (bool, error)
 }
+
+type dirtyWorkBatchUpserter interface {
+	UpsertDirtyWorkItems(context.Context, []domainsemantic.SemanticDirtyWorkItem) ([]domainsemantic.SemanticDirtyWorkItem, error)
+}
+
+const defaultDirtyWorkUpsertBatchSize = 128
 
 type AnalyzeInput struct {
 	SemanticIndexID domainsemantic.SemanticIndexID
@@ -144,8 +151,25 @@ func (a Analyzer) enqueueForEvent(ctx context.Context, index domainsemantic.Sema
 		return 0, fmt.Errorf("graph reader is required")
 	}
 	targets := a.resolveTargets(ctx, index, event)
+	batchSize := a.MaxBatchSize
+	if batchSize <= 0 {
+		batchSize = defaultDirtyWorkUpsertBatchSize
+	}
 	count := 0
+	batch := make([]domainsemantic.SemanticDirtyWorkItem, 0, min(batchSize, len(targets)))
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		flushed, err := a.upsertDirtyWorkItems(ctx, batch)
+		count += flushed
+		batch = batch[:0]
+		return err
+	}
 	for targetID, target := range targets {
+		if err := ctx.Err(); err != nil {
+			return count, err
+		}
 		item := domainsemantic.SemanticDirtyWorkItem{SemanticIndexID: index.ID, SpaceID: index.SpaceID, DomainID: index.DomainID, TargetNodeID: targetID, SourceNodeID: targetID, SourceTxnIDs: []uuid.UUID{event.TxnID}, FirstGraphRevision: event.GraphRevision, LastGraphRevision: event.GraphRevision, Reason: target.Reason, Action: target.Action, Status: domainsemantic.SemanticDirtyWorkStatusPending}
 		cooldown := a.DirtyCooldown
 		if a.DirtyCooldownForTarget != nil {
@@ -159,12 +183,41 @@ func (a Analyzer) enqueueForEvent(ctx context.Context, index domainsemantic.Sema
 			runAt := now.Add(cooldown)
 			item.EarliestRunAt = &runAt
 		}
-		if _, err := a.MaintenanceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
-			return count, err
+		batch = append(batch, item)
+		if len(batch) >= batchSize {
+			if err := flush(); err != nil {
+				return count, err
+			}
 		}
-		count++
+	}
+	if err := flush(); err != nil {
+		return count, err
 	}
 	return count, nil
+}
+
+func (a Analyzer) upsertDirtyWorkItems(ctx context.Context, items []domainsemantic.SemanticDirtyWorkItem) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if len(items) == 0 {
+		return 0, nil
+	}
+	if batcher, ok := a.MaintenanceManager.(dirtyWorkBatchUpserter); ok {
+		if _, err := batcher.UpsertDirtyWorkItems(ctx, items); err != nil {
+			return 0, err
+		}
+		return len(items), nil
+	}
+	for i, item := range items {
+		if err := ctx.Err(); err != nil {
+			return i, err
+		}
+		if _, err := a.MaintenanceManager.UpsertDirtyWorkItem(ctx, item); err != nil {
+			return i, err
+		}
+	}
+	return len(items), nil
 }
 
 type resolvedTarget struct {
@@ -211,7 +264,7 @@ func (a Analyzer) resolveTargets(ctx context.Context, index domainsemantic.Seman
 }
 
 func (a Analyzer) targetForNode(ctx context.Context, index domainsemantic.SemanticIndex, nodeID graph.NodeID) (graph.NodeID, bool) {
-	node, err := a.GraphReader.GetNode(ctx, nodeID)
+	node, err := a.GraphReader.GetNode(ctx, index.DomainID, nodeID)
 	if err != nil || node.DomainID != index.DomainID {
 		return uuid.Nil, false
 	}
@@ -226,11 +279,11 @@ func (a Analyzer) targetForNode(ctx context.Context, index domainsemantic.Semant
 	}
 	parentID := nodeID
 	for depth := 0; depth < 256; depth++ {
-		parent, err := a.GraphReader.Parent(ctx, parentID)
+		parent, err := a.GraphReader.Parent(ctx, index.DomainID, parentID)
 		if err != nil || parent == nil || parent.FromID == uuid.Nil {
 			return uuid.Nil, false
 		}
-		parentNode, err := a.GraphReader.GetNode(ctx, parent.FromID)
+		parentNode, err := a.GraphReader.GetNode(ctx, index.DomainID, parent.FromID)
 		if err != nil || parentNode.DomainID != index.DomainID {
 			return uuid.Nil, false
 		}

@@ -19,10 +19,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
-	"github.com/myceldb/mycel/internal/embedding/catalog"
-	storeembedding "github.com/myceldb/mycel/internal/embedding/store"
-	"github.com/myceldb/mycel/internal/graph/filesession"
 	"github.com/myceldb/mycel/internal/graph/model"
+	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -31,12 +29,11 @@ import (
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
-	semanticmigration "github.com/myceldb/mycel/internal/semantic/migration"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	sessionapi "github.com/myceldb/mycel/internal/session/api"
+	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 	"github.com/myceldb/mycel/internal/wal"
@@ -57,8 +54,10 @@ type Module struct {
 	accounting           storeaccounting.Manager
 	accountingBase       storeaccounting.Manager
 	spaces               map[domainspace.SpaceID]storesemantic.SpaceManager
+	maintenanceManagers  map[domainspace.SpaceID]storesemantic.MaintenanceManager
 	maintenanceConfig    MaintenanceConfig
 	schemaManager        SchemaManager
+	graphReaderManager   GraphReadManager
 	logger               *slog.Logger
 	maintenanceCancel    context.CancelFunc
 	maintenanceWG        sync.WaitGroup
@@ -95,10 +94,16 @@ func NewModule(config ...Config) *Module {
 		cfg = config[0]
 	}
 
-	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, gate: quiesce.NewGate(ModuleName), secretKeyB64: cfg.SecretKeyB64, maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager}
+	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, maintenanceManagers: map[domainspace.SpaceID]storesemantic.MaintenanceManager{}, gate: quiesce.NewGate(ModuleName), secretKeyB64: cfg.SecretKeyB64, maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager, graphReaderManager: cfg.GraphReadManager}
 }
 
 func (m *Module) Name() string { return ModuleName }
+
+func (m *Module) SetGraphReadManager(manager GraphReadManager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.graphReaderManager = manager
+}
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	global := storesemantic.NewGlobalManager()
@@ -118,6 +123,18 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
 	m.loadRaftAppliedCommands()
+	if lookup, ok := host.(runtime.ServiceLookup); ok {
+		if schemaSvc, ok := lookup.Service(schemaservice.ModuleName); ok {
+			if manager, ok := schemaSvc.(schemaservice.Manager); ok {
+				m.schemaManager = manager
+			}
+		}
+		if graphSvc, ok := lookup.Service(graphservice.ModuleName); ok {
+			if manager, ok := graphSvc.(GraphReadManager); ok {
+				m.graphReaderManager = manager
+			}
+		}
+	}
 	m.globalBase = global
 	if provider, ok := host.(runtime.WALProvider); ok {
 		m.wal = provider.WALManager()
@@ -150,6 +167,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	m.accountingBase = acct
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
+	m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
 	if m.maintenanceConfig == (MaintenanceConfig{}) {
 		m.maintenanceConfig = maintenanceConfigFromHost(host)
 	}
@@ -201,6 +219,7 @@ func (m *Module) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	m.clearMaintenanceManagers()
 	m.mu.Lock()
 	m.maintenanceRunning = false
 	m.maintenanceStarted = time.Time{}
@@ -450,17 +469,48 @@ func (m *Module) ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager,
 }
 
 func (m *Module) MaintenanceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.MaintenanceManager, error) {
-	if spaceID == domainspace.SpaceID(uuid.Nil) {
-		return nil, fmt.Errorf("space_id is required")
-	}
-	mgr := storesemantic.NewMaintenanceManager()
-	if err := mgr.Init(ctx, m.maintenanceDir(spaceID), spaceID); err != nil {
+	mgr, err := m.baseMaintenanceManager(ctx, spaceID)
+	if err != nil {
 		return nil, err
 	}
 	if m.wal != nil || m.raftGroups != nil {
 		return &walMaintenanceManager{inner: mgr, module: m, spaceID: spaceID}, nil
 	}
 	return mgr, nil
+}
+
+func (m *Module) baseMaintenanceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.MaintenanceManager, error) {
+	if spaceID == domainspace.SpaceID(uuid.Nil) {
+		return nil, fmt.Errorf("space_id is required")
+	}
+	m.mu.Lock()
+	if m.maintenanceManagers == nil {
+		m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
+	}
+	if mgr := m.maintenanceManagers[spaceID]; mgr != nil {
+		m.mu.Unlock()
+		return mgr, nil
+	}
+	mgr := storesemantic.NewMaintenanceManager()
+	if err := mgr.Init(ctx, m.maintenanceDir(spaceID), spaceID); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	m.maintenanceManagers[spaceID] = mgr
+	m.mu.Unlock()
+	return mgr, nil
+}
+
+func (m *Module) clearMaintenanceManagers() {
+	m.mu.Lock()
+	managers := m.maintenanceManagers
+	m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
+	m.mu.Unlock()
+	for _, mgr := range managers {
+		if closer, ok := mgr.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}
 }
 
 func (m *Module) maintenanceDir(spaceID domainspace.SpaceID) string {
@@ -703,11 +753,11 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	reader, err := m.graphReader(ctx, in.SpaceID, graph.DomainID(uuid.Nil))
+	reader, err := m.graphReader(ctx, in.SpaceID)
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, MaxBatchSize: m.maintenanceConfig.MaxBatchSize, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 }
 
 func (m *Module) schemaDirtyCooldownForTarget(reader semanticmaintenance.GraphReader) func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error) {
@@ -715,7 +765,7 @@ func (m *Module) schemaDirtyCooldownForTarget(reader semanticmaintenance.GraphRe
 		return nil
 	}
 	return func(ctx context.Context, index domainsemantic.SemanticIndex, targetID graph.NodeID, fallback time.Duration) (time.Duration, error) {
-		node, err := reader.GetNode(ctx, targetID)
+		node, err := reader.GetNode(ctx, index.DomainID, targetID)
 		if err != nil {
 			return fallback, nil
 		}
@@ -759,7 +809,7 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
-	runner, err := m.backfillRunner(ctx, in.SpaceID, graph.DomainID(uuid.Nil), mgr)
+	runner, err := m.backfillRunner(ctx, in.SpaceID, mgr)
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
@@ -776,14 +826,12 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 	if err != nil {
 		return semanticbackfill.Result{}, err
 	}
-	domainID := graph.DomainID(uuid.Nil)
 	indexes, err := mgr.ListSemanticIndexes(ctx)
 	if err != nil {
 		return semanticbackfill.Result{}, err
 	}
 	for _, index := range indexes {
 		if index.ID == in.SemanticIndexID {
-			domainID = index.DomainID
 			if skip, err := m.skipSemanticDisabledIndex(ctx, index); err != nil {
 				return semanticbackfill.Result{}, err
 			} else if skip {
@@ -792,36 +840,11 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 			break
 		}
 	}
-	runner, err := m.backfillRunner(ctx, in.SpaceID, domainID, mgr)
+	runner, err := m.backfillRunner(ctx, in.SpaceID, mgr)
 	if err != nil {
 		return semanticbackfill.Result{}, err
 	}
 	return runner.Run(ctx, in)
-}
-
-func (m *Module) MigrateLegacyEmbeddings(ctx context.Context, in LegacyMigrationInput) (semanticmigration.LegacyEmbeddingResult, error) {
-	release, err := m.enterWork(ctx)
-	if err != nil {
-		return semanticmigration.LegacyEmbeddingResult{}, err
-	}
-	defer release()
-	ownerID, err := uuid.Parse(in.OwnerUserID)
-	if err != nil || ownerID == uuid.Nil {
-		return semanticmigration.LegacyEmbeddingResult{}, fmt.Errorf("owner_user_id is required")
-	}
-	cat, err := catalog.Load()
-	if err != nil {
-		return semanticmigration.LegacyEmbeddingResult{}, err
-	}
-	embeddings := storeembedding.NewManager()
-	if err := embeddings.Init(ctx, filepath.Join(m.dataDir, "meta", "embedding"), m.secretKeyB64); err != nil {
-		return semanticmigration.LegacyEmbeddingResult{}, err
-	}
-	spaceMgr, err := m.SpaceManager(ctx, in.SpaceID)
-	if err != nil {
-		return semanticmigration.LegacyEmbeddingResult{}, err
-	}
-	return semanticmigration.MigrateLegacyEmbeddings(ctx, semanticmigration.LegacyEmbeddingInput{OwnerUserID: ownerID, SpaceID: in.SpaceID, DomainID: in.DomainID, ProfileRef: in.ProfileRef, AllowBackgroundUse: in.AllowBackgroundUse, AddAllowPolicy: in.AddAllowPolicy, Strict: in.Strict, DryRun: in.DryRun, Limit: in.Limit, Catalog: cat, EmbeddingManager: embeddings, GlobalManager: m.GlobalManager(), SpaceManager: spaceMgr, EncryptSecret: m.EncryptSecret})
 }
 
 func (m *Module) skipSemanticDisabledIndex(ctx context.Context, index domainsemantic.SemanticIndex) (bool, error) {
@@ -847,17 +870,95 @@ func (m *Module) isSemanticDisabledDomain(ctx context.Context, domainID graph.Do
 	return !graph.DomainSemanticIndexingEnabled(domain), nil
 }
 
-func (m *Module) graphReader(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (sessionapi.Session, error) {
-	return filesession.NewConfig(filepath.Join(m.dataDir, "graphs"), filepath.Join(m.dataDir, "blobs"), spaceID, sessionapi.Permissions{Read: true, Admin: true}, sessionapi.Errors{Closed: fmt.Errorf("session closed"), NotFound: fmt.Errorf("not found"), Unauthorized: fmt.Errorf("unauthorized"), Conflict: fmt.Errorf("conflict")}, filesession.Config{DomainID: domainID}), nil
+func (m *Module) graphReader(ctx context.Context, spaceID domainspace.SpaceID) (semanticGraphReader, error) {
+	if err := ctx.Err(); err != nil {
+		return semanticGraphReader{}, err
+	}
+	m.mu.Lock()
+	manager := m.graphReaderManager
+	m.mu.Unlock()
+	if manager == nil {
+		return semanticGraphReader{}, fmt.Errorf("graph reader is not configured")
+	}
+	return semanticGraphReader{manager: manager, spaceID: spaceID}, nil
 }
 
-func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID, mgr storesemantic.SpaceManager) (semanticbackfill.Runner, error) {
-	sess, err := m.graphReader(ctx, spaceID, domainID)
+func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID, mgr storesemantic.SpaceManager) (semanticbackfill.Runner, error) {
+	reader, err := m.graphReader(ctx, spaceID)
 	if err != nil {
 		return semanticbackfill.Runner{}, err
 	}
 	global := m.GlobalManager()
-	return semanticbackfill.Runner{Session: sess, GlobalManager: global, SpaceManager: mgr, Connector: connectors.Service{GlobalManager: global, Accounting: m.accounting, SecretKeyB64: m.secretKeyB64}, VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}, nil
+	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: connectors.Service{GlobalManager: global, Accounting: m.accounting, SecretKeyB64: m.secretKeyB64}, VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}, nil
+}
+
+type semanticGraphReader struct {
+	manager GraphReadManager
+	spaceID domainspace.SpaceID
+}
+
+func (r semanticGraphReader) GetNode(ctx context.Context, domainID graph.DomainID, id graph.NodeID) (graph.Node, error) {
+	if r.manager == nil {
+		return graph.Node{}, fmt.Errorf("graph reader is not configured")
+	}
+	return r.manager.GetNode(ctx, r.tx(domainID), id.String())
+}
+
+func (r semanticGraphReader) Parent(ctx context.Context, domainID graph.DomainID, childID graph.NodeID) (*graph.Edge, error) {
+	if r.manager == nil {
+		return nil, fmt.Errorf("graph reader is not configured")
+	}
+	return r.manager.GetParent(ctx, r.tx(domainID), childID.String())
+}
+
+func (r semanticGraphReader) ListNodes(ctx context.Context, domainID graph.DomainID) ([]graph.Node, error) {
+	if r.manager == nil {
+		return nil, fmt.Errorf("graph reader is not configured")
+	}
+	return listAllGraphNodes(ctx, r.manager, r.tx(domainID))
+}
+
+func (r semanticGraphReader) ListEdges(ctx context.Context, domainID graph.DomainID) ([]graph.Edge, error) {
+	if r.manager == nil {
+		return nil, fmt.Errorf("graph reader is not configured")
+	}
+	return listAllGraphEdges(ctx, r.manager, r.tx(domainID))
+}
+
+func (r semanticGraphReader) tx(domainID graph.DomainID) daemonsession.GraphTransaction {
+	return daemonsession.GraphTransaction{ID: "semantic-read-" + r.spaceID.String() + "-" + domainID.String(), SessionID: "semantic-read", UserID: "semantic", SpaceID: r.spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive}
+}
+
+func listAllGraphNodes(ctx context.Context, manager GraphReadManager, tx daemonsession.GraphTransaction) ([]graph.Node, error) {
+	out := []graph.Node{}
+	pageToken := ""
+	for {
+		nodes, next, err := manager.ListNodes(ctx, tx, 1000, pageToken)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, nodes...)
+		if strings.TrimSpace(next) == "" {
+			return out, nil
+		}
+		pageToken = next
+	}
+}
+
+func listAllGraphEdges(ctx context.Context, manager GraphReadManager, tx daemonsession.GraphTransaction) ([]graph.Edge, error) {
+	out := []graph.Edge{}
+	pageToken := ""
+	for {
+		edges, next, err := manager.ListEdges(ctx, tx, 1000, pageToken)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, edges...)
+		if strings.TrimSpace(next) == "" {
+			return out, nil
+		}
+		pageToken = next
+	}
 }
 
 func maintenanceConfigFromHost(host runtime.Host) MaintenanceConfig {
