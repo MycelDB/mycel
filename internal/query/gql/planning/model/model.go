@@ -56,10 +56,12 @@ type QueryPathOperation struct {
 	Start                NodePattern
 	Segments             []PathSegment
 	Returns              []ReturnItem
+	ReturnGraph          bool
 	Limit                int64
 	ComparisonPredicates []ComparisonPredicate
 	TextPredicates       []TextContainsPredicate
 	SemanticPredicates   []SemanticSimilarPredicate
+	OrderBy              []OrderItem
 }
 
 func (QueryPathOperation) operation() {}

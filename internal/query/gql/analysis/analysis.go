@@ -181,8 +181,9 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 			}
 			defined[segment.Node.Variable] = struct{}{}
 			if segment.Relationship.Quantifier != nil {
-				if segment.Relationship.Quantifier.Min < 1 || segment.Relationship.Quantifier.Max < segment.Relationship.Quantifier.Min || segment.Relationship.Quantifier.Max > 5 {
-					return fmt.Errorf("relationship quantifier must be within 1..5")
+				max := segment.Relationship.Quantifier.Max
+				if segment.Relationship.Quantifier.Min < 0 || (max != -1 && max < segment.Relationship.Quantifier.Min) || max > 5 {
+					return fmt.Errorf("relationship quantifier must be within 0..5 or use an open upper bound")
 				}
 				if segment.Relationship.Variable != "" {
 					return fmt.Errorf("relationship variables are not supported on variable-length traversals")

@@ -2039,6 +2039,386 @@ func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.G
 	return out, next, stats, nil
 }
 
+func (m *Module) ScanAdjacency(ctx context.Context, tx daemonsession.GraphTransaction, scan AdjacencyScan) ([]domaingraph.Edge, string, IndexedReadStats, error) {
+	stats := IndexedReadStats{Plan: "EdgeAdjacencyIndexScan", IndexName: string(scan.Direction) + ":" + scan.Label, NextCursorKind: "adjacency_key"}
+	if err := ensureReadable(tx); err != nil {
+		return nil, "", stats, err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return nil, "", stats, err
+	} else if forward {
+		req := raftReadRequest("scan_adjacency", tx)
+		req.AdjacencyScan = scan
+		var res raftGraphIndexedEdgesResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return nil, "", stats, err
+		}
+		return res.Edges, res.NextPageToken, res.Stats, nil
+	}
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
+		return nil, "", stats, err
+	}
+	id, err := parseUUID[domaingraph.NodeID](scan.NodeID, "node_id")
+	if err != nil {
+		return nil, "", stats, err
+	}
+	label := strings.TrimSpace(scan.Label)
+	if label == "" {
+		return nil, "", stats, fmt.Errorf("%w: adjacency label is required", ErrInvalidInput)
+	}
+	store, err := m.store(ctx, tx.SpaceID)
+	if err != nil {
+		return nil, "", stats, err
+	}
+	m.mu.Lock()
+	o := m.overlays[tx.ID]
+	var overlaySnapshot *overlay
+	if o != nil {
+		overlaySnapshot = o.clone()
+	}
+	m.mu.Unlock()
+	storageDirection := graphstorage.AdjacencyDirectionOut
+	if scan.Direction == AdjacencyDirectionIn {
+		storageDirection = graphstorage.AdjacencyDirectionIn
+	}
+	if overlaySnapshot != nil {
+		view := transactionEdgeView{store: store, overlay: overlaySnapshot}
+		var endpointEdges []domaingraph.Edge
+		if scan.Direction == AdjacencyDirectionIn {
+			endpointEdges, err = view.incoming(ctx, id)
+		} else {
+			endpointEdges, err = view.outgoing(ctx, id)
+		}
+		if err != nil {
+			return nil, "", stats, err
+		}
+		cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
+		if err != nil {
+			return nil, "", stats, mapStorageError(err)
+		}
+		items := make([]domaingraph.Edge, 0, len(endpointEdges))
+		for _, edge := range endpointEdges {
+			if edge.DomainID != mustDomainID(tx.DomainID) || !domaingraph.EdgeHasLabels(edge, []string{label}) {
+				continue
+			}
+			key := adjacencyServiceKey(edge)
+			if cursorKey != "" && key <= cursorKey {
+				continue
+			}
+			items = append(items, cloneEdge(edge))
+		}
+		sort.Slice(items, func(i, j int) bool { return adjacencyServiceKey(items[i]) < adjacencyServiceKey(items[j]) })
+		limit := scan.Limit
+		if limit <= 0 || limit > len(items) {
+			limit = len(items)
+		}
+		out := make([]domaingraph.Edge, 0, limit)
+		for _, edge := range items[:limit] {
+			out = append(out, cloneEdge(edge))
+		}
+		next := ""
+		if limit < len(items) && limit > 0 {
+			next = graphstorage.EncodeIndexCursor(adjacencyServiceKey(items[limit-1]))
+		}
+		stats.IndexEntriesScanned = len(items)
+		stats.EdgesLoaded = len(out)
+		return out, next, stats, nil
+	}
+	edgeIDs, next, err := store.ScanAdjacency(ctx, graphstorage.AdjacencyScan{DomainID: mustDomainID(tx.DomainID), NodeID: id, Label: label, Direction: storageDirection, Limit: scan.Limit, Cursor: scan.Cursor})
+	if err != nil {
+		return nil, "", stats, mapStorageError(err)
+	}
+	stats.IndexEntriesScanned = len(edgeIDs)
+	out := make([]domaingraph.Edge, 0, len(edgeIDs))
+	for _, edgeID := range edgeIDs {
+		edge, err := store.GetEdge(ctx, edgeID)
+		if err != nil {
+			return nil, "", stats, mapStorageError(err)
+		}
+		out = append(out, cloneEdge(edge))
+	}
+	stats.EdgesLoaded = len(out)
+	return out, next, stats, nil
+}
+
+func (m *Module) ScanSubtree(ctx context.Context, tx daemonsession.GraphTransaction, scan SubtreeScan) (SubtreeResult, IndexedReadStats, error) {
+	stats := IndexedReadStats{Plan: "EdgeAdjacencyIndexScan", IndexName: string(scan.Direction) + ":" + scan.Label, NextCursorKind: "root_index_key"}
+	if err := ensureReadable(tx); err != nil {
+		return SubtreeResult{}, stats, err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return SubtreeResult{}, stats, err
+	} else if forward {
+		req := raftReadRequest("scan_subtree", tx)
+		req.SubtreeScan = scan
+		var res raftGraphSubtreeResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return SubtreeResult{}, stats, err
+		}
+		return res.Result, res.Stats, nil
+	}
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
+		return SubtreeResult{}, stats, err
+	}
+	label := strings.TrimSpace(scan.Label)
+	if label == "" {
+		return SubtreeResult{}, stats, fmt.Errorf("%w: subtree label is required", ErrInvalidInput)
+	}
+	if scan.Direction != AdjacencyDirectionOut && scan.Direction != AdjacencyDirectionIn {
+		return SubtreeResult{}, stats, fmt.Errorf("%w: subtree direction is required", ErrInvalidInput)
+	}
+	if scan.MinDepth < 0 || (scan.MaxDepth != -1 && scan.MaxDepth < scan.MinDepth) {
+		return SubtreeResult{}, stats, fmt.Errorf("%w: invalid subtree depth", ErrInvalidInput)
+	}
+	store, err := m.store(ctx, tx.SpaceID)
+	if err != nil {
+		return SubtreeResult{}, stats, err
+	}
+	m.mu.Lock()
+	o := m.overlays[tx.ID]
+	var overlaySnapshot *overlay
+	if o != nil {
+		overlaySnapshot = o.clone()
+	}
+	m.mu.Unlock()
+	storageDirection := graphstorage.AdjacencyDirectionOut
+	if scan.Direction == AdjacencyDirectionIn {
+		storageDirection = graphstorage.AdjacencyDirectionIn
+	}
+	maxNodes := scan.MaxNodes
+	if maxNodes <= 0 {
+		maxNodes = int(^uint(0) >> 1)
+	}
+	maxEdges := scan.MaxEdges
+	if maxEdges <= 0 {
+		maxEdges = int(^uint(0) >> 1)
+	}
+	result := SubtreeResult{Roots: make([]SubtreeRoot, 0, len(scan.Roots))}
+	seenGraphNodes := map[string]bool{}
+	seenGraphEdges := map[string]bool{}
+	addGraphNode := func(node domaingraph.Node) bool {
+		id := node.ID.String()
+		if seenGraphNodes[id] {
+			return true
+		}
+		if len(seenGraphNodes) >= maxNodes {
+			result.Truncated = true
+			if result.TruncationReason == "" {
+				result.TruncationReason = "max_nodes exceeded"
+			}
+			return false
+		}
+		seenGraphNodes[id] = true
+		result.GraphNodes = append(result.GraphNodes, cloneNode(node))
+		return true
+	}
+	canAddGraphEdge := func(edge domaingraph.Edge) bool {
+		id := edge.ID.String()
+		if seenGraphEdges[id] {
+			return true
+		}
+		if len(seenGraphEdges) >= maxEdges {
+			result.Truncated = true
+			if result.TruncationReason == "" {
+				result.TruncationReason = "max_edges exceeded"
+			}
+			return false
+		}
+		return true
+	}
+	addGraphEdge := func(edge domaingraph.Edge) bool {
+		if !canAddGraphEdge(edge) {
+			return false
+		}
+		id := edge.ID.String()
+		if seenGraphEdges[id] {
+			return true
+		}
+		seenGraphEdges[id] = true
+		result.GraphEdges = append(result.GraphEdges, cloneEdge(edge))
+		return true
+	}
+	loadNode := func(id domaingraph.NodeID) (domaingraph.Node, error) {
+		if overlaySnapshot != nil {
+			if _, deleted := overlaySnapshot.deleteNodes[id]; deleted {
+				return domaingraph.Node{}, ErrNotFound
+			}
+			if node, ok := overlaySnapshot.putNodes[id]; ok {
+				stats.NodeReadCalls++
+				return cloneNode(node), nil
+			}
+		}
+		node, err := store.GetNode(ctx, id)
+		stats.NodeReadCalls++
+		if err != nil {
+			return domaingraph.Node{}, mapStorageError(err)
+		}
+		if node.DomainID != mustDomainID(tx.DomainID) {
+			return domaingraph.Node{}, ErrNotFound
+		}
+		return cloneNode(node), nil
+	}
+	loadAdjacency := func(nodeID domaingraph.NodeID) ([]domaingraph.Edge, error) {
+		stats.AdjacencyScanCalls++
+		if overlaySnapshot != nil {
+			view := transactionEdgeView{store: store, overlay: overlaySnapshot}
+			var endpointEdges []domaingraph.Edge
+			var err error
+			if scan.Direction == AdjacencyDirectionIn {
+				endpointEdges, err = view.incoming(ctx, nodeID)
+			} else {
+				endpointEdges, err = view.outgoing(ctx, nodeID)
+			}
+			if err != nil {
+				return nil, err
+			}
+			items := make([]domaingraph.Edge, 0, len(endpointEdges))
+			for _, edge := range endpointEdges {
+				if edge.DomainID == mustDomainID(tx.DomainID) && domaingraph.EdgeHasLabels(edge, []string{label}) {
+					items = append(items, cloneEdge(edge))
+				}
+			}
+			sort.Slice(items, func(i, j int) bool { return adjacencyServiceKey(items[i]) < adjacencyServiceKey(items[j]) })
+			stats.IndexEntriesScanned += len(items)
+			stats.EdgesLoaded += len(items)
+			return items, nil
+		}
+		out := []domaingraph.Edge{}
+		cursor := ""
+		for {
+			edgeIDs, next, err := store.ScanAdjacency(ctx, graphstorage.AdjacencyScan{DomainID: mustDomainID(tx.DomainID), NodeID: nodeID, Label: label, Direction: storageDirection, Limit: 0, Cursor: cursor})
+			if err != nil {
+				return nil, mapStorageError(err)
+			}
+			stats.IndexEntriesScanned += len(edgeIDs)
+			for _, edgeID := range edgeIDs {
+				edge, err := store.GetEdge(ctx, edgeID)
+				if err != nil {
+					return nil, mapStorageError(err)
+				}
+				out = append(out, cloneEdge(edge))
+			}
+			if next == "" {
+				break
+			}
+			cursor = next
+		}
+		stats.EdgesLoaded += len(out)
+		return out, nil
+	}
+	for _, root := range scan.Roots {
+		if result.Truncated {
+			break
+		}
+		root = cloneNode(root)
+		if !addGraphNode(root) {
+			break
+		}
+		row := SubtreeRoot{Root: root, ParentByChild: map[string]string{}, OrderByChild: map[string]any{}}
+		if scan.MinDepth == 0 && subtreeNodeMatchesLabels(root, scan.TargetLabels) {
+			row.Nodes = append(row.Nodes, root)
+		}
+		visited := map[string]bool{root.ID.String(): true}
+		frontier := []subtreeServiceFrontier{{node: root, depth: 0}}
+		for len(frontier) > 0 && !result.Truncated {
+			current := frontier[0]
+			frontier = frontier[1:]
+			if scan.MaxDepth != -1 && current.depth >= scan.MaxDepth {
+				continue
+			}
+			edges, err := loadAdjacency(current.node.ID)
+			if err != nil {
+				return SubtreeResult{}, stats, err
+			}
+			for _, edge := range edges {
+				if !canAddGraphEdge(edge) {
+					break
+				}
+				endpointID := edge.ToID
+				if scan.Direction == AdjacencyDirectionIn {
+					endpointID = edge.FromID
+				}
+				if visited[endpointID.String()] {
+					if !addGraphEdge(edge) {
+						break
+					}
+					continue
+				}
+				endpoint, err := loadNode(endpointID)
+				if err != nil {
+					return SubtreeResult{}, stats, err
+				}
+				stats.NodesLoaded++
+				if !addGraphNode(endpoint) {
+					break
+				}
+				if !addGraphEdge(edge) {
+					break
+				}
+				visited[endpointID.String()] = true
+				childDepth := current.depth + 1
+				if childDepth >= scan.MinDepth && subtreeNodeMatchesLabels(endpoint, scan.TargetLabels) {
+					row.Nodes = append(row.Nodes, endpoint)
+					if scan.Direction == AdjacencyDirectionOut && label == "contains" {
+						row.ParentByChild[endpoint.ID.String()] = current.node.ID.String()
+						row.OrderByChild[endpoint.ID.String()] = edge.Properties["order"]
+					}
+				}
+				if scan.MaxDepth == -1 || childDepth < scan.MaxDepth {
+					frontier = append(frontier, subtreeServiceFrontier{node: endpoint, depth: childDepth})
+				}
+			}
+		}
+		result.Roots = append(result.Roots, row)
+	}
+	return result, stats, nil
+}
+
+type subtreeServiceFrontier struct {
+	node  domaingraph.Node
+	depth int
+}
+
+func subtreeNodeMatchesLabels(node domaingraph.Node, labels []string) bool {
+	for _, want := range labels {
+		found := false
+		for _, got := range node.Labels {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func adjacencyServiceKey(edge domaingraph.Edge) string {
+	order := int64(0)
+	if value, ok := edge.Properties["order"]; ok {
+		switch v := value.(type) {
+		case int:
+			order = int64(v)
+		case int32:
+			order = int64(v)
+		case int64:
+			order = v
+		case float32:
+			order = int64(v)
+		case float64:
+			order = int64(v)
+		case string:
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+				order = parsed
+			}
+		}
+	}
+	flipped := uint64(order) ^ (uint64(1) << 63)
+	return fmt.Sprintf("u:%020d\x00%s", flipped, edge.ID.String())
+}
+
 type indexedNodeResult struct {
 	node domaingraph.Node
 	key  string

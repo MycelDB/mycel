@@ -136,6 +136,12 @@ func (f fakeConditionGraph) ConfigureIndexes(context.Context, sessionservice.Gra
 func (f fakeConditionGraph) ScanNodePropertyOrdered(context.Context, sessionservice.GraphTransaction, graphservice.OrderedNodePropertyScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
 	panic("unused")
 }
+func (f fakeConditionGraph) ScanAdjacency(context.Context, sessionservice.GraphTransaction, graphservice.AdjacencyScan) ([]graph.Edge, string, graphservice.IndexedReadStats, error) {
+	panic("unused")
+}
+func (f fakeConditionGraph) ScanSubtree(context.Context, sessionservice.GraphTransaction, graphservice.SubtreeScan) (graphservice.SubtreeResult, graphservice.IndexedReadStats, error) {
+	panic("unused")
+}
 func (f fakeConditionGraph) BlobRefCount(context.Context, string, string) (int, error) {
 	panic("unused")
 }

@@ -28,6 +28,7 @@ type MatchStatement struct {
 	MatchPattern MatchPattern
 	Where        *WhereClause
 	Returns      []ReturnItem
+	ReturnGraph  bool
 	OrderBy      []OrderItem
 	FetchFirst   *FetchFirstClause
 }

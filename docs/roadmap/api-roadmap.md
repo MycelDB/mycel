@@ -91,11 +91,11 @@ Desirability values are relative priorities:
 | Scalar projection | Return scalar fields. Current implementation returns the bound node ID for scalar projections. | High | High | N | Incomplete surface. |
 | Property/payload/meta scalar projection | Return arbitrary node/edge properties, payload fields, or meta fields. | High | Very High | N | Missing. |
 | Mixed projections | Return nodes, trees, and scalars in one row. | Medium | Medium | N | Incomplete surface. |
-| Result graph envelope | Deduplicate returned nodes/edges into a graph envelope. | Medium | Medium | Y | Output mapping exists; matching/traversal are not accepted. |
+| Result graph envelope | Deduplicate returned nodes/edges into a graph envelope. | Medium | Medium | Y | Implemented for projected nodes/edges and indexed-root subtree graph results. |
 | Query-level limit | Limit total rows before paging. | High | High | N | Current limit is post-materialization. |
 | Response pagination | Page with `page_size` and opaque `page_token`. | High | High | N | Current pagination is post-materialization. |
 | Offset | Skip the first N rows explicitly. | Medium | Medium | N | Missing. |
-| Indexed single-label property ordering | Sort a node-only single-label query by a schema-declared ordered property index, e.g. `JournalEntry ORDER BY date`. | Very High | Very High | Y | Implemented for the production indexed query shape, including inclusive `BetweenExpr` bounds and strict `LessThanExpr` upper bounds on the ordered property. |
+| Indexed single-label property ordering | Sort a node-only single-label query by a schema-declared ordered property index, e.g. `JournalEntry ORDER BY date`. | Very High | Very High | Y | Implemented for node-only reads and as the root selector for indexed subtree graph reads, including inclusive `BetweenExpr` bounds and strict `LessThanExpr` upper bounds on the ordered property. |
 | General ordering | Sort arbitrary result rows by value expressions. | High | High | N | General ordering outside the indexed single-label property shape is not accepted. |
 | Parameters | Reuse a query shape with external parameter values. | High | High | N | Missing. |
 | Mutations | Create/update/delete nodes or edges through the structured query API. | Medium | Medium | N | Missing. |
@@ -107,9 +107,10 @@ Desirability values are relative priorities:
 | General query diagnostics | Return timing, scan counts, warnings, and planner diagnostics for all query shapes. | Medium | Medium | N | Missing outside accepted indexed plans. |
 | Explain plan | Return a planned/optimized form without executing. | Medium | Low | N | Missing. |
 | Index pushdown | Use graph/metadata/semantic indexes instead of full in-memory scans where possible. | Very High | Very High | N | Missing. |
-| Node-only execution path | Avoid loading edges when the query only matches and returns nodes. | Very High | Very High | N | Missing. |
-| Cursor pagination from index | Page directly from a stable index cursor. | Very High | Very High | N | Missing. |
-| Ordered property index scans | Support date/name/updated-time ordered reads without full sort. | Very High | Very High | N | Missing. |
+| Node-only execution path | Avoid loading edges when the query only matches and returns nodes. | Very High | Very High | Y | Implemented for indexed ordered node-property scans. |
+| Indexed-root subtree graph read | Select ordered/bounded root nodes from an index, expand bounded adjacency traversal, and return one result graph. | Very High | Very High | Y | Implemented for one traversal step using adjacency indexes with `max_nodes`/`max_edges` truncation diagnostics. |
+| Cursor pagination from index | Page directly from a stable index cursor. | Very High | Very High | Y | Implemented for ordered node scans and root pagination in indexed subtree graph reads. |
+| Ordered property index scans | Support date/name/updated-time ordered reads without full sort. | Very High | Very High | Y | Implemented for schema-declared ordered node property indexes. |
 | CLI node-query helper | Build common structured node queries from CLI flags. | Medium | Medium | N | Current helper uses the rejected executor. |
 | SDK convenience helpers | Provide ergonomic builders around generated protobuf clients. | Medium | High | N | Only thin generated/helper calls exist. |
 | Schema-derived client helpers | Generate typed dynamic query helpers from domain schemas. | Medium | Very High | N | Missing. |

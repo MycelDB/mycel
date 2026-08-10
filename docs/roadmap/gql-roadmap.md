@@ -55,7 +55,8 @@ Desirability values are relative priorities:
 | Multi-hop path match | Match chained patterns such as `(a)-[:REFERS_TO]->(b)-[:MENTIONS]->(c)`. | Very High | Very High | Y |
 | Variable-length traversal | Match bounded variable-length paths. | High | Very High | Y |
 | Path binding | Bind a full path, e.g. `MATCH path = (a)-[*]->(b) RETURN path`. | Medium | High | N |
-| Path projection | Return nodes and edges in a matched path. | Medium | High | N |
+| Path projection | Return nodes and edges in a matched path. | Medium | High | Partial |
+| Indexed root subtree graph return | Select roots with ordered index bounds/limit and expand a bounded adjacency subtree into `RETURN GRAPH`. | Very High | Very High | Y |
 | Neighborhood expansion | Query neighbors around matched nodes. | High | Very High | Y |
 | Shortest path | Find shortest paths between nodes. | Medium | Medium | N |
 | Standard node `CREATE` alias | Add standard GQL node creation syntax beyond current `INSERT`. | Medium | Medium | N |
@@ -131,6 +132,14 @@ RETURN a.title, b.title
 ```
 
 ```gql
+MATCH (d:pkm.journal)-[:contains*0..2]->(n)
+WHERE d.journal_day BETWEEN 20260701 AND 20260731
+RETURN GRAPH d,n
+ORDER BY d.journal_day DESC
+FETCH FIRST 7 ROWS ONLY
+```
+
+```gql
 MATCH (n:Note)
 WHERE TEXT_CONTAINS(n.payload.text, 'graph memory')
 RETURN n
@@ -148,7 +157,7 @@ Near-term priorities should keep the implementation incremental while making GQL
 
 1. Broaden `CREATE` toward standard GQL syntax, including node `CREATE` aliases and eventually inline endpoint creation.
 2. Path binding/projection on top of existing bounded variable-length traversal.
-3. Broaden `ORDER BY` beyond the indexed single-label node-property shape and add `OFFSET` for result shaping and pagination.
+3. Broaden `ORDER BY` beyond the indexed single-label node-property and indexed-root subtree shapes, and add `OFFSET` for result shaping and pagination.
 4. Aliased scalar projections.
 5. Full map/list result values for richer payload returns.
 6. Query parameters to avoid literal interpolation in application code.
@@ -169,7 +178,7 @@ Knot PKM needs GQL to model and traverse relationships between notes, concepts, 
 - `NEXT`
 - `PREVIOUS`
 
-For Knot PKM, edge creation, single-hop edge matching, multi-hop path matching, neighborhood expansion, bounded variable-length traversal, scalar payload projection, and text/semantic predicate MVPs are now available. The highest-value remaining areas are path binding/projection, index-backed semantic/full-text pushdown, richer result values, and query diagnostics.
+For Knot PKM, edge creation, single-hop edge matching, multi-hop path matching, neighborhood expansion, bounded variable-length traversal, indexed journal-root subtree graph reads, scalar payload projection, and text/semantic predicate MVPs are now available. The highest-value remaining areas are broader path binding/projection, index-backed semantic/full-text pushdown, richer result values, and query diagnostics.
 
 ## Related Implementation Plans
 

@@ -58,6 +58,8 @@ type raftGraphReadRequest struct {
 	SchemaHash              string                        `json:"schema_hash,omitempty"`
 	Indexes                 []schemamodel.IndexDefinition `json:"indexes,omitempty"`
 	OrderedNodePropertyScan OrderedNodePropertyScan       `json:"ordered_node_property_scan,omitempty"`
+	AdjacencyScan           AdjacencyScan                 `json:"adjacency_scan,omitempty"`
+	SubtreeScan             SubtreeScan                   `json:"subtree_scan,omitempty"`
 }
 
 type StrongReadContext struct {
@@ -108,6 +110,19 @@ type raftGraphIndexedNodesResponse struct {
 	NextPageToken string             `json:"next_page_token"`
 	Stats         IndexedReadStats   `json:"stats"`
 	Read          *StrongReadContext `json:"read,omitempty"`
+}
+
+type raftGraphIndexedEdgesResponse struct {
+	Edges         []domaingraph.Edge `json:"edges"`
+	NextPageToken string             `json:"next_page_token"`
+	Stats         IndexedReadStats   `json:"stats"`
+	Read          *StrongReadContext `json:"read,omitempty"`
+}
+
+type raftGraphSubtreeResponse struct {
+	Result SubtreeResult      `json:"result"`
+	Stats  IndexedReadStats   `json:"stats"`
+	Read   *StrongReadContext `json:"read,omitempty"`
 }
 
 type raftGraphOKResponse struct {
@@ -309,6 +324,10 @@ func recordForwardedRaftGraphRead(ctx context.Context, out any) {
 		RecordStrongReadContext(ctx, res.Read)
 	case *raftGraphIndexedNodesResponse:
 		RecordStrongReadContext(ctx, res.Read)
+	case *raftGraphIndexedEdgesResponse:
+		RecordStrongReadContext(ctx, res.Read)
+	case *raftGraphSubtreeResponse:
+		RecordStrongReadContext(ctx, res.Read)
 	case *raftGraphOKResponse:
 		RecordStrongReadContext(ctx, res.Read)
 	}
@@ -374,6 +393,18 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 			return nil, err
 		}
 		return json.Marshal(raftGraphIndexedNodesResponse{Nodes: n, NextPageToken: next, Stats: stats, Read: read})
+	case "scan_adjacency":
+		e, next, stats, err := m.ScanAdjacency(ctx, tx, req.AdjacencyScan)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftGraphIndexedEdgesResponse{Edges: e, NextPageToken: next, Stats: stats, Read: read})
+	case "scan_subtree":
+		result, stats, err := m.ScanSubtree(ctx, tx, req.SubtreeScan)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftGraphSubtreeResponse{Result: result, Stats: stats, Read: read})
 	case "get_edge":
 		id, err := parseUUID[domaingraph.EdgeID](req.ID, "edge_id")
 		if err != nil {

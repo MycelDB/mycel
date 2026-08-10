@@ -26,7 +26,7 @@ insertStatement
   ;
 
 matchStatement
-  : MATCH matchPattern whereClause? RETURN returnItem (COMMA returnItem)* orderByClause? fetchFirstClause?
+  : MATCH matchPattern whereClause? RETURN GRAPH? returnItem (COMMA returnItem)* orderByClause? fetchFirstClause?
   ;
 
 matchCreateStatement
@@ -53,7 +53,7 @@ edgePattern
 
 relationshipQuantifier
   : STAR INTEGER
-  | STAR INTEGER DOT DOT INTEGER
+  | STAR INTEGER DOT DOT INTEGER?
   ;
 
 whereClause
@@ -65,13 +65,18 @@ predicate
   ;
 
 predicateTerm
-  : propertyComparison
+  : propertyBetween
+  | propertyComparison
   | textContainsPredicate
   | semanticSimilarPredicate
   ;
 
 propertyComparison
   : IDENTIFIER DOT IDENTIFIER comparisonOperator value
+  ;
+
+propertyBetween
+  : IDENTIFIER DOT IDENTIFIER BETWEEN value AND value
   ;
 
 comparisonOperator
@@ -135,7 +140,7 @@ labelExpression
   ;
 
 labelName
-  : IDENTIFIER
+  : IDENTIFIER (DOT IDENTIFIER)*
   ;
 
 propertyMap
@@ -174,6 +179,8 @@ BY     : [Bb] [Yy];
 ASC    : [Aa] [Ss] [Cc];
 DESC   : [Dd] [Ee] [Ss] [Cc];
 AND    : [Aa] [Nn] [Dd];
+BETWEEN : [Bb] [Ee] [Tt] [Ww] [Ee] [Ee] [Nn];
+GRAPH  : [Gg] [Rr] [Aa] [Pp] [Hh];
 TEXT_CONTAINS : [Tt] [Ee] [Xx] [Tt] '_' [Cc] [Oo] [Nn] [Tt] [Aa] [Ii] [Nn] [Ss];
 SEMANTIC_SIMILAR : [Ss] [Ee] [Mm] [Aa] [Nn] [Tt] [Ii] [Cc] '_' [Ss] [Ii] [Mm] [Ii] [Ll] [Aa] [Rr];
 TOP    : [Tt] [Oo] [Pp];

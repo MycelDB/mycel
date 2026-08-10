@@ -15,10 +15,11 @@
 //	MATCH (n:Label) WHERE SEMANTIC_SIMILAR(n, 'value', TOP 10) RETURN n
 //	MATCH (a:Note)-[r:REFERENCES]->(b:Note) RETURN a, r, b.title
 //	MATCH (a:Note)-[:REFERENCES*1..3]->(b:Note) RETURN b
+//	MATCH (d:pkm.journal)-[:contains*0..2]->(n) WHERE d.journal_day BETWEEN 20260701 AND 20260731 RETURN GRAPH d,n ORDER BY d.journal_day DESC FETCH FIRST 7 ROWS ONLY
 //	MATCH (j:JournalEntry) RETURN j ORDER BY j.date FETCH FIRST 10 ROWS ONLY
 //	MATCH (n:Label) RETURN n FETCH FIRST 10 ROWS ONLY
 //
 // Unsupported for now: OR, predicate parentheses, general function calls,
-// aliased projections, OFFSET, general in-memory ORDER BY fallback, Cypher-style LIMIT, path binding,
+// aliased projections, OFFSET, general in-memory ORDER BY fallback, Cypher-style LIMIT, path binding outside indexed graph returns,
 // SET, DELETE, MERGE, aggregation, and query parameters.
 package gql

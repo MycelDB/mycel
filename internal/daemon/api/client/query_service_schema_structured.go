@@ -10,10 +10,11 @@ import (
 )
 
 type structuredQuerySchemaState struct {
-	strict    bool
-	nodeTypes map[string][]schemamodel.NodeType
-	edgeTypes map[string][]schemamodel.EdgeType
-	aliases   map[string][]schemamodel.NodeType
+	strict      bool
+	nodeTypes   map[string][]schemamodel.NodeType
+	edgeTypes   map[string][]schemamodel.EdgeType
+	aliases     map[string][]schemamodel.NodeType
+	edgeAliases map[string][]schemamodel.EdgeType
 }
 
 func validateStructuredGraphQueryWithSchema(query *clientv1.GraphQuery, schemaCtx analysis.SchemaContext) error {
@@ -40,7 +41,7 @@ func validateStructuredGraphQueryWithSchema(query *clientv1.GraphQuery, schemaCt
 }
 
 func newStructuredQuerySchemaState(doc schemamodel.DomainSchema) structuredQuerySchemaState {
-	state := structuredQuerySchemaState{strict: doc.Mode == schemamodel.SchemaModeStrict, nodeTypes: map[string][]schemamodel.NodeType{}, edgeTypes: map[string][]schemamodel.EdgeType{}, aliases: map[string][]schemamodel.NodeType{}}
+	state := structuredQuerySchemaState{strict: doc.Mode == schemamodel.SchemaModeStrict, nodeTypes: map[string][]schemamodel.NodeType{}, edgeTypes: map[string][]schemamodel.EdgeType{}, aliases: map[string][]schemamodel.NodeType{}, edgeAliases: map[string][]schemamodel.EdgeType{}}
 	for _, typ := range doc.NodeTypes {
 		state.nodeTypes[typ.Name] = append(state.nodeTypes[typ.Name], typ)
 		for _, label := range typ.Labels {
@@ -69,10 +70,17 @@ func (s structuredQuerySchemaState) validatePattern(pattern *clientv1.GraphPatte
 		if err != nil {
 			return err
 		}
+		if alias := strings.TrimSpace(step.GetEdgeAlias()); alias != "" {
+			s.edgeAliases[alias] = edgeTypes
+		}
 		if err := s.validateNodePattern(step.GetTarget()); err != nil {
 			return err
 		}
-		if err := s.validateTraversalEndpoints(edgeTypes, currentAlias, step.GetTarget().GetAlias()); err != nil {
+		fromAlias, toAlias := currentAlias, step.GetTarget().GetAlias()
+		if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN {
+			fromAlias, toAlias = toAlias, fromAlias
+		}
+		if err := s.validateTraversalEndpoints(edgeTypes, fromAlias, toAlias); err != nil {
 			return err
 		}
 		currentAlias = step.GetTarget().GetAlias()
@@ -170,6 +178,14 @@ func (s structuredQuerySchemaState) validateValueExpr(value *clientv1.ValueExpr)
 }
 
 func (s structuredQuerySchemaState) validateNodeField(alias string, namespace string, field string) error {
+	if edgeTypes := s.edgeAliases[alias]; len(edgeTypes) > 0 {
+		for _, typ := range edgeTypes {
+			if structuredEdgeTypeHasField(typ, namespace, field) {
+				return nil
+			}
+		}
+		return fmt.Errorf("unknown edge %s field %q", namespace, field)
+	}
 	types := s.aliases[alias]
 	if len(types) == 0 {
 		return nil
@@ -183,6 +199,19 @@ func (s structuredQuerySchemaState) validateNodeField(alias string, namespace st
 }
 
 func structuredNodeTypeHasField(typ schemamodel.NodeType, namespace string, field string) bool {
+	switch namespace {
+	case "", "properties":
+		return structuredFieldExists(typ.Properties, field)
+	case "payload":
+		return structuredFieldExists(typ.Payload, field)
+	case "meta":
+		return structuredFieldExists(typ.Meta, field)
+	default:
+		return false
+	}
+}
+
+func structuredEdgeTypeHasField(typ schemamodel.EdgeType, namespace string, field string) bool {
 	switch namespace {
 	case "", "properties":
 		return structuredFieldExists(typ.Properties, field)

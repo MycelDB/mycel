@@ -44,6 +44,8 @@ type Manager interface {
 	DiscardTransactionGraph(ctx context.Context, transactionID string)
 	ConfigureIndexes(ctx context.Context, tx daemonsession.GraphTransaction, schemaHash string, indexes []schemamodel.IndexDefinition) error
 	ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.GraphTransaction, scan OrderedNodePropertyScan) ([]domaingraph.Node, string, IndexedReadStats, error)
+	ScanAdjacency(ctx context.Context, tx daemonsession.GraphTransaction, scan AdjacencyScan) ([]domaingraph.Edge, string, IndexedReadStats, error)
+	ScanSubtree(ctx context.Context, tx daemonsession.GraphTransaction, scan SubtreeScan) (SubtreeResult, IndexedReadStats, error)
 	BlobRefCount(ctx context.Context, spaceID string, blobID string) (int, error)
 }
 
@@ -60,6 +62,47 @@ type OrderedNodePropertyScan struct {
 	HighExclusive bool
 }
 
+type AdjacencyDirection string
+
+const (
+	AdjacencyDirectionOut AdjacencyDirection = "out"
+	AdjacencyDirectionIn  AdjacencyDirection = "in"
+)
+
+type AdjacencyScan struct {
+	NodeID    string
+	Label     string
+	Direction AdjacencyDirection
+	Limit     int
+	Cursor    string
+}
+
+type SubtreeScan struct {
+	Roots        []domaingraph.Node
+	Label        string
+	Direction    AdjacencyDirection
+	MinDepth     int
+	MaxDepth     int
+	MaxNodes     int
+	MaxEdges     int
+	TargetLabels []string
+}
+
+type SubtreeRoot struct {
+	Root          domaingraph.Node
+	Nodes         []domaingraph.Node
+	ParentByChild map[string]string
+	OrderByChild  map[string]any
+}
+
+type SubtreeResult struct {
+	Roots            []SubtreeRoot
+	GraphNodes       []domaingraph.Node
+	GraphEdges       []domaingraph.Edge
+	Truncated        bool
+	TruncationReason string
+}
+
 type IndexedReadStats struct {
 	Plan                string
 	IndexName           string
@@ -68,6 +111,8 @@ type IndexedReadStats struct {
 	EdgesLoaded         int
 	FullScan            bool
 	NextCursorKind      string
+	AdjacencyScanCalls  int
+	NodeReadCalls       int
 }
 
 type CommitResult struct {

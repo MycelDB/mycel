@@ -85,9 +85,6 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 		limit = stmt.FetchFirst.Count
 	}
 	comparisonPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where)
-	if len(orderBy) > 0 && (len(pattern.Segments) > 0 || pattern.Relationship != nil) {
-		return planmodel.Plan{}, fmt.Errorf("ORDER BY is currently supported only for node-only MATCH statements")
-	}
 	if len(pattern.Segments) > 1 || hasQuantifiedSegment(pattern.Segments) {
 		segments := make([]planmodel.PathSegment, 0, len(pattern.Segments))
 		for i, segment := range pattern.Segments {
@@ -119,7 +116,7 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 			}
 			segments = append(segments, planmodel.PathSegment{Relationship: planRelationshipPattern(segment.Relationship, relProps), Node: planmodel.NodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: nodeProps}})
 		}
-		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
+		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, ReturnGraph: stmt.ReturnGraph, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates, OrderBy: orderBy}}}, nil
 	}
 	if pattern.Relationship != nil {
 		relProps := propertiesMap(pattern.Relationship.Properties)

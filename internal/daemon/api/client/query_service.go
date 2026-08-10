@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -28,7 +30,14 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-const queryMaxPageSize = 500
+const (
+	queryMaxPageSize          = 500
+	defaultSubtreeMaxNodes    = 10000
+	defaultSubtreeMaxEdges    = 50000
+	indexedSubtreePlanName    = "OrderedNodePropertyIndexScan+EdgeAdjacencyIndexScan"
+	indexedSubtreeCursorKind  = "root_index_key"
+	indexedSubtreeMaxDepthCap = 64
+)
 
 type QueryService struct {
 	clientv1.UnimplementedQueryServiceServer
@@ -82,7 +91,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, mapDomainError(err, "query domain")
 	}
-	if !domaingraph.DomainBroadSearchable(domain) {
+	if !domaingraph.DomainBroadSearchable(domain) && !isIndexedAdjacencyQuery(req.GetQuery()) && !isIndexedRootSubtreeQuery(req.GetQuery()) {
 		return nil, status.Error(codes.FailedPrecondition, "domain is excluded from broad query execution")
 	}
 	schemaCtx, err := s.schemaContext(ctx, tx)
@@ -327,6 +336,7 @@ type queryExecution struct {
 
 type queryRowState struct {
 	bindings      map[string][]domaingraph.Node
+	edgeBindings  map[string][]domaingraph.Edge
 	parentByChild map[string]string
 	orderByChild  map[string]any
 }
@@ -348,12 +358,15 @@ func (e *queryExecution) match(pattern *clientv1.GraphPattern, where *clientv1.E
 	if strings.TrimSpace(start.GetAlias()) == "" {
 		return nil, fmt.Errorf("start alias is required")
 	}
+	if patternHasEdgeAlias(pattern) {
+		return e.matchEdgeRows(pattern, where)
+	}
 	rows := []*queryRowState{}
 	for _, node := range e.nodes {
 		if !e.nodeMatches(node, start) {
 			continue
 		}
-		row := &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): []domaingraph.Node{node}}, parentByChild: map[string]string{}, orderByChild: map[string]any{}}
+		row := newQueryRowState(start.GetAlias(), node)
 		if err := e.applySteps(row, []domaingraph.Node{node}, pattern.GetSteps()); err != nil {
 			return nil, err
 		}
@@ -375,10 +388,119 @@ func (e *queryExecution) nodeMatches(node domaingraph.Node, pattern *clientv1.No
 	if pattern == nil {
 		return true
 	}
+	if len(pattern.GetNodeIds()) > 0 && !stringInSet(node.ID.String(), pattern.GetNodeIds()) {
+		return false
+	}
 	if len(pattern.GetLabels()) > 0 && !nodeHasLabels(node.Labels, pattern.GetLabels()) {
 		return false
 	}
 	return true
+}
+
+func patternHasEdgeAlias(pattern *clientv1.GraphPattern) bool {
+	for _, step := range pattern.GetSteps() {
+		if strings.TrimSpace(step.GetEdgeAlias()) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func newQueryRowState(alias string, node domaingraph.Node) *queryRowState {
+	return &queryRowState{bindings: map[string][]domaingraph.Node{alias: []domaingraph.Node{node}}, edgeBindings: map[string][]domaingraph.Edge{}, parentByChild: map[string]string{}, orderByChild: map[string]any{}}
+}
+
+func cloneQueryRowState(row *queryRowState) *queryRowState {
+	out := &queryRowState{bindings: map[string][]domaingraph.Node{}, edgeBindings: map[string][]domaingraph.Edge{}, parentByChild: map[string]string{}, orderByChild: map[string]any{}}
+	for alias, nodes := range row.bindings {
+		out.bindings[alias] = append([]domaingraph.Node(nil), nodes...)
+	}
+	for alias, edges := range row.edgeBindings {
+		out.edgeBindings[alias] = append([]domaingraph.Edge(nil), edges...)
+	}
+	for child, parent := range row.parentByChild {
+		out.parentByChild[child] = parent
+	}
+	for child, order := range row.orderByChild {
+		out.orderByChild[child] = order
+	}
+	return out
+}
+
+func (e *queryExecution) matchEdgeRows(pattern *clientv1.GraphPattern, where *clientv1.Expr) ([]*queryRowState, error) {
+	start := pattern.GetStart()
+	rows := []*queryRowState{}
+	for _, node := range e.nodes {
+		if !e.nodeMatches(node, start) {
+			continue
+		}
+		rows = append(rows, newQueryRowState(start.GetAlias(), node))
+	}
+	currentAlias := start.GetAlias()
+	for _, step := range pattern.GetSteps() {
+		if step.GetTarget() == nil || strings.TrimSpace(step.GetTarget().GetAlias()) == "" {
+			return nil, fmt.Errorf("traversal target alias is required")
+		}
+		if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_UNSPECIFIED {
+			return nil, fmt.Errorf("traversal direction is required")
+		}
+		if strings.TrimSpace(step.GetEdgeKind()) == "" {
+			return nil, fmt.Errorf("traversal edge_kind is required")
+		}
+		if depth := step.GetDepth(); depth != nil && (depth.GetMinDepth() > 1 || depth.GetMaxDepth() != 1) {
+			return nil, fmt.Errorf("edge_alias currently supports one-hop traversal only")
+		}
+		nextRows := []*queryRowState{}
+		for _, row := range rows {
+			for _, node := range row.bindings[currentAlias] {
+				for _, edge := range e.stepEdges(node, step) {
+					candidateID := edge.ToID.String()
+					if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN {
+						candidateID = edge.FromID.String()
+					}
+					candidate, ok := e.nodeByID[candidateID]
+					if !ok || !e.nodeMatches(candidate, step.GetTarget()) {
+						continue
+					}
+					child := cloneQueryRowState(row)
+					child.bindings[step.GetTarget().GetAlias()] = []domaingraph.Node{candidate}
+					if alias := strings.TrimSpace(step.GetEdgeAlias()); alias != "" {
+						child.edgeBindings[alias] = []domaingraph.Edge{edge}
+					}
+					if domaingraph.EdgeHasLabels(edge, []string{"contains"}) && step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT {
+						child.parentByChild[candidate.ID.String()] = node.ID.String()
+						child.orderByChild[candidate.ID.String()] = edge.Properties["order"]
+					}
+					nextRows = append(nextRows, child)
+				}
+			}
+		}
+		rows = nextRows
+		currentAlias = step.GetTarget().GetAlias()
+	}
+	if where == nil {
+		return rows, nil
+	}
+	out := []*queryRowState{}
+	for _, row := range rows {
+		ok, err := e.evalExpr(row, where)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+func stringInSet(value string, set []string) bool {
+	for _, candidate := range set {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func nodeHasLabels(labels []string, required []string) bool {
@@ -540,6 +662,9 @@ func (e *queryExecution) evalValue(row *queryRowState, value *clientv1.ValueExpr
 	}
 	switch v := value.GetExpr().(type) {
 	case *clientv1.ValueExpr_Prop:
+		if edge, err := firstBoundEdge(row, v.Prop.GetAlias()); err == nil {
+			return edgePropValue(edge, v.Prop.GetName()), nil
+		}
 		node, err := firstBoundNode(row, v.Prop.GetAlias())
 		if err != nil {
 			return nil, err
@@ -590,6 +715,10 @@ func (e *queryExecution) hasTag(row *queryRowState, alias string, tag string) (b
 }
 
 func (e *queryExecution) customProperty(row *queryRowState, alias string, name string) (any, bool, error) {
+	if edge, err := firstBoundEdge(row, alias); err == nil {
+		value, ok := edgeCustomProperty(edge, name)
+		return value, ok, nil
+	}
 	node, err := firstBoundNode(row, alias)
 	if err != nil {
 		return nil, false, err
@@ -663,6 +792,12 @@ func (e *queryExecution) projectRow(row *queryRowState, returns []*clientv1.Retu
 				return nil, err
 			}
 			fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Scalar{Scalar: protoValue(node.ID.String())}}
+		case clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_EDGE:
+			edge, err := firstBoundEdge(row, ret.GetAlias())
+			if err != nil {
+				return nil, err
+			}
+			fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Edge{Edge: mapProtoEdge(edge)}}
 		default:
 			node, err := firstBoundNode(row, ret.GetAlias())
 			if err != nil {
@@ -717,6 +852,14 @@ func firstBoundNode(row *queryRowState, alias string) (domaingraph.Node, error) 
 	return nodes[0], nil
 }
 
+func firstBoundEdge(row *queryRowState, alias string) (domaingraph.Edge, error) {
+	edges := row.edgeBindings[alias]
+	if len(edges) == 0 {
+		return domaingraph.Edge{}, fmt.Errorf("edge alias %q is not bound", alias)
+	}
+	return edges[0], nil
+}
+
 func propValue(node domaingraph.Node, name string) any {
 	if name == "node_id" {
 		return node.ID.String()
@@ -728,6 +871,32 @@ func propValue(node domaingraph.Node, name string) any {
 		return value
 	}
 	return nil
+}
+
+func edgePropValue(edge domaingraph.Edge, name string) any {
+	switch name {
+	case "edge_id":
+		return edge.ID.String()
+	case "from_node_id":
+		return edge.FromID.String()
+	case "to_node_id":
+		return edge.ToID.String()
+	}
+	if value, ok := domaingraph.EdgeProperty(edge, name); ok {
+		return value
+	}
+	return nil
+}
+
+func edgeCustomProperty(edge domaingraph.Edge, name string) (any, bool) {
+	if value, ok := domaingraph.EdgeProperty(edge, name); ok {
+		return value, true
+	}
+	want, err := domaingraph.NormalizePropertyName(name)
+	if err != nil || want == name {
+		return nil, false
+	}
+	return domaingraph.EdgeProperty(edge, want)
 }
 
 type gqlDaemonGraph struct {
@@ -1098,12 +1267,15 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil {
 		return false, nil, nil
 	}
+	if indexed, res, err := s.tryExecuteIndexedAdjacencyQuery(ctx, req, tx, recorder); indexed || err != nil {
+		return indexed, res, err
+	}
 	if len(query.GetOrderBy()) == 0 {
 		return false, nil, nil
 	}
 	match := query.GetMatch()
 	start := match.GetStart()
-	if len(match.GetSteps()) != 0 || len(query.GetOrderBy()) != 1 || len(start.GetLabels()) != 1 {
+	if len(query.GetOrderBy()) != 1 || len(start.GetLabels()) != 1 {
 		return true, nil, status.Error(codes.FailedPrecondition, "ORDER BY requires an indexed single-label node query")
 	}
 	order := query.GetOrderBy()[0]
@@ -1129,6 +1301,12 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 	}
 	if err := s.graphs.ConfigureIndexes(ctx, tx, schemacompile.Hash(*schemaCtx.Schema), schemaCtx.Schema.Indexes); err != nil {
 		return true, nil, mapGraphError(err, "configure query indexes")
+	}
+	if len(match.GetSteps()) == 1 {
+		return s.executeIndexedRootSubtreeQuery(ctx, req, tx, recorder, idx, bounds)
+	}
+	if len(match.GetSteps()) != 0 {
+		return true, nil, status.Error(codes.FailedPrecondition, "ORDER BY traversal requires an indexed bounded subtree query")
 	}
 	limit := effectiveIndexedLimit(req.GetPageSize(), query.GetLimit())
 	direction := order.GetDirection()
@@ -1156,6 +1334,360 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 	}
 	result := queryResultFromRows(out, next)
 	diagnostics := &clientv1.QueryDiagnostics{Plan: stats.Plan, Indexes: []string{idx.Name}, FullScan: stats.FullScan, IndexEntriesScanned: int32(stats.IndexEntriesScanned), NodesLoaded: int32(stats.NodesLoaded), EdgesLoaded: int32(stats.EdgesLoaded), RowsReturned: int32(len(out)), NextCursorKind: stats.NextCursorKind}
+	return true, &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: diagnostics}, nil
+}
+
+func isIndexedRootSubtreeQuery(query *clientv1.GraphQuery) bool {
+	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil || len(query.GetOrderBy()) != 1 || len(query.GetMatch().GetSteps()) != 1 {
+		return false
+	}
+	start := query.GetMatch().GetStart()
+	step := query.GetMatch().GetSteps()[0]
+	return len(start.GetLabels()) == 1 && strings.TrimSpace(start.GetAlias()) != "" && step.GetTarget() != nil && strings.TrimSpace(step.GetTarget().GetAlias()) != "" && strings.TrimSpace(step.GetEdgeKind()) != ""
+}
+
+type indexedSubtreeExpansion struct {
+	rows      []*clientv1.QueryRow
+	graph     *clientv1.ResultGraph
+	stats     daegraph.IndexedReadStats
+	truncated bool
+	reason    string
+}
+
+func (s *QueryService) executeIndexedRootSubtreeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, recorder *daegraph.ReadMetadataRecorder, idx schemamodel.IndexDefinition, bounds indexedBounds) (bool, *clientv1.ExecuteQueryResponse, error) {
+	query := req.GetQuery()
+	if err := validateIndexedRootSubtreeShape(query); err != nil {
+		return true, nil, err
+	}
+	limit := effectiveIndexedLimit(req.GetPageSize(), query.GetLimit())
+	indexDirection := schemamodel.IndexSortDirectionAsc
+	if query.GetOrderBy()[0].GetDirection() == clientv1.SortDirection_SORT_DIRECTION_DESC {
+		indexDirection = schemamodel.IndexSortDirectionDesc
+	}
+	rootScanStart := time.Now()
+	roots, next, rootStats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, daegraph.OrderedNodePropertyScan{IndexName: idx.Name, Direction: indexDirection, Limit: limit, Cursor: req.GetPageToken(), HasLow: bounds.hasLow, Low: bounds.low, LowExclusive: bounds.lowExclusive, HasHigh: bounds.hasHigh, High: bounds.high, HighExclusive: bounds.highExclusive})
+	rootScanMillis := time.Since(rootScanStart).Milliseconds()
+	if err != nil {
+		return true, nil, mapGraphError(err, "execute indexed root scan")
+	}
+	expansionStart := time.Now()
+	expanded, err := s.expandIndexedSubtrees(ctx, tx, query, roots, idx.Name, rootStats)
+	expansionMillis := time.Since(expansionStart).Milliseconds()
+	if err != nil {
+		return true, nil, err
+	}
+	if expanded.truncated {
+		next = ""
+	}
+	result := queryResultFromRows(expanded.rows, next)
+	result.Graph = expanded.graph
+	diagnostics := &clientv1.QueryDiagnostics{Plan: indexedSubtreePlanName, Indexes: []string{idx.Name, expanded.stats.IndexName}, FullScan: false, IndexEntriesScanned: int32(expanded.stats.IndexEntriesScanned), NodesLoaded: int32(expanded.stats.NodesLoaded), EdgesLoaded: int32(expanded.stats.EdgesLoaded), RowsReturned: int32(len(expanded.rows)), NextCursorKind: indexedSubtreeCursorKind, RootCount: int32(len(expanded.rows)), Truncated: expanded.truncated, TruncationReason: expanded.reason, RootScanMillis: rootScanMillis, ExpansionMillis: expansionMillis, AdjacencyScanCalls: int32(expanded.stats.AdjacencyScanCalls), NodeReadCalls: int32(expanded.stats.NodeReadCalls)}
+	return true, &clientv1.ExecuteQueryResponse{Rows: expanded.rows, NextPageToken: next, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: diagnostics}, nil
+}
+
+func validateIndexedRootSubtreeShape(query *clientv1.GraphQuery) error {
+	match := query.GetMatch()
+	start := match.GetStart()
+	step := match.GetSteps()[0]
+	if len(match.GetSteps()) != 1 || len(query.GetOrderBy()) != 1 || len(start.GetLabels()) != 1 || strings.TrimSpace(start.GetAlias()) == "" {
+		return status.Error(codes.FailedPrecondition, "indexed subtree requires one ordered single-label root pattern")
+	}
+	if strings.TrimSpace(step.GetEdgeAlias()) != "" {
+		return status.Error(codes.FailedPrecondition, "indexed subtree traversal does not support edge aliases")
+	}
+	if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_UNSPECIFIED {
+		return status.Error(codes.InvalidArgument, "indexed subtree traversal direction is required")
+	}
+	if strings.TrimSpace(step.GetEdgeKind()) == "" {
+		return status.Error(codes.InvalidArgument, "indexed subtree traversal edge_kind is required")
+	}
+	if step.GetTarget() == nil || strings.TrimSpace(step.GetTarget().GetAlias()) == "" {
+		return status.Error(codes.InvalidArgument, "indexed subtree traversal target alias is required")
+	}
+	minDepth, maxDepth, err := traversalDepthBounds(step.GetDepth())
+	if err != nil {
+		return err
+	}
+	if maxDepth != -1 && maxDepth < minDepth {
+		return status.Error(codes.InvalidArgument, "indexed subtree traversal max_depth must be >= min_depth")
+	}
+	if maxDepth > indexedSubtreeMaxDepthCap {
+		return status.Errorf(codes.InvalidArgument, "indexed subtree traversal max_depth must be <= %d", indexedSubtreeMaxDepthCap)
+	}
+	return nil
+}
+
+func traversalDepthBounds(depth *clientv1.DepthSpec) (int, int, error) {
+	if depth == nil {
+		return 1, 1, nil
+	}
+	minDepth := int(depth.GetMinDepth())
+	maxDepth := int(depth.GetMaxDepth())
+	if minDepth < 0 {
+		return 0, 0, status.Error(codes.InvalidArgument, "indexed subtree traversal min_depth must be non-negative")
+	}
+	return minDepth, maxDepth, nil
+}
+
+func subtreeCaps(query *clientv1.GraphQuery) (int, int) {
+	maxNodes := int(query.GetMaxNodes())
+	if maxNodes <= 0 {
+		maxNodes = defaultSubtreeMaxNodes
+	}
+	maxEdges := int(query.GetMaxEdges())
+	if maxEdges <= 0 {
+		maxEdges = defaultSubtreeMaxEdges
+	}
+	return maxNodes, maxEdges
+}
+
+func (s *QueryService) expandIndexedSubtrees(ctx context.Context, tx daemonsession.GraphTransaction, query *clientv1.GraphQuery, roots []domaingraph.Node, orderedIndexName string, rootStats daegraph.IndexedReadStats) (indexedSubtreeExpansion, error) {
+	match := query.GetMatch()
+	start := match.GetStart()
+	step := match.GetSteps()[0]
+	target := step.GetTarget()
+	minDepth, maxDepth, err := traversalDepthBounds(step.GetDepth())
+	if err != nil {
+		return indexedSubtreeExpansion{}, err
+	}
+	maxNodes, maxEdges := subtreeCaps(query)
+	direction := daegraph.AdjacencyDirectionOut
+	if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN {
+		direction = daegraph.AdjacencyDirectionIn
+	}
+	returns := query.GetReturns()
+	if len(returns) == 0 {
+		returns = []*clientv1.ReturnProjection{{Alias: target.GetAlias(), OutputName: "graph", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_TREE}}
+	}
+	result, subtreeStats, err := s.graphs.ScanSubtree(ctx, tx, daegraph.SubtreeScan{Roots: roots, Label: step.GetEdgeKind(), Direction: direction, MinDepth: minDepth, MaxDepth: maxDepth, MaxNodes: maxNodes, MaxEdges: maxEdges, TargetLabels: append([]string(nil), target.GetLabels()...)})
+	if err != nil {
+		return indexedSubtreeExpansion{}, mapGraphError(err, "execute indexed subtree scan")
+	}
+	combined := daegraph.IndexedReadStats{Plan: indexedSubtreePlanName, IndexName: string(direction) + ":" + step.GetEdgeKind(), IndexEntriesScanned: rootStats.IndexEntriesScanned + subtreeStats.IndexEntriesScanned, NodesLoaded: rootStats.NodesLoaded + subtreeStats.NodesLoaded, EdgesLoaded: rootStats.EdgesLoaded + subtreeStats.EdgesLoaded, FullScan: rootStats.FullScan || subtreeStats.FullScan, NextCursorKind: indexedSubtreeCursorKind, AdjacencyScanCalls: subtreeStats.AdjacencyScanCalls, NodeReadCalls: subtreeStats.NodeReadCalls}
+	exec := newQueryExecution(nil, nil)
+	out := make([]*clientv1.QueryRow, 0, len(result.Roots))
+	for _, root := range result.Roots {
+		row := &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): {root.Root}, target.GetAlias(): append([]domaingraph.Node(nil), root.Nodes...)}, parentByChild: root.ParentByChild, orderByChild: root.OrderByChild}
+		protoRow, err := exec.projectRow(row, returns)
+		if err != nil {
+			return indexedSubtreeExpansion{}, status.Error(codes.InvalidArgument, err.Error())
+		}
+		out = append(out, protoRow)
+	}
+	graph := &clientv1.ResultGraph{Nodes: make([]*clientv1.Node, 0, len(result.GraphNodes)), Edges: make([]*clientv1.Edge, 0, len(result.GraphEdges))}
+	for _, node := range result.GraphNodes {
+		graph.Nodes = append(graph.Nodes, mapProtoNode(node))
+	}
+	for _, edge := range result.GraphEdges {
+		graph.Edges = append(graph.Edges, mapProtoEdge(edge))
+	}
+	return indexedSubtreeExpansion{rows: out, graph: graph, stats: combined, truncated: result.Truncated, reason: result.TruncationReason}, nil
+}
+
+func isIndexedAdjacencyQuery(query *clientv1.GraphQuery) bool {
+	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil || len(query.GetOrderBy()) != 0 || len(query.GetMatch().GetSteps()) != 1 {
+		return false
+	}
+	start := query.GetMatch().GetStart()
+	step := query.GetMatch().GetSteps()[0]
+	return strings.TrimSpace(start.GetAlias()) != "" && len(start.GetNodeIds()) > 0 && step.GetTarget() != nil && strings.TrimSpace(step.GetTarget().GetAlias()) != "" && strings.TrimSpace(step.GetEdgeAlias()) != ""
+}
+
+type indexedAdjacencyCursor struct {
+	StartIndex   int    `json:"start_index"`
+	EdgeCursor   string `json:"edge_cursor,omitempty"`
+	RowsReturned int    `json:"rows_returned,omitempty"`
+}
+
+func encodeIndexedAdjacencyCursor(cursor indexedAdjacencyCursor) string {
+	payload, err := json.Marshal(cursor)
+	if err != nil {
+		return ""
+	}
+	return "multi:" + base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func decodeIndexedAdjacencyCursor(token string) (indexedAdjacencyCursor, bool, error) {
+	if !strings.HasPrefix(token, "multi:") {
+		return indexedAdjacencyCursor{}, false, nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, "multi:"))
+	if err != nil {
+		return indexedAdjacencyCursor{}, true, err
+	}
+	var out indexedAdjacencyCursor
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return indexedAdjacencyCursor{}, true, err
+	}
+	if out.StartIndex < 0 {
+		return indexedAdjacencyCursor{}, true, fmt.Errorf("negative start_index")
+	}
+	if out.RowsReturned < 0 {
+		return indexedAdjacencyCursor{}, true, fmt.Errorf("negative rows_returned")
+	}
+	return out, true, nil
+}
+
+func (s *QueryService) tryExecuteIndexedAdjacencyQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+	query := req.GetQuery()
+	match := query.GetMatch()
+	if len(query.GetOrderBy()) != 0 || len(match.GetSteps()) != 1 {
+		return false, nil, nil
+	}
+	start := match.GetStart()
+	step := match.GetSteps()[0]
+	if strings.TrimSpace(step.GetEdgeAlias()) == "" || len(start.GetNodeIds()) == 0 {
+		return false, nil, nil
+	}
+	if strings.TrimSpace(start.GetAlias()) == "" {
+		return true, nil, status.Error(codes.InvalidArgument, "start alias is required")
+	}
+	if step.GetTarget() == nil || strings.TrimSpace(step.GetTarget().GetAlias()) == "" {
+		return true, nil, status.Error(codes.InvalidArgument, "traversal target alias is required")
+	}
+	if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_UNSPECIFIED {
+		return true, nil, status.Error(codes.InvalidArgument, "traversal direction is required")
+	}
+	if strings.TrimSpace(step.GetEdgeKind()) == "" {
+		return true, nil, status.Error(codes.InvalidArgument, "traversal edge_kind is required")
+	}
+	if depth := step.GetDepth(); depth != nil && (depth.GetMinDepth() > 1 || depth.GetMaxDepth() != 1) {
+		return true, nil, status.Error(codes.InvalidArgument, "indexed edge traversal supports one-hop depth only")
+	}
+	multiCursor, isMultiCursor, err := decodeIndexedAdjacencyCursor(req.GetPageToken())
+	if err != nil {
+		return true, nil, status.Error(codes.InvalidArgument, "invalid adjacency page token")
+	}
+	if !isMultiCursor && req.GetPageToken() != "" && len(start.GetNodeIds()) > 1 {
+		return true, nil, status.Error(codes.InvalidArgument, "multi-node adjacency pagination requires a multi-node page token")
+	}
+	if s.graphs == nil {
+		return true, nil, status.Error(codes.Internal, "graph manager is not configured")
+	}
+	pageLimit := effectiveIndexedLimit(req.GetPageSize(), 0)
+	queryLimit := int(query.GetLimit())
+	rowsReturnedBefore := 0
+	if isMultiCursor {
+		rowsReturnedBefore = multiCursor.RowsReturned
+	}
+	if queryLimit > 0 {
+		if rowsReturnedBefore >= queryLimit {
+			return true, nil, status.Error(codes.InvalidArgument, "adjacency page token is beyond query limit")
+		}
+		if remainingLimit := queryLimit - rowsReturnedBefore; remainingLimit < pageLimit {
+			pageLimit = remainingLimit
+		}
+	}
+	remaining := pageLimit
+	direction := daegraph.AdjacencyDirectionOut
+	if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN {
+		direction = daegraph.AdjacencyDirectionIn
+	}
+	returns := query.GetReturns()
+	if len(returns) == 0 {
+		returns = []*clientv1.ReturnProjection{{Alias: start.GetAlias(), OutputName: start.GetAlias(), Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}
+	}
+	exec := newQueryExecution(nil, nil)
+	out := make([]*clientv1.QueryRow, 0, pageLimit)
+	next := ""
+	combined := daegraph.IndexedReadStats{Plan: "EdgeAdjacencyIndexScan", IndexName: string(direction) + ":" + step.GetEdgeKind(), NextCursorKind: "adjacency_key"}
+	startIndex := 0
+	initialEdgeCursor := ""
+	if isMultiCursor {
+		startIndex = multiCursor.StartIndex
+		initialEdgeCursor = multiCursor.EdgeCursor
+	} else if len(start.GetNodeIds()) == 1 {
+		initialEdgeCursor = req.GetPageToken()
+	}
+	if startIndex >= len(start.GetNodeIds()) {
+		return true, nil, status.Error(codes.InvalidArgument, "adjacency page token start_index is out of range")
+	}
+	for i := startIndex; i < len(start.GetNodeIds()); i++ {
+		if remaining <= 0 {
+			break
+		}
+		startID := start.GetNodeIds()[i]
+		startNode, err := s.graphs.GetNode(ctx, tx, startID)
+		if err != nil {
+			return true, nil, mapGraphError(err, "query get start node")
+		}
+		combined.NodesLoaded++
+		if !exec.nodeMatches(startNode, start) {
+			continue
+		}
+		cursor := ""
+		if i == startIndex {
+			cursor = initialEdgeCursor
+		}
+		for remaining > 0 {
+			edges, edgeNext, stats, err := s.graphs.ScanAdjacency(ctx, tx, daegraph.AdjacencyScan{NodeID: startID, Label: step.GetEdgeKind(), Direction: direction, Limit: remaining, Cursor: cursor})
+			if err != nil {
+				return true, nil, mapGraphError(err, "execute adjacency query")
+			}
+			combined.IndexEntriesScanned += stats.IndexEntriesScanned
+			combined.EdgesLoaded += stats.EdgesLoaded
+			for _, edge := range edges {
+				endpointID := edge.ToID.String()
+				if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN {
+					endpointID = edge.FromID.String()
+				}
+				endpoint, err := s.graphs.GetNode(ctx, tx, endpointID)
+				if err != nil {
+					return true, nil, mapGraphError(err, "query get endpoint node")
+				}
+				combined.NodesLoaded++
+				if !exec.nodeMatches(endpoint, step.GetTarget()) {
+					continue
+				}
+				row := &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): {startNode}, step.GetTarget().GetAlias(): {endpoint}}, edgeBindings: map[string][]domaingraph.Edge{step.GetEdgeAlias(): {edge}}, parentByChild: map[string]string{}, orderByChild: map[string]any{}}
+				if query.GetWhere() != nil {
+					ok, err := exec.evalExpr(row, query.GetWhere())
+					if err != nil {
+						return true, nil, status.Error(codes.InvalidArgument, err.Error())
+					}
+					if !ok {
+						continue
+					}
+				}
+				protoRow, err := exec.projectRow(row, returns)
+				if err != nil {
+					return true, nil, status.Error(codes.InvalidArgument, err.Error())
+				}
+				out = append(out, protoRow)
+				remaining--
+				if remaining <= 0 {
+					break
+				}
+			}
+			rowsReturnedTotal := rowsReturnedBefore + len(out)
+			limitAllowsMore := queryLimit <= 0 || rowsReturnedTotal < queryLimit
+			if len(start.GetNodeIds()) == 1 {
+				if queryLimit > 0 {
+					if edgeNext != "" && limitAllowsMore {
+						next = encodeIndexedAdjacencyCursor(indexedAdjacencyCursor{StartIndex: i, EdgeCursor: edgeNext, RowsReturned: rowsReturnedTotal})
+					}
+				} else {
+					next = edgeNext
+				}
+			} else if remaining <= 0 && limitAllowsMore {
+				if edgeNext != "" {
+					next = encodeIndexedAdjacencyCursor(indexedAdjacencyCursor{StartIndex: i, EdgeCursor: edgeNext, RowsReturned: rowsReturnedTotal})
+				} else if i+1 < len(start.GetNodeIds()) {
+					next = encodeIndexedAdjacencyCursor(indexedAdjacencyCursor{StartIndex: i + 1, RowsReturned: rowsReturnedTotal})
+				}
+			}
+			if edgeNext == "" || remaining <= 0 {
+				break
+			}
+			cursor = edgeNext
+		}
+		rowsReturnedTotal := rowsReturnedBefore + len(out)
+		if len(start.GetNodeIds()) > 1 && remaining <= 0 && next == "" && i+1 < len(start.GetNodeIds()) && (queryLimit <= 0 || rowsReturnedTotal < queryLimit) {
+			next = encodeIndexedAdjacencyCursor(indexedAdjacencyCursor{StartIndex: i + 1, RowsReturned: rowsReturnedTotal})
+		}
+	}
+	result := queryResultFromRows(out, next)
+	diagnostics := &clientv1.QueryDiagnostics{Plan: combined.Plan, Indexes: []string{combined.IndexName}, FullScan: combined.FullScan, IndexEntriesScanned: int32(combined.IndexEntriesScanned), NodesLoaded: int32(combined.NodesLoaded), EdgesLoaded: int32(combined.EdgesLoaded), RowsReturned: int32(len(out)), NextCursorKind: combined.NextCursorKind}
 	return true, &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: diagnostics}, nil
 }
 
@@ -1192,6 +1724,9 @@ func (s *QueryService) tryExecuteIndexedGQL(ctx context.Context, tx daemonsessio
 	if len(plan.Operations) != 1 {
 		return false, nil, nil
 	}
+	if path, ok := plan.Operations[0].(planmodel.QueryPathOperation); ok {
+		return s.tryExecuteIndexedGQLPath(ctx, tx, schemaCtx, path, pageSize, pageToken, recorder)
+	}
 	op, ok := plan.Operations[0].(planmodel.QueryNodesOperation)
 	if !ok {
 		return false, nil, nil
@@ -1226,6 +1761,83 @@ func (s *QueryService) tryExecuteIndexedGQL(ctx context.Context, tx daemonsessio
 		return indexed, nil, err
 	}
 	return true, &clientv1.ExecuteGQLResponse{Result: res.GetResult(), ReadMetadata: res.GetReadMetadata(), Diagnostics: res.GetDiagnostics()}, nil
+}
+
+func (s *QueryService) tryExecuteIndexedGQLPath(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, op planmodel.QueryPathOperation, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
+	if len(op.OrderBy) == 0 {
+		return false, nil, nil
+	}
+	if len(op.OrderBy) != 1 || len(op.Start.Labels) != 1 || len(op.Start.Properties) != 0 || len(op.Segments) != 1 || len(op.TextPredicates) != 0 || len(op.SemanticPredicates) != 0 {
+		return true, nil, status.Error(codes.FailedPrecondition, "GQL indexed graph traversal requires one ordered single-label root and one bounded traversal")
+	}
+	if !op.ReturnGraph {
+		return true, nil, status.Error(codes.FailedPrecondition, "GQL indexed graph traversal requires RETURN GRAPH")
+	}
+	order := op.OrderBy[0]
+	if order.Variable != op.Start.Variable || order.Property == "" {
+		return true, nil, status.Error(codes.FailedPrecondition, "GQL indexed graph traversal ORDER BY must target the root property")
+	}
+	segment := op.Segments[0]
+	if len(segment.Relationship.Labels) != 1 || len(segment.Relationship.Properties) != 0 || strings.TrimSpace(segment.Node.Variable) == "" {
+		return true, nil, status.Error(codes.FailedPrecondition, "GQL indexed graph traversal requires one edge label and a target variable")
+	}
+	direction := clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT
+	if segment.Relationship.Direction == planmodel.RelationshipIncoming {
+		direction = clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN
+	} else if segment.Relationship.Direction == planmodel.RelationshipUndirected {
+		return true, nil, status.Error(codes.FailedPrecondition, "GQL indexed graph traversal requires directed traversal")
+	}
+	minDepth, maxDepth := int32(1), int32(1)
+	if segment.Relationship.Quantifier != nil {
+		minDepth = int32(segment.Relationship.Quantifier.Min)
+		maxDepth = int32(segment.Relationship.Quantifier.Max)
+	}
+	sortDirection := clientv1.SortDirection_SORT_DIRECTION_ASC
+	if order.Direction == planmodel.SortDescending {
+		sortDirection = clientv1.SortDirection_SORT_DIRECTION_DESC
+	}
+	where, err := gqlIndexedBoundsExpr(op.ComparisonPredicates, op.Start.Variable, order.Property)
+	if err != nil {
+		return true, nil, err
+	}
+	request := &clientv1.ExecuteQueryRequest{TransactionId: tx.ID, PageSize: int32(pageSize), PageToken: pageToken, Query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: op.Start.Variable, Labels: append([]string(nil), op.Start.Labels...)}, Steps: []*clientv1.TraversalStep{{Direction: direction, EdgeKind: segment.Relationship.Labels[0], Depth: &clientv1.DepthSpec{MinDepth: minDepth, MaxDepth: maxDepth}, Target: &clientv1.NodePattern{Alias: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...)}}}}, Where: where, Returns: []*clientv1.ReturnProjection{{Alias: op.Start.Variable, OutputName: op.Start.Variable, Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}, {Alias: segment.Node.Variable, OutputName: "graph", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_TREE}}, OrderBy: []*clientv1.OrderSpec{{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: op.Start.Variable, Name: order.Property}}}, Direction: sortDirection}}, Limit: int32(op.Limit)}}
+	indexed, res, err := s.tryExecuteIndexedQuery(ctx, request, tx, schemaCtx, recorder)
+	if !indexed || err != nil {
+		return indexed, nil, err
+	}
+	return true, &clientv1.ExecuteGQLResponse{Result: res.GetResult(), ReadMetadata: res.GetReadMetadata(), Diagnostics: res.GetDiagnostics()}, nil
+}
+
+func gqlIndexedBoundsExpr(predicates []planmodel.ComparisonPredicate, alias string, property string) (*clientv1.Expr, error) {
+	var low *clientv1.ValueExpr
+	var high *clientv1.ValueExpr
+	var strictHigh *clientv1.ValueExpr
+	for _, predicate := range predicates {
+		if predicate.Variable != alias || predicate.Property != property {
+			return nil, status.Error(codes.FailedPrecondition, "GQL indexed graph traversal WHERE must bound the ordered root property")
+		}
+		value := &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Literal{Literal: &clientv1.LiteralExpr{Value: protoValue(predicate.Value)}}}
+		switch predicate.Operator {
+		case planmodel.ComparisonGreaterThanOrEqual:
+			low = value
+		case planmodel.ComparisonLessThanOrEqual:
+			high = value
+		case planmodel.ComparisonLessThan:
+			strictHigh = value
+		default:
+			return nil, status.Errorf(codes.FailedPrecondition, "unsupported GQL indexed bound operator %q", predicate.Operator)
+		}
+	}
+	if strictHigh != nil {
+		if low != nil || high != nil || len(predicates) != 1 {
+			return nil, status.Error(codes.FailedPrecondition, "GQL indexed less-than bounds cannot be combined with other predicates yet")
+		}
+		return &clientv1.Expr{Expr: &clientv1.Expr_LessThan{LessThan: &clientv1.LessThanExpr{Left: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: alias, Name: property}}}, Right: strictHigh}}}, nil
+	}
+	if low == nil && high == nil {
+		return nil, nil
+	}
+	return &clientv1.Expr{Expr: &clientv1.Expr_Between{Between: &clientv1.BetweenExpr{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: alias, Name: property}}}, Low: low, High: high}}}, nil
 }
 
 type indexedBounds struct {
