@@ -137,7 +137,15 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 		}
 		returns = append(returns, built)
 	}
-	stmt := model.MatchStatement{Pattern: node, Where: where, Returns: returns, FetchFirst: fetchFirst}
+	var orderBy []model.OrderItem
+	if orderCtx := matchCtx.OrderByClause(); orderCtx != nil {
+		built, err := buildOrderByClause(orderCtx)
+		if err != nil {
+			return model.Query{}, err
+		}
+		orderBy = built
+	}
+	stmt := model.MatchStatement{Pattern: node, Where: where, Returns: returns, OrderBy: orderBy, FetchFirst: fetchFirst}
 	if matchPattern.Relationship != nil || len(matchPattern.Segments) > 0 {
 		stmt.MatchPattern = matchPattern
 	}
@@ -279,6 +287,36 @@ func buildFetchFirstClause(ctx generated.IFetchFirstClauseContext) (model.FetchF
 		return model.FetchFirstClause{}, fmt.Errorf("invalid fetch first count: %w", err)
 	}
 	return model.FetchFirstClause{Count: count}, nil
+}
+
+func buildOrderByClause(ctx generated.IOrderByClauseContext) ([]model.OrderItem, error) {
+	orderCtx, ok := ctx.(*generated.OrderByClauseContext)
+	if !ok {
+		return nil, fmt.Errorf("invalid order by clause")
+	}
+	items := make([]model.OrderItem, 0, len(orderCtx.AllOrderItem()))
+	for _, item := range orderCtx.AllOrderItem() {
+		itemCtx, ok := item.(*generated.OrderItemContext)
+		if !ok || itemCtx.PropertyReference() == nil {
+			return nil, fmt.Errorf("invalid order item")
+		}
+		field, err := buildFieldReference(itemCtx.PropertyReference())
+		if err != nil {
+			return nil, err
+		}
+		direction := model.SortAscending
+		if sortCtx := itemCtx.SortDirection(); sortCtx != nil {
+			ctx, ok := sortCtx.(*generated.SortDirectionContext)
+			if !ok {
+				return nil, fmt.Errorf("invalid sort direction")
+			}
+			if ctx.DESC() != nil {
+				direction = model.SortDescending
+			}
+		}
+		items = append(items, model.OrderItem{Variable: field.Variable, Namespace: field.Namespace, Property: field.Property, Direction: direction})
+	}
+	return items, nil
 }
 
 func buildReturnItem(ctx *generated.ReturnItemContext) (model.ReturnItem, error) {

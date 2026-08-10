@@ -33,6 +33,7 @@ type QueryNodesOperation struct {
 	ComparisonPredicates []ComparisonPredicate
 	TextPredicates       []TextContainsPredicate
 	SemanticPredicates   []SemanticSimilarPredicate
+	OrderBy              []OrderItem
 }
 
 func (QueryNodesOperation) operation() {}
@@ -153,4 +154,18 @@ type SemanticSimilarPredicate struct {
 	Variable string
 	Query    string
 	TopK     int64
+}
+
+type SortDirection string
+
+const (
+	SortAscending  SortDirection = "asc"
+	SortDescending SortDirection = "desc"
+)
+
+type OrderItem struct {
+	Variable  string
+	Namespace string
+	Property  string
+	Direction SortDirection
 }

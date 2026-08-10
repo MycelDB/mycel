@@ -245,6 +245,27 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 			return fmt.Errorf("unsupported return item kind %q", kind)
 		}
 	}
+	for _, order := range stmt.OrderBy {
+		if order.Variable == "" || order.Property == "" {
+			return fmt.Errorf("order by item requires variable and property")
+		}
+		if _, ok := defined[order.Variable]; !ok {
+			return fmt.Errorf("order by variable %q is not defined", order.Variable)
+		}
+		switch order.Namespace {
+		case "", "properties", "payload", "meta":
+		default:
+			return fmt.Errorf("unsupported order by namespace %q", order.Namespace)
+		}
+		switch order.Direction {
+		case "", model.SortAscending, model.SortDescending:
+		default:
+			return fmt.Errorf("unsupported order by direction %q", order.Direction)
+		}
+		if err := schemaState.validateWhereProperty(order.Variable, order.Namespace, order.Property); err != nil {
+			return err
+		}
+	}
 	if stmt.FetchFirst != nil && stmt.FetchFirst.Count <= 0 {
 		return fmt.Errorf("fetch first count must be positive")
 	}

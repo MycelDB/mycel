@@ -140,6 +140,9 @@ Recommended response shape:
 message ExecuteQueryResponse {
   repeated QueryRow rows = 1;
   string next_page_token = 2;
+  QueryResult result = 3;
+  ReadMetadata read_metadata = 4;
+  QueryDiagnostics diagnostics = 5;
 }
 ```
 
@@ -209,6 +212,7 @@ The v1 expression model should support current builder functionality plus explic
 - current date
 - date minus days
 - between
+- less than
 - and
 - has tag
 - property exists
@@ -258,7 +262,13 @@ Scalar values use `google.protobuf.Value` so string, number, boolean, and null-l
 
 `ExecuteQueryRequest` includes `page_size` and `page_token`.
 
-Implementations may cap page size. The initial implementation may have limitations, but pagination should be part of the API from the start.
+Implementations may cap page size. Indexed query plans use opaque index-key cursors rather than offset-style row cursors.
+
+## Indexed execution and diagnostics
+
+The accepted production path for single-label node ordering uses schema-declared ordered property indexes. For example, `JournalEntry ORDER BY date` is planned as an ordered node property index scan when the domain schema declares the index. Missing indexes fail closed rather than silently scanning the domain. The indexed path also supports bounds on the ordered property, including inclusive `BetweenExpr` bounds and strict upper bounds via `LessThanExpr`, so callers can ask for entries before a timestamp sorted descending with a limit.
+
+`QueryDiagnostics` reports plan shape, indexes used, full-scan status, index entries scanned, loaded nodes/edges, rows returned, and cursor kind. For the indexed journal query, diagnostics should show `plan=OrderedNodePropertyIndexScan`, `full_scan=false`, and `edges_loaded=0`.
 
 ## Authorization
 

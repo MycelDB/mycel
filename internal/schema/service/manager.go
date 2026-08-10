@@ -116,15 +116,14 @@ func (m *SchemaManager) PutDomainSchema(ctx context.Context, value schema.Domain
 		value.CreatedAt = now
 	}
 	value.UpdatedAt = now
+	if value.SourceHash == "" && value.SourceGWL != "" {
+		value.SourceHash = schemacompile.SourceHash(value.SourceGWL)
+	}
 	compiled, err := schemacompile.Compile(value)
 	if err != nil {
 		return err
 	}
-	if value.SourceHash == "" && value.SourceGWL != "" {
-		value.SourceHash = schemacompile.SourceHash(value.SourceGWL)
-	}
-	_ = compiled
-	return m.commitDomainSchema(ctx, value)
+	return m.commitDomainSchema(ctx, compiled.Schema)
 }
 
 func (m *SchemaManager) DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error {
@@ -136,6 +135,7 @@ func (m *SchemaManager) applyDomainSchema(ctx context.Context, value schema.Doma
 	if err != nil {
 		return err
 	}
+	value = compiled.Schema
 	if err := m.store.PutDomainSchema(ctx, value); err != nil {
 		return err
 	}

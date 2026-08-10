@@ -17,6 +17,7 @@ type CompiledSchema struct {
 	NodeTypesByLabel      map[string][]*schema.NodeType
 	NodeTypesByRecordType map[string]*schema.NodeType
 	EdgeTypesByLabel      map[string][]*schema.EdgeType
+	IndexesByName         map[string]*schema.IndexDefinition
 }
 
 func Compile(value schema.DomainSchema) (*CompiledSchema, error) {
@@ -24,7 +25,7 @@ func Compile(value schema.DomainSchema) (*CompiledSchema, error) {
 	if err := schema.Validate(value); err != nil {
 		return nil, err
 	}
-	out := &CompiledSchema{Schema: value, Hash: Hash(value), NodeTypesByName: map[string]*schema.NodeType{}, NodeTypesByLabel: map[string][]*schema.NodeType{}, NodeTypesByRecordType: map[string]*schema.NodeType{}, EdgeTypesByLabel: map[string][]*schema.EdgeType{}}
+	out := &CompiledSchema{Schema: value, Hash: Hash(value), NodeTypesByName: map[string]*schema.NodeType{}, NodeTypesByLabel: map[string][]*schema.NodeType{}, NodeTypesByRecordType: map[string]*schema.NodeType{}, EdgeTypesByLabel: map[string][]*schema.EdgeType{}, IndexesByName: map[string]*schema.IndexDefinition{}}
 	for i := range out.Schema.NodeTypes {
 		nt := &out.Schema.NodeTypes[i]
 		out.NodeTypesByName[nt.Name] = nt
@@ -46,6 +47,10 @@ func Compile(value schema.DomainSchema) (*CompiledSchema, error) {
 				out.EdgeTypesByLabel[label] = append(out.EdgeTypesByLabel[label], et)
 			}
 		}
+	}
+	for i := range out.Schema.Indexes {
+		idx := &out.Schema.Indexes[i]
+		out.IndexesByName[idx.Name] = idx
 	}
 	return out, nil
 }

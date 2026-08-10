@@ -1633,7 +1633,7 @@ func mapStorageError(err error) error {
 	if errors.Is(err, graphstorage.ErrConflict) {
 		return ErrConflict
 	}
-	if errors.Is(err, graphstorage.ErrTxnClosed) || errors.Is(err, graphstorage.ErrClosed) {
+	if errors.Is(err, graphstorage.ErrTxnClosed) || errors.Is(err, graphstorage.ErrClosed) || errors.Is(err, graphstorage.ErrIndexUnavailable) {
 		return ErrInvalidState
 	}
 	return err
@@ -1900,4 +1900,208 @@ func sortedEdgeIDs(in map[domaingraph.EdgeID]struct{}) []domaingraph.EdgeID {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out
+}
+
+func (m *Module) ConfigureIndexes(ctx context.Context, tx daemonsession.GraphTransaction, schemaHash string, indexes []schemamodel.IndexDefinition) error {
+	if err := ensureReadable(tx); err != nil {
+		return err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return err
+	} else if forward {
+		req := raftReadRequest("configure_indexes", tx)
+		req.SchemaHash = schemaHash
+		req.Indexes = indexes
+		var res raftGraphOKResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return err
+		}
+		return nil
+	}
+	store, err := m.store(ctx, tx.SpaceID)
+	if err != nil {
+		return err
+	}
+	return mapStorageError(store.ConfigureIndexes(ctx, mustDomainID(tx.DomainID), schemaHash, indexes))
+}
+
+func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.GraphTransaction, scan OrderedNodePropertyScan) ([]domaingraph.Node, string, IndexedReadStats, error) {
+	stats := IndexedReadStats{Plan: "OrderedNodePropertyIndexScan", IndexName: scan.IndexName, NextCursorKind: "index_key"}
+	if err := ensureReadable(tx); err != nil {
+		return nil, "", stats, err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return nil, "", stats, err
+	} else if forward {
+		req := raftReadRequest("scan_node_property_ordered", tx)
+		req.OrderedNodePropertyScan = scan
+		var res raftGraphIndexedNodesResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return nil, "", stats, err
+		}
+		return res.Nodes, res.NextPageToken, res.Stats, nil
+	}
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
+		return nil, "", stats, err
+	}
+	store, err := m.store(ctx, tx.SpaceID)
+	if err != nil {
+		return nil, "", stats, err
+	}
+	m.mu.Lock()
+	o := m.overlays[tx.ID]
+	var overlaySnapshot *overlay
+	if o != nil {
+		overlaySnapshot = o.clone()
+	}
+	m.mu.Unlock()
+	extra := 0
+	if overlaySnapshot != nil {
+		extra = len(overlaySnapshot.putNodes)
+	}
+	storageLimit := scan.Limit
+	if storageLimit > 0 {
+		storageLimit += extra
+	}
+	entries, next, err := store.ScanNodePropertyOrdered(ctx, graphstorage.OrderedNodePropertyScan{DomainID: mustDomainID(tx.DomainID), IndexName: scan.IndexName, Direction: scan.Direction, Limit: storageLimit, Cursor: scan.Cursor, HasLow: scan.HasLow, Low: scan.Low, LowExclusive: scan.LowExclusive, HasHigh: scan.HasHigh, High: scan.High, HighExclusive: scan.HighExclusive})
+	if err != nil {
+		return nil, "", stats, mapStorageError(err)
+	}
+	stats.IndexEntriesScanned = len(entries)
+	items := make([]indexedNodeResult, 0, len(entries)+extra)
+	for _, entry := range entries {
+		if overlaySnapshot != nil {
+			if _, deleted := overlaySnapshot.deleteNodes[entry.NodeID]; deleted {
+				continue
+			}
+			if _, replaced := overlaySnapshot.putNodes[entry.NodeID]; replaced {
+				continue
+			}
+		}
+		node, err := store.GetNode(ctx, entry.NodeID)
+		if err != nil {
+			return nil, "", stats, mapStorageError(err)
+		}
+		stats.NodesLoaded++
+		key, _ := graphstorage.EncodeOrderedNodeKey(entry.Value, node.ID)
+		items = append(items, indexedNodeResult{node: node, key: key})
+	}
+	if overlaySnapshot != nil {
+		cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
+		if err != nil {
+			return nil, "", stats, mapStorageError(err)
+		}
+		for _, node := range overlaySnapshot.putNodes {
+			if node.DomainID != mustDomainID(tx.DomainID) || !nodeMatchesConfiguredIndex(node, scan.IndexName, store) {
+				continue
+			}
+			value, ok := domaingraph.Property(node, indexedFieldName(scan.IndexName, store, mustDomainID(tx.DomainID)))
+			if !ok {
+				continue
+			}
+			key, err := graphstorage.EncodeOrderedNodeKey(value, node.ID)
+			if err != nil {
+				continue
+			}
+			if !indexedValueInBounds(key, scan) {
+				continue
+			}
+			if cursorKey != "" {
+				if scan.Direction == schemamodel.IndexSortDirectionDesc {
+					if key >= cursorKey {
+						continue
+					}
+				} else if key <= cursorKey {
+					continue
+				}
+			}
+			items = append(items, indexedNodeResult{node: cloneNode(node), key: key})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if scan.Direction == schemamodel.IndexSortDirectionDesc {
+			return items[i].key > items[j].key
+		}
+		return items[i].key < items[j].key
+	})
+	limit := scan.Limit
+	if limit <= 0 || limit > len(items) {
+		limit = len(items)
+	}
+	out := make([]domaingraph.Node, 0, limit)
+	for _, item := range items[:limit] {
+		out = append(out, cloneNode(item.node))
+	}
+	stats.NodesLoaded = len(out)
+	if limit < len(items) && limit > 0 {
+		next = graphstorage.EncodeIndexCursor(items[limit-1].key)
+	}
+	return out, next, stats, nil
+}
+
+type indexedNodeResult struct {
+	node domaingraph.Node
+	key  string
+}
+
+func indexedValueInBounds(key string, scan OrderedNodePropertyScan) bool {
+	valueKey := key
+	if idx := strings.LastIndex(key, "\x00"); idx >= 0 {
+		valueKey = key[:idx]
+	}
+	if scan.HasLow {
+		low, err := graphstorage.EncodeSortableValue(scan.Low)
+		if err != nil || valueKey < low || scan.LowExclusive && valueKey == low {
+			return false
+		}
+	}
+	if scan.HasHigh {
+		high, err := graphstorage.EncodeSortableValue(scan.High)
+		if err != nil || valueKey > high || scan.HighExclusive && valueKey == high {
+			return false
+		}
+	}
+	return true
+}
+
+func nodeMatchesConfiguredIndex(node domaingraph.Node, indexName string, store *graphstorage.LocalStore) bool {
+	statuses, err := store.IndexStatuses(context.Background())
+	if err != nil {
+		return false
+	}
+	for _, status := range statuses {
+		if status.Name == indexName && status.DomainID == node.DomainID {
+			if len(status.Labels) == 0 {
+				return false
+			}
+			return nodeHasAnyLabelForIndexedRead(node, status.Labels)
+		}
+	}
+	return false
+}
+
+func indexedFieldName(indexName string, store *graphstorage.LocalStore, domainID domaingraph.DomainID) string {
+	statuses, err := store.IndexStatuses(context.Background())
+	if err != nil {
+		return ""
+	}
+	for _, status := range statuses {
+		if status.Name == indexName && status.DomainID == domainID {
+			return status.Field.Name
+		}
+	}
+	return ""
+}
+
+func nodeHasAnyLabelForIndexedRead(node domaingraph.Node, labels []string) bool {
+	seen := map[string]struct{}{}
+	for _, label := range node.Labels {
+		seen[label] = struct{}{}
+	}
+	for _, label := range labels {
+		if _, ok := seen[label]; ok {
+			return true
+		}
+	}
+	return false
 }

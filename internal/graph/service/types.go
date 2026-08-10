@@ -6,6 +6,7 @@ import (
 
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 )
 
@@ -41,7 +42,32 @@ type Manager interface {
 	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
 	CommitTransactionGraph(ctx context.Context, tx daemonsession.GraphTransaction) (CommitResult, error)
 	DiscardTransactionGraph(ctx context.Context, transactionID string)
+	ConfigureIndexes(ctx context.Context, tx daemonsession.GraphTransaction, schemaHash string, indexes []schemamodel.IndexDefinition) error
+	ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.GraphTransaction, scan OrderedNodePropertyScan) ([]domaingraph.Node, string, IndexedReadStats, error)
 	BlobRefCount(ctx context.Context, spaceID string, blobID string) (int, error)
+}
+
+type OrderedNodePropertyScan struct {
+	IndexName     string
+	Direction     schemamodel.IndexSortDirection
+	Limit         int
+	Cursor        string
+	HasLow        bool
+	Low           any
+	LowExclusive  bool
+	HasHigh       bool
+	High          any
+	HighExclusive bool
+}
+
+type IndexedReadStats struct {
+	Plan                string
+	IndexName           string
+	IndexEntriesScanned int
+	NodesLoaded         int
+	EdgesLoaded         int
+	FullScan            bool
+	NextCursorKind      string
 }
 
 type CommitResult struct {

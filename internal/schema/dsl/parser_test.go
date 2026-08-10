@@ -23,6 +23,9 @@ edge contains from Note to Note hierarchy
 edge hasTask from Note to Task {
   confidence?: float
 }
+index notes_by_title on node Note field properties.title ordered asc
+index tasks_by_done on node Task field properties.done
+index has_task_by_confidence on edge hasTask field properties.confidence ordered desc
 `)
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
@@ -45,6 +48,9 @@ edge hasTask from Note to Task {
 	if len(got.EdgeTypes) != 2 || got.EdgeTypes[0].Hierarchy == nil || !got.EdgeTypes[0].Hierarchy.Enabled {
 		t.Fatalf("unexpected edge types: %+v", got.EdgeTypes)
 	}
+	if len(got.Indexes) != 3 || got.Indexes[0].Kind != schema.IndexKindOrdered || got.Indexes[2].Direction != schema.IndexSortDirectionDesc {
+		t.Fatalf("unexpected indexes: %+v", got.Indexes)
+	}
 	if err := schema.Validate(got); err != nil {
 		t.Fatalf("schema.Validate() error = %v", err)
 	}
@@ -66,6 +72,30 @@ node Journal {
 	}
 	if err := schema.Validate(got); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestParseBracketListLabels(t *testing.T) {
+	got, err := Parse(`schema "PKM" version "1" mode strict domain 00000000-0000-0000-0000-000000000001
+node JournalEntry labels [JournalEntry,Journal] {
+  date: date required
+}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.NodeTypes[0].Labels) != 2 || got.NodeTypes[0].Labels[1] != "Journal" {
+		t.Fatalf("bracket labels not parsed: %+v", got.NodeTypes[0].Labels)
+	}
+}
+
+func TestParseIndexErrors(t *testing.T) {
+	_, err := Parse(`schema "PKM" version "1" mode strict domain 00000000-0000-0000-0000-000000000001
+node Note {
+  title: string
+}
+index bad on node Note field title ordered asc`)
+	if err == nil || err.Error() != "line 5: field path must be namespace.name" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

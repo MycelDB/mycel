@@ -17,6 +17,9 @@ import (
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
 	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
+	planmodel "github.com/myceldb/mycel/internal/query/gql/planning/model"
+	schemacompile "github.com/myceldb/mycel/internal/schema/compile"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -90,6 +93,9 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	if indexed, res, err := s.tryExecuteIndexedQuery(readCtx, req, tx, schemaCtx, recorder); indexed || err != nil {
+		return res, err
+	}
 	nodes, err := s.allNodes(readCtx, tx)
 	if err != nil {
 		return nil, mapGraphError(err, "query list nodes")
@@ -172,6 +178,9 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 		return nil, status.Error(codes.FailedPrecondition, "GQL query requires a read-write transaction")
 	}
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	if indexed, res, err := s.tryExecuteIndexedGQL(readCtx, tx, schemaCtx, plan, int(req.GetPageSize()), req.GetPageToken(), recorder); indexed || err != nil {
+		return res, err
+	}
 	execResult, err := execution.Execute(readCtx, gqlDaemonGraph{service: s, tx: tx}, plan)
 	if err != nil {
 		return nil, mapGQLExecutionError(err)
@@ -510,6 +519,16 @@ func (e *queryExecution) evalExpr(row *queryRowState, expr *clientv1.Expr) (bool
 			return false, err
 		}
 		return compareQueryValues(value, low) >= 0 && compareQueryValues(value, high) <= 0, nil
+	case *clientv1.Expr_LessThan:
+		left, err := e.evalValue(row, v.LessThan.GetLeft())
+		if err != nil {
+			return false, err
+		}
+		right, err := e.evalValue(row, v.LessThan.GetRight())
+		if err != nil {
+			return false, err
+		}
+		return compareQueryValues(left, right) < 0, nil
 	default:
 		return true, nil
 	}
@@ -703,9 +722,12 @@ func propValue(node domaingraph.Node, name string) any {
 		return node.ID.String()
 	}
 	if name == "content" {
-		return node.Content
+		return domaingraph.PayloadText(node)
 	}
-	return node.Props[name]
+	if value, ok := domaingraph.Property(node, name); ok {
+		return value
+	}
+	return nil
 }
 
 type gqlDaemonGraph struct {
@@ -1069,4 +1091,214 @@ func protoValue(value any) *structpb.Value {
 		return structpb.NewStringValue(fmt.Sprint(value))
 	}
 	return out
+}
+
+func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+	query := req.GetQuery()
+	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil {
+		return false, nil, nil
+	}
+	if len(query.GetOrderBy()) == 0 {
+		return false, nil, nil
+	}
+	match := query.GetMatch()
+	start := match.GetStart()
+	if len(match.GetSteps()) != 0 || len(query.GetOrderBy()) != 1 || len(start.GetLabels()) != 1 {
+		return true, nil, status.Error(codes.FailedPrecondition, "ORDER BY requires an indexed single-label node query")
+	}
+	order := query.GetOrderBy()[0]
+	prop := order.GetValue().GetProp()
+	if prop == nil || prop.GetAlias() != start.GetAlias() || strings.TrimSpace(prop.GetName()) == "" {
+		return true, nil, status.Error(codes.FailedPrecondition, "ORDER BY requires an indexed property reference on the start alias")
+	}
+	bounds, err := indexedQueryBounds(query.GetWhere(), start.GetAlias(), prop.GetName())
+	if err != nil {
+		return true, nil, err
+	}
+	if schemaCtx.Schema == nil {
+		return true, nil, status.Error(codes.FailedPrecondition, "indexed query requires an active schema with an ordered index")
+	}
+	label := start.GetLabels()[0]
+	field := prop.GetName()
+	idx, ok := findOrderedNodeIndex(*schemaCtx.Schema, label, field)
+	if !ok {
+		return true, nil, status.Errorf(codes.FailedPrecondition, "no ordered index for %s.properties.%s", label, field)
+	}
+	if s.graphs == nil {
+		return true, nil, status.Error(codes.Internal, "graph manager is not configured")
+	}
+	if err := s.graphs.ConfigureIndexes(ctx, tx, schemacompile.Hash(*schemaCtx.Schema), schemaCtx.Schema.Indexes); err != nil {
+		return true, nil, mapGraphError(err, "configure query indexes")
+	}
+	limit := effectiveIndexedLimit(req.GetPageSize(), query.GetLimit())
+	direction := order.GetDirection()
+	indexDirection := schemamodel.IndexSortDirectionAsc
+	if direction == clientv1.SortDirection_SORT_DIRECTION_DESC {
+		indexDirection = schemamodel.IndexSortDirectionDesc
+	}
+	nodes, next, stats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, daegraph.OrderedNodePropertyScan{IndexName: idx.Name, Direction: indexDirection, Limit: limit, Cursor: req.GetPageToken(), HasLow: bounds.hasLow, Low: bounds.low, LowExclusive: bounds.lowExclusive, HasHigh: bounds.hasHigh, High: bounds.high, HighExclusive: bounds.highExclusive})
+	if err != nil {
+		return true, nil, mapGraphError(err, "execute indexed query")
+	}
+	returns := query.GetReturns()
+	if len(returns) == 0 {
+		returns = []*clientv1.ReturnProjection{{Alias: start.GetAlias(), OutputName: start.GetAlias(), Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}
+	}
+	exec := newQueryExecution(nil, nil)
+	out := make([]*clientv1.QueryRow, 0, len(nodes))
+	for _, node := range nodes {
+		row := &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): []domaingraph.Node{node}}, parentByChild: map[string]string{}, orderByChild: map[string]any{}}
+		protoRow, err := exec.projectRow(row, returns)
+		if err != nil {
+			return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		out = append(out, protoRow)
+	}
+	result := queryResultFromRows(out, next)
+	diagnostics := &clientv1.QueryDiagnostics{Plan: stats.Plan, Indexes: []string{idx.Name}, FullScan: stats.FullScan, IndexEntriesScanned: int32(stats.IndexEntriesScanned), NodesLoaded: int32(stats.NodesLoaded), EdgesLoaded: int32(stats.EdgesLoaded), RowsReturned: int32(len(out)), NextCursorKind: stats.NextCursorKind}
+	return true, &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: diagnostics}, nil
+}
+
+func findOrderedNodeIndex(schemaDoc schemamodel.DomainSchema, label string, field string) (schemamodel.IndexDefinition, bool) {
+	schemaDoc = schemaDoc.Normalize()
+	for _, idx := range schemaDoc.Indexes {
+		if idx.TargetKind != schemamodel.IndexTargetNode || idx.Kind != schemamodel.IndexKindOrdered || idx.Field.Namespace != "properties" || idx.Field.Name != field {
+			continue
+		}
+		for _, idxLabel := range idx.Labels {
+			if idxLabel == label {
+				return idx, true
+			}
+		}
+		if idx.TargetType == label {
+			return idx, true
+		}
+	}
+	return schemamodel.IndexDefinition{}, false
+}
+
+func effectiveIndexedLimit(pageSize int32, queryLimit int32) int {
+	limit := int(pageSize)
+	if limit <= 0 || limit > queryMaxPageSize {
+		limit = queryMaxPageSize
+	}
+	if queryLimit > 0 && int(queryLimit) < limit {
+		limit = int(queryLimit)
+	}
+	return limit
+}
+
+func (s *QueryService) tryExecuteIndexedGQL(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, plan planmodel.Plan, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
+	if len(plan.Operations) != 1 {
+		return false, nil, nil
+	}
+	op, ok := plan.Operations[0].(planmodel.QueryNodesOperation)
+	if !ok {
+		return false, nil, nil
+	}
+	if len(op.OrderBy) == 0 {
+		return false, nil, nil
+	}
+	if len(op.OrderBy) != 1 || len(op.Labels) != 1 || len(op.Properties) != 0 || len(op.ComparisonPredicates) != 0 || len(op.TextPredicates) != 0 || len(op.SemanticPredicates) != 0 {
+		return true, nil, status.Error(codes.FailedPrecondition, "GQL ORDER BY requires an indexed single-label node query")
+	}
+	order := op.OrderBy[0]
+	if order.Variable != op.Variable || order.Property == "" {
+		return true, nil, status.Error(codes.FailedPrecondition, "GQL ORDER BY requires an indexed property reference on the matched node")
+	}
+	direction := clientv1.SortDirection_SORT_DIRECTION_ASC
+	if order.Direction == planmodel.SortDescending {
+		direction = clientv1.SortDirection_SORT_DIRECTION_DESC
+	}
+	returns := make([]*clientv1.ReturnProjection, 0, len(op.Returns))
+	for _, ret := range op.Returns {
+		kind := clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE
+		if ret.Kind == planmodel.ReturnProperty {
+			return true, nil, status.Error(codes.FailedPrecondition, "GQL ORDER BY indexed execution currently supports node returns only")
+		}
+		output := ret.Variable
+		returns = append(returns, &clientv1.ReturnProjection{Alias: ret.Variable, OutputName: output, Kind: kind})
+	}
+	queryLimit := int32(op.Limit)
+	request := &clientv1.ExecuteQueryRequest{TransactionId: tx.ID, PageSize: int32(pageSize), PageToken: pageToken, Query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: op.Variable, Labels: append([]string(nil), op.Labels...)}}, Returns: returns, OrderBy: []*clientv1.OrderSpec{{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: op.Variable, Name: order.Property}}}, Direction: direction}}, Limit: queryLimit}}
+	indexed, res, err := s.tryExecuteIndexedQuery(ctx, request, tx, schemaCtx, recorder)
+	if !indexed || err != nil {
+		return indexed, nil, err
+	}
+	return true, &clientv1.ExecuteGQLResponse{Result: res.GetResult(), ReadMetadata: res.GetReadMetadata(), Diagnostics: res.GetDiagnostics()}, nil
+}
+
+type indexedBounds struct {
+	hasLow        bool
+	low           any
+	lowExclusive  bool
+	hasHigh       bool
+	high          any
+	highExclusive bool
+}
+
+func indexedQueryBounds(expr *clientv1.Expr, alias string, property string) (indexedBounds, error) {
+	if expr == nil {
+		return indexedBounds{}, nil
+	}
+	if between := expr.GetBetween(); between != nil {
+		if between.GetValue().GetProp() == nil {
+			return indexedBounds{}, status.Error(codes.FailedPrecondition, "indexed ORDER BY bounds must target the ordered property")
+		}
+		prop := between.GetValue().GetProp()
+		if prop.GetAlias() != alias || prop.GetName() != property {
+			return indexedBounds{}, status.Error(codes.FailedPrecondition, "indexed ORDER BY bounds must target the ordered property")
+		}
+		bounds := indexedBounds{}
+		if between.GetLow() != nil {
+			value, err := staticIndexedValue(between.GetLow())
+			if err != nil {
+				return indexedBounds{}, err
+			}
+			bounds.hasLow = true
+			bounds.low = value
+		}
+		if between.GetHigh() != nil {
+			value, err := staticIndexedValue(between.GetHigh())
+			if err != nil {
+				return indexedBounds{}, err
+			}
+			bounds.hasHigh = true
+			bounds.high = value
+		}
+		return bounds, nil
+	}
+	if less := expr.GetLessThan(); less != nil {
+		prop := less.GetLeft().GetProp()
+		if prop == nil || prop.GetAlias() != alias || prop.GetName() != property {
+			return indexedBounds{}, status.Error(codes.FailedPrecondition, "indexed ORDER BY less-than bounds must compare the ordered property")
+		}
+		value, err := staticIndexedValue(less.GetRight())
+		if err != nil {
+			return indexedBounds{}, err
+		}
+		return indexedBounds{hasHigh: true, high: value, highExclusive: true}, nil
+	}
+	return indexedBounds{}, status.Error(codes.FailedPrecondition, "indexed ORDER BY currently supports only BETWEEN or less-than bounds on the ordered property")
+}
+
+func staticIndexedValue(value *clientv1.ValueExpr) (any, error) {
+	if value == nil {
+		return nil, status.Error(codes.InvalidArgument, "indexed bound value is required")
+	}
+	switch v := value.GetExpr().(type) {
+	case *clientv1.ValueExpr_Literal:
+		return v.Literal.GetValue().AsInterface(), nil
+	case *clientv1.ValueExpr_Date:
+		parsed, err := time.Parse("2006-01-02", v.Date.GetValue())
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid date bound: %v", err)
+		}
+		return parsed.AddDate(0, 0, int(v.Date.GetOffsetDays())).Format("2006-01-02"), nil
+	case *clientv1.ValueExpr_CurrentDate:
+		now := time.Now()
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, int(v.CurrentDate.GetOffsetDays())).Format("2006-01-02"), nil
+	default:
+		return nil, status.Error(codes.FailedPrecondition, "indexed bounds require literal/date values")
+	}
 }

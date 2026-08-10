@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
+	schema "github.com/myceldb/mycel/internal/schema/model"
 )
 
 var (
@@ -89,6 +90,12 @@ type Store interface {
 	Parent(ctx context.Context, childID graph.NodeID) (*graph.Edge, error)
 	NodesByDomain(ctx context.Context, domainID graph.DomainID) ([]graph.NodeID, error)
 	JournalNodesByDayRange(ctx context.Context, from, to int) ([]graph.NodeID, error)
+	ConfigureIndexes(ctx context.Context, domainID graph.DomainID, schemaHash string, indexes []schema.IndexDefinition) error
+	ScanLabel(ctx context.Context, scan LabelScan) ([]graph.NodeID, string, error)
+	ScanNodePropertyOrdered(ctx context.Context, scan OrderedNodePropertyScan) ([]NodeIndexEntry, string, error)
+	ScanEdgePropertyOrdered(ctx context.Context, scan OrderedEdgePropertyScan) ([]EdgeIndexEntry, string, error)
+	ScanAdjacency(ctx context.Context, scan AdjacencyScan) ([]graph.EdgeID, string, error)
+	IndexStatuses(ctx context.Context) ([]IndexMetadata, error)
 	BlobRefCount(ctx context.Context, id graph.BlobID) (int, error)
 }
 

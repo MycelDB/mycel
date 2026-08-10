@@ -9,6 +9,7 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
 
@@ -129,6 +130,12 @@ func (f fakeConditionGraph) CommitTransactionGraph(context.Context, sessionservi
 	panic("unused")
 }
 func (f fakeConditionGraph) DiscardTransactionGraph(context.Context, string) { panic("unused") }
+func (f fakeConditionGraph) ConfigureIndexes(context.Context, sessionservice.GraphTransaction, string, []schemamodel.IndexDefinition) error {
+	panic("unused")
+}
+func (f fakeConditionGraph) ScanNodePropertyOrdered(context.Context, sessionservice.GraphTransaction, graphservice.OrderedNodePropertyScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
+	panic("unused")
+}
 func (f fakeConditionGraph) BlobRefCount(context.Context, string, string) (int, error) {
 	panic("unused")
 }

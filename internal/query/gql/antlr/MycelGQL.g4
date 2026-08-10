@@ -26,7 +26,7 @@ insertStatement
   ;
 
 matchStatement
-  : MATCH matchPattern whereClause? RETURN returnItem (COMMA returnItem)* fetchFirstClause?
+  : MATCH matchPattern whereClause? RETURN returnItem (COMMA returnItem)* orderByClause? fetchFirstClause?
   ;
 
 matchCreateStatement
@@ -96,6 +96,19 @@ returnItem
   | variable
   ;
 
+orderByClause
+  : ORDER BY orderItem (COMMA orderItem)*
+  ;
+
+orderItem
+  : propertyReference sortDirection?
+  ;
+
+sortDirection
+  : ASC
+  | DESC
+  ;
+
 propertyReference
   : IDENTIFIER DOT IDENTIFIER (DOT IDENTIFIER)?
   ;
@@ -156,6 +169,10 @@ FIRST  : [Ff] [Ii] [Rr] [Ss] [Tt];
 ROW    : [Rr] [Oo] [Ww];
 ROWS   : [Rr] [Oo] [Ww] [Ss];
 ONLY   : [Oo] [Nn] [Ll] [Yy];
+ORDER  : [Oo] [Rr] [Dd] [Ee] [Rr];
+BY     : [Bb] [Yy];
+ASC    : [Aa] [Ss] [Cc];
+DESC   : [Dd] [Ee] [Ss] [Cc];
 AND    : [Aa] [Nn] [Dd];
 TEXT_CONTAINS : [Tt] [Ee] [Xx] [Tt] '_' [Cc] [Oo] [Nn] [Tt] [Aa] [Ii] [Nn] [Ss];
 SEMANTIC_SIMILAR : [Ss] [Ee] [Mm] [Aa] [Nn] [Tt] [Ii] [Cc] '_' [Ss] [Ii] [Mm] [Ii] [Ll] [Aa] [Rr];

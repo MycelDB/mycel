@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
+	schema "github.com/myceldb/mycel/internal/schema/model"
 )
 
 func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
@@ -613,5 +614,449 @@ func TestLocalStoreAllowsEdgeMoveAwayBeforeNodeDelete(t *testing.T) {
 	}
 	if moved.FromID != newParent.ID || moved.ToID != child.ID {
 		t.Fatalf("moved edge = %#v", moved)
+	}
+}
+
+func TestLocalStoreSchemaNodePropertyIndexBackfillsAndMaintains(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	defer store.Close()
+	domainID := graph.DomainID(uuid.New())
+	oldest := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-18", "title": "oldest"}}
+	latest := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-20", "title": "latest"}}
+	other := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Note"}, Properties: map[string]any{"date": "2026-07-19"}}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []graph.Node{latest, other, oldest} {
+		if err := seed.PutNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	idx := journalDateIndex()
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-1", []schema.IndexDefinition{idx}); err != nil {
+		t.Fatalf("ConfigureIndexes() error = %v", err)
+	}
+	entries, next, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10})
+	if err != nil || next != "" {
+		t.Fatalf("ScanNodePropertyOrdered() entries=%+v next=%q err=%v", entries, next, err)
+	}
+	if got := nodeIDs(entries); !reflect.DeepEqual(got, []graph.NodeID{oldest.ID, latest.ID}) {
+		t.Fatalf("unexpected indexed order: %+v", got)
+	}
+
+	middle := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-19", "title": "middle"}}
+	put, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := put.PutNode(middle); err != nil {
+		t.Fatal(err)
+	}
+	if err := put.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err = store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := nodeIDs(entries); !reflect.DeepEqual(got, []graph.NodeID{oldest.ID, middle.ID, latest.ID}) {
+		t.Fatalf("insert not indexed: %+v", got)
+	}
+
+	latest.Properties = map[string]any{"date": "2026-07-17", "title": "updated"}
+	update, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := update.PutNode(latest); err != nil {
+		t.Fatal(err)
+	}
+	if err := update.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err = store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := nodeIDs(entries); !reflect.DeepEqual(got, []graph.NodeID{latest.ID, oldest.ID, middle.ID}) {
+		t.Fatalf("update not reindexed: %+v", got)
+	}
+
+	deleteTx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteTx.DeleteNode(oldest.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err = store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := nodeIDs(entries); !reflect.DeepEqual(got, []graph.NodeID{latest.ID, middle.ID}) {
+		t.Fatalf("delete not deindexed: %+v", got)
+	}
+}
+
+func TestLocalStoreSchemaNodePropertyIndexSurvivesReopenByRebuild(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	domainID := graph.DomainID(uuid.New())
+	idx := journalDateIndex()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-18"}}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-19"}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-1", []schema.IndexDefinition{idx}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	entries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := nodeIDs(entries); !reflect.DeepEqual(got, []graph.NodeID{first.ID, second.ID}) {
+		t.Fatalf("reopened index order = %+v", got)
+	}
+	statuses, err := store.IndexStatuses(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].BuildState != IndexBuildStateReady || statuses[0].SchemaHash != "schema-1" {
+		t.Fatalf("unexpected statuses: %+v", statuses)
+	}
+}
+
+func TestLocalStoreLabelIndexScanAndPagination(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	domainID := graph.DomainID(uuid.New())
+	nodes := []graph.Node{
+		{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}},
+		{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}},
+		{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Note"}},
+	}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range nodes {
+		if err := tx.PutNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	page1, next, err := store.ScanLabel(ctx, LabelScan{DomainID: domainID, Label: "JournalEntry", Limit: 1})
+	if err != nil || len(page1) != 1 || next == "" {
+		t.Fatalf("page1=%+v next=%q err=%v", page1, next, err)
+	}
+	page2, next, err := store.ScanLabel(ctx, LabelScan{DomainID: domainID, Label: "JournalEntry", Limit: 10, Cursor: next})
+	if err != nil || len(page2) != 1 || next != "" {
+		t.Fatalf("page2=%+v next=%q err=%v", page2, next, err)
+	}
+	if page1[0] == page2[0] {
+		t.Fatalf("pagination duplicated node: page1=%+v page2=%+v", page1, page2)
+	}
+}
+
+func TestLocalStoreRequiredIndexRejectsMissingValue(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	domainID := graph.DomainID(uuid.New())
+	idx := journalDateIndex()
+	idx.Required = true
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-1", []schema.IndexDefinition{idx}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"title": "missing date"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err == nil {
+		t.Fatal("expected commit to fail for missing required indexed value")
+	}
+}
+
+func journalDateIndex() schema.IndexDefinition {
+	return schema.IndexDefinition{Name: "journal_entries_by_date", TargetKind: schema.IndexTargetNode, TargetType: "JournalEntry", Labels: []string{"JournalEntry"}, Field: schema.FieldPath{Namespace: "properties", Name: "date"}, Kind: schema.IndexKindOrdered, Direction: schema.IndexSortDirectionAsc}
+}
+
+func nodeIDs(entries []NodeIndexEntry) []graph.NodeID {
+	out := make([]graph.NodeID, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.NodeID)
+	}
+	return out
+}
+
+func TestLocalStoreEdgePropertyIndexBackfillsMaintainsAndRebuilds(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	domainID := graph.DomainID(uuid.New())
+	idx := referencesConfidenceIndex()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Note"}}
+	to := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Note"}}
+	low := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.2}}
+	high := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.9}}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []graph.Node{from, to} {
+		if err := seed.PutNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := seed.PutEdge(high); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutEdge(low); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-edges", []schema.IndexDefinition{idx}); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err := store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionDesc, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := edgeIDs(entries); !reflect.DeepEqual(got, []graph.EdgeID{high.ID, low.ID}) {
+		t.Fatalf("unexpected edge order after backfill: %+v", got)
+	}
+
+	low.Properties = map[string]any{"confidence": 0.95}
+	update, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := update.PutEdge(low); err != nil {
+		t.Fatal(err)
+	}
+	if err := update.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err = store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionDesc, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := edgeIDs(entries); !reflect.DeepEqual(got, []graph.EdgeID{low.ID, high.ID}) {
+		t.Fatalf("edge update not reindexed: %+v", got)
+	}
+
+	deleteTx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteTx.DeleteEdge(high.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err = store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionDesc, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := edgeIDs(entries); !reflect.DeepEqual(got, []graph.EdgeID{low.ID}) {
+		t.Fatalf("edge delete not deindexed: %+v", got)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	entries, _, err = store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionDesc, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := edgeIDs(entries); !reflect.DeepEqual(got, []graph.EdgeID{low.ID}) {
+		t.Fatalf("edge index not rebuilt after reopen: %+v", got)
+	}
+}
+
+func TestLocalStoreAdjacencyScanByLabelOrderAndPagination(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	domainID := graph.DomainID(uuid.New())
+	from := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID}
+	to1 := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID}
+	to2 := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID}
+	first := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to1.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"order": int64(1)}}
+	second := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to2.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"order": int64(2)}}
+	other := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to2.ID, Labels: []string{"MENTIONS"}, Properties: map[string]any{"order": int64(0)}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []graph.Node{from, to1, to2} {
+		if err := tx.PutNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, edge := range []graph.Edge{second, first, other} {
+		if err := tx.PutEdge(edge); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	page1, next, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: from.ID, Label: "REFERENCES", Direction: AdjacencyDirectionOut, Limit: 1})
+	if err != nil || len(page1) != 1 || page1[0] != first.ID || next == "" {
+		t.Fatalf("page1=%+v next=%q err=%v", page1, next, err)
+	}
+	page2, next, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: from.ID, Label: "REFERENCES", Direction: AdjacencyDirectionOut, Limit: 10, Cursor: next})
+	if err != nil || len(page2) != 1 || page2[0] != second.ID || next != "" {
+		t.Fatalf("page2=%+v next=%q err=%v", page2, next, err)
+	}
+	incoming, _, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: to1.ID, Label: "REFERENCES", Direction: AdjacencyDirectionIn, Limit: 10})
+	if err != nil || !reflect.DeepEqual(incoming, []graph.EdgeID{first.ID}) {
+		t.Fatalf("incoming=%+v err=%v", incoming, err)
+	}
+}
+
+func TestLocalStoreRequiredEdgeIndexRejectsMissingValue(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	domainID := graph.DomainID(uuid.New())
+	idx := referencesConfidenceIndex()
+	idx.Required = true
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-edges", []schema.IndexDefinition{idx}); err != nil {
+		t.Fatal(err)
+	}
+	from := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID}
+	to := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(from); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(to); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutEdge(graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"kind": "missing-confidence"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err == nil {
+		t.Fatal("expected commit to fail for missing required indexed edge value")
+	}
+}
+
+func referencesConfidenceIndex() schema.IndexDefinition {
+	return schema.IndexDefinition{Name: "references_by_confidence", TargetKind: schema.IndexTargetEdge, TargetType: "REFERENCES", Labels: []string{"REFERENCES"}, Field: schema.FieldPath{Namespace: "properties", Name: "confidence"}, Kind: schema.IndexKindOrdered, Direction: schema.IndexSortDirectionDesc}
+}
+
+func edgeIDs(entries []EdgeIndexEntry) []graph.EdgeID {
+	out := make([]graph.EdgeID, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.EdgeID)
+	}
+	return out
+}
+
+func TestLocalStoreConfigureIndexesRemoveAndChangeLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	domainID := graph.DomainID(uuid.New())
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-20", "title": "today"}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	dateIdx := journalDateIndex()
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-1", []schema.IndexDefinition{dateIdx}); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: dateIdx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10}); err != nil || len(entries) != 1 {
+		t.Fatalf("date index unavailable before removal: entries=%+v err=%v", entries, err)
+	}
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-2", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: dateIdx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10}); err != ErrIndexUnavailable {
+		t.Fatalf("removed index error = %v, want ErrIndexUnavailable", err)
+	}
+	titleIdx := schema.IndexDefinition{Name: "journal_entries_by_title", TargetKind: schema.IndexTargetNode, TargetType: "JournalEntry", Labels: []string{"JournalEntry"}, Field: schema.FieldPath{Namespace: "properties", Name: "title"}, Kind: schema.IndexKindOrdered, Direction: schema.IndexSortDirectionAsc}
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-3", []schema.IndexDefinition{titleIdx}); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: titleIdx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10}); err != nil || len(entries) != 1 {
+		t.Fatalf("changed index not backfilled: entries=%+v err=%v", entries, err)
 	}
 }

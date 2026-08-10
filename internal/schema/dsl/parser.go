@@ -22,6 +22,7 @@ import (
 //	edge references from Note to Note {
 //	  confidence: float
 //	}
+//	index journal_entries_by_date on node JournalEntry field properties.date ordered asc
 func Parse(input string) (schema.DomainSchema, error) {
 	p := parser{lines: preprocess(input)}
 	return p.parse()
@@ -94,8 +95,15 @@ func (p *parser) parse() (schema.DomainSchema, error) {
 				return p.out, err
 			}
 			p.out.EdgeTypes = append(p.out.EdgeTypes, et)
+		case strings.HasPrefix(lower, "index "):
+			idx, err := p.parseIndex(current)
+			if err != nil {
+				return p.out, err
+			}
+			p.out.Indexes = append(p.out.Indexes, idx)
+			p.pos++
 		default:
-			return p.out, p.err(current, "expected schema, node, or edge declaration")
+			return p.out, p.err(current, "expected schema, node, edge, or index declaration")
 		}
 	}
 	return p.out.Normalize(), nil
@@ -224,6 +232,73 @@ func (p *parser) parseEdge() (schema.EdgeType, error) {
 	return et, nil
 }
 
+func (p *parser) parseIndex(l line) (schema.IndexDefinition, error) {
+	tokens, err := splitTokens(l.text)
+	if err != nil {
+		return schema.IndexDefinition{}, p.err(l, err.Error())
+	}
+	if len(tokens) < 7 {
+		return schema.IndexDefinition{}, p.err(l, "index requires: index NAME on node|edge TYPE field properties.NAME")
+	}
+	idx := schema.IndexDefinition{Name: tokens[1], Kind: schema.IndexKindEquality}
+	for i := 2; i < len(tokens); i++ {
+		switch strings.ToLower(tokens[i]) {
+		case "on":
+			i++
+			if i >= len(tokens) {
+				return idx, p.err(l, "on requires node or edge")
+			}
+			switch strings.ToLower(tokens[i]) {
+			case "node":
+				idx.TargetKind = schema.IndexTargetNode
+			case "edge":
+				idx.TargetKind = schema.IndexTargetEdge
+			default:
+				return idx, p.err(l, "on requires node or edge")
+			}
+			i++
+			if i >= len(tokens) {
+				return idx, p.err(l, "index target type is required")
+			}
+			idx.TargetType = tokens[i]
+		case "field":
+			i++
+			if i >= len(tokens) {
+				return idx, p.err(l, "field requires a path")
+			}
+			field, err := parseFieldPath(tokens[i])
+			if err != nil {
+				return idx, p.err(l, err.Error())
+			}
+			idx.Field = field
+		case "ordered":
+			idx.Kind = schema.IndexKindOrdered
+			if i+1 < len(tokens) {
+				next := strings.ToLower(tokens[i+1])
+				if next == string(schema.IndexSortDirectionAsc) || next == string(schema.IndexSortDirectionDesc) {
+					idx.Direction = schema.IndexSortDirection(next)
+					i++
+				}
+			}
+		case "unique":
+			idx.Unique = true
+		case "required":
+			idx.Required = true
+		default:
+			return idx, p.err(l, fmt.Sprintf("unexpected index option %q", tokens[i]))
+		}
+	}
+	return idx, nil
+}
+
+func parseFieldPath(value string) (schema.FieldPath, error) {
+	parts := strings.Split(value, ".")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return schema.FieldPath{}, fmt.Errorf("field path must be namespace.name")
+	}
+	return schema.FieldPath{Namespace: strings.TrimSpace(parts[0]), Name: strings.TrimSpace(parts[1])}, nil
+}
+
 func (p *parser) parseFieldBlock() ([]schema.FieldSpec, error) {
 	fields := []schema.FieldSpec{}
 	for p.pos < len(p.lines) {
@@ -302,6 +377,10 @@ func isFieldKeyword(value string) bool {
 }
 
 func splitList(value string) []string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		value = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "["), "]"))
+	}
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {

@@ -66,6 +66,31 @@ func (t *localTxn) Commit() error {
 	return err
 }
 
+func (t *localTxn) touchedDomains() map[graph.DomainID]struct{} {
+	out := map[graph.DomainID]struct{}{}
+	for _, node := range t.nodePuts {
+		if node.DomainID != uuid.Nil {
+			out[node.DomainID] = struct{}{}
+		}
+	}
+	for _, id := range t.nodeDeletes {
+		if node, ok := t.store.nodeRecords[id]; ok && node.DomainID != uuid.Nil {
+			out[node.DomainID] = struct{}{}
+		}
+	}
+	for _, edge := range t.edgePuts {
+		if edge.DomainID != uuid.Nil {
+			out[edge.DomainID] = struct{}{}
+		}
+	}
+	for _, id := range t.edgeDeletes {
+		if edge, ok := t.store.edgeRecords[id]; ok && edge.DomainID != uuid.Nil {
+			out[edge.DomainID] = struct{}{}
+		}
+	}
+	return out
+}
+
 func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	if t.closed {
 		return CommitInfo{}, ErrTxnClosed
@@ -83,6 +108,16 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	}
 	if _, ok := t.invariantConflict(); ok {
 		return CommitInfo{}, ErrConflict
+	}
+	for _, node := range t.nodePuts {
+		if err := t.store.validateNodeIndexes(node); err != nil {
+			return CommitInfo{}, err
+		}
+	}
+	for _, edge := range t.edgePuts {
+		if err := t.store.validateEdgeIndexes(edge); err != nil {
+			return CommitInfo{}, err
+		}
 	}
 	zero := uuid.Nil
 	if _, err := t.store.txns.appendRecord(RecordKindTxnBegin, t.id, zero, nil); err != nil {
@@ -172,6 +207,7 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	for _, id := range t.edgeDeletes {
 		t.store.edgeModRev[id] = newRev
 	}
+	t.store.markReadyIndexesIndexedThrough(newRev, t.touchedDomains())
 	t.closed = true
 	return info, nil
 }

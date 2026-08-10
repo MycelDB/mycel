@@ -73,11 +73,21 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 		}
 		returns = append(returns, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Namespace: ret.Namespace, Property: ret.Property})
 	}
+	var orderBy []planmodel.OrderItem
+	if len(stmt.OrderBy) > 0 {
+		orderBy = make([]planmodel.OrderItem, 0, len(stmt.OrderBy))
+		for _, order := range stmt.OrderBy {
+			orderBy = append(orderBy, planmodel.OrderItem{Variable: order.Variable, Namespace: order.Namespace, Property: order.Property, Direction: planmodel.SortDirection(order.Direction)})
+		}
+	}
 	var limit int64
 	if stmt.FetchFirst != nil {
 		limit = stmt.FetchFirst.Count
 	}
 	comparisonPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where)
+	if len(orderBy) > 0 && (len(pattern.Segments) > 0 || pattern.Relationship != nil) {
+		return planmodel.Plan{}, fmt.Errorf("ORDER BY is currently supported only for node-only MATCH statements")
+	}
 	if len(pattern.Segments) > 1 || hasQuantifiedSegment(pattern.Segments) {
 		segments := make([]planmodel.PathSegment, 0, len(pattern.Segments))
 		for i, segment := range pattern.Segments {
@@ -159,6 +169,7 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 				ComparisonPredicates: comparisonPredicates,
 				TextPredicates:       textPredicates,
 				SemanticPredicates:   semanticPredicates,
+				OrderBy:              orderBy,
 			},
 		},
 	}, nil

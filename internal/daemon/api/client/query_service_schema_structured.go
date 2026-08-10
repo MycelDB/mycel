@@ -150,6 +150,11 @@ func (s structuredQuerySchemaState) validateExpr(expr *clientv1.Expr) error {
 			return err
 		}
 		return s.validateValueExpr(v.Between.GetHigh())
+	case *clientv1.Expr_LessThan:
+		if err := s.validateValueExpr(v.LessThan.GetLeft()); err != nil {
+			return err
+		}
+		return s.validateValueExpr(v.LessThan.GetRight())
 	}
 	return nil
 }
