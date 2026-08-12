@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/myceldb/mycel/internal/cli/app"
@@ -190,10 +191,18 @@ func NewTransactionCloseCommand(a *app.App) *cobra.Command {
 }
 
 func resolveDaemonDomainID(client clientv1.DomainServiceClient, authCtx context.Context, spaceID string, domainID string, domainKey string) (string, error) {
-	if domainID != "" {
-		return domainID, nil
+	if strings.TrimSpace(domainID) != "" {
+		return strings.TrimSpace(domainID), nil
 	}
-	res, err := client.GetDomain(authCtx, &clientv1.GetDomainRequest{SpaceId: spaceID, Key: domainKey})
+	key := strings.TrimSpace(domainKey)
+	if key == "" {
+		res, err := resolveDefaultDaemonDomain(client, authCtx, spaceID)
+		if err != nil {
+			return "", err
+		}
+		return res.GetDomainId(), nil
+	}
+	res, err := client.GetDomain(authCtx, &clientv1.GetDomainRequest{SpaceId: spaceID, Key: key})
 	if err != nil {
 		return "", err
 	}

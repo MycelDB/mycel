@@ -23,6 +23,10 @@ type App struct {
 	DaemonTLSClientCertFile     string
 	DaemonTLSClientKeyFile      string
 	CurrentSpaceID              *domainspace.SpaceID
+	CurrentSpaceName            string
+	CurrentDomainID             string
+	CurrentDomainKey            string
+	CurrentDomainName           string
 }
 
 func DefaultOutput(v string) string {
@@ -42,8 +46,39 @@ func (a *App) ResolveSpaceID(spaceIDText string) (domainspace.SpaceID, error) {
 	return uuid.Nil, fmt.Errorf("--space-id is required; in REPL you can use set_space SPACE_ID")
 }
 
-func (a *App) SetCurrentSpace(spaceID domainspace.SpaceID) {
+func (a *App) SetCurrentSpace(spaceID domainspace.SpaceID, name string) {
 	a.CurrentSpaceID = &spaceID
+	a.CurrentSpaceName = strings.TrimSpace(name)
+}
+
+func (a *App) SetCurrentDomain(domainID, key, name string) {
+	a.CurrentDomainID = strings.TrimSpace(domainID)
+	a.CurrentDomainKey = strings.TrimSpace(key)
+	a.CurrentDomainName = strings.TrimSpace(name)
+}
+
+func (a *App) ClearCurrentDomain() {
+	a.CurrentDomainID = ""
+	a.CurrentDomainKey = ""
+	a.CurrentDomainName = ""
+}
+
+func (a *App) ClearCurrentConnection() {
+	a.CurrentSpaceID = nil
+	a.CurrentSpaceName = ""
+	a.ClearCurrentDomain()
+}
+
+func (a *App) Prompt() string {
+	if a == nil || a.CurrentSpaceID == nil {
+		return "mycel> "
+	}
+	space := firstNonEmpty(a.CurrentSpaceName, a.CurrentSpaceID.String())
+	domain := firstNonEmpty(a.CurrentDomainKey, a.CurrentDomainName, a.CurrentDomainID)
+	if domain == "" {
+		return fmt.Sprintf("mycel[%s]> ", space)
+	}
+	return fmt.Sprintf("mycel[%s/%s]> ", space, domain)
 }
 
 func (a *App) Print(v any, text string) error {

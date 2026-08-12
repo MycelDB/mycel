@@ -105,10 +105,12 @@ func NewSetSpaceCommand(a *app.App) *cobra.Command {
 				return err
 			}
 			defer conn.Close()
-			if _, err := clientv1.NewSpaceServiceClient(conn).GetSpace(authCtx, &clientv1.GetSpaceRequest{SpaceId: id.String()}); err != nil {
+			res, err := clientv1.NewSpaceServiceClient(conn).GetSpace(authCtx, &clientv1.GetSpaceRequest{SpaceId: id.String()})
+			if err != nil {
 				return err
 			}
-			a.CurrentSpaceID = &id
+			a.SetCurrentSpace(id, res.GetSpace().GetName())
+			a.ClearCurrentDomain()
 			return a.Print(map[string]any{"current_space_id": id}, fmt.Sprintf("space set: %s\n", id))
 		},
 	}
@@ -119,7 +121,7 @@ func NewUnsetSpaceCommand(a *app.App) *cobra.Command {
 		Use:   "unset",
 		Short: "Clear the current REPL space",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a.CurrentSpaceID = nil
+			a.ClearCurrentConnection()
 			return a.Print(map[string]any{"current_space_id": nil}, "space unset\n")
 		},
 	}
