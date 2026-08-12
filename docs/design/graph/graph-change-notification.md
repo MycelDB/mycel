@@ -396,7 +396,7 @@ UUID and returns it on `GraphTransaction.operation_id` and
 
 The notification subsystem stores the operation ID in resolved origin metadata
 and echoes it in committed events. The server also enriches internal origin
-metadata with trusted server-side fields such as user ID, session ID, and
+metadata with trusted server-side fields such as principal ID, session ID, and
 transaction ID.
 
 Internal origin fields:
@@ -406,7 +406,7 @@ operation_id        // public, client-provided or server-generated UUID
 client_id           // internal/future
 client_instance_id  // internal/future
 label               // internal/future
-user_id             // server-populated
+principal_id        // server-populated
 session_id          // server-populated
 transaction_id      // server-populated
 ```
@@ -416,7 +416,7 @@ in a main editor and a side panel. Origin metadata lets a client distinguish:
 
 - its own write acknowledgement;
 - a different tab or client instance from the same app;
-- a different user or third-party client.
+- a different principal or third-party client.
 
 Origin metadata is advisory. Authorization and conflict handling remain separate
 concerns.

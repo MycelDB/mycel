@@ -42,9 +42,10 @@ type Source struct {
 }
 
 type User struct {
-	UserID   string `json:"user_id"`
-	Username string `json:"username"`
-	State    string `json:"state,omitempty"`
+	PrincipalID string `json:"principal_id,omitempty"`
+	UserID      string `json:"user_id,omitempty"` // legacy mycel-user-backup-v1 compatibility
+	Username    string `json:"username"`
+	State       string `json:"state,omitempty"`
 }
 
 type Options struct {
@@ -54,10 +55,11 @@ type Options struct {
 }
 
 type Space struct {
-	SourceSpaceID string   `json:"source_space_id"`
-	Name          string   `json:"name"`
-	OwnerUserID   string   `json:"owner_user_id,omitempty"`
-	Domains       []Domain `json:"domains"`
+	SourceSpaceID    string   `json:"source_space_id"`
+	Name             string   `json:"name"`
+	OwnerPrincipalID string   `json:"owner_principal_id,omitempty"`
+	OwnerUserID      string   `json:"owner_user_id,omitempty"` // legacy mycel-user-backup-v1 compatibility
+	Domains          []Domain `json:"domains"`
 }
 
 type Domain struct {
@@ -226,8 +228,8 @@ func Validate(manifest Manifest, entries map[string][]byte) error {
 			return fmt.Errorf("manifest checksum mismatch")
 		}
 	}
-	if manifest.SubjectUser.UserID == "" && manifest.SubjectUser.Username == "" {
-		return fmt.Errorf("manifest subject_user requires user_id or username")
+	if manifest.SubjectUser.PrincipalID == "" && manifest.SubjectUser.UserID == "" && manifest.SubjectUser.Username == "" {
+		return fmt.Errorf("manifest subject_user requires principal_id, legacy user_id, or username")
 	}
 	wantFiles := map[string]File{}
 	for _, file := range manifest.Files {

@@ -31,7 +31,7 @@ func NewAdminUserBackupCommand(a *app.App) *cobra.Command {
 }
 
 func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
-	var userID, username, outputPath, compression, sourceLabel string
+	var principalID, username, outputPath, compression, sourceLabel string
 	var includeBlobs, includeArchived, includeSystemDomains bool
 	cmd := &cobra.Command{Use: "export", Short: "Export a selected user's visible spaces from this daemon", RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(outputPath) == "" || outputPath == "-" {
@@ -43,7 +43,7 @@ func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
 		}
 		defer conn.Close()
 		principalClient := adminv1.NewAdminPrincipalServiceClient(conn)
-		user, err := resolveAdminPrincipal(cmd.Context(), principalClient, operatorCtx, userID, username)
+		user, err := resolveAdminPrincipal(cmd.Context(), principalClient, operatorCtx, principalID, username)
 		if err != nil {
 			return err
 		}
@@ -60,7 +60,7 @@ func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		sort.Slice(spaces, func(i, j int) bool { return spaces[i].GetSpaceId() < spaces[j].GetSpaceId() })
-		manifest := archive.Manifest{CreatedAt: time.Now().UTC(), Source: archive.Source{Endpoint: a.DaemonAddr, Label: sourceLabel}, SubjectUser: archive.User{UserID: user.GetPrincipalId(), Username: user.GetUsername(), State: user.GetState().String()}, Options: archive.Options{IncludeBlobs: includeBlobs, IncludeInactiveSpaces: includeArchived}}
+		manifest := archive.Manifest{CreatedAt: time.Now().UTC(), Source: archive.Source{Endpoint: a.DaemonAddr, Label: sourceLabel}, SubjectUser: archive.User{PrincipalID: user.GetPrincipalId(), UserID: user.GetPrincipalId(), Username: user.GetUsername(), State: user.GetState().String()}, Options: archive.Options{IncludeBlobs: includeBlobs, IncludeInactiveSpaces: includeArchived}}
 		var entries []archive.Entry
 		for _, sp := range spaces {
 			domains, err := listAllUserDomains(userCtx, clientv1.NewDomainServiceClient(conn), sp.GetSpaceId(), includeSystemDomains)
@@ -68,7 +68,7 @@ func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
 				return err
 			}
 			sort.Slice(domains, func(i, j int) bool { return domains[i].GetDomainId() < domains[j].GetDomainId() })
-			spaceEntry := archive.Space{SourceSpaceID: sp.GetSpaceId(), Name: sp.GetName(), OwnerUserID: sp.GetOwner().GetId()}
+			spaceEntry := archive.Space{SourceSpaceID: sp.GetSpaceId(), Name: sp.GetName(), OwnerPrincipalID: sp.GetOwner().GetId(), OwnerUserID: sp.GetOwner().GetId()}
 			for _, domain := range domains {
 				data, counts, err := exportDomainDocument(userCtx, conn, sp.GetSpaceId(), domain.GetDomainId(), includeBlobs)
 				if err != nil {
@@ -100,9 +100,10 @@ func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
 		if err := file.Close(); err != nil {
 			return err
 		}
-		return a.Print(map[string]any{"file": outputPath, "user_id": user.GetPrincipalId(), "username": user.GetUsername(), "spaces": len(manifest.Spaces), "files": len(entries)}, fmt.Sprintf("principal backup exported: %s (%d spaces)\n", outputPath, len(manifest.Spaces)))
+		return a.Print(map[string]any{"file": outputPath, "principal_id": user.GetPrincipalId(), "user_id": user.GetPrincipalId(), "username": user.GetUsername(), "spaces": len(manifest.Spaces), "files": len(entries)}, fmt.Sprintf("principal backup exported: %s (%d spaces)\n", outputPath, len(manifest.Spaces)))
 	}}
-	cmd.Flags().StringVar(&userID, "user-id", "", "source user id")
+	cmd.Flags().StringVar(&principalID, "principal-id", "", "source principal id")
+	cmd.Flags().StringVar(&principalID, "user-id", "", "deprecated; use --principal-id")
 	cmd.Flags().StringVar(&username, "source-username", "", "source username")
 	cmd.Flags().StringVarP(&outputPath, "file", "f", "", "output archive path (.tar.zst recommended)")
 	cmd.Flags().StringVar(&compression, "compression", archive.DefaultMethod, "compression: zstd, gzip, or none")
@@ -183,7 +184,8 @@ func NewAdminUserBackupImportCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().StringVarP(&filePath, "file", "f", "", "input archive path")
 	cmd.Flags().StringVar(&compression, "compression", "auto", "compression: auto, zstd, gzip, or none")
-	cmd.Flags().StringVar(&targetPrincipalID, "target-user-id", "", "existing restore target principal id")
+	cmd.Flags().StringVar(&targetPrincipalID, "target-principal-id", "", "existing restore target principal id")
+	cmd.Flags().StringVar(&targetPrincipalID, "target-user-id", "", "deprecated; use --target-principal-id")
 	cmd.Flags().StringVar(&targetPrincipalname, "target-username", "", "existing or new restore target principalname")
 	cmd.Flags().BoolVar(&createUser, "create-user", false, "create --target-username when it does not exist")
 	cmd.Flags().StringVar(&newPassword, "new-password", "", "optional password for --create-user (never read from backup)")
@@ -204,16 +206,16 @@ func readUserBackupArchive(filePath, compression string) (*archive.Archive, erro
 	return archive.Read(f, compression)
 }
 
-func resolveAdminPrincipal(ctx context.Context, client adminv1.AdminPrincipalServiceClient, authCtx context.Context, userID, username string) (*adminv1.Principal, error) {
-	userID = strings.TrimSpace(userID)
+func resolveAdminPrincipal(ctx context.Context, client adminv1.AdminPrincipalServiceClient, authCtx context.Context, principalID, username string) (*adminv1.Principal, error) {
+	principalID = strings.TrimSpace(principalID)
 	username = strings.TrimSpace(username)
-	if userID == "" && username == "" {
-		return nil, fmt.Errorf("--user-id or --source-username/--target-username is required")
+	if principalID == "" && username == "" {
+		return nil, fmt.Errorf("--principal-id/--user-id or --source-username/--target-username is required")
 	}
-	if userID != "" {
-		res, err := client.GetPrincipal(authCtx, &adminv1.GetPrincipalRequest{PrincipalId: userID})
+	if principalID != "" {
+		res, err := client.GetPrincipal(authCtx, &adminv1.GetPrincipalRequest{PrincipalId: principalID})
 		if err != nil {
-			return nil, fmt.Errorf("get user %s: %w", userID, err)
+			return nil, fmt.Errorf("get principal %s: %w", principalID, err)
 		}
 		return res.GetPrincipal(), nil
 	}
@@ -319,7 +321,8 @@ func optionalString(s string) *string {
 }
 
 type userBackupRestoreResult struct {
-	UserID         string            `json:"user_id"`
+	PrincipalID    string            `json:"principal_id"`
+	UserID         string            `json:"user_id,omitempty"`
 	Username       string            `json:"username"`
 	SpacesCreated  int               `json:"spaces_created"`
 	DomainsCreated int               `json:"domains_created"`
@@ -361,19 +364,22 @@ func planUserBackupImportForNewUser(backup *archive.Archive, targetPrincipalname
 		return nil, err
 	}
 	return map[string]any{
-		"source_user":          backup.Manifest.SubjectUser,
-		"target_user_id":       "",
-		"target_username":      targetPrincipalname,
-		"target_user_create":   true,
-		"spaces_to_create":     len(backup.Manifest.Spaces),
-		"domains_to_import":    totals.domains,
-		"nodes_to_import":      totals.nodes,
-		"edges_to_import":      totals.edges,
-		"blobs_to_import":      totals.blobs,
-		"space_name_conflicts": []map[string]string{},
-		"preserves_graph_ids":  true,
-		"preserves_space_ids":  false,
-		"preserves_domain_ids": false,
+		"source_principal":        backup.Manifest.SubjectUser,
+		"source_user":             backup.Manifest.SubjectUser,
+		"target_principal_id":     "",
+		"target_user_id":          "",
+		"target_username":         targetPrincipalname,
+		"target_principal_create": true,
+		"target_user_create":      true,
+		"spaces_to_create":        len(backup.Manifest.Spaces),
+		"domains_to_import":       totals.domains,
+		"nodes_to_import":         totals.nodes,
+		"edges_to_import":         totals.edges,
+		"blobs_to_import":         totals.blobs,
+		"space_name_conflicts":    []map[string]string{},
+		"preserves_graph_ids":     true,
+		"preserves_space_ids":     false,
+		"preserves_domain_ids":    false,
 	}, nil
 }
 
@@ -413,7 +419,9 @@ func planUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface, op
 		return nil, fmt.Errorf("target principal has %d space name conflict(s); rerun with --allow-space-name-conflicts or choose a fresh target", len(conflicts))
 	}
 	return map[string]any{
+		"source_principal":     backup.Manifest.SubjectUser,
 		"source_user":          backup.Manifest.SubjectUser,
+		"target_principal_id":  target.GetPrincipalId(),
 		"target_user_id":       target.GetPrincipalId(),
 		"target_username":      target.GetUsername(),
 		"spaces_to_create":     len(backup.Manifest.Spaces),
@@ -438,7 +446,7 @@ func executeUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface,
 	spaceClient := adminv1.NewAdminSpaceServiceClient(conn)
 	domainClient := clientv1.NewDomainServiceClient(conn)
 	schemaClient := clientv1.NewSchemaServiceClient(conn)
-	result := userBackupRestoreResult{UserID: target.GetPrincipalId(), Username: target.GetUsername(), SpaceIDMap: map[string]string{}, DomainIDMap: map[string]string{}}
+	result := userBackupRestoreResult{PrincipalID: target.GetPrincipalId(), UserID: target.GetPrincipalId(), Username: target.GetUsername(), SpaceIDMap: map[string]string{}, DomainIDMap: map[string]string{}}
 	for _, sourceSpace := range backup.Manifest.Spaces {
 		defaultDomain := firstDefaultDomain(sourceSpace.Domains)
 		createSpace := &adminv1.CreateSpaceRequest{Name: sourceSpace.Name, OwnerPrincipalId: target.GetPrincipalId()}

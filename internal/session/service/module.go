@@ -87,7 +87,7 @@ func (m *Module) OpenSession(ctx context.Context, input OpenSessionInput) (Graph
 		return GraphSession{}, err
 	}
 	if strings.TrimSpace(input.PrincipalID) == "" || strings.TrimSpace(input.SpaceID) == "" || strings.TrimSpace(input.DomainID) == "" {
-		return GraphSession{}, fmt.Errorf("%w: user_id, space_id, and domain_id are required", ErrInvalidInput)
+		return GraphSession{}, fmt.Errorf("%w: principal_id, space_id, and domain_id are required", ErrInvalidInput)
 	}
 	idle := normalizeTimeout(input.IdleTimeout)
 	now := time.Now().UTC()

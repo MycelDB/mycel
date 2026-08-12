@@ -2,9 +2,9 @@
 
 ## Status
 
-Draft v2 design note for the `refactor_daemon` branch.
+Current design note for daemon initialization.
 
-This document describes the intended daemon initialization behavior for the current design scope only. It does not describe a complete daemon runtime beyond initialization, module registration, and the current admin/operator management slice.
+This document describes the intended daemon initialization behavior for the current design scope only. It does not describe a complete daemon runtime beyond initialization, module registration, and the current unified principal identity slice.
 
 ## Scope
 
@@ -15,30 +15,29 @@ The current initialization design covers:
 - data directory creation
 - log directory creation
 - logger initialization
-- admin management module initialization
-- user management module initialization
-- admin store creation when missing
-- user store creation when missing
-- default standalone admin creation when no admin store exists
-- admin/operator list and lifecycle operations
+- identity subsystem initialization
+- principal store creation when missing
+- auth-session store creation when missing
+- default standalone admin principal creation when no principal store exists
+- principal list and lifecycle operations
 - gRPC listener startup for Admin API operations
 - startup/shutdown log messages
 
 Out of scope for this document:
 
 - client graph APIs
-- admin user management
-- admin operator role/capability mutation beyond the current daemon-local file store
+- product-level signup/profile management
+- role/capability mutation beyond the current daemon-local principal store
 - space management
 - mesh networking
 - replication
 - gRPC listener setup details
 - production credential rotation
-- full daemon module lifecycle beyond init/admin operator management
+- full daemon module lifecycle beyond init/principal management
 
 ## Terminology
 
-This document uses **admin** to describe daemon administrator accounts and **operator** for the Admin API model of those accounts. The standalone bootstrap creates one initial active system-admin operator named `admin`.
+This document uses **principal** for daemon-managed identities. A principal with system-management roles/capabilities can administer the daemon. The standalone bootstrap creates one initial active system-admin principal named `admin`.
 
 ## Initialization inputs
 
@@ -71,16 +70,13 @@ Within the data directory, the current initialization design creates the followi
 ```text
 <data>/
   log/
-  admins/
-  users/
+  identity/
     sessions/
 ```
 
 `log/` stores daemon log files.
 
-`admins/` stores daemon admin/operator management data for the current design scope.
-
-`users/` stores daemon standard-user management data and user refresh-session records.
+`identity/` stores unified principal records, role bindings, capability grants, and durable auth-session records.
 
 Additional directories will be introduced by future modules.
 
@@ -95,23 +91,23 @@ Initialization should ensure:
 3. logging is configured using the selected level and format
 4. startup and shutdown events are recorded
 5. filesystem initialization/reinitialization actions are recorded
-6. admin initialization actions are recorded
+6. identity initialization actions are recorded
 
 Expected log events include:
 
 - daemon startup begins
 - data directory created or already exists
 - log directory created or already exists
-- admin directory created or already exists
-- admin store created or already exists
-- default standalone admin created, if applicable
+- identity directory created or already exists
+- principal store created or already exists
+- default standalone admin principal created, if applicable
 - daemon initialization complete
 - daemon ready
 - daemon runtime configuration, including data directory, mode, gRPC address, log path, log level, and log format
 - shutdown begins
 - shutdown complete
 
-When the default standalone admin is created, the generated username and password are logged so that an operator can retrieve them from the daemon log file. The log message must explicitly instruct the operator to change the generated password immediately.
+When the default standalone admin principal is created, the generated username and password are logged so that the deployment operator can retrieve them from the daemon log file. The log message must explicitly instruct the operator to change the generated password immediately.
 
 The plaintext generated password is logged only for this bootstrap event and should not be stored as plaintext.
 
@@ -191,70 +187,38 @@ unknown
 
 If `abort` is true, daemon startup stops. If `abort` is false, the daemon logs the issue and continues initializing remaining modules.
 
-## Admin management module initialization
+## Identity module initialization
 
-The current registered modules are the admin management module and the user management module.
+The identity subsystem initializes the unified principal store and durable auth-session store:
 
-Its `Init` method checks:
+```text
+<data>/identity/store.json
+<data>/identity/sessions/refresh_sessions.json
+```
 
-1. whether `<data>/admins/` exists
-2. whether the admin store exists
-3. whether standalone bootstrap behavior applies
+It stores daemon-managed principals with active/disabled/deleted state, create/update timestamps, role bindings, capability grants, and password hashes when login is enabled. Password plaintext is never persisted.
 
-If `<data>/admins/` does not exist, the module creates it.
-
-If the admin store does not exist, the module creates it.
-
-If the daemon is running in `standalone` mode and the admin store was missing or contains no admins, the module creates a default active system-admin operator:
+If the daemon is running in `standalone` mode and the principal store is empty, initialization creates a default active system-admin principal:
 
 ```text
 username: admin
 password: randomly generated
 ```
 
-The module persists the admin account with a password hash, active state, create/update timestamps, and a `system_admin` role grant. It does not store the plaintext password.
-
 The module logs the generated username and plaintext password once for bootstrap access and explicitly tells the operator to change the generated password immediately.
 
-If the admin store already exists and contains at least one admin, the module does not recreate the default admin. For compatibility with earlier daemon slices, standalone initialization also ensures at least one active existing admin has the `system_admin` role; if no active system admin exists, it grants `system_admin` to the first active existing admin and logs the migration.
+The identity subsystem enforces the last-system-admin invariant: mutations must not remove or disable the final active principal with system-admin authority.
 
-## User management module initialization
+## Principal operations
 
-The user module initializes:
-
-```text
-<data>/users/users.json
-<data>/users/sessions/refresh_sessions.json
-```
-
-It stores daemon-managed standard users with active/disabled/deleted state, optional email/display name, create/update timestamps, and bcrypt password hashes. Password plaintext is never persisted.
-
-The module also owns user refresh-session listing and revocation for AdminUserService.
-
-## Admins/operators operations
-
-The current admin management behavior includes daemon-local operator lifecycle operations.
-
-Internally, the admin module exposes safe `AdminSummary` values that omit password hashes. Externally, authenticated clients access those summaries through:
+The current admin identity behavior includes daemon-local principal lifecycle operations. Authenticated clients access those operations through:
 
 ```text
-mycel.admin.v1.AdminAuthService.LoginOperator
-mycel.admin.v1.AdminOperatorService
+mycel.common.v1.AuthService
+mycel.admin.v1.AdminPrincipalService
 ```
 
-`LoginOperator` verifies an operator username/password and returns a short-lived bearer token. `AdminOperatorService` methods require that token in gRPC metadata. The current service supports list/get/find/create/update/disable/enable/soft-delete/password/role/capability/session RPCs backed by the daemon-local file store.
-
-Only active operators can log in. Mutations that affect other operators require operator-management capability. The module rejects actions that would remove the last active system admin. Operator session RPCs are currently empty/no-op placeholders because operator access tokens are short-lived and not persisted.
-
-## Standard user operations
-
-Authenticated operators with `CAPABILITY_USER_CREATE` / `CAPABILITY_USER_MANAGE` can call:
-
-```text
-mycel.admin.v1.AdminUserService
-```
-
-The current service supports list/get/find/create/update/disable/enable/soft-delete/password/session RPCs backed by the daemon user module.
+`AuthService.Login` verifies principal username/password and returns a short-lived bearer token plus refresh-session metadata. `AdminPrincipalService` methods require a bearer token whose principal has the relevant role/capability. The current service supports list/get/find/create/update/disable/enable/delete/password/role/capability/session RPCs backed by the unified principal store.
 
 ## Initialization sequence
 
@@ -290,23 +254,23 @@ flowchart TD
   Y --> Z[Log shutdown complete]
 ```
 
-The current admin management module's `Init` method internally follows this narrower flow:
+The identity subsystem's `Init` method internally follows this narrower flow:
 
 ```mermaid
 flowchart TD
-  A[Admin module Init] --> B{admins directory exists?}
-  B -- No --> C[Create admins directory]
-  B -- Yes --> D[Use existing admins directory]
-  C --> E{admin store exists?}
+  A[Identity module Init] --> B{identity directory exists?}
+  B -- No --> C[Create identity directory]
+  B -- Yes --> D[Use existing identity directory]
+  C --> E{principal store exists?}
   D --> E
-  E -- No --> F[Create admin store]
-  E -- Yes --> G[Open admin store]
-  F --> H{standalone mode and no admins?}
+  E -- No --> F[Create principal store]
+  E -- Yes --> G[Open principal store]
+  F --> H{standalone mode and no principals?}
   G --> H
-  H -- Yes --> I[Generate default admin password]
-  I --> J[Hash password and persist admin]
-  J --> K[Log bootstrap admin credentials]
-  H -- No --> L[Skip default admin creation]
+  H -- Yes --> I[Generate default principal password]
+  I --> J[Hash password and persist system-admin principal]
+  J --> K[Log bootstrap principal credentials]
+  H -- No --> L[Skip default principal creation]
   K --> M[Return ok]
   L --> M
 ```
@@ -318,8 +282,8 @@ Initialization should be safe to run repeatedly.
 Expected behavior on repeated startup:
 
 - existing directories are reused
-- existing admin store is reused
-- default admin is not recreated if admins already exist
+- existing principal store is reused
+- default admin principal is not recreated if principals already exist
 - initialization logs indicate that existing resources were found
 
 ## Security notes
@@ -327,7 +291,7 @@ Expected behavior on repeated startup:
 - The generated default admin password is only for first standalone bootstrap.
 - The generated password is logged once so the operator can retrieve it.
 - The generated password must not be persisted as plaintext.
-- Admin store files should be written with restrictive permissions.
+- Identity store files should be written with restrictive permissions.
 - Log files may contain the one-time bootstrap password and should be protected accordingly.
 
 ## Testing expectations
@@ -337,17 +301,17 @@ Unit tests for the initialization design should cover:
 - unset `MYCELD_DATA_DIR` defaults to `~/mycel_data`
 - missing data directory is created
 - missing log directory is created
-- missing admins directory is created
-- missing admin store is created
-- standalone initialization creates default `admin` when no admins exist
-- generated admin password is logged during bootstrap
+- missing identity directory is created
+- missing principal store is created
+- standalone initialization creates default `admin` when no principals exist
+- generated principal password is logged during bootstrap
 - bootstrap log includes an explicit change-password warning
-- plaintext password is not stored in the admin store
-- repeated initialization does not recreate default admin
-- list admins returns safe summaries without password hashes
-- gRPC `LoginOperator` authenticates the bootstrap admin with the logged one-time password
-- unauthenticated gRPC `ListOperators` fails
-- authenticated gRPC `ListOperators` maps admin summaries to operator records
+- plaintext password is not stored in the identity store
+- repeated initialization does not recreate default admin principal
+- list principals returns safe summaries without password hashes
+- gRPC `AuthService.Login` authenticates the bootstrap admin principal with the logged one-time password
+- unauthenticated gRPC `ListPrincipals` fails
+- authenticated gRPC `ListPrincipals` returns principal records
 - daemon ready is followed by a runtime-configuration log entry with data directory, mode, gRPC address, log path, log level, and log format
 - non-standalone mode does not create the default admin unless explicitly designed later
 - runtime registers initialized modules by name
@@ -359,10 +323,10 @@ This document intentionally does not define:
 
 - gRPC server startup
 - CLI command syntax
-- admin login flow
-- admin password rotation
-- admin disable/delete operations
-- admin role/capability mutation
+- auth login flow
+- principal password rotation
+- principal disable/delete operations
+- principal role/capability mutation
 - mesh bootstrap
 
 Those items are separate design/implementation topics.
