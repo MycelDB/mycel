@@ -30,6 +30,7 @@ Desirability values are relative priorities:
 | Mixed return projection | Return full nodes and scalar properties together. | Medium | Medium | Y |
 | Row limiting | ISO-style row limit, e.g. `FETCH FIRST 10 ROWS ONLY`. | High | High | Y |
 | CLI GQL text output | Print GQL result rows from the CLI. | Medium | Medium | Y |
+| REPL space/domain connection | Connect to a space/domain in the CLI REPL and run GQL without repeating IDs. | High | High | N |
 | Admin console GQL execution | Execute GQL from `mycel-admin`. | Medium | High | Y |
 | Admin scalar result rendering | Display scalar projection values in `mycel-admin`. | Medium | High | Y |
 | Admin read-write execution | Allow write GQL from `mycel-admin` with confirmation. | Medium | Medium | Y |

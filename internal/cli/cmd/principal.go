@@ -42,7 +42,11 @@ func NewPrincipalListCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return a.Print(res.GetPrincipals(), fmt.Sprintf("principals: %d\n", len(res.GetPrincipals())))
+		if a.Output == "json" {
+			return a.Print(res.GetPrincipals(), "")
+		}
+		app.RenderPrincipalsTable(res.GetPrincipals())
+		return nil
 	}}
 	cmd.Flags().BoolVar(&includeDisabled, "include-disabled", false, "include disabled principals")
 	cmd.Flags().BoolVar(&includeDeleted, "include-deleted", false, "include deleted principals")

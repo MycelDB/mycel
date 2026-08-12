@@ -5,12 +5,24 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/space/access"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
+
+func RenderPrincipalsTable(principals []*adminv1.Principal) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleDefault)
+	t.AppendHeader(table.Row{"Principal ID", "Username", "Display Name", "Email", "Type", "State", "Login"})
+	for _, principal := range principals {
+		t.AppendRow(table.Row{principal.GetPrincipalId(), principal.GetUsername(), principal.GetDisplayName(), principal.GetEmail(), principal.GetType().String(), principal.GetState().String(), principal.GetLoginEnabled()})
+	}
+	t.Render()
+}
 
 func RenderClientSpacesTable(spaces []*clientv1.Space) {
 	t := table.NewWriter()
