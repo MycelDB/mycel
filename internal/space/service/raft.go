@@ -58,8 +58,8 @@ func (m *Module) applySpaceMetadataRaftCommand(ctx context.Context, apply consen
 	case recordTypeCreateSpaceWithDefaultDomain:
 		_, err := m.applyCreateSpaceRaftCommand(ctx, apply, cmd, partitionCount)
 		return err
-	case recordTypeGrantSpaceUser:
-		return m.applyGrantSpaceUser(ctx, rec)
+	case recordTypeGrantSpacePrincipal:
+		return m.applyGrantSpacePrincipal(ctx, rec)
 	case recordTypeCreateDomain:
 		return m.applyCreateDomain(ctx, rec)
 	case recordTypeUpdateDomain:

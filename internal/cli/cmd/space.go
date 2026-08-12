@@ -24,14 +24,14 @@ func NewAddSpaceCommand(a *app.App) *cobra.Command {
 				return fmt.Errorf("space name is required")
 			}
 			if ownerUserIDText == "" && ownerUsername == "" {
-				return fmt.Errorf("--owner-user-id or --owner-username is required")
+				return fmt.Errorf("--owner-principal-id or --owner-username is required")
 			}
 			conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
 			defer conn.Close()
-			res, err := adminv1.NewAdminSpaceServiceClient(conn).CreateSpace(authCtx, &adminv1.CreateSpaceRequest{Name: name, OwnerUserId: ownerUserIDText, OwnerUsername: ownerUsername, DefaultDomainKey: defaultDomainKey, DefaultDomainName: defaultDomainName})
+			res, err := adminv1.NewAdminSpaceServiceClient(conn).CreateSpace(authCtx, &adminv1.CreateSpaceRequest{Name: name, OwnerPrincipalId: ownerUserIDText, OwnerUsername: ownerUsername, DefaultDomainKey: defaultDomainKey, DefaultDomainName: defaultDomainName})
 			if err != nil {
 				return err
 			}
@@ -39,7 +39,8 @@ func NewAddSpaceCommand(a *app.App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "space name")
-	cmd.Flags().StringVar(&ownerUserIDText, "owner-user-id", "", "target daemon user ID")
+	cmd.Flags().StringVar(&ownerUserIDText, "owner-principal-id", "", "target daemon principal ID")
+	cmd.Flags().StringVar(&ownerUserIDText, "owner-user-id", "", "deprecated; use --owner-principal-id")
 	cmd.Flags().StringVar(&ownerUsername, "owner-username", "", "target daemon username")
 	cmd.Flags().StringVar(&defaultDomainKey, "default-domain-key", "", "initial default domain key")
 	cmd.Flags().StringVar(&defaultDomainName, "default-domain-name", "", "initial default domain name")
@@ -76,7 +77,7 @@ func NewDeleteSpaceCommand(a *app.App) *cobra.Command {
 
 func NewGetSpaceCommand(a *app.App) *cobra.Command {
 	return &cobra.Command{Use: "get SPACE_ID", Short: "Get a visible space through the daemon Client API", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -99,7 +100,7 @@ func NewSetSpaceCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+			conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
@@ -130,7 +131,7 @@ func NewListSpacesCommand(a *app.App) *cobra.Command {
 		Use:   "spaces",
 		Short: "List visible spaces through the daemon Client API",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+			conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 			if err != nil {
 				return err
 			}

@@ -47,17 +47,12 @@ func Run(ctx context.Context) int {
 	}
 	defer func() { _ = rt.Close() }()
 
-	adminService, ok := daemonruntime.ServiceAs[*identityservice.AdminModule](rt, identityservice.AdminModuleName)
+	principalService, ok := daemonruntime.ServiceAs[*identityservice.PrincipalModule](rt, identityservice.PrincipalModuleName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: admin service is not registered\n")
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: identity service is not registered\n")
 		return 1
 	}
 	serverCtx, stopServer := context.WithCancel(ctx)
-	userService, ok := daemonruntime.ServiceAs[*identityservice.UserModule](rt, identityservice.UserModuleName)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "myceld initialization failed: user service is not registered\n")
-		return 1
-	}
 	spaceService, ok := daemonruntime.ServiceAs[*spaceservice.Module](rt, spaceservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: space service is not registered\n")
@@ -113,7 +108,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, AdminLister: adminService, AdminAuthenticator: adminService, OperatorManager: adminService, BackupManager: backupService, UserManager: userService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, SemanticManager: semanticService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, PrincipalManager: principalService, BackupManager: backupService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, SemanticManager: semanticService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -193,8 +188,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		rt.WALWaiter = rt.WALRecovery.Waiter()
 		logger.Info("wal ready", "path", walDir, "last_committed_lsn", walManager.LastCommittedLSN())
 	}
-	adminService := identityservice.NewAdminManager()
-	userService := identityservice.NewUserManager()
+	principalService := identityservice.NewPrincipalManager()
 	spaceService := spaceservice.NewModule()
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
@@ -247,7 +241,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	})
-	if err := rt.InitServices(ctx, []daemonruntime.Service{adminService, userService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, semanticService, backupService}); err != nil {
+	if err := rt.InitServices(ctx, []daemonruntime.Service{principalService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, semanticService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}
@@ -263,7 +257,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		backupService.PrepareExperimentalRaftMode()
 		systemMetadataSM := consensus.NewSystemStateMachine()
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
-			return compositeSystemStateMachine{systemMetadataSM, identityservice.UserRaftStateMachine{Module: userService}, identityservice.AdminRaftStateMachine{Module: adminService}, backupservice.RaftStateMachine{Module: backupService}, daemonsemantic.RaftStateMachine{Module: semanticService, System: true, PartitionCount: uint32(cfg.Cluster.RaftPartitionCount)}}
+			return compositeSystemStateMachine{systemMetadataSM, identityservice.PrincipalRaftStateMachine{Module: principalService}, backupservice.RaftStateMachine{Module: backupService}, daemonsemantic.RaftStateMachine{Module: semanticService, System: true, PartitionCount: uint32(cfg.Cluster.RaftPartitionCount)}}
 		}, func(partitionID uint32) consensus.StateMachine {
 			partitionCount := uint32(cfg.Cluster.RaftPartitionCount)
 			return compositePartitionStateMachine{
@@ -287,8 +281,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		backupService.EnableExperimentalRaft(rt.RaftGroups)
 		backupService.EnableClusterBackupNetworking(uint64(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
-		userService.EnableExperimentalRaft(rt.RaftGroups)
-		adminService.EnableExperimentalRaft(rt.RaftGroups)
+		principalService.EnableExperimentalRaft(rt.RaftGroups)
 		startSystemMetadataBootstrap(ctx, rt, systemMetadataSM)
 	}
 	clusterManager.SetBackendBlobPayloadProvider(blobservice.BackendPayloadProvider{Module: blobService})

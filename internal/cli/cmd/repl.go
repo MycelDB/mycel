@@ -53,7 +53,7 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 			}
 			a.UserRef = args[1]
 			a.Password = args[2]
-			conn, _, login, err := loginDaemonUser(ctx, a)
+			conn, _, login, err := loginDaemonPrincipal(ctx, a)
 			if err != nil {
 				fmt.Fprintln(out, "error:", err)
 				continue

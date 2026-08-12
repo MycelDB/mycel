@@ -21,7 +21,7 @@ import (
 func TestWatchGraphChangesFailsClosedWhenLocalNodeIsNotGraphLeader(t *testing.T) {
 	spaceModule, _, userID, spaceID, domainID := initSessionServiceTestModules(t)
 	svc := NewGraphChangeService(graphnotification.NewModule(), spaceModule).WithGraphWriteLeaderChecker(fakeGraphChangeLeaderChecker{err: status.Error(codes.Unavailable, "not local graph leader")})
-	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: userID, Username: "alice"})
+	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: userID, Username: "alice"})
 	err := svc.WatchGraphChanges(&clientv1.WatchGraphChangesRequest{SpaceId: spaceID, DomainId: domainID}, fakeGraphChangeWatchServer{ctx: ctx})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("WatchGraphChanges() error = %v, want Unavailable", err)

@@ -64,7 +64,7 @@ func (a clusterAuthz) HasCapability(ctx context.Context, operatorID string, capa
 }
 
 func authenticatedClusterContext() context.Context {
-	return daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindOperator, OperatorID: "op_1", Username: "admin"})
+	return daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: "op_1", Username: "admin"})
 }
 
 func newBootstrapClusterManager(t *testing.T) *clustering.Manager {

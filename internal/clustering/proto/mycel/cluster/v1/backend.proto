@@ -332,8 +332,9 @@ message ExecuteRaftSemanticReadResponse {
 
 message ForwardedPrincipal {
   string kind = 1;
-  string operator_id = 2;
-  string user_id = 3;
+  string principal_id = 2;
+  reserved 3;
+  reserved "user_id";
   string auth_session_id = 4;
   string username = 5;
   string created_at = 6;

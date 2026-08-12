@@ -25,7 +25,7 @@ func NewChangeStreamWatchCommand(a *app.App) *cobra.Command {
 	var afterRevision int64
 	var maxEvents int
 	cmd := &cobra.Command{Use: "watch", Short: "Watch committed graph changes for a domain", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}

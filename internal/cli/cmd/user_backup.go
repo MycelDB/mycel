@@ -14,6 +14,7 @@ import (
 	"github.com/myceldb/mycel/internal/cli/app"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/userbackup/archive"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -34,24 +35,24 @@ func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
 	var includeBlobs, includeArchived, includeSystemDomains bool
 	cmd := &cobra.Command{Use: "export", Short: "Export a selected user's visible spaces from this daemon", RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(outputPath) == "" || outputPath == "-" {
-			return fmt.Errorf("--file is required for user backups")
+			return fmt.Errorf("--file is required for principal backups")
 		}
 		conn, operatorCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		userClient := adminv1.NewAdminUserServiceClient(conn)
-		user, err := resolveAdminUser(cmd.Context(), userClient, operatorCtx, userID, username)
+		principalClient := adminv1.NewAdminPrincipalServiceClient(conn)
+		user, err := resolveAdminPrincipal(cmd.Context(), principalClient, operatorCtx, userID, username)
 		if err != nil {
 			return err
 		}
-		sessionRes, err := userClient.CreateUserSession(operatorCtx, &adminv1.CreateUserSessionRequest{UserId: user.GetUserId(), Client: &adminv1.AdminClientInfo{Name: "mycel-admin-user-backup", Version: "v1", DeviceLabel: "operator-export"}})
+		sessionRes, err := principalClient.CreatePrincipalSession(operatorCtx, &adminv1.CreatePrincipalSessionRequest{PrincipalId: user.GetPrincipalId(), Client: &commonv1.ClientInfo{Name: "mycel-admin-user-backup", Version: "v1", DeviceLabel: "operator-export"}})
 		if err != nil {
 			return fmt.Errorf("create temporary user export session: %w", err)
 		}
 		defer func() {
-			_, _ = userClient.RevokeUserSession(operatorCtx, &adminv1.RevokeUserSessionRequest{UserId: user.GetUserId(), AuthSessionId: sessionRes.GetAuthSessionId()})
+			_, _ = principalClient.RevokePrincipalSession(operatorCtx, &adminv1.RevokePrincipalSessionRequest{PrincipalId: user.GetPrincipalId(), AuthSessionId: sessionRes.GetAuthSessionId()})
 		}()
 		userCtx := metadata.AppendToOutgoingContext(cmd.Context(), "authorization", "Bearer "+sessionRes.GetAccessToken())
 		spaces, err := listAllUserSpaces(userCtx, clientv1.NewSpaceServiceClient(conn), includeArchived)
@@ -59,7 +60,7 @@ func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		sort.Slice(spaces, func(i, j int) bool { return spaces[i].GetSpaceId() < spaces[j].GetSpaceId() })
-		manifest := archive.Manifest{CreatedAt: time.Now().UTC(), Source: archive.Source{Endpoint: a.DaemonAddr, Label: sourceLabel}, SubjectUser: archive.User{UserID: user.GetUserId(), Username: user.GetUsername(), State: user.GetState().String()}, Options: archive.Options{IncludeBlobs: includeBlobs, IncludeInactiveSpaces: includeArchived}}
+		manifest := archive.Manifest{CreatedAt: time.Now().UTC(), Source: archive.Source{Endpoint: a.DaemonAddr, Label: sourceLabel}, SubjectUser: archive.User{UserID: user.GetPrincipalId(), Username: user.GetUsername(), State: user.GetState().String()}, Options: archive.Options{IncludeBlobs: includeBlobs, IncludeInactiveSpaces: includeArchived}}
 		var entries []archive.Entry
 		for _, sp := range spaces {
 			domains, err := listAllUserDomains(userCtx, clientv1.NewDomainServiceClient(conn), sp.GetSpaceId(), includeSystemDomains)
@@ -99,7 +100,7 @@ func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
 		if err := file.Close(); err != nil {
 			return err
 		}
-		return a.Print(map[string]any{"file": outputPath, "user_id": user.GetUserId(), "username": user.GetUsername(), "spaces": len(manifest.Spaces), "files": len(entries)}, fmt.Sprintf("user backup exported: %s (%d spaces)\n", outputPath, len(manifest.Spaces)))
+		return a.Print(map[string]any{"file": outputPath, "user_id": user.GetPrincipalId(), "username": user.GetUsername(), "spaces": len(manifest.Spaces), "files": len(entries)}, fmt.Sprintf("principal backup exported: %s (%d spaces)\n", outputPath, len(manifest.Spaces)))
 	}}
 	cmd.Flags().StringVar(&userID, "user-id", "", "source user id")
 	cmd.Flags().StringVar(&username, "source-username", "", "source username")
@@ -114,12 +115,12 @@ func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
 
 func NewAdminUserBackupValidateCommand(a *app.App) *cobra.Command {
 	var filePath, compression string
-	cmd := &cobra.Command{Use: "validate", Aliases: []string{"check"}, Short: "Validate a user backup archive without connecting to a daemon", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "validate", Aliases: []string{"check"}, Short: "Validate a principal backup archive without connecting to a daemon", RunE: func(cmd *cobra.Command, args []string) error {
 		backup, err := readUserBackupArchive(filePath, compression)
 		if err != nil {
 			return err
 		}
-		return a.Print(backup.Manifest, fmt.Sprintf("user backup valid: %s (%d spaces, %d files)\n", backup.Manifest.SubjectUser.Username, len(backup.Manifest.Spaces), len(backup.Manifest.Files)))
+		return a.Print(backup.Manifest, fmt.Sprintf("principal backup valid: %s (%d spaces, %d files)\n", backup.Manifest.SubjectUser.Username, len(backup.Manifest.Spaces), len(backup.Manifest.Files)))
 	}}
 	cmd.Flags().StringVarP(&filePath, "file", "f", "", "input archive path")
 	cmd.Flags().StringVar(&compression, "compression", "auto", "compression: auto, zstd, gzip, or none")
@@ -128,9 +129,9 @@ func NewAdminUserBackupValidateCommand(a *app.App) *cobra.Command {
 }
 
 func NewAdminUserBackupImportCommand(a *app.App) *cobra.Command {
-	var filePath, compression, targetUserID, targetUsername, newPassword, mode string
+	var filePath, compression, targetPrincipalID, targetPrincipalname, newPassword, mode string
 	var execute, createUser, disabled, allowNameConflicts bool
-	cmd := &cobra.Command{Use: "import", Short: "Plan or restore a user backup into a target user", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "import", Short: "Plan or restore a principal backup into a target principal", RunE: func(cmd *cobra.Command, args []string) error {
 		backup, err := readUserBackupArchive(filePath, compression)
 		if err != nil {
 			return err
@@ -138,55 +139,55 @@ func NewAdminUserBackupImportCommand(a *app.App) *cobra.Command {
 		if mode != "append" && mode != "upsert" {
 			return fmt.Errorf("--domain-import-mode must be append or upsert")
 		}
-		if strings.TrimSpace(targetUserID) == "" && strings.TrimSpace(targetUsername) == "" {
-			targetUsername = backup.Manifest.SubjectUser.Username
+		if strings.TrimSpace(targetPrincipalID) == "" && strings.TrimSpace(targetPrincipalname) == "" {
+			targetPrincipalname = backup.Manifest.SubjectUser.Username
 		}
 		conn, operatorCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		userClient := adminv1.NewAdminUserServiceClient(conn)
-		targetUser, err := resolveAdminUser(cmd.Context(), userClient, operatorCtx, targetUserID, targetUsername)
+		principalClient := adminv1.NewAdminPrincipalServiceClient(conn)
+		targetPrincipal, err := resolveAdminPrincipal(cmd.Context(), principalClient, operatorCtx, targetPrincipalID, targetPrincipalname)
 		if err != nil {
-			if !createUser || strings.TrimSpace(targetUsername) == "" {
+			if !createUser || strings.TrimSpace(targetPrincipalname) == "" {
 				return err
 			}
 			if !execute {
-				plan, planErr := planUserBackupImportForNewUser(backup, targetUsername)
+				plan, planErr := planUserBackupImportForNewUser(backup, targetPrincipalname)
 				if planErr != nil {
 					return planErr
 				}
 				plan["dry_run"] = true
-				return a.Print(plan, fmt.Sprintf("user backup import dry-run: %d spaces would be created for %s\n", len(backup.Manifest.Spaces), targetUsername))
+				return a.Print(plan, fmt.Sprintf("principal backup import dry-run: %d spaces would be created for %s\n", len(backup.Manifest.Spaces), targetPrincipalname))
 			}
-			created, createErr := userClient.CreateUser(operatorCtx, &adminv1.CreateUserRequest{Username: targetUsername, Password: optionalString(newPassword), Disabled: disabled})
+			created, createErr := principalClient.CreatePrincipal(operatorCtx, &adminv1.CreatePrincipalRequest{Username: targetPrincipalname, Password: optionalString(newPassword), Type: commonv1.PrincipalType_PRINCIPAL_TYPE_HUMAN, LoginEnabled: true, Disabled: disabled})
 			if createErr != nil {
-				return fmt.Errorf("create target user: %w", createErr)
+				return fmt.Errorf("create target principal: %w", createErr)
 			}
-			targetUser = created.GetUser()
+			targetPrincipal = created.GetPrincipal()
 		}
-		plan, err := planUserBackupImport(cmd.Context(), conn, operatorCtx, backup, targetUser, allowNameConflicts)
+		plan, err := planUserBackupImport(cmd.Context(), conn, operatorCtx, backup, targetPrincipal, allowNameConflicts)
 		if err != nil {
 			return err
 		}
 		plan["dry_run"] = !execute
 		if !execute {
-			return a.Print(plan, fmt.Sprintf("user backup import dry-run: %d spaces would be created for %s\n", len(backup.Manifest.Spaces), targetUser.GetUsername()))
+			return a.Print(plan, fmt.Sprintf("principal backup import dry-run: %d spaces would be created for %s\n", len(backup.Manifest.Spaces), targetPrincipal.GetUsername()))
 		}
-		restored, err := executeUserBackupImport(cmd.Context(), conn, operatorCtx, backup, targetUser, mode)
+		restored, err := executeUserBackupImport(cmd.Context(), conn, operatorCtx, backup, targetPrincipal, mode)
 		if err != nil {
 			return err
 		}
-		return a.Print(restored, fmt.Sprintf("user backup imported: %d spaces restored for %s\n", restored.SpacesCreated, targetUser.GetUsername()))
+		return a.Print(restored, fmt.Sprintf("principal backup imported: %d spaces restored for %s\n", restored.SpacesCreated, targetPrincipal.GetUsername()))
 	}}
 	cmd.Flags().StringVarP(&filePath, "file", "f", "", "input archive path")
 	cmd.Flags().StringVar(&compression, "compression", "auto", "compression: auto, zstd, gzip, or none")
-	cmd.Flags().StringVar(&targetUserID, "target-user-id", "", "existing restore target user id")
-	cmd.Flags().StringVar(&targetUsername, "target-username", "", "existing or new restore target username")
+	cmd.Flags().StringVar(&targetPrincipalID, "target-user-id", "", "existing restore target principal id")
+	cmd.Flags().StringVar(&targetPrincipalname, "target-username", "", "existing or new restore target principalname")
 	cmd.Flags().BoolVar(&createUser, "create-user", false, "create --target-username when it does not exist")
 	cmd.Flags().StringVar(&newPassword, "new-password", "", "optional password for --create-user (never read from backup)")
-	cmd.Flags().BoolVar(&disabled, "disabled", false, "create target user disabled")
+	cmd.Flags().BoolVar(&disabled, "disabled", false, "create target principal disabled")
 	cmd.Flags().BoolVar(&execute, "execute", false, "perform restore; default is dry-run/plan only")
 	cmd.Flags().BoolVar(&allowNameConflicts, "allow-space-name-conflicts", false, "allow restore when target already has spaces with the same names")
 	cmd.Flags().StringVar(&mode, "domain-import-mode", "append", "domain import mode: append or upsert")
@@ -203,24 +204,24 @@ func readUserBackupArchive(filePath, compression string) (*archive.Archive, erro
 	return archive.Read(f, compression)
 }
 
-func resolveAdminUser(ctx context.Context, client adminv1.AdminUserServiceClient, authCtx context.Context, userID, username string) (*adminv1.User, error) {
+func resolveAdminPrincipal(ctx context.Context, client adminv1.AdminPrincipalServiceClient, authCtx context.Context, userID, username string) (*adminv1.Principal, error) {
 	userID = strings.TrimSpace(userID)
 	username = strings.TrimSpace(username)
 	if userID == "" && username == "" {
 		return nil, fmt.Errorf("--user-id or --source-username/--target-username is required")
 	}
 	if userID != "" {
-		res, err := client.GetUser(authCtx, &adminv1.GetUserRequest{UserId: userID})
+		res, err := client.GetPrincipal(authCtx, &adminv1.GetPrincipalRequest{PrincipalId: userID})
 		if err != nil {
 			return nil, fmt.Errorf("get user %s: %w", userID, err)
 		}
-		return res.GetUser(), nil
+		return res.GetPrincipal(), nil
 	}
-	res, err := client.FindUser(authCtx, &adminv1.FindUserRequest{Username: username})
+	res, err := client.FindPrincipal(authCtx, &adminv1.FindPrincipalRequest{Lookup: &adminv1.FindPrincipalRequest_Username{Username: username}})
 	if err != nil {
-		return nil, fmt.Errorf("find user %s: %w", username, err)
+		return nil, fmt.Errorf("find principal %s: %w", username, err)
 	}
-	return res.GetUser(), nil
+	return res.GetPrincipal(), nil
 }
 
 func listAllUserSpaces(ctx context.Context, client clientv1.SpaceServiceClient, includeArchived bool) ([]*clientv1.Space, error) {
@@ -354,7 +355,7 @@ func userBackupTotalsFromArchive(backup *archive.Archive) (userBackupTotals, err
 	return totals, nil
 }
 
-func planUserBackupImportForNewUser(backup *archive.Archive, targetUsername string) (map[string]any, error) {
+func planUserBackupImportForNewUser(backup *archive.Archive, targetPrincipalname string) (map[string]any, error) {
 	totals, err := userBackupTotalsFromArchive(backup)
 	if err != nil {
 		return nil, err
@@ -362,7 +363,7 @@ func planUserBackupImportForNewUser(backup *archive.Archive, targetUsername stri
 	return map[string]any{
 		"source_user":          backup.Manifest.SubjectUser,
 		"target_user_id":       "",
-		"target_username":      targetUsername,
+		"target_username":      targetPrincipalname,
 		"target_user_create":   true,
 		"spaces_to_create":     len(backup.Manifest.Spaces),
 		"domains_to_import":    totals.domains,
@@ -376,9 +377,9 @@ func planUserBackupImportForNewUser(backup *archive.Archive, targetUsername stri
 	}, nil
 }
 
-func planUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface, operatorCtx context.Context, backup *archive.Archive, target *adminv1.User, allowNameConflicts bool) (map[string]any, error) {
-	userClient := adminv1.NewAdminUserServiceClient(conn)
-	userCtx, revoke, err := temporaryUserAuthContext(operatorCtx, userClient, target.GetUserId(), "operator-import-plan")
+func planUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface, operatorCtx context.Context, backup *archive.Archive, target *adminv1.Principal, allowNameConflicts bool) (map[string]any, error) {
+	principalClient := adminv1.NewAdminPrincipalServiceClient(conn)
+	userCtx, revoke, err := temporaryUserAuthContext(operatorCtx, principalClient, target.GetPrincipalId(), "operator-import-plan")
 	if err != nil {
 		return nil, err
 	}
@@ -409,11 +410,11 @@ func planUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface, op
 		}
 	}
 	if len(conflicts) > 0 && !allowNameConflicts {
-		return nil, fmt.Errorf("target user has %d space name conflict(s); rerun with --allow-space-name-conflicts or choose a fresh target", len(conflicts))
+		return nil, fmt.Errorf("target principal has %d space name conflict(s); rerun with --allow-space-name-conflicts or choose a fresh target", len(conflicts))
 	}
 	return map[string]any{
 		"source_user":          backup.Manifest.SubjectUser,
-		"target_user_id":       target.GetUserId(),
+		"target_user_id":       target.GetPrincipalId(),
 		"target_username":      target.GetUsername(),
 		"spaces_to_create":     len(backup.Manifest.Spaces),
 		"domains_to_import":    totalDomains,
@@ -427,9 +428,9 @@ func planUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface, op
 	}, nil
 }
 
-func executeUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface, operatorCtx context.Context, backup *archive.Archive, target *adminv1.User, mode string) (userBackupRestoreResult, error) {
-	userClient := adminv1.NewAdminUserServiceClient(conn)
-	userCtx, revoke, err := temporaryUserAuthContext(operatorCtx, userClient, target.GetUserId(), "operator-import-execute")
+func executeUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface, operatorCtx context.Context, backup *archive.Archive, target *adminv1.Principal, mode string) (userBackupRestoreResult, error) {
+	principalClient := adminv1.NewAdminPrincipalServiceClient(conn)
+	userCtx, revoke, err := temporaryUserAuthContext(operatorCtx, principalClient, target.GetPrincipalId(), "operator-import-execute")
 	if err != nil {
 		return userBackupRestoreResult{}, err
 	}
@@ -437,10 +438,10 @@ func executeUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface,
 	spaceClient := adminv1.NewAdminSpaceServiceClient(conn)
 	domainClient := clientv1.NewDomainServiceClient(conn)
 	schemaClient := clientv1.NewSchemaServiceClient(conn)
-	result := userBackupRestoreResult{UserID: target.GetUserId(), Username: target.GetUsername(), SpaceIDMap: map[string]string{}, DomainIDMap: map[string]string{}}
+	result := userBackupRestoreResult{UserID: target.GetPrincipalId(), Username: target.GetUsername(), SpaceIDMap: map[string]string{}, DomainIDMap: map[string]string{}}
 	for _, sourceSpace := range backup.Manifest.Spaces {
 		defaultDomain := firstDefaultDomain(sourceSpace.Domains)
-		createSpace := &adminv1.CreateSpaceRequest{Name: sourceSpace.Name, OwnerUserId: target.GetUserId()}
+		createSpace := &adminv1.CreateSpaceRequest{Name: sourceSpace.Name, OwnerPrincipalId: target.GetPrincipalId()}
 		if defaultDomain != nil {
 			createSpace.DefaultDomainKey = defaultDomain.Key
 			createSpace.DefaultDomainName = defaultDomain.Name
@@ -497,13 +498,13 @@ func executeUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface,
 	return result, nil
 }
 
-func temporaryUserAuthContext(operatorCtx context.Context, userClient adminv1.AdminUserServiceClient, userID, label string) (context.Context, func(), error) {
-	res, err := userClient.CreateUserSession(operatorCtx, &adminv1.CreateUserSessionRequest{UserId: userID, Client: &adminv1.AdminClientInfo{Name: "mycel-admin-user-backup", Version: "v1", DeviceLabel: label}})
+func temporaryUserAuthContext(operatorCtx context.Context, userClient adminv1.AdminPrincipalServiceClient, userID, label string) (context.Context, func(), error) {
+	res, err := userClient.CreatePrincipalSession(operatorCtx, &adminv1.CreatePrincipalSessionRequest{PrincipalId: userID, Client: &commonv1.ClientInfo{Name: "mycel-admin-user-backup", Version: "v1", DeviceLabel: label}})
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("create temporary user session: %w", err)
 	}
 	revoke := func() {
-		_, _ = userClient.RevokeUserSession(operatorCtx, &adminv1.RevokeUserSessionRequest{UserId: userID, AuthSessionId: res.GetAuthSessionId()})
+		_, _ = userClient.RevokePrincipalSession(operatorCtx, &adminv1.RevokePrincipalSessionRequest{PrincipalId: userID, AuthSessionId: res.GetAuthSessionId()})
 	}
 	return metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+res.GetAccessToken()), revoke, nil
 }

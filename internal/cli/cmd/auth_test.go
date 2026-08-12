@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/myceldb/mycel/internal/cli/app"
-	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 )
 
 func TestAuthLoginWhoAmIAndSessionListUseDaemonGRPC(t *testing.T) {
@@ -21,7 +21,7 @@ func TestAuthLoginWhoAmIAndSessionListUseDaemonGRPC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth login failed: %v\n%s", err, out)
 	}
-	var login clientv1.LoginResponse
+	var login commonv1.LoginResponse
 	if err := json.Unmarshal([]byte(out), &login); err != nil {
 		t.Fatalf("decode login output: %v\n%s", err, out)
 	}
@@ -38,7 +38,7 @@ func TestAuthLoginWhoAmIAndSessionListUseDaemonGRPC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth session list failed: %v\n%s", err, out)
 	}
-	var sessions []*clientv1.AuthSessionSummary
+	var sessions []*commonv1.AuthSessionSummary
 	if err := json.Unmarshal([]byte(out), &sessions); err != nil {
 		t.Fatalf("decode session list: %v\n%s", err, out)
 	}
@@ -59,7 +59,7 @@ func TestAuthRefreshAndRevokeOtherUseDaemonGRPC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth login failed: %v\n%s", err, out)
 	}
-	var login clientv1.LoginResponse
+	var login commonv1.LoginResponse
 	if err := json.Unmarshal([]byte(out), &login); err != nil {
 		t.Fatalf("decode login output: %v\n%s", err, out)
 	}
@@ -68,7 +68,7 @@ func TestAuthRefreshAndRevokeOtherUseDaemonGRPC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth refresh failed: %v\n%s", err, out)
 	}
-	var refreshed clientv1.RefreshResponse
+	var refreshed commonv1.RefreshResponse
 	if err := json.Unmarshal([]byte(out), &refreshed); err != nil {
 		t.Fatalf("decode refresh output: %v\n%s", err, out)
 	}

@@ -83,7 +83,7 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if err != nil {
 		return nil, err
 	}
-	actorID, err := parseIdentityUserID(principal.UserID)
+	actorID, err := parseIdentityPrincipalID(principal.PrincipalID)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if err != nil {
 		return nil, mapSemanticError(err, "semantic search")
 	}
-	nodeByID, warnings := s.loadSearchNodes(ctx, principal.UserID, spaceID, domainID, result.Results)
+	nodeByID, warnings := s.loadSearchNodes(ctx, principal.PrincipalID, spaceID, domainID, result.Results)
 	out := make([]*clientv1.SemanticSearchResult, 0, len(result.Results))
 	for _, item := range result.Results {
 		node := nodeByID[item.NodeID]
@@ -122,17 +122,17 @@ func (s *SemanticService) authorizeDomainRead(ctx context.Context, spaceIDText, 
 	if err != nil {
 		return principalUser{}, uuid.Nil, uuid.Nil, err
 	}
-	domain, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, spaceID.String(), domainID.String(), "")
+	domain, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, spaceID.String(), domainID.String(), "")
 	if err != nil {
 		return principalUser{}, uuid.Nil, uuid.Nil, mapDomainError(err, "semantic authorize domain")
 	}
 	if !graph.DomainExplicitSemanticSearchable(domain) {
 		return principalUser{}, uuid.Nil, uuid.Nil, status.Error(codes.FailedPrecondition, "domain is excluded from semantic search and indexing")
 	}
-	return principalUser{UserID: principal.UserID}, spaceID, domainID, nil
+	return principalUser{PrincipalID: principal.PrincipalID}, spaceID, domainID, nil
 }
 
-type principalUser struct{ UserID string }
+type principalUser struct{ PrincipalID string }
 
 func (s *SemanticService) semanticDisplayMetadata(ctx context.Context, spaceID domainspace.SpaceID) (map[domainsemantic.SemanticIndexID]domainsemantic.SemanticIndexState, map[domainsemantic.ModelEndpointID]domainsemantic.ModelEndpoint, map[domainsemantic.InferenceModelID]domainsemantic.InferenceModel, map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend, error) {
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
@@ -207,10 +207,10 @@ func (s *SemanticService) resolveSearchIndexes(ctx context.Context, spaceID doma
 	return nil, status.Error(codes.NotFound, "semantic index not found")
 }
 
-func (s *SemanticService) loadSearchNodes(ctx context.Context, userID string, spaceID domainspace.SpaceID, domainID graph.DomainID, results []semanticsearch.SearchResult) (map[graph.NodeID]*clientv1.Node, []string) {
+func (s *SemanticService) loadSearchNodes(ctx context.Context, principalID string, spaceID domainspace.SpaceID, domainID graph.DomainID, results []semanticsearch.SearchResult) (map[graph.NodeID]*clientv1.Node, []string) {
 	out := map[graph.NodeID]*clientv1.Node{}
 	warnings := []string{}
-	tx := daemonsession.GraphTransaction{ID: "semantic-search-" + uuid.NewString(), UserID: userID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
+	tx := daemonsession.GraphTransaction{ID: "semantic-search-" + uuid.NewString(), PrincipalID: principalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
 	seen := map[graph.NodeID]bool{}
 	for _, result := range results {
 		if seen[result.NodeID] {
@@ -340,12 +340,12 @@ func parseSemanticIndexID(raw string) (domainsemantic.SemanticIndexID, error) {
 	return domainsemantic.SemanticIndexID(id), nil
 }
 
-func parseIdentityUserID(raw string) (identity.UserID, error) {
+func parseIdentityPrincipalID(raw string) (identity.PrincipalID, error) {
 	id, err := uuid.Parse(strings.TrimSpace(raw))
 	if err != nil || id == uuid.Nil {
-		return uuid.Nil, status.Error(codes.Unauthenticated, "invalid user principal")
+		return "", status.Error(codes.Unauthenticated, "invalid principal")
 	}
-	return identity.UserID(id), nil
+	return identity.PrincipalID(id.String()), nil
 }
 
 func mapSemanticError(err error, action string) error {

@@ -22,10 +22,9 @@ import (
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
-	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
-	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
@@ -38,11 +37,8 @@ import (
 
 type Config struct {
 	Addr                     string
-	AdminLister              daemonadmin.AdminLister
-	AdminAuthenticator       daemonadmin.OperatorAuthManager
-	OperatorManager          daemonadmin.OperatorManager
+	PrincipalManager         adminapi.PrincipalManager
 	BackupManager            daemonbackup.Manager
-	UserManager              daemonuser.Manager
 	SpaceManager             daemonspace.Manager
 	SessionManager           daemonsession.Manager
 	GraphManager             daegraph.Manager
@@ -77,17 +73,8 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if cfg.Addr == "" {
 		return nil, fmt.Errorf("grpc address is required")
 	}
-	if cfg.AdminLister == nil {
-		return nil, fmt.Errorf("admin lister is required")
-	}
-	if cfg.AdminAuthenticator == nil {
-		return nil, fmt.Errorf("admin authenticator is required")
-	}
-	if cfg.OperatorManager == nil {
-		return nil, fmt.Errorf("operator manager is required")
-	}
-	if cfg.UserManager == nil {
-		return nil, fmt.Errorf("user manager is required")
+	if cfg.PrincipalManager == nil {
+		return nil, fmt.Errorf("principal manager is required")
 	}
 	if cfg.SpaceManager == nil {
 		return nil, fmt.Errorf("space manager is required")
@@ -143,15 +130,14 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if cfg.ClusteringServer != nil {
 		clusterpb.RegisterClusterBackendServiceServer(grpcServer, cfg.ClusteringServer)
 	}
-	adminv1.RegisterAdminAuthServiceServer(grpcServer, adminapi.NewAuthService(cfg.AdminAuthenticator, cfg.TokenManager))
-	adminv1.RegisterAdminOperatorServiceServer(grpcServer, adminapi.NewOperatorService(cfg.OperatorManager))
-	adminv1.RegisterAdminUserServiceServer(grpcServer, adminapi.NewUserService(cfg.UserManager, cfg.OperatorManager, cfg.TokenManager))
-	adminv1.RegisterAdminSpaceServiceServer(grpcServer, adminapi.NewAdminSpaceService(cfg.SpaceManager, cfg.UserManager, cfg.OperatorManager))
-	adminv1.RegisterAdminDomainServiceServer(grpcServer, adminapi.NewAdminDomainService(cfg.SpaceManager, cfg.OperatorManager))
-	adminv1.RegisterAdminInferenceServiceServer(grpcServer, adminapi.NewAdminInferenceService(cfg.SemanticManager, cfg.OperatorManager))
-	adminv1.RegisterAdminSemanticServiceServer(grpcServer, adminapi.NewAdminSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
-	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.OperatorManager))
-	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.OperatorManager))
+	commonv1.RegisterAuthServiceServer(grpcServer, clientapi.NewAuthService(cfg.PrincipalManager, cfg.TokenManager))
+	adminv1.RegisterAdminPrincipalServiceServer(grpcServer, adminapi.NewPrincipalService(cfg.PrincipalManager, cfg.TokenManager))
+	adminv1.RegisterAdminSpaceServiceServer(grpcServer, adminapi.NewAdminSpaceService(cfg.SpaceManager, cfg.PrincipalManager, cfg.PrincipalManager))
+	adminv1.RegisterAdminDomainServiceServer(grpcServer, adminapi.NewAdminDomainService(cfg.SpaceManager, cfg.PrincipalManager))
+	adminv1.RegisterAdminInferenceServiceServer(grpcServer, adminapi.NewAdminInferenceService(cfg.SemanticManager, cfg.PrincipalManager))
+	adminv1.RegisterAdminSemanticServiceServer(grpcServer, adminapi.NewAdminSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.PrincipalManager))
+	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.PrincipalManager))
+	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.PrincipalManager))
 	if cfg.SchemaManager != nil {
 		adminv1.RegisterAdminSchemaServiceServer(grpcServer, adminapi.NewAdminSchemaService(cfg.SchemaManager))
 	}
@@ -159,7 +145,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		adminv1.RegisterAdminAutomationServiceServer(grpcServer, adminapi.NewAdminAutomationService(cfg.AutomationManager))
 	}
 	if cfg.ClusteringManager != nil {
-		clusterAdmin := adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.OperatorManager).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups, cfg.RaftTransportDiagnostics)
+		clusterAdmin := adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.PrincipalManager).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups, cfg.RaftTransportDiagnostics)
 		if provider, ok := cfg.GraphManager.(adminapi.LocalGraphConsistencyProvider); ok {
 			clusterAdmin.WithGraphConsistency(provider)
 		}
@@ -169,7 +155,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		adminv1.RegisterAdminClusterServiceServer(grpcServer, clusterAdmin)
 	}
 	if cfg.BackupManager != nil {
-		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.OperatorManager).WithClusterRuntime(cfg.ClusteringManager, cfg.ClusterConfig))
+		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.PrincipalManager).WithClusterRuntime(cfg.ClusteringManager, cfg.ClusterConfig))
 	}
 	var clientRouter clientapi.ClientRequestRouter
 	localNode := consensus.NodeID(cfg.ClusterConfig.RaftLocalNodeID)
@@ -189,7 +175,6 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if cfg.ClusteringManager != nil {
 		cfg.ClusteringManager.SetBackendClientRequestForwarder(clientapi.ForwardedClientHandler{LocalNode: localNode, Sessions: sessionAPI, Transactions: transactionAPI, Graphs: graphAPI, Queries: queryAPI, Metadata: metadataCatalogAPI})
 	}
-	clientv1.RegisterAuthServiceServer(grpcServer, clientapi.NewAuthService(cfg.UserManager, cfg.TokenManager))
 	clientv1.RegisterSpaceServiceServer(grpcServer, clientapi.NewSpaceService(cfg.SpaceManager))
 	clientv1.RegisterDomainServiceServer(grpcServer, clientapi.NewDomainService(cfg.SpaceManager))
 	clientv1.RegisterSessionServiceServer(grpcServer, sessionAPI)
@@ -220,10 +205,8 @@ func clientRoutingEnabled(cfg daemonconfig.ClusterConfig, clusterID string) bool
 
 func defaultPublicMethods() map[string]bool {
 	return map[string]bool{
-		adminv1.AdminAuthService_LoginOperator_FullMethodName:                       true,
-		adminv1.AdminAuthService_RefreshOperator_FullMethodName:                     true,
-		clientv1.AuthService_Login_FullMethodName:                                   true,
-		clientv1.AuthService_Refresh_FullMethodName:                                 true,
+		commonv1.AuthService_Login_FullMethodName:                                   true,
+		commonv1.AuthService_Refresh_FullMethodName:                                 true,
 		clusterpb.ClusterBackendService_RegisterNode_FullMethodName:                 true,
 		clusterpb.ClusterBackendService_GetClusterView_FullMethodName:               true,
 		clusterpb.ClusterBackendService_UpdateNodeStatus_FullMethodName:             true,
@@ -247,9 +230,9 @@ func defaultPublicMethods() map[string]bool {
 
 func defaultQuiesceExemptMethods() map[string]bool {
 	return map[string]bool{
-		adminv1.AdminAuthService_LoginOperator_FullMethodName:                       true,
-		adminv1.AdminAuthService_RefreshOperator_FullMethodName:                     true,
-		adminv1.AdminAuthService_WhoAmI_FullMethodName:                              true,
+		commonv1.AuthService_Login_FullMethodName:                                   true,
+		commonv1.AuthService_Refresh_FullMethodName:                                 true,
+		commonv1.AuthService_WhoAmI_FullMethodName:                                  true,
 		adminv1.AdminBackupService_GetBackupPolicy_FullMethodName:                   true,
 		adminv1.AdminBackupService_TriggerBackup_FullMethodName:                     true,
 		adminv1.AdminBackupService_GetBackupStatus_FullMethodName:                   true,

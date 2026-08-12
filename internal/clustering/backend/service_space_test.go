@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/model"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
+	"github.com/myceldb/mycel/internal/identity/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -30,7 +31,7 @@ func (r *fakeSpaceReader) GetLocalRaftSpace(ctx context.Context, spaceID string)
 func TestGetRaftSpaceUsesLocalReaderAndMapsSpace(t *testing.T) {
 	created := time.Now().UTC().Truncate(time.Nanosecond)
 	updated := created.Add(time.Second)
-	sp := domainspace.Space{SpaceID: uuid.New(), OwnerID: uuid.New(), Name: "main", Status: "active", CreatedAt: created, UpdatedAt: updated}
+	sp := domainspace.Space{SpaceID: uuid.New(), OwnerID: identity.PrincipalID(uuid.NewString()), Name: "main", Status: "active", CreatedAt: created, UpdatedAt: updated}
 	reader := &fakeSpaceReader{space: sp}
 	svc := NewService(model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: "node-a", ClusterID: "cluster-a"}, model.NodeStateClustered, nil).WithSpaceReader(reader)
 	res, err := svc.GetRaftSpace(context.Background(), &clusterpb.GetRaftSpaceRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, SpaceId: sp.SpaceID.String()})

@@ -10,6 +10,7 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
@@ -63,9 +64,9 @@ func TestQuiesceUnaryInterceptorRejectsQuiescedRequest(t *testing.T) {
 	}
 }
 
-func TestDefaultQuiesceExemptsAdminAuthRefresh(t *testing.T) {
+func TestDefaultQuiesceExemptsCommonAuth(t *testing.T) {
 	exempt := defaultQuiesceExemptMethods()
-	for _, method := range []string{adminv1.AdminAuthService_LoginOperator_FullMethodName, adminv1.AdminAuthService_RefreshOperator_FullMethodName, adminv1.AdminAuthService_WhoAmI_FullMethodName} {
+	for _, method := range []string{commonv1.AuthService_Login_FullMethodName, commonv1.AuthService_Refresh_FullMethodName, commonv1.AuthService_WhoAmI_FullMethodName} {
 		if !exempt[method] {
 			t.Fatalf("method %s is not quiesce-exempt", method)
 		}
@@ -145,7 +146,7 @@ func TestServerNewRegistersIngressGateWithCoordinator(t *testing.T) {
 		t.Fatalf("graph change notification init failed: %v", result.Error)
 	}
 
-	srv, err := New(Config{Addr: "127.0.0.1:0", AdminLister: fakeOperatorManager{}, AdminAuthenticator: fakeOperatorManager{}, OperatorManager: fakeOperatorManager{}, UserManager: fakeUserManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, Quiesce: coordinator})
+	srv, err := New(Config{Addr: "127.0.0.1:0", PrincipalManager: fakePrincipalManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, Quiesce: coordinator})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

@@ -24,7 +24,7 @@ func TestModuleAllowsStandaloneWrite(t *testing.T) {
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	if _, err := m.CreateSpaceWithResult(ctx, CreateSpaceInput{Name: "standalone", OwnerUserID: uuid.New()}); err != nil {
+	if _, err := m.CreateSpaceWithResult(ctx, CreateSpaceInput{Name: "standalone", OwnerPrincipalID: testPrincipalID(t)}); err != nil {
 		t.Fatalf("CreateSpaceWithResult() error = %v", err)
 	}
 }
@@ -44,8 +44,8 @@ func TestModuleWALCreateSpaceAppendsAndApplies(t *testing.T) {
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	owner := uuid.New()
-	result, err := m.CreateSpaceWithResult(ctx, CreateSpaceInput{Name: "wal-space", OwnerUserID: owner})
+	owner := testPrincipalID(t)
+	result, err := m.CreateSpaceWithResult(ctx, CreateSpaceInput{Name: "wal-space", OwnerPrincipalID: owner})
 	if err != nil {
 		t.Fatalf("CreateSpaceWithResult() error = %v", err)
 	}
@@ -85,12 +85,12 @@ func TestModuleWALCreateDomainAppendsAndApplies(t *testing.T) {
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	owner := uuid.New()
-	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerUserID: owner})
+	owner := testPrincipalID(t)
+	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerPrincipalID: owner})
 	if err != nil {
 		t.Fatalf("CreateSpace() error = %v", err)
 	}
-	domain, err := m.CreateDomain(ctx, owner.String(), CreateDomainInput{SpaceID: sp.SpaceID.String(), Key: "docs", Name: "Docs"})
+	domain, err := m.CreateDomain(ctx, string(owner), CreateDomainInput{SpaceID: sp.SpaceID.String(), Key: "docs", Name: "Docs"})
 	if err != nil {
 		t.Fatalf("CreateDomain() error = %v", err)
 	}
@@ -119,17 +119,17 @@ func TestModuleWALUpdateDomainAppendsAndApplies(t *testing.T) {
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	owner := uuid.New()
-	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerUserID: owner})
+	owner := testPrincipalID(t)
+	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerPrincipalID: owner})
 	if err != nil {
 		t.Fatalf("CreateSpace() error = %v", err)
 	}
-	domain, err := m.CreateDomain(ctx, owner.String(), CreateDomainInput{SpaceID: sp.SpaceID.String(), Key: "docs", Name: "Docs"})
+	domain, err := m.CreateDomain(ctx, string(owner), CreateDomainInput{SpaceID: sp.SpaceID.String(), Key: "docs", Name: "Docs"})
 	if err != nil {
 		t.Fatalf("CreateDomain() error = %v", err)
 	}
 	desc := "updated docs"
-	updated, err := m.UpdateDomain(ctx, owner.String(), UpdateDomainInput{SpaceID: sp.SpaceID.String(), DomainID: domain.ID.String(), Description: &desc})
+	updated, err := m.UpdateDomain(ctx, string(owner), UpdateDomainInput{SpaceID: sp.SpaceID.String(), DomainID: domain.ID.String(), Description: &desc})
 	if err != nil {
 		t.Fatalf("UpdateDomain() error = %v", err)
 	}
@@ -158,16 +158,16 @@ func TestModuleWALDeleteDomainAppendsAndApplies(t *testing.T) {
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	owner := uuid.New()
-	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerUserID: owner})
+	owner := testPrincipalID(t)
+	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerPrincipalID: owner})
 	if err != nil {
 		t.Fatalf("CreateSpace() error = %v", err)
 	}
-	domain, err := m.CreateDomain(ctx, owner.String(), CreateDomainInput{SpaceID: sp.SpaceID.String(), Key: "docs", Name: "Docs"})
+	domain, err := m.CreateDomain(ctx, string(owner), CreateDomainInput{SpaceID: sp.SpaceID.String(), Key: "docs", Name: "Docs"})
 	if err != nil {
 		t.Fatalf("CreateDomain() error = %v", err)
 	}
-	if err := m.DeleteDomain(ctx, owner.String(), sp.SpaceID.String(), domain.ID.String()); err != nil {
+	if err := m.DeleteDomain(ctx, string(owner), sp.SpaceID.String(), domain.ID.String()); err != nil {
 		t.Fatalf("DeleteDomain() error = %v", err)
 	}
 	if got := walManager.LastCommittedLSN(); got != 3 {
@@ -181,7 +181,7 @@ func TestModuleWALDeleteDomainAppendsAndApplies(t *testing.T) {
 	}
 }
 
-func TestModuleWALGrantSpaceUserAppendsAndApplies(t *testing.T) {
+func TestModuleWALGrantSpacePrincipalAppendsAndApplies(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 	walManager, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal"), SegmentBytes: 1024 * 1024})
@@ -195,15 +195,15 @@ func TestModuleWALGrantSpaceUserAppendsAndApplies(t *testing.T) {
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	owner := uuid.New()
-	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerUserID: owner})
+	owner := testPrincipalID(t)
+	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerPrincipalID: owner})
 	if err != nil {
 		t.Fatalf("CreateSpace() error = %v", err)
 	}
 	user := uuid.New()
-	grant, err := m.GrantSpaceUser(ctx, sp.SpaceID.String(), user.String(), "reader")
+	grant, err := m.GrantSpacePrincipal(ctx, sp.SpaceID.String(), user.String(), "reader")
 	if err != nil {
-		t.Fatalf("GrantSpaceUser() error = %v", err)
+		t.Fatalf("GrantSpacePrincipal() error = %v", err)
 	}
 	if grant.ID == "" || grant.Role != "reader" {
 		t.Fatalf("grant=%#v", grant)
@@ -230,8 +230,8 @@ func TestModuleWALDeleteSpaceAppendsAndApplies(t *testing.T) {
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	owner := uuid.New()
-	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerUserID: owner})
+	owner := testPrincipalID(t)
+	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerPrincipalID: owner})
 	if err != nil {
 		t.Fatalf("CreateSpace() error = %v", err)
 	}
@@ -254,7 +254,7 @@ func TestModuleWALRecoveryAppliesCommittedCreateSpace(t *testing.T) {
 	dataDir := t.TempDir()
 	walDir := filepath.Join(dataDir, "wal")
 	seed := NewModule()
-	record := seed.buildCreateSpaceRecord(CreateSpaceInput{Name: "recovered", OwnerUserID: uuid.New()})
+	record := seed.buildCreateSpaceRecord(CreateSpaceInput{Name: "recovered", OwnerPrincipalID: testPrincipalID(t)})
 	payload, err := json.Marshal(record)
 	if err != nil {
 		t.Fatal(err)
@@ -314,7 +314,7 @@ func TestModuleQuiesceRejectsCreateSpace(t *testing.T) {
 		t.Fatalf("Quiesce() error = %v", err)
 	}
 	defer lease.Release(ctx)
-	_, _, err = m.CreateSpace(ctx, CreateSpaceInput{Name: "blocked", OwnerUserID: uuid.New()})
+	_, _, err = m.CreateSpace(ctx, CreateSpaceInput{Name: "blocked", OwnerPrincipalID: testPrincipalID(t)})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("CreateSpace() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
 	}

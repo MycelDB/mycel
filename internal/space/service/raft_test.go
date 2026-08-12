@@ -19,8 +19,8 @@ import (
 
 func TestBuildCreateSpaceRaftCommand(t *testing.T) {
 	m := NewModule()
-	ownerID := uuid.New()
-	record, cmd, err := m.buildCreateSpaceRaftCommand(CreateSpaceInput{Name: "raft-space", OwnerUserID: ownerID}, 64, "create-space-1")
+	ownerID := testPrincipalID(t)
+	record, cmd, err := m.buildCreateSpaceRaftCommand(CreateSpaceInput{Name: "raft-space", OwnerPrincipalID: ownerID}, 64, "create-space-1")
 	if err != nil {
 		t.Fatalf("buildCreateSpaceRaftCommand() error = %v", err)
 	}
@@ -43,7 +43,7 @@ func TestApplyCreateSpaceRaftCommand(t *testing.T) {
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	_, cmd, err := m.buildCreateSpaceRaftCommand(CreateSpaceInput{Name: "raft-space", OwnerUserID: uuid.New()}, 64, "create-space-1")
+	_, cmd, err := m.buildCreateSpaceRaftCommand(CreateSpaceInput{Name: "raft-space", OwnerPrincipalID: testPrincipalID(t)}, 64, "create-space-1")
 	if err != nil {
 		t.Fatalf("buildCreateSpaceRaftCommand() error = %v", err)
 	}
@@ -70,7 +70,7 @@ func TestRaftStateMachineAppliesSpaceMetadataCommands(t *testing.T) {
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	_, createCmd, err := m.buildCreateSpaceRaftCommand(CreateSpaceInput{Name: "raft-space", OwnerUserID: uuid.New()}, 64, "create-space-1")
+	_, createCmd, err := m.buildCreateSpaceRaftCommand(CreateSpaceInput{Name: "raft-space", OwnerPrincipalID: testPrincipalID(t)}, 64, "create-space-1")
 	if err != nil {
 		t.Fatalf("buildCreateSpaceRaftCommand() error = %v", err)
 	}
@@ -89,13 +89,13 @@ func TestRaftStateMachineAppliesSpaceMetadataCommands(t *testing.T) {
 		t.Fatalf("GetDomainByRef() after raft apply error = %v", err)
 	}
 
-	userID := uuid.New()
-	grantRecord := grantSpaceUserRecord{Rule: access.SpaceAccessRule{ID: uuid.New(), SpaceID: spaceID, UserID: userID, Permissions: []access.SpacePermission{access.SpacePermissionRead}}}
-	grantCmd := mustSpaceRaftCommand(t, spaceID, recordTypeGrantSpaceUser, grantRecord, "grant-1")
+	principalID := testPrincipalID(t)
+	grantRecord := grantSpacePrincipalRecord{Rule: access.SpaceAccessRule{ID: uuid.New(), SpaceID: spaceID, PrincipalID: principalID, Permissions: []access.SpacePermission{access.SpacePermissionRead}}}
+	grantCmd := mustSpaceRaftCommand(t, spaceID, recordTypeGrantSpacePrincipal, grantRecord, "grant-1")
 	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 3, RaftTerm: 1}, grantCmd); err != nil {
 		t.Fatalf("apply grant command: %v", err)
 	}
-	if access, err := m.DomainEffectiveAccess(ctx, userID.String(), spaceID.String()); err != nil || len(access.Capabilities) == 0 {
+	if access, err := m.DomainEffectiveAccess(ctx, string(principalID), spaceID.String()); err != nil || len(access.Capabilities) == 0 {
 		t.Fatalf("DomainEffectiveAccess() = %+v, %v; want capabilities", access, err)
 	}
 
@@ -111,15 +111,15 @@ func TestRaftStateMachineAppliesSpaceMetadataCommands(t *testing.T) {
 func TestBuildPhase8SpaceMetadataRaftCommands(t *testing.T) {
 	m := NewModule()
 	spaceID := uuid.New()
-	userID := uuid.New()
+	principalID := testPrincipalID(t)
 	domainRecord := m.buildCreateDomainRecord(spaceID, CreateDomainInput{Key: "docs", Name: "Docs"})
 	commands := []struct {
 		name       string
 		recordType string
 		build      func() (consensus.RaftCommand, error)
 	}{
-		{"grant", string(recordTypeGrantSpaceUser), func() (consensus.RaftCommand, error) {
-			return m.buildGrantSpaceUserRaftCommand(grantSpaceUserRecord{Rule: access.SpaceAccessRule{ID: uuid.New(), SpaceID: spaceID, UserID: userID, Permissions: []access.SpacePermission{access.SpacePermissionRead}}}, 64, "grant-1")
+		{"grant", string(recordTypeGrantSpacePrincipal), func() (consensus.RaftCommand, error) {
+			return m.buildGrantSpacePrincipalRaftCommand(grantSpacePrincipalRecord{Rule: access.SpaceAccessRule{ID: uuid.New(), SpaceID: spaceID, PrincipalID: principalID, Permissions: []access.SpacePermission{access.SpacePermissionRead}}}, 64, "grant-1")
 		}},
 		{"create-domain", string(recordTypeCreateDomain), func() (consensus.RaftCommand, error) {
 			return m.buildCreateDomainRaftCommand(domainRecord, 64, "domain-create-1")
@@ -176,7 +176,7 @@ func TestSpaceMetadataRaftProposalFailsClosedWithoutLeader(t *testing.T) {
 
 func TestBuildCreateSpaceRaftCommandRequiresCommandID(t *testing.T) {
 	m := NewModule()
-	if _, _, err := m.buildCreateSpaceRaftCommand(CreateSpaceInput{Name: "raft-space", OwnerUserID: uuid.New()}, 64, ""); err == nil {
+	if _, _, err := m.buildCreateSpaceRaftCommand(CreateSpaceInput{Name: "raft-space", OwnerPrincipalID: testPrincipalID(t)}, 64, ""); err == nil {
 		t.Fatal("expected missing command id to fail")
 	}
 }

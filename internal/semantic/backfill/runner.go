@@ -133,15 +133,15 @@ func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIn
 	return rec, nil, nil
 }
 
-func backfillCredentialOwnerAttribution(credential domainsemantic.InferenceCredential) identity.UserID {
+func backfillCredentialOwnerAttribution(credential domainsemantic.InferenceCredential) identity.PrincipalID {
 	if credential.OwnerType != domainsemantic.CredentialOwnerUser {
-		return uuid.Nil
+		return ""
 	}
 	id, err := uuid.Parse(strings.TrimSpace(credential.OwnerID))
 	if err != nil || id == uuid.Nil {
-		return uuid.Nil
+		return ""
 	}
-	return identity.UserID(id)
+	return identity.PrincipalID(id.String())
 }
 
 func (r Runner) listVectorRecords(ctx context.Context, index domainsemantic.SemanticIndex, model domainsemantic.InferenceModel) ([]domainsemantic.AdvancedEmbeddingRecord, error) {

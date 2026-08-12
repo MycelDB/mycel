@@ -149,5 +149,5 @@ type SearchInput struct {
 	Text             string
 	Limit            int
 	MinScore         float64
-	ActorPrincipalID identity.UserID
+	ActorPrincipalID identity.PrincipalID
 }

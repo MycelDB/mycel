@@ -926,7 +926,7 @@ func (r semanticGraphReader) ListEdges(ctx context.Context, domainID graph.Domai
 }
 
 func (r semanticGraphReader) tx(domainID graph.DomainID) daemonsession.GraphTransaction {
-	return daemonsession.GraphTransaction{ID: "semantic-read-" + r.spaceID.String() + "-" + domainID.String(), SessionID: "semantic-read", UserID: "semantic", SpaceID: r.spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive}
+	return daemonsession.GraphTransaction{ID: "semantic-read-" + r.spaceID.String() + "-" + domainID.String(), SessionID: "semantic-read", PrincipalID: "semantic", SpaceID: r.spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive}
 }
 
 func listAllGraphNodes(ctx context.Context, manager GraphReadManager, tx daemonsession.GraphTransaction) ([]graph.Node, error) {

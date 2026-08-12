@@ -25,7 +25,7 @@ func NewUploadBlobCommand(a *app.App) *cobra.Command {
 		if originalFilename == "" {
 			originalFilename = filepath.Base(args[0])
 		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -69,7 +69,7 @@ func NewUploadBlobCommand(a *app.App) *cobra.Command {
 func NewGetRawBlobCommand(a *app.App) *cobra.Command {
 	var spaceID string
 	cmd := &cobra.Command{Use: "get BLOB_ID", Aliases: []string{"metadata", "show"}, Short: "Get raw blob metadata", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -88,7 +88,7 @@ func NewGetRawBlobCommand(a *app.App) *cobra.Command {
 func NewDownloadRawBlobCommand(a *app.App) *cobra.Command {
 	var spaceID, outputPath string
 	cmd := &cobra.Command{Use: "download BLOB_ID", Short: "Download raw blob content", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -156,7 +156,7 @@ func NewDownloadRawBlobCommand(a *app.App) *cobra.Command {
 func NewDeleteRawBlobCommand(a *app.App) *cobra.Command {
 	var spaceID string
 	cmd := &cobra.Command{Use: "delete BLOB_ID", Aliases: []string{"del", "remove", "rm"}, Short: "Delete an unreferenced raw blob", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}

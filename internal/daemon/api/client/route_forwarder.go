@@ -292,7 +292,7 @@ func principalToForwarded(p daemonauth.Principal) clusterbackend.ForwardedPrinci
 	if !p.CreatedAt.IsZero() {
 		created = p.CreatedAt.UTC().Format(time.RFC3339Nano)
 	}
-	return clusterbackend.ForwardedPrincipal{Kind: string(p.Kind), OperatorID: p.OperatorID, UserID: p.UserID, AuthSessionID: p.AuthSessionID, Username: p.Username, CreatedAt: created}
+	return clusterbackend.ForwardedPrincipal{Kind: string(p.Kind), PrincipalID: p.PrincipalID, AuthSessionID: p.AuthSessionID, Username: p.Username, CreatedAt: created}
 }
 
 func principalFromForwarded(p clusterbackend.ForwardedPrincipal) daemonauth.Principal {
@@ -302,7 +302,8 @@ func principalFromForwarded(p clusterbackend.ForwardedPrincipal) daemonauth.Prin
 			created = parsed
 		}
 	}
-	return daemonauth.Principal{Kind: daemonauth.PrincipalKind(strings.TrimSpace(p.Kind)), OperatorID: strings.TrimSpace(p.OperatorID), UserID: strings.TrimSpace(p.UserID), AuthSessionID: strings.TrimSpace(p.AuthSessionID), Username: strings.TrimSpace(p.Username), CreatedAt: created}
+	principalID := strings.TrimSpace(p.PrincipalID)
+	return daemonauth.Principal{Kind: daemonauth.PrincipalKind(strings.TrimSpace(p.Kind)), PrincipalID: principalID, AuthSessionID: strings.TrimSpace(p.AuthSessionID), Username: strings.TrimSpace(p.Username), CreatedAt: created}
 }
 
 func forwardedContext(ctx context.Context, principal clusterbackend.ForwardedPrincipal) context.Context {

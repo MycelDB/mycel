@@ -15,11 +15,11 @@ type Manager interface {
 	GetByID(ctx context.Context, id domainauth.RefreshSessionID) (domainauth.RefreshSession, error)
 	FindByTokenHash(ctx context.Context, hash string) (domainauth.RefreshSession, error)
 	FindByConsumedTokenHash(ctx context.Context, hash string) (domainauth.RefreshSession, error)
-	ListByUser(ctx context.Context, userID identity.UserID) ([]domainauth.RefreshSession, error)
+	ListByPrincipal(ctx context.Context, principalID identity.PrincipalID) ([]domainauth.RefreshSession, error)
 	Update(ctx context.Context, rec domainauth.RefreshSession) (domainauth.RefreshSession, error)
 	RevokeByID(ctx context.Context, id domainauth.RefreshSessionID, revokedAt time.Time, reason string) (domainauth.RefreshSession, error)
 	RevokeFamily(ctx context.Context, familyID domainauth.TokenFamilyID, revokedAt time.Time, reason string) (int, error)
 	DeleteExpiredRedacted(ctx context.Context, cutoff time.Time) (int, error)
 	RecordAuditEvent(ctx context.Context, event domainauth.AuthAuditEvent) (domainauth.AuthAuditEvent, error)
-	ListAuditEvents(ctx context.Context, userID *identity.UserID) ([]domainauth.AuthAuditEvent, error)
+	ListAuditEventsByPrincipal(ctx context.Context, principalID *identity.PrincipalID) ([]domainauth.AuthAuditEvent, error)
 }

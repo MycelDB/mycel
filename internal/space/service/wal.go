@@ -21,7 +21,7 @@ const (
 	recordTypeCreateDomain                 wal.RecordType = "space.domain.create.v1"
 	recordTypeUpdateDomain                 wal.RecordType = "space.domain.update.v1"
 	recordTypeDeleteDomain                 wal.RecordType = "space.domain.delete.v1"
-	recordTypeGrantSpaceUser               wal.RecordType = "space.acl.grant.v1"
+	recordTypeGrantSpacePrincipal          wal.RecordType = "space.access.grant.v1"
 	recordTypeDeleteSpace                  wal.RecordType = "space.delete.v1"
 )
 
@@ -44,7 +44,7 @@ type deleteDomainRecord struct {
 	SpaceID  domainspace.SpaceID `json:"space_id"`
 }
 
-type grantSpaceUserRecord struct {
+type grantSpacePrincipalRecord struct {
 	Rule access.SpaceAccessRule `json:"rule"`
 }
 
@@ -67,9 +67,9 @@ func (m *Module) buildCreateSpaceRecord(input CreateSpaceInput) createSpaceWithD
 			name = key
 		}
 	}
-	sp := domainspace.Space{SpaceID: spaceID, OwnerID: input.OwnerUserID, Name: input.Name, Status: "active", CreatedAt: now, UpdatedAt: now}
+	sp := domainspace.Space{SpaceID: spaceID, OwnerID: input.OwnerPrincipalID, Name: input.Name, Status: "active", CreatedAt: now, UpdatedAt: now}
 	domain := graph.Domain{ID: uuid.New(), SpaceID: spaceID, Key: key, Name: name, DiscoveryMode: graph.DomainDiscoveryModeNormal, SearchMode: graph.DomainSearchModeNormal, SemanticMode: graph.DomainSemanticModeNormal, Default: true, CreatedAt: now, UpdatedAt: now}
-	grant := access.SpaceAccessRule{ID: uuid.New(), SpaceID: spaceID, UserID: input.OwnerUserID, Permissions: []access.SpacePermission{access.SpacePermissionAdmin}}
+	grant := access.SpaceAccessRule{ID: uuid.New(), SpaceID: spaceID, PrincipalID: input.OwnerPrincipalID, Permissions: []access.SpacePermission{access.SpacePermissionAdmin}}
 	return createSpaceWithDefaultDomainRecord{Space: sp, DefaultDomain: domain, OwnerGrant: grant}
 }
 
@@ -121,8 +121,8 @@ func (m *Module) applyDeleteDomain(ctx context.Context, rec wal.Record) error {
 	return m.domains.ApplyDelete(ctx, payload.DomainID)
 }
 
-func (m *Module) applyGrantSpaceUser(ctx context.Context, rec wal.Record) error {
-	var payload grantSpaceUserRecord
+func (m *Module) applyGrantSpacePrincipal(ctx context.Context, rec wal.Record) error {
+	var payload grantSpacePrincipalRecord
 	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
 		return err
 	}
@@ -159,7 +159,7 @@ func (m *Module) applyCreateSpaceRecord(ctx context.Context, payload createSpace
 	if err != nil {
 		return domainspace.Space{}, graph.Domain{}, err
 	}
-	if payload.OwnerGrant.SpaceID != sp.SpaceID || payload.OwnerGrant.UserID != sp.OwnerID {
+	if payload.OwnerGrant.SpaceID != sp.SpaceID || payload.OwnerGrant.PrincipalID != sp.OwnerID {
 		return domainspace.Space{}, graph.Domain{}, fmt.Errorf("%w: owner grant does not match space", ErrInvalidInput)
 	}
 	if _, err := m.access.ApplyGrant(ctx, payload.OwnerGrant); err != nil {

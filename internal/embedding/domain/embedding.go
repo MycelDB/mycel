@@ -54,31 +54,31 @@ type ModelDefinition struct {
 
 // ProviderKey is public key metadata. Plaintext and ciphertext secrets are not exposed.
 type ProviderKey struct {
-	ID         ProviderKeyID   `json:"id"`
-	OwnerID    identity.UserID `json:"owner_id"`
-	ProviderID string          `json:"provider_id"`
-	Name       string          `json:"name"`
-	IsDefault  bool            `json:"is_default"`
-	Disabled   bool            `json:"disabled"`
-	HasAPIKey  bool            `json:"has_api_key"`
-	CreatedAt  time.Time       `json:"created_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	ID         ProviderKeyID        `json:"id"`
+	OwnerID    identity.PrincipalID `json:"owner_id"`
+	ProviderID string               `json:"provider_id"`
+	Name       string               `json:"name"`
+	IsDefault  bool                 `json:"is_default"`
+	Disabled   bool                 `json:"disabled"`
+	HasAPIKey  bool                 `json:"has_api_key"`
+	CreatedAt  time.Time            `json:"created_at"`
+	UpdatedAt  time.Time            `json:"updated_at"`
 }
 
 // Profile is reusable metadata describing how to embed nodes.
 type Profile struct {
-	ID                 ProfileID       `json:"id"`
-	OwnerID            identity.UserID `json:"owner_id"`
-	Name               string          `json:"name"`
-	ProviderID         string          `json:"provider_id"`
-	ModelID            string          `json:"model_id"`
-	SourceMode         SourceMode      `json:"source_mode"`
-	IncludeProps       []string        `json:"include_props,omitempty"`
-	MaxDepth           *int            `json:"max_depth,omitempty"`
-	MinimumTextLength  int             `json:"minimum_text_length,omitempty"`
-	TargetTemplateKeys []string        `json:"target_template_keys,omitempty"`
-	CreatedAt          time.Time       `json:"created_at"`
-	UpdatedAt          time.Time       `json:"updated_at"`
+	ID                 ProfileID            `json:"id"`
+	OwnerID            identity.PrincipalID `json:"owner_id"`
+	Name               string               `json:"name"`
+	ProviderID         string               `json:"provider_id"`
+	ModelID            string               `json:"model_id"`
+	SourceMode         SourceMode           `json:"source_mode"`
+	IncludeProps       []string             `json:"include_props,omitempty"`
+	MaxDepth           *int                 `json:"max_depth,omitempty"`
+	MinimumTextLength  int                  `json:"minimum_text_length,omitempty"`
+	TargetTemplateKeys []string             `json:"target_template_keys,omitempty"`
+	CreatedAt          time.Time            `json:"created_at"`
+	UpdatedAt          time.Time            `json:"updated_at"`
 }
 
 // EmbeddingRecord describes one generated vector record. Vector is omitted from JSON responses by default.

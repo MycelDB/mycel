@@ -23,9 +23,9 @@ import (
 )
 
 func TestBackendClientRequestRouterForwardsUnaryToRemoteHome(t *testing.T) {
-	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: "u1", Username: "alice"})
+	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: "u1", Username: "alice"})
 	handler := clusterbackend.ForwardedClientRequestHandler(clusterbackendForwardedHandlerFunc(func(ctx context.Context, req clusterbackend.ForwardedClientRequest) (clusterbackend.ForwardedClientResponse, error) {
-		if req.ClusterID != "cluster_a" || req.Operation != clientv1.SessionService_GetSession_FullMethodName || req.SessionID == "" || req.RequesterNode != 1 || req.TargetNode != 2 || req.Principal.UserID != "u1" {
+		if req.ClusterID != "cluster_a" || req.Operation != clientv1.SessionService_GetSession_FullMethodName || req.SessionID == "" || req.RequesterNode != 1 || req.TargetNode != 2 || req.Principal.PrincipalID != "u1" {
 			t.Fatalf("unexpected forwarded request: %#v", req)
 		}
 		in := &clientv1.GetSessionRequest{}
@@ -94,7 +94,7 @@ func TestBackendClientRequestRouterClassifiesForwardedGRPCRouteFailures(t *testi
 }
 
 func TestGraphQueryAndMetadataServicesUseRouter(t *testing.T) {
-	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: "u1", Username: "alice"})
+	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: "u1", Username: "alice"})
 	router := &fakeClientRequestRouter{}
 	graphSvc := NewGraphService(nil, nil).WithClientRequestRouter(router)
 	if _, err := graphSvc.GetNode(ctx, &clientv1.GetNodeRequest{TransactionId: "tx.2.00000000-0000-0000-0000-000000000002", NodeId: "n"}); err != nil {

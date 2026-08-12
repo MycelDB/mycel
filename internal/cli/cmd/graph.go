@@ -57,7 +57,7 @@ func newGraphBlobNodeCreateCommand(a *app.App) *cobra.Command {
 		if originalFilename == "" {
 			originalFilename = filepath.Base(args[0])
 		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -116,7 +116,7 @@ func newGraphNodeCreateCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -146,7 +146,7 @@ func newGraphNodeCreateCommand(a *app.App) *cobra.Command {
 func newGraphNodeGetCommand(a *app.App) *cobra.Command {
 	var transactionID string
 	cmd := &cobra.Command{Use: "get NODE_ID", Short: "Get a node in a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -166,7 +166,7 @@ func newGraphNodeListCommand(a *app.App) *cobra.Command {
 	var transactionID, pageToken string
 	var pageSize int32
 	cmd := &cobra.Command{Use: "list", Short: "List nodes in a daemon graph transaction", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -201,7 +201,7 @@ func newGraphNodeUpdateCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -230,7 +230,7 @@ func newGraphNodeDeleteCommand(a *app.App) *cobra.Command {
 	var transactionID string
 	var recursive bool
 	cmd := &cobra.Command{Use: "delete NODE_ID", Short: "Delete a node in a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -260,7 +260,7 @@ func newGraphEdgeCreateCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -290,7 +290,7 @@ func newGraphEdgeCreateCommand(a *app.App) *cobra.Command {
 func newGraphEdgeGetCommand(a *app.App) *cobra.Command {
 	var transactionID string
 	cmd := &cobra.Command{Use: "get EDGE_ID", Short: "Get an edge", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -310,7 +310,7 @@ func newGraphEdgeListCommand(a *app.App) *cobra.Command {
 	var transactionID, pageToken string
 	var pageSize int32
 	cmd := &cobra.Command{Use: "list", Short: "List edges", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -340,7 +340,7 @@ func newGraphEdgeListCommand(a *app.App) *cobra.Command {
 func newGraphEdgeDeleteCommand(a *app.App) *cobra.Command {
 	var transactionID string
 	cmd := &cobra.Command{Use: "delete EDGE_ID", Short: "Delete an edge", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -359,7 +359,7 @@ func newGraphEdgeDeleteCommand(a *app.App) *cobra.Command {
 func newGraphChildrenCommand(a *app.App) *cobra.Command {
 	var transactionID string
 	cmd := &cobra.Command{Use: "children PARENT_NODE_ID", Short: "List contains edges for a parent", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -378,7 +378,7 @@ func newGraphChildrenCommand(a *app.App) *cobra.Command {
 func newGraphParentCommand(a *app.App) *cobra.Command {
 	var transactionID string
 	cmd := &cobra.Command{Use: "parent CHILD_NODE_ID", Short: "Get contains parent edge for a child", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}

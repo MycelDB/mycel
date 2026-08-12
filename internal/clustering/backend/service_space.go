@@ -67,5 +67,5 @@ func (s *Service) ListRaftSpaces(ctx context.Context, req *clusterpb.ListRaftSpa
 }
 
 func SpaceToProto(sp domainspace.Space) *clusterpb.RaftSpace {
-	return &clusterpb.RaftSpace{SpaceId: sp.SpaceID.String(), OwnerId: sp.OwnerID.String(), Name: sp.Name, Status: sp.Status, CreatedAt: sp.CreatedAt.UTC().Format(time.RFC3339Nano), UpdatedAt: sp.UpdatedAt.UTC().Format(time.RFC3339Nano)}
+	return &clusterpb.RaftSpace{SpaceId: sp.SpaceID.String(), OwnerId: string(sp.OwnerID), Name: sp.Name, Status: sp.Status, CreatedAt: sp.CreatedAt.UTC().Format(time.RFC3339Nano), UpdatedAt: sp.UpdatedAt.UTC().Format(time.RFC3339Nano)}
 }

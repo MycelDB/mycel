@@ -35,7 +35,7 @@ type OriginMetadata struct {
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
 	OperationID      string `json:"operation_id,omitempty"`
 	Label            string `json:"label,omitempty"`
-	UserID           string `json:"user_id,omitempty"`
+	PrincipalID      string `json:"principal_id,omitempty"`
 	SessionID        string `json:"session_id,omitempty"`
 	TransactionID    string `json:"transaction_id,omitempty"`
 }

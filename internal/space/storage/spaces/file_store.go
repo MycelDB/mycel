@@ -19,7 +19,7 @@ const spacesStoreFile = "spaces.json"
 
 type storedSpace struct {
 	SpaceID   domainspace.SpaceID       `json:"space_id"`
-	OwnerID   identity.UserID           `json:"owner_id"`
+	OwnerID   identity.PrincipalID      `json:"owner_id"`
 	Name      string                    `json:"name"`
 	Status    string                    `json:"status"`
 	Settings  domainspace.SpaceSettings `json:"settings,omitempty"`
@@ -111,11 +111,11 @@ func (m *defaultManager) List(ctx context.Context) ([]domainspace.Space, error) 
 	return out, nil
 }
 
-func (m *defaultManager) ListByOwner(ctx context.Context, ownerID identity.UserID) ([]domainspace.Space, error) {
+func (m *defaultManager) ListByOwner(ctx context.Context, ownerID identity.PrincipalID) ([]domainspace.Space, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if ownerID == uuid.Nil {
+	if strings.TrimSpace(string(ownerID)) == "" {
 		return nil, fmt.Errorf("%w: owner_id is required", ErrInvalidInput)
 	}
 	out := []domainspace.Space{}
@@ -127,11 +127,11 @@ func (m *defaultManager) ListByOwner(ctx context.Context, ownerID identity.UserI
 	return out, nil
 }
 
-func (m *defaultManager) FindByOwnerAndName(ctx context.Context, ownerID identity.UserID, name string) (domainspace.Space, error) {
+func (m *defaultManager) FindByOwnerAndName(ctx context.Context, ownerID identity.PrincipalID, name string) (domainspace.Space, error) {
 	if err := ctx.Err(); err != nil {
 		return domainspace.Space{}, err
 	}
-	if ownerID == uuid.Nil {
+	if strings.TrimSpace(string(ownerID)) == "" {
 		return domainspace.Space{}, fmt.Errorf("%w: owner_id is required", ErrInvalidInput)
 	}
 	if strings.TrimSpace(name) == "" {
@@ -148,7 +148,7 @@ func (m *defaultManager) Create(ctx context.Context, in CreateInput) (domainspac
 	if err := ctx.Err(); err != nil {
 		return domainspace.Space{}, err
 	}
-	if in.OwnerID == uuid.Nil {
+	if strings.TrimSpace(string(in.OwnerID)) == "" {
 		return domainspace.Space{}, fmt.Errorf("%w: owner_id is required", ErrInvalidInput)
 	}
 	if strings.TrimSpace(in.Name) == "" {
@@ -189,7 +189,7 @@ func (m *defaultManager) ApplyCreate(ctx context.Context, space domainspace.Spac
 	if space.SpaceID == uuid.Nil {
 		return domainspace.Space{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
-	if space.OwnerID == uuid.Nil {
+	if strings.TrimSpace(string(space.OwnerID)) == "" {
 		return domainspace.Space{}, fmt.Errorf("%w: owner_id is required", ErrInvalidInput)
 	}
 	if strings.TrimSpace(space.Name) == "" {
@@ -299,6 +299,6 @@ func (s storedSpace) toModel() domainspace.Space {
 	}
 }
 
-func ownerNameKey(ownerID identity.UserID, name string) string {
-	return ownerID.String() + ":" + strings.ToLower(strings.TrimSpace(name))
+func ownerNameKey(ownerID identity.PrincipalID, name string) string {
+	return string(ownerID) + ":" + strings.ToLower(strings.TrimSpace(name))
 }

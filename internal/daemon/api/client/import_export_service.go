@@ -49,7 +49,7 @@ func (s *ImportExportService) ExportDomain(req *clientv1.ExportDomainRequest, st
 	if err != nil {
 		return err
 	}
-	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, req.GetTransactionId())
+	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
 	if err != nil {
 		return mapSessionError(err, "export domain")
 	}
@@ -139,7 +139,7 @@ func (s *ImportExportService) ImportDomain(stream clientv1.ImportExportService_I
 			continue
 		}
 		if tx == nil {
-			resolved, err := s.importTransaction(ctx, principal.UserID, metadata)
+			resolved, err := s.importTransaction(ctx, principal.PrincipalID, metadata)
 			if err != nil {
 				return err
 			}

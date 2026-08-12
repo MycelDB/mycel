@@ -23,17 +23,17 @@ type accessStore struct {
 }
 
 type defaultManager struct {
-	location          string
-	storePath         string
-	systemRules       []domainaccess.SystemAccessRule
-	spaceRules        []domainaccess.SpaceAccessRule
-	indexBySystemUser map[identity.UserID]int
-	indexBySpaceUser  map[string]int
+	location              string
+	storePath             string
+	systemRules           []domainaccess.SystemAccessRule
+	spaceRules            []domainaccess.SpaceAccessRule
+	indexBySystemUser     map[identity.PrincipalID]int
+	indexBySpacePrincipal map[string]int
 }
 
 // NewManager creates the default file-backed Manager implementation.
 func NewManager() Manager {
-	return &defaultManager{indexBySystemUser: map[identity.UserID]int{}, indexBySpaceUser: map[string]int{}}
+	return &defaultManager{indexBySystemUser: map[identity.PrincipalID]int{}, indexBySpacePrincipal: map[string]int{}}
 }
 
 func (m *defaultManager) Init(ctx context.Context, location string) error {
@@ -75,18 +75,18 @@ func (m *defaultManager) GrantSystemRole(ctx context.Context, in GrantSystemRole
 	if err := ctx.Err(); err != nil {
 		return domainaccess.SystemAccessRule{}, err
 	}
-	if in.UserID == uuid.Nil {
-		return domainaccess.SystemAccessRule{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if strings.TrimSpace(string(in.PrincipalID)) == "" {
+		return domainaccess.SystemAccessRule{}, fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
 	roles, err := normalizeSystemRoles(in.Roles)
 	if err != nil {
 		return domainaccess.SystemAccessRule{}, err
 	}
-	if idx, ok := m.indexBySystemUser[in.UserID]; ok {
+	if idx, ok := m.indexBySystemUser[in.PrincipalID]; ok {
 		oldRule := m.systemRules[idx]
 		newRule := oldRule
 		newRule.Roles = roles
-		if hasSystemRole(oldRule.Roles, domainaccess.SystemRoleSuperuser) && !hasSystemRole(newRule.Roles, domainaccess.SystemRoleSuperuser) && m.superuserCountExcluding(in.UserID) == 0 {
+		if hasSystemRole(oldRule.Roles, domainaccess.SystemRoleSuperuser) && !hasSystemRole(newRule.Roles, domainaccess.SystemRoleSuperuser) && m.superuserCountExcluding(in.PrincipalID) == 0 {
 			return domainaccess.SystemAccessRule{}, ErrLastSuperuser
 		}
 		m.systemRules[idx] = newRule
@@ -96,7 +96,7 @@ func (m *defaultManager) GrantSystemRole(ctx context.Context, in GrantSystemRole
 		}
 		return cloneSystemRule(newRule), nil
 	}
-	rule := domainaccess.SystemAccessRule{ID: uuid.New(), UserID: in.UserID, Roles: roles}
+	rule := domainaccess.SystemAccessRule{ID: uuid.New(), PrincipalID: in.PrincipalID, Roles: roles}
 	m.systemRules = append(m.systemRules, rule)
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
@@ -111,15 +111,15 @@ func (m *defaultManager) RevokeSystemRole(ctx context.Context, in RevokeSystemRo
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if in.UserID == uuid.Nil {
-		return fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if strings.TrimSpace(string(in.PrincipalID)) == "" {
+		return fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
-	idx, ok := m.indexBySystemUser[in.UserID]
+	idx, ok := m.indexBySystemUser[in.PrincipalID]
 	if !ok {
 		return ErrRuleNotFound
 	}
 	rule := m.systemRules[idx]
-	if hasSystemRole(rule.Roles, domainaccess.SystemRoleSuperuser) && m.superuserCountExcluding(in.UserID) == 0 {
+	if hasSystemRole(rule.Roles, domainaccess.SystemRoleSuperuser) && m.superuserCountExcluding(in.PrincipalID) == 0 {
 		return ErrLastSuperuser
 	}
 	oldRules := append([]domainaccess.SystemAccessRule(nil), m.systemRules...)
@@ -133,14 +133,14 @@ func (m *defaultManager) RevokeSystemRole(ctx context.Context, in RevokeSystemRo
 	return nil
 }
 
-func (m *defaultManager) SystemRolesForUser(ctx context.Context, userID identity.UserID) ([]domainaccess.SystemRole, error) {
+func (m *defaultManager) SystemRolesForPrincipal(ctx context.Context, principalID identity.PrincipalID) ([]domainaccess.SystemRole, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if userID == uuid.Nil {
-		return nil, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if strings.TrimSpace(string(principalID)) == "" {
+		return nil, fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
-	idx, ok := m.indexBySystemUser[userID]
+	idx, ok := m.indexBySystemUser[principalID]
 	if !ok {
 		return []domainaccess.SystemRole{}, nil
 	}
@@ -158,17 +158,17 @@ func (m *defaultManager) SystemRules(ctx context.Context) ([]domainaccess.System
 	return out, nil
 }
 
-func (m *defaultManager) CanSystem(ctx context.Context, userID identity.UserID, permission domainaccess.SystemPermission) (bool, error) {
+func (m *defaultManager) CanSystem(ctx context.Context, principalID identity.PrincipalID, permission domainaccess.SystemPermission) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if userID == uuid.Nil {
-		return false, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if strings.TrimSpace(string(principalID)) == "" {
+		return false, fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
 	if !validSystemPermission(permission) {
 		return false, fmt.Errorf("%w: invalid system permission", ErrInvalidInput)
 	}
-	roles, err := m.SystemRolesForUser(ctx, userID)
+	roles, err := m.SystemRolesForPrincipal(ctx, principalID)
 	if err != nil {
 		return false, err
 	}
@@ -187,20 +187,20 @@ func (m *defaultManager) Grant(ctx context.Context, in GrantInput) (domainaccess
 	if in.SpaceID == uuid.Nil {
 		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
-	if in.UserID == uuid.Nil {
-		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if strings.TrimSpace(string(in.PrincipalID)) == "" {
+		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
 	permissions, err := normalizePermissions(in.Permissions)
 	if err != nil {
 		return domainaccess.SpaceAccessRule{}, err
 	}
 
-	key := spaceUserKey(in.SpaceID, in.UserID)
-	if idx, ok := m.indexBySpaceUser[key]; ok {
+	key := spacePrincipalKey(in.SpaceID, in.PrincipalID)
+	if idx, ok := m.indexBySpacePrincipal[key]; ok {
 		oldRule := m.spaceRules[idx]
 		newRule := oldRule
 		newRule.Permissions = permissions
-		if hasPermission(oldRule.Permissions, domainaccess.SpacePermissionAdmin) && !hasPermission(newRule.Permissions, domainaccess.SpacePermissionAdmin) && m.adminCountExcluding(in.SpaceID, in.UserID) == 0 {
+		if hasPermission(oldRule.Permissions, domainaccess.SpacePermissionAdmin) && !hasPermission(newRule.Permissions, domainaccess.SpacePermissionAdmin) && m.adminCountExcluding(in.SpaceID, in.PrincipalID) == 0 {
 			return domainaccess.SpaceAccessRule{}, ErrLastAdmin
 		}
 		m.spaceRules[idx] = newRule
@@ -211,7 +211,7 @@ func (m *defaultManager) Grant(ctx context.Context, in GrantInput) (domainaccess
 		return cloneSpaceRule(newRule), nil
 	}
 
-	rule := domainaccess.SpaceAccessRule{ID: uuid.New(), SpaceID: in.SpaceID, UserID: in.UserID, Permissions: permissions}
+	rule := domainaccess.SpaceAccessRule{ID: uuid.New(), SpaceID: in.SpaceID, PrincipalID: in.PrincipalID, Permissions: permissions}
 	m.spaceRules = append(m.spaceRules, rule)
 	m.rebuildIndex()
 	if err := m.persist(); err != nil {
@@ -232,15 +232,15 @@ func (m *defaultManager) ApplyGrant(ctx context.Context, rule domainaccess.Space
 	if rule.SpaceID == uuid.Nil {
 		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
-	if rule.UserID == uuid.Nil {
-		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if strings.TrimSpace(string(rule.PrincipalID)) == "" {
+		return domainaccess.SpaceAccessRule{}, fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
 	permissions, err := normalizePermissions(rule.Permissions)
 	if err != nil {
 		return domainaccess.SpaceAccessRule{}, err
 	}
-	key := spaceUserKey(rule.SpaceID, rule.UserID)
-	if idx, ok := m.indexBySpaceUser[key]; ok {
+	key := spacePrincipalKey(rule.SpaceID, rule.PrincipalID)
+	if idx, ok := m.indexBySpacePrincipal[key]; ok {
 		existing := m.spaceRules[idx]
 		if existing.ID == rule.ID {
 			oldRule := existing
@@ -272,15 +272,15 @@ func (m *defaultManager) Revoke(ctx context.Context, in RevokeInput) error {
 	if in.SpaceID == uuid.Nil {
 		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
-	if in.UserID == uuid.Nil {
-		return fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if strings.TrimSpace(string(in.PrincipalID)) == "" {
+		return fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
-	idx, ok := m.indexBySpaceUser[spaceUserKey(in.SpaceID, in.UserID)]
+	idx, ok := m.indexBySpacePrincipal[spacePrincipalKey(in.SpaceID, in.PrincipalID)]
 	if !ok {
 		return ErrRuleNotFound
 	}
 	rule := m.spaceRules[idx]
-	if hasPermission(rule.Permissions, domainaccess.SpacePermissionAdmin) && m.adminCountExcluding(in.SpaceID, in.UserID) == 0 {
+	if hasPermission(rule.Permissions, domainaccess.SpacePermissionAdmin) && m.adminCountExcluding(in.SpaceID, in.PrincipalID) == 0 {
 		return ErrLastAdmin
 	}
 	oldRules := append([]domainaccess.SpaceAccessRule(nil), m.spaceRules...)
@@ -294,16 +294,16 @@ func (m *defaultManager) Revoke(ctx context.Context, in RevokeInput) error {
 	return nil
 }
 
-func (m *defaultManager) DeleteForUser(ctx context.Context, userID identity.UserID) error {
+func (m *defaultManager) DeleteForPrincipal(ctx context.Context, principalID identity.PrincipalID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if userID == uuid.Nil {
-		return fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if strings.TrimSpace(string(principalID)) == "" {
+		return fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
-	if idx, ok := m.indexBySystemUser[userID]; ok {
+	if idx, ok := m.indexBySystemUser[principalID]; ok {
 		rule := m.systemRules[idx]
-		if hasSystemRole(rule.Roles, domainaccess.SystemRoleSuperuser) && m.superuserCountExcluding(userID) == 0 {
+		if hasSystemRole(rule.Roles, domainaccess.SystemRoleSuperuser) && m.superuserCountExcluding(principalID) == 0 {
 			return ErrLastSuperuser
 		}
 	}
@@ -311,13 +311,13 @@ func (m *defaultManager) DeleteForUser(ctx context.Context, userID identity.User
 	oldSpaceRules := append([]domainaccess.SpaceAccessRule(nil), m.spaceRules...)
 	newSystemRules := make([]domainaccess.SystemAccessRule, 0, len(m.systemRules))
 	for _, rule := range m.systemRules {
-		if rule.UserID != userID {
+		if rule.PrincipalID != principalID {
 			newSystemRules = append(newSystemRules, rule)
 		}
 	}
 	newSpaceRules := make([]domainaccess.SpaceAccessRule, 0, len(m.spaceRules))
 	for _, rule := range m.spaceRules {
-		if rule.UserID != userID {
+		if rule.PrincipalID != principalID {
 			newSpaceRules = append(newSpaceRules, rule)
 		}
 	}
@@ -357,12 +357,12 @@ func (m *defaultManager) DeleteForSpace(ctx context.Context, spaceID domainspace
 	return nil
 }
 
-func (m *defaultManager) Can(ctx context.Context, userID identity.UserID, spaceID domainspace.SpaceID, permission domainaccess.SpacePermission) (bool, error) {
+func (m *defaultManager) Can(ctx context.Context, principalID identity.PrincipalID, spaceID domainspace.SpaceID, permission domainaccess.SpacePermission) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if userID == uuid.Nil {
-		return false, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if strings.TrimSpace(string(principalID)) == "" {
+		return false, fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
 	if spaceID == uuid.Nil {
 		return false, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
@@ -370,7 +370,7 @@ func (m *defaultManager) Can(ctx context.Context, userID identity.UserID, spaceI
 	if !validPermission(permission) {
 		return false, fmt.Errorf("%w: invalid permission", ErrInvalidInput)
 	}
-	idx, ok := m.indexBySpaceUser[spaceUserKey(spaceID, userID)]
+	idx, ok := m.indexBySpacePrincipal[spacePrincipalKey(spaceID, principalID)]
 	if !ok {
 		return false, nil
 	}
@@ -399,13 +399,13 @@ func (m *defaultManager) RulesForSpace(ctx context.Context, spaceID domainspace.
 }
 
 func (m *defaultManager) rebuildIndex() {
-	m.indexBySystemUser = map[identity.UserID]int{}
+	m.indexBySystemUser = map[identity.PrincipalID]int{}
 	for i, rule := range m.systemRules {
-		m.indexBySystemUser[rule.UserID] = i
+		m.indexBySystemUser[rule.PrincipalID] = i
 	}
-	m.indexBySpaceUser = map[string]int{}
+	m.indexBySpacePrincipal = map[string]int{}
 	for i, rule := range m.spaceRules {
-		m.indexBySpaceUser[spaceUserKey(rule.SpaceID, rule.UserID)] = i
+		m.indexBySpacePrincipal[spacePrincipalKey(rule.SpaceID, rule.PrincipalID)] = i
 	}
 }
 
@@ -418,10 +418,10 @@ func (m *defaultManager) persist() error {
 	return filestore.WriteFileAtomic(m.storePath, b, 0o600)
 }
 
-func (m *defaultManager) superuserCountExcluding(excludedUserID identity.UserID) int {
+func (m *defaultManager) superuserCountExcluding(excludedPrincipalID identity.PrincipalID) int {
 	count := 0
 	for _, rule := range m.systemRules {
-		if rule.UserID == excludedUserID {
+		if rule.PrincipalID == excludedPrincipalID {
 			continue
 		}
 		if hasSystemRole(rule.Roles, domainaccess.SystemRoleSuperuser) {
@@ -431,10 +431,10 @@ func (m *defaultManager) superuserCountExcluding(excludedUserID identity.UserID)
 	return count
 }
 
-func (m *defaultManager) adminCountExcluding(spaceID domainspace.SpaceID, excludedUserID identity.UserID) int {
+func (m *defaultManager) adminCountExcluding(spaceID domainspace.SpaceID, excludedPrincipalID identity.PrincipalID) int {
 	count := 0
 	for _, rule := range m.spaceRules {
-		if rule.SpaceID != spaceID || rule.UserID == excludedUserID {
+		if rule.SpaceID != spaceID || rule.PrincipalID == excludedPrincipalID {
 			continue
 		}
 		if hasPermission(rule.Permissions, domainaccess.SpacePermissionAdmin) {
@@ -537,6 +537,6 @@ func cloneSpaceRule(rule domainaccess.SpaceAccessRule) domainaccess.SpaceAccessR
 	return rule
 }
 
-func spaceUserKey(spaceID domainspace.SpaceID, userID identity.UserID) string {
-	return spaceID.String() + ":" + userID.String()
+func spacePrincipalKey(spaceID domainspace.SpaceID, principalID identity.PrincipalID) string {
+	return spaceID.String() + ":" + string(principalID)
 }

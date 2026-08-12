@@ -19,7 +19,7 @@ func TestDefaultManager_InitAndCreate(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	ownerID := identity.UserID(uuid.New())
+	ownerID := identity.PrincipalID(uuid.NewString())
 	space, err := m.Create(context.Background(), CreateInput{OwnerID: ownerID, Name: "default"})
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
@@ -43,7 +43,7 @@ func TestDefaultManager_CreateIsIdempotentByOwnerAndName(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	ownerID := identity.UserID(uuid.New())
+	ownerID := identity.PrincipalID(uuid.NewString())
 	first, err := m.Create(context.Background(), CreateInput{OwnerID: ownerID, Name: "default"})
 	if err != nil {
 		t.Fatalf("first create failed: %v", err)

@@ -31,6 +31,11 @@ assigned to a tagged release bucket.
 
 - [Legacy file-session and embedding migration cleanup implementation plan](legacy-filesession-and-embedding-cleanup-implementation-plan.md) — staged removal plan for `internal/graph/filesession`, `internal/session/api`, legacy embedding migration, and related compatibility surfaces.
 
+## Identity and access control
+
+- [Unified principal identity implementation plan](unified-principal-identity-implementation-plan.md) — breaking replacement of split administrator/user identity stores with one principal, role-binding, and capability-grant model.
+- [Unified principal identity remaining work plan](unified-principal-identity-remaining-work-plan.md) — follow-up checklist for completing the missing UP1-UP11 work after the partial unified-principal branch implementation.
+
 ## Admin/UI follow-ups
 
 - [Admin template service and UI implementation plan](admin-template-service-and-ui-implementation-plan.md)

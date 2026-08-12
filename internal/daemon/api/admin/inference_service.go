@@ -114,7 +114,7 @@ func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *
 		capabilities = append(capabilities, capability)
 	}
 	counts := map[string]int{"model_endpoints": len(req.GetModelEndpoints()), "models": len(req.GetModels()), "model_endpoint_capabilities": len(req.GetModelEndpointCapabilities()), "vector_stores": len(req.GetVectorStores())}
-	pkg, err := mgr.UpsertPackage(ctx, domainsemantic.InferencePackage{Name: req.GetName(), Version: req.GetVersion(), Source: req.GetSource(), Checksum: req.GetChecksum(), InstalledBy: principal.OperatorID, DefinitionCounts: counts})
+	pkg, err := mgr.UpsertPackage(ctx, domainsemantic.InferencePackage{Name: req.GetName(), Version: req.GetVersion(), Source: req.GetSource(), Checksum: req.GetChecksum(), InstalledBy: principal.PrincipalID, DefinitionCounts: counts})
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert inference package")
 	}
@@ -358,7 +358,7 @@ func (s *AdminInferenceService) CreateCredentialGrant(ctx context.Context, req *
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
 	}
-	grant, err := spaceMgr.UpsertCredentialGrant(ctx, domainsemantic.CredentialGrant{CredentialID: credentialID, Scope: scope, Operations: operationsFromStringsAdmin(req.GetOperations()), ModelEndpointID: endpointID, ModelID: modelID, Priority: int(req.GetPriority()), IsDefault: req.GetIsDefault(), AllowBackgroundUse: req.GetAllowBackgroundUse(), GrantedBy: principal.OperatorID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
+	grant, err := spaceMgr.UpsertCredentialGrant(ctx, domainsemantic.CredentialGrant{CredentialID: credentialID, Scope: scope, Operations: operationsFromStringsAdmin(req.GetOperations()), ModelEndpointID: endpointID, ModelID: modelID, Priority: int(req.GetPriority()), IsDefault: req.GetIsDefault(), AllowBackgroundUse: req.GetAllowBackgroundUse(), GrantedBy: principal.PrincipalID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert credential grant")
 	}
@@ -421,7 +421,7 @@ func (s *AdminInferenceService) CreateInferencePolicy(ctx context.Context, req *
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
 	}
-	policy, err := spaceMgr.UpsertInferencePolicy(ctx, domainsemantic.InferencePolicy{Scope: scope, Effect: domainsemantic.PolicyEffect(req.GetEffect()), Operations: operationsFromStringsAdmin(req.GetOperations()), NoInference: req.GetNoInference(), AllowedPrivacyClasses: privacyClassesFromStringsAdmin(req.GetAllowedPrivacyClasses()), DisallowThirdParty: req.GetDisallowThirdParty(), RequireLocalEndpoint: req.GetRequireLocalEndpoint(), Reason: req.GetReason(), CreatedBy: principal.OperatorID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
+	policy, err := spaceMgr.UpsertInferencePolicy(ctx, domainsemantic.InferencePolicy{Scope: scope, Effect: domainsemantic.PolicyEffect(req.GetEffect()), Operations: operationsFromStringsAdmin(req.GetOperations()), NoInference: req.GetNoInference(), AllowedPrivacyClasses: privacyClassesFromStringsAdmin(req.GetAllowedPrivacyClasses()), DisallowThirdParty: req.GetDisallowThirdParty(), RequireLocalEndpoint: req.GetRequireLocalEndpoint(), Reason: req.GetReason(), CreatedBy: principal.PrincipalID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert inference policy")
 	}
@@ -1243,7 +1243,7 @@ func (s *AdminInferenceService) requireInferenceManage(ctx context.Context) (dae
 	if err != nil {
 		return daemonauth.Principal{}, err
 	}
-	ok, err := s.authorizer.HasCapability(ctx, principal.OperatorID, commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH.String())
+	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH.String())
 	if err != nil {
 		return daemonauth.Principal{}, status.Errorf(codes.Internal, "authorize operator: %v", err)
 	}

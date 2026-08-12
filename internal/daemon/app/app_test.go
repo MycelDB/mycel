@@ -12,7 +12,7 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
-	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
+	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
@@ -24,11 +24,8 @@ func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	if _, ok := rt.Service("admin"); !ok {
-		t.Fatalf("expected admin service to be registered, got services: %#v", rt.ServicesByName)
-	}
-	if _, ok := rt.Service("user"); !ok {
-		t.Fatalf("expected user service to be registered, got services: %#v", rt.ServicesByName)
+	if _, ok := rt.Service(identityservice.PrincipalModuleName); !ok {
+		t.Fatalf("expected identity service to be registered, got services: %#v", rt.ServicesByName)
 	}
 	statuses := rt.ServiceStatuses(context.Background())
 	if len(statuses) == 0 {
@@ -43,10 +40,10 @@ func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 
 	assertDir(t, dataDir)
 	assertDir(t, filepath.Join(dataDir, "log"))
-	assertDir(t, filepath.Join(dataDir, "users"))
-	assertDir(t, filepath.Join(dataDir, "users", "sessions"))
+	assertDir(t, filepath.Join(dataDir, "identity"))
+	assertDir(t, filepath.Join(dataDir, "identity", "sessions"))
 	assertFile(t, filepath.Join(dataDir, "log", LogFilename))
-	assertFile(t, filepath.Join(dataDir, "users", "users.json"))
+	assertFile(t, filepath.Join(dataDir, "identity", "store.json"))
 
 	logContent := readFile(t, rt.LogPath)
 	for _, want := range []string{"daemon startup begins", "data directory ready", "log directory ready", "initializing service", "daemon initialization complete"} {
@@ -81,16 +78,16 @@ func TestPhase8OfflineRestoreArchiveBootsDaemonAndListsResources(t *testing.T) {
 		t.Fatalf("Initialize(restored) error = %v", err)
 	}
 	defer restored.Close()
-	adminService, ok := daemonruntime.ServiceAs[*daemonadmin.Module](restored, daemonadmin.ModuleName)
+	identityService, ok := daemonruntime.ServiceAs[*identityservice.PrincipalModule](restored, identityservice.PrincipalModuleName)
 	if !ok {
-		t.Fatal("restored admin service is not registered")
+		t.Fatal("restored identity service is not registered")
 	}
-	admins, err := adminService.ListAdmins(context.Background())
+	principals, err := identityService.ListPrincipals(context.Background())
 	if err != nil {
-		t.Fatalf("ListAdmins(restored) error = %v", err)
+		t.Fatalf("ListPrincipals(restored) error = %v", err)
 	}
-	if len(admins) == 0 || admins[0].Username != "admin" {
-		t.Fatalf("unexpected restored admins: %#v", admins)
+	if len(principals) == 0 || principals[0].Username != "admin" {
+		t.Fatalf("unexpected restored principals: %#v", principals)
 	}
 }
 

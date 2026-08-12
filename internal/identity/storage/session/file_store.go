@@ -170,16 +170,17 @@ func (m *defaultManager) FindByConsumedTokenHash(ctx context.Context, hash strin
 	return m.sessions[idx], nil
 }
 
-func (m *defaultManager) ListByUser(ctx context.Context, userID identity.UserID) ([]domainauth.RefreshSession, error) {
+func (m *defaultManager) ListByPrincipal(ctx context.Context, principalID identity.PrincipalID) ([]domainauth.RefreshSession, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if userID == uuid.Nil {
-		return nil, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	principalID = identity.PrincipalID(strings.TrimSpace(string(principalID)))
+	if principalID == "" {
+		return nil, fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
 	out := []domainauth.RefreshSession{}
 	for _, rec := range m.sessions {
-		if rec.UserID == userID {
+		if rec.PrincipalID == principalID {
 			out = append(out, rec)
 		}
 	}
@@ -358,19 +359,21 @@ func (m *defaultManager) RecordAuditEvent(ctx context.Context, event domainauth.
 	return event, nil
 }
 
-func (m *defaultManager) ListAuditEvents(ctx context.Context, userID *identity.UserID) ([]domainauth.AuthAuditEvent, error) {
+func (m *defaultManager) ListAuditEventsByPrincipal(ctx context.Context, principalID *identity.PrincipalID) ([]domainauth.AuthAuditEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if userID != nil && *userID == uuid.Nil {
-		return nil, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if principalID != nil {
+		trimmed := identity.PrincipalID(strings.TrimSpace(string(*principalID)))
+		if trimmed == "" {
+			return nil, fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
+		}
+		principalID = &trimmed
 	}
 	out := []domainauth.AuthAuditEvent{}
 	for _, event := range m.auditEvents {
-		if userID != nil {
-			if event.UserID == nil || *event.UserID != *userID {
-				continue
-			}
+		if principalID != nil && (event.PrincipalID == nil || *event.PrincipalID != *principalID) {
+			continue
 		}
 		out = append(out, event)
 	}
@@ -408,11 +411,11 @@ func (m *defaultManager) persist() error {
 }
 
 func validateSession(rec domainauth.RefreshSession, creating bool) error {
-	if rec.UserID == uuid.Nil {
-		return fmt.Errorf("%w: user_id is required", ErrInvalidInput)
+	if strings.TrimSpace(string(rec.PrincipalID)) == "" {
+		return fmt.Errorf("%w: principal_id is required", ErrInvalidInput)
 	}
-	if strings.TrimSpace(string(rec.UserRef)) == "" {
-		return fmt.Errorf("%w: user_ref is required", ErrInvalidInput)
+	if strings.TrimSpace(string(rec.PrincipalRef)) == "" {
+		return fmt.Errorf("%w: principal_ref is required", ErrInvalidInput)
 	}
 	if strings.TrimSpace(string(rec.TokenFamilyID)) == "" {
 		return fmt.Errorf("%w: token_family_id is required", ErrInvalidInput)
@@ -472,7 +475,8 @@ func normalizeSessions(in []domainauth.RefreshSession) []domainauth.RefreshSessi
 }
 
 func normalizeSession(rec domainauth.RefreshSession) domainauth.RefreshSession {
-	rec.UserRef = identity.UserRef(strings.TrimSpace(string(rec.UserRef)))
+	rec.PrincipalID = identity.PrincipalID(strings.TrimSpace(string(rec.PrincipalID)))
+	rec.PrincipalRef = identity.PrincipalRef(strings.TrimSpace(string(rec.PrincipalRef)))
 	rec.TokenFamilyID = domainauth.TokenFamilyID(strings.TrimSpace(string(rec.TokenFamilyID)))
 	rec.RefreshTokenHash = strings.TrimSpace(rec.RefreshTokenHash)
 	if len(rec.ConsumedRefreshTokenHashes) > 0 {
