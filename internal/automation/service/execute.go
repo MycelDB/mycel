@@ -36,11 +36,11 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		run.OutputHash = hex.EncodeToString(outSum[:])
 		return run, nil
 	}
-	sess, err := m.sessions.OpenSession(ctx, sessionservice.OpenSessionInput{UserID: automationActor, SpaceID: inv.SpaceID, DomainID: inv.DomainID.String()})
+	sess, err := m.sessions.OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: automationActor, SpaceID: inv.SpaceID, DomainID: inv.DomainID.String()})
 	if err != nil {
 		return run, err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{UserID: automationActor, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite})
+	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: automationActor, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite})
 	if err != nil {
 		return run, err
 	}

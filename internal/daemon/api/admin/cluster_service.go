@@ -339,7 +339,7 @@ func (s *AdminClusterService) requireClusterManage(ctx context.Context) (daemona
 	if s.authorizer == nil {
 		return principal, nil
 	}
-	ok, err := s.authorizer.HasCapability(ctx, principal.OperatorID, clusterManageCapability)
+	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, clusterManageCapability)
 	if err != nil {
 		return daemonauth.Principal{}, err
 	}

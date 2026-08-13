@@ -15,7 +15,7 @@ type SpaceID = uuid.UUID
 // Space is an owner-scoped logical container for graph data.
 type Space struct {
 	SpaceID   SpaceID
-	OwnerID   identity.UserID
+	OwnerID   identity.PrincipalID
 	Name      string
 	Status    string
 	Settings  SpaceSettings

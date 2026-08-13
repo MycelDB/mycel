@@ -140,6 +140,9 @@ Recommended response shape:
 message ExecuteQueryResponse {
   repeated QueryRow rows = 1;
   string next_page_token = 2;
+  QueryResult result = 3;
+  ReadMetadata read_metadata = 4;
+  QueryDiagnostics diagnostics = 5;
 }
 ```
 
@@ -152,6 +155,7 @@ A graph query contains:
 - return projections
 - order specs
 - optional limit
+- optional traversal safety caps (`max_nodes`, `max_edges`)
 
 ```protobuf
 message GraphQuery {
@@ -160,6 +164,8 @@ message GraphQuery {
   repeated ReturnProjection returns = 3;
   repeated OrderSpec order_by = 4;
   int32 limit = 5;
+  int32 max_nodes = 6;
+  int32 max_edges = 7;
 }
 ```
 
@@ -209,6 +215,7 @@ The v1 expression model should support current builder functionality plus explic
 - current date
 - date minus days
 - between
+- less than
 - and
 - has tag
 - property exists
@@ -258,7 +265,27 @@ Scalar values use `google.protobuf.Value` so string, number, boolean, and null-l
 
 `ExecuteQueryRequest` includes `page_size` and `page_token`.
 
-Implementations may cap page size. The initial implementation may have limitations, but pagination should be part of the API from the start.
+Implementations may cap page size. Indexed query plans use opaque index-key cursors rather than offset-style row cursors.
+
+## Indexed execution and diagnostics
+
+The accepted production path for single-label node ordering uses schema-declared ordered property indexes. For example, `JournalEntry ORDER BY date` is planned as an ordered node property index scan when the domain schema declares the index. Missing indexes fail closed rather than silently scanning the domain. The indexed path also supports bounds on the ordered property, including inclusive `BetweenExpr` bounds and strict upper bounds via `LessThanExpr`, so callers can ask for entries before a timestamp sorted descending with a limit.
+
+The indexed-root subtree path combines that ordered root scan with adjacency-index traversal. A query with a single ordered root label, one traversal step, finite or safety-capped depth, `limit`, and optional `max_nodes`/`max_edges` first selects root rows from the ordered property index, then expands only those roots through the edge adjacency index. `limit` and `page_token` apply to root nodes, not descendants. The response `result.graph` includes selected roots, traversed descendant nodes, and traversed edges. If `max_nodes` or `max_edges` is hit, diagnostics set `truncated=true` and include `truncation_reason`; execution does not fall back to a full scan.
+
+Example structured shape:
+
+```text
+match.start = (d:pkm.journal)
+where = d.journal_day BETWEEN 20260701 AND 20260731
+order_by = d.journal_day DESC
+limit = 7
+match.steps[0] = d -[:contains*0..2]-> n
+returns = node(d), tree(n)
+max_nodes/max_edges = caller safety caps
+```
+
+`QueryDiagnostics` reports plan shape, indexes used, full-scan status, index entries scanned, loaded nodes/edges, root count, truncation state, root scan/expansion timing, adjacency scan calls, node read calls, rows returned, and cursor kind. For the indexed journal subtree query, diagnostics should show `plan=OrderedNodePropertyIndexScan+EdgeAdjacencyIndexScan`, `full_scan=false`, the ordered journal index, an adjacency index such as `out:contains`, and `next_cursor_kind=root_index_key`.
 
 ## Authorization
 

@@ -22,7 +22,7 @@ func NewSchemaCommand(a *app.App) *cobra.Command {
 func newSchemaGetCommand(a *app.App) *cobra.Command {
 	var domainID string
 	cmd := &cobra.Command{Use: "get", Short: "Get a domain schema", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), a)
 		if err != nil {
 			return err
 		}
@@ -47,7 +47,7 @@ func newSchemaPutCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), a)
 		if err != nil {
 			return err
 		}
@@ -68,7 +68,7 @@ func newSchemaPutCommand(a *app.App) *cobra.Command {
 func newSchemaDeleteCommand(a *app.App) *cobra.Command {
 	var domainID string
 	cmd := &cobra.Command{Use: "delete", Short: "Delete a domain schema", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), a)
 		if err != nil {
 			return err
 		}
@@ -88,7 +88,7 @@ func newSchemaValidateCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), a)
 		if err != nil {
 			return err
 		}

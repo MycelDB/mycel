@@ -102,7 +102,7 @@ type connectorTestIDs struct {
 	spaceID                                             domainspace.SpaceID
 	domainID                                            graph.DomainID
 	nodeID                                              graph.NodeID
-	userID                                              identity.UserID
+	userID                                              identity.PrincipalID
 }
 
 func provisionConnectorTestResources(t *testing.T, endpointURL string, credentialStatus domainsemantic.CredentialStatus, capabilityEnabled bool) (storesemantic.GlobalManager, storeaccounting.Manager, string, connectorTestIDs) {
@@ -117,7 +117,7 @@ func provisionConnectorTestResources(t *testing.T, endpointURL string, credentia
 	if err := acct.Init(ctx, filepath.Join(root, "meta", "accounting")); err != nil {
 		t.Fatalf("accounting init failed: %v", err)
 	}
-	ids := connectorTestIDs{endpointID: uuid.New(), modelID: uuid.New(), credentialID: uuid.New(), grantID: uuid.New(), indexID: uuid.New(), spaceID: uuid.New(), domainID: uuid.New(), nodeID: uuid.New(), userID: uuid.New()}
+	ids := connectorTestIDs{endpointID: uuid.New(), modelID: uuid.New(), credentialID: uuid.New(), grantID: uuid.New(), indexID: uuid.New(), spaceID: uuid.New(), domainID: uuid.New(), nodeID: uuid.New(), userID: identity.PrincipalID(uuid.NewString())}
 	now := time.Now().UTC()
 	if _, err := global.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{ID: ids.endpointID, Key: "openai", Name: "OpenAI", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: endpointURL, NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeBearerToken}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("endpoint upsert failed: %v", err)

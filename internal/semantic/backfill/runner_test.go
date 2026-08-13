@@ -121,7 +121,7 @@ func TestRunnerAccountingAttributesBackfillToCredentialOwner(t *testing.T) {
 		t.Fatalf("accounting init failed: %v", err)
 	}
 	provider := &fakeProviderConnector{}
-	actorID := identity.UserID(uuid.New())
+	actorID := identity.PrincipalID(uuid.NewString())
 	runner := env.runner
 	runner.Connector = connectors.Service{GlobalManager: env.globalMgr, Accounting: accountingMgr, ActorPrincipalID: actorID, Connectors: map[domainsemantic.ConnectorType]connectors.Connector{domainsemantic.ConnectorOpenAICompatible: provider}}
 	result, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
@@ -194,7 +194,7 @@ func TestRunnerExplicitRootsAndForce(t *testing.T) {
 type backfillTestEnv struct {
 	spaceID   domainspace.SpaceID
 	domainID  graph.DomainID
-	userID    identity.UserID
+	userID    identity.PrincipalID
 	graph     *memoryGraphSource
 	globalMgr storesemantic.GlobalManager
 	spaceMgr  storesemantic.SpaceManager
@@ -211,7 +211,7 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	root := t.TempDir()
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
-	userID := identity.UserID(uuid.New())
+	userID := identity.PrincipalID(uuid.NewString())
 	graphReader := &memoryGraphSource{domainID: domainID}
 	globalMgr := storesemantic.NewGlobalManager()
 	if err := globalMgr.Init(ctx, filepath.Join(root, "meta")); err != nil {

@@ -15,7 +15,7 @@ import (
 func TestTokenManagerIssueVerify(t *testing.T) {
 	mgr := NewTokenManager([]byte("01234567890123456789012345678901"), time.Minute)
 	mgr.now = func() time.Time { return time.Unix(100, 0) }
-	principal := Principal{OperatorID: "op-1", Username: "admin", CreatedAt: time.Unix(50, 0)}
+	principal := Principal{PrincipalID: "op-1", Username: "admin", CreatedAt: time.Unix(50, 0)}
 	token, expireAt, err := mgr.Issue(principal)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
@@ -27,7 +27,7 @@ func TestTokenManagerIssueVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
-	if got.OperatorID != principal.OperatorID || got.Username != principal.Username {
+	if got.PrincipalID != principal.PrincipalID || got.Username != principal.Username {
 		t.Fatalf("unexpected principal %#v", got)
 	}
 }
@@ -35,7 +35,7 @@ func TestTokenManagerIssueVerify(t *testing.T) {
 func TestTokenManagerRejectsTamperedAndExpiredTokens(t *testing.T) {
 	mgr := NewTokenManager([]byte("01234567890123456789012345678901"), time.Minute)
 	mgr.now = func() time.Time { return time.Unix(100, 0) }
-	token, _, err := mgr.Issue(Principal{OperatorID: "op-1", Username: "admin"})
+	token, _, err := mgr.Issue(Principal{PrincipalID: "op-1", Username: "admin"})
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
@@ -59,7 +59,7 @@ func TestUnaryInterceptorRequiresBearerToken(t *testing.T) {
 
 func TestUnaryInterceptorAddsPrincipal(t *testing.T) {
 	mgr := NewTokenManager([]byte("01234567890123456789012345678901"), time.Minute)
-	token, _, err := mgr.Issue(Principal{OperatorID: "op-1", Username: "admin"})
+	token, _, err := mgr.Issue(Principal{PrincipalID: "op-1", Username: "admin"})
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}

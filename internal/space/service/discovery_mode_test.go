@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/identity/model"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 )
@@ -18,7 +19,7 @@ func TestModuleExplicitOnlyDomainIsDirectlyAddressableButNotListed(t *testing.T)
 		t.Fatalf("init failed: %v", result.Error)
 	}
 	ownerID := uuid.New().String()
-	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "space", OwnerUserID: uuid.MustParse(ownerID)})
+	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "space", OwnerPrincipalID: identity.PrincipalID(ownerID)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestModuleUpdateDomainPolicyRoundTrip(t *testing.T) {
 		t.Fatalf("init failed: %v", result.Error)
 	}
 	ownerID := uuid.New().String()
-	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "space", OwnerUserID: uuid.MustParse(ownerID)})
+	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "space", OwnerPrincipalID: identity.PrincipalID(ownerID)})
 	if err != nil {
 		t.Fatal(err)
 	}

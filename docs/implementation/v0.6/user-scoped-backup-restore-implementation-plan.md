@@ -1,5 +1,8 @@
 # User-Scoped Backup and Restore Implementation Plan
 
+> Historical note: this v0.6 implementation plan predates unified principal identity. Current code uses principal terminology and `principal_id` where possible. The `mycel-user-backup-v1` archive format may still carry legacy `user_id` / `owner_user_id` compatibility keys.
+
+
 ## Status
 
 Proposed.

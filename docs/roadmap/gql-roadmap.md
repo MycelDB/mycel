@@ -6,7 +6,7 @@ This document tracks the mycel GQL feature roadmap. It is intentionally product-
 
 mycel GQL aims to provide a graph-native query language for nodes, edges, paths, projections, filtering, mutation, diagnostics, and higher-level application use cases such as Knot PKM.
 
-The current implemented subset is intentionally small and focused on node insertion, node matching, relationship matching, relationship creation between matched nodes, property filtering, scalar projection, and row limiting.
+The current implemented subset is still intentionally incremental, but it now covers node insertion, node matching, relationship matching, relationship creation between matched nodes, multi-hop and bounded variable-length traversal, comparison predicates, text/semantic predicate MVPs, property/payload/meta scalar projection, schema-aware validation, scripts, and row limiting.
 
 ## Feature Matrix
 
@@ -30,12 +30,13 @@ Desirability values are relative priorities:
 | Mixed return projection | Return full nodes and scalar properties together. | Medium | Medium | Y |
 | Row limiting | ISO-style row limit, e.g. `FETCH FIRST 10 ROWS ONLY`. | High | High | Y |
 | CLI GQL text output | Print GQL result rows from the CLI. | Medium | Medium | Y |
+| REPL space/domain connection | Connect to a space/domain in the CLI REPL and run GQL without repeating IDs. | High | High | N |
 | Admin console GQL execution | Execute GQL from `mycel-admin`. | Medium | High | Y |
 | Admin scalar result rendering | Display scalar projection values in `mycel-admin`. | Medium | High | Y |
 | Admin read-write execution | Allow write GQL from `mycel-admin` with confirmation. | Medium | Medium | Y |
-| `ORDER BY` | Sort rows by property or expression. | High | High | N |
+| `ORDER BY` | Sort rows by property or expression. | High | High | Partial |
 | `OFFSET` | Skip the first N rows for pagination. | Medium | Medium | N |
-| Comparison predicates | Support `>`, `<`, `>=`, `<=`, and `!=` in `WHERE`. | High | High | N |
+| Comparison predicates | Support `>`, `<`, `>=`, `<=`, and `!=` in `WHERE`. | High | High | Y |
 | `OR` predicates | Combine filters with `OR`. | Medium | Medium | N |
 | Parenthesized predicates | Group boolean expressions in `WHERE`. | Medium | Medium | N |
 | String predicates | Support `CONTAINS`, `STARTS WITH`, `ENDS WITH`, or regex-like matching. | High | High | N |
@@ -49,13 +50,14 @@ Desirability values are relative priorities:
 | Edge labels/types | Match/create edge labels such as `-[r:LINKS_TO]->`. | Very High | Very High | Y |
 | Edge properties | Store, filter, and return structured edge properties. | High | High | Y |
 | Edge property equality predicates | Filter on edge equality values, e.g. `WHERE r.weight = 0.5`. | High | High | Y |
-| Edge comparison predicates | Filter on edge comparison values, e.g. `WHERE r.weight > 0.5`. | High | High | N |
+| Edge comparison predicates | Filter on edge comparison values, e.g. `WHERE r.weight > 0.5`. | High | High | Y |
 | Return edge | Return a matched relationship, e.g. `RETURN r`. | High | High | Y |
 | Return edge properties | Return scalar edge property projections, e.g. `RETURN r.kind, r.weight`. | High | High | Y |
 | Multi-hop path match | Match chained patterns such as `(a)-[:REFERS_TO]->(b)-[:MENTIONS]->(c)`. | Very High | Very High | Y |
 | Variable-length traversal | Match bounded variable-length paths. | High | Very High | Y |
 | Path binding | Bind a full path, e.g. `MATCH path = (a)-[*]->(b) RETURN path`. | Medium | High | N |
-| Path projection | Return nodes and edges in a matched path. | Medium | High | N |
+| Path projection | Return nodes and edges in a matched path. | Medium | High | Partial |
+| Indexed root subtree graph return | Select roots with ordered index bounds/limit and expand a bounded adjacency subtree into `RETURN GRAPH`. | Very High | Very High | Y |
 | Neighborhood expansion | Query neighbors around matched nodes. | High | Very High | Y |
 | Shortest path | Find shortest paths between nodes. | Medium | Medium | N |
 | Standard node `CREATE` alias | Add standard GQL node creation syntax beyond current `INSERT`. | Medium | Medium | N |
@@ -70,13 +72,13 @@ Desirability values are relative priorities:
 | Function calls | Add built-in scalar, list, and string functions. | Medium | Medium | N |
 | List/map literals | Support richer literal values in queries. | Medium | Medium | N |
 | Payload projection | Return `Payload` fields such as primary text or blob references. | High | Very High | Y |
-| Meta projection | Return Mycel-controlled metadata fields. | Medium | Medium | N |
+| Meta projection | Return Mycel-controlled metadata fields. | Medium | Medium | Y |
 | Full-text search predicate | Match text payload/properties using text predicate filtering. | High | Very High | Y |
 | Semantic/vector predicate | Query semantically similar nodes. Initial implementation uses local textual fallback until semantic index pushdown is wired. | Medium | Very High | Y |
 | Schema-aware predicates | Filter/query using schema labels, record semantics, or schema-derived metadata. | Medium | High | Partial |
 | Degree predicates | Filter by incoming/outgoing edge counts. | Medium | High | N |
 | Explain plan | Show the compiled or optimized query plan. | Medium | Low | N |
-| Query diagnostics | Return timing, counters, and warnings. | Medium | Medium | N |
+| Query diagnostics | Return timing, counters, and warnings. | Medium | Medium | Partial |
 
 ## Current Implemented Subset
 
@@ -97,6 +99,12 @@ MATCH (p:Person)
 WHERE p.lastName = 'Jones'
 RETURN p.firstName, p.lastName
 FETCH FIRST 10 ROWS ONLY
+```
+
+```gql
+MATCH (p:Person)
+WHERE p.role = 'Monarch' AND p.birthYear > 1940
+RETURN p.name, p.birthYear
 ```
 
 ```gql
@@ -125,6 +133,14 @@ RETURN a.title, b.title
 ```
 
 ```gql
+MATCH (d:pkm.journal)-[:contains*0..2]->(n)
+WHERE d.journal_day BETWEEN 20260701 AND 20260731
+RETURN GRAPH d,n
+ORDER BY d.journal_day DESC
+FETCH FIRST 7 ROWS ONLY
+```
+
+```gql
 MATCH (n:Note)
 WHERE TEXT_CONTAINS(n.payload.text, 'graph memory')
 RETURN n
@@ -141,12 +157,12 @@ RETURN n
 Near-term priorities should keep the implementation incremental while making GQL useful for real graph workflows:
 
 1. Broaden `CREATE` toward standard GQL syntax, including node `CREATE` aliases and eventually inline endpoint creation.
-2. Path binding/projection and variable-length traversal.
-3. `ORDER BY` and `OFFSET` for result shaping and pagination.
-4. Comparison predicates beyond equality for node and edge properties.
-5. Aliased scalar projections.
-6. Full map/list result values for richer payload returns.
-7. Query parameters to avoid literal interpolation in application code.
+2. Path binding/projection on top of existing bounded variable-length traversal.
+3. Broaden `ORDER BY` beyond the indexed single-label node-property and indexed-root subtree shapes, and add `OFFSET` for result shaping and pagination.
+4. Aliased scalar projections.
+5. Full map/list result values for richer payload returns.
+6. Query parameters to avoid literal interpolation in application code.
+7. Index-backed full-text and semantic predicate pushdown beyond the current local fallback behavior.
 
 ## Knot PKM Use Cases
 
@@ -163,7 +179,7 @@ Knot PKM needs GQL to model and traverse relationships between notes, concepts, 
 - `NEXT`
 - `PREVIOUS`
 
-For Knot PKM, edge creation, single-hop edge matching, multi-hop path matching, neighborhood expansion, bounded variable-length traversal, scalar payload projection, and text/semantic predicate MVPs are now available. The highest-value remaining areas are path binding/projection, index-backed semantic/full-text pushdown, richer result values, and query diagnostics.
+For Knot PKM, edge creation, single-hop edge matching, multi-hop path matching, neighborhood expansion, bounded variable-length traversal, indexed journal-root subtree graph reads, scalar payload projection, and text/semantic predicate MVPs are now available. The highest-value remaining areas are broader path binding/projection, index-backed semantic/full-text pushdown, richer result values, and query diagnostics.
 
 ## Related Implementation Plans
 

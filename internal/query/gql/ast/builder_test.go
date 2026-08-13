@@ -156,6 +156,27 @@ func TestBuilderBuildsIncomingAndUndirectedRelationshipDirections(t *testing.T) 
 	}
 }
 
+func TestBuilderBuildsOrderByAST(t *testing.T) {
+	tree, err := gqlantlr.Parse("MATCH (j:JournalEntry) RETURN j ORDER BY j.date DESC FETCH FIRST 2 ROWS ONLY")
+	if err != nil {
+		t.Fatalf("antlr.Parse() error = %v", err)
+	}
+	query, err := Build(tree)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	stmt, ok := query.Statement.(model.MatchStatement)
+	if !ok {
+		t.Fatalf("statement = %T, want MatchStatement", query.Statement)
+	}
+	if len(stmt.OrderBy) != 1 || stmt.OrderBy[0].Variable != "j" || stmt.OrderBy[0].Property != "date" || stmt.OrderBy[0].Direction != model.SortDescending {
+		t.Fatalf("OrderBy = %+v", stmt.OrderBy)
+	}
+	if stmt.FetchFirst == nil || stmt.FetchFirst.Count != 2 {
+		t.Fatalf("FetchFirst = %#v", stmt.FetchFirst)
+	}
+}
+
 func TestBuilderBuildsFetchFirstAST(t *testing.T) {
 	tree, err := gqlantlr.Parse("MATCH (p:Person) WHERE p.firstName = 'Alice' RETURN p.firstName FETCH FIRST 2 ROWS ONLY")
 	if err != nil {

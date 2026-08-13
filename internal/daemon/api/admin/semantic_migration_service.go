@@ -34,7 +34,7 @@ func (s *AdminSemanticMigrationService) requireMigration(ctx context.Context) er
 	if err != nil {
 		return err
 	}
-	ok, err := s.authorizer.HasCapability(ctx, principal.OperatorID, commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH.String())
+	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH.String())
 	if err != nil {
 		return status.Errorf(codes.Internal, "authorize operator: %v", err)
 	}

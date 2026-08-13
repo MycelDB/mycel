@@ -137,7 +137,15 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 		}
 		returns = append(returns, built)
 	}
-	stmt := model.MatchStatement{Pattern: node, Where: where, Returns: returns, FetchFirst: fetchFirst}
+	var orderBy []model.OrderItem
+	if orderCtx := matchCtx.OrderByClause(); orderCtx != nil {
+		built, err := buildOrderByClause(orderCtx)
+		if err != nil {
+			return model.Query{}, err
+		}
+		orderBy = built
+	}
+	stmt := model.MatchStatement{Pattern: node, Where: where, Returns: returns, ReturnGraph: matchCtx.GRAPH() != nil, OrderBy: orderBy, FetchFirst: fetchFirst}
 	if matchPattern.Relationship != nil || len(matchPattern.Segments) > 0 {
 		stmt.MatchPattern = matchPattern
 	}
@@ -221,10 +229,10 @@ func buildEdgePattern(ctx generated.IEdgePatternContext) (model.RelationshipPatt
 		}
 		for _, label := range labelCtx.AllLabelName() {
 			nameCtx, ok := label.(*generated.LabelNameContext)
-			if !ok || nameCtx.IDENTIFIER() == nil {
+			if !ok || strings.TrimSpace(nameCtx.GetText()) == "" {
 				return model.RelationshipPattern{}, fmt.Errorf("invalid edge label name")
 			}
-			edge.Labels = append(edge.Labels, nameCtx.IDENTIFIER().GetText())
+			edge.Labels = append(edge.Labels, nameCtx.GetText())
 		}
 	}
 	if quant := edgeCtx.RelationshipQuantifier(); quant != nil {
@@ -265,6 +273,8 @@ func buildRelationshipQuantifier(ctx generated.IRelationshipQuantifierContext) (
 		if err != nil {
 			return model.RelationshipQuantifier{}, fmt.Errorf("invalid relationship quantifier max: %w", err)
 		}
+	} else if strings.Contains(quantCtx.GetText(), "..") {
+		max = -1
 	}
 	return model.RelationshipQuantifier{Min: min, Max: max}, nil
 }
@@ -279,6 +289,36 @@ func buildFetchFirstClause(ctx generated.IFetchFirstClauseContext) (model.FetchF
 		return model.FetchFirstClause{}, fmt.Errorf("invalid fetch first count: %w", err)
 	}
 	return model.FetchFirstClause{Count: count}, nil
+}
+
+func buildOrderByClause(ctx generated.IOrderByClauseContext) ([]model.OrderItem, error) {
+	orderCtx, ok := ctx.(*generated.OrderByClauseContext)
+	if !ok {
+		return nil, fmt.Errorf("invalid order by clause")
+	}
+	items := make([]model.OrderItem, 0, len(orderCtx.AllOrderItem()))
+	for _, item := range orderCtx.AllOrderItem() {
+		itemCtx, ok := item.(*generated.OrderItemContext)
+		if !ok || itemCtx.PropertyReference() == nil {
+			return nil, fmt.Errorf("invalid order item")
+		}
+		field, err := buildFieldReference(itemCtx.PropertyReference())
+		if err != nil {
+			return nil, err
+		}
+		direction := model.SortAscending
+		if sortCtx := itemCtx.SortDirection(); sortCtx != nil {
+			ctx, ok := sortCtx.(*generated.SortDirectionContext)
+			if !ok {
+				return nil, fmt.Errorf("invalid sort direction")
+			}
+			if ctx.DESC() != nil {
+				direction = model.SortDescending
+			}
+		}
+		items = append(items, model.OrderItem{Variable: field.Variable, Namespace: field.Namespace, Property: field.Property, Direction: direction})
+	}
+	return items, nil
 }
 
 func buildReturnItem(ctx *generated.ReturnItemContext) (model.ReturnItem, error) {
@@ -318,6 +358,14 @@ func buildWhereClause(ctx generated.IWhereClauseContext) (model.WhereClause, err
 		termCtx, ok := term.(*generated.PredicateTermContext)
 		if !ok {
 			return model.WhereClause{}, fmt.Errorf("invalid predicate term")
+		}
+		if between := termCtx.PropertyBetween(); between != nil {
+			low, high, err := buildPropertyBetween(between)
+			if err != nil {
+				return model.WhereClause{}, err
+			}
+			where.Predicates = append(where.Predicates, low, high)
+			continue
 		}
 		if comparison := termCtx.PropertyComparison(); comparison != nil {
 			built, err := buildPropertyComparison(comparison)
@@ -398,6 +446,24 @@ func buildFieldReference(ctx generated.IPropertyReferenceContext) (fieldReferenc
 	return field, nil
 }
 
+func buildPropertyBetween(ctx generated.IPropertyBetweenContext) (model.PropertyComparison, model.PropertyComparison, error) {
+	betweenCtx, ok := ctx.(*generated.PropertyBetweenContext)
+	if !ok || len(betweenCtx.AllIDENTIFIER()) != 2 || len(betweenCtx.AllValue()) != 2 {
+		return model.PropertyComparison{}, model.PropertyComparison{}, fmt.Errorf("invalid property between")
+	}
+	lowValue, err := buildValue(betweenCtx.Value(0))
+	if err != nil {
+		return model.PropertyComparison{}, model.PropertyComparison{}, err
+	}
+	highValue, err := buildValue(betweenCtx.Value(1))
+	if err != nil {
+		return model.PropertyComparison{}, model.PropertyComparison{}, err
+	}
+	variable := betweenCtx.IDENTIFIER(0).GetText()
+	property := betweenCtx.IDENTIFIER(1).GetText()
+	return model.PropertyComparison{Variable: variable, Property: property, Operator: model.ComparisonGreaterThanOrEqual, Value: lowValue}, model.PropertyComparison{Variable: variable, Property: property, Operator: model.ComparisonLessThanOrEqual, Value: highValue}, nil
+}
+
 func buildPropertyComparison(ctx generated.IPropertyComparisonContext) (model.PropertyComparison, error) {
 	comparisonCtx, ok := ctx.(*generated.PropertyComparisonContext)
 	if !ok || len(comparisonCtx.AllIDENTIFIER()) != 2 || comparisonCtx.ComparisonOperator() == nil || comparisonCtx.Value() == nil {
@@ -457,10 +523,10 @@ func buildNodePattern(ctx generated.INodePatternContext) (model.NodePattern, err
 		}
 		for _, label := range labelCtx.AllLabelName() {
 			nameCtx, ok := label.(*generated.LabelNameContext)
-			if !ok || nameCtx.IDENTIFIER() == nil {
+			if !ok || strings.TrimSpace(nameCtx.GetText()) == "" {
 				return model.NodePattern{}, fmt.Errorf("invalid label name")
 			}
-			node.Labels = append(node.Labels, nameCtx.IDENTIFIER().GetText())
+			node.Labels = append(node.Labels, nameCtx.GetText())
 		}
 	}
 	if props := nodeCtx.PropertyMap(); props != nil {

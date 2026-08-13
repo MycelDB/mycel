@@ -478,9 +478,9 @@ type InferenceUsageEvent struct {
 	Status                    string                    `json:"status"`
 	Operation                 string                    `json:"operation"`
 	Reason                    string                    `json:"reason,omitempty"`
-	ActorPrincipalID          identity.UserID           `json:"actor_principal_id,omitempty"`
-	EffectivePrincipalID      identity.UserID           `json:"effective_principal_id,omitempty"`
-	OnBehalfOfPrincipalID     identity.UserID           `json:"on_behalf_of_principal_id,omitempty"`
+	ActorPrincipalID          identity.PrincipalID      `json:"actor_principal_id,omitempty"`
+	EffectivePrincipalID      identity.PrincipalID      `json:"effective_principal_id,omitempty"`
+	OnBehalfOfPrincipalID     identity.PrincipalID      `json:"on_behalf_of_principal_id,omitempty"`
 	SpaceID                   domainspace.SpaceID       `json:"space_id,omitempty"`
 	DomainID                  graph.DomainID            `json:"domain_id,omitempty"`
 	SemanticIndexID           SemanticIndexID           `json:"semantic_index_id,omitempty"`

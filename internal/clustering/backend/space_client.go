@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
+	"github.com/myceldb/mycel/internal/identity/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -51,10 +52,7 @@ func SpaceFromProto(sp *clusterpb.RaftSpace) (domainspace.Space, error) {
 	if err != nil {
 		return domainspace.Space{}, err
 	}
-	ownerID, err := uuid.Parse(sp.GetOwnerId())
-	if err != nil {
-		return domainspace.Space{}, err
-	}
+	ownerID := sp.GetOwnerId()
 	createdAt, err := time.Parse(time.RFC3339Nano, sp.GetCreatedAt())
 	if err != nil {
 		return domainspace.Space{}, err
@@ -63,5 +61,5 @@ func SpaceFromProto(sp *clusterpb.RaftSpace) (domainspace.Space, error) {
 	if err != nil {
 		return domainspace.Space{}, err
 	}
-	return domainspace.Space{SpaceID: spaceID, OwnerID: ownerID, Name: sp.GetName(), Status: sp.GetStatus(), CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+	return domainspace.Space{SpaceID: spaceID, OwnerID: identity.PrincipalID(ownerID), Name: sp.GetName(), Status: sp.GetStatus(), CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }

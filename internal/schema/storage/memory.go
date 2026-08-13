@@ -90,6 +90,10 @@ func cloneSchema(value schema.DomainSchema) schema.DomainSchema {
 		value.NodeTypes[i].Payload = append([]schema.FieldSpec(nil), value.NodeTypes[i].Payload...)
 		value.NodeTypes[i].Meta = append([]schema.FieldSpec(nil), value.NodeTypes[i].Meta...)
 	}
+	value.Indexes = append([]schema.IndexDefinition(nil), value.Indexes...)
+	for i := range value.Indexes {
+		value.Indexes[i].Labels = append([]string(nil), value.Indexes[i].Labels...)
+	}
 	value.EdgeTypes = append([]schema.EdgeType(nil), value.EdgeTypes...)
 	for i := range value.EdgeTypes {
 		value.EdgeTypes[i].Labels = append([]string(nil), value.EdgeTypes[i].Labels...)

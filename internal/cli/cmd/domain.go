@@ -25,7 +25,7 @@ func NewListDomainsCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+			conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
@@ -56,7 +56,7 @@ func NewAddDomainCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+			conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
@@ -90,7 +90,7 @@ func NewShowDomainCommand(a *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+			conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
@@ -136,7 +136,7 @@ func NewUpdateDomainCommand(a *app.App) *cobra.Command {
 		if len(paths) == 0 {
 			return fmt.Errorf("at least one of --name or --description is required")
 		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -161,7 +161,7 @@ func NewDeleteDomainCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}

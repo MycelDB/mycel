@@ -40,9 +40,12 @@ type RefreshSessionMetadata struct {
 // RefreshTokenHash stores only a cryptographic hash of the refresh token. The
 // plaintext refresh token must never be persisted.
 type RefreshSession struct {
-	ID                         RefreshSessionID       `json:"id"`
-	UserID                     identity.UserID        `json:"user_id"`
-	UserRef                    identity.UserRef       `json:"user_ref"`
+	ID RefreshSessionID `json:"id"`
+
+	// PrincipalID is the authoritative owner for the unified identity model.
+	PrincipalID  identity.PrincipalID  `json:"principal_id,omitempty"`
+	PrincipalRef identity.PrincipalRef `json:"principal_ref,omitempty"`
+
 	Status                     RefreshSessionStatus   `json:"status"`
 	TokenFamilyID              TokenFamilyID          `json:"token_family_id"`
 	RefreshTokenHash           string                 `json:"refresh_token_hash,omitempty"`
@@ -60,12 +63,13 @@ type RefreshSession struct {
 
 // AuthAuditEvent is a non-sensitive auth/session lifecycle audit record.
 type AuthAuditEvent struct {
-	ID        AuditEventID      `json:"id"`
-	Type      string            `json:"type"`
-	UserID    *identity.UserID  `json:"user_id,omitempty"`
-	UserRef   identity.UserRef  `json:"user_ref,omitempty"`
-	SessionID *RefreshSessionID `json:"session_id,omitempty"`
-	Message   string            `json:"message,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
+	ID   AuditEventID `json:"id"`
+	Type string       `json:"type"`
+
+	PrincipalID  *identity.PrincipalID `json:"principal_id,omitempty"`
+	PrincipalRef identity.PrincipalRef `json:"principal_ref,omitempty"`
+	SessionID    *RefreshSessionID     `json:"session_id,omitempty"`
+	Message      string                `json:"message,omitempty"`
+	Metadata     map[string]string     `json:"metadata,omitempty"`
+	CreatedAt    time.Time             `json:"created_at"`
 }

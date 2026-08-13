@@ -33,6 +33,7 @@ type QueryNodesOperation struct {
 	ComparisonPredicates []ComparisonPredicate
 	TextPredicates       []TextContainsPredicate
 	SemanticPredicates   []SemanticSimilarPredicate
+	OrderBy              []OrderItem
 }
 
 func (QueryNodesOperation) operation() {}
@@ -55,10 +56,12 @@ type QueryPathOperation struct {
 	Start                NodePattern
 	Segments             []PathSegment
 	Returns              []ReturnItem
+	ReturnGraph          bool
 	Limit                int64
 	ComparisonPredicates []ComparisonPredicate
 	TextPredicates       []TextContainsPredicate
 	SemanticPredicates   []SemanticSimilarPredicate
+	OrderBy              []OrderItem
 }
 
 func (QueryPathOperation) operation() {}
@@ -153,4 +156,18 @@ type SemanticSimilarPredicate struct {
 	Variable string
 	Query    string
 	TopK     int64
+}
+
+type SortDirection string
+
+const (
+	SortAscending  SortDirection = "asc"
+	SortDescending SortDirection = "desc"
+)
+
+type OrderItem struct {
+	Variable  string
+	Namespace string
+	Property  string
+	Direction SortDirection
 }

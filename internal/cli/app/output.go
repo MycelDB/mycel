@@ -7,41 +7,19 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
-	"github.com/myceldb/mycel/internal/identity/model"
 	"github.com/myceldb/mycel/internal/space/access"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-func RenderDaemonOperatorsTable(operators []*adminv1.Operator) {
+func RenderPrincipalsTable(principals []*adminv1.Principal) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"Operator ID", "Username", "State", "Created At"})
-	for _, operator := range operators {
-		t.AppendRow(table.Row{operator.GetOperatorId(), operator.GetUsername(), operator.GetState().String(), operator.GetCreateTime().AsTime()})
-	}
-	t.Render()
-}
-
-func RenderUsersTable(users []identity.User) {
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"User ID", "Username", "Status"})
-	for _, u := range users {
-		t.AppendRow(table.Row{u.ID, u.Username, u.Status})
-	}
-	t.Render()
-}
-
-func RenderDaemonUsersTable(users []*adminv1.User) {
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"User ID", "Username", "State", "Created At"})
-	for _, user := range users {
-		t.AppendRow(table.Row{user.GetUserId(), user.GetUsername(), user.GetState().String(), user.GetCreateTime().AsTime()})
+	t.AppendHeader(table.Row{"Principal ID", "Username", "Display Name", "Email", "Type", "State", "Login"})
+	for _, principal := range principals {
+		t.AppendRow(table.Row{principal.GetPrincipalId(), principal.GetUsername(), principal.GetDisplayName(), principal.GetEmail(), principal.GetType().String(), principal.GetState().String(), principal.GetLoginEnabled()})
 	}
 	t.Render()
 }
@@ -109,9 +87,9 @@ func RenderSystemAccessTable(rules []access.SystemAccessRule) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"Rule ID", "User ID", "Roles"})
+	t.AppendHeader(table.Row{"Rule ID", "Principal ID", "Roles"})
 	for _, rule := range rules {
-		t.AppendRow(table.Row{rule.ID, rule.UserID, joinSystemRoles(rule.Roles)})
+		t.AppendRow(table.Row{rule.ID, rule.PrincipalID, joinSystemRoles(rule.Roles)})
 	}
 	t.Render()
 }
@@ -120,14 +98,14 @@ func RenderSpaceAccessTable(rules []access.SpaceAccessRule) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"Rule ID", "Space ID", "User ID", "Permissions"})
+	t.AppendHeader(table.Row{"Rule ID", "Space ID", "Principal ID", "Permissions"})
 	for _, rule := range rules {
-		t.AppendRow(table.Row{rule.ID, rule.SpaceID, rule.UserID, joinSpacePermissions(rule.Permissions)})
+		t.AppendRow(table.Row{rule.ID, rule.SpaceID, rule.PrincipalID, joinSpacePermissions(rule.Permissions)})
 	}
 	t.Render()
 }
 
-func RenderClientAuthSessionsTable(sessions []*clientv1.AuthSessionSummary) {
+func RenderAuthSessionsTable(sessions []*commonv1.AuthSessionSummary) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetStyle(table.StyleDefault)

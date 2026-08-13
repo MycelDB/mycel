@@ -181,8 +181,9 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 			}
 			defined[segment.Node.Variable] = struct{}{}
 			if segment.Relationship.Quantifier != nil {
-				if segment.Relationship.Quantifier.Min < 1 || segment.Relationship.Quantifier.Max < segment.Relationship.Quantifier.Min || segment.Relationship.Quantifier.Max > 5 {
-					return fmt.Errorf("relationship quantifier must be within 1..5")
+				max := segment.Relationship.Quantifier.Max
+				if segment.Relationship.Quantifier.Min < 0 || (max != -1 && max < segment.Relationship.Quantifier.Min) || max > 5 {
+					return fmt.Errorf("relationship quantifier must be within 0..5 or use an open upper bound")
 				}
 				if segment.Relationship.Variable != "" {
 					return fmt.Errorf("relationship variables are not supported on variable-length traversals")
@@ -243,6 +244,27 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 			}
 		default:
 			return fmt.Errorf("unsupported return item kind %q", kind)
+		}
+	}
+	for _, order := range stmt.OrderBy {
+		if order.Variable == "" || order.Property == "" {
+			return fmt.Errorf("order by item requires variable and property")
+		}
+		if _, ok := defined[order.Variable]; !ok {
+			return fmt.Errorf("order by variable %q is not defined", order.Variable)
+		}
+		switch order.Namespace {
+		case "", "properties", "payload", "meta":
+		default:
+			return fmt.Errorf("unsupported order by namespace %q", order.Namespace)
+		}
+		switch order.Direction {
+		case "", model.SortAscending, model.SortDescending:
+		default:
+			return fmt.Errorf("unsupported order by direction %q", order.Direction)
+		}
+		if err := schemaState.validateWhereProperty(order.Variable, order.Namespace, order.Property); err != nil {
+			return err
 		}
 	}
 	if stmt.FetchFirst != nil && stmt.FetchFirst.Count <= 0 {

@@ -33,7 +33,7 @@ func (s *DomainService) ListDomains(ctx context.Context, req *clientv1.ListDomai
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	pageSize := normalizePageSize(req.GetPageSize())
-	domains, err := s.spaces.ListVisibleDomains(ctx, principal.UserID, req.GetSpaceId(), req.GetIncludeSystem())
+	domains, err := s.spaces.ListVisibleDomains(ctx, principal.PrincipalID, req.GetSpaceId(), req.GetIncludeSystem())
 	if err != nil {
 		return nil, mapDomainError(err, "list domains")
 	}
@@ -44,7 +44,7 @@ func (s *DomainService) ListDomains(ctx context.Context, req *clientv1.ListDomai
 	if end > len(domains) {
 		end = len(domains)
 	}
-	access, err := s.spaces.DomainEffectiveAccess(ctx, principal.UserID, req.GetSpaceId())
+	access, err := s.spaces.DomainEffectiveAccess(ctx, principal.PrincipalID, req.GetSpaceId())
 	if err != nil {
 		return nil, mapDomainError(err, "resolve effective access")
 	}
@@ -64,11 +64,11 @@ func (s *DomainService) GetDomain(ctx context.Context, req *clientv1.GetDomainRe
 	if err != nil {
 		return nil, err
 	}
-	domain, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, req.GetSpaceId(), req.GetDomainId(), req.GetKey())
+	domain, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, req.GetSpaceId(), req.GetDomainId(), req.GetKey())
 	if err != nil {
 		return nil, mapDomainError(err, "get domain")
 	}
-	access, err := s.spaces.DomainEffectiveAccess(ctx, principal.UserID, req.GetSpaceId())
+	access, err := s.spaces.DomainEffectiveAccess(ctx, principal.PrincipalID, req.GetSpaceId())
 	if err != nil {
 		return nil, mapDomainError(err, "resolve effective access")
 	}
@@ -80,11 +80,11 @@ func (s *DomainService) CreateDomain(ctx context.Context, req *clientv1.CreateDo
 	if err != nil {
 		return nil, err
 	}
-	domain, err := s.spaces.CreateDomain(ctx, principal.UserID, daemonspace.CreateDomainInput{SpaceID: req.GetSpaceId(), Key: req.GetKey(), Name: req.GetName(), Description: req.GetDescription(), DiscoveryMode: discoveryModeFromProto(req.GetDiscoveryMode()), SearchMode: searchModeFromProto(req.GetSearchMode()), SemanticMode: semanticModeFromProto(req.GetSemanticMode()), ReadOnly: req.GetReadOnly()})
+	domain, err := s.spaces.CreateDomain(ctx, principal.PrincipalID, daemonspace.CreateDomainInput{SpaceID: req.GetSpaceId(), Key: req.GetKey(), Name: req.GetName(), Description: req.GetDescription(), DiscoveryMode: discoveryModeFromProto(req.GetDiscoveryMode()), SearchMode: searchModeFromProto(req.GetSearchMode()), SemanticMode: semanticModeFromProto(req.GetSemanticMode()), ReadOnly: req.GetReadOnly()})
 	if err != nil {
 		return nil, mapDomainError(err, "create domain")
 	}
-	access, err := s.spaces.DomainEffectiveAccess(ctx, principal.UserID, req.GetSpaceId())
+	access, err := s.spaces.DomainEffectiveAccess(ctx, principal.PrincipalID, req.GetSpaceId())
 	if err != nil {
 		return nil, mapDomainError(err, "resolve effective access")
 	}
@@ -129,11 +129,11 @@ func (s *DomainService) UpdateDomain(ctx context.Context, req *clientv1.UpdateDo
 	if req.GetUpdateMask() == nil || len(req.GetUpdateMask().GetPaths()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "update_mask is required")
 	}
-	domain, err := s.spaces.UpdateDomain(ctx, principal.UserID, daemonspace.UpdateDomainInput{SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), Name: name, Description: description, DiscoveryMode: discoveryMode, SearchMode: searchMode, SemanticMode: semanticMode, ReadOnly: readOnly})
+	domain, err := s.spaces.UpdateDomain(ctx, principal.PrincipalID, daemonspace.UpdateDomainInput{SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), Name: name, Description: description, DiscoveryMode: discoveryMode, SearchMode: searchMode, SemanticMode: semanticMode, ReadOnly: readOnly})
 	if err != nil {
 		return nil, mapDomainError(err, "update domain")
 	}
-	access, err := s.spaces.DomainEffectiveAccess(ctx, principal.UserID, req.GetSpaceId())
+	access, err := s.spaces.DomainEffectiveAccess(ctx, principal.PrincipalID, req.GetSpaceId())
 	if err != nil {
 		return nil, mapDomainError(err, "resolve effective access")
 	}
@@ -145,7 +145,7 @@ func (s *DomainService) DeleteDomain(ctx context.Context, req *clientv1.DeleteDo
 	if err != nil {
 		return nil, err
 	}
-	if err := s.spaces.DeleteDomain(ctx, principal.UserID, req.GetSpaceId(), req.GetDomainId()); err != nil {
+	if err := s.spaces.DeleteDomain(ctx, principal.PrincipalID, req.GetSpaceId(), req.GetDomainId()); err != nil {
 		return nil, mapDomainError(err, "delete domain")
 	}
 	return &clientv1.DeleteDomainResponse{}, nil

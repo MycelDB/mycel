@@ -28,6 +28,8 @@ type MatchStatement struct {
 	MatchPattern MatchPattern
 	Where        *WhereClause
 	Returns      []ReturnItem
+	ReturnGraph  bool
+	OrderBy      []OrderItem
 	FetchFirst   *FetchFirstClause
 }
 
@@ -104,6 +106,20 @@ type ReturnItem struct {
 	Variable  string
 	Namespace string
 	Property  string
+}
+
+type SortDirection string
+
+const (
+	SortAscending  SortDirection = "asc"
+	SortDescending SortDirection = "desc"
+)
+
+type OrderItem struct {
+	Variable  string
+	Namespace string
+	Property  string
+	Direction SortDirection
 }
 
 // MatchPattern represents a GQL graph pattern. The initial edge-capable shape

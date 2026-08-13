@@ -6,14 +6,14 @@ import (
 	"strings"
 
 	"github.com/myceldb/mycel/internal/cli/app"
-	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
 
 func NewAuthCommand(a *app.App) *cobra.Command {
-	auth := &cobra.Command{Use: "auth", Short: "Manage client authentication"}
+	auth := &cobra.Command{Use: "auth", Short: "Manage principal authentication"}
 	session := &cobra.Command{Use: "session", Short: "Manage durable auth sessions"}
 	session.AddCommand(NewAuthSessionListCommand(a), NewAuthSessionRevokeCommand(a), NewAuthSessionRevokeOtherCommand(a), NewAuthSessionCleanupCommand(a))
 	auth.AddCommand(NewAuthLoginCommand(a), NewAuthRefreshCommand(a), NewAuthLogoutCommand(a), NewAuthWhoAmICommand(a), session)
@@ -21,8 +21,8 @@ func NewAuthCommand(a *app.App) *cobra.Command {
 }
 
 func NewAuthLoginCommand(a *app.App) *cobra.Command {
-	return &cobra.Command{Use: "login", Short: "Login as a standard user", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, _, login, err := loginDaemonUser(cmd.Context(), a)
+	return &cobra.Command{Use: "login", Short: "Login as a principal", RunE: func(cmd *cobra.Command, args []string) error {
+		conn, _, login, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -33,7 +33,7 @@ func NewAuthLoginCommand(a *app.App) *cobra.Command {
 
 func NewAuthRefreshCommand(a *app.App) *cobra.Command {
 	var refreshToken string
-	cmd := &cobra.Command{Use: "refresh", Short: "Refresh a standard-user auth session", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "refresh", Short: "Refresh a principal auth session", RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(refreshToken) == "" {
 			return fmt.Errorf("--refresh-token is required")
 		}
@@ -42,7 +42,7 @@ func NewAuthRefreshCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := clientv1.NewAuthServiceClient(conn).Refresh(cmd.Context(), &clientv1.RefreshRequest{RefreshToken: &refreshToken, Client: &clientv1.ClientInfo{Name: "mycel-cli", Platform: "cli"}})
+		res, err := commonv1.NewAuthServiceClient(conn).Refresh(cmd.Context(), &commonv1.RefreshRequest{RefreshToken: &refreshToken, Client: &commonv1.ClientInfo{Name: "mycel-cli", Platform: "cli"}})
 		if err != nil {
 			return err
 		}
@@ -53,33 +53,33 @@ func NewAuthRefreshCommand(a *app.App) *cobra.Command {
 }
 
 func NewAuthWhoAmICommand(a *app.App) *cobra.Command {
-	return &cobra.Command{Use: "whoami", Short: "Show the authenticated standard user", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+	return &cobra.Command{Use: "whoami", Short: "Show the authenticated principal", RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := clientv1.NewAuthServiceClient(conn).WhoAmI(authCtx, &clientv1.WhoAmIRequest{})
+		res, err := commonv1.NewAuthServiceClient(conn).WhoAmI(authCtx, &commonv1.WhoAmIRequest{})
 		if err != nil {
 			return err
 		}
-		return a.Print(res.GetPrincipal(), "user: "+res.GetPrincipal().GetUsername()+"\n")
+		return a.Print(res.GetPrincipal(), "principal: "+res.GetPrincipal().GetUsername()+"\n")
 	}}
 }
 
 func NewAuthLogoutCommand(a *app.App) *cobra.Command {
 	var sessionID string
-	cmd := &cobra.Command{Use: "logout", Short: "Logout/revoke a standard-user auth session", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+	cmd := &cobra.Command{Use: "logout", Short: "Logout/revoke a principal auth session", RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		req := &clientv1.LogoutRequest{}
+		req := &commonv1.LogoutRequest{}
 		if sessionID != "" {
 			req.AuthSessionId = &sessionID
 		}
-		_, err = clientv1.NewAuthServiceClient(conn).Logout(authCtx, req)
+		_, err = commonv1.NewAuthServiceClient(conn).Logout(authCtx, req)
 		if err != nil {
 			return err
 		}
@@ -91,20 +91,20 @@ func NewAuthLogoutCommand(a *app.App) *cobra.Command {
 
 func NewAuthSessionListCommand(a *app.App) *cobra.Command {
 	var includeInactive bool
-	cmd := &cobra.Command{Use: "list", Short: "List refresh sessions for the authenticated user", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+	cmd := &cobra.Command{Use: "list", Short: "List refresh sessions for the authenticated principal", RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := clientv1.NewAuthServiceClient(conn).ListAuthSessions(authCtx, &clientv1.ListAuthSessionsRequest{IncludeInactive: includeInactive})
+		res, err := commonv1.NewAuthServiceClient(conn).ListAuthSessions(authCtx, &commonv1.ListAuthSessionsRequest{IncludeInactive: includeInactive})
 		if err != nil {
 			return err
 		}
 		if a.Output == "json" {
 			return a.Print(res.GetSessions(), "")
 		}
-		app.RenderClientAuthSessionsTable(res.GetSessions())
+		app.RenderAuthSessionsTable(res.GetSessions())
 		return nil
 	}}
 	cmd.Flags().BoolVar(&includeInactive, "include-inactive", false, "include inactive sessions")
@@ -112,13 +112,13 @@ func NewAuthSessionListCommand(a *app.App) *cobra.Command {
 }
 
 func NewAuthSessionRevokeCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "revoke SESSION_ID", Short: "Revoke one refresh session owned by the authenticated user", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+	cmd := &cobra.Command{Use: "revoke SESSION_ID", Short: "Revoke one refresh session owned by the authenticated principal", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		_, err = clientv1.NewAuthServiceClient(conn).RevokeAuthSession(authCtx, &clientv1.RevokeAuthSessionRequest{AuthSessionId: args[0]})
+		_, err = commonv1.NewAuthServiceClient(conn).RevokeAuthSession(authCtx, &commonv1.RevokeAuthSessionRequest{AuthSessionId: args[0]})
 		if err != nil {
 			return err
 		}
@@ -129,13 +129,13 @@ func NewAuthSessionRevokeCommand(a *app.App) *cobra.Command {
 }
 
 func NewAuthSessionRevokeOtherCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "revoke-other", Short: "Revoke all other refresh sessions owned by the authenticated user", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+	cmd := &cobra.Command{Use: "revoke-other", Short: "Revoke all other refresh sessions owned by the authenticated principal", RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := clientv1.NewAuthServiceClient(conn).RevokeOtherAuthSessions(authCtx, &clientv1.RevokeOtherAuthSessionsRequest{})
+		res, err := commonv1.NewAuthServiceClient(conn).RevokeOtherAuthSessions(authCtx, &commonv1.RevokeOtherAuthSessionsRequest{})
 		if err != nil {
 			return err
 		}
@@ -152,19 +152,19 @@ func NewAuthSessionCleanupCommand(a *app.App) *cobra.Command {
 	}}
 }
 
-func loginDaemonUser(ctx context.Context, a *app.App) (*grpc.ClientConn, context.Context, *clientv1.LoginResponse, error) {
+func loginDaemonPrincipal(ctx context.Context, a *app.App) (*grpc.ClientConn, context.Context, *commonv1.LoginResponse, error) {
 	if strings.TrimSpace(a.UserRef) == "" || strings.TrimSpace(a.Password) == "" {
-		return nil, nil, nil, fmt.Errorf("--username/-u and --password/-p are required for auth commands")
+		return nil, nil, nil, fmt.Errorf("--username/-u and --password/-p are required for principal auth commands")
 	}
 	conn, addr, err := dialDaemon(ctx, a)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	client := clientv1.NewAuthServiceClient(conn)
-	login, err := client.Login(ctx, &clientv1.LoginRequest{Username: a.UserRef, Password: a.Password, Client: &clientv1.ClientInfo{Name: "mycel-cli", Platform: "cli"}})
+	client := commonv1.NewAuthServiceClient(conn)
+	login, err := client.Login(ctx, &commonv1.LoginRequest{Username: a.UserRef, Password: a.Password, Client: &commonv1.ClientInfo{Name: "mycel-cli", Platform: "cli"}})
 	if err != nil {
 		_ = conn.Close()
-		return nil, nil, nil, fmt.Errorf("login user via %s: %w", addr, err)
+		return nil, nil, nil, fmt.Errorf("login principal via %s: %w", addr, err)
 	}
 	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+login.GetAccessToken())
 	return conn, authCtx, login, nil

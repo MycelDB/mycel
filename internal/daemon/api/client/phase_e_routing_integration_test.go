@@ -20,6 +20,7 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/identity/model"
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -299,7 +300,7 @@ func newPhaseERoutingNode(t *testing.T, id consensus.NodeID) *phaseERoutingNode 
 func (n *phaseERoutingNode) createVisibleSpace(t *testing.T) (string, string) {
 	t.Helper()
 	owner := uuid.New()
-	space, domain, err := n.spaces.CreateSpace(context.Background(), daemonspace.CreateSpaceInput{Name: fmt.Sprintf("node-%d-space", n.id), OwnerUserID: owner})
+	space, domain, err := n.spaces.CreateSpace(context.Background(), daemonspace.CreateSpaceInput{Name: fmt.Sprintf("node-%d-space", n.id), OwnerPrincipalID: identity.PrincipalID(owner.String())})
 	if err != nil {
 		t.Fatalf("create visible space: %v", err)
 	}
@@ -360,5 +361,5 @@ func phaseEBackendAuthInterceptor(requiredToken string) grpc.UnaryServerIntercep
 }
 
 func phaseEUserContext(userID string) context.Context {
-	return auth.ContextWithPrincipal(context.Background(), auth.Principal{Kind: auth.PrincipalKindUser, UserID: userID, Username: "phase-e-user"})
+	return auth.ContextWithPrincipal(context.Background(), auth.Principal{Kind: auth.PrincipalKindHuman, PrincipalID: userID, Username: "phase-e-user"})
 }

@@ -97,7 +97,7 @@ func TestPlannerSeparatesGroupsByCredentialGrant(t *testing.T) {
 type searchEnv struct {
 	spaceID     domainspace.SpaceID
 	domainID    graph.DomainID
-	userID      identity.UserID
+	userID      identity.PrincipalID
 	globalMgr   storesemantic.GlobalManager
 	spaceMgr    storesemantic.SpaceManager
 	vector      vectorstore.MycelFileBackend
@@ -117,7 +117,7 @@ func newSearchEnv(t *testing.T) *searchEnv {
 	root := t.TempDir()
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
-	userID := identity.UserID(uuid.New())
+	userID := identity.PrincipalID(uuid.NewString())
 	globalMgr := storesemantic.NewGlobalManager()
 	if err := globalMgr.Init(ctx, filepath.Join(root, "meta")); err != nil {
 		t.Fatalf("global init failed: %v", err)

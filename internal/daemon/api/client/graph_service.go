@@ -553,7 +553,7 @@ func (s *GraphService) transaction(ctx context.Context, transactionID string) (d
 	if err != nil {
 		return daemonsession.GraphTransaction{}, err
 	}
-	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, transactionID)
+	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, transactionID)
 	if err != nil {
 		return daemonsession.GraphTransaction{}, mapSessionError(err, "get transaction")
 	}

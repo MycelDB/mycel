@@ -14,7 +14,7 @@ import (
 type Filter struct {
 	From              *time.Time
 	To                *time.Time
-	PrincipalID       identity.UserID
+	PrincipalID       identity.PrincipalID
 	SpaceID           domainspace.SpaceID
 	DomainID          graph.DomainID
 	NodeID            graph.NodeID

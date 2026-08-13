@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/myceldb/mycel/internal/cli/app"
@@ -26,7 +27,7 @@ func NewSessionOpenCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -55,7 +56,7 @@ func NewSessionOpenCommand(a *app.App) *cobra.Command {
 
 func NewSessionGetCommand(a *app.App) *cobra.Command {
 	return &cobra.Command{Use: "get SESSION_ID", Short: "Get a daemon graph session", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -71,7 +72,7 @@ func NewSessionGetCommand(a *app.App) *cobra.Command {
 func NewSessionHeartbeatCommand(a *app.App) *cobra.Command {
 	var extension time.Duration
 	cmd := &cobra.Command{Use: "heartbeat SESSION_ID", Short: "Heartbeat a daemon graph session", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -92,7 +93,7 @@ func NewSessionHeartbeatCommand(a *app.App) *cobra.Command {
 
 func NewSessionCloseCommand(a *app.App) *cobra.Command {
 	return &cobra.Command{Use: "close SESSION_ID", Short: "Close a daemon graph session", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -114,7 +115,7 @@ func NewTransactionCommand(a *app.App) *cobra.Command {
 func NewTransactionBeginCommand(a *app.App) *cobra.Command {
 	var mode string
 	cmd := &cobra.Command{Use: "begin SESSION_ID", Short: "Begin a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -131,7 +132,7 @@ func NewTransactionBeginCommand(a *app.App) *cobra.Command {
 
 func NewTransactionGetCommand(a *app.App) *cobra.Command {
 	return &cobra.Command{Use: "get TRANSACTION_ID", Short: "Get a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -146,7 +147,7 @@ func NewTransactionGetCommand(a *app.App) *cobra.Command {
 
 func NewTransactionCommitCommand(a *app.App) *cobra.Command {
 	return &cobra.Command{Use: "commit TRANSACTION_ID", Short: "Commit a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -161,7 +162,7 @@ func NewTransactionCommitCommand(a *app.App) *cobra.Command {
 
 func NewTransactionRollbackCommand(a *app.App) *cobra.Command {
 	return &cobra.Command{Use: "rollback TRANSACTION_ID", Short: "Rollback a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -176,7 +177,7 @@ func NewTransactionRollbackCommand(a *app.App) *cobra.Command {
 
 func NewTransactionCloseCommand(a *app.App) *cobra.Command {
 	return &cobra.Command{Use: "close TRANSACTION_ID", Short: "Close a daemon graph transaction", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -190,10 +191,18 @@ func NewTransactionCloseCommand(a *app.App) *cobra.Command {
 }
 
 func resolveDaemonDomainID(client clientv1.DomainServiceClient, authCtx context.Context, spaceID string, domainID string, domainKey string) (string, error) {
-	if domainID != "" {
-		return domainID, nil
+	if strings.TrimSpace(domainID) != "" {
+		return strings.TrimSpace(domainID), nil
 	}
-	res, err := client.GetDomain(authCtx, &clientv1.GetDomainRequest{SpaceId: spaceID, Key: domainKey})
+	key := strings.TrimSpace(domainKey)
+	if key == "" {
+		res, err := resolveDefaultDaemonDomain(client, authCtx, spaceID)
+		if err != nil {
+			return "", err
+		}
+		return res.GetDomainId(), nil
+	}
+	res, err := client.GetDomain(authCtx, &clientv1.GetDomainRequest{SpaceId: spaceID, Key: key})
 	if err != nil {
 		return "", err
 	}

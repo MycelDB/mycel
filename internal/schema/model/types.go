@@ -45,6 +45,7 @@ type DomainSchema struct {
 	Mode       SchemaMode
 	NodeTypes  []NodeType
 	EdgeTypes  []EdgeType
+	Indexes    []IndexDefinition
 	Policies   SchemaPolicies
 	SourceGWL  string
 	SourceHash string
@@ -84,6 +85,44 @@ type FieldSpec struct {
 	Repeated    bool
 	EnumValues  []string
 	Description string
+}
+
+type IndexTargetKind string
+
+const (
+	IndexTargetNode IndexTargetKind = "node"
+	IndexTargetEdge IndexTargetKind = "edge"
+)
+
+type IndexKind string
+
+const (
+	IndexKindEquality IndexKind = "equality"
+	IndexKindOrdered  IndexKind = "ordered"
+)
+
+type IndexSortDirection string
+
+const (
+	IndexSortDirectionAsc  IndexSortDirection = "asc"
+	IndexSortDirectionDesc IndexSortDirection = "desc"
+)
+
+type FieldPath struct {
+	Namespace string
+	Name      string
+}
+
+type IndexDefinition struct {
+	Name       string
+	TargetKind IndexTargetKind
+	TargetType string
+	Labels     []string
+	Field      FieldPath
+	Kind       IndexKind
+	Direction  IndexSortDirection
+	Unique     bool
+	Required   bool
 }
 
 type EndpointSpec struct {
@@ -138,6 +177,38 @@ func (s DomainSchema) Normalize() DomainSchema {
 		normalizeFields(s.EdgeTypes[i].Properties)
 		normalizeFields(s.EdgeTypes[i].Payload)
 		normalizeFields(s.EdgeTypes[i].Meta)
+	}
+	nodeLabels := map[string][]string{}
+	for _, nt := range s.NodeTypes {
+		nodeLabels[nt.Name] = append([]string(nil), nt.Labels...)
+	}
+	edgeLabels := map[string][]string{}
+	for _, et := range s.EdgeTypes {
+		edgeLabels[et.Name] = append([]string(nil), et.Labels...)
+	}
+	for i := range s.Indexes {
+		idx := &s.Indexes[i]
+		idx.Name = strings.TrimSpace(idx.Name)
+		idx.TargetType = strings.TrimSpace(idx.TargetType)
+		idx.Field.Namespace = strings.ToLower(strings.TrimSpace(idx.Field.Namespace))
+		idx.Field.Name = strings.TrimSpace(idx.Field.Name)
+		idx.TargetKind = IndexTargetKind(strings.ToLower(strings.TrimSpace(string(idx.TargetKind))))
+		idx.Kind = IndexKind(strings.ToLower(strings.TrimSpace(string(idx.Kind))))
+		idx.Direction = IndexSortDirection(strings.ToLower(strings.TrimSpace(string(idx.Direction))))
+		if idx.Kind == "" {
+			idx.Kind = IndexKindEquality
+		}
+		if idx.Kind == IndexKindOrdered && idx.Direction == "" {
+			idx.Direction = IndexSortDirectionAsc
+		}
+		switch idx.TargetKind {
+		case IndexTargetNode:
+			idx.Labels = append([]string(nil), nodeLabels[idx.TargetType]...)
+		case IndexTargetEdge:
+			idx.Labels = append([]string(nil), edgeLabels[idx.TargetType]...)
+		default:
+			idx.Labels = trimStrings(idx.Labels)
+		}
 	}
 	return s
 }

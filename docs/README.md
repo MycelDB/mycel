@@ -10,7 +10,7 @@ This directory is organized by audience and intent:
 - [Operations](operations/README.md) explains how to run, operate, validate, and recover mycel.
 - [Implementation](implementation/README.md) archives implementation plans by release.
 - [AI prompt templates](ai/README.md) provide optional reusable prompts for contributors.
-- [Roadmap](roadmap/gql-roadmap.md) tracks forward-looking product and GQL work.
+- Roadmaps track forward-looking query work: [GQL](roadmap/gql-roadmap.md) and [structured query API](roadmap/api-roadmap.md).
 
 ## Quick links
 

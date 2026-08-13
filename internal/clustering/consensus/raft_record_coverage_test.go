@@ -17,15 +17,15 @@ type raftRecordCoverage struct {
 }
 
 var phaseDRaftRecordCoverage = map[string]raftRecordCoverage{
-	"identity.admin.put.v1":                {Subsystem: "admin identity", Scope: "system raft", Status: "covered", Tranche: "D0 verify"},
-	"identity.admin.session.put.v1":        {Subsystem: "admin identity", Scope: "system raft", Status: "covered", Tranche: "D0 verify"},
-	"identity.user.put.v1":                 {Subsystem: "user identity", Scope: "system raft", Status: "covered", Tranche: "D0 verify"},
-	"identity.user.session.put.v1":         {Subsystem: "user identity", Scope: "system raft", Status: "covered", Tranche: "D0 verify"},
+	"identity.principal.put.v1":            {Subsystem: "identity", Scope: "system raft", Status: "covered", Tranche: "unified principal identity"},
+	"identity.role_binding.put.v1":         {Subsystem: "identity", Scope: "system raft", Status: "covered", Tranche: "unified principal identity"},
+	"identity.capability_grant.put.v1":     {Subsystem: "identity", Scope: "system raft", Status: "covered", Tranche: "unified principal identity"},
+	"identity.principal.session.put.v1":    {Subsystem: "identity", Scope: "system raft", Status: "covered", Tranche: "unified principal identity"},
 	"space.create_with_default_domain.v1":  {Subsystem: "space", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
 	"space.domain.create.v1":               {Subsystem: "space/domain", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
 	"space.domain.update.v1":               {Subsystem: "space/domain", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
 	"space.domain.delete.v1":               {Subsystem: "space/domain", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
-	"space.acl.grant.v1":                   {Subsystem: "space acl", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
+	"space.access.grant.v1":                {Subsystem: "space access", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
 	"space.delete.v1":                      {Subsystem: "space", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
 	"graph.commit.v1":                      {Subsystem: "graph", Scope: "partition raft", Status: "covered", Tranche: "D0 verify"},
 	"blob.meta.put.v1":                     {Subsystem: "blob", Scope: "partition raft", Status: "covered", Tranche: "D3 verify"},

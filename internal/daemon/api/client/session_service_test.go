@@ -14,6 +14,7 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/identity/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -26,7 +27,7 @@ func TestSessionAndTransactionServicesLifecycle(t *testing.T) {
 	spaceModule, sessionModule, userID, spaceID, domainID := initSessionServiceTestModules(t)
 	sessionSvc := NewSessionService(sessionModule, spaceModule)
 	txSvc := NewTransactionService(sessionModule)
-	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: userID, Username: "alice"})
+	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: userID, Username: "alice"})
 
 	opened, err := sessionSvc.OpenSession(ctx, &clientv1.OpenSessionRequest{SpaceId: spaceID, DomainId: domainID, RequestedIdleTimeout: durationpb.New(time.Hour)})
 	if err != nil {
@@ -113,7 +114,7 @@ func (r *fakeClientRequestRouter) EnsureLocalTransaction(ctx context.Context, tr
 func TestSessionAndTransactionServicesUseRouter(t *testing.T) {
 	router := &fakeClientRequestRouter{}
 	sessionSvc := NewSessionService(nil, nil).WithClientRequestRouter(router)
-	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: uuid.NewString(), Username: "alice"})
+	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: uuid.NewString(), Username: "alice"})
 	got, err := sessionSvc.GetSession(ctx, &clientv1.GetSessionRequest{SessionId: "s.2.00000000-0000-0000-0000-000000000001"})
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
@@ -165,7 +166,7 @@ func TestBeginTransactionReadWriteRequiresLocalGraphLeader(t *testing.T) {
 	sessionSvc := NewSessionService(sessionModule, spaceModule)
 	graph := &fakeWriteLeaderGraph{requireErr: status.Error(codes.Unavailable, "not graph leader")}
 	txSvc := NewTransactionService(sessionModule, graph, spaceModule)
-	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: userID, Username: "alice"})
+	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: userID, Username: "alice"})
 	opened, err := sessionSvc.OpenSession(ctx, &clientv1.OpenSessionRequest{SpaceId: spaceID, DomainId: domainID})
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
@@ -195,12 +196,12 @@ func TestBeginTransactionReadWriteRequiresLocalGraphLeader(t *testing.T) {
 func TestSessionServiceRejectsWrongUser(t *testing.T) {
 	spaceModule, sessionModule, userID, spaceID, domainID := initSessionServiceTestModules(t)
 	svc := NewSessionService(sessionModule, spaceModule)
-	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: userID, Username: "alice"})
+	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: userID, Username: "alice"})
 	opened, err := svc.OpenSession(ctx, &clientv1.OpenSessionRequest{SpaceId: spaceID, DomainId: domainID})
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
 	}
-	otherCtx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: uuid.NewString(), Username: "mallory"})
+	otherCtx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: uuid.NewString(), Username: "mallory"})
 	if _, err := svc.GetSession(otherCtx, &clientv1.GetSessionRequest{SessionId: opened.GetSession().GetSessionId()}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected permission denied for wrong user, got %v", err)
 	}
@@ -219,7 +220,7 @@ func initSessionServiceTestModules(t *testing.T) (*daemonspace.Module, *daemonse
 		t.Fatalf("init session module: %v", result.Error)
 	}
 	userID := uuid.New()
-	space, domain, err := spaceModule.CreateSpace(context.Background(), daemonspace.CreateSpaceInput{Name: "Test Space", OwnerUserID: userID})
+	space, domain, err := spaceModule.CreateSpace(context.Background(), daemonspace.CreateSpaceInput{Name: "Test Space", OwnerPrincipalID: identity.PrincipalID(userID.String())})
 	if err != nil {
 		t.Fatalf("create test space: %v", err)
 	}

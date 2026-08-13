@@ -61,14 +61,14 @@ func (s *SessionService) OpenSession(ctx context.Context, req *clientv1.OpenSess
 		}
 	}
 	// Validate that the caller can see the requested domain before minting a daemon session handle.
-	if _, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, req.GetSpaceId(), req.GetDomainId(), ""); err != nil {
+	if _, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, req.GetSpaceId(), req.GetDomainId(), ""); err != nil {
 		return nil, mapSessionError(err, "open session")
 	}
 	var idle time.Duration
 	if req.GetRequestedIdleTimeout() != nil {
 		idle = req.GetRequestedIdleTimeout().AsDuration()
 	}
-	session, err := s.sessions.OpenSession(ctx, daemonsession.OpenSessionInput{UserID: principal.UserID, SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), IdleTimeout: idle})
+	session, err := s.sessions.OpenSession(ctx, daemonsession.OpenSessionInput{PrincipalID: principal.PrincipalID, SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), IdleTimeout: idle})
 	if err != nil {
 		return nil, mapSessionError(err, "open session")
 	}
@@ -87,7 +87,7 @@ func (s *SessionService) GetSession(ctx context.Context, req *clientv1.GetSessio
 	if err != nil {
 		return nil, err
 	}
-	session, err := s.sessions.GetSession(ctx, principal.UserID, req.GetSessionId())
+	session, err := s.sessions.GetSession(ctx, principal.PrincipalID, req.GetSessionId())
 	if err != nil {
 		return nil, mapSessionError(err, "get session")
 	}
@@ -110,7 +110,7 @@ func (s *SessionService) HeartbeatSession(ctx context.Context, req *clientv1.Hea
 	if req.GetRequestedExtension() != nil {
 		extension = req.GetRequestedExtension().AsDuration()
 	}
-	session, err := s.sessions.HeartbeatSession(ctx, principal.UserID, req.GetSessionId(), extension)
+	session, err := s.sessions.HeartbeatSession(ctx, principal.PrincipalID, req.GetSessionId(), extension)
 	if err != nil {
 		return nil, mapSessionError(err, "heartbeat session")
 	}
@@ -129,7 +129,7 @@ func (s *SessionService) CloseSession(ctx context.Context, req *clientv1.CloseSe
 	if err != nil {
 		return nil, err
 	}
-	session, err := s.sessions.CloseSession(ctx, principal.UserID, req.GetSessionId())
+	session, err := s.sessions.CloseSession(ctx, principal.PrincipalID, req.GetSessionId())
 	if err != nil {
 		return nil, mapSessionError(err, "close session")
 	}
@@ -184,17 +184,17 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 	if err != nil {
 		return nil, err
 	}
-	input := daemonsession.BeginTransactionInput{UserID: principal.UserID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode()), Origin: graphchange.OriginMetadata{OperationID: req.GetOperationId()}}
+	input := daemonsession.BeginTransactionInput{PrincipalID: principal.PrincipalID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode()), Origin: graphchange.OriginMetadata{OperationID: req.GetOperationId()}}
 	var session daemonsession.GraphSession
 	if s.graphs != nil || s.spaces != nil {
 		var err error
-		session, err = s.sessions.GetSession(ctx, principal.UserID, req.GetSessionId())
+		session, err = s.sessions.GetSession(ctx, principal.PrincipalID, req.GetSessionId())
 		if err != nil {
 			return nil, mapSessionError(err, "begin transaction")
 		}
 	}
 	if s.spaces != nil {
-		domain, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, session.SpaceID, session.DomainID, "")
+		domain, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, session.SpaceID, session.DomainID, "")
 		if err != nil {
 			return nil, mapDomainError(err, "begin transaction domain")
 		}
@@ -239,7 +239,7 @@ func (s *TransactionService) GetTransaction(ctx context.Context, req *clientv1.G
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, req.GetTransactionId())
+	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
 	if err != nil {
 		return nil, mapSessionError(err, "get transaction")
 	}
@@ -258,7 +258,7 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, req.GetTransactionId())
+	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
 	if err != nil {
 		return nil, mapSessionError(err, "commit transaction")
 	}
@@ -272,9 +272,9 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 	commitCtx := context.WithoutCancel(ctx)
 	var commit daemonsession.TransactionCommit
 	if graphCommit.CommittedRevision > 0 {
-		commit, err = s.sessions.CommitTransactionAtRevision(commitCtx, principal.UserID, req.GetTransactionId(), graphCommit.OperationCount, graphCommit.CommittedRevision)
+		commit, err = s.sessions.CommitTransactionAtRevision(commitCtx, principal.PrincipalID, req.GetTransactionId(), graphCommit.OperationCount, graphCommit.CommittedRevision)
 	} else {
-		commit, err = s.sessions.CommitTransaction(commitCtx, principal.UserID, req.GetTransactionId(), graphCommit.OperationCount)
+		commit, err = s.sessions.CommitTransaction(commitCtx, principal.PrincipalID, req.GetTransactionId(), graphCommit.OperationCount)
 	}
 	if err != nil {
 		return nil, mapSessionError(err, "commit transaction")
@@ -294,7 +294,7 @@ func (s *TransactionService) RollbackTransaction(ctx context.Context, req *clien
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.sessions.RollbackTransaction(ctx, principal.UserID, req.GetTransactionId())
+	tx, err := s.sessions.RollbackTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
 	if err == nil && s.graphs != nil {
 		s.graphs.DiscardTransactionGraph(ctx, req.GetTransactionId())
 	}
@@ -316,7 +316,7 @@ func (s *TransactionService) CloseTransaction(ctx context.Context, req *clientv1
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.sessions.CloseTransaction(ctx, principal.UserID, req.GetTransactionId())
+	tx, err := s.sessions.CloseTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
 	if err == nil && s.graphs != nil {
 		s.graphs.DiscardTransactionGraph(ctx, req.GetTransactionId())
 	}

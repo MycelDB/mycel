@@ -73,6 +73,13 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 		}
 		returns = append(returns, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Namespace: ret.Namespace, Property: ret.Property})
 	}
+	var orderBy []planmodel.OrderItem
+	if len(stmt.OrderBy) > 0 {
+		orderBy = make([]planmodel.OrderItem, 0, len(stmt.OrderBy))
+		for _, order := range stmt.OrderBy {
+			orderBy = append(orderBy, planmodel.OrderItem{Variable: order.Variable, Namespace: order.Namespace, Property: order.Property, Direction: planmodel.SortDirection(order.Direction)})
+		}
+	}
 	var limit int64
 	if stmt.FetchFirst != nil {
 		limit = stmt.FetchFirst.Count
@@ -109,7 +116,7 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 			}
 			segments = append(segments, planmodel.PathSegment{Relationship: planRelationshipPattern(segment.Relationship, relProps), Node: planmodel.NodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: nodeProps}})
 		}
-		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
+		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, ReturnGraph: stmt.ReturnGraph, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates, OrderBy: orderBy}}}, nil
 	}
 	if pattern.Relationship != nil {
 		relProps := propertiesMap(pattern.Relationship.Properties)
@@ -159,6 +166,7 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 				ComparisonPredicates: comparisonPredicates,
 				TextPredicates:       textPredicates,
 				SemanticPredicates:   semanticPredicates,
+				OrderBy:              orderBy,
 			},
 		},
 	}, nil

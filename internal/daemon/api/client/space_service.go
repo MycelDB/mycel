@@ -34,7 +34,7 @@ func (s *SpaceService) ListSpaces(ctx context.Context, req *clientv1.ListSpacesR
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	pageSize := normalizePageSize(req.GetPageSize())
-	spaces, err := s.spaces.ListVisibleSpaces(ctx, principal.UserID, req.GetIncludeArchived())
+	spaces, err := s.spaces.ListVisibleSpaces(ctx, principal.PrincipalID, req.GetIncludeArchived())
 	if err != nil {
 		return nil, mapSpaceError(err, "list spaces")
 	}
@@ -47,7 +47,7 @@ func (s *SpaceService) ListSpaces(ctx context.Context, req *clientv1.ListSpacesR
 	}
 	out := make([]*clientv1.Space, 0, end-offset)
 	for _, sp := range spaces[offset:end] {
-		access, err := s.spaces.EffectiveAccess(ctx, principal.UserID, sp)
+		access, err := s.spaces.EffectiveAccess(ctx, principal.PrincipalID, sp)
 		if err != nil {
 			return nil, mapSpaceError(err, "resolve effective access")
 		}
@@ -65,11 +65,11 @@ func (s *SpaceService) GetSpace(ctx context.Context, req *clientv1.GetSpaceReque
 	if err != nil {
 		return nil, err
 	}
-	sp, err := s.spaces.GetVisibleSpace(ctx, principal.UserID, req.GetSpaceId())
+	sp, err := s.spaces.GetVisibleSpace(ctx, principal.PrincipalID, req.GetSpaceId())
 	if err != nil {
 		return nil, mapSpaceError(err, "get space")
 	}
-	access, err := s.spaces.EffectiveAccess(ctx, principal.UserID, sp)
+	access, err := s.spaces.EffectiveAccess(ctx, principal.PrincipalID, sp)
 	if err != nil {
 		return nil, mapSpaceError(err, "resolve effective access")
 	}
@@ -78,8 +78,8 @@ func (s *SpaceService) GetSpace(ctx context.Context, req *clientv1.GetSpaceReque
 
 func spaceUserPrincipalFromContext(ctx context.Context) (daemonauth.Principal, error) {
 	principal, ok := daemonauth.PrincipalFromContext(ctx)
-	if !ok || principal.Kind != daemonauth.PrincipalKindUser || principal.UserID == "" {
-		return daemonauth.Principal{}, status.Error(codes.Unauthenticated, "user authentication is required")
+	if !ok || principal.PrincipalID == "" {
+		return daemonauth.Principal{}, status.Error(codes.Unauthenticated, "principal authentication is required")
 	}
 	return principal, nil
 }
@@ -103,7 +103,7 @@ func MapSpace(sp domainspace.Space, access daemonspace.EffectiveAccess) *clientv
 	if strings.EqualFold(sp.Status, "archived") {
 		state = clientv1.SpaceState_SPACE_STATE_ARCHIVED
 	}
-	return &clientv1.Space{SpaceId: sp.SpaceID.String(), Name: sp.Name, Owner: &commonv1.Principal{Type: commonv1.PrincipalType_PRINCIPAL_TYPE_USER, Id: sp.OwnerID.String()}, State: state, CreateTime: timestampOrNil(sp.CreatedAt), UpdateTime: timestampOrNil(sp.UpdatedAt), CallerAccess: &commonv1.EffectiveAccess{Roles: roles, Capabilities: capabilities}}
+	return &clientv1.Space{SpaceId: sp.SpaceID.String(), Name: sp.Name, Owner: &commonv1.Principal{Type: commonv1.PrincipalType_PRINCIPAL_TYPE_HUMAN, Id: string(sp.OwnerID)}, State: state, CreateTime: timestampOrNil(sp.CreatedAt), UpdateTime: timestampOrNil(sp.UpdatedAt), CallerAccess: &commonv1.EffectiveAccess{Roles: roles, Capabilities: capabilities}}
 }
 
 func mapSpaceError(err error, action string) error {

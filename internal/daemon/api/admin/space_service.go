@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/google/uuid"
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/identity/model"
-	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
+	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -23,12 +22,12 @@ import (
 type AdminSpaceService struct {
 	adminv1.UnimplementedAdminSpaceServiceServer
 	spaces     daemonspace.Manager
-	users      daemonuser.Manager
+	principals principalservice.Manager
 	authorizer OperatorAuthorizer
 }
 
-func NewAdminSpaceService(spaces daemonspace.Manager, users daemonuser.Manager, authorizer OperatorAuthorizer) *AdminSpaceService {
-	return &AdminSpaceService{spaces: spaces, users: users, authorizer: authorizer}
+func NewAdminSpaceService(spaces daemonspace.Manager, principals principalservice.Manager, authorizer OperatorAuthorizer) *AdminSpaceService {
+	return &AdminSpaceService{spaces: spaces, principals: principals, authorizer: authorizer}
 }
 
 func (s *AdminSpaceService) ListSpaces(ctx context.Context, req *adminv1.AdminSpaceServiceListSpacesRequest) (*adminv1.AdminSpaceServiceListSpacesResponse, error) {
@@ -77,11 +76,11 @@ func (s *AdminSpaceService) CreateSpace(ctx context.Context, req *adminv1.Create
 	if _, err := s.requireSpaceCreate(ctx); err != nil {
 		return nil, err
 	}
-	ownerID, err := s.resolveOwnerID(ctx, req.GetOwnerUserId(), req.GetOwnerUsername())
+	ownerID, err := s.resolveOwnerID(ctx, req.GetOwnerPrincipalId(), req.GetOwnerUsername())
 	if err != nil {
 		return nil, err
 	}
-	sp, domain, err := s.spaces.CreateSpace(ctx, daemonspace.CreateSpaceInput{Name: req.GetName(), OwnerUserID: ownerID, DefaultDomainKey: req.GetDefaultDomainKey(), DefaultDomainName: req.GetDefaultDomainName(), CommandID: idempotencyKeyFromContext(ctx)})
+	sp, domain, err := s.spaces.CreateSpace(ctx, daemonspace.CreateSpaceInput{Name: req.GetName(), OwnerPrincipalID: ownerID, DefaultDomainKey: req.GetDefaultDomainKey(), DefaultDomainName: req.GetDefaultDomainName(), CommandID: idempotencyKeyFromContext(ctx)})
 	if err != nil {
 		return nil, mapSpaceError(err, "create space")
 	}
@@ -99,11 +98,11 @@ func (s *AdminSpaceService) DeleteSpace(ctx context.Context, req *adminv1.Delete
 	return &adminv1.DeleteSpaceResponse{}, nil
 }
 
-func (s *AdminSpaceService) GrantSpaceUser(ctx context.Context, req *adminv1.GrantSpaceUserRequest) (*adminv1.GrantSpaceUserResponse, error) {
+func (s *AdminSpaceService) GrantSpacePrincipal(ctx context.Context, req *adminv1.GrantSpacePrincipalRequest) (*adminv1.GrantSpacePrincipalResponse, error) {
 	if _, err := s.requireSpaceManage(ctx); err != nil {
 		return nil, err
 	}
-	userID, err := s.resolveOwnerID(ctx, req.GetUserId(), req.GetUsername())
+	principalID, err := s.resolveOwnerID(ctx, req.GetPrincipalId(), req.GetUsername())
 	if err != nil {
 		return nil, err
 	}
@@ -111,11 +110,11 @@ func (s *AdminSpaceService) GrantSpaceUser(ctx context.Context, req *adminv1.Gra
 	if err != nil {
 		return nil, err
 	}
-	grant, err := s.spaces.GrantSpaceUser(ctx, req.GetSpaceId(), userID.String(), role)
+	grant, err := s.spaces.GrantSpacePrincipal(ctx, req.GetSpaceId(), string(principalID), role)
 	if err != nil {
-		return nil, mapSpaceError(err, "grant space user")
+		return nil, mapSpaceError(err, "grant space principal")
 	}
-	return &adminv1.GrantSpaceUserResponse{Grant: mapAdminSpaceGrant(grant)}, nil
+	return &adminv1.GrantSpacePrincipalResponse{Grant: mapAdminSpaceGrant(grant)}, nil
 }
 
 func idempotencyKeyFromContext(ctx context.Context) string {
@@ -132,37 +131,29 @@ func idempotencyKeyFromContext(ctx context.Context) string {
 	return ""
 }
 
-func (s *AdminSpaceService) resolveOwnerID(ctx context.Context, ownerUserID string, ownerUsername string) (identity.UserID, error) {
-	ownerUserID = strings.TrimSpace(ownerUserID)
+func (s *AdminSpaceService) resolveOwnerID(ctx context.Context, ownerPrincipalID string, ownerUsername string) (identity.PrincipalID, error) {
+	ownerPrincipalID = strings.TrimSpace(ownerPrincipalID)
 	ownerUsername = strings.TrimSpace(ownerUsername)
-	if ownerUserID == "" && ownerUsername == "" {
-		return uuid.Nil, status.Error(codes.InvalidArgument, "owner_user_id or owner_username is required")
+	if ownerPrincipalID == "" && ownerUsername == "" {
+		return "", status.Error(codes.InvalidArgument, "owner_principal_id or owner_username is required")
 	}
-	var id identity.UserID
-	if ownerUserID != "" {
-		parsed, err := uuid.Parse(ownerUserID)
-		if err != nil || parsed == uuid.Nil {
-			return uuid.Nil, status.Error(codes.InvalidArgument, "owner_user_id must be a UUID")
-		}
-		user, err := s.users.GetUser(ctx, parsed.String())
+	var id identity.PrincipalID
+	if ownerPrincipalID != "" {
+		principal, err := s.principals.GetPrincipal(ctx, ownerPrincipalID)
 		if err != nil {
-			return uuid.Nil, mapUserError(err, "get owner user")
+			return "", mapPrincipalServiceError(err, "get owner principal")
 		}
-		id = parsed
-		if ownerUsername != "" && user.Username != ownerUsername {
-			return uuid.Nil, status.Error(codes.InvalidArgument, "owner_user_id and owner_username refer to different users")
+		id = identity.PrincipalID(ownerPrincipalID)
+		if ownerUsername != "" && principal.Username != ownerUsername {
+			return "", status.Error(codes.InvalidArgument, "owner_principal_id and owner_username refer to different principals")
 		}
 	}
-	if ownerUsername != "" && id == uuid.Nil {
-		user, err := s.users.FindUser(ctx, ownerUsername)
+	if ownerUsername != "" && id == "" {
+		principal, err := s.principals.FindPrincipal(ctx, ownerUsername, "")
 		if err != nil {
-			return uuid.Nil, mapUserError(err, "find owner user")
+			return "", mapPrincipalServiceError(err, "find owner principal")
 		}
-		parsed, err := uuid.Parse(user.ID)
-		if err != nil || parsed == uuid.Nil {
-			return uuid.Nil, status.Error(codes.Internal, "owner user has invalid id")
-		}
-		id = parsed
+		id = identity.PrincipalID(principal.ID)
 	}
 	return id, nil
 }
@@ -197,7 +188,7 @@ func mapAdminSpaceGrant(grant daemonspace.SpaceGrant) *commonv1.AccessGrant {
 			caps = append(caps, mapped)
 		}
 	}
-	return &commonv1.AccessGrant{AccessGrantId: grant.ID, Principal: &commonv1.Principal{Type: commonv1.PrincipalType_PRINCIPAL_TYPE_USER, Id: grant.UserID}, Scope: &commonv1.AccessScope{Type: commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_SPACE, SpaceId: &grant.SpaceID}, Roles: []commonv1.SpaceRole{role}, Capabilities: caps}
+	return &commonv1.AccessGrant{AccessGrantId: grant.ID, Principal: &commonv1.Principal{Type: commonv1.PrincipalType_PRINCIPAL_TYPE_HUMAN, Id: grant.PrincipalID}, Scope: &commonv1.AccessScope{Type: commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_SPACE, SpaceId: &grant.SpaceID}, Roles: []commonv1.SpaceRole{role}, Capabilities: caps}
 }
 
 func (s *AdminSpaceService) requireSpaceCreate(ctx context.Context) (daemonauth.Principal, error) {
@@ -214,7 +205,7 @@ func (s *AdminSpaceService) requireCapability(ctx context.Context, capability co
 	if err != nil {
 		return daemonauth.Principal{}, err
 	}
-	ok, err := s.authorizer.HasCapability(ctx, principal.OperatorID, capability.String())
+	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, capability.String())
 	if err != nil {
 		return daemonauth.Principal{}, status.Errorf(codes.Internal, "authorize operator: %v", err)
 	}

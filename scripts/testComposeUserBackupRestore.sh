@@ -241,11 +241,11 @@ create_source_fixture() {
 
 export_user_backup() {
   local service="$1" username="$2" archive="$3"
-  local remote="/tmp/${username}.user-backup.tar.zst" raw user_id
+  local remote="/tmp/${username}.user-backup.tar.zst" raw principal_id
   echo "Exporting backup for $username" >&2
   raw="$(admin_cli "$service" user find --user-username "$username")"
-  user_id="$(printf '%s\n' "$raw" | json_get 'user_id')"
-  admin_cli "$service" admin user-backup export --user-id "$user_id" --file "$remote" --compression "$ARCHIVE_COMPRESSION" --include-blobs --source-label "$service" >/dev/null
+  principal_id="$(printf '%s\n' "$raw" | json_get 'principal_id')"
+  admin_cli "$service" admin user-backup export --principal-id "$principal_id" --file "$remote" --compression "$ARCHIVE_COMPRESSION" --include-blobs --source-label "$service" >/dev/null
   admin_cli "$service" admin user-backup validate --file "$remote" --compression "$ARCHIVE_COMPRESSION" >/dev/null
   copy_from_service "$service" "$remote" "$archive"
 }

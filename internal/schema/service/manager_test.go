@@ -39,7 +39,8 @@ node Journal {
   record_type: enum pkm.journal required
   journal_date: date required
   properties: object required
-}`
+}
+index journals_by_date on node Journal field properties.journal_date ordered asc`
 	if err := mgr.PutDomainSchemaGWL(ctx, domainID, source); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +50,9 @@ node Journal {
 	}
 	if got.SourceGWL != source || got.SourceHash == "" {
 		t.Fatalf("source not persisted: %+v", got)
+	}
+	if len(got.Indexes) != 1 || got.Indexes[0].Name != "journals_by_date" || got.Indexes[0].Direction != schema.IndexSortDirectionAsc {
+		t.Fatalf("index not persisted: %+v", got.Indexes)
 	}
 	valid := graph.Node{Properties: map[string]any{"record_type": "pkm.journal", "journal_date": "2026-07-26", "properties": map[string]any{}}}
 	res, err := mgr.ValidateNode(ctx, domainID, valid)

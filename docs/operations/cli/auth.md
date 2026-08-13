@@ -1,12 +1,12 @@
 # `mycel auth`
 
-Standard-user login, refresh, logout, whoami, and session management.
+Principal login, refresh, logout, whoami, and auth-session management.
 
-Authentication mode: **user**.
+Authentication mode: **principal**.
 
 ## Common tasks
 
-- Login and refresh standard-user sessions.
+- Login and refresh principal auth sessions.
 - List or revoke auth sessions.
 
 ## Examples

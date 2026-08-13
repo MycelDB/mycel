@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/adjacency"
 	"github.com/myceldb/mycel/internal/graph/model"
+	schema "github.com/myceldb/mycel/internal/schema/model"
 )
 
 type manifest struct {
@@ -25,24 +26,31 @@ type manifest struct {
 }
 
 type LocalStore struct {
-	mu               sync.RWMutex
-	path             string
-	state            StoreState
-	manifest         manifest
-	nodes            *segment
-	edges            *segment
-	txns             *segment
-	nodeRecords      map[graph.NodeID]graph.Node
-	edgeRecords      map[graph.EdgeID]graph.Edge
-	nodeMeta         map[graph.NodeID]NodeMeta
-	edgeMeta         map[graph.EdgeID]EdgeMeta
-	nodesByDomain    map[graph.DomainID]map[graph.NodeID]struct{}
-	containsChildren map[graph.NodeID][]graph.EdgeID
-	containsParent   map[graph.NodeID]graph.EdgeID
-	edgeIndex        adjacency.EdgeIndex
-	journalDay       map[int]map[graph.NodeID]struct{}
-	blobRefs         map[graph.BlobID]map[graph.NodeID]struct{}
-	revision         uint64
+	mu                sync.RWMutex
+	path              string
+	state             StoreState
+	manifest          manifest
+	nodes             *segment
+	edges             *segment
+	txns              *segment
+	nodeRecords       map[graph.NodeID]graph.Node
+	edgeRecords       map[graph.EdgeID]graph.Edge
+	nodeMeta          map[graph.NodeID]NodeMeta
+	edgeMeta          map[graph.EdgeID]EdgeMeta
+	nodesByDomain     map[graph.DomainID]map[graph.NodeID]struct{}
+	labelIndex        map[graph.DomainID]map[string]map[graph.NodeID]struct{}
+	configuredIndexes map[graph.DomainID][]schema.IndexDefinition
+	indexMetadata     map[string]IndexMetadata
+	nodePropertyIndex map[string]map[string]nodePropertyIndexEntry
+	edgePropertyIndex map[string]map[string]edgePropertyIndexEntry
+	edgeAdjacencyOut  map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
+	edgeAdjacencyIn   map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
+	containsChildren  map[graph.NodeID][]graph.EdgeID
+	containsParent    map[graph.NodeID]graph.EdgeID
+	edgeIndex         adjacency.EdgeIndex
+	journalDay        map[int]map[graph.NodeID]struct{}
+	blobRefs          map[graph.BlobID]map[graph.NodeID]struct{}
+	revision          uint64
 	// nodeModRev/edgeModRev record the store revision at which each entity was
 	// last written, enabling write-set (fine-grained) conflict detection so that
 	// concurrent transactions touching disjoint entities do not conflict.
@@ -115,6 +123,9 @@ func (s *LocalStore) loadManifest() (manifest, error) {
 
 func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 	s.resetIndexes()
+	if err := s.loadIndexManifestLocked(); err != nil {
+		return err
+	}
 	committed := map[uuid.UUID]struct{}{}
 	commitRevision := map[uuid.UUID]uint64{}
 	s.revision = 0
@@ -183,6 +194,12 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 			return err
 		}
 	}
+	for key, meta := range s.indexMetadata {
+		if meta.BuildState == IndexBuildStateReady {
+			meta.LastIndexedGraphRevision = s.revision
+			s.indexMetadata[key] = meta
+		}
+	}
 	return nil
 }
 
@@ -192,6 +209,13 @@ func (s *LocalStore) resetIndexes() {
 	s.nodeMeta = map[graph.NodeID]NodeMeta{}
 	s.edgeMeta = map[graph.EdgeID]EdgeMeta{}
 	s.nodesByDomain = map[graph.DomainID]map[graph.NodeID]struct{}{}
+	s.labelIndex = map[graph.DomainID]map[string]map[graph.NodeID]struct{}{}
+	s.configuredIndexes = map[graph.DomainID][]schema.IndexDefinition{}
+	s.indexMetadata = map[string]IndexMetadata{}
+	s.nodePropertyIndex = map[string]map[string]nodePropertyIndexEntry{}
+	s.edgePropertyIndex = map[string]map[string]edgePropertyIndexEntry{}
+	s.edgeAdjacencyOut = map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID{}
+	s.edgeAdjacencyIn = map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID{}
 	s.containsChildren = map[graph.NodeID][]graph.EdgeID{}
 	s.containsParent = map[graph.NodeID]graph.EdgeID{}
 	s.edgeIndex = adjacency.NewMemoryEdgeIndex()
@@ -395,6 +419,10 @@ func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
 	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, DomainID: n.DomainID, Location: loc}
 	if n.DomainID != uuid.Nil {
 		ensureNodeSet(s.nodesByDomain, n.DomainID)[n.ID] = struct{}{}
+		s.addNodeLabelIndexes(n)
+		for _, idx := range s.configuredIndexes[n.DomainID] {
+			_ = s.addNodePropertyIndexEntry(n, idx)
+		}
 	}
 	propsForIndex := n.Properties
 	if len(propsForIndex) == 0 {
@@ -420,6 +448,10 @@ func (s *LocalStore) removeNodeIndexes(n graph.Node) {
 		if len(s.nodesByDomain[n.DomainID]) == 0 {
 			delete(s.nodesByDomain, n.DomainID)
 		}
+		s.removeNodeLabelIndexes(n)
+		for _, idx := range s.configuredIndexes[n.DomainID] {
+			s.removeNodePropertyIndexEntry(n, idx)
+		}
 	}
 	propsForIndex := n.Properties
 	if len(propsForIndex) == 0 {
@@ -443,6 +475,10 @@ func (s *LocalStore) applyEdgePut(e graph.Edge, loc RecordLocation) {
 	s.edgeRecords[e.ID] = stored
 	s.edgeMeta[e.ID] = EdgeMeta{ID: e.ID, DomainID: e.DomainID, FromID: e.FromID, ToID: e.ToID, Labels: append([]string(nil), e.Labels...), Location: loc}
 	_ = s.edgeIndex.Put(context.Background(), stored)
+	s.addEdgeAdjacencyIndexes(stored)
+	for _, idx := range s.configuredIndexes[e.DomainID] {
+		_ = s.addEdgePropertyIndexEntry(stored, idx)
+	}
 	if graph.EdgeHasLabels(e, []string{"contains"}) {
 		s.containsChildren[e.FromID] = append(s.containsChildren[e.FromID], e.ID)
 		s.containsParent[e.ToID] = e.ID
@@ -458,6 +494,10 @@ func (s *LocalStore) applyEdgeDelete(id graph.EdgeID, loc RecordLocation) {
 }
 func (s *LocalStore) removeEdgeIndexes(e graph.Edge) {
 	_ = s.edgeIndex.Delete(context.Background(), e)
+	s.removeEdgeAdjacencyIndexes(e)
+	for _, idx := range s.configuredIndexes[e.DomainID] {
+		s.removeEdgePropertyIndexEntry(e, idx)
+	}
 	if graph.EdgeHasLabels(e, []string{"contains"}) {
 		ids := s.containsChildren[e.FromID]
 		out := ids[:0]

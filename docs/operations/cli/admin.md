@@ -1,14 +1,14 @@
 # `mycel admin`
 
-Operator/admin management surfaces.
+Admin management surfaces.
 
-Authentication mode: **operator**.
+Authentication mode: **principal auth with admin capabilities**.
 
 ## Common tasks
 
-- List/create/update operators and users.
-- Create/delete spaces as an operator.
-- Run node-local daemon backup, raft-storage-safe coordinated cluster backup, and user-scoped backup/restore commands.
+- Legacy aliases for principal identity management.
+- Create/delete spaces as an admin-capable principal.
+- Run node-local daemon backup, raft-storage-safe coordinated cluster backup, and principal-scoped backup/restore commands.
 
 ## Examples
 

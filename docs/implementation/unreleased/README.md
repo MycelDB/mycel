@@ -23,9 +23,19 @@ assigned to a tagged release bucket.
 
 - [Semantic maintenance loaded state implementation plan](semantic-maintenance-loaded-state-implementation-plan.md) — per-space loaded maintenance managers and in-memory indexes for dirty events, work items, and checkpoints.
 
+## Query and schema indexes
+
+- [GWL indexes and indexed query execution implementation plan](gwl-indexes-and-indexed-query-execution-implementation-plan.md) — schema-declared node/edge indexes, graph index persistence, synchronous maintenance, backfill, and indexed structured/GQL query planning.
+- [REPL space connection and GQL execution implementation plan](repl-space-gql-connect-implementation-plan.md) — psql-like REPL connection state for spaces/domains and convenient GQL execution without repeating IDs.
+
 ## Cleanup
 
 - [Legacy file-session and embedding migration cleanup implementation plan](legacy-filesession-and-embedding-cleanup-implementation-plan.md) — staged removal plan for `internal/graph/filesession`, `internal/session/api`, legacy embedding migration, and related compatibility surfaces.
+
+## Identity and access control
+
+- [Unified principal identity implementation plan](unified-principal-identity-implementation-plan.md) — breaking replacement of split administrator/user identity stores with one principal, role-binding, and capability-grant model.
+- [Unified principal identity remaining work plan](unified-principal-identity-remaining-work-plan.md) — follow-up checklist for completing the missing UP1-UP11 work after the partial unified-principal branch implementation.
 
 ## Admin/UI follow-ups
 

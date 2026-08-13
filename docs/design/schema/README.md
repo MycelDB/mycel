@@ -7,3 +7,4 @@ query/graph validation.
 - [Schema subsystem design](schema-subsystem.md)
 - [Schema management](schema-management.md)
 - [GQL schema behavior](gql-schema-behavior.md)
+- [GWL index declarations and indexed query execution](gwl-indexes-and-query-planning.md)

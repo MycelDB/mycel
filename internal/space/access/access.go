@@ -19,7 +19,7 @@ const (
 type SystemPermission string
 
 const (
-	SystemPermissionManageUsers   SystemPermission = "users:manage"
+	SystemPermissionManageUsers   SystemPermission = "principals:manage"
 	SystemPermissionCreateSpaces  SystemPermission = "spaces:create"
 	SystemPermissionManageAccess  SystemPermission = "access:manage"
 	SystemPermissionOperateSystem SystemPermission = "system:operate"
@@ -30,12 +30,12 @@ type SystemAccessRuleID = uuid.UUID
 
 // SystemAccessRule grants system roles to a user.
 type SystemAccessRule struct {
-	ID     SystemAccessRuleID `json:"id"`
-	UserID identity.UserID    `json:"user_id"`
-	Roles  []SystemRole       `json:"roles"`
+	ID          SystemAccessRuleID   `json:"id"`
+	PrincipalID identity.PrincipalID `json:"principal_id"`
+	Roles       []SystemRole         `json:"roles"`
 }
 
-// SpacePermission is an action granted to a user for a space.
+// SpacePermission is an action granted to a principal for a space.
 type SpacePermission string
 
 const (
@@ -47,12 +47,12 @@ const (
 // SpaceAccessRuleID uniquely identifies a space access rule.
 type SpaceAccessRuleID = uuid.UUID
 
-// SpaceAccessRule grants permissions to a user for a space.
+// SpaceAccessRule grants permissions to a principal for a space.
 type SpaceAccessRule struct {
-	ID          SpaceAccessRuleID   `json:"id"`
-	SpaceID     domainspace.SpaceID `json:"space_id"`
-	UserID      identity.UserID     `json:"user_id"`
-	Permissions []SpacePermission   `json:"permissions"`
+	ID          SpaceAccessRuleID    `json:"id"`
+	SpaceID     domainspace.SpaceID  `json:"space_id"`
+	PrincipalID identity.PrincipalID `json:"principal_id"`
+	Permissions []SpacePermission    `json:"permissions"`
 }
 
 // RoleAllows reports whether a system role satisfies a system permission.

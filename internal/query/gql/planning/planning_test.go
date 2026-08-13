@@ -194,6 +194,18 @@ func TestPlannerRejectsConflictingRelationshipWhereProperty(t *testing.T) {
 	}
 }
 
+func TestPlannerPlansOrderByAnalysis(t *testing.T) {
+	a := analysis.Analysis{AccessMode: analysis.ReadOnly, Query: ast.Query{Statement: ast.MatchStatement{Pattern: ast.NodePattern{Variable: "j", Labels: []string{"JournalEntry"}}, Returns: []ast.ReturnItem{{Kind: ast.ReturnVariable, Variable: "j"}}, OrderBy: []ast.OrderItem{{Variable: "j", Property: "date", Direction: ast.SortDescending}}, FetchFirst: &ast.FetchFirstClause{Count: 10}}}}
+	plan, err := Plan(a)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	want := planmodel.Plan{AccessMode: analysis.ReadOnly, Operations: []planmodel.Operation{planmodel.QueryNodesOperation{Variable: "j", Labels: []string{"JournalEntry"}, Properties: map[string]any{}, Returns: []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "j"}}, Limit: 10, OrderBy: []planmodel.OrderItem{{Variable: "j", Property: "date", Direction: planmodel.SortDescending}}}}}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Plan() = %#v, want %#v", plan, want)
+	}
+}
+
 func TestPlannerPlansFetchFirstAnalysis(t *testing.T) {
 	a := analysis.Analysis{
 		AccessMode: analysis.ReadOnly,

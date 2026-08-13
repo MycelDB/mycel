@@ -86,14 +86,14 @@ func (m *Module) OpenSession(ctx context.Context, input OpenSessionInput) (Graph
 	if err := ctx.Err(); err != nil {
 		return GraphSession{}, err
 	}
-	if strings.TrimSpace(input.UserID) == "" || strings.TrimSpace(input.SpaceID) == "" || strings.TrimSpace(input.DomainID) == "" {
-		return GraphSession{}, fmt.Errorf("%w: user_id, space_id, and domain_id are required", ErrInvalidInput)
+	if strings.TrimSpace(input.PrincipalID) == "" || strings.TrimSpace(input.SpaceID) == "" || strings.TrimSpace(input.DomainID) == "" {
+		return GraphSession{}, fmt.Errorf("%w: principal_id, space_id, and domain_id are required", ErrInvalidInput)
 	}
 	idle := normalizeTimeout(input.IdleTimeout)
 	now := time.Now().UTC()
 	origin := input.Origin
-	origin.UserID = strings.TrimSpace(input.UserID)
-	s := GraphSession{ID: routing.NewSessionID(m.localHomeNodeID), UserID: strings.TrimSpace(input.UserID), SpaceID: strings.TrimSpace(input.SpaceID), DomainID: strings.TrimSpace(input.DomainID), HomeNodeID: m.localHomeNodeID, State: SessionStateActive, Origin: origin, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(idle)}
+	origin.PrincipalID = strings.TrimSpace(input.PrincipalID)
+	s := GraphSession{ID: routing.NewSessionID(m.localHomeNodeID), PrincipalID: strings.TrimSpace(input.PrincipalID), SpaceID: strings.TrimSpace(input.SpaceID), DomainID: strings.TrimSpace(input.DomainID), HomeNodeID: m.localHomeNodeID, State: SessionStateActive, Origin: origin, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(idle)}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessions[s.ID] = s
@@ -101,7 +101,7 @@ func (m *Module) OpenSession(ctx context.Context, input OpenSessionInput) (Graph
 	return s, nil
 }
 
-func (m *Module) GetSession(ctx context.Context, userID string, sessionID string) (GraphSession, error) {
+func (m *Module) GetSession(ctx context.Context, principalID string, sessionID string) (GraphSession, error) {
 	if err := m.requireLocalSessionHome(sessionID); err != nil {
 		return GraphSession{}, err
 	}
@@ -110,14 +110,14 @@ func (m *Module) GetSession(ctx context.Context, userID string, sessionID string
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, err := m.getSessionLocked(userID, sessionID)
+	s, err := m.getSessionLocked(principalID, sessionID)
 	if err != nil {
 		return GraphSession{}, err
 	}
 	return s, nil
 }
 
-func (m *Module) HeartbeatSession(ctx context.Context, userID string, sessionID string, extension time.Duration) (GraphSession, error) {
+func (m *Module) HeartbeatSession(ctx context.Context, principalID string, sessionID string, extension time.Duration) (GraphSession, error) {
 	if err := m.requireLocalSessionHome(sessionID); err != nil {
 		return GraphSession{}, err
 	}
@@ -131,7 +131,7 @@ func (m *Module) HeartbeatSession(ctx context.Context, userID string, sessionID 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, err := m.getSessionLocked(userID, sessionID)
+	s, err := m.getSessionLocked(principalID, sessionID)
 	if err != nil {
 		return GraphSession{}, err
 	}
@@ -154,7 +154,7 @@ func (m *Module) HeartbeatSession(ctx context.Context, userID string, sessionID 
 	return s, nil
 }
 
-func (m *Module) CloseSession(ctx context.Context, userID string, sessionID string) (GraphSession, error) {
+func (m *Module) CloseSession(ctx context.Context, principalID string, sessionID string) (GraphSession, error) {
 	if err := m.requireLocalSessionHome(sessionID); err != nil {
 		return GraphSession{}, err
 	}
@@ -168,7 +168,7 @@ func (m *Module) CloseSession(ctx context.Context, userID string, sessionID stri
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, err := m.getSessionLocked(userID, sessionID)
+	s, err := m.getSessionLocked(principalID, sessionID)
 	if err != nil {
 		return GraphSession{}, err
 	}
@@ -212,7 +212,7 @@ func (m *Module) BeginTransaction(ctx context.Context, input BeginTransactionInp
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, err := m.getSessionLocked(input.UserID, input.SessionID)
+	s, err := m.getSessionLocked(input.PrincipalID, input.SessionID)
 	if err != nil {
 		return GraphTransaction{}, err
 	}
@@ -233,17 +233,17 @@ func (m *Module) BeginTransaction(ctx context.Context, input BeginTransactionInp
 		return GraphTransaction{}, err
 	}
 	origin.OperationID = operationID
-	origin.UserID = s.UserID
+	origin.PrincipalID = s.PrincipalID
 	origin.SessionID = s.ID
 	txID := routing.NewTransactionID(s.HomeNodeID)
 	origin.TransactionID = txID
-	tx := GraphTransaction{ID: txID, SessionID: s.ID, UserID: s.UserID, SpaceID: s.SpaceID, DomainID: s.DomainID, HomeNodeID: s.HomeNodeID, Mode: input.Mode, State: TransactionStateActive, BaseRevision: baseRevision, Origin: origin, CreatedAt: now, LastSeen: now, ExpiresAt: s.ExpiresAt}
+	tx := GraphTransaction{ID: txID, SessionID: s.ID, PrincipalID: s.PrincipalID, SpaceID: s.SpaceID, DomainID: s.DomainID, HomeNodeID: s.HomeNodeID, Mode: input.Mode, State: TransactionStateActive, BaseRevision: baseRevision, Origin: origin, CreatedAt: now, LastSeen: now, ExpiresAt: s.ExpiresAt}
 	m.transactions[tx.ID] = tx
 	m.transactionRoutes[tx.ID] = transactionRouteFromTransaction(tx, now)
 	return tx, nil
 }
 
-func (m *Module) GetTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error) {
+func (m *Module) GetTransaction(ctx context.Context, principalID string, transactionID string) (GraphTransaction, error) {
 	if err := m.requireLocalTransactionHome(transactionID); err != nil {
 		return GraphTransaction{}, err
 	}
@@ -252,18 +252,18 @@ func (m *Module) GetTransaction(ctx context.Context, userID string, transactionI
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.getTransactionLocked(userID, transactionID)
+	return m.getTransactionLocked(principalID, transactionID)
 }
 
-func (m *Module) CommitTransaction(ctx context.Context, userID string, transactionID string, operationCount int32) (TransactionCommit, error) {
-	return m.commitTransaction(ctx, userID, transactionID, operationCount, 0)
+func (m *Module) CommitTransaction(ctx context.Context, principalID string, transactionID string, operationCount int32) (TransactionCommit, error) {
+	return m.commitTransaction(ctx, principalID, transactionID, operationCount, 0)
 }
 
-func (m *Module) CommitTransactionAtRevision(ctx context.Context, userID string, transactionID string, operationCount int32, committedRevision int64) (TransactionCommit, error) {
-	return m.commitTransaction(ctx, userID, transactionID, operationCount, committedRevision)
+func (m *Module) CommitTransactionAtRevision(ctx context.Context, principalID string, transactionID string, operationCount int32, committedRevision int64) (TransactionCommit, error) {
+	return m.commitTransaction(ctx, principalID, transactionID, operationCount, committedRevision)
 }
 
-func (m *Module) commitTransaction(ctx context.Context, userID string, transactionID string, operationCount int32, committedRevision int64) (TransactionCommit, error) {
+func (m *Module) commitTransaction(ctx context.Context, principalID string, transactionID string, operationCount int32, committedRevision int64) (TransactionCommit, error) {
 	if err := m.requireLocalTransactionHome(transactionID); err != nil {
 		return TransactionCommit{}, err
 	}
@@ -277,7 +277,7 @@ func (m *Module) commitTransaction(ctx context.Context, userID string, transacti
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tx, err := m.getTransactionLocked(userID, transactionID)
+	tx, err := m.getTransactionLocked(principalID, transactionID)
 	if err != nil {
 		return TransactionCommit{}, err
 	}
@@ -303,15 +303,15 @@ func (m *Module) commitTransaction(ctx context.Context, userID string, transacti
 	m.transactions[tx.ID] = tx
 	m.transactionRoutes[tx.ID] = transactionRouteFromTransaction(tx, now)
 	origin := tx.Origin
-	origin.UserID = tx.UserID
+	origin.PrincipalID = tx.PrincipalID
 	origin.SessionID = tx.SessionID
 	origin.TransactionID = tx.ID
-	commit := TransactionCommit{ID: uuid.NewString(), TransactionID: tx.ID, SessionID: tx.SessionID, UserID: tx.UserID, SpaceID: tx.SpaceID, DomainID: tx.DomainID, BaseRevision: tx.BaseRevision, CommittedRevision: committedRevision, OperationCount: operationCount, Origin: origin, CommittedAt: now}
+	commit := TransactionCommit{ID: uuid.NewString(), TransactionID: tx.ID, SessionID: tx.SessionID, PrincipalID: tx.PrincipalID, SpaceID: tx.SpaceID, DomainID: tx.DomainID, BaseRevision: tx.BaseRevision, CommittedRevision: committedRevision, OperationCount: operationCount, Origin: origin, CommittedAt: now}
 	m.commits[commit.ID] = commit
 	return commit, nil
 }
 
-func (m *Module) RollbackTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error) {
+func (m *Module) RollbackTransaction(ctx context.Context, principalID string, transactionID string) (GraphTransaction, error) {
 	if err := m.requireLocalTransactionHome(transactionID); err != nil {
 		return GraphTransaction{}, err
 	}
@@ -325,7 +325,7 @@ func (m *Module) RollbackTransaction(ctx context.Context, userID string, transac
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tx, err := m.getTransactionLocked(userID, transactionID)
+	tx, err := m.getTransactionLocked(principalID, transactionID)
 	if err != nil {
 		return GraphTransaction{}, err
 	}
@@ -339,7 +339,7 @@ func (m *Module) RollbackTransaction(ctx context.Context, userID string, transac
 	return tx, nil
 }
 
-func (m *Module) CloseTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error) {
+func (m *Module) CloseTransaction(ctx context.Context, principalID string, transactionID string) (GraphTransaction, error) {
 	if err := m.requireLocalTransactionHome(transactionID); err != nil {
 		return GraphTransaction{}, err
 	}
@@ -353,7 +353,7 @@ func (m *Module) CloseTransaction(ctx context.Context, userID string, transactio
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	tx, err := m.getTransactionLocked(userID, transactionID)
+	tx, err := m.getTransactionLocked(principalID, transactionID)
 	if err != nil {
 		return GraphTransaction{}, err
 	}
@@ -382,7 +382,7 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 	return release, nil
 }
 
-func (m *Module) getSessionLocked(userID string, sessionID string) (GraphSession, error) {
+func (m *Module) getSessionLocked(principalID string, sessionID string) (GraphSession, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return GraphSession{}, fmt.Errorf("%w: session_id is required", ErrInvalidInput)
 	}
@@ -390,7 +390,7 @@ func (m *Module) getSessionLocked(userID string, sessionID string) (GraphSession
 	if !ok {
 		return GraphSession{}, ErrSessionNotFound
 	}
-	if s.UserID != strings.TrimSpace(userID) {
+	if s.PrincipalID != strings.TrimSpace(principalID) {
 		return GraphSession{}, ErrUnauthorized
 	}
 	if s.State == SessionStateActive && !s.ExpiresAt.IsZero() && !time.Now().UTC().Before(s.ExpiresAt) {
@@ -409,7 +409,7 @@ func (m *Module) getSessionLocked(userID string, sessionID string) (GraphSession
 	return s, nil
 }
 
-func (m *Module) getTransactionLocked(userID string, transactionID string) (GraphTransaction, error) {
+func (m *Module) getTransactionLocked(principalID string, transactionID string) (GraphTransaction, error) {
 	if strings.TrimSpace(transactionID) == "" {
 		return GraphTransaction{}, fmt.Errorf("%w: transaction_id is required", ErrInvalidInput)
 	}
@@ -417,7 +417,7 @@ func (m *Module) getTransactionLocked(userID string, transactionID string) (Grap
 	if !ok {
 		return GraphTransaction{}, ErrTransactionNotFound
 	}
-	if tx.UserID != strings.TrimSpace(userID) {
+	if tx.PrincipalID != strings.TrimSpace(principalID) {
 		return GraphTransaction{}, ErrUnauthorized
 	}
 	if tx.State == TransactionStateActive && !tx.ExpiresAt.IsZero() && !time.Now().UTC().Before(tx.ExpiresAt) {
@@ -511,11 +511,11 @@ func (m *Module) requireLocalTransactionHome(transactionID string) error {
 }
 
 func sessionRouteFromSession(s GraphSession, updatedAt time.Time) SessionRouteRecord {
-	return SessionRouteRecord{SessionID: s.ID, UserID: s.UserID, SpaceID: s.SpaceID, DomainID: s.DomainID, HomeNodeID: s.HomeNodeID, State: s.State, CreatedAt: s.CreatedAt, UpdatedAt: updatedAt, ExpiresAt: s.ExpiresAt}
+	return SessionRouteRecord{SessionID: s.ID, PrincipalID: s.PrincipalID, SpaceID: s.SpaceID, DomainID: s.DomainID, HomeNodeID: s.HomeNodeID, State: s.State, CreatedAt: s.CreatedAt, UpdatedAt: updatedAt, ExpiresAt: s.ExpiresAt}
 }
 
 func transactionRouteFromTransaction(tx GraphTransaction, updatedAt time.Time) TransactionRouteRecord {
-	return TransactionRouteRecord{TransactionID: tx.ID, SessionID: tx.SessionID, UserID: tx.UserID, SpaceID: tx.SpaceID, DomainID: tx.DomainID, HomeNodeID: tx.HomeNodeID, State: tx.State, CreatedAt: tx.CreatedAt, UpdatedAt: updatedAt, ExpiresAt: tx.ExpiresAt}
+	return TransactionRouteRecord{TransactionID: tx.ID, SessionID: tx.SessionID, PrincipalID: tx.PrincipalID, SpaceID: tx.SpaceID, DomainID: tx.DomainID, HomeNodeID: tx.HomeNodeID, State: tx.State, CreatedAt: tx.CreatedAt, UpdatedAt: updatedAt, ExpiresAt: tx.ExpiresAt}
 }
 
 func normalizeOperationID(value string) (string, error) {

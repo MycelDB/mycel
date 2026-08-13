@@ -24,6 +24,43 @@ func TestREPLLoginUsesDaemon(t *testing.T) {
 	}
 }
 
+func TestREPLConnectAndGQLUseDaemon(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	createTestUser(t, addr, adminPassword, "repl-gql", "repl-pass")
+	createImportExportTestSpace(t, addr, adminPassword, "repl-gql", "REPL GQL Space")
+
+	a := &app.App{DaemonAddr: addr}
+	input := strings.NewReader("login repl-gql repl-pass\nconnect space \"REPL GQL Space\"\ngql INSERT (:Note {title: 'Hello'})\ngql MATCH (n:Note) RETURN n.title\nexit\n")
+	var out bytes.Buffer
+	if err := RunREPL(t.Context(), a, input, &out); err != nil {
+		t.Fatalf("RunREPL() error = %v\n%s", err, out.String())
+	}
+	if a.CurrentSpaceID == nil || a.CurrentSpaceName != "REPL GQL Space" || a.CurrentDomainID == "" {
+		t.Fatalf("expected connected space/domain, got space=%v name=%q domain=%q; output:\n%s", a.CurrentSpaceID, a.CurrentSpaceName, a.CurrentDomainID, out.String())
+	}
+	if !strings.Contains(out.String(), "connected to space REPL GQL Space") || !strings.Contains(out.String(), "nodes_inserted=1 edges_inserted=0") || !strings.Contains(out.String(), "Hello") {
+		t.Fatalf("unexpected REPL output:\n%s", out.String())
+	}
+}
+
+func TestREPLGQLCanCreateAndQueryRelationship(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	createTestUser(t, addr, adminPassword, "repl-rel", "repl-pass")
+	createImportExportTestSpace(t, addr, adminPassword, "repl-rel", "REPL Relationship Space")
+
+	a := &app.App{DaemonAddr: addr}
+	input := strings.NewReader("login repl-rel repl-pass\nconnect space \"REPL Relationship Space\"\ngql INSERT (:Person {name: 'Alice'})\ngql INSERT (:Person {name: 'Bob'})\ngql MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) CREATE (a)-[:KNOWS {since: 2026}]->(b)\ngql MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name, r.since, b.name FETCH FIRST 10 ROWS ONLY\nexit\n")
+	var out bytes.Buffer
+	if err := RunREPL(t.Context(), a, input, &out); err != nil {
+		t.Fatalf("RunREPL() error = %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "nodes_inserted=0 edges_inserted=1") || !strings.Contains(out.String(), "a.name=\"Alice\"") || !strings.Contains(out.String(), "r.since=2026") || !strings.Contains(out.String(), "b.name=\"Bob\"") {
+		t.Fatalf("unexpected relationship REPL output:\n%s", out.String())
+	}
+}
+
 func TestREPLSpaceSetUsesDaemon(t *testing.T) {
 	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()

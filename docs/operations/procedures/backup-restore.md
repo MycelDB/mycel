@@ -4,8 +4,8 @@ mycel currently has three backup/restore-oriented surfaces:
 
 1. Admin backup policy/status operations for node-local daemon backups.
 2. Coordinated cluster system backups through `mycel admin backup cluster`.
-3. User-scoped backup/restore through `mycel admin user-backup` for explicit
-   operator-selected export/import of a standard user's visible spaces/domains.
+3. Principal-scoped backup/restore through `mycel admin user-backup` for explicit
+   operator-selected export/import of a principal's visible spaces/domains.
 
 ## Daemon/system backup
 
@@ -50,11 +50,12 @@ raft freeze evidence in `backup-set.json`, wipes the namespace/PVCs, restores
 each ordinal archive into fresh PVCs, restarts the StatefulSet, and verifies
 graph/blob payloads through every pod.
 
-## User-scoped export/import
+## Principal-scoped export/import
 
-Use user-scoped backup for trusted-source recovery into a fresh cluster or a
-selected target user. The operation does not automatically repair divergent PVCs
-or choose an authoritative source.
+Use principal-scoped backup for trusted-source recovery into a fresh cluster or a
+selected target principal. The command group is still named `user-backup` for
+archive-format compatibility. The operation does not automatically repair
+divergent PVCs or choose an authoritative source.
 
 Export from the operator-selected source endpoint:
 
@@ -62,11 +63,14 @@ Export from the operator-selected source endpoint:
 mycel --daemon-addr <source-pod-or-node>:9091 \
   --username <operator> --password <password> \
   admin user-backup export \
-  --user-id <source-user-id> \
+  --principal-id <source-principal-id> \
   --file user-backup.tar.zst \
   --include-blobs \
   --source-label <source-label>
 ```
+
+`--user-id` remains a deprecated alias for compatibility with the
+`mycel-user-backup-v1` archive format.
 
 Validate before import:
 
@@ -81,7 +85,7 @@ mycel --daemon-addr <target-node>:9091 \
   --username <operator> --password <password> \
   admin user-backup import \
   --file user-backup.tar.zst \
-  --target-username <target-user> \
+  --target-username <target-principal-username> \
   --create-user
 ```
 
@@ -92,7 +96,7 @@ mycel --daemon-addr <target-node>:9091 \
   --username <operator> --password <password> \
   admin user-backup import \
   --file user-backup.tar.zst \
-  --target-username <target-user> \
+  --target-username <target-principal-username> \
   --create-user \
   --new-password <new-password> \
   --execute
@@ -101,14 +105,14 @@ mycel --daemon-addr <target-node>:9091 \
 ## Safety notes
 
 - Backups do not export plaintext passwords or active sessions/tokens.
-- Restore defaults to dry-run planning for user-scoped import.
+- Restore defaults to dry-run planning for principal-scoped import.
 - Coordinated cluster system restore is offline and operator-driven; it does not
   choose an authoritative node, repair divergent PVCs, or restore into a live
   cluster.
 - Raw raft metadata/storage restore is the current same-cluster system restore
   mechanism. Future subsystem-snapshot/bootstrap restore formats may supersede
   it, but they are not automatic today.
-- Destructive domain replacement is not exposed by user-scoped restore.
+- Destructive domain replacement is not exposed by principal-scoped restore.
 - Space/domain IDs are remapped; graph node/edge/blob IDs are preserved where
   supported by domain import.
 

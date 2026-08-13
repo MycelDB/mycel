@@ -30,7 +30,8 @@ func TestPutDomainSchemaGWLAppendsWALAndApplies(t *testing.T) {
 node Person {
   record_type: enum person required
   name: string required
-}`
+}
+index people_by_name on node Person field properties.name ordered asc`
 	if err := mgr.PutDomainSchemaGWL(ctx, domainID, source); err != nil {
 		t.Fatal(err)
 	}
@@ -40,6 +41,9 @@ node Person {
 	}
 	if got.SourceGWL != source || got.SourceHash == "" {
 		t.Fatalf("schema source not stored: %+v", got)
+	}
+	if len(got.Indexes) != 1 || got.Indexes[0].Name != "people_by_name" {
+		t.Fatalf("schema index not stored: %+v", got.Indexes)
 	}
 	lsn, err := progress.AppliedLSN(ctx)
 	if err != nil {
@@ -58,7 +62,8 @@ func TestApplySchemaPutWALWarmsValidationCache(t *testing.T) {
 node Journal {
   record_type: enum pkm.journal required
   journal_date: date required
-}`
+}
+index journals_by_date on node Journal field properties.journal_date ordered asc`
 	if err := mgr.PutDomainSchemaGWL(ctx, domainID, source); err != nil {
 		t.Fatal(err)
 	}
@@ -80,5 +85,12 @@ node Journal {
 	}
 	if res.Valid() {
 		t.Fatalf("expected replayed schema cache to reject invalid date: %+v", res)
+	}
+	got, err := replay.GetDomainSchema(ctx, domainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Indexes) != 1 || got.Indexes[0].Name != "journals_by_date" {
+		t.Fatalf("schema index not replayed: %+v", got.Indexes)
 	}
 }

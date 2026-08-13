@@ -43,7 +43,7 @@ func newAutomationPutCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), a)
 		if err != nil {
 			return err
 		}
@@ -73,7 +73,7 @@ func newAutomationPutCommand(a *app.App) *cobra.Command {
 func newAutomationListCommand(a *app.App) *cobra.Command {
 	var domainID, status string
 	cmd := &cobra.Command{Use: "list", Short: "List automation definitions", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), a)
 		if err != nil {
 			return err
 		}
@@ -130,7 +130,7 @@ func newAutomationDeleteCommand(a *app.App) *cobra.Command {
 func automationIDCommand(a *app.App, use, short string, run func(clientv1.AutomationServiceClient, context.Context, string, string) (string, error)) *cobra.Command {
 	var domainID string
 	cmd := &cobra.Command{Use: use + " <automation-id>", Short: short, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), a)
 		if err != nil {
 			return err
 		}
@@ -153,7 +153,7 @@ func newAutomationRunGetCommand(a *app.App) *cobra.Command {
 		if args[0] != "get" {
 			return fmt.Errorf("unknown run subcommand %q", args[0])
 		}
-		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), a)
 		if err != nil {
 			return err
 		}
@@ -179,7 +179,7 @@ func newAutomationInvocationCommand(a *app.App) *cobra.Command {
 func newAutomationInvocationActionCommand(a *app.App, action string) *cobra.Command {
 	var domainID string
 	cmd := &cobra.Command{Use: action + " <invocation-id>", Short: action + " an automation invocation", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), a)
 		if err != nil {
 			return err
 		}
@@ -211,7 +211,7 @@ func newAutomationRunsCommand(a *app.App) *cobra.Command {
 	var domainID, automationID, status string
 	var limit int32
 	cmd := &cobra.Command{Use: "runs", Short: "List automation invocations", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(context.Background(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), a)
 		if err != nil {
 			return err
 		}

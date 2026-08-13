@@ -27,7 +27,7 @@ func TestAccountingAppendListSummarizeAndRebuild(t *testing.T) {
 			t.Fatalf("expected %s: %v", rel, err)
 		}
 	}
-	principal := identity.UserID(uuid.New())
+	principal := identity.PrincipalID(uuid.NewString())
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	nodeID := graph.NodeID(uuid.New())
@@ -55,8 +55,8 @@ func TestAccountingAppendListSummarizeAndRebuild(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected two summary rows, got %+v", rows)
 	}
-	workerID := identity.UserID(uuid.New())
-	representedID := identity.UserID(uuid.New())
+	workerID := identity.PrincipalID(uuid.NewString())
+	representedID := identity.PrincipalID(uuid.NewString())
 	if _, err := mgr.Append(ctx, domainsemantic.InferenceUsageEvent{CreatedAt: created.Add(2 * time.Hour), Status: "success", Operation: "content_embedding", ActorPrincipalID: workerID, EffectivePrincipalID: workerID, OnBehalfOfPrincipalID: representedID, SpaceID: spaceID, InputTokens: 1, TokenCountSource: "unavailable"}); err != nil {
 		t.Fatalf("append background event failed: %v", err)
 	}
