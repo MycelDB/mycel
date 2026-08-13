@@ -31,7 +31,7 @@ type Input struct {
 	Text             string
 	Limit            int
 	MinScore         float64
-	ActorPrincipalID identity.UserID
+	ActorPrincipalID identity.PrincipalID
 }
 
 type Result struct {

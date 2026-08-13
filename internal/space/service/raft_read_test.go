@@ -17,7 +17,7 @@ func TestGetSpaceViaRaftLeaderNoLeader(t *testing.T) {
 	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	created, err := m.CreateSpaceWithResult(ctx, CreateSpaceInput{Name: "main", OwnerUserID: testUserID(t)})
+	created, err := m.CreateSpaceWithResult(ctx, CreateSpaceInput{Name: "main", OwnerPrincipalID: testPrincipalID(t)})
 	if err != nil {
 		t.Fatalf("CreateSpaceWithResult() error = %v", err)
 	}
@@ -38,7 +38,7 @@ func TestGetSpaceViaRaftLeaderLocalLeader(t *testing.T) {
 	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	created, err := m.CreateSpaceWithResult(ctx, CreateSpaceInput{Name: "main", OwnerUserID: testUserID(t)})
+	created, err := m.CreateSpaceWithResult(ctx, CreateSpaceInput{Name: "main", OwnerPrincipalID: testPrincipalID(t)})
 	if err != nil {
 		t.Fatalf("CreateSpaceWithResult() error = %v", err)
 	}

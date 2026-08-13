@@ -53,12 +53,12 @@ func TestModuleCreateSpaceWithResultUsesRaftProposalWhenEnabled(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("leaders not elected: %v", err)
 	}
-	ownerID := testUserID(t)
-	result, err := m.CreateSpaceWithResult(waitCtx, CreateSpaceInput{Name: "raft-service", OwnerUserID: ownerID, CommandID: "create-space-idempotent-1"})
+	ownerID := testPrincipalID(t)
+	result, err := m.CreateSpaceWithResult(waitCtx, CreateSpaceInput{Name: "raft-service", OwnerPrincipalID: ownerID, CommandID: "create-space-idempotent-1"})
 	if err != nil {
 		t.Fatalf("CreateSpaceWithResult() error = %v", err)
 	}
-	retry, err := m.CreateSpaceWithResult(waitCtx, CreateSpaceInput{Name: "raft-service", OwnerUserID: ownerID, CommandID: "create-space-idempotent-1"})
+	retry, err := m.CreateSpaceWithResult(waitCtx, CreateSpaceInput{Name: "raft-service", OwnerPrincipalID: ownerID, CommandID: "create-space-idempotent-1"})
 	if err != nil {
 		t.Fatalf("CreateSpaceWithResult() retry error = %v", err)
 	}
@@ -82,14 +82,14 @@ func TestModuleCreateSpaceWithResultUsesRaftProposalWhenEnabled(t *testing.T) {
 	if len(listed) != 1 || listed[0].SpaceID != result.Space.SpaceID {
 		t.Fatalf("ListSpaces() = %+v, want created space only", listed)
 	}
-	grant, err := m.GrantSpaceUser(waitCtx, result.Space.SpaceID.String(), testUserID(t).String(), "reader")
+	grant, err := m.GrantSpacePrincipal(waitCtx, result.Space.SpaceID.String(), string(testPrincipalID(t)), "reader")
 	if err != nil {
-		t.Fatalf("GrantSpaceUser() via raft error = %v", err)
+		t.Fatalf("GrantSpacePrincipal() via raft error = %v", err)
 	}
 	if grant.SpaceID != result.Space.SpaceID.String() || grant.Role != "reader" {
 		t.Fatalf("unexpected grant: %+v", grant)
 	}
-	domain, err := m.CreateDomain(waitCtx, ownerID.String(), CreateDomainInput{SpaceID: result.Space.SpaceID.String(), Key: "docs", Name: "Docs"})
+	domain, err := m.CreateDomain(waitCtx, string(ownerID), CreateDomainInput{SpaceID: result.Space.SpaceID.String(), Key: "docs", Name: "Docs"})
 	if err != nil {
 		t.Fatalf("CreateDomain() via raft error = %v", err)
 	}
@@ -101,14 +101,14 @@ func TestModuleCreateSpaceWithResultUsesRaftProposalWhenEnabled(t *testing.T) {
 		t.Fatalf("loaded domain=%s want %s", loadedDomain.ID, domain.ID)
 	}
 	newName := "Docs Updated"
-	updated, err := m.UpdateDomain(waitCtx, ownerID.String(), UpdateDomainInput{SpaceID: result.Space.SpaceID.String(), DomainID: domain.ID.String(), Name: &newName})
+	updated, err := m.UpdateDomain(waitCtx, string(ownerID), UpdateDomainInput{SpaceID: result.Space.SpaceID.String(), DomainID: domain.ID.String(), Name: &newName})
 	if err != nil {
 		t.Fatalf("UpdateDomain() via raft error = %v", err)
 	}
 	if updated.Name != newName {
 		t.Fatalf("updated domain name=%q want %q", updated.Name, newName)
 	}
-	if err := m.DeleteDomain(waitCtx, ownerID.String(), result.Space.SpaceID.String(), domain.ID.String()); err != nil {
+	if err := m.DeleteDomain(waitCtx, string(ownerID), result.Space.SpaceID.String(), domain.ID.String()); err != nil {
 		t.Fatalf("DeleteDomain() via raft error = %v", err)
 	}
 	if _, err := m.GetDomainByRef(ctx, result.Space.SpaceID.String(), domain.ID.String()); err == nil {
@@ -164,8 +164,8 @@ func TestRaftCreateSpaceCommitAndLeaderFailoverHarness(t *testing.T) {
 		}
 	}()
 
-	ownerID := testUserID(t)
-	seedRecord, cmd, err := modules[1].buildCreateSpaceRaftCommand(CreateSpaceInput{Name: "raft-main", OwnerUserID: ownerID}, 64, "create-space-e2e-1")
+	ownerID := testPrincipalID(t)
+	seedRecord, cmd, err := modules[1].buildCreateSpaceRaftCommand(CreateSpaceInput{Name: "raft-main", OwnerPrincipalID: ownerID}, 64, "create-space-e2e-1")
 	if err != nil {
 		t.Fatalf("buildCreateSpaceRaftCommand() error = %v", err)
 	}

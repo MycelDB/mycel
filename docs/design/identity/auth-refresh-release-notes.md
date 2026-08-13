@@ -1,85 +1,27 @@
-# Auth refresh release notes
+# Auth Refresh Sessions Release Notes
 
-## Summary
+## Status
 
-Mycel daemon authentication now supports the standard short-lived access-token
-plus durable refresh-token lifecycle for both Client and Admin callers.
+Historical note superseded by unified principal identity.
 
-This fixes long-running service failures such as:
-
-```text
-rpc error: code = Unauthenticated desc = authorization token is expired
-```
-
-without increasing access-token TTLs or restarting dependent services.
-
-## Admin API changes
-
-`mycel.admin.v1.AdminAuthService` now supports:
+The current public authentication surface is:
 
 ```text
-LoginOperator
-RefreshOperator
-LogoutOperator
-WhoAmI
+mycel.common.v1.AuthService
 ```
 
-`LoginOperator` and `RefreshOperator` return:
+The current admin identity-management surface is:
 
 ```text
-access_token
-access_token_expire_time
-refresh_token
+mycel.admin.v1.AdminPrincipalService
 ```
 
-Operator access tokens include an auth-session ID. `LogoutOperator` revokes the
-current operator session by default.
+## Current behavior
 
-## Client API behavior
+`AuthService` supports login, refresh, logout, whoami, caller-owned session listing, session revocation, and revoking all other sessions for the authenticated principal. Access tokens include the authenticated `principal_id` and auth-session ID. Refresh sessions are durable and rotate refresh tokens on refresh.
 
-The existing Client auth refresh/session model remains the normal path for user
-callers. SDK clients now keep access-token expiry and refresh-token state so
-long-running callers can renew automatically.
+System-management authorization is handled by principal role bindings and capability grants; there is no separate admin/operator auth service.
 
-## SDK behavior
+## Historical note
 
-Updated SDKs should:
-
-- store access-token expiry and refresh token returned by login/refresh
-- refresh proactively before access-token expiry
-- retry once on expired-token `Unauthenticated`
-- rotate the stored refresh token after every refresh
-- expose logout helpers that revoke the current auth session
-
-Raw generated clients receive bearer metadata, but direct callers that bypass SDK
-helpers may need to call refresh helpers themselves.
-
-## Daemon configuration
-
-`myceld` accepts:
-
-```text
-MYCELD_ACCESS_TOKEN_TTL=15m
-```
-
-The default remains short-lived. Prefer refresh sessions over increasing the TTL
-for services that stay online for long periods.
-
-## Migration notes
-
-- `mycel-api` remains proto-only; generated bindings belong to consuming repos.
-- Consumers should regenerate local stubs from `mycel-api`.
-- Go and Rust SDK users should update to versions containing auto-refresh
-  support before running long-lived daemons/services.
-- Existing short-lived access tokens remain valid until expiry, but clients need
-  a refresh token from a fresh login to renew automatically.
-
-## Validation highlights
-
-Validation added for this release includes:
-
-- operator login refresh-token issuance
-- operator refresh-token rotation and reuse rejection
-- operator logout/session revocation
-- SDK proactive refresh and expired-token retry
-- PKM signup/onboarding after cached daemon access tokens expire
+Earlier daemon slices exposed separate admin/operator auth RPCs. Those RPCs were removed during unified principal identity cleanup.

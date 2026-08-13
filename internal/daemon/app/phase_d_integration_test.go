@@ -15,6 +15,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/identity/model"
 	runtimetest "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
@@ -57,7 +58,7 @@ func TestPhaseDMultiSubsystemRaftConvergesAndRestarts(t *testing.T) {
 	cluster.waitForLeaders(ctx, t)
 
 	ownerID := uuid.New()
-	created, err := cluster.nodes[1].space.CreateSpaceWithResult(ctx, spaceservice.CreateSpaceInput{Name: "phase-d", OwnerUserID: ownerID, DefaultDomainKey: "notes", DefaultDomainName: "Notes", CommandID: "phase-d-space"})
+	created, err := cluster.nodes[1].space.CreateSpaceWithResult(ctx, spaceservice.CreateSpaceInput{Name: "phase-d", OwnerPrincipalID: identity.PrincipalID(ownerID.String()), DefaultDomainKey: "notes", DefaultDomainName: "Notes", CommandID: "phase-d-space"})
 	if err != nil {
 		t.Fatalf("CreateSpaceWithResult() error = %v", err)
 	}
@@ -354,7 +355,7 @@ func (c *phaseDIntegrationCluster) waitForNoVectorStore(ctx context.Context, t *
 
 func phaseDLocalGraphNode(ctx context.Context, m *graphservice.Module, spaceID, domainID, nodeID string, revision int64) (graphmodel.Node, error) {
 	tx := phaseDGraphTx(spaceID, domainID, revision)
-	req := map[string]any{"op": "get_node", "space_id": spaceID, "id": nodeID, "tx": map[string]any{"ID": tx.ID, "SessionID": tx.SessionID, "UserID": tx.UserID, "SpaceID": tx.SpaceID, "DomainID": tx.DomainID, "Mode": string(tx.Mode), "State": string(tx.State), "BaseRevision": tx.BaseRevision}}
+	req := map[string]any{"op": "get_node", "space_id": spaceID, "id": nodeID, "tx": map[string]any{"ID": tx.ID, "SessionID": tx.SessionID, "PrincipalID": tx.PrincipalID, "SpaceID": tx.SpaceID, "DomainID": tx.DomainID, "Mode": string(tx.Mode), "State": string(tx.State), "BaseRevision": tx.BaseRevision}}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return graphmodel.Node{}, err
@@ -387,7 +388,7 @@ func phaseDHasVectorStore(ctx context.Context, m *semanticservice.Module, key st
 
 func phaseDGraphTx(spaceID string, domainID string, baseRevision int64) sessionservice.GraphTransaction {
 	now := time.Now().UTC()
-	return sessionservice.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), UserID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionservice.TransactionModeReadWrite, State: sessionservice.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
+	return sessionservice.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionservice.TransactionModeReadWrite, State: sessionservice.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
 }
 
 func phaseDTestSchema(domainID graphmodel.DomainID) schemamodel.DomainSchema {

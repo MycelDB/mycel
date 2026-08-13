@@ -1,9 +1,5 @@
 package service
 
-import (
-	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
-	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
-)
+import principal "github.com/myceldb/mycel/internal/identity/service/principal"
 
-type UserRaftStateMachine = daemonuser.RaftStateMachine
-type AdminRaftStateMachine = daemonadmin.RaftStateMachine
+type PrincipalRaftStateMachine = principal.RaftStateMachine

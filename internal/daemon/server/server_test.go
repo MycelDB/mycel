@@ -24,12 +24,13 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
-	daemonadmin "github.com/myceldb/mycel/internal/identity/service/admin"
-	daemonuser "github.com/myceldb/mycel/internal/identity/service/user"
+	"github.com/myceldb/mycel/internal/identity/model"
+	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -42,116 +43,89 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type fakeOperatorManager struct{ admin daemonadmin.AdminSummary }
+type fakePrincipalManager struct{}
 
-func (f fakeOperatorManager) ListAdmins(context.Context) ([]daemonadmin.AdminSummary, error) {
-	return []daemonadmin.AdminSummary{f.admin}, nil
+func (fakePrincipalManager) ListPrincipals(context.Context) ([]principalservice.PrincipalSummary, error) {
+	createdAt := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	return []principalservice.PrincipalSummary{{ID: "admin-1", Username: "admin", Kind: principalservice.PrincipalKindHuman, State: principalservice.PrincipalStateActive, LoginEnabled: true, CreatedAt: createdAt, UpdatedAt: createdAt}}, nil
 }
-func (f fakeOperatorManager) AuthenticateOperator(context.Context, string, string) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
+func (fakePrincipalManager) GetPrincipal(context.Context, string) (principalservice.PrincipalSummary, error) {
+	return principalservice.PrincipalSummary{}, principalservice.ErrPrincipalNotFound
 }
-func (f fakeOperatorManager) SetOperatorPassword(context.Context, string, string) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
+func (fakePrincipalManager) FindPrincipal(context.Context, string, string) (principalservice.PrincipalSummary, error) {
+	return principalservice.PrincipalSummary{}, principalservice.ErrPrincipalNotFound
 }
-func (f fakeOperatorManager) GetOperator(context.Context, string) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
+func (fakePrincipalManager) CreatePrincipal(context.Context, principalservice.CreatePrincipalInput) (principalservice.PrincipalSummary, error) {
+	return principalservice.PrincipalSummary{}, nil
 }
-func (f fakeOperatorManager) FindOperator(context.Context, string, string) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
+func (fakePrincipalManager) UpdatePrincipal(context.Context, principalservice.UpdatePrincipalInput) (principalservice.PrincipalSummary, error) {
+	return principalservice.PrincipalSummary{}, nil
 }
-func (f fakeOperatorManager) CreateOperator(context.Context, daemonadmin.CreateOperatorInput) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
+func (fakePrincipalManager) DisablePrincipal(context.Context, string) (principalservice.PrincipalSummary, error) {
+	return principalservice.PrincipalSummary{}, nil
 }
-func (f fakeOperatorManager) UpdateOperator(context.Context, daemonadmin.UpdateOperatorInput) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
+func (fakePrincipalManager) EnablePrincipal(context.Context, string) (principalservice.PrincipalSummary, error) {
+	return principalservice.PrincipalSummary{}, nil
 }
-func (f fakeOperatorManager) DisableOperator(context.Context, string) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
+func (fakePrincipalManager) DeletePrincipal(context.Context, string) (principalservice.PrincipalSummary, error) {
+	return principalservice.PrincipalSummary{}, nil
 }
-func (f fakeOperatorManager) EnableOperator(context.Context, string) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
+func (fakePrincipalManager) SetPrincipalPassword(context.Context, string, string) (principalservice.PrincipalSummary, error) {
+	return principalservice.PrincipalSummary{}, nil
 }
-func (f fakeOperatorManager) DeleteOperator(context.Context, string) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
+func (fakePrincipalManager) AuthenticatePrincipal(context.Context, string, string) (principalservice.PrincipalSummary, error) {
+	createdAt := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	return principalservice.PrincipalSummary{ID: "00000000-0000-0000-0000-000000000001", Username: "alice", Kind: principalservice.PrincipalKindHuman, State: principalservice.PrincipalStateActive, LoginEnabled: true, CreatedAt: createdAt, UpdatedAt: createdAt}, nil
 }
-func (f fakeOperatorManager) GrantRole(context.Context, string, string, daemonadmin.AccessScope, string, string) (daemonadmin.RoleGrant, daemonadmin.AdminSummary, error) {
-	return daemonadmin.RoleGrant{}, f.admin, nil
+func (fakePrincipalManager) CreateAuthSession(context.Context, principalservice.PrincipalSummary, domainauth.RefreshSessionMetadata, int, time.Duration, time.Duration) (domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	id := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	return "refresh", domainauth.RefreshSession{ID: id, PrincipalID: identity.PrincipalID("00000000-0000-0000-0000-000000000001"), Status: domainauth.RefreshSessionStatusActive, CreatedAt: time.Now(), LastUsedAt: time.Now(), AbsoluteExpiresAt: time.Now().Add(time.Hour)}, nil
 }
-func (f fakeOperatorManager) RevokeRole(context.Context, string, string) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
+func (fakePrincipalManager) RefreshAuthSession(context.Context, domainauth.RefreshToken, domainauth.RefreshSessionMetadata, int, time.Duration) (principalservice.PrincipalSummary, domainauth.RefreshToken, domainauth.RefreshSession, error) {
+	return principalservice.PrincipalSummary{}, "refresh", domainauth.RefreshSession{}, nil
 }
-func (f fakeOperatorManager) GrantCapability(context.Context, string, string, daemonadmin.AccessScope, string, string) (daemonadmin.CapabilityGrant, daemonadmin.AdminSummary, error) {
-	return daemonadmin.CapabilityGrant{}, f.admin, nil
-}
-func (f fakeOperatorManager) RevokeCapability(context.Context, string, string) (daemonadmin.AdminSummary, error) {
-	return f.admin, nil
-}
-func (f fakeOperatorManager) IsSystemAdmin(context.Context, string) (bool, error) { return true, nil }
-func (f fakeOperatorManager) HasCapability(context.Context, string, string) (bool, error) {
-	return true, nil
-}
-func (f fakeOperatorManager) CreateOperatorAuthSession(context.Context, daemonadmin.AdminSummary, domainauth.RefreshSessionMetadata, int, time.Duration, time.Duration) (domainauth.RefreshToken, domainauth.RefreshSession, error) {
-	return "operator-refresh", domainauth.RefreshSession{ID: uuid.New(), CreatedAt: time.Now().UTC()}, nil
-}
-func (f fakeOperatorManager) RefreshOperatorAuthSession(context.Context, domainauth.RefreshToken, domainauth.RefreshSessionMetadata, int, time.Duration) (daemonadmin.AdminSummary, domainauth.RefreshToken, domainauth.RefreshSession, error) {
-	return f.admin, "operator-refresh-2", domainauth.RefreshSession{ID: uuid.New(), CreatedAt: time.Now().UTC()}, nil
-}
-func (f fakeOperatorManager) ListOperatorSessions(context.Context, string) ([]domainauth.RefreshSession, error) {
+func (fakePrincipalManager) ListPrincipalSessions(context.Context, string) ([]domainauth.RefreshSession, error) {
 	return nil, nil
 }
-func (f fakeOperatorManager) RevokeOperatorSession(context.Context, string, string) error { return nil }
-func (f fakeOperatorManager) RevokeOperatorSessions(context.Context, string) (int, error) {
+func (fakePrincipalManager) RevokePrincipalSession(context.Context, string, string) error { return nil }
+func (fakePrincipalManager) RevokePrincipalSessions(context.Context, string) (int, error) {
 	return 0, nil
 }
-
-type fakeUserManager struct{}
-
-func (fakeUserManager) ListUsers(context.Context) ([]daemonuser.UserSummary, error) { return nil, nil }
-func (fakeUserManager) GetUser(context.Context, string) (daemonuser.UserSummary, error) {
-	return daemonuser.UserSummary{}, daemonuser.ErrUserNotFound
-}
-func (fakeUserManager) FindUser(context.Context, string) (daemonuser.UserSummary, error) {
-	return daemonuser.UserSummary{}, daemonuser.ErrUserNotFound
-}
-func (fakeUserManager) CreateUser(context.Context, daemonuser.CreateUserInput) (daemonuser.UserSummary, error) {
-	return daemonuser.UserSummary{}, nil
-}
-func (fakeUserManager) DisableUser(context.Context, string) (daemonuser.UserSummary, error) {
-	return daemonuser.UserSummary{}, nil
-}
-func (fakeUserManager) EnableUser(context.Context, string) (daemonuser.UserSummary, error) {
-	return daemonuser.UserSummary{}, nil
-}
-func (fakeUserManager) DeleteUser(context.Context, string) (daemonuser.UserSummary, error) {
-	return daemonuser.UserSummary{}, nil
-}
-func (fakeUserManager) SetUserPassword(context.Context, string, string) (daemonuser.UserSummary, error) {
-	return daemonuser.UserSummary{}, nil
-}
-func (fakeUserManager) AuthenticateUser(context.Context, string, string) (daemonuser.UserSummary, error) {
-	createdAt := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	return daemonuser.UserSummary{ID: "00000000-0000-0000-0000-000000000001", Username: "alice", State: daemonuser.UserStateActive, CreatedAt: createdAt, UpdatedAt: createdAt}, nil
-}
-func (fakeUserManager) CreateAuthSession(context.Context, daemonuser.UserSummary, domainauth.RefreshSessionMetadata, int, time.Duration, time.Duration) (domainauth.RefreshToken, domainauth.RefreshSession, error) {
-	id := uuid.MustParse("00000000-0000-0000-0000-000000000002")
-	return "refresh", domainauth.RefreshSession{ID: id, UserID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Status: domainauth.RefreshSessionStatusActive, CreatedAt: time.Now(), LastUsedAt: time.Now(), AbsoluteExpiresAt: time.Now().Add(time.Hour)}, nil
-}
-func (fakeUserManager) RefreshAuthSession(context.Context, domainauth.RefreshToken, domainauth.RefreshSessionMetadata, int, time.Duration) (daemonuser.UserSummary, domainauth.RefreshToken, domainauth.RefreshSession, error) {
-	return daemonuser.UserSummary{}, "refresh", domainauth.RefreshSession{}, nil
-}
-func (fakeUserManager) ListUserSessions(context.Context, string) ([]domainauth.RefreshSession, error) {
+func (fakePrincipalManager) ListRoleBindings(context.Context, string) ([]principalservice.RoleBinding, error) {
 	return nil, nil
 }
-func (fakeUserManager) RevokeUserSession(context.Context, string, string) error { return nil }
-func (fakeUserManager) RevokeUserSessions(context.Context, string) (int, error) { return 0, nil }
+func (fakePrincipalManager) GrantRole(context.Context, string, string, principalservice.AccessScope, string, string) (principalservice.RoleBinding, principalservice.PrincipalSummary, error) {
+	return principalservice.RoleBinding{}, principalservice.PrincipalSummary{}, nil
+}
+func (fakePrincipalManager) RevokeRole(context.Context, string, string, string) (principalservice.PrincipalSummary, error) {
+	return principalservice.PrincipalSummary{}, nil
+}
+func (fakePrincipalManager) ListCapabilityGrants(context.Context, string) ([]principalservice.CapabilityGrant, error) {
+	return nil, nil
+}
+func (fakePrincipalManager) GrantCapability(context.Context, string, string, principalservice.AccessScope, string, string) (principalservice.CapabilityGrant, principalservice.PrincipalSummary, error) {
+	return principalservice.CapabilityGrant{}, principalservice.PrincipalSummary{}, nil
+}
+func (fakePrincipalManager) RevokeCapability(context.Context, string, string, string) (principalservice.PrincipalSummary, error) {
+	return principalservice.PrincipalSummary{}, nil
+}
+func (fakePrincipalManager) Authorize(context.Context, string, string, principalservice.AccessScope) error {
+	return nil
+}
+func (fakePrincipalManager) HasCapability(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+func (fakePrincipalManager) EffectiveAccess(context.Context, string, principalservice.AccessScope) (principalservice.EffectiveAccess, error) {
+	return principalservice.EffectiveAccess{}, nil
+}
 
 type fakeSpaceManager struct{}
 
 func (fakeSpaceManager) ListVisibleSpaces(context.Context, string, bool) ([]domainspace.Space, error) {
-	return []domainspace.Space{{SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), OwnerID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Name: "Personal", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}, nil
+	return []domainspace.Space{{SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), OwnerID: identity.PrincipalID("00000000-0000-0000-0000-000000000001"), Name: "Personal", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}, nil
 }
 func (fakeSpaceManager) GetVisibleSpace(context.Context, string, string) (domainspace.Space, error) {
-	return domainspace.Space{SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), OwnerID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Name: "Personal", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
+	return domainspace.Space{SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), OwnerID: identity.PrincipalID("00000000-0000-0000-0000-000000000001"), Name: "Personal", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }
 func (fakeSpaceManager) ListSpaces(context.Context, bool) ([]domainspace.Space, error) {
 	return nil, nil
@@ -163,7 +137,7 @@ func (fakeSpaceManager) CreateSpace(context.Context, daemonspace.CreateSpaceInpu
 	return domainspace.Space{}, graph.Domain{}, nil
 }
 func (fakeSpaceManager) DeleteSpace(context.Context, string) error { return nil }
-func (fakeSpaceManager) GrantSpaceUser(context.Context, string, string, string) (daemonspace.SpaceGrant, error) {
+func (fakeSpaceManager) GrantSpacePrincipal(context.Context, string, string, string) (daemonspace.SpaceGrant, error) {
 	return daemonspace.SpaceGrant{}, nil
 }
 func (fakeSpaceManager) EffectiveAccess(context.Context, string, domainspace.Space) (daemonspace.EffectiveAccess, error) {
@@ -191,12 +165,9 @@ func (fakeSpaceManager) UpdateDomain(context.Context, string, daemonspace.Update
 	return graph.Domain{}, nil
 }
 func (fakeSpaceManager) DeleteDomain(context.Context, string, string, string) error { return nil }
-func TestServerRegistersProtectedAdminOperatorService(t *testing.T) {
+func TestServerRegistersProtectedAdminPrincipalService(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	createdAt := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	admin := daemonadmin.AdminSummary{ID: "admin-1", Username: "admin", State: daemonadmin.AdminStateActive, CreatedAt: createdAt, UpdatedAt: createdAt}
-	manager := fakeOperatorManager{admin: admin}
 	tokens := daemonauth.NewTokenManager([]byte("01234567890123456789012345678901"), time.Minute)
 	graphModule := daegraph.NewModule()
 	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, Logger: slog.Default()}
@@ -207,7 +178,7 @@ func TestServerRegistersProtectedAdminOperatorService(t *testing.T) {
 	semanticModule.Init(ctx, rt)
 	graphNotificationModule := graphnotification.NewModule()
 	graphNotificationModule.Init(ctx, rt)
-	srv, errCh, err := Start(ctx, Config{Addr: "127.0.0.1:0", AdminLister: manager, AdminAuthenticator: manager, OperatorManager: manager, UserManager: fakeUserManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, TokenManager: tokens})
+	srv, errCh, err := Start(ctx, Config{Addr: "127.0.0.1:0", PrincipalManager: fakePrincipalManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, TokenManager: tokens})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -218,25 +189,25 @@ func TestServerRegistersProtectedAdminOperatorService(t *testing.T) {
 		t.Fatalf("dial grpc server: %v", err)
 	}
 	defer conn.Close()
-	operatorClient := adminv1.NewAdminOperatorServiceClient(conn)
-	if _, err := operatorClient.ListOperators(ctx, &adminv1.ListOperatorsRequest{}); status.Code(err) != codes.Unauthenticated {
+	principalClient := adminv1.NewAdminPrincipalServiceClient(conn)
+	if _, err := principalClient.ListPrincipals(ctx, &adminv1.ListPrincipalsRequest{}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected unauthenticated list to fail, got %v", err)
 	}
-	authClient := adminv1.NewAdminAuthServiceClient(conn)
-	login, err := authClient.LoginOperator(ctx, &adminv1.LoginOperatorRequest{Username: "admin", Password: "pass"})
+	authClient := commonv1.NewAuthServiceClient(conn)
+	login, err := authClient.Login(ctx, &commonv1.LoginRequest{Username: "admin", Password: "pass"})
 	if err != nil {
-		t.Fatalf("LoginOperator() error = %v", err)
+		t.Fatalf("AuthService Login() error = %v", err)
 	}
 	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+login.GetAccessToken())
-	clientAuth := clientv1.NewAuthServiceClient(conn)
-	clientLogin, err := clientAuth.Login(ctx, &clientv1.LoginRequest{Username: "alice", Password: "pass"})
+	clientAuth := commonv1.NewAuthServiceClient(conn)
+	clientLogin, err := clientAuth.Login(ctx, &commonv1.LoginRequest{Username: "alice", Password: "pass"})
 	if err != nil {
 		t.Fatalf("client AuthService Login() error = %v", err)
 	}
 	if clientLogin.GetAccessToken() == "" || clientLogin.GetPrincipal().GetUsername() != "alice" {
 		t.Fatalf("unexpected client login response: %#v", clientLogin)
 	}
-	if _, err := clientAuth.WhoAmI(ctx, &clientv1.WhoAmIRequest{}); status.Code(err) != codes.Unauthenticated {
+	if _, err := clientAuth.WhoAmI(ctx, &commonv1.WhoAmIRequest{}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected unauthenticated client WhoAmI to fail, got %v", err)
 	}
 	clientAuthCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+clientLogin.GetAccessToken())
@@ -245,12 +216,12 @@ func TestServerRegistersProtectedAdminOperatorService(t *testing.T) {
 		t.Fatalf("client SpaceService ListSpaces() = %#v, %v", spaceRes, err)
 	}
 
-	res, err := operatorClient.ListOperators(authCtx, &adminv1.ListOperatorsRequest{})
+	res, err := principalClient.ListPrincipals(authCtx, &adminv1.ListPrincipalsRequest{})
 	if err != nil {
-		t.Fatalf("ListOperators() error = %v", err)
+		t.Fatalf("ListPrincipals() error = %v", err)
 	}
-	if len(res.GetOperators()) != 1 || res.GetOperators()[0].GetUsername() != "admin" {
-		t.Fatalf("unexpected operators response: %#v", res)
+	if len(res.GetPrincipals()) != 1 || res.GetPrincipals()[0].GetUsername() != "admin" {
+		t.Fatalf("unexpected principals response: %#v", res)
 	}
 
 	cancel()
@@ -289,10 +260,10 @@ func TestServerRegistersProtectedAdminClusterService(t *testing.T) {
 	if _, err := client.GetClusterStatus(ctx, &adminv1.GetClusterStatusRequest{}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected unauthenticated cluster status to fail, got %v", err)
 	}
-	authClient := adminv1.NewAdminAuthServiceClient(conn)
-	login, err := authClient.LoginOperator(ctx, &adminv1.LoginOperatorRequest{Username: "admin", Password: "pass"})
+	authClient := commonv1.NewAuthServiceClient(conn)
+	login, err := authClient.Login(ctx, &commonv1.LoginRequest{Username: "admin", Password: "pass"})
 	if err != nil {
-		t.Fatalf("LoginOperator() error = %v", err)
+		t.Fatalf("AuthService Login() error = %v", err)
 	}
 	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+login.GetAccessToken())
 	res, err := client.GetClusterStatus(authCtx, &adminv1.GetClusterStatusRequest{})
@@ -346,8 +317,8 @@ func TestServerTLSAndMTLS(t *testing.T) {
 		t.Fatalf("dial TLS server with client cert: %v", err)
 	}
 	defer conn.Close()
-	if _, err := adminv1.NewAdminAuthServiceClient(conn).LoginOperator(ctx, &adminv1.LoginOperatorRequest{Username: "admin", Password: "pass"}); err != nil {
-		t.Fatalf("LoginOperator over mTLS failed: %v", err)
+	if _, err := commonv1.NewAuthServiceClient(conn).Login(ctx, &commonv1.LoginRequest{Username: "admin", Password: "pass"}); err != nil {
+		t.Fatalf("AuthService Login over mTLS failed: %v", err)
 	}
 	cancel()
 	select {
@@ -362,8 +333,6 @@ func TestServerTLSAndMTLS(t *testing.T) {
 
 func testServerConfig(t *testing.T, ctx context.Context) Config {
 	t.Helper()
-	createdAt := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	manager := fakeOperatorManager{admin: daemonadmin.AdminSummary{ID: "admin-1", Username: "admin", State: daemonadmin.AdminStateActive, CreatedAt: createdAt, UpdatedAt: createdAt}}
 	tokens := daemonauth.NewTokenManager([]byte("01234567890123456789012345678901"), time.Minute)
 	graphModule := daegraph.NewModule()
 	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, Logger: slog.Default()}
@@ -374,7 +343,7 @@ func testServerConfig(t *testing.T, ctx context.Context) Config {
 	semanticModule.Init(ctx, rt)
 	graphNotificationModule := graphnotification.NewModule()
 	graphNotificationModule.Init(ctx, rt)
-	return Config{Addr: "127.0.0.1:0", AdminLister: manager, AdminAuthenticator: manager, OperatorManager: manager, UserManager: fakeUserManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, TokenManager: tokens}
+	return Config{Addr: "127.0.0.1:0", PrincipalManager: fakePrincipalManager{}, SpaceManager: fakeSpaceManager{}, SessionManager: daemonsession.NewModule(), GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, TokenManager: tokens}
 }
 
 func writeTestCA(t *testing.T, dir string) (*x509.Certificate, *rsa.PrivateKey, string) {

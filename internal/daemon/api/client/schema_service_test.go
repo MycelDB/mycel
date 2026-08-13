@@ -13,7 +13,7 @@ import (
 )
 
 func TestSchemaServicePutGetValidate(t *testing.T) {
-	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: uuid.NewString(), Username: "alice"})
+	ctx := daemonauth.ContextWithPrincipal(context.Background(), daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: uuid.NewString(), Username: "alice"})
 	svc := NewSchemaService(service.NewManager(storage.NewMemoryStore()))
 	domainID := uuid.NewString()
 	gwl := `schema "test" version "v1" mode strict

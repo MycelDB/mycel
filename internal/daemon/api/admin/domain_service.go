@@ -71,13 +71,13 @@ func (s *AdminDomainService) requireDomainRead(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ok, err := s.authorizer.HasCapability(ctx, principal.OperatorID, commonv1.Capability_CAPABILITY_DOMAIN_READ.String())
+	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_DOMAIN_READ.String())
 	if err != nil {
 		return status.Errorf(codes.Internal, "authorize operator: %v", err)
 	}
 	if !ok {
 		// Semantic admins need domain lookup for semantic/inference provisioning.
-		ok, err = s.authorizer.HasCapability(ctx, principal.OperatorID, commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH.String())
+		ok, err = s.authorizer.HasCapability(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH.String())
 		if err != nil {
 			return status.Errorf(codes.Internal, "authorize operator: %v", err)
 		}

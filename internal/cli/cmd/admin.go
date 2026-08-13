@@ -11,7 +11,10 @@ import (
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 func NewAdminCommand(a *app.App) *cobra.Command {
@@ -25,348 +28,336 @@ func NewAdminCommand(a *app.App) *cobra.Command {
 }
 
 func NewListAdminsCommand(a *app.App) *cobra.Command {
-	return &cobra.Command{Use: "admins", Short: "List daemon admins", RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "admins", Short: "List daemon admin principals", RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		client := adminv1.NewAdminOperatorServiceClient(conn)
-		res, err := client.ListOperators(authCtx, &adminv1.ListOperatorsRequest{})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).ListPrincipals(authCtx, &adminv1.ListPrincipalsRequest{})
 		if err != nil {
-			return fmt.Errorf("list daemon admins: %w", err)
+			return fmt.Errorf("list daemon admin principals: %w", err)
 		}
-		if a.Output == "json" {
-			return a.Print(res.GetOperators(), "")
-		}
-		app.RenderDaemonOperatorsTable(res.GetOperators())
-		return nil
+		return a.Print(res.GetPrincipals(), fmt.Sprintf("principals: %d\n", len(res.GetPrincipals())))
 	}}
 }
 
 func NewGetAdminCommand(a *app.App) *cobra.Command {
 	var id string
-	cmd := &cobra.Command{Use: "get", Short: "Get a daemon admin", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "get", Short: "Get a daemon admin principal", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" {
-			return fmt.Errorf("--operator-id is required")
+			return fmt.Errorf("--operator-id/--principal-id is required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).GetOperator(authCtx, &adminv1.GetOperatorRequest{OperatorId: id})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).GetPrincipal(authCtx, &adminv1.GetPrincipalRequest{PrincipalId: id})
 		if err != nil {
 			return err
 		}
-		return printOperator(a, res.GetOperator(), "admin: "+res.GetOperator().GetUsername()+"\n")
+		return printPrincipalAlias(a, res.GetPrincipal(), "admin principal: "+res.GetPrincipal().GetUsername()+"\n")
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	return cmd
 }
 
 func NewFindAdminCommand(a *app.App) *cobra.Command {
-	var operatorUsername, email string
-	cmd := &cobra.Command{Use: "find", Short: "Find a daemon admin", RunE: func(cmd *cobra.Command, args []string) error {
-		if operatorUsername == "" && email == "" {
-			return fmt.Errorf("--operator-username or --email is required")
+	var principalUsername, email string
+	cmd := &cobra.Command{Use: "find", Short: "Find a daemon admin principal", RunE: func(cmd *cobra.Command, args []string) error {
+		if principalUsername == "" && email == "" {
+			return fmt.Errorf("--operator-username/--principal-username or --email is required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		req := &adminv1.FindOperatorRequest{}
-		if operatorUsername != "" {
-			req.Lookup = &adminv1.FindOperatorRequest_Username{Username: operatorUsername}
+		req := &adminv1.FindPrincipalRequest{}
+		if principalUsername != "" {
+			req.Lookup = &adminv1.FindPrincipalRequest_Username{Username: principalUsername}
 		} else {
-			req.Lookup = &adminv1.FindOperatorRequest_Email{Email: email}
+			req.Lookup = &adminv1.FindPrincipalRequest_Email{Email: email}
 		}
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).FindOperator(authCtx, req)
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).FindPrincipal(authCtx, req)
 		if err != nil {
 			return err
 		}
-		return printOperator(a, res.GetOperator(), "admin: "+res.GetOperator().GetUsername()+"\n")
+		return printPrincipalAlias(a, res.GetPrincipal(), "admin principal: "+res.GetPrincipal().GetUsername()+"\n")
 	}}
-	cmd.Flags().StringVar(&operatorUsername, "operator-username", "", "operator username")
-	cmd.Flags().StringVar(&email, "email", "", "operator email")
+	cmd.Flags().StringVar(&principalUsername, "principal-username", "", "principal username")
+	cmd.Flags().StringVar(&principalUsername, "operator-username", "", "deprecated; use --principal-username")
+	cmd.Flags().StringVar(&email, "email", "", "principal email")
 	return cmd
 }
 
 func NewCreateAdminCommand(a *app.App) *cobra.Command {
-	var operatorUsername, newPassword, email string
+	var principalUsername, newPassword, email string
 	var roles []string
 	var disabled bool
-	cmd := &cobra.Command{Use: "create", Short: "Create a daemon admin", RunE: func(cmd *cobra.Command, args []string) error {
-		if operatorUsername == "" || newPassword == "" {
-			return fmt.Errorf("--operator-username and --new-password are required")
+	cmd := &cobra.Command{Use: "create", Short: "Create a daemon admin principal", RunE: func(cmd *cobra.Command, args []string) error {
+		if principalUsername == "" || newPassword == "" {
+			return fmt.Errorf("--operator-username/--principal-username and --new-password are required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		req := &adminv1.CreateOperatorRequest{Username: operatorUsername, Email: email, Password: &newPassword, Disabled: disabled}
+		req := &adminv1.CreatePrincipalRequest{Username: principalUsername, Email: email, Password: &newPassword, Type: commonv1.PrincipalType_PRINCIPAL_TYPE_HUMAN, LoginEnabled: true, Disabled: disabled}
 		for _, raw := range roles {
-			role, err := parseOperatorRole(raw)
-			if err != nil {
-				return err
-			}
-			req.Roles = append(req.Roles, role)
+			req.Roles = append(req.Roles, principalRoleFromAdminFlag(raw))
 		}
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).CreateOperator(authCtx, req)
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).CreatePrincipal(authCtx, req)
 		if err != nil {
 			return err
 		}
-		return printOperator(a, res.GetOperator(), "admin created: "+res.GetOperator().GetUsername()+"\n")
+		return printPrincipalAlias(a, res.GetPrincipal(), "admin principal created: "+res.GetPrincipal().GetUsername()+"\n")
 	}}
-	cmd.Flags().StringVar(&operatorUsername, "operator-username", "", "new operator username")
-	cmd.Flags().StringVar(&newPassword, "new-password", "", "new operator password")
-	cmd.Flags().StringVar(&email, "email", "", "new operator email")
-	cmd.Flags().StringArrayVar(&roles, "role", nil, "initial role, e.g. system-admin, user-admin")
+	cmd.Flags().StringVar(&principalUsername, "principal-username", "", "new principal username")
+	cmd.Flags().StringVar(&principalUsername, "operator-username", "", "deprecated; use --principal-username")
+	cmd.Flags().StringVar(&newPassword, "new-password", "", "new principal password")
+	cmd.Flags().StringVar(&email, "email", "", "new principal email")
+	cmd.Flags().StringArrayVar(&roles, "role", nil, "initial role, e.g. system.admin, identity.admin")
 	cmd.Flags().BoolVar(&disabled, "disabled", false, "create disabled")
 	return cmd
 }
 
 func NewUpdateAdminCommand(a *app.App) *cobra.Command {
 	var id, email string
-	cmd := &cobra.Command{Use: "update", Short: "Update a daemon admin", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "update", Short: "Update a daemon admin principal", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" {
-			return fmt.Errorf("--operator-id is required")
+			return fmt.Errorf("--operator-id/--principal-id is required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).UpdateOperator(authCtx, &adminv1.UpdateOperatorRequest{Operator: &adminv1.Operator{OperatorId: id, Email: email}})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).UpdatePrincipal(authCtx, &adminv1.UpdatePrincipalRequest{Principal: &adminv1.Principal{PrincipalId: id, Email: email}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"email"}}})
 		if err != nil {
 			return err
 		}
-		return printOperator(a, res.GetOperator(), "admin updated: "+res.GetOperator().GetUsername()+"\n")
+		return printPrincipalAlias(a, res.GetPrincipal(), "admin principal updated: "+res.GetPrincipal().GetUsername()+"\n")
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
-	cmd.Flags().StringVar(&email, "email", "", "operator email")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
+	cmd.Flags().StringVar(&email, "email", "", "principal email")
 	return cmd
 }
+
 func NewDisableAdminCommand(a *app.App) *cobra.Command {
 	var id, reason string
-	cmd := &cobra.Command{Use: "disable", Short: "Disable a daemon admin", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "disable", Short: "Disable a daemon admin principal", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" {
-			return fmt.Errorf("--operator-id is required")
+			return fmt.Errorf("--operator-id/--principal-id is required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).DisableOperator(authCtx, &adminv1.DisableOperatorRequest{OperatorId: id, Reason: reason})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).DisablePrincipal(authCtx, &adminv1.DisablePrincipalRequest{PrincipalId: id, Reason: reason})
 		if err != nil {
 			return err
 		}
-		return printOperator(a, res.GetOperator(), "admin disabled: "+res.GetOperator().GetUsername()+"\n")
+		return printPrincipalAlias(a, res.GetPrincipal(), "admin principal disabled: "+res.GetPrincipal().GetUsername()+"\n")
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	cmd.Flags().StringVar(&reason, "reason", "", "reason")
 	return cmd
 }
+
 func NewEnableAdminCommand(a *app.App) *cobra.Command {
 	var id string
-	cmd := &cobra.Command{Use: "enable", Short: "Enable a daemon admin", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "enable", Short: "Enable a daemon admin principal", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" {
-			return fmt.Errorf("--operator-id is required")
+			return fmt.Errorf("--operator-id/--principal-id is required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).EnableOperator(authCtx, &adminv1.EnableOperatorRequest{OperatorId: id})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).EnablePrincipal(authCtx, &adminv1.EnablePrincipalRequest{PrincipalId: id})
 		if err != nil {
 			return err
 		}
-		return printOperator(a, res.GetOperator(), "admin enabled: "+res.GetOperator().GetUsername()+"\n")
+		return printPrincipalAlias(a, res.GetPrincipal(), "admin principal enabled: "+res.GetPrincipal().GetUsername()+"\n")
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	return cmd
 }
+
 func NewDeleteAdminCommand(a *app.App) *cobra.Command {
 	var id string
-	cmd := &cobra.Command{Use: "delete", Aliases: []string{"del", "rm"}, Short: "Soft-delete a daemon admin", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "delete", Aliases: []string{"del", "rm"}, Short: "Soft-delete a daemon admin principal", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" {
-			return fmt.Errorf("--operator-id is required")
+			return fmt.Errorf("--operator-id/--principal-id is required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).DeleteOperator(authCtx, &adminv1.DeleteOperatorRequest{OperatorId: id})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).DeletePrincipal(authCtx, &adminv1.DeletePrincipalRequest{PrincipalId: id})
 		if err != nil {
 			return err
 		}
-		return printOperator(a, res.GetOperator(), "admin deleted: "+res.GetOperator().GetUsername()+"\n")
+		return printPrincipalAlias(a, res.GetPrincipal(), "admin principal deleted: "+res.GetPrincipal().GetUsername()+"\n")
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	return cmd
 }
 
 func NewAdminPasswordCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "password", Short: "Manage daemon admin passwords"}
+	cmd := &cobra.Command{Use: "password", Short: "Manage daemon admin principal passwords"}
 	set := NewSetAdminPasswordCommand(a)
 	set.Use = "set"
-	set.Short = "Change a daemon admin password"
+	set.Short = "Change a daemon admin principal password"
 	cmd.AddCommand(set)
 	return cmd
 }
+
 func NewSetAdminPasswordCommand(a *app.App) *cobra.Command {
-	var newPassword, operatorID string
-	cmd := &cobra.Command{Use: "set", Short: "Change a daemon admin password", RunE: func(cmd *cobra.Command, args []string) error {
+	var newPassword, principalID string
+	cmd := &cobra.Command{Use: "set", Short: "Change a daemon admin principal password", RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(newPassword) == "" {
 			return fmt.Errorf("--new-password is required")
 		}
-		conn, authCtx, operator, err := loginDaemonOperator(cmd.Context(), a)
+		conn, authCtx, principal, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		if operatorID == "" {
-			operatorID = operator.GetOperatorId()
+		if principalID == "" {
+			principalID = principal.GetPrincipalId()
 		}
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).SetOperatorPassword(authCtx, &adminv1.SetOperatorPasswordRequest{OperatorId: operatorID, Password: newPassword})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).SetPrincipalPassword(authCtx, &adminv1.SetPrincipalPasswordRequest{PrincipalId: principalID, Password: newPassword})
 		if err != nil {
-			return fmt.Errorf("set daemon admin password: %w", err)
+			return fmt.Errorf("set daemon admin principal password: %w", err)
 		}
-		return printOperator(a, res.GetOperator(), "admin password changed: "+res.GetOperator().GetUsername()+"\n")
+		return printPrincipalAlias(a, res.GetPrincipal(), "admin password changed: "+res.GetPrincipal().GetUsername()+"\n")
 	}}
-	cmd.Flags().StringVar(&operatorID, "operator-id", "", "operator id (defaults to authenticated operator)")
+	cmd.Flags().StringVar(&principalID, "principal-id", "", "principal id (defaults to authenticated principal)")
+	cmd.Flags().StringVar(&principalID, "operator-id", "", "deprecated; use --principal-id")
 	cmd.Flags().StringVar(&newPassword, "new-password", "", "new daemon admin password")
 	return cmd
 }
 
 func NewAdminRoleCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "role", Short: "Manage daemon admin roles"}
+	cmd := &cobra.Command{Use: "role", Short: "Manage daemon admin principal roles"}
 	cmd.AddCommand(NewListAdminRolesCommand(a), NewGrantAdminRoleCommand(a), NewRevokeAdminRoleCommand(a))
 	return cmd
 }
+
 func NewListAdminRolesCommand(a *app.App) *cobra.Command {
 	var id string
-	cmd := &cobra.Command{Use: "list", Short: "List daemon admin roles", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "list", Short: "List daemon admin principal roles", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" {
-			return fmt.Errorf("--operator-id is required")
+			return fmt.Errorf("--operator-id/--principal-id is required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).ListOperatorRoles(authCtx, &adminv1.ListOperatorRolesRequest{OperatorId: id})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).ListPrincipalRoles(authCtx, &adminv1.ListPrincipalRolesRequest{PrincipalId: id})
 		if err != nil {
 			return err
 		}
-		if a.Output == "json" {
-			return a.Print(res, "")
-		}
-		for _, grant := range res.GetGrants() {
-			fmt.Printf("%s\t%s\n", grant.GetRoleGrantId(), grant.GetRole().String())
-		}
-		return nil
+		return a.Print(res, fmt.Sprintf("principal role grants: %d\n", len(res.GetGrants())))
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	return cmd
 }
+
 func NewGrantAdminRoleCommand(a *app.App) *cobra.Command {
 	var id, role, reason string
-	cmd := &cobra.Command{Use: "grant", Short: "Grant a daemon admin role", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "grant", Short: "Grant a daemon admin principal role", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" || role == "" {
-			return fmt.Errorf("--operator-id and --role are required")
-		}
-		parsed, err := parseOperatorRole(role)
-		if err != nil {
-			return err
+			return fmt.Errorf("--operator-id/--principal-id and --role are required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).GrantOperatorRole(authCtx, &adminv1.GrantOperatorRoleRequest{OperatorId: id, Role: parsed, Reason: reason})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).GrantPrincipalRole(authCtx, &adminv1.GrantPrincipalRoleRequest{PrincipalId: id, Role: principalRoleFromAdminFlag(role), Reason: reason})
 		if err != nil {
 			return err
 		}
-		if a.Output == "json" {
-			return a.Print(res, "")
-		}
-		fmt.Printf("role granted: %s\n", res.GetGrant().GetRoleGrantId())
-		return nil
+		return a.Print(res, fmt.Sprintf("principal role granted: %s\n", res.GetGrant().GetRoleGrantId()))
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	cmd.Flags().StringVar(&role, "role", "", "role")
 	cmd.Flags().StringVar(&reason, "reason", "", "reason")
 	return cmd
 }
+
 func NewRevokeAdminRoleCommand(a *app.App) *cobra.Command {
 	var id, grantID string
-	cmd := &cobra.Command{Use: "revoke", Short: "Revoke a daemon admin role", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "revoke", Short: "Revoke a daemon admin principal role", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" || grantID == "" {
-			return fmt.Errorf("--operator-id and --grant-id are required")
+			return fmt.Errorf("--operator-id/--principal-id and --grant-id are required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).RevokeOperatorRole(authCtx, &adminv1.RevokeOperatorRoleRequest{OperatorId: id, RoleGrantId: grantID})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).RevokePrincipalRole(authCtx, &adminv1.RevokePrincipalRoleRequest{PrincipalId: id, RoleGrantId: grantID})
 		if err != nil {
 			return err
 		}
-		if a.Output == "json" {
-			return a.Print(res, "")
-		}
-		fmt.Println("role revoked")
-		return nil
+		return a.Print(res, "principal role revoked\n")
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	cmd.Flags().StringVar(&grantID, "grant-id", "", "grant id")
 	return cmd
 }
 
 func NewAdminCapabilityCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "capability", Short: "Manage daemon admin capabilities"}
+	cmd := &cobra.Command{Use: "capability", Short: "Manage daemon admin principal capabilities"}
 	cmd.AddCommand(NewListAdminCapabilitiesCommand(a), NewGrantAdminCapabilityCommand(a), NewRevokeAdminCapabilityCommand(a))
 	return cmd
 }
+
 func NewListAdminCapabilitiesCommand(a *app.App) *cobra.Command {
 	var id string
-	cmd := &cobra.Command{Use: "list", Short: "List daemon admin capabilities", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "list", Short: "List daemon admin principal capabilities", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" {
-			return fmt.Errorf("--operator-id is required")
+			return fmt.Errorf("--operator-id/--principal-id is required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).ListOperatorCapabilities(authCtx, &adminv1.ListOperatorCapabilitiesRequest{OperatorId: id})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).ListPrincipalCapabilities(authCtx, &adminv1.ListPrincipalCapabilitiesRequest{PrincipalId: id})
 		if err != nil {
 			return err
 		}
-		if a.Output == "json" {
-			return a.Print(res, "")
-		}
-		for _, cap := range res.GetEffectiveCapabilities() {
-			fmt.Println(cap.String())
-		}
-		return nil
+		return a.Print(res, fmt.Sprintf("principal capability grants: %d\n", len(res.GetGrants())))
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	return cmd
 }
+
 func NewGrantAdminCapabilityCommand(a *app.App) *cobra.Command {
 	var id, capability, reason string
-	cmd := &cobra.Command{Use: "grant", Short: "Grant a daemon admin capability", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "grant", Short: "Grant a daemon admin principal capability", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" || capability == "" {
-			return fmt.Errorf("--operator-id and --capability are required")
+			return fmt.Errorf("--operator-id/--principal-id and --capability are required")
 		}
 		parsed, err := parseCapability(capability)
 		if err != nil {
@@ -377,127 +368,149 @@ func NewGrantAdminCapabilityCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).GrantOperatorCapability(authCtx, &adminv1.GrantOperatorCapabilityRequest{OperatorId: id, Capability: parsed, Reason: reason})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).GrantPrincipalCapability(authCtx, &adminv1.GrantPrincipalCapabilityRequest{PrincipalId: id, Capability: parsed, Reason: reason})
 		if err != nil {
 			return err
 		}
-		if a.Output == "json" {
-			return a.Print(res, "")
-		}
-		fmt.Printf("capability granted: %s\n", res.GetGrant().GetCapabilityGrantId())
-		return nil
+		return a.Print(res, fmt.Sprintf("principal capability granted: %s\n", res.GetGrant().GetCapabilityGrantId()))
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
-	cmd.Flags().StringVar(&capability, "capability", "", "capability, e.g. operator-manage")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
+	cmd.Flags().StringVar(&capability, "capability", "", "capability, e.g. identity-principal-update")
 	cmd.Flags().StringVar(&reason, "reason", "", "reason")
 	return cmd
 }
+
 func NewRevokeAdminCapabilityCommand(a *app.App) *cobra.Command {
 	var id, grantID string
-	cmd := &cobra.Command{Use: "revoke", Short: "Revoke a daemon admin capability", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "revoke", Short: "Revoke a daemon admin principal capability", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" || grantID == "" {
-			return fmt.Errorf("--operator-id and --grant-id are required")
+			return fmt.Errorf("--operator-id/--principal-id and --grant-id are required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).RevokeOperatorCapability(authCtx, &adminv1.RevokeOperatorCapabilityRequest{OperatorId: id, CapabilityGrantId: grantID})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).RevokePrincipalCapability(authCtx, &adminv1.RevokePrincipalCapabilityRequest{PrincipalId: id, CapabilityGrantId: grantID})
 		if err != nil {
 			return err
 		}
-		if a.Output == "json" {
-			return a.Print(res, "")
-		}
-		fmt.Println("capability revoked")
-		return nil
+		return a.Print(res, "principal capability revoked\n")
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	cmd.Flags().StringVar(&grantID, "grant-id", "", "grant id")
 	return cmd
 }
 
 func NewAdminSessionCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "session", Short: "Manage daemon admin sessions"}
+	cmd := &cobra.Command{Use: "session", Short: "Manage daemon admin principal sessions"}
 	cmd.AddCommand(NewListAdminSessionsCommand(a), NewRevokeAdminSessionCommand(a), NewRevokeAdminSessionsCommand(a))
 	return cmd
 }
+
 func NewListAdminSessionsCommand(a *app.App) *cobra.Command {
 	var id string
-	cmd := &cobra.Command{Use: "list", Short: "List daemon admin sessions", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "list", Short: "List daemon admin principal sessions", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" {
-			return fmt.Errorf("--operator-id is required")
+			return fmt.Errorf("--operator-id/--principal-id is required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).ListOperatorSessions(authCtx, &adminv1.ListOperatorSessionsRequest{OperatorId: id})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).ListPrincipalSessions(authCtx, &adminv1.ListPrincipalSessionsRequest{PrincipalId: id})
 		if err != nil {
 			return err
 		}
 		sessions := res.GetSessions()
 		if sessions == nil {
-			sessions = []*adminv1.OperatorAuthSessionSummary{}
+			sessions = []*commonv1.AuthSessionSummary{}
 		}
 		return a.Print(sessions, "")
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	return cmd
 }
+
 func NewRevokeAdminSessionCommand(a *app.App) *cobra.Command {
 	var id, sessionID string
-	cmd := &cobra.Command{Use: "revoke", Short: "Revoke daemon admin session", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "revoke", Short: "Revoke daemon admin principal session", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" || sessionID == "" {
-			return fmt.Errorf("--operator-id and --session-id are required")
+			return fmt.Errorf("--operator-id/--principal-id and --session-id are required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		_, err = adminv1.NewAdminOperatorServiceClient(conn).RevokeOperatorSession(authCtx, &adminv1.RevokeOperatorSessionRequest{OperatorId: id, AuthSessionId: sessionID})
-		if err != nil {
+		_, err = adminv1.NewAdminPrincipalServiceClient(conn).RevokePrincipalSession(authCtx, &adminv1.RevokePrincipalSessionRequest{PrincipalId: id, AuthSessionId: sessionID})
+		if err != nil && status.Code(err) != codes.NotFound {
 			return err
 		}
 		fmt.Println("session revoked")
 		return nil
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	cmd.Flags().StringVar(&sessionID, "session-id", "", "session id")
 	return cmd
 }
+
 func NewRevokeAdminSessionsCommand(a *app.App) *cobra.Command {
 	var id string
-	cmd := &cobra.Command{Use: "revoke-all", Short: "Revoke all daemon admin sessions", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "revoke-all", Short: "Revoke all daemon admin principal sessions", RunE: func(cmd *cobra.Command, args []string) error {
 		if id == "" {
-			return fmt.Errorf("--operator-id is required")
+			return fmt.Errorf("--operator-id/--principal-id is required")
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminOperatorServiceClient(conn).RevokeOperatorSessions(authCtx, &adminv1.RevokeOperatorSessionsRequest{OperatorId: id})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).RevokePrincipalSessions(authCtx, &adminv1.RevokePrincipalSessionsRequest{PrincipalId: id})
 		if err != nil {
 			return err
 		}
 		return a.Print(res, fmt.Sprintf("sessions revoked: %d\n", res.GetRevokedCount()))
 	}}
-	cmd.Flags().StringVar(&id, "operator-id", "", "operator id")
+	cmd.Flags().StringVar(&id, "principal-id", "", "principal id")
+	cmd.Flags().StringVar(&id, "operator-id", "", "deprecated; use --principal-id")
 	return cmd
 }
 
-func printOperator(a *app.App, operator *adminv1.Operator, text string) error {
+func printPrincipalAlias(a *app.App, principal *adminv1.Principal, text string) error {
 	if a.Output == "json" {
-		return a.Print(operator, "")
+		return a.Print(principal, "")
 	}
-	return a.Print(operator, text)
+	return a.Print(principal, text)
 }
 
-func loginDaemonOperator(ctx context.Context, a *app.App) (*grpc.ClientConn, context.Context, *adminv1.Operator, error) {
+func principalRoleFromAdminFlag(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "system-admin", "system_admin", "system.admin":
+		return "system.admin"
+	case "user-admin", "user_admin", "operator-admin", "operator_admin", "identity-admin", "identity_admin", "identity.admin":
+		return "identity.admin"
+	case "space-admin", "space_admin", "space.admin":
+		return "space.admin"
+	case "semantic-admin", "semantic_admin", "semantic.admin":
+		return "semantic.admin"
+	case "storage-admin", "storage_admin", "backup-operator", "backup_operator", "backup.operator":
+		return "backup.operator"
+	case "mesh-admin", "mesh_admin", "cluster-operator", "cluster_operator", "cluster.operator":
+		return "cluster.operator"
+	case "audit-reader", "audit_reader", "audit.reader":
+		return "audit.reader"
+	default:
+		return strings.TrimSpace(raw)
+	}
+}
+
+func loginDaemonOperator(ctx context.Context, a *app.App) (*grpc.ClientConn, context.Context, *commonv1.AuthPrincipal, error) {
 	if strings.TrimSpace(a.UserRef) == "" || strings.TrimSpace(a.Password) == "" {
 		return nil, nil, nil, fmt.Errorf("--username/-u and --password/-p are required for admin commands")
 	}
@@ -505,19 +518,19 @@ func loginDaemonOperator(ctx context.Context, a *app.App) (*grpc.ClientConn, con
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	authClient := adminv1.NewAdminAuthServiceClient(conn)
-	login, err := authClient.LoginOperator(ctx, &adminv1.LoginOperatorRequest{Username: a.UserRef, Password: a.Password, Client: &adminv1.OperatorClientInfo{Name: "mycel-cli", Platform: "cli"}})
+	authClient := commonv1.NewAuthServiceClient(conn)
+	login, err := authClient.Login(ctx, &commonv1.LoginRequest{Username: a.UserRef, Password: a.Password, Client: &commonv1.ClientInfo{Name: "mycel-cli", Platform: "cli"}})
 	if err != nil {
 		_ = conn.Close()
-		return nil, nil, nil, fmt.Errorf("login daemon operator via %s: %w", addr, err)
+		return nil, nil, nil, fmt.Errorf("login daemon principal via %s: %w", addr, err)
 	}
 	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+login.GetAccessToken())
-	who, err := authClient.WhoAmI(authCtx, &adminv1.WhoAmIRequest{})
+	who, err := authClient.WhoAmI(authCtx, &commonv1.WhoAmIRequest{})
 	if err != nil {
 		_ = conn.Close()
-		return nil, nil, nil, fmt.Errorf("resolve daemon operator identity via %s: %w", addr, err)
+		return nil, nil, nil, fmt.Errorf("resolve daemon principal identity via %s: %w", addr, err)
 	}
-	return conn, authCtx, who.GetOperator(), nil
+	return conn, authCtx, who.GetPrincipal(), nil
 }
 
 func NewAdminDomainCommand(a *app.App) *cobra.Command {
@@ -587,13 +600,6 @@ func resolveDaemonAddr(a *app.App) (string, error) {
 	return cfg.GRPCAddr, nil
 }
 
-func parseOperatorRole(raw string) (adminv1.OperatorRole, error) {
-	key := "OPERATOR_ROLE_" + strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(raw), "-", "_"))
-	if value, ok := adminv1.OperatorRole_value[key]; ok && value != int32(adminv1.OperatorRole_OPERATOR_ROLE_UNSPECIFIED) {
-		return adminv1.OperatorRole(value), nil
-	}
-	return adminv1.OperatorRole_OPERATOR_ROLE_UNSPECIFIED, fmt.Errorf("unknown role %q", raw)
-}
 func parseCapability(raw string) (commonv1.Capability, error) {
 	key := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(raw), "-", "_"))
 	if !strings.HasPrefix(key, "CAPABILITY_") {

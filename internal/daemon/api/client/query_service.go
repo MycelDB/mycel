@@ -77,7 +77,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, req.GetTransactionId())
+	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
 	if err != nil {
 		return nil, mapSessionError(err, "execute query")
 	}
@@ -87,7 +87,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if req.GetQuery() == nil || req.GetQuery().GetMatch() == nil || req.GetQuery().GetMatch().GetStart() == nil {
 		return nil, status.Error(codes.InvalidArgument, "query.match.start is required")
 	}
-	domain, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, tx.SpaceID, tx.DomainID, "")
+	domain, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, tx.SpaceID, tx.DomainID, "")
 	if err != nil {
 		return nil, mapDomainError(err, "query domain")
 	}
@@ -168,7 +168,7 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, req.GetTransactionId())
+	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
 	if err != nil {
 		return nil, mapSessionError(err, "execute gql")
 	}
@@ -223,7 +223,7 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, req.GetTransactionId())
+	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
 	if err != nil {
 		return nil, mapSessionError(err, "execute gql script")
 	}

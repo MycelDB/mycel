@@ -1,4 +1,4 @@
-package user
+package principal
 
 import (
 	"context"
@@ -10,24 +10,24 @@ import (
 	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
 )
 
-const userRaftSnapshotVersion = 1
+const principalRaftSnapshotVersion = 1
 
-type userRaftSnapshot struct {
+type principalRaftSnapshot struct {
 	Version         int      `json:"version"`
-	UsersJSON       []byte   `json:"users_json"`
+	StoreJSON       []byte   `json:"store_json"`
 	SessionsJSON    []byte   `json:"sessions_json,omitempty"`
 	AppliedCommands []string `json:"applied_commands,omitempty"`
 }
 
 func (s RaftStateMachine) Snapshot() ([]byte, error) {
 	if s.Module == nil || s.Module.dataDir == "" {
-		return json.Marshal(userRaftSnapshot{Version: userRaftSnapshotVersion})
+		return json.Marshal(principalRaftSnapshot{Version: principalRaftSnapshotVersion})
 	}
-	users, err := os.ReadFile(filepath.Join(s.Module.dataDir, "users", StoreFilename))
+	store, err := os.ReadFile(filepath.Join(s.Module.dataDir, "identity", StoreFilename))
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	sessions, err := os.ReadFile(filepath.Join(s.Module.dataDir, "users", "sessions", "refresh_sessions.json"))
+	sessions, err := os.ReadFile(filepath.Join(s.Module.dataDir, "identity", "sessions", "refresh_sessions.json"))
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -37,42 +37,42 @@ func (s RaftStateMachine) Snapshot() ([]byte, error) {
 		applied = append(applied, id)
 	}
 	s.Module.mu.Unlock()
-	return json.Marshal(userRaftSnapshot{Version: userRaftSnapshotVersion, UsersJSON: users, SessionsJSON: sessions, AppliedCommands: applied})
+	return json.Marshal(principalRaftSnapshot{Version: principalRaftSnapshotVersion, StoreJSON: store, SessionsJSON: sessions, AppliedCommands: applied})
 }
 
 func (s RaftStateMachine) RestoreSnapshot(data []byte) error {
 	if s.Module == nil || len(data) == 0 {
 		return nil
 	}
-	var snap userRaftSnapshot
+	var snap principalRaftSnapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return err
 	}
-	if snap.Version != userRaftSnapshotVersion {
-		return fmt.Errorf("unsupported user raft snapshot version %d", snap.Version)
+	if snap.Version != principalRaftSnapshotVersion {
+		return fmt.Errorf("unsupported principal raft snapshot version %d", snap.Version)
 	}
-	userDir := filepath.Join(s.Module.dataDir, "users")
-	if err := os.MkdirAll(filepath.Join(userDir, "sessions"), 0o700); err != nil {
+	identityDir := filepath.Join(s.Module.dataDir, "identity")
+	if err := os.MkdirAll(filepath.Join(identityDir, "sessions"), 0o700); err != nil {
 		return err
 	}
-	if len(snap.UsersJSON) == 0 {
-		snap.UsersJSON = []byte(`{"users":[]}`)
+	if len(snap.StoreJSON) == 0 {
+		snap.StoreJSON = []byte(`{"principals":[],"role_bindings":[],"capability_grants":[]}`)
 	}
-	if err := os.WriteFile(filepath.Join(userDir, StoreFilename), snap.UsersJSON, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(identityDir, StoreFilename), snap.StoreJSON, 0o600); err != nil {
 		return err
 	}
 	if len(snap.SessionsJSON) == 0 {
 		snap.SessionsJSON = []byte(`{"refresh_sessions":[]}`)
 	}
-	if err := os.WriteFile(filepath.Join(userDir, "sessions", "refresh_sessions.json"), snap.SessionsJSON, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(identityDir, "sessions", "refresh_sessions.json"), snap.SessionsJSON, 0o600); err != nil {
 		return err
 	}
-	store, err := OpenExistingStore(userDir)
+	store, err := OpenExistingStore(identityDir)
 	if err != nil {
 		return err
 	}
 	sessions := storesession.NewManager()
-	if err := sessions.Init(context.Background(), filepath.Join(userDir, "sessions")); err != nil {
+	if err := sessions.Init(context.Background(), filepath.Join(identityDir, "sessions")); err != nil {
 		return err
 	}
 	s.Module.mu.Lock()

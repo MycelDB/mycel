@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/myceldb/mycel/internal/cli/app"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/query/gql"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
-	"github.com/myceldb/mycel/internal/query/gql/execution"
 	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
+	planmodel "github.com/myceldb/mycel/internal/query/gql/planning/model"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -25,76 +27,108 @@ func NewQueryCommand(a *app.App) *cobra.Command {
 func NewQueryGQLCommand(a *app.App) *cobra.Command {
 	var spaceIDText, domainID, domainKey string
 	cmd := &cobra.Command{Use: "gql QUERY", Short: "Execute a GQL query against a daemon graph domain", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		spaceID, err := a.ResolveSpaceID(spaceIDText)
-		if err != nil {
-			return err
-		}
-		plan, err := gql.Compile(args[0])
-		if err != nil {
-			return err
-		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
-		if err != nil {
-			return err
-		}
-		defer conn.Close()
-		domainClient := clientv1.NewDomainServiceClient(conn)
-		resolvedDomainID, err := resolveDaemonDomainID(domainClient, authCtx, spaceID.String(), domainID, domainKey)
-		if err != nil {
-			return err
-		}
-		sessionClient := clientv1.NewSessionServiceClient(conn)
-		txClient := clientv1.NewTransactionServiceClient(conn)
-		sessionRes, err := sessionClient.OpenSession(authCtx, &clientv1.OpenSessionRequest{SpaceId: spaceID.String(), DomainId: resolvedDomainID})
-		if err != nil {
-			return err
-		}
-		sessionID := sessionRes.GetSession().GetSessionId()
-		defer func() {
-			_, _ = sessionClient.CloseSession(authCtx, &clientv1.CloseSessionRequest{SessionId: sessionID})
-		}()
-		mode := clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE
-		if plan.AccessMode == analysis.ReadOnly {
-			mode = clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY
-		}
-		txRes, err := txClient.BeginTransaction(authCtx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: mode})
-		if err != nil {
-			return err
-		}
-		transactionID := txRes.GetTransaction().GetTransactionId()
-		committed := false
-		defer func() {
-			if !committed {
-				_, _ = txClient.RollbackTransaction(authCtx, &clientv1.RollbackTransactionRequest{TransactionId: transactionID})
-			}
-		}()
-		result, err := execution.Execute(authCtx, daemonGraphWriter{graphClient: clientv1.NewGraphServiceClient(conn), queryClient: clientv1.NewQueryServiceClient(conn), transactionID: transactionID}, plan)
-		if err != nil {
-			return err
-		}
-		if plan.AccessMode == analysis.ReadOnly {
-			if _, err := txClient.CloseTransaction(authCtx, &clientv1.CloseTransactionRequest{TransactionId: transactionID}); err != nil {
-				return err
-			}
-			committed = true
-			if a.Output == "json" {
-				return a.Print(gqlCLIResult{Result: result, TransactionID: transactionID}, fmt.Sprintf("query executed: rows=%d\n", len(result.Rows)))
-			}
-			printGQLRows(result)
-			fmt.Printf("query executed: rows=%d\n", len(result.Rows))
-			return nil
-		}
-		commitRes, err := txClient.CommitTransaction(authCtx, &clientv1.CommitTransactionRequest{TransactionId: transactionID})
-		if err != nil {
-			return err
-		}
-		committed = true
-		return a.Print(gqlCLIResult{Result: result, TransactionID: transactionID, CommittedRevision: commitRes.GetCommit().GetCommittedRevision()}, fmt.Sprintf("query executed: nodes_inserted=%d revision=%d\n", result.Counters.NodesInserted, commitRes.GetCommit().GetCommittedRevision()))
+		return runGQL(cmd.Context(), a, gqlRunOptions{QueryText: args[0], SpaceIDText: spaceIDText, DomainID: domainID, DomainKey: domainKey})
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID (defaults to current REPL space)")
 	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID")
 	cmd.Flags().StringVar(&domainKey, "domain", "", "domain key (defaults to the space default domain)")
 	return cmd
+}
+
+type gqlRunOptions struct {
+	QueryText     string
+	SpaceIDText   string
+	DomainID      string
+	DomainKey     string
+	RequireDomain bool
+	Out           io.Writer
+}
+
+func runGQL(ctx context.Context, a *app.App, opts gqlRunOptions) error {
+	out := opts.Out
+	if out == nil {
+		out = os.Stdout
+	}
+	spaceID, err := a.ResolveSpaceID(opts.SpaceIDText)
+	if err != nil {
+		return err
+	}
+	domainID := strings.TrimSpace(opts.DomainID)
+	domainKey := strings.TrimSpace(opts.DomainKey)
+	if domainID == "" && domainKey == "" && strings.TrimSpace(opts.SpaceIDText) == "" && a.CurrentSpaceID != nil && a.CurrentSpaceID.String() == spaceID.String() {
+		domainID = a.CurrentDomainID
+		domainKey = a.CurrentDomainKey
+	}
+	plan, err := gql.Compile(opts.QueryText)
+	if err != nil {
+		return err
+	}
+	conn, authCtx, _, err := loginDaemonPrincipal(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	domainClient := clientv1.NewDomainServiceClient(conn)
+	resolvedDomainID, err := resolveDaemonDomainID(domainClient, authCtx, spaceID.String(), domainID, domainKey)
+	if err != nil {
+		if opts.RequireDomain && domainID == "" && domainKey == "" {
+			return fmt.Errorf("no domain connected; use connect domain <domain-id-or-key>: %w", err)
+		}
+		return err
+	}
+	sessionClient := clientv1.NewSessionServiceClient(conn)
+	txClient := clientv1.NewTransactionServiceClient(conn)
+	sessionRes, err := sessionClient.OpenSession(authCtx, &clientv1.OpenSessionRequest{SpaceId: spaceID.String(), DomainId: resolvedDomainID})
+	if err != nil {
+		return err
+	}
+	sessionID := sessionRes.GetSession().GetSessionId()
+	defer func() {
+		_, _ = sessionClient.CloseSession(authCtx, &clientv1.CloseSessionRequest{SessionId: sessionID})
+	}()
+	mode := clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE
+	if plan.AccessMode == analysis.ReadOnly {
+		mode = clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY
+	}
+	txRes, err := txClient.BeginTransaction(authCtx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: mode})
+	if err != nil {
+		return err
+	}
+	transactionID := txRes.GetTransaction().GetTransactionId()
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = txClient.RollbackTransaction(authCtx, &clientv1.RollbackTransactionRequest{TransactionId: transactionID})
+		}
+	}()
+	gqlRes, err := clientv1.NewQueryServiceClient(conn).ExecuteGQL(authCtx, &clientv1.ExecuteGQLRequest{TransactionId: transactionID, Query: opts.QueryText})
+	if err != nil {
+		return err
+	}
+	result := execResultFromProto(gqlRes.GetResult(), gqlPlanColumns(plan))
+	if plan.AccessMode == analysis.ReadOnly {
+		if _, err := txClient.CloseTransaction(authCtx, &clientv1.CloseTransactionRequest{TransactionId: transactionID}); err != nil {
+			return err
+		}
+		committed = true
+		if a.Output == "json" {
+			return a.Print(gqlCLIResult{Result: result, TransactionID: transactionID}, fmt.Sprintf("query executed: rows=%d\n", len(result.Rows)))
+		}
+		printGQLRows(out, result)
+		fmt.Fprintf(out, "query executed: rows=%d\n", len(result.Rows))
+		return nil
+	}
+	commitRes, err := txClient.CommitTransaction(authCtx, &clientv1.CommitTransactionRequest{TransactionId: transactionID})
+	if err != nil {
+		return err
+	}
+	committed = true
+	message := fmt.Sprintf("query executed: nodes_inserted=%d edges_inserted=%d revision=%d\n", result.Counters.NodesInserted, result.Counters.EdgesInserted, commitRes.GetCommit().GetCommittedRevision())
+	if a.Output == "json" {
+		return a.Print(gqlCLIResult{Result: result, TransactionID: transactionID, CommittedRevision: commitRes.GetCommit().GetCommittedRevision()}, message)
+	}
+	_, err = fmt.Fprint(out, message)
+	return err
 }
 
 func NewQueryNodesCommand(a *app.App) *cobra.Command {
@@ -106,7 +140,7 @@ func NewQueryNodesCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -149,89 +183,81 @@ type gqlCLIResult struct {
 	CommittedRevision int64            `json:"committed_revision"`
 }
 
-type daemonGraphWriter struct {
-	graphClient   clientv1.GraphServiceClient
-	queryClient   clientv1.QueryServiceClient
-	transactionID string
-}
-
-func (w daemonGraphWriter) InsertNode(ctx context.Context, node execution.InsertNode) (execmodel.NodeRef, error) {
-	protoProperties, err := structpb.NewStruct(copyGQLProperties(node.Properties))
-	if err != nil {
-		return execmodel.NodeRef{}, err
+func execResultFromProto(result *clientv1.QueryResult, columns []string) execmodel.Result {
+	out := execmodel.Result{Columns: columns}
+	if result == nil {
+		return out
 	}
-	res, err := w.graphClient.CreateNode(ctx, &clientv1.CreateNodeRequest{TransactionId: w.transactionID, Node: &clientv1.NodeCreate{Labels: append([]string(nil), node.Labels...), Properties: protoProperties}})
-	if err != nil {
-		return execmodel.NodeRef{}, err
-	}
-	return execmodel.NodeRef{ID: res.GetNode().GetNodeId()}, nil
-}
-
-func (w daemonGraphWriter) CreateEdge(ctx context.Context, edge execution.CreateEdge) (execmodel.Edge, error) {
-	props, err := structpb.NewStruct(copyGQLProperties(edge.Properties))
-	if err != nil {
-		return execmodel.Edge{}, err
-	}
-	res, err := w.graphClient.CreateEdge(ctx, &clientv1.CreateEdgeRequest{TransactionId: w.transactionID, Edge: &clientv1.EdgeCreate{FromNodeId: edge.FromNodeID, ToNodeId: edge.ToNodeID, Labels: append([]string(nil), edge.Labels...), Properties: props}})
-	if err != nil {
-		return execmodel.Edge{}, err
-	}
-	created := res.GetEdge()
-	return execmodel.Edge{ID: created.GetEdgeId(), DomainID: created.GetDomainId(), FromID: created.GetFromNodeId(), ToID: created.GetToNodeId(), Labels: created.GetLabels(), Properties: created.GetProperties().AsMap()}, nil
-}
-
-func (w daemonGraphWriter) QueryPattern(ctx context.Context, query execution.QueryPattern) ([]execution.PatternRow, error) {
-	return nil, fmt.Errorf("CLI local GQL relationship execution is not supported yet; use daemon ExecuteGQL")
-}
-
-func (w daemonGraphWriter) QueryNodes(ctx context.Context, query execution.QueryNodes) ([]execmodel.Node, error) {
-	graphQuery, err := buildGQLNodeQuery(query)
-	if err != nil {
-		return nil, err
-	}
-	res, err := w.queryClient.ExecuteQuery(ctx, &clientv1.ExecuteQueryRequest{TransactionId: w.transactionID, Query: graphQuery, PageSize: 100})
-	if err != nil {
-		return nil, err
-	}
-	nodes := []execmodel.Node{}
-	for _, row := range res.GetRows() {
-		field := row.GetFields()["node"]
-		if field == nil || field.GetNode() == nil {
-			continue
+	counters := result.GetCounters()
+	out.Counters = execmodel.Counters{NodesInserted: int(counters.GetNodesInserted()), EdgesInserted: int(counters.GetEdgesInserted())}
+	for _, row := range result.GetRows() {
+		execRow := execmodel.Row{}
+		for name, value := range row.GetFields() {
+			execRow[name] = execValueFromProto(value)
 		}
-		node := field.GetNode()
-		labels := node.GetLabels()
-		if !containsAllLabels(labels, query.Labels) {
-			continue
-		}
-		nodes = append(nodes, execmodel.Node{ID: node.GetNodeId(), Labels: labels, Properties: node.GetProperties().AsMap()})
+		out.Rows = append(out.Rows, execRow)
 	}
-	return nodes, nil
+	return out
 }
 
-func buildGQLNodeQuery(query execution.QueryNodes) (*clientv1.GraphQuery, error) {
-	exprs := []*clientv1.Expr{}
-	for key, value := range query.Properties {
-		protoValue, err := structpb.NewValue(value)
-		if err != nil {
-			return nil, err
-		}
-		exprs = append(exprs, &clientv1.Expr{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "n", Name: key, Value: protoValue}}})
+func execValueFromProto(value *clientv1.QueryValue) execmodel.Value {
+	if value == nil {
+		return execmodel.Value{}
 	}
-	var where *clientv1.Expr
-	if len(exprs) == 1 {
-		where = exprs[0]
-	} else if len(exprs) > 1 {
-		where = &clientv1.Expr{Expr: &clientv1.Expr_And{And: &clientv1.AndExpr{Exprs: exprs}}}
+	if node := value.GetNode(); node != nil {
+		n := execmodel.Node{ID: node.GetNodeId(), DomainID: node.GetDomainId(), Labels: append([]string(nil), node.GetLabels()...), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload()), Meta: structMap(node.GetMeta())}
+		return execmodel.Value{Node: &n}
 	}
-	limit := int32(0)
-	if query.Limit > 0 {
-		limit = int32(query.Limit)
+	if edge := value.GetEdge(); edge != nil {
+		e := execmodel.Edge{ID: edge.GetEdgeId(), DomainID: edge.GetDomainId(), FromID: edge.GetFromNodeId(), ToID: edge.GetToNodeId(), Labels: append([]string(nil), edge.GetLabels()...), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload()), Meta: structMap(edge.GetMeta())}
+		return execmodel.Value{Edge: &e}
 	}
-	return &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: append([]string(nil), query.Labels...)}}, Where: where, Returns: []*clientv1.ReturnProjection{{Alias: "n", OutputName: "node", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}, Limit: limit}, nil
+	if scalar := value.GetScalar(); scalar != nil {
+		return execmodel.Value{Scalar: scalar.AsInterface()}
+	}
+	return execmodel.Value{}
 }
 
-func printGQLRows(result execmodel.Result) {
+func structMap(value *structpb.Struct) map[string]any {
+	if value == nil {
+		return nil
+	}
+	return value.AsMap()
+}
+
+func gqlPlanColumns(plan planmodel.Plan) []string {
+	var columns []string
+	for _, op := range plan.Operations {
+		switch op := op.(type) {
+		case planmodel.QueryNodesOperation:
+			columns = appendReturnColumns(columns, op.Returns)
+		case planmodel.QueryPatternOperation:
+			columns = appendReturnColumns(columns, op.Returns)
+		case planmodel.QueryPathOperation:
+			columns = appendReturnColumns(columns, op.Returns)
+		}
+	}
+	return columns
+}
+
+func appendReturnColumns(columns []string, returns []planmodel.ReturnItem) []string {
+	for _, ret := range returns {
+		columns = append(columns, gqlReturnColumn(ret))
+	}
+	return columns
+}
+
+func gqlReturnColumn(ret planmodel.ReturnItem) string {
+	if ret.Kind == planmodel.ReturnProperty {
+		if ret.Namespace != "" {
+			return ret.Variable + "." + ret.Namespace + "." + ret.Property
+		}
+		return ret.Variable + "." + ret.Property
+	}
+	return ret.Variable
+}
+
+func printGQLRows(out io.Writer, result execmodel.Result) {
 	for _, row := range result.Rows {
 		columns := result.Columns
 		if len(columns) == 0 {
@@ -248,7 +274,7 @@ func printGQLRows(result execmodel.Result) {
 			}
 			parts = append(parts, fmt.Sprintf("%s=%s", column, formatGQLValue(value)))
 		}
-		fmt.Println(strings.Join(parts, "\t"))
+		fmt.Fprintln(out, strings.Join(parts, "\t"))
 	}
 }
 

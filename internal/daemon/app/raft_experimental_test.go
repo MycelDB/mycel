@@ -256,8 +256,7 @@ func TestCompositeSystemStateMachineSkipsUnsupportedSystemRecordTypes(t *testing
 func TestCompositeStateMachineRecordOwnershipIsUnique(t *testing.T) {
 	systemSMs := []consensus.StateMachine{
 		consensus.NewSystemStateMachine(),
-		identityservice.UserRaftStateMachine{},
-		identityservice.AdminRaftStateMachine{},
+		identityservice.PrincipalRaftStateMachine{},
 		backupservice.RaftStateMachine{},
 		semanticservice.RaftStateMachine{},
 	}
@@ -271,10 +270,10 @@ func TestCompositeStateMachineRecordOwnershipIsUnique(t *testing.T) {
 	systemRecords := map[wal.RecordType]string{
 		consensus.SystemRecordBootstrapMetadata: "system.metadata",
 		consensus.SystemRecordRegisterNode:      "system.metadata",
-		"identity.admin.put.v1":                 "identity.admin",
-		"identity.admin.session.put.v1":         "identity.admin",
-		"identity.user.put.v1":                  "identity.user",
-		"identity.user.session.put.v1":          "identity.user",
+		"identity.principal.put.v1":             "identity.principal",
+		"identity.role_binding.put.v1":          "identity.principal",
+		"identity.capability_grant.put.v1":      "identity.principal",
+		"identity.principal.session.put.v1":     "identity.principal",
 		"semantic.global.mutation.v1":           "semantic",
 		"semantic.accounting.mutation.v1":       "semantic",
 		"daemon.backup.policy.update.v1":        "backup",
@@ -285,7 +284,7 @@ func TestCompositeStateMachineRecordOwnershipIsUnique(t *testing.T) {
 		"space.domain.create.v1":              "space",
 		"space.domain.update.v1":              "space",
 		"space.domain.delete.v1":              "space",
-		"space.acl.grant.v1":                  "space",
+		"space.access.grant.v1":               "space",
 		"space.delete.v1":                     "space",
 		"schema.put.v1":                       "schema",
 		"schema.delete.v1":                    "schema",

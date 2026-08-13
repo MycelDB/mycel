@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/filestore"
+	identity "github.com/myceldb/mycel/internal/identity/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 )
 
@@ -313,7 +314,7 @@ func matches(e domainsemantic.InferenceUsageEvent, f Filter) bool {
 	if f.To != nil && !e.CreatedAt.Before(*f.To) {
 		return false
 	}
-	if f.PrincipalID != uuid.Nil && e.ActorPrincipalID != f.PrincipalID && e.EffectivePrincipalID != f.PrincipalID && e.OnBehalfOfPrincipalID != f.PrincipalID {
+	if f.PrincipalID != "" && e.ActorPrincipalID != f.PrincipalID && e.EffectivePrincipalID != f.PrincipalID && e.OnBehalfOfPrincipalID != f.PrincipalID {
 		return false
 	}
 	if f.SpaceID != uuid.Nil && e.SpaceID != f.SpaceID {
@@ -394,7 +395,7 @@ func groupFor(event domainsemantic.InferenceUsageEvent, groupBy []string) map[st
 		case "month":
 			group["month"] = event.CreatedAt.Format("2006-01")
 		case "user", "principal":
-			group["user"] = firstNonNilUUID(event.OnBehalfOfPrincipalID, event.EffectivePrincipalID, event.ActorPrincipalID)
+			group["user"] = firstNonEmptyPrincipal(event.OnBehalfOfPrincipalID, event.EffectivePrincipalID, event.ActorPrincipalID)
 		case "space":
 			group["space"] = event.SpaceID.String()
 		case "domain":
@@ -416,9 +417,9 @@ func groupFor(event domainsemantic.InferenceUsageEvent, groupBy []string) map[st
 	return group
 }
 
-func firstNonNilUUID(values ...uuid.UUID) string {
+func firstNonEmptyPrincipal(values ...identity.PrincipalID) string {
 	for _, value := range values {
-		if value != uuid.Nil {
+		if value != "" {
 			return value.String()
 		}
 	}

@@ -22,19 +22,19 @@ var (
 
 type Manager interface {
 	OpenSession(ctx context.Context, input OpenSessionInput) (GraphSession, error)
-	GetSession(ctx context.Context, userID string, sessionID string) (GraphSession, error)
-	HeartbeatSession(ctx context.Context, userID string, sessionID string, extension time.Duration) (GraphSession, error)
-	CloseSession(ctx context.Context, userID string, sessionID string) (GraphSession, error)
+	GetSession(ctx context.Context, principalID string, sessionID string) (GraphSession, error)
+	HeartbeatSession(ctx context.Context, principalID string, sessionID string, extension time.Duration) (GraphSession, error)
+	CloseSession(ctx context.Context, principalID string, sessionID string) (GraphSession, error)
 	BeginTransaction(ctx context.Context, input BeginTransactionInput) (GraphTransaction, error)
-	GetTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error)
-	CommitTransaction(ctx context.Context, userID string, transactionID string, operationCount int32) (TransactionCommit, error)
-	CommitTransactionAtRevision(ctx context.Context, userID string, transactionID string, operationCount int32, committedRevision int64) (TransactionCommit, error)
-	RollbackTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error)
-	CloseTransaction(ctx context.Context, userID string, transactionID string) (GraphTransaction, error)
+	GetTransaction(ctx context.Context, principalID string, transactionID string) (GraphTransaction, error)
+	CommitTransaction(ctx context.Context, principalID string, transactionID string, operationCount int32) (TransactionCommit, error)
+	CommitTransactionAtRevision(ctx context.Context, principalID string, transactionID string, operationCount int32, committedRevision int64) (TransactionCommit, error)
+	RollbackTransaction(ctx context.Context, principalID string, transactionID string) (GraphTransaction, error)
+	CloseTransaction(ctx context.Context, principalID string, transactionID string) (GraphTransaction, error)
 }
 
 type OpenSessionInput struct {
-	UserID      string
+	PrincipalID string
 	SpaceID     string
 	DomainID    string
 	IdleTimeout time.Duration
@@ -42,7 +42,7 @@ type OpenSessionInput struct {
 }
 
 type BeginTransactionInput struct {
-	UserID       string
+	PrincipalID  string
 	SessionID    string
 	Mode         TransactionMode
 	BaseRevision *int64
@@ -76,22 +76,22 @@ const (
 )
 
 type GraphSession struct {
-	ID         string
-	UserID     string
-	SpaceID    string
-	DomainID   string
-	HomeNodeID consensus.NodeID
-	State      SessionState
-	Origin     graphchange.OriginMetadata
-	CreatedAt  time.Time
-	LastSeen   time.Time
-	ExpiresAt  time.Time
+	ID          string
+	PrincipalID string
+	SpaceID     string
+	DomainID    string
+	HomeNodeID  consensus.NodeID
+	State       SessionState
+	Origin      graphchange.OriginMetadata
+	CreatedAt   time.Time
+	LastSeen    time.Time
+	ExpiresAt   time.Time
 }
 
 type GraphTransaction struct {
 	ID           string
 	SessionID    string
-	UserID       string
+	PrincipalID  string
 	SpaceID      string
 	DomainID     string
 	HomeNodeID   consensus.NodeID
@@ -105,21 +105,21 @@ type GraphTransaction struct {
 }
 
 type SessionRouteRecord struct {
-	SessionID  string
-	UserID     string
-	SpaceID    string
-	DomainID   string
-	HomeNodeID consensus.NodeID
-	State      SessionState
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	ExpiresAt  time.Time
+	SessionID   string
+	PrincipalID string
+	SpaceID     string
+	DomainID    string
+	HomeNodeID  consensus.NodeID
+	State       SessionState
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	ExpiresAt   time.Time
 }
 
 type TransactionRouteRecord struct {
 	TransactionID string
 	SessionID     string
-	UserID        string
+	PrincipalID   string
 	SpaceID       string
 	DomainID      string
 	HomeNodeID    consensus.NodeID
@@ -153,7 +153,7 @@ type TransactionCommit struct {
 	ID                string
 	TransactionID     string
 	SessionID         string
-	UserID            string
+	PrincipalID       string
 	SpaceID           string
 	DomainID          string
 	BaseRevision      int64

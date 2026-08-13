@@ -37,7 +37,7 @@ func TestForwardClientRequestDispatchesToHandler(t *testing.T) {
 		SessionId:       "s.2.00000000-0000-0000-0000-000000000001",
 		RequesterNodeId: 1,
 		TargetNodeId:    2,
-		Principal:       &clusterpb.ForwardedPrincipal{Kind: "user", UserId: "u1", Username: "alice"},
+		Principal:       &clusterpb.ForwardedPrincipal{Kind: "human", PrincipalId: "u1", Username: "alice"},
 		PayloadType:     PayloadTypeProto,
 		Payload:         []byte("payload"),
 		RequestId:       "req-1",
@@ -48,7 +48,7 @@ func TestForwardClientRequestDispatchesToHandler(t *testing.T) {
 	if string(res.GetPayload()) != "ok:payload" || res.GetPayloadType() != PayloadTypeProto {
 		t.Fatalf("unexpected response: type=%q payload=%q", res.GetPayloadType(), string(res.GetPayload()))
 	}
-	if handler.req.ClusterID != "cluster_a" || handler.req.Operation != "session.get" || handler.req.SessionID == "" || handler.req.RequesterNode != 1 || handler.req.TargetNode != 2 || handler.req.Principal.UserID != "u1" || handler.req.RequestID != "req-1" {
+	if handler.req.ClusterID != "cluster_a" || handler.req.Operation != "session.get" || handler.req.SessionID == "" || handler.req.RequesterNode != 1 || handler.req.TargetNode != 2 || handler.req.Principal.PrincipalID != "u1" || handler.req.RequestID != "req-1" {
 		t.Fatalf("unexpected forwarded request: %#v", handler.req)
 	}
 	diag := svc.ForwardClientDiagnostics()
@@ -120,7 +120,7 @@ func TestClientForwardClientRequestAddsRouteMetadata(t *testing.T) {
 	defer server.Stop()
 
 	client := Client{DialOptions: []grpc.DialOption{grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) }), grpc.WithTransportCredentials(insecure.NewCredentials())}}
-	res, err := client.ForwardClientRequest(context.Background(), "bufnet", ForwardClientRequestInput{ClusterID: "cluster_a", Operation: "transaction.get", TransactionID: "tx.2.00000000-0000-0000-0000-000000000002", RequesterNode: consensus.NodeID(1), TargetNode: consensus.NodeID(2), Principal: ForwardedPrincipal{Kind: "user", UserID: "u1"}, PayloadType: PayloadTypeProto, Payload: []byte("tx")})
+	res, err := client.ForwardClientRequest(context.Background(), "bufnet", ForwardClientRequestInput{ClusterID: "cluster_a", Operation: "transaction.get", TransactionID: "tx.2.00000000-0000-0000-0000-000000000002", RequesterNode: consensus.NodeID(1), TargetNode: consensus.NodeID(2), Principal: ForwardedPrincipal{Kind: "human", PrincipalID: "u1"}, PayloadType: PayloadTypeProto, Payload: []byte("tx")})
 	if err != nil {
 		t.Fatalf("client ForwardClientRequest() error = %v", err)
 	}

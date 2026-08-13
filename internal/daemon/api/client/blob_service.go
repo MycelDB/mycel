@@ -47,7 +47,7 @@ func (s *BlobService) UploadBlob(stream clientv1.BlobService_UploadBlobServer) e
 				return status.Error(codes.InvalidArgument, "upload metadata must be sent once")
 			}
 			meta = m
-			if _, err := s.spaces.GetVisibleSpace(ctx, principal.UserID, meta.GetSpaceId()); err != nil {
+			if _, err := s.spaces.GetVisibleSpace(ctx, principal.PrincipalID, meta.GetSpaceId()); err != nil {
 				return mapBlobSpaceError(err)
 			}
 			continue
@@ -78,7 +78,7 @@ func (s *BlobService) DownloadBlob(req *clientv1.DownloadBlobRequest, stream cli
 	if err != nil {
 		return err
 	}
-	if _, err := s.spaces.GetVisibleSpace(ctx, principal.UserID, req.GetSpaceId()); err != nil {
+	if _, err := s.spaces.GetVisibleSpace(ctx, principal.PrincipalID, req.GetSpaceId()); err != nil {
 		return mapBlobSpaceError(err)
 	}
 	meta, reader, err := s.blobs.OpenBlob(ctx, req.GetSpaceId(), req.GetBlobId())
@@ -112,7 +112,7 @@ func (s *BlobService) GetBlob(ctx context.Context, req *clientv1.GetBlobRequest)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.spaces.GetVisibleSpace(ctx, principal.UserID, req.GetSpaceId()); err != nil {
+	if _, err := s.spaces.GetVisibleSpace(ctx, principal.PrincipalID, req.GetSpaceId()); err != nil {
 		return nil, mapBlobSpaceError(err)
 	}
 	blob, err := s.blobs.GetBlob(ctx, req.GetSpaceId(), req.GetBlobId())
@@ -127,7 +127,7 @@ func (s *BlobService) DeleteBlob(ctx context.Context, req *clientv1.DeleteBlobRe
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.spaces.GetVisibleSpace(ctx, principal.UserID, req.GetSpaceId()); err != nil {
+	if _, err := s.spaces.GetVisibleSpace(ctx, principal.PrincipalID, req.GetSpaceId()); err != nil {
 		return nil, mapBlobSpaceError(err)
 	}
 	id, err := s.blobs.DeleteBlob(ctx, req.GetSpaceId(), req.GetBlobId())

@@ -15,6 +15,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/identity/model"
 	semanticmodel "github.com/myceldb/mycel/internal/semantic/model"
 	semanticservice "github.com/myceldb/mycel/internal/semantic/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
@@ -58,7 +59,7 @@ func TestSyntheticLogseqDatastoreImportWithSemanticMaintenance(t *testing.T) {
 
 	created, err := cluster.nodes[1].space.CreateSpaceWithResult(ctx, spaceservice.CreateSpaceInput{
 		Name:              "synthetic-logseq-import",
-		OwnerUserID:       uuid.New(),
+		OwnerPrincipalID:  identity.PrincipalID(uuid.NewString()),
 		DefaultDomainKey:  "logseq",
 		DefaultDomainName: "Logseq",
 		CommandID:         "synthetic-logseq-space",
@@ -418,7 +419,7 @@ func syntheticLogseqReadTx(spaceID, domainID string, revision int64) sessionserv
 
 func syntheticLogseqLocalRevision(ctx context.Context, graph *graphservice.Module, spaceID string) (int64, error) {
 	tx := phaseDGraphTx(spaceID, uuid.Nil.String(), 0)
-	req := map[string]any{"op": "current_revision", "space_id": spaceID, "tx": map[string]any{"ID": tx.ID, "SessionID": tx.SessionID, "UserID": tx.UserID, "SpaceID": tx.SpaceID, "DomainID": tx.DomainID, "Mode": string(tx.Mode), "State": string(tx.State), "BaseRevision": tx.BaseRevision}}
+	req := map[string]any{"op": "current_revision", "space_id": spaceID, "tx": map[string]any{"ID": tx.ID, "SessionID": tx.SessionID, "PrincipalID": tx.PrincipalID, "SpaceID": tx.SpaceID, "DomainID": tx.DomainID, "Mode": string(tx.Mode), "State": string(tx.State), "BaseRevision": tx.BaseRevision}}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return 0, err

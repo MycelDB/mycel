@@ -74,7 +74,7 @@ func (s *AdminBackupService) TriggerBackup(ctx context.Context, req *adminv1.Tri
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.manager.Trigger(ctx, backupcore.TriggerInput{Source: principal.OperatorID, Reason: firstNonEmptyAdmin(req.GetReason(), "manual backup")})
+	result, err := s.manager.Trigger(ctx, backupcore.TriggerInput{Source: principal.PrincipalID, Reason: firstNonEmptyAdmin(req.GetReason(), "manual backup")})
 	if err != nil {
 		return nil, mapBackupError(err, "trigger backup")
 	}
@@ -144,7 +144,7 @@ func (s *AdminBackupService) TriggerClusterBackup(ctx context.Context, req *admi
 	if !ok {
 		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
 	}
-	st, err := clusterManager.TriggerClusterBackup(ctx, daemonbackup.TriggerClusterBackupInput{Reason: firstNonEmptyAdmin(req.GetReason(), "cluster system backup by "+principal.OperatorID), OutputDir: req.GetOutputDir(), ArchiveFormat: archiveFormatFromProto(req.GetArchiveFormat()), ClusterID: clusterID, Nodes: nodes})
+	st, err := clusterManager.TriggerClusterBackup(ctx, daemonbackup.TriggerClusterBackupInput{Reason: firstNonEmptyAdmin(req.GetReason(), "cluster system backup by "+principal.PrincipalID), OutputDir: req.GetOutputDir(), ArchiveFormat: archiveFormatFromProto(req.GetArchiveFormat()), ClusterID: clusterID, Nodes: nodes})
 	if err != nil {
 		return nil, mapBackupError(err, "trigger cluster backup")
 	}
@@ -217,7 +217,7 @@ func (s *AdminBackupService) requireBackupManage(ctx context.Context) (daemonaut
 	if s.manager == nil {
 		return daemonauth.Principal{}, status.Error(codes.FailedPrecondition, "backup service is not configured")
 	}
-	ok, err := s.authorizer.HasCapability(ctx, principal.OperatorID, commonv1.Capability_CAPABILITY_SYSTEM_BACKUP_SPACE.String())
+	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SYSTEM_BACKUP_SPACE.String())
 	if err != nil {
 		return daemonauth.Principal{}, status.Errorf(codes.Internal, "authorize operator: %v", err)
 	}

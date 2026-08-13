@@ -9,8 +9,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/cli/app"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func NewReplCommand(a *app.App) *cobra.Command {
@@ -24,15 +29,21 @@ func NewReplCommand(a *app.App) *cobra.Command {
 }
 
 func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error {
-	fmt.Fprintln(out, "mycel REPL. Use login <username> <password>, space set <space_id>, space unset, help, or exit.")
+	fmt.Fprintln(out, "mycel REPL. Use login <username> <password>, connect space <space>, connect domain <domain>, gql <query>, help, or exit.")
 	scanner := bufio.NewScanner(in)
 	for {
-		fmt.Fprint(out, "mycel> ")
+		fmt.Fprint(out, a.Prompt())
 		if !scanner.Scan() {
 			break
 		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "gql ") {
+			if err := runREPLGQL(ctx, a, strings.TrimSpace(strings.TrimPrefix(line, "gql ")), out); err != nil {
+				fmt.Fprintln(out, "error:", err)
+			}
 			continue
 		}
 		args, err := splitArgs(line)
@@ -53,7 +64,7 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 			}
 			a.UserRef = args[1]
 			a.Password = args[2]
-			conn, _, login, err := loginDaemonUser(ctx, a)
+			conn, _, login, err := loginDaemonPrincipal(ctx, a)
 			if err != nil {
 				fmt.Fprintln(out, "error:", err)
 				continue
@@ -63,8 +74,19 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 		case "logout":
 			a.UserRef = ""
 			a.Password = ""
-			a.CurrentSpaceID = nil
+			a.ClearCurrentConnection()
 			fmt.Fprintln(out, "logged out")
+		case "connect":
+			if err := runREPLConnect(ctx, a, args[1:], out); err != nil {
+				fmt.Fprintln(out, "error:", err)
+			}
+		case "disconnect":
+			a.ClearCurrentConnection()
+			fmt.Fprintln(out, "disconnected")
+		case "\\c":
+			if err := runREPLConnectAlias(ctx, a, args[1:], out); err != nil {
+				fmt.Fprintln(out, "error:", err)
+			}
 		case "set_space":
 			fmt.Fprintln(out, "usage: space set SPACE_ID")
 			continue
@@ -76,6 +98,13 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 			root.SetOut(out)
 			root.SetErr(out)
 			_ = root.Help()
+			fmt.Fprintln(out, "\nREPL shortcuts:")
+			fmt.Fprintln(out, "  connect space <space-id-or-name>")
+			fmt.Fprintln(out, "  connect domain <domain-id-or-key-or-name>")
+			fmt.Fprintln(out, "  connect <space-id-or-name>[/<domain-id-or-key-or-name>]")
+			fmt.Fprintln(out, "  \\c <space-id-or-name>[/<domain-id-or-key-or-name>]")
+			fmt.Fprintln(out, "  disconnect")
+			fmt.Fprintln(out, "  gql <GQL query text>")
 		default:
 			root := NewRootCommand(a, true)
 			root.SetArgs(args)
@@ -89,6 +118,222 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 		}
 	}
 	return scanner.Err()
+}
+
+func runREPLConnectAlias(ctx context.Context, a *app.App, args []string, out io.Writer) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: \\c SPACE[/DOMAIN]")
+	}
+	return connectSpaceDomainTarget(ctx, a, args[0], out)
+}
+
+func runREPLConnect(ctx context.Context, a *app.App, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: connect [space] SPACE[/DOMAIN] or connect domain DOMAIN")
+	}
+	switch args[0] {
+	case "space":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: connect space SPACE")
+		}
+		return connectSpaceDomainTarget(ctx, a, args[1], out)
+	case "domain":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: connect domain DOMAIN")
+		}
+		return connectCurrentDomain(ctx, a, args[1], out)
+	default:
+		if len(args) != 1 {
+			return fmt.Errorf("usage: connect SPACE[/DOMAIN]")
+		}
+		return connectSpaceDomainTarget(ctx, a, args[0], out)
+	}
+}
+
+func connectSpaceDomainTarget(ctx context.Context, a *app.App, target string, out io.Writer) error {
+	spaceRef, domainRef, _ := strings.Cut(strings.TrimSpace(target), "/")
+	if spaceRef == "" {
+		return fmt.Errorf("space reference is required")
+	}
+	conn, authCtx, _, err := loginDaemonPrincipal(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	space, err := resolveVisibleSpace(ctx, clientv1.NewSpaceServiceClient(conn), authCtx, spaceRef)
+	if err != nil {
+		return err
+	}
+	spaceID, err := app.ParseUUID[domainspace.SpaceID](space.GetSpaceId())
+	if err != nil {
+		return err
+	}
+	a.SetCurrentSpace(spaceID, space.GetName())
+	a.ClearCurrentDomain()
+	domainClient := clientv1.NewDomainServiceClient(conn)
+	var domain *clientv1.Domain
+	if strings.TrimSpace(domainRef) != "" {
+		domain, err = resolveVisibleDomain(ctx, domainClient, authCtx, space.GetSpaceId(), domainRef)
+	} else {
+		domain, err = resolveDefaultDaemonDomain(domainClient, authCtx, space.GetSpaceId())
+	}
+	if err == nil && domain != nil {
+		a.SetCurrentDomain(domain.GetDomainId(), domain.GetKey(), domain.GetName())
+		fmt.Fprintf(out, "connected to space %s (%s) domain %s (%s)\n", space.GetName(), space.GetSpaceId(), firstNonEmptyText(domain.GetKey(), domain.GetName()), domain.GetDomainId())
+		return nil
+	}
+	if strings.TrimSpace(domainRef) != "" {
+		a.ClearCurrentConnection()
+		return err
+	}
+	fmt.Fprintf(out, "connected to space %s (%s); no default domain selected: %v\n", space.GetName(), space.GetSpaceId(), err)
+	return nil
+}
+
+func connectCurrentDomain(ctx context.Context, a *app.App, domainRef string, out io.Writer) error {
+	if a.CurrentSpaceID == nil {
+		return fmt.Errorf("no space connected; use connect space <space-id-or-name>")
+	}
+	conn, authCtx, _, err := loginDaemonPrincipal(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	domain, err := resolveVisibleDomain(ctx, clientv1.NewDomainServiceClient(conn), authCtx, a.CurrentSpaceID.String(), domainRef)
+	if err != nil {
+		return err
+	}
+	a.SetCurrentDomain(domain.GetDomainId(), domain.GetKey(), domain.GetName())
+	fmt.Fprintf(out, "connected to domain %s (%s)\n", firstNonEmptyText(domain.GetKey(), domain.GetName()), domain.GetDomainId())
+	return nil
+}
+
+func runREPLGQL(ctx context.Context, a *app.App, queryText string, out io.Writer) error {
+	if strings.TrimSpace(queryText) == "" {
+		return fmt.Errorf("GQL query text is required")
+	}
+	if a.CurrentSpaceID == nil {
+		return fmt.Errorf("no space connected; use connect space <space-id-or-name>")
+	}
+	return runGQL(ctx, a, gqlRunOptions{QueryText: queryText, SpaceIDText: a.CurrentSpaceID.String(), DomainID: a.CurrentDomainID, DomainKey: a.CurrentDomainKey, RequireDomain: true, Out: out})
+}
+
+func resolveVisibleSpace(ctx context.Context, client clientv1.SpaceServiceClient, authCtx context.Context, ref string) (*clientv1.Space, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, fmt.Errorf("space reference is required")
+	}
+	if _, err := uuid.Parse(ref); err == nil {
+		res, err := client.GetSpace(authCtx, &clientv1.GetSpaceRequest{SpaceId: ref})
+		if err != nil {
+			return nil, err
+		}
+		return res.GetSpace(), nil
+	}
+	res, err := client.ListSpaces(authCtx, &clientv1.ListSpacesRequest{PageSize: 1000})
+	if err != nil {
+		return nil, err
+	}
+	var exact []*clientv1.Space
+	var folded []*clientv1.Space
+	for _, space := range res.GetSpaces() {
+		if space.GetName() == ref {
+			exact = append(exact, space)
+		}
+		if strings.EqualFold(space.GetName(), ref) {
+			folded = append(folded, space)
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], nil
+	}
+	if len(exact) > 1 {
+		return nil, fmt.Errorf("space name %q is ambiguous", ref)
+	}
+	if len(folded) == 1 {
+		return folded[0], nil
+	}
+	if len(folded) > 1 {
+		return nil, fmt.Errorf("space name %q is ambiguous", ref)
+	}
+	return nil, fmt.Errorf("space %q not found", ref)
+}
+
+func resolveVisibleDomain(ctx context.Context, client clientv1.DomainServiceClient, authCtx context.Context, spaceID, ref string) (*clientv1.Domain, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, fmt.Errorf("domain reference is required")
+	}
+	if _, err := uuid.Parse(ref); err == nil {
+		res, err := client.GetDomain(authCtx, &clientv1.GetDomainRequest{SpaceId: spaceID, DomainId: ref})
+		if err == nil {
+			return res.GetDomain(), nil
+		}
+		if status.Code(err) != codes.NotFound {
+			return nil, err
+		}
+	}
+	res, err := client.GetDomain(authCtx, &clientv1.GetDomainRequest{SpaceId: spaceID, Key: ref})
+	if err == nil {
+		return res.GetDomain(), nil
+	}
+	if status.Code(err) != codes.NotFound {
+		return nil, err
+	}
+	listed, err := client.ListDomains(authCtx, &clientv1.ListDomainsRequest{SpaceId: spaceID, PageSize: 1000})
+	if err != nil {
+		return nil, err
+	}
+	var exact []*clientv1.Domain
+	var folded []*clientv1.Domain
+	for _, domain := range listed.GetDomains() {
+		if domain.GetName() == ref {
+			exact = append(exact, domain)
+		}
+		if strings.EqualFold(domain.GetName(), ref) {
+			folded = append(folded, domain)
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], nil
+	}
+	if len(exact) > 1 {
+		return nil, fmt.Errorf("domain name %q is ambiguous", ref)
+	}
+	if len(folded) == 1 {
+		return folded[0], nil
+	}
+	if len(folded) > 1 {
+		return nil, fmt.Errorf("domain name %q is ambiguous", ref)
+	}
+	return nil, fmt.Errorf("domain %q not found", ref)
+}
+
+func resolveDefaultDaemonDomain(client clientv1.DomainServiceClient, authCtx context.Context, spaceID string) (*clientv1.Domain, error) {
+	res, err := client.ListDomains(authCtx, &clientv1.ListDomainsRequest{SpaceId: spaceID, PageSize: 1000})
+	if err != nil {
+		return nil, err
+	}
+	domains := res.GetDomains()
+	var defaults []*clientv1.Domain
+	for _, domain := range domains {
+		if domain.GetDefault() {
+			defaults = append(defaults, domain)
+		}
+	}
+	if len(defaults) == 1 {
+		return defaults[0], nil
+	}
+	if len(defaults) > 1 {
+		return nil, fmt.Errorf("space %s has multiple default domains", spaceID)
+	}
+	if len(domains) == 1 {
+		return domains[0], nil
+	}
+	if len(domains) == 0 {
+		return nil, fmt.Errorf("space %s has no domains", spaceID)
+	}
+	return nil, fmt.Errorf("space %s has no default domain; use connect domain <domain-id-or-key>", spaceID)
 }
 
 func splitArgs(s string) ([]string, error) {

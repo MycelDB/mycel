@@ -24,7 +24,7 @@ type Service struct {
 	Accounting       storeaccounting.Manager
 	SecretKeyB64     string
 	Connectors       map[domainsemantic.ConnectorType]Connector
-	ActorPrincipalID identity.UserID
+	ActorPrincipalID identity.PrincipalID
 }
 
 type EmbedInput struct {
@@ -37,9 +37,9 @@ type EmbedInput struct {
 	DomainID              graph.DomainID
 	SemanticIndexID       domainsemantic.SemanticIndexID
 	TargetNodeID          graph.NodeID
-	ActorPrincipalID      identity.UserID
-	EffectivePrincipalID  identity.UserID
-	OnBehalfOfPrincipalID identity.UserID
+	ActorPrincipalID      identity.PrincipalID
+	EffectivePrincipalID  identity.PrincipalID
+	OnBehalfOfPrincipalID identity.PrincipalID
 	Input                 string
 	Reason                string
 }
@@ -153,7 +153,7 @@ func (s Service) connector(typ domainsemantic.ConnectorType) Connector {
 
 func (s Service) accountingBase(in EmbedInput, endpoint domainsemantic.ModelEndpoint, model domainsemantic.InferenceModel, cap domainsemantic.ModelEndpointCapability, credential domainsemantic.InferenceCredential) domainsemantic.InferenceUsageEvent {
 	actor := in.ActorPrincipalID
-	if actor == uuid.Nil {
+	if actor == "" {
 		actor = s.ActorPrincipalID
 	}
 	return domainsemantic.InferenceUsageEvent{CreatedAt: time.Now().UTC(), Operation: string(domainsemantic.OperationEmbeddings), Reason: in.Reason, ActorPrincipalID: actor, EffectivePrincipalID: in.EffectivePrincipalID, OnBehalfOfPrincipalID: in.OnBehalfOfPrincipalID, SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticIndexID: in.SemanticIndexID, TargetNodeID: in.TargetNodeID, ModelEndpointID: endpoint.ID, ModelEndpointKey: endpoint.Key, ModelID: model.ID, ModelKey: model.Key, ModelEndpointCapabilityID: cap.ID, CredentialID: credential.ID, CredentialGrantID: in.CredentialGrantID, PolicyDecisionID: in.PolicyDecisionID}

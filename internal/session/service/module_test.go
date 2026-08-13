@@ -46,7 +46,7 @@ func TestModuleSessionRoutesEncodeHomeNode(t *testing.T) {
 	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default(), routeIdentity: runtime.LocalRouteIdentity{RaftMode: true, RaftNodeID: 2}}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	opened, err := m.OpenSession(ctx, OpenSessionInput{UserID: "u1", SpaceID: uuid.NewString(), DomainID: uuid.NewString(), IdleTimeout: time.Minute})
+	opened, err := m.OpenSession(ctx, OpenSessionInput{PrincipalID: "u1", SpaceID: uuid.NewString(), DomainID: uuid.NewString(), IdleTimeout: time.Minute})
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
 	}
@@ -62,7 +62,7 @@ func TestModuleSessionRoutesEncodeHomeNode(t *testing.T) {
 		t.Fatalf("SessionRoute()=(%#v,%v), want active home 2", route, ok)
 	}
 
-	tx, err := m.BeginTransaction(ctx, BeginTransactionInput{UserID: "u1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	tx, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "u1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
 	if err != nil {
 		t.Fatalf("BeginTransaction() error = %v", err)
 	}
@@ -89,19 +89,19 @@ func TestModuleOriginMetadataFlowsFromSessionToTransactionCommit(t *testing.T) {
 	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default()}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	opened, err := m.OpenSession(ctx, OpenSessionInput{UserID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString(), Origin: graphchange.OriginMetadata{ClientID: "knotpkm", ClientInstanceID: "tab-1", OperationID: "session-op", UserID: "spoofed"}})
+	opened, err := m.OpenSession(ctx, OpenSessionInput{PrincipalID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString(), Origin: graphchange.OriginMetadata{ClientID: "knotpkm", ClientInstanceID: "tab-1", OperationID: "session-op", PrincipalID: "spoofed"}})
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
 	}
-	if opened.Origin.ClientID != "knotpkm" || opened.Origin.ClientInstanceID != "tab-1" || opened.Origin.UserID != "user-1" {
+	if opened.Origin.ClientID != "knotpkm" || opened.Origin.ClientInstanceID != "tab-1" || opened.Origin.PrincipalID != "user-1" {
 		t.Fatalf("session origin = %#v", opened.Origin)
 	}
 	operationID := uuid.NewString()
-	tx, err := m.BeginTransaction(ctx, BeginTransactionInput{UserID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: operationID, Label: "editor-save", SessionID: "spoofed", TransactionID: "spoofed"}})
+	tx, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: operationID, Label: "editor-save", SessionID: "spoofed", TransactionID: "spoofed"}})
 	if err != nil {
 		t.Fatalf("BeginTransaction() error = %v", err)
 	}
-	if tx.Origin.ClientID != "knotpkm" || tx.Origin.ClientInstanceID != "tab-1" || tx.Origin.OperationID != operationID || tx.Origin.Label != "editor-save" || tx.Origin.UserID != "user-1" || tx.Origin.SessionID != opened.ID || tx.Origin.TransactionID != tx.ID {
+	if tx.Origin.ClientID != "knotpkm" || tx.Origin.ClientInstanceID != "tab-1" || tx.Origin.OperationID != operationID || tx.Origin.Label != "editor-save" || tx.Origin.PrincipalID != "user-1" || tx.Origin.SessionID != opened.ID || tx.Origin.TransactionID != tx.ID {
 		t.Fatalf("transaction origin = %#v", tx.Origin)
 	}
 	commit, err := m.CommitTransaction(ctx, "user-1", tx.ID, 1)
@@ -119,18 +119,18 @@ func TestModuleGeneratesAndValidatesOperationID(t *testing.T) {
 	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default()}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	opened, err := m.OpenSession(ctx, OpenSessionInput{UserID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString()})
+	opened, err := m.OpenSession(ctx, OpenSessionInput{PrincipalID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString()})
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
 	}
-	generated, err := m.BeginTransaction(ctx, BeginTransactionInput{UserID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	generated, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
 	if err != nil {
 		t.Fatalf("BeginTransaction() error = %v", err)
 	}
 	if _, err := uuid.Parse(generated.Origin.OperationID); err != nil {
 		t.Fatalf("generated operation id %q is not a UUID: %v", generated.Origin.OperationID, err)
 	}
-	if _, err := m.BeginTransaction(ctx, BeginTransactionInput{UserID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: "not-a-uuid"}}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: "not-a-uuid"}}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("BeginTransaction(invalid operation) error = %v, want ErrInvalidInput", err)
 	}
 }
@@ -166,7 +166,7 @@ func TestModuleQuiesceRejectsOpenSession(t *testing.T) {
 		t.Fatalf("Quiesce() error = %v", err)
 	}
 	defer lease.Release(ctx)
-	_, err = m.OpenSession(ctx, OpenSessionInput{UserID: uuid.NewString(), SpaceID: uuid.NewString(), DomainID: uuid.NewString(), IdleTimeout: time.Minute})
+	_, err = m.OpenSession(ctx, OpenSessionInput{PrincipalID: uuid.NewString(), SpaceID: uuid.NewString(), DomainID: uuid.NewString(), IdleTimeout: time.Minute})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("OpenSession() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
 	}

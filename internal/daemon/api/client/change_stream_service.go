@@ -51,7 +51,7 @@ func (s *GraphChangeService) WatchGraphChanges(req *clientv1.WatchGraphChangesRe
 	if s.notifications == nil {
 		return status.Error(codes.Unavailable, "graph change notifications are unavailable")
 	}
-	if _, err := s.spaces.GetVisibleDomain(ctx, principal.UserID, spaceID, domainID, ""); err != nil {
+	if _, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, spaceID, domainID, ""); err != nil {
 		return mapDomainError(err, "watch graph changes")
 	}
 	if s.leaderChecker != nil {

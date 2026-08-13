@@ -31,7 +31,7 @@ func NewExportDomainCommand(a *app.App) *cobra.Command {
 	var transactionID, filePath string
 	var includeBlobs bool
 	cmd := &cobra.Command{Use: "domain", Short: "Export a domain snapshot from a readable transaction", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ func NewImportDomainCommand(a *app.App) *cobra.Command {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			return fmt.Errorf("invalid domain import JSON: %w", err)
 		}
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}

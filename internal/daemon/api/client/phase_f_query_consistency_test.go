@@ -20,6 +20,7 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/identity/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -36,7 +37,7 @@ func TestGraphWriteTransactionThroughNonLeaderIngressRoutesSessionToPartitionLea
 
 	leader, userID, spaceID, domainID := cluster.createSpaceOnPartitionLeader(t)
 	ingress := cluster.nodeOtherThan(leader.id)
-	ctx := auth.ContextWithPrincipal(cluster.ctx, auth.Principal{Kind: auth.PrincipalKindUser, UserID: userID, Username: "raft-write-routing-user"})
+	ctx := auth.ContextWithPrincipal(cluster.ctx, auth.Principal{Kind: auth.PrincipalKindHuman, PrincipalID: userID, Username: "raft-write-routing-user"})
 
 	opened, err := ingress.sessionsAPI.OpenSession(ctx, &clientv1.OpenSessionRequest{SpaceId: spaceID, DomainId: domainID})
 	if err != nil {
@@ -139,7 +140,7 @@ func TestPhaseFQueryThroughNonHomeIngressRoutesToLeaderStrongRead(t *testing.T) 
 
 	home, userID, spaceID, domainID := cluster.createSpaceOnPartitionLeader(t)
 	ingress := cluster.nodeOtherThan(home.id)
-	ctx := auth.ContextWithPrincipal(cluster.ctx, auth.Principal{Kind: auth.PrincipalKindUser, UserID: userID, Username: "phase-f4-user"})
+	ctx := auth.ContextWithPrincipal(cluster.ctx, auth.Principal{Kind: auth.PrincipalKindHuman, PrincipalID: userID, Username: "phase-f4-user"})
 
 	opened, err := home.sessionsAPI.OpenSession(ctx, &clientv1.OpenSessionRequest{SpaceId: spaceID, DomainId: domainID})
 	if err != nil {
@@ -372,7 +373,7 @@ func (c *phaseFQueryCluster) createSpaceOnPartitionLeader(t *testing.T) (*phaseF
 	for attempt := 0; attempt < 60; attempt++ {
 		candidate := c.nodes[consensus.NodeID(attempt%len(c.nodes)+1)]
 		owner := uuid.New()
-		space, domain, err := candidate.spaces.CreateSpace(c.ctx, daemonspace.CreateSpaceInput{Name: fmt.Sprintf("phase-f4-%d", attempt), OwnerUserID: owner})
+		space, domain, err := candidate.spaces.CreateSpace(c.ctx, daemonspace.CreateSpaceInput{Name: fmt.Sprintf("phase-f4-%d", attempt), OwnerPrincipalID: identity.PrincipalID(owner.String())})
 		if err != nil {
 			t.Fatalf("CreateSpace() error = %v", err)
 		}

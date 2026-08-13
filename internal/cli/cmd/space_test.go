@@ -68,7 +68,7 @@ func TestSpaceAddRequiresOwner(t *testing.T) {
 	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
 	out, err := runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "space", "add", "No Owner")
-	if err == nil || !strings.Contains(err.Error(), "--owner-user-id or --owner-username is required") {
+	if err == nil || !strings.Contains(err.Error(), "--owner-principal-id or --owner-username is required") {
 		t.Fatalf("expected owner requirement error, got err=%v out=%s", err, out)
 	}
 }

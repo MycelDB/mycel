@@ -212,7 +212,7 @@ func TestModuleFineGrainedOCC(t *testing.T) {
 
 func graphTx(spaceID string, domainID string, baseRevision int64) daemonsession.GraphTransaction {
 	now := time.Now().UTC()
-	return daemonsession.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), UserID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: daemonsession.TransactionModeReadWrite, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
+	return daemonsession.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: daemonsession.TransactionModeReadWrite, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
 }
 
 func sameStringSet(got []string, want []string) bool {

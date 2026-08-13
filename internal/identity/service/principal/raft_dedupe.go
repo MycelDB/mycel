@@ -1,4 +1,4 @@
-package user
+package principal
 
 import (
 	"context"
@@ -16,7 +16,7 @@ func (m *Module) loadRaftAppliedCommands() {
 		return
 	}
 	var ids []string
-	if err := json.Unmarshal(data, &ids); err != nil {
+	if json.Unmarshal(data, &ids) != nil {
 		return
 	}
 	if m.raftAppliedCommands == nil {
@@ -28,6 +28,7 @@ func (m *Module) loadRaftAppliedCommands() {
 		}
 	}
 }
+
 func (m *Module) raftCommandApplied(commandID string) bool {
 	if commandID == "" {
 		return false
@@ -37,6 +38,7 @@ func (m *Module) raftCommandApplied(commandID string) bool {
 	_, ok := m.raftAppliedCommands[commandID]
 	return ok
 }
+
 func (m *Module) rememberRaftAppliedCommand(ctx context.Context, commandID string) error {
 	if commandID == "" {
 		return nil
@@ -73,6 +75,7 @@ func (m *Module) rememberRaftAppliedCommand(ctx context.Context, commandID strin
 	}
 	return os.Rename(tmp, path)
 }
+
 func (m *Module) raftAppliedCommandsPath() string {
-	return filepath.Join(m.dataDir, "users", "raft-applied-commands.json")
+	return filepath.Join(m.dataDir, "identity", "raft-applied-commands.json")
 }

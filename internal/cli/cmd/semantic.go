@@ -46,7 +46,7 @@ func newSemanticIndexListCommand(a *app.App) *cobra.Command {
 	var spaceIDText, domainRef, pageToken string
 	var pageSize int32
 	cmd := &cobra.Command{Use: "list", Short: "List semantic indexes via daemon gRPC", RunE: func(cmd *cobra.Command, args []string) error {
-		conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
@@ -83,7 +83,7 @@ func newSemanticIndexListCommand(a *app.App) *cobra.Command {
 }
 
 func runDaemonSemanticSearch(cmd *cobra.Command, a *app.App, spaceIDText string, domainRef string, text string, indexRefs []string, limit int, minScore float64) error {
-	conn, authCtx, _, err := loginDaemonUser(cmd.Context(), a)
+	conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 	if err != nil {
 		return err
 	}

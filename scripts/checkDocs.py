@@ -24,6 +24,7 @@ REQUIRED_CLI_DOCS = [
     "inference",
     "metadata",
     "node",
+    "principal",
     "query",
     "schema",
     "semantic",

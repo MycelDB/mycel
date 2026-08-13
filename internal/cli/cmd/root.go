@@ -71,7 +71,7 @@ func NewRootCommand(a *app.App, repl bool) *cobra.Command {
 	root.PersistentFlags().StringVar(&a.DaemonTLSClientCertFile, "daemon-tls-client-cert", a.DaemonTLSClientCertFile, "client certificate for daemon mTLS (defaults to MYCELD_TLS_CLIENT_CERT_FILE)")
 	root.PersistentFlags().StringVar(&a.DaemonTLSClientKeyFile, "daemon-tls-client-key", a.DaemonTLSClientKeyFile, "client private key for daemon mTLS (defaults to MYCELD_TLS_CLIENT_KEY_FILE)")
 
-	root.AddCommand(NewInitCommand(a), NewAdminCommand(a), NewUserCommand(a), NewSpaceCommand(a), NewDomainCommand(a), NewNodeCommand(a), NewGraphCommand(a), NewBlobCommand(a), NewACLCommand(a), NewAuthCommand(a), NewSessionCommand(a), NewTransactionCommand(a), NewQueryCommand(a), NewSchemaCommand(a), NewAutomationCommand(a), NewMetadataCommand(a), NewExportCommand(a), NewImportCommand(a), NewInferenceCommand(a), NewSemanticCommand(a), NewChangeStreamCommand(a), NewAccountingCommand(a), NewClusterCommand(a), NewReplCommand(a))
+	root.AddCommand(NewInitCommand(a), NewPrincipalCommand(a), NewAdminCommand(a), NewUserCommand(a), NewSpaceCommand(a), NewDomainCommand(a), NewNodeCommand(a), NewGraphCommand(a), NewBlobCommand(a), NewACLCommand(a), NewAuthCommand(a), NewSessionCommand(a), NewTransactionCommand(a), NewQueryCommand(a), NewSchemaCommand(a), NewAutomationCommand(a), NewMetadataCommand(a), NewExportCommand(a), NewImportCommand(a), NewInferenceCommand(a), NewSemanticCommand(a), NewChangeStreamCommand(a), NewAccountingCommand(a), NewClusterCommand(a), NewReplCommand(a))
 	if repl {
 		root.Use = ""
 	}

@@ -28,14 +28,14 @@ var (
 type PrincipalKind string
 
 const (
-	PrincipalKindOperator PrincipalKind = "operator"
-	PrincipalKindUser     PrincipalKind = "user"
+	PrincipalKindHuman   PrincipalKind = "human"
+	PrincipalKindService PrincipalKind = "service"
+	PrincipalKindSystem  PrincipalKind = "system"
 )
 
 type Principal struct {
 	Kind          PrincipalKind
-	OperatorID    string
-	UserID        string
+	PrincipalID   string
 	AuthSessionID string
 	Username      string
 	CreatedAt     time.Time
@@ -60,8 +60,7 @@ type TokenManager struct {
 
 type tokenPayload struct {
 	Kind          PrincipalKind `json:"kind,omitempty"`
-	OperatorID    string        `json:"operator_id,omitempty"`
-	UserID        string        `json:"user_id,omitempty"`
+	PrincipalID   string        `json:"principal_id"`
 	AuthSessionID string        `json:"auth_session_id,omitempty"`
 	Username      string        `json:"username"`
 	CreatedAt     int64         `json:"created_at"`
@@ -92,13 +91,13 @@ func (m *TokenManager) Issue(principal Principal) (string, time.Time, error) {
 	expireAt := now.Add(m.ttl)
 	kind := principal.Kind
 	if kind == "" {
-		if principal.OperatorID != "" {
-			kind = PrincipalKindOperator
-		} else if principal.UserID != "" {
-			kind = PrincipalKindUser
-		}
+		kind = PrincipalKindHuman
 	}
-	payload := tokenPayload{Kind: kind, OperatorID: principal.OperatorID, UserID: principal.UserID, AuthSessionID: principal.AuthSessionID, Username: principal.Username, CreatedAt: principal.CreatedAt.UTC().Unix(), IssuedAt: now.Unix(), ExpiresAt: expireAt.Unix()}
+	principalID := strings.TrimSpace(principal.PrincipalID)
+	if principalID == "" {
+		return "", time.Time{}, ErrInvalidToken
+	}
+	payload := tokenPayload{Kind: kind, PrincipalID: principalID, AuthSessionID: principal.AuthSessionID, Username: principal.Username, CreatedAt: principal.CreatedAt.UTC().Unix(), IssuedAt: now.Unix(), ExpiresAt: expireAt.Unix()}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return "", time.Time{}, err
@@ -128,19 +127,17 @@ func (m *TokenManager) Verify(token string) (Principal, error) {
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 		return Principal{}, ErrInvalidToken
 	}
-	if payload.Kind == "" && payload.OperatorID != "" {
-		payload.Kind = PrincipalKindOperator
+	if payload.Kind == "" {
+		payload.Kind = PrincipalKindHuman
 	}
-	if payload.Kind == "" && payload.UserID != "" {
-		payload.Kind = PrincipalKindUser
-	}
-	if payload.Username == "" || payload.ExpiresAt <= 0 || (payload.OperatorID == "" && payload.UserID == "") {
+	payload.PrincipalID = strings.TrimSpace(payload.PrincipalID)
+	if payload.Username == "" || payload.ExpiresAt <= 0 || payload.PrincipalID == "" {
 		return Principal{}, ErrInvalidToken
 	}
 	if !m.now().UTC().Before(time.Unix(payload.ExpiresAt, 0)) {
 		return Principal{}, ErrExpiredToken
 	}
-	return Principal{Kind: payload.Kind, OperatorID: payload.OperatorID, UserID: payload.UserID, AuthSessionID: payload.AuthSessionID, Username: payload.Username, CreatedAt: time.Unix(payload.CreatedAt, 0).UTC()}, nil
+	return Principal{Kind: payload.Kind, PrincipalID: payload.PrincipalID, AuthSessionID: payload.AuthSessionID, Username: payload.Username, CreatedAt: time.Unix(payload.CreatedAt, 0).UTC()}, nil
 }
 
 func (m *TokenManager) UnaryInterceptor(publicMethods map[string]bool) grpc.UnaryServerInterceptor {

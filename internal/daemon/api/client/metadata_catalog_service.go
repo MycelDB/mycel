@@ -146,7 +146,7 @@ func (s *MetadataCatalogService) readableTransaction(ctx context.Context, transa
 	if err != nil {
 		return daemonsession.GraphTransaction{}, err
 	}
-	tx, err := s.sessions.GetTransaction(ctx, principal.UserID, transactionID)
+	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, transactionID)
 	if err != nil {
 		return daemonsession.GraphTransaction{}, mapSessionError(err, "metadata catalog")
 	}

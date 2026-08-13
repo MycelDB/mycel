@@ -23,7 +23,7 @@ func TestDefaultManager_InitCreateAndReload(t *testing.T) {
 	}
 
 	firstHash := testRefreshTokenHash(t, "first")
-	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), firstHash))
+	created, err := m.Create(ctx, validRefreshSession(identity.PrincipalID(uuid.NewString()), firstHash))
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -48,27 +48,27 @@ func TestDefaultManager_InitCreateAndReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after reload failed: %v", err)
 	}
-	if got.ID != created.ID || got.RefreshTokenHash != firstHash || got.UserID != created.UserID {
+	if got.ID != created.ID || got.RefreshTokenHash != firstHash || got.PrincipalID != created.PrincipalID {
 		t.Fatalf("unexpected reloaded session: %#v", got)
 	}
 }
 
-func TestDefaultManager_FindByTokenHashAndListByUser(t *testing.T) {
+func TestDefaultManager_FindByTokenHashAndListByPrincipal(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
-	userID := identity.UserID(uuid.New())
-	otherUserID := identity.UserID(uuid.New())
+	principalID := identity.PrincipalID(uuid.NewString())
+	otherPrincipalID := identity.PrincipalID(uuid.NewString())
 	firstHash := testRefreshTokenHash(t, "first")
 	secondHash := testRefreshTokenHash(t, "second")
 	thirdHash := testRefreshTokenHash(t, "third")
-	first, err := m.Create(ctx, validRefreshSession(userID, firstHash))
+	first, err := m.Create(ctx, validRefreshSession(principalID, firstHash))
 	if err != nil {
 		t.Fatalf("create first failed: %v", err)
 	}
-	if _, err := m.Create(ctx, validRefreshSession(userID, secondHash)); err != nil {
+	if _, err := m.Create(ctx, validRefreshSession(principalID, secondHash)); err != nil {
 		t.Fatalf("create second failed: %v", err)
 	}
-	if _, err := m.Create(ctx, validRefreshSession(otherUserID, thirdHash)); err != nil {
+	if _, err := m.Create(ctx, validRefreshSession(otherPrincipalID, thirdHash)); err != nil {
 		t.Fatalf("create third failed: %v", err)
 	}
 
@@ -79,24 +79,24 @@ func TestDefaultManager_FindByTokenHashAndListByUser(t *testing.T) {
 	if found.ID != first.ID {
 		t.Fatalf("expected first session, got %#v", found)
 	}
-	listed, err := m.ListByUser(ctx, userID)
+	listed, err := m.ListByPrincipal(ctx, principalID)
 	if err != nil {
-		t.Fatalf("list by user failed: %v", err)
+		t.Fatalf("list by principal failed: %v", err)
 	}
 	if len(listed) != 2 {
-		t.Fatalf("expected 2 sessions for user, got %d", len(listed))
+		t.Fatalf("expected 2 sessions for principal, got %d", len(listed))
 	}
 }
 
 func TestDefaultManager_DuplicateTokenHashRejected(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
-	userID := identity.UserID(uuid.New())
+	principalID := identity.PrincipalID(uuid.NewString())
 	duplicateHash := testRefreshTokenHash(t, "duplicate")
-	if _, err := m.Create(ctx, validRefreshSession(userID, duplicateHash)); err != nil {
+	if _, err := m.Create(ctx, validRefreshSession(principalID, duplicateHash)); err != nil {
 		t.Fatalf("create first failed: %v", err)
 	}
-	_, err := m.Create(ctx, validRefreshSession(userID, duplicateHash))
+	_, err := m.Create(ctx, validRefreshSession(principalID, duplicateHash))
 	if !errors.Is(err, ErrDuplicateTokenHash) {
 		t.Fatalf("expected ErrDuplicateTokenHash, got %v", err)
 	}
@@ -107,7 +107,7 @@ func TestDefaultManager_UpdateRotatesTokenHash(t *testing.T) {
 	m := initializedManager(t)
 	oldHash := testRefreshTokenHash(t, "old")
 	newHash := testRefreshTokenHash(t, "new")
-	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), oldHash))
+	created, err := m.Create(ctx, validRefreshSession(identity.PrincipalID(uuid.NewString()), oldHash))
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestDefaultManager_ConsumedTokenHashLookup(t *testing.T) {
 	m := initializedManager(t)
 	oldHash := testRefreshTokenHash(t, "consumed-old")
 	newHash := testRefreshTokenHash(t, "consumed-new")
-	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), oldHash))
+	created, err := m.Create(ctx, validRefreshSession(identity.PrincipalID(uuid.NewString()), oldHash))
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -164,19 +164,19 @@ func TestDefaultManager_RevokeFamily(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
 	familyID := domainauth.TokenFamilyID(uuid.NewString())
-	first := validRefreshSession(identity.UserID(uuid.New()), testRefreshTokenHash(t, "family-first"))
+	first := validRefreshSession(identity.PrincipalID(uuid.NewString()), testRefreshTokenHash(t, "family-first"))
 	first.TokenFamilyID = familyID
 	first, err := m.Create(ctx, first)
 	if err != nil {
 		t.Fatalf("create first failed: %v", err)
 	}
-	second := validRefreshSession(first.UserID, testRefreshTokenHash(t, "family-second"))
+	second := validRefreshSession(first.PrincipalID, testRefreshTokenHash(t, "family-second"))
 	second.TokenFamilyID = familyID
 	second, err = m.Create(ctx, second)
 	if err != nil {
 		t.Fatalf("create second failed: %v", err)
 	}
-	other := validRefreshSession(first.UserID, testRefreshTokenHash(t, "family-other"))
+	other := validRefreshSession(first.PrincipalID, testRefreshTokenHash(t, "family-other"))
 	other.TokenFamilyID = domainauth.TokenFamilyID(uuid.NewString())
 	other, err = m.Create(ctx, other)
 	if err != nil {
@@ -212,7 +212,7 @@ func TestDefaultManager_RevokeFamily(t *testing.T) {
 func TestDefaultManager_RevokeByID(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
-	created, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), testRefreshTokenHash(t, "revoke")))
+	created, err := m.Create(ctx, validRefreshSession(identity.PrincipalID(uuid.NewString()), testRefreshTokenHash(t, "revoke")))
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestDefaultManager_RevokeByID(t *testing.T) {
 func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
-	userID := identity.UserID(uuid.New())
+	principalID := identity.PrincipalID(uuid.NewString())
 	now := time.Now().UTC()
 	cutoff := now.Add(-24 * time.Hour)
 
@@ -244,7 +244,7 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 	expiredOldHash := testRefreshTokenHash(t, "expired-old")
 	activeRecentHash := testRefreshTokenHash(t, "active-recent")
 	revokedOldConsumedHash := testRefreshTokenHash(t, "revoked-old-consumed")
-	revokedOld := validRefreshSession(userID, revokedOldHash)
+	revokedOld := validRefreshSession(principalID, revokedOldHash)
 	revokedOld.ConsumedRefreshTokenHashes = []string{revokedOldConsumedHash}
 	revokedOld.Status = domainauth.RefreshSessionStatusRevoked
 	revokedOld.RevokedAt = cutoff.Add(-time.Hour)
@@ -254,7 +254,7 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 		t.Fatalf("create revoked old failed: %v", err)
 	}
 
-	expiredOld := validRefreshSession(userID, expiredOldHash)
+	expiredOld := validRefreshSession(principalID, expiredOldHash)
 	expiredOld.IdleExpiresAt = cutoff.Add(-time.Hour)
 	expiredOld.AbsoluteExpiresAt = cutoff.Add(-30 * time.Minute)
 	expiredOld, err = m.Create(ctx, expiredOld)
@@ -262,7 +262,7 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 		t.Fatalf("create expired old failed: %v", err)
 	}
 
-	activeRecent := validRefreshSession(userID, activeRecentHash)
+	activeRecent := validRefreshSession(principalID, activeRecentHash)
 	activeRecent.IdleExpiresAt = now.Add(time.Hour)
 	activeRecent.AbsoluteExpiresAt = now.Add(2 * time.Hour)
 	activeRecent, err = m.Create(ctx, activeRecent)
@@ -316,7 +316,7 @@ func TestDefaultManager_DeleteExpiredRedacted(t *testing.T) {
 func TestDefaultManager_ValidationRejectsPlainMissingTokenHash(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
-	rec := validRefreshSession(identity.UserID(uuid.New()), "")
+	rec := validRefreshSession(identity.PrincipalID(uuid.NewString()), "")
 	_, err := m.Create(ctx, rec)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput for missing refresh token hash, got %v", err)
@@ -326,7 +326,7 @@ func TestDefaultManager_ValidationRejectsPlainMissingTokenHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new refresh token failed: %v", err)
 	}
-	rec = validRefreshSession(identity.UserID(uuid.New()), string(token))
+	rec = validRefreshSession(identity.PrincipalID(uuid.NewString()), string(token))
 	_, err = m.Create(ctx, rec)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput for plaintext refresh token, got %v", err)
@@ -339,7 +339,7 @@ func TestDefaultManager_DeleteExpiredRedactedMarksRecentExpiredWithoutRedacting(
 	now := time.Now().UTC()
 	cutoff := now.Add(-24 * time.Hour)
 	recentExpiredHash := testRefreshTokenHash(t, "recent-expired")
-	recentExpired := validRefreshSession(identity.UserID(uuid.New()), recentExpiredHash)
+	recentExpired := validRefreshSession(identity.PrincipalID(uuid.NewString()), recentExpiredHash)
 	recentExpired.IdleExpiresAt = now.Add(-time.Hour)
 	recentExpired.AbsoluteExpiresAt = now.Add(time.Hour)
 	recentExpired, err := m.Create(ctx, recentExpired)
@@ -373,26 +373,26 @@ func TestDefaultManager_DeleteExpiredRedactedMarksRecentExpiredWithoutRedacting(
 func TestDefaultManager_RecordAndListAuditEvents(t *testing.T) {
 	ctx := context.Background()
 	m := initializedManager(t)
-	userID := identity.UserID(uuid.New())
-	otherUserID := identity.UserID(uuid.New())
-	event, err := m.RecordAuditEvent(ctx, domainauth.AuthAuditEvent{Type: " auth.login_success ", UserID: &userID, UserRef: identity.UserRef("user@example.test"), Message: " login ok "})
+	principalID := identity.PrincipalID(uuid.NewString())
+	otherPrincipalID := identity.PrincipalID(uuid.NewString())
+	event, err := m.RecordAuditEvent(ctx, domainauth.AuthAuditEvent{Type: " auth.login_success ", PrincipalID: &principalID, PrincipalRef: identity.PrincipalRef("user@example.test"), Message: " login ok "})
 	if err != nil {
 		t.Fatalf("record audit event failed: %v", err)
 	}
 	if event.ID == uuid.Nil || event.Type != "auth.login_success" || event.Message != "login ok" || event.CreatedAt.IsZero() {
 		t.Fatalf("unexpected audit event: %#v", event)
 	}
-	if _, err := m.RecordAuditEvent(ctx, domainauth.AuthAuditEvent{Type: "auth.login_failure", UserID: &otherUserID}); err != nil {
+	if _, err := m.RecordAuditEvent(ctx, domainauth.AuthAuditEvent{Type: "auth.login_failure", PrincipalID: &otherPrincipalID}); err != nil {
 		t.Fatalf("record other audit event failed: %v", err)
 	}
-	listed, err := m.ListAuditEvents(ctx, &userID)
+	listed, err := m.ListAuditEventsByPrincipal(ctx, &principalID)
 	if err != nil {
 		t.Fatalf("list audit events failed: %v", err)
 	}
 	if len(listed) != 1 || listed[0].ID != event.ID {
 		t.Fatalf("expected one matching audit event, got %#v", listed)
 	}
-	all, err := m.ListAuditEvents(ctx, nil)
+	all, err := m.ListAuditEventsByPrincipal(ctx, nil)
 	if err != nil {
 		t.Fatalf("list all audit events failed: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestDefaultManager_PersistsHashWithoutPlaintextRefreshToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash refresh token failed: %v", err)
 	}
-	if _, err := m.Create(ctx, validRefreshSession(identity.UserID(uuid.New()), hash)); err != nil {
+	if _, err := m.Create(ctx, validRefreshSession(identity.PrincipalID(uuid.NewString()), hash)); err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, refreshSessionsStoreFile))
@@ -449,11 +449,11 @@ func testRefreshTokenHash(t *testing.T, label string) string {
 	return hash
 }
 
-func validRefreshSession(userID identity.UserID, tokenHash string) domainauth.RefreshSession {
+func validRefreshSession(principalID identity.PrincipalID, tokenHash string) domainauth.RefreshSession {
 	now := time.Now().UTC().Truncate(time.Second)
 	return domainauth.RefreshSession{
-		UserID:            userID,
-		UserRef:           identity.UserRef(userID.String() + "@example.test"),
+		PrincipalID:       principalID,
+		PrincipalRef:      identity.PrincipalRef(string(principalID) + "@example.test"),
 		RefreshTokenHash:  tokenHash,
 		CreatedAt:         now,
 		LastUsedAt:        now,

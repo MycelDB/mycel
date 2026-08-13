@@ -13,6 +13,7 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/identity/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -117,7 +118,7 @@ func initDomainPolicyClientAPITest(t *testing.T, opts domainPolicyFixtureOptions
 	}
 
 	userID := uuid.New()
-	space, domain, err := spaceModule.CreateSpace(ctx, daemonspace.CreateSpaceInput{Name: "Test Space", OwnerUserID: userID})
+	space, domain, err := spaceModule.CreateSpace(ctx, daemonspace.CreateSpaceInput{Name: "Test Space", OwnerPrincipalID: identity.PrincipalID(userID.String())})
 	if err != nil {
 		t.Fatalf("create test space: %v", err)
 	}
@@ -138,7 +139,7 @@ func initDomainPolicyClientAPITest(t *testing.T, opts domainPolicyFixtureOptions
 		t.Fatalf("set domain policy: %v", err)
 	}
 
-	authedCtx := daemonauth.ContextWithPrincipal(ctx, daemonauth.Principal{Kind: daemonauth.PrincipalKindUser, UserID: userID.String(), Username: "alice"})
+	authedCtx := daemonauth.ContextWithPrincipal(ctx, daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: userID.String(), Username: "alice"})
 	opened, err := NewSessionService(sessionModule, spaceModule).OpenSession(authedCtx, &clientv1.OpenSessionRequest{SpaceId: space.SpaceID.String(), DomainId: domain.ID.String()})
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)

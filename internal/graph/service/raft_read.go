@@ -48,9 +48,9 @@ type raftGraphReadRequest struct {
 	Op      string `json:"op"`
 	SpaceID string `json:"space_id"`
 	Tx      struct {
-		ID, SessionID, UserID, SpaceID, DomainID, Mode, State string
-		HomeNodeID                                            uint64
-		BaseRevision                                          int64
+		ID, SessionID, PrincipalID, SpaceID, DomainID, Mode, State string
+		HomeNodeID                                                 uint64
+		BaseRevision                                               int64
 	} `json:"tx"`
 	ID                      string                        `json:"id,omitempty"`
 	PageSize                int                           `json:"page_size,omitempty"`
@@ -464,11 +464,11 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 
 func raftReadRequest(op string, tx daemonsession.GraphTransaction) raftGraphReadRequest {
 	return raftGraphReadRequest{Op: op, SpaceID: tx.SpaceID, Tx: struct {
-		ID, SessionID, UserID, SpaceID, DomainID, Mode, State string
-		HomeNodeID                                            uint64
-		BaseRevision                                          int64
-	}{tx.ID, tx.SessionID, tx.UserID, tx.SpaceID, tx.DomainID, string(tx.Mode), string(tx.State), uint64(tx.HomeNodeID), tx.BaseRevision}}
+		ID, SessionID, PrincipalID, SpaceID, DomainID, Mode, State string
+		HomeNodeID                                                 uint64
+		BaseRevision                                               int64
+	}{tx.ID, tx.SessionID, tx.PrincipalID, tx.SpaceID, tx.DomainID, string(tx.Mode), string(tx.State), uint64(tx.HomeNodeID), tx.BaseRevision}}
 }
 func (r raftGraphReadRequest) toTx() daemonsession.GraphTransaction {
-	return daemonsession.GraphTransaction{ID: r.Tx.ID, SessionID: r.Tx.SessionID, UserID: r.Tx.UserID, SpaceID: r.Tx.SpaceID, DomainID: r.Tx.DomainID, HomeNodeID: consensus.NodeID(r.Tx.HomeNodeID), Mode: daemonsession.TransactionMode(r.Tx.Mode), State: daemonsession.TransactionState(r.Tx.State), BaseRevision: r.Tx.BaseRevision}
+	return daemonsession.GraphTransaction{ID: r.Tx.ID, SessionID: r.Tx.SessionID, PrincipalID: r.Tx.PrincipalID, SpaceID: r.Tx.SpaceID, DomainID: r.Tx.DomainID, HomeNodeID: consensus.NodeID(r.Tx.HomeNodeID), Mode: daemonsession.TransactionMode(r.Tx.Mode), State: daemonsession.TransactionState(r.Tx.State), BaseRevision: r.Tx.BaseRevision}
 }

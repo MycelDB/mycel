@@ -26,7 +26,7 @@ func TestChangeStreamWatchReceivesCommitEvent(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, authCtx, _, err := loginDaemonUser(ctx, &app.App{DaemonAddr: addr, UserRef: "change-user", Password: "change-pass"})
+	conn, authCtx, _, err := loginDaemonPrincipal(ctx, &app.App{DaemonAddr: addr, UserRef: "change-user", Password: "change-pass"})
 	if err != nil {
 		t.Fatalf("login user: %v", err)
 	}

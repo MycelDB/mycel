@@ -33,8 +33,7 @@ type ForwardClientDiagnostics struct {
 
 type ForwardedPrincipal struct {
 	Kind          string
-	OperatorID    string
-	UserID        string
+	PrincipalID   string
 	AuthSessionID string
 	Username      string
 	CreatedAt     string
@@ -214,9 +213,9 @@ func principalFromProto(in *clusterpb.ForwardedPrincipal) ForwardedPrincipal {
 	if in == nil {
 		return ForwardedPrincipal{}
 	}
-	return ForwardedPrincipal{Kind: strings.TrimSpace(in.GetKind()), OperatorID: strings.TrimSpace(in.GetOperatorId()), UserID: strings.TrimSpace(in.GetUserId()), AuthSessionID: strings.TrimSpace(in.GetAuthSessionId()), Username: strings.TrimSpace(in.GetUsername()), CreatedAt: strings.TrimSpace(in.GetCreatedAt())}
+	return ForwardedPrincipal{Kind: strings.TrimSpace(in.GetKind()), PrincipalID: strings.TrimSpace(in.GetPrincipalId()), AuthSessionID: strings.TrimSpace(in.GetAuthSessionId()), Username: strings.TrimSpace(in.GetUsername()), CreatedAt: strings.TrimSpace(in.GetCreatedAt())}
 }
 
 func principalToProto(in ForwardedPrincipal) *clusterpb.ForwardedPrincipal {
-	return &clusterpb.ForwardedPrincipal{Kind: strings.TrimSpace(in.Kind), OperatorId: strings.TrimSpace(in.OperatorID), UserId: strings.TrimSpace(in.UserID), AuthSessionId: strings.TrimSpace(in.AuthSessionID), Username: strings.TrimSpace(in.Username), CreatedAt: strings.TrimSpace(in.CreatedAt)}
+	return &clusterpb.ForwardedPrincipal{Kind: strings.TrimSpace(in.Kind), PrincipalId: strings.TrimSpace(in.PrincipalID), AuthSessionId: strings.TrimSpace(in.AuthSessionID), Username: strings.TrimSpace(in.Username), CreatedAt: strings.TrimSpace(in.CreatedAt)}
 }
