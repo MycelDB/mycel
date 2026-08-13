@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: MycelDB/mycel-api
-          ref: v0.7.0
+          ref: v0.8.0
           path: mycel-api
           # GITHUB_TOKEN is scoped to this repository and cannot read sibling
           # private repos. Use a fine-grained PAT with read-only Contents access
