@@ -2,8 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, main]
+    tags:
+      - 'v*'
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
