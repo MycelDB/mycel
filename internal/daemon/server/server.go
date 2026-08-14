@@ -25,6 +25,7 @@ import (
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	daemoninference "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
@@ -44,6 +45,7 @@ type Config struct {
 	GraphManager             daegraph.Manager
 	GraphChangeManager       graphnotification.Manager
 	BlobManager              daemonblob.Manager
+	InferenceManager         daemoninference.Manager
 	SemanticManager          daemonsemantic.Manager
 	SchemaManager            schemaservice.Manager
 	AutomationManager        automationservice.Manager

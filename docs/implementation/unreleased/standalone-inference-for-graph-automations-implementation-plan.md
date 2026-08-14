@@ -7,7 +7,10 @@ common inference enums/messages were added in `mycel-api`; Admin Inference was
 split into themed catalog, profile, credential, grant, policy, and usage admin
 services; those services include profile, credential rotation, policy decision,
 and usage telemetry contracts; and automation APIs now expose
-inference-reference metadata. Runtime conversion remains for later phases.
+inference-reference metadata. INF2 is implemented as a skeleton-only tranche:
+`internal/inference` now has canonical model structs, storage interfaces,
+file-backed global/space/usage stores, a runtime module, daemon initialization,
+and focused round-trip tests. Runtime conversion remains for later phases.
 
 No compatibility migration from the current semantic inference stores,
 automation provider configuration, automation run records, CLI shapes, or
