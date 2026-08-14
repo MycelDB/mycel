@@ -746,3 +746,89 @@ func inferenceCredentialStatusFromSemantic(value domainsemantic.CredentialStatus
 func semanticPackageToInference(in domainsemantic.InferencePackage) domaininference.InferencePackage {
 	return domaininference.InferencePackage{ID: domaininference.InferencePackageID(in.ID), Name: in.Name, Version: in.Version, Source: in.Source, Checksum: in.Checksum, InstalledAt: in.InstalledAt, InstalledBy: in.InstalledBy, DefinitionCounts: in.DefinitionCounts}
 }
+
+func semanticScopeToInference(in domainsemantic.ProcessingScope) domaininference.Scope {
+	return domaininference.Scope{SpaceID: uuidOrEmptyAdmin(in.SpaceID), DomainID: uuidOrEmptyAdmin(in.DomainID), SemanticIndexID: uuidOrEmptyAdmin(in.SemanticIndexID), NodeID: uuidOrEmptyAdmin(in.NodeID), IncludeDescendants: in.IncludeDescendants}
+}
+
+func semanticGrantToInference(spaceID string, in domainsemantic.CredentialGrant) domaininference.CredentialGrant {
+	out := domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(in.ID), SpaceID: spaceID, CredentialID: domaininference.CredentialID(in.CredentialID), Scope: semanticScopeToInference(in.Scope), Operations: inferenceOperationsFromSemantic(in.Operations), Priority: in.Priority, State: domaininference.GrantStateActive, CreatedBy: in.GrantedBy, CreatedAt: in.CreatedAt, Reason: "semantic admin grant"}
+	if in.ModelEndpointID != nil {
+		out.EndpointRefs = []string{in.ModelEndpointID.String()}
+	}
+	if in.ModelID != nil {
+		out.ModelRefs = []string{in.ModelID.String()}
+	}
+	if in.AllowBackgroundUse {
+		out.UsageModes = []domaininference.UsageMode{domaininference.UsageModeInteractive, domaininference.UsageModeAutomation, domaininference.UsageModeBackground, domaininference.UsageModeSemantic}
+	} else {
+		out.UsageModes = []domaininference.UsageMode{domaininference.UsageModeInteractive, domaininference.UsageModeAutomation, domaininference.UsageModeSemantic}
+	}
+	if in.ExpiresAt != nil {
+		out.ExpiresAt = *in.ExpiresAt
+		if !in.ExpiresAt.After(time.Now()) {
+			out.State = domaininference.GrantStateExpired
+		}
+	}
+	return out
+}
+
+func semanticPolicyToInference(spaceID string, in domainsemantic.InferencePolicy) domaininference.Policy {
+	out := domaininference.Policy{ID: domaininference.PolicyID(in.ID), SpaceID: spaceID, Scope: semanticScopeToInference(in.Scope), Operations: inferenceOperationsFromSemantic(in.Operations), Action: inferencePolicyActionFromSemantic(in.Effect), NoInference: in.NoInference, AllowedPrivacyClasses: inferencePrivacyClassesFromSemantic(in.AllowedPrivacyClasses), RequireLocalEndpoint: in.RequireLocalEndpoint, DisallowThirdParty: in.DisallowThirdParty, State: domaininference.PolicyStateActive, CreatedBy: in.CreatedBy, CreatedAt: in.CreatedAt, Reason: in.Reason}
+	if in.ExpiresAt != nil {
+		out.ExpiresAt = *in.ExpiresAt
+		if !in.ExpiresAt.After(time.Now()) {
+			out.State = domaininference.PolicyStateExpired
+		}
+	}
+	return out
+}
+
+func inferencePolicyActionFromSemantic(value domainsemantic.PolicyEffect) domaininference.PolicyAction {
+	switch value {
+	case domainsemantic.PolicyEffectDeny:
+		return domaininference.PolicyActionDeny
+	case domainsemantic.PolicyEffectRestrict:
+		return domaininference.PolicyActionRestrict
+	default:
+		return domaininference.PolicyActionAllow
+	}
+}
+
+func inferencePrivacyClassesFromSemantic(values []domainsemantic.PrivacyClass) []domaininference.PrivacyClass {
+	out := make([]domaininference.PrivacyClass, 0, len(values))
+	for _, value := range values {
+		out = append(out, inferencePrivacyClassFromSemantic(value))
+	}
+	return out
+}
+
+func mapStandalonePolicyDecision(in domaininference.PolicyDecision) *adminv1.PolicyDecision {
+	return &adminv1.PolicyDecision{PolicyDecisionId: in.ID.String(), SpaceId: in.SpaceID, DomainId: in.DomainID, NodeId: in.NodeID, Operation: inferenceOperationToProto(in.Operation), UsageMode: inferenceUsageModeToProto(in.UsageMode), InferenceProfileId: uuidOrEmptyAdmin(in.ProfileID), ModelEndpointCapabilityId: uuidOrEmptyAdmin(in.CapabilityID), ModelEndpointId: uuidOrEmptyAdmin(in.EndpointID), ModelId: uuidOrEmptyAdmin(in.ModelID), CredentialId: uuidOrEmptyAdmin(in.CredentialID), CredentialGrantId: uuidOrEmptyAdmin(in.CredentialGrantID), ActorPrincipalId: in.ActorPrincipalID, OnBehalfOfPrincipalId: in.OnBehalfOfPrincipalID, Action: inferencePolicyDecisionActionToProto(in.Action), MatchedPolicyIds: append([]string(nil), in.MatchedPolicyIDs...), Reason: in.Reason, DecidedAt: timestamppb.New(in.DecidedAt), Metadata: protoStructAdmin(in.Metadata)}
+}
+
+func inferenceUsageModeToProto(value domaininference.UsageMode) commonv1.InferenceUsageMode {
+	switch value {
+	case domaininference.UsageModeInteractive:
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_INTERACTIVE
+	case domaininference.UsageModeAutomation:
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_AUTOMATION
+	case domaininference.UsageModeBackground:
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_BACKGROUND
+	case domaininference.UsageModeSemantic:
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_SEMANTIC
+	default:
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_UNSPECIFIED
+	}
+}
+
+func inferencePolicyDecisionActionToProto(value domaininference.PolicyDecisionAction) commonv1.InferencePolicyDecisionAction {
+	switch value {
+	case domaininference.PolicyDecisionAllowed:
+		return commonv1.InferencePolicyDecisionAction_INFERENCE_POLICY_DECISION_ACTION_ALLOWED
+	case domaininference.PolicyDecisionDenied:
+		return commonv1.InferencePolicyDecisionAction_INFERENCE_POLICY_DECISION_ACTION_DENIED
+	default:
+		return commonv1.InferencePolicyDecisionAction_INFERENCE_POLICY_DECISION_ACTION_UNSPECIFIED
+	}
+}

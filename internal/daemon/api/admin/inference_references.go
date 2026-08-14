@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -242,4 +243,25 @@ func referencedPrecondition(resource string, refs []string) error {
 		refs = append(append([]string{}, refs[:20]...), fmt.Sprintf("...%d more", len(refs)-20))
 	}
 	return status.Errorf(codes.FailedPrecondition, "%s is referenced by %s", resource, strings.Join(refs, ", "))
+}
+
+func (s *AdminInferenceService) standaloneDecisionReferences(ctx context.Context, spaceID string, match func(domaininference.PolicyDecision) bool) ([]string, error) {
+	if s.inference == nil {
+		return nil, nil
+	}
+	mgr, err := s.inference.SpaceManager(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	decisions, err := mgr.ListPolicyDecisions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	refs := []string{}
+	for _, decision := range decisions {
+		if match(decision) {
+			refs = append(refs, "policy_decision:"+decision.ID.String())
+		}
+	}
+	return refs, nil
 }

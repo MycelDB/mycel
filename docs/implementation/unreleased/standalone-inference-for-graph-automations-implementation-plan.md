@@ -14,8 +14,12 @@ and focused round-trip tests. INF3 is implemented as a management tranche:
 admin catalog and credential writes now mirror into the standalone inference
 stores, credential rotation preserves stable credential IDs, external secret refs
 fail closed to supported `env://NAME` references, and space-scoped profile
-CRUD is exposed through the themed admin API and CLI. Runtime conversion remains
-for later phases.
+CRUD is exposed through the themed admin API and CLI. INF4 is implemented as a
+resolver tranche: the standalone inference subsystem can resolve profile,
+capability, credential grant, credential/secret, and policy matches; denies
+missing grants/policies fail closed; deny/no-inference policies win; policy
+restrictions are enforced; policy decisions are persisted and readable through
+the themed admin API/CLI. Runtime conversion remains for later phases.
 
 No compatibility migration from the current semantic inference stores,
 automation provider configuration, automation run records, CLI shapes, or
@@ -368,6 +372,18 @@ profile -> capability -> credential grant -> credential/secret -> policy decisio
 - Node/subtree scope specificity tests.
 - Decision persistence tests for allowed and denied attempts.
 - Capability authorization tests for policy/grant management APIs.
+
+### Implementation status
+
+Implemented. `internal/inference/service` exposes `Resolve`, which evaluates a
+hypothetical workload against enabled profiles, catalog capabilities, credential
+grants, credential/secret state, owner constraints, usage mode, scope, privacy,
+feature, token, and policy constraints. Missing profiles, capabilities, grants,
+or matching policies deny and persist a denied policy decision. Matching allow or
+restrict policies permit the request only after restrictions pass; deny and
+no-inference policies take precedence. Admin grant/policy writes now synchronize
+into the standalone inference space store, and `GetPolicyDecision` plus
+`inference policy decision get` expose persisted decisions.
 
 ### Functional endpoint for the phase
 

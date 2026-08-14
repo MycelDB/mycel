@@ -591,7 +591,7 @@ func newInferenceCredentialGrantListCommand(a *app.App) *cobra.Command {
 
 func newInferencePolicyCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "policy", Short: "Manage inference content policies"}
-	cmd.AddCommand(newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectAllow), newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectDeny), newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectRestrict), newInferencePolicyListCommand(a), newInferencePolicyExpireCommand(a), newInferencePolicyDeleteCommand(a))
+	cmd.AddCommand(newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectAllow), newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectDeny), newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectRestrict), newInferencePolicyListCommand(a), newInferencePolicyExpireCommand(a), newInferencePolicyDeleteCommand(a), newInferencePolicyDecisionCommand(a))
 	return cmd
 }
 
@@ -648,6 +648,31 @@ func newInferencePolicyDeleteCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		return a.Print(res, fmt.Sprintf("inference policy deleted: %s\n", res.GetInferencePolicyId()))
+	}}
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
+	_ = cmd.MarkFlagRequired("space-id")
+	return cmd
+}
+
+func newInferencePolicyDecisionCommand(a *app.App) *cobra.Command {
+	cmd := &cobra.Command{Use: "decision", Short: "Inspect inference policy decisions"}
+	cmd.AddCommand(newInferencePolicyDecisionGetCommand(a))
+	return cmd
+}
+
+func newInferencePolicyDecisionGetCommand(a *app.App) *cobra.Command {
+	var spaceID string
+	cmd := &cobra.Command{Use: "get POLICY_DECISION_ID", Short: "Get an inference policy decision", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := adminv1.NewAdminInferencePolicyServiceClient(conn).GetPolicyDecision(authCtx, &adminv1.AdminInferencePolicyServiceGetPolicyDecisionRequest{SpaceId: spaceID, PolicyDecisionId: args[0]})
+		if err != nil {
+			return err
+		}
+		return a.Print(res, fmt.Sprintf("inference policy decision: %s %s\n", res.GetPolicyDecision().GetPolicyDecisionId(), res.GetPolicyDecision().GetAction().String()))
 	}}
 	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
 	_ = cmd.MarkFlagRequired("space-id")

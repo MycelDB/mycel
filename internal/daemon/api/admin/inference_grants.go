@@ -7,6 +7,7 @@ import (
 	"time"
 
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
@@ -60,6 +61,9 @@ func (s *AdminInferenceService) CreateCredentialGrant(ctx context.Context, req *
 	grant, err := spaceMgr.UpsertCredentialGrant(ctx, domainsemantic.CredentialGrant{CredentialID: credentialID, Scope: scope, Operations: operationsFromStringsAdmin(req.GetOperations()), ModelEndpointID: endpointID, ModelID: modelID, Priority: int(req.GetPriority()), IsDefault: req.GetIsDefault(), AllowBackgroundUse: req.GetAllowBackgroundUse(), GrantedBy: principal.PrincipalID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert credential grant")
+	}
+	if err := s.syncInferenceCredentialGrant(ctx, spaceID.String(), grant); err != nil {
+		return nil, mapAdminInferenceError(err, "sync inference credential grant")
 	}
 	return &adminv1.AdminInferenceGrantServiceCreateCredentialGrantResponse{CredentialGrant: mapCredentialGrant(grant)}, nil
 }
@@ -131,6 +135,9 @@ func (s *AdminInferenceService) ExpireCredentialGrant(ctx context.Context, req *
 			if err != nil {
 				return nil, mapAdminInferenceError(err, "expire credential grant")
 			}
+			if err := s.syncInferenceCredentialGrant(ctx, spaceID.String(), stored); err != nil {
+				return nil, mapAdminInferenceError(err, "sync inference credential grant")
+			}
 			return &adminv1.AdminInferenceGrantServiceExpireCredentialGrantResponse{CredentialGrant: mapCredentialGrant(stored)}, nil
 		}
 	}
@@ -154,6 +161,11 @@ func (s *AdminInferenceService) DeleteCredentialGrant(ctx context.Context, req *
 	} else if len(refs) > 0 {
 		return nil, referencedPrecondition("credential grant", refs)
 	}
+	if refs, err := s.standaloneDecisionReferences(ctx, spaceID.String(), func(decision domaininference.PolicyDecision) bool { return decision.CredentialGrantID == grantID }); err != nil {
+		return nil, mapAdminInferenceError(err, "list standalone inference policy decisions")
+	} else if len(refs) > 0 {
+		return nil, referencedPrecondition("credential grant", refs)
+	}
 	ctx, release, err := s.beginSemanticMutation(ctx)
 	if err != nil {
 		return nil, err
@@ -165,6 +177,15 @@ func (s *AdminInferenceService) DeleteCredentialGrant(ctx context.Context, req *
 	}
 	if err := spaceMgr.DeleteCredentialGrant(ctx, grantID); err != nil {
 		return nil, mapAdminInferenceError(err, "delete credential grant")
+	}
+	if s.inference != nil {
+		inferenceSpace, err := s.inference.SpaceManager(ctx, spaceID.String())
+		if err != nil {
+			return nil, mapAdminInferenceError(err, "open inference space manager")
+		}
+		if err := inferenceSpace.DeleteCredentialGrant(ctx, grantID); err != nil {
+			return nil, mapAdminInferenceError(err, "delete inference credential grant")
+		}
 	}
 	return &adminv1.AdminInferenceGrantServiceDeleteCredentialGrantResponse{CredentialGrantId: grantID.String()}, nil
 }

@@ -65,3 +65,27 @@ func (s *AdminInferenceService) syncInferenceCredential(ctx context.Context, cre
 	_, err := s.inference.GlobalManager().UpsertCredential(ctx, semanticCredentialToInference(credential))
 	return err
 }
+
+func (s *AdminInferenceService) syncInferenceCredentialGrant(ctx context.Context, spaceID string, grant domainsemantic.CredentialGrant) error {
+	if s.inference == nil {
+		return nil
+	}
+	mgr, err := s.inference.SpaceManager(ctx, spaceID)
+	if err != nil {
+		return err
+	}
+	_, err = mgr.UpsertCredentialGrant(ctx, semanticGrantToInference(spaceID, grant))
+	return err
+}
+
+func (s *AdminInferenceService) syncInferencePolicy(ctx context.Context, spaceID string, policy domainsemantic.InferencePolicy) error {
+	if s.inference == nil {
+		return nil
+	}
+	mgr, err := s.inference.SpaceManager(ctx, spaceID)
+	if err != nil {
+		return err
+	}
+	_, err = mgr.UpsertPolicy(ctx, semanticPolicyToInference(spaceID, policy))
+	return err
+}

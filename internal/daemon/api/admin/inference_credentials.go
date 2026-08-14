@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -260,6 +261,21 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 	if len(grantRefs) > 0 && !req.GetDeleteGrants() {
 		return nil, referencedPrecondition("credential", grantRefs)
 	}
+	spaces, err := s.semantic.ListSpaceManagers(ctx)
+	if err != nil {
+		return nil, mapAdminInferenceError(err, "list semantic spaces")
+	}
+	standaloneDecisionRefs := []string{}
+	for _, space := range spaces {
+		refs, err := s.standaloneDecisionReferences(ctx, space.SpaceID.String(), func(decision domaininference.PolicyDecision) bool { return decision.CredentialID == id })
+		if err != nil {
+			return nil, mapAdminInferenceError(err, "list standalone inference policy decisions")
+		}
+		standaloneDecisionRefs = append(standaloneDecisionRefs, refs...)
+	}
+	if len(standaloneDecisionRefs) > 0 {
+		return nil, referencedPrecondition("credential", standaloneDecisionRefs)
+	}
 	ctx, release, err := s.beginSemanticMutation(ctx)
 	if err != nil {
 		return nil, err
@@ -267,10 +283,6 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 	defer release()
 	deletedGrants := int32(0)
 	if req.GetDeleteGrants() {
-		spaces, err := s.semantic.ListSpaceManagers(ctx)
-		if err != nil {
-			return nil, mapAdminInferenceError(err, "list semantic spaces")
-		}
 		for _, space := range spaces {
 			grants, err := space.Manager.ListCredentialGrants(ctx)
 			if err != nil {
@@ -285,6 +297,15 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 					}
 					if err := space.Manager.DeleteCredentialGrant(ctx, grant.ID); err != nil {
 						return nil, mapAdminInferenceError(err, "delete credential grant")
+					}
+					if s.inference != nil {
+						inferenceSpace, err := s.inference.SpaceManager(ctx, space.SpaceID.String())
+						if err != nil {
+							return nil, mapAdminInferenceError(err, "open inference space manager")
+						}
+						if err := inferenceSpace.DeleteCredentialGrant(ctx, grant.ID); err != nil {
+							return nil, mapAdminInferenceError(err, "delete inference credential grant")
+						}
 					}
 					deletedGrants++
 				}

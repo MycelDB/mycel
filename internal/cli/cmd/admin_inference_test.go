@@ -198,6 +198,18 @@ model_endpoint_capabilities:
 	if createdPolicy.GetInferencePolicy().GetEffect() != "allow" {
 		t.Fatalf("unexpected policy: %#v", &createdPolicy)
 	}
+	inferenceSpace := inferencestorage.NewSpaceManager()
+	if err := inferenceSpace.Init(context.Background(), filepath.Join(dataDir, "graphs", spaceID, "inference"), spaceID); err != nil {
+		t.Fatalf("init standalone inference space manager: %v", err)
+	}
+	standaloneGrants, err := inferenceSpace.ListCredentialGrants(context.Background())
+	if err != nil || len(standaloneGrants) != 1 || standaloneGrants[0].ID.String() != createdGrant.GetCredentialGrant().GetCredentialGrantId() {
+		t.Fatalf("standalone inference grant sync failed: %#v err=%v", standaloneGrants, err)
+	}
+	standalonePolicies, err := inferenceSpace.ListPolicies(context.Background())
+	if err != nil || len(standalonePolicies) != 1 || standalonePolicies[0].ID.String() != createdPolicy.GetInferencePolicy().GetInferencePolicyId() {
+		t.Fatalf("standalone inference policy sync failed: %#v err=%v", standalonePolicies, err)
+	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "policy", "list", "--space-id", spaceID, "--effect", "allow")
 	if err != nil {
 		t.Fatalf("policy list failed: %v\n%s", err, out)
