@@ -80,7 +80,7 @@ model_endpoint_capabilities:
 	if err != nil || len(inferenceEndpoints) != 1 || inferenceEndpoints[0].Key != "test-openai" {
 		t.Fatalf("standalone inference endpoint sync failed: %#v err=%v", inferenceEndpoints, err)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "model-endpoint", "list")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "endpoint", "list")
 	if err != nil {
 		t.Fatalf("model endpoint list failed: %v\n%s", err, out)
 	}
@@ -104,11 +104,11 @@ model_endpoint_capabilities:
 	if index.GetKey() != "pkg-notes" {
 		t.Fatalf("unexpected semantic index: %#v", &index)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "add", "bad-secret-ref", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test", "--external-ref", "vault://OPENAI_API_KEY")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "create", "bad-secret-ref", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test", "--external-ref", "vault://OPENAI_API_KEY")
 	if err == nil || !strings.Contains(err.Error()+out, "env://NAME") {
 		t.Fatalf("expected unsupported external ref failure, err=%v out=%s", err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "add", "test-openai-key", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test", "--external-ref", "env://OPENAI_API_KEY")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "create", "test-openai-key", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test", "--external-ref", "env://OPENAI_API_KEY")
 	if err != nil {
 		t.Fatalf("credential add failed: %v\n%s", err, out)
 	}
@@ -160,13 +160,16 @@ model_endpoint_capabilities:
 	if err != nil || len(listedProfiles.GetInferenceProfiles()) != 1 {
 		t.Fatalf("list inference profiles failed: profiles=%#v err=%v", listedProfiles.GetInferenceProfiles(), err)
 	}
-	credentialClient := adminv1.NewAdminInferenceCredentialServiceClient(conn)
-	rotated, err := credentialClient.RotateCredential(authCtx, &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest{Credential: "test-openai-key", SecretMaterial: &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest_ExternalRef{ExternalRef: "env://OPENAI_API_KEY_V2"}})
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "rotate", "test-openai-key", "--external-ref", "env://OPENAI_API_KEY_V2")
 	if err != nil {
-		t.Fatalf("rotate credential failed: %v", err)
+		t.Fatalf("rotate credential failed: %v\n%s", err, out)
+	}
+	var rotated adminv1.AdminInferenceCredentialServiceRotateCredentialResponse
+	if err := json.Unmarshal([]byte(out), &rotated); err != nil {
+		t.Fatalf("decode rotated credential: %v\n%s", err, out)
 	}
 	if rotated.GetCredential().GetCredentialId() != createdCredential.GetCredential().GetCredentialId() || rotated.GetSecret().GetExternalRef() != "env://OPENAI_API_KEY_V2" {
-		t.Fatalf("unexpected rotated credential: %#v", rotated)
+		t.Fatalf("unexpected rotated credential: %#v", &rotated)
 	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "list", "--owner-type", "system", "--owner-id", "daemon-test")
 	if err != nil {
@@ -176,7 +179,7 @@ model_endpoint_capabilities:
 	if err := json.Unmarshal([]byte(out), &credentials); err != nil || len(credentials.GetCredentials()) != 1 || credentials.GetCredentials()[0].GetKey() != "test-openai-key" {
 		t.Fatalf("unexpected credentials: %#v err=%v out=%s", &credentials, err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "grant", "test-openai-key", "--space-id", spaceID, "--domain", "default", "--semantic-index", index.GetSemanticIndexId(), "--model-endpoint", "test-openai", "--model", "test/text-embedding", "--allow-background-use")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "grant", "test-openai-key", "--space-id", spaceID, "--domain", "default", "--semantic-index", index.GetSemanticIndexId(), "--model-endpoint", "test-openai", "--model", "test/text-embedding", "--allow-background-use", "--grantee-principal-id", "automation", "--allow-on-behalf-of-principal-id", "principal-a")
 	if err != nil {
 		t.Fatalf("credential grant failed: %v\n%s", err, out)
 	}
@@ -184,7 +187,7 @@ model_endpoint_capabilities:
 	if err := json.Unmarshal([]byte(out), &createdGrant); err != nil {
 		t.Fatalf("decode credential grant: %v\n%s", err, out)
 	}
-	if createdGrant.GetCredentialGrant().GetCredentialId() != createdCredential.GetCredential().GetCredentialId() || !createdGrant.GetCredentialGrant().GetAllowBackgroundUse() {
+	if createdGrant.GetCredentialGrant().GetCredentialId() != createdCredential.GetCredential().GetCredentialId() || !createdGrant.GetCredentialGrant().GetAllowBackgroundUse() || len(createdGrant.GetCredentialGrant().GetAllowOnBehalfOfPrincipalIds()) != 1 {
 		t.Fatalf("unexpected grant: %#v", &createdGrant)
 	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "policy", "allow", "--space-id", spaceID, "--domain", "default", "--reason", "daemon test")
@@ -218,7 +221,7 @@ model_endpoint_capabilities:
 	if err := json.Unmarshal([]byte(out), &policies); err != nil || len(policies.GetInferencePolicies()) != 1 || policies.GetInferencePolicies()[0].GetReason() != "daemon test" {
 		t.Fatalf("unexpected policies: %#v err=%v out=%s", &policies, err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "model-endpoint", "disable", "test-openai")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "endpoint", "disable", "test-openai")
 	if err != nil {
 		t.Fatalf("model endpoint disable failed: %v\n%s", err, out)
 	}
@@ -226,7 +229,7 @@ model_endpoint_capabilities:
 	if err := json.Unmarshal([]byte(out), &disabledEndpoint); err != nil || disabledEndpoint.GetModelEndpoint().GetEnabled() {
 		t.Fatalf("unexpected disabled endpoint: %#v err=%v out=%s", &disabledEndpoint, err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "revoked", "test-openai-key")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "revoke", "test-openai-key")
 	if err != nil {
 		t.Fatalf("credential revoke failed: %v\n%s", err, out)
 	}
@@ -242,7 +245,7 @@ model_endpoint_capabilities:
 	if err == nil || !strings.Contains(err.Error()+out, "purge_references") {
 		t.Fatalf("expected referenced semantic index delete failure, err=%v out=%s", err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "grant", "expire", createdGrant.GetCredentialGrant().GetCredentialGrantId(), "--space-id", spaceID)
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "grant", "expire", createdGrant.GetCredentialGrant().GetCredentialGrantId(), "--space-id", spaceID)
 	if err != nil {
 		t.Fatalf("credential grant expire failed: %v\n%s", err, out)
 	}
@@ -266,7 +269,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("capability delete failed: %v\n%s", err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "model-endpoint", "delete", "test-openai")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "endpoint", "delete", "test-openai")
 	if err != nil {
 		t.Fatalf("model endpoint delete failed: %v\n%s", err, out)
 	}

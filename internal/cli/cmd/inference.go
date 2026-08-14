@@ -1,17 +1,22 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/myceldb/mycel/internal/cli/app"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,13 +43,25 @@ type capabilityDefinition struct {
 }
 
 func NewInferenceCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "inference", Short: "Provision inference endpoints, models, credentials, profiles, grants, and policies"}
-	cmd.AddCommand(newInferencePackageCommand(a), newInferenceModelEndpointCommand(a), newInferenceModelCommand(a), newInferenceVectorStoreCommand(a), newInferenceCapabilityCommand(a), newInferenceCredentialCommand(a), newInferenceProfileCommand(a), newInferencePolicyCommand(a))
+	cmd := &cobra.Command{Use: "inference", Short: "Provision inference endpoints, models, credentials, profiles, grants, policies, decisions, and usage"}
+	cmd.AddCommand(
+		newInferencePackageCommand(a),
+		newInferenceModelEndpointCommand(a),
+		newInferenceModelCommand(a),
+		newInferenceVectorStoreCommand(a),
+		newInferenceCapabilityCommand(a),
+		newInferenceCredentialCommand(a),
+		newInferenceGrantCommand(a),
+		newInferenceProfileCommand(a),
+		newInferencePolicyCommand(a),
+		newInferenceDecisionCommand(a),
+		newInferenceUsageCommand(a),
+	)
 	return cmd
 }
 
 func newInferencePackageCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "package", Short: "Manage inference definition packages"}
+	cmd := &cobra.Command{Use: "package", Aliases: []string{"packages"}, Short: "Manage inference definition packages"}
 	cmd.AddCommand(newInferencePackageApplyCommand(a), newInferencePackageListCommand(a))
 	return cmd
 }
@@ -122,7 +139,7 @@ func newInferencePackageListCommand(a *app.App) *cobra.Command {
 }
 
 func newInferenceCapabilityCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "capability", Short: "Manage model endpoint capabilities"}
+	cmd := &cobra.Command{Use: "capability", Aliases: []string{"capabilities"}, Short: "Manage model endpoint capabilities"}
 	cmd.AddCommand(newInferenceCapabilityListCommand(a), newInferenceCapabilityAddCommand(a), newInferenceCapabilitySetEnabledCommand(a, true), newInferenceCapabilitySetEnabledCommand(a, false), newInferenceCapabilityDeleteCommand(a))
 	return cmd
 }
@@ -200,7 +217,7 @@ func newInferenceCapabilityAddCommand(a *app.App) *cobra.Command {
 }
 
 func newInferenceModelEndpointCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "model-endpoint", Aliases: []string{"endpoint"}, Short: "Manage model endpoints"}
+	cmd := &cobra.Command{Use: "endpoint", Aliases: []string{"endpoints", "model-endpoint", "model-endpoints"}, Short: "Manage model endpoints"}
 	cmd.AddCommand(newInferenceModelEndpointListCommand(a), newInferenceModelEndpointSetEnabledCommand(a, true), newInferenceModelEndpointSetEnabledCommand(a, false), newInferenceModelEndpointDeleteCommand(a))
 	return cmd
 }
@@ -271,7 +288,7 @@ func newInferenceModelEndpointDeleteCommand(a *app.App) *cobra.Command {
 }
 
 func newInferenceModelCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "model", Short: "Manage inference models"}
+	cmd := &cobra.Command{Use: "model", Aliases: []string{"models"}, Short: "Manage inference models"}
 	cmd.AddCommand(newInferenceModelListCommand(a), newInferenceModelDeleteCommand(a))
 	return cmd
 }
@@ -322,7 +339,7 @@ func newInferenceModelDeleteCommand(a *app.App) *cobra.Command {
 }
 
 func newInferenceVectorStoreCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "vector-store", Short: "Manage vector stores"}
+	cmd := &cobra.Command{Use: "vector-store", Aliases: []string{"vector-stores"}, Short: "Manage vector stores"}
 	cmd.AddCommand(newInferenceVectorStoreListCommand(a), newInferenceVectorStoreSetEnabledCommand(a, true), newInferenceVectorStoreSetEnabledCommand(a, false), newInferenceVectorStoreDeleteCommand(a))
 	return cmd
 }
@@ -393,13 +410,23 @@ func newInferenceVectorStoreDeleteCommand(a *app.App) *cobra.Command {
 }
 
 func newInferenceCredentialCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "credential", Short: "Manage inference credentials and grants"}
-	cmd.AddCommand(newInferenceCredentialAddCommand(a), newInferenceCredentialListCommand(a), newInferenceCredentialSetStatusCommand(a, domainsemantic.CredentialStatusActive), newInferenceCredentialSetStatusCommand(a, domainsemantic.CredentialStatusDisabled), newInferenceCredentialSetStatusCommand(a, domainsemantic.CredentialStatusRevoked), newInferenceCredentialDeleteCommand(a), newInferenceCredentialGrantCommand(a))
+	cmd := &cobra.Command{Use: "credential", Aliases: []string{"credentials"}, Short: "Manage inference credentials"}
+	cmd.AddCommand(newInferenceCredentialAddCommand(a), newInferenceCredentialListCommand(a), newInferenceCredentialRotateCommand(a), newInferenceCredentialSetStatusCommand(a, domainsemantic.CredentialStatusActive), newInferenceCredentialSetStatusCommand(a, domainsemantic.CredentialStatusDisabled), newInferenceCredentialSetStatusCommand(a, domainsemantic.CredentialStatusRevoked), newInferenceCredentialDeleteCommand(a), newInferenceGrantCommand(a))
 	return cmd
 }
 
 func newInferenceCredentialSetStatusCommand(a *app.App, status domainsemantic.CredentialStatus) *cobra.Command {
-	return &cobra.Command{Use: string(status) + " CREDENTIAL", Short: "Set credential lifecycle status via daemon gRPC", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	use := "enable CREDENTIAL"
+	aliases := []string{"active"}
+	switch status {
+	case domainsemantic.CredentialStatusDisabled:
+		use = "disable CREDENTIAL"
+		aliases = []string{"disabled"}
+	case domainsemantic.CredentialStatusRevoked:
+		use = "revoke CREDENTIAL"
+		aliases = []string{"revoked"}
+	}
+	return &cobra.Command{Use: use, Aliases: aliases, Short: "Set credential lifecycle status via daemon gRPC", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
@@ -435,7 +462,7 @@ func newInferenceCredentialDeleteCommand(a *app.App) *cobra.Command {
 func newInferenceCredentialAddCommand(a *app.App) *cobra.Command {
 	var endpointRef, ownerUser, ownerType, ownerID, authType, apiKey, apiKeyEnv, externalRef, name string
 	var isDefault bool
-	cmd := &cobra.Command{Use: "add KEY", Short: "Add an inference credential", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "create KEY", Aliases: []string{"add"}, Short: "Create an inference credential", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		return runDaemonInferenceCredentialAdd(cmd, a, args[0], endpointRef, ownerUser, ownerType, ownerID, authType, apiKey, apiKeyEnv, externalRef, name, isDefault)
 	}}
 	cmd.Flags().StringVar(&endpointRef, "model-endpoint", "", "model endpoint key or ID")
@@ -449,6 +476,35 @@ func newInferenceCredentialAddCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "credential display name")
 	cmd.Flags().BoolVar(&isDefault, "default", false, "mark credential as default metadata")
 	_ = cmd.MarkFlagRequired("model-endpoint")
+	return cmd
+}
+
+func newInferenceCredentialRotateCommand(a *app.App) *cobra.Command {
+	var apiKey, apiKeyEnv, externalRef string
+	cmd := &cobra.Command{Use: "rotate CREDENTIAL", Short: "Rotate an inference credential secret", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		if apiKey == "" && apiKeyEnv != "" {
+			apiKey = os.Getenv(apiKeyEnv)
+		}
+		req := &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest{Credential: args[0]}
+		if externalRef != "" {
+			req.SecretMaterial = &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest_ExternalRef{ExternalRef: externalRef}
+		} else {
+			req.SecretMaterial = &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest_SecretValue{SecretValue: apiKey}
+		}
+		res, err := adminv1.NewAdminInferenceCredentialServiceClient(conn).RotateCredential(authCtx, req)
+		if err != nil {
+			return err
+		}
+		return a.Print(res, fmt.Sprintf("credential rotated: %s\n", res.GetCredential().GetCredentialId()))
+	}}
+	cmd.Flags().StringVar(&apiKey, "api-key", "", "secret value (prefer --api-key-env)")
+	cmd.Flags().StringVar(&apiKeyEnv, "api-key-env", "", "environment variable containing the secret value")
+	cmd.Flags().StringVar(&externalRef, "external-ref", "", "external secret reference")
 	return cmd
 }
 
@@ -490,13 +546,13 @@ func newInferenceCredentialListCommand(a *app.App) *cobra.Command {
 	return cmd
 }
 
-func newInferenceCredentialGrantCommand(a *app.App) *cobra.Command {
+func newInferenceGrantCommand(a *app.App) *cobra.Command {
 	var spaceIDText, domainRef, indexRef, nodeText, endpointRef, modelRef string
-	var operations []string
+	var operations, granteePrincipalIDs, allowOnBehalfPrincipalIDs []string
 	var allowBackgroundUse, includeDescendants, isDefault bool
 	var priority int
-	cmd := &cobra.Command{Use: "grant CREDENTIAL", Short: "Grant a credential for a space-owned processing scope", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		return runDaemonInferenceCredentialGrant(cmd, a, args[0], spaceIDText, domainRef, indexRef, nodeText, endpointRef, modelRef, operations, allowBackgroundUse, includeDescendants, isDefault, priority)
+	cmd := &cobra.Command{Use: "grant CREDENTIAL", Aliases: []string{"grants"}, Short: "Grant a credential for a space-owned processing scope", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return runDaemonInferenceCredentialGrant(cmd, a, args[0], spaceIDText, domainRef, indexRef, nodeText, endpointRef, modelRef, operations, granteePrincipalIDs, allowOnBehalfPrincipalIDs, allowBackgroundUse, includeDescendants, isDefault, priority)
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
 	cmd.Flags().StringVar(&domainRef, "domain", "", "domain key or ID")
@@ -505,6 +561,8 @@ func newInferenceCredentialGrantCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&endpointRef, "model-endpoint", "", "optional model endpoint constraint")
 	cmd.Flags().StringVar(&modelRef, "model", "", "optional model constraint")
 	cmd.Flags().StringArrayVar(&operations, "operation", []string{string(domainsemantic.OperationEmbeddings)}, "operation allowed by grant")
+	cmd.Flags().StringArrayVar(&granteePrincipalIDs, "grantee-principal-id", nil, "actor principal ID allowed by this grant; repeatable")
+	cmd.Flags().StringArrayVar(&allowOnBehalfPrincipalIDs, "allow-on-behalf-of-principal-id", nil, "on-behalf-of principal ID allowed by this grant; repeatable")
 	cmd.Flags().BoolVar(&allowBackgroundUse, "allow-background-use", false, "allow background semantic maintenance")
 	cmd.Flags().BoolVar(&includeDescendants, "include-descendants", false, "include descendant nodes in node scope")
 	cmd.Flags().BoolVar(&isDefault, "default", false, "mark grant as default metadata")
@@ -590,8 +648,8 @@ func newInferenceCredentialGrantListCommand(a *app.App) *cobra.Command {
 }
 
 func newInferencePolicyCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "policy", Short: "Manage inference content policies"}
-	cmd.AddCommand(newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectAllow), newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectDeny), newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectRestrict), newInferencePolicyListCommand(a), newInferencePolicyExpireCommand(a), newInferencePolicyDeleteCommand(a), newInferencePolicyDecisionCommand(a))
+	cmd := &cobra.Command{Use: "policy", Aliases: []string{"policies"}, Short: "Manage inference content policies"}
+	cmd.AddCommand(newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectAllow), newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectDeny), newInferencePolicyEffectCommand(a, domainsemantic.PolicyEffectRestrict), newInferencePolicyListCommand(a), newInferencePolicyExpireCommand(a), newInferencePolicyDeleteCommand(a), newInferenceDecisionCommand(a))
 	return cmd
 }
 
@@ -654,13 +712,13 @@ func newInferencePolicyDeleteCommand(a *app.App) *cobra.Command {
 	return cmd
 }
 
-func newInferencePolicyDecisionCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "decision", Short: "Inspect inference policy decisions"}
-	cmd.AddCommand(newInferencePolicyDecisionGetCommand(a))
+func newInferenceDecisionCommand(a *app.App) *cobra.Command {
+	cmd := &cobra.Command{Use: "decision", Aliases: []string{"decisions"}, Short: "Inspect inference policy decisions"}
+	cmd.AddCommand(newInferenceDecisionGetCommand(a))
 	return cmd
 }
 
-func newInferencePolicyDecisionGetCommand(a *app.App) *cobra.Command {
+func newInferenceDecisionGetCommand(a *app.App) *cobra.Command {
 	var spaceID string
 	cmd := &cobra.Command{Use: "get POLICY_DECISION_ID", Short: "Get an inference policy decision", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
@@ -742,7 +800,7 @@ func runDaemonInferenceCredentialAdd(cmd *cobra.Command, a *app.App, key, endpoi
 	return a.Print(res, fmt.Sprintf("credential added: %s\n", res.GetCredential().GetCredentialId()))
 }
 
-func runDaemonInferenceCredentialGrant(cmd *cobra.Command, a *app.App, credentialRef, spaceIDText, domainRef, indexRef, nodeText, endpointRef, modelRef string, operations []string, allowBackgroundUse, includeDescendants, isDefault bool, priority int) error {
+func runDaemonInferenceCredentialGrant(cmd *cobra.Command, a *app.App, credentialRef, spaceIDText, domainRef, indexRef, nodeText, endpointRef, modelRef string, operations, granteePrincipalIDs, allowOnBehalfPrincipalIDs []string, allowBackgroundUse, includeDescendants, isDefault bool, priority int) error {
 	conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 	if err != nil {
 		return err
@@ -759,7 +817,7 @@ func runDaemonInferenceCredentialGrant(cmd *cobra.Command, a *app.App, credentia
 			return err
 		}
 	}
-	req := &adminv1.AdminInferenceGrantServiceCreateCredentialGrantRequest{SpaceId: spaceID.String(), Credential: credentialRef, Scope: &adminv1.ProcessingScope{SpaceId: spaceID.String(), DomainId: domainID, SemanticIndexId: indexRef, NodeId: nodeText, IncludeDescendants: includeDescendants}, Operations: operations, ModelEndpoint: endpointRef, Model: modelRef, Priority: int32(priority), IsDefault: isDefault, AllowBackgroundUse: allowBackgroundUse}
+	req := &adminv1.AdminInferenceGrantServiceCreateCredentialGrantRequest{SpaceId: spaceID.String(), Credential: credentialRef, Scope: &adminv1.ProcessingScope{SpaceId: spaceID.String(), DomainId: domainID, SemanticIndexId: indexRef, NodeId: nodeText, IncludeDescendants: includeDescendants}, Operations: operations, ModelEndpoint: endpointRef, Model: modelRef, Priority: int32(priority), IsDefault: isDefault, AllowBackgroundUse: allowBackgroundUse, GranteePrincipalIds: granteePrincipalIDs, AllowOnBehalfOfPrincipalIds: allowOnBehalfPrincipalIDs}
 	res, err := adminv1.NewAdminInferenceGrantServiceClient(conn).CreateCredentialGrant(authCtx, req)
 	if err != nil {
 		return err
@@ -791,8 +849,235 @@ func runDaemonInferencePolicyCreate(cmd *cobra.Command, a *app.App, effect domai
 	return a.Print(res, fmt.Sprintf("inference policy added: %s\n", res.GetInferencePolicy().GetInferencePolicyId()))
 }
 
+func newInferenceUsageCommand(a *app.App) *cobra.Command {
+	cmd := &cobra.Command{Use: "usage", Short: "Inspect neutral inference usage telemetry"}
+	cmd.AddCommand(newInferenceUsageListCommand(a), newInferenceUsageSummarizeCommand(a))
+	return cmd
+}
+
+func newInferenceUsageListCommand(a *app.App) *cobra.Command {
+	var f inferenceUsageFlags
+	cmd := &cobra.Command{Use: "list", Short: "List inference usage events", RunE: func(cmd *cobra.Command, args []string) error {
+		return runInferenceUsageList(cmd, a, f)
+	}}
+	bindInferenceUsageScopeFlags(cmd, &f)
+	cmd.Flags().StringVar(&f.Operation, "operation", "", "operation filter: embeddings, chat, rerank, summarize, classify")
+	cmd.Flags().StringVar(&f.UsageMode, "usage-mode", "", "usage mode filter: interactive, automation, background, semantic")
+	cmd.Flags().StringVar(&f.Status, "status", "", "status filter: succeeded, failed, denied, canceled")
+	cmd.Flags().StringVar(&f.ProfileID, "profile-id", "", "inference profile UUID filter")
+	cmd.Flags().StringVar(&f.EndpointID, "endpoint-id", "", "model endpoint UUID filter")
+	cmd.Flags().StringVar(&f.ModelID, "model-id", "", "model UUID filter")
+	cmd.Flags().StringVar(&f.CredentialGrantID, "credential-grant-id", "", "credential grant UUID filter")
+	cmd.Flags().StringVar(&f.AutomationID, "automation-id", "", "automation ID filter")
+	cmd.Flags().StringVar(&f.AutomationRunID, "automation-run-id", "", "automation run ID filter")
+	cmd.Flags().StringVar(&f.ActorPrincipalID, "actor-principal-id", "", "actor principal ID filter")
+	cmd.Flags().StringVar(&f.OnBehalfOfPrincipalID, "on-behalf-of-principal-id", "", "on-behalf-of principal ID filter")
+	cmd.Flags().Int32Var(&f.PageSize, "page-size", 100, "page size")
+	cmd.Flags().StringVar(&f.PageToken, "page-token", "", "page token")
+	return cmd
+}
+
+func newInferenceUsageSummarizeCommand(a *app.App) *cobra.Command {
+	var f inferenceUsageFlags
+	cmd := &cobra.Command{Use: "summarize", Aliases: []string{"summary"}, Short: "Summarize inference usage telemetry", RunE: func(cmd *cobra.Command, args []string) error {
+		return runInferenceUsageSummarize(cmd, a, f)
+	}}
+	bindInferenceUsageScopeFlags(cmd, &f)
+	cmd.Flags().StringArrayVar(&f.GroupBy, "group-by", nil, "summary group field; repeatable")
+	return cmd
+}
+
+type inferenceUsageFlags struct {
+	SpaceID               string
+	DomainRef             string
+	SemanticIndexID       string
+	NodeID                string
+	IncludeDescendants    bool
+	Operation             string
+	UsageMode             string
+	Status                string
+	ProfileID             string
+	EndpointID            string
+	ModelID               string
+	CredentialGrantID     string
+	AutomationID          string
+	AutomationRunID       string
+	ActorPrincipalID      string
+	OnBehalfOfPrincipalID string
+	Since                 string
+	Until                 string
+	PageSize              int32
+	PageToken             string
+	GroupBy               []string
+}
+
+func bindInferenceUsageScopeFlags(cmd *cobra.Command, f *inferenceUsageFlags) {
+	cmd.Flags().StringVar(&f.SpaceID, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&f.DomainRef, "domain", "", "domain key or ID")
+	cmd.Flags().StringVar(&f.SemanticIndexID, "semantic-index", "", "semantic index key or ID")
+	cmd.Flags().StringVar(&f.NodeID, "node", "", "node ID scope")
+	cmd.Flags().BoolVar(&f.IncludeDescendants, "include-descendants", false, "include descendant nodes in node scope")
+	cmd.Flags().StringVar(&f.Since, "since", "", "include usage at or after RFC3339 timestamp")
+	cmd.Flags().StringVar(&f.Until, "until", "", "include usage at or before RFC3339 timestamp")
+}
+
+func runInferenceUsageList(cmd *cobra.Command, a *app.App, f inferenceUsageFlags) error {
+	conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	scope, err := inferenceUsageScope(cmd, conn, authCtx, f)
+	if err != nil {
+		return err
+	}
+	op, err := optionalInferenceOperationFromFlag(f.Operation)
+	if err != nil {
+		return err
+	}
+	mode, err := inferenceUsageModeFromFlag(f.UsageMode)
+	if err != nil {
+		return err
+	}
+	status, err := inferenceUsageStatusFromFlag(f.Status)
+	if err != nil {
+		return err
+	}
+	since, err := parseOptionalTimestampFlag("--since", f.Since)
+	if err != nil {
+		return err
+	}
+	until, err := parseOptionalTimestampFlag("--until", f.Until)
+	if err != nil {
+		return err
+	}
+	res, err := adminv1.NewAdminInferenceUsageServiceClient(conn).ListUsageEvents(authCtx, &adminv1.AdminInferenceUsageServiceListUsageEventsRequest{SpaceId: f.SpaceID, Scope: scope, Operation: op, UsageMode: mode, Status: status, InferenceProfileId: f.ProfileID, ModelEndpointId: f.EndpointID, ModelId: f.ModelID, CredentialGrantId: f.CredentialGrantID, AutomationId: f.AutomationID, AutomationRunId: f.AutomationRunID, SemanticIndexId: f.SemanticIndexID, ActorPrincipalId: f.ActorPrincipalID, OnBehalfOfPrincipalId: f.OnBehalfOfPrincipalID, Since: since, Until: until, PageSize: f.PageSize, PageToken: f.PageToken})
+	if err != nil {
+		return err
+	}
+	if a.Output == "json" {
+		return a.Print(res, "")
+	}
+	for _, event := range res.GetUsageEvents() {
+		fmt.Printf("%s\t%s\t%s\t%s\tspace=%s\ttokens=%d\n", event.GetUsageEventId(), event.GetOperation().String(), event.GetUsageMode().String(), event.GetStatus().String(), event.GetSpaceId(), event.GetTotalTokens())
+	}
+	if res.GetNextPageToken() != "" {
+		fmt.Printf("next page token: %s\n", res.GetNextPageToken())
+	}
+	return nil
+}
+
+func runInferenceUsageSummarize(cmd *cobra.Command, a *app.App, f inferenceUsageFlags) error {
+	conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	scope, err := inferenceUsageScope(cmd, conn, authCtx, f)
+	if err != nil {
+		return err
+	}
+	since, err := parseOptionalTimestampFlag("--since", f.Since)
+	if err != nil {
+		return err
+	}
+	until, err := parseOptionalTimestampFlag("--until", f.Until)
+	if err != nil {
+		return err
+	}
+	res, err := adminv1.NewAdminInferenceUsageServiceClient(conn).SummarizeUsage(authCtx, &adminv1.AdminInferenceUsageServiceSummarizeUsageRequest{SpaceId: f.SpaceID, Scope: scope, Since: since, Until: until, GroupBy: f.GroupBy})
+	if err != nil {
+		return err
+	}
+	if a.Output == "json" {
+		return a.Print(res, "")
+	}
+	for _, summary := range res.GetSummaries() {
+		fmt.Printf("%s\trequests=%d\tsucceeded=%d\tfailed=%d\tdenied=%d\ttokens=%d\n", formatUsageGroup(summary.GetGroup()), summary.GetRequestCount(), summary.GetSucceededCount(), summary.GetFailedCount(), summary.GetDeniedCount(), summary.GetTotalTokens())
+	}
+	return nil
+}
+
+func inferenceUsageScope(cmd *cobra.Command, conn *grpc.ClientConn, authCtx context.Context, f inferenceUsageFlags) (*commonv1.InferenceScope, error) {
+	spaceID := strings.TrimSpace(f.SpaceID)
+	domainID := ""
+	if strings.TrimSpace(f.DomainRef) != "" {
+		if spaceID == "" {
+			return nil, fmt.Errorf("--space-id is required when --domain is set")
+		}
+		var err error
+		domainID, err = daemonResolveAdminDomainID(cmd.Context(), conn, authCtx, spaceID, f.DomainRef)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &commonv1.InferenceScope{SpaceId: spaceID, DomainId: domainID, SemanticIndexId: f.SemanticIndexID, NodeId: f.NodeID, IncludeDescendants: f.IncludeDescendants}, nil
+}
+
+func formatUsageGroup(group map[string]string) string {
+	if len(group) == 0 {
+		return "all"
+	}
+	keys := make([]string, 0, len(group))
+	for key := range group {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+group[key])
+	}
+	return strings.Join(parts, ",")
+}
+
+func parseOptionalTimestampFlag(name, value string) (*timestamppb.Timestamp, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be RFC3339: %w", name, err)
+	}
+	return timestamppb.New(parsed), nil
+}
+
+func inferenceUsageModeFromFlag(value string) (commonv1.InferenceUsageMode, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_UNSPECIFIED, nil
+	case "interactive":
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_INTERACTIVE, nil
+	case "automation":
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_AUTOMATION, nil
+	case "background":
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_BACKGROUND, nil
+	case "semantic":
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_SEMANTIC, nil
+	default:
+		return commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_UNSPECIFIED, fmt.Errorf("unsupported inference usage mode %q", value)
+	}
+}
+
+func inferenceUsageStatusFromFlag(value string) (commonv1.InferenceUsageStatus, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_UNSPECIFIED, nil
+	case "succeeded", "success":
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_SUCCEEDED, nil
+	case "failed", "failure":
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_FAILED, nil
+	case "denied":
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_DENIED, nil
+	case "canceled", "cancelled":
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_CANCELED, nil
+	default:
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_UNSPECIFIED, fmt.Errorf("unsupported inference usage status %q", value)
+	}
+}
+
 func newInferenceProfileCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "profile", Short: "Manage space-scoped inference profiles"}
+	cmd := &cobra.Command{Use: "profile", Aliases: []string{"profiles"}, Short: "Manage space-scoped inference profiles"}
 	cmd.AddCommand(newInferenceProfileCreateCommand(a), newInferenceProfileListCommand(a), newInferenceProfileGetCommand(a), newInferenceProfileSetEnabledCommand(a, true), newInferenceProfileSetEnabledCommand(a, false), newInferenceProfileDeleteCommand(a))
 	return cmd
 }
@@ -821,7 +1106,11 @@ func newInferenceProfileCreateCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceProfileServiceClient(conn).CreateInferenceProfile(authCtx, &adminv1.AdminInferenceProfileServiceCreateInferenceProfileRequest{SpaceId: spaceID, Key: args[0], DisplayName: displayName, Description: description, Operation: op, Purpose: purpose, DomainIds: domains, CapabilityRefs: capabilities, EndpointRefs: endpoints, ModelRefs: models, RequiredFeatures: features, PrivacyRequirement: privacy, DefaultParameters: params, Enabled: true})
+		resolvedDomains, err := resolveAdminDomainRefs(cmd, conn, authCtx, spaceID, domains)
+		if err != nil {
+			return err
+		}
+		res, err := adminv1.NewAdminInferenceProfileServiceClient(conn).CreateInferenceProfile(authCtx, &adminv1.AdminInferenceProfileServiceCreateInferenceProfileRequest{SpaceId: spaceID, Key: args[0], DisplayName: displayName, Description: description, Operation: op, Purpose: purpose, DomainIds: resolvedDomains, CapabilityRefs: capabilities, EndpointRefs: endpoints, ModelRefs: models, RequiredFeatures: features, PrivacyRequirement: privacy, DefaultParameters: params, Enabled: true})
 		if err != nil {
 			return err
 		}
@@ -862,7 +1151,17 @@ func newInferenceProfileListCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceProfileServiceClient(conn).ListInferenceProfiles(authCtx, &adminv1.AdminInferenceProfileServiceListInferenceProfilesRequest{SpaceId: spaceID, PageSize: pageSize, PageToken: pageToken, DomainId: domainID, Operation: op, Purpose: purpose, IncludeDisabled: includeDisabled})
+		resolvedDomainID := ""
+		if strings.TrimSpace(domainID) != "" {
+			resolvedDomains, err := resolveAdminDomainRefs(cmd, conn, authCtx, spaceID, []string{domainID})
+			if err != nil {
+				return err
+			}
+			if len(resolvedDomains) > 0 {
+				resolvedDomainID = resolvedDomains[0]
+			}
+		}
+		res, err := adminv1.NewAdminInferenceProfileServiceClient(conn).ListInferenceProfiles(authCtx, &adminv1.AdminInferenceProfileServiceListInferenceProfilesRequest{SpaceId: spaceID, PageSize: pageSize, PageToken: pageToken, DomainId: resolvedDomainID, Operation: op, Purpose: purpose, IncludeDisabled: includeDisabled})
 		if err != nil {
 			return err
 		}
@@ -947,6 +1246,22 @@ func newInferenceProfileDeleteCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
 	_ = cmd.MarkFlagRequired("space-id")
 	return cmd
+}
+
+func resolveAdminDomainRefs(cmd *cobra.Command, conn *grpc.ClientConn, authCtx context.Context, spaceID string, refs []string) ([]string, error) {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		resolved, err := daemonResolveAdminDomainID(cmd.Context(), conn, authCtx, spaceID, ref)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, resolved)
+	}
+	return out, nil
 }
 
 func inferenceOperationFromFlag(value string) (commonv1.InferenceOperation, error) {

@@ -51,13 +51,13 @@ A complete example lives at `examples/automations/summarize_page.json`.
 Create an automation:
 
 ```sh
-mycel automation put --domain <domain-uuid> examples/automations/summarize_page.json
+mycel automation create examples/automations/summarize_page.json --space-id <space-id> --domain default
 ```
 
 List automations:
 
 ```sh
-mycel automation list --domain <domain-uuid>
+mycel automation list --space-id <space-id> --domain default
 ```
 
 Inspect one definition:

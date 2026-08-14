@@ -682,11 +682,10 @@ CLI/API should support both patterns:
 
 ```sh
 mycel inference credential rotate openai-prod \
-  --secret-env OPENAI_API_KEY_V2
+  --external-ref env://OPENAI_API_KEY_V2
 
-mycel inference credential grant update '<grant-id>' \
-  --space-id '<space-id>' \
-  --credential openai-prod-v2
+mycel inference grant expire '<grant-id>' --space-id '<space-id>'
+mycel inference grant openai-prod-v2 --space-id '<space-id>' --domain notes --operation chat
 ```
 
 Secret representation:
@@ -905,18 +904,16 @@ shape as other scoped commands:
 
 ```sh
 mycel inference credential create openai-prod \
-  --endpoint openai \
+  --model-endpoint openai \
   --owner-type system \
   --owner-id daemon \
-  --auth-type bearer \
-  --secret-env OPENAI_API_KEY
+  --external-ref env://OPENAI_API_KEY
 
-mycel inference credential list --endpoint openai
-mycel inference credential get openai-prod
+mycel inference credential list --owner-type system
 mycel inference credential disable openai-prod
 mycel inference credential revoke openai-prod
-mycel inference credential rotate openai-prod --secret-env OPENAI_API_KEY_V2
-mycel inference credential delete openai-prod --delete-secret-if-unreferenced
+mycel inference credential rotate openai-prod --external-ref env://OPENAI_API_KEY_V2
+mycel inference credential delete openai-prod --delete-secret
 ```
 
 CLI output must never print secret material.
@@ -927,16 +924,15 @@ Grants should be top-level under `inference grant`, with `credential grant` as a
 alias if desired.
 
 ```sh
-mycel inference grant create \
+mycel inference grant openai-prod \
   --space-id <space-id> \
   --domain notes \
-  --credential openai-prod \
-  --profile summarize-page \
   --operation chat \
-  --usage-mode automation \
-  --allow-on-behalf-of space-principals
+  --model openai/gpt-4o-mini \
+  --grantee-principal-id automation \
+  --allow-on-behalf-of-principal-id <owner-principal-id>
 
-mycel inference grant list --space-id <space-id> --domain notes
+mycel inference grant list --space-id <space-id>
 mycel inference grant expire <grant-id> --space-id <space-id>
 mycel inference grant delete <grant-id> --space-id <space-id>
 ```
@@ -975,12 +971,14 @@ mycel inference usage list \
   --space-id <space-id> \
   --domain notes \
   --operation chat \
-  --automation summarize-page
+  --automation-id summarize-page
 
-mycel inference usage summary \
+mycel inference usage summarize \
   --space-id <space-id> \
-  --since 24h \
-  --group-by profile,operation,status
+  --since 2026-01-01T00:00:00Z \
+  --group-by profile_id \
+  --group-by operation \
+  --group-by status
 
 mycel inference decision get <decision-id> --space-id <space-id>
 ```
@@ -991,15 +989,15 @@ Automation commands should use consistent scope flags and should not expose
 provider credentials.
 
 ```sh
-mycel automation validate --space-id <space-id> --domain notes summarize-page.json
-mycel automation put --space-id <space-id> --domain notes summarize-page.json
+mycel automation validate summarize-page.json
+mycel automation create summarize-page.json --space-id <space-id> --domain notes
 mycel automation list --space-id <space-id> --domain notes
-mycel automation get --space-id <space-id> --domain notes summarize-page
-mycel automation enable --space-id <space-id> --domain notes summarize-page
-mycel automation disable --space-id <space-id> --domain notes summarize-page
-mycel automation delete --space-id <space-id> --domain notes summarize-page
-mycel automation run list --space-id <space-id> --domain notes --automation summarize-page
-mycel automation run get --space-id <space-id> --domain notes <run-id>
+mycel automation get summarize-page --space-id <space-id> --domain notes
+mycel automation enable summarize-page --space-id <space-id> --domain notes
+mycel automation disable summarize-page --space-id <space-id> --domain notes
+mycel automation delete summarize-page --space-id <space-id> --domain notes
+mycel automation runs --space-id <space-id> --domain notes --automation summarize-page
+mycel automation run get <run-id> --space-id <space-id> --domain notes
 ```
 
 Automation docs should show profile references, not provider/model/API key

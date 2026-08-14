@@ -93,7 +93,7 @@ Daemon-backed discovery:
 
 ```sh
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference package list
-./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference model-endpoint list
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference endpoint list
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference model list
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference vector-store list
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference capability list
@@ -103,14 +103,14 @@ Daemon-backed credentials, grants, and policies:
 
 ```sh
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
-  inference credential add openai-key \
+  inference credential create openai-key \
   --model-endpoint openai \
   --owner-type system \
   --owner-id daemon \
-  --external-ref vault://mycel/openai
+  --external-ref env://OPENAI_API_KEY
 
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
-  inference credential grant openai-key \
+  inference grant openai-key \
   --space-id '<space-id>' \
   --domain default \
   --allow-background-use
@@ -127,12 +127,12 @@ Inline `--api-key` material is encrypted by the daemon and requires `MYCELD_USER
 Daemon-backed soft cleanup/lifecycle commands:
 
 ```sh
-./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference model-endpoint disable openai
-./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference model-endpoint enable openai
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference endpoint disable openai
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference endpoint enable openai
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference vector-store disable mycel-file
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference capability disable '<capability-id>'
-./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference credential revoked openai-key
-./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference credential grant expire '<grant-id>' --space-id '<space-id>'
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference credential revoke openai-key
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference grant expire '<grant-id>' --space-id '<space-id>'
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference policy expire '<policy-id>' --space-id '<space-id>'
 ```
 
@@ -140,10 +140,10 @@ Daemon-backed hard-delete commands are reference-safe. Endpoint/model/vector-sto
 
 ```sh
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference credential delete openai-key --delete-grants --delete-secret
-./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference credential grant delete '<grant-id>' --space-id '<space-id>'
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference grant delete '<grant-id>' --space-id '<space-id>'
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference policy delete '<policy-id>' --space-id '<space-id>'
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference capability delete '<capability-id>'
-./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference model-endpoint delete openai
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference endpoint delete openai
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference model delete openai/text-embedding-3-small
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference vector-store delete mycel-file
 ```

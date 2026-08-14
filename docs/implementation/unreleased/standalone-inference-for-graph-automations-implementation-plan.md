@@ -39,7 +39,12 @@ automation service principal is bootstrapped with worker capabilities, runtime
 inference validates actor/on-behalf principal activity, principal-owned
 credential use on behalf of another principal requires an explicit grant, and
 automation definitions/invocations/runs preserve actor, on-behalf-of, and owner
-provenance.
+provenance. INF9 is implemented as a CLI and operations documentation tranche:
+`mycel inference` now exposes systematic singular resource nouns with useful
+plural/legacy aliases, top-level grant/decision/usage commands, credential
+rotation and lifecycle verbs, on-behalf grant flags, and automation commands can
+use `--space-id` plus domain key/ID refs while preserving domain UUID
+compatibility.
 
 No compatibility migration from the current semantic inference stores,
 automation provider configuration, automation run records, CLI shapes, or
