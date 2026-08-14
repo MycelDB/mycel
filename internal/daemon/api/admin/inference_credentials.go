@@ -16,7 +16,7 @@ import (
 // Credential and secret RPC handlers for AdminInferenceService.
 
 func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceCreateCredentialRequest) (*adminv1.AdminInferenceCredentialServiceCreateCredentialResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceCredentialManage, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(req.GetKey()) == "" {
@@ -75,7 +75,7 @@ func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *admin
 }
 
 func (s *AdminInferenceService) ListCredentials(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceListCredentialsRequest) (*adminv1.AdminInferenceCredentialServiceListCredentialsResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceCredentialRead, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	items, err := s.semantic.GlobalManager().ListCredentials(ctx)
@@ -107,7 +107,7 @@ func (s *AdminInferenceService) ListCredentials(ctx context.Context, req *adminv
 }
 
 func (s *AdminInferenceService) SetCredentialStatus(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceSetCredentialStatusRequest) (*adminv1.AdminInferenceCredentialServiceSetCredentialStatusResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceCredentialManage, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	id, err := s.resolveCredentialID(ctx, firstNonEmptyAdmin(req.GetCredentialId(), req.GetCredential()))
@@ -147,7 +147,7 @@ func (s *AdminInferenceService) SetCredentialStatus(ctx context.Context, req *ad
 }
 
 func (s *AdminInferenceService) RotateCredential(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceRotateCredentialRequest) (*adminv1.AdminInferenceCredentialServiceRotateCredentialResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceCredentialManage, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	id, err := s.resolveCredentialID(ctx, firstNonEmptyAdmin(req.GetCredentialId(), req.GetCredential()))
@@ -236,7 +236,7 @@ func (s *AdminInferenceService) hydrateCredentialFromInferenceStore(ctx context.
 }
 
 func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceDeleteCredentialRequest) (*adminv1.AdminInferenceCredentialServiceDeleteCredentialResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceCredentialManage, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	id, err := s.resolveCredentialID(ctx, firstNonEmptyAdmin(req.GetCredentialId(), req.GetCredential()))

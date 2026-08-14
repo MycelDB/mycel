@@ -28,14 +28,28 @@ func TestStandaloneBootstrapCreatesSystemAdminPrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPrincipals() error = %v", err)
 	}
-	if len(principals) != 1 {
-		t.Fatalf("expected one bootstrap principal, got %#v", principals)
+	if len(principals) != 2 {
+		t.Fatalf("expected admin and automation bootstrap principals, got %#v", principals)
 	}
-	admin := principals[0]
+	admin, err := m.FindPrincipal(ctx, "admin", "")
+	if err != nil {
+		t.Fatalf("FindPrincipal(admin) error = %v", err)
+	}
+	automationPrincipal, err := m.GetPrincipal(ctx, ServicePrincipalAutomation)
+	if err != nil {
+		t.Fatalf("GetPrincipal(automation) error = %v", err)
+	}
+	if automationPrincipal.Kind != PrincipalKindService || automationPrincipal.State != PrincipalStateActive || automationPrincipal.LoginEnabled {
+		t.Fatalf("unexpected automation service principal: %#v", automationPrincipal)
+	}
+	ok, err := m.HasCapability(ctx, automationPrincipal.ID, "automation.worker")
+	if err != nil || !ok {
+		t.Fatalf("automation service principal should have worker capability, ok=%v err=%v", ok, err)
+	}
 	if admin.Username != "admin" || admin.Kind != PrincipalKindHuman || admin.State != PrincipalStateActive || !admin.LoginEnabled {
 		t.Fatalf("unexpected bootstrap principal: %#v", admin)
 	}
-	ok, err := m.HasCapability(ctx, admin.ID, "identity.principal.update")
+	ok, err = m.HasCapability(ctx, admin.ID, "identity.principal.update")
 	if err != nil || !ok {
 		t.Fatalf("bootstrap principal should have system-admin capabilities, ok=%v err=%v", ok, err)
 	}
@@ -71,6 +85,9 @@ func TestPrincipalCRUDGrantsSessionsAndLastAdminInvariant(t *testing.T) {
 	}
 	if !containsString(access.Roles, RoleSpaceViewer) || !containsString(access.Capabilities, "query.run") {
 		t.Fatalf("expected role/capability in effective access, got %#v", access)
+	}
+	if err := m.Authorize(ctx, alice.ID, "query.run", AccessScope{Type: "domain", DomainID: "domain-without-space"}); err == nil {
+		t.Fatalf("space-scoped grant authorized domain request without matching space")
 	}
 	if _, err := m.RevokeCapability(ctx, alice.ID, capGrant.ID, admin.ID); err != nil {
 		t.Fatalf("RevokeCapability() error = %v", err)

@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
-	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
+	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -116,12 +116,34 @@ func (s *AdminInferenceService) resolveCredentialID(ctx context.Context, ref str
 	return uuid.Nil, status.Errorf(codes.NotFound, "credential %q not found", ref)
 }
 
-func (s *AdminInferenceService) requireInferenceManage(ctx context.Context) (daemonauth.Principal, error) {
+const (
+	capInferenceCatalogRead      = "inference.catalog.read"
+	capInferenceCatalogManage    = "inference.catalog.manage"
+	capInferenceProfileRead      = "inference.profile.read"
+	capInferenceProfileManage    = "inference.profile.manage"
+	capInferenceCredentialRead   = "inference.credential.read"
+	capInferenceCredentialManage = "inference.credential.manage"
+	capInferenceGrantManage      = "inference.grant.manage"
+	capInferencePolicyManage     = "inference.policy.manage"
+	capInferenceAuditRead        = "inference.audit.read"
+)
+
+type ScopedOperatorAuthorizer interface {
+	Authorize(ctx context.Context, principalID string, capability string, scope principalservice.AccessScope) error
+}
+
+func (s *AdminInferenceService) requireInferenceCapability(ctx context.Context, capability string, scope principalservice.AccessScope) (daemonauth.Principal, error) {
 	principal, err := principalFromContext(ctx)
 	if err != nil {
 		return daemonauth.Principal{}, err
 	}
-	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH.String())
+	if scoped, ok := s.authorizer.(ScopedOperatorAuthorizer); ok {
+		if err := scoped.Authorize(ctx, principal.PrincipalID, capability, scope); err != nil {
+			return daemonauth.Principal{}, err
+		}
+		return principal, nil
+	}
+	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, capability)
 	if err != nil {
 		return daemonauth.Principal{}, status.Errorf(codes.Internal, "authorize operator: %v", err)
 	}
@@ -129,4 +151,20 @@ func (s *AdminInferenceService) requireInferenceManage(ctx context.Context) (dae
 		return daemonauth.Principal{}, status.Error(codes.PermissionDenied, "operator lacks required inference capability")
 	}
 	return principal, nil
+}
+
+func inferenceScope(spaceID string, domainID string) principalservice.AccessScope {
+	spaceID = strings.TrimSpace(spaceID)
+	domainID = strings.TrimSpace(domainID)
+	if domainID != "" {
+		return principalservice.AccessScope{Type: "domain", SpaceID: spaceID, DomainID: domainID}
+	}
+	if spaceID != "" {
+		return principalservice.AccessScope{Type: "space", SpaceID: spaceID}
+	}
+	return principalservice.AccessScope{Type: "system"}
+}
+
+func (s *AdminInferenceService) requireInferenceManage(ctx context.Context) (daemonauth.Principal, error) {
+	return s.requireInferenceCapability(ctx, capInferenceCatalogManage, principalservice.AccessScope{Type: "system"})
 }

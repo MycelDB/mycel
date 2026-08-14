@@ -24,22 +24,25 @@ const (
 )
 
 type Definition struct {
-	ID             string          `json:"id"`
-	Name           string          `json:"name,omitempty"`
-	Version        int             `json:"version"`
-	DomainID       graph.DomainID  `json:"domain_id"`
-	Status         string          `json:"status"`
-	Trigger        Trigger         `json:"on"`
-	Condition      Condition       `json:"condition"`
-	Input          Input           `json:"input"`
-	Inference      InferenceRef    `json:"inference,omitempty"`
-	LegacyModelRef *LegacyModelRef `json:"model,omitempty"`
-	Prompt         string          `json:"prompt"`
-	Output         Output          `json:"output,omitempty"`
-	Workflow       *Workflow       `json:"workflow,omitempty"`
-	Safety         Safety          `json:"safety,omitempty"`
-	CreatedAt      time.Time       `json:"created_at,omitempty"`
-	UpdatedAt      time.Time       `json:"updated_at,omitempty"`
+	ID                   string          `json:"id"`
+	Name                 string          `json:"name,omitempty"`
+	Version              int             `json:"version"`
+	DomainID             graph.DomainID  `json:"domain_id"`
+	Status               string          `json:"status"`
+	Trigger              Trigger         `json:"on"`
+	Condition            Condition       `json:"condition"`
+	Input                Input           `json:"input"`
+	Inference            InferenceRef    `json:"inference,omitempty"`
+	LegacyModelRef       *LegacyModelRef `json:"model,omitempty"`
+	Prompt               string          `json:"prompt"`
+	Output               Output          `json:"output,omitempty"`
+	Workflow             *Workflow       `json:"workflow,omitempty"`
+	Safety               Safety          `json:"safety,omitempty"`
+	OwnerPrincipalID     string          `json:"owner_principal_id,omitempty"`
+	CreatedByPrincipalID string          `json:"created_by_principal_id,omitempty"`
+	UpdatedByPrincipalID string          `json:"updated_by_principal_id,omitempty"`
+	CreatedAt            time.Time       `json:"created_at,omitempty"`
+	UpdatedAt            time.Time       `json:"updated_at,omitempty"`
 }
 
 type Workflow struct {
@@ -170,25 +173,26 @@ type Idempotency struct {
 }
 
 type Invocation struct {
-	ID                    string         `json:"id"`
-	DomainID              graph.DomainID `json:"domain_id"`
-	SpaceID               string         `json:"space_id,omitempty"`
-	AutomationID          string         `json:"automation_id"`
-	AutomationVersion     int            `json:"automation_version"`
-	EventID               string         `json:"event_id"`
-	ChangedElementID      string         `json:"changed_element_id"`
-	ChangedElementKind    string         `json:"changed_element_kind"`
-	OldNode               *graph.Node    `json:"old_node,omitempty"`
-	EventType             string         `json:"event_type"`
-	ActorPrincipalID      string         `json:"actor_principal_id,omitempty"`
-	OnBehalfOfPrincipalID string         `json:"on_behalf_of_principal_id,omitempty"`
-	InputHash             string         `json:"input_hash,omitempty"`
-	Status                string         `json:"status"`
-	SkipReason            string         `json:"skip_reason,omitempty"`
-	AttemptCount          int            `json:"attempt_count,omitempty"`
-	NextAttemptAt         time.Time      `json:"next_attempt_at,omitempty"`
-	CreatedAt             time.Time      `json:"created_at,omitempty"`
-	UpdatedAt             time.Time      `json:"updated_at,omitempty"`
+	ID                         string         `json:"id"`
+	DomainID                   graph.DomainID `json:"domain_id"`
+	SpaceID                    string         `json:"space_id,omitempty"`
+	AutomationID               string         `json:"automation_id"`
+	AutomationVersion          int            `json:"automation_version"`
+	EventID                    string         `json:"event_id"`
+	ChangedElementID           string         `json:"changed_element_id"`
+	ChangedElementKind         string         `json:"changed_element_kind"`
+	OldNode                    *graph.Node    `json:"old_node,omitempty"`
+	EventType                  string         `json:"event_type"`
+	ActorPrincipalID           string         `json:"actor_principal_id,omitempty"`
+	OnBehalfOfPrincipalID      string         `json:"on_behalf_of_principal_id,omitempty"`
+	AutomationOwnerPrincipalID string         `json:"automation_owner_principal_id,omitempty"`
+	InputHash                  string         `json:"input_hash,omitempty"`
+	Status                     string         `json:"status"`
+	SkipReason                 string         `json:"skip_reason,omitempty"`
+	AttemptCount               int            `json:"attempt_count,omitempty"`
+	NextAttemptAt              time.Time      `json:"next_attempt_at,omitempty"`
+	CreatedAt                  time.Time      `json:"created_at,omitempty"`
+	UpdatedAt                  time.Time      `json:"updated_at,omitempty"`
 }
 
 type WorkflowInstance struct {
@@ -245,28 +249,31 @@ type WorkflowStepRun struct {
 }
 
 type Run struct {
-	ID                 string         `json:"id"`
-	DomainID           graph.DomainID `json:"domain_id"`
-	InvocationID       string         `json:"invocation_id"`
-	AttemptNumber      int            `json:"attempt_number"`
-	Status             string         `json:"status"`
-	RenderedInputHash  string         `json:"rendered_input_hash,omitempty"`
-	InferenceProfile   string         `json:"inference_profile,omitempty"`
-	InferenceProfileID string         `json:"inference_profile_id,omitempty"`
-	ModelEndpointID    string         `json:"model_endpoint_id,omitempty"`
-	ModelID            string         `json:"model_id,omitempty"`
-	CapabilityID       string         `json:"model_endpoint_capability_id,omitempty"`
-	CredentialID       string         `json:"credential_id,omitempty"`
-	CredentialGrantID  string         `json:"credential_grant_id,omitempty"`
-	PolicyDecisionID   string         `json:"policy_decision_id,omitempty"`
-	OutputHash         string         `json:"output_hash,omitempty"`
-	ProviderRequestID  string         `json:"provider_request_id,omitempty"`
-	Usage              TokenUsage     `json:"usage,omitempty"`
-	ActionFingerprint  string         `json:"action_fingerprint,omitempty"`
-	MutationID         string         `json:"mutation_id,omitempty"`
-	Error              string         `json:"error,omitempty"`
-	StartedAt          time.Time      `json:"started_at,omitempty"`
-	CompletedAt        time.Time      `json:"completed_at,omitempty"`
+	ID                         string         `json:"id"`
+	DomainID                   graph.DomainID `json:"domain_id"`
+	InvocationID               string         `json:"invocation_id"`
+	AttemptNumber              int            `json:"attempt_number"`
+	Status                     string         `json:"status"`
+	RenderedInputHash          string         `json:"rendered_input_hash,omitempty"`
+	ActorPrincipalID           string         `json:"actor_principal_id,omitempty"`
+	OnBehalfOfPrincipalID      string         `json:"on_behalf_of_principal_id,omitempty"`
+	AutomationOwnerPrincipalID string         `json:"automation_owner_principal_id,omitempty"`
+	InferenceProfile           string         `json:"inference_profile,omitempty"`
+	InferenceProfileID         string         `json:"inference_profile_id,omitempty"`
+	ModelEndpointID            string         `json:"model_endpoint_id,omitempty"`
+	ModelID                    string         `json:"model_id,omitempty"`
+	CapabilityID               string         `json:"model_endpoint_capability_id,omitempty"`
+	CredentialID               string         `json:"credential_id,omitempty"`
+	CredentialGrantID          string         `json:"credential_grant_id,omitempty"`
+	PolicyDecisionID           string         `json:"policy_decision_id,omitempty"`
+	OutputHash                 string         `json:"output_hash,omitempty"`
+	ProviderRequestID          string         `json:"provider_request_id,omitempty"`
+	Usage                      TokenUsage     `json:"usage,omitempty"`
+	ActionFingerprint          string         `json:"action_fingerprint,omitempty"`
+	MutationID                 string         `json:"mutation_id,omitempty"`
+	Error                      string         `json:"error,omitempty"`
+	StartedAt                  time.Time      `json:"started_at,omitempty"`
+	CompletedAt                time.Time      `json:"completed_at,omitempty"`
 }
 
 type TokenUsage struct {
@@ -282,6 +289,9 @@ type TokenUsage struct {
 func (d Definition) Normalize() Definition {
 	d.ID = strings.TrimSpace(d.ID)
 	d.Name = strings.TrimSpace(d.Name)
+	d.OwnerPrincipalID = strings.TrimSpace(d.OwnerPrincipalID)
+	d.CreatedByPrincipalID = strings.TrimSpace(d.CreatedByPrincipalID)
+	d.UpdatedByPrincipalID = strings.TrimSpace(d.UpdatedByPrincipalID)
 	if d.Version == 0 {
 		d.Version = 1
 	}

@@ -107,7 +107,7 @@ func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *
 }
 
 func (s *AdminInferenceService) ListInferencePackages(ctx context.Context, req *adminv1.AdminInferenceCatalogServiceListInferencePackagesRequest) (*adminv1.AdminInferenceCatalogServiceListInferencePackagesResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceCatalogRead, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	items, err := s.semantic.GlobalManager().ListPackages(ctx)
@@ -123,7 +123,7 @@ func (s *AdminInferenceService) ListInferencePackages(ctx context.Context, req *
 }
 
 func (s *AdminInferenceService) ListModelEndpoints(ctx context.Context, req *adminv1.AdminInferenceCatalogServiceListModelEndpointsRequest) (*adminv1.AdminInferenceCatalogServiceListModelEndpointsResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceCatalogRead, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	items, err := s.semantic.GlobalManager().ListModelEndpoints(ctx)
@@ -140,7 +140,7 @@ func (s *AdminInferenceService) ListModelEndpoints(ctx context.Context, req *adm
 }
 
 func (s *AdminInferenceService) ListModels(ctx context.Context, req *adminv1.AdminInferenceCatalogServiceListModelsRequest) (*adminv1.AdminInferenceCatalogServiceListModelsResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceCatalogRead, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	items, err := s.semantic.GlobalManager().ListModels(ctx)
@@ -166,7 +166,7 @@ func (s *AdminInferenceService) ListModels(ctx context.Context, req *adminv1.Adm
 }
 
 func (s *AdminInferenceService) ListVectorStores(ctx context.Context, req *adminv1.AdminInferenceCatalogServiceListVectorStoresRequest) (*adminv1.AdminInferenceCatalogServiceListVectorStoresResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceCatalogRead, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	items, err := s.semantic.GlobalManager().ListVectorStores(ctx)
@@ -183,7 +183,7 @@ func (s *AdminInferenceService) ListVectorStores(ctx context.Context, req *admin
 }
 
 func (s *AdminInferenceService) ListModelEndpointCapabilities(ctx context.Context, req *adminv1.AdminInferenceCatalogServiceListModelEndpointCapabilitiesRequest) (*adminv1.AdminInferenceCatalogServiceListModelEndpointCapabilitiesResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceCatalogRead, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	items, err := s.semantic.GlobalManager().ListModelEndpointCapabilities(ctx)

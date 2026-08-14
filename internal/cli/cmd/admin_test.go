@@ -41,11 +41,18 @@ func TestAdminListCommandJSONUsesGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &admins); err != nil {
 		t.Fatalf("decode admin list output failed: %v\n%s", err, out)
 	}
-	if len(admins) != 1 {
-		t.Fatalf("expected 1 admin, got %#v", admins)
+	var admin *adminv1.Principal
+	for _, principal := range admins {
+		if principal.GetUsername() == "admin" {
+			admin = principal
+			break
+		}
 	}
-	if admins[0].GetUsername() != "admin" || admins[0].GetPrincipalId() == "" || admins[0].GetCreateTime().AsTime().IsZero() {
-		t.Fatalf("unexpected admin operator: %#v", admins[0])
+	if admin == nil {
+		t.Fatalf("expected admin principal, got %#v", admins)
+	}
+	if admin.GetPrincipalId() == "" || admin.GetCreateTime().AsTime().IsZero() {
+		t.Fatalf("unexpected admin operator: %#v", admin)
 	}
 	if strings.Contains(out, "password") || strings.Contains(out, "hash") {
 		t.Fatalf("admin list leaked password/hash material: %s", out)

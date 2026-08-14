@@ -91,7 +91,7 @@ func TestPhase8OfflineRestoreArchiveBootsDaemonAndListsResources(t *testing.T) {
 	}
 }
 
-func TestInitializeWithWALEnabledOpensAndRecoversEmptyLog(t *testing.T) {
+func TestInitializeWithWALEnabledOpensAndRecordsBootstrap(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "mycel-data")
 	cfg := config.Config{DataDir: dataDir, Mode: "mesh", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", WAL: config.WALConfig{Enabled: true, SegmentBytes: 1024, SyncPolicy: "always"}}
 	rt, err := Initialize(context.Background(), cfg)
@@ -101,13 +101,34 @@ func TestInitializeWithWALEnabledOpensAndRecoversEmptyLog(t *testing.T) {
 	if rt.WAL == nil || rt.WALRegistry == nil || rt.WALRecovery == nil || rt.WALWaiter == nil {
 		t.Fatalf("expected WAL runtime components to be initialized")
 	}
-	if got := rt.WAL.LastCommittedLSN(); got != 0 {
-		t.Fatalf("LastCommittedLSN() = %v, want 0", got)
+	if got := rt.WAL.LastCommittedLSN(); got == 0 {
+		t.Fatalf("LastCommittedLSN() = %v, want bootstrap WAL records", got)
 	}
 	if err := rt.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 	assertDir(t, filepath.Join(dataDir, "wal"))
+}
+
+func TestInitializeWithWALBootstrapIsIdempotentAcrossRestart(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "mycel-data")
+	cfg := config.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", WAL: config.WALConfig{Enabled: true, SegmentBytes: 1024, SyncPolicy: "always"}}
+	rt, err := Initialize(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	firstLSN := rt.WAL.LastCommittedLSN()
+	if err := rt.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	restarted, err := Initialize(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Initialize(restart) error = %v", err)
+	}
+	defer restarted.Close()
+	if got := restarted.WAL.LastCommittedLSN(); got != firstLSN {
+		t.Fatalf("LastCommittedLSN after restart = %v, want unchanged %v", got, firstLSN)
+	}
 }
 
 func TestInitializeWithWALCorruptionFailsStartup(t *testing.T) {

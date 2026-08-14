@@ -149,7 +149,7 @@ func mapProcessingScope(in domainsemantic.ProcessingScope) *adminv1.ProcessingSc
 }
 
 func mapCredentialGrant(in domainsemantic.CredentialGrant) *adminv1.CredentialGrant {
-	out := &adminv1.CredentialGrant{CredentialGrantId: in.ID.String(), CredentialId: in.CredentialID.String(), Scope: mapProcessingScope(in.Scope), Operations: stringsFromOperations(in.Operations), Priority: int32(in.Priority), IsDefault: in.IsDefault, AllowBackgroundUse: in.AllowBackgroundUse, GrantedBy: in.GrantedBy, CreateTime: timestamppb.New(in.CreatedAt)}
+	out := &adminv1.CredentialGrant{CredentialGrantId: in.ID.String(), CredentialId: in.CredentialID.String(), Scope: mapProcessingScope(in.Scope), Operations: stringsFromOperations(in.Operations), Priority: int32(in.Priority), IsDefault: in.IsDefault, AllowBackgroundUse: in.AllowBackgroundUse, GranteePrincipalIds: append([]string(nil), in.GranteePrincipalIDs...), AllowOnBehalfOfPrincipalIds: append([]string(nil), in.AllowOnBehalfOfPrincipalIDs...), GrantedBy: in.GrantedBy, CreateTime: timestamppb.New(in.CreatedAt)}
 	if in.ModelEndpointID != nil {
 		out.ModelEndpointId = in.ModelEndpointID.String()
 	}
@@ -340,6 +340,24 @@ func stringsFromPrivacyClasses(values []domainsemantic.PrivacyClass) []string {
 	out := make([]string, 0, len(values))
 	for _, v := range values {
 		out = append(out, string(v))
+	}
+	return out
+}
+
+func cleanStringListAdmin(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }
@@ -752,7 +770,7 @@ func semanticScopeToInference(in domainsemantic.ProcessingScope) domaininference
 }
 
 func semanticGrantToInference(spaceID string, in domainsemantic.CredentialGrant) domaininference.CredentialGrant {
-	out := domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(in.ID), SpaceID: spaceID, CredentialID: domaininference.CredentialID(in.CredentialID), Scope: semanticScopeToInference(in.Scope), Operations: inferenceOperationsFromSemantic(in.Operations), Priority: in.Priority, State: domaininference.GrantStateActive, CreatedBy: in.GrantedBy, CreatedAt: in.CreatedAt, Reason: "semantic admin grant"}
+	out := domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(in.ID), SpaceID: spaceID, CredentialID: domaininference.CredentialID(in.CredentialID), Scope: semanticScopeToInference(in.Scope), Operations: inferenceOperationsFromSemantic(in.Operations), Priority: in.Priority, GranteePrincipals: append([]string(nil), in.GranteePrincipalIDs...), AllowOnBehalfOfPrincipals: append([]string(nil), in.AllowOnBehalfOfPrincipalIDs...), State: domaininference.GrantStateActive, CreatedBy: in.GrantedBy, CreatedAt: in.CreatedAt, Reason: "semantic admin grant"}
 	if in.ModelEndpointID != nil {
 		out.EndpointRefs = []string{in.ModelEndpointID.String()}
 	}

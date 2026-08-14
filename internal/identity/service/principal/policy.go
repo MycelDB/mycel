@@ -15,6 +15,12 @@ func canonicalRole(role string) string {
 		return RoleSpaceAdmin
 	case "semantic_admin", "semantic.admin":
 		return RoleSemanticAdmin
+	case "inference_admin", "inference.admin":
+		return RoleInferenceAdmin
+	case "automation_admin", "automation.admin":
+		return RoleAutomationAdmin
+	case "automation_worker", "automation.worker":
+		return RoleAutomationWorker
 	case "storage_admin", "backup.operator":
 		return RoleBackupOperator
 	case "mesh_admin", "cluster.operator":
@@ -86,6 +92,34 @@ func canonicalCapability(capability string) string {
 		return "query.run"
 	case "CAPABILITY_SEMANTIC_SEARCH", "semantic.search", "semantic.manage":
 		return "semantic.search"
+	case "inference.catalog.read":
+		return "inference.catalog.read"
+	case "inference.catalog.manage":
+		return "inference.catalog.manage"
+	case "inference.profile.read":
+		return "inference.profile.read"
+	case "inference.profile.manage":
+		return "inference.profile.manage"
+	case "inference.credential.read":
+		return "inference.credential.read"
+	case "inference.credential.manage":
+		return "inference.credential.manage"
+	case "inference.grant.manage":
+		return "inference.grant.manage"
+	case "inference.policy.manage":
+		return "inference.policy.manage"
+	case "inference.audit.read":
+		return "inference.audit.read"
+	case "inference.invoke":
+		return "inference.invoke"
+	case "automation.read":
+		return "automation.read"
+	case "automation.manage":
+		return "automation.manage"
+	case "automation.run":
+		return "automation.run"
+	case "automation.worker":
+		return "automation.worker"
 	case "CAPABILITY_DAEMON_CONFIGURE", "daemon.configure":
 		return "daemon.configure"
 	case "CAPABILITY_MESH_MANAGE", "cluster.manage":
@@ -106,9 +140,11 @@ func roleCapabilities(role string) []string {
 	case RoleSpaceAdmin:
 		return []string{"space.read", "space.create", "space.update", "space.manage_access", "space.archive", "space.delete", "domain.read", "domain.create", "domain.update", "domain.delete"}
 	case RoleSemanticAdmin:
-		return []string{"semantic.search", "semantic.manage"}
+		return []string{"semantic.search", "semantic.manage", "inference.profile.read", "inference.audit.read"}
+	case RoleInferenceAdmin:
+		return []string{"inference.catalog.read", "inference.catalog.manage", "inference.profile.read", "inference.profile.manage", "inference.credential.read", "inference.credential.manage", "inference.grant.manage", "inference.policy.manage", "inference.audit.read"}
 	case RoleAutomationAdmin:
-		return []string{"automation.manage", "automation.run"}
+		return []string{"automation.read", "automation.manage", "automation.run", "inference.profile.read", "inference.audit.read"}
 	case RoleBackupOperator:
 		return []string{"backup.manage"}
 	case RoleClusterOperator:
@@ -122,7 +158,7 @@ func roleCapabilities(role string) []string {
 	case RoleSpaceViewer:
 		return []string{"space.read", "domain.read", "graph.read", "query.run", "blob.read", "metadata.read", "semantic.search"}
 	case RoleAutomationWorker:
-		return []string{"automation.run", "query.run", "graph.read", "graph.write"}
+		return []string{"automation.worker"}
 	case RoleSemanticMaintenance:
 		return []string{"semantic.manage", "graph.read", "query.run"}
 	case RoleImportWorker:
@@ -144,11 +180,15 @@ func scopeApplies(grant AccessScope, requested AccessScope) bool {
 			return false
 		}
 	}
-	if grant.SpaceID != "" && requested.SpaceID != "" && grant.SpaceID != requested.SpaceID {
-		return false
+	if grant.SpaceID != "" {
+		if requested.SpaceID == "" || grant.SpaceID != requested.SpaceID {
+			return false
+		}
 	}
-	if grant.DomainID != "" && requested.DomainID != "" && grant.DomainID != requested.DomainID {
-		return false
+	if grant.DomainID != "" {
+		if requested.DomainID == "" || grant.DomainID != requested.DomainID {
+			return false
+		}
 	}
 	return true
 }

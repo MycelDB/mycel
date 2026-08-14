@@ -15,7 +15,7 @@ import (
 // Profile RPC handlers for the standalone inference subsystem.
 
 func (s *AdminInferenceService) CreateInferenceProfile(ctx context.Context, req *adminv1.AdminInferenceProfileServiceCreateInferenceProfileRequest) (*adminv1.AdminInferenceProfileServiceCreateInferenceProfileResponse, error) {
-	principal, err := s.requireInferenceManage(ctx)
+	principal, err := s.requireInferenceCapability(ctx, capInferenceProfileManage, inferenceScope(req.GetSpaceId(), ""))
 	if err != nil {
 		return nil, err
 	}
@@ -38,13 +38,13 @@ func (s *AdminInferenceService) CreateInferenceProfile(ctx context.Context, req 
 }
 
 func (s *AdminInferenceService) ListInferenceProfiles(ctx context.Context, req *adminv1.AdminInferenceProfileServiceListInferenceProfilesRequest) (*adminv1.AdminInferenceProfileServiceListInferenceProfilesResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	spaceID := strings.TrimSpace(req.GetSpaceId())
+	if _, err := s.requireInferenceCapability(ctx, capInferenceProfileRead, inferenceScope(spaceID, req.GetDomainId())); err != nil {
 		return nil, err
 	}
 	if s.inference == nil {
 		return nil, status.Error(codes.FailedPrecondition, "inference subsystem is not configured")
 	}
-	spaceID := strings.TrimSpace(req.GetSpaceId())
 	if spaceID == "" {
 		return nil, status.Error(codes.InvalidArgument, "space_id is required")
 	}
@@ -77,7 +77,7 @@ func (s *AdminInferenceService) ListInferenceProfiles(ctx context.Context, req *
 }
 
 func (s *AdminInferenceService) GetInferenceProfile(ctx context.Context, req *adminv1.AdminInferenceProfileServiceGetInferenceProfileRequest) (*adminv1.AdminInferenceProfileServiceGetInferenceProfileResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceProfileRead, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	profile, err := s.resolveInferenceProfile(ctx, req.GetSpaceId(), firstNonEmptyAdmin(req.GetInferenceProfileId(), req.GetInferenceProfile()))
@@ -88,7 +88,7 @@ func (s *AdminInferenceService) GetInferenceProfile(ctx context.Context, req *ad
 }
 
 func (s *AdminInferenceService) SetInferenceProfileEnabled(ctx context.Context, req *adminv1.AdminInferenceProfileServiceSetInferenceProfileEnabledRequest) (*adminv1.AdminInferenceProfileServiceSetInferenceProfileEnabledResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceProfileManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	profile, err := s.resolveInferenceProfile(ctx, req.GetSpaceId(), firstNonEmptyAdmin(req.GetInferenceProfileId(), req.GetInferenceProfile()))
@@ -108,7 +108,7 @@ func (s *AdminInferenceService) SetInferenceProfileEnabled(ctx context.Context, 
 }
 
 func (s *AdminInferenceService) DeleteInferenceProfile(ctx context.Context, req *adminv1.AdminInferenceProfileServiceDeleteInferenceProfileRequest) (*adminv1.AdminInferenceProfileServiceDeleteInferenceProfileResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceProfileManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	profile, err := s.resolveInferenceProfile(ctx, req.GetSpaceId(), firstNonEmptyAdmin(req.GetInferenceProfileId(), req.GetInferenceProfile()))

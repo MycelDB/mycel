@@ -94,9 +94,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if host.Log() != nil {
 		host.Log().Info("identity store ready", "path", filepath.Join(identityDir, StoreFilename), "created", storeCreated)
 	}
-	if hostMode(host) == "standalone" {
-		if err := m.ensureStandaloneSystemAdmin(ctx, host.Log(), hostBootstrapAdminUsername(host), hostBootstrapAdminPassword(host)); err != nil {
-			return runtime.Abort(ModuleName, "store", "failed to ensure standalone system admin principal", err)
+	if !m.deferBootstrapUntilWALRecovery() {
+		if err := m.EnsureBootstrapPrincipals(ctx, hostMode(host), hostBootstrapAdminUsername(host), hostBootstrapAdminPassword(host), host.Log()); err != nil {
+			return runtime.Abort(ModuleName, "store", "failed to ensure bootstrap principals", err)
 		}
 	}
 	return runtime.OK(ModuleName)
@@ -104,6 +104,22 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 
 func ensureDir(path string, perm os.FileMode) error {
 	return os.MkdirAll(path, perm)
+}
+
+func (m *Module) deferBootstrapUntilWALRecovery() bool {
+	return m.wal != nil && m.wal.LastCommittedLSN() > 0
+}
+
+func (m *Module) EnsureBootstrapPrincipals(ctx context.Context, mode, bootstrapUsername, bootstrapPassword string, logger *slog.Logger) error {
+	if err := m.ensureBuiltinServicePrincipals(ctx, logger); err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(mode), "standalone") {
+		if err := m.ensureStandaloneSystemAdmin(ctx, logger, bootstrapUsername, bootstrapPassword); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Module) SetWriteAllowed(fn func() error) { m.writeAllowed = fn }
@@ -728,4 +744,86 @@ func stringHostConfigField(host runtime.Host, name string) string {
 		return ""
 	}
 	return field.String()
+}
+
+const ServicePrincipalAutomation = "automation"
+
+func (m *Module) ensureBuiltinServicePrincipals(ctx context.Context, logger *slog.Logger) error {
+	if err := m.ensureBuiltinServicePrincipal(ctx, ServicePrincipalAutomation, "Automation worker", RoleAutomationWorker); err != nil {
+		return err
+	}
+	if logger != nil {
+		logger.Info("identity builtin service principals ready")
+	}
+	return nil
+}
+
+func (m *Module) ensureBuiltinServicePrincipal(ctx context.Context, id string, displayName string, role string) error {
+	now := time.Now().UTC()
+	principal, err := m.store.GetPrincipal(ctx, id)
+	principalChanged := false
+	if err != nil {
+		if !errors.Is(err, ErrPrincipalNotFound) {
+			return err
+		}
+		principal = Principal{ID: id, Username: id, DisplayName: displayName, Kind: PrincipalKindService, State: PrincipalStateActive, LoginEnabled: false, CreatedAt: now, UpdatedAt: now, CreatedBy: "system"}
+		principalChanged = true
+	} else {
+		if principal.Kind != PrincipalKindService && principal.Kind != PrincipalKindSystem {
+			principal.Kind = PrincipalKindService
+			principalChanged = true
+		}
+		if principal.LoginEnabled {
+			principal.LoginEnabled = false
+			principalChanged = true
+		}
+		if principal.State == "" {
+			principal.State = PrincipalStateActive
+			principalChanged = true
+		}
+		if strings.TrimSpace(principal.Username) == "" {
+			principal.Username = id
+			principalChanged = true
+		}
+		if strings.TrimSpace(principal.DisplayName) == "" && strings.TrimSpace(displayName) != "" {
+			principal.DisplayName = displayName
+			principalChanged = true
+		}
+		if principalChanged {
+			principal.UpdatedAt = now
+		}
+	}
+	bindings, err := m.store.ListRoleBindings(ctx, id)
+	if err != nil {
+		return err
+	}
+	hasBinding := false
+	for _, binding := range bindings {
+		if binding.State == GrantStateActive && canonicalRole(binding.Role) == canonicalRole(role) && normalizeScope(binding.Scope).Type == "system" {
+			hasBinding = true
+			break
+		}
+	}
+	if !principalChanged && hasBinding {
+		return nil
+	}
+	if principalChanged {
+		if _, err := m.commitPrincipalPut(ctx, principal, "identity-principal-put"); err != nil {
+			return err
+		}
+	}
+	if hasBinding {
+		return nil
+	}
+	binding := RoleBinding{ID: "builtin:" + id + ":" + strings.ReplaceAll(canonicalRole(role), ".", "-"), PrincipalID: id, Role: role, Scope: AccessScope{Type: "system"}, State: GrantStateActive, Reason: "builtin service principal", CreatedBy: "system", CreatedAt: now}
+	_, err = m.commitRoleBindingPut(ctx, binding, "identity-role-binding-put")
+	return err
+}
+
+func (m *Module) IsPrincipalActive(ctx context.Context, principalID string) (bool, error) {
+	p, err := m.store.GetPrincipal(ctx, principalID)
+	if err != nil {
+		return false, err
+	}
+	return p.State == PrincipalStateActive, nil
 }

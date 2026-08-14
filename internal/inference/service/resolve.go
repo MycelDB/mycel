@@ -92,6 +92,9 @@ func (r resolver) resolve(ctx context.Context, req ResolveRequest) (ResolveResul
 	if err != nil {
 		return ResolveResult{}, err
 	}
+	if err := r.validatePrincipalContext(ctx, req); err != nil {
+		return r.deny(ctx, spaceMgr, req, ResolveResult{}, nil, err.Error())
+	}
 	profile, err := r.resolveProfile(ctx, spaceMgr, req)
 	if err != nil {
 		return r.deny(ctx, spaceMgr, req, ResolveResult{}, nil, err.Error())
@@ -447,10 +450,10 @@ func grantMatches(grant domaininference.CredentialGrant, credential domaininfere
 	if credential.Status != domaininference.CredentialStatusActive || credential.EndpointID != candidate.endpoint.ID {
 		return false
 	}
-	if !credentialOwnerMatches(credential, req) {
+	if !credentialOwnerMatches(grant, credential, req) {
 		return false
 	}
-	if !scopeMatches(grant.Scope, req) || !operationRefsMatch(grant.Operations, req.Operation) || !usageModesMatch(grant.UsageModes, req.UsageMode) || !principalListMatches(grant.GranteePrincipals, req.ActorPrincipalID) || !principalListMatches(grant.AllowOnBehalfOfPrincipals, req.OnBehalfOfPrincipalID) {
+	if !scopeMatches(grant.Scope, req) || !operationRefsMatch(grant.Operations, req.Operation) || !usageModesMatch(grant.UsageModes, req.UsageMode) || !principalListMatches(grant.GranteePrincipals, req.ActorPrincipalID) || !onBehalfPrincipalMatches(grant.AllowOnBehalfOfPrincipals, req.ActorPrincipalID, req.OnBehalfOfPrincipalID) {
 		return false
 	}
 	if !refsAllow(grant.ProfileRefs, profile.ID, profile.Key) || !refsAllow(grant.CapabilityRefs, candidate.capability.ID, candidate.capability.Key) || !refsAllow(grant.EndpointRefs, candidate.endpoint.ID, candidate.endpoint.Key) || !refsAllow(grant.ModelRefs, candidate.model.ID, candidate.model.Key) {
@@ -459,17 +462,50 @@ func grantMatches(grant domaininference.CredentialGrant, credential domaininfere
 	return true
 }
 
-func credentialOwnerMatches(credential domaininference.Credential, req ResolveRequest) bool {
+func credentialOwnerMatches(grant domaininference.CredentialGrant, credential domaininference.Credential, req ResolveRequest) bool {
 	switch credential.OwnerType {
 	case domaininference.CredentialOwnerSystem:
 		return true
 	case domaininference.CredentialOwnerSpace:
 		return strings.TrimSpace(credential.OwnerID) == "" || credential.OwnerID == req.SpaceID
 	case domaininference.CredentialOwnerPrincipal:
-		return credential.OwnerID == req.ActorPrincipalID || (req.OnBehalfOfPrincipalID != "" && credential.OwnerID == req.OnBehalfOfPrincipalID)
+		owner := strings.TrimSpace(credential.OwnerID)
+		if owner == "" {
+			return false
+		}
+		if owner == strings.TrimSpace(req.ActorPrincipalID) {
+			return true
+		}
+		if owner == strings.TrimSpace(req.OnBehalfOfPrincipalID) {
+			return principalListExplicitlyAllows(grant.AllowOnBehalfOfPrincipals, owner)
+		}
+		return false
 	default:
 		return false
 	}
+}
+
+func principalListExplicitlyAllows(values []string, principalID string) bool {
+	principalID = strings.TrimSpace(principalID)
+	if principalID == "" {
+		return false
+	}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "*" || value == principalID {
+			return true
+		}
+	}
+	return false
+}
+
+func onBehalfPrincipalMatches(values []string, actorPrincipalID string, onBehalfPrincipalID string) bool {
+	actorPrincipalID = strings.TrimSpace(actorPrincipalID)
+	onBehalfPrincipalID = strings.TrimSpace(onBehalfPrincipalID)
+	if onBehalfPrincipalID == "" || strings.EqualFold(actorPrincipalID, onBehalfPrincipalID) {
+		return true
+	}
+	return principalListExplicitlyAllows(values, onBehalfPrincipalID)
 }
 
 func policyMatches(policy domaininference.Policy, req ResolveRequest, profile domaininference.Profile, now time.Time) bool {
@@ -643,4 +679,35 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func (r resolver) validatePrincipalContext(ctx context.Context, req ResolveRequest) error {
+	checkerProvider, ok := r.manager.(interface{ principalStatusChecker() PrincipalStatusChecker })
+	if !ok {
+		return nil
+	}
+	checker := checkerProvider.principalStatusChecker()
+	if checker == nil {
+		return nil
+	}
+	for _, principal := range []struct {
+		label string
+		id    string
+	}{
+		{label: "actor principal", id: req.ActorPrincipalID},
+		{label: "on-behalf-of principal", id: req.OnBehalfOfPrincipalID},
+	} {
+		principalID := strings.TrimSpace(principal.id)
+		if principalID == "" {
+			continue
+		}
+		active, err := checker.IsPrincipalActive(ctx, principalID)
+		if err != nil {
+			return fmt.Errorf("%s %q is not active", principal.label, principalID)
+		}
+		if !active {
+			return fmt.Errorf("%s %q is disabled", principal.label, principalID)
+		}
+	}
+	return nil
 }

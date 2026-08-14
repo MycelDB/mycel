@@ -43,8 +43,8 @@ func TestGenerateTextRecordsInferenceUsage(t *testing.T) {
 	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
 	mgr := NewManager(nil).WithInferenceManager(inference)
 	run := automation.Run{ID: uuid.NewString()}
-	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, Prompt: "prompt", Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}}
-	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, ChangedElementID: uuid.NewString(), ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a"}
+	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, OwnerPrincipalID: "owner-a", Prompt: "prompt", Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}}
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, ChangedElementID: uuid.NewString(), ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a", AutomationOwnerPrincipalID: "owner-a"}
 	text, err := mgr.generateWithInference(ctx, def, inv, "input words", &run)
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestGenerateTextRecordsInferenceUsage(t *testing.T) {
 	if text != "result text" {
 		t.Fatalf("text = %q", text)
 	}
-	if run.ProviderRequestID != "fake" || run.PolicyDecisionID == "" || run.CredentialID != ids.credentialID.String() || run.CredentialGrantID != ids.grantID.String() {
+	if run.ProviderRequestID != "fake" || run.PolicyDecisionID == "" || run.CredentialID != ids.credentialID.String() || run.CredentialGrantID != ids.grantID.String() || run.ActorPrincipalID != "automation" || run.OnBehalfOfPrincipalID != "principal-a" || run.AutomationOwnerPrincipalID != "owner-a" {
 		t.Fatalf("unexpected run inference provenance: %+v", run)
 	}
 	if run.Usage.InputTokens == 0 || run.Usage.OutputTokens == 0 || run.Usage.TotalTokens == 0 {
@@ -208,7 +208,7 @@ func newAutomationInferenceRuntime(t *testing.T, ctx context.Context, deny bool)
 	if _, err := spaceMgr.UpsertProfile(ctx, domaininference.Profile{ID: domaininference.ProfileID(ids.profileID), SpaceID: ids.spaceID, Key: "summarize", Operation: domaininference.OperationChat, DomainIDs: []string{ids.domainID.String()}, CapabilityRefs: []string{ids.capabilityID.String()}, Enabled: true}); err != nil {
 		t.Fatalf("upsert profile: %v", err)
 	}
-	if _, err := spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(ids.grantID), SpaceID: ids.spaceID, CredentialID: domaininference.CredentialID(ids.credentialID), Scope: domaininference.Scope{SpaceID: ids.spaceID, DomainID: ids.domainID.String()}, Operations: []domaininference.Operation{domaininference.OperationChat}, ProfileRefs: []string{ids.profileID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeAutomation}, State: domaininference.GrantStateActive}); err != nil {
+	if _, err := spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(ids.grantID), SpaceID: ids.spaceID, CredentialID: domaininference.CredentialID(ids.credentialID), Scope: domaininference.Scope{SpaceID: ids.spaceID, DomainID: ids.domainID.String()}, Operations: []domaininference.Operation{domaininference.OperationChat}, ProfileRefs: []string{ids.profileID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeAutomation}, AllowOnBehalfOfPrincipals: []string{"principal-a"}, State: domaininference.GrantStateActive}); err != nil {
 		t.Fatalf("upsert grant: %v", err)
 	}
 	action := domaininference.PolicyActionAllow

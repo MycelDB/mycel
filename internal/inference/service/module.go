@@ -28,6 +28,7 @@ type Module struct {
 	spaces         map[string]inferencestorage.SpaceManager
 	connectors     map[domaininference.ConnectorType]connectors.Connector
 	secretResolver SecretResolver
+	principals     PrincipalStatusChecker
 	logger         *slog.Logger
 	gate           *quiesce.Gate
 	startedAt      time.Time
@@ -38,6 +39,19 @@ func NewModule() *Module {
 }
 
 func (m *Module) Name() string { return ModuleName }
+
+func (m *Module) WithPrincipalStatusChecker(checker PrincipalStatusChecker) *Module {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.principals = checker
+	return m
+}
+
+func (m *Module) principalStatusChecker() PrincipalStatusChecker {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.principals
+}
 
 func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.InitResult {
 	global := inferencestorage.NewGlobalManager()

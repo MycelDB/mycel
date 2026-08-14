@@ -8,6 +8,10 @@ import (
 
 const ModuleName = "inference"
 
+type PrincipalStatusChecker interface {
+	IsPrincipalActive(ctx context.Context, principalID string) (bool, error)
+}
+
 type Manager interface {
 	GlobalManager() inferencestorage.GlobalManager
 	SpaceManager(ctx context.Context, spaceID string) (inferencestorage.SpaceManager, error)

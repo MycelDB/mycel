@@ -17,7 +17,7 @@ import (
 // Credential grant RPC handlers for AdminInferenceService.
 
 func (s *AdminInferenceService) CreateCredentialGrant(ctx context.Context, req *adminv1.AdminInferenceGrantServiceCreateCredentialGrantRequest) (*adminv1.AdminInferenceGrantServiceCreateCredentialGrantResponse, error) {
-	principal, err := s.requireInferenceManage(ctx)
+	principal, err := s.requireInferenceCapability(ctx, capInferenceGrantManage, inferenceScope(req.GetSpaceId(), ""))
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func (s *AdminInferenceService) CreateCredentialGrant(ctx context.Context, req *
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
 	}
-	grant, err := spaceMgr.UpsertCredentialGrant(ctx, domainsemantic.CredentialGrant{CredentialID: credentialID, Scope: scope, Operations: operationsFromStringsAdmin(req.GetOperations()), ModelEndpointID: endpointID, ModelID: modelID, Priority: int(req.GetPriority()), IsDefault: req.GetIsDefault(), AllowBackgroundUse: req.GetAllowBackgroundUse(), GrantedBy: principal.PrincipalID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
+	grant, err := spaceMgr.UpsertCredentialGrant(ctx, domainsemantic.CredentialGrant{CredentialID: credentialID, Scope: scope, Operations: operationsFromStringsAdmin(req.GetOperations()), ModelEndpointID: endpointID, ModelID: modelID, Priority: int(req.GetPriority()), IsDefault: req.GetIsDefault(), AllowBackgroundUse: req.GetAllowBackgroundUse(), GranteePrincipalIDs: cleanStringListAdmin(req.GetGranteePrincipalIds()), AllowOnBehalfOfPrincipalIDs: cleanStringListAdmin(req.GetAllowOnBehalfOfPrincipalIds()), GrantedBy: principal.PrincipalID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert credential grant")
 	}
@@ -69,7 +69,7 @@ func (s *AdminInferenceService) CreateCredentialGrant(ctx context.Context, req *
 }
 
 func (s *AdminInferenceService) ListCredentialGrants(ctx context.Context, req *adminv1.AdminInferenceGrantServiceListCredentialGrantsRequest) (*adminv1.AdminInferenceGrantServiceListCredentialGrantsResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceGrantManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
@@ -103,7 +103,7 @@ func (s *AdminInferenceService) ListCredentialGrants(ctx context.Context, req *a
 }
 
 func (s *AdminInferenceService) ExpireCredentialGrant(ctx context.Context, req *adminv1.AdminInferenceGrantServiceExpireCredentialGrantRequest) (*adminv1.AdminInferenceGrantServiceExpireCredentialGrantResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceGrantManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
@@ -145,7 +145,7 @@ func (s *AdminInferenceService) ExpireCredentialGrant(ctx context.Context, req *
 }
 
 func (s *AdminInferenceService) DeleteCredentialGrant(ctx context.Context, req *adminv1.AdminInferenceGrantServiceDeleteCredentialGrantRequest) (*adminv1.AdminInferenceGrantServiceDeleteCredentialGrantResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceGrantManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")

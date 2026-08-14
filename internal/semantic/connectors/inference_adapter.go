@@ -31,7 +31,7 @@ func (a InferenceAdapter) Embed(ctx context.Context, in EmbedInput) (EmbeddingRe
 	if strings.TrimSpace(in.InferenceProfile) == "" && in.InferenceProfileID == nilUUID {
 		return a.fallback(ctx, in, fmt.Errorf("semantic index does not declare an inference profile"))
 	}
-	resp, err := a.Manager.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: in.SpaceID.String(), DomainID: in.DomainID.String(), SemanticIndexID: in.SemanticIndexID.String(), NodeID: in.TargetNodeID.String(), Operation: domaininference.OperationEmbeddings, UsageMode: domaininference.UsageModeSemantic, ProfileRef: in.InferenceProfile, ProfileID: domaininference.ProfileID(in.InferenceProfileID), EndpointID: domaininference.EndpointID(in.ModelEndpointID), ModelID: domaininference.ModelID(in.ModelID), CapabilityID: domaininference.CapabilityID(in.ModelEndpointCapabilityID), ActorPrincipalID: in.ActorPrincipalID.String(), OnBehalfOfPrincipalID: in.OnBehalfOfPrincipalID.String(), Metadata: map[string]any{"semantic_reason": in.Reason}}, Input: in.Input, SemanticIndexID: in.SemanticIndexID.String(), Metadata: map[string]any{"semantic_connector": "inference"}})
+	resp, err := a.Manager.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: in.SpaceID.String(), DomainID: in.DomainID.String(), SemanticIndexID: in.SemanticIndexID.String(), NodeID: in.TargetNodeID.String(), Operation: domaininference.OperationEmbeddings, UsageMode: domaininference.UsageModeSemantic, ProfileRef: in.InferenceProfile, ProfileID: domaininference.ProfileID(in.InferenceProfileID), EndpointID: domaininference.EndpointID(in.ModelEndpointID), ModelID: domaininference.ModelID(in.ModelID), CapabilityID: domaininference.CapabilityID(in.ModelEndpointCapabilityID), ActorPrincipalID: inferencePrincipalString(in.ActorPrincipalID), OnBehalfOfPrincipalID: inferencePrincipalString(in.OnBehalfOfPrincipalID), Metadata: map[string]any{"semantic_reason": in.Reason}}, Input: in.Input, SemanticIndexID: in.SemanticIndexID.String(), Metadata: map[string]any{"semantic_connector": "inference"}})
 	if err != nil {
 		return EmbeddingResponse{PolicyDecisionID: domainsemantic.PolicyDecisionID(resp.Decision.ID)}, err
 	}
@@ -63,6 +63,14 @@ func tokenCountSource(resp inferenceservice.InvokeResponse) string {
 }
 
 var nilUUID domaininference.ProfileID
+
+func inferencePrincipalString(id interface{ String() string }) string {
+	value := strings.TrimSpace(id.String())
+	if value == "" || value == "00000000-0000-0000-0000-000000000000" {
+		return ""
+	}
+	return value
+}
 
 func IsInferenceDenied(err error) bool {
 	return errors.Is(err, inferenceservice.ErrDenied)

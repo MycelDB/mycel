@@ -14,7 +14,7 @@ import (
 )
 
 func (s *AdminInferenceService) ListUsageEvents(ctx context.Context, req *adminv1.AdminInferenceUsageServiceListUsageEventsRequest) (*adminv1.AdminInferenceUsageServiceListUsageEventsResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceAuditRead, inferenceScope(req.GetSpaceId(), req.GetScope().GetDomainId())); err != nil {
 		return nil, err
 	}
 	if s.inference == nil {
@@ -34,7 +34,7 @@ func (s *AdminInferenceService) ListUsageEvents(ctx context.Context, req *adminv
 }
 
 func (s *AdminInferenceService) SummarizeUsage(ctx context.Context, req *adminv1.AdminInferenceUsageServiceSummarizeUsageRequest) (*adminv1.AdminInferenceUsageServiceSummarizeUsageResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceAuditRead, inferenceScope(req.GetSpaceId(), req.GetScope().GetDomainId())); err != nil {
 		return nil, err
 	}
 	if s.inference == nil {

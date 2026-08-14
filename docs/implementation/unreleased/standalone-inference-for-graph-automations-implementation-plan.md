@@ -32,7 +32,14 @@ implemented as the graph automation conversion tranche: automation definitions
 use inference profile refs, validation rejects embedded credentials/secrets/raw
 endpoint URLs and legacy provider/model config, single-step LLM execution calls
 the standalone inference resolver/invoker, run records keep neutral inference
-provenance, and automation usage events include automation/run context.
+provenance, and automation usage events include automation/run context. INF8 is
+implemented as an authorization/on-behalf-of tranche: inference and automation
+admin APIs enforce explicit scoped capabilities, the reserved non-login
+automation service principal is bootstrapped with worker capabilities, runtime
+inference validates actor/on-behalf principal activity, principal-owned
+credential use on behalf of another principal requires an explicit grant, and
+automation definitions/invocations/runs preserve actor, on-behalf-of, and owner
+provenance.
 
 No compatibility migration from the current semantic inference stores,
 automation provider configuration, automation run records, CLI shapes, or

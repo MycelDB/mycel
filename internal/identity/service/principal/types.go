@@ -27,6 +27,7 @@ const (
 	RoleClusterOperator     = "cluster.operator"
 	RoleBackupOperator      = "backup.operator"
 	RoleSemanticAdmin       = "semantic.admin"
+	RoleInferenceAdmin      = "inference.admin"
 	RoleAutomationAdmin     = "automation.admin"
 	RoleAuditReader         = "audit.reader"
 	RoleSpaceOwner          = "space.owner"

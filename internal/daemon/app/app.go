@@ -200,7 +200,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	schemaService := schemaservice.NewModule("")
 	graphService := graphservice.NewModule()
 	graphNotificationService := graphnotification.NewModule()
-	inferenceService := inferenceservice.NewModule()
+	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)
 	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithInferenceManager(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
 	blobService := blobservice.NewModule(graphService)
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
@@ -299,6 +299,10 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 			return nil, fmt.Errorf("recover wal: %w", err)
 		}
 		logger.Info("wal recovery complete", "applied_lsn", applied, "last_committed_lsn", rt.WAL.LastCommittedLSN(), "duration", time.Since(started))
+	}
+	if err := principalService.EnsureBootstrapPrincipals(ctx, cfg.Mode, cfg.BootstrapAdminUsername, cfg.BootstrapAdminPassword, logger); err != nil {
+		_ = rt.Close()
+		return nil, fmt.Errorf("ensure bootstrap principals: %w", err)
 	}
 	// Local WAL durability and recovery remain active above; clustered operation is Raft-only.
 	semanticSink := graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {

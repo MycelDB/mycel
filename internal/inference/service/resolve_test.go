@@ -106,6 +106,106 @@ func TestResolvePrincipalOwnedCredentialRequiresMatchingPrincipal(t *testing.T) 
 	}
 }
 
+func TestResolveDeniesInactiveActorOrOnBehalfPrincipal(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	module.WithPrincipalStatusChecker(fakePrincipalStatus{active: map[string]bool{"actor-a": false, "principal-a": true}})
+
+	denied, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a", OnBehalfOfPrincipalID: "principal-a"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if denied.Allowed || !strings.Contains(denied.Decision.Reason, "actor principal") {
+		t.Fatalf("expected inactive actor denial, got %#v", denied.Decision)
+	}
+
+	module.WithPrincipalStatusChecker(fakePrincipalStatus{active: map[string]bool{"actor-a": true, "principal-a": false}})
+	denied, err = module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a", OnBehalfOfPrincipalID: "principal-a"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if denied.Allowed || !strings.Contains(denied.Decision.Reason, "on-behalf-of principal") {
+		t.Fatalf("expected inactive on-behalf denial, got %#v", denied.Decision)
+	}
+}
+
+func TestResolvePrincipalOwnedCredentialOnBehalfRequiresExplicitGrant(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	fixture.credential.OwnerType = domaininference.CredentialOwnerPrincipal
+	fixture.credential.OwnerID = "owner-a"
+	if _, err := module.GlobalManager().UpsertCredential(ctx, fixture.credential); err != nil {
+		t.Fatalf("update credential owner: %v", err)
+	}
+
+	denied, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "owner-a"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if denied.Allowed {
+		t.Fatalf("expected on-behalf principal credential use without explicit grant to be denied")
+	}
+
+	fixture.grant.AllowOnBehalfOfPrincipals = []string{"owner-a"}
+	if _, err := fixture.spaceMgr.UpsertCredentialGrant(ctx, fixture.grant); err != nil {
+		t.Fatalf("update grant: %v", err)
+	}
+	allowed, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "owner-a"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if !allowed.Allowed {
+		t.Fatalf("expected explicit on-behalf grant to allow principal credential use, got %#v", allowed.Decision)
+	}
+}
+
+func TestResolveSystemCredentialOnBehalfAllowListIsEnforcedWhenPresent(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	deniedWithoutGrant, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if deniedWithoutGrant.Allowed {
+		t.Fatalf("expected delegated on-behalf request without explicit grant to be denied")
+	}
+
+	fixture.grant.AllowOnBehalfOfPrincipals = []string{"principal-a"}
+	if _, err := fixture.spaceMgr.UpsertCredentialGrant(ctx, fixture.grant); err != nil {
+		t.Fatalf("update grant: %v", err)
+	}
+
+	allowed, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if !allowed.Allowed {
+		t.Fatalf("expected listed on-behalf principal to be allowed, got %#v", allowed.Decision)
+	}
+
+	denied, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-b"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if denied.Allowed {
+		t.Fatalf("expected unlisted on-behalf principal to be denied")
+	}
+
+	direct, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if !direct.Allowed {
+		t.Fatalf("expected direct actor request to remain allowed, got %#v", direct.Decision)
+	}
+}
+
+type fakePrincipalStatus struct{ active map[string]bool }
+
+func (f fakePrincipalStatus) IsPrincipalActive(_ context.Context, principalID string) (bool, error) {
+	return f.active[strings.TrimSpace(principalID)], nil
+}
+
 type resolverFixture struct {
 	spaceID  string
 	spaceMgr interface {

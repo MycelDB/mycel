@@ -17,7 +17,7 @@ import (
 // Inference policy RPC handlers for AdminInferenceService.
 
 func (s *AdminInferenceService) CreateInferencePolicy(ctx context.Context, req *adminv1.AdminInferencePolicyServiceCreateInferencePolicyRequest) (*adminv1.AdminInferencePolicyServiceCreateInferencePolicyResponse, error) {
-	principal, err := s.requireInferenceManage(ctx)
+	principal, err := s.requireInferenceCapability(ctx, capInferencePolicyManage, inferenceScope(req.GetSpaceId(), ""))
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func (s *AdminInferenceService) CreateInferencePolicy(ctx context.Context, req *
 }
 
 func (s *AdminInferenceService) ListInferencePolicies(ctx context.Context, req *adminv1.AdminInferencePolicyServiceListInferencePoliciesRequest) (*adminv1.AdminInferencePolicyServiceListInferencePoliciesResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferencePolicyManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
@@ -79,7 +79,7 @@ func (s *AdminInferenceService) ListInferencePolicies(ctx context.Context, req *
 }
 
 func (s *AdminInferenceService) ExpireInferencePolicy(ctx context.Context, req *adminv1.AdminInferencePolicyServiceExpireInferencePolicyRequest) (*adminv1.AdminInferencePolicyServiceExpireInferencePolicyResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferencePolicyManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
@@ -121,7 +121,7 @@ func (s *AdminInferenceService) ExpireInferencePolicy(ctx context.Context, req *
 }
 
 func (s *AdminInferenceService) DeleteInferencePolicy(ctx context.Context, req *adminv1.AdminInferencePolicyServiceDeleteInferencePolicyRequest) (*adminv1.AdminInferencePolicyServiceDeleteInferencePolicyResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferencePolicyManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
@@ -186,7 +186,7 @@ func (s *AdminInferenceService) DeleteInferencePolicy(ctx context.Context, req *
 }
 
 func (s *AdminInferenceService) GetPolicyDecision(ctx context.Context, req *adminv1.AdminInferencePolicyServiceGetPolicyDecisionRequest) (*adminv1.AdminInferencePolicyServiceGetPolicyDecisionResponse, error) {
-	if _, err := s.requireInferenceManage(ctx); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capInferenceAuditRead, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	if s.inference == nil {

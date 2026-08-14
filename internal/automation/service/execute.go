@@ -24,7 +24,7 @@ var ErrInferenceUnavailable = errors.New("automation inference subsystem is not 
 
 func (m *AutomationManager) executeInvocation(ctx context.Context, def automation.Definition, inv automation.Invocation) (automation.Run, error) {
 	now := m.now()
-	run := automation.Run{ID: newRunID(), DomainID: inv.DomainID, InvocationID: inv.ID, AttemptNumber: inv.AttemptCount + 1, Status: "running", InferenceProfile: strings.TrimSpace(def.Inference.Profile), InferenceProfileID: strings.TrimSpace(def.Inference.ProfileID), StartedAt: now}
+	run := automation.Run{ID: newRunID(), DomainID: inv.DomainID, InvocationID: inv.ID, AttemptNumber: inv.AttemptCount + 1, Status: "running", ActorPrincipalID: firstNonEmptyString(inv.ActorPrincipalID, automationActor), OnBehalfOfPrincipalID: firstNonEmptyString(inv.OnBehalfOfPrincipalID, def.OwnerPrincipalID, automationActor), AutomationOwnerPrincipalID: firstNonEmptyString(inv.AutomationOwnerPrincipalID, def.OwnerPrincipalID), InferenceProfile: strings.TrimSpace(def.Inference.Profile), InferenceProfileID: strings.TrimSpace(def.Inference.ProfileID), StartedAt: now}
 	if m.sessions == nil || m.graphs == nil {
 		result, err := render.Render(def.Input, render.Context{})
 		if err != nil {
@@ -158,7 +158,10 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 	}
 	actor := firstNonEmptyString(inv.ActorPrincipalID, automationActor)
 	onBehalf := firstNonEmptyString(inv.OnBehalfOfPrincipalID, inv.ActorPrincipalID, automationActor)
-	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: inv.ChangedElementID, Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: map[string]any{"automation_id": def.ID, "automation_version": def.Version, "automation_run_id": run.ID, "invocation_id": inv.ID}}, Prompt: def.Prompt, Input: rendered, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: map[string]any{"invocation_id": inv.ID, "automation_version": def.Version}})
+	run.ActorPrincipalID = actor
+	run.OnBehalfOfPrincipalID = onBehalf
+	run.AutomationOwnerPrincipalID = firstNonEmptyString(inv.AutomationOwnerPrincipalID, def.OwnerPrincipalID)
+	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: inv.ChangedElementID, Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: map[string]any{"automation_id": def.ID, "automation_version": def.Version, "automation_run_id": run.ID, "invocation_id": inv.ID, "automation_owner_principal_id": run.AutomationOwnerPrincipalID}}, Prompt: def.Prompt, Input: rendered, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: map[string]any{"invocation_id": inv.ID, "automation_version": def.Version, "automation_owner_principal_id": run.AutomationOwnerPrincipalID}})
 	populateRunFromInference(run, ref, resp)
 	if err != nil {
 		return "", err

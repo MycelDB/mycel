@@ -14,22 +14,37 @@ import (
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+)
+
+const (
+	capAutomationRead   = "automation.read"
+	capAutomationManage = "automation.manage"
+	capAutomationRun    = "automation.run"
 )
 
 type AdminAutomationService struct {
 	adminv1.UnimplementedAdminAutomationServiceServer
 	automations automationservice.Manager
+	authorizer  OperatorAuthorizer
 }
 
-func NewAdminAutomationService(automations automationservice.Manager) *AdminAutomationService {
-	return &AdminAutomationService{automations: automations}
+func NewAdminAutomationService(automations automationservice.Manager, authorizer ...OperatorAuthorizer) *AdminAutomationService {
+	var authz OperatorAuthorizer
+	if len(authorizer) > 0 {
+		authz = authorizer[0]
+	}
+	return &AdminAutomationService{automations: automations, authorizer: authz}
 }
 
 func (s *AdminAutomationService) ValidateAutomation(ctx context.Context, req *adminv1.ValidateAutomationRequest) (*adminv1.ValidateAutomationResponse, error) {
 	domainID, err := parseAdminAutomationDomainID(req.GetDomainId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationManage); err != nil {
 		return nil, err
 	}
 	def, err := s.automations.ValidateAutomation(ctx, domainID, req.GetDefinitionJson())
@@ -48,7 +63,10 @@ func (s *AdminAutomationService) CreateAutomation(ctx context.Context, req *admi
 	if err != nil {
 		return nil, err
 	}
-	def, err := s.automations.CreateAutomation(ctx, domainID, req.GetDefinitionJson())
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationManage); err != nil {
+		return nil, err
+	}
+	def, err := s.automations.CreateAutomationAs(ctx, domainID, req.GetDefinitionJson(), automationActorFromContext(ctx))
 	if err != nil {
 		return nil, mapAdminAutomationError(err)
 	}
@@ -63,7 +81,10 @@ func (s *AdminAutomationService) UpdateAutomation(ctx context.Context, req *admi
 	if err != nil {
 		return nil, err
 	}
-	def, err := s.automations.UpdateAutomation(ctx, domainID, req.GetAutomationId(), req.GetDefinitionJson())
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationManage); err != nil {
+		return nil, err
+	}
+	def, err := s.automations.UpdateAutomationAs(ctx, domainID, req.GetAutomationId(), req.GetDefinitionJson(), automationActorFromContext(ctx))
 	if err != nil {
 		return nil, mapAdminAutomationError(err)
 	}
@@ -78,6 +99,9 @@ func (s *AdminAutomationService) DeleteAutomation(ctx context.Context, req *admi
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationManage); err != nil {
+		return nil, err
+	}
 	if err := s.automations.DeleteAutomation(ctx, domainID, req.GetAutomationId()); err != nil {
 		return nil, mapAdminAutomationError(err)
 	}
@@ -86,6 +110,9 @@ func (s *AdminAutomationService) DeleteAutomation(ctx context.Context, req *admi
 func (s *AdminAutomationService) GetAutomation(ctx context.Context, req *adminv1.GetAutomationRequest) (*adminv1.GetAutomationResponse, error) {
 	domainID, err := parseAdminAutomationDomainID(req.GetDomainId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationRead); err != nil {
 		return nil, err
 	}
 	def, err := s.automations.GetAutomation(ctx, domainID, req.GetAutomationId())
@@ -103,6 +130,9 @@ func (s *AdminAutomationService) ListAutomations(ctx context.Context, req *admin
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationRead); err != nil {
+		return nil, err
+	}
 	defs, err := s.automations.ListAutomations(ctx, domainID, req.GetStatus())
 	if err != nil {
 		return nil, mapAdminAutomationError(err)
@@ -118,7 +148,10 @@ func (s *AdminAutomationService) EnableAutomation(ctx context.Context, req *admi
 	if err != nil {
 		return nil, err
 	}
-	def, err := s.automations.SetAutomationStatus(ctx, domainID, req.GetAutomationId(), automationmodel.StatusEnabled)
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationManage); err != nil {
+		return nil, err
+	}
+	def, err := s.automations.SetAutomationStatusAs(ctx, domainID, req.GetAutomationId(), automationmodel.StatusEnabled, automationActorFromContext(ctx))
 	if err != nil {
 		return nil, mapAdminAutomationError(err)
 	}
@@ -133,7 +166,10 @@ func (s *AdminAutomationService) DisableAutomation(ctx context.Context, req *adm
 	if err != nil {
 		return nil, err
 	}
-	def, err := s.automations.SetAutomationStatus(ctx, domainID, req.GetAutomationId(), automationmodel.StatusDisabled)
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationManage); err != nil {
+		return nil, err
+	}
+	def, err := s.automations.SetAutomationStatusAs(ctx, domainID, req.GetAutomationId(), automationmodel.StatusDisabled, automationActorFromContext(ctx))
 	if err != nil {
 		return nil, mapAdminAutomationError(err)
 	}
@@ -146,6 +182,9 @@ func (s *AdminAutomationService) DisableAutomation(ctx context.Context, req *adm
 func (s *AdminAutomationService) ListAutomationInvocations(ctx context.Context, req *adminv1.ListAutomationInvocationsRequest) (*adminv1.ListAutomationInvocationsResponse, error) {
 	domainID, err := parseAdminAutomationDomainID(req.GetDomainId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationRead); err != nil {
 		return nil, err
 	}
 	items, err := s.automations.ListInvocations(ctx, domainID, storage.InvocationFilter{AutomationID: strings.TrimSpace(req.GetAutomationId()), Status: strings.TrimSpace(req.GetStatus()), Limit: int(req.GetLimit())})
@@ -161,6 +200,9 @@ func (s *AdminAutomationService) ListAutomationInvocations(ctx context.Context, 
 func (s *AdminAutomationService) GetAutomationRun(ctx context.Context, req *adminv1.GetAutomationRunRequest) (*adminv1.GetAutomationRunResponse, error) {
 	domainID, err := parseAdminAutomationDomainID(req.GetDomainId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationRead); err != nil {
 		return nil, err
 	}
 	run, err := s.automations.GetRun(ctx, domainID, req.GetRunId())
@@ -179,6 +221,9 @@ func (s *AdminAutomationService) RetryAutomationInvocation(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationRun); err != nil {
+		return nil, err
+	}
 	inv, err := s.automations.RetryInvocation(ctx, domainID, req.GetInvocationId())
 	if err != nil {
 		return nil, mapAdminAutomationError(err)
@@ -189,6 +234,9 @@ func (s *AdminAutomationService) RetryAutomationInvocation(ctx context.Context, 
 func (s *AdminAutomationService) CancelAutomationInvocation(ctx context.Context, req *adminv1.CancelAutomationInvocationRequest) (*adminv1.CancelAutomationInvocationResponse, error) {
 	domainID, err := parseAdminAutomationDomainID(req.GetDomainId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationRun); err != nil {
 		return nil, err
 	}
 	inv, err := s.automations.CancelInvocation(ctx, domainID, req.GetInvocationId())
@@ -235,4 +283,35 @@ func mapAdminAutomationError(err error) error {
 		return status.Error(codes.NotFound, "automation not found")
 	}
 	return status.Error(codes.InvalidArgument, fmt.Sprint(err))
+}
+
+func (s *AdminAutomationService) requireAutomationCapability(ctx context.Context, domainID graph.DomainID, capability string) error {
+	if s.authorizer == nil {
+		_, err := principalFromContext(ctx)
+		return err
+	}
+	principal, err := principalFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	scope := principalservice.AccessScope{Type: "domain", DomainID: domainID.String()}
+	if scoped, ok := s.authorizer.(ScopedOperatorAuthorizer); ok {
+		return scoped.Authorize(ctx, principal.PrincipalID, capability, scope)
+	}
+	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, capability)
+	if err != nil {
+		return status.Errorf(codes.Internal, "authorize automation operator: %v", err)
+	}
+	if !ok {
+		return status.Error(codes.PermissionDenied, "operator lacks required automation capability")
+	}
+	return nil
+}
+
+func automationActorFromContext(ctx context.Context) string {
+	principal, err := principalFromContext(ctx)
+	if err != nil {
+		return ""
+	}
+	return principal.PrincipalID
 }

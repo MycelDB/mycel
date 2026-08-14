@@ -24,12 +24,15 @@ var ErrAutomationNotFound = errors.New("automation not found")
 type Manager interface {
 	ValidateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error)
 	CreateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error)
+	CreateAutomationAs(ctx context.Context, domainID graph.DomainID, rawJSON string, principalID string) (automation.Definition, error)
 	UpdateAutomation(ctx context.Context, domainID graph.DomainID, id string, rawJSON string) (automation.Definition, error)
+	UpdateAutomationAs(ctx context.Context, domainID graph.DomainID, id string, rawJSON string, principalID string) (automation.Definition, error)
 	DeleteAutomation(ctx context.Context, domainID graph.DomainID, id string) error
 	GetAutomation(ctx context.Context, domainID graph.DomainID, id string) (automation.Definition, error)
 	ListAutomationDomains(ctx context.Context) ([]graph.DomainID, error)
 	ListAutomations(ctx context.Context, domainID graph.DomainID, status string) ([]automation.Definition, error)
 	SetAutomationStatus(ctx context.Context, domainID graph.DomainID, id string, status string) (automation.Definition, error)
+	SetAutomationStatusAs(ctx context.Context, domainID graph.DomainID, id string, status string, principalID string) (automation.Definition, error)
 	ListInvocations(ctx context.Context, domainID graph.DomainID, filter storage.InvocationFilter) ([]automation.Invocation, error)
 	GetRun(ctx context.Context, domainID graph.DomainID, runID string) (automation.Run, error)
 	RetryInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error)
@@ -111,6 +114,10 @@ func (m *AutomationManager) ValidateAutomation(ctx context.Context, domainID gra
 }
 
 func (m *AutomationManager) CreateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error) {
+	return m.CreateAutomationAs(ctx, domainID, rawJSON, "")
+}
+
+func (m *AutomationManager) CreateAutomationAs(ctx context.Context, domainID graph.DomainID, rawJSON string, principalID string) (automation.Definition, error) {
 	if err := m.requireWriteAllowed(); err != nil {
 		return automation.Definition{}, err
 	}
@@ -124,6 +131,10 @@ func (m *AutomationManager) CreateAutomation(ctx context.Context, domainID graph
 		return def, mapStoreError(err)
 	}
 	now := m.now()
+	principalID = strings.TrimSpace(principalID)
+	def.OwnerPrincipalID = principalID
+	def.CreatedByPrincipalID = principalID
+	def.UpdatedByPrincipalID = principalID
 	def.CreatedAt = now
 	def.UpdatedAt = now
 	if err := m.store.PutDefinition(ctx, def); err != nil {
@@ -133,6 +144,10 @@ func (m *AutomationManager) CreateAutomation(ctx context.Context, domainID graph
 }
 
 func (m *AutomationManager) UpdateAutomation(ctx context.Context, domainID graph.DomainID, id string, rawJSON string) (automation.Definition, error) {
+	return m.UpdateAutomationAs(ctx, domainID, id, rawJSON, "")
+}
+
+func (m *AutomationManager) UpdateAutomationAs(ctx context.Context, domainID graph.DomainID, id string, rawJSON string, principalID string) (automation.Definition, error) {
 	if err := m.requireWriteAllowed(); err != nil {
 		return automation.Definition{}, err
 	}
@@ -150,6 +165,16 @@ func (m *AutomationManager) UpdateAutomation(ctx context.Context, domainID graph
 	if err := automation.ValidateDefinition(def); err != nil {
 		return def, err
 	}
+	principalID = strings.TrimSpace(principalID)
+	def.OwnerPrincipalID = current.OwnerPrincipalID
+	if def.OwnerPrincipalID == "" {
+		def.OwnerPrincipalID = principalID
+	}
+	def.CreatedByPrincipalID = current.CreatedByPrincipalID
+	if def.CreatedByPrincipalID == "" {
+		def.CreatedByPrincipalID = principalID
+	}
+	def.UpdatedByPrincipalID = principalID
 	def.CreatedAt = current.CreatedAt
 	def.UpdatedAt = m.now()
 	if err := m.store.PutDefinition(ctx, def); err != nil {
@@ -194,6 +219,10 @@ func (m *AutomationManager) ListAutomations(ctx context.Context, domainID graph.
 }
 
 func (m *AutomationManager) SetAutomationStatus(ctx context.Context, domainID graph.DomainID, id string, status string) (automation.Definition, error) {
+	return m.SetAutomationStatusAs(ctx, domainID, id, status, "")
+}
+
+func (m *AutomationManager) SetAutomationStatusAs(ctx context.Context, domainID graph.DomainID, id string, status string, principalID string) (automation.Definition, error) {
 	if err := m.requireWriteAllowed(); err != nil {
 		return automation.Definition{}, err
 	}
@@ -206,6 +235,7 @@ func (m *AutomationManager) SetAutomationStatus(ctx context.Context, domainID gr
 		return def, mapStoreError(err)
 	}
 	def.Status = status
+	def.UpdatedByPrincipalID = strings.TrimSpace(principalID)
 	def.UpdatedAt = m.now()
 	if err := m.store.PutDefinition(ctx, def); err != nil {
 		return def, mapStoreError(err)
@@ -289,7 +319,7 @@ func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphch
 				copy := *change.OldNode
 				oldNode = &copy
 			}
-			inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, SpaceID: event.SpaceID.String(), AutomationID: def.ID, AutomationVersion: def.Version, EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType, ActorPrincipalID: automationActor, OnBehalfOfPrincipalID: strings.TrimSpace(event.Origin.PrincipalID), Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
+			inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, SpaceID: event.SpaceID.String(), AutomationID: def.ID, AutomationVersion: def.Version, EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType, ActorPrincipalID: automationActor, OnBehalfOfPrincipalID: firstNonEmptyString(event.Origin.PrincipalID, def.OwnerPrincipalID), AutomationOwnerPrincipalID: def.OwnerPrincipalID, Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
 			_ = m.store.PutInvocation(ctx, inv)
 		}
 	}

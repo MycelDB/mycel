@@ -45,14 +45,15 @@ func (s *AutomationService) ValidateAutomation(ctx context.Context, req *clientv
 }
 
 func (s *AutomationService) CreateAutomation(ctx context.Context, req *clientv1.CreateAutomationRequest) (*clientv1.CreateAutomationResponse, error) {
-	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 	domainID, err := parseDomainID(req.GetDomainId())
 	if err != nil {
 		return nil, err
 	}
-	def, err := s.automations.CreateAutomation(ctx, domainID, req.GetDefinitionJson())
+	def, err := s.automations.CreateAutomationAs(ctx, domainID, req.GetDefinitionJson(), principal.PrincipalID)
 	if err != nil {
 		return nil, mapAutomationError(err)
 	}
@@ -64,14 +65,15 @@ func (s *AutomationService) CreateAutomation(ctx context.Context, req *clientv1.
 }
 
 func (s *AutomationService) UpdateAutomation(ctx context.Context, req *clientv1.UpdateAutomationRequest) (*clientv1.UpdateAutomationResponse, error) {
-	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 	domainID, err := parseDomainID(req.GetDomainId())
 	if err != nil {
 		return nil, err
 	}
-	def, err := s.automations.UpdateAutomation(ctx, domainID, req.GetAutomationId(), req.GetDefinitionJson())
+	def, err := s.automations.UpdateAutomationAs(ctx, domainID, req.GetAutomationId(), req.GetDefinitionJson(), principal.PrincipalID)
 	if err != nil {
 		return nil, mapAutomationError(err)
 	}
@@ -135,14 +137,15 @@ func (s *AutomationService) ListAutomations(ctx context.Context, req *clientv1.L
 }
 
 func (s *AutomationService) EnableAutomation(ctx context.Context, req *clientv1.EnableAutomationRequest) (*clientv1.EnableAutomationResponse, error) {
-	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 	domainID, err := parseDomainID(req.GetDomainId())
 	if err != nil {
 		return nil, err
 	}
-	def, err := s.automations.SetAutomationStatus(ctx, domainID, req.GetAutomationId(), automationmodel.StatusEnabled)
+	def, err := s.automations.SetAutomationStatusAs(ctx, domainID, req.GetAutomationId(), automationmodel.StatusEnabled, principal.PrincipalID)
 	if err != nil {
 		return nil, mapAutomationError(err)
 	}
@@ -154,14 +157,15 @@ func (s *AutomationService) EnableAutomation(ctx context.Context, req *clientv1.
 }
 
 func (s *AutomationService) DisableAutomation(ctx context.Context, req *clientv1.DisableAutomationRequest) (*clientv1.DisableAutomationResponse, error) {
-	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 	domainID, err := parseDomainID(req.GetDomainId())
 	if err != nil {
 		return nil, err
 	}
-	def, err := s.automations.SetAutomationStatus(ctx, domainID, req.GetAutomationId(), automationmodel.StatusDisabled)
+	def, err := s.automations.SetAutomationStatusAs(ctx, domainID, req.GetAutomationId(), automationmodel.StatusDisabled, principal.PrincipalID)
 	if err != nil {
 		return nil, mapAutomationError(err)
 	}

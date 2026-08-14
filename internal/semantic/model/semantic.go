@@ -285,18 +285,20 @@ type ProcessingScope struct {
 
 // CredentialGrant is a space-owned authorization to use one credential in one processing scope.
 type CredentialGrant struct {
-	ID                 CredentialGrantID     `json:"id"`
-	CredentialID       InferenceCredentialID `json:"credential_id"`
-	Scope              ProcessingScope       `json:"scope"`
-	Operations         []Operation           `json:"operations,omitempty"`
-	ModelEndpointID    *ModelEndpointID      `json:"model_endpoint_id,omitempty"`
-	ModelID            *InferenceModelID     `json:"model_id,omitempty"`
-	Priority           int                   `json:"priority,omitempty"`
-	IsDefault          bool                  `json:"is_default,omitempty"`
-	AllowBackgroundUse bool                  `json:"allow_background_use,omitempty"`
-	GrantedBy          string                `json:"granted_by,omitempty"`
-	CreatedAt          time.Time             `json:"created_at"`
-	ExpiresAt          *time.Time            `json:"expires_at,omitempty"`
+	ID                          CredentialGrantID     `json:"id"`
+	CredentialID                InferenceCredentialID `json:"credential_id"`
+	Scope                       ProcessingScope       `json:"scope"`
+	Operations                  []Operation           `json:"operations,omitempty"`
+	ModelEndpointID             *ModelEndpointID      `json:"model_endpoint_id,omitempty"`
+	ModelID                     *InferenceModelID     `json:"model_id,omitempty"`
+	Priority                    int                   `json:"priority,omitempty"`
+	IsDefault                   bool                  `json:"is_default,omitempty"`
+	AllowBackgroundUse          bool                  `json:"allow_background_use,omitempty"`
+	GranteePrincipalIDs         []string              `json:"grantee_principal_ids,omitempty"`
+	AllowOnBehalfOfPrincipalIDs []string              `json:"allow_on_behalf_of_principal_ids,omitempty"`
+	GrantedBy                   string                `json:"granted_by,omitempty"`
+	CreatedAt                   time.Time             `json:"created_at"`
+	ExpiresAt                   *time.Time            `json:"expires_at,omitempty"`
 }
 
 // InferencePolicy controls whether graph content may be processed by model endpoints.
