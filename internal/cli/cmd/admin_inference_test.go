@@ -62,7 +62,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("inference package apply failed: %v\n%s", err, out)
 	}
-	var applied adminv1.AdminInferenceServiceApplyInferencePackageResponse
+	var applied adminv1.AdminInferenceCatalogServiceApplyInferencePackageResponse
 	if err := json.Unmarshal([]byte(out), &applied); err != nil {
 		t.Fatalf("decode package apply: %v\n%s", err, out)
 	}
@@ -73,7 +73,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("model endpoint list failed: %v\n%s", err, out)
 	}
-	var endpoints adminv1.AdminInferenceServiceListModelEndpointsResponse
+	var endpoints adminv1.AdminInferenceCatalogServiceListModelEndpointsResponse
 	if err := json.Unmarshal([]byte(out), &endpoints); err != nil || len(endpoints.GetModelEndpoints()) != 1 || endpoints.GetModelEndpoints()[0].GetKey() != "test-openai" {
 		t.Fatalf("unexpected endpoints: %#v err=%v out=%s", &endpoints, err, out)
 	}
@@ -97,7 +97,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("credential add failed: %v\n%s", err, out)
 	}
-	var createdCredential adminv1.AdminInferenceServiceCreateCredentialResponse
+	var createdCredential adminv1.AdminInferenceCredentialServiceCreateCredentialResponse
 	if err := json.Unmarshal([]byte(out), &createdCredential); err != nil {
 		t.Fatalf("decode credential add: %v\n%s", err, out)
 	}
@@ -108,7 +108,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("credential list failed: %v\n%s", err, out)
 	}
-	var credentials adminv1.AdminInferenceServiceListCredentialsResponse
+	var credentials adminv1.AdminInferenceCredentialServiceListCredentialsResponse
 	if err := json.Unmarshal([]byte(out), &credentials); err != nil || len(credentials.GetCredentials()) != 1 || credentials.GetCredentials()[0].GetKey() != "test-openai-key" {
 		t.Fatalf("unexpected credentials: %#v err=%v out=%s", &credentials, err, out)
 	}
@@ -116,7 +116,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("credential grant failed: %v\n%s", err, out)
 	}
-	var createdGrant adminv1.AdminInferenceServiceCreateCredentialGrantResponse
+	var createdGrant adminv1.AdminInferenceGrantServiceCreateCredentialGrantResponse
 	if err := json.Unmarshal([]byte(out), &createdGrant); err != nil {
 		t.Fatalf("decode credential grant: %v\n%s", err, out)
 	}
@@ -127,7 +127,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("policy allow failed: %v\n%s", err, out)
 	}
-	var createdPolicy adminv1.AdminInferenceServiceCreateInferencePolicyResponse
+	var createdPolicy adminv1.AdminInferencePolicyServiceCreateInferencePolicyResponse
 	if err := json.Unmarshal([]byte(out), &createdPolicy); err != nil {
 		t.Fatalf("decode policy: %v\n%s", err, out)
 	}
@@ -138,7 +138,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("policy list failed: %v\n%s", err, out)
 	}
-	var policies adminv1.AdminInferenceServiceListInferencePoliciesResponse
+	var policies adminv1.AdminInferencePolicyServiceListInferencePoliciesResponse
 	if err := json.Unmarshal([]byte(out), &policies); err != nil || len(policies.GetInferencePolicies()) != 1 || policies.GetInferencePolicies()[0].GetReason() != "daemon test" {
 		t.Fatalf("unexpected policies: %#v err=%v out=%s", &policies, err, out)
 	}
@@ -146,7 +146,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("model endpoint disable failed: %v\n%s", err, out)
 	}
-	var disabledEndpoint adminv1.AdminInferenceServiceSetModelEndpointEnabledResponse
+	var disabledEndpoint adminv1.AdminInferenceCatalogServiceSetModelEndpointEnabledResponse
 	if err := json.Unmarshal([]byte(out), &disabledEndpoint); err != nil || disabledEndpoint.GetModelEndpoint().GetEnabled() {
 		t.Fatalf("unexpected disabled endpoint: %#v err=%v out=%s", &disabledEndpoint, err, out)
 	}
@@ -154,7 +154,7 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("credential revoke failed: %v\n%s", err, out)
 	}
-	var revoked adminv1.AdminInferenceServiceSetCredentialStatusResponse
+	var revoked adminv1.AdminInferenceCredentialServiceSetCredentialStatusResponse
 	if err := json.Unmarshal([]byte(out), &revoked); err != nil || revoked.GetCredential().GetStatus() != "revoked" {
 		t.Fatalf("unexpected revoked credential: %#v err=%v out=%s", &revoked, err, out)
 	}

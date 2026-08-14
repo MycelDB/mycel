@@ -183,7 +183,7 @@ func runDaemonSemanticIndexAdd(cmd *cobra.Command, a *app.App, key string, space
 	if err != nil {
 		return err
 	}
-	inferenceClient := adminv1.NewAdminInferenceServiceClient(conn)
+	inferenceClient := adminv1.NewAdminInferenceCatalogServiceClient(conn)
 	endpointID, err := daemonResolveAdminModelEndpointID(cmd.Context(), inferenceClient, authCtx, endpointRef)
 	if err != nil {
 		return err
@@ -203,12 +203,12 @@ func runDaemonSemanticIndexAdd(cmd *cobra.Command, a *app.App, key string, space
 	return a.Print(res.GetIndex(), fmt.Sprintf("semantic index added: %s\n", res.GetIndex().GetSemanticIndexId()))
 }
 
-func daemonResolveAdminModelEndpointID(ctx context.Context, client adminv1.AdminInferenceServiceClient, authCtx context.Context, raw string) (string, error) {
+func daemonResolveAdminModelEndpointID(ctx context.Context, client adminv1.AdminInferenceCatalogServiceClient, authCtx context.Context, raw string) (string, error) {
 	ref := strings.TrimSpace(raw)
 	if id, err := uuid.Parse(ref); err == nil && id != uuid.Nil {
 		return id.String(), nil
 	}
-	res, err := client.ListModelEndpoints(authCtx, &adminv1.AdminInferenceServiceListModelEndpointsRequest{PageSize: 500})
+	res, err := client.ListModelEndpoints(authCtx, &adminv1.AdminInferenceCatalogServiceListModelEndpointsRequest{PageSize: 500})
 	if err != nil {
 		return "", err
 	}
@@ -221,12 +221,12 @@ func daemonResolveAdminModelEndpointID(ctx context.Context, client adminv1.Admin
 	return "", fmt.Errorf("model endpoint %q not found", raw)
 }
 
-func daemonResolveAdminModelID(ctx context.Context, client adminv1.AdminInferenceServiceClient, authCtx context.Context, raw string) (string, error) {
+func daemonResolveAdminModelID(ctx context.Context, client adminv1.AdminInferenceCatalogServiceClient, authCtx context.Context, raw string) (string, error) {
 	ref := strings.TrimSpace(raw)
 	if id, err := uuid.Parse(ref); err == nil && id != uuid.Nil {
 		return id.String(), nil
 	}
-	res, err := client.ListModels(authCtx, &adminv1.AdminInferenceServiceListModelsRequest{PageSize: 500})
+	res, err := client.ListModels(authCtx, &adminv1.AdminInferenceCatalogServiceListModelsRequest{PageSize: 500})
 	if err != nil {
 		return "", err
 	}
@@ -239,12 +239,12 @@ func daemonResolveAdminModelID(ctx context.Context, client adminv1.AdminInferenc
 	return "", fmt.Errorf("model %q not found", raw)
 }
 
-func daemonResolveAdminVectorStoreID(ctx context.Context, client adminv1.AdminInferenceServiceClient, authCtx context.Context, raw string) (string, error) {
+func daemonResolveAdminVectorStoreID(ctx context.Context, client adminv1.AdminInferenceCatalogServiceClient, authCtx context.Context, raw string) (string, error) {
 	ref := strings.TrimSpace(raw)
 	if id, err := uuid.Parse(ref); err == nil && id != uuid.Nil {
 		return id.String(), nil
 	}
-	res, err := client.ListVectorStores(authCtx, &adminv1.AdminInferenceServiceListVectorStoresRequest{PageSize: 500})
+	res, err := client.ListVectorStores(authCtx, &adminv1.AdminInferenceCatalogServiceListVectorStoresRequest{PageSize: 500})
 	if err != nil {
 		return "", err
 	}

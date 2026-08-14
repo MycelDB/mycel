@@ -57,7 +57,7 @@ Daemon-backed index upsert is available when `--daemon-addr` is supplied:
   --source subtree
 ```
 
-With AdminInferenceService and AdminDomainService in place, daemon-mode `semantic index add` can resolve domain/model endpoint/model/vector store by key or UUID.
+With the Admin Inference catalog service and AdminDomainService in place, daemon-mode `semantic index add` can resolve domain/model endpoint/model/vector store by key or UUID.
 
 Reference-safe delete:
 

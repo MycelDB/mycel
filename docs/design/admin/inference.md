@@ -12,7 +12,7 @@ github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/inference.proto
 
 ## Purpose
 
-`AdminInferenceService` manages daemon inference catalog/configuration resources used by semantic indexes and semantic search.
+Admin inference APIs manage daemon inference catalog/configuration resources used by semantic indexes, semantic search, and graph automations. The API is split into themed services: `AdminInferenceCatalogService`, `AdminInferenceProfileService`, `AdminInferenceCredentialService`, `AdminInferenceGrantService`, `AdminInferencePolicyService`, and `AdminInferenceUsageService`.
 
 mycel owns semantic and embedding infrastructure: embedding model endpoints, embedding model definitions, vector stores, semantic indexes, embedding credentials/grants/policies, and semantic search execution. mycel may understand connector types such as `openai-compatible` or `ollama`, but only for operations mycel owns, primarily `embeddings`.
 
@@ -22,32 +22,39 @@ The MVP moves inference package application, safe resource discovery, credential
 
 ## Implemented MVP
 
+`AdminInferenceCatalogService`:
+
 - `ApplyInferencePackage`
 - `ListInferencePackages`
 - `ListModelEndpoints`
 - `ListModels`
 - `ListVectorStores`
 - `ListModelEndpointCapabilities`
-- `CreateCredential`
-- `ListCredentials`
-- `CreateCredentialGrant`
-- `ListCredentialGrants`
-- `CreateInferencePolicy`
-- `ListInferencePolicies`
 - `SetModelEndpointEnabled`
 - `SetVectorStoreEnabled`
 - `SetModelEndpointCapabilityEnabled`
+- reference-safe hard deletes for endpoints, models, vector stores, and endpoint capabilities
+
+`AdminInferenceCredentialService`:
+
+- `CreateCredential`
+- `ListCredentials`
 - `SetCredentialStatus`
+- `DeleteCredential`
+
+`AdminInferenceGrantService`:
+
+- `CreateCredentialGrant`
+- `ListCredentialGrants`
 - `ExpireCredentialGrant`
+- `DeleteCredentialGrant`
+
+`AdminInferencePolicyService`:
+
+- `CreateInferencePolicy`
+- `ListInferencePolicies`
 - `ExpireInferencePolicy`
-- reference-safe hard deletes:
-  - `DeleteModelEndpoint`
-  - `DeleteModel`
-  - `DeleteVectorStore`
-  - `DeleteModelEndpointCapability`
-  - `DeleteCredential`
-  - `DeleteCredentialGrant`
-  - `DeleteInferencePolicy`
+- `DeleteInferencePolicy`
 
 ## Not yet implemented
 

@@ -19,8 +19,9 @@ assigned to a tagged release bucket.
 - [add_callbacks parking-lot implementation plan](add-callbacks-parking-lot-implementation-plan.md) — remaining downstream compatibility, examples, integration notes, and final validation work after parking the coordinated graph-change watch/operation-correlation branches.
 - [add_callbacks integration notes](add-callbacks-integration-notes.md) — breaking API migration notes, operation ID semantics, downstream compatibility result, example locations, and validation checklist for the coordinated branches.
 
-## Semantic maintenance
+## Semantic maintenance and inference
 
+- [Standalone inference for graph automations implementation plan](standalone-inference-for-graph-automations-implementation-plan.md) — breaking phased plan for a standalone inference subsystem shared by semantic embeddings/search and graph automations.
 - [Semantic maintenance loaded state implementation plan](semantic-maintenance-loaded-state-implementation-plan.md) — per-space loaded maintenance managers and in-memory indexes for dirty events, work items, and checkpoints.
 
 ## Query and schema indexes

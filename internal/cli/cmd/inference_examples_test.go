@@ -86,7 +86,7 @@ func TestInferenceExamplePackagesApplyViaDaemonCLI(t *testing.T) {
 			if err != nil {
 				t.Fatalf("inference package apply failed: %v\n%s", err, out)
 			}
-			var res adminv1.AdminInferenceServiceApplyInferencePackageResponse
+			var res adminv1.AdminInferenceCatalogServiceApplyInferencePackageResponse
 			if err := json.Unmarshal([]byte(out), &res); err != nil {
 				t.Fatalf("decode apply response: %v\n%s", err, out)
 			}

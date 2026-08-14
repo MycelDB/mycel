@@ -71,7 +71,7 @@ func runDaemonInferencePackageApply(cmd *cobra.Command, a *app.App, filePath str
 	if strings.TrimSpace(doc.Name) == "" || strings.TrimSpace(doc.Version) == "" {
 		return fmt.Errorf("invalid inference package: name and version are required")
 	}
-	req := &adminv1.AdminInferenceServiceApplyInferencePackageRequest{Name: doc.Name, Version: doc.Version, Source: firstNonEmpty(doc.Source, filePath), Checksum: doc.Checksum}
+	req := &adminv1.AdminInferenceCatalogServiceApplyInferencePackageRequest{Name: doc.Name, Version: doc.Version, Source: firstNonEmpty(doc.Source, filePath), Checksum: doc.Checksum}
 	for _, endpoint := range doc.ModelEndpoints {
 		req.ModelEndpoints = append(req.ModelEndpoints, adminModelEndpointFromDomain(endpoint))
 	}
@@ -84,7 +84,7 @@ func runDaemonInferencePackageApply(cmd *cobra.Command, a *app.App, filePath str
 	for _, cap := range doc.ModelEndpointCapabilities {
 		req.ModelEndpointCapabilities = append(req.ModelEndpointCapabilities, adminCapabilityDefinitionFromCLI(cap))
 	}
-	res, err := adminv1.NewAdminInferenceServiceClient(conn).ApplyInferencePackage(authCtx, req)
+	res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).ApplyInferencePackage(authCtx, req)
 	if err != nil {
 		return err
 	}
@@ -100,7 +100,7 @@ func newInferencePackageListCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).ListInferencePackages(authCtx, &adminv1.AdminInferenceServiceListInferencePackagesRequest{PageSize: pageSize, PageToken: pageToken})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).ListInferencePackages(authCtx, &adminv1.AdminInferenceCatalogServiceListInferencePackagesRequest{PageSize: pageSize, PageToken: pageToken})
 		if err != nil {
 			return err
 		}
@@ -136,7 +136,7 @@ func newInferenceCapabilityListCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).ListModelEndpointCapabilities(authCtx, &adminv1.AdminInferenceServiceListModelEndpointCapabilitiesRequest{PageSize: pageSize, PageToken: pageToken, Operation: operation, IncludeDisabled: includeDisabled})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).ListModelEndpointCapabilities(authCtx, &adminv1.AdminInferenceCatalogServiceListModelEndpointCapabilitiesRequest{PageSize: pageSize, PageToken: pageToken, Operation: operation, IncludeDisabled: includeDisabled})
 		if err != nil {
 			return err
 		}
@@ -169,7 +169,7 @@ func newInferenceCapabilitySetEnabledCommand(a *app.App, enabled bool) *cobra.Co
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).SetModelEndpointCapabilityEnabled(authCtx, &adminv1.AdminInferenceServiceSetModelEndpointCapabilityEnabledRequest{ModelEndpointCapabilityId: args[0], Enabled: enabled})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).SetModelEndpointCapabilityEnabled(authCtx, &adminv1.AdminInferenceCatalogServiceSetModelEndpointCapabilityEnabledRequest{ModelEndpointCapabilityId: args[0], Enabled: enabled})
 		if err != nil {
 			return err
 		}
@@ -184,7 +184,7 @@ func newInferenceCapabilityDeleteCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).DeleteModelEndpointCapability(authCtx, &adminv1.AdminInferenceServiceDeleteModelEndpointCapabilityRequest{ModelEndpointCapabilityId: args[0]})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).DeleteModelEndpointCapability(authCtx, &adminv1.AdminInferenceCatalogServiceDeleteModelEndpointCapabilityRequest{ModelEndpointCapabilityId: args[0]})
 		if err != nil {
 			return err
 		}
@@ -214,7 +214,7 @@ func newInferenceModelEndpointListCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).ListModelEndpoints(authCtx, &adminv1.AdminInferenceServiceListModelEndpointsRequest{PageSize: pageSize, PageToken: pageToken, IncludeDisabled: includeDisabled})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).ListModelEndpoints(authCtx, &adminv1.AdminInferenceCatalogServiceListModelEndpointsRequest{PageSize: pageSize, PageToken: pageToken, IncludeDisabled: includeDisabled})
 		if err != nil {
 			return err
 		}
@@ -246,7 +246,7 @@ func newInferenceModelEndpointSetEnabledCommand(a *app.App, enabled bool) *cobra
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).SetModelEndpointEnabled(authCtx, &adminv1.AdminInferenceServiceSetModelEndpointEnabledRequest{ModelEndpoint: args[0], Enabled: enabled})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).SetModelEndpointEnabled(authCtx, &adminv1.AdminInferenceCatalogServiceSetModelEndpointEnabledRequest{ModelEndpoint: args[0], Enabled: enabled})
 		if err != nil {
 			return err
 		}
@@ -261,7 +261,7 @@ func newInferenceModelEndpointDeleteCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).DeleteModelEndpoint(authCtx, &adminv1.AdminInferenceServiceDeleteModelEndpointRequest{ModelEndpoint: args[0]})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).DeleteModelEndpoint(authCtx, &adminv1.AdminInferenceCatalogServiceDeleteModelEndpointRequest{ModelEndpoint: args[0]})
 		if err != nil {
 			return err
 		}
@@ -284,7 +284,7 @@ func newInferenceModelListCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).ListModels(authCtx, &adminv1.AdminInferenceServiceListModelsRequest{PageSize: pageSize, PageToken: pageToken, Operation: operation})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).ListModels(authCtx, &adminv1.AdminInferenceCatalogServiceListModelsRequest{PageSize: pageSize, PageToken: pageToken, Operation: operation})
 		if err != nil {
 			return err
 		}
@@ -312,7 +312,7 @@ func newInferenceModelDeleteCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).DeleteModel(authCtx, &adminv1.AdminInferenceServiceDeleteModelRequest{Model: args[0]})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).DeleteModel(authCtx, &adminv1.AdminInferenceCatalogServiceDeleteModelRequest{Model: args[0]})
 		if err != nil {
 			return err
 		}
@@ -336,7 +336,7 @@ func newInferenceVectorStoreListCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).ListVectorStores(authCtx, &adminv1.AdminInferenceServiceListVectorStoresRequest{PageSize: pageSize, PageToken: pageToken, IncludeDisabled: includeDisabled})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).ListVectorStores(authCtx, &adminv1.AdminInferenceCatalogServiceListVectorStoresRequest{PageSize: pageSize, PageToken: pageToken, IncludeDisabled: includeDisabled})
 		if err != nil {
 			return err
 		}
@@ -368,7 +368,7 @@ func newInferenceVectorStoreSetEnabledCommand(a *app.App, enabled bool) *cobra.C
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).SetVectorStoreEnabled(authCtx, &adminv1.AdminInferenceServiceSetVectorStoreEnabledRequest{VectorStore: args[0], Enabled: enabled})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).SetVectorStoreEnabled(authCtx, &adminv1.AdminInferenceCatalogServiceSetVectorStoreEnabledRequest{VectorStore: args[0], Enabled: enabled})
 		if err != nil {
 			return err
 		}
@@ -383,7 +383,7 @@ func newInferenceVectorStoreDeleteCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).DeleteVectorStore(authCtx, &adminv1.AdminInferenceServiceDeleteVectorStoreRequest{VectorStore: args[0]})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).DeleteVectorStore(authCtx, &adminv1.AdminInferenceCatalogServiceDeleteVectorStoreRequest{VectorStore: args[0]})
 		if err != nil {
 			return err
 		}
@@ -404,7 +404,7 @@ func newInferenceCredentialSetStatusCommand(a *app.App, status domainsemantic.Cr
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).SetCredentialStatus(authCtx, &adminv1.AdminInferenceServiceSetCredentialStatusRequest{Credential: args[0], Status: string(status)})
+		res, err := adminv1.NewAdminInferenceCredentialServiceClient(conn).SetCredentialStatus(authCtx, &adminv1.AdminInferenceCredentialServiceSetCredentialStatusRequest{Credential: args[0], Status: string(status)})
 		if err != nil {
 			return err
 		}
@@ -420,7 +420,7 @@ func newInferenceCredentialDeleteCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).DeleteCredential(authCtx, &adminv1.AdminInferenceServiceDeleteCredentialRequest{Credential: args[0], DeleteGrants: deleteGrants, DeleteSecret: deleteSecret})
+		res, err := adminv1.NewAdminInferenceCredentialServiceClient(conn).DeleteCredential(authCtx, &adminv1.AdminInferenceCredentialServiceDeleteCredentialRequest{Credential: args[0], DeleteGrants: deleteGrants, DeleteSecret: deleteSecret})
 		if err != nil {
 			return err
 		}
@@ -461,11 +461,11 @@ func newInferenceCredentialListCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		req := &adminv1.AdminInferenceServiceListCredentialsRequest{PageSize: pageSize, PageToken: pageToken, OwnerType: ownerType, OwnerId: ownerID, IncludeInactive: includeInactive}
+		req := &adminv1.AdminInferenceCredentialServiceListCredentialsRequest{PageSize: pageSize, PageToken: pageToken, OwnerType: ownerType, OwnerId: ownerID, IncludeInactive: includeInactive}
 		if strings.TrimSpace(endpointID) != "" {
 			req.ModelEndpointId = &endpointID
 		}
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).ListCredentials(authCtx, req)
+		res, err := adminv1.NewAdminInferenceCredentialServiceClient(conn).ListCredentials(authCtx, req)
 		if err != nil {
 			return err
 		}
@@ -520,7 +520,7 @@ func newInferenceCredentialGrantExpireCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).ExpireCredentialGrant(authCtx, &adminv1.AdminInferenceServiceExpireCredentialGrantRequest{SpaceId: spaceID, CredentialGrantId: args[0]})
+		res, err := adminv1.NewAdminInferenceGrantServiceClient(conn).ExpireCredentialGrant(authCtx, &adminv1.AdminInferenceGrantServiceExpireCredentialGrantRequest{SpaceId: spaceID, CredentialGrantId: args[0]})
 		if err != nil {
 			return err
 		}
@@ -539,7 +539,7 @@ func newInferenceCredentialGrantDeleteCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).DeleteCredentialGrant(authCtx, &adminv1.AdminInferenceServiceDeleteCredentialGrantRequest{SpaceId: spaceID, CredentialGrantId: args[0]})
+		res, err := adminv1.NewAdminInferenceGrantServiceClient(conn).DeleteCredentialGrant(authCtx, &adminv1.AdminInferenceGrantServiceDeleteCredentialGrantRequest{SpaceId: spaceID, CredentialGrantId: args[0]})
 		if err != nil {
 			return err
 		}
@@ -560,11 +560,11 @@ func newInferenceCredentialGrantListCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		req := &adminv1.AdminInferenceServiceListCredentialGrantsRequest{SpaceId: spaceID, PageSize: pageSize, PageToken: pageToken, IncludeExpired: includeExpired}
+		req := &adminv1.AdminInferenceGrantServiceListCredentialGrantsRequest{SpaceId: spaceID, PageSize: pageSize, PageToken: pageToken, IncludeExpired: includeExpired}
 		if strings.TrimSpace(credentialID) != "" {
 			req.CredentialId = &credentialID
 		}
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).ListCredentialGrants(authCtx, req)
+		res, err := adminv1.NewAdminInferenceGrantServiceClient(conn).ListCredentialGrants(authCtx, req)
 		if err != nil {
 			return err
 		}
@@ -623,7 +623,7 @@ func newInferencePolicyExpireCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).ExpireInferencePolicy(authCtx, &adminv1.AdminInferenceServiceExpireInferencePolicyRequest{SpaceId: spaceID, InferencePolicyId: args[0]})
+		res, err := adminv1.NewAdminInferencePolicyServiceClient(conn).ExpireInferencePolicy(authCtx, &adminv1.AdminInferencePolicyServiceExpireInferencePolicyRequest{SpaceId: spaceID, InferencePolicyId: args[0]})
 		if err != nil {
 			return err
 		}
@@ -642,7 +642,7 @@ func newInferencePolicyDeleteCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).DeleteInferencePolicy(authCtx, &adminv1.AdminInferenceServiceDeleteInferencePolicyRequest{SpaceId: spaceID, InferencePolicyId: args[0]})
+		res, err := adminv1.NewAdminInferencePolicyServiceClient(conn).DeleteInferencePolicy(authCtx, &adminv1.AdminInferencePolicyServiceDeleteInferencePolicyRequest{SpaceId: spaceID, InferencePolicyId: args[0]})
 		if err != nil {
 			return err
 		}
@@ -663,7 +663,7 @@ func newInferencePolicyListCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceServiceClient(conn).ListInferencePolicies(authCtx, &adminv1.AdminInferenceServiceListInferencePoliciesRequest{SpaceId: spaceID, PageSize: pageSize, PageToken: pageToken, Effect: effect, IncludeExpired: includeExpired})
+		res, err := adminv1.NewAdminInferencePolicyServiceClient(conn).ListInferencePolicies(authCtx, &adminv1.AdminInferencePolicyServiceListInferencePoliciesRequest{SpaceId: spaceID, PageSize: pageSize, PageToken: pageToken, Effect: effect, IncludeExpired: includeExpired})
 		if err != nil {
 			return err
 		}
@@ -703,13 +703,13 @@ func runDaemonInferenceCredentialAdd(cmd *cobra.Command, a *app.App, key, endpoi
 	if ownerType == "" {
 		ownerType = string(domainsemantic.CredentialOwnerUser)
 	}
-	req := &adminv1.AdminInferenceServiceCreateCredentialRequest{Key: key, DisplayName: firstNonEmpty(name, key), ModelEndpoint: endpointRef, OwnerType: ownerType, OwnerId: ownerID, AuthType: firstNonEmpty(authType, string(domainsemantic.AuthModeAPIKey)), IsDefault: isDefault}
+	req := &adminv1.AdminInferenceCredentialServiceCreateCredentialRequest{Key: key, DisplayName: firstNonEmpty(name, key), ModelEndpoint: endpointRef, OwnerType: ownerType, OwnerId: ownerID, AuthType: firstNonEmpty(authType, string(domainsemantic.AuthModeAPIKey)), IsDefault: isDefault}
 	if externalRef != "" {
-		req.SecretMaterial = &adminv1.AdminInferenceServiceCreateCredentialRequest_ExternalRef{ExternalRef: externalRef}
+		req.SecretMaterial = &adminv1.AdminInferenceCredentialServiceCreateCredentialRequest_ExternalRef{ExternalRef: externalRef}
 	} else {
-		req.SecretMaterial = &adminv1.AdminInferenceServiceCreateCredentialRequest_SecretValue{SecretValue: apiKey}
+		req.SecretMaterial = &adminv1.AdminInferenceCredentialServiceCreateCredentialRequest_SecretValue{SecretValue: apiKey}
 	}
-	res, err := adminv1.NewAdminInferenceServiceClient(conn).CreateCredential(authCtx, req)
+	res, err := adminv1.NewAdminInferenceCredentialServiceClient(conn).CreateCredential(authCtx, req)
 	if err != nil {
 		return err
 	}
@@ -733,8 +733,8 @@ func runDaemonInferenceCredentialGrant(cmd *cobra.Command, a *app.App, credentia
 			return err
 		}
 	}
-	req := &adminv1.AdminInferenceServiceCreateCredentialGrantRequest{SpaceId: spaceID.String(), Credential: credentialRef, Scope: &adminv1.ProcessingScope{SpaceId: spaceID.String(), DomainId: domainID, SemanticIndexId: indexRef, NodeId: nodeText, IncludeDescendants: includeDescendants}, Operations: operations, ModelEndpoint: endpointRef, Model: modelRef, Priority: int32(priority), IsDefault: isDefault, AllowBackgroundUse: allowBackgroundUse}
-	res, err := adminv1.NewAdminInferenceServiceClient(conn).CreateCredentialGrant(authCtx, req)
+	req := &adminv1.AdminInferenceGrantServiceCreateCredentialGrantRequest{SpaceId: spaceID.String(), Credential: credentialRef, Scope: &adminv1.ProcessingScope{SpaceId: spaceID.String(), DomainId: domainID, SemanticIndexId: indexRef, NodeId: nodeText, IncludeDescendants: includeDescendants}, Operations: operations, ModelEndpoint: endpointRef, Model: modelRef, Priority: int32(priority), IsDefault: isDefault, AllowBackgroundUse: allowBackgroundUse}
+	res, err := adminv1.NewAdminInferenceGrantServiceClient(conn).CreateCredentialGrant(authCtx, req)
 	if err != nil {
 		return err
 	}
@@ -758,7 +758,7 @@ func runDaemonInferencePolicyCreate(cmd *cobra.Command, a *app.App, effect domai
 			return err
 		}
 	}
-	res, err := adminv1.NewAdminInferenceServiceClient(conn).CreateInferencePolicy(authCtx, &adminv1.AdminInferenceServiceCreateInferencePolicyRequest{SpaceId: spaceID.String(), Scope: &adminv1.ProcessingScope{SpaceId: spaceID.String(), DomainId: domainID, SemanticIndexId: indexRef, NodeId: nodeText, IncludeDescendants: includeDescendants}, Effect: string(effect), Operations: operations, NoInference: noInference, AllowedPrivacyClasses: privacyClasses, DisallowThirdParty: disallowThirdParty, RequireLocalEndpoint: requireLocalEndpoint, Reason: reason})
+	res, err := adminv1.NewAdminInferencePolicyServiceClient(conn).CreateInferencePolicy(authCtx, &adminv1.AdminInferencePolicyServiceCreateInferencePolicyRequest{SpaceId: spaceID.String(), Scope: &adminv1.ProcessingScope{SpaceId: spaceID.String(), DomainId: domainID, SemanticIndexId: indexRef, NodeId: nodeText, IncludeDescendants: includeDescendants}, Effect: string(effect), Operations: operations, NoInference: noInference, AllowedPrivacyClasses: privacyClasses, DisallowThirdParty: disallowThirdParty, RequireLocalEndpoint: requireLocalEndpoint, Reason: reason})
 	if err != nil {
 		return err
 	}
