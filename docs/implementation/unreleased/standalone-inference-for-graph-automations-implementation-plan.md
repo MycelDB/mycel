@@ -19,7 +19,12 @@ resolver tranche: the standalone inference subsystem can resolve profile,
 capability, credential grant, credential/secret, and policy matches; denies
 missing grants/policies fail closed; deny/no-inference policies win; policy
 restrictions are enforced; policy decisions are persisted and readable through
-the themed admin API/CLI. Runtime conversion remains for later phases.
+the themed admin API/CLI. INF5 is implemented as a connector-runtime tranche:
+standalone inference now has operation-generic fake and OpenAI-compatible
+connectors for embeddings and chat-like generation, secret material resolution
+after policy allow, connector invocation APIs, and neutral usage telemetry for
+success, failure, denial, and cancellation. Runtime conversion remains for later
+phases.
 
 No compatibility migration from the current semantic inference stores,
 automation provider configuration, automation run records, CLI shapes, or
@@ -426,6 +431,19 @@ Implement operation-generic provider invocation through the inference subsystem.
 - Denied request tests prove no connector call occurs.
 - Usage event tests for success, failure, and denial.
 - Secret material redaction tests.
+
+### Implementation status
+
+Implemented. `internal/inference/connectors` defines embedding and chat
+connector interfaces, normalized request/response shapes, deterministic fake
+connector behavior, and OpenAI-compatible embedding and chat-completions request
+handling. `internal/inference/service.Invoke` resolves policy first, records
+denied usage without resolving secrets or calling connectors, resolves secret
+material only for allowed requests, invokes the registered connector, and appends
+neutral usage events for success, failure, denial, and cancellation. The admin
+usage service now lists and summarizes standalone usage ledger events. Tests
+cover fake invocation, OpenAI-compatible request shapes, denied no-call behavior,
+usage telemetry, connector failure classification, and secret redaction.
 
 ### Functional endpoint for the phase
 

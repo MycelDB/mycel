@@ -252,9 +252,13 @@ func (r resolver) matchingGrants(ctx context.Context, spaceMgr inferencestorage.
 		if !ok {
 			continue
 		}
-		secret, ok := secretByID[credential.SecretID]
-		if !ok {
-			continue
+		secret := domaininference.Secret{}
+		if credential.AuthType != domaininference.CredentialAuthNone {
+			var ok bool
+			secret, ok = secretByID[credential.SecretID]
+			if !ok {
+				continue
+			}
 		}
 		if !grantMatches(grant, credential, req, profile, candidate, now) {
 			continue

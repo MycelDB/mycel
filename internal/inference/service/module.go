@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/inference/connectors"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
 	mycelruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
@@ -19,18 +21,20 @@ var _ mycelruntime.StatusReporter = (*Module)(nil)
 var _ Manager = (*Module)(nil)
 
 type Module struct {
-	mu        sync.Mutex
-	dataDir   string
-	global    inferencestorage.GlobalManager
-	usage     inferencestorage.UsageLedger
-	spaces    map[string]inferencestorage.SpaceManager
-	logger    *slog.Logger
-	gate      *quiesce.Gate
-	startedAt time.Time
+	mu             sync.Mutex
+	dataDir        string
+	global         inferencestorage.GlobalManager
+	usage          inferencestorage.UsageLedger
+	spaces         map[string]inferencestorage.SpaceManager
+	connectors     map[domaininference.ConnectorType]connectors.Connector
+	secretResolver SecretResolver
+	logger         *slog.Logger
+	gate           *quiesce.Gate
+	startedAt      time.Time
 }
 
 func NewModule() *Module {
-	return &Module{spaces: map[string]inferencestorage.SpaceManager{}, gate: quiesce.NewGate(ModuleName)}
+	return &Module{spaces: map[string]inferencestorage.SpaceManager{}, connectors: defaultConnectors(), secretResolver: EnvSecretResolver{}, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -49,6 +53,12 @@ func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.
 	m.global = global
 	m.usage = usage
 	m.spaces = map[string]inferencestorage.SpaceManager{}
+	if m.connectors == nil {
+		m.connectors = defaultConnectors()
+	}
+	if m.secretResolver == nil {
+		m.secretResolver = EnvSecretResolver{}
+	}
 	m.logger = host.Log()
 	m.startedAt = time.Now().UTC()
 	if m.gate == nil {

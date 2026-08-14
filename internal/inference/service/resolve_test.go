@@ -109,6 +109,7 @@ func TestResolvePrincipalOwnedCredentialRequiresMatchingPrincipal(t *testing.T) 
 type resolverFixture struct {
 	spaceID  string
 	spaceMgr interface {
+		UpsertProfile(context.Context, domaininference.Profile) (domaininference.Profile, error)
 		UpsertPolicy(context.Context, domaininference.Policy) (domaininference.Policy, error)
 		UpsertCredentialGrant(context.Context, domaininference.CredentialGrant) (domaininference.CredentialGrant, error)
 		DeleteCredentialGrant(context.Context, domaininference.CredentialGrantID) error

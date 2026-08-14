@@ -832,3 +832,60 @@ func inferencePolicyDecisionActionToProto(value domaininference.PolicyDecisionAc
 		return commonv1.InferencePolicyDecisionAction_INFERENCE_POLICY_DECISION_ACTION_UNSPECIFIED
 	}
 }
+
+func mapStandaloneUsageEvent(in domaininference.UsageEvent) *adminv1.InferenceUsageEvent {
+	return &adminv1.InferenceUsageEvent{UsageEventId: in.ID.String(), RequestId: in.RequestID, Operation: inferenceOperationToProto(in.Operation), UsageMode: inferenceUsageModeToProto(in.UsageMode), Status: inferenceUsageStatusToProto(in.Status), SpaceId: in.SpaceID, DomainId: in.DomainID, NodeId: in.NodeID, AutomationId: in.AutomationID, AutomationRunId: in.AutomationRunID, SemanticIndexId: in.SemanticIndexID, ActorPrincipalId: in.ActorPrincipalID, OnBehalfOfPrincipalId: in.OnBehalfOfPrincipalID, InferenceProfileId: uuidOrEmptyAdmin(in.ProfileID), ModelEndpointId: uuidOrEmptyAdmin(in.EndpointID), ModelId: uuidOrEmptyAdmin(in.ModelID), ModelEndpointCapabilityId: uuidOrEmptyAdmin(in.CapabilityID), CredentialId: uuidOrEmptyAdmin(in.CredentialID), CredentialGrantId: uuidOrEmptyAdmin(in.CredentialGrantID), PolicyDecisionId: uuidOrEmptyAdmin(in.PolicyDecisionID), ProviderRequestId: in.ProviderRequestID, InputTokens: in.InputTokens, OutputTokens: in.OutputTokens, TotalTokens: in.TotalTokens, LatencyMillis: in.LatencyMillis, ErrorCode: in.ErrorCode, ErrorMessage: in.ErrorMessage, StartedAt: timestamppb.New(in.StartedAt), CompletedAt: timestamppb.New(in.CompletedAt), Metadata: protoStructAdmin(in.Metadata)}
+}
+
+func mapStandaloneUsageEvents(items []domaininference.UsageEvent) []*adminv1.InferenceUsageEvent {
+	out := make([]*adminv1.InferenceUsageEvent, 0, len(items))
+	for _, item := range items {
+		out = append(out, mapStandaloneUsageEvent(item))
+	}
+	return out
+}
+
+func inferenceUsageStatusToProto(value domaininference.UsageStatus) commonv1.InferenceUsageStatus {
+	switch value {
+	case domaininference.UsageStatusSucceeded:
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_SUCCEEDED
+	case domaininference.UsageStatusFailed:
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_FAILED
+	case domaininference.UsageStatusDenied:
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_DENIED
+	case domaininference.UsageStatusCanceled:
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_CANCELED
+	default:
+		return commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_UNSPECIFIED
+	}
+}
+
+func inferenceUsageModeFromProto(value commonv1.InferenceUsageMode) domaininference.UsageMode {
+	switch value {
+	case commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_INTERACTIVE:
+		return domaininference.UsageModeInteractive
+	case commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_AUTOMATION:
+		return domaininference.UsageModeAutomation
+	case commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_BACKGROUND:
+		return domaininference.UsageModeBackground
+	case commonv1.InferenceUsageMode_INFERENCE_USAGE_MODE_SEMANTIC:
+		return domaininference.UsageModeSemantic
+	default:
+		return ""
+	}
+}
+
+func inferenceUsageStatusFromProto(value commonv1.InferenceUsageStatus) domaininference.UsageStatus {
+	switch value {
+	case commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_SUCCEEDED:
+		return domaininference.UsageStatusSucceeded
+	case commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_FAILED:
+		return domaininference.UsageStatusFailed
+	case commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_DENIED:
+		return domaininference.UsageStatusDenied
+	case commonv1.InferenceUsageStatus_INFERENCE_USAGE_STATUS_CANCELED:
+		return domaininference.UsageStatusCanceled
+	default:
+		return ""
+	}
+}

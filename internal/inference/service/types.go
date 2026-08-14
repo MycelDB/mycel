@@ -13,4 +13,5 @@ type Manager interface {
 	SpaceManager(ctx context.Context, spaceID string) (inferencestorage.SpaceManager, error)
 	UsageLedger() inferencestorage.UsageLedger
 	Resolve(ctx context.Context, req ResolveRequest) (ResolveResult, error)
+	Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse, error)
 }
