@@ -3,8 +3,11 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const defaultMaxActions = 10
@@ -47,11 +50,14 @@ func ValidateDefinition(def Definition) error {
 	if err := validateInput(def.Input); err != nil {
 		return err
 	}
-	if err := validateModel(def.Model); err != nil {
+	if err := rejectSecretBearingDefinition(def); err != nil {
 		return err
 	}
 	if def.Workflow != nil {
 		return validateWorkflow(*def.Workflow)
+	}
+	if err := validateInferenceRef("automation inference", def.Inference, true); err != nil {
+		return err
 	}
 	if strings.TrimSpace(def.Prompt) == "" {
 		return fmt.Errorf("automation prompt is required")
@@ -82,6 +88,15 @@ func validateWorkflow(workflow Workflow) error {
 		}
 		if strings.TrimSpace(step.Kind) == WorkflowStepTool && strings.TrimSpace(step.Tool) == "" {
 			return fmt.Errorf("workflow tool step %q requires tool", step.ID)
+		}
+		if strings.TrimSpace(step.Kind) == WorkflowStepLLM {
+			if err := validateInferenceRef(fmt.Sprintf("workflow llm step %q inference", step.ID), step.Inference, true); err != nil {
+				return err
+			}
+		} else if hasInferenceRef(step.Inference) {
+			if err := validateInferenceRef(fmt.Sprintf("workflow step %q inference", step.ID), step.Inference, false); err != nil {
+				return err
+			}
 		}
 		seen[step.ID] = step
 	}
@@ -140,12 +155,75 @@ func validateInput(input Input) error {
 	return nil
 }
 
-func validateModel(model Model) error {
-	if model.Temperature != nil && (*model.Temperature < 0 || *model.Temperature > 2) {
-		return fmt.Errorf("automation model.temperature must be between 0 and 2")
+func validateInferenceRef(path string, ref InferenceRef, required bool) error {
+	if required && !hasInferenceRef(ref) {
+		return fmt.Errorf("%s is required", path)
 	}
-	if model.MaxOutputTokens < 0 {
-		return fmt.Errorf("automation model.maxOutputTokens must be non-negative")
+	if !hasInferenceRef(ref) {
+		return nil
+	}
+	operation := strings.ToLower(strings.TrimSpace(ref.Operation))
+	if operation == "" {
+		return fmt.Errorf("%s.operation is required", path)
+	}
+	if operation != "chat" && operation != "summarize" && operation != "classify" {
+		return fmt.Errorf("%s.operation must be chat, summarize, or classify", path)
+	}
+	if strings.TrimSpace(ref.Profile) == "" && strings.TrimSpace(ref.ProfileID) == "" {
+		return fmt.Errorf("%s.profile or profile_id is required", path)
+	}
+	if err := validateReferenceToken(path+".profile", ref.Profile); err != nil {
+		return err
+	}
+	if err := validateReferenceToken(path+".profile_id", ref.ProfileID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(ref.ProfileID) != "" {
+		if _, err := uuid.Parse(strings.TrimSpace(ref.ProfileID)); err != nil {
+			return fmt.Errorf("%s.profile_id must be a UUID", path)
+		}
+	}
+	for name, value := range map[string]string{"capability_ref": ref.CapabilityRef, "endpoint_ref": ref.EndpointRef, "model_ref": ref.ModelRef} {
+		if err := validateReferenceToken(path+"."+name, value); err != nil {
+			return err
+		}
+	}
+	params := ref.Parameters
+	if params.Temperature != nil && (*params.Temperature < 0 || *params.Temperature > 2) {
+		return fmt.Errorf("%s.parameters.temperature must be between 0 and 2", path)
+	}
+	if params.MaxInputTokens < 0 {
+		return fmt.Errorf("%s.parameters.maxInputTokens must be non-negative", path)
+	}
+	if params.MaxOutputTokens < 0 {
+		return fmt.Errorf("%s.parameters.maxOutputTokens must be non-negative", path)
+	}
+	switch strings.ToLower(strings.TrimSpace(params.ResponseFormat)) {
+	case "", "text", "json", "json_object":
+	default:
+		return fmt.Errorf("%s.parameters.responseFormat must be text, json, or json_object", path)
+	}
+	return nil
+}
+
+func hasInferenceRef(ref InferenceRef) bool {
+	return strings.TrimSpace(ref.Operation) != "" || strings.TrimSpace(ref.Profile) != "" || strings.TrimSpace(ref.ProfileID) != "" || strings.TrimSpace(ref.CapabilityRef) != "" || strings.TrimSpace(ref.EndpointRef) != "" || strings.TrimSpace(ref.ModelRef) != "" || ref.Parameters.Temperature != nil || ref.Parameters.MaxInputTokens != 0 || ref.Parameters.MaxOutputTokens != 0 || strings.TrimSpace(ref.Parameters.ResponseFormat) != "" || len(ref.Parameters.Metadata) != 0
+}
+
+func validateReferenceToken(path string, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if strings.ContainsAny(value, " \t\n\r") {
+		return fmt.Errorf("%s must not contain whitespace", path)
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "env://") || strings.HasPrefix(lower, "secret://") || strings.HasPrefix(lower, "file://") {
+		return fmt.Errorf("%s must not reference secrets", path)
+	}
+	if u, err := url.Parse(value); err == nil && u.Scheme != "" && u.Host != "" {
+		return fmt.Errorf("%s must not be a raw endpoint URL", path)
 	}
 	return nil
 }
@@ -286,4 +364,84 @@ func validateStringMap(name string, values map[string]string) error {
 		}
 	}
 	return nil
+}
+
+func rejectSecretBearingDefinition(def Definition) error {
+	if def.LegacyModelRef != nil {
+		return fmt.Errorf("automation model provider/model fields are not supported; use inference profile refs")
+	}
+	for _, step := range workflowSteps(def.Workflow) {
+		if step.LegacyModelRef != nil {
+			return fmt.Errorf("workflow step %q model provider/model fields are not supported; use inference profile refs", step.ID)
+		}
+	}
+	raw, err := json.Marshal(def)
+	if err != nil {
+		return err
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	return rejectSecretBearingValue("automation definition", decoded, "")
+}
+
+func workflowSteps(workflow *Workflow) []WorkflowStep {
+	if workflow == nil {
+		return nil
+	}
+	return workflow.Steps
+}
+
+func rejectSecretBearingValue(path string, value any, keyHint string) error {
+	sensitiveKey := isSensitiveDefinitionKey(keyHint)
+	switch v := value.(type) {
+	case map[string]any:
+		for key, child := range v {
+			if err := rejectSecretBearingValue(path+"."+key, child, key); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, child := range v {
+			if err := rejectSecretBearingValue(fmt.Sprintf("%s[%d]", path, i), child, keyHint); err != nil {
+				return err
+			}
+		}
+	case string:
+		text := strings.TrimSpace(v)
+		lower := strings.ToLower(text)
+		if strings.HasPrefix(lower, "env://") || strings.HasPrefix(lower, "secret://") || strings.HasPrefix(lower, "file://") {
+			return fmt.Errorf("%s must not contain secret references", path)
+		}
+		if strings.HasPrefix(lower, "bearer ") {
+			return fmt.Errorf("%s must not contain bearer tokens", path)
+		}
+		if sensitiveKey && text != "" {
+			return fmt.Errorf("%s must not contain embedded credentials or endpoint URLs", path)
+		}
+		if isURLKey(keyHint) {
+			if u, err := url.Parse(text); err == nil && u.Scheme != "" && u.Host != "" {
+				return fmt.Errorf("%s must not contain raw endpoint URLs", path)
+			}
+		}
+	}
+	return nil
+}
+
+func isSensitiveDefinitionKey(key string) bool {
+	key = normalizedDefinitionKey(key)
+	sensitive := map[string]bool{"apikey": true, "api_key": true, "token": true, "bearertoken": true, "bearer_token": true, "secret": true, "secretref": true, "secret_ref": true, "credential": true, "credentialid": true, "credential_id": true, "password": true, "authorization": true}
+	return sensitive[key]
+}
+
+func isURLKey(key string) bool {
+	key = normalizedDefinitionKey(key)
+	return key == "url" || key == "endpoint" || key == "endpointurl" || key == "endpoint_url" || key == "baseurl" || key == "base_url"
+}
+
+func normalizedDefinitionKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.ReplaceAll(key, "-", "_")
+	return key
 }

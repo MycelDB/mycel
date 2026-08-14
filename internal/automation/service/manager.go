@@ -9,13 +9,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/internal/automation/accounting"
 	automation "github.com/myceldb/mycel/internal/automation/model"
-	"github.com/myceldb/mycel/internal/automation/provider"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
@@ -46,10 +45,9 @@ type AutomationManager struct {
 	sessions         sessionservice.Manager
 	graphs           graphservice.Manager
 	schemas          schemaservice.Manager
-	provider         provider.Provider
-	accounting       accounting.Estimator
-	maxTokensPerRun  int64
-	maxCostPerRun    float64
+	inference        inferenceservice.Manager
+	maxInputTokens   int64
+	maxOutputTokens  int64
 	metricsProcessed int64
 	metricsSucceeded int64
 	metricsSkipped   int64
@@ -59,7 +57,7 @@ type AutomationManager struct {
 }
 
 func NewManager(store storage.Store) *AutomationManager {
-	return &AutomationManager{store: store, now: func() time.Time { return time.Now().UTC() }, accounting: accounting.DefaultEstimator()}
+	return &AutomationManager{store: store, now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (m *AutomationManager) WithGraphRuntime(sessions sessionservice.Manager, graphs graphservice.Manager) *AutomationManager {
@@ -68,8 +66,8 @@ func (m *AutomationManager) WithGraphRuntime(sessions sessionservice.Manager, gr
 	return m
 }
 
-func (m *AutomationManager) WithProvider(provider provider.Provider) *AutomationManager {
-	m.provider = provider
+func (m *AutomationManager) WithInferenceManager(inference inferenceservice.Manager) *AutomationManager {
+	m.inference = inference
 	return m
 }
 
@@ -78,9 +76,9 @@ func (m *AutomationManager) WithSchemaManager(schemas schemaservice.Manager) *Au
 	return m
 }
 
-func (m *AutomationManager) WithRunCeilings(maxTokens int64, maxCost float64) *AutomationManager {
-	m.maxTokensPerRun = maxTokens
-	m.maxCostPerRun = maxCost
+func (m *AutomationManager) WithRunCeilings(maxInputTokens int64, maxOutputTokens int64) *AutomationManager {
+	m.maxInputTokens = maxInputTokens
+	m.maxOutputTokens = maxOutputTokens
 	return m
 }
 
@@ -291,7 +289,7 @@ func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphch
 				copy := *change.OldNode
 				oldNode = &copy
 			}
-			inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, SpaceID: event.SpaceID.String(), AutomationID: def.ID, AutomationVersion: def.Version, EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType, Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
+			inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, SpaceID: event.SpaceID.String(), AutomationID: def.ID, AutomationVersion: def.Version, EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType, ActorPrincipalID: automationActor, OnBehalfOfPrincipalID: strings.TrimSpace(event.Origin.PrincipalID), Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
 			_ = m.store.PutInvocation(ctx, inv)
 		}
 	}
@@ -350,7 +348,18 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			} else {
 				inv.Status = "failed"
 			}
-			run = automation.Run{ID: uuid.NewString(), DomainID: domainID, InvocationID: inv.ID, AttemptNumber: inv.AttemptCount, Status: inv.Status, Error: err.Error(), StartedAt: now, CompletedAt: now}
+			if run.ID == "" {
+				run.ID = uuid.NewString()
+			}
+			run.DomainID = domainID
+			run.InvocationID = inv.ID
+			run.AttemptNumber = inv.AttemptCount
+			run.Status = inv.Status
+			run.Error = err.Error()
+			if run.StartedAt.IsZero() {
+				run.StartedAt = now
+			}
+			run.CompletedAt = now
 		} else {
 			inv.AttemptCount++
 			inv.NextAttemptAt = time.Time{}

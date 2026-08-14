@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/myceldb/mycel/internal/automation/provider"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
@@ -21,21 +21,21 @@ type WorkerConfig struct {
 	Enabled         bool
 	Interval        time.Duration
 	BatchSize       int
-	MaxTokensPerRun int64
-	MaxCostPerRun   float64
+	MaxInputTokens  int64
+	MaxOutputTokens int64
 	Concurrency     int
 }
 
 type Module struct {
 	*AutomationManager
-	dataDir  string
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	sessions sessionservice.Manager
-	graphs   graphservice.Manager
-	schemas  schemaservice.Manager
-	provider provider.Provider
-	worker   WorkerConfig
+	dataDir   string
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	sessions  sessionservice.Manager
+	graphs    graphservice.Manager
+	schemas   schemaservice.Manager
+	inference inferenceservice.Manager
+	worker    WorkerConfig
 }
 
 func NewModule(dataDir string) *Module {
@@ -53,8 +53,8 @@ func (m *Module) WithSchemaManager(schemas schemaservice.Manager) *Module {
 	return m
 }
 
-func (m *Module) WithProvider(provider provider.Provider) *Module {
-	m.provider = provider
+func (m *Module) WithInferenceManager(inference inferenceservice.Manager) *Module {
+	m.inference = inference
 	return m
 }
 
@@ -79,7 +79,14 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 	if dataDir == "" && host != nil {
 		dataDir = filepath.Join(host.DataDir(), "automations")
 	}
-	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaManager(m.schemas).WithProvider(m.provider).WithRunCeilings(m.worker.MaxTokensPerRun, m.worker.MaxCostPerRun)
+	if lookup, ok := host.(coreruntime.ServiceLookup); ok && m.inference == nil {
+		if svc, ok := lookup.Service(inferenceservice.ModuleName); ok {
+			if manager, ok := svc.(inferenceservice.Manager); ok {
+				m.inference = manager
+			}
+		}
+	}
+	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaManager(m.schemas).WithInferenceManager(m.inference).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens)
 	if gate, ok := host.(coreruntime.LocalWriteGate); ok {
 		m.AutomationManager.WithWriteAllowed(gate.RequireLocalWriteAllowed)
 	}

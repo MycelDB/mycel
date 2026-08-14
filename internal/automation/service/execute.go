@@ -4,29 +4,34 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/automation/actions"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	autooutput "github.com/myceldb/mycel/internal/automation/output"
-	"github.com/myceldb/mycel/internal/automation/provider"
 	"github.com/myceldb/mycel/internal/automation/render"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
+	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
 
 const automationActor = "automation"
 
+var ErrInferenceUnavailable = errors.New("automation inference subsystem is not configured")
+
 func (m *AutomationManager) executeInvocation(ctx context.Context, def automation.Definition, inv automation.Invocation) (automation.Run, error) {
 	now := m.now()
-	run := automation.Run{ID: newRunID(), DomainID: inv.DomainID, InvocationID: inv.ID, AttemptNumber: 1, Status: "running", Provider: def.Model.Provider, Model: def.Model.Model, StartedAt: now}
+	run := automation.Run{ID: newRunID(), DomainID: inv.DomainID, InvocationID: inv.ID, AttemptNumber: inv.AttemptCount + 1, Status: "running", InferenceProfile: strings.TrimSpace(def.Inference.Profile), InferenceProfileID: strings.TrimSpace(def.Inference.ProfileID), StartedAt: now}
 	if m.sessions == nil || m.graphs == nil {
 		result, err := render.Render(def.Input, render.Context{})
 		if err != nil {
 			return run, err
 		}
 		run.RenderedInputHash = result.Hash
-		output, err := m.generateText(ctx, def, result.Text, &run)
+		output, err := m.generateWithInference(ctx, def, inv, result.Text, &run)
 		if err != nil {
 			return run, err
 		}
@@ -80,7 +85,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 			return run, nil
 		}
 	}
-	output, err := m.generateText(ctx, def, rendered.Text, &run)
+	output, err := m.generateWithInference(ctx, def, inv, rendered.Text, &run)
 	if err != nil {
 		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
 		return run, err
@@ -120,32 +125,99 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 
 func newRunID() string { return uuid.NewString() }
 
-func (m *AutomationManager) generateText(ctx context.Context, def automation.Definition, rendered string, run *automation.Run) (string, error) {
-	p := m.provider
-	if p == nil {
-		run.Usage = automation.TokenUsage{Status: provider.UsageStatusUnavailable}
-		return "", provider.ErrUnavailable
+func (m *AutomationManager) generateWithInference(ctx context.Context, def automation.Definition, inv automation.Invocation, rendered string, run *automation.Run) (string, error) {
+	if m.inference == nil {
+		run.Usage = automation.TokenUsage{Status: string(domaininference.UsageStatusFailed)}
+		return "", ErrInferenceUnavailable
 	}
-	resp, err := p.GenerateText(ctx, provider.Request{Provider: def.Model.Provider, Model: def.Model.Model, Prompt: def.Prompt, Input: rendered, Temperature: def.Model.Temperature, MaxOutputTokens: def.Model.MaxOutputTokens})
+	ref := def.Inference
+	profileID, err := parseOptionalUUID(ref.ProfileID)
+	if err != nil {
+		return "", fmt.Errorf("automation inference profile_id must be a UUID: %w", err)
+	}
+	params := inferenceParameters(ref.Parameters)
+	if m.maxOutputTokens > 0 {
+		if params.MaxOutputTokens > int(m.maxOutputTokens) {
+			return "", fmt.Errorf("automation output token ceiling exceeded by definition: %d > %d", params.MaxOutputTokens, m.maxOutputTokens)
+		}
+		if params.MaxOutputTokens == 0 {
+			params.MaxOutputTokens = int(m.maxOutputTokens)
+		}
+	}
+	if m.maxInputTokens > 0 {
+		if params.MaxInputTokens > int(m.maxInputTokens) {
+			return "", fmt.Errorf("automation input token ceiling exceeded by definition: %d > %d", params.MaxInputTokens, m.maxInputTokens)
+		}
+		if params.MaxInputTokens == 0 {
+			params.MaxInputTokens = int(m.maxInputTokens)
+		}
+	}
+	operation := domaininference.Operation(strings.ToLower(strings.TrimSpace(ref.Operation)))
+	if operation == "" {
+		operation = domaininference.OperationChat
+	}
+	actor := firstNonEmptyString(inv.ActorPrincipalID, automationActor)
+	onBehalf := firstNonEmptyString(inv.OnBehalfOfPrincipalID, inv.ActorPrincipalID, automationActor)
+	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: inv.ChangedElementID, Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: map[string]any{"automation_id": def.ID, "automation_version": def.Version, "automation_run_id": run.ID, "invocation_id": inv.ID}}, Prompt: def.Prompt, Input: rendered, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: map[string]any{"invocation_id": inv.ID, "automation_version": def.Version}})
+	populateRunFromInference(run, ref, resp)
 	if err != nil {
 		return "", err
 	}
-	run.ProviderRequestID = resp.ProviderRequestID
-	usageStatus := resp.Usage.Status
-	if usageStatus == "" {
-		usageStatus = provider.UsageStatusUnavailable
+	if m.maxInputTokens > 0 && run.Usage.InputTokens > m.maxInputTokens {
+		return "", fmt.Errorf("automation input token ceiling exceeded: %d > %d", run.Usage.InputTokens, m.maxInputTokens)
 	}
-	totalTokens := resp.Usage.TotalTokens
-	if totalTokens == 0 && (resp.Usage.InputTokens != 0 || resp.Usage.OutputTokens != 0) {
-		totalTokens = resp.Usage.InputTokens + resp.Usage.OutputTokens
-	}
-	run.Usage = automation.TokenUsage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: totalTokens, CachedInputTokens: resp.Usage.CachedInputTokens, ReasoningTokens: resp.Usage.ReasoningTokens, Status: usageStatus, Metadata: resp.Usage.Metadata}
-	run.Cost = m.accounting.Estimate(def.Model.Provider, def.Model.Model, run.Usage)
-	if m.maxTokensPerRun > 0 && run.Usage.TotalTokens > m.maxTokensPerRun {
-		return "", fmt.Errorf("automation token ceiling exceeded: %d > %d", run.Usage.TotalTokens, m.maxTokensPerRun)
-	}
-	if m.maxCostPerRun > 0 && run.Cost.TotalCost > m.maxCostPerRun {
-		return "", fmt.Errorf("automation cost ceiling exceeded: %.6f > %.6f", run.Cost.TotalCost, m.maxCostPerRun)
+	if m.maxOutputTokens > 0 && run.Usage.OutputTokens > m.maxOutputTokens {
+		return "", fmt.Errorf("automation output token ceiling exceeded: %d > %d", run.Usage.OutputTokens, m.maxOutputTokens)
 	}
 	return resp.Text, nil
+}
+
+func inferenceParameters(in automation.InferenceParameters) domaininference.Parameters {
+	return domaininference.Parameters{Temperature: in.Temperature, MaxInputTokens: in.MaxInputTokens, MaxOutputTokens: in.MaxOutputTokens, ResponseFormat: strings.TrimSpace(in.ResponseFormat), Metadata: in.Metadata}
+}
+
+func parseOptionalUUID(value string) (uuid.UUID, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return uuid.Nil, nil
+	}
+	return uuid.Parse(value)
+}
+
+func populateRunFromInference(run *automation.Run, ref automation.InferenceRef, resp inferenceservice.InvokeResponse) {
+	run.InferenceProfile = strings.TrimSpace(ref.Profile)
+	if resp.Decision.ProfileID != uuid.Nil {
+		run.InferenceProfileID = resp.Decision.ProfileID.String()
+	} else {
+		run.InferenceProfileID = strings.TrimSpace(ref.ProfileID)
+	}
+	run.ModelEndpointID = uuidString(resp.Decision.EndpointID)
+	run.ModelID = uuidString(resp.Decision.ModelID)
+	run.CapabilityID = uuidString(resp.Decision.CapabilityID)
+	run.CredentialID = uuidString(resp.Decision.CredentialID)
+	run.CredentialGrantID = uuidString(resp.Decision.CredentialGrantID)
+	run.PolicyDecisionID = uuidString(resp.Decision.ID)
+	run.ProviderRequestID = resp.ProviderRequestID
+	status := resp.Usage.TokenCountSource
+	if status == "" {
+		status = string(domaininference.UsageStatusSucceeded)
+	}
+	run.Usage = automation.TokenUsage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: resp.Usage.TotalTokens, Status: status, Metadata: map[string]any{"token_count_source": resp.Usage.TokenCountSource}}
+}
+
+func uuidString[T ~[16]byte](id T) string {
+	u := uuid.UUID(id)
+	if u == uuid.Nil {
+		return ""
+	}
+	return u.String()
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

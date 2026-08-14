@@ -7,7 +7,6 @@ import (
 	"time"
 
 	automation "github.com/myceldb/mycel/internal/automation/model"
-	"github.com/myceldb/mycel/internal/automation/provider"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 )
@@ -50,7 +49,7 @@ func retryableAutomationError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, provider.ErrUnavailable) {
+	if errors.Is(err, ErrInferenceUnavailable) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())

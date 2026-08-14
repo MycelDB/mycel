@@ -14,9 +14,13 @@
     "target": "changed",
     "fields": ["properties.title", "payload.text"]
   },
-  "model": {
-    "provider": "default",
-    "model": "default"
+  "inference": {
+    "operation": "chat",
+    "profile": "summarize-page",
+    "parameters": {
+      "responseFormat": "text",
+      "maxOutputTokens": 512
+    }
   },
   "prompt": "Summarize this page in concise markdown.",
   "output": {

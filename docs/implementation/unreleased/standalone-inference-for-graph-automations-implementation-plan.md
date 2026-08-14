@@ -27,8 +27,12 @@ success, failure, denial, and cancellation. INF6 is implemented as a semantic
 embedding conversion tranche: semantic backfill and semantic query embedding can
 route through the standalone inference resolver/invocation/usage path when a
 semantic index declares an inference profile, while legacy fallback keeps
-existing semantic indexes functional until they are reprofiled. Graph automation
-runtime conversion remains for later phases.
+existing semantic indexes functional until they are reprofiled. INF7 is
+implemented as the graph automation conversion tranche: automation definitions
+use inference profile refs, validation rejects embedded credentials/secrets/raw
+endpoint URLs and legacy provider/model config, single-step LLM execution calls
+the standalone inference resolver/invoker, run records keep neutral inference
+provenance, and automation usage events include automation/run context.
 
 No compatibility migration from the current semantic inference stores,
 automation provider configuration, automation run records, CLI shapes, or
@@ -556,6 +560,22 @@ automation steps through standalone inference.
 - Policy denial test records decision and run failure without connector call.
 - Credential rotation test proves automation definition does not change.
 - Old automation provider environment variables are no longer needed by tests.
+
+### Implementation status
+
+Implemented. Internal automation definitions now use `inference` refs rather
+than provider/model config, workflow LLM steps require their own inference refs,
+and validation rejects legacy `model` config, embedded credentials, bearer
+strings, secret refs, and raw endpoint URLs. The daemon no longer reads
+`MYCELD_AUTOMATION_PROVIDER` or provider-specific automation environment
+variables. Automation execution calls `inference.Service.Invoke` with usage mode
+`automation`, profile/model/capability refs, automation ID, invocation ID, run
+ID, and actor/on-behalf-of context. Run records denormalize inference profile,
+model/capability/credential/grant, policy decision, provider request, and token
+summaries without cost fields. Focused tests cover validation failures,
+standalone fake connector execution, denial without connector calls, credential
+rotation stability, token ceilings, and an end-to-end graph-change automation
+that mutates a node and records an inference usage event.
 
 ### Functional endpoint for the phase
 

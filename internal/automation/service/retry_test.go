@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	automation "github.com/myceldb/mycel/internal/automation/model"
-	"github.com/myceldb/mycel/internal/automation/provider"
 )
 
 func TestMaxAttemptsDefaultAndOverride(t *testing.T) {
@@ -18,8 +17,8 @@ func TestMaxAttemptsDefaultAndOverride(t *testing.T) {
 }
 
 func TestRetryableAutomationError(t *testing.T) {
-	if !retryableAutomationError(provider.ErrUnavailable) {
-		t.Fatal("expected unavailable to retry")
+	if !retryableAutomationError(ErrInferenceUnavailable) {
+		t.Fatal("expected unavailable inference subsystem to retry")
 	}
 	if !retryableAutomationError(errors.New("provider timeout")) {
 		t.Fatal("expected timeout to retry")

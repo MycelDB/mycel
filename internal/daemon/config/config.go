@@ -67,15 +67,11 @@ type SemanticMaintenanceConfig struct {
 }
 
 type AutomationConfig struct {
-	Provider          string
-	BaseURL           string
-	APIKey            string
-	Timeout           time.Duration
 	WorkerEnabled     bool
 	WorkerInterval    time.Duration
 	WorkerBatchSize   int
-	MaxTokensPerRun   int64
-	MaxCostPerRun     float64
+	MaxInputTokens    int64
+	MaxOutputTokens   int64
 	WorkerConcurrency int
 }
 
@@ -186,15 +182,11 @@ func LoadFromEnv() (Config, error) {
 			RaftSnapshotMinRetainEntries: parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MIN_RETAIN_ENTRIES"), 0),
 		},
 		Automation: AutomationConfig{
-			Provider:          strings.TrimSpace(os.Getenv("MYCELD_AUTOMATION_PROVIDER")),
-			BaseURL:           strings.TrimSpace(os.Getenv("MYCELD_AUTOMATION_PROVIDER_BASE_URL")),
-			APIKey:            os.Getenv("MYCELD_AUTOMATION_PROVIDER_API_KEY"),
-			Timeout:           parseDurationEnv(os.Getenv("MYCELD_AUTOMATION_PROVIDER_TIMEOUT"), 60*time.Second),
 			WorkerEnabled:     parseBoolEnvDefault(os.Getenv("MYCELD_AUTOMATION_WORKER_ENABLED"), true),
 			WorkerInterval:    parseDurationEnv(os.Getenv("MYCELD_AUTOMATION_WORKER_INTERVAL"), time.Second),
 			WorkerBatchSize:   parseIntEnv(os.Getenv("MYCELD_AUTOMATION_WORKER_BATCH_SIZE"), 25),
-			MaxTokensPerRun:   int64(parseIntEnv(os.Getenv("MYCELD_AUTOMATION_MAX_TOKENS_PER_RUN"), 0)),
-			MaxCostPerRun:     parseFloatEnv(os.Getenv("MYCELD_AUTOMATION_MAX_COST_PER_RUN"), 0),
+			MaxInputTokens:    int64(parseIntEnv(os.Getenv("MYCELD_AUTOMATION_MAX_INPUT_TOKENS"), 0)),
+			MaxOutputTokens:   int64(parseIntEnv(os.Getenv("MYCELD_AUTOMATION_MAX_OUTPUT_TOKENS"), 0)),
 			WorkerConcurrency: parseIntEnv(os.Getenv("MYCELD_AUTOMATION_WORKER_CONCURRENCY"), 1),
 		},
 		Backup: BackupConfig{

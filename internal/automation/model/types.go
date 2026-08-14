@@ -24,21 +24,22 @@ const (
 )
 
 type Definition struct {
-	ID        string         `json:"id"`
-	Name      string         `json:"name,omitempty"`
-	Version   int            `json:"version"`
-	DomainID  graph.DomainID `json:"domain_id"`
-	Status    string         `json:"status"`
-	Trigger   Trigger        `json:"on"`
-	Condition Condition      `json:"condition"`
-	Input     Input          `json:"input"`
-	Model     Model          `json:"model,omitempty"`
-	Prompt    string         `json:"prompt"`
-	Output    Output         `json:"output,omitempty"`
-	Workflow  *Workflow      `json:"workflow,omitempty"`
-	Safety    Safety         `json:"safety,omitempty"`
-	CreatedAt time.Time      `json:"created_at,omitempty"`
-	UpdatedAt time.Time      `json:"updated_at,omitempty"`
+	ID             string          `json:"id"`
+	Name           string          `json:"name,omitempty"`
+	Version        int             `json:"version"`
+	DomainID       graph.DomainID  `json:"domain_id"`
+	Status         string          `json:"status"`
+	Trigger        Trigger         `json:"on"`
+	Condition      Condition       `json:"condition"`
+	Input          Input           `json:"input"`
+	Inference      InferenceRef    `json:"inference,omitempty"`
+	LegacyModelRef *LegacyModelRef `json:"model,omitempty"`
+	Prompt         string          `json:"prompt"`
+	Output         Output          `json:"output,omitempty"`
+	Workflow       *Workflow       `json:"workflow,omitempty"`
+	Safety         Safety          `json:"safety,omitempty"`
+	CreatedAt      time.Time       `json:"created_at,omitempty"`
+	UpdatedAt      time.Time       `json:"updated_at,omitempty"`
 }
 
 type Workflow struct {
@@ -46,18 +47,19 @@ type Workflow struct {
 }
 
 type WorkflowStep struct {
-	ID          string            `json:"id"`
-	Kind        string            `json:"kind"`
-	DependsOn   []string          `json:"dependsOn,omitempty"`
-	Condition   Condition         `json:"condition,omitempty"`
-	Input       Input             `json:"input,omitempty"`
-	Model       Model             `json:"model,omitempty"`
-	Prompt      string            `json:"prompt,omitempty"`
-	Output      Output            `json:"output,omitempty"`
-	Approval    string            `json:"approval,omitempty"`
-	Tool        string            `json:"tool,omitempty"`
-	ToolInput   map[string]string `json:"toolInput,omitempty"`
-	MaxAttempts int               `json:"maxAttempts,omitempty"`
+	ID             string            `json:"id"`
+	Kind           string            `json:"kind"`
+	DependsOn      []string          `json:"dependsOn,omitempty"`
+	Condition      Condition         `json:"condition,omitempty"`
+	Input          Input             `json:"input,omitempty"`
+	Inference      InferenceRef      `json:"inference,omitempty"`
+	LegacyModelRef *LegacyModelRef   `json:"model,omitempty"`
+	Prompt         string            `json:"prompt,omitempty"`
+	Output         Output            `json:"output,omitempty"`
+	Approval       string            `json:"approval,omitempty"`
+	Tool           string            `json:"tool,omitempty"`
+	ToolInput      map[string]string `json:"toolInput,omitempty"`
+	MaxAttempts    int               `json:"maxAttempts,omitempty"`
 }
 
 const (
@@ -95,7 +97,25 @@ type Input struct {
 	Template string   `json:"template,omitempty"`
 }
 
-type Model struct {
+type InferenceRef struct {
+	Operation     string              `json:"operation,omitempty"`
+	Profile       string              `json:"profile,omitempty"`
+	ProfileID     string              `json:"profile_id,omitempty"`
+	CapabilityRef string              `json:"capability_ref,omitempty"`
+	EndpointRef   string              `json:"endpoint_ref,omitempty"`
+	ModelRef      string              `json:"model_ref,omitempty"`
+	Parameters    InferenceParameters `json:"parameters,omitempty"`
+}
+
+type InferenceParameters struct {
+	Temperature     *float64       `json:"temperature,omitempty"`
+	MaxInputTokens  int            `json:"maxInputTokens,omitempty"`
+	MaxOutputTokens int            `json:"maxOutputTokens,omitempty"`
+	ResponseFormat  string         `json:"responseFormat,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+}
+
+type LegacyModelRef struct {
 	Provider        string   `json:"provider,omitempty"`
 	Model           string   `json:"model,omitempty"`
 	Temperature     *float64 `json:"temperature,omitempty"`
@@ -150,23 +170,25 @@ type Idempotency struct {
 }
 
 type Invocation struct {
-	ID                 string         `json:"id"`
-	DomainID           graph.DomainID `json:"domain_id"`
-	SpaceID            string         `json:"space_id,omitempty"`
-	AutomationID       string         `json:"automation_id"`
-	AutomationVersion  int            `json:"automation_version"`
-	EventID            string         `json:"event_id"`
-	ChangedElementID   string         `json:"changed_element_id"`
-	ChangedElementKind string         `json:"changed_element_kind"`
-	OldNode            *graph.Node    `json:"old_node,omitempty"`
-	EventType          string         `json:"event_type"`
-	InputHash          string         `json:"input_hash,omitempty"`
-	Status             string         `json:"status"`
-	SkipReason         string         `json:"skip_reason,omitempty"`
-	AttemptCount       int            `json:"attempt_count,omitempty"`
-	NextAttemptAt      time.Time      `json:"next_attempt_at,omitempty"`
-	CreatedAt          time.Time      `json:"created_at,omitempty"`
-	UpdatedAt          time.Time      `json:"updated_at,omitempty"`
+	ID                    string         `json:"id"`
+	DomainID              graph.DomainID `json:"domain_id"`
+	SpaceID               string         `json:"space_id,omitempty"`
+	AutomationID          string         `json:"automation_id"`
+	AutomationVersion     int            `json:"automation_version"`
+	EventID               string         `json:"event_id"`
+	ChangedElementID      string         `json:"changed_element_id"`
+	ChangedElementKind    string         `json:"changed_element_kind"`
+	OldNode               *graph.Node    `json:"old_node,omitempty"`
+	EventType             string         `json:"event_type"`
+	ActorPrincipalID      string         `json:"actor_principal_id,omitempty"`
+	OnBehalfOfPrincipalID string         `json:"on_behalf_of_principal_id,omitempty"`
+	InputHash             string         `json:"input_hash,omitempty"`
+	Status                string         `json:"status"`
+	SkipReason            string         `json:"skip_reason,omitempty"`
+	AttemptCount          int            `json:"attempt_count,omitempty"`
+	NextAttemptAt         time.Time      `json:"next_attempt_at,omitempty"`
+	CreatedAt             time.Time      `json:"created_at,omitempty"`
+	UpdatedAt             time.Time      `json:"updated_at,omitempty"`
 }
 
 type WorkflowInstance struct {
@@ -201,8 +223,9 @@ type Policy struct {
 	MaxToolCalls     int            `json:"max_tool_calls,omitempty"`
 	MaxProviderCalls int            `json:"max_provider_calls,omitempty"`
 	RequireApproval  bool           `json:"require_approval,omitempty"`
-	MaxTokensPerRun  int64          `json:"max_tokens_per_run,omitempty"`
-	MaxCostPerRun    float64        `json:"max_cost_per_run,omitempty"`
+	MaxInputTokens   int64          `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens  int64          `json:"max_output_tokens,omitempty"`
+	MaxElapsedMillis int64          `json:"max_elapsed_millis,omitempty"`
 	AllowCrossDomain bool           `json:"allow_cross_domain,omitempty"`
 	AllowedTools     []string       `json:"allowed_tools,omitempty"`
 }
@@ -222,32 +245,28 @@ type WorkflowStepRun struct {
 }
 
 type Run struct {
-	ID                string         `json:"id"`
-	DomainID          graph.DomainID `json:"domain_id"`
-	InvocationID      string         `json:"invocation_id"`
-	AttemptNumber     int            `json:"attempt_number"`
-	Status            string         `json:"status"`
-	RenderedInputHash string         `json:"rendered_input_hash,omitempty"`
-	Provider          string         `json:"provider,omitempty"`
-	Model             string         `json:"model,omitempty"`
-	OutputHash        string         `json:"output_hash,omitempty"`
-	ProviderRequestID string         `json:"provider_request_id,omitempty"`
-	Usage             TokenUsage     `json:"usage,omitempty"`
-	Cost              CostEstimate   `json:"cost,omitempty"`
-	ActionFingerprint string         `json:"action_fingerprint,omitempty"`
-	MutationID        string         `json:"mutation_id,omitempty"`
-	Error             string         `json:"error,omitempty"`
-	StartedAt         time.Time      `json:"started_at,omitempty"`
-	CompletedAt       time.Time      `json:"completed_at,omitempty"`
-}
-
-type CostEstimate struct {
-	InputCost      float64 `json:"input_cost,omitempty"`
-	OutputCost     float64 `json:"output_cost,omitempty"`
-	TotalCost      float64 `json:"total_cost,omitempty"`
-	Currency       string  `json:"currency,omitempty"`
-	PricingVersion string  `json:"pricing_version,omitempty"`
-	Status         string  `json:"status,omitempty"`
+	ID                 string         `json:"id"`
+	DomainID           graph.DomainID `json:"domain_id"`
+	InvocationID       string         `json:"invocation_id"`
+	AttemptNumber      int            `json:"attempt_number"`
+	Status             string         `json:"status"`
+	RenderedInputHash  string         `json:"rendered_input_hash,omitempty"`
+	InferenceProfile   string         `json:"inference_profile,omitempty"`
+	InferenceProfileID string         `json:"inference_profile_id,omitempty"`
+	ModelEndpointID    string         `json:"model_endpoint_id,omitempty"`
+	ModelID            string         `json:"model_id,omitempty"`
+	CapabilityID       string         `json:"model_endpoint_capability_id,omitempty"`
+	CredentialID       string         `json:"credential_id,omitempty"`
+	CredentialGrantID  string         `json:"credential_grant_id,omitempty"`
+	PolicyDecisionID   string         `json:"policy_decision_id,omitempty"`
+	OutputHash         string         `json:"output_hash,omitempty"`
+	ProviderRequestID  string         `json:"provider_request_id,omitempty"`
+	Usage              TokenUsage     `json:"usage,omitempty"`
+	ActionFingerprint  string         `json:"action_fingerprint,omitempty"`
+	MutationID         string         `json:"mutation_id,omitempty"`
+	Error              string         `json:"error,omitempty"`
+	StartedAt          time.Time      `json:"started_at,omitempty"`
+	CompletedAt        time.Time      `json:"completed_at,omitempty"`
 }
 
 type TokenUsage struct {

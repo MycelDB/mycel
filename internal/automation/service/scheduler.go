@@ -40,7 +40,7 @@ func (m *AutomationManager) ProcessScheduled(ctx context.Context, domainID graph
 				continue
 			}
 		}
-		inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, AutomationID: def.ID, AutomationVersion: def.Version, EventID: "schedule:" + def.ID + ":" + m.now().Format(time.RFC3339), ChangedElementKind: "schedule", EventType: "schedule", Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
+		inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, AutomationID: def.ID, AutomationVersion: def.Version, EventID: "schedule:" + def.ID + ":" + m.now().Format(time.RFC3339), ChangedElementKind: "schedule", EventType: "schedule", ActorPrincipalID: automationActor, OnBehalfOfPrincipalID: automationActor, Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
 		if err := m.store.PutInvocation(ctx, inv); err != nil {
 			return count, mapStoreError(err)
 		}

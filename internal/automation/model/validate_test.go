@@ -62,7 +62,7 @@ func TestValidateDefinitionAcceptsWorkflow(t *testing.T) {
 	def := baseDefinition()
 	def.Prompt = ""
 	def.Output = Output{}
-	def.Workflow = &Workflow{Steps: []WorkflowStep{{ID: "summarize", Kind: WorkflowStepLLM}, {ID: "act", Kind: WorkflowStepAction, DependsOn: []string{"summarize"}}}}
+	def.Workflow = &Workflow{Steps: []WorkflowStep{{ID: "summarize", Kind: WorkflowStepLLM, Inference: InferenceRef{Operation: "chat", Profile: "summarize"}}, {ID: "act", Kind: WorkflowStepAction, DependsOn: []string{"summarize"}}}}
 	if err := ValidateDefinition(def); err != nil {
 		t.Fatalf("ValidateDefinition() error = %v", err)
 	}
@@ -72,7 +72,7 @@ func TestValidateDefinitionRejectsWorkflowCycle(t *testing.T) {
 	def := baseDefinition()
 	def.Prompt = ""
 	def.Output = Output{}
-	def.Workflow = &Workflow{Steps: []WorkflowStep{{ID: "a", Kind: WorkflowStepLLM, DependsOn: []string{"b"}}, {ID: "b", Kind: WorkflowStepAction, DependsOn: []string{"a"}}}}
+	def.Workflow = &Workflow{Steps: []WorkflowStep{{ID: "a", Kind: WorkflowStepLLM, Inference: InferenceRef{Operation: "chat", Profile: "summarize"}, DependsOn: []string{"b"}}, {ID: "b", Kind: WorkflowStepAction, DependsOn: []string{"a"}}}}
 	assertValidationError(t, def, "cycle")
 }
 
@@ -107,11 +107,36 @@ func TestValidateDefinitionRejectsTooManyActions(t *testing.T) {
 	assertValidationError(t, def, "exceeds maximum")
 }
 
-func TestValidateDefinitionRejectsInvalidModelParams(t *testing.T) {
+func TestValidateDefinitionRejectsInvalidInferenceParams(t *testing.T) {
 	def := baseDefinition()
 	temp := 3.0
-	def.Model.Temperature = &temp
+	def.Inference.Parameters.Temperature = &temp
 	assertValidationError(t, def, "temperature")
+}
+
+func TestValidateDefinitionRejectsMissingInferenceRef(t *testing.T) {
+	def := baseDefinition()
+	def.Inference = InferenceRef{}
+	assertValidationError(t, def, "inference is required")
+}
+
+func TestValidateDefinitionRejectsLegacyModelAndSecrets(t *testing.T) {
+	def := baseDefinition()
+	def.LegacyModelRef = &LegacyModelRef{Provider: "openai", Model: "gpt"}
+	assertValidationError(t, def, "provider/model fields are not supported")
+
+	def = baseDefinition()
+	def.Inference.Profile = "env://OPENAI_API_KEY"
+	assertValidationError(t, def, "secret references")
+
+	def = baseDefinition()
+	def.Inference.EndpointRef = "https://api.example.invalid/v1"
+	assertValidationError(t, def, "raw endpoint URL")
+
+	def = baseDefinition()
+	def.Inference.Profile = ""
+	def.Inference.ProfileID = "not-a-uuid"
+	assertValidationError(t, def, "profile_id must be a UUID")
 }
 
 func baseDefinition() Definition {
@@ -122,9 +147,10 @@ func baseDefinition() Definition {
 		Trigger: Trigger{Events: []string{EventNodeCreated, EventNodeUpdated}, Labels: []string{"Page"}},
 		Condition: Condition{GQL: `MATCH (changed:Page)
 RETURN changed`},
-		Input:  Input{Target: "changed", Fields: []string{"properties.title", "payload.text"}},
-		Prompt: "Summarize this page.",
-		Output: Output{Mode: OutputModeText, Actions: []Action{{UpdateNode: &UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summaryMarkdown": "$result.text"}}}}},
+		Input:     Input{Target: "changed", Fields: []string{"properties.title", "payload.text"}},
+		Inference: InferenceRef{Operation: "chat", Profile: "summarize-page", Parameters: InferenceParameters{ResponseFormat: "text"}},
+		Prompt:    "Summarize this page.",
+		Output:    Output{Mode: OutputModeText, Actions: []Action{{UpdateNode: &UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summaryMarkdown": "$result.text"}}}}},
 	}
 }
 

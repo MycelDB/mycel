@@ -483,7 +483,7 @@ Embedding generation should append accounting usage events with:
 - credential/credential grant IDs
 - endpoint/model IDs
 - token counts
-- estimated cost when catalog/pricing metadata is available
+- neutral token/request telemetry when provider metadata is available
 
 Throttling should be able to use both request counts and token counts.
 
