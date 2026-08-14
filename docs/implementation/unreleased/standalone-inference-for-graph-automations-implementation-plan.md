@@ -23,8 +23,12 @@ the themed admin API/CLI. INF5 is implemented as a connector-runtime tranche:
 standalone inference now has operation-generic fake and OpenAI-compatible
 connectors for embeddings and chat-like generation, secret material resolution
 after policy allow, connector invocation APIs, and neutral usage telemetry for
-success, failure, denial, and cancellation. Runtime conversion remains for later
-phases.
+success, failure, denial, and cancellation. INF6 is implemented as a semantic
+embedding conversion tranche: semantic backfill and semantic query embedding can
+route through the standalone inference resolver/invocation/usage path when a
+semantic index declares an inference profile, while legacy fallback keeps
+existing semantic indexes functional until they are reprofiled. Graph automation
+runtime conversion remains for later phases.
 
 No compatibility migration from the current semantic inference stores,
 automation provider configuration, automation run records, CLI shapes, or
@@ -484,6 +488,20 @@ embedding operations.
 - Policy denial prevents semantic embedding and records a decision/event.
 - Disabled endpoint/model/capability/credential fails closed.
 - `make test` passes.
+
+### Implementation status
+
+Implemented. Semantic embedding connector inputs now carry inference profile and
+capability refs plus policy-decision provenance. `connectors.InferenceAdapter`
+routes semantic embedding requests through `inference.Service.Invoke`, including
+resolver, grant/policy decision, secret resolution, connector invocation, and
+shared usage ledger recording; it falls back to the legacy semantic connector
+only when a semantic index has no inference profile. Semantic backfill stores the
+returned policy decision on vector records, and semantic search query embedding
+can use the same standalone inference path. The semantic module discovers the
+inference subsystem from runtime service lookup and wires the adapter into
+backfill and search. Integration coverage creates a profile/grant/policy, indexes
+content, searches through the shared inference path, and verifies usage events.
 
 ### Functional endpoint for the phase
 

@@ -85,7 +85,8 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 	}
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].key < ordered[j].key })
 	for _, g := range ordered {
-		query, err := p.Connector.Embed(ctx, connectors.EmbedInput{ModelEndpointID: g.binding.endpoint.ID, ModelID: g.binding.model.ID, CredentialID: g.credential.credential.ID, CredentialGrantID: g.credential.grant.ID, SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticIndexID: g.indexes[0].ID, ActorPrincipalID: in.ActorPrincipalID, Input: strings.TrimSpace(in.Text), Reason: "semantic_query"})
+		profileRef, profileID := semanticInferenceProfileRef(g.indexes[0])
+		query, err := p.Connector.Embed(ctx, connectors.EmbedInput{ModelEndpointID: g.binding.endpoint.ID, ModelID: g.binding.model.ID, ModelEndpointCapabilityID: g.binding.capability.ID, CredentialID: g.credential.credential.ID, CredentialGrantID: g.credential.grant.ID, SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticIndexID: g.indexes[0].ID, ActorPrincipalID: in.ActorPrincipalID, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: strings.TrimSpace(in.Text), Reason: "semantic_query"})
 		if err != nil {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("vector space %s skipped: %v", g.binding.model.VectorSpaceKey, err))
 			continue
@@ -359,4 +360,23 @@ func operationMatches(ops []domainsemantic.Operation, op domainsemantic.Operatio
 		}
 	}
 	return false
+}
+
+func semanticInferenceProfileRef(index domainsemantic.SemanticIndex) (string, uuid.UUID) {
+	if len(index.Metadata) == 0 {
+		return "", uuid.Nil
+	}
+	if raw, ok := index.Metadata["inference_profile_id"]; ok {
+		if id, err := uuid.Parse(strings.TrimSpace(fmt.Sprint(raw))); err == nil {
+			return "", id
+		}
+	}
+	for _, key := range []string{"inference_profile", "inference_profile_key", "embedding_profile"} {
+		if raw, ok := index.Metadata[key]; ok {
+			if value := strings.TrimSpace(fmt.Sprint(raw)); value != "" {
+				return value, uuid.Nil
+			}
+		}
+	}
+	return "", uuid.Nil
 }

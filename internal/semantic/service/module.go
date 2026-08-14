@@ -21,6 +21,8 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	identity "github.com/myceldb/mycel/internal/identity/model"
+	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -58,6 +60,7 @@ type Module struct {
 	maintenanceConfig    MaintenanceConfig
 	schemaManager        SchemaManager
 	graphReaderManager   GraphReadManager
+	inferenceManager     inferenceservice.Manager
 	logger               *slog.Logger
 	maintenanceCancel    context.CancelFunc
 	maintenanceWG        sync.WaitGroup
@@ -94,7 +97,7 @@ func NewModule(config ...Config) *Module {
 		cfg = config[0]
 	}
 
-	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, maintenanceManagers: map[domainspace.SpaceID]storesemantic.MaintenanceManager{}, gate: quiesce.NewGate(ModuleName), secretKeyB64: cfg.SecretKeyB64, maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager, graphReaderManager: cfg.GraphReadManager}
+	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, maintenanceManagers: map[domainspace.SpaceID]storesemantic.MaintenanceManager{}, gate: quiesce.NewGate(ModuleName), secretKeyB64: cfg.SecretKeyB64, maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager, graphReaderManager: cfg.GraphReadManager, inferenceManager: cfg.InferenceManager}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -132,6 +135,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		if graphSvc, ok := lookup.Service(graphservice.ModuleName); ok {
 			if manager, ok := graphSvc.(GraphReadManager); ok {
 				m.graphReaderManager = manager
+			}
+		}
+		if inferenceSvc, ok := lookup.Service(inferenceservice.ModuleName); ok {
+			if manager, ok := inferenceSvc.(inferenceservice.Manager); ok {
+				m.inferenceManager = manager
 			}
 		}
 	}
@@ -870,6 +878,21 @@ func (m *Module) isSemanticDisabledDomain(ctx context.Context, domainID graph.Do
 	return !graph.DomainSemanticIndexingEnabled(domain), nil
 }
 
+func (m *Module) semanticEmbeddingConnector(global storesemantic.GlobalManager, actor identity.PrincipalID) semanticEmbedder {
+	legacy := connectors.Service{GlobalManager: global, Accounting: m.accounting, SecretKeyB64: m.secretKeyB64, ActorPrincipalID: actor}
+	m.mu.Lock()
+	inference := m.inferenceManager
+	m.mu.Unlock()
+	if inference == nil {
+		return legacy
+	}
+	return connectors.InferenceAdapter{Manager: inference, Fallback: legacy}
+}
+
+type semanticEmbedder interface {
+	Embed(ctx context.Context, in connectors.EmbedInput) (connectors.EmbeddingResponse, error)
+}
+
 func (m *Module) graphReader(ctx context.Context, spaceID domainspace.SpaceID) (semanticGraphReader, error) {
 	if err := ctx.Err(); err != nil {
 		return semanticGraphReader{}, err
@@ -889,7 +912,7 @@ func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID
 		return semanticbackfill.Runner{}, err
 	}
 	global := m.GlobalManager()
-	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: connectors.Service{GlobalManager: global, Accounting: m.accounting, SecretKeyB64: m.secretKeyB64}, VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}, nil
+	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, ""), VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}, nil
 }
 
 type semanticGraphReader struct {
@@ -1064,6 +1087,6 @@ func (m *Module) Search(ctx context.Context, in SearchInput) (semanticsearch.Res
 		return semanticsearch.Result{}, err
 	}
 	global := m.GlobalManager()
-	planner := semanticsearch.Planner{GlobalManager: global, SpaceManager: mgr, Connector: connectors.Service{GlobalManager: global, Accounting: m.accounting, SecretKeyB64: m.secretKeyB64, ActorPrincipalID: in.ActorPrincipalID}, VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}
+	planner := semanticsearch.Planner{GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, in.ActorPrincipalID), VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}
 	return planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
 }

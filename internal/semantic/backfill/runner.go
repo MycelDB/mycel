@@ -122,11 +122,12 @@ func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIn
 		}
 	}
 	attribution := backfillCredentialOwnerAttribution(credential)
-	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{ModelEndpointID: endpoint.ID, ModelID: model.ID, CredentialID: credential.ID, CredentialGrantID: grant.ID, SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, TargetNodeID: root.ID, OnBehalfOfPrincipalID: attribution, EffectivePrincipalID: attribution, Input: source.Text, Reason: "semantic_backfill"})
+	profileRef, profileID := semanticInferenceProfileRef(index)
+	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{ModelEndpointID: endpoint.ID, ModelID: model.ID, ModelEndpointCapabilityID: cap.ID, CredentialID: credential.ID, CredentialGrantID: grant.ID, SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, TargetNodeID: root.ID, OnBehalfOfPrincipalID: attribution, EffectivePrincipalID: attribution, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: source.Text, Reason: "semantic_backfill"})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
-	rec, err := r.VectorBackend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, NodeID: root.ID, SourceHash: source.Hash, SourceMode: string(mode), ModelEndpointID: endpoint.ID, ModelID: model.ID, ModelEndpointCapabilityID: cap.ID, CredentialID: credential.ID, CredentialGrantID: grant.ID, VectorStoreID: index.VectorStoreID, VectorSpaceKey: model.VectorSpaceKey, Dimensions: len(resp.Vector), Vector: resp.Vector, CreatedAt: time.Now().UTC()})
+	rec, err := r.VectorBackend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, NodeID: root.ID, SourceHash: source.Hash, SourceMode: string(mode), ModelEndpointID: endpoint.ID, ModelID: model.ID, ModelEndpointCapabilityID: cap.ID, CredentialID: credential.ID, CredentialGrantID: grant.ID, PolicyDecisionID: resp.PolicyDecisionID, VectorStoreID: index.VectorStoreID, VectorSpaceKey: model.VectorSpaceKey, Dimensions: len(resp.Vector), Vector: resp.Vector, CreatedAt: time.Now().UTC()})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
@@ -434,4 +435,23 @@ func zeroVector(dim int) []float64 {
 		dim = 1
 	}
 	return make([]float64, dim)
+}
+
+func semanticInferenceProfileRef(index domainsemantic.SemanticIndex) (string, uuid.UUID) {
+	if len(index.Metadata) == 0 {
+		return "", uuid.Nil
+	}
+	if raw, ok := index.Metadata["inference_profile_id"]; ok {
+		if id, err := uuid.Parse(strings.TrimSpace(fmt.Sprint(raw))); err == nil {
+			return "", id
+		}
+	}
+	for _, key := range []string{"inference_profile", "inference_profile_key", "embedding_profile"} {
+		if raw, ok := index.Metadata[key]; ok {
+			if value := strings.TrimSpace(fmt.Sprint(raw)); value != "" {
+				return value, uuid.Nil
+			}
+		}
+	}
+	return "", uuid.Nil
 }

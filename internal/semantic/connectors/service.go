@@ -28,20 +28,23 @@ type Service struct {
 }
 
 type EmbedInput struct {
-	ModelEndpointID       domainsemantic.ModelEndpointID
-	ModelID               domainsemantic.InferenceModelID
-	CredentialID          domainsemantic.InferenceCredentialID
-	CredentialGrantID     domainsemantic.CredentialGrantID
-	PolicyDecisionID      domainsemantic.PolicyDecisionID
-	SpaceID               domainspace.SpaceID
-	DomainID              graph.DomainID
-	SemanticIndexID       domainsemantic.SemanticIndexID
-	TargetNodeID          graph.NodeID
-	ActorPrincipalID      identity.PrincipalID
-	EffectivePrincipalID  identity.PrincipalID
-	OnBehalfOfPrincipalID identity.PrincipalID
-	Input                 string
-	Reason                string
+	ModelEndpointID           domainsemantic.ModelEndpointID
+	ModelID                   domainsemantic.InferenceModelID
+	ModelEndpointCapabilityID domainsemantic.ModelEndpointCapabilityID
+	CredentialID              domainsemantic.InferenceCredentialID
+	CredentialGrantID         domainsemantic.CredentialGrantID
+	PolicyDecisionID          domainsemantic.PolicyDecisionID
+	InferenceProfile          string
+	InferenceProfileID        uuid.UUID
+	SpaceID                   domainspace.SpaceID
+	DomainID                  graph.DomainID
+	SemanticIndexID           domainsemantic.SemanticIndexID
+	TargetNodeID              graph.NodeID
+	ActorPrincipalID          identity.PrincipalID
+	EffectivePrincipalID      identity.PrincipalID
+	OnBehalfOfPrincipalID     identity.PrincipalID
+	Input                     string
+	Reason                    string
 }
 
 func (s Service) Embed(ctx context.Context, in EmbedInput) (EmbeddingResponse, error) {
@@ -59,6 +62,7 @@ func (s Service) Embed(ctx context.Context, in EmbedInput) (EmbeddingResponse, e
 	}
 	base := s.accountingBase(in, endpoint, model, cap, credential)
 	resp, callErr := connector.Embed(ctx, EmbeddingRequest{Endpoint: endpoint, Model: model, Capability: cap, Credential: credential, Secret: secret, Input: in.Input})
+	resp.PolicyDecisionID = in.PolicyDecisionID
 	event := base
 	event.ProviderRequestID = resp.ProviderRequestID
 	event.InputTokens = resp.InputTokens

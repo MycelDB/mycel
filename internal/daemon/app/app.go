@@ -213,6 +213,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		SecretKeyB64:     cfg.UserStoreEncryptionKeyB64,
 		SchemaManager:    schemaService,
 		GraphReadManager: graphService,
+		InferenceManager: inferenceService,
 		MaintenanceConfig: daemonsemantic.MaintenanceConfig{
 			Enabled:                    cfg.SemanticMaintenance.Enabled,
 			DirtyCooldown:              cfg.SemanticMaintenance.DirtyCooldown,

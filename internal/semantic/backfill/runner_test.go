@@ -2,6 +2,8 @@ package backfill
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,9 +12,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/identity/model"
+	inferenceconnectors "github.com/myceldb/mycel/internal/inference/connectors"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
+	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
+	"github.com/myceldb/mycel/internal/runtime/runtimetest"
 	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -153,6 +160,85 @@ func TestRunnerAccountingAttributesBackfillToCredentialOwner(t *testing.T) {
 	}
 	if event.InputTokens == 0 || event.TotalTokens == 0 || event.TokenCountSource != "provider_reported" || event.ProviderRequestID != "fake-provider-request" {
 		t.Fatalf("unexpected accounting usage metrics: %+v", event)
+	}
+}
+
+func TestRunnerBackfillsThroughStandaloneInferenceProfile(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root, _ := env.addRootWithChild(t, "standalone root", "standalone child")
+	inference := inferenceservice.NewModule()
+	if result := inference.Init(ctx, runtimetest.New(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))); !result.OK {
+		t.Fatalf("init inference module: %#v", result)
+	}
+	fake := &inferenceconnectors.FakeConnector{Vector: []float64{0.2, 0.8, 0}}
+	inference.SetConnector(domaininference.ConnectorOpenAICompatible, fake)
+	profileID := uuid.New()
+	env.index.Metadata = map[string]any{"inference_profile_id": profileID.String()}
+	if _, err := env.spaceMgr.UpsertSemanticIndex(ctx, env.index); err != nil {
+		t.Fatalf("upsert profiled semantic index: %v", err)
+	}
+	seedStandaloneInferenceForBackfill(t, ctx, inference, env, profileID)
+	runner := env.runner
+	runner.Connector = connectors.InferenceAdapter{Manager: inference}
+
+	result, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
+	if err != nil {
+		t.Fatalf("backfill through inference failed: %v", err)
+	}
+	if result.GeneratedCount != 1 || result.Records[0].NodeID != root.ID || result.Records[0].PolicyDecisionID == uuid.Nil {
+		t.Fatalf("expected generated record with policy decision, result=%+v", result)
+	}
+	if len(env.connector.calls) != 0 {
+		t.Fatalf("legacy semantic connector should not be called, calls=%+v", env.connector.calls)
+	}
+	embedCalls, _ := fake.Calls()
+	if embedCalls != 1 {
+		t.Fatalf("expected standalone inference fake connector call, got %d", embedCalls)
+	}
+	searchPlanner := semanticsearch.Planner{GlobalManager: env.globalMgr, SpaceManager: env.spaceMgr, Connector: connectors.InferenceAdapter{Manager: inference}, VectorBackend: env.vector}
+	search, err := searchPlanner.Search(ctx, semanticsearch.Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "standalone", Limit: 10, Purpose: domainsemantic.SemanticIndexPurposeSearch, ActorPrincipalID: env.userID})
+	if err != nil {
+		t.Fatalf("semantic search through inference failed: %v", err)
+	}
+	if len(search.Results) != 1 || len(search.Warnings) != 0 {
+		t.Fatalf("unexpected semantic search result: %+v", search)
+	}
+	events, err := inference.UsageLedger().ListUsageEvents(ctx)
+	if err != nil || len(events) != 2 || events[0].Status != domaininference.UsageStatusSucceeded || events[1].Status != domaininference.UsageStatusSucceeded || events[0].SemanticIndexID != env.index.ID.String() || events[1].SemanticIndexID != env.index.ID.String() {
+		t.Fatalf("unexpected standalone inference usage events: %#v err=%v", events, err)
+	}
+}
+
+func seedStandaloneInferenceForBackfill(t *testing.T, ctx context.Context, inference *inferenceservice.Module, env *backfillTestEnv, profileID uuid.UUID) {
+	t.Helper()
+	if _, err := inference.GlobalManager().UpsertEndpoint(ctx, domaininference.Endpoint{ID: domaininference.EndpointID(env.index.ModelEndpointID), Key: "openai", ConnectorType: domaininference.ConnectorOpenAICompatible, NetworkClass: domaininference.NetworkClassPublicInternet, PrivacyClass: domaininference.PrivacyClassThirdParty, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, Enabled: true}); err != nil {
+		t.Fatalf("upsert inference endpoint: %v", err)
+	}
+	if _, err := inference.GlobalManager().UpsertModel(ctx, domaininference.Model{ID: domaininference.ModelID(env.index.ModelID), Key: "test/embedding", Operation: domaininference.OperationEmbeddings, ProviderModelName: "embedding", EmbeddingDims: 3, VectorSpace: "test/embedding", Enabled: true}); err != nil {
+		t.Fatalf("upsert inference model: %v", err)
+	}
+	if _, err := inference.GlobalManager().UpsertCapability(ctx, domaininference.Capability{ID: domaininference.CapabilityID(env.index.ModelEndpointCapabilityID), EndpointID: domaininference.EndpointID(env.index.ModelEndpointID), ModelID: domaininference.ModelID(env.index.ModelID), Operation: domaininference.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatalf("upsert inference capability: %v", err)
+	}
+	if _, err := inference.GlobalManager().UpsertSecret(ctx, domaininference.Secret{ID: domaininference.SecretID(uuid.New()), OwnerType: domaininference.CredentialOwnerPrincipal, OwnerID: env.userID.String(), Kind: "none"}); err != nil {
+		t.Fatalf("upsert inference secret: %v", err)
+	}
+	if _, err := inference.GlobalManager().UpsertCredential(ctx, domaininference.Credential{ID: domaininference.CredentialID(env.grant.CredentialID), Key: "cred", EndpointID: domaininference.EndpointID(env.index.ModelEndpointID), OwnerType: domaininference.CredentialOwnerPrincipal, OwnerID: env.userID.String(), AuthType: domaininference.CredentialAuthNone, Status: domaininference.CredentialStatusActive}); err != nil {
+		t.Fatalf("upsert inference credential: %v", err)
+	}
+	spaceMgr, err := inference.SpaceManager(ctx, env.spaceID.String())
+	if err != nil {
+		t.Fatalf("inference space manager: %v", err)
+	}
+	if _, err := spaceMgr.UpsertProfile(ctx, domaininference.Profile{ID: domaininference.ProfileID(profileID), SpaceID: env.spaceID.String(), Key: "semantic-profile", Operation: domaininference.OperationEmbeddings, DomainIDs: []string{env.domainID.String()}, EndpointRefs: []string{env.index.ModelEndpointID.String()}, ModelRefs: []string{env.index.ModelID.String()}, CapabilityRefs: []string{env.index.ModelEndpointCapabilityID.String()}, Enabled: true}); err != nil {
+		t.Fatalf("upsert inference profile: %v", err)
+	}
+	if _, err := spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(env.grant.ID), SpaceID: env.spaceID.String(), CredentialID: domaininference.CredentialID(env.grant.CredentialID), Scope: domaininference.Scope{SpaceID: env.spaceID.String(), DomainID: env.domainID.String(), SemanticIndexID: env.index.ID.String()}, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, ProfileRefs: []string{profileID.String()}, EndpointRefs: []string{env.index.ModelEndpointID.String()}, ModelRefs: []string{env.index.ModelID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeSemantic}, State: domaininference.GrantStateActive}); err != nil {
+		t.Fatalf("upsert inference grant: %v", err)
+	}
+	if _, err := spaceMgr.UpsertPolicy(ctx, domaininference.Policy{SpaceID: env.spaceID.String(), Scope: domaininference.Scope{SpaceID: env.spaceID.String(), DomainID: env.domainID.String(), SemanticIndexID: env.index.ID.String()}, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, ProfileRefs: []string{profileID.String()}, Action: domaininference.PolicyActionAllow, AllowedPrivacyClasses: []domaininference.PrivacyClass{domaininference.PrivacyClassThirdParty}, State: domaininference.PolicyStateActive}); err != nil {
+		t.Fatalf("upsert inference policy: %v", err)
 	}
 }
 

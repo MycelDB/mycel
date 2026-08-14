@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/identity/model"
+	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
@@ -55,6 +56,7 @@ type Config struct {
 	MaintenanceConfig MaintenanceConfig
 	SchemaManager     SchemaManager
 	GraphReadManager  GraphReadManager
+	InferenceManager  inferenceservice.Manager
 }
 
 type Manager interface {

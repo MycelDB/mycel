@@ -22,6 +22,7 @@ type EmbeddingResponse struct {
 	TotalTokens       int
 	TokenCountSource  string
 	ProviderRequestID string
+	PolicyDecisionID  domainsemantic.PolicyDecisionID
 }
 
 type Connector interface {
