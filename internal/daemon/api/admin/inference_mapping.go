@@ -10,7 +10,9 @@ import (
 
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
@@ -506,4 +508,241 @@ func mapAdminInferenceError(err error, action string) error {
 		return status.Error(codes.InvalidArgument, msg)
 	}
 	return status.Errorf(codes.Internal, "%s: %v", action, err)
+}
+
+func inferenceProfileFromProto(in *adminv1.AdminInferenceProfileServiceCreateInferenceProfileRequest, principalID string) (domaininference.Profile, error) {
+	if in == nil {
+		return domaininference.Profile{}, status.Error(codes.InvalidArgument, "inference profile is required")
+	}
+	if strings.TrimSpace(in.GetSpaceId()) == "" {
+		return domaininference.Profile{}, status.Error(codes.InvalidArgument, "space_id is required")
+	}
+	if strings.TrimSpace(in.GetKey()) == "" {
+		return domaininference.Profile{}, status.Error(codes.InvalidArgument, "key is required")
+	}
+	op := inferenceOperationFromProto(in.GetOperation())
+	if op == "" {
+		return domaininference.Profile{}, status.Error(codes.InvalidArgument, "operation is required")
+	}
+	return domaininference.Profile{SpaceID: in.GetSpaceId(), Key: in.GetKey(), DisplayName: firstNonEmptyAdmin(in.GetDisplayName(), in.GetKey()), Description: in.GetDescription(), Operation: op, Purpose: in.GetPurpose(), DomainIDs: append([]string(nil), in.GetDomainIds()...), CapabilityRefs: append([]string(nil), in.GetCapabilityRefs()...), EndpointRefs: append([]string(nil), in.GetEndpointRefs()...), ModelRefs: append([]string(nil), in.GetModelRefs()...), RequiredFeatures: append([]string(nil), in.GetRequiredFeatures()...), PrivacyRequirement: privacyRequirementFromProto(in.GetPrivacyRequirement()), DefaultParameters: parametersFromProto(in.GetDefaultParameters()), Enabled: in.GetEnabled(), CreatedBy: principalID, Metadata: structToMap(in.GetMetadata())}, nil
+}
+
+func mapInferenceProfile(in domaininference.Profile) *adminv1.InferenceProfile {
+	return &adminv1.InferenceProfile{InferenceProfileId: in.ID.String(), SpaceId: in.SpaceID, Key: in.Key, DisplayName: in.DisplayName, Description: in.Description, Operation: inferenceOperationToProto(in.Operation), Purpose: in.Purpose, DomainIds: append([]string(nil), in.DomainIDs...), CapabilityRefs: append([]string(nil), in.CapabilityRefs...), EndpointRefs: append([]string(nil), in.EndpointRefs...), ModelRefs: append([]string(nil), in.ModelRefs...), RequiredFeatures: append([]string(nil), in.RequiredFeatures...), PrivacyRequirement: privacyRequirementToProto(in.PrivacyRequirement), DefaultParameters: parametersToProto(in.DefaultParameters), Enabled: in.Enabled, CreatedBy: in.CreatedBy, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt), Metadata: protoStructAdmin(in.Metadata)}
+}
+
+func mapInferenceProfiles(items []domaininference.Profile) []*adminv1.InferenceProfile {
+	out := make([]*adminv1.InferenceProfile, 0, len(items))
+	for _, item := range items {
+		out = append(out, mapInferenceProfile(item))
+	}
+	return out
+}
+
+func privacyRequirementFromProto(in *commonv1.InferencePrivacyRequirement) domaininference.PrivacyRequirement {
+	if in == nil {
+		return domaininference.PrivacyRequirement{}
+	}
+	classes := make([]domaininference.PrivacyClass, 0, len(in.GetAllowedPrivacyClasses()))
+	for _, value := range in.GetAllowedPrivacyClasses() {
+		if cls := inferencePrivacyClassFromProto(value); cls != "" {
+			classes = append(classes, cls)
+		}
+	}
+	return domaininference.PrivacyRequirement{AllowedPrivacyClasses: classes, RequireLocalEndpoint: in.GetRequireLocalEndpoint(), DisallowThirdParty: in.GetDisallowThirdParty()}
+}
+
+func privacyRequirementToProto(in domaininference.PrivacyRequirement) *commonv1.InferencePrivacyRequirement {
+	classes := make([]commonv1.InferencePrivacyClass, 0, len(in.AllowedPrivacyClasses))
+	for _, value := range in.AllowedPrivacyClasses {
+		classes = append(classes, inferencePrivacyClassToProto(value))
+	}
+	return &commonv1.InferencePrivacyRequirement{AllowedPrivacyClasses: classes, RequireLocalEndpoint: in.RequireLocalEndpoint, DisallowThirdParty: in.DisallowThirdParty}
+}
+
+func parametersFromProto(in *commonv1.InferenceParameters) domaininference.Parameters {
+	if in == nil {
+		return domaininference.Parameters{}
+	}
+	var temp *float64
+	if in.Temperature != nil {
+		v := in.GetTemperature()
+		temp = &v
+	}
+	return domaininference.Parameters{Temperature: temp, MaxInputTokens: int(in.GetMaxInputTokens()), MaxOutputTokens: int(in.GetMaxOutputTokens()), ResponseFormat: in.GetResponseFormat(), Metadata: structToMap(in.GetMetadata())}
+}
+
+func parametersToProto(in domaininference.Parameters) *commonv1.InferenceParameters {
+	out := &commonv1.InferenceParameters{MaxInputTokens: int32(in.MaxInputTokens), MaxOutputTokens: int32(in.MaxOutputTokens), ResponseFormat: in.ResponseFormat, Metadata: protoStructAdmin(in.Metadata)}
+	if in.Temperature != nil {
+		out.Temperature = in.Temperature
+	}
+	return out
+}
+
+func inferenceOperationFromProto(value commonv1.InferenceOperation) domaininference.Operation {
+	switch value {
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_EMBEDDINGS:
+		return domaininference.OperationEmbeddings
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_CHAT:
+		return domaininference.OperationChat
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_RERANK:
+		return domaininference.OperationRerank
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_SUMMARIZE:
+		return domaininference.OperationSummarize
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_CLASSIFY:
+		return domaininference.OperationClassify
+	default:
+		return ""
+	}
+}
+
+func inferenceOperationToProto(value domaininference.Operation) commonv1.InferenceOperation {
+	switch value {
+	case domaininference.OperationEmbeddings:
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_EMBEDDINGS
+	case domaininference.OperationChat:
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_CHAT
+	case domaininference.OperationRerank:
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_RERANK
+	case domaininference.OperationSummarize:
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_SUMMARIZE
+	case domaininference.OperationClassify:
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_CLASSIFY
+	default:
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_UNSPECIFIED
+	}
+}
+
+func inferencePrivacyClassFromProto(value commonv1.InferencePrivacyClass) domaininference.PrivacyClass {
+	switch value {
+	case commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_LOCAL_ONLY:
+		return domaininference.PrivacyClassLocalOnly
+	case commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_PRIVATE:
+		return domaininference.PrivacyClassPrivate
+	case commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_THIRD_PARTY:
+		return domaininference.PrivacyClassThirdParty
+	default:
+		return ""
+	}
+}
+
+func inferencePrivacyClassToProto(value domaininference.PrivacyClass) commonv1.InferencePrivacyClass {
+	switch value {
+	case domaininference.PrivacyClassLocalOnly:
+		return commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_LOCAL_ONLY
+	case domaininference.PrivacyClassPrivate:
+		return commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_PRIVATE
+	case domaininference.PrivacyClassThirdParty:
+		return commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_THIRD_PARTY
+	default:
+		return commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_UNSPECIFIED
+	}
+}
+
+func semanticEndpointToInference(in domainsemantic.ModelEndpoint) domaininference.Endpoint {
+	return domaininference.Endpoint{ID: domaininference.EndpointID(in.ID), Key: in.Key, DisplayName: in.Name, ConnectorType: domaininference.ConnectorType(in.ConnectorType), BaseURL: in.EndpointURL, NetworkClass: inferenceNetworkClassFromSemantic(in.NetworkClass), PrivacyClass: inferencePrivacyClassFromSemantic(in.PrivacyClass), AuthTypes: inferenceAuthTypesFromSemantic(in.AuthModes), Operations: inferenceOperationsFromSemantic(in.Operations), Enabled: in.Enabled, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt, Metadata: in.Metadata}
+}
+
+func semanticModelToInference(in domainsemantic.InferenceModel) domaininference.Model {
+	return domaininference.Model{ID: domaininference.ModelID(in.ID), Key: in.Key, Operation: domaininference.Operation(in.Operation), ProviderModelName: in.ModelName, ConnectorTypes: inferenceConnectorTypesFromSemantic(in.ConnectorTypes), EmbeddingDims: in.Dimensions, VectorSpace: in.VectorSpaceKey, Enabled: true, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt, Metadata: in.Metadata}
+}
+
+func semanticCapabilityToInference(in domainsemantic.ModelEndpointCapability) domaininference.Capability {
+	return domaininference.Capability{ID: domaininference.CapabilityID(in.ID), EndpointID: domaininference.EndpointID(in.ModelEndpointID), ModelID: domaininference.ModelID(in.ModelID), Operation: domaininference.Operation(in.Operation), ProviderModelOverride: in.ModelNameOverride, Enabled: in.Enabled, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt, Metadata: in.Metadata}
+}
+
+func semanticVectorStoreToInference(in domainsemantic.VectorStoreBackend) domaininference.VectorStore {
+	return domaininference.VectorStore{ID: domaininference.VectorStoreID(in.ID), Key: in.Key, DisplayName: in.Name, Type: string(in.Type), PrivacyClass: inferencePrivacyClassFromSemantic(in.PrivacyClass), Enabled: in.Enabled, Config: in.Config, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+}
+
+func semanticSecretToInference(in domainsemantic.Secret) domaininference.Secret {
+	return domaininference.Secret{ID: domaininference.SecretID(in.ID), OwnerType: inferenceOwnerTypeFromSemantic(in.OwnerType), OwnerID: in.OwnerID, Kind: string(in.Kind), ExternalRef: in.ExternalRef, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+}
+
+func semanticCredentialToInference(in domainsemantic.InferenceCredential) domaininference.Credential {
+	return domaininference.Credential{ID: domaininference.CredentialID(in.ID), Key: in.Key, DisplayName: in.Name, EndpointID: domaininference.EndpointID(in.ModelEndpointID), OwnerType: inferenceOwnerTypeFromSemantic(in.OwnerType), OwnerID: in.OwnerID, AuthType: inferenceAuthTypeFromSemantic(in.AuthType), SecretID: domaininference.SecretID(in.SecretRef), Status: inferenceCredentialStatusFromSemantic(in.Status), CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+}
+
+func inferenceNetworkClassFromSemantic(value domainsemantic.NetworkClass) domaininference.NetworkClass {
+	switch value {
+	case domainsemantic.NetworkClassLocal:
+		return domaininference.NetworkClassLocal
+	case domainsemantic.NetworkClassPrivateNetwork:
+		return domaininference.NetworkClassPrivateNetwork
+	default:
+		return domaininference.NetworkClassPublicInternet
+	}
+}
+
+func inferencePrivacyClassFromSemantic(value domainsemantic.PrivacyClass) domaininference.PrivacyClass {
+	switch value {
+	case domainsemantic.PrivacyClassLocalOnly:
+		return domaininference.PrivacyClassLocalOnly
+	case domainsemantic.PrivacyClassEnterprisePrivate:
+		return domaininference.PrivacyClassPrivate
+	default:
+		return domaininference.PrivacyClassThirdParty
+	}
+}
+
+func inferenceAuthTypeFromSemantic(value domainsemantic.AuthMode) domaininference.CredentialAuthType {
+	switch value {
+	case domainsemantic.AuthModeNone:
+		return domaininference.CredentialAuthNone
+	case domainsemantic.AuthModeBearerToken:
+		return domaininference.CredentialAuthBearer
+	default:
+		return domaininference.CredentialAuthAPIKey
+	}
+}
+
+func inferenceAuthTypesFromSemantic(values []domainsemantic.AuthMode) []domaininference.CredentialAuthType {
+	out := make([]domaininference.CredentialAuthType, 0, len(values))
+	for _, value := range values {
+		out = append(out, inferenceAuthTypeFromSemantic(value))
+	}
+	return out
+}
+
+func inferenceOperationsFromSemantic(values []domainsemantic.Operation) []domaininference.Operation {
+	out := make([]domaininference.Operation, 0, len(values))
+	for _, value := range values {
+		out = append(out, domaininference.Operation(value))
+	}
+	return out
+}
+
+func inferenceConnectorTypesFromSemantic(values []domainsemantic.ConnectorType) []domaininference.ConnectorType {
+	out := make([]domaininference.ConnectorType, 0, len(values))
+	for _, value := range values {
+		out = append(out, domaininference.ConnectorType(value))
+	}
+	return out
+}
+
+func inferenceOwnerTypeFromSemantic(value domainsemantic.CredentialOwnerType) domaininference.CredentialOwnerType {
+	switch value {
+	case domainsemantic.CredentialOwnerSpace:
+		return domaininference.CredentialOwnerSpace
+	case domainsemantic.CredentialOwnerSystem:
+		return domaininference.CredentialOwnerSystem
+	default:
+		return domaininference.CredentialOwnerPrincipal
+	}
+}
+
+func inferenceCredentialStatusFromSemantic(value domainsemantic.CredentialStatus) domaininference.CredentialStatus {
+	switch value {
+	case domainsemantic.CredentialStatusDisabled:
+		return domaininference.CredentialStatusDisabled
+	case domainsemantic.CredentialStatusRevoked, domainsemantic.CredentialStatusExpired:
+		return domaininference.CredentialStatusRevoked
+	default:
+		return domaininference.CredentialStatusActive
+	}
+}
+
+func semanticPackageToInference(in domainsemantic.InferencePackage) domaininference.InferencePackage {
+	return domaininference.InferencePackage{ID: domaininference.InferencePackageID(in.ID), Name: in.Name, Version: in.Version, Source: in.Source, Checksum: in.Checksum, InstalledAt: in.InstalledAt, InstalledBy: in.InstalledBy, DefinitionCounts: in.DefinitionCounts}
 }

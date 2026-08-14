@@ -10,7 +10,12 @@ and usage telemetry contracts; and automation APIs now expose
 inference-reference metadata. INF2 is implemented as a skeleton-only tranche:
 `internal/inference` now has canonical model structs, storage interfaces,
 file-backed global/space/usage stores, a runtime module, daemon initialization,
-and focused round-trip tests. Runtime conversion remains for later phases.
+and focused round-trip tests. INF3 is implemented as a management tranche:
+admin catalog and credential writes now mirror into the standalone inference
+stores, credential rotation preserves stable credential IDs, external secret refs
+fail closed to supported `env://NAME` references, and space-scoped profile
+CRUD is exposed through the themed admin API and CLI. Runtime conversion remains
+for later phases.
 
 No compatibility migration from the current semantic inference stores,
 automation provider configuration, automation run records, CLI shapes, or
@@ -290,6 +295,17 @@ and space-level profiles.
 - Secret redaction tests for API, CLI, logs, and persisted public records.
 - Credential rotation tests prove credential ID stability.
 - Unsupported secret scheme tests fail closed.
+
+### Implementation status
+
+Implemented. The existing semantic-backed admin catalog and credential paths now
+synchronize endpoints, models, capabilities, vector stores, secrets, credentials,
+and packages into the standalone inference subsystem while current semantic
+runtime paths remain unchanged. Profile CRUD is implemented directly against the
+standalone inference space manager and exposed through `inference profile` CLI
+commands. Credential rotation creates a new redacted secret record and updates
+the stable credential ID. External secret references are restricted to
+`env://NAME`; unsupported schemes are rejected.
 
 ### Functional endpoint for the phase
 

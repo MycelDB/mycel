@@ -9,9 +9,12 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	cliapp "github.com/myceldb/mycel/internal/cli/app"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
+	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -69,6 +72,14 @@ model_endpoint_capabilities:
 	if applied.GetPackage().GetName() != "test-openai" || len(applied.GetModelEndpoints()) != 1 || len(applied.GetModels()) != 1 || len(applied.GetModelEndpointCapabilities()) != 1 {
 		t.Fatalf("unexpected applied package: %#v", &applied)
 	}
+	inferenceGlobal := inferencestorage.NewGlobalManager()
+	if err := inferenceGlobal.Init(context.Background(), filepath.Join(dataDir, "meta")); err != nil {
+		t.Fatalf("init standalone inference global manager: %v", err)
+	}
+	inferenceEndpoints, err := inferenceGlobal.ListEndpoints(context.Background())
+	if err != nil || len(inferenceEndpoints) != 1 || inferenceEndpoints[0].Key != "test-openai" {
+		t.Fatalf("standalone inference endpoint sync failed: %#v err=%v", inferenceEndpoints, err)
+	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "model-endpoint", "list")
 	if err != nil {
 		t.Fatalf("model endpoint list failed: %v\n%s", err, out)
@@ -93,7 +104,11 @@ model_endpoint_capabilities:
 	if index.GetKey() != "pkg-notes" {
 		t.Fatalf("unexpected semantic index: %#v", &index)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "add", "test-openai-key", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test", "--external-ref", "test-secret-ref")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "add", "bad-secret-ref", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test", "--external-ref", "vault://OPENAI_API_KEY")
+	if err == nil || !strings.Contains(err.Error()+out, "env://NAME") {
+		t.Fatalf("expected unsupported external ref failure, err=%v out=%s", err, out)
+	}
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "add", "test-openai-key", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test", "--external-ref", "env://OPENAI_API_KEY")
 	if err != nil {
 		t.Fatalf("credential add failed: %v\n%s", err, out)
 	}
@@ -103,6 +118,55 @@ model_endpoint_capabilities:
 	}
 	if createdCredential.GetCredential().GetKey() != "test-openai-key" || createdCredential.GetSecret().GetKind() != "external_ref" {
 		t.Fatalf("unexpected credential: %#v", &createdCredential)
+	}
+	inferenceGlobalAfterCredential := inferencestorage.NewGlobalManager()
+	if err := inferenceGlobalAfterCredential.Init(context.Background(), filepath.Join(dataDir, "meta")); err != nil {
+		t.Fatalf("reload standalone inference global manager: %v", err)
+	}
+	standaloneCredentials, err := inferenceGlobalAfterCredential.ListCredentials(context.Background())
+	if err != nil || len(standaloneCredentials) != 1 || standaloneCredentials[0].Key != "test-openai-key" {
+		t.Fatalf("standalone inference credential sync failed: %#v err=%v", standaloneCredentials, err)
+	}
+	conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), &cliapp.App{DaemonAddr: addr, UserRef: "admin", Password: adminPassword})
+	if err != nil {
+		t.Fatalf("admin login for inference profile client failed: %v", err)
+	}
+	defer conn.Close()
+	profileClient := adminv1.NewAdminInferenceProfileServiceClient(conn)
+	createdProfile, err := profileClient.CreateInferenceProfile(authCtx, &adminv1.AdminInferenceProfileServiceCreateInferenceProfileRequest{SpaceId: spaceID, Key: "summarize-page", DisplayName: "Summarize page", Operation: commonv1.InferenceOperation_INFERENCE_OPERATION_CHAT, Purpose: "automation", DomainIds: []string{"default"}, Enabled: true})
+	if err != nil {
+		t.Fatalf("create inference profile failed: %v", err)
+	}
+	if createdProfile.GetInferenceProfile().GetKey() != "summarize-page" || !createdProfile.GetInferenceProfile().GetEnabled() {
+		t.Fatalf("unexpected profile: %#v", createdProfile.GetInferenceProfile())
+	}
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "profile", "get", "summarize-page", "--space-id", spaceID)
+	if err != nil {
+		t.Fatalf("profile get failed: %v\n%s", err, out)
+	}
+	var fetchedProfile adminv1.AdminInferenceProfileServiceGetInferenceProfileResponse
+	if err := json.Unmarshal([]byte(out), &fetchedProfile); err != nil || fetchedProfile.GetInferenceProfile().GetKey() != "summarize-page" {
+		t.Fatalf("unexpected fetched profile: %#v err=%v out=%s", &fetchedProfile, err, out)
+	}
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "profile", "disable", "summarize-page", "--space-id", spaceID)
+	if err != nil {
+		t.Fatalf("profile disable failed: %v\n%s", err, out)
+	}
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "profile", "enable", "summarize-page", "--space-id", spaceID)
+	if err != nil {
+		t.Fatalf("profile enable failed: %v\n%s", err, out)
+	}
+	listedProfiles, err := profileClient.ListInferenceProfiles(authCtx, &adminv1.AdminInferenceProfileServiceListInferenceProfilesRequest{SpaceId: spaceID})
+	if err != nil || len(listedProfiles.GetInferenceProfiles()) != 1 {
+		t.Fatalf("list inference profiles failed: profiles=%#v err=%v", listedProfiles.GetInferenceProfiles(), err)
+	}
+	credentialClient := adminv1.NewAdminInferenceCredentialServiceClient(conn)
+	rotated, err := credentialClient.RotateCredential(authCtx, &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest{Credential: "test-openai-key", SecretMaterial: &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest_ExternalRef{ExternalRef: "env://OPENAI_API_KEY_V2"}})
+	if err != nil {
+		t.Fatalf("rotate credential failed: %v", err)
+	}
+	if rotated.GetCredential().GetCredentialId() != createdCredential.GetCredential().GetCredentialId() || rotated.GetSecret().GetExternalRef() != "env://OPENAI_API_KEY_V2" {
+		t.Fatalf("unexpected rotated credential: %#v", rotated)
 	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "list", "--owner-type", "system", "--owner-id", "daemon-test")
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
+	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -487,13 +488,17 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	if !ok {
 		t.Fatal("semantic service was not registered")
 	}
+	inferenceModule, ok := daemonruntime.ServiceAs[*inferenceservice.Module](rt, inferenceservice.ModuleName)
+	if !ok {
+		t.Fatal("inference service was not registered")
+	}
 	backupModule, ok := daemonruntime.ServiceAs[*daemonbackup.Module](rt, daemonbackup.ModuleName)
 	if !ok {
 		t.Fatal("backup service was not registered")
 	}
 	password := bootstrapPasswordFromLog(t, rt.LogPath)
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", PrincipalManager: principalModule, BackupManager: backupModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, SemanticManager: semanticModule, Logger: rt.Logger, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService()})
+	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", PrincipalManager: principalModule, BackupManager: backupModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, InferenceManager: inferenceModule, SemanticManager: semanticModule, Logger: rt.Logger, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService()})
 	if err != nil {
 		_ = rt.Close()
 		t.Fatalf("start grpc server failed: %v", err)

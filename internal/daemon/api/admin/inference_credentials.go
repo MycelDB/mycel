@@ -42,6 +42,9 @@ func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *admin
 		secret.Kind = domainsemantic.SecretKindInlineEncrypted
 		secret.Ciphertext = ciphertext
 	} else if strings.TrimSpace(req.GetExternalRef()) != "" {
+		if err := validateExternalSecretRef(req.GetExternalRef()); err != nil {
+			return nil, err
+		}
 		secret.Kind = domainsemantic.SecretKindExternalRef
 		secret.ExternalRef = req.GetExternalRef()
 	} else {
@@ -57,9 +60,15 @@ func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *admin
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert secret")
 	}
+	if err := s.syncInferenceSecret(ctx, storedSecret); err != nil {
+		return nil, mapAdminInferenceError(err, "sync inference secret")
+	}
 	credential, err := mgr.UpsertCredential(ctx, domainsemantic.InferenceCredential{Key: req.GetKey(), Name: firstNonEmptyAdmin(req.GetDisplayName(), req.GetKey()), ModelEndpointID: endpointID, OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID, AuthType: domainsemantic.AuthMode(firstNonEmptyAdmin(req.GetAuthType(), string(domainsemantic.AuthModeAPIKey))), SecretRef: storedSecret.ID, Status: domainsemantic.CredentialStatusActive, IsDefault: req.GetIsDefault()})
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert credential")
+	}
+	if err := s.syncInferenceCredential(ctx, credential); err != nil {
+		return nil, mapAdminInferenceError(err, "sync inference credential")
 	}
 	return &adminv1.AdminInferenceCredentialServiceCreateCredentialResponse{Secret: mapSecret(storedSecret), Credential: mapCredential(credential)}, nil
 }
@@ -120,14 +129,109 @@ func (s *AdminInferenceService) SetCredentialStatus(ctx context.Context, req *ad
 	for _, item := range items {
 		if item.ID == id {
 			item.Status = statusValue
+			if err := s.hydrateCredentialFromInferenceStore(ctx, &item); err != nil {
+				return nil, err
+			}
 			stored, err := s.semantic.GlobalManager().UpsertCredential(ctx, item)
 			if err != nil {
 				return nil, mapAdminInferenceError(err, "update credential")
+			}
+			if err := s.syncInferenceCredential(ctx, stored); err != nil {
+				return nil, mapAdminInferenceError(err, "sync inference credential")
 			}
 			return &adminv1.AdminInferenceCredentialServiceSetCredentialStatusResponse{Credential: mapCredential(stored)}, nil
 		}
 	}
 	return nil, status.Error(codes.NotFound, "credential not found")
+}
+
+func (s *AdminInferenceService) RotateCredential(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceRotateCredentialRequest) (*adminv1.AdminInferenceCredentialServiceRotateCredentialResponse, error) {
+	if _, err := s.requireInferenceManage(ctx); err != nil {
+		return nil, err
+	}
+	id, err := s.resolveCredentialID(ctx, firstNonEmptyAdmin(req.GetCredentialId(), req.GetCredential()))
+	if err != nil {
+		return nil, err
+	}
+	credential, err := s.credentialByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.hydrateCredentialFromInferenceStore(ctx, &credential); err != nil {
+		return nil, err
+	}
+	secret, err := s.rotatedSecretFromRequest(ctx, req, credential)
+	if err != nil {
+		return nil, err
+	}
+	ctx, release, err := s.beginSemanticMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	storedSecret, err := s.semantic.GlobalManager().UpsertSecret(ctx, secret)
+	if err != nil {
+		return nil, mapAdminInferenceError(err, "upsert rotated secret")
+	}
+	if err := s.syncInferenceSecret(ctx, storedSecret); err != nil {
+		return nil, mapAdminInferenceError(err, "sync rotated inference secret")
+	}
+	credential.SecretRef = storedSecret.ID
+	storedCredential, err := s.semantic.GlobalManager().UpsertCredential(ctx, credential)
+	if err != nil {
+		return nil, mapAdminInferenceError(err, "update rotated credential")
+	}
+	if err := s.syncInferenceCredential(ctx, storedCredential); err != nil {
+		return nil, mapAdminInferenceError(err, "sync rotated inference credential")
+	}
+	return &adminv1.AdminInferenceCredentialServiceRotateCredentialResponse{Secret: mapSecret(storedSecret), Credential: mapCredential(storedCredential)}, nil
+}
+
+func (s *AdminInferenceService) rotatedSecretFromRequest(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceRotateCredentialRequest, credential domainsemantic.InferenceCredential) (domainsemantic.Secret, error) {
+	secret := domainsemantic.Secret{OwnerType: credential.OwnerType, OwnerID: credential.OwnerID}
+	if inline := req.GetInlineSecret(); inline != nil {
+		secret.Kind = domainsemantic.SecretKindInlineEncrypted
+		secret.Ciphertext = &domainsemantic.EncryptedSecretPayload{Algorithm: inline.GetAlgorithm(), NonceB64: inline.GetNonceB64(), CipherB64: inline.GetCipherB64()}
+		return secret, nil
+	}
+	if strings.TrimSpace(req.GetSecretValue()) != "" {
+		ciphertext, err := s.semantic.EncryptSecret(ctx, req.GetSecretValue())
+		if err != nil {
+			return domainsemantic.Secret{}, status.Errorf(codes.FailedPrecondition, "encrypt secret: %v", err)
+		}
+		secret.Kind = domainsemantic.SecretKindInlineEncrypted
+		secret.Ciphertext = ciphertext
+		return secret, nil
+	}
+	if strings.TrimSpace(req.GetExternalRef()) != "" {
+		if err := validateExternalSecretRef(req.GetExternalRef()); err != nil {
+			return domainsemantic.Secret{}, err
+		}
+		secret.Kind = domainsemantic.SecretKindExternalRef
+		secret.ExternalRef = req.GetExternalRef()
+		return secret, nil
+	}
+	return domainsemantic.Secret{}, status.Error(codes.InvalidArgument, "secret_value, inline_secret, or external_ref is required")
+}
+
+func (s *AdminInferenceService) hydrateCredentialFromInferenceStore(ctx context.Context, credential *domainsemantic.InferenceCredential) error {
+	if credential == nil || credential.ModelEndpointID != uuid.Nil || s.inference == nil {
+		return nil
+	}
+	items, err := s.inference.GlobalManager().ListCredentials(ctx)
+	if err != nil {
+		return mapAdminInferenceError(err, "list standalone inference credentials")
+	}
+	for _, item := range items {
+		if item.ID == uuid.UUID(credential.ID) || strings.EqualFold(strings.TrimSpace(item.Key), strings.TrimSpace(credential.Key)) {
+			credential.ModelEndpointID = domainsemantic.ModelEndpointID(item.EndpointID)
+			if credential.AuthType == "" {
+				credential.AuthType = domainsemantic.AuthMode(item.AuthType)
+			}
+			return nil
+		}
+	}
+	return nil
 }
 
 func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceDeleteCredentialRequest) (*adminv1.AdminInferenceCredentialServiceDeleteCredentialResponse, error) {
@@ -197,10 +301,31 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 		if err := s.semantic.GlobalManager().DeleteSecret(ctx, credential.SecretRef); err != nil {
 			return nil, mapAdminInferenceError(err, "delete secret")
 		}
+		if s.inference != nil {
+			if err := s.inference.GlobalManager().DeleteSecret(ctx, credential.SecretRef); err != nil {
+				return nil, mapAdminInferenceError(err, "delete inference secret")
+			}
+		}
 		secretDeleted = true
 	}
 	if err := s.semantic.GlobalManager().DeleteCredential(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete credential")
 	}
+	if s.inference != nil {
+		if err := s.inference.GlobalManager().DeleteCredential(ctx, id); err != nil {
+			return nil, mapAdminInferenceError(err, "delete inference credential")
+		}
+	}
 	return &adminv1.AdminInferenceCredentialServiceDeleteCredentialResponse{CredentialId: id.String(), CredentialGrantsDeleted: deletedGrants, SecretDeleted: secretDeleted}, nil
+}
+
+func validateExternalSecretRef(ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return status.Error(codes.InvalidArgument, "external_ref is required")
+	}
+	if !strings.HasPrefix(ref, "env://") || strings.TrimSpace(strings.TrimPrefix(ref, "env://")) == "" {
+		return status.Error(codes.InvalidArgument, "external_ref must use env://NAME")
+	}
+	return nil
 }

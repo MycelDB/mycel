@@ -8,6 +8,7 @@ import (
 
 	"github.com/myceldb/mycel/internal/cli/app"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -37,8 +38,8 @@ type capabilityDefinition struct {
 }
 
 func NewInferenceCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "inference", Short: "Provision inference endpoints, models, credentials, grants, and policies"}
-	cmd.AddCommand(newInferencePackageCommand(a), newInferenceModelEndpointCommand(a), newInferenceModelCommand(a), newInferenceVectorStoreCommand(a), newInferenceCapabilityCommand(a), newInferenceCredentialCommand(a), newInferencePolicyCommand(a))
+	cmd := &cobra.Command{Use: "inference", Short: "Provision inference endpoints, models, credentials, profiles, grants, and policies"}
+	cmd.AddCommand(newInferencePackageCommand(a), newInferenceModelEndpointCommand(a), newInferenceModelCommand(a), newInferenceVectorStoreCommand(a), newInferenceCapabilityCommand(a), newInferenceCredentialCommand(a), newInferenceProfileCommand(a), newInferencePolicyCommand(a))
 	return cmd
 }
 
@@ -763,6 +764,213 @@ func runDaemonInferencePolicyCreate(cmd *cobra.Command, a *app.App, effect domai
 		return err
 	}
 	return a.Print(res, fmt.Sprintf("inference policy added: %s\n", res.GetInferencePolicy().GetInferencePolicyId()))
+}
+
+func newInferenceProfileCommand(a *app.App) *cobra.Command {
+	cmd := &cobra.Command{Use: "profile", Short: "Manage space-scoped inference profiles"}
+	cmd.AddCommand(newInferenceProfileCreateCommand(a), newInferenceProfileListCommand(a), newInferenceProfileGetCommand(a), newInferenceProfileSetEnabledCommand(a, true), newInferenceProfileSetEnabledCommand(a, false), newInferenceProfileDeleteCommand(a))
+	return cmd
+}
+
+func newInferenceProfileCreateCommand(a *app.App) *cobra.Command {
+	var spaceID, displayName, description, operation, purpose, responseFormat string
+	var domains, capabilities, endpoints, models, features, privacyClasses []string
+	var requireLocal, disallowThirdParty bool
+	var temperature float64
+	var maxInputTokens, maxOutputTokens int32
+	cmd := &cobra.Command{Use: "create KEY", Short: "Create or update an inference profile", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		op, err := inferenceOperationFromFlag(operation)
+		if err != nil {
+			return err
+		}
+		privacy, err := inferencePrivacyRequirementFromFlags(privacyClasses, requireLocal, disallowThirdParty)
+		if err != nil {
+			return err
+		}
+		params := &commonv1.InferenceParameters{MaxInputTokens: maxInputTokens, MaxOutputTokens: maxOutputTokens, ResponseFormat: responseFormat}
+		if cmd.Flags().Changed("temperature") {
+			params.Temperature = &temperature
+		}
+		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := adminv1.NewAdminInferenceProfileServiceClient(conn).CreateInferenceProfile(authCtx, &adminv1.AdminInferenceProfileServiceCreateInferenceProfileRequest{SpaceId: spaceID, Key: args[0], DisplayName: displayName, Description: description, Operation: op, Purpose: purpose, DomainIds: domains, CapabilityRefs: capabilities, EndpointRefs: endpoints, ModelRefs: models, RequiredFeatures: features, PrivacyRequirement: privacy, DefaultParameters: params, Enabled: true})
+		if err != nil {
+			return err
+		}
+		return a.Print(res, fmt.Sprintf("inference profile saved: %s\n", res.GetInferenceProfile().GetKey()))
+	}}
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&displayName, "display-name", "", "display name")
+	cmd.Flags().StringVar(&description, "description", "", "description")
+	cmd.Flags().StringVar(&operation, "operation", string(domainsemantic.OperationEmbeddings), "operation: embeddings, chat, rerank, summarize, classify")
+	cmd.Flags().StringVar(&purpose, "purpose", "", "purpose label, such as automation or semantic")
+	cmd.Flags().StringArrayVar(&domains, "domain", nil, "domain ID/ref allowed by this profile")
+	cmd.Flags().StringArrayVar(&capabilities, "capability", nil, "capability ID/key candidate")
+	cmd.Flags().StringArrayVar(&endpoints, "model-endpoint", nil, "endpoint ID/key candidate")
+	cmd.Flags().StringArrayVar(&models, "model", nil, "model ID/key candidate")
+	cmd.Flags().StringArrayVar(&features, "feature", nil, "required feature")
+	cmd.Flags().StringArrayVar(&privacyClasses, "privacy-class", nil, "allowed privacy class: local_only, private, third_party")
+	cmd.Flags().BoolVar(&requireLocal, "require-local-endpoint", false, "require a local endpoint")
+	cmd.Flags().BoolVar(&disallowThirdParty, "disallow-third-party", false, "disallow third-party providers")
+	cmd.Flags().Float64Var(&temperature, "temperature", 0, "default temperature")
+	cmd.Flags().Int32Var(&maxInputTokens, "max-input-tokens", 0, "default max input tokens")
+	cmd.Flags().Int32Var(&maxOutputTokens, "max-output-tokens", 0, "default max output tokens")
+	cmd.Flags().StringVar(&responseFormat, "response-format", "", "default response format")
+	_ = cmd.MarkFlagRequired("space-id")
+	return cmd
+}
+
+func newInferenceProfileListCommand(a *app.App) *cobra.Command {
+	var spaceID, pageToken, operation, domainID, purpose string
+	var pageSize int32
+	var includeDisabled bool
+	cmd := &cobra.Command{Use: "list", Short: "List inference profiles via daemon gRPC", RunE: func(cmd *cobra.Command, args []string) error {
+		op, err := optionalInferenceOperationFromFlag(operation)
+		if err != nil {
+			return err
+		}
+		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := adminv1.NewAdminInferenceProfileServiceClient(conn).ListInferenceProfiles(authCtx, &adminv1.AdminInferenceProfileServiceListInferenceProfilesRequest{SpaceId: spaceID, PageSize: pageSize, PageToken: pageToken, DomainId: domainID, Operation: op, Purpose: purpose, IncludeDisabled: includeDisabled})
+		if err != nil {
+			return err
+		}
+		if a.Output == "json" {
+			return a.Print(res, "")
+		}
+		for _, profile := range res.GetInferenceProfiles() {
+			fmt.Printf("%s\t%s\t%s\tenabled=%t\n", profile.GetInferenceProfileId(), profile.GetKey(), profile.GetOperation().String(), profile.GetEnabled())
+		}
+		if res.GetNextPageToken() != "" {
+			fmt.Printf("next page token: %s\n", res.GetNextPageToken())
+		}
+		return nil
+	}}
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
+	cmd.Flags().Int32Var(&pageSize, "page-size", 100, "page size")
+	cmd.Flags().StringVar(&pageToken, "page-token", "", "page token")
+	cmd.Flags().StringVar(&operation, "operation", "", "operation filter")
+	cmd.Flags().StringVar(&domainID, "domain", "", "domain ID filter")
+	cmd.Flags().StringVar(&purpose, "purpose", "", "purpose filter")
+	cmd.Flags().BoolVar(&includeDisabled, "include-disabled", false, "include disabled profiles")
+	_ = cmd.MarkFlagRequired("space-id")
+	return cmd
+}
+
+func newInferenceProfileGetCommand(a *app.App) *cobra.Command {
+	var spaceID string
+	cmd := &cobra.Command{Use: "get PROFILE", Short: "Get an inference profile by key or ID", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := adminv1.NewAdminInferenceProfileServiceClient(conn).GetInferenceProfile(authCtx, &adminv1.AdminInferenceProfileServiceGetInferenceProfileRequest{SpaceId: spaceID, InferenceProfile: args[0]})
+		if err != nil {
+			return err
+		}
+		return a.Print(res, fmt.Sprintf("inference profile: %s\n", res.GetInferenceProfile().GetKey()))
+	}}
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
+	_ = cmd.MarkFlagRequired("space-id")
+	return cmd
+}
+
+func newInferenceProfileSetEnabledCommand(a *app.App, enabled bool) *cobra.Command {
+	use := "disable PROFILE"
+	if enabled {
+		use = "enable PROFILE"
+	}
+	var spaceID string
+	cmd := &cobra.Command{Use: use, Short: "Enable or disable an inference profile", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := adminv1.NewAdminInferenceProfileServiceClient(conn).SetInferenceProfileEnabled(authCtx, &adminv1.AdminInferenceProfileServiceSetInferenceProfileEnabledRequest{SpaceId: spaceID, InferenceProfile: args[0], Enabled: enabled})
+		if err != nil {
+			return err
+		}
+		return a.Print(res, fmt.Sprintf("inference profile %s: enabled=%t\n", res.GetInferenceProfile().GetKey(), res.GetInferenceProfile().GetEnabled()))
+	}}
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
+	_ = cmd.MarkFlagRequired("space-id")
+	return cmd
+}
+
+func newInferenceProfileDeleteCommand(a *app.App) *cobra.Command {
+	var spaceID string
+	cmd := &cobra.Command{Use: "delete PROFILE", Aliases: []string{"rm", "remove"}, Short: "Delete an inference profile", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := adminv1.NewAdminInferenceProfileServiceClient(conn).DeleteInferenceProfile(authCtx, &adminv1.AdminInferenceProfileServiceDeleteInferenceProfileRequest{SpaceId: spaceID, InferenceProfile: args[0]})
+		if err != nil {
+			return err
+		}
+		return a.Print(res, fmt.Sprintf("inference profile deleted: %s\n", res.GetInferenceProfileId()))
+	}}
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
+	_ = cmd.MarkFlagRequired("space-id")
+	return cmd
+}
+
+func inferenceOperationFromFlag(value string) (commonv1.InferenceOperation, error) {
+	op, err := optionalInferenceOperationFromFlag(value)
+	if err != nil {
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_UNSPECIFIED, err
+	}
+	if op == commonv1.InferenceOperation_INFERENCE_OPERATION_UNSPECIFIED {
+		return op, fmt.Errorf("operation is required")
+	}
+	return op, nil
+}
+
+func optionalInferenceOperationFromFlag(value string) (commonv1.InferenceOperation, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_UNSPECIFIED, nil
+	case "embedding", "embeddings":
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_EMBEDDINGS, nil
+	case "chat":
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_CHAT, nil
+	case "rerank":
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_RERANK, nil
+	case "summarize", "summary":
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_SUMMARIZE, nil
+	case "classify", "classification":
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_CLASSIFY, nil
+	default:
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_UNSPECIFIED, fmt.Errorf("unsupported inference operation %q", value)
+	}
+}
+
+func inferencePrivacyRequirementFromFlags(values []string, requireLocal, disallowThirdParty bool) (*commonv1.InferencePrivacyRequirement, error) {
+	out := &commonv1.InferencePrivacyRequirement{RequireLocalEndpoint: requireLocal, DisallowThirdParty: disallowThirdParty}
+	for _, value := range values {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "", "unspecified":
+			continue
+		case "local", "local_only", "local-only":
+			out.AllowedPrivacyClasses = append(out.AllowedPrivacyClasses, commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_LOCAL_ONLY)
+		case "private", "enterprise_private", "enterprise-private":
+			out.AllowedPrivacyClasses = append(out.AllowedPrivacyClasses, commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_PRIVATE)
+		case "third_party", "third-party", "public":
+			out.AllowedPrivacyClasses = append(out.AllowedPrivacyClasses, commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_THIRD_PARTY)
+		default:
+			return nil, fmt.Errorf("unsupported inference privacy class %q", value)
+		}
+	}
+	return out, nil
 }
 
 func adminModelEndpointFromDomain(endpoint domainsemantic.ModelEndpoint) *adminv1.ModelEndpoint {

@@ -37,6 +37,9 @@ func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *
 		if err != nil {
 			return nil, mapAdminInferenceError(err, "upsert model endpoint")
 		}
+		if err := s.syncInferenceEndpoint(ctx, stored); err != nil {
+			return nil, mapAdminInferenceError(err, "sync inference endpoint")
+		}
 		endpoints = append(endpoints, stored)
 	}
 	models := make([]domainsemantic.InferenceModel, 0, len(req.GetModels()))
@@ -49,6 +52,9 @@ func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *
 		if err != nil {
 			return nil, mapAdminInferenceError(err, "upsert model")
 		}
+		if err := s.syncInferenceModel(ctx, stored); err != nil {
+			return nil, mapAdminInferenceError(err, "sync inference model")
+		}
 		models = append(models, stored)
 	}
 	stores := make([]domainsemantic.VectorStoreBackend, 0, len(req.GetVectorStores()))
@@ -60,6 +66,9 @@ func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *
 		stored, err := mgr.UpsertVectorStore(ctx, store)
 		if err != nil {
 			return nil, mapAdminInferenceError(err, "upsert vector store")
+		}
+		if err := s.syncInferenceVectorStore(ctx, stored); err != nil {
+			return nil, mapAdminInferenceError(err, "sync inference vector store")
 		}
 		stores = append(stores, stored)
 	}
@@ -81,12 +90,18 @@ func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *
 		if err != nil {
 			return nil, mapAdminInferenceError(err, "upsert model endpoint capability")
 		}
+		if err := s.syncInferenceCapability(ctx, capability); err != nil {
+			return nil, mapAdminInferenceError(err, "sync inference capability")
+		}
 		capabilities = append(capabilities, capability)
 	}
 	counts := map[string]int{"model_endpoints": len(req.GetModelEndpoints()), "models": len(req.GetModels()), "model_endpoint_capabilities": len(req.GetModelEndpointCapabilities()), "vector_stores": len(req.GetVectorStores())}
 	pkg, err := mgr.UpsertPackage(ctx, domainsemantic.InferencePackage{Name: req.GetName(), Version: req.GetVersion(), Source: req.GetSource(), Checksum: req.GetChecksum(), InstalledBy: principal.PrincipalID, DefinitionCounts: counts})
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert inference package")
+	}
+	if err := s.syncInferencePackage(ctx, pkg); err != nil {
+		return nil, mapAdminInferenceError(err, "sync inference package")
 	}
 	return &adminv1.AdminInferenceCatalogServiceApplyInferencePackageResponse{Package: mapInferencePackage(pkg), ModelEndpoints: mapModelEndpoints(endpoints), Models: mapInferenceModels(models), VectorStores: mapVectorStores(stores), ModelEndpointCapabilities: mapModelEndpointCapabilities(capabilities)}, nil
 }
@@ -228,6 +243,9 @@ func (s *AdminInferenceService) SetModelEndpointEnabled(ctx context.Context, req
 			if err != nil {
 				return nil, mapAdminInferenceError(err, "update model endpoint")
 			}
+			if err := s.syncInferenceEndpoint(ctx, stored); err != nil {
+				return nil, mapAdminInferenceError(err, "sync inference endpoint")
+			}
 			return &adminv1.AdminInferenceCatalogServiceSetModelEndpointEnabledResponse{ModelEndpoint: mapModelEndpoint(stored)}, nil
 		}
 	}
@@ -258,6 +276,9 @@ func (s *AdminInferenceService) SetVectorStoreEnabled(ctx context.Context, req *
 			if err != nil {
 				return nil, mapAdminInferenceError(err, "update vector store")
 			}
+			if err := s.syncInferenceVectorStore(ctx, stored); err != nil {
+				return nil, mapAdminInferenceError(err, "sync inference vector store")
+			}
 			return &adminv1.AdminInferenceCatalogServiceSetVectorStoreEnabledResponse{VectorStore: mapVectorStore(stored)}, nil
 		}
 	}
@@ -281,6 +302,9 @@ func (s *AdminInferenceService) SetModelEndpointCapabilityEnabled(ctx context.Co
 	stored, err := s.semantic.GlobalManager().UpsertModelEndpointCapability(ctx, cap)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "update model endpoint capability")
+	}
+	if err := s.syncInferenceCapability(ctx, stored); err != nil {
+		return nil, mapAdminInferenceError(err, "sync inference capability")
 	}
 	return &adminv1.AdminInferenceCatalogServiceSetModelEndpointCapabilityEnabledResponse{ModelEndpointCapability: mapModelEndpointCapability(stored)}, nil
 }
@@ -308,6 +332,11 @@ func (s *AdminInferenceService) DeleteModelEndpoint(ctx context.Context, req *ad
 	if err := s.semantic.GlobalManager().DeleteModelEndpoint(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete model endpoint")
 	}
+	if s.inference != nil {
+		if err := s.inference.GlobalManager().DeleteEndpoint(ctx, id); err != nil {
+			return nil, mapAdminInferenceError(err, "delete inference endpoint")
+		}
+	}
 	return &adminv1.AdminInferenceCatalogServiceDeleteModelEndpointResponse{ModelEndpointId: id.String()}, nil
 }
 
@@ -333,6 +362,11 @@ func (s *AdminInferenceService) DeleteModel(ctx context.Context, req *adminv1.Ad
 	defer release()
 	if err := s.semantic.GlobalManager().DeleteModel(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete model")
+	}
+	if s.inference != nil {
+		if err := s.inference.GlobalManager().DeleteModel(ctx, id); err != nil {
+			return nil, mapAdminInferenceError(err, "delete inference model")
+		}
 	}
 	return &adminv1.AdminInferenceCatalogServiceDeleteModelResponse{ModelId: id.String()}, nil
 }
@@ -360,6 +394,11 @@ func (s *AdminInferenceService) DeleteVectorStore(ctx context.Context, req *admi
 	if err := s.semantic.GlobalManager().DeleteVectorStore(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete vector store")
 	}
+	if s.inference != nil {
+		if err := s.inference.GlobalManager().DeleteVectorStore(ctx, id); err != nil {
+			return nil, mapAdminInferenceError(err, "delete inference vector store")
+		}
+	}
 	return &adminv1.AdminInferenceCatalogServiceDeleteVectorStoreResponse{VectorStoreId: id.String()}, nil
 }
 
@@ -385,6 +424,11 @@ func (s *AdminInferenceService) DeleteModelEndpointCapability(ctx context.Contex
 	defer release()
 	if err := s.semantic.GlobalManager().DeleteModelEndpointCapability(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete model endpoint capability")
+	}
+	if s.inference != nil {
+		if err := s.inference.GlobalManager().DeleteCapability(ctx, id); err != nil {
+			return nil, mapAdminInferenceError(err, "delete inference capability")
+		}
 	}
 	return &adminv1.AdminInferenceCatalogServiceDeleteModelEndpointCapabilityResponse{ModelEndpointCapabilityId: id.String()}, nil
 }

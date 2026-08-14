@@ -136,7 +136,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	adminv1.RegisterAdminPrincipalServiceServer(grpcServer, adminapi.NewPrincipalService(cfg.PrincipalManager, cfg.TokenManager))
 	adminv1.RegisterAdminSpaceServiceServer(grpcServer, adminapi.NewAdminSpaceService(cfg.SpaceManager, cfg.PrincipalManager, cfg.PrincipalManager))
 	adminv1.RegisterAdminDomainServiceServer(grpcServer, adminapi.NewAdminDomainService(cfg.SpaceManager, cfg.PrincipalManager))
-	adminInference := adminapi.NewAdminInferenceService(cfg.SemanticManager, cfg.PrincipalManager)
+	adminInference := adminapi.NewAdminInferenceService(cfg.SemanticManager, cfg.InferenceManager, cfg.PrincipalManager)
 	adminv1.RegisterAdminInferenceCatalogServiceServer(grpcServer, adminInference)
 	adminv1.RegisterAdminInferenceProfileServiceServer(grpcServer, adminInference)
 	adminv1.RegisterAdminInferenceCredentialServiceServer(grpcServer, adminInference)
