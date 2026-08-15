@@ -115,6 +115,13 @@ func (s *AdminInferenceService) DeleteInferenceProfile(ctx context.Context, req 
 	if err != nil {
 		return nil, err
 	}
+	refs, err := s.profileReferences(ctx, profile)
+	if err != nil {
+		return nil, err
+	}
+	if len(refs) > 0 {
+		return nil, referencedPrecondition("inference profile", refs)
+	}
 	mgr, err := s.inference.SpaceManager(ctx, profile.SpaceID)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open inference space manager")

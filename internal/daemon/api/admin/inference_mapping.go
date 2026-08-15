@@ -532,8 +532,12 @@ func inferenceProfileFromProto(in *adminv1.AdminInferenceProfileServiceCreateInf
 	if in == nil {
 		return domaininference.Profile{}, status.Error(codes.InvalidArgument, "inference profile is required")
 	}
-	if strings.TrimSpace(in.GetSpaceId()) == "" {
+	spaceID := strings.TrimSpace(in.GetSpaceId())
+	if spaceID == "" {
 		return domaininference.Profile{}, status.Error(codes.InvalidArgument, "space_id is required")
+	}
+	if _, err := uuid.Parse(spaceID); err != nil {
+		return domaininference.Profile{}, status.Error(codes.InvalidArgument, "space_id must be a UUID")
 	}
 	if strings.TrimSpace(in.GetKey()) == "" {
 		return domaininference.Profile{}, status.Error(codes.InvalidArgument, "key is required")
@@ -542,7 +546,7 @@ func inferenceProfileFromProto(in *adminv1.AdminInferenceProfileServiceCreateInf
 	if op == "" {
 		return domaininference.Profile{}, status.Error(codes.InvalidArgument, "operation is required")
 	}
-	return domaininference.Profile{SpaceID: in.GetSpaceId(), Key: in.GetKey(), DisplayName: firstNonEmptyAdmin(in.GetDisplayName(), in.GetKey()), Description: in.GetDescription(), Operation: op, Purpose: in.GetPurpose(), DomainIDs: append([]string(nil), in.GetDomainIds()...), CapabilityRefs: append([]string(nil), in.GetCapabilityRefs()...), EndpointRefs: append([]string(nil), in.GetEndpointRefs()...), ModelRefs: append([]string(nil), in.GetModelRefs()...), RequiredFeatures: append([]string(nil), in.GetRequiredFeatures()...), PrivacyRequirement: privacyRequirementFromProto(in.GetPrivacyRequirement()), DefaultParameters: parametersFromProto(in.GetDefaultParameters()), Enabled: in.GetEnabled(), CreatedBy: principalID, Metadata: structToMap(in.GetMetadata())}, nil
+	return domaininference.Profile{SpaceID: spaceID, Key: in.GetKey(), DisplayName: firstNonEmptyAdmin(in.GetDisplayName(), in.GetKey()), Description: in.GetDescription(), Operation: op, Purpose: in.GetPurpose(), DomainIDs: append([]string(nil), in.GetDomainIds()...), CapabilityRefs: append([]string(nil), in.GetCapabilityRefs()...), EndpointRefs: append([]string(nil), in.GetEndpointRefs()...), ModelRefs: append([]string(nil), in.GetModelRefs()...), RequiredFeatures: append([]string(nil), in.GetRequiredFeatures()...), PrivacyRequirement: privacyRequirementFromProto(in.GetPrivacyRequirement()), DefaultParameters: parametersFromProto(in.GetDefaultParameters()), Enabled: in.GetEnabled(), CreatedBy: principalID, Metadata: structToMap(in.GetMetadata())}, nil
 }
 
 func mapInferenceProfile(in domaininference.Profile) *adminv1.InferenceProfile {

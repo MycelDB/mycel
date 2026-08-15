@@ -44,7 +44,14 @@ provenance. INF9 is implemented as a CLI and operations documentation tranche:
 plural/legacy aliases, top-level grant/decision/usage commands, credential
 rotation and lifecycle verbs, on-behalf grant flags, and automation commands can
 use `--space-id` plus domain key/ID refs while preserving domain UUID
-compatibility.
+compatibility. INF10 is implemented as the durability/lifecycle tranche:
+standalone inference mutations are WAL-backed when the daemon WAL provider is
+available, WAL appliers are registered for global, space, and usage records,
+`ReloadAfterSnapshot` reopens global/usage stores and clears cached space
+managers, local inference writes honor the runtime local-write gate in clustered
+modes until a dedicated inference raft executor is wired, and admin lifecycle
+commands reject deletes when standalone decisions, usage, profiles, grants,
+policies, or semantic profile metadata still reference the target resource.
 
 No compatibility migration from the current semantic inference stores,
 automation provider configuration, automation run records, CLI shapes, or
@@ -706,25 +713,43 @@ subsystem architecture.
 ### Tasks
 
 1. Decide authoritative storage for each inference resource:
-   - global catalog;
-   - credentials/secrets;
-   - space profiles;
-   - grants;
-   - policies;
-   - decisions;
-   - usage ledger.
-2. Add WAL/raft records for authoritative resource mutations where required by
-   current daemon architecture.
-3. Add snapshot/reload support for inference subsystem state.
+   - global catalog: standalone inference global store under `meta/inference`;
+   - credentials/secrets: standalone inference credential/secret stores under
+     `meta/credentials` and `meta/secrets`;
+   - space profiles: standalone per-space inference store under
+     `graphs/<space-id>/inference`;
+   - grants: standalone per-space inference store;
+   - policies: standalone per-space inference store;
+   - decisions: standalone per-space inference audit store;
+   - usage ledger: standalone global neutral usage ledger under
+     `meta/accounting`.
+2. Add WAL records for authoritative standalone inference mutations:
+   - `inference.global.mutation.v1`;
+   - `inference.space.mutation.v1`;
+   - `inference.usage.mutation.v1`.
+   In clustered raft deployments these records are local-write-gated until the
+   dedicated inference raft executor is enabled; this prevents unsafe local
+   mutations while preserving standalone WAL durability.
+3. Add snapshot/reload support for inference subsystem state: the module
+   implements runtime snapshot reload by reopening global and usage stores and
+   clearing cached per-space managers.
 4. Register WAL appliers and quiesce gates.
 5. Add reference-safe lifecycle checks:
    - endpoint referenced by capabilities/credentials/usage;
    - model referenced by capabilities/profiles/usage;
    - capability referenced by profiles/semantic indexes/automations/decisions;
    - credential referenced by grants/decisions/usage;
-   - profile referenced by semantic indexes/automations/runs.
-6. Define usage ledger retention/export strategy without billing semantics.
-7. Ensure clustered deployment behavior is explicit and test-covered.
+   - profile referenced by semantic index inference metadata, standalone grants,
+     policies, decisions, or usage events. Automation executions are covered
+     through recorded inference usage/provenance; definition-only automation
+     profile reference scanning remains a future hardening item.
+6. Define usage ledger retention/export strategy without billing semantics:
+   usage events remain neutral operational telemetry; export is via the admin
+   usage list/summarize surfaces and retention is an operator data-retention
+   policy concern, not a pricing/billing subsystem.
+7. Ensure clustered deployment behavior is explicit and test-covered: INF10
+   fails closed through the runtime local-write gate for standalone inference
+   mutations in clustered modes until inference raft execution is wired.
 
 ### Validation
 

@@ -283,6 +283,7 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 	defer release()
 	deletedGrants := int32(0)
 	if req.GetDeleteGrants() {
+		deletedStandaloneGrants := map[string]struct{}{}
 		for _, space := range spaces {
 			grants, err := space.Manager.ListCredentialGrants(ctx)
 			if err != nil {
@@ -306,8 +307,35 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 						if err := inferenceSpace.DeleteCredentialGrant(ctx, grant.ID); err != nil {
 							return nil, mapAdminInferenceError(err, "delete inference credential grant")
 						}
+						deletedStandaloneGrants[grant.ID.String()] = struct{}{}
 					}
 					deletedGrants++
+				}
+			}
+			if s.inference != nil {
+				inferenceSpace, err := s.inference.SpaceManager(ctx, space.SpaceID.String())
+				if err != nil {
+					return nil, mapAdminInferenceError(err, "open inference space manager")
+				}
+				standaloneGrants, err := inferenceSpace.ListCredentialGrants(ctx)
+				if err != nil {
+					return nil, mapAdminInferenceError(err, "list inference credential grants")
+				}
+				for _, grant := range standaloneGrants {
+					if grant.CredentialID != id {
+						continue
+					}
+					if refs, err := s.credentialGrantVectorReferences(ctx, grant.ID); err != nil {
+						return nil, err
+					} else if len(refs) > 0 {
+						return nil, referencedPrecondition("credential grant", refs)
+					}
+					if err := inferenceSpace.DeleteCredentialGrant(ctx, grant.ID); err != nil {
+						return nil, mapAdminInferenceError(err, "delete inference credential grant")
+					}
+					if _, seen := deletedStandaloneGrants[grant.ID.String()]; !seen {
+						deletedGrants++
+					}
 				}
 			}
 		}

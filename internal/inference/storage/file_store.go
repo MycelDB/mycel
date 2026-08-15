@@ -618,6 +618,12 @@ func (m *usageLedger) AppendUsageEvent(ctx context.Context, item domaininference
 	if item.StartedAt.IsZero() {
 		item.StartedAt = time.Now().UTC()
 	}
+	for i, existing := range m.state.Events {
+		if existing.ID == item.ID {
+			m.state.Events[i] = item
+			return item, writeJSON(m.path(), m.state)
+		}
+	}
 	m.state.Events = append(m.state.Events, item)
 	return item, writeJSON(m.path(), m.state)
 }

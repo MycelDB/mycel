@@ -261,7 +261,7 @@ model_endpoint_capabilities:
 	if err := json.Unmarshal([]byte(out), &deletedIndex); err != nil || deletedIndex.GetCredentialGrantsDeleted() != 1 || !deletedIndex.GetVectorsPurged() {
 		t.Fatalf("unexpected semantic index delete response: %#v err=%v out=%s", &deletedIndex, err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "delete", "test-openai-key", "--delete-secret")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "delete", "test-openai-key", "--delete-grants", "--delete-secret")
 	if err != nil {
 		t.Fatalf("credential delete failed: %v\n%s", err, out)
 	}

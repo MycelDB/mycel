@@ -16,6 +16,7 @@ type Manager interface {
 	GlobalManager() inferencestorage.GlobalManager
 	SpaceManager(ctx context.Context, spaceID string) (inferencestorage.SpaceManager, error)
 	UsageLedger() inferencestorage.UsageLedger
+	RequireLocalWriteAllowed() error
 	Resolve(ctx context.Context, req ResolveRequest) (ResolveResult, error)
 	Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse, error)
 }

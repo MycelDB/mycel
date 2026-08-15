@@ -27,6 +27,11 @@ func NewAdminInferenceService(semantic daemonsemantic.Manager, inference daemoni
 }
 
 func (s *AdminInferenceService) beginSemanticMutation(ctx context.Context) (context.Context, func(), error) {
+	if s.inference != nil {
+		if err := s.inference.RequireLocalWriteAllowed(); err != nil {
+			return ctx, nil, mapAdminInferenceError(err, "preflight inference mutation")
+		}
+	}
 	ctx, release, err := s.semantic.BeginMutation(ctx)
 	if err != nil {
 		return ctx, nil, mapAdminInferenceError(err, "begin semantic mutation")
