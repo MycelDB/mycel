@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -32,7 +33,7 @@ func TestInferenceAdapterEmbedsThroughStandaloneInference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Embed() error = %v", err)
 	}
-	if len(resp.Vector) != 2 || resp.PolicyDecisionID == uuid.Nil || resp.ProviderRequestID != "fake" {
+	if len(resp.Vector) != 2 || resp.PolicyDecisionID == uuid.Nil || resp.ProviderRequestID != "fake" || resp.CredentialGrantID != ids.grantID {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 	embedCalls, _ := fake.Calls()
@@ -45,26 +46,12 @@ func TestInferenceAdapterEmbedsThroughStandaloneInference(t *testing.T) {
 	}
 }
 
-func TestInferenceAdapterFallsBackWhenProfileMissing(t *testing.T) {
+func TestInferenceAdapterRequiresProfile(t *testing.T) {
 	ctx := context.Background()
-	fallback := &fakeSemanticEmbedder{resp: EmbeddingResponse{Vector: []float64{1, 2, 3}, ProviderRequestID: "legacy"}}
-	resp, err := (InferenceAdapter{Manager: inferenceservice.NewModule(), Fallback: fallback}).Embed(ctx, EmbedInput{Input: "semantic text"})
-	if err != nil {
-		t.Fatalf("Embed() error = %v", err)
+	_, err := (InferenceAdapter{Manager: inferenceservice.NewModule()}).Embed(ctx, EmbedInput{Input: "semantic text"})
+	if err == nil || !strings.Contains(err.Error(), "does not declare an inference profile") {
+		t.Fatalf("expected missing profile error, got %v", err)
 	}
-	if resp.ProviderRequestID != "legacy" || fallback.calls != 1 {
-		t.Fatalf("expected fallback response, resp=%#v calls=%d", resp, fallback.calls)
-	}
-}
-
-type fakeSemanticEmbedder struct {
-	resp  EmbeddingResponse
-	calls int
-}
-
-func (f *fakeSemanticEmbedder) Embed(context.Context, EmbedInput) (EmbeddingResponse, error) {
-	f.calls++
-	return f.resp, nil
 }
 
 type semanticInferenceAdapterIDs struct {

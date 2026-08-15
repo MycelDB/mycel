@@ -60,7 +60,8 @@ Those packages are removed or internalized. The root `github.com/myceldb/mycel` 
 - `internal/blob/storage/`: blob persistence used by `myceld`.
 - `internal/graph/query/` and `internal/graph/metadataindex/`: graph query planning/evaluation and metadata indexing internals.
 - `internal/session/service/`: daemon client session and transaction lifecycle service.
-- `internal/semantic/model/`, `internal/semantic/storage/`, and `internal/semantic/accounting/`: semantic/inference model, persistence, and usage accounting internals.
+- `internal/semantic/model/` and `internal/semantic/storage/`: semantic index and vector metadata internals.
+- `internal/inference/model/`, `internal/inference/storage/`, and `internal/inference/service/`: standalone inference catalog, credential, policy, connector, and neutral usage telemetry internals.
 - `internal/space/model/`, `internal/space/access/`, and `internal/space/storage/`: space/access models and space/domain/ACL persistence.
 - `internal/identity/model/`, `internal/identity/auth/`, and `internal/identity/storage/`: identity/auth models and user/session persistence.
 

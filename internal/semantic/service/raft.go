@@ -25,7 +25,7 @@ func (s RaftStateMachine) RaftStateMachineName() string { return "semantic" }
 
 func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope, recordType wal.RecordType) bool {
 	switch recordType {
-	case recordTypeSemanticGlobal, recordTypeSemanticAccounting:
+	case recordTypeSemanticGlobal:
 		return scope == consensus.CommandScopeSystem
 	case recordTypeSemanticSpace, recordTypeSemanticMaintenance:
 		return scope == consensus.CommandScopeSpacePartition
@@ -48,18 +48,11 @@ func (m *Module) EnableExperimentalRaft(groups *consensus.MultiGroup, partitionC
 		if _, ok := m.global.(*walGlobalManager); !ok && m.globalBase != nil {
 			m.global = &walGlobalManager{inner: m.globalBase, module: m}
 		}
-		if _, ok := m.accounting.(*walAccountingManager); !ok && m.accountingBase != nil {
-			m.accounting = &walAccountingManager{inner: m.accountingBase, module: m}
-		}
 	}
 }
 
 func (m *Module) buildSemanticGlobalRaftCommand(rec semanticMutationRecord, payload []byte, commandID string) (consensus.RaftCommand, error) {
 	return buildSemanticSystemRaftCommand(recordTypeSemanticGlobal, payload, commandID)
-}
-
-func (m *Module) buildSemanticAccountingRaftCommand(rec accountingMutationRecord, payload []byte, commandID string) (consensus.RaftCommand, error) {
-	return buildSemanticSystemRaftCommand(recordTypeSemanticAccounting, payload, commandID)
 }
 
 func (m *Module) buildSemanticSpaceRaftCommand(rec semanticMutationRecord, payload []byte, commandID string) (consensus.RaftCommand, error) {
@@ -136,11 +129,6 @@ func (m *Module) applySemanticRaftCommand(ctx context.Context, cmd consensus.Raf
 			return fmt.Errorf("semantic global raft command must use system scope")
 		}
 		err = m.applySemanticGlobal(ctx, wal.Record{Type: cmd.RecordType, SchemaVersion: cmd.SchemaVersion, Encoding: cmd.Encoding, Payload: cmd.Payload})
-	case recordTypeSemanticAccounting:
-		if cmd.Scope != consensus.CommandScopeSystem {
-			return fmt.Errorf("semantic accounting raft command must use system scope")
-		}
-		err = m.applySemanticAccounting(ctx, wal.Record{Type: cmd.RecordType, SchemaVersion: cmd.SchemaVersion, Encoding: cmd.Encoding, Payload: cmd.Payload})
 	case recordTypeSemanticSpace:
 		if cmd.Scope != consensus.CommandScopeSpacePartition {
 			return fmt.Errorf("semantic space raft command must use space partition scope")

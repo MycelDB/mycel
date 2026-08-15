@@ -35,7 +35,6 @@ var phaseDRaftRecordCoverage = map[string]raftRecordCoverage{
 	"semantic.global.mutation.v1":          {Subsystem: "semantic", Scope: "system raft", Status: "covered", Tranche: "D4 verify"},
 	"semantic.space.mutation.v1":           {Subsystem: "semantic", Scope: "partition raft", Status: "covered", Tranche: "D4 verify"},
 	"semantic.maintenance.mutation.v1":     {Subsystem: "semantic maintenance", Scope: "partition raft", Status: "covered", Tranche: "D4 verify"},
-	"semantic.accounting.mutation.v1":      {Subsystem: "semantic accounting", Scope: "system raft", Status: "covered", Tranche: "D4 verify"},
 	"inference.global.mutation.v1":         {Subsystem: "inference", Scope: "system WAL; raft gated until inference raft executor", Status: "covered", Tranche: "INF10"},
 	"inference.space.mutation.v1":          {Subsystem: "inference", Scope: "space WAL; raft gated until inference raft executor", Status: "covered", Tranche: "INF10"},
 	"inference.usage.mutation.v1":          {Subsystem: "inference usage", Scope: "system WAL; raft gated until inference raft executor", Status: "covered", Tranche: "INF10"},

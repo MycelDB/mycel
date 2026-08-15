@@ -367,14 +367,6 @@ func validateStringMap(name string, values map[string]string) error {
 }
 
 func rejectSecretBearingDefinition(def Definition) error {
-	if def.LegacyModelRef != nil {
-		return fmt.Errorf("automation model provider/model fields are not supported; use inference profile refs")
-	}
-	for _, step := range workflowSteps(def.Workflow) {
-		if step.LegacyModelRef != nil {
-			return fmt.Errorf("workflow step %q model provider/model fields are not supported; use inference profile refs", step.ID)
-		}
-	}
 	raw, err := json.Marshal(def)
 	if err != nil {
 		return err
@@ -384,13 +376,6 @@ func rejectSecretBearingDefinition(def Definition) error {
 		return err
 	}
 	return rejectSecretBearingValue("automation definition", decoded, "")
-}
-
-func workflowSteps(workflow *Workflow) []WorkflowStep {
-	if workflow == nil {
-		return nil
-	}
-	return workflow.Steps
 }
 
 func rejectSecretBearingValue(path string, value any, keyHint string) error {

@@ -11,7 +11,6 @@ import (
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
-	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -26,10 +25,6 @@ func TestSemanticSystemRaftStateMachineSnapshotRestore(t *testing.T) {
 	vectorStore, err := source.globalBase.UpsertVectorStore(ctx, semanticVectorStore("snapshot-system"))
 	if err != nil {
 		t.Fatalf("UpsertVectorStore() error = %v", err)
-	}
-	usage := semanticUsageEvent()
-	if _, err := source.accountingBase.Append(ctx, usage); err != nil {
-		t.Fatalf("Append() error = %v", err)
 	}
 	snapshot, err := (RaftStateMachine{Module: source, System: true, PartitionCount: 4}).Snapshot()
 	if err != nil {
@@ -50,13 +45,6 @@ func TestSemanticSystemRaftStateMachineSnapshotRestore(t *testing.T) {
 	}
 	if !hasVectorStoreKey(stores, vectorStore.Key) {
 		t.Fatalf("vector stores=%#v want key %q", stores, vectorStore.Key)
-	}
-	events, err := restored.accountingBase.List(ctx, storeaccounting.Filter{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 1 || events[0].ID != usage.ID {
-		t.Fatalf("events=%#v want %s", events, usage.ID)
 	}
 	if restored.raftCommandApplied("semantic-global-stale-post-snapshot") {
 		t.Fatal("RestoreSnapshot should trim stale system semantic applied command IDs")

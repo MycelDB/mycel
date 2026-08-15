@@ -420,10 +420,36 @@ func decodeDefinition(rawJSON string) (automation.Definition, error) {
 	if strings.TrimSpace(rawJSON) == "" {
 		return def, fmt.Errorf("automation definition JSON is required")
 	}
+	if err := rejectLegacyAutomationModelJSON([]byte(rawJSON)); err != nil {
+		return def, err
+	}
 	if err := json.Unmarshal([]byte(rawJSON), &def); err != nil {
 		return def, fmt.Errorf("invalid automation definition JSON: %w", err)
 	}
 	return def, nil
+}
+
+func rejectLegacyAutomationModelJSON(raw []byte) error {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil
+	}
+	if _, ok := root["model"]; ok {
+		return fmt.Errorf("automation model provider/model fields are not supported; use inference profile refs")
+	}
+	var workflow struct {
+		Steps []map[string]json.RawMessage `json:"steps"`
+	}
+	if rawWorkflow, ok := root["workflow"]; ok {
+		if err := json.Unmarshal(rawWorkflow, &workflow); err == nil {
+			for _, step := range workflow.Steps {
+				if _, ok := step["model"]; ok {
+					return fmt.Errorf("workflow step model provider/model fields are not supported; use inference profile refs")
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func mapStoreError(err error) error {

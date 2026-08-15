@@ -120,12 +120,8 @@ func TestValidateDefinitionRejectsMissingInferenceRef(t *testing.T) {
 	assertValidationError(t, def, "inference is required")
 }
 
-func TestValidateDefinitionRejectsLegacyModelAndSecrets(t *testing.T) {
+func TestValidateDefinitionRejectsSecrets(t *testing.T) {
 	def := baseDefinition()
-	def.LegacyModelRef = &LegacyModelRef{Provider: "openai", Model: "gpt"}
-	assertValidationError(t, def, "provider/model fields are not supported")
-
-	def = baseDefinition()
 	def.Inference.Profile = "env://OPENAI_API_KEY"
 	assertValidationError(t, def, "secret references")
 

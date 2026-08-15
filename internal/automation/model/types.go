@@ -24,25 +24,24 @@ const (
 )
 
 type Definition struct {
-	ID                   string          `json:"id"`
-	Name                 string          `json:"name,omitempty"`
-	Version              int             `json:"version"`
-	DomainID             graph.DomainID  `json:"domain_id"`
-	Status               string          `json:"status"`
-	Trigger              Trigger         `json:"on"`
-	Condition            Condition       `json:"condition"`
-	Input                Input           `json:"input"`
-	Inference            InferenceRef    `json:"inference,omitempty"`
-	LegacyModelRef       *LegacyModelRef `json:"model,omitempty"`
-	Prompt               string          `json:"prompt"`
-	Output               Output          `json:"output,omitempty"`
-	Workflow             *Workflow       `json:"workflow,omitempty"`
-	Safety               Safety          `json:"safety,omitempty"`
-	OwnerPrincipalID     string          `json:"owner_principal_id,omitempty"`
-	CreatedByPrincipalID string          `json:"created_by_principal_id,omitempty"`
-	UpdatedByPrincipalID string          `json:"updated_by_principal_id,omitempty"`
-	CreatedAt            time.Time       `json:"created_at,omitempty"`
-	UpdatedAt            time.Time       `json:"updated_at,omitempty"`
+	ID                   string         `json:"id"`
+	Name                 string         `json:"name,omitempty"`
+	Version              int            `json:"version"`
+	DomainID             graph.DomainID `json:"domain_id"`
+	Status               string         `json:"status"`
+	Trigger              Trigger        `json:"on"`
+	Condition            Condition      `json:"condition"`
+	Input                Input          `json:"input"`
+	Inference            InferenceRef   `json:"inference,omitempty"`
+	Prompt               string         `json:"prompt"`
+	Output               Output         `json:"output,omitempty"`
+	Workflow             *Workflow      `json:"workflow,omitempty"`
+	Safety               Safety         `json:"safety,omitempty"`
+	OwnerPrincipalID     string         `json:"owner_principal_id,omitempty"`
+	CreatedByPrincipalID string         `json:"created_by_principal_id,omitempty"`
+	UpdatedByPrincipalID string         `json:"updated_by_principal_id,omitempty"`
+	CreatedAt            time.Time      `json:"created_at,omitempty"`
+	UpdatedAt            time.Time      `json:"updated_at,omitempty"`
 }
 
 type Workflow struct {
@@ -50,19 +49,18 @@ type Workflow struct {
 }
 
 type WorkflowStep struct {
-	ID             string            `json:"id"`
-	Kind           string            `json:"kind"`
-	DependsOn      []string          `json:"dependsOn,omitempty"`
-	Condition      Condition         `json:"condition,omitempty"`
-	Input          Input             `json:"input,omitempty"`
-	Inference      InferenceRef      `json:"inference,omitempty"`
-	LegacyModelRef *LegacyModelRef   `json:"model,omitempty"`
-	Prompt         string            `json:"prompt,omitempty"`
-	Output         Output            `json:"output,omitempty"`
-	Approval       string            `json:"approval,omitempty"`
-	Tool           string            `json:"tool,omitempty"`
-	ToolInput      map[string]string `json:"toolInput,omitempty"`
-	MaxAttempts    int               `json:"maxAttempts,omitempty"`
+	ID          string            `json:"id"`
+	Kind        string            `json:"kind"`
+	DependsOn   []string          `json:"dependsOn,omitempty"`
+	Condition   Condition         `json:"condition,omitempty"`
+	Input       Input             `json:"input,omitempty"`
+	Inference   InferenceRef      `json:"inference,omitempty"`
+	Prompt      string            `json:"prompt,omitempty"`
+	Output      Output            `json:"output,omitempty"`
+	Approval    string            `json:"approval,omitempty"`
+	Tool        string            `json:"tool,omitempty"`
+	ToolInput   map[string]string `json:"toolInput,omitempty"`
+	MaxAttempts int               `json:"maxAttempts,omitempty"`
 }
 
 const (
@@ -116,13 +114,6 @@ type InferenceParameters struct {
 	MaxOutputTokens int            `json:"maxOutputTokens,omitempty"`
 	ResponseFormat  string         `json:"responseFormat,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
-}
-
-type LegacyModelRef struct {
-	Provider        string   `json:"provider,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	Temperature     *float64 `json:"temperature,omitempty"`
-	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
 }
 
 type Output struct {
@@ -222,16 +213,16 @@ type Proposal struct {
 }
 
 type Policy struct {
-	DomainID         graph.DomainID `json:"domain_id"`
-	MaxWorkflowSteps int            `json:"max_workflow_steps,omitempty"`
-	MaxToolCalls     int            `json:"max_tool_calls,omitempty"`
-	MaxProviderCalls int            `json:"max_provider_calls,omitempty"`
-	RequireApproval  bool           `json:"require_approval,omitempty"`
-	MaxInputTokens   int64          `json:"max_input_tokens,omitempty"`
-	MaxOutputTokens  int64          `json:"max_output_tokens,omitempty"`
-	MaxElapsedMillis int64          `json:"max_elapsed_millis,omitempty"`
-	AllowCrossDomain bool           `json:"allow_cross_domain,omitempty"`
-	AllowedTools     []string       `json:"allowed_tools,omitempty"`
+	DomainID          graph.DomainID `json:"domain_id"`
+	MaxWorkflowSteps  int            `json:"max_workflow_steps,omitempty"`
+	MaxToolCalls      int            `json:"max_tool_calls,omitempty"`
+	MaxInferenceCalls int            `json:"max_inference_calls,omitempty"`
+	RequireApproval   bool           `json:"require_approval,omitempty"`
+	MaxInputTokens    int64          `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens   int64          `json:"max_output_tokens,omitempty"`
+	MaxElapsedMillis  int64          `json:"max_elapsed_millis,omitempty"`
+	AllowCrossDomain  bool           `json:"allow_cross_domain,omitempty"`
+	AllowedTools      []string       `json:"allowed_tools,omitempty"`
 }
 
 type WorkflowStepRun struct {

@@ -11,7 +11,6 @@ import (
 	"github.com/myceldb/mycel/internal/embedding"
 	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 	"github.com/myceldb/mycel/internal/graph/model"
-	identity "github.com/myceldb/mycel/internal/identity/model"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
@@ -50,12 +49,8 @@ func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	grant, credential, err := r.resolveBackgroundGrant(ctx, *index)
-	if err != nil {
-		return Result{}, err
-	}
-	if err := r.ensureAllowedPolicy(ctx, *index, endpoint); err != nil {
-		return Result{}, err
+	if profileRef, profileID := semanticInferenceProfileRef(*index); strings.TrimSpace(profileRef) == "" && profileID == uuid.Nil {
+		return Result{}, fmt.Errorf("semantic index %s does not declare an inference profile", index.ID)
 	}
 	nodes, err := r.GraphReader.ListNodes(ctx, index.DomainID)
 	if err != nil {
@@ -77,7 +72,7 @@ func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 	}
 	result := Result{SemanticIndexID: index.ID, SelectedCount: len(selected)}
 	for _, root := range selected {
-		rec, skipped, failure := r.processRoot(ctx, *index, endpoint, model, cap, credential, grant, root, nodes, edges, in.Force)
+		rec, skipped, failure := r.processRoot(ctx, *index, endpoint, model, cap, root, nodes, edges, in.Force)
 		if failure != nil {
 			result.FailedCount++
 			result.Failures = append(result.Failures, *failure)
@@ -97,7 +92,7 @@ func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 	return result, nil
 }
 
-func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIndex, endpoint domainsemantic.ModelEndpoint, model domainsemantic.InferenceModel, cap domainsemantic.ModelEndpointCapability, credential domainsemantic.InferenceCredential, grant domainsemantic.CredentialGrant, root graph.Node, nodes []graph.Node, edges []graph.Edge, force bool) (domainsemantic.AdvancedEmbeddingRecord, *Skipped, *Failure) {
+func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIndex, endpoint domainsemantic.ModelEndpoint, model domainsemantic.InferenceModel, cap domainsemantic.ModelEndpointCapability, root graph.Node, nodes []graph.Node, edges []graph.Edge, force bool) (domainsemantic.AdvancedEmbeddingRecord, *Skipped, *Failure) {
 	mode := domainembedding.SourceMode(index.SourcePolicy.Extraction)
 	if mode == "" {
 		mode = domainembedding.SourceModeSubtree
@@ -121,28 +116,16 @@ func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIn
 			return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "current source hash already embedded"}, nil
 		}
 	}
-	attribution := backfillCredentialOwnerAttribution(credential)
 	profileRef, profileID := semanticInferenceProfileRef(index)
-	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{ModelEndpointID: endpoint.ID, ModelID: model.ID, ModelEndpointCapabilityID: cap.ID, CredentialID: credential.ID, CredentialGrantID: grant.ID, SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, TargetNodeID: root.ID, OnBehalfOfPrincipalID: attribution, EffectivePrincipalID: attribution, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: source.Text, Reason: "semantic_backfill"})
+	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{ModelEndpointID: endpoint.ID, ModelID: model.ID, ModelEndpointCapabilityID: cap.ID, SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, TargetNodeID: root.ID, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: source.Text, Reason: "semantic_backfill"})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
-	rec, err := r.VectorBackend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, NodeID: root.ID, SourceHash: source.Hash, SourceMode: string(mode), ModelEndpointID: endpoint.ID, ModelID: model.ID, ModelEndpointCapabilityID: cap.ID, CredentialID: credential.ID, CredentialGrantID: grant.ID, PolicyDecisionID: resp.PolicyDecisionID, VectorStoreID: index.VectorStoreID, VectorSpaceKey: model.VectorSpaceKey, Dimensions: len(resp.Vector), Vector: resp.Vector, CreatedAt: time.Now().UTC()})
+	rec, err := r.VectorBackend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, NodeID: root.ID, SourceHash: source.Hash, SourceMode: string(mode), ModelEndpointID: endpoint.ID, ModelID: model.ID, ModelEndpointCapabilityID: cap.ID, CredentialID: resp.CredentialID, CredentialGrantID: resp.CredentialGrantID, PolicyDecisionID: resp.PolicyDecisionID, VectorStoreID: index.VectorStoreID, VectorSpaceKey: model.VectorSpaceKey, Dimensions: len(resp.Vector), Vector: resp.Vector, CreatedAt: time.Now().UTC()})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
 	return rec, nil, nil
-}
-
-func backfillCredentialOwnerAttribution(credential domainsemantic.InferenceCredential) identity.PrincipalID {
-	if credential.OwnerType != domainsemantic.CredentialOwnerUser {
-		return ""
-	}
-	id, err := uuid.Parse(strings.TrimSpace(credential.OwnerID))
-	if err != nil || id == uuid.Nil {
-		return ""
-	}
-	return identity.PrincipalID(id.String())
 }
 
 func (r Runner) listVectorRecords(ctx context.Context, index domainsemantic.SemanticIndex, model domainsemantic.InferenceModel) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
@@ -199,125 +182,6 @@ func (r Runner) resolveEndpointModelCapability(ctx context.Context, index domain
 		}
 	}
 	return domainsemantic.ModelEndpoint{}, domainsemantic.InferenceModel{}, domainsemantic.ModelEndpointCapability{}, fmt.Errorf("enabled capability not found for endpoint=%s model=%s operation=embeddings", endpoint.ID, model.ID)
-}
-
-func (r Runner) resolveBackgroundGrant(ctx context.Context, index domainsemantic.SemanticIndex) (domainsemantic.CredentialGrant, domainsemantic.InferenceCredential, error) {
-	grants, err := r.SpaceManager.ListCredentialGrants(ctx)
-	if err != nil {
-		return domainsemantic.CredentialGrant{}, domainsemantic.InferenceCredential{}, err
-	}
-	credentials, err := r.GlobalManager.ListCredentials(ctx)
-	if err != nil {
-		return domainsemantic.CredentialGrant{}, domainsemantic.InferenceCredential{}, err
-	}
-	credentialsByID := map[domainsemantic.InferenceCredentialID]domainsemantic.InferenceCredential{}
-	for _, credential := range credentials {
-		credentialsByID[credential.ID] = credential
-	}
-	type candidate struct {
-		grant       domainsemantic.CredentialGrant
-		specificity int
-	}
-	candidates := []candidate{}
-	now := time.Now().UTC()
-	for _, grant := range grants {
-		if !grant.AllowBackgroundUse || !operationMatches(grant.Operations, domainsemantic.OperationEmbeddings) || (grant.ExpiresAt != nil && grant.ExpiresAt.Before(now)) {
-			continue
-		}
-		if grant.ModelEndpointID != nil && *grant.ModelEndpointID != index.ModelEndpointID {
-			continue
-		}
-		if grant.ModelID != nil && *grant.ModelID != index.ModelID {
-			continue
-		}
-		cred, ok := credentialsByID[grant.CredentialID]
-		if !ok || cred.Status != domainsemantic.CredentialStatusActive || cred.ModelEndpointID != index.ModelEndpointID {
-			continue
-		}
-		specificity, ok := grantSpecificity(grant.Scope, index)
-		if !ok {
-			continue
-		}
-		candidates = append(candidates, candidate{grant: grant, specificity: specificity})
-	}
-	if len(candidates) == 0 {
-		return domainsemantic.CredentialGrant{}, domainsemantic.InferenceCredential{}, fmt.Errorf("no background credential grant for semantic index %s", index.ID)
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].specificity != candidates[j].specificity {
-			return candidates[i].specificity > candidates[j].specificity
-		}
-		if candidates[i].grant.Priority != candidates[j].grant.Priority {
-			return candidates[i].grant.Priority > candidates[j].grant.Priority
-		}
-		if candidates[i].grant.IsDefault != candidates[j].grant.IsDefault {
-			return candidates[i].grant.IsDefault
-		}
-		return candidates[i].grant.ID.String() < candidates[j].grant.ID.String()
-	})
-	selected := candidates[0].grant
-	return selected, credentialsByID[selected.CredentialID], nil
-}
-
-func (r Runner) ensureAllowedPolicy(ctx context.Context, index domainsemantic.SemanticIndex, endpoint domainsemantic.ModelEndpoint) error {
-	policies, err := r.SpaceManager.ListInferencePolicies(ctx)
-	if err != nil {
-		return err
-	}
-	now := time.Now().UTC()
-	matchedAllow := false
-	allowedPrivacy := map[domainsemantic.PrivacyClass]bool{}
-	restrictPrivacySeen := false
-	requireLocal := false
-	disallowThirdParty := false
-	for _, policy := range policies {
-		if policy.ExpiresAt != nil && policy.ExpiresAt.Before(now) {
-			continue
-		}
-		if !operationMatches(policy.Operations, domainsemantic.OperationEmbeddings) {
-			continue
-		}
-		if ok, _ := policyApplies(policy.Scope, index); !ok {
-			continue
-		}
-		if policy.NoInference || policy.Effect == domainsemantic.PolicyEffectDeny {
-			return fmt.Errorf("inference policy denies embeddings for semantic index %s", index.ID)
-		}
-		if policy.Effect == domainsemantic.PolicyEffectAllow || policy.Effect == domainsemantic.PolicyEffectRestrict {
-			matchedAllow = true
-		}
-		if len(policy.AllowedPrivacyClasses) > 0 {
-			if !restrictPrivacySeen {
-				for _, cls := range policy.AllowedPrivacyClasses {
-					allowedPrivacy[cls] = true
-				}
-				restrictPrivacySeen = true
-			} else {
-				next := map[domainsemantic.PrivacyClass]bool{}
-				for _, cls := range policy.AllowedPrivacyClasses {
-					if allowedPrivacy[cls] {
-						next[cls] = true
-					}
-				}
-				allowedPrivacy = next
-			}
-		}
-		requireLocal = requireLocal || policy.RequireLocalEndpoint
-		disallowThirdParty = disallowThirdParty || policy.DisallowThirdParty
-	}
-	if !matchedAllow {
-		return fmt.Errorf("no applicable inference policy allows embeddings for semantic index %s", index.ID)
-	}
-	if requireLocal && endpoint.NetworkClass != domainsemantic.NetworkClassLocal {
-		return fmt.Errorf("inference policy requires local endpoint")
-	}
-	if disallowThirdParty && endpoint.PrivacyClass == domainsemantic.PrivacyClassThirdParty {
-		return fmt.Errorf("inference policy disallows third-party endpoint")
-	}
-	if restrictPrivacySeen && !allowedPrivacy[endpoint.PrivacyClass] {
-		return fmt.Errorf("endpoint privacy class %s is not allowed by inference policy", endpoint.PrivacyClass)
-	}
-	return nil
 }
 
 func latestCurrentBindingRecord(records []domainsemantic.AdvancedEmbeddingRecord, nodeID graph.NodeID, sourceMode string, index domainsemantic.SemanticIndex, model domainsemantic.InferenceModel, cap domainsemantic.ModelEndpointCapability) *domainsemantic.AdvancedEmbeddingRecord {
@@ -385,49 +249,6 @@ func removeNested(nodes []graph.Node, edges []graph.Edge) []graph.Node {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
 	return out
-}
-
-func grantSpecificity(scope domainsemantic.ProcessingScope, index domainsemantic.SemanticIndex) (int, bool) {
-	return scopeSpecificity(scope, index)
-}
-
-func policyApplies(scope domainsemantic.ProcessingScope, index domainsemantic.SemanticIndex) (bool, int) {
-	specificity, ok := scopeSpecificity(scope, index)
-	return ok, specificity
-}
-
-func scopeSpecificity(scope domainsemantic.ProcessingScope, index domainsemantic.SemanticIndex) (int, bool) {
-	if scope.SpaceID != uuid.Nil && scope.SpaceID != index.SpaceID {
-		return 0, false
-	}
-	if scope.DomainID != uuid.Nil && scope.DomainID != index.DomainID {
-		return 0, false
-	}
-	if scope.SemanticIndexID != uuid.Nil && scope.SemanticIndexID != index.ID {
-		return 0, false
-	}
-	if scope.NodeID != uuid.Nil {
-		return 4, false
-	}
-	if scope.SemanticIndexID != uuid.Nil {
-		return 3, true
-	}
-	if scope.DomainID != uuid.Nil {
-		return 2, true
-	}
-	return 1, true
-}
-
-func operationMatches(ops []domainsemantic.Operation, op domainsemantic.Operation) bool {
-	if len(ops) == 0 {
-		return true
-	}
-	for _, candidate := range ops {
-		if candidate == op {
-			return true
-		}
-	}
-	return false
 }
 
 func zeroVector(dim int) []float64 {

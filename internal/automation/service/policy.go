@@ -26,7 +26,7 @@ func (m *AutomationManager) PutPolicy(ctx context.Context, policy automation.Pol
 func (m *AutomationManager) Policy(ctx context.Context, domainID graph.DomainID) (automation.Policy, error) {
 	policy, err := m.store.GetPolicy(ctx, domainID)
 	if errors.Is(err, storage.ErrNotFound) {
-		return automation.Policy{DomainID: domainID, MaxWorkflowSteps: 50, MaxToolCalls: 10, MaxProviderCalls: 10}, nil
+		return automation.Policy{DomainID: domainID, MaxWorkflowSteps: 50, MaxToolCalls: 10, MaxInferenceCalls: 10}, nil
 	}
 	return policy, mapStoreError(err)
 }

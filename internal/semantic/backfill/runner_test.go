@@ -16,7 +16,6 @@ import (
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
-	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
@@ -39,15 +38,15 @@ func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	if len(env.connector.calls) != 1 || !strings.Contains(env.connector.calls[0], "child note") {
 		t.Fatalf("expected subtree source sent to connector, calls=%+v", env.connector.calls)
 	}
-	if len(env.connector.inputs) != 1 || env.connector.inputs[0].OnBehalfOfPrincipalID != env.userID || env.connector.inputs[0].EffectivePrincipalID != env.userID {
-		t.Fatalf("expected backfill attribution to credential owner %s, got %+v", env.userID, env.connector.inputs)
+	if len(env.connector.inputs) != 1 || env.connector.inputs[0].InferenceProfile != "semantic-profile" {
+		t.Fatalf("expected profile-backed connector input, got %+v", env.connector.inputs)
 	}
 	search, err := env.vector.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticIndexID: env.index.ID, Query: []float64{1, 0, 0}, Limit: 10, MinScore: 0.5})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
-	if len(search) != 1 || search[0].NodeID != root.ID || search[0].Record.CredentialGrantID != env.grant.ID {
-		t.Fatalf("expected stored semantic record with grant provenance, got %+v", search)
+	if len(search) != 1 || search[0].NodeID != root.ID {
+		t.Fatalf("expected stored semantic record, got %+v", search)
 	}
 	result, err = env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
 	if err != nil {
@@ -119,50 +118,6 @@ func TestRunnerTombstonesCurrentVectorWhenSourceBecomesEmpty(t *testing.T) {
 	}
 }
 
-func TestRunnerAccountingAttributesBackfillToCredentialOwner(t *testing.T) {
-	ctx := context.Background()
-	env := newBackfillTestEnv(t)
-	root, _ := env.addRootWithChild(t, "accounted root", "accounted child")
-	accountingMgr := storeaccounting.NewManager()
-	if err := accountingMgr.Init(ctx, t.TempDir()); err != nil {
-		t.Fatalf("accounting init failed: %v", err)
-	}
-	provider := &fakeProviderConnector{}
-	actorID := identity.PrincipalID(uuid.NewString())
-	runner := env.runner
-	runner.Connector = connectors.Service{GlobalManager: env.globalMgr, Accounting: accountingMgr, ActorPrincipalID: actorID, Connectors: map[domainsemantic.ConnectorType]connectors.Connector{domainsemantic.ConnectorOpenAICompatible: provider}}
-	result, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
-	if err != nil {
-		t.Fatalf("backfill failed: %v", err)
-	}
-	if result.GeneratedCount != 1 || len(provider.requests) != 1 {
-		t.Fatalf("expected one accounted embedding call, result=%+v provider_requests=%+v", result, provider.requests)
-	}
-	events, err := accountingMgr.List(ctx, storeaccounting.Filter{})
-	if err != nil {
-		t.Fatalf("list accounting events failed: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected one accounting event, got %+v", events)
-	}
-	event := events[0]
-	if event.Status != "success" || event.Operation != string(domainsemantic.OperationEmbeddings) || event.Reason != "semantic_backfill" {
-		t.Fatalf("unexpected accounting event status/operation/reason: %+v", event)
-	}
-	if event.ActorPrincipalID != actorID || event.EffectivePrincipalID != env.userID || event.OnBehalfOfPrincipalID != env.userID {
-		t.Fatalf("expected backfill accounting actor=%s effective/on_behalf=%s, got %+v", actorID, env.userID, event)
-	}
-	if event.SpaceID != env.spaceID || event.DomainID != env.domainID || event.SemanticIndexID != env.index.ID || event.TargetNodeID != root.ID {
-		t.Fatalf("unexpected accounting target attribution: %+v", event)
-	}
-	if event.ModelEndpointID != env.index.ModelEndpointID || event.ModelID != env.index.ModelID || event.CredentialID != env.grant.CredentialID || event.CredentialGrantID != env.grant.ID {
-		t.Fatalf("unexpected accounting semantic provenance: %+v", event)
-	}
-	if event.InputTokens == 0 || event.TotalTokens == 0 || event.TokenCountSource != "provider_reported" || event.ProviderRequestID != "fake-provider-request" {
-		t.Fatalf("unexpected accounting usage metrics: %+v", event)
-	}
-}
-
 func TestRunnerBackfillsThroughStandaloneInferenceProfile(t *testing.T) {
 	ctx := context.Background()
 	env := newBackfillTestEnv(t)
@@ -224,7 +179,7 @@ func seedStandaloneInferenceForBackfill(t *testing.T, ctx context.Context, infer
 	if _, err := inference.GlobalManager().UpsertSecret(ctx, domaininference.Secret{ID: domaininference.SecretID(uuid.New()), OwnerType: domaininference.CredentialOwnerPrincipal, OwnerID: env.userID.String(), Kind: "none"}); err != nil {
 		t.Fatalf("upsert inference secret: %v", err)
 	}
-	if _, err := inference.GlobalManager().UpsertCredential(ctx, domaininference.Credential{ID: domaininference.CredentialID(env.grant.CredentialID), Key: "cred", EndpointID: domaininference.EndpointID(env.index.ModelEndpointID), OwnerType: domaininference.CredentialOwnerPrincipal, OwnerID: env.userID.String(), AuthType: domaininference.CredentialAuthNone, Status: domaininference.CredentialStatusActive}); err != nil {
+	if _, err := inference.GlobalManager().UpsertCredential(ctx, domaininference.Credential{ID: domaininference.CredentialID(env.grant.CredentialID), Key: "cred", EndpointID: domaininference.EndpointID(env.index.ModelEndpointID), OwnerType: domaininference.CredentialOwnerSystem, OwnerID: "semantic", AuthType: domaininference.CredentialAuthNone, SecretID: domaininference.SecretID(uuid.New()), Status: domaininference.CredentialStatusActive}); err != nil {
 		t.Fatalf("upsert inference credential: %v", err)
 	}
 	spaceMgr, err := inference.SpaceManager(ctx, env.spaceID.String())
@@ -234,33 +189,11 @@ func seedStandaloneInferenceForBackfill(t *testing.T, ctx context.Context, infer
 	if _, err := spaceMgr.UpsertProfile(ctx, domaininference.Profile{ID: domaininference.ProfileID(profileID), SpaceID: env.spaceID.String(), Key: "semantic-profile", Operation: domaininference.OperationEmbeddings, DomainIDs: []string{env.domainID.String()}, EndpointRefs: []string{env.index.ModelEndpointID.String()}, ModelRefs: []string{env.index.ModelID.String()}, CapabilityRefs: []string{env.index.ModelEndpointCapabilityID.String()}, Enabled: true}); err != nil {
 		t.Fatalf("upsert inference profile: %v", err)
 	}
-	if _, err := spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(env.grant.ID), SpaceID: env.spaceID.String(), CredentialID: domaininference.CredentialID(env.grant.CredentialID), Scope: domaininference.Scope{SpaceID: env.spaceID.String(), DomainID: env.domainID.String(), SemanticIndexID: env.index.ID.String()}, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, ProfileRefs: []string{profileID.String()}, EndpointRefs: []string{env.index.ModelEndpointID.String()}, ModelRefs: []string{env.index.ModelID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeSemantic}, AllowOnBehalfOfPrincipals: []string{env.userID.String()}, State: domaininference.GrantStateActive}); err != nil {
+	if _, err := spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(env.grant.ID), SpaceID: env.spaceID.String(), CredentialID: domaininference.CredentialID(env.grant.CredentialID), Scope: domaininference.Scope{SpaceID: env.spaceID.String(), DomainID: env.domainID.String(), SemanticIndexID: env.index.ID.String()}, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, ProfileRefs: []string{profileID.String()}, EndpointRefs: []string{env.index.ModelEndpointID.String()}, ModelRefs: []string{env.index.ModelID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeSemantic}, State: domaininference.GrantStateActive}); err != nil {
 		t.Fatalf("upsert inference grant: %v", err)
 	}
 	if _, err := spaceMgr.UpsertPolicy(ctx, domaininference.Policy{SpaceID: env.spaceID.String(), Scope: domaininference.Scope{SpaceID: env.spaceID.String(), DomainID: env.domainID.String(), SemanticIndexID: env.index.ID.String()}, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, ProfileRefs: []string{profileID.String()}, Action: domaininference.PolicyActionAllow, AllowedPrivacyClasses: []domaininference.PrivacyClass{domaininference.PrivacyClassThirdParty}, State: domaininference.PolicyStateActive}); err != nil {
 		t.Fatalf("upsert inference policy: %v", err)
-	}
-}
-
-func TestRunnerRequiresPolicyAndBackgroundGrant(t *testing.T) {
-	ctx := context.Background()
-	env := newBackfillTestEnv(t)
-	env.addRootWithChild(t, "root", "child")
-	if _, err := env.spaceMgr.UpsertInferencePolicy(ctx, domainsemantic.InferencePolicy{ID: uuid.New(), Scope: domainsemantic.ProcessingScope{SpaceID: env.spaceID, DomainID: env.domainID}, Effect: domainsemantic.PolicyEffectDeny, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, CreatedAt: time.Now().UTC()}); err != nil {
-		t.Fatalf("deny policy upsert failed: %v", err)
-	}
-	if _, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID}); err == nil || !strings.Contains(err.Error(), "denies") {
-		t.Fatalf("expected deny policy error, got %v", err)
-	}
-
-	env = newBackfillTestEnv(t)
-	env.addRootWithChild(t, "root", "child")
-	env.grant.AllowBackgroundUse = false
-	if _, err := env.spaceMgr.UpsertCredentialGrant(ctx, env.grant); err != nil {
-		t.Fatalf("grant update failed: %v", err)
-	}
-	if _, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID}); err == nil || !strings.Contains(err.Error(), "no background credential grant") {
-		t.Fatalf("expected missing background grant error, got %v", err)
 	}
 }
 
@@ -328,7 +261,7 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	if _, err := globalMgr.UpsertCredential(ctx, domainsemantic.InferenceCredential{ID: credentialID, Key: "cred", Name: "Credential", ModelEndpointID: endpointID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: userID.String(), AuthType: domainsemantic.AuthModeNone, Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("credential upsert failed: %v", err)
 	}
-	index, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "notes", Name: "Notes", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{RecordTypes: []string{"note"}, Extraction: domainsemantic.SourceExtractionSubtree}, ModelEndpointID: endpointID, ModelID: modelID, ModelEndpointCapabilityID: capID, VectorStoreID: storeID, Enabled: true})
+	index, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "notes", Name: "Notes", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{RecordTypes: []string{"note"}, Extraction: domainsemantic.SourceExtractionSubtree}, ModelEndpointID: endpointID, ModelID: modelID, ModelEndpointCapabilityID: capID, VectorStoreID: storeID, Enabled: true, Metadata: map[string]any{"inference_profile": "semantic-profile"}})
 	if err != nil {
 		t.Fatalf("index upsert failed: %v", err)
 	}
@@ -410,13 +343,4 @@ func (f *fakeConnector) Embed(ctx context.Context, in connectors.EmbedInput) (co
 	f.calls = append(f.calls, in.Input)
 	f.inputs = append(f.inputs, in)
 	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "estimated"}, nil
-}
-
-type fakeProviderConnector struct {
-	requests []connectors.EmbeddingRequest
-}
-
-func (f *fakeProviderConnector) Embed(ctx context.Context, in connectors.EmbeddingRequest) (connectors.EmbeddingResponse, error) {
-	f.requests = append(f.requests, in)
-	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "provider_reported", ProviderRequestID: "fake-provider-request"}, nil
 }

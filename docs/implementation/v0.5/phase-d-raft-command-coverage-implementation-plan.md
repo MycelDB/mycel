@@ -39,7 +39,7 @@ This table is the starting audit map. D0 must confirm it against code before imp
 | Blob payloads | payload files/content | Payload availability is separate from metadata | Define V1 policy: shared/object-backed, replicated, or fail closed when payload missing. |
 | Schema | `schema.put.v1`, `schema.delete.v1` | Initial partition raft coverage added in D2 | Continue graph-validation consistency validation. |
 | Semantic global config | `semantic.global.mutation.v1` | Initial system raft coverage added in D4 | Continue multi-node/system replay validation. |
-| Semantic space config/checkpoints/accounting | `semantic.space.mutation.v1`, `semantic.maintenance.mutation.v1`, `semantic.accounting.mutation.v1` | Space/maintenance use partition raft; accounting uses system raft | Continue authoritative-vs-derived validation and operational docs. |
+| Semantic space config/checkpoints | `semantic.space.mutation.v1`, `semantic.maintenance.mutation.v1` | Space/maintenance use partition raft; standalone inference owns usage telemetry | Continue authoritative-vs-derived validation and operational docs. |
 | Embedding provider keys | `embedding.provider_key.put.v1`, `embedding.provider_key.delete.v1` | Legacy WAL-backed store superseded by semantic global credentials | Keep out of raft-mode daemon runtime; remove or migrate legacy API surface later. |
 | Backup | `daemon.backup.policy.update.v1`, `daemon.backup.delete.v1` | Initial system raft coverage added in D5 | Continue multi-node execution/replay validation. |
 | Change streams | checkpoints/events | Existing subsystem has durable/local behavior | Events should derive from committed raft changes; checkpoints need explicit model. |
@@ -155,7 +155,7 @@ V1 payload policy is **payload replicated/catch-up verified**: the proposer must
 
 ### Status
 
-Initial D4 implementation is in place: semantic global configuration/credentials/policies route through system raft in raft mode, semantic accounting is classified as authoritative append-only audit and routes through system raft, semantic space and maintenance records remain partition-raft-owned, and legacy embedding provider-key WAL records are classified as unsupported/superseded by semantic global credentials in the raft-mode daemon runtime.
+Initial D4 implementation is in place: semantic global configuration routes through system raft in raft mode, semantic space and maintenance records remain partition-raft-owned, standalone inference owns usage telemetry, and legacy embedding provider-key WAL records are classified as unsupported/superseded by inference subsystem credentials in the raft-mode daemon runtime.
 
 Derived vector/index data remains local/rebuildable from graph plus semantic configuration and is not treated as authoritative raft state in this tranche.
 
@@ -172,7 +172,6 @@ Derived vector/index data remains local/rebuildable from graph plus semantic con
   - `semantic.global.mutation.v1`;
   - `semantic.space.mutation.v1`;
   - `semantic.maintenance.mutation.v1`;
-  - `semantic.accounting.mutation.v1`, if authoritative;
   - `embedding.provider_key.put.v1` / `delete.v1`, if still separate from semantic global config.
 - For derived vector data, document freshness and rebuild behavior; ensure search responses do not imply stronger guarantees than provided.
 - Add tests for rafted semantic config replication and derived-local rebuildability assumptions.

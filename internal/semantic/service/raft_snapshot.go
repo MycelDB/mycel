@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/partitioning"
-	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -46,7 +45,6 @@ type semanticGlobalSnapshot struct {
 	VectorStores []domainsemantic.VectorStoreBackend      `json:"vector_stores,omitempty"`
 	Secrets      []domainsemantic.Secret                  `json:"secrets,omitempty"`
 	Credentials  []domainsemantic.InferenceCredential     `json:"credentials,omitempty"`
-	UsageEvents  []domainsemantic.InferenceUsageEvent     `json:"usage_events,omitempty"`
 }
 
 type semanticSpaceSnapshot struct {
@@ -160,7 +158,7 @@ func (m *Module) restoreSemanticRaft(ctx context.Context, data []byte, expectedS
 func (m *Module) snapshotSemanticGlobal(ctx context.Context) (semanticGlobalSnapshot, error) {
 	var out semanticGlobalSnapshot
 	var err error
-	if m.globalBase == nil || m.accountingBase == nil {
+	if m.globalBase == nil {
 		return out, fmt.Errorf("semantic global stores are not initialized")
 	}
 	if out.Packages, err = m.globalBase.ListPackages(ctx); err != nil {
@@ -182,9 +180,6 @@ func (m *Module) snapshotSemanticGlobal(ctx context.Context) (semanticGlobalSnap
 		return out, err
 	}
 	if out.Credentials, err = m.globalBase.ListCredentials(ctx); err != nil {
-		return out, err
-	}
-	if out.UsageEvents, err = m.accountingBase.List(ctx, storeaccounting.Filter{}); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -238,24 +233,12 @@ func (m *Module) restoreSemanticGlobal(ctx context.Context, snap semanticGlobalS
 			return err
 		}
 	}
-	acct := storeaccounting.NewManager()
-	if err := acct.Init(ctx, filepath.Join(m.dataDir, "meta", "accounting")); err != nil {
-		return err
-	}
-	for _, event := range snap.UsageEvents {
-		if _, err := acct.Append(ctx, event); err != nil {
-			return err
-		}
-	}
 	m.mu.Lock()
 	m.globalBase = global
-	m.accountingBase = acct
 	if m.wal != nil || m.raftGroups != nil {
 		m.global = &walGlobalManager{inner: global, module: m}
-		m.accounting = &walAccountingManager{inner: acct, module: m}
 	} else {
 		m.global = global
-		m.accounting = acct
 	}
 	m.mu.Unlock()
 	return nil
@@ -515,12 +498,12 @@ func resetSemanticGlobalFiles(dataDir string) error {
 			return err
 		}
 	}
-	return os.RemoveAll(filepath.Join(dataDir, "meta", "accounting"))
+	return nil
 }
 
 func semanticCommandIDBelongsToScope(commandID, scope string, spaces map[string]struct{}) bool {
 	if scope == "system" {
-		return strings.HasPrefix(commandID, "semantic-global-") || strings.HasPrefix(commandID, "semantic-accounting-")
+		return strings.HasPrefix(commandID, "semantic-global-")
 	}
 	for spaceID := range spaces {
 		if strings.Contains(commandID, spaceID) {
@@ -532,7 +515,7 @@ func semanticCommandIDBelongsToScope(commandID, scope string, spaces map[string]
 
 func semanticCommandIDBelongsToRestoredScope(commandID, scope string, partitionID, partitionCount uint32) bool {
 	if scope == "system" {
-		return strings.HasPrefix(commandID, "semantic-global-") || strings.HasPrefix(commandID, "semantic-accounting-")
+		return strings.HasPrefix(commandID, "semantic-global-")
 	}
 	for _, candidate := range semanticCommandUUIDPattern.FindAllString(commandID, -1) {
 		id, err := uuid.Parse(candidate)

@@ -774,16 +774,21 @@ paths use the standalone inference subsystem.
 
 ### Tasks
 
-1. Delete automation-specific provider runtime and environment config.
-2. Delete automation pricing/cost estimator code and cost policy fields.
-3. Delete semantic-specific duplicate credential grant/policy resolver code.
-4. Delete stale docs that describe application chat catalogs or provider API keys
-   as automation configuration.
-5. Delete obsolete API compatibility messages/commands introduced only for the
-   old model.
-6. Remove stale tests and replace them with profile/grant/policy tests.
-7. Run public surface checks to ensure no generated/internal boundaries changed
-   unexpectedly.
+1. [x] Delete automation-specific provider runtime and environment config.
+2. [x] Delete automation pricing/cost estimator code and cost policy fields.
+3. [x] Delete semantic-specific duplicate credential grant/policy resolver code
+   from backfill/search execution; semantic embedding now requires standalone
+   inference profile metadata.
+4. [x] Delete the legacy semantic connector service/OpenAI-compatible runtime;
+   semantic embedding now calls the standalone inference adapter only.
+5. [x] Delete stale docs that describe application chat catalogs or provider API
+   keys as automation configuration, except historical design notes that explain
+   why those paths were removed.
+6. [x] Delete obsolete API compatibility messages/commands introduced only for
+   the old model where they remained in internal automation definitions.
+7. [x] Remove stale tests and replace them with profile/grant/policy tests.
+8. [ ] Run public surface checks to ensure no generated/internal boundaries
+   changed unexpectedly.
 
 ### Validation
 

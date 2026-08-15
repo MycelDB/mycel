@@ -549,7 +549,7 @@ func DefaultClassifyFailure(err error, item domainsemantic.SemanticDirtyWorkItem
 	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline") || strings.Contains(lower, "temporar") || strings.Contains(lower, "unavailable") || strings.Contains(lower, "connection reset"):
 		category = "provider_error"
 		retryable = true
-	case strings.Contains(lower, "credential") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission") || strings.Contains(lower, "policy denies") || strings.Contains(lower, "no background credential grant"):
+	case strings.Contains(lower, "credential") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission") || strings.Contains(lower, "policy denies") || strings.Contains(lower, "inference profile") || strings.Contains(lower, "inference policy"):
 		category = "authorization_error"
 	case strings.Contains(lower, "not found") || strings.Contains(lower, "disabled") || strings.Contains(lower, "required") || strings.Contains(lower, "invalid"):
 		category = "configuration_error"

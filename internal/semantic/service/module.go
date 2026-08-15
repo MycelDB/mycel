@@ -27,7 +27,6 @@ import (
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
-	storeaccounting "github.com/myceldb/mycel/internal/semantic/accounting"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
@@ -53,8 +52,6 @@ type Module struct {
 	secretKeyB64         string
 	global               storesemantic.GlobalManager
 	globalBase           storesemantic.GlobalManager
-	accounting           storeaccounting.Manager
-	accountingBase       storeaccounting.Manager
 	spaces               map[domainspace.SpaceID]storesemantic.SpaceManager
 	maintenanceManagers  map[domainspace.SpaceID]storesemantic.MaintenanceManager
 	maintenanceConfig    MaintenanceConfig
@@ -116,10 +113,6 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if _, err := global.EnsureDefaultVectorStore(ctx); err != nil {
 		return runtime.Abort(ModuleName, "store", "failed to ensure default vector store", err)
 	}
-	acct := storeaccounting.NewManager()
-	if err := acct.Init(ctx, filepath.Join(host.DataDir(), "meta", "accounting")); err != nil {
-		return runtime.Abort(ModuleName, "store", "failed to open accounting store", err)
-	}
 	m.dataDir = host.DataDir()
 	m.secretKeyB64 = firstNonEmpty(m.secretKeyB64, hostStringConfigField(host, "UserStoreEncryptionKeyB64"))
 	if m.raftAppliedCommands == nil {
@@ -158,9 +151,6 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			if err := registry.Register(recordTypeSemanticSpace, wal.ApplierFunc(m.applySemanticSpace)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register semantic space WAL applier", err)
 			}
-			if err := registry.Register(recordTypeSemanticAccounting, wal.ApplierFunc(m.applySemanticAccounting)); err != nil {
-				return runtime.Abort(ModuleName, "wal", "register semantic accounting WAL applier", err)
-			}
 			if err := registry.Register(recordTypeSemanticMaintenance, wal.ApplierFunc(m.applySemanticMaintenance)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register semantic maintenance WAL applier", err)
 			}
@@ -168,12 +158,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	if m.wal != nil {
 		m.global = &walGlobalManager{inner: global, module: m}
-		m.accounting = &walAccountingManager{inner: acct, module: m}
 	} else {
 		m.global = global
-		m.accounting = acct
 	}
-	m.accountingBase = acct
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
 	m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
 	if m.maintenanceConfig == (MaintenanceConfig{}) {
@@ -879,14 +866,10 @@ func (m *Module) isSemanticDisabledDomain(ctx context.Context, domainID graph.Do
 }
 
 func (m *Module) semanticEmbeddingConnector(global storesemantic.GlobalManager, actor identity.PrincipalID) semanticEmbedder {
-	legacy := connectors.Service{GlobalManager: global, Accounting: m.accounting, SecretKeyB64: m.secretKeyB64, ActorPrincipalID: actor}
 	m.mu.Lock()
 	inference := m.inferenceManager
 	m.mu.Unlock()
-	if inference == nil {
-		return legacy
-	}
-	return connectors.InferenceAdapter{Manager: inference, Fallback: legacy}
+	return connectors.InferenceAdapter{Manager: inference}
 }
 
 type semanticEmbedder interface {

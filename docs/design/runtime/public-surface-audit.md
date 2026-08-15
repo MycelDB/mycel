@@ -30,7 +30,6 @@ github.com/myceldb/mycel
 | `internal/semantic/model` | 14 | 0 | Internal semantic/inference/vector/maintenance records. Internalized in Phase 3. |
 | `internal/space/model` | 24 | former importer only | Core space model. External use replaced with SDK `SpaceInfo` / proto IDs; internalized in Phase 3. |
 | `internal/graph/query` | 2 | 0 | In-memory session query builder, used only by internal session implementation. Internalized in Phase 2. |
-| `internal/semantic/accounting` | 3 | 0 | File-backed implementation. Internalized in Phase 2. |
 | `internal/space/storage/acl` | 1 | 0 | File-backed implementation. Internalized in Phase 2. |
 | `internal/space/storage/domains` | 1 | 0 | File-backed implementation. Internalized in Phase 2. |
 | `internal/semantic/storage` | 7 | 0 | File-backed semantic resources and maintenance queues. Internalized in Phase 2. |

@@ -275,7 +275,6 @@ func TestCompositeStateMachineRecordOwnershipIsUnique(t *testing.T) {
 		"identity.capability_grant.put.v1":      "identity.principal",
 		"identity.principal.session.put.v1":     "identity.principal",
 		"semantic.global.mutation.v1":           "semantic",
-		"semantic.accounting.mutation.v1":       "semantic",
 		"daemon.backup.policy.update.v1":        "backup",
 		"daemon.backup.delete.v1":               "backup",
 	}

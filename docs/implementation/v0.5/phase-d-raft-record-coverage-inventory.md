@@ -35,7 +35,6 @@ The guardrail test `internal/clustering/consensus/raft_record_coverage_test.go` 
 | `semantic.global.mutation.v1` | Semantic global config | System raft | Covered | D4 verify | Global semantic config/credential/policy writes now route through system raft in raft mode. |
 | `semantic.space.mutation.v1` | Semantic space config | Partition raft | Covered | D4 verify | Partition raft path exists; verify no gaps and read semantics. |
 | `semantic.maintenance.mutation.v1` | Semantic maintenance | Partition raft | Covered | D4 verify | Partition raft path exists; classify authoritative vs derived details. |
-| `semantic.accounting.mutation.v1` | Semantic accounting/audit | System raft | Covered | D4 verify | Usage accounting is treated as authoritative append-only audit and routes through system raft in raft mode. |
 | `embedding.provider_key.put.v1` | Legacy embedding provider keys | Legacy unsupported in raft daemon | Unsupported/fail-closed | D4 | Superseded by semantic global credentials/config; this legacy WAL store is not configured by the raft-mode daemon runtime. |
 | `embedding.provider_key.delete.v1` | Legacy embedding provider keys | Legacy unsupported in raft daemon | Unsupported/fail-closed | D4 | Superseded by semantic global credentials/config; this legacy WAL store is not configured by the raft-mode daemon runtime. |
 | `daemon.backup.policy.update.v1` | Backup policy | System raft | Covered | D5 verify | Backup policy/config routes through system raft in raft mode; scheduled execution is system-leader-only. |
