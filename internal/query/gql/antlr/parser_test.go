@@ -59,6 +59,16 @@ func TestParserParsesVariableLengthTraversal(t *testing.T) {
 	}
 }
 
+func TestParserParsesPathBinding(t *testing.T) {
+	tree, err := Parse("MATCH path = (a:Person)-[:FRIEND_OF*1..3]->(b:Person) RETURN path")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}
+
 func TestParserParsesTextAndSemanticPredicates(t *testing.T) {
 	queries := []string{
 		"MATCH (n:Note) WHERE TEXT_CONTAINS(n.payload.text, 'graph memory') RETURN n",
@@ -119,6 +129,35 @@ func TestParserParsesIncomingAndUndirectedRelationshipPatterns(t *testing.T) {
 
 func TestParserParsesOrderBy(t *testing.T) {
 	tree, err := Parse("MATCH (j:JournalEntry) RETURN j ORDER BY j.date DESC FETCH FIRST 10 ROWS ONLY")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Parse() tree = nil")
+	}
+}
+
+func TestParserParsesQueryExpansionSyntax(t *testing.T) {
+	queries := []string{
+		"MATCH (p:Person) RETURN p.name AS name, p.age AS age",
+		"MATCH (p:Person {name: $name}) SET p.age = $age RETURN p",
+		"MATCH (a:Person)-[r:FRIEND_OF]->(b:Person) DELETE r RETURN a, b",
+		"MERGE (p:Person {name: 'Alice'}) RETURN p",
+		"MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MERGE (a)-[r:KNOWS]->(b) RETURN a, r, b",
+	}
+	for _, query := range queries {
+		tree, err := Parse(query)
+		if err != nil {
+			t.Fatalf("Parse(%q) error = %v", query, err)
+		}
+		if tree == nil {
+			t.Fatalf("Parse(%q) tree = nil", query)
+		}
+	}
+}
+
+func TestParserParsesMatchSetReturn(t *testing.T) {
+	tree, err := Parse("MATCH (p:Person {name: 'Martin'}) SET p.age = 57, p.sex = 'Male' RETURN p")
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}

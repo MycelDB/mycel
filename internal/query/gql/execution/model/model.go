@@ -11,7 +11,11 @@ type Result struct {
 // Counters summarizes mutations performed by a query.
 type Counters struct {
 	NodesInserted int
+	NodesUpdated  int
+	NodesDeleted  int
 	EdgesInserted int
+	EdgesUpdated  int
+	EdgesDeleted  int
 }
 
 type Row map[string]Value
@@ -19,6 +23,7 @@ type Row map[string]Value
 type Value struct {
 	Node   *Node `json:"node,omitempty"`
 	Edge   *Edge `json:"edge,omitempty"`
+	Path   *Path `json:"path,omitempty"`
 	Scalar any   `json:"scalar,omitempty"`
 }
 
@@ -40,6 +45,12 @@ type Edge struct {
 	Properties map[string]any `json:"properties,omitempty"`
 	Payload    map[string]any `json:"payload,omitempty"`
 	Meta       map[string]any `json:"meta,omitempty"`
+}
+
+// Path stores ordered nodes and edges traversed by a path binding.
+type Path struct {
+	Nodes []Node `json:"nodes,omitempty"`
+	Edges []Edge `json:"edges,omitempty"`
 }
 
 // NodeRef identifies a graph node created or read during execution.

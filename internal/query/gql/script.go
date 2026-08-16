@@ -69,17 +69,25 @@ func SplitScript(script string) ([]string, error) {
 }
 
 func CompileScript(script string) (ScriptPlan, error) {
-	return CompileScriptWithSchema(script, analysis.SchemaContext{})
+	return CompileScriptWithSchemaAndParams(script, analysis.SchemaContext{}, nil)
+}
+
+func CompileScriptWithParams(script string, params map[string]any) (ScriptPlan, error) {
+	return CompileScriptWithSchemaAndParams(script, analysis.SchemaContext{}, params)
 }
 
 func CompileScriptWithSchema(script string, schema analysis.SchemaContext) (ScriptPlan, error) {
+	return CompileScriptWithSchemaAndParams(script, schema, nil)
+}
+
+func CompileScriptWithSchemaAndParams(script string, schema analysis.SchemaContext, params map[string]any) (ScriptPlan, error) {
 	statements, err := SplitScript(script)
 	if err != nil {
 		return ScriptPlan{}, err
 	}
 	out := ScriptPlan{AccessMode: analysis.ReadOnly}
 	for index, statement := range statements {
-		plan, err := CompileWithSchema(statement, schema)
+		plan, err := CompileWithSchemaAndParams(statement, schema, params)
 		if err != nil {
 			return ScriptPlan{}, fmt.Errorf("statement %d: %w", index+1, err)
 		}

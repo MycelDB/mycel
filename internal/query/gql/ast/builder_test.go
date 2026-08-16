@@ -105,6 +105,32 @@ func TestBuilderBuildsReturnPropertyAST(t *testing.T) {
 	}
 }
 
+func TestBuilderBuildsPathBindingAST(t *testing.T) {
+	tree, err := gqlantlr.Parse("MATCH path = (a:Person)-[:FRIEND_OF*1..3]->(b:Person) RETURN path")
+	if err != nil {
+		t.Fatalf("antlr.Parse() error = %v", err)
+	}
+
+	query, err := Build(tree)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	stmt, ok := query.Statement.(model.MatchStatement)
+	if !ok {
+		t.Fatalf("statement = %T, want MatchStatement", query.Statement)
+	}
+	if stmt.MatchPattern.PathVariable != "path" {
+		t.Fatalf("path variable = %q, want path", stmt.MatchPattern.PathVariable)
+	}
+	if len(stmt.MatchPattern.Segments) != 1 || stmt.MatchPattern.Segments[0].Relationship.Quantifier == nil || stmt.MatchPattern.Segments[0].Relationship.Quantifier.Min != 1 || stmt.MatchPattern.Segments[0].Relationship.Quantifier.Max != 3 {
+		t.Fatalf("unexpected path segments: %#v", stmt.MatchPattern.Segments)
+	}
+	if !reflect.DeepEqual(stmt.Returns, []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "path"}}) {
+		t.Fatalf("returns = %#v", stmt.Returns)
+	}
+}
+
 func TestBuilderBuildsRelationshipPatternAST(t *testing.T) {
 	tree, err := gqlantlr.Parse("MATCH (a:Note)-[r:REFERENCES:CITES {confidence: 0.9}]->(b:Note) RETURN a, r, b")
 	if err != nil {
@@ -153,6 +179,28 @@ func TestBuilderBuildsIncomingAndUndirectedRelationshipDirections(t *testing.T) 
 		if stmt.MatchPattern.Relationship == nil || stmt.MatchPattern.Relationship.Direction != tc.want {
 			t.Fatalf("direction for %q = %#v, want %q", tc.query, stmt.MatchPattern.Relationship, tc.want)
 		}
+	}
+}
+
+func TestBuilderBuildsMatchSetAST(t *testing.T) {
+	tree, err := gqlantlr.Parse("MATCH (p:Person {name: 'Martin'}) SET p.age = 57, p.sex = 'Male' RETURN p, p.age")
+	if err != nil {
+		t.Fatalf("antlr.Parse() error = %v", err)
+	}
+	query, err := Build(tree)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	want := model.Query{Statement: model.MatchSetStatement{
+		MatchPattern: model.MatchPattern{Start: model.NodePattern{Variable: "p", Labels: []string{"Person"}, Properties: []model.Property{{Key: "name", Value: model.Value{Kind: model.StringValue, Value: "Martin"}}}}},
+		Assignments: []model.SetAssignment{
+			{Variable: "p", Property: "age", Value: model.Value{Kind: model.IntValue, Value: int64(57)}},
+			{Variable: "p", Property: "sex", Value: model.Value{Kind: model.StringValue, Value: "Male"}},
+		},
+		Returns: []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "p"}, {Kind: model.ReturnProperty, Variable: "p", Property: "age"}},
+	}}
+	if !reflect.DeepEqual(query, want) {
+		t.Fatalf("Build() = %#v, want %#v", query, want)
 	}
 }
 

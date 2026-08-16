@@ -53,6 +53,7 @@ type QueryPatternOperation struct {
 func (QueryPatternOperation) operation() {}
 
 type QueryPathOperation struct {
+	PathVariable         string
 	Start                NodePattern
 	Segments             []PathSegment
 	Returns              []ReturnItem
@@ -66,9 +67,75 @@ type QueryPathOperation struct {
 
 func (QueryPathOperation) operation() {}
 
+// MergeNodeOperation matches or creates one node.
+type MergeNodeOperation struct {
+	Variable    string
+	Labels      []string
+	Properties  map[string]any
+	Returns     []ReturnItem
+	ReturnGraph bool
+	Limit       int64
+}
+
+func (MergeNodeOperation) operation() {}
+
+// MatchSetOperation updates properties or payload fields on matched nodes/edges.
+type MatchSetOperation struct {
+	Start                NodePattern
+	Segments             []PathSegment
+	Assignments          []SetAssignment
+	Returns              []ReturnItem
+	ReturnGraph          bool
+	Limit                int64
+	ComparisonPredicates []ComparisonPredicate
+	TextPredicates       []TextContainsPredicate
+	SemanticPredicates   []SemanticSimilarPredicate
+}
+
+func (MatchSetOperation) operation() {}
+
+// MatchDeleteOperation deletes matched nodes/edges.
+type MatchDeleteOperation struct {
+	Start                NodePattern
+	Segments             []PathSegment
+	Targets              []string
+	Returns              []ReturnItem
+	ReturnGraph          bool
+	Limit                int64
+	ComparisonPredicates []ComparisonPredicate
+	TextPredicates       []TextContainsPredicate
+	SemanticPredicates   []SemanticSimilarPredicate
+}
+
+func (MatchDeleteOperation) operation() {}
+
+// MatchMergeRelationshipOperation matches or creates relationships between matched nodes.
+type MatchMergeRelationshipOperation struct {
+	Matches      []NodePattern
+	Relationship CreateRelationshipOperation
+	Returns      []ReturnItem
+	ReturnGraph  bool
+	Limit        int64
+}
+
+func (MatchMergeRelationshipOperation) operation() {}
+
+// SetAssignment updates one field on a matched variable.
+type SetAssignment struct {
+	Variable  string
+	Namespace string
+	Property  string
+	Value     any
+}
+
 type PathSegment struct {
 	Relationship RelationshipPattern
 	Node         NodePattern
+}
+
+type PathValue struct {
+	Nodes []NodePattern
+	Edges []RelationshipPattern
 }
 
 // MatchCreateRelationshipOperation creates relationships between matched nodes.
@@ -80,6 +147,7 @@ type MatchCreateRelationshipOperation struct {
 func (MatchCreateRelationshipOperation) operation() {}
 
 type CreateRelationshipOperation struct {
+	Variable     string
 	FromVariable string
 	ToVariable   string
 	Labels       []string
@@ -121,10 +189,11 @@ const (
 )
 
 type ReturnItem struct {
-	Kind      ReturnItemKind
-	Variable  string
-	Namespace string
-	Property  string
+	Kind       ReturnItemKind
+	Variable   string
+	Namespace  string
+	Property   string
+	OutputName string
 }
 
 type ComparisonPredicate struct {

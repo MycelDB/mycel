@@ -18,6 +18,7 @@ const (
 type Analysis struct {
 	Query      model.Query
 	AccessMode AccessMode
+	Params     map[string]any
 }
 
 // Analyzer validates a GQL AST and returns semantic information used by later
@@ -28,6 +29,7 @@ type Analyzer interface {
 
 type analyzer struct {
 	schema SchemaContext
+	params map[string]any
 }
 
 // Option configures the GQL analyzer.
@@ -36,6 +38,11 @@ type Option func(*analyzer)
 // WithSchema enables schema-aware semantic validation.
 func WithSchema(schema SchemaContext) Option {
 	return func(a *analyzer) { a.schema = schema }
+}
+
+// WithParams supplies scalar values for GQL parameter references.
+func WithParams(params map[string]any) Option {
+	return func(a *analyzer) { a.params = params }
 }
 
 func NewAnalyzer(options ...Option) Analyzer {
@@ -48,27 +55,55 @@ func NewAnalyzer(options ...Option) Analyzer {
 
 func Analyze(query model.Query) (Analysis, error) { return NewAnalyzer().Analyze(query) }
 
+func AnalyzeWithParams(query model.Query, params map[string]any) (Analysis, error) {
+	return NewAnalyzer(WithParams(params)).Analyze(query)
+}
+
 func AnalyzeWithSchema(query model.Query, schema SchemaContext) (Analysis, error) {
 	return NewAnalyzer(WithSchema(schema)).Analyze(query)
+}
+
+func AnalyzeWithSchemaAndParams(query model.Query, schema SchemaContext, params map[string]any) (Analysis, error) {
+	return NewAnalyzer(WithSchema(schema), WithParams(params)).Analyze(query)
 }
 
 func (a analyzer) Analyze(query model.Query) (Analysis, error) {
 	switch stmt := query.Statement.(type) {
 	case model.InsertStatement:
-		if err := analyzeInsertStatement(stmt, a.schema); err != nil {
+		if err := analyzeInsertStatement(stmt, a.schema, a.params); err != nil {
 			return Analysis{}, err
 		}
-		return Analysis{Query: query, AccessMode: ReadWrite}, nil
+		return Analysis{Query: query, AccessMode: ReadWrite, Params: a.params}, nil
+	case model.MergeNodeStatement:
+		if err := analyzeMergeNodeStatement(stmt, a.schema, a.params); err != nil {
+			return Analysis{}, err
+		}
+		return Analysis{Query: query, AccessMode: ReadWrite, Params: a.params}, nil
 	case model.MatchStatement:
-		if err := analyzeMatchStatement(stmt, a.schema); err != nil {
+		if err := analyzeMatchStatement(stmt, a.schema, a.params); err != nil {
 			return Analysis{}, err
 		}
-		return Analysis{Query: query, AccessMode: ReadOnly}, nil
+		return Analysis{Query: query, AccessMode: ReadOnly, Params: a.params}, nil
+	case model.MatchSetStatement:
+		if err := analyzeMatchSetStatement(stmt, a.schema, a.params); err != nil {
+			return Analysis{}, err
+		}
+		return Analysis{Query: query, AccessMode: ReadWrite, Params: a.params}, nil
+	case model.MatchDeleteStatement:
+		if err := analyzeMatchDeleteStatement(stmt, a.schema, a.params); err != nil {
+			return Analysis{}, err
+		}
+		return Analysis{Query: query, AccessMode: ReadWrite, Params: a.params}, nil
 	case model.MatchCreateStatement:
-		if err := analyzeMatchCreateStatement(stmt, a.schema); err != nil {
+		if err := analyzeMatchCreateStatement(stmt, a.schema, a.params); err != nil {
 			return Analysis{}, err
 		}
-		return Analysis{Query: query, AccessMode: ReadWrite}, nil
+		return Analysis{Query: query, AccessMode: ReadWrite, Params: a.params}, nil
+	case model.MatchMergeRelationshipStatement:
+		if err := analyzeMatchMergeRelationshipStatement(stmt, a.schema, a.params); err != nil {
+			return Analysis{}, err
+		}
+		return Analysis{Query: query, AccessMode: ReadWrite, Params: a.params}, nil
 	case nil:
 		return Analysis{}, fmt.Errorf("query statement is required")
 	default:
@@ -76,7 +111,7 @@ func (a analyzer) Analyze(query model.Query) (Analysis, error) {
 	}
 }
 
-func analyzeInsertStatement(stmt model.InsertStatement, schemaCtx SchemaContext) error {
+func analyzeInsertStatement(stmt model.InsertStatement, schemaCtx SchemaContext, params map[string]any) error {
 	pattern := stmt.Pattern
 	if len(pattern.Labels) == 0 {
 		return fmt.Errorf("insert node requires at least one label")
@@ -100,14 +135,14 @@ func analyzeInsertStatement(stmt model.InsertStatement, schemaCtx SchemaContext)
 			return fmt.Errorf("duplicate property key %q", prop.Key)
 		}
 		seenProperties[prop.Key] = struct{}{}
-		if err := analyzeValue(prop.Value); err != nil {
+		if err := analyzeValue(prop.Value, params); err != nil {
 			return fmt.Errorf("property %q: %w", prop.Key, err)
 		}
 	}
 	return newSchemaState(schemaCtx).analyzeNodePattern(pattern)
 }
 
-func analyzeMatchCreateStatement(stmt model.MatchCreateStatement, schemaCtx SchemaContext) error {
+func analyzeMatchCreateStatement(stmt model.MatchCreateStatement, schemaCtx SchemaContext, params map[string]any) error {
 	if len(stmt.Matches) < 2 {
 		return fmt.Errorf("match create requires at least two node patterns")
 	}
@@ -121,7 +156,7 @@ func analyzeMatchCreateStatement(stmt model.MatchCreateStatement, schemaCtx Sche
 			return fmt.Errorf("duplicate variable %q", pattern.Variable)
 		}
 		defined[pattern.Variable] = struct{}{}
-		if err := analyzePatternProperties(pattern.Properties); err != nil {
+		if err := analyzePatternProperties(pattern.Properties, params); err != nil {
 			return err
 		}
 		if err := schemaState.analyzeNodePattern(pattern); err != nil {
@@ -141,7 +176,7 @@ func analyzeMatchCreateStatement(stmt model.MatchCreateStatement, schemaCtx Sche
 	if err != nil {
 		return err
 	}
-	if err := analyzePatternProperties(stmt.Create.Relationship.Properties); err != nil {
+	if err := analyzePatternProperties(stmt.Create.Relationship.Properties, params); err != nil {
 		return fmt.Errorf("relationship pattern: %w", err)
 	}
 	if err := schemaState.validateRelationshipEndpoints(edgeTypes, stmt.Create.FromVariable, stmt.Create.ToVariable); err != nil {
@@ -150,7 +185,150 @@ func analyzeMatchCreateStatement(stmt model.MatchCreateStatement, schemaCtx Sche
 	return nil
 }
 
-func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) error {
+func analyzeMergeNodeStatement(stmt model.MergeNodeStatement, schemaCtx SchemaContext, params map[string]any) error {
+	if stmt.Pattern.Variable == "" {
+		return fmt.Errorf("merge node variable is required")
+	}
+	if len(stmt.Pattern.Labels) == 0 && len(stmt.Pattern.Properties) == 0 {
+		return fmt.Errorf("merge node requires at least one label or property")
+	}
+	if err := analyzePatternProperties(stmt.Pattern.Properties, params); err != nil {
+		return err
+	}
+	if stmt.FetchFirst != nil && stmt.FetchFirst.Count <= 0 {
+		return fmt.Errorf("fetch first count must be positive")
+	}
+	schemaState := newSchemaState(schemaCtx)
+	if err := schemaState.analyzeNodePattern(stmt.Pattern); err != nil {
+		return err
+	}
+	return validateReturns(stmt.Returns, map[string]struct{}{stmt.Pattern.Variable: {}}, schemaState)
+}
+
+func analyzeMatchSetStatement(stmt model.MatchSetStatement, schemaCtx SchemaContext, params map[string]any) error {
+	if len(stmt.Assignments) == 0 {
+		return fmt.Errorf("set statement requires at least one assignment")
+	}
+	if err := analyzeMatchStatement(model.MatchStatement{MatchPattern: stmt.MatchPattern, Where: stmt.Where, Returns: stmt.Returns, ReturnGraph: stmt.ReturnGraph, FetchFirst: stmt.FetchFirst}, schemaCtx, params); err != nil {
+		return err
+	}
+	defined := definedVariables(stmt.MatchPattern)
+	for _, assignment := range stmt.Assignments {
+		if assignment.Variable == "" {
+			return fmt.Errorf("set assignment variable cannot be empty")
+		}
+		if _, ok := defined[assignment.Variable]; !ok {
+			return fmt.Errorf("set variable %q is not defined", assignment.Variable)
+		}
+		if assignment.Property == "" {
+			return fmt.Errorf("set property cannot be empty")
+		}
+		switch assignment.Namespace {
+		case "", "properties", "payload":
+		default:
+			return fmt.Errorf("unsupported set namespace %q", assignment.Namespace)
+		}
+		if err := analyzeValue(assignment.Value, params); err != nil {
+			return fmt.Errorf("set property %q: %w", assignment.Property, err)
+		}
+	}
+	return nil
+}
+
+func analyzeMatchDeleteStatement(stmt model.MatchDeleteStatement, schemaCtx SchemaContext, params map[string]any) error {
+	if len(stmt.Targets) == 0 {
+		return fmt.Errorf("delete statement requires at least one target")
+	}
+	if err := analyzeMatchStatement(model.MatchStatement{MatchPattern: stmt.MatchPattern, Where: stmt.Where, Returns: stmt.Returns, ReturnGraph: stmt.ReturnGraph, FetchFirst: stmt.FetchFirst}, schemaCtx, params); err != nil {
+		return err
+	}
+	defined := definedVariables(stmt.MatchPattern)
+	seen := map[string]struct{}{}
+	for _, target := range stmt.Targets {
+		if _, ok := defined[target]; !ok {
+			return fmt.Errorf("delete variable %q is not defined", target)
+		}
+		if _, ok := seen[target]; ok {
+			return fmt.Errorf("duplicate delete variable %q", target)
+		}
+		seen[target] = struct{}{}
+	}
+	return nil
+}
+
+func analyzeMatchMergeRelationshipStatement(stmt model.MatchMergeRelationshipStatement, schemaCtx SchemaContext, params map[string]any) error {
+	if len(stmt.Matches) < 2 {
+		return fmt.Errorf("match merge requires at least two node patterns")
+	}
+	if stmt.FetchFirst != nil && stmt.FetchFirst.Count <= 0 {
+		return fmt.Errorf("fetch first count must be positive")
+	}
+	defined := map[string]struct{}{}
+	schemaState := newSchemaState(schemaCtx)
+	for _, pattern := range stmt.Matches {
+		if pattern.Variable == "" {
+			return fmt.Errorf("matched node variable is required")
+		}
+		if _, exists := defined[pattern.Variable]; exists {
+			return fmt.Errorf("duplicate variable %q", pattern.Variable)
+		}
+		if len(pattern.Properties) == 0 {
+			return fmt.Errorf("match merge endpoint %q requires at least one identifying property", pattern.Variable)
+		}
+		defined[pattern.Variable] = struct{}{}
+		if err := analyzePatternProperties(pattern.Properties, params); err != nil {
+			return err
+		}
+		if err := schemaState.analyzeNodePattern(pattern); err != nil {
+			return err
+		}
+	}
+	if _, ok := defined[stmt.Merge.FromVariable]; !ok {
+		return fmt.Errorf("merge source variable %q is not defined", stmt.Merge.FromVariable)
+	}
+	if _, ok := defined[stmt.Merge.ToVariable]; !ok {
+		return fmt.Errorf("merge target variable %q is not defined", stmt.Merge.ToVariable)
+	}
+	if len(stmt.Merge.Relationship.Labels) == 0 {
+		return fmt.Errorf("merge relationship requires at least one label")
+	}
+	edgeTypes, err := schemaState.analyzeRelationshipPattern(stmt.Merge.Relationship)
+	if err != nil {
+		return err
+	}
+	if err := analyzePatternProperties(stmt.Merge.Relationship.Properties, params); err != nil {
+		return fmt.Errorf("relationship pattern: %w", err)
+	}
+	if err := schemaState.validateRelationshipEndpoints(edgeTypes, stmt.Merge.FromVariable, stmt.Merge.ToVariable); err != nil {
+		return err
+	}
+	if stmt.Merge.Relationship.Variable != "" {
+		defined[stmt.Merge.Relationship.Variable] = struct{}{}
+	}
+	return validateReturns(stmt.Returns, defined, schemaState)
+}
+
+func definedVariables(pattern model.MatchPattern) map[string]struct{} {
+	defined := map[string]struct{}{}
+	if pattern.Start.Variable != "" {
+		defined[pattern.Start.Variable] = struct{}{}
+	}
+	segments := pattern.Segments
+	if len(segments) == 0 && pattern.Relationship != nil && pattern.End != nil {
+		segments = []model.PathSegment{{Relationship: *pattern.Relationship, Node: *pattern.End}}
+	}
+	for _, segment := range segments {
+		if segment.Relationship.Variable != "" {
+			defined[segment.Relationship.Variable] = struct{}{}
+		}
+		if segment.Node.Variable != "" {
+			defined[segment.Node.Variable] = struct{}{}
+		}
+	}
+	return defined
+}
+
+func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext, params map[string]any) error {
 	pattern := stmt.MatchPattern
 	if pattern.Start.Variable == "" && pattern.Relationship == nil {
 		pattern.Start = stmt.Pattern
@@ -159,6 +337,12 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 		return fmt.Errorf("match node variable is required")
 	}
 	defined := map[string]struct{}{pattern.Start.Variable: {}}
+	if pattern.PathVariable != "" {
+		if pattern.PathVariable == pattern.Start.Variable {
+			return fmt.Errorf("path variable %q conflicts with node variable", pattern.PathVariable)
+		}
+		defined[pattern.PathVariable] = struct{}{}
+	}
 	schemaState := newSchemaState(schemaCtx)
 	if err := schemaState.analyzeNodePattern(pattern.Start); err != nil {
 		return err
@@ -169,6 +353,9 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 			return fmt.Errorf("relationship pattern requires target node")
 		}
 		segments = []model.PathSegment{{Relationship: *pattern.Relationship, Node: *pattern.End}}
+	}
+	if pattern.PathVariable != "" && len(segments) == 0 {
+		return fmt.Errorf("path binding requires a relationship path")
 	}
 	if len(segments) > 0 {
 		fromVar := pattern.Start.Variable
@@ -199,10 +386,10 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 			if err != nil {
 				return err
 			}
-			if err := analyzePatternProperties(segment.Relationship.Properties); err != nil {
+			if err := analyzePatternProperties(segment.Relationship.Properties, params); err != nil {
 				return fmt.Errorf("relationship pattern: %w", err)
 			}
-			if err := analyzePatternProperties(segment.Node.Properties); err != nil {
+			if err := analyzePatternProperties(segment.Node.Properties, params); err != nil {
 				return fmt.Errorf("target node pattern: %w", err)
 			}
 			if err := schemaState.analyzeNodePattern(segment.Node); err != nil {
@@ -217,6 +404,7 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 	if len(stmt.Returns) == 0 {
 		return fmt.Errorf("match statement requires at least one return item")
 	}
+	seenOutputs := map[string]struct{}{}
 	for _, ret := range stmt.Returns {
 		kind := ret.Kind
 		if kind == "" {
@@ -225,12 +413,20 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 		if ret.Variable == "" {
 			return fmt.Errorf("return variable cannot be empty")
 		}
+		outputName := returnOutputName(ret)
+		if _, exists := seenOutputs[outputName]; exists {
+			return fmt.Errorf("duplicate return output name %q", outputName)
+		}
+		seenOutputs[outputName] = struct{}{}
 		if _, ok := defined[ret.Variable]; !ok {
 			return fmt.Errorf("return variable %q is not defined", ret.Variable)
 		}
 		switch kind {
 		case model.ReturnVariable:
 		case model.ReturnProperty:
+			if ret.Variable == pattern.PathVariable {
+				return fmt.Errorf("path variable %q does not support property projection", ret.Variable)
+			}
 			if ret.Property == "" {
 				return fmt.Errorf("return property cannot be empty")
 			}
@@ -308,7 +504,7 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 			if predicate.Property == "" {
 				return fmt.Errorf("where property cannot be empty")
 			}
-			if err := analyzeValue(predicate.Value); err != nil {
+			if err := analyzeValue(predicate.Value, params); err != nil {
 				return fmt.Errorf("where property %q: %w", predicate.Property, err)
 			}
 			if err := schemaState.validateWhereProperty(predicate.Variable, "properties", predicate.Property); err != nil {
@@ -316,13 +512,68 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext) e
 			}
 		}
 	}
-	if err := analyzePatternProperties(pattern.Start.Properties); err != nil {
+	if err := analyzePatternProperties(pattern.Start.Properties, params); err != nil {
 		return err
 	}
 	return nil
 }
 
-func analyzePatternProperties(properties []model.Property) error {
+func validateReturns(returns []model.ReturnItem, defined map[string]struct{}, schemaState schemaState) error {
+	if len(returns) == 0 {
+		return fmt.Errorf("statement requires at least one return item")
+	}
+	seenOutputs := map[string]struct{}{}
+	for _, ret := range returns {
+		kind := ret.Kind
+		if kind == "" {
+			kind = model.ReturnVariable
+		}
+		if ret.Variable == "" {
+			return fmt.Errorf("return variable cannot be empty")
+		}
+		if _, ok := defined[ret.Variable]; !ok {
+			return fmt.Errorf("return variable %q is not defined", ret.Variable)
+		}
+		outputName := returnOutputName(ret)
+		if _, exists := seenOutputs[outputName]; exists {
+			return fmt.Errorf("duplicate return output name %q", outputName)
+		}
+		seenOutputs[outputName] = struct{}{}
+		switch kind {
+		case model.ReturnVariable:
+		case model.ReturnProperty:
+			if ret.Property == "" {
+				return fmt.Errorf("return property cannot be empty")
+			}
+			switch ret.Namespace {
+			case "", "properties", "payload", "meta":
+			default:
+				return fmt.Errorf("unsupported return namespace %q", ret.Namespace)
+			}
+			if err := schemaState.validateReturn(ret); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported return item kind %q", kind)
+		}
+	}
+	return nil
+}
+
+func returnOutputName(ret model.ReturnItem) string {
+	if ret.OutputName != "" {
+		return ret.OutputName
+	}
+	if ret.Kind == model.ReturnProperty {
+		if ret.Namespace != "" {
+			return ret.Variable + "." + ret.Namespace + "." + ret.Property
+		}
+		return ret.Variable + "." + ret.Property
+	}
+	return ret.Variable
+}
+
+func analyzePatternProperties(properties []model.Property, params map[string]any) error {
 	seenProperties := map[string]struct{}{}
 	for _, prop := range properties {
 		if prop.Key == "" {
@@ -332,14 +583,14 @@ func analyzePatternProperties(properties []model.Property) error {
 			return fmt.Errorf("duplicate property key %q", prop.Key)
 		}
 		seenProperties[prop.Key] = struct{}{}
-		if err := analyzeValue(prop.Value); err != nil {
+		if err := analyzeValue(prop.Value, params); err != nil {
 			return fmt.Errorf("property %q: %w", prop.Key, err)
 		}
 	}
 	return nil
 }
 
-func analyzeValue(value model.Value) error {
+func analyzeValue(value model.Value, params map[string]any) error {
 	switch value.Kind {
 	case model.StringValue:
 		if _, ok := value.Value.(string); !ok {
@@ -360,6 +611,20 @@ func analyzeValue(value model.Value) error {
 	case model.NullValue:
 		if value.Value != nil {
 			return fmt.Errorf("null value kind requires nil payload")
+		}
+	case model.ParameterValue:
+		name, ok := value.Value.(string)
+		if !ok || name == "" {
+			return fmt.Errorf("parameter value kind requires parameter name")
+		}
+		param, ok := params[name]
+		if !ok {
+			return fmt.Errorf("missing parameter %q", name)
+		}
+		switch param.(type) {
+		case nil, string, int, int32, int64, float32, float64, bool:
+		default:
+			return fmt.Errorf("parameter %q has unsupported value type %T", name, param)
 		}
 	default:
 		return fmt.Errorf("unsupported value kind %q", value.Kind)

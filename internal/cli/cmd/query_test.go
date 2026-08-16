@@ -1,12 +1,31 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
 )
+
+func TestFormatGQLValueRendersPath(t *testing.T) {
+	formatted := formatGQLValue(execmodel.Value{Path: &execmodel.Path{Nodes: []execmodel.Node{{ID: "a"}, {ID: "b"}}, Edges: []execmodel.Edge{{ID: "e", FromID: "a", ToID: "b"}}}})
+	if !strings.Contains(formatted, `"nodes"`) || !strings.Contains(formatted, `"edges"`) {
+		t.Fatalf("formatted path = %s", formatted)
+	}
+}
+
+func TestPrintGQLRowsPrintsReturnedWriteRows(t *testing.T) {
+	result := execmodel.Result{Columns: []string{"name"}, Rows: []execmodel.Row{{"name": execmodel.Value{Scalar: "Levi"}}}}
+	var out bytes.Buffer
+	printGQLRows(&out, result)
+	if got := out.String(); !strings.Contains(got, "name=\"Levi\"") {
+		t.Fatalf("printed rows = %q", got)
+	}
+}
 
 func TestQueryNodesCommandUsesDaemonGRPC(t *testing.T) {
 	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)

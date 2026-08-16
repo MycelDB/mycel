@@ -57,8 +57,8 @@ func TestSessionAndTransactionServicesLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitTransaction() error = %v", err)
 	}
-	if commit.GetCommit().GetCommittedRevision() != 1 || commit.GetCommit().GetOperationId() != operationID {
-		t.Fatalf("unexpected commit: %#v", commit.GetCommit())
+	if commit.GetCommit().GetCommittedRevision() != 0 || commit.GetCommit().GetOperationCount() != 0 || commit.GetCommit().GetOperationId() != operationID {
+		t.Fatalf("unexpected no-op commit: %#v", commit.GetCommit())
 	}
 
 	readOnly, err := txSvc.BeginTransaction(ctx, &clientv1.BeginTransactionRequest{SessionId: opened.GetSession().GetSessionId(), Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY})

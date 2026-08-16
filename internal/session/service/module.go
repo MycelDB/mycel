@@ -294,8 +294,14 @@ func (m *Module) commitTransaction(ctx context.Context, principalID string, tran
 			return TransactionCommit{}, ErrInvalidState
 		}
 		m.revisions[key] = committedRevision
-	} else {
+	} else if operationCount > 0 {
 		m.revisions[key]++
+		committedRevision = m.revisions[key]
+	} else {
+		// A read-write transaction may execute only reads. Committing that no-op
+		// transaction must not advance the session subsystem's view of the graph
+		// revision, or the next write can start from a base revision that is ahead
+		// of the graph store and fail as a false transaction conflict.
 		committedRevision = m.revisions[key]
 	}
 	tx.State = TransactionStateCommitted

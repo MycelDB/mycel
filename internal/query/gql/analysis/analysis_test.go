@@ -46,6 +46,43 @@ func TestAnalyzeMatchReturnNodeAST(t *testing.T) {
 	}
 }
 
+func TestAnalyzePathBindingAST(t *testing.T) {
+	query := model.Query{Statement: model.MatchStatement{
+		MatchPattern: model.MatchPattern{
+			PathVariable: "path",
+			Start:        model.NodePattern{Variable: "a", Labels: []string{"Person"}},
+			Segments: []model.PathSegment{{
+				Relationship: model.RelationshipPattern{Labels: []string{"FRIEND_OF"}, Direction: model.RelationshipOutgoing},
+				Node:         model.NodePattern{Variable: "b", Labels: []string{"Person"}},
+			}},
+		},
+		Returns: []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "path"}},
+	}}
+
+	analysis, err := Analyze(query)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if analysis.AccessMode != ReadOnly {
+		t.Fatalf("Analyze().AccessMode = %q, want %q", analysis.AccessMode, ReadOnly)
+	}
+}
+
+func TestAnalyzeRejectsPathPropertyProjection(t *testing.T) {
+	query := model.Query{Statement: model.MatchStatement{
+		MatchPattern: model.MatchPattern{
+			PathVariable: "path",
+			Start:        model.NodePattern{Variable: "a"},
+			Segments:     []model.PathSegment{{Relationship: model.RelationshipPattern{Direction: model.RelationshipOutgoing}, Node: model.NodePattern{Variable: "b"}}},
+		},
+		Returns: []model.ReturnItem{{Kind: model.ReturnProperty, Variable: "path", Property: "nodes"}},
+	}}
+	_, err := Analyze(query)
+	if err == nil || !strings.Contains(err.Error(), "does not support property projection") {
+		t.Fatalf("Analyze() error = %v, want path property projection error", err)
+	}
+}
+
 func TestAnalyzeRejectsInvalidInsertNodeAST(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -180,6 +217,59 @@ func TestAnalyzeMatchReturnPropertyAST(t *testing.T) {
 	}}
 	if _, err := Analyze(query); err != nil {
 		t.Fatalf("Analyze() error = %v", err)
+	}
+}
+
+func TestAnalyzeMatchSetAST(t *testing.T) {
+	query := model.Query{Statement: model.MatchSetStatement{
+		MatchPattern: model.MatchPattern{Start: model.NodePattern{Variable: "p", Labels: []string{"Person"}}},
+		Assignments:  []model.SetAssignment{{Variable: "p", Property: "age", Value: model.Value{Kind: model.IntValue, Value: int64(57)}}},
+		Returns:      []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "p"}},
+	}}
+	analysis, err := Analyze(query)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if analysis.AccessMode != ReadWrite {
+		t.Fatalf("Analyze().AccessMode = %q, want %q", analysis.AccessMode, ReadWrite)
+	}
+}
+
+func TestAnalyzeRejectsInvalidMatchSetAST(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   model.Query
+		wantErr string
+	}{
+		{
+			name: "undefined set variable",
+			query: model.Query{Statement: model.MatchSetStatement{
+				MatchPattern: model.MatchPattern{Start: model.NodePattern{Variable: "p"}},
+				Assignments:  []model.SetAssignment{{Variable: "q", Property: "age", Value: model.Value{Kind: model.IntValue, Value: int64(57)}}},
+				Returns:      []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "p"}},
+			}},
+			wantErr: "set variable \"q\" is not defined",
+		},
+		{
+			name: "unsupported namespace",
+			query: model.Query{Statement: model.MatchSetStatement{
+				MatchPattern: model.MatchPattern{Start: model.NodePattern{Variable: "p"}},
+				Assignments:  []model.SetAssignment{{Variable: "p", Namespace: "meta", Property: "system", Value: model.Value{Kind: model.BoolValue, Value: true}}},
+				Returns:      []model.ReturnItem{{Kind: model.ReturnVariable, Variable: "p"}},
+			}},
+			wantErr: "unsupported set namespace",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Analyze(tt.query)
+			if err == nil {
+				t.Fatal("Analyze() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Analyze() error = %q, want containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

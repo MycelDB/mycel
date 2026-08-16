@@ -68,6 +68,30 @@ func TestPlannerPlansMatchReturnNodeAnalysis(t *testing.T) {
 	}
 }
 
+func TestPlannerPlansPathBindingAnalysis(t *testing.T) {
+	a := analysis.Analysis{AccessMode: analysis.ReadOnly, Query: ast.Query{Statement: ast.MatchStatement{
+		MatchPattern: ast.MatchPattern{
+			PathVariable: "path",
+			Start:        ast.NodePattern{Variable: "a", Labels: []string{"Person"}},
+			Relationship: &ast.RelationshipPattern{Labels: []string{"FRIEND_OF"}, Direction: ast.RelationshipOutgoing},
+			End:          &ast.NodePattern{Variable: "b", Labels: []string{"Person"}},
+		},
+		Returns: []ast.ReturnItem{{Kind: ast.ReturnVariable, Variable: "path"}},
+	}}}
+
+	plan, err := Plan(a)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	op, ok := plan.Operations[0].(planmodel.QueryPathOperation)
+	if !ok {
+		t.Fatalf("operation = %T, want QueryPathOperation", plan.Operations[0])
+	}
+	if op.PathVariable != "path" || len(op.Segments) != 1 || op.Returns[0].Variable != "path" {
+		t.Fatalf("unexpected path operation: %#v", op)
+	}
+}
+
 func TestPlannerRejectsMissingStatement(t *testing.T) {
 	_, err := Plan(analysis.Analysis{AccessMode: analysis.ReadWrite})
 	if err == nil {
@@ -137,6 +161,29 @@ func TestPlannerPlansReturnPropertyAnalysis(t *testing.T) {
 			{Kind: planmodel.ReturnProperty, Variable: "p", Property: "firstName"},
 		}},
 	}}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("Plan() = %#v, want %#v", plan, want)
+	}
+}
+
+func TestPlannerPlansMatchSetAnalysis(t *testing.T) {
+	a := analysis.Analysis{AccessMode: analysis.ReadWrite, Query: ast.Query{Statement: ast.MatchSetStatement{
+		MatchPattern: ast.MatchPattern{Start: ast.NodePattern{Variable: "p", Labels: []string{"Person"}, Properties: []ast.Property{{Key: "name", Value: ast.Value{Kind: ast.StringValue, Value: "Martin"}}}}},
+		Assignments:  []ast.SetAssignment{{Variable: "p", Property: "age", Value: ast.Value{Kind: ast.IntValue, Value: int64(57)}}, {Variable: "p", Property: "sex", Value: ast.Value{Kind: ast.StringValue, Value: "Male"}}},
+		Returns:      []ast.ReturnItem{{Kind: ast.ReturnVariable, Variable: "p"}},
+		FetchFirst:   &ast.FetchFirstClause{Count: 1},
+	}}}
+	plan, err := Plan(a)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	want := planmodel.Plan{AccessMode: analysis.ReadWrite, Operations: []planmodel.Operation{planmodel.MatchSetOperation{
+		Start:       planmodel.NodePattern{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"name": "Martin"}},
+		Segments:    []planmodel.PathSegment{},
+		Assignments: []planmodel.SetAssignment{{Variable: "p", Property: "age", Value: int64(57)}, {Variable: "p", Property: "sex", Value: "Male"}},
+		Returns:     []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "p"}},
+		Limit:       1,
+	}}}
 	if !reflect.DeepEqual(plan, want) {
 		t.Fatalf("Plan() = %#v, want %#v", plan, want)
 	}

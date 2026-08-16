@@ -113,6 +113,49 @@ func TestModuleOriginMetadataFlowsFromSessionToTransactionCommit(t *testing.T) {
 	}
 }
 
+func TestModuleNoopReadWriteCommitDoesNotAdvanceRevision(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	opened, err := m.OpenSession(ctx, OpenSessionInput{PrincipalID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString()})
+	if err != nil {
+		t.Fatalf("OpenSession() error = %v", err)
+	}
+	first, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	if err != nil {
+		t.Fatalf("BeginTransaction(first) error = %v", err)
+	}
+	firstCommit, err := m.CommitTransaction(ctx, "user-1", first.ID, 1)
+	if err != nil {
+		t.Fatalf("CommitTransaction(first) error = %v", err)
+	}
+	if firstCommit.CommittedRevision != 1 {
+		t.Fatalf("first committed revision = %d, want 1", firstCommit.CommittedRevision)
+	}
+
+	noop, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	if err != nil {
+		t.Fatalf("BeginTransaction(noop) error = %v", err)
+	}
+	noopCommit, err := m.CommitTransaction(ctx, "user-1", noop.ID, 0)
+	if err != nil {
+		t.Fatalf("CommitTransaction(noop) error = %v", err)
+	}
+	if noopCommit.CommittedRevision != firstCommit.CommittedRevision {
+		t.Fatalf("noop committed revision = %d, want %d", noopCommit.CommittedRevision, firstCommit.CommittedRevision)
+	}
+
+	next, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	if err != nil {
+		t.Fatalf("BeginTransaction(next) error = %v", err)
+	}
+	if next.BaseRevision != firstCommit.CommittedRevision {
+		t.Fatalf("next base revision = %d, want %d", next.BaseRevision, firstCommit.CommittedRevision)
+	}
+}
+
 func TestModuleGeneratesAndValidatesOperationID(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()

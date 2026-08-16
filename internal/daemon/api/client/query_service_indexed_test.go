@@ -50,6 +50,65 @@ func TestQueryServiceExecuteQueryUsesOrderedNodePropertyIndex(t *testing.T) {
 	}
 }
 
+func TestQueryServiceExecuteQueryUsesIndexedEqualityNodeStart(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
+	manager := journalSchemaManagerForQueryTest(t, fixture.domainID, true)
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	for _, item := range []struct{ title, date string }{{"target", "2026-07-20"}, {"other", "2026-07-19"}} {
+		if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{Labels: []string{"JournalEntry"}, Properties: mustStruct(t, map[string]any{"title": item.title, "date": item.date})}}); err != nil {
+			t.Fatalf("CreateNode(%s) error = %v", item.title, err)
+		}
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+	query := &clientv1.GraphQuery{
+		Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+		Where:   &clientv1.Expr{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "j", Name: "date", Value: structpb.NewStringValue("2026-07-20")}}},
+		Returns: []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+	}
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ExecuteQuery() error = %v", err)
+	}
+	if len(res.GetRows()) != 1 || res.GetRows()[0].GetFields()["title"].GetScalar().GetStringValue() != "target" {
+		t.Fatalf("unexpected rows: %+v", res.GetRows())
+	}
+	if res.GetDiagnostics().GetPlan() != "OrderedNodePropertyEqualityIndexScan" || res.GetDiagnostics().GetFullScan() || res.GetDiagnostics().GetEdgesLoaded() != 0 {
+		t.Fatalf("diagnostics = %+v", res.GetDiagnostics())
+	}
+}
+
+func TestQueryServiceExecuteQueryStructuredScalarFieldProjection(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	manager := journalSchemaManagerForQueryTest(t, fixture.domainID, true)
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{Labels: []string{"JournalEntry"}, Properties: mustStruct(t, map[string]any{"title": "latest", "date": "2026-07-20"})}}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	query := journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)
+	query.Returns = []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}}
+	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ExecuteQuery() error = %v", err)
+	}
+	if got := res.GetRows()[0].GetFields()["title"].GetScalar().GetStringValue(); got != "latest" {
+		t.Fatalf("scalar title = %q", got)
+	}
+	if res.GetDiagnostics().GetFullScan() {
+		t.Fatalf("diagnostics = %+v", res.GetDiagnostics())
+	}
+}
+
 func TestQueryServiceExecuteQueryFindsDottedLabelNumericBetweenNodeCreatedDirectly(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	manager := dottedJournalSchemaManagerForQueryTest(t, fixture.domainID)
@@ -136,6 +195,31 @@ func TestQueryServiceExecuteQueryIndexedPagination(t *testing.T) {
 	page2, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC), PageSize: 1, PageToken: page1.GetNextPageToken()})
 	if err != nil || page2.GetNextPageToken() != "" || !reflect.DeepEqual(journalTitles(page2.GetRows()), []string{"b"}) {
 		t.Fatalf("page2 rows=%+v next=%q err=%v", journalTitles(page2.GetRows()), page2.GetNextPageToken(), err)
+	}
+}
+
+func TestQueryServiceExecuteGQLIndexedOrderPreservesScalarProjection(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	manager := journalSchemaManagerForQueryTest(t, fixture.domainID, true)
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{Labels: []string{"JournalEntry"}, Properties: mustStruct(t, map[string]any{"title": "latest", "date": "2026-07-20"})}}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (j:JournalEntry) RETURN j.date AS date ORDER BY j.date", PageSize: 10})
+	if err != nil {
+		t.Fatalf("ExecuteGQL() error = %v", err)
+	}
+	if got := res.GetResult().GetRows()[0].GetFields()["date"].GetScalar().GetStringValue(); got != "2026-07-20" {
+		t.Fatalf("date scalar = %q", got)
+	}
+	if res.GetDiagnostics().GetPlan() != "OrderedNodePropertyIndexScan" {
+		t.Fatalf("diagnostics = %+v", res.GetDiagnostics())
 	}
 }
 

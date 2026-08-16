@@ -9,6 +9,7 @@ Client API docs describe standard user/application gRPC surfaces.
 - [Graph](graph.md)
 - [Blob](blob.md)
 - [Query](query.md)
+- [Query expansion](query-expansion.md)
 - [Import/export](import-export.md)
 - [Metadata catalog](metadata-catalog.md)
 - [Semantic](semantic.md)

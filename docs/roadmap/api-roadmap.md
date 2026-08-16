@@ -9,9 +9,10 @@ construction over query strings.
 
 ## Current Reality
 
-The current structured query executor is not a real database query
-implementation. It is an early API-shape prototype and should be treated as a
-faulty execution strategy for production-sized graphs.
+The general structured query executor is not a real database query
+implementation. Accepted indexed paths are production-oriented, but unsupported
+shapes may still use the legacy prototype executor in searchable domains and
+should not be treated as production-sized graph functionality.
 
 `ExecuteQuery` currently:
 
@@ -61,12 +62,12 @@ Desirability values are relative priorities:
 | Transaction-scoped execution | Execute a structured query inside an existing graph transaction. | Very High | Very High | Y | Request/transaction plumbing exists. |
 | Strong/current read consistency | Use current strong/read-index semantics and return read metadata. | Very High | Very High | Y | Read metadata is returned. |
 | Read-your-writes overlay | Query staged writes in a read-write transaction. | High | High | Y | Transaction layer supports overlay-visible reads; query executor still needs replacement. |
-| Node pattern start | Match from a required start node pattern and alias. | Very High | Very High | N | Current behavior depends on full-domain node scan. |
-| Node labels | Match nodes with required labels. | Very High | Very High | N | Current behavior filters labels after scanning nodes. |
+| Node pattern start | Match from a required start node pattern and alias. | Very High | Very High | Y | Accepted for schema-indexed equality and ordered single-label node starts. |
+| Node labels | Match nodes with required labels. | Very High | Very High | Y | Accepted for indexed single-label node starts and indexed adjacency targets. |
 | Inline node property maps | Put property constraints directly on `NodePattern`. | Medium | Medium | N | Missing. |
 | Tag predicate | Filter nodes using normalized mycel tags. | High | Very High | N | Current behavior is post-scan. |
 | Property exists predicate | Filter nodes with a normalized custom property name. | High | High | N | Current behavior is post-scan. |
-| Property equals predicate | Filter nodes by custom property equality. | High | High | N | Current behavior is post-scan. |
+| Property equals predicate | Filter nodes by custom property equality. | High | High | Y | Accepted for start-alias equality predicates backed by ordered property indexes. |
 | Boolean `AND` | Combine predicates conjunctively. | High | High | N | Current behavior is only in-memory expression evaluation. |
 | Boolean `OR` | Combine alternatives. | Medium | Medium | N | Missing. |
 | Parenthesized/grouped predicates | Group boolean expressions explicitly. | Medium | Medium | N | Missing. |
@@ -75,25 +76,25 @@ Desirability values are relative priorities:
 | Date/current-date expressions | Compare date literals and current date with day offsets. | Medium | Medium | N | Expression values exist, but database execution is missing. |
 | Text contains predicate | Full-text-style filtering over payload/properties. | High | Very High | N | Missing. |
 | Semantic predicate | Semantic/vector similarity from the structured query API. | Medium | Very High | N | Missing. |
-| Outgoing traversal | Traverse outgoing edges by label. | Very High | Very High | N | Current path loads all edges. |
-| Incoming traversal | Traverse incoming edges by label. | High | High | N | Current path loads all edges. |
+| Outgoing traversal | Traverse outgoing edges by label. | Very High | Very High | Y | Accepted for one-hop adjacency-index traversal from explicit start node IDs. |
+| Incoming traversal | Traverse incoming edges by label. | High | High | Y | Accepted for one-hop adjacency-index traversal from explicit start node IDs. |
 | Undirected traversal | Traverse without direction. | Medium | Medium | N | Missing. |
-| Edge label filter | Restrict traversal by edge kind/label. | Very High | Very High | N | Current behavior filters edges after loading all edges. |
-| Edge property filter | Restrict traversal by edge properties. | High | High | N | Missing. |
-| Bind edge alias | Bind traversed edges as returnable values. | High | High | N | Missing. |
-| Return edge | Return traversed edge objects. | High | High | N | Missing. |
+| Edge label filter | Restrict traversal by edge kind/label. | Very High | Very High | Y | Accepted for one-hop adjacency-index traversal. |
+| Edge property filter | Restrict traversal by edge properties. | High | High | Y | Accepted for one-hop adjacency-index traversal with edge aliases. |
+| Bind edge alias | Bind traversed edges as returnable values. | High | High | Y | Accepted for one-hop adjacency-index traversal. |
+| Return edge | Return traversed edge objects. | High | High | Y | Accepted for one-hop adjacency-index traversal. |
 | Multi-hop traversal | Chain multiple traversal steps. | Very High | Very High | N | Current path is in-memory traversal. |
 | Variable-depth traversal | Traverse bounded or unbounded depth with `DepthSpec`. | High | Very High | N | Current path is in-memory traversal. |
 | Path binding | Bind a whole path as a single result value. | Medium | High | N | Missing. |
 | Path projection | Return ordered nodes/edges for a path. | Medium | High | N | Missing. |
 | Node projection | Return matched nodes. | Very High | Very High | Y | Output mapping exists; matching itself is not accepted. |
 | Tree projection | Project matched containment hierarchy as a tree. | High | Very High | N | Current path derives from loaded edges. |
-| Scalar projection | Return scalar fields. Current implementation returns the bound node ID for scalar projections. | High | High | N | Incomplete surface. |
-| Property/payload/meta scalar projection | Return arbitrary node/edge properties, payload fields, or meta fields. | High | Very High | N | Missing. |
-| Mixed projections | Return nodes, trees, and scalars in one row. | Medium | Medium | N | Incomplete surface. |
+| Scalar projection | Return scalar fields. Current implementation supports field-addressed scalar projections and legacy node-id scalar aliases. | High | High | Y | Accepted for indexed structured paths. |
+| Property/payload/meta scalar projection | Return arbitrary node/edge properties, payload fields, or meta fields. | High | Very High | Y | Encoded as `ReturnProjection.alias` values such as `n.title`, `n.payload.text`, or `r.weight`. |
+| Mixed projections | Return nodes, trees, edges, and scalars in one row. | Medium | Medium | Y | Accepted for indexed structured paths. |
 | Result graph envelope | Deduplicate returned nodes/edges into a graph envelope. | Medium | Medium | Y | Implemented for projected nodes/edges and indexed-root subtree graph results. |
-| Query-level limit | Limit total rows before paging. | High | High | N | Current limit is post-materialization. |
-| Response pagination | Page with `page_size` and opaque `page_token`. | High | High | N | Current pagination is post-materialization. |
+| Query-level limit | Limit total rows before paging. | High | High | Y | Accepted for indexed ordered, equality, adjacency, and root-subtree paths. |
+| Response pagination | Page with `page_size` and opaque `page_token`. | High | High | Y | Accepted for index-cursor paths. |
 | Offset | Skip the first N rows explicitly. | Medium | Medium | N | Missing. |
 | Indexed single-label property ordering | Sort a node-only single-label query by a schema-declared ordered property index, e.g. `JournalEntry ORDER BY date`. | Very High | Very High | Y | Implemented for node-only reads and as the root selector for indexed subtree graph reads, including inclusive `BetweenExpr` bounds and strict `LessThanExpr` upper bounds on the ordered property. |
 | General ordering | Sort arbitrary result rows by value expressions. | High | High | N | General ordering outside the indexed single-label property shape is not accepted. |
@@ -103,11 +104,11 @@ Desirability values are relative priorities:
 | Dynamic/schema-free domains | Continue accepting unknown labels/properties without an active strict schema. | Very High | Very High | Y | Accepted API behavior. |
 | Warn-mode diagnostics | Surface warnings for schema warn mode. | Medium | Medium | N | Missing. |
 | Query counters | Return row and mutation counters. | Medium | Medium | N | Incomplete surface. |
-| Indexed query diagnostics | Return plan/index/full-scan/load-count diagnostics for accepted indexed query plans. | High | High | Y | Implemented for indexed single-label property ordering. |
+| Indexed query diagnostics | Return plan/index/full-scan/load-count diagnostics for accepted indexed query plans. | High | High | Y | Implemented for indexed equality, ordered node scans, adjacency traversal, and indexed-root subtree graph reads. |
 | General query diagnostics | Return timing, scan counts, warnings, and planner diagnostics for all query shapes. | Medium | Medium | N | Missing outside accepted indexed plans. |
 | Explain plan | Return a planned/optimized form without executing. | Medium | Low | N | Missing. |
 | Index pushdown | Use graph/metadata/semantic indexes instead of full in-memory scans where possible. | Very High | Very High | N | Missing. |
-| Node-only execution path | Avoid loading edges when the query only matches and returns nodes. | Very High | Very High | Y | Implemented for indexed ordered node-property scans. |
+| Node-only execution path | Avoid loading edges when the query only matches and returns nodes. | Very High | Very High | Y | Implemented for indexed equality and ordered node-property scans. |
 | Indexed-root subtree graph read | Select ordered/bounded root nodes from an index, expand bounded adjacency traversal, and return one result graph. | Very High | Very High | Y | Implemented for one traversal step using adjacency indexes with `max_nodes`/`max_edges` truncation diagnostics. |
 | Cursor pagination from index | Page directly from a stable index cursor. | Very High | Very High | Y | Implemented for ordered node scans and root pagination in indexed subtree graph reads. |
 | Ordered property index scans | Support date/name/updated-time ordered reads without full sort. | Very High | Very High | Y | Implemented for schema-declared ordered node property indexes. |
@@ -116,28 +117,20 @@ Desirability values are relative priorities:
 | Schema-derived client helpers | Generate typed dynamic query helpers from domain schemas. | Medium | Very High | N | Missing. |
 | Stored query templates | Save reusable structured query shapes. | Medium | High | N | Missing. |
 
-## Current Prototype Behavior
+## Accepted Indexed Query Surface
 
-The current structured API can express small read queries such as:
+The accepted production-oriented structured query surface now covers these indexed read shapes:
 
-- match nodes by label;
-- filter by tag, custom property exists, custom property equality, `AND`, and
-  `between`;
-- use date and current-date value expressions;
-- traverse outgoing/incoming edges by edge label;
-- chain traversal steps and use depth ranges;
-- return nodes and containment trees;
-- sort, limit, and page results;
-- validate against strict domain schemas while preserving dynamic behavior for
-  schema-free/permissive domains;
-- return read metadata and normalized result envelopes.
+- schema-indexed equality node starts using `PropertyEqualsExpr` on a single-label start alias;
+- schema-indexed ordered node starts using `ORDER BY` on one declared ordered node property, including compatible bounds;
+- one-hop outgoing/incoming adjacency traversal from explicit start node IDs, with edge aliases, edge property filters, edge returns, and scalar projections;
+- indexed root-subtree graph reads that select ordered roots and expand bounded adjacency subtrees into `result.graph`;
+- node, edge, tree, and scalar projections for accepted indexed shapes;
+- stable index-cursor pagination, read metadata, read-your-writes overlay behavior, and diagnostics that report plan/index/full-scan/load counts.
 
-Except for validation, transaction scoping, read metadata, and basic output
-mapping, this list describes prototype behavior only. It should not be described
-as implemented database query functionality because it depends on full-domain
-node and edge loads.
+Unsupported shapes may still execute through the legacy prototype path when the domain allows broad search. Those fallback behaviors are useful for small development graphs, but they are not accepted as production query functionality.
 
-The CLI exposes only a common node-query subset:
+The CLI exposes a common node-query subset:
 
 ```sh
 mycel query nodes --transaction-id '<tx-id>' --label Note
@@ -146,9 +139,9 @@ mycel query nodes --transaction-id '<tx-id>' --property-exists status
 mycel query nodes --transaction-id '<tx-id>' --property-equals status=active
 ```
 
-These commands also use the rejected full-scan structured query executor.
+These commands are convenience helpers and should not be treated as proof that every equivalent structured query shape has an accepted indexed plan.
 
-## Example: Journal Entries by Date
+## Example: Indexed Journal Entries by Date
 
 The API shape for journal entries ordered by date is:
 
@@ -164,47 +157,19 @@ query := &clientv1.GraphQuery{
 }
 ```
 
-That is only an API shape today. It is not accepted as implemented database
-behavior. The current executor scans the domain, filters `JournalEntry` rows in
-memory, sorts rows in memory, and only then pages results.
+When the active domain schema declares an ordered node-property index for `JournalEntry.properties.date`, this shape is accepted as indexed database behavior. The daemon uses an ordered label/property index scan, reads matching journal nodes in date order, and returns a stable cursor plus diagnostics such as `plan=OrderedNodePropertyIndexScan` and `full_scan=false`.
 
-The production implementation must perform an ordered label/property index scan
-that reads only matching journal nodes in date order and returns a stable cursor.
+## Next Querying Tranche
 
-## Required Reimplementation Tranche
+The next structured API tranche should continue replacing fallback behavior with accepted indexed plans. See [GWL index declarations and indexed query execution](../design/schema/gwl-indexes-and-query-planning.md) for the schema, persistence, mutation-maintenance, and planning model.
 
-Before adding more structured query surface area, replace the rejected executor
-with a storage/index-backed query path. See
-[GWL index declarations and indexed query execution](../design/schema/gwl-indexes-and-query-planning.md)
-for the proposed schema, persistence, mutation-maintenance, and planning model.
-
-1. Define queryable field addressing for `properties`, `payload`, and `meta`.
-2. Add label, tag, property-exists, property-equality, and ordered property index
-   reads with strong/read-index consistency.
-3. Add a node-only query path that does not load edges unless traversal or edge
-   projection requires them.
-4. Push compatible predicates, ordering, `limit`, and page size into index reads
-   before materialization.
-5. Return stable cursor pagination from the index/read plan, not from an
-   in-memory result slice.
-6. Add diagnostics that report the plan, index use, scanned counts, matched
-   counts, returned counts, and whether a fallback scan occurred.
-7. Use deterministic adjacency lookups for traversal instead of loading all
-   domain edges.
-8. Preserve read-your-writes semantics by overlaying transaction writes onto the
-   indexed read plan without reverting to full-domain scans.
-
-## Later API Surface Work
-
-After the execution engine is reimplemented, add or complete:
-
-1. property/payload/meta scalar projections;
-2. edge binding and edge return projections;
-3. edge property predicates;
-4. `OR` and general comparison operators;
-5. text predicates and semantic predicates with index-aware plans;
-6. schema-derived typed builders for dynamic application APIs;
-7. stored query templates.
+1. Add accepted indexed plans for tag, property-exists, and additional property-equality predicates beyond the start-alias equality shape.
+2. Add accepted `AND` combinations across compatible indexed predicates.
+3. Add accepted multi-hop and bounded variable-depth traversal plans that do not load every edge in the domain.
+4. Add path binding/projection to the structured API, preferably with a dedicated public path value.
+5. Add text and semantic predicates with index-aware plans.
+6. Add planner diagnostics for unsupported shapes before falling back in searchable domains.
+7. Add schema-derived typed builders and stored query templates after the indexed semantics are stable.
 
 ## Production Acceptance Criteria
 

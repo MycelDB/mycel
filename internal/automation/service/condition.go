@@ -91,6 +91,22 @@ func (g automationGQLGraph) CreateEdge(context.Context, execution.CreateEdge) (e
 	return execmodel.Edge{}, fmt.Errorf("automation conditions are read-only")
 }
 
+func (g automationGQLGraph) UpdateNode(context.Context, execution.UpdateNode) (execmodel.Node, error) {
+	return execmodel.Node{}, fmt.Errorf("automation conditions are read-only")
+}
+
+func (g automationGQLGraph) UpdateEdge(context.Context, execution.UpdateEdge) (execmodel.Edge, error) {
+	return execmodel.Edge{}, fmt.Errorf("automation conditions are read-only")
+}
+
+func (g automationGQLGraph) DeleteNode(context.Context, string) error {
+	return fmt.Errorf("automation conditions are read-only")
+}
+
+func (g automationGQLGraph) DeleteEdge(context.Context, string) error {
+	return fmt.Errorf("automation conditions are read-only")
+}
+
 func (g automationGQLGraph) QueryNodes(ctx context.Context, query execution.QueryNodes) ([]execmodel.Node, error) {
 	if isReservedBinding(query.Variable) {
 		bound, ok := g.boundNode(query.Variable)

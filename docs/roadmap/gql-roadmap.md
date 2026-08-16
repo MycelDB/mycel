@@ -6,7 +6,7 @@ This document tracks the mycel GQL feature roadmap. It is intentionally product-
 
 mycel GQL aims to provide a graph-native query language for nodes, edges, paths, projections, filtering, mutation, diagnostics, and higher-level application use cases such as Knot PKM.
 
-The current implemented subset is still intentionally incremental, but it now covers node insertion, node matching, relationship matching, relationship creation between matched nodes, multi-hop and bounded variable-length traversal, comparison predicates, text/semantic predicate MVPs, property/payload/meta scalar projection, schema-aware validation, scripts, and row limiting.
+The current implemented subset is still intentionally incremental, but it now covers node insertion, node matching, relationship matching, relationship creation between matched nodes, multi-hop and bounded variable-length traversal, path binding/projection, comparison predicates, text/semantic predicate MVPs, property/payload/meta scalar projection, aliases, parameters, `SET`, `DELETE`, `MERGE`, schema-aware validation, scripts, and row limiting.
 
 ## Feature Matrix
 
@@ -41,7 +41,7 @@ Desirability values are relative priorities:
 | Parenthesized predicates | Group boolean expressions in `WHERE`. | Medium | Medium | N |
 | String predicates | Support `CONTAINS`, `STARTS WITH`, `ENDS WITH`, or regex-like matching. | High | High | N |
 | `IS NULL` / `IS NOT NULL` | Test missing or null properties. | High | High | N |
-| Parameterized queries | Use query parameters instead of literal interpolation. | High | High | N |
+| Parameterized queries | Use query parameters instead of literal interpolation. | High | High | Y |
 | Multiple independent `MATCH` node patterns | Bind multiple node variables, e.g. `MATCH (a:Person), (b:Person)`. | High | High | Y |
 | Create edge from matched endpoints | Create a relationship between matched node variables, e.g. `MATCH (a), (b) CREATE (a)-[:KNOWS]->(b)`. | Very High | Very High | Y |
 | Match directed edge | Match directed relationships, e.g. `MATCH (a)-[r]->(b)`. | Very High | Very High | Y |
@@ -55,20 +55,20 @@ Desirability values are relative priorities:
 | Return edge properties | Return scalar edge property projections, e.g. `RETURN r.kind, r.weight`. | High | High | Y |
 | Multi-hop path match | Match chained patterns such as `(a)-[:REFERS_TO]->(b)-[:MENTIONS]->(c)`. | Very High | Very High | Y |
 | Variable-length traversal | Match bounded variable-length paths. | High | Very High | Y |
-| Path binding | Bind a full path, e.g. `MATCH path = (a)-[*]->(b) RETURN path`. | Medium | High | N |
-| Path projection | Return nodes and edges in a matched path. | Medium | High | Partial |
+| Path binding | Bind a full path, e.g. `MATCH path = (a)-[*]->(b) RETURN path`. | Medium | High | Y |
+| Path projection | Return nodes and edges in a matched path. | Medium | High | Y |
 | Indexed root subtree graph return | Select roots with ordered index bounds/limit and expand a bounded adjacency subtree into `RETURN GRAPH`. | Very High | Very High | Y |
 | Neighborhood expansion | Query neighbors around matched nodes. | High | Very High | Y |
 | Shortest path | Find shortest paths between nodes. | Medium | Medium | N |
 | Standard node `CREATE` alias | Add standard GQL node creation syntax beyond current `INSERT`. | Medium | Medium | N |
-| `SET` property update | Update node or edge properties. | High | High | N |
-| `DELETE` node/edge | Delete matched graph elements. | High | Medium | N |
-| `MERGE` / upsert | Match-or-create nodes and relationships. | High | High | N |
+| `SET` property update | Update node or edge properties with `MATCH ... SET ... RETURN ...`. | High | High | Y |
+| `DELETE` node/edge | Delete matched graph elements. | High | Medium | Y |
+| `MERGE` / upsert | Match-or-create nodes and relationships. | High | High | Y |
 | Relationship `CREATE` with inline endpoint creation | Create relationships and endpoint nodes in the same `CREATE` clause. | High | High | N |
-| Edge upsert / merge | Match-or-create relationships. | High | High | N |
+| Edge upsert / merge | Match-or-create relationships between matched endpoints. | High | High | Y |
 | Aggregation | Support `COUNT`, grouping, and simple aggregates. | High | High | N |
 | Distinct rows | Support `RETURN DISTINCT ...`. | Medium | Medium | N |
-| Aliased projections | Support `RETURN p.name AS name`. | Medium | High | N |
+| Aliased projections | Support `RETURN p.name AS name`. | Medium | High | Y |
 | Function calls | Add built-in scalar, list, and string functions. | Medium | Medium | N |
 | List/map literals | Support richer literal values in queries. | Medium | Medium | N |
 | Payload projection | Return `Payload` fields such as primary text or blob references. | High | Very High | Y |
@@ -152,17 +152,53 @@ WHERE SEMANTIC_SIMILAR(n, 'family notes', TOP 10)
 RETURN n
 ```
 
-## Near-Term Priorities
+```gql
+MATCH (p:Person {name: 'Alice'})
+SET p.age = 42, p.sex = 'Female'
+RETURN p
+```
 
-Near-term priorities should keep the implementation incremental while making GQL useful for real graph workflows:
+```gql
+MATCH (a:Person)-[r:KNOWS]->(b:Person)
+SET r.since = 2024
+RETURN a, r, b
+```
 
-1. Broaden `CREATE` toward standard GQL syntax, including node `CREATE` aliases and eventually inline endpoint creation.
-2. Path binding/projection on top of existing bounded variable-length traversal.
-3. Broaden `ORDER BY` beyond the indexed single-label node-property and indexed-root subtree shapes, and add `OFFSET` for result shaping and pagination.
-4. Aliased scalar projections.
-5. Full map/list result values for richer payload returns.
-6. Query parameters to avoid literal interpolation in application code.
-7. Index-backed full-text and semantic predicate pushdown beyond the current local fallback behavior.
+```gql
+MATCH (p:Person {name: $name})
+SET p.age = $age
+RETURN p.name AS name, p.age AS age
+```
+
+```gql
+MATCH (a:Person)-[r:FRIEND_OF]->(b:Person)
+DELETE r
+RETURN a, b
+```
+
+```gql
+MERGE (p:Person {name: 'Alice'})
+RETURN p
+```
+
+```gql
+MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})
+MERGE (a)-[r:KNOWS]->(b)
+RETURN a, r, b
+```
+
+## Near-Term Querying Priorities
+
+Near-term priorities should focus on query expressiveness, result shaping, and scalable execution before adding broader mutation syntax:
+
+1. Aggregation basics: `COUNT`, simple grouped aggregates, and clear counter/aggregation semantics.
+2. Predicate expressiveness: `OR`, parenthesized predicates, `IS NULL` / `IS NOT NULL`, and string predicates such as `CONTAINS`, `STARTS WITH`, and `ENDS WITH`.
+3. Result shaping: `RETURN DISTINCT`, broader `ORDER BY`, `OFFSET`, and stable cursor/page semantics for non-trivial result sets.
+4. Query diagnostics and explainability: `EXPLAIN`, planner diagnostics, index-use reporting, and warnings when a shape cannot use an accepted indexed path.
+5. Index-backed pushdown for full-text and semantic predicates beyond the current local fallback behavior.
+6. Richer result values, including list/map literals and a dedicated public path value representation when the protobuf API is ready.
+
+Mutation follow-ups remain important but should follow the next query tranche: standard node `CREATE`, inline endpoint creation for relationships, and broader structured mutation helpers.
 
 ## Knot PKM Use Cases
 
@@ -179,7 +215,7 @@ Knot PKM needs GQL to model and traverse relationships between notes, concepts, 
 - `NEXT`
 - `PREVIOUS`
 
-For Knot PKM, edge creation, single-hop edge matching, multi-hop path matching, neighborhood expansion, bounded variable-length traversal, indexed journal-root subtree graph reads, scalar payload projection, and text/semantic predicate MVPs are now available. The highest-value remaining areas are broader path binding/projection, index-backed semantic/full-text pushdown, richer result values, and query diagnostics.
+For graph-heavy applications, edge creation, single-hop edge matching, multi-hop path matching, path binding/projection, neighborhood expansion, bounded variable-length traversal, indexed root subtree graph reads, scalar payload projection, and text/semantic predicate MVPs are now available. The highest-value remaining querying areas are aggregation, richer predicates, result shaping, index-backed semantic/full-text pushdown, richer result values, and query diagnostics.
 
 ## Related Implementation Plans
 

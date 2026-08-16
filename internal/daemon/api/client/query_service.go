@@ -91,7 +91,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, mapDomainError(err, "query domain")
 	}
-	if !domaingraph.DomainBroadSearchable(domain) && !isIndexedAdjacencyQuery(req.GetQuery()) && !isIndexedRootSubtreeQuery(req.GetQuery()) {
+	if !domaingraph.DomainBroadSearchable(domain) && !isIndexedAdjacencyQuery(req.GetQuery()) && !isIndexedRootSubtreeQuery(req.GetQuery()) && !isIndexedEqualityNodeQuery(req.GetQuery()) {
 		return nil, status.Error(codes.FailedPrecondition, "domain is excluded from broad query execution")
 	}
 	schemaCtx, err := s.schemaContext(ctx, tx)
@@ -161,9 +161,7 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if strings.TrimSpace(req.GetQuery()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "query is required")
 	}
-	if len(req.GetParams()) > 0 {
-		return nil, status.Error(codes.Unimplemented, "GQL parameters are reserved but not implemented yet")
-	}
+	params := gqlParamsFromProto(req.GetParams())
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -179,7 +177,7 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if err != nil {
 		return nil, err
 	}
-	plan, err := gql.CompileWithSchema(req.GetQuery(), schemaCtx)
+	plan, err := gql.CompileWithSchemaAndParams(req.GetQuery(), schemaCtx, params)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -194,12 +192,14 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if err != nil {
 		return nil, mapGQLExecutionError(err)
 	}
-	rows := gqlRowsToProto(execResult)
-	pageRows, next, err := paginateProtoQueryRows(rows, int(req.GetPageSize()), req.GetPageToken())
+	pageExecResult, next, err := paginateExecResult(execResult, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &clientv1.ExecuteGQLResponse{Result: queryResultFromRowsWithCounters(pageRows, next, execResult.Counters), ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
+	pageRows := gqlRowsToProto(pageExecResult)
+	result := queryResultFromRowsWithCounters(pageRows, next, execResult.Counters)
+	mergeExecPathGraph(result, pageExecResult)
+	return &clientv1.ExecuteGQLResponse{Result: result, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
 func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.ExecuteGQLScriptRequest) (*clientv1.ExecuteGQLScriptResponse, error) {
@@ -216,9 +216,7 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	if strings.TrimSpace(req.GetScript()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "script is required")
 	}
-	if len(req.GetParams()) > 0 {
-		return nil, status.Error(codes.Unimplemented, "GQL parameters are reserved but not implemented yet")
-	}
+	params := gqlParamsFromProto(req.GetParams())
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -234,7 +232,7 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	if err != nil {
 		return nil, err
 	}
-	scriptPlan, err := gql.CompileScriptWithSchema(req.GetScript(), schemaCtx)
+	scriptPlan, err := gql.CompileScriptWithSchemaAndParams(req.GetScript(), schemaCtx, params)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -253,8 +251,7 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 			}
 			continue
 		}
-		rows := gqlRowsToProto(execResult)
-		pageRows, next, err := paginateProtoQueryRows(rows, int(req.GetPageSize()), "")
+		pageExecResult, next, err := paginateExecResult(execResult, int(req.GetPageSize()), "")
 		if err != nil {
 			statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: false, Error: err.Error()})
 			if req.GetStopOnError() {
@@ -262,11 +259,28 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 			}
 			continue
 		}
+		pageRows := gqlRowsToProto(pageExecResult)
 		result := queryResultFromRowsWithCounters(pageRows, next, execResult.Counters)
+		mergeExecPathGraph(result, pageExecResult)
 		statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: true, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary())})
 		mergeQueryResult(aggregate, result)
 	}
 	return &clientv1.ExecuteGQLScriptResponse{Statements: statementResults, Result: aggregate, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
+}
+
+func gqlParamsFromProto(params map[string]*structpb.Value) map[string]any {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(params))
+	for key, value := range params {
+		if value == nil {
+			out[key] = nil
+			continue
+		}
+		out[key] = value.AsInterface()
+	}
+	return out
 }
 
 func mapGQLExecutionError(err error) error {
@@ -787,11 +801,11 @@ func (e *queryExecution) projectRow(row *queryRowState, returns []*clientv1.Retu
 		case clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_TREE:
 			fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Tree{Tree: e.projectTree(row, ret.GetAlias())}}
 		case clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR:
-			node, err := firstBoundNode(row, ret.GetAlias())
+			value, err := scalarProjectionValue(row, ret.GetAlias())
 			if err != nil {
 				return nil, err
 			}
-			fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Scalar{Scalar: protoValue(node.ID.String())}}
+			fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Scalar{Scalar: protoValue(value)}}
 		case clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_EDGE:
 			edge, err := firstBoundEdge(row, ret.GetAlias())
 			if err != nil {
@@ -842,6 +856,73 @@ func (e *queryExecution) projectTree(row *queryRowState, alias string) *clientv1
 		forest.Roots = append(forest.Roots, build(root))
 	}
 	return forest
+}
+
+func scalarProjectionValue(row *queryRowState, projection string) (any, error) {
+	parts := strings.Split(projection, ".")
+	if len(parts) == 1 {
+		node, err := firstBoundNode(row, projection)
+		if err != nil {
+			return nil, err
+		}
+		return node.ID.String(), nil
+	}
+	if len(parts) != 2 && len(parts) != 3 {
+		return nil, fmt.Errorf("scalar projection %q must be alias, alias.property, alias.payload.field, or alias.meta.field", projection)
+	}
+	alias := parts[0]
+	namespace := "properties"
+	field := parts[1]
+	if len(parts) == 3 {
+		namespace = parts[1]
+		field = parts[2]
+	}
+	if edge, err := firstBoundEdge(row, alias); err == nil {
+		return edgeProjectionField(edge, namespace, field), nil
+	}
+	node, err := firstBoundNode(row, alias)
+	if err != nil {
+		return nil, err
+	}
+	return nodeProjectionField(node, namespace, field), nil
+}
+
+func nodeProjectionField(node domaingraph.Node, namespace, field string) any {
+	switch namespace {
+	case "properties", "":
+		return propValue(node, field)
+	case "payload":
+		if node.Payload == nil {
+			return nil
+		}
+		return node.Payload[field]
+	case "meta":
+		if node.Meta == nil {
+			return nil
+		}
+		return node.Meta[field]
+	default:
+		return nil
+	}
+}
+
+func edgeProjectionField(edge domaingraph.Edge, namespace, field string) any {
+	switch namespace {
+	case "properties", "":
+		return edgePropValue(edge, field)
+	case "payload":
+		if edge.Payload == nil {
+			return nil
+		}
+		return edge.Payload[field]
+	case "meta":
+		if edge.Meta == nil {
+			return nil
+		}
+		return edge.Meta[field]
+	default:
+		return nil
+	}
 }
 
 func firstBoundNode(row *queryRowState, alias string) (domaingraph.Node, error) {
@@ -918,6 +999,32 @@ func (g gqlDaemonGraph) CreateEdge(ctx context.Context, edge execution.CreateEdg
 		return execmodel.Edge{}, err
 	}
 	return gqlExecEdge(created), nil
+}
+
+func (g gqlDaemonGraph) UpdateNode(ctx context.Context, node execution.UpdateNode) (execmodel.Node, error) {
+	updated, err := g.service.graphs.UpdateNode(ctx, g.tx, daegraph.UpdateNodeInput{NodeID: node.NodeID, Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties), Payload: copyMapAny(node.Payload), Meta: copyMapAny(node.Meta), UpdateMask: []string{"labels", "properties", "payload", "meta"}})
+	if err != nil {
+		return execmodel.Node{}, err
+	}
+	return gqlExecNode(updated), nil
+}
+
+func (g gqlDaemonGraph) UpdateEdge(ctx context.Context, edge execution.UpdateEdge) (execmodel.Edge, error) {
+	updated, err := g.service.graphs.UpdateEdge(ctx, g.tx, daegraph.UpdateEdgeInput{EdgeID: edge.EdgeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload), Meta: copyMapAny(edge.Meta), UpdateMask: []string{"labels", "properties", "payload", "meta"}})
+	if err != nil {
+		return execmodel.Edge{}, err
+	}
+	return gqlExecEdge(updated), nil
+}
+
+func (g gqlDaemonGraph) DeleteNode(ctx context.Context, nodeID string) error {
+	_, _, err := g.service.graphs.DeleteNode(ctx, g.tx, nodeID, false)
+	return err
+}
+
+func (g gqlDaemonGraph) DeleteEdge(ctx context.Context, edgeID string) error {
+	_, err := g.service.graphs.DeleteEdge(ctx, g.tx, edgeID)
+	return err
 }
 
 func (g gqlDaemonGraph) QueryNodes(ctx context.Context, query execution.QueryNodes) ([]execmodel.Node, error) {
@@ -1020,6 +1127,10 @@ func gqlRowsToProto(result execmodel.Result) []*clientv1.QueryRow {
 				fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Edge{Edge: gqlEdgeToProto(*value.Edge)}}
 				continue
 			}
+			if value.Path != nil {
+				fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Scalar{Scalar: protoValue(gqlPathToScalar(*value.Path))}}
+				continue
+			}
 			fields[name] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Scalar{Scalar: protoValue(value.Scalar)}}
 		}
 		rows = append(rows, &clientv1.QueryRow{Fields: fields})
@@ -1035,12 +1146,70 @@ func gqlEdgeToProto(edge execmodel.Edge) *clientv1.Edge {
 	return &clientv1.Edge{EdgeId: edge.ID, DomainId: edge.DomainID, FromNodeId: edge.FromID, ToNodeId: edge.ToID, Labels: append([]string(nil), edge.Labels...), Properties: protoStruct(edge.Properties), Payload: protoStruct(edge.Payload), Meta: protoStruct(edge.Meta)}
 }
 
+func gqlPathToScalar(path execmodel.Path) map[string]any {
+	nodes := make([]any, 0, len(path.Nodes))
+	for _, node := range path.Nodes {
+		nodes = append(nodes, map[string]any{"nodeId": node.ID, "domainId": node.DomainID, "labels": stringListValue(node.Labels), "properties": node.Properties, "payload": node.Payload, "meta": node.Meta})
+	}
+	edges := make([]any, 0, len(path.Edges))
+	for _, edge := range path.Edges {
+		edges = append(edges, map[string]any{"edgeId": edge.ID, "domainId": edge.DomainID, "fromNodeId": edge.FromID, "toNodeId": edge.ToID, "labels": stringListValue(edge.Labels), "properties": edge.Properties, "payload": edge.Payload, "meta": edge.Meta})
+	}
+	return map[string]any{"nodes": nodes, "edges": edges}
+}
+
+func stringListValue(values []string) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
+}
+
 func queryResultFromRows(rows []*clientv1.QueryRow, next string) *clientv1.QueryResult {
 	return queryResultFromRowsWithCounters(rows, next, execmodel.Counters{})
 }
 
+func mergeExecPathGraph(result *clientv1.QueryResult, execResult execmodel.Result) {
+	if result == nil {
+		return
+	}
+	if result.Graph == nil {
+		result.Graph = &clientv1.ResultGraph{}
+	}
+	nodeSeen := map[string]struct{}{}
+	for _, node := range result.Graph.Nodes {
+		nodeSeen[node.GetNodeId()] = struct{}{}
+	}
+	edgeSeen := map[string]struct{}{}
+	for _, edge := range result.Graph.Edges {
+		edgeSeen[edge.GetEdgeId()] = struct{}{}
+	}
+	for _, row := range execResult.Rows {
+		for _, value := range row {
+			if value.Path == nil {
+				continue
+			}
+			for _, node := range value.Path.Nodes {
+				if _, ok := nodeSeen[node.ID]; ok {
+					continue
+				}
+				result.Graph.Nodes = append(result.Graph.Nodes, gqlNodeToProto(node))
+				nodeSeen[node.ID] = struct{}{}
+			}
+			for _, edge := range value.Path.Edges {
+				if _, ok := edgeSeen[edge.ID]; ok {
+					continue
+				}
+				result.Graph.Edges = append(result.Graph.Edges, gqlEdgeToProto(edge))
+				edgeSeen[edge.ID] = struct{}{}
+			}
+		}
+	}
+}
+
 func queryResultFromRowsWithCounters(rows []*clientv1.QueryRow, next string, counters execmodel.Counters) *clientv1.QueryResult {
-	return &clientv1.QueryResult{Rows: rows, NextPageToken: next, Graph: graphFromRows(rows), Counters: &clientv1.QueryCounters{RowsReturned: int32(len(rows)), NodesInserted: int32(counters.NodesInserted), EdgesInserted: int32(counters.EdgesInserted)}}
+	return &clientv1.QueryResult{Rows: rows, NextPageToken: next, Graph: graphFromRows(rows), Counters: &clientv1.QueryCounters{RowsReturned: int32(len(rows)), NodesInserted: int32(counters.NodesInserted), NodesUpdated: int32(counters.NodesUpdated), NodesDeleted: int32(counters.NodesDeleted), EdgesInserted: int32(counters.EdgesInserted), EdgesDeleted: int32(counters.EdgesDeleted)}}
 }
 
 func mergeQueryResult(aggregate *clientv1.QueryResult, result *clientv1.QueryResult) {
@@ -1065,16 +1234,27 @@ func mergeQueryResult(aggregate *clientv1.QueryResult, result *clientv1.QueryRes
 	if aggregate.Graph == nil {
 		aggregate.Graph = &clientv1.ResultGraph{}
 	}
-	seen := map[string]bool{}
+	seenNodes := map[string]bool{}
 	for _, node := range aggregate.Graph.GetNodes() {
-		seen[node.GetNodeId()] = true
+		seenNodes[node.GetNodeId()] = true
 	}
 	for _, node := range result.GetGraph().GetNodes() {
-		if seen[node.GetNodeId()] {
+		if seenNodes[node.GetNodeId()] {
 			continue
 		}
-		seen[node.GetNodeId()] = true
+		seenNodes[node.GetNodeId()] = true
 		aggregate.Graph.Nodes = append(aggregate.Graph.Nodes, node)
+	}
+	seenEdges := map[string]bool{}
+	for _, edge := range aggregate.Graph.GetEdges() {
+		seenEdges[edge.GetEdgeId()] = true
+	}
+	for _, edge := range result.GetGraph().GetEdges() {
+		if seenEdges[edge.GetEdgeId()] {
+			continue
+		}
+		seenEdges[edge.GetEdgeId()] = true
+		aggregate.Graph.Edges = append(aggregate.Graph.Edges, edge)
 	}
 }
 
@@ -1096,6 +1276,34 @@ func graphFromRows(rows []*clientv1.QueryRow) *clientv1.ResultGraph {
 		}
 	}
 	return &clientv1.ResultGraph{Nodes: nodes, Edges: edges}
+}
+
+func paginateExecResult(result execmodel.Result, pageSize int, pageToken string) (execmodel.Result, string, error) {
+	start := 0
+	if strings.TrimSpace(pageToken) != "" {
+		value, err := strconv.Atoi(pageToken)
+		if err != nil || value < 0 {
+			return execmodel.Result{}, "", fmt.Errorf("invalid page_token")
+		}
+		start = value
+	}
+	if pageSize <= 0 || pageSize > queryMaxPageSize {
+		pageSize = queryMaxPageSize
+	}
+	page := execmodel.Result{Counters: result.Counters, Columns: append([]string(nil), result.Columns...)}
+	if start >= len(result.Rows) {
+		return page, "", nil
+	}
+	end := start + pageSize
+	if end > len(result.Rows) {
+		end = len(result.Rows)
+	}
+	next := ""
+	if end < len(result.Rows) {
+		next = strconv.Itoa(end)
+	}
+	page.Rows = append([]execmodel.Row(nil), result.Rows[start:end]...)
+	return page, next, nil
 }
 
 func paginateProtoQueryRows(rows []*clientv1.QueryRow, pageSize int, pageToken string) ([]*clientv1.QueryRow, string, error) {
@@ -1271,6 +1479,9 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 		return indexed, res, err
 	}
 	if len(query.GetOrderBy()) == 0 {
+		if indexed, res, err := s.tryExecuteIndexedEqualityNodeQuery(ctx, req, tx, schemaCtx, recorder); indexed || err != nil {
+			return indexed, res, err
+		}
 		return false, nil, nil
 	}
 	match := query.GetMatch()
@@ -1335,6 +1546,75 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 	result := queryResultFromRows(out, next)
 	diagnostics := &clientv1.QueryDiagnostics{Plan: stats.Plan, Indexes: []string{idx.Name}, FullScan: stats.FullScan, IndexEntriesScanned: int32(stats.IndexEntriesScanned), NodesLoaded: int32(stats.NodesLoaded), EdgesLoaded: int32(stats.EdgesLoaded), RowsReturned: int32(len(out)), NextCursorKind: stats.NextCursorKind}
 	return true, &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: diagnostics}, nil
+}
+
+func isIndexedEqualityNodeQuery(query *clientv1.GraphQuery) bool {
+	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil || len(query.GetOrderBy()) != 0 || len(query.GetMatch().GetSteps()) != 0 || len(query.GetMatch().GetStart().GetLabels()) != 1 {
+		return false
+	}
+	field, _, ok, err := indexedEqualityPredicate(query.GetWhere(), query.GetMatch().GetStart().GetAlias())
+	return err == nil && ok && strings.TrimSpace(field) != ""
+}
+
+func (s *QueryService) tryExecuteIndexedEqualityNodeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+	query := req.GetQuery()
+	match := query.GetMatch()
+	start := match.GetStart()
+	if len(match.GetSteps()) != 0 || len(start.GetLabels()) != 1 {
+		return false, nil, nil
+	}
+	field, value, ok, err := indexedEqualityPredicate(query.GetWhere(), start.GetAlias())
+	if err != nil || !ok {
+		return ok, nil, err
+	}
+	if schemaCtx.Schema == nil {
+		return true, nil, status.Error(codes.FailedPrecondition, "indexed equality query requires an active schema with an ordered index")
+	}
+	idx, ok := findOrderedNodeIndex(*schemaCtx.Schema, start.GetLabels()[0], field)
+	if !ok {
+		return true, nil, status.Errorf(codes.FailedPrecondition, "no ordered index for %s.properties.%s", start.GetLabels()[0], field)
+	}
+	if s.graphs == nil {
+		return true, nil, status.Error(codes.Internal, "graph manager is not configured")
+	}
+	if err := s.graphs.ConfigureIndexes(ctx, tx, schemacompile.Hash(*schemaCtx.Schema), schemaCtx.Schema.Indexes); err != nil {
+		return true, nil, mapGraphError(err, "configure equality query indexes")
+	}
+	limit := effectiveIndexedLimit(req.GetPageSize(), query.GetLimit())
+	nodes, next, stats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, daegraph.OrderedNodePropertyScan{IndexName: idx.Name, Direction: schemamodel.IndexSortDirectionAsc, Limit: limit, Cursor: req.GetPageToken(), HasLow: true, Low: value, HasHigh: true, High: value})
+	if err != nil {
+		return true, nil, mapGraphError(err, "execute indexed equality query")
+	}
+	returns := query.GetReturns()
+	if len(returns) == 0 {
+		returns = []*clientv1.ReturnProjection{{Alias: start.GetAlias(), OutputName: start.GetAlias(), Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}
+	}
+	exec := newQueryExecution(nil, nil)
+	out := make([]*clientv1.QueryRow, 0, len(nodes))
+	for _, node := range nodes {
+		row := &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): {node}}, parentByChild: map[string]string{}, orderByChild: map[string]any{}}
+		protoRow, err := exec.projectRow(row, returns)
+		if err != nil {
+			return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		out = append(out, protoRow)
+	}
+	result := queryResultFromRows(out, next)
+	diagnostics := &clientv1.QueryDiagnostics{Plan: "OrderedNodePropertyEqualityIndexScan", Indexes: []string{idx.Name}, FullScan: stats.FullScan, IndexEntriesScanned: int32(stats.IndexEntriesScanned), NodesLoaded: int32(stats.NodesLoaded), EdgesLoaded: int32(stats.EdgesLoaded), RowsReturned: int32(len(out)), NextCursorKind: stats.NextCursorKind}
+	return true, &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: diagnostics}, nil
+}
+
+func indexedEqualityPredicate(expr *clientv1.Expr, alias string) (string, any, bool, error) {
+	if expr == nil {
+		return "", nil, false, nil
+	}
+	if eq := expr.GetPropertyEquals(); eq != nil {
+		if eq.GetAlias() != alias || strings.TrimSpace(eq.GetName()) == "" {
+			return "", nil, true, status.Error(codes.FailedPrecondition, "indexed equality query predicate must target the start alias")
+		}
+		return eq.GetName(), eq.GetValue().AsInterface(), true, nil
+	}
+	return "", nil, false, nil
 }
 
 func isIndexedRootSubtreeQuery(query *clientv1.GraphQuery) bool {
@@ -1748,11 +2028,16 @@ func (s *QueryService) tryExecuteIndexedGQL(ctx context.Context, tx daemonsessio
 	returns := make([]*clientv1.ReturnProjection, 0, len(op.Returns))
 	for _, ret := range op.Returns {
 		kind := clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE
+		alias := ret.Variable
 		if ret.Kind == planmodel.ReturnProperty {
-			return true, nil, status.Error(codes.FailedPrecondition, "GQL ORDER BY indexed execution currently supports node returns only")
+			kind = clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR
+			alias = gqlStructuredScalarAlias(ret)
 		}
-		output := ret.Variable
-		returns = append(returns, &clientv1.ReturnProjection{Alias: ret.Variable, OutputName: output, Kind: kind})
+		output := ret.OutputName
+		if output == "" {
+			output = gqlReturnOutputName(ret)
+		}
+		returns = append(returns, &clientv1.ReturnProjection{Alias: alias, OutputName: output, Kind: kind})
 	}
 	queryLimit := int32(op.Limit)
 	request := &clientv1.ExecuteQueryRequest{TransactionId: tx.ID, PageSize: int32(pageSize), PageToken: pageToken, Query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: op.Variable, Labels: append([]string(nil), op.Labels...)}}, Returns: returns, OrderBy: []*clientv1.OrderSpec{{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: op.Variable, Name: order.Property}}}, Direction: direction}}, Limit: queryLimit}}
@@ -1763,7 +2048,27 @@ func (s *QueryService) tryExecuteIndexedGQL(ctx context.Context, tx daemonsessio
 	return true, &clientv1.ExecuteGQLResponse{Result: res.GetResult(), ReadMetadata: res.GetReadMetadata(), Diagnostics: res.GetDiagnostics()}, nil
 }
 
+func gqlStructuredScalarAlias(ret planmodel.ReturnItem) string {
+	if ret.Namespace != "" {
+		return ret.Variable + "." + ret.Namespace + "." + ret.Property
+	}
+	return ret.Variable + "." + ret.Property
+}
+
+func gqlReturnOutputName(ret planmodel.ReturnItem) string {
+	if ret.OutputName != "" {
+		return ret.OutputName
+	}
+	if ret.Kind == planmodel.ReturnProperty {
+		return gqlStructuredScalarAlias(ret)
+	}
+	return ret.Variable
+}
+
 func (s *QueryService) tryExecuteIndexedGQLPath(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, op planmodel.QueryPathOperation, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
+	if op.PathVariable != "" {
+		return false, nil, nil
+	}
 	if len(op.OrderBy) == 0 {
 		return false, nil, nil
 	}

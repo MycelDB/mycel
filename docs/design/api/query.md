@@ -97,10 +97,10 @@ These commands construct a `GraphQuery` with start alias `n` and return the matc
 
 - Supports transaction-scoped node pattern starts.
 - Supports linear traversal steps in the protobuf API for `out` and `in` directions.
-- Supports node and tree projections.
+- Supports node, edge, tree, and scalar projections for accepted indexed shapes.
 - Supports `and`, `has_tag`, `property_exists`, `property_equals`, and `between` expressions.
 - Supports order specs, query limit, and response pagination.
-- Scalar projections are minimal and currently return the bound node id for the requested alias.
+- Scalar projections can address `alias.property`, `alias.payload.field`, or `alias.meta.field`; a plain `alias` scalar projection preserves the legacy node-id behavior.
 - The CLI currently exposes the common node-query subset; richer traversal query construction is available via gRPC clients.
 
 ## Transaction scoping
@@ -190,6 +190,7 @@ A traversal step includes:
 
 - direction
 - edge kind
+- optional edge alias
 - depth min/max
 - target node pattern
 
@@ -244,10 +245,11 @@ The daemon applies Mycel metadata normalization rules for tags and custom proper
 Initial projection kinds:
 
 - node variable
+- edge variable
 - tree projection
-- scalar value, reserved for future/current ordering/filtering convenience
+- scalar value
 
-A tree projection returns a forest preserving `contains` edge hierarchy.
+A tree projection returns a forest preserving `contains` edge hierarchy. Scalar projections use `ReturnProjection.alias` as a field reference in the current wire shape: `n.title`, `n.payload.text`, `n.meta.created_at`, or edge equivalents such as `r.weight`. `ReturnProjection.output_name` controls the row field name.
 
 ## Result model
 
@@ -256,10 +258,11 @@ A result row is a map from output field name to typed query value.
 Known value kinds:
 
 - node
+- edge
 - tree
 - scalar
 
-Scalar values use `google.protobuf.Value` so string, number, boolean, and null-like values can be represented.
+Scalar values use `google.protobuf.Value` so string, number, boolean, null-like values, and structured path fallback objects can be represented.
 
 ## Pagination
 
@@ -269,7 +272,7 @@ Implementations may cap page size. Indexed query plans use opaque index-key curs
 
 ## Indexed execution and diagnostics
 
-The accepted production path for single-label node ordering uses schema-declared ordered property indexes. For example, `JournalEntry ORDER BY date` is planned as an ordered node property index scan when the domain schema declares the index. Missing indexes fail closed rather than silently scanning the domain. The indexed path also supports bounds on the ordered property, including inclusive `BetweenExpr` bounds and strict upper bounds via `LessThanExpr`, so callers can ask for entries before a timestamp sorted descending with a limit.
+The accepted production paths for single-label node starts use schema-declared ordered property indexes. `PropertyEqualsExpr` on the start alias is planned as `OrderedNodePropertyEqualityIndexScan`; `ORDER BY` on one indexed property is planned as `OrderedNodePropertyIndexScan`. Missing indexes fail closed rather than silently scanning the domain. The ordered path also supports bounds on the ordered property, including inclusive `BetweenExpr` bounds and strict upper bounds via `LessThanExpr`, so callers can ask for entries before a timestamp sorted descending with a limit.
 
 The indexed-root subtree path combines that ordered root scan with adjacency-index traversal. A query with a single ordered root label, one traversal step, finite or safety-capped depth, `limit`, and optional `max_nodes`/`max_edges` first selects root rows from the ordered property index, then expands only those roots through the edge adjacency index. `limit` and `page_token` apply to root nodes, not descendants. The response `result.graph` includes selected roots, traversed descendant nodes, and traversed edges. If `max_nodes` or `max_edges` is hit, diagnostics set `truncated=true` and include `truncation_reason`; execution does not fall back to a full scan.
 

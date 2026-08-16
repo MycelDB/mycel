@@ -27,6 +27,7 @@ assigned to a tagged release bucket.
 ## Query and schema indexes
 
 - [GWL indexes and indexed query execution implementation plan](gwl-indexes-and-indexed-query-execution-implementation-plan.md) — schema-declared node/edge indexes, graph index persistence, synchronous maintenance, backfill, and indexed structured/GQL query planning.
+- [Query expansion implementation plan](query-expansion-implementation-plan.md) — GQL delete/merge, parameters, aliased projections, indexed structured query parity, and path projection.
 - [REPL space connection and GQL execution implementation plan](repl-space-gql-connect-implementation-plan.md) — psql-like REPL connection state for spaces/domains and convenient GQL execution without repeating IDs.
 
 ## Cleanup

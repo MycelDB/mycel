@@ -17,7 +17,11 @@ query
 
 statement
   : insertStatement
+  | mergeNodeStatement
   | matchCreateStatement
+  | matchSetStatement
+  | matchDeleteStatement
+  | matchMergeRelationshipStatement
   | matchStatement
   ;
 
@@ -26,11 +30,35 @@ insertStatement
   ;
 
 matchStatement
-  : MATCH matchPattern whereClause? RETURN GRAPH? returnItem (COMMA returnItem)* orderByClause? fetchFirstClause?
+  : MATCH pathBinding? matchPattern whereClause? RETURN GRAPH? returnProjection (COMMA returnProjection)* orderByClause? fetchFirstClause?
+  ;
+
+pathBinding
+  : variable EQ
   ;
 
 matchCreateStatement
   : MATCH nodePattern (COMMA nodePattern)+ CREATE createRelationshipPattern
+  ;
+
+matchSetStatement
+  : MATCH matchPattern whereClause? SET setAssignment (COMMA setAssignment)* RETURN GRAPH? returnProjection (COMMA returnProjection)* fetchFirstClause?
+  ;
+
+matchDeleteStatement
+  : MATCH matchPattern whereClause? DELETE variable (COMMA variable)* RETURN GRAPH? returnProjection (COMMA returnProjection)* fetchFirstClause?
+  ;
+
+mergeNodeStatement
+  : MERGE nodePattern RETURN GRAPH? returnProjection (COMMA returnProjection)* fetchFirstClause?
+  ;
+
+matchMergeRelationshipStatement
+  : MATCH nodePattern (COMMA nodePattern)+ MERGE createRelationshipPattern RETURN GRAPH? returnProjection (COMMA returnProjection)* fetchFirstClause?
+  ;
+
+setAssignment
+  : propertyReference EQ value
   ;
 
 createRelationshipPattern
@@ -94,6 +122,10 @@ textContainsPredicate
 
 semanticSimilarPredicate
   : SEMANTIC_SIMILAR LPAREN variable COMMA STRING COMMA TOP INTEGER RPAREN
+  ;
+
+returnProjection
+  : returnItem (AS IDENTIFIER)?
   ;
 
 returnItem
@@ -162,11 +194,16 @@ value
   | TRUE
   | FALSE
   | NULL
+  | PARAMETER
   ;
 
 INSERT : [Ii] [Nn] [Ss] [Ee] [Rr] [Tt];
 CREATE : [Cc] [Rr] [Ee] [Aa] [Tt] [Ee];
+MERGE  : [Mm] [Ee] [Rr] [Gg] [Ee];
 MATCH  : [Mm] [Aa] [Tt] [Cc] [Hh];
+SET    : [Ss] [Ee] [Tt];
+DELETE : [Dd] [Ee] [Ll] [Ee] [Tt] [Ee];
+AS     : [Aa] [Ss];
 WHERE  : [Ww] [Hh] [Ee] [Rr] [Ee];
 RETURN : [Rr] [Ee] [Tt] [Uu] [Rr] [Nn];
 FETCH  : [Ff] [Ee] [Tt] [Cc] [Hh];
@@ -217,6 +254,10 @@ INTEGER
 STRING
   : '\'' ( ~['\\] | ESCAPE_SEQUENCE )* '\''
   | '"'  ( ~["\\] | ESCAPE_SEQUENCE )* '"'
+  ;
+
+PARAMETER
+  : '$' IDENTIFIER_START IDENTIFIER_PART*
   ;
 
 IDENTIFIER

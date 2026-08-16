@@ -33,8 +33,20 @@ func (builder) Build(tree antlr4.Tree) (model.Query, error) {
 	if insert := stmtCtx.InsertStatement(); insert != nil {
 		return buildInsertStatement(insert)
 	}
+	if mergeNode := stmtCtx.MergeNodeStatement(); mergeNode != nil {
+		return buildMergeNodeStatement(mergeNode)
+	}
 	if matchCreate := stmtCtx.MatchCreateStatement(); matchCreate != nil {
 		return buildMatchCreateStatement(matchCreate)
+	}
+	if matchSet := stmtCtx.MatchSetStatement(); matchSet != nil {
+		return buildMatchSetStatement(matchSet)
+	}
+	if matchDelete := stmtCtx.MatchDeleteStatement(); matchDelete != nil {
+		return buildMatchDeleteStatement(matchDelete)
+	}
+	if matchMerge := stmtCtx.MatchMergeRelationshipStatement(); matchMerge != nil {
+		return buildMatchMergeRelationshipStatement(matchMerge)
 	}
 	if match := stmtCtx.MatchStatement(); match != nil {
 		return buildMatchStatement(match)
@@ -52,6 +64,26 @@ func buildInsertStatement(ctx generated.IInsertStatementContext) (model.Query, e
 		return model.Query{}, err
 	}
 	return model.Query{Statement: model.InsertStatement{Pattern: node}}, nil
+}
+
+func buildMergeNodeStatement(ctx generated.IMergeNodeStatementContext) (model.Query, error) {
+	mergeCtx, ok := ctx.(*generated.MergeNodeStatementContext)
+	if !ok || mergeCtx.NodePattern() == nil {
+		return model.Query{}, fmt.Errorf("expected merge node statement")
+	}
+	node, err := buildNodePattern(mergeCtx.NodePattern())
+	if err != nil {
+		return model.Query{}, err
+	}
+	returns, err := buildReturnProjections(mergeCtx.AllReturnProjection())
+	if err != nil {
+		return model.Query{}, err
+	}
+	fetchFirst, err := optionalFetchFirst(mergeCtx.FetchFirstClause())
+	if err != nil {
+		return model.Query{}, err
+	}
+	return model.Query{Statement: model.MergeNodeStatement{Pattern: node, Returns: returns, ReturnGraph: mergeCtx.GRAPH() != nil, FetchFirst: fetchFirst}}, nil
 }
 
 func buildMatchCreateStatement(ctx generated.IMatchCreateStatementContext) (model.Query, error) {
@@ -72,6 +104,122 @@ func buildMatchCreateStatement(ctx generated.IMatchCreateStatementContext) (mode
 		return model.Query{}, err
 	}
 	return model.Query{Statement: model.MatchCreateStatement{Matches: matches, Create: create}}, nil
+}
+
+func buildMatchSetStatement(ctx generated.IMatchSetStatementContext) (model.Query, error) {
+	matchCtx, ok := ctx.(*generated.MatchSetStatementContext)
+	if !ok || matchCtx.MatchPattern() == nil || len(matchCtx.AllSetAssignment()) == 0 {
+		return model.Query{}, fmt.Errorf("expected match set statement")
+	}
+	matchPattern, err := buildMatchPattern(matchCtx.MatchPattern())
+	if err != nil {
+		return model.Query{}, err
+	}
+	assignments := make([]model.SetAssignment, 0, len(matchCtx.AllSetAssignment()))
+	for _, assignmentCtx := range matchCtx.AllSetAssignment() {
+		assignment, err := buildSetAssignment(assignmentCtx)
+		if err != nil {
+			return model.Query{}, err
+		}
+		assignments = append(assignments, assignment)
+	}
+	returns, err := buildReturnProjections(matchCtx.AllReturnProjection())
+	if err != nil {
+		return model.Query{}, err
+	}
+	var where *model.WhereClause
+	if whereCtx := matchCtx.WhereClause(); whereCtx != nil {
+		built, err := buildWhereClause(whereCtx)
+		if err != nil {
+			return model.Query{}, err
+		}
+		where = &built
+	}
+	var fetchFirst *model.FetchFirstClause
+	if fetchCtx := matchCtx.FetchFirstClause(); fetchCtx != nil {
+		built, err := buildFetchFirstClause(fetchCtx)
+		if err != nil {
+			return model.Query{}, err
+		}
+		fetchFirst = &built
+	}
+	return model.Query{Statement: model.MatchSetStatement{MatchPattern: matchPattern, Where: where, Assignments: assignments, Returns: returns, ReturnGraph: matchCtx.GRAPH() != nil, FetchFirst: fetchFirst}}, nil
+}
+
+func buildMatchDeleteStatement(ctx generated.IMatchDeleteStatementContext) (model.Query, error) {
+	deleteCtx, ok := ctx.(*generated.MatchDeleteStatementContext)
+	if !ok || deleteCtx.MatchPattern() == nil || len(deleteCtx.AllVariable()) == 0 {
+		return model.Query{}, fmt.Errorf("expected match delete statement")
+	}
+	matchPattern, err := buildMatchPattern(deleteCtx.MatchPattern())
+	if err != nil {
+		return model.Query{}, err
+	}
+	targets := make([]string, 0, len(deleteCtx.AllVariable()))
+	for _, variable := range deleteCtx.AllVariable() {
+		v, ok := variable.(*generated.VariableContext)
+		if !ok || v.IDENTIFIER() == nil {
+			return model.Query{}, fmt.Errorf("invalid delete variable")
+		}
+		targets = append(targets, v.IDENTIFIER().GetText())
+	}
+	returns, err := buildReturnProjections(deleteCtx.AllReturnProjection())
+	if err != nil {
+		return model.Query{}, err
+	}
+	where, err := optionalWhere(deleteCtx.WhereClause())
+	if err != nil {
+		return model.Query{}, err
+	}
+	fetchFirst, err := optionalFetchFirst(deleteCtx.FetchFirstClause())
+	if err != nil {
+		return model.Query{}, err
+	}
+	return model.Query{Statement: model.MatchDeleteStatement{MatchPattern: matchPattern, Where: where, Targets: targets, Returns: returns, ReturnGraph: deleteCtx.GRAPH() != nil, FetchFirst: fetchFirst}}, nil
+}
+
+func buildMatchMergeRelationshipStatement(ctx generated.IMatchMergeRelationshipStatementContext) (model.Query, error) {
+	mergeCtx, ok := ctx.(*generated.MatchMergeRelationshipStatementContext)
+	if !ok || len(mergeCtx.AllNodePattern()) < 2 || mergeCtx.CreateRelationshipPattern() == nil {
+		return model.Query{}, fmt.Errorf("expected match merge relationship statement")
+	}
+	matches := make([]model.NodePattern, 0, len(mergeCtx.AllNodePattern()))
+	for _, nodeCtx := range mergeCtx.AllNodePattern() {
+		node, err := buildNodePattern(nodeCtx)
+		if err != nil {
+			return model.Query{}, err
+		}
+		matches = append(matches, node)
+	}
+	merge, err := buildCreateRelationshipPattern(mergeCtx.CreateRelationshipPattern())
+	if err != nil {
+		return model.Query{}, err
+	}
+	returns, err := buildReturnProjections(mergeCtx.AllReturnProjection())
+	if err != nil {
+		return model.Query{}, err
+	}
+	fetchFirst, err := optionalFetchFirst(mergeCtx.FetchFirstClause())
+	if err != nil {
+		return model.Query{}, err
+	}
+	return model.Query{Statement: model.MatchMergeRelationshipStatement{Matches: matches, Merge: merge, Returns: returns, ReturnGraph: mergeCtx.GRAPH() != nil, FetchFirst: fetchFirst}}, nil
+}
+
+func buildSetAssignment(ctx generated.ISetAssignmentContext) (model.SetAssignment, error) {
+	assignmentCtx, ok := ctx.(*generated.SetAssignmentContext)
+	if !ok || assignmentCtx.PropertyReference() == nil || assignmentCtx.Value() == nil {
+		return model.SetAssignment{}, fmt.Errorf("invalid set assignment")
+	}
+	field, err := buildFieldReference(assignmentCtx.PropertyReference())
+	if err != nil {
+		return model.SetAssignment{}, err
+	}
+	value, err := buildValue(assignmentCtx.Value())
+	if err != nil {
+		return model.SetAssignment{}, err
+	}
+	return model.SetAssignment{Variable: field.Variable, Namespace: field.Namespace, Property: field.Property, Value: value}, nil
 }
 
 func buildCreateRelationshipPattern(ctx generated.ICreateRelationshipPatternContext) (model.CreateRelationshipPattern, error) {
@@ -108,6 +256,13 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 	if err != nil {
 		return model.Query{}, err
 	}
+	if pathBinding := matchCtx.PathBinding(); pathBinding != nil {
+		pathVariable, err := buildPathBinding(pathBinding)
+		if err != nil {
+			return model.Query{}, err
+		}
+		matchPattern.PathVariable = pathVariable
+	}
 	node := matchPattern.Start
 	var where *model.WhereClause
 	if whereCtx := matchCtx.WhereClause(); whereCtx != nil {
@@ -117,25 +272,13 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 		}
 		where = &built
 	}
-	var fetchFirst *model.FetchFirstClause
-	if fetchCtx := matchCtx.FetchFirstClause(); fetchCtx != nil {
-		built, err := buildFetchFirstClause(fetchCtx)
-		if err != nil {
-			return model.Query{}, err
-		}
-		fetchFirst = &built
+	fetchFirst, err := optionalFetchFirst(matchCtx.FetchFirstClause())
+	if err != nil {
+		return model.Query{}, err
 	}
-	returns := make([]model.ReturnItem, 0, len(matchCtx.AllReturnItem()))
-	for _, item := range matchCtx.AllReturnItem() {
-		returnCtx, ok := item.(*generated.ReturnItemContext)
-		if !ok {
-			return model.Query{}, fmt.Errorf("invalid return item")
-		}
-		built, err := buildReturnItem(returnCtx)
-		if err != nil {
-			return model.Query{}, err
-		}
-		returns = append(returns, built)
+	returns, err := buildReturnProjections(matchCtx.AllReturnProjection())
+	if err != nil {
+		return model.Query{}, err
 	}
 	var orderBy []model.OrderItem
 	if orderCtx := matchCtx.OrderByClause(); orderCtx != nil {
@@ -150,6 +293,18 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 		stmt.MatchPattern = matchPattern
 	}
 	return model.Query{Statement: stmt}, nil
+}
+
+func buildPathBinding(ctx generated.IPathBindingContext) (string, error) {
+	bindingCtx, ok := ctx.(*generated.PathBindingContext)
+	if !ok || bindingCtx.Variable() == nil {
+		return "", fmt.Errorf("invalid path binding")
+	}
+	variableCtx, ok := bindingCtx.Variable().(*generated.VariableContext)
+	if !ok || variableCtx.IDENTIFIER() == nil {
+		return "", fmt.Errorf("invalid path binding variable")
+	}
+	return variableCtx.IDENTIFIER().GetText(), nil
 }
 
 func buildMatchPattern(ctx generated.IMatchPatternContext) (model.MatchPattern, error) {
@@ -319,6 +474,54 @@ func buildOrderByClause(ctx generated.IOrderByClauseContext) ([]model.OrderItem,
 		items = append(items, model.OrderItem{Variable: field.Variable, Namespace: field.Namespace, Property: field.Property, Direction: direction})
 	}
 	return items, nil
+}
+
+func optionalWhere(ctx generated.IWhereClauseContext) (*model.WhereClause, error) {
+	if ctx == nil {
+		return nil, nil
+	}
+	built, err := buildWhereClause(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &built, nil
+}
+
+func optionalFetchFirst(ctx generated.IFetchFirstClauseContext) (*model.FetchFirstClause, error) {
+	if ctx == nil {
+		return nil, nil
+	}
+	built, err := buildFetchFirstClause(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &built, nil
+}
+
+func buildReturnProjections(items []generated.IReturnProjectionContext) ([]model.ReturnItem, error) {
+	returns := make([]model.ReturnItem, 0, len(items))
+	for _, item := range items {
+		projCtx, ok := item.(*generated.ReturnProjectionContext)
+		if !ok || projCtx.ReturnItem() == nil {
+			return nil, fmt.Errorf("invalid return projection")
+		}
+		returnCtx, ok := projCtx.ReturnItem().(*generated.ReturnItemContext)
+		if !ok {
+			return nil, fmt.Errorf("invalid return item")
+		}
+		built, err := buildReturnItem(returnCtx)
+		if err != nil {
+			return nil, err
+		}
+		if projCtx.AS() != nil {
+			if projCtx.IDENTIFIER() == nil {
+				return nil, fmt.Errorf("invalid return alias")
+			}
+			built.OutputName = projCtx.IDENTIFIER().GetText()
+		}
+		returns = append(returns, built)
+	}
+	return returns, nil
 }
 
 func buildReturnItem(ctx *generated.ReturnItemContext) (model.ReturnItem, error) {
@@ -589,6 +792,8 @@ func buildValue(ctx generated.IValueContext) (model.Value, error) {
 		return model.Value{Kind: model.BoolValue, Value: false}, nil
 	case valueCtx.NULL() != nil:
 		return model.Value{Kind: model.NullValue, Value: nil}, nil
+	case valueCtx.PARAMETER() != nil:
+		return model.Value{Kind: model.ParameterValue, Value: strings.TrimPrefix(valueCtx.PARAMETER().GetText(), "$")}, nil
 	default:
 		return model.Value{}, fmt.Errorf("unsupported value %q", valueCtx.GetText())
 	}

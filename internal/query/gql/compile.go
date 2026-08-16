@@ -21,16 +21,26 @@ func Parse(query string) (ast.Query, error) {
 
 // Compile parses, analyzes, and plans a small Mycel GQL query.
 func Compile(query string) (planmodel.Plan, error) {
+	return CompileWithParams(query, nil)
+}
+
+// CompileWithParams parses, analyzes, and plans Mycel GQL with supplied scalar parameters.
+func CompileWithParams(query string, params map[string]any) (planmodel.Plan, error) {
 	parsed, err := Parse(query)
 	if err != nil {
 		return planmodel.Plan{}, err
 	}
-	return CompileAST(parsed)
+	return CompileASTWithParams(parsed, params)
 }
 
 // CompileAST analyzes and plans Mycel's GQL AST.
 func CompileAST(query ast.Query) (planmodel.Plan, error) {
-	analyzed, err := gqlanalysis.Analyze(query)
+	return CompileASTWithParams(query, nil)
+}
+
+// CompileASTWithParams analyzes and plans Mycel's GQL AST using supplied scalar parameters.
+func CompileASTWithParams(query ast.Query, params map[string]any) (planmodel.Plan, error) {
+	analyzed, err := gqlanalysis.AnalyzeWithParams(query, params)
 	if err != nil {
 		return planmodel.Plan{}, err
 	}
@@ -40,7 +50,12 @@ func CompileAST(query ast.Query) (planmodel.Plan, error) {
 // CompileASTWithSchema analyzes and plans Mycel's GQL AST using optional
 // schema-aware semantic validation.
 func CompileASTWithSchema(query ast.Query, schema gqlanalysis.SchemaContext) (planmodel.Plan, error) {
-	analyzed, err := gqlanalysis.AnalyzeWithSchema(query, schema)
+	return CompileASTWithSchemaAndParams(query, schema, nil)
+}
+
+// CompileASTWithSchemaAndParams analyzes and plans Mycel's GQL AST using optional schema and parameters.
+func CompileASTWithSchemaAndParams(query ast.Query, schema gqlanalysis.SchemaContext, params map[string]any) (planmodel.Plan, error) {
+	analyzed, err := gqlanalysis.AnalyzeWithSchemaAndParams(query, schema, params)
 	if err != nil {
 		return planmodel.Plan{}, err
 	}
@@ -50,9 +65,14 @@ func CompileASTWithSchema(query ast.Query, schema gqlanalysis.SchemaContext) (pl
 // CompileWithSchema parses, analyzes, and plans Mycel GQL with optional
 // schema-aware semantic validation.
 func CompileWithSchema(query string, schema gqlanalysis.SchemaContext) (planmodel.Plan, error) {
+	return CompileWithSchemaAndParams(query, schema, nil)
+}
+
+// CompileWithSchemaAndParams parses, analyzes, and plans Mycel GQL with optional schema and parameters.
+func CompileWithSchemaAndParams(query string, schema gqlanalysis.SchemaContext, params map[string]any) (planmodel.Plan, error) {
 	parsed, err := Parse(query)
 	if err != nil {
 		return planmodel.Plan{}, err
 	}
-	return CompileASTWithSchema(parsed, schema)
+	return CompileASTWithSchemaAndParams(parsed, schema, params)
 }

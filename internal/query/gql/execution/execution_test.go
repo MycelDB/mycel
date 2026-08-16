@@ -230,6 +230,56 @@ func TestExecutorExecutesRelationshipPattern(t *testing.T) {
 	}
 }
 
+func TestExecutorExecutesPathBindingProjection(t *testing.T) {
+	source := execmodel.Node{ID: "source", Labels: []string{"Person"}, Properties: map[string]any{"name": "Source"}}
+	target := execmodel.Node{ID: "target", Labels: []string{"Person"}, Properties: map[string]any{"name": "Target"}}
+	edge := execmodel.Edge{ID: "edge-1", FromID: "source", ToID: "target", Labels: []string{"FRIEND_OF"}}
+	graph := &fakeGraphWriter{nodes: []execmodel.Node{source}, patternRows: []PatternRow{{Start: source, Edge: edge, End: target}}}
+	plan := planmodel.Plan{AccessMode: analysis.ReadOnly, Operations: []planmodel.Operation{planmodel.QueryPathOperation{
+		PathVariable: "path",
+		Start:        planmodel.NodePattern{Variable: "a", Labels: []string{"Person"}},
+		Segments:     []planmodel.PathSegment{{Relationship: planmodel.RelationshipPattern{Labels: []string{"FRIEND_OF"}, Direction: planmodel.RelationshipOutgoing}, Node: planmodel.NodePattern{Variable: "b", Labels: []string{"Person"}}}},
+		Returns:      []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "path"}},
+	}}}
+	result, err := Execute(context.Background(), graph, plan)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !reflect.DeepEqual(result.Columns, []string{"path"}) {
+		t.Fatalf("columns = %#v", result.Columns)
+	}
+	got := result.Rows[0]["path"].Path
+	if got == nil || len(got.Nodes) != 2 || len(got.Edges) != 1 || got.Nodes[0].ID != "source" || got.Nodes[1].ID != "target" || got.Edges[0].ID != "edge-1" {
+		t.Fatalf("unexpected path value: %#v", got)
+	}
+}
+
+func TestExecutorExecutesMatchSetNodeProperties(t *testing.T) {
+	graph := &fakeGraphWriter{nodes: []execmodel.Node{{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"name": "Martin"}}}}
+	plan := planmodel.Plan{AccessMode: analysis.ReadWrite, Operations: []planmodel.Operation{planmodel.MatchSetOperation{
+		Start:       planmodel.NodePattern{Variable: "p", Labels: []string{"Person"}, Properties: map[string]any{"name": "Martin"}},
+		Assignments: []planmodel.SetAssignment{{Variable: "p", Property: "age", Value: int64(57)}, {Variable: "p", Property: "sex", Value: "Male"}},
+		Returns:     []planmodel.ReturnItem{{Kind: planmodel.ReturnVariable, Variable: "p"}, {Kind: planmodel.ReturnProperty, Variable: "p", Property: "age"}},
+	}}}
+	result, err := Execute(context.Background(), graph, plan)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.Counters.NodesUpdated != 1 {
+		t.Fatalf("NodesUpdated = %d, want 1", result.Counters.NodesUpdated)
+	}
+	if len(graph.updatedNodes) != 2 {
+		t.Fatalf("updatedNodes count = %d, want 2 assignments", len(graph.updatedNodes))
+	}
+	last := graph.updatedNodes[len(graph.updatedNodes)-1]
+	if !reflect.DeepEqual(last.Properties, map[string]any{"name": "Martin", "age": int64(57), "sex": "Male"}) {
+		t.Fatalf("updated properties = %#v", last.Properties)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["p"].Node == nil || result.Rows[0]["p"].Node.Properties["age"] != int64(57) || result.Rows[0]["p.age"].Scalar != int64(57) {
+		t.Fatalf("unexpected rows: %#v", result.Rows)
+	}
+}
+
 func TestExecutorAppliesFetchFirstLimit(t *testing.T) {
 	graph := &fakeGraphWriter{nodes: []execmodel.Node{
 		{ID: "node-1", Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Alice"}},
@@ -285,6 +335,10 @@ type fakeGraphWriter struct {
 	nodes          []execmodel.Node
 	patternRows    []PatternRow
 	createdEdges   []CreateEdge
+	updatedNodes   []UpdateNode
+	updatedEdges   []UpdateEdge
+	deletedNodes   []string
+	deletedEdges   []string
 }
 
 func (f *fakeGraphWriter) InsertNode(_ context.Context, node InsertNode) (execmodel.NodeRef, error) {
@@ -301,6 +355,46 @@ func (f *fakeGraphWriter) CreateEdge(_ context.Context, edge CreateEdge) (execmo
 	}
 	f.createdEdges = append(f.createdEdges, edge)
 	return execmodel.Edge{ID: "edge-created", FromID: edge.FromNodeID, ToID: edge.ToNodeID, Labels: append([]string(nil), edge.Labels...), Properties: copyProperties(edge.Properties)}, nil
+}
+
+func (f *fakeGraphWriter) UpdateNode(_ context.Context, node UpdateNode) (execmodel.Node, error) {
+	if f.err != nil {
+		return execmodel.Node{}, f.err
+	}
+	f.updatedNodes = append(f.updatedNodes, node)
+	updated := execmodel.Node{ID: node.NodeID, Labels: append([]string(nil), node.Labels...), Properties: copyProperties(node.Properties), Payload: copyProperties(node.Payload), Meta: copyProperties(node.Meta)}
+	for i, existing := range f.nodes {
+		if existing.ID == node.NodeID {
+			f.nodes[i] = updated
+			break
+		}
+	}
+	return updated, nil
+}
+
+func (f *fakeGraphWriter) UpdateEdge(_ context.Context, edge UpdateEdge) (execmodel.Edge, error) {
+	if f.err != nil {
+		return execmodel.Edge{}, f.err
+	}
+	f.updatedEdges = append(f.updatedEdges, edge)
+	updated := execmodel.Edge{ID: edge.EdgeID, Labels: append([]string(nil), edge.Labels...), Properties: copyProperties(edge.Properties), Payload: copyProperties(edge.Payload), Meta: copyProperties(edge.Meta)}
+	return updated, nil
+}
+
+func (f *fakeGraphWriter) DeleteNode(_ context.Context, nodeID string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.deletedNodes = append(f.deletedNodes, nodeID)
+	return nil
+}
+
+func (f *fakeGraphWriter) DeleteEdge(_ context.Context, edgeID string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.deletedEdges = append(f.deletedEdges, edgeID)
+	return nil
 }
 
 func (f *fakeGraphWriter) QueryPattern(_ context.Context, query QueryPattern) ([]PatternRow, error) {

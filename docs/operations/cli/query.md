@@ -27,6 +27,28 @@ mycel query nodes --transaction-id <tx-id> --label Note
 mycel query gql --space-id <space-id> --domain <key> "MATCH ..."
 ```
 
+Parameterized and aliased GQL:
+
+```sh
+mycel query gql --space-id <space-id> --domain <key> \
+  --param name=Levi \
+  'MATCH (p:Person {name: $name}) RETURN p.name AS name'
+```
+
+Read-write GQL prints returned rows and mutation counters:
+
+```sh
+mycel query gql --space-id <space-id> --domain <key> \
+  "MERGE (p:Person {name: 'Levi'}) RETURN p.name AS name"
+```
+
+Path binding and graph projection:
+
+```sh
+mycel query gql --space-id <space-id> --domain <key> \
+  "MATCH path = (a:Person)-[:FRIEND_OF*1..3]->(b:Person) RETURN GRAPH path"
+```
+
 ## Related docs
 
 - [CLI index](README.md)

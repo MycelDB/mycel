@@ -25,13 +25,20 @@ func NewQueryCommand(a *app.App) *cobra.Command {
 }
 
 func NewQueryGQLCommand(a *app.App) *cobra.Command {
-	var spaceIDText, domainID, domainKey string
+	var spaceIDText, domainID, domainKey, paramsJSON string
+	var params []string
 	cmd := &cobra.Command{Use: "gql QUERY", Short: "Execute a GQL query against a daemon graph domain", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		return runGQL(cmd.Context(), a, gqlRunOptions{QueryText: args[0], SpaceIDText: spaceIDText, DomainID: domainID, DomainKey: domainKey})
+		parsedParams, err := parseGQLParams(params, paramsJSON)
+		if err != nil {
+			return err
+		}
+		return runGQL(cmd.Context(), a, gqlRunOptions{QueryText: args[0], SpaceIDText: spaceIDText, DomainID: domainID, DomainKey: domainKey, Params: parsedParams})
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID (defaults to current REPL space)")
 	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID")
 	cmd.Flags().StringVar(&domainKey, "domain", "", "domain key (defaults to the space default domain)")
+	cmd.Flags().StringArrayVar(&params, "param", nil, "GQL parameter as name=value; repeatable")
+	cmd.Flags().StringVar(&paramsJSON, "params-json", "", "GQL parameters as a JSON object")
 	return cmd
 }
 
@@ -41,6 +48,7 @@ type gqlRunOptions struct {
 	DomainID      string
 	DomainKey     string
 	RequireDomain bool
+	Params        map[string]any
 	Out           io.Writer
 }
 
@@ -59,7 +67,7 @@ func runGQL(ctx context.Context, a *app.App, opts gqlRunOptions) error {
 		domainID = a.CurrentDomainID
 		domainKey = a.CurrentDomainKey
 	}
-	plan, err := gql.Compile(opts.QueryText)
+	plan, err := gql.CompileWithParams(opts.QueryText, opts.Params)
 	if err != nil {
 		return err
 	}
@@ -101,7 +109,7 @@ func runGQL(ctx context.Context, a *app.App, opts gqlRunOptions) error {
 			_, _ = txClient.RollbackTransaction(authCtx, &clientv1.RollbackTransactionRequest{TransactionId: transactionID})
 		}
 	}()
-	gqlRes, err := clientv1.NewQueryServiceClient(conn).ExecuteGQL(authCtx, &clientv1.ExecuteGQLRequest{TransactionId: transactionID, Query: opts.QueryText})
+	gqlRes, err := clientv1.NewQueryServiceClient(conn).ExecuteGQL(authCtx, &clientv1.ExecuteGQLRequest{TransactionId: transactionID, Query: opts.QueryText, Params: protoParamsFromAny(opts.Params)})
 	if err != nil {
 		return err
 	}
@@ -123,10 +131,11 @@ func runGQL(ctx context.Context, a *app.App, opts gqlRunOptions) error {
 		return err
 	}
 	committed = true
-	message := fmt.Sprintf("query executed: nodes_inserted=%d edges_inserted=%d revision=%d\n", result.Counters.NodesInserted, result.Counters.EdgesInserted, commitRes.GetCommit().GetCommittedRevision())
+	message := fmt.Sprintf("query executed: nodes_inserted=%d edges_inserted=%d nodes_updated=%d nodes_deleted=%d edges_deleted=%d revision=%d\n", result.Counters.NodesInserted, result.Counters.EdgesInserted, result.Counters.NodesUpdated, result.Counters.NodesDeleted, result.Counters.EdgesDeleted, commitRes.GetCommit().GetCommittedRevision())
 	if a.Output == "json" {
 		return a.Print(gqlCLIResult{Result: result, TransactionID: transactionID, CommittedRevision: commitRes.GetCommit().GetCommittedRevision()}, message)
 	}
+	printGQLRows(out, result)
 	_, err = fmt.Fprint(out, message)
 	return err
 }
@@ -183,13 +192,56 @@ type gqlCLIResult struct {
 	CommittedRevision int64            `json:"committed_revision"`
 }
 
+func parseGQLParams(pairs []string, paramsJSON string) (map[string]any, error) {
+	out := map[string]any{}
+	if strings.TrimSpace(paramsJSON) != "" {
+		if err := json.Unmarshal([]byte(paramsJSON), &out); err != nil {
+			return nil, fmt.Errorf("invalid --params-json: %w", err)
+		}
+	}
+	for _, pair := range pairs {
+		name, value, ok := strings.Cut(pair, "=")
+		if !ok || strings.TrimSpace(name) == "" {
+			return nil, fmt.Errorf("invalid --param %q; expected name=value", pair)
+		}
+		out[strings.TrimSpace(name)] = parseGQLParamValue(value)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func parseGQLParamValue(value string) any {
+	var decoded any
+	if err := json.Unmarshal([]byte(value), &decoded); err == nil {
+		return decoded
+	}
+	return value
+}
+
+func protoParamsFromAny(params map[string]any) map[string]*structpb.Value {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make(map[string]*structpb.Value, len(params))
+	for key, value := range params {
+		protoValue, err := structpb.NewValue(value)
+		if err != nil {
+			continue
+		}
+		out[key] = protoValue
+	}
+	return out
+}
+
 func execResultFromProto(result *clientv1.QueryResult, columns []string) execmodel.Result {
 	out := execmodel.Result{Columns: columns}
 	if result == nil {
 		return out
 	}
 	counters := result.GetCounters()
-	out.Counters = execmodel.Counters{NodesInserted: int(counters.GetNodesInserted()), EdgesInserted: int(counters.GetEdgesInserted())}
+	out.Counters = execmodel.Counters{NodesInserted: int(counters.GetNodesInserted()), NodesUpdated: int(counters.GetNodesUpdated()), NodesDeleted: int(counters.GetNodesDeleted()), EdgesInserted: int(counters.GetEdgesInserted()), EdgesDeleted: int(counters.GetEdgesDeleted())}
 	for _, row := range result.GetRows() {
 		execRow := execmodel.Row{}
 		for name, value := range row.GetFields() {
@@ -235,6 +287,14 @@ func gqlPlanColumns(plan planmodel.Plan) []string {
 			columns = appendReturnColumns(columns, op.Returns)
 		case planmodel.QueryPathOperation:
 			columns = appendReturnColumns(columns, op.Returns)
+		case planmodel.MatchSetOperation:
+			columns = appendReturnColumns(columns, op.Returns)
+		case planmodel.MatchDeleteOperation:
+			columns = appendReturnColumns(columns, op.Returns)
+		case planmodel.MergeNodeOperation:
+			columns = appendReturnColumns(columns, op.Returns)
+		case planmodel.MatchMergeRelationshipOperation:
+			columns = appendReturnColumns(columns, op.Returns)
 		}
 	}
 	return columns
@@ -248,6 +308,9 @@ func appendReturnColumns(columns []string, returns []planmodel.ReturnItem) []str
 }
 
 func gqlReturnColumn(ret planmodel.ReturnItem) string {
+	if ret.OutputName != "" {
+		return ret.OutputName
+	}
 	if ret.Kind == planmodel.ReturnProperty {
 		if ret.Namespace != "" {
 			return ret.Variable + "." + ret.Namespace + "." + ret.Property
@@ -288,6 +351,13 @@ func formatGQLValue(value execmodel.Value) string {
 	}
 	if value.Edge != nil {
 		encoded, err := json.Marshal(value.Edge)
+		if err != nil {
+			return "<unprintable>"
+		}
+		return string(encoded)
+	}
+	if value.Path != nil {
+		encoded, err := json.Marshal(value.Path)
 		if err != nil {
 			return "<unprintable>"
 		}

@@ -55,7 +55,7 @@ func TestSessionAndTransactionCommandsUseDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &commit); err != nil {
 		t.Fatalf("decode transaction commit: %v\n%s", err, out)
 	}
-	if commit.GetCommittedRevision() != 1 {
+	if commit.GetCommittedRevision() != 0 {
 		t.Fatalf("unexpected commit: %#v", &commit)
 	}
 

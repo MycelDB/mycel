@@ -25,10 +25,18 @@ func (planner) Plan(a analysis.Analysis) (planmodel.Plan, error) {
 	switch stmt := a.Query.Statement.(type) {
 	case ast.InsertStatement:
 		return planInsertStatement(a, stmt), nil
+	case ast.MergeNodeStatement:
+		return planMergeNodeStatement(a, stmt), nil
 	case ast.MatchStatement:
 		return planMatchStatement(a, stmt)
+	case ast.MatchSetStatement:
+		return planMatchSetStatement(a, stmt)
 	case ast.MatchCreateStatement:
 		return planMatchCreateStatement(a, stmt), nil
+	case ast.MatchDeleteStatement:
+		return planMatchDeleteStatement(a, stmt)
+	case ast.MatchMergeRelationshipStatement:
+		return planMatchMergeRelationshipStatement(a, stmt), nil
 	case nil:
 		return planmodel.Plan{}, fmt.Errorf("query statement is required")
 	default:
@@ -36,14 +44,168 @@ func (planner) Plan(a analysis.Analysis) (planmodel.Plan, error) {
 	}
 }
 
+func planMergeNodeStatement(a analysis.Analysis, stmt ast.MergeNodeStatement) planmodel.Plan {
+	returns := planReturns(stmt.Returns)
+	var limit int64
+	if stmt.FetchFirst != nil {
+		limit = stmt.FetchFirst.Count
+	}
+	return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.MergeNodeOperation{Variable: stmt.Pattern.Variable, Labels: append([]string(nil), stmt.Pattern.Labels...), Properties: propertiesMap(stmt.Pattern.Properties, a.Params), Returns: returns, ReturnGraph: stmt.ReturnGraph, Limit: limit}}}
+}
+
+func planMatchSetStatement(a analysis.Analysis, stmt ast.MatchSetStatement) (planmodel.Plan, error) {
+	pattern := stmt.MatchPattern
+	if pattern.Start.Variable == "" {
+		pattern.Start = stmt.MatchPattern.Start
+	}
+	segments := pattern.Segments
+	if len(segments) == 0 && pattern.Relationship != nil && pattern.End != nil {
+		segments = []ast.PathSegment{{Relationship: *pattern.Relationship, Node: *pattern.End}}
+	}
+	plannedSegments := make([]planmodel.PathSegment, 0, len(segments))
+	startProps := propertiesMap(pattern.Start.Properties, a.Params)
+	if stmt.Where != nil {
+		for _, predicate := range stmt.Where.Predicates {
+			if predicate.Variable != pattern.Start.Variable || !isEqualityOperator(predicate.Operator) {
+				continue
+			}
+			value := resolveValue(predicate.Value, a.Params)
+			if existing, ok := startProps[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
+				return planmodel.Plan{}, fmt.Errorf("conflicting values for property %q", predicate.Property)
+			}
+			startProps[predicate.Property] = value
+		}
+	}
+	for i, segment := range segments {
+		relProps := propertiesMap(segment.Relationship.Properties, a.Params)
+		nodeProps := propertiesMap(segment.Node.Properties, a.Params)
+		if stmt.Where != nil {
+			for _, predicate := range stmt.Where.Predicates {
+				if !isEqualityOperator(predicate.Operator) {
+					continue
+				}
+				value := resolveValue(predicate.Value, a.Params)
+				switch predicate.Variable {
+				case segment.Relationship.Variable:
+					if existing, ok := relProps[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
+						return planmodel.Plan{}, fmt.Errorf("conflicting values for property %q", predicate.Property)
+					}
+					relProps[predicate.Property] = value
+				case segment.Node.Variable:
+					if existing, ok := nodeProps[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
+						return planmodel.Plan{}, fmt.Errorf("conflicting values for property %q", predicate.Property)
+					}
+					nodeProps[predicate.Property] = value
+				case pattern.Start.Variable:
+					if i == 0 {
+						// Already folded above.
+					}
+				}
+			}
+		}
+		plannedSegments = append(plannedSegments, planmodel.PathSegment{Relationship: planRelationshipPattern(segment.Relationship, relProps), Node: planmodel.NodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: nodeProps}})
+	}
+	returns := make([]planmodel.ReturnItem, 0, len(stmt.Returns))
+	for _, ret := range stmt.Returns {
+		kind := planmodel.ReturnItemKind(ret.Kind)
+		if kind == "" {
+			kind = planmodel.ReturnVariable
+		}
+		returns = append(returns, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Namespace: ret.Namespace, Property: ret.Property, OutputName: ret.OutputName})
+	}
+	assignments := make([]planmodel.SetAssignment, 0, len(stmt.Assignments))
+	for _, assignment := range stmt.Assignments {
+		assignments = append(assignments, planmodel.SetAssignment{Variable: assignment.Variable, Namespace: assignment.Namespace, Property: assignment.Property, Value: resolveValue(assignment.Value, a.Params)})
+	}
+	var limit int64
+	if stmt.FetchFirst != nil {
+		limit = stmt.FetchFirst.Count
+	}
+	comparisonPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where, a.Params)
+	return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.MatchSetOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: startProps}, Segments: plannedSegments, Assignments: assignments, Returns: returns, ReturnGraph: stmt.ReturnGraph, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
+}
+
+func planMatchDeleteStatement(a analysis.Analysis, stmt ast.MatchDeleteStatement) (planmodel.Plan, error) {
+	pattern := stmt.MatchPattern
+	segments := pattern.Segments
+	if len(segments) == 0 && pattern.Relationship != nil && pattern.End != nil {
+		segments = []ast.PathSegment{{Relationship: *pattern.Relationship, Node: *pattern.End}}
+	}
+	plannedSegments := make([]planmodel.PathSegment, 0, len(segments))
+	startProps := propertiesMap(pattern.Start.Properties, a.Params)
+	if stmt.Where != nil {
+		for _, predicate := range stmt.Where.Predicates {
+			if predicate.Variable != pattern.Start.Variable || !isEqualityOperator(predicate.Operator) {
+				continue
+			}
+			value := resolveValue(predicate.Value, a.Params)
+			if existing, ok := startProps[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
+				return planmodel.Plan{}, fmt.Errorf("conflicting values for property %q", predicate.Property)
+			}
+			startProps[predicate.Property] = value
+		}
+	}
+	for i, segment := range segments {
+		relProps := propertiesMap(segment.Relationship.Properties, a.Params)
+		nodeProps := propertiesMap(segment.Node.Properties, a.Params)
+		if stmt.Where != nil {
+			for _, predicate := range stmt.Where.Predicates {
+				if !isEqualityOperator(predicate.Operator) {
+					continue
+				}
+				value := resolveValue(predicate.Value, a.Params)
+				switch predicate.Variable {
+				case segment.Relationship.Variable:
+					if existing, ok := relProps[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
+						return planmodel.Plan{}, fmt.Errorf("conflicting values for property %q", predicate.Property)
+					}
+					relProps[predicate.Property] = value
+				case segment.Node.Variable:
+					if existing, ok := nodeProps[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
+						return planmodel.Plan{}, fmt.Errorf("conflicting values for property %q", predicate.Property)
+					}
+					nodeProps[predicate.Property] = value
+				case pattern.Start.Variable:
+					if i == 0 {
+						// Already folded above.
+					}
+				}
+			}
+		}
+		plannedSegments = append(plannedSegments, planmodel.PathSegment{Relationship: planRelationshipPattern(segment.Relationship, relProps), Node: planmodel.NodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: nodeProps}})
+	}
+	var limit int64
+	if stmt.FetchFirst != nil {
+		limit = stmt.FetchFirst.Count
+	}
+	comparisonPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where, a.Params)
+	return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.MatchDeleteOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: startProps}, Segments: plannedSegments, Targets: append([]string(nil), stmt.Targets...), Returns: planReturns(stmt.Returns), ReturnGraph: stmt.ReturnGraph, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
+}
+
 func planMatchCreateStatement(a analysis.Analysis, stmt ast.MatchCreateStatement) planmodel.Plan {
 	matches := make([]planmodel.NodePattern, 0, len(stmt.Matches))
 	for _, match := range stmt.Matches {
-		matches = append(matches, planmodel.NodePattern{Variable: match.Variable, Labels: append([]string(nil), match.Labels...), Properties: propertiesMap(match.Properties)})
+		matches = append(matches, planmodel.NodePattern{Variable: match.Variable, Labels: append([]string(nil), match.Labels...), Properties: propertiesMap(match.Properties, a.Params)})
 	}
 	return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.MatchCreateRelationshipOperation{
 		Matches:      matches,
-		Relationship: planmodel.CreateRelationshipOperation{FromVariable: stmt.Create.FromVariable, ToVariable: stmt.Create.ToVariable, Labels: append([]string(nil), stmt.Create.Relationship.Labels...), Properties: propertiesMap(stmt.Create.Relationship.Properties)},
+		Relationship: planmodel.CreateRelationshipOperation{Variable: stmt.Create.Relationship.Variable, FromVariable: stmt.Create.FromVariable, ToVariable: stmt.Create.ToVariable, Labels: append([]string(nil), stmt.Create.Relationship.Labels...), Properties: propertiesMap(stmt.Create.Relationship.Properties, a.Params)},
+	}}}
+}
+
+func planMatchMergeRelationshipStatement(a analysis.Analysis, stmt ast.MatchMergeRelationshipStatement) planmodel.Plan {
+	matches := make([]planmodel.NodePattern, 0, len(stmt.Matches))
+	for _, match := range stmt.Matches {
+		matches = append(matches, planmodel.NodePattern{Variable: match.Variable, Labels: append([]string(nil), match.Labels...), Properties: propertiesMap(match.Properties, a.Params)})
+	}
+	var limit int64
+	if stmt.FetchFirst != nil {
+		limit = stmt.FetchFirst.Count
+	}
+	return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.MatchMergeRelationshipOperation{
+		Matches:      matches,
+		Relationship: planmodel.CreateRelationshipOperation{Variable: stmt.Merge.Relationship.Variable, FromVariable: stmt.Merge.FromVariable, ToVariable: stmt.Merge.ToVariable, Labels: append([]string(nil), stmt.Merge.Relationship.Labels...), Properties: propertiesMap(stmt.Merge.Relationship.Properties, a.Params)},
+		Returns:      planReturns(stmt.Returns), ReturnGraph: stmt.ReturnGraph, Limit: limit,
 	}}}
 }
 
@@ -52,13 +214,13 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 	if pattern.Start.Variable == "" && pattern.Relationship == nil {
 		pattern.Start = stmt.Pattern
 	}
-	properties := propertiesMap(pattern.Start.Properties)
+	properties := propertiesMap(pattern.Start.Properties, a.Params)
 	if stmt.Where != nil {
 		for _, predicate := range stmt.Where.Predicates {
 			if predicate.Variable != pattern.Start.Variable || !isEqualityOperator(predicate.Operator) {
 				continue
 			}
-			value := predicate.Value.Value
+			value := resolveValue(predicate.Value, a.Params)
 			if existing, ok := properties[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
 				return planmodel.Plan{}, fmt.Errorf("conflicting values for property %q", predicate.Property)
 			}
@@ -71,7 +233,7 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 		if kind == "" {
 			kind = planmodel.ReturnVariable
 		}
-		returns = append(returns, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Namespace: ret.Namespace, Property: ret.Property})
+		returns = append(returns, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Namespace: ret.Namespace, Property: ret.Property, OutputName: ret.OutputName})
 	}
 	var orderBy []planmodel.OrderItem
 	if len(stmt.OrderBy) > 0 {
@@ -84,18 +246,22 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 	if stmt.FetchFirst != nil {
 		limit = stmt.FetchFirst.Count
 	}
-	comparisonPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where)
-	if len(pattern.Segments) > 1 || hasQuantifiedSegment(pattern.Segments) {
-		segments := make([]planmodel.PathSegment, 0, len(pattern.Segments))
-		for i, segment := range pattern.Segments {
-			relProps := propertiesMap(segment.Relationship.Properties)
-			nodeProps := propertiesMap(segment.Node.Properties)
+	comparisonPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where, a.Params)
+	if len(pattern.Segments) > 1 || hasQuantifiedSegment(pattern.Segments) || pattern.PathVariable != "" {
+		astSegments := pattern.Segments
+		if len(astSegments) == 0 && pattern.Relationship != nil && pattern.End != nil {
+			astSegments = []ast.PathSegment{{Relationship: *pattern.Relationship, Node: *pattern.End}}
+		}
+		segments := make([]planmodel.PathSegment, 0, len(astSegments))
+		for i, segment := range astSegments {
+			relProps := propertiesMap(segment.Relationship.Properties, a.Params)
+			nodeProps := propertiesMap(segment.Node.Properties, a.Params)
 			if stmt.Where != nil {
 				for _, predicate := range stmt.Where.Predicates {
 					if !isEqualityOperator(predicate.Operator) {
 						continue
 					}
-					value := predicate.Value.Value
+					value := resolveValue(predicate.Value, a.Params)
 					switch predicate.Variable {
 					case segment.Relationship.Variable:
 						if existing, ok := relProps[predicate.Property]; ok && !reflect.DeepEqual(existing, value) {
@@ -116,17 +282,17 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 			}
 			segments = append(segments, planmodel.PathSegment{Relationship: planRelationshipPattern(segment.Relationship, relProps), Node: planmodel.NodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: nodeProps}})
 		}
-		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, ReturnGraph: stmt.ReturnGraph, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates, OrderBy: orderBy}}}, nil
+		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{PathVariable: pattern.PathVariable, Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, ReturnGraph: stmt.ReturnGraph, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates, OrderBy: orderBy}}}, nil
 	}
 	if pattern.Relationship != nil {
-		relProps := propertiesMap(pattern.Relationship.Properties)
-		endProps := propertiesMap(pattern.End.Properties)
+		relProps := propertiesMap(pattern.Relationship.Properties, a.Params)
+		endProps := propertiesMap(pattern.End.Properties, a.Params)
 		if stmt.Where != nil {
 			for _, predicate := range stmt.Where.Predicates {
 				if !isEqualityOperator(predicate.Operator) {
 					continue
 				}
-				value := predicate.Value.Value
+				value := resolveValue(predicate.Value, a.Params)
 				switch predicate.Variable {
 				case pattern.Start.Variable:
 					// Already folded above for compatibility with QueryNodesOperation.
@@ -176,7 +342,7 @@ func isEqualityOperator(op ast.ComparisonOperator) bool {
 	return op == "" || op == ast.ComparisonEqual
 }
 
-func planPredicates(where *ast.WhereClause) ([]planmodel.ComparisonPredicate, []planmodel.TextContainsPredicate, []planmodel.SemanticSimilarPredicate) {
+func planPredicates(where *ast.WhereClause, params map[string]any) ([]planmodel.ComparisonPredicate, []planmodel.TextContainsPredicate, []planmodel.SemanticSimilarPredicate) {
 	if where == nil {
 		return nil, nil, nil
 	}
@@ -185,7 +351,7 @@ func planPredicates(where *ast.WhereClause) ([]planmodel.ComparisonPredicate, []
 		if isEqualityOperator(pred.Operator) {
 			continue
 		}
-		comparisons = append(comparisons, planmodel.ComparisonPredicate{Variable: pred.Variable, Property: pred.Property, Operator: planmodel.ComparisonOperator(pred.Operator), Value: pred.Value.Value})
+		comparisons = append(comparisons, planmodel.ComparisonPredicate{Variable: pred.Variable, Property: pred.Property, Operator: planmodel.ComparisonOperator(pred.Operator), Value: resolveValue(pred.Value, params)})
 	}
 	texts := make([]planmodel.TextContainsPredicate, 0, len(where.TextPredicates))
 	for _, pred := range where.TextPredicates {
@@ -224,18 +390,40 @@ func planRelationshipPattern(rel ast.RelationshipPattern, props map[string]any) 
 	return out
 }
 
-func propertiesMap(properties []ast.Property) map[string]any {
+func propertiesMap(properties []ast.Property, params map[string]any) map[string]any {
 	out := make(map[string]any, len(properties))
 	for _, prop := range properties {
-		out[prop.Key] = prop.Value.Value
+		out[prop.Key] = resolveValue(prop.Value, params)
 	}
 	return out
+}
+
+func planReturns(returns []ast.ReturnItem) []planmodel.ReturnItem {
+	out := make([]planmodel.ReturnItem, 0, len(returns))
+	for _, ret := range returns {
+		kind := planmodel.ReturnItemKind(ret.Kind)
+		if kind == "" {
+			kind = planmodel.ReturnVariable
+		}
+		out = append(out, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Namespace: ret.Namespace, Property: ret.Property, OutputName: ret.OutputName})
+	}
+	return out
+}
+
+func resolveValue(value ast.Value, params map[string]any) any {
+	if value.Kind == ast.ParameterValue {
+		if name, ok := value.Value.(string); ok {
+			return params[name]
+		}
+		return nil
+	}
+	return value.Value
 }
 
 func planInsertStatement(a analysis.Analysis, stmt ast.InsertStatement) planmodel.Plan {
 	properties := make(map[string]any, len(stmt.Pattern.Properties))
 	for _, prop := range stmt.Pattern.Properties {
-		properties[prop.Key] = prop.Value.Value
+		properties[prop.Key] = resolveValue(prop.Value, a.Params)
 	}
 	return planmodel.Plan{
 		AccessMode: a.AccessMode,

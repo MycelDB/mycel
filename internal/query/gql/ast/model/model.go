@@ -43,6 +43,59 @@ type MatchCreateStatement struct {
 
 func (MatchCreateStatement) statement() {}
 
+// MergeNodeStatement represents MERGE node RETURN ...
+type MergeNodeStatement struct {
+	Pattern     NodePattern
+	Returns     []ReturnItem
+	ReturnGraph bool
+	FetchFirst  *FetchFirstClause
+}
+
+func (MergeNodeStatement) statement() {}
+
+// MatchMergeRelationshipStatement represents MATCH ..., ... MERGE relationship RETURN ...
+type MatchMergeRelationshipStatement struct {
+	Matches     []NodePattern
+	Merge       CreateRelationshipPattern
+	Returns     []ReturnItem
+	ReturnGraph bool
+	FetchFirst  *FetchFirstClause
+}
+
+func (MatchMergeRelationshipStatement) statement() {}
+
+// MatchSetStatement represents MATCH ... SET ... RETURN property updates.
+type MatchSetStatement struct {
+	MatchPattern MatchPattern
+	Where        *WhereClause
+	Assignments  []SetAssignment
+	Returns      []ReturnItem
+	ReturnGraph  bool
+	FetchFirst   *FetchFirstClause
+}
+
+func (MatchSetStatement) statement() {}
+
+// MatchDeleteStatement represents MATCH ... DELETE ... RETURN deletes.
+type MatchDeleteStatement struct {
+	MatchPattern MatchPattern
+	Where        *WhereClause
+	Targets      []string
+	Returns      []ReturnItem
+	ReturnGraph  bool
+	FetchFirst   *FetchFirstClause
+}
+
+func (MatchDeleteStatement) statement() {}
+
+// SetAssignment updates a property/payload/meta field on a matched variable.
+type SetAssignment struct {
+	Variable  string
+	Namespace string
+	Property  string
+	Value     Value
+}
+
 type CreateRelationshipPattern struct {
 	FromVariable string
 	ToVariable   string
@@ -102,10 +155,11 @@ const (
 
 // ReturnItem represents one returned variable or property expression.
 type ReturnItem struct {
-	Kind      ReturnItemKind
-	Variable  string
-	Namespace string
-	Property  string
+	Kind       ReturnItemKind
+	Variable   string
+	Namespace  string
+	Property   string
+	OutputName string
 }
 
 type SortDirection string
@@ -125,6 +179,7 @@ type OrderItem struct {
 // MatchPattern represents a GQL graph pattern. The initial edge-capable shape
 // supports one node or one node-edge-node path.
 type MatchPattern struct {
+	PathVariable string
 	Start        NodePattern
 	Segments     []PathSegment
 	Relationship *RelationshipPattern
@@ -181,9 +236,10 @@ type Value struct {
 type ValueKind string
 
 const (
-	StringValue ValueKind = "string"
-	IntValue    ValueKind = "int"
-	FloatValue  ValueKind = "float"
-	BoolValue   ValueKind = "bool"
-	NullValue   ValueKind = "null"
+	StringValue    ValueKind = "string"
+	IntValue       ValueKind = "int"
+	FloatValue     ValueKind = "float"
+	BoolValue      ValueKind = "bool"
+	NullValue      ValueKind = "null"
+	ParameterValue ValueKind = "parameter"
 )
