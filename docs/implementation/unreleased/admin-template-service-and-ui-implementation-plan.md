@@ -1,8 +1,8 @@
-# AdminTemplateService and Mycel Admin template UI implementation plan
+# AdminTemplateService and Mycel Console template UI implementation plan
 
 ## Goal
 
-Add an operator/admin-facing template API and wire it into `mycel-admin` so operators can view templates for a given space without using user-scoped client sessions.
+Add an operator/admin-facing template API and wire it into `mycel-console` so operators can view templates for a given space without using user-scoped client sessions.
 
 Initial scope is read-only:
 
@@ -16,7 +16,7 @@ Management operations can be added later once the read model is stable.
 
 - Use a dedicated `AdminTemplateService` in `mycel.admin.v1`.
 - Keep the API space-scoped.
-- Do not use user/client sessions in `mycel-admin` for operator workflows.
+- Do not use user/client sessions in `mycel-console` for operator workflows.
 - Do not introduce template mutation APIs in the first phase.
 - Preserve room for future WAL-first admin template mutations.
 - In clustered mode, read-only template inspection may be allowed on primary or follower as long as local replica state is consistent.
@@ -100,7 +100,7 @@ If the existing domain template model is more flexible than typed fields, use on
 - `bytes schema_json`
 - `repeated TemplateProperty properties`
 
-The chosen API should be stable enough for `mycel-admin` tables/detail views.
+The chosen API should be stable enough for `mycel-console` tables/detail views.
 
 ### Acceptance
 
@@ -195,7 +195,7 @@ Add conversion from internal/client template domain model to `mycel.admin.v1.Tem
 
 ## Phase 4: CLI optional smoke command
 
-This is optional but useful for validation. Either add CLI commands or skip if `mycel-admin` is the only consumer.
+This is optional but useful for validation. Either add CLI commands or skip if `mycel-console` is the only consumer.
 
 Possible commands:
 
@@ -213,13 +213,13 @@ mycel template get --space-id SPACE_ID TEMPLATE_ID
 
 If implemented, commands should use operator login and AdminTemplateService, not user client TemplateService.
 
-## Phase 5: mycel-admin Tauri command layer
+## Phase 5: mycel-console Tauri command layer
 
 ### Files
 
-- `mycel-admin/src-tauri/src/commands/templates.rs` or add to an existing command module
-- `mycel-admin/src-tauri/src/commands/mod.rs`
-- `mycel-admin/src-tauri/src/lib.rs`
+- `mycel-console/src-tauri/src/commands/templates.rs` or add to an existing command module
+- `mycel-console/src-tauri/src/commands/mod.rs`
+- `mycel-console/src-tauri/src/lib.rs`
 
 ### Commands
 
@@ -263,8 +263,8 @@ struct TemplateInfo {
 
 ### Files
 
-- new: `mycel-admin/src/types/templates.ts`
-- update: `mycel-admin/src/services/adminService.ts`
+- new: `mycel-console/src/types/templates.ts`
+- update: `mycel-console/src/services/adminService.ts`
 
 ### Types
 
@@ -319,10 +319,10 @@ Update `src/services/adminService.test.ts` for invoke names and payload shape.
 
 ### Files
 
-- `mycel-admin/src/features/spaces/pages/SpaceDetailPage.tsx`
+- `mycel-console/src/features/spaces/pages/SpaceDetailPage.tsx`
 - optional new component:
-  - `mycel-admin/src/features/spaces/components/TemplateTable.tsx`
-  - `mycel-admin/src/features/spaces/components/TemplateDetailDrawer.tsx`
+  - `mycel-console/src/features/spaces/components/TemplateTable.tsx`
+  - `mycel-console/src/features/spaces/components/TemplateDetailDrawer.tsx`
 
 ### Behavior
 
@@ -378,7 +378,7 @@ cd mycel-api && go run github.com/bufbuild/buf/cmd/buf@v1.50.1 lint
 cd ../mycel && ./scripts/generate-proto.sh && go test ./internal/...
 cd ../mycel-go-sdk && ./scripts/generate-proto.sh && go test ./...
 cd ../mycel-rust-sdk && cargo check -p mycel-proto && cargo check -p mycel-sdk
-cd ../mycel-admin/src-tauri && cargo check
+cd ../mycel-console/src-tauri && cargo check
 cd .. && npm test -- --runInBand
 cd .. && npm run build
 ```

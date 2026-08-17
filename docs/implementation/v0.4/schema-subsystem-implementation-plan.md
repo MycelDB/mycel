@@ -171,7 +171,7 @@ Status: implemented on `improved_gql` for the current structured `ExecuteQuery` 
 
 ## Tranche 7 — Schema APIs and admin/CLI support
 
-Status: implemented on `improved_gql`. Added client/admin schema service protos, daemon schema services backed by the schema manager, Go/Rust SDK client exposure, CLI `mycel schema get|put|validate|compile` commands, JSON schema document support, and human-authored GWL schema DSL input that compiles to canonical JSON. `ValidateGraph` accepts a JSON graph document with `nodes` and `edges`. Admin UI read-only schema display is implemented in `mycel-admin`. YAML input remains deferred.
+Status: implemented on `improved_gql`. Added client/admin schema service protos, daemon schema services backed by the schema manager, Go/Rust SDK client exposure, CLI `mycel schema get|put|validate|compile` commands, JSON schema document support, and human-authored GWL schema DSL input that compiles to canonical JSON. `ValidateGraph` accepts a JSON graph document with `nodes` and `edges`. Admin UI read-only schema display is implemented in `mycel-console`. YAML input remains deferred.
 
 ### Work
 

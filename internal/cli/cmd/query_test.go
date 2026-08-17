@@ -27,6 +27,18 @@ func TestPrintGQLRowsPrintsReturnedWriteRows(t *testing.T) {
 	}
 }
 
+func TestPrintQueryDiagnosticsRendersExplainFields(t *testing.T) {
+	diag := &clientv1.QueryDiagnostics{Planner: "mycel-query", PlannerVersion: "qpc8", Plan: "OrderedNodePropertyIndexScan", PlanKind: "indexed_order", Indexes: []string{"by_date"}, PushedPredicates: []string{"between"}, FullScan: false, RowsScanned: 3, RowsProduced: 2, RowsReturned: 2, CandidateCount: 3, IndexEntriesScanned: 3}
+	var out bytes.Buffer
+	printQueryDiagnostics(&out, diag)
+	got := out.String()
+	for _, want := range []string{"planner: mycel-query qpc8", "plan: OrderedNodePropertyIndexScan (indexed_order)", "indexes: by_date", "pushed predicates: between", "full scan: false", "rows: scanned=3 produced=2 returned=2"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("diagnostics output %q missing %q", got, want)
+		}
+	}
+}
+
 func TestQueryNodesCommandUsesDaemonGRPC(t *testing.T) {
 	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()

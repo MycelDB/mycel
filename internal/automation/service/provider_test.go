@@ -329,6 +329,12 @@ func (g *automationE2EGraph) DiscardTransactionGraph(context.Context, string) {}
 func (g *automationE2EGraph) ConfigureIndexes(context.Context, sessionservice.GraphTransaction, string, []schemamodel.IndexDefinition) error {
 	return nil
 }
+func (g *automationE2EGraph) ScanLabel(context.Context, sessionservice.GraphTransaction, graphservice.LabelScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
+	return nil, "", graphservice.IndexedReadStats{}, fmt.Errorf("unused")
+}
+func (g *automationE2EGraph) ScanTag(context.Context, sessionservice.GraphTransaction, graphservice.TagScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
+	return nil, "", graphservice.IndexedReadStats{}, fmt.Errorf("unused")
+}
 func (g *automationE2EGraph) ScanNodePropertyOrdered(context.Context, sessionservice.GraphTransaction, graphservice.OrderedNodePropertyScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
 	return nil, "", graphservice.IndexedReadStats{}, fmt.Errorf("unused")
 }

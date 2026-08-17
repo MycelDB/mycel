@@ -28,6 +28,8 @@ assigned to a tagged release bucket.
 
 - [GWL indexes and indexed query execution implementation plan](gwl-indexes-and-indexed-query-execution-implementation-plan.md) — schema-declared node/edge indexes, graph index persistence, synchronous maintenance, backfill, and indexed structured/GQL query planning.
 - [Query expansion implementation plan](query-expansion-implementation-plan.md) — GQL delete/merge, parameters, aliased projections, indexed structured query parity, and path projection.
+- [Top query priorities implementation plan](top-query-priorities-implementation-plan.md) — indexed structured multi-hop traversal/path projection, aggregation/result shaping, and predicate/index-pushdown MVP baseline.
+- [Top query priorities completion implementation plan](top-query-priorities-completion-implementation-plan.md) — remaining work to make predicate pushdown, semantic/vector execution, broader indexed paths, aggregation, result shaping, diagnostics, SDKs, and Console support production-complete.
 - [REPL space connection and GQL execution implementation plan](repl-space-gql-connect-implementation-plan.md) — psql-like REPL connection state for spaces/domains and convenient GQL execution without repeating IDs.
 
 ## Cleanup

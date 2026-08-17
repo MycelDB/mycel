@@ -29,4 +29,4 @@ Suggested RPC groups:
 
 ## Not yet in admin UI
 
-`mycel-admin` currently exposes V2 automation definition and run inspection. V3 workflow timeline, proposal queue, and policy/budget editors still need API support before UI implementation.
+`mycel-console` currently exposes V2 automation definition and run inspection. V3 workflow timeline, proposal queue, and policy/budget editors still need API support before UI implementation.

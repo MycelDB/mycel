@@ -158,7 +158,7 @@ Likely required if admin status should expose new fields. Additions are backward
 
 If these fields are not yet necessary for Phase 1 tests, defer API changes to Phase 5.
 
-### mycel-admin impact
+### mycel-console impact
 
 Likely not required in this phase. Later, show cluster identity/readiness warnings in cluster UI.
 
@@ -342,7 +342,7 @@ int32 expected_member_count = ...;
 int32 active_member_count = ...;
 ```
 
-### mycel-admin impact
+### mycel-console impact
 
 After API fields exist:
 
@@ -538,7 +538,7 @@ make test-k3s-cluster
 | `mycel-api` | Additive admin cluster status/health fields if needed. |
 | `mycel-go-sdk` | Regenerate stubs if API changes. Add helpers only if useful. |
 | `mycel-rust-sdk` | Regenerate stubs/update API submodule if API changes. |
-| `mycel-admin` | Show cluster metadata/readiness if API changes. |
+| `mycel-console` | Show cluster metadata/readiness if API changes. |
 | `orchestration/knot_pkm_k3s` | Readiness probe/service updates if new endpoint or service split is required. |
 | `knot_pkm_server` | Usually no change for Problem 1; later session/routing fixes may affect client config. |
 

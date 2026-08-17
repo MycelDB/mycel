@@ -26,7 +26,7 @@ The plan is intentionally split into independently reviewable tranches. Each tra
 - Do not implement `COUNT()` or general aggregation in this plan.
 - Do not add product pricing, credits, or billing concepts.
 - Do not add application-specific graph concepts to mycel.
-- Do not make `mycel-admin` policy-authoritative; frontend gates remain UX hints only.
+- Do not make `mycel-console` policy-authoritative; frontend gates remain UX hints only.
 - Do not silently expand structured query execution through full-domain scans.
 
 ## Current baseline and assumptions
@@ -470,7 +470,7 @@ If protobuf changes are included, run protobuf and SDK/admin validation.
 
 ## QX7: Console and CLI polish
 
-Status: implemented for CLI aliases/counters/path rendering and returned rows from write GQL statements. mycel-admin already renders graph envelopes; a dedicated parameter JSON panel remains optional future UX work.
+Status: implemented for CLI aliases/counters/path rendering and returned rows from write GQL statements. mycel-console already renders graph envelopes; a dedicated parameter JSON panel remains optional future UX work.
 
 ### Tasks
 
@@ -478,7 +478,7 @@ Status: implemented for CLI aliases/counters/path rendering and returned rows fr
    - aliased columns;
    - delete/merge counters;
    - path values, if added.
-2. Update `mycel-admin` graph query UI docs/examples:
+2. Update `mycel-console` graph query UI docs/examples:
    - parameter input if implemented;
    - aliases in rows view;
    - path graph visualization if result shape changes.
@@ -491,7 +491,7 @@ Status: implemented for CLI aliases/counters/path rendering and returned rows fr
 # mycel
 go test ./internal/cli/cmd ./internal/daemon/api/client -count=1
 
-# mycel-admin, if UI changes are included
+# mycel-console, if UI changes are included
 npm test -- --runInBand --watch=false
 npm run build
 cd src-tauri && MYCEL_API_ROOT=/path/to/mycel-api PATH="$HOME/.cargo/bin:$PATH" cargo check

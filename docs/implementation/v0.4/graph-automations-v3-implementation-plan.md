@@ -373,7 +373,7 @@ Regenerate:
 
 - `mycel-go-sdk`
 - `mycel-rust-sdk`
-- `mycel-admin` Tauri bindings as needed
+- `mycel-console` Tauri bindings as needed
 
 ### Docs/examples
 
@@ -418,8 +418,8 @@ cd myceldb/mycel-api && make test
 cd myceldb/mycel && go test ./...
 cd myceldb/mycel-go-sdk && go test ./...
 cd myceldb/mycel-rust-sdk && MYCEL_API_ROOT=/path/to/mycel-api cargo test
-cd myceldb/mycel-admin && npm test -- --runInBand
-cd myceldb/mycel-admin/src-tauri && MYCEL_API_ROOT=/path/to/mycel-api cargo check
+cd myceldb/mycel-console && npm test -- --runInBand
+cd myceldb/mycel-console/src-tauri && MYCEL_API_ROOT=/path/to/mycel-api cargo check
 ```
 
 ## Open decisions

@@ -57,6 +57,8 @@ type raftGraphReadRequest struct {
 	PageToken               string                        `json:"page_token,omitempty"`
 	SchemaHash              string                        `json:"schema_hash,omitempty"`
 	Indexes                 []schemamodel.IndexDefinition `json:"indexes,omitempty"`
+	LabelScan               LabelScan                     `json:"label_scan,omitempty"`
+	TagScan                 TagScan                       `json:"tag_scan,omitempty"`
 	OrderedNodePropertyScan OrderedNodePropertyScan       `json:"ordered_node_property_scan,omitempty"`
 	AdjacencyScan           AdjacencyScan                 `json:"adjacency_scan,omitempty"`
 	SubtreeScan             SubtreeScan                   `json:"subtree_scan,omitempty"`
@@ -387,6 +389,18 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 			return nil, mapStorageError(err)
 		}
 		return json.Marshal(raftGraphOKResponse{OK: true, Read: read})
+	case "scan_label":
+		n, next, stats, err := m.ScanLabel(ctx, tx, req.LabelScan)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftGraphIndexedNodesResponse{Nodes: n, NextPageToken: next, Stats: stats, Read: read})
+	case "scan_tag":
+		n, next, stats, err := m.ScanTag(ctx, tx, req.TagScan)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftGraphIndexedNodesResponse{Nodes: n, NextPageToken: next, Stats: stats, Read: read})
 	case "scan_node_property_ordered":
 		n, next, stats, err := m.ScanNodePropertyOrdered(ctx, tx, req.OrderedNodePropertyScan)
 		if err != nil {

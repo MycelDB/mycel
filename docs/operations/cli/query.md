@@ -49,6 +49,13 @@ mycel query gql --space-id <space-id> --domain <key> \
   "MATCH path = (a:Person)-[:FRIEND_OF*1..3]->(b:Person) RETURN GRAPH path"
 ```
 
+Explain a GQL query without executing graph reads or mutations:
+
+```sh
+mycel query gql --space-id <space-id> --domain <key> --explain \
+  "MATCH (j:JournalEntry) RETURN j ORDER BY j.date"
+```
+
 ## Related docs
 
 - [CLI index](README.md)

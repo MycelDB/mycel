@@ -47,8 +47,8 @@ cd mycel && go test ./internal/...
 cd mycel-api && go run github.com/bufbuild/buf/cmd/buf@v1.50.1 lint
 cd mycel-go-sdk && ./scripts/generate-proto.sh && go test ./...
 cd mycel-rust-sdk && cargo check -p mycel-proto && cargo check -p mycel-sdk
-cd mycel-admin/src-tauri && cargo check
-cd mycel-admin && npm test -- --runInBand && npm run build
+cd mycel-console/src-tauri && cargo check
+cd mycel-console && npm test -- --runInBand && npm run build
 ```
 
 For `knot_pkm`, maintain a smoke test at each phase using standalone Mycel until Raft cluster mode is activated for application flows. The smoke test should verify at least:
@@ -433,7 +433,7 @@ Status: implemented for experimental Raft mode. ACL grants, domain create/update
 - ACL/domain/template CRUD through any node.
 - Leader failover during domain/template operation.
 - Admin template list/get still works.
-- `mycel-admin` Spaces detail tabs still work.
+- `mycel-console` Spaces detail tabs still work.
 - Full frontend/Tauri validation.
 
 ### Knot PKM compatibility
@@ -517,7 +517,7 @@ Status: in progress. Added a semantic partition Raft state machine for space-sco
 1. Move semantic index metadata to partition Raft.
 2. Move accounting/maintenance records to partition Raft where space-scoped.
 3. Keep worker execution state local/ephemeral.
-4. Ensure `mycel-admin` semantic tabs use leader-routed reads.
+4. Ensure `mycel-console` semantic tabs use leader-routed reads.
 
 ### Tests
 
@@ -628,7 +628,7 @@ Smoke backup/restore only if `knot_pkm` depends on it. Otherwise verify normal s
    - reconnect/failover behavior
 5. Rust SDK:
    - same as Go where applicable
-6. `mycel-admin`:
+6. `mycel-console`:
    - cluster console shows Raft health instead of static primary/follower state
    - remove obsolete primary promotion/switchover UI
 
@@ -755,7 +755,7 @@ A phase is complete only when:
 3. Docs affected by the phase are updated.
 4. Obsolete artifacts introduced by earlier designs are either still needed or explicitly removed/replaced.
 5. `knot_pkm` compatibility smoke test passes for the mode expected at that phase.
-6. Any public API/CLI/SDK change is reflected in Go SDK, Rust SDK, and `mycel-admin` where applicable.
+6. Any public API/CLI/SDK change is reflected in Go SDK, Rust SDK, and `mycel-console` where applicable.
 
 ## Risks
 

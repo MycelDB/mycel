@@ -80,6 +80,10 @@ func (h ForwardedClientHandler) HandleForwardedClientRequest(ctx context.Context
 		return h.handleQueryExecute(ctx, req)
 	case clientv1.QueryService_ExecuteGQL_FullMethodName:
 		return h.handleQueryGQL(ctx, req)
+	case clientv1.QueryService_ExplainQuery_FullMethodName:
+		return h.handleQueryExplain(ctx, req)
+	case clientv1.QueryService_ExplainGQL_FullMethodName:
+		return h.handleQueryExplainGQL(ctx, req)
 	case clientv1.QueryService_ExecuteGQLScript_FullMethodName:
 		return h.handleQueryGQLScript(ctx, req)
 	case clientv1.MetadataCatalogService_ListTags_FullMethodName:
@@ -481,6 +485,34 @@ func (h ForwardedClientHandler) handleQueryGQL(ctx context.Context, in clusterba
 		return clusterbackend.ForwardedClientResponse{}, err
 	}
 	res, err := h.Queries.ExecuteGQL(ctx, req)
+	if err != nil {
+		return clusterbackend.ForwardedClientResponse{}, err
+	}
+	return encodeForwarded(res)
+}
+func (h ForwardedClientHandler) handleQueryExplain(ctx context.Context, in clusterbackend.ForwardedClientRequest) (clusterbackend.ForwardedClientResponse, error) {
+	if h.Queries == nil {
+		return clusterbackend.ForwardedClientResponse{}, status.Error(codes.FailedPrecondition, "query service is not configured")
+	}
+	req := &clientv1.ExplainQueryRequest{}
+	if err := decodeForwarded(in.Payload, req); err != nil {
+		return clusterbackend.ForwardedClientResponse{}, err
+	}
+	res, err := h.Queries.ExplainQuery(ctx, req)
+	if err != nil {
+		return clusterbackend.ForwardedClientResponse{}, err
+	}
+	return encodeForwarded(res)
+}
+func (h ForwardedClientHandler) handleQueryExplainGQL(ctx context.Context, in clusterbackend.ForwardedClientRequest) (clusterbackend.ForwardedClientResponse, error) {
+	if h.Queries == nil {
+		return clusterbackend.ForwardedClientResponse{}, status.Error(codes.FailedPrecondition, "query service is not configured")
+	}
+	req := &clientv1.ExplainGQLRequest{}
+	if err := decodeForwarded(in.Payload, req); err != nil {
+		return clusterbackend.ForwardedClientResponse{}, err
+	}
+	res, err := h.Queries.ExplainGQL(ctx, req)
 	if err != nil {
 		return clusterbackend.ForwardedClientResponse{}, err
 	}

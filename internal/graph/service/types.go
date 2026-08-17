@@ -43,10 +43,24 @@ type Manager interface {
 	CommitTransactionGraph(ctx context.Context, tx daemonsession.GraphTransaction) (CommitResult, error)
 	DiscardTransactionGraph(ctx context.Context, transactionID string)
 	ConfigureIndexes(ctx context.Context, tx daemonsession.GraphTransaction, schemaHash string, indexes []schemamodel.IndexDefinition) error
+	ScanLabel(ctx context.Context, tx daemonsession.GraphTransaction, scan LabelScan) ([]domaingraph.Node, string, IndexedReadStats, error)
+	ScanTag(ctx context.Context, tx daemonsession.GraphTransaction, scan TagScan) ([]domaingraph.Node, string, IndexedReadStats, error)
 	ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.GraphTransaction, scan OrderedNodePropertyScan) ([]domaingraph.Node, string, IndexedReadStats, error)
 	ScanAdjacency(ctx context.Context, tx daemonsession.GraphTransaction, scan AdjacencyScan) ([]domaingraph.Edge, string, IndexedReadStats, error)
 	ScanSubtree(ctx context.Context, tx daemonsession.GraphTransaction, scan SubtreeScan) (SubtreeResult, IndexedReadStats, error)
 	BlobRefCount(ctx context.Context, spaceID string, blobID string) (int, error)
+}
+
+type LabelScan struct {
+	Label  string
+	Limit  int
+	Cursor string
+}
+
+type TagScan struct {
+	Tag    string
+	Limit  int
+	Cursor string
 }
 
 type OrderedNodePropertyScan struct {

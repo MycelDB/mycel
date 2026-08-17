@@ -29,9 +29,10 @@ The target expansion areas are:
 3. query parameters;
 4. aliased projections;
 5. structured API parity for indexed node/edge pattern reads;
-6. path binding and path projection.
+6. path binding and path projection;
+7. predicate, aggregation, and result-shaping semantics shared by GQL and the structured API.
 
-`COUNT()` and general aggregation are intentionally outside this design slice. They remain useful follow-up query features.
+The initial `COUNT`, `DISTINCT`, `OFFSET`, predicate-expression, and first-class path-value surfaces are now implemented as an MVP. Broader aggregate functions, text/vector index pushdown, and cost-based indexed path planning remain follow-up work.
 
 ## Current baseline
 
@@ -42,12 +43,11 @@ The target expansion areas are:
 The current GQL subsystem is intentionally incremental. It supports graph-shaped reads and writes through the daemon Query API, including:
 
 - `INSERT` for nodes;
-- `MATCH ... RETURN` for nodes, edges, scalar fields, multi-hop paths, and bounded traversal;
+- `MATCH ... RETURN` for nodes, edges, scalar fields, multi-hop paths, bounded traversal, and indexed-start path-variable projections for label-index and supported ordered-property start predicates;
 - `MATCH ..., ... CREATE (...)` for relationship creation between matched endpoints;
 - `MATCH ... SET ... RETURN ...` for node and edge property or payload updates;
-- `WHERE` predicates for equality, comparisons, text fallback predicates, and semantic fallback predicates;
-- `ORDER BY` for implemented indexed shapes;
-- `FETCH FIRST` row limiting;
+- `WHERE` predicates for equality, comparisons, boolean `AND`/`OR`, parentheses, null checks, string predicates, text fallback predicates, and accepted semantic-vector predicates with broad-searchable fallback for unsupported semantic shapes;
+- `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `RETURN DISTINCT`, `OFFSET`, `ORDER BY` for implemented indexed shapes, and `FETCH FIRST` row limiting;
 - script execution with per-statement results and an aggregate result envelope.
 
 
@@ -205,7 +205,7 @@ RETURN a, r, b
 
 The protobuf Query API should add a parameter map to textual GQL execution requests. Internally, parsing should preserve parameter references as AST value expressions rather than interpolating text.
 
-Analysis and planning would resolve parameter references against supplied values, preserving type validation and schema-aware checks. SDKs and `mycel-admin` can then pass structured parameter values to the daemon instead of constructing query strings.
+Analysis and planning would resolve parameter references against supplied values, preserving type validation and schema-aware checks. SDKs and `mycel-console` can then pass structured parameter values to the daemon instead of constructing query strings.
 
 The structured API already uses protobuf request construction, but it should align on the same value model so GQL and structured requests handle scalar values consistently.
 
@@ -259,12 +259,14 @@ Implemented structured capabilities:
 - indexed node starts by label/property equality;
 - indexed node starts by ordered property scans and ordered bounds;
 - one-hop edge traversal by direction and label using adjacency indexes;
-- edge binding and edge return projection;
+- explicit-start multi-hop and bounded-depth path traversal using adjacency indexes;
+- edge binding, edge return projection, and first-class path projection;
 - node and edge scalar field projection using `alias.field`, `alias.payload.field`, and `alias.meta.field` projection aliases;
+- aggregate functions, distinct, order, offset, fetch, cursor pagination, stable row-shaping support, query diagnostics, and explain planning;
 - stable cursor pagination from indexes;
 - diagnostics proving plan/index use.
 
-Broader multi-hop structured traversal remains outside the accepted indexed surface until it can be planned without full-domain scans.
+Broader indexed starts for multi-hop structured traversal remain outside the accepted indexed surface until they can be planned without full-domain scans.
 
 
 
@@ -279,7 +281,7 @@ Structured reads should match GQL semantics for:
 - graph result envelopes;
 - row and graph projection behavior.
 
-If a structured query shape requires an index that is missing, building, stale, or unsupported, the daemon should fail with an explicit planning error instead of scanning the whole domain.
+If a structured query shape requires an index that is missing, building, stale, or unsupported, the daemon should fail with an explicit planning error instead of scanning the whole domain. Broad full-domain fallback is permitted only for domains explicitly configured as broad-searchable and is not counted as accepted production query support.
 
 ### Existing system expansion
 
@@ -300,7 +302,7 @@ GQL should reuse the same lower-level indexed read capabilities where possible. 
 
 ### User feature
 
-Path binding returns a matched path as a result value, which is useful for traversal explanations and graph visualization. The current implementation uses the existing scalar value envelope to return a structured object with ordered `nodes` and `edges`; a dedicated protobuf `QueryValue.path` remains a future public API refinement.
+Path binding returns a matched path as a result value, which is useful for traversal explanations and graph visualization. Paths are first-class protobuf values through `QueryValue.path`, with ordered `nodes` and `edges`.
 
 Target examples:
 

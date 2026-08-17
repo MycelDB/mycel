@@ -410,6 +410,17 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext, p
 		if kind == "" {
 			kind = model.ReturnVariable
 		}
+		if kind == model.ReturnAggregate {
+			if err := validateAggregateReturn(ret, defined); err != nil {
+				return err
+			}
+			outputName := returnOutputName(ret)
+			if _, exists := seenOutputs[outputName]; exists {
+				return fmt.Errorf("duplicate return output name %q", outputName)
+			}
+			seenOutputs[outputName] = struct{}{}
+			continue
+		}
 		if ret.Variable == "" {
 			return fmt.Errorf("return variable cannot be empty")
 		}
@@ -466,9 +477,38 @@ func analyzeMatchStatement(stmt model.MatchStatement, schemaCtx SchemaContext, p
 	if stmt.FetchFirst != nil && stmt.FetchFirst.Count <= 0 {
 		return fmt.Errorf("fetch first count must be positive")
 	}
+	if stmt.Offset != nil && stmt.Offset.Count < 0 {
+		return fmt.Errorf("offset count must be non-negative")
+	}
 	if stmt.Where != nil {
-		if len(stmt.Where.Predicates) == 0 && len(stmt.Where.TextPredicates) == 0 && len(stmt.Where.SemanticPredicates) == 0 {
+		if stmt.Where.Expr == nil && len(stmt.Where.Predicates) == 0 && len(stmt.Where.NullPredicates) == 0 && len(stmt.Where.StringPredicates) == 0 && len(stmt.Where.TextPredicates) == 0 && len(stmt.Where.SemanticPredicates) == 0 {
 			return fmt.Errorf("where clause requires at least one predicate")
+		}
+		for _, predicate := range stmt.Where.NullPredicates {
+			if _, ok := defined[predicate.Variable]; !ok {
+				return fmt.Errorf("where variable %q is not defined", predicate.Variable)
+			}
+			if predicate.Property == "" {
+				return fmt.Errorf("null predicate requires field")
+			}
+			switch predicate.Namespace {
+			case "", "properties", "payload", "meta":
+			default:
+				return fmt.Errorf("unsupported null predicate namespace %q", predicate.Namespace)
+			}
+		}
+		for _, predicate := range stmt.Where.StringPredicates {
+			if _, ok := defined[predicate.Variable]; !ok {
+				return fmt.Errorf("where variable %q is not defined", predicate.Variable)
+			}
+			if predicate.Property == "" || predicate.Query == "" {
+				return fmt.Errorf("string predicate requires field and query")
+			}
+			switch predicate.Namespace {
+			case "", "properties", "payload", "meta":
+			default:
+				return fmt.Errorf("unsupported string predicate namespace %q", predicate.Namespace)
+			}
 		}
 		for _, predicate := range stmt.Where.TextPredicates {
 			if _, ok := defined[predicate.Variable]; !ok {
@@ -528,6 +568,17 @@ func validateReturns(returns []model.ReturnItem, defined map[string]struct{}, sc
 		if kind == "" {
 			kind = model.ReturnVariable
 		}
+		if kind == model.ReturnAggregate {
+			if err := validateAggregateReturn(ret, defined); err != nil {
+				return err
+			}
+			outputName := returnOutputName(ret)
+			if _, exists := seenOutputs[outputName]; exists {
+				return fmt.Errorf("duplicate return output name %q", outputName)
+			}
+			seenOutputs[outputName] = struct{}{}
+			continue
+		}
 		if ret.Variable == "" {
 			return fmt.Errorf("return variable cannot be empty")
 		}
@@ -560,9 +611,42 @@ func validateReturns(returns []model.ReturnItem, defined map[string]struct{}, sc
 	return nil
 }
 
+func validateAggregateReturn(ret model.ReturnItem, defined map[string]struct{}) error {
+	switch ret.Aggregate {
+	case "count", "sum", "avg", "min", "max":
+	default:
+		return fmt.Errorf("unsupported aggregate function %q", ret.Aggregate)
+	}
+	if ret.AggregateStar {
+		if ret.Aggregate != "count" {
+			return fmt.Errorf("%s(*) is not supported", ret.Aggregate)
+		}
+		return nil
+	}
+	if ret.AggregateAlias == "" {
+		return fmt.Errorf("aggregate variable cannot be empty")
+	}
+	if _, ok := defined[ret.AggregateAlias]; !ok {
+		return fmt.Errorf("aggregate variable %q is not defined", ret.AggregateAlias)
+	}
+	if ret.Aggregate != "count" && ret.AggregateProperty == "" {
+		return fmt.Errorf("%s aggregate requires a property argument", ret.Aggregate)
+	}
+	return nil
+}
+
 func returnOutputName(ret model.ReturnItem) string {
 	if ret.OutputName != "" {
 		return ret.OutputName
+	}
+	if ret.Kind == model.ReturnAggregate {
+		if ret.OutputName != "" {
+			return ret.OutputName
+		}
+		if ret.Aggregate != "" {
+			return ret.Aggregate
+		}
+		return "count"
 	}
 	if ret.Kind == model.ReturnProperty {
 		if ret.Namespace != "" {

@@ -121,8 +121,8 @@ func planMatchSetStatement(a analysis.Analysis, stmt ast.MatchSetStatement) (pla
 	if stmt.FetchFirst != nil {
 		limit = stmt.FetchFirst.Count
 	}
-	comparisonPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where, a.Params)
-	return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.MatchSetOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: startProps}, Segments: plannedSegments, Assignments: assignments, Returns: returns, ReturnGraph: stmt.ReturnGraph, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
+	predicate, comparisonPredicates, nullPredicates, stringPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where, a.Params)
+	return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.MatchSetOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: startProps}, Segments: plannedSegments, Assignments: assignments, Returns: returns, ReturnGraph: stmt.ReturnGraph, Limit: limit, Predicate: predicate, ComparisonPredicates: comparisonPredicates, NullPredicates: nullPredicates, StringPredicates: stringPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
 }
 
 func planMatchDeleteStatement(a analysis.Analysis, stmt ast.MatchDeleteStatement) (planmodel.Plan, error) {
@@ -178,8 +178,8 @@ func planMatchDeleteStatement(a analysis.Analysis, stmt ast.MatchDeleteStatement
 	if stmt.FetchFirst != nil {
 		limit = stmt.FetchFirst.Count
 	}
-	comparisonPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where, a.Params)
-	return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.MatchDeleteOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: startProps}, Segments: plannedSegments, Targets: append([]string(nil), stmt.Targets...), Returns: planReturns(stmt.Returns), ReturnGraph: stmt.ReturnGraph, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
+	predicate, comparisonPredicates, nullPredicates, stringPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where, a.Params)
+	return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.MatchDeleteOperation{Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: startProps}, Segments: plannedSegments, Targets: append([]string(nil), stmt.Targets...), Returns: planReturns(stmt.Returns), ReturnGraph: stmt.ReturnGraph, Limit: limit, Predicate: predicate, ComparisonPredicates: comparisonPredicates, NullPredicates: nullPredicates, StringPredicates: stringPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates}}}, nil
 }
 
 func planMatchCreateStatement(a analysis.Analysis, stmt ast.MatchCreateStatement) planmodel.Plan {
@@ -229,6 +229,9 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 	}
 	returns := make([]planmodel.ReturnItem, 0, len(stmt.Returns))
 	for _, ret := range stmt.Returns {
+		if ret.Kind == ast.ReturnAggregate {
+			continue
+		}
 		kind := planmodel.ReturnItemKind(ret.Kind)
 		if kind == "" {
 			kind = planmodel.ReturnVariable
@@ -246,7 +249,11 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 	if stmt.FetchFirst != nil {
 		limit = stmt.FetchFirst.Count
 	}
-	comparisonPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where, a.Params)
+	var offset int64
+	if stmt.Offset != nil {
+		offset = stmt.Offset.Count
+	}
+	predicate, comparisonPredicates, nullPredicates, stringPredicates, textPredicates, semanticPredicates := planPredicates(stmt.Where, a.Params)
 	if len(pattern.Segments) > 1 || hasQuantifiedSegment(pattern.Segments) || pattern.PathVariable != "" {
 		astSegments := pattern.Segments
 		if len(astSegments) == 0 && pattern.Relationship != nil && pattern.End != nil {
@@ -282,7 +289,7 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 			}
 			segments = append(segments, planmodel.PathSegment{Relationship: planRelationshipPattern(segment.Relationship, relProps), Node: planmodel.NodePattern{Variable: segment.Node.Variable, Labels: append([]string(nil), segment.Node.Labels...), Properties: nodeProps}})
 		}
-		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{PathVariable: pattern.PathVariable, Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, ReturnGraph: stmt.ReturnGraph, Limit: limit, ComparisonPredicates: comparisonPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates, OrderBy: orderBy}}}, nil
+		return planmodel.Plan{AccessMode: a.AccessMode, Operations: []planmodel.Operation{planmodel.QueryPathOperation{PathVariable: pattern.PathVariable, Start: planmodel.NodePattern{Variable: pattern.Start.Variable, Labels: append([]string(nil), pattern.Start.Labels...), Properties: properties}, Segments: segments, Returns: returns, Aggregates: planAggregates(stmt.Returns), ReturnGraph: stmt.ReturnGraph, Distinct: stmt.Distinct, Offset: offset, Limit: limit, Predicate: predicate, ComparisonPredicates: comparisonPredicates, NullPredicates: nullPredicates, StringPredicates: stringPredicates, TextPredicates: textPredicates, SemanticPredicates: semanticPredicates, OrderBy: orderBy}}}, nil
 	}
 	if pattern.Relationship != nil {
 		relProps := propertiesMap(pattern.Relationship.Properties, a.Params)
@@ -314,10 +321,17 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 			Relationship:         planRelationshipPattern(*pattern.Relationship, relProps),
 			End:                  planmodel.NodePattern{Variable: pattern.End.Variable, Labels: append([]string(nil), pattern.End.Labels...), Properties: endProps},
 			Returns:              returns,
+			Aggregates:           planAggregates(stmt.Returns),
+			Distinct:             stmt.Distinct,
+			Offset:               offset,
 			Limit:                limit,
+			Predicate:            predicate,
 			ComparisonPredicates: comparisonPredicates,
+			NullPredicates:       nullPredicates,
+			StringPredicates:     stringPredicates,
 			TextPredicates:       textPredicates,
 			SemanticPredicates:   semanticPredicates,
+			OrderBy:              orderBy,
 		}}}, nil
 	}
 	return planmodel.Plan{
@@ -328,8 +342,14 @@ func planMatchStatement(a analysis.Analysis, stmt ast.MatchStatement) (planmodel
 				Labels:               append([]string(nil), pattern.Start.Labels...),
 				Properties:           properties,
 				Returns:              returns,
+				Aggregates:           planAggregates(stmt.Returns),
+				Distinct:             stmt.Distinct,
+				Offset:               offset,
 				Limit:                limit,
+				Predicate:            predicate,
 				ComparisonPredicates: comparisonPredicates,
+				NullPredicates:       nullPredicates,
+				StringPredicates:     stringPredicates,
 				TextPredicates:       textPredicates,
 				SemanticPredicates:   semanticPredicates,
 				OrderBy:              orderBy,
@@ -342,16 +362,29 @@ func isEqualityOperator(op ast.ComparisonOperator) bool {
 	return op == "" || op == ast.ComparisonEqual
 }
 
-func planPredicates(where *ast.WhereClause, params map[string]any) ([]planmodel.ComparisonPredicate, []planmodel.TextContainsPredicate, []planmodel.SemanticSimilarPredicate) {
+func planPredicates(where *ast.WhereClause, params map[string]any) (*planmodel.PredicateExpr, []planmodel.ComparisonPredicate, []planmodel.NullPredicate, []planmodel.StringPredicate, []planmodel.TextContainsPredicate, []planmodel.SemanticSimilarPredicate) {
 	if where == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil, nil, nil
+	}
+	var predicate *planmodel.PredicateExpr
+	if where.Expr != nil {
+		built := planPredicateExpr(*where.Expr, params)
+		predicate = &built
 	}
 	comparisons := make([]planmodel.ComparisonPredicate, 0, len(where.Predicates))
 	for _, pred := range where.Predicates {
 		if isEqualityOperator(pred.Operator) {
 			continue
 		}
-		comparisons = append(comparisons, planmodel.ComparisonPredicate{Variable: pred.Variable, Property: pred.Property, Operator: planmodel.ComparisonOperator(pred.Operator), Value: resolveValue(pred.Value, params)})
+		comparisons = append(comparisons, planComparisonPredicate(pred, params))
+	}
+	nulls := make([]planmodel.NullPredicate, 0, len(where.NullPredicates))
+	for _, pred := range where.NullPredicates {
+		nulls = append(nulls, planmodel.NullPredicate{Variable: pred.Variable, Namespace: pred.Namespace, Property: pred.Property, IsNull: pred.IsNull})
+	}
+	strings := make([]planmodel.StringPredicate, 0, len(where.StringPredicates))
+	for _, pred := range where.StringPredicates {
+		strings = append(strings, planmodel.StringPredicate{Variable: pred.Variable, Namespace: pred.Namespace, Property: pred.Property, Operator: planmodel.StringPredicateOperator(pred.Operator), Query: pred.Query})
 	}
 	texts := make([]planmodel.TextContainsPredicate, 0, len(where.TextPredicates))
 	for _, pred := range where.TextPredicates {
@@ -364,13 +397,73 @@ func planPredicates(where *ast.WhereClause, params map[string]any) ([]planmodel.
 	if len(comparisons) == 0 {
 		comparisons = nil
 	}
+	if len(nulls) == 0 {
+		nulls = nil
+	}
+	if len(strings) == 0 {
+		strings = nil
+	}
 	if len(texts) == 0 {
 		texts = nil
 	}
 	if len(semantics) == 0 {
 		semantics = nil
 	}
-	return comparisons, texts, semantics
+	return predicate, comparisons, nulls, strings, texts, semantics
+}
+
+func planComparisonPredicate(pred ast.PropertyComparison, params map[string]any) planmodel.ComparisonPredicate {
+	return planmodel.ComparisonPredicate{Variable: pred.Variable, Property: pred.Property, Operator: planmodel.ComparisonOperator(pred.Operator), Value: resolveValue(pred.Value, params)}
+}
+
+func planPredicateExpr(expr ast.PredicateExpr, params map[string]any) planmodel.PredicateExpr {
+	out := planmodel.PredicateExpr{Op: planmodel.PredicateOp(expr.Op)}
+	for _, term := range expr.Terms {
+		out.Terms = append(out.Terms, planPredicateExpr(term, params))
+	}
+	if expr.Leaf != nil {
+		leaf := &planmodel.PredicateLeafExpr{Kind: planmodel.PredicateLeafKind(expr.Leaf.Kind)}
+		if expr.Leaf.Comparison != nil {
+			c := planComparisonPredicate(*expr.Leaf.Comparison, params)
+			leaf.Comparison = &c
+		}
+		if expr.Leaf.Null != nil {
+			n := planmodel.NullPredicate{Variable: expr.Leaf.Null.Variable, Namespace: expr.Leaf.Null.Namespace, Property: expr.Leaf.Null.Property, IsNull: expr.Leaf.Null.IsNull}
+			leaf.Null = &n
+		}
+		if expr.Leaf.String != nil {
+			sp := planmodel.StringPredicate{Variable: expr.Leaf.String.Variable, Namespace: expr.Leaf.String.Namespace, Property: expr.Leaf.String.Property, Operator: planmodel.StringPredicateOperator(expr.Leaf.String.Operator), Query: expr.Leaf.String.Query}
+			leaf.String = &sp
+		}
+		if expr.Leaf.Text != nil {
+			t := planmodel.TextContainsPredicate{Variable: expr.Leaf.Text.Variable, Namespace: expr.Leaf.Text.Namespace, Property: expr.Leaf.Text.Property, Query: expr.Leaf.Text.Query}
+			leaf.Text = &t
+		}
+		if expr.Leaf.Semantic != nil {
+			sem := planmodel.SemanticSimilarPredicate{Variable: expr.Leaf.Semantic.Variable, Query: expr.Leaf.Semantic.Query, TopK: expr.Leaf.Semantic.TopK}
+			leaf.Semantic = &sem
+		}
+		out.Leaf = leaf
+	}
+	return out
+}
+
+func planAggregates(returns []ast.ReturnItem) []planmodel.AggregateItem {
+	var aggs []planmodel.AggregateItem
+	for _, ret := range returns {
+		if ret.Kind != ast.ReturnAggregate {
+			continue
+		}
+		output := ret.OutputName
+		if output == "" {
+			output = ret.Aggregate
+			if output == "" {
+				output = "count"
+			}
+		}
+		aggs = append(aggs, planmodel.AggregateItem{Function: ret.Aggregate, Star: ret.AggregateStar, Alias: ret.AggregateAlias, Namespace: ret.AggregateNamespace, Property: ret.AggregateProperty, Output: output})
+	}
+	return aggs
 }
 
 func hasQuantifiedSegment(segments []ast.PathSegment) bool {

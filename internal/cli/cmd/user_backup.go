@@ -47,7 +47,7 @@ func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		sessionRes, err := principalClient.CreatePrincipalSession(operatorCtx, &adminv1.CreatePrincipalSessionRequest{PrincipalId: user.GetPrincipalId(), Client: &commonv1.ClientInfo{Name: "mycel-admin-user-backup", Version: "v1", DeviceLabel: "operator-export"}})
+		sessionRes, err := principalClient.CreatePrincipalSession(operatorCtx, &adminv1.CreatePrincipalSessionRequest{PrincipalId: user.GetPrincipalId(), Client: &commonv1.ClientInfo{Name: "mycel-console-user-backup", Version: "v1", DeviceLabel: "operator-export"}})
 		if err != nil {
 			return fmt.Errorf("create temporary user export session: %w", err)
 		}
@@ -507,7 +507,7 @@ func executeUserBackupImport(ctx context.Context, conn grpc.ClientConnInterface,
 }
 
 func temporaryUserAuthContext(operatorCtx context.Context, userClient adminv1.AdminPrincipalServiceClient, userID, label string) (context.Context, func(), error) {
-	res, err := userClient.CreatePrincipalSession(operatorCtx, &adminv1.CreatePrincipalSessionRequest{PrincipalId: userID, Client: &commonv1.ClientInfo{Name: "mycel-admin-user-backup", Version: "v1", DeviceLabel: label}})
+	res, err := userClient.CreatePrincipalSession(operatorCtx, &adminv1.CreatePrincipalSessionRequest{PrincipalId: userID, Client: &commonv1.ClientInfo{Name: "mycel-console-user-backup", Version: "v1", DeviceLabel: label}})
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("create temporary user session: %w", err)
 	}

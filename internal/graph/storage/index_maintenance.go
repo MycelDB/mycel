@@ -51,6 +51,54 @@ func (s *LocalStore) removeNodeLabelIndexes(node graph.Node) {
 	}
 }
 
+func (s *LocalStore) addNodeTagIndexes(node graph.Node) {
+	if node.DomainID == graph.DomainID(uuid.Nil) {
+		return
+	}
+	byTag := s.tagIndex[node.DomainID]
+	if byTag == nil {
+		byTag = map[string]map[graph.NodeID]struct{}{}
+		s.tagIndex[node.DomainID] = byTag
+	}
+	for _, tag := range tagsForStorageIndex(node) {
+		set := byTag[tag]
+		if set == nil {
+			set = map[graph.NodeID]struct{}{}
+			byTag[tag] = set
+		}
+		set[node.ID] = struct{}{}
+	}
+}
+
+func (s *LocalStore) removeNodeTagIndexes(node graph.Node) {
+	byTag := s.tagIndex[node.DomainID]
+	for _, tag := range tagsForStorageIndex(node) {
+		set := byTag[tag]
+		delete(set, node.ID)
+		if len(set) == 0 {
+			delete(byTag, tag)
+		}
+	}
+	if len(byTag) == 0 {
+		delete(s.tagIndex, node.DomainID)
+	}
+}
+
+func tagsForStorageIndex(node graph.Node) []string {
+	value := any(nil)
+	if node.Properties != nil {
+		value = node.Properties[graph.NodePropTags]
+	}
+	if value == nil && node.Props != nil {
+		value = node.Props[graph.NodePropTags]
+	}
+	tags, err := graph.NormalizeTagsValue(value)
+	if err != nil {
+		return nil
+	}
+	return tags
+}
+
 func (s *LocalStore) addNodePropertyIndexEntry(node graph.Node, idx schema.IndexDefinition) error {
 	entry, err := s.nodePropertyIndexEntry(node, idx)
 	if err != nil || entry == nil {

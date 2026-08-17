@@ -39,6 +39,7 @@ type LocalStore struct {
 	edgeMeta          map[graph.EdgeID]EdgeMeta
 	nodesByDomain     map[graph.DomainID]map[graph.NodeID]struct{}
 	labelIndex        map[graph.DomainID]map[string]map[graph.NodeID]struct{}
+	tagIndex          map[graph.DomainID]map[string]map[graph.NodeID]struct{}
 	configuredIndexes map[graph.DomainID][]schema.IndexDefinition
 	indexMetadata     map[string]IndexMetadata
 	nodePropertyIndex map[string]map[string]nodePropertyIndexEntry
@@ -210,6 +211,7 @@ func (s *LocalStore) resetIndexes() {
 	s.edgeMeta = map[graph.EdgeID]EdgeMeta{}
 	s.nodesByDomain = map[graph.DomainID]map[graph.NodeID]struct{}{}
 	s.labelIndex = map[graph.DomainID]map[string]map[graph.NodeID]struct{}{}
+	s.tagIndex = map[graph.DomainID]map[string]map[graph.NodeID]struct{}{}
 	s.configuredIndexes = map[graph.DomainID][]schema.IndexDefinition{}
 	s.indexMetadata = map[string]IndexMetadata{}
 	s.nodePropertyIndex = map[string]map[string]nodePropertyIndexEntry{}
@@ -420,6 +422,7 @@ func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
 	if n.DomainID != uuid.Nil {
 		ensureNodeSet(s.nodesByDomain, n.DomainID)[n.ID] = struct{}{}
 		s.addNodeLabelIndexes(n)
+		s.addNodeTagIndexes(n)
 		for _, idx := range s.configuredIndexes[n.DomainID] {
 			_ = s.addNodePropertyIndexEntry(n, idx)
 		}
@@ -449,6 +452,7 @@ func (s *LocalStore) removeNodeIndexes(n graph.Node) {
 			delete(s.nodesByDomain, n.DomainID)
 		}
 		s.removeNodeLabelIndexes(n)
+		s.removeNodeTagIndexes(n)
 		for _, idx := range s.configuredIndexes[n.DomainID] {
 			s.removeNodePropertyIndexEntry(n, idx)
 		}

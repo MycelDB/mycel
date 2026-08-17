@@ -30,7 +30,7 @@ Create aligned branches named `node_modif` in each affected repository before im
 
 - `mycel-api`
 - `mycel`
-- `mycel-admin`
+- `mycel-console`
 - `mycel-go-sdk`
 - `mycel-rust-sdk`
 - `mycel-bench`
@@ -312,7 +312,7 @@ Validation:
 go test ./internal/cli/cmd
 ```
 
-## Tranche 9 — Admin UI update in `mycel-admin`
+## Tranche 9 — Admin UI update in `mycel-console`
 
 Status: validated. Current admin UI does not expose client graph node content/props views, so no code changes were required; tests and production build pass.
 
@@ -463,7 +463,7 @@ Update:
 
 ## Tranche 16 — End-to-end validation
 
-Status: completed. Mycel generated protobufs, full tests, and build pass. A clean-daemon CLI smoke created an admin/user-owned space with a default domain, inserted a GQL node with `:Person` and properties, then matched it by label/property and verified labels/properties in the result. Cross-repo validation passed for `mycel-api`, `mycel-admin`, `mycel-go-sdk`, `mycel-rust-sdk`, `mycel-bench`, `knot_pkm_client`, `knot_pkm_importer`, and `knot_pkm_docs`; `knot_pkm_server` daemon adapter tests pass, while its broader daemon semantic/prompt integration suite still has pre-existing/follow-up failures against the current node-modified Mycel behavior.
+Status: completed. Mycel generated protobufs, full tests, and build pass. A clean-daemon CLI smoke created an admin/user-owned space with a default domain, inserted a GQL node with `:Person` and properties, then matched it by label/property and verified labels/properties in the result. Cross-repo validation passed for `mycel-api`, `mycel-console`, `mycel-go-sdk`, `mycel-rust-sdk`, `mycel-bench`, `knot_pkm_client`, `knot_pkm_importer`, and `knot_pkm_docs`; `knot_pkm_server` daemon adapter tests pass, while its broader daemon semantic/prompt integration suite still has pre-existing/follow-up failures against the current node-modified Mycel behavior.
 
 End-to-end smoke flow:
 

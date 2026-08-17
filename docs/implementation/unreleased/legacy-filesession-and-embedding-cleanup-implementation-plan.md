@@ -151,7 +151,7 @@ Downstream audit as of LC1:
 | `mycel-api` | Defines `mycel.admin.v1.AdminSemanticMigrationService` and `MigrateLegacyEmbeddings`; removal is breaking. |
 | `mycel-go-sdk` | Generated admin migration client and top-level `Client.SemanticMigration` field expose the API. |
 | `mycel-rust-sdk` | Vendored proto and admin client expose the API. |
-| `mycel-admin` | No direct migration command/UI invocation found in the LC1 audit. |
+| `mycel-console` | No direct migration command/UI invocation found in the LC1 audit. |
 | `mycel-bench` | No migration usage found in the LC1 audit. |
 | Knot PKM repos | No `semantic migrate legacy-embeddings` or `MigrateLegacyEmbeddings` usage found in the LC1 audit. |
 

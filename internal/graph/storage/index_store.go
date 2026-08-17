@@ -223,14 +223,29 @@ func (s *LocalStore) ScanLabel(ctx context.Context, scan LabelScan) ([]graph.Nod
 	if err := s.ensureReady(); err != nil {
 		return nil, "", err
 	}
-	idsMap := s.labelIndex[scan.DomainID][scan.Label]
+	return scanNodeIDSet(s.labelIndex[scan.DomainID][scan.Label], scan.Limit, scan.Cursor)
+}
+
+func (s *LocalStore) ScanTag(ctx context.Context, scan TagScan) ([]graph.NodeID, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return nil, "", err
+	}
+	return scanNodeIDSet(s.tagIndex[scan.DomainID][scan.Tag], scan.Limit, scan.Cursor)
+}
+
+func scanNodeIDSet(idsMap map[graph.NodeID]struct{}, limit int, cursor string) ([]graph.NodeID, string, error) {
 	ids := make([]graph.NodeID, 0, len(idsMap))
 	for id := range idsMap {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
-	if scan.Cursor != "" {
-		cursorID, err := parseLabelCursor(scan.Cursor)
+	if cursor != "" {
+		cursorID, err := parseLabelCursor(cursor)
 		if err != nil {
 			return nil, "", err
 		}
@@ -242,7 +257,6 @@ func (s *LocalStore) ScanLabel(ctx context.Context, scan LabelScan) ([]graph.Nod
 		}
 		ids = filtered
 	}
-	limit := scan.Limit
 	if limit <= 0 || limit > len(ids) {
 		limit = len(ids)
 	}

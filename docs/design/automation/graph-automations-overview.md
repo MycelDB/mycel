@@ -87,7 +87,7 @@ mycel automation runs --domain <domain-uuid> --automation summarize_page --limit
 
 ## Admin API and UI
 
-The daemon exposes client and admin automation services. `mycel-admin` includes an **Automations** tab on the space detail page that lists domain automations, toggles enabled/disabled state, shows definition JSON, lists recent invocations, and opens run detail JSON including inference profile, policy decision, token, provider-request, and action metadata.
+The daemon exposes client and admin automation services. `mycel-console` includes an **Automations** tab on the space detail page that lists domain automations, toggles enabled/disabled state, shows definition JSON, lists recent invocations, and opens run detail JSON including inference profile, policy decision, token, provider-request, and action metadata.
 
 A richer visual authoring experience remains future work.
 

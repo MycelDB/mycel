@@ -357,7 +357,7 @@ V1 schema-aware behavior:
 
 No schema DSL extensions are required for V1. Automation definitions remain separate documents.
 
-## mycel-admin V1 UI
+## mycel-console V1 UI
 
 Add a read-oriented and basic management UI:
 
@@ -442,7 +442,7 @@ Full authoring UX can wait; V1 should make automations inspectable and operable.
 
 ### Phase 6 — Admin visibility
 
-- Add mycel-admin automation list/detail/run history.
+- Add mycel-console automation list/detail/run history.
 - Add enable/disable controls.
 - Add formatted JSON definition view.
 
@@ -462,8 +462,8 @@ cd myceldb/mycel-api && make generate || true
 cd myceldb/mycel-go-sdk && make generate && go test ./...
 cd myceldb/mycel-rust-sdk && cargo test
 cd myceldb/mycel && go test ./...
-cd myceldb/mycel-admin && npm test -- --runInBand
-cd myceldb/mycel-admin/src-tauri && cargo check
+cd myceldb/mycel-console && npm test -- --runInBand
+cd myceldb/mycel-console/src-tauri && cargo check
 ```
 
 Adjust exact generation commands to each repo's current Makefile targets.

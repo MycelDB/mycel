@@ -79,7 +79,7 @@ writes in local cache invalidation code.
 Search command:
 
 ```sh
-rg 'ChangeStreamService|WatchDomainChanges|WatchDomainChangesRequest|WatchDomainChangesResponse|ChangeEventType' ../knot_pkm ../orchestration ../myceldb/mycel-bench ../myceldb/mycel-admin || true
+rg 'ChangeStreamService|WatchDomainChanges|WatchDomainChangesRequest|WatchDomainChangesResponse|ChangeEventType' ../knot_pkm ../orchestration ../myceldb/mycel-bench ../myceldb/mycel-console || true
 ```
 
 Result:

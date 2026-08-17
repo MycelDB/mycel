@@ -235,8 +235,8 @@ No major UI work should be needed if existing GQL read-write execution and edge 
 Validate:
 
 - CLI can run the relationship creation query in read-write mode
-- `mycel-admin` can run the creation query with write confirmation
-- `mycel-admin` graph preview renders the created edge when queried
+- `mycel-console` can run the creation query with write confirmation
+- `mycel-console` graph preview renders the created edge when queried
 
 ## Validation commands
 

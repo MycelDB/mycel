@@ -837,7 +837,7 @@ changes this assumption.
 - Add minimal helpers for new inference and automation references where useful.
 - Avoid introducing product billing abstractions.
 
-### mycel-admin
+### mycel-console
 
 - Later UI work should manage inference profiles, credentials, grants, policies,
   decisions, usage telemetry, and automation definitions without exposing secret

@@ -29,8 +29,14 @@ type QueryNodesOperation struct {
 	Labels               []string
 	Properties           map[string]any
 	Returns              []ReturnItem
+	Aggregates           []AggregateItem
+	Distinct             bool
+	Offset               int64
 	Limit                int64
+	Predicate            *PredicateExpr
 	ComparisonPredicates []ComparisonPredicate
+	NullPredicates       []NullPredicate
+	StringPredicates     []StringPredicate
 	TextPredicates       []TextContainsPredicate
 	SemanticPredicates   []SemanticSimilarPredicate
 	OrderBy              []OrderItem
@@ -44,10 +50,17 @@ type QueryPatternOperation struct {
 	Relationship         RelationshipPattern
 	End                  NodePattern
 	Returns              []ReturnItem
+	Aggregates           []AggregateItem
+	Distinct             bool
+	Offset               int64
 	Limit                int64
+	Predicate            *PredicateExpr
 	ComparisonPredicates []ComparisonPredicate
+	NullPredicates       []NullPredicate
+	StringPredicates     []StringPredicate
 	TextPredicates       []TextContainsPredicate
 	SemanticPredicates   []SemanticSimilarPredicate
+	OrderBy              []OrderItem
 }
 
 func (QueryPatternOperation) operation() {}
@@ -57,9 +70,15 @@ type QueryPathOperation struct {
 	Start                NodePattern
 	Segments             []PathSegment
 	Returns              []ReturnItem
+	Aggregates           []AggregateItem
 	ReturnGraph          bool
+	Distinct             bool
+	Offset               int64
 	Limit                int64
+	Predicate            *PredicateExpr
 	ComparisonPredicates []ComparisonPredicate
+	NullPredicates       []NullPredicate
+	StringPredicates     []StringPredicate
 	TextPredicates       []TextContainsPredicate
 	SemanticPredicates   []SemanticSimilarPredicate
 	OrderBy              []OrderItem
@@ -87,7 +106,10 @@ type MatchSetOperation struct {
 	Returns              []ReturnItem
 	ReturnGraph          bool
 	Limit                int64
+	Predicate            *PredicateExpr
 	ComparisonPredicates []ComparisonPredicate
+	NullPredicates       []NullPredicate
+	StringPredicates     []StringPredicate
 	TextPredicates       []TextContainsPredicate
 	SemanticPredicates   []SemanticSimilarPredicate
 }
@@ -102,7 +124,10 @@ type MatchDeleteOperation struct {
 	Returns              []ReturnItem
 	ReturnGraph          bool
 	Limit                int64
+	Predicate            *PredicateExpr
 	ComparisonPredicates []ComparisonPredicate
+	NullPredicates       []NullPredicate
+	StringPredicates     []StringPredicate
 	TextPredicates       []TextContainsPredicate
 	SemanticPredicates   []SemanticSimilarPredicate
 }
@@ -184,8 +209,9 @@ type RelationshipQuantifier struct {
 type ReturnItemKind string
 
 const (
-	ReturnVariable ReturnItemKind = "variable"
-	ReturnProperty ReturnItemKind = "property"
+	ReturnVariable  ReturnItemKind = "variable"
+	ReturnProperty  ReturnItemKind = "property"
+	ReturnAggregate ReturnItemKind = "aggregate"
 )
 
 type ReturnItem struct {
@@ -194,6 +220,15 @@ type ReturnItem struct {
 	Namespace  string
 	Property   string
 	OutputName string
+}
+
+type AggregateItem struct {
+	Function  string
+	Star      bool
+	Alias     string
+	Namespace string
+	Property  string
+	Output    string
 }
 
 type ComparisonPredicate struct {
@@ -214,11 +249,67 @@ const (
 	ComparisonGreaterThanOrEqual ComparisonOperator = ">="
 )
 
+type NullPredicate struct {
+	Variable  string
+	Namespace string
+	Property  string
+	IsNull    bool
+}
+
+type StringPredicateOperator string
+
+const (
+	StringContains   StringPredicateOperator = "contains"
+	StringStartsWith StringPredicateOperator = "starts_with"
+	StringEndsWith   StringPredicateOperator = "ends_with"
+)
+
+type StringPredicate struct {
+	Variable  string
+	Namespace string
+	Property  string
+	Operator  StringPredicateOperator
+	Query     string
+}
+
 type TextContainsPredicate struct {
 	Variable  string
 	Namespace string
 	Property  string
 	Query     string
+}
+
+type PredicateOp string
+
+const (
+	PredicateLeaf PredicateOp = "leaf"
+	PredicateAnd  PredicateOp = "and"
+	PredicateOr   PredicateOp = "or"
+)
+
+type PredicateExpr struct {
+	Op    PredicateOp
+	Terms []PredicateExpr
+	Leaf  *PredicateLeafExpr
+}
+
+type PredicateLeafKind string
+
+const (
+	PredicateLeafComparison PredicateLeafKind = "comparison"
+	PredicateLeafNull       PredicateLeafKind = "null"
+	PredicateLeafString     PredicateLeafKind = "string"
+	PredicateLeafText       PredicateLeafKind = "text"
+	PredicateLeafSemantic   PredicateLeafKind = "semantic"
+)
+
+type PredicateLeafExpr struct {
+	Kind       PredicateLeafKind
+	Comparison *ComparisonPredicate
+	Null       *NullPredicate
+	String     *StringPredicate
+	Text       *TextContainsPredicate
+	Semantic   *SemanticSimilarPredicate
 }
 
 type SemanticSimilarPredicate struct {

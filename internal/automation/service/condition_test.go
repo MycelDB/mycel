@@ -133,6 +133,12 @@ func (f fakeConditionGraph) DiscardTransactionGraph(context.Context, string) { p
 func (f fakeConditionGraph) ConfigureIndexes(context.Context, sessionservice.GraphTransaction, string, []schemamodel.IndexDefinition) error {
 	panic("unused")
 }
+func (f fakeConditionGraph) ScanLabel(context.Context, sessionservice.GraphTransaction, graphservice.LabelScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
+	panic("unused")
+}
+func (f fakeConditionGraph) ScanTag(context.Context, sessionservice.GraphTransaction, graphservice.TagScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
+	panic("unused")
+}
 func (f fakeConditionGraph) ScanNodePropertyOrdered(context.Context, sessionservice.GraphTransaction, graphservice.OrderedNodePropertyScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
 	panic("unused")
 }

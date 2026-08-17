@@ -177,7 +177,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	}
 	transactionAPI := clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	graphAPI := clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager).WithClientRequestRouter(clientRouter)
-	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithClientRequestRouter(clientRouter)
+	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSemanticManager(cfg.SemanticManager).WithClientRequestRouter(clientRouter)
 	importExportAPI := clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	metadataCatalogAPI := clientapi.NewMetadataCatalogService(cfg.SessionManager, cfg.GraphManager).WithClientRequestRouter(clientRouter)
 	if cfg.ClusteringManager != nil {

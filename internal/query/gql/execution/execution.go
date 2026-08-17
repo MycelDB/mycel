@@ -3,7 +3,9 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
@@ -272,7 +274,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 			}
 			matched := []pathBinding{}
 			for _, binding := range bindings {
-				if bindingMatchesPredicates(binding, op.ComparisonPredicates, op.TextPredicates, op.SemanticPredicates) {
+				if bindingMatchesAll(binding, op.Predicate, op.ComparisonPredicates, op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates) {
 					matched = append(matched, binding)
 				}
 			}
@@ -326,7 +328,7 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 			}
 			matched := []pathBinding{}
 			for _, binding := range bindings {
-				if bindingMatchesPredicates(binding, op.ComparisonPredicates, op.TextPredicates, op.SemanticPredicates) {
+				if bindingMatchesAll(binding, op.Predicate, op.ComparisonPredicates, op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates) {
 					matched = append(matched, binding)
 				}
 			}
@@ -418,49 +420,20 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 				bindings = next
 				currentVar = segment.Node.Variable
 			}
-			if op.Limit > 0 && int64(len(bindings)) > op.Limit {
-				bindings = bindings[:op.Limit]
+			matchedBindings := []pathBinding{}
+			for _, binding := range bindings {
+				if bindingMatchesAll(binding, op.Predicate, op.ComparisonPredicates, op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates) {
+					matchedBindings = append(matchedBindings, binding)
+				}
 			}
 			for _, ret := range op.Returns {
 				result.Columns = append(result.Columns, returnColumn(ret))
 			}
-			for _, binding := range bindings {
-				if !bindingMatchesPredicates(binding, op.ComparisonPredicates, op.TextPredicates, op.SemanticPredicates) {
-					continue
-				}
-				row := execmodel.Row{}
-				for _, ret := range op.Returns {
-					column := returnColumn(ret)
-					if returnKind(ret) == planmodel.ReturnVariable {
-						if ret.Variable == op.PathVariable {
-							path := execmodel.Path{Nodes: append([]execmodel.Node(nil), binding.OrderedNodes...), Edges: append([]execmodel.Edge(nil), binding.OrderedEdges...)}
-							row[column] = execmodel.Value{Path: &path}
-							continue
-						}
-						if n, ok := binding.Nodes[ret.Variable]; ok {
-							n := n
-							row[column] = execmodel.Value{Node: &n}
-							continue
-						}
-						if edge, ok := binding.Edges[ret.Variable]; ok {
-							edge := edge
-							row[column] = execmodel.Value{Edge: &edge}
-							continue
-						}
-						return execmodel.Result{}, fmt.Errorf("return variable %q is not bound", ret.Variable)
-					}
-					if n, ok := binding.Nodes[ret.Variable]; ok {
-						row[column] = execmodel.Value{Scalar: projectNodeField(n, ret)}
-						continue
-					}
-					if edge, ok := binding.Edges[ret.Variable]; ok {
-						row[column] = execmodel.Value{Scalar: projectEdgeField(edge, ret)}
-						continue
-					}
-					return execmodel.Result{}, fmt.Errorf("return variable %q is not bound", ret.Variable)
-				}
-				result.Rows = append(result.Rows, row)
+			rows, err := projectOrderedBindingRows(matchedBindings, op.Returns, op.OrderBy, op.Distinct, op.Offset, op.Limit, op.PathVariable)
+			if err != nil {
+				return execmodel.Result{}, err
 			}
+			result.Rows = append(result.Rows, rows...)
 		case planmodel.QueryPatternOperation:
 			if plan.AccessMode != analysis.ReadOnly {
 				return execmodel.Result{}, fmt.Errorf("query pattern requires read-only access mode")
@@ -474,55 +447,37 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 			if err != nil {
 				return execmodel.Result{}, err
 			}
-			if op.Limit > 0 && int64(len(rows)) > op.Limit {
-				rows = rows[:op.Limit]
-			}
-			for _, ret := range op.Returns {
-				result.Columns = append(result.Columns, returnColumn(ret))
-			}
+			bindings := []pathBinding{}
 			for _, matched := range rows {
 				binding := pathBinding{Nodes: map[string]execmodel.Node{op.Start.Variable: matched.Start, op.End.Variable: matched.End}, Edges: map[string]execmodel.Edge{}}
 				if op.Relationship.Variable != "" {
 					binding.Edges[op.Relationship.Variable] = matched.Edge
 				}
-				if !bindingMatchesPredicates(binding, op.ComparisonPredicates, op.TextPredicates, op.SemanticPredicates) {
-					continue
+				if bindingMatchesAll(binding, op.Predicate, op.ComparisonPredicates, op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates) {
+					bindings = append(bindings, binding)
 				}
-				row := execmodel.Row{}
-				for _, ret := range op.Returns {
-					column := returnColumn(ret)
-					switch returnKind(ret) {
-					case planmodel.ReturnVariable:
-						switch ret.Variable {
-						case op.Start.Variable:
-							n := matched.Start
-							row[column] = execmodel.Value{Node: &n}
-						case op.Relationship.Variable:
-							edge := matched.Edge
-							row[column] = execmodel.Value{Edge: &edge}
-						case op.End.Variable:
-							n := matched.End
-							row[column] = execmodel.Value{Node: &n}
-						default:
-							return execmodel.Result{}, fmt.Errorf("return variable %q is not bound", ret.Variable)
-						}
-					case planmodel.ReturnProperty:
-						switch ret.Variable {
-						case op.Start.Variable:
-							row[column] = execmodel.Value{Scalar: projectNodeField(matched.Start, ret)}
-						case op.Relationship.Variable:
-							row[column] = execmodel.Value{Scalar: projectEdgeField(matched.Edge, ret)}
-						case op.End.Variable:
-							row[column] = execmodel.Value{Scalar: projectNodeField(matched.End, ret)}
-						default:
-							return execmodel.Result{}, fmt.Errorf("return variable %q is not bound", ret.Variable)
-						}
-					default:
-						return execmodel.Result{}, fmt.Errorf("unsupported return item kind %q", ret.Kind)
-					}
-				}
-				result.Rows = append(result.Rows, row)
 			}
+			if len(op.Aggregates) > 0 {
+				columns, rows, err := aggregateBindingRows(bindings, op.Returns, op.Aggregates, "")
+				if err != nil {
+					return execmodel.Result{}, err
+				}
+				result.Columns = append(result.Columns, columns...)
+				shapedRows, err := shapeAggregateExecRows(rows, op.Returns, op.OrderBy, op.Distinct, op.Offset, op.Limit)
+				if err != nil {
+					return execmodel.Result{}, err
+				}
+				result.Rows = append(result.Rows, shapedRows...)
+				continue
+			}
+			for _, ret := range op.Returns {
+				result.Columns = append(result.Columns, returnColumn(ret))
+			}
+			projected, err := projectOrderedBindingRows(bindings, op.Returns, op.OrderBy, op.Distinct, op.Offset, op.Limit, "")
+			if err != nil {
+				return execmodel.Result{}, err
+			}
+			result.Rows = append(result.Rows, projected...)
 		case planmodel.QueryNodesOperation:
 			if plan.AccessMode != analysis.ReadOnly {
 				return execmodel.Result{}, fmt.Errorf("query nodes requires read-only access mode")
@@ -531,32 +486,34 @@ func (e executor) Execute(ctx context.Context, plan planmodel.Plan) (execmodel.R
 			if err != nil {
 				return execmodel.Result{}, err
 			}
-			if op.Limit > 0 && int64(len(nodes)) > op.Limit {
-				nodes = nodes[:op.Limit]
+			bindings := []pathBinding{}
+			for _, node := range nodes {
+				binding := pathBinding{Nodes: map[string]execmodel.Node{op.Variable: node}, Edges: map[string]execmodel.Edge{}}
+				if bindingMatchesAll(binding, op.Predicate, op.ComparisonPredicates, op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates) {
+					bindings = append(bindings, binding)
+				}
+			}
+			if len(op.Aggregates) > 0 {
+				columns, rows, err := aggregateBindingRows(bindings, op.Returns, op.Aggregates, "")
+				if err != nil {
+					return execmodel.Result{}, err
+				}
+				result.Columns = append(result.Columns, columns...)
+				shapedRows, err := shapeAggregateExecRows(rows, op.Returns, op.OrderBy, op.Distinct, op.Offset, op.Limit)
+				if err != nil {
+					return execmodel.Result{}, err
+				}
+				result.Rows = append(result.Rows, shapedRows...)
+				continue
 			}
 			for _, ret := range op.Returns {
 				result.Columns = append(result.Columns, returnColumn(ret))
 			}
-			for _, node := range nodes {
-				binding := pathBinding{Nodes: map[string]execmodel.Node{op.Variable: node}, Edges: map[string]execmodel.Edge{}}
-				if !bindingMatchesPredicates(binding, op.ComparisonPredicates, op.TextPredicates, op.SemanticPredicates) {
-					continue
-				}
-				row := execmodel.Row{}
-				for _, ret := range op.Returns {
-					column := returnColumn(ret)
-					switch returnKind(ret) {
-					case planmodel.ReturnVariable:
-						n := node
-						row[column] = execmodel.Value{Node: &n}
-					case planmodel.ReturnProperty:
-						row[column] = execmodel.Value{Scalar: projectNodeField(node, ret)}
-					default:
-						return execmodel.Result{}, fmt.Errorf("unsupported return item kind %q", ret.Kind)
-					}
-				}
-				result.Rows = append(result.Rows, row)
+			projected, err := projectOrderedBindingRows(bindings, op.Returns, op.OrderBy, op.Distinct, op.Offset, op.Limit, "")
+			if err != nil {
+				return execmodel.Result{}, err
 			}
+			result.Rows = append(result.Rows, projected...)
 		default:
 			return execmodel.Result{}, fmt.Errorf("unsupported operation %T", op)
 		}
@@ -720,6 +677,404 @@ func projectBindingRow(binding pathBinding, returns []planmodel.ReturnItem) (exe
 	return row, nil
 }
 
+type shapedExecRow struct {
+	row        execmodel.Row
+	sortValues []any
+	sequence   int
+}
+
+func projectOrderedBindingRows(bindings []pathBinding, returns []planmodel.ReturnItem, orders []planmodel.OrderItem, distinct bool, offset int64, limit int64, pathVariable string) ([]execmodel.Row, error) {
+	shaped := make([]shapedExecRow, 0, len(bindings))
+	for i, binding := range bindings {
+		row, err := projectBindingRowWithPath(binding, returns, pathVariable)
+		if err != nil {
+			return nil, err
+		}
+		sortValues, err := bindingSortValues(binding, orders)
+		if err != nil {
+			return nil, err
+		}
+		shaped = append(shaped, shapedExecRow{row: row, sortValues: sortValues, sequence: i})
+	}
+	shaped = distinctShapedExecRowsIf(shaped, distinct)
+	sortShapedExecRows(shaped, orders)
+	return shapeExecRows(materializeShapedExecRows(shaped), false, offset, limit), nil
+}
+
+func bindingSortValues(binding pathBinding, orders []planmodel.OrderItem) ([]any, error) {
+	if len(orders) == 0 {
+		return nil, nil
+	}
+	values := make([]any, 0, len(orders))
+	for _, order := range orders {
+		value, ok := bindingOrderValue(binding, order)
+		if !ok {
+			return nil, fmt.Errorf("order by variable %q is not bound", order.Variable)
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
+func bindingOrderValue(binding pathBinding, order planmodel.OrderItem) (any, bool) {
+	ret := planmodel.ReturnItem{Variable: order.Variable, Namespace: order.Namespace, Property: order.Property}
+	if node, ok := binding.Nodes[order.Variable]; ok {
+		return projectNodeField(node, ret), true
+	}
+	if edge, ok := binding.Edges[order.Variable]; ok {
+		return projectEdgeField(edge, ret), true
+	}
+	return nil, false
+}
+
+func distinctShapedExecRowsIf(rows []shapedExecRow, distinct bool) []shapedExecRow {
+	if !distinct {
+		return rows
+	}
+	seen := map[string]struct{}{}
+	out := make([]shapedExecRow, 0, len(rows))
+	for _, row := range rows {
+		key := execRowKey(row.row)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, row)
+	}
+	return out
+}
+
+func sortShapedExecRows(rows []shapedExecRow, orders []planmodel.OrderItem) {
+	if len(orders) == 0 {
+		return
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		for idx, order := range orders {
+			cmp := compareAggregateValues(rows[i].sortValues[idx], rows[j].sortValues[idx])
+			if cmp == 0 {
+				continue
+			}
+			if order.Direction == planmodel.SortDescending {
+				return cmp > 0
+			}
+			return cmp < 0
+		}
+		return rows[i].sequence < rows[j].sequence
+	})
+}
+
+func materializeShapedExecRows(rows []shapedExecRow) []execmodel.Row {
+	out := make([]execmodel.Row, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.row)
+	}
+	return out
+}
+
+func shapeAggregateExecRows(rows []execmodel.Row, returns []planmodel.ReturnItem, orders []planmodel.OrderItem, distinct bool, offset int64, limit int64) ([]execmodel.Row, error) {
+	shaped := make([]shapedExecRow, 0, len(rows))
+	for i, row := range rows {
+		sortValues, err := aggregateRowSortValues(row, returns, orders)
+		if err != nil {
+			return nil, err
+		}
+		shaped = append(shaped, shapedExecRow{row: row, sortValues: sortValues, sequence: i})
+	}
+	shaped = distinctShapedExecRowsIf(shaped, distinct)
+	sortShapedExecRows(shaped, orders)
+	return shapeExecRows(materializeShapedExecRows(shaped), false, offset, limit), nil
+}
+
+func aggregateRowSortValues(row execmodel.Row, returns []planmodel.ReturnItem, orders []planmodel.OrderItem) ([]any, error) {
+	if len(orders) == 0 {
+		return nil, nil
+	}
+	values := make([]any, 0, len(orders))
+	for _, order := range orders {
+		column, ok := orderReturnColumn(order, returns)
+		if !ok {
+			return nil, fmt.Errorf("order by %s.%s must be projected for aggregate ordering", order.Variable, order.Property)
+		}
+		values = append(values, row[column].Scalar)
+	}
+	return values, nil
+}
+
+func orderReturnColumn(order planmodel.OrderItem, returns []planmodel.ReturnItem) (string, bool) {
+	for _, ret := range returns {
+		if ret.Variable == order.Variable && ret.Namespace == order.Namespace && ret.Property == order.Property {
+			return returnColumn(ret), true
+		}
+	}
+	return "", false
+}
+
+func shapeExecRows(rows []execmodel.Row, distinct bool, offset int64, limit int64) []execmodel.Row {
+	if distinct {
+		seen := map[string]struct{}{}
+		out := make([]execmodel.Row, 0, len(rows))
+		for _, row := range rows {
+			key := execRowKey(row)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, row)
+		}
+		rows = out
+	}
+	if offset > 0 {
+		if offset >= int64(len(rows)) {
+			return []execmodel.Row{}
+		}
+		rows = rows[offset:]
+	}
+	if limit > 0 && int64(len(rows)) > limit {
+		rows = rows[:limit]
+	}
+	return rows
+}
+
+func execRowKey(row execmodel.Row) string {
+	payload, err := json.Marshal(row)
+	if err != nil {
+		return fmt.Sprint(row)
+	}
+	return string(payload)
+}
+
+func aggregateBindingRows(bindings []pathBinding, returns []planmodel.ReturnItem, aggregates []planmodel.AggregateItem, pathVariable string) ([]string, []execmodel.Row, error) {
+	columns := make([]string, 0, len(returns)+len(aggregates))
+	for _, ret := range returns {
+		columns = append(columns, returnColumn(ret))
+	}
+	for _, agg := range aggregates {
+		name := agg.Output
+		if name == "" {
+			name = agg.Function
+		}
+		if name == "" {
+			name = "count"
+		}
+		columns = append(columns, name)
+	}
+	if len(aggregates) == 0 {
+		return columns, nil, nil
+	}
+	if len(returns) == 0 {
+		row := execmodel.Row{}
+		for _, agg := range aggregates {
+			name := aggregateOutputName(agg)
+			value, err := aggregateBindings(bindings, agg)
+			if err != nil {
+				return nil, nil, err
+			}
+			row[name] = execmodel.Value{Scalar: value}
+		}
+		return columns, []execmodel.Row{row}, nil
+	}
+	groups := map[string]execmodel.Row{}
+	groupBindings := map[string][]pathBinding{}
+	for _, binding := range bindings {
+		row, err := projectBindingRowWithPath(binding, returns, pathVariable)
+		if err != nil {
+			return nil, nil, err
+		}
+		key := execRowKey(row)
+		if _, ok := groups[key]; !ok {
+			groups[key] = row
+		}
+		groupBindings[key] = append(groupBindings[key], binding)
+	}
+	out := make([]execmodel.Row, 0, len(groups))
+	for key, row := range groups {
+		for _, agg := range aggregates {
+			name := aggregateOutputName(agg)
+			value, err := aggregateBindings(groupBindings[key], agg)
+			if err != nil {
+				return nil, nil, err
+			}
+			row[name] = execmodel.Value{Scalar: value}
+		}
+		out = append(out, row)
+	}
+	return columns, out, nil
+}
+
+func aggregateOutputName(agg planmodel.AggregateItem) string {
+	if agg.Output != "" {
+		return agg.Output
+	}
+	if agg.Function != "" {
+		return agg.Function
+	}
+	return "count"
+}
+
+func aggregateBindings(bindings []pathBinding, agg planmodel.AggregateItem) (any, error) {
+	switch agg.Function {
+	case "", "count":
+		return int64(countAggregateBindings(bindings, agg)), nil
+	case "sum":
+		values, err := aggregateNumericBindingValues(bindings, agg)
+		if err != nil {
+			return nil, err
+		}
+		sum := 0.0
+		for _, value := range values {
+			sum += value
+		}
+		return sum, nil
+	case "avg":
+		values, err := aggregateNumericBindingValues(bindings, agg)
+		if err != nil {
+			return nil, err
+		}
+		if len(values) == 0 {
+			return nil, nil
+		}
+		sum := 0.0
+		for _, value := range values {
+			sum += value
+		}
+		return sum / float64(len(values)), nil
+	case "min", "max":
+		values := aggregateBindingValues(bindings, agg)
+		if len(values) == 0 {
+			return nil, nil
+		}
+		best := values[0]
+		for _, value := range values[1:] {
+			cmp := compareAggregateValues(value, best)
+			if (agg.Function == "min" && cmp < 0) || (agg.Function == "max" && cmp > 0) {
+				best = value
+			}
+		}
+		return best, nil
+	default:
+		return nil, fmt.Errorf("unsupported aggregate function %q", agg.Function)
+	}
+}
+
+func countAggregateBindings(bindings []pathBinding, agg planmodel.AggregateItem) int {
+	if agg.Star || agg.Alias == "" {
+		return len(bindings)
+	}
+	if agg.Property != "" {
+		count := 0
+		for _, value := range aggregateBindingValues(bindings, agg) {
+			if value != nil {
+				count++
+			}
+		}
+		return count
+	}
+	count := 0
+	for _, binding := range bindings {
+		if _, ok := binding.Nodes[agg.Alias]; ok {
+			count++
+			continue
+		}
+		if _, ok := binding.Edges[agg.Alias]; ok {
+			count++
+		}
+	}
+	return count
+}
+
+func aggregateBindingValues(bindings []pathBinding, agg planmodel.AggregateItem) []any {
+	values := []any{}
+	ret := planmodel.ReturnItem{Variable: agg.Alias, Namespace: agg.Namespace, Property: agg.Property}
+	for _, binding := range bindings {
+		if node, ok := binding.Nodes[agg.Alias]; ok {
+			if value := projectNodeField(node, ret); value != nil {
+				values = append(values, value)
+			}
+			continue
+		}
+		if edge, ok := binding.Edges[agg.Alias]; ok {
+			if value := projectEdgeField(edge, ret); value != nil {
+				values = append(values, value)
+			}
+		}
+	}
+	return values
+}
+
+func aggregateNumericBindingValues(bindings []pathBinding, agg planmodel.AggregateItem) ([]float64, error) {
+	values := []float64{}
+	for _, value := range aggregateBindingValues(bindings, agg) {
+		number, ok := aggregateNumber(value)
+		if !ok {
+			return nil, fmt.Errorf("%s aggregate requires numeric values", agg.Function)
+		}
+		values = append(values, number)
+	}
+	return values, nil
+}
+
+func aggregateNumber(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case float32:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	default:
+		return 0, false
+	}
+}
+
+func compareAggregateValues(left any, right any) int {
+	if ln, ok := aggregateNumber(left); ok {
+		if rn, ok := aggregateNumber(right); ok {
+			switch {
+			case ln < rn:
+				return -1
+			case ln > rn:
+				return 1
+			default:
+				return 0
+			}
+		}
+	}
+	ls, rs := fmt.Sprint(left), fmt.Sprint(right)
+	if ls < rs {
+		return -1
+	}
+	if ls > rs {
+		return 1
+	}
+	return 0
+}
+
+func projectBindingRowWithPath(binding pathBinding, returns []planmodel.ReturnItem, pathVariable string) (execmodel.Row, error) {
+	if pathVariable == "" {
+		return projectBindingRow(binding, returns)
+	}
+	row := execmodel.Row{}
+	for _, ret := range returns {
+		if ret.Kind == planmodel.ReturnVariable && ret.Variable == pathVariable {
+			path := execmodel.Path{Nodes: append([]execmodel.Node(nil), binding.OrderedNodes...), Edges: append([]execmodel.Edge(nil), binding.OrderedEdges...)}
+			row[returnColumn(ret)] = execmodel.Value{Path: &path}
+			continue
+		}
+		projected, err := projectBindingRow(binding, []planmodel.ReturnItem{ret})
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range projected {
+			row[key] = value
+		}
+	}
+	return row, nil
+}
+
 func (e executor) expandSegment(ctx context.Context, current execmodel.Node, segment planmodel.PathSegment) ([]segmentExpansion, error) {
 	quant := segment.Relationship.Quantifier
 	if quant == nil {
@@ -798,10 +1153,25 @@ func executionQuantifier(quant *planmodel.RelationshipQuantifier) *RelationshipQ
 	return &RelationshipQuantifier{Min: quant.Min, Max: quant.Max}
 }
 
-func bindingMatchesPredicates(binding pathBinding, comparisons []planmodel.ComparisonPredicate, texts []planmodel.TextContainsPredicate, semantics []planmodel.SemanticSimilarPredicate) bool {
+func bindingMatchesAll(binding pathBinding, predicate *planmodel.PredicateExpr, comparisons []planmodel.ComparisonPredicate, nulls []planmodel.NullPredicate, stringsPred []planmodel.StringPredicate, texts []planmodel.TextContainsPredicate, semantics []planmodel.SemanticSimilarPredicate) bool {
+	if predicate != nil {
+		return bindingMatchesPredicateExpr(binding, *predicate)
+	}
 	for _, pred := range comparisons {
-		value, ok := bindingValue(binding, pred.Variable, "", pred.Property)
-		if !ok || !compareValues(value, pred.Operator, pred.Value) {
+		if !bindingMatchesComparison(binding, pred) {
+			return false
+		}
+	}
+	for _, pred := range nulls {
+		value, ok := bindingValue(binding, pred.Variable, pred.Namespace, pred.Property)
+		isNull := !ok || value == nil
+		if isNull != pred.IsNull {
+			return false
+		}
+	}
+	for _, pred := range stringsPred {
+		value, ok := bindingValue(binding, pred.Variable, pred.Namespace, pred.Property)
+		if !ok || !matchPlanStringPredicate(value, pred.Operator, pred.Query) {
 			return false
 		}
 	}
@@ -821,6 +1191,69 @@ func bindingMatchesPredicates(binding pathBinding, comparisons []planmodel.Compa
 	return true
 }
 
+func bindingMatchesPredicateExpr(binding pathBinding, expr planmodel.PredicateExpr) bool {
+	switch expr.Op {
+	case planmodel.PredicateAnd:
+		for _, term := range expr.Terms {
+			if !bindingMatchesPredicateExpr(binding, term) {
+				return false
+			}
+		}
+		return true
+	case planmodel.PredicateOr:
+		for _, term := range expr.Terms {
+			if bindingMatchesPredicateExpr(binding, term) {
+				return true
+			}
+		}
+		return false
+	default:
+		if expr.Leaf == nil {
+			return true
+		}
+		switch expr.Leaf.Kind {
+		case planmodel.PredicateLeafComparison:
+			return expr.Leaf.Comparison != nil && bindingMatchesComparison(binding, *expr.Leaf.Comparison)
+		case planmodel.PredicateLeafNull:
+			if expr.Leaf.Null == nil {
+				return false
+			}
+			value, ok := bindingValue(binding, expr.Leaf.Null.Variable, expr.Leaf.Null.Namespace, expr.Leaf.Null.Property)
+			return (!ok || value == nil) == expr.Leaf.Null.IsNull
+		case planmodel.PredicateLeafString:
+			if expr.Leaf.String == nil {
+				return false
+			}
+			value, ok := bindingValue(binding, expr.Leaf.String.Variable, expr.Leaf.String.Namespace, expr.Leaf.String.Property)
+			return ok && matchPlanStringPredicate(value, expr.Leaf.String.Operator, expr.Leaf.String.Query)
+		case planmodel.PredicateLeafText:
+			return expr.Leaf.Text != nil && bindingMatchesAll(binding, nil, nil, nil, nil, []planmodel.TextContainsPredicate{*expr.Leaf.Text}, nil)
+		case planmodel.PredicateLeafSemantic:
+			return expr.Leaf.Semantic != nil && bindingMatchesAll(binding, nil, nil, nil, nil, nil, []planmodel.SemanticSimilarPredicate{*expr.Leaf.Semantic})
+		default:
+			return true
+		}
+	}
+}
+
+func bindingMatchesComparison(binding pathBinding, pred planmodel.ComparisonPredicate) bool {
+	value, ok := bindingValue(binding, pred.Variable, "", pred.Property)
+	return ok && compareValues(value, pred.Operator, pred.Value)
+}
+
+func matchPlanStringPredicate(value any, op planmodel.StringPredicateOperator, query string) bool {
+	left := strings.ToLower(fmt.Sprint(value))
+	right := strings.ToLower(query)
+	switch op {
+	case planmodel.StringStartsWith:
+		return strings.HasPrefix(left, right)
+	case planmodel.StringEndsWith:
+		return strings.HasSuffix(left, right)
+	default:
+		return strings.Contains(left, right)
+	}
+}
+
 func bindingValue(binding pathBinding, variable, namespace, property string) (any, bool) {
 	if node, ok := binding.Nodes[variable]; ok {
 		return projectNodeField(node, planmodel.ReturnItem{Namespace: namespace, Property: property}), true
@@ -832,7 +1265,7 @@ func bindingValue(binding pathBinding, variable, namespace, property string) (an
 }
 
 func compareValues(left any, op planmodel.ComparisonOperator, right any) bool {
-	if op == planmodel.ComparisonEqual {
+	if op == "" || op == planmodel.ComparisonEqual {
 		return fmt.Sprint(left) == fmt.Sprint(right)
 	}
 	if op == planmodel.ComparisonNotEqual {

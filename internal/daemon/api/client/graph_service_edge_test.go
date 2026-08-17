@@ -536,9 +536,9 @@ func TestQueryServiceExecuteGQLPathBindingReturnsPathAndGraph(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("row count = %d, rows=%+v", len(rows), rows)
 	}
-	pathValue := rows[0].GetFields()["path"].GetScalar().AsInterface().(map[string]any)
-	if len(pathValue["nodes"].([]any)) != 3 || len(pathValue["edges"].([]any)) != 2 {
-		t.Fatalf("path scalar = %#v", pathValue)
+	pathValue := rows[0].GetFields()["path"].GetPath()
+	if pathValue == nil || len(pathValue.GetNodes()) != 3 || len(pathValue.GetEdges()) != 2 {
+		t.Fatalf("path value = %#v", pathValue)
 	}
 	if len(res.GetResult().GetGraph().GetNodes()) != 3 || len(res.GetResult().GetGraph().GetEdges()) != 2 {
 		t.Fatalf("graph = %+v", res.GetResult().GetGraph())

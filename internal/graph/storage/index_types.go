@@ -76,6 +76,13 @@ type LabelScan struct {
 	Cursor   string
 }
 
+type TagScan struct {
+	DomainID graph.DomainID
+	Tag      string
+	Limit    int
+	Cursor   string
+}
+
 type AdjacencyDirection string
 
 const (

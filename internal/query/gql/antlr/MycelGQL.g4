@@ -30,7 +30,7 @@ insertStatement
   ;
 
 matchStatement
-  : MATCH pathBinding? matchPattern whereClause? RETURN GRAPH? returnProjection (COMMA returnProjection)* orderByClause? fetchFirstClause?
+  : MATCH pathBinding? matchPattern whereClause? RETURN GRAPH? DISTINCT? returnProjection (COMMA returnProjection)* orderByClause? offsetClause? fetchFirstClause?
   ;
 
 pathBinding
@@ -89,22 +89,51 @@ whereClause
   ;
 
 predicate
-  : predicateTerm (AND predicateTerm)*
+  : predicateOr
+  ;
+
+predicateOr
+  : predicateAnd (OR predicateAnd)*
+  ;
+
+predicateAnd
+  : predicateFactor (AND predicateFactor)*
+  ;
+
+predicateFactor
+  : LPAREN predicate RPAREN
+  | predicateTerm
   ;
 
 predicateTerm
   : propertyBetween
   | propertyComparison
+  | propertyNullPredicate
+  | propertyStringPredicate
   | textContainsPredicate
   | semanticSimilarPredicate
   ;
 
 propertyComparison
-  : IDENTIFIER DOT IDENTIFIER comparisonOperator value
+  : propertyReference comparisonOperator value
   ;
 
 propertyBetween
-  : IDENTIFIER DOT IDENTIFIER BETWEEN value AND value
+  : propertyReference BETWEEN value AND value
+  ;
+
+propertyNullPredicate
+  : propertyReference IS NOT? NULL
+  ;
+
+propertyStringPredicate
+  : propertyReference stringPredicateOperator STRING
+  ;
+
+stringPredicateOperator
+  : CONTAINS
+  | STARTS WITH
+  | ENDS WITH
   ;
 
 comparisonOperator
@@ -125,12 +154,25 @@ semanticSimilarPredicate
   ;
 
 returnProjection
-  : returnItem (AS IDENTIFIER)?
+  : returnItem (AS identifierName)?
   ;
 
 returnItem
-  : propertyReference
+  : aggregateFunction
+  | propertyReference
   | variable
+  ;
+
+aggregateFunction
+  : aggregateName LPAREN (STAR | propertyReference | variable) RPAREN
+  ;
+
+aggregateName
+  : COUNT
+  | SUM
+  | AVG
+  | MIN
+  | MAX
   ;
 
 orderByClause
@@ -148,6 +190,10 @@ sortDirection
 
 propertyReference
   : IDENTIFIER DOT IDENTIFIER (DOT IDENTIFIER)?
+  ;
+
+offsetClause
+  : OFFSET INTEGER rowWord?
   ;
 
 fetchFirstClause
@@ -172,7 +218,25 @@ labelExpression
   ;
 
 labelName
-  : IDENTIFIER (DOT IDENTIFIER)*
+  : identifierName (DOT identifierName)*
+  ;
+
+identifierName
+  : IDENTIFIER
+  | CONTAINS
+  | STARTS
+  | WITH
+  | ENDS
+  | COUNT
+  | SUM
+  | AVG
+  | MIN
+  | MAX
+  | DISTINCT
+  | OFFSET
+  | OR
+  | IS
+  | NOT
   ;
 
 propertyMap
@@ -184,7 +248,7 @@ propertyPair
   ;
 
 propertyKey
-  : IDENTIFIER
+  : identifierName
   ;
 
 value
@@ -216,6 +280,20 @@ BY     : [Bb] [Yy];
 ASC    : [Aa] [Ss] [Cc];
 DESC   : [Dd] [Ee] [Ss] [Cc];
 AND    : [Aa] [Nn] [Dd];
+OR     : [Oo] [Rr];
+IS     : [Ii] [Ss];
+NOT    : [Nn] [Oo] [Tt];
+CONTAINS : [Cc] [Oo] [Nn] [Tt] [Aa] [Ii] [Nn] [Ss];
+STARTS : [Ss] [Tt] [Aa] [Rr] [Tt] [Ss];
+WITH   : [Ww] [Ii] [Tt] [Hh];
+ENDS   : [Ee] [Nn] [Dd] [Ss];
+COUNT  : [Cc] [Oo] [Uu] [Nn] [Tt];
+SUM    : [Ss] [Uu] [Mm];
+AVG    : [Aa] [Vv] [Gg];
+MIN    : [Mm] [Ii] [Nn];
+MAX    : [Mm] [Aa] [Xx];
+DISTINCT : [Dd] [Ii] [Ss] [Tt] [Ii] [Nn] [Cc] [Tt];
+OFFSET : [Oo] [Ff] [Ff] [Ss] [Ee] [Tt];
 BETWEEN : [Bb] [Ee] [Tt] [Ww] [Ee] [Ee] [Nn];
 GRAPH  : [Gg] [Rr] [Aa] [Pp] [Hh];
 TEXT_CONTAINS : [Tt] [Ee] [Xx] [Tt] '_' [Cc] [Oo] [Nn] [Tt] [Aa] [Ii] [Nn] [Ss];

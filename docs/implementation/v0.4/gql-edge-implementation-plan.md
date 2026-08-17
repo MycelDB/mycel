@@ -71,7 +71,7 @@ Update mycel and API contracts:
 - SDK edge types/helpers in:
   - `mycel-go-sdk`
   - `mycel-rust-sdk`
-  - `mycel-admin` Tauri proto bindings
+  - `mycel-console` Tauri proto bindings
   - `mycel-bench` if edge workload helpers are affected
 
 Replace edge fields:
@@ -171,8 +171,8 @@ Add protobuf `QueryValue` support for edges if not already present. If the query
 Update consumers so edge results are visible:
 
 - CLI text output for returned edges and edge scalar projections
-- `mycel-admin` rows view for edge values
-- `mycel-admin` graph preview should display edges once returned in result graph
+- `mycel-console` rows view for edge values
+- `mycel-console` graph preview should display edges once returned in result graph
 
 ## Phase 8 — Knot PKM server refactor
 
@@ -216,7 +216,7 @@ Minimum validation before merging this branch family:
 # mycel
 go test ./internal/graph/... ./internal/daemon/api/client ./internal/query/gql/... ./internal/cli/cmd
 
-# mycel-admin
+# mycel-console
 npm test -- --runInBand
 cd src-tauri && cargo check
 

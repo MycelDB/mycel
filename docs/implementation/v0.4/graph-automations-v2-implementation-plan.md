@@ -21,7 +21,7 @@ V1 provides:
 - deterministic placeholder output
 - changed-node update action
 - self-write metadata and loop prevention
-- initial mycel-admin Tauri command/service wrappers
+- initial mycel-console Tauri command/service wrappers
 
 V2 should build incrementally on this without changing the V1 storage layout unnecessarily.
 
@@ -483,10 +483,10 @@ Acceptance:
 Files/packages:
 
 ```text
-mycel-admin/src/features/spaces/pages/SpaceDetailPage.tsx
-mycel-admin/src/services/adminService.ts
-mycel-admin/src/types/automations.ts
-mycel-admin/src-tauri/src/commands/automations.rs
+mycel-console/src/features/spaces/pages/SpaceDetailPage.tsx
+mycel-console/src/services/adminService.ts
+mycel-console/src/types/automations.ts
+mycel-console/src-tauri/src/commands/automations.rs
 ```
 
 Tasks:
@@ -613,8 +613,8 @@ cd myceldb/mycel-api && make test
 cd myceldb/mycel && go test ./...
 cd myceldb/mycel-go-sdk && go test ./...
 cd myceldb/mycel-rust-sdk && MYCEL_API_ROOT=/path/to/mycel-api cargo test
-cd myceldb/mycel-admin && npm test -- --runInBand
-cd myceldb/mycel-admin/src-tauri && MYCEL_API_ROOT=/path/to/mycel-api cargo check
+cd myceldb/mycel-console && npm test -- --runInBand
+cd myceldb/mycel-console/src-tauri && MYCEL_API_ROOT=/path/to/mycel-api cargo check
 ```
 
 ## Rollout and migration

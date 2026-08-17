@@ -27,18 +27,20 @@ func NewQueryCommand(a *app.App) *cobra.Command {
 func NewQueryGQLCommand(a *app.App) *cobra.Command {
 	var spaceIDText, domainID, domainKey, paramsJSON string
 	var params []string
+	var explain bool
 	cmd := &cobra.Command{Use: "gql QUERY", Short: "Execute a GQL query against a daemon graph domain", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		parsedParams, err := parseGQLParams(params, paramsJSON)
 		if err != nil {
 			return err
 		}
-		return runGQL(cmd.Context(), a, gqlRunOptions{QueryText: args[0], SpaceIDText: spaceIDText, DomainID: domainID, DomainKey: domainKey, Params: parsedParams})
+		return runGQL(cmd.Context(), a, gqlRunOptions{QueryText: args[0], SpaceIDText: spaceIDText, DomainID: domainID, DomainKey: domainKey, Params: parsedParams, Explain: explain})
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID (defaults to current REPL space)")
 	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID")
 	cmd.Flags().StringVar(&domainKey, "domain", "", "domain key (defaults to the space default domain)")
 	cmd.Flags().StringArrayVar(&params, "param", nil, "GQL parameter as name=value; repeatable")
 	cmd.Flags().StringVar(&paramsJSON, "params-json", "", "GQL parameters as a JSON object")
+	cmd.Flags().BoolVar(&explain, "explain", false, "plan the query and print diagnostics without executing it")
 	return cmd
 }
 
@@ -49,6 +51,7 @@ type gqlRunOptions struct {
 	DomainKey     string
 	RequireDomain bool
 	Params        map[string]any
+	Explain       bool
 	Out           io.Writer
 }
 
@@ -109,7 +112,23 @@ func runGQL(ctx context.Context, a *app.App, opts gqlRunOptions) error {
 			_, _ = txClient.RollbackTransaction(authCtx, &clientv1.RollbackTransactionRequest{TransactionId: transactionID})
 		}
 	}()
-	gqlRes, err := clientv1.NewQueryServiceClient(conn).ExecuteGQL(authCtx, &clientv1.ExecuteGQLRequest{TransactionId: transactionID, Query: opts.QueryText, Params: protoParamsFromAny(opts.Params)})
+	queryClient := clientv1.NewQueryServiceClient(conn)
+	if opts.Explain {
+		explainRes, err := queryClient.ExplainGQL(authCtx, &clientv1.ExplainGQLRequest{TransactionId: transactionID, Query: opts.QueryText, Params: protoParamsFromAny(opts.Params)})
+		if err != nil {
+			return err
+		}
+		if _, err := txClient.CloseTransaction(authCtx, &clientv1.CloseTransactionRequest{TransactionId: transactionID}); err != nil {
+			return err
+		}
+		committed = true
+		if a.Output == "json" {
+			return a.Print(explainRes, "")
+		}
+		printQueryDiagnostics(out, explainRes.GetDiagnostics())
+		return nil
+	}
+	gqlRes, err := queryClient.ExecuteGQL(authCtx, &clientv1.ExecuteGQLRequest{TransactionId: transactionID, Query: opts.QueryText, Params: protoParamsFromAny(opts.Params)})
 	if err != nil {
 		return err
 	}
@@ -275,6 +294,36 @@ func structMap(value *structpb.Struct) map[string]any {
 		return nil
 	}
 	return value.AsMap()
+}
+
+func printQueryDiagnostics(out io.Writer, diag *clientv1.QueryDiagnostics) {
+	if diag == nil {
+		fmt.Fprintln(out, "plan: <none>")
+		return
+	}
+	fmt.Fprintf(out, "planner: %s %s\n", diag.GetPlanner(), diag.GetPlannerVersion())
+	fmt.Fprintf(out, "plan: %s (%s)\n", diag.GetPlan(), diag.GetPlanKind())
+	if diag.GetRejectedReason() != "" {
+		fmt.Fprintf(out, "rejected: %s\n", diag.GetRejectedReason())
+	}
+	if len(diag.GetIndexes()) > 0 {
+		fmt.Fprintf(out, "indexes: %s\n", strings.Join(diag.GetIndexes(), ", "))
+	}
+	if len(diag.GetPushedPredicates()) > 0 {
+		fmt.Fprintf(out, "pushed predicates: %s\n", strings.Join(diag.GetPushedPredicates(), ", "))
+	}
+	if len(diag.GetResidualPredicates()) > 0 {
+		fmt.Fprintf(out, "residual predicates: %s\n", strings.Join(diag.GetResidualPredicates(), ", "))
+	}
+	fmt.Fprintf(out, "full scan: %t\n", diag.GetFullScan())
+	if diag.GetFallbackMode() != "" {
+		fmt.Fprintf(out, "fallback: %s\n", diag.GetFallbackMode())
+	}
+	fmt.Fprintf(out, "rows: scanned=%d produced=%d returned=%d\n", diag.GetRowsScanned(), diag.GetRowsProduced(), diag.GetRowsReturned())
+	fmt.Fprintf(out, "loaded: candidates=%d index_entries=%d nodes=%d edges=%d\n", diag.GetCandidateCount(), diag.GetIndexEntriesScanned(), diag.GetNodesLoaded(), diag.GetEdgesLoaded())
+	if diag.GetTruncated() || diag.GetTruncationReason() != "" {
+		fmt.Fprintf(out, "truncated: %t %s\n", diag.GetTruncated(), diag.GetTruncationReason())
+	}
 }
 
 func gqlPlanColumns(plan planmodel.Plan) []string {

@@ -276,6 +276,10 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 	if err != nil {
 		return model.Query{}, err
 	}
+	offset, err := optionalOffset(matchCtx.OffsetClause())
+	if err != nil {
+		return model.Query{}, err
+	}
 	returns, err := buildReturnProjections(matchCtx.AllReturnProjection())
 	if err != nil {
 		return model.Query{}, err
@@ -288,7 +292,7 @@ func buildMatchStatement(ctx generated.IMatchStatementContext) (model.Query, err
 		}
 		orderBy = built
 	}
-	stmt := model.MatchStatement{Pattern: node, Where: where, Returns: returns, ReturnGraph: matchCtx.GRAPH() != nil, OrderBy: orderBy, FetchFirst: fetchFirst}
+	stmt := model.MatchStatement{Pattern: node, Where: where, Returns: returns, ReturnGraph: matchCtx.GRAPH() != nil, Distinct: matchCtx.DISTINCT() != nil, OrderBy: orderBy, Offset: offset, FetchFirst: fetchFirst}
 	if matchPattern.Relationship != nil || len(matchPattern.Segments) > 0 {
 		stmt.MatchPattern = matchPattern
 	}
@@ -498,6 +502,21 @@ func optionalFetchFirst(ctx generated.IFetchFirstClauseContext) (*model.FetchFir
 	return &built, nil
 }
 
+func optionalOffset(ctx generated.IOffsetClauseContext) (*model.OffsetClause, error) {
+	if ctx == nil {
+		return nil, nil
+	}
+	offsetCtx, ok := ctx.(*generated.OffsetClauseContext)
+	if !ok || offsetCtx.INTEGER() == nil {
+		return nil, fmt.Errorf("invalid offset clause")
+	}
+	count, err := strconv.ParseInt(offsetCtx.INTEGER().GetText(), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid offset count: %w", err)
+	}
+	return &model.OffsetClause{Count: count}, nil
+}
+
 func buildReturnProjections(items []generated.IReturnProjectionContext) ([]model.ReturnItem, error) {
 	returns := make([]model.ReturnItem, 0, len(items))
 	for _, item := range items {
@@ -514,10 +533,10 @@ func buildReturnProjections(items []generated.IReturnProjectionContext) ([]model
 			return nil, err
 		}
 		if projCtx.AS() != nil {
-			if projCtx.IDENTIFIER() == nil {
+			if projCtx.IdentifierName() == nil {
 				return nil, fmt.Errorf("invalid return alias")
 			}
-			built.OutputName = projCtx.IDENTIFIER().GetText()
+			built.OutputName = projCtx.IdentifierName().GetText()
 		}
 		returns = append(returns, built)
 	}
@@ -525,6 +544,40 @@ func buildReturnProjections(items []generated.IReturnProjectionContext) ([]model
 }
 
 func buildReturnItem(ctx *generated.ReturnItemContext) (model.ReturnItem, error) {
+	if aggregate := ctx.AggregateFunction(); aggregate != nil {
+		aggCtx, ok := aggregate.(*generated.AggregateFunctionContext)
+		if !ok {
+			return model.ReturnItem{}, fmt.Errorf("invalid aggregate function")
+		}
+		nameCtx := aggCtx.AggregateName()
+		if nameCtx == nil {
+			return model.ReturnItem{}, fmt.Errorf("invalid aggregate function")
+		}
+		item := model.ReturnItem{Kind: model.ReturnAggregate, Aggregate: strings.ToLower(nameCtx.GetText())}
+		if aggCtx.STAR() != nil {
+			item.AggregateStar = true
+			return item, nil
+		}
+		if prop := aggCtx.PropertyReference(); prop != nil {
+			propCtx, ok := prop.(*generated.PropertyReferenceContext)
+			if !ok || len(propCtx.AllIDENTIFIER()) < 2 || len(propCtx.AllIDENTIFIER()) > 3 {
+				return model.ReturnItem{}, fmt.Errorf("invalid aggregate property")
+			}
+			item.AggregateAlias = propCtx.IDENTIFIER(0).GetText()
+			item.AggregateProperty = propCtx.IDENTIFIER(1).GetText()
+			if len(propCtx.AllIDENTIFIER()) == 3 {
+				item.AggregateNamespace = propCtx.IDENTIFIER(1).GetText()
+				item.AggregateProperty = propCtx.IDENTIFIER(2).GetText()
+			}
+			return item, nil
+		}
+		variableCtx, ok := aggCtx.Variable().(*generated.VariableContext)
+		if !ok || variableCtx.IDENTIFIER() == nil {
+			return model.ReturnItem{}, fmt.Errorf("invalid aggregate variable")
+		}
+		item.AggregateAlias = variableCtx.IDENTIFIER().GetText()
+		return item, nil
+	}
 	if prop := ctx.PropertyReference(); prop != nil {
 		propCtx, ok := prop.(*generated.PropertyReferenceContext)
 		if !ok || len(propCtx.AllIDENTIFIER()) < 2 || len(propCtx.AllIDENTIFIER()) > 3 {
@@ -552,50 +605,181 @@ func buildWhereClause(ctx generated.IWhereClauseContext) (model.WhereClause, err
 	if !ok || whereCtx.Predicate() == nil {
 		return model.WhereClause{}, fmt.Errorf("invalid where clause")
 	}
-	predicateCtx, ok := whereCtx.Predicate().(*generated.PredicateContext)
-	if !ok {
-		return model.WhereClause{}, fmt.Errorf("invalid predicate")
+	expr, err := buildPredicate(whereCtx.Predicate())
+	if err != nil {
+		return model.WhereClause{}, err
 	}
 	where := model.WhereClause{}
-	for _, term := range predicateCtx.AllPredicateTerm() {
-		termCtx, ok := term.(*generated.PredicateTermContext)
-		if !ok {
-			return model.WhereClause{}, fmt.Errorf("invalid predicate term")
-		}
-		if between := termCtx.PropertyBetween(); between != nil {
-			low, high, err := buildPropertyBetween(between)
-			if err != nil {
-				return model.WhereClause{}, err
-			}
-			where.Predicates = append(where.Predicates, low, high)
-			continue
-		}
-		if comparison := termCtx.PropertyComparison(); comparison != nil {
-			built, err := buildPropertyComparison(comparison)
-			if err != nil {
-				return model.WhereClause{}, err
-			}
-			where.Predicates = append(where.Predicates, built)
-			continue
-		}
-		if text := termCtx.TextContainsPredicate(); text != nil {
-			built, err := buildTextContainsPredicate(text)
-			if err != nil {
-				return model.WhereClause{}, err
-			}
-			where.TextPredicates = append(where.TextPredicates, built)
-			continue
-		}
-		if semantic := termCtx.SemanticSimilarPredicate(); semantic != nil {
-			built, err := buildSemanticSimilarPredicate(semantic)
-			if err != nil {
-				return model.WhereClause{}, err
-			}
-			where.SemanticPredicates = append(where.SemanticPredicates, built)
-			continue
-		}
+	if predicateContainsOp(expr, model.PredicateOr) {
+		where.Expr = &expr
+	} else {
+		populateLegacyPredicateSlices(&where, expr)
 	}
 	return where, nil
+}
+
+func predicateContainsOp(expr model.PredicateExpr, op model.PredicateOp) bool {
+	if expr.Op == op {
+		return true
+	}
+	for _, term := range expr.Terms {
+		if predicateContainsOp(term, op) {
+			return true
+		}
+	}
+	return false
+}
+
+func populateLegacyPredicateSlices(where *model.WhereClause, expr model.PredicateExpr) {
+	if expr.Op == model.PredicateAnd {
+		for _, term := range expr.Terms {
+			populateLegacyPredicateSlices(where, term)
+		}
+		return
+	}
+	if expr.Op != model.PredicateLeaf || expr.Leaf == nil {
+		return
+	}
+	switch expr.Leaf.Kind {
+	case model.PredicateLeafComparison:
+		if expr.Leaf.Comparison != nil {
+			where.Predicates = append(where.Predicates, *expr.Leaf.Comparison)
+		}
+	case model.PredicateLeafNull:
+		if expr.Leaf.Null != nil {
+			where.NullPredicates = append(where.NullPredicates, *expr.Leaf.Null)
+		}
+	case model.PredicateLeafString:
+		if expr.Leaf.String != nil {
+			where.StringPredicates = append(where.StringPredicates, *expr.Leaf.String)
+		}
+	case model.PredicateLeafText:
+		if expr.Leaf.Text != nil {
+			where.TextPredicates = append(where.TextPredicates, *expr.Leaf.Text)
+		}
+	case model.PredicateLeafSemantic:
+		if expr.Leaf.Semantic != nil {
+			where.SemanticPredicates = append(where.SemanticPredicates, *expr.Leaf.Semantic)
+		}
+	}
+}
+
+func buildPredicate(ctx generated.IPredicateContext) (model.PredicateExpr, error) {
+	predicateCtx, ok := ctx.(*generated.PredicateContext)
+	if !ok || predicateCtx.PredicateOr() == nil {
+		return model.PredicateExpr{}, fmt.Errorf("invalid predicate")
+	}
+	return buildPredicateOr(predicateCtx.PredicateOr())
+}
+
+func buildPredicateOr(ctx generated.IPredicateOrContext) (model.PredicateExpr, error) {
+	orCtx, ok := ctx.(*generated.PredicateOrContext)
+	if !ok {
+		return model.PredicateExpr{}, fmt.Errorf("invalid OR predicate")
+	}
+	terms := make([]model.PredicateExpr, 0, len(orCtx.AllPredicateAnd()))
+	for _, child := range orCtx.AllPredicateAnd() {
+		built, err := buildPredicateAnd(child)
+		if err != nil {
+			return model.PredicateExpr{}, err
+		}
+		terms = append(terms, built)
+	}
+	if len(terms) == 1 {
+		return terms[0], nil
+	}
+	return model.PredicateExpr{Op: model.PredicateOr, Terms: terms}, nil
+}
+
+func buildPredicateAnd(ctx generated.IPredicateAndContext) (model.PredicateExpr, error) {
+	andCtx, ok := ctx.(*generated.PredicateAndContext)
+	if !ok {
+		return model.PredicateExpr{}, fmt.Errorf("invalid AND predicate")
+	}
+	terms := make([]model.PredicateExpr, 0, len(andCtx.AllPredicateFactor()))
+	for _, child := range andCtx.AllPredicateFactor() {
+		built, err := buildPredicateFactor(child)
+		if err != nil {
+			return model.PredicateExpr{}, err
+		}
+		terms = append(terms, built)
+	}
+	if len(terms) == 1 {
+		return terms[0], nil
+	}
+	return model.PredicateExpr{Op: model.PredicateAnd, Terms: terms}, nil
+}
+
+func buildPredicateFactor(ctx generated.IPredicateFactorContext) (model.PredicateExpr, error) {
+	factorCtx, ok := ctx.(*generated.PredicateFactorContext)
+	if !ok {
+		return model.PredicateExpr{}, fmt.Errorf("invalid predicate factor")
+	}
+	if factorCtx.Predicate() != nil {
+		return buildPredicate(factorCtx.Predicate())
+	}
+	return buildPredicateTermExpr(factorCtx.PredicateTerm())
+}
+
+func buildPredicateTermExpr(ctx generated.IPredicateTermContext) (model.PredicateExpr, error) {
+	termCtx, ok := ctx.(*generated.PredicateTermContext)
+	if !ok {
+		return model.PredicateExpr{}, fmt.Errorf("invalid predicate term")
+	}
+	leaf := model.PredicateLeafExpr{}
+	if between := termCtx.PropertyBetween(); between != nil {
+		low, high, err := buildPropertyBetween(between)
+		if err != nil {
+			return model.PredicateExpr{}, err
+		}
+		return model.PredicateExpr{Op: model.PredicateAnd, Terms: []model.PredicateExpr{{Op: model.PredicateLeaf, Leaf: &model.PredicateLeafExpr{Kind: model.PredicateLeafComparison, Comparison: &low}}, {Op: model.PredicateLeaf, Leaf: &model.PredicateLeafExpr{Kind: model.PredicateLeafComparison, Comparison: &high}}}}, nil
+	}
+	if comparison := termCtx.PropertyComparison(); comparison != nil {
+		built, err := buildPropertyComparison(comparison)
+		if err != nil {
+			return model.PredicateExpr{}, err
+		}
+		leaf.Kind = model.PredicateLeafComparison
+		leaf.Comparison = &built
+		return model.PredicateExpr{Op: model.PredicateLeaf, Leaf: &leaf}, nil
+	}
+	if nullPred := termCtx.PropertyNullPredicate(); nullPred != nil {
+		built, err := buildPropertyNullPredicate(nullPred)
+		if err != nil {
+			return model.PredicateExpr{}, err
+		}
+		leaf.Kind = model.PredicateLeafNull
+		leaf.Null = &built
+		return model.PredicateExpr{Op: model.PredicateLeaf, Leaf: &leaf}, nil
+	}
+	if stringPred := termCtx.PropertyStringPredicate(); stringPred != nil {
+		built, err := buildPropertyStringPredicate(stringPred)
+		if err != nil {
+			return model.PredicateExpr{}, err
+		}
+		leaf.Kind = model.PredicateLeafString
+		leaf.String = &built
+		return model.PredicateExpr{Op: model.PredicateLeaf, Leaf: &leaf}, nil
+	}
+	if text := termCtx.TextContainsPredicate(); text != nil {
+		built, err := buildTextContainsPredicate(text)
+		if err != nil {
+			return model.PredicateExpr{}, err
+		}
+		leaf.Kind = model.PredicateLeafText
+		leaf.Text = &built
+		return model.PredicateExpr{Op: model.PredicateLeaf, Leaf: &leaf}, nil
+	}
+	if semantic := termCtx.SemanticSimilarPredicate(); semantic != nil {
+		built, err := buildSemanticSimilarPredicate(semantic)
+		if err != nil {
+			return model.PredicateExpr{}, err
+		}
+		leaf.Kind = model.PredicateLeafSemantic
+		leaf.Semantic = &built
+		return model.PredicateExpr{Op: model.PredicateLeaf, Leaf: &leaf}, nil
+	}
+	return model.PredicateExpr{}, fmt.Errorf("unsupported predicate term")
 }
 
 func buildTextContainsPredicate(ctx generated.ITextContainsPredicateContext) (model.TextContainsPredicate, error) {
@@ -651,8 +835,12 @@ func buildFieldReference(ctx generated.IPropertyReferenceContext) (fieldReferenc
 
 func buildPropertyBetween(ctx generated.IPropertyBetweenContext) (model.PropertyComparison, model.PropertyComparison, error) {
 	betweenCtx, ok := ctx.(*generated.PropertyBetweenContext)
-	if !ok || len(betweenCtx.AllIDENTIFIER()) != 2 || len(betweenCtx.AllValue()) != 2 {
+	if !ok || betweenCtx.PropertyReference() == nil || len(betweenCtx.AllValue()) != 2 {
 		return model.PropertyComparison{}, model.PropertyComparison{}, fmt.Errorf("invalid property between")
+	}
+	field, err := buildFieldReference(betweenCtx.PropertyReference())
+	if err != nil {
+		return model.PropertyComparison{}, model.PropertyComparison{}, err
 	}
 	lowValue, err := buildValue(betweenCtx.Value(0))
 	if err != nil {
@@ -662,15 +850,17 @@ func buildPropertyBetween(ctx generated.IPropertyBetweenContext) (model.Property
 	if err != nil {
 		return model.PropertyComparison{}, model.PropertyComparison{}, err
 	}
-	variable := betweenCtx.IDENTIFIER(0).GetText()
-	property := betweenCtx.IDENTIFIER(1).GetText()
-	return model.PropertyComparison{Variable: variable, Property: property, Operator: model.ComparisonGreaterThanOrEqual, Value: lowValue}, model.PropertyComparison{Variable: variable, Property: property, Operator: model.ComparisonLessThanOrEqual, Value: highValue}, nil
+	return model.PropertyComparison{Variable: field.Variable, Property: field.Property, Operator: model.ComparisonGreaterThanOrEqual, Value: lowValue}, model.PropertyComparison{Variable: field.Variable, Property: field.Property, Operator: model.ComparisonLessThanOrEqual, Value: highValue}, nil
 }
 
 func buildPropertyComparison(ctx generated.IPropertyComparisonContext) (model.PropertyComparison, error) {
 	comparisonCtx, ok := ctx.(*generated.PropertyComparisonContext)
-	if !ok || len(comparisonCtx.AllIDENTIFIER()) != 2 || comparisonCtx.ComparisonOperator() == nil || comparisonCtx.Value() == nil {
+	if !ok || comparisonCtx.PropertyReference() == nil || comparisonCtx.ComparisonOperator() == nil || comparisonCtx.Value() == nil {
 		return model.PropertyComparison{}, fmt.Errorf("invalid property comparison")
+	}
+	field, err := buildFieldReference(comparisonCtx.PropertyReference())
+	if err != nil {
+		return model.PropertyComparison{}, err
 	}
 	value, err := buildValue(comparisonCtx.Value())
 	if err != nil {
@@ -680,7 +870,56 @@ func buildPropertyComparison(ctx generated.IPropertyComparisonContext) (model.Pr
 	if err != nil {
 		return model.PropertyComparison{}, err
 	}
-	return model.PropertyComparison{Variable: comparisonCtx.IDENTIFIER(0).GetText(), Property: comparisonCtx.IDENTIFIER(1).GetText(), Operator: operator, Value: value}, nil
+	return model.PropertyComparison{Variable: field.Variable, Property: field.Property, Operator: operator, Value: value}, nil
+}
+
+func buildPropertyNullPredicate(ctx generated.IPropertyNullPredicateContext) (model.NullPredicate, error) {
+	nullCtx, ok := ctx.(*generated.PropertyNullPredicateContext)
+	if !ok || nullCtx.PropertyReference() == nil {
+		return model.NullPredicate{}, fmt.Errorf("invalid null predicate")
+	}
+	field, err := buildFieldReference(nullCtx.PropertyReference())
+	if err != nil {
+		return model.NullPredicate{}, err
+	}
+	return model.NullPredicate{Variable: field.Variable, Namespace: field.Namespace, Property: field.Property, IsNull: nullCtx.NOT() == nil}, nil
+}
+
+func buildPropertyStringPredicate(ctx generated.IPropertyStringPredicateContext) (model.StringPredicate, error) {
+	stringCtx, ok := ctx.(*generated.PropertyStringPredicateContext)
+	if !ok || stringCtx.PropertyReference() == nil || stringCtx.StringPredicateOperator() == nil || stringCtx.STRING() == nil {
+		return model.StringPredicate{}, fmt.Errorf("invalid string predicate")
+	}
+	field, err := buildFieldReference(stringCtx.PropertyReference())
+	if err != nil {
+		return model.StringPredicate{}, err
+	}
+	query, err := unquoteString(stringCtx.STRING().GetText())
+	if err != nil {
+		return model.StringPredicate{}, err
+	}
+	op, err := buildStringPredicateOperator(stringCtx.StringPredicateOperator())
+	if err != nil {
+		return model.StringPredicate{}, err
+	}
+	return model.StringPredicate{Variable: field.Variable, Namespace: field.Namespace, Property: field.Property, Operator: op, Query: query}, nil
+}
+
+func buildStringPredicateOperator(ctx generated.IStringPredicateOperatorContext) (model.StringPredicateOperator, error) {
+	opCtx, ok := ctx.(*generated.StringPredicateOperatorContext)
+	if !ok {
+		return "", fmt.Errorf("invalid string predicate operator")
+	}
+	switch {
+	case opCtx.CONTAINS() != nil:
+		return model.StringContains, nil
+	case opCtx.STARTS() != nil:
+		return model.StringStartsWith, nil
+	case opCtx.ENDS() != nil:
+		return model.StringEndsWith, nil
+	default:
+		return "", fmt.Errorf("unsupported string predicate operator")
+	}
 }
 
 func buildComparisonOperator(ctx generated.IComparisonOperatorContext) (model.ComparisonOperator, error) {
@@ -754,14 +993,14 @@ func buildPropertyPair(ctx generated.IPropertyPairContext) (model.Property, erro
 		return model.Property{}, fmt.Errorf("invalid property pair")
 	}
 	keyCtx, ok := pairCtx.PropertyKey().(*generated.PropertyKeyContext)
-	if !ok || keyCtx.IDENTIFIER() == nil {
+	if !ok || strings.TrimSpace(keyCtx.GetText()) == "" {
 		return model.Property{}, fmt.Errorf("invalid property key")
 	}
 	value, err := buildValue(pairCtx.Value())
 	if err != nil {
-		return model.Property{}, fmt.Errorf("property %q: %w", keyCtx.IDENTIFIER().GetText(), err)
+		return model.Property{}, fmt.Errorf("property %q: %w", keyCtx.GetText(), err)
 	}
-	return model.Property{Key: keyCtx.IDENTIFIER().GetText(), Value: value}, nil
+	return model.Property{Key: keyCtx.GetText(), Value: value}, nil
 }
 
 func unquoteString(text string) (string, error) {

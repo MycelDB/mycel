@@ -29,7 +29,9 @@ type MatchStatement struct {
 	Where        *WhereClause
 	Returns      []ReturnItem
 	ReturnGraph  bool
+	Distinct     bool
 	OrderBy      []OrderItem
+	Offset       *OffsetClause
 	FetchFirst   *FetchFirstClause
 }
 
@@ -107,11 +109,54 @@ type FetchFirstClause struct {
 	Count int64
 }
 
-// WhereClause represents a conjunction of property predicates.
+// OffsetClause represents OFFSET n ROW(S).
+type OffsetClause struct {
+	Count int64
+}
+
+// WhereClause represents query predicates. The legacy slices are populated for
+// simple AND-only predicates so existing planners can continue to fold equality
+// starts; Expr is authoritative for OR/parenthesized/null/string predicates.
 type WhereClause struct {
+	Expr               *PredicateExpr
 	Predicates         []PropertyComparison
+	NullPredicates     []NullPredicate
+	StringPredicates   []StringPredicate
 	TextPredicates     []TextContainsPredicate
 	SemanticPredicates []SemanticSimilarPredicate
+}
+
+type PredicateOp string
+
+const (
+	PredicateLeaf PredicateOp = "leaf"
+	PredicateAnd  PredicateOp = "and"
+	PredicateOr   PredicateOp = "or"
+)
+
+type PredicateExpr struct {
+	Op    PredicateOp
+	Terms []PredicateExpr
+	Leaf  *PredicateLeafExpr
+}
+
+type PredicateLeafKind string
+
+const (
+	PredicateLeafComparison PredicateLeafKind = "comparison"
+	PredicateLeafNull       PredicateLeafKind = "null"
+	PredicateLeafString     PredicateLeafKind = "string"
+	PredicateLeafText       PredicateLeafKind = "text"
+	PredicateLeafSemantic   PredicateLeafKind = "semantic"
+)
+
+type PredicateLeafExpr struct {
+	Kind       PredicateLeafKind
+	Comparison *PropertyComparison
+	Null       *NullPredicate
+	String     *StringPredicate
+	Text       *TextContainsPredicate
+	Semantic   *SemanticSimilarPredicate
 }
 
 // PropertyComparison represents a variable.property = value predicate.
@@ -133,6 +178,29 @@ const (
 	ComparisonGreaterThanOrEqual ComparisonOperator = ">="
 )
 
+type NullPredicate struct {
+	Variable  string
+	Namespace string
+	Property  string
+	IsNull    bool
+}
+
+type StringPredicateOperator string
+
+const (
+	StringContains   StringPredicateOperator = "contains"
+	StringStartsWith StringPredicateOperator = "starts_with"
+	StringEndsWith   StringPredicateOperator = "ends_with"
+)
+
+type StringPredicate struct {
+	Variable  string
+	Namespace string
+	Property  string
+	Operator  StringPredicateOperator
+	Query     string
+}
+
 type TextContainsPredicate struct {
 	Variable  string
 	Namespace string
@@ -149,17 +217,23 @@ type SemanticSimilarPredicate struct {
 type ReturnItemKind string
 
 const (
-	ReturnVariable ReturnItemKind = "variable"
-	ReturnProperty ReturnItemKind = "property"
+	ReturnVariable  ReturnItemKind = "variable"
+	ReturnProperty  ReturnItemKind = "property"
+	ReturnAggregate ReturnItemKind = "aggregate"
 )
 
 // ReturnItem represents one returned variable or property expression.
 type ReturnItem struct {
-	Kind       ReturnItemKind
-	Variable   string
-	Namespace  string
-	Property   string
-	OutputName string
+	Kind               ReturnItemKind
+	Variable           string
+	Namespace          string
+	Property           string
+	OutputName         string
+	Aggregate          string
+	AggregateStar      bool
+	AggregateAlias     string
+	AggregateNamespace string
+	AggregateProperty  string
 }
 
 type SortDirection string

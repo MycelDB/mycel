@@ -270,18 +270,18 @@ Acceptance:
 
 - CLI exposes only Raft cluster semantics.
 
-## Phase 11 — mycel-admin cleanup
+## Phase 11 — mycel-console cleanup
 
 Remove leftover static components/types:
 
-- `mycel-admin/src/features/cluster/components/AddClusterNodeModal.tsx`
-- `mycel-admin/src/features/cluster/components/AddClusterNodeModal.test.tsx`
-- static-primary-only types in `mycel-admin/src/types/cluster.ts`
-- static-primary-only DTOs/functions in `mycel-admin/src-tauri/src/commands/cluster.rs`
+- `mycel-console/src/features/cluster/components/AddClusterNodeModal.tsx`
+- `mycel-console/src/features/cluster/components/AddClusterNodeModal.test.tsx`
+- static-primary-only types in `mycel-console/src/types/cluster.ts`
+- static-primary-only DTOs/functions in `mycel-console/src-tauri/src/commands/cluster.rs`
 
 Acceptance:
 
-- `mycel-admin` has no active static-primary controls or service calls.
+- `mycel-console` has no active static-primary controls or service calls.
 
 ## Phase 12 — Scripts and compose cleanup
 
@@ -330,7 +330,7 @@ Canonical docs should be:
 
 - `mycel/docs/design/space-partitioned-raft-clustering.md`
 - `mycel/docs/implementation/space-partitioned-raft-clustering-implementation-plan.md`
-- `mycel-admin/docs/implementation_plans/raft_cluster_management_console.md`
+- `mycel-console/docs/implementation_plans/raft_cluster_management_console.md`
 
 Acceptance:
 
@@ -368,7 +368,7 @@ scripts/validateRaftPhase12Public.sh
 Admin:
 
 ```bash
-cd mycel-admin
+cd mycel-console
 cargo check --manifest-path src-tauri/Cargo.toml
 npm test
 npm run build

@@ -33,6 +33,40 @@ func TestSearchDisabledExecuteQueryReturnsFailedPrecondition(t *testing.T) {
 	}
 }
 
+func TestSearchDisabledExecuteGQLFallbackReturnsFailedPrecondition(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
+	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+
+	_, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
+		TransactionId: tx,
+		Query:         "MATCH (n) RETURN n",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ExecuteGQL() code = %v, want %v (err: %v)", status.Code(err), codes.FailedPrecondition, err)
+	}
+}
+
+func TestExecuteQueryRejectsUnboundedStructuredTraversal(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+
+	_, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+		TransactionId: tx,
+		Query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{
+			Start: &clientv1.NodePattern{Alias: "a", NodeIds: []string{uuid.NewString()}},
+			Steps: []*clientv1.TraversalStep{{
+				Direction: clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT,
+				EdgeKind:  "RELATES_TO",
+				Depth:     &clientv1.DepthSpec{MinDepth: 1, MaxDepth: -1},
+				Target:    &clientv1.NodePattern{Alias: "b"},
+			}},
+		}},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ExecuteQuery() code = %v, want %v (err: %v)", status.Code(err), codes.FailedPrecondition, err)
+	}
+}
+
 func TestExplicitOnlyGraphGetNodeByIDWorks(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{DiscoveryMode: graphmodel.DomainDiscoveryModeExplicitOnly, SearchMode: graphmodel.DomainSearchModeDisabled, SemanticMode: graphmodel.DomainSemanticModeDisabled})
 	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)

@@ -73,6 +73,47 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	}
 }
 
+func TestLocalStoreScanTagUsesCanonicalPropertiesAndRebuilds(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	domainID := graph.DomainID(uuid.New())
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Document"}, Properties: map[string]any{graph.NodePropTags: []any{"Project", "Urgent"}}}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Document"}, Properties: map[string]any{graph.NodePropTags: []string{"archive"}}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	got, next, err := store.ScanTag(ctx, TagScan{DomainID: domainID, Tag: "project", Limit: 10})
+	if err != nil || next != "" || !reflect.DeepEqual(got, []graph.NodeID{first.ID}) {
+		t.Fatalf("ScanTag(project) got=%+v next=%q err=%v", got, next, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	got, next, err = store.ScanTag(ctx, TagScan{DomainID: domainID, Tag: "urgent", Limit: 10})
+	if err != nil || next != "" || !reflect.DeepEqual(got, []graph.NodeID{first.ID}) {
+		t.Fatalf("ScanTag(urgent after reopen) got=%+v next=%q err=%v", got, next, err)
+	}
+}
+
 func TestLocalStoreIncomingOutgoingEdgesSurviveReopenAndReplacement(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

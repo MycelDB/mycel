@@ -92,6 +92,7 @@ type Store interface {
 	JournalNodesByDayRange(ctx context.Context, from, to int) ([]graph.NodeID, error)
 	ConfigureIndexes(ctx context.Context, domainID graph.DomainID, schemaHash string, indexes []schema.IndexDefinition) error
 	ScanLabel(ctx context.Context, scan LabelScan) ([]graph.NodeID, string, error)
+	ScanTag(ctx context.Context, scan TagScan) ([]graph.NodeID, string, error)
 	ScanNodePropertyOrdered(ctx context.Context, scan OrderedNodePropertyScan) ([]NodeIndexEntry, string, error)
 	ScanEdgePropertyOrdered(ctx context.Context, scan OrderedEdgePropertyScan) ([]EdgeIndexEntry, string, error)
 	ScanAdjacency(ctx context.Context, scan AdjacencyScan) ([]graph.EdgeID, string, error)

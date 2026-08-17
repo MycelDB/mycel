@@ -1925,6 +1925,208 @@ func (m *Module) ConfigureIndexes(ctx context.Context, tx daemonsession.GraphTra
 	return mapStorageError(store.ConfigureIndexes(ctx, mustDomainID(tx.DomainID), schemaHash, indexes))
 }
 
+func (m *Module) ScanLabel(ctx context.Context, tx daemonsession.GraphTransaction, scan LabelScan) ([]domaingraph.Node, string, IndexedReadStats, error) {
+	label := strings.TrimSpace(scan.Label)
+	stats := IndexedReadStats{Plan: "LabelIndexScan", IndexName: "label:" + label, NextCursorKind: "label_key"}
+	if err := ensureReadable(tx); err != nil {
+		return nil, "", stats, err
+	}
+	if label == "" {
+		return nil, "", stats, fmt.Errorf("%w: label is required", ErrInvalidInput)
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return nil, "", stats, err
+	} else if forward {
+		req := raftReadRequest("scan_label", tx)
+		req.LabelScan = scan
+		var res raftGraphIndexedNodesResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return nil, "", stats, err
+		}
+		return res.Nodes, res.NextPageToken, res.Stats, nil
+	}
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
+		return nil, "", stats, err
+	}
+	store, err := m.store(ctx, tx.SpaceID)
+	if err != nil {
+		return nil, "", stats, err
+	}
+	m.mu.Lock()
+	o := m.overlays[tx.ID]
+	var overlaySnapshot *overlay
+	if o != nil {
+		overlaySnapshot = o.clone()
+	}
+	m.mu.Unlock()
+	extra := 0
+	if overlaySnapshot != nil {
+		extra = len(overlaySnapshot.putNodes)
+	}
+	storageLimit := scan.Limit
+	if storageLimit > 0 {
+		storageLimit += extra
+	}
+	nodeIDs, next, err := store.ScanLabel(ctx, graphstorage.LabelScan{DomainID: mustDomainID(tx.DomainID), Label: label, Limit: storageLimit, Cursor: scan.Cursor})
+	if err != nil {
+		return nil, "", stats, mapStorageError(err)
+	}
+	stats.IndexEntriesScanned = len(nodeIDs)
+	items := make([]domaingraph.Node, 0, len(nodeIDs)+extra)
+	for _, nodeID := range nodeIDs {
+		if overlaySnapshot != nil {
+			if _, deleted := overlaySnapshot.deleteNodes[nodeID]; deleted {
+				continue
+			}
+			if _, replaced := overlaySnapshot.putNodes[nodeID]; replaced {
+				continue
+			}
+		}
+		node, err := store.GetNode(ctx, nodeID)
+		if err != nil {
+			return nil, "", stats, mapStorageError(err)
+		}
+		items = append(items, cloneNode(node))
+	}
+	if overlaySnapshot != nil {
+		cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
+		if err != nil {
+			return nil, "", stats, mapStorageError(err)
+		}
+		for _, node := range overlaySnapshot.putNodes {
+			if node.DomainID != mustDomainID(tx.DomainID) || !nodeHasAnyLabelForIndexedRead(node, []string{label}) {
+				continue
+			}
+			if cursorKey != "" && node.ID.String() <= cursorKey {
+				continue
+			}
+			items = append(items, cloneNode(node))
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ID.String() < items[j].ID.String() })
+	limit := scan.Limit
+	if limit <= 0 || limit > len(items) {
+		limit = len(items)
+	}
+	out := append([]domaingraph.Node(nil), items[:limit]...)
+	stats.NodesLoaded = len(out)
+	if limit < len(items) && limit > 0 {
+		next = graphstorage.EncodeIndexCursor(items[limit-1].ID.String())
+	}
+	return out, next, stats, nil
+}
+
+func (m *Module) ScanTag(ctx context.Context, tx daemonsession.GraphTransaction, scan TagScan) ([]domaingraph.Node, string, IndexedReadStats, error) {
+	tag, err := domaingraph.NormalizeTag(scan.Tag)
+	stats := IndexedReadStats{Plan: "TagIndexScan", IndexName: "tag:" + tag, NextCursorKind: "tag_key"}
+	if err := ensureReadable(tx); err != nil {
+		return nil, "", stats, err
+	}
+	if err != nil {
+		return nil, "", stats, fmt.Errorf("%w: invalid tag", ErrInvalidInput)
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return nil, "", stats, err
+	} else if forward {
+		req := raftReadRequest("scan_tag", tx)
+		req.TagScan = scan
+		var res raftGraphIndexedNodesResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return nil, "", stats, err
+		}
+		return res.Nodes, res.NextPageToken, res.Stats, nil
+	}
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
+		return nil, "", stats, err
+	}
+	store, err := m.store(ctx, tx.SpaceID)
+	if err != nil {
+		return nil, "", stats, err
+	}
+	m.mu.Lock()
+	o := m.overlays[tx.ID]
+	var overlaySnapshot *overlay
+	if o != nil {
+		overlaySnapshot = o.clone()
+	}
+	m.mu.Unlock()
+	extra := 0
+	if overlaySnapshot != nil {
+		extra = len(overlaySnapshot.putNodes)
+	}
+	storageLimit := scan.Limit
+	if storageLimit > 0 {
+		storageLimit += extra
+	}
+	nodeIDs, next, err := store.ScanTag(ctx, graphstorage.TagScan{DomainID: mustDomainID(tx.DomainID), Tag: tag, Limit: storageLimit, Cursor: scan.Cursor})
+	if err != nil {
+		return nil, "", stats, mapStorageError(err)
+	}
+	stats.IndexEntriesScanned = len(nodeIDs)
+	items := make([]domaingraph.Node, 0, len(nodeIDs)+extra)
+	for _, nodeID := range nodeIDs {
+		if overlaySnapshot != nil {
+			if _, deleted := overlaySnapshot.deleteNodes[nodeID]; deleted {
+				continue
+			}
+			if _, replaced := overlaySnapshot.putNodes[nodeID]; replaced {
+				continue
+			}
+		}
+		node, err := store.GetNode(ctx, nodeID)
+		if err != nil {
+			return nil, "", stats, mapStorageError(err)
+		}
+		items = append(items, cloneNode(node))
+	}
+	if overlaySnapshot != nil {
+		cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
+		if err != nil {
+			return nil, "", stats, mapStorageError(err)
+		}
+		for _, node := range overlaySnapshot.putNodes {
+			if node.DomainID != mustDomainID(tx.DomainID) || !nodeHasTagForIndexedRead(node, tag) {
+				continue
+			}
+			if cursorKey != "" && node.ID.String() <= cursorKey {
+				continue
+			}
+			items = append(items, cloneNode(node))
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ID.String() < items[j].ID.String() })
+	limit := scan.Limit
+	if limit <= 0 || limit > len(items) {
+		limit = len(items)
+	}
+	out := append([]domaingraph.Node(nil), items[:limit]...)
+	stats.NodesLoaded = len(out)
+	if limit < len(items) && limit > 0 {
+		next = graphstorage.EncodeIndexCursor(items[limit-1].ID.String())
+	}
+	return out, next, stats, nil
+}
+
+func nodeHasTagForIndexedRead(node domaingraph.Node, tag string) bool {
+	value := any(nil)
+	if node.Properties != nil {
+		value = node.Properties[domaingraph.NodePropTags]
+	}
+	if value == nil && node.Props != nil {
+		value = node.Props[domaingraph.NodePropTags]
+	}
+	tags, err := domaingraph.NormalizeTagsValue(value)
+	if err != nil {
+		return false
+	}
+	for _, got := range tags {
+		if got == tag {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.GraphTransaction, scan OrderedNodePropertyScan) ([]domaingraph.Node, string, IndexedReadStats, error) {
 	stats := IndexedReadStats{Plan: "OrderedNodePropertyIndexScan", IndexName: scan.IndexName, NextCursorKind: "index_key"}
 	if err := ensureReadable(tx); err != nil {

@@ -4,9 +4,9 @@ This document tracks the mycel GQL feature roadmap. It is intentionally product-
 
 ## Scope
 
-mycel GQL aims to provide a graph-native query language for nodes, edges, paths, projections, filtering, mutation, diagnostics, and higher-level application use cases such as Knot PKM.
+mycel GQL aims to provide a graph-native query language for nodes, edges, paths, projections, filtering, mutation, diagnostics, and higher-level application use cases without embedding application-specific concepts.
 
-The current implemented subset is still intentionally incremental, but it now covers node insertion, node matching, relationship matching, relationship creation between matched nodes, multi-hop and bounded variable-length traversal, path binding/projection, comparison predicates, text/semantic predicate MVPs, property/payload/meta scalar projection, aliases, parameters, `SET`, `DELETE`, `MERGE`, schema-aware validation, scripts, and row limiting.
+The current implemented subset is still intentionally incremental, but it now covers node insertion, node matching, relationship matching, relationship creation between matched nodes, multi-hop and bounded variable-length traversal, path binding/projection, comparison predicates, text/semantic predicate MVPs, property/payload/meta scalar projection, aliases, parameters, `SET`, `DELETE`, `MERGE`, aggregation, result shaping, explain diagnostics, schema-aware validation, scripts, and row limiting.
 
 ## Feature Matrix
 
@@ -31,16 +31,16 @@ Desirability values are relative priorities:
 | Row limiting | ISO-style row limit, e.g. `FETCH FIRST 10 ROWS ONLY`. | High | High | Y |
 | CLI GQL text output | Print GQL result rows from the CLI. | Medium | Medium | Y |
 | REPL space/domain connection | Connect to a space/domain in the CLI REPL and run GQL without repeating IDs. | High | High | N |
-| Admin console GQL execution | Execute GQL from `mycel-admin`. | Medium | High | Y |
-| Admin scalar result rendering | Display scalar projection values in `mycel-admin`. | Medium | High | Y |
-| Admin read-write execution | Allow write GQL from `mycel-admin` with confirmation. | Medium | Medium | Y |
-| `ORDER BY` | Sort rows by property or expression. | High | High | Partial |
-| `OFFSET` | Skip the first N rows for pagination. | Medium | Medium | N |
+| Mycel Console GQL execution | Execute GQL from `mycel-console`. | Medium | High | Y |
+| Mycel Console scalar/result rendering | Display scalar, path, aggregate, graph, diagnostics, fallback, and rejection results in `mycel-console`. | Medium | High | Y |
+| Mycel Console read-write execution | Allow write GQL from `mycel-console` with confirmation. | Medium | Medium | Y |
+| `ORDER BY` | Sort rows by property or expression. | High | High | Y |
+| `OFFSET` | Skip the first N rows for pagination. | Medium | Medium | Y |
 | Comparison predicates | Support `>`, `<`, `>=`, `<=`, and `!=` in `WHERE`. | High | High | Y |
-| `OR` predicates | Combine filters with `OR`. | Medium | Medium | N |
-| Parenthesized predicates | Group boolean expressions in `WHERE`. | Medium | Medium | N |
-| String predicates | Support `CONTAINS`, `STARTS WITH`, `ENDS WITH`, or regex-like matching. | High | High | N |
-| `IS NULL` / `IS NOT NULL` | Test missing or null properties. | High | High | N |
+| `OR` predicates | Combine filters with `OR`. | Medium | Medium | Y |
+| Parenthesized predicates | Group boolean expressions in `WHERE`. | Medium | Medium | Y |
+| String predicates | Support `CONTAINS`, `STARTS WITH`, `ENDS WITH`, or regex-like matching. | High | High | Partial |
+| `IS NULL` / `IS NOT NULL` | Test missing or null properties. | High | High | Y |
 | Parameterized queries | Use query parameters instead of literal interpolation. | High | High | Y |
 | Multiple independent `MATCH` node patterns | Bind multiple node variables, e.g. `MATCH (a:Person), (b:Person)`. | High | High | Y |
 | Create edge from matched endpoints | Create a relationship between matched node variables, e.g. `MATCH (a), (b) CREATE (a)-[:KNOWS]->(b)`. | Very High | Very High | Y |
@@ -66,19 +66,21 @@ Desirability values are relative priorities:
 | `MERGE` / upsert | Match-or-create nodes and relationships. | High | High | Y |
 | Relationship `CREATE` with inline endpoint creation | Create relationships and endpoint nodes in the same `CREATE` clause. | High | High | N |
 | Edge upsert / merge | Match-or-create relationships between matched endpoints. | High | High | Y |
-| Aggregation | Support `COUNT`, grouping, and simple aggregates. | High | High | N |
-| Distinct rows | Support `RETURN DISTINCT ...`. | Medium | Medium | N |
+| Aggregation | Support `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, grouping, and aggregate aliases. | High | High | Y |
+| Distinct rows | Support `RETURN DISTINCT ...`. | Medium | Medium | Y |
 | Aliased projections | Support `RETURN p.name AS name`. | Medium | High | Y |
 | Function calls | Add built-in scalar, list, and string functions. | Medium | Medium | N |
 | List/map literals | Support richer literal values in queries. | Medium | Medium | N |
 | Payload projection | Return `Payload` fields such as primary text or blob references. | High | Very High | Y |
 | Meta projection | Return Mycel-controlled metadata fields. | Medium | Medium | Y |
 | Full-text search predicate | Match text payload/properties using text predicate filtering. | High | Very High | Y |
+| Full-text index pushdown | Execute text predicates through an indexed text-search plan instead of local filtering. | High | Very High | N |
 | Semantic/vector predicate | Query semantically similar nodes. Initial implementation uses local textual fallback until semantic index pushdown is wired. | Medium | Very High | Y |
+| Semantic/vector index pushdown | Execute semantic predicates through semantic/vector indexes instead of local textual fallback. | Medium | Very High | N |
 | Schema-aware predicates | Filter/query using schema labels, record semantics, or schema-derived metadata. | Medium | High | Partial |
 | Degree predicates | Filter by incoming/outgoing edge counts. | Medium | High | N |
-| Explain plan | Show the compiled or optimized query plan. | Medium | Low | N |
-| Query diagnostics | Return timing, counters, and warnings. | Medium | Medium | Partial |
+| Explain plan | Show planner diagnostics without executing graph reads or writes. | Medium | Low | Y |
+| Query diagnostics | Return planner/version, plan kind, predicate, timing, row/candidate count, fallback, and rejection diagnostics. | Medium | Medium | Y |
 
 ## Current Implemented Subset
 
@@ -187,16 +189,23 @@ MERGE (a)-[r:KNOWS]->(b)
 RETURN a, r, b
 ```
 
+## Top Cross-Roadmap Unimplemented Query Priorities
+
+Reviewing the current GQL grammar/planner and structured `QueryService` implementation leaves three highest-value unimplemented query feature bundles across the GQL and structured API roadmaps:
+
+1. **Broader predicate/index pushdown.** GQL boolean, string, null/missing, text, and semantic predicate surfaces exist, but richer indexed combinations, full-text ranking, and semantic score/threshold controls remain follow-ups.
+2. **Cost-based path planning.** Multi-hop/path execution is implemented for accepted indexed starts; broader start selection and planning remain follow-ups.
+3. **Developer ergonomics.** SDK helpers, Console rendering, diagnostics, and docs now cover common shapes; schema-derived helpers and stored query templates remain follow-ups.
+
 ## Near-Term Querying Priorities
 
-Near-term priorities should focus on query expressiveness, result shaping, and scalable execution before adding broader mutation syntax:
+Near-term priorities should focus on those three feature bundles before adding broader mutation syntax:
 
-1. Aggregation basics: `COUNT`, simple grouped aggregates, and clear counter/aggregation semantics.
-2. Predicate expressiveness: `OR`, parenthesized predicates, `IS NULL` / `IS NOT NULL`, and string predicates such as `CONTAINS`, `STARTS WITH`, and `ENDS WITH`.
-3. Result shaping: `RETURN DISTINCT`, broader `ORDER BY`, `OFFSET`, and stable cursor/page semantics for non-trivial result sets.
-4. Query diagnostics and explainability: `EXPLAIN`, planner diagnostics, index-use reporting, and warnings when a shape cannot use an accepted indexed path.
-5. Index-backed pushdown for full-text and semantic predicates beyond the current local fallback behavior.
-6. Richer result values, including list/map literals and a dedicated public path value representation when the protobuf API is ready.
+1. Add accepted indexed structured multi-hop traversal with path binding/projection and dedicated diagnostics.
+2. Add GQL aggregation/result-shaping basics: `COUNT`, `RETURN DISTINCT`, and `OFFSET`, then align structured API aggregation once the public API shape is settled.
+3. Add richer predicates and pushdown: GQL `OR`/parentheses/null/string predicates, structured indexed tag/property predicates, and full-text/semantic index-backed execution.
+4. Add `EXPLAIN`/planner diagnostics for unsupported or fallback query shapes.
+5. Add richer result values, including list/map literals and a dedicated public path value representation when the protobuf API is ready.
 
 Mutation follow-ups remain important but should follow the next query tranche: standard node `CREATE`, inline endpoint creation for relationships, and broader structured mutation helpers.
 

@@ -296,7 +296,7 @@ should disappear once `Labels` is first-class.
 
 - `mycel-api`: update protobuf contracts for graph/session/query/change-stream messages.
 - `mycel`: update generated stubs, domain graph model, storage, graph service, query service, session API, import/export, semantic maintenance/backfill, change streams, CLI, and tests.
-- `mycel-admin`: update TypeScript types, node/detail displays, imports/exports where nodes are rendered.
+- `mycel-console`: update TypeScript types, node/detail displays, imports/exports where nodes are rendered.
 - `mycel-go-sdk`: update generated API bindings and any typed helper structs.
 - `mycel-rust-sdk`: update generated API bindings and typed helper structs.
 - `mycel-bench`: update fixture generation and benchmark queries.

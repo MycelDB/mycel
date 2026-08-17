@@ -287,7 +287,7 @@ cargo test
 Admin:
 
 ```bash
-cd mycel-admin
+cd mycel-console
 npm test
 npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
