@@ -41,10 +41,7 @@ func ValidateDefinition(def Definition) error {
 			return fmt.Errorf("automation scan.gql must be bounded with LIMIT")
 		}
 	}
-	if strings.TrimSpace(def.Condition.GQL) == "" {
-		return fmt.Errorf("automation condition.gql is required")
-	}
-	if !strings.Contains(def.Condition.GQL, "changed") {
+	if strings.TrimSpace(def.Condition.GQL) != "" && !strings.Contains(def.Condition.GQL, "changed") {
 		return fmt.Errorf("automation condition must reference changed")
 	}
 	if err := validateInput(def.Input); err != nil {
@@ -219,7 +216,7 @@ func validateReferenceToken(path string, value string) error {
 		return fmt.Errorf("%s must not contain whitespace", path)
 	}
 	lower := strings.ToLower(value)
-	if strings.HasPrefix(lower, "env://") || strings.HasPrefix(lower, "secret://") || strings.HasPrefix(lower, "file://") {
+	if strings.HasPrefix(lower, "secret://") || strings.HasPrefix(lower, "file://") {
 		return fmt.Errorf("%s must not reference secrets", path)
 	}
 	if u, err := url.Parse(value); err == nil && u.Scheme != "" && u.Host != "" {
@@ -396,7 +393,7 @@ func rejectSecretBearingValue(path string, value any, keyHint string) error {
 	case string:
 		text := strings.TrimSpace(v)
 		lower := strings.ToLower(text)
-		if strings.HasPrefix(lower, "env://") || strings.HasPrefix(lower, "secret://") || strings.HasPrefix(lower, "file://") {
+		if strings.HasPrefix(lower, "secret://") || strings.HasPrefix(lower, "file://") {
 			return fmt.Errorf("%s must not contain secret references", path)
 		}
 		if strings.HasPrefix(lower, "bearer ") {

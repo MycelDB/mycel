@@ -9,6 +9,7 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
+	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
@@ -26,6 +27,23 @@ func TestEvaluateConditionMatchesChangedRow(t *testing.T) {
 	}
 	if _, ok := res.Aliases["changed"]; !ok {
 		t.Fatalf("expected changed alias, got %+v", res.Aliases)
+	}
+}
+
+func TestEvaluateConditionDefaultsToChangedWhenOmitted(t *testing.T) {
+	domainID := graph.DomainID(uuid.New())
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Page"}, Properties: map[string]any{"title": "A"}}
+	mgr := NewManager(nil).WithGraphRuntime(nil, fakeConditionGraph{nodes: []graph.Node{node}})
+	res, err := mgr.evaluateCondition(context.Background(), conditionTx(domainID), automation.Definition{}, node, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Matched {
+		t.Fatal("expected omitted condition to match")
+	}
+	alias, ok := res.Aliases["changed"].(execmodel.Node)
+	if !ok || alias.ID != node.ID.String() {
+		t.Fatalf("expected changed alias for omitted condition, got %+v", res.Aliases)
 	}
 }
 

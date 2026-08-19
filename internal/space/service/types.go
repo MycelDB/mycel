@@ -22,6 +22,7 @@ type Manager interface {
 	EffectiveAccess(ctx context.Context, principalID string, sp domainspace.Space) (EffectiveAccess, error)
 	DomainEffectiveAccess(ctx context.Context, principalID string, spaceID string) (EffectiveAccess, error)
 	ListDomains(ctx context.Context, spaceID string, includeSystem bool) ([]graph.Domain, error)
+	GetDomain(ctx context.Context, domainID string) (graph.Domain, error)
 	GetDomainByRef(ctx context.Context, spaceID string, domainRef string) (graph.Domain, error)
 	ListVisibleDomains(ctx context.Context, principalID string, spaceID string, includeSystem bool) ([]graph.Domain, error)
 	GetVisibleDomain(ctx context.Context, principalID string, spaceID string, domainID string, key string) (graph.Domain, error)

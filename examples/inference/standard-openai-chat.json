@@ -1,0 +1,180 @@
+{
+  "name": "standard-openai-chat",
+  "version": "2026-08",
+  "source": "examples/inference/standard-openai-chat.json",
+  "model_endpoints": [
+    {
+      "key": "openai",
+      "name": "OpenAI",
+      "connector_type": "openai-compatible",
+      "endpoint_url": "https://api.openai.com/v1",
+      "network_class": "public_internet",
+      "privacy_class": "third_party",
+      "auth_modes": ["api_key"],
+      "operations": ["chat", "summarize", "classify"],
+      "enabled": true,
+      "metadata": {
+        "provider": "openai",
+        "docs": "https://platform.openai.com/docs",
+        "package_notes": "OpenAI 5.6 generation models for graph automation chat, summarization, and classification."
+      }
+    }
+  ],
+  "models": [
+    {
+      "key": "openai/gpt-5.6-mini",
+      "operation": "chat",
+      "model_name": "gpt-5.6-mini",
+      "connector_types": ["openai-compatible"],
+      "modality": "text",
+      "input_modalities": ["text"],
+      "output_modalities": ["text", "json"],
+      "context_tokens": 1047576,
+      "max_output_tokens": 32768,
+      "enabled": true,
+      "metadata": {
+        "provider": "openai",
+        "display_name": "OpenAI GPT-5.6 mini",
+        "recommended_for": ["graph automation", "summarization", "classification", "cost-sensitive workflows"]
+      }
+    },
+    {
+      "key": "openai/gpt-5.6",
+      "operation": "chat",
+      "model_name": "gpt-5.6",
+      "connector_types": ["openai-compatible"],
+      "modality": "text",
+      "input_modalities": ["text"],
+      "output_modalities": ["text", "json"],
+      "context_tokens": 1047576,
+      "max_output_tokens": 32768,
+      "enabled": true,
+      "metadata": {
+        "provider": "openai",
+        "display_name": "OpenAI GPT-5.6",
+        "recommended_for": ["graph automation", "high-quality summarization", "structured extraction"]
+      }
+    },
+    {
+      "key": "openai/gpt-5.6-pro",
+      "operation": "chat",
+      "model_name": "gpt-5.6-pro",
+      "connector_types": ["openai-compatible"],
+      "modality": "text",
+      "input_modalities": ["text"],
+      "output_modalities": ["text", "json"],
+      "context_tokens": 1047576,
+      "max_output_tokens": 65536,
+      "enabled": true,
+      "metadata": {
+        "provider": "openai",
+        "display_name": "OpenAI GPT-5.6 pro",
+        "recommended_for": ["complex graph automation", "long-context synthesis", "high-accuracy classification"]
+      }
+    }
+  ],
+  "model_endpoint_capabilities": [
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-mini",
+      "operation": "chat",
+      "enabled": true,
+      "metadata": {
+        "supports_json_mode": true,
+        "supports_tool_calls": true,
+        "max_input_tokens": 1047576,
+        "max_output_tokens": 32768
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-mini",
+      "operation": "summarize",
+      "enabled": true,
+      "metadata": {
+        "supports_json_mode": true,
+        "max_input_tokens": 1047576,
+        "max_output_tokens": 32768
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-mini",
+      "operation": "classify",
+      "enabled": true,
+      "metadata": {
+        "supports_json_mode": true,
+        "max_input_tokens": 1047576,
+        "max_output_tokens": 32768
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6",
+      "operation": "chat",
+      "enabled": true,
+      "metadata": {
+        "supports_json_mode": true,
+        "supports_tool_calls": true,
+        "max_input_tokens": 1047576,
+        "max_output_tokens": 32768
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6",
+      "operation": "summarize",
+      "enabled": true,
+      "metadata": {
+        "supports_json_mode": true,
+        "max_input_tokens": 1047576,
+        "max_output_tokens": 32768
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6",
+      "operation": "classify",
+      "enabled": true,
+      "metadata": {
+        "supports_json_mode": true,
+        "max_input_tokens": 1047576,
+        "max_output_tokens": 32768
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-pro",
+      "operation": "chat",
+      "enabled": true,
+      "metadata": {
+        "supports_json_mode": true,
+        "supports_tool_calls": true,
+        "max_input_tokens": 1047576,
+        "max_output_tokens": 65536
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-pro",
+      "operation": "summarize",
+      "enabled": true,
+      "metadata": {
+        "supports_json_mode": true,
+        "max_input_tokens": 1047576,
+        "max_output_tokens": 65536
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-pro",
+      "operation": "classify",
+      "enabled": true,
+      "metadata": {
+        "supports_json_mode": true,
+        "max_input_tokens": 1047576,
+        "max_output_tokens": 65536
+      }
+    }
+  ]
+}

@@ -16,7 +16,7 @@ func NewAuthCommand(a *app.App) *cobra.Command {
 	auth := &cobra.Command{Use: "auth", Short: "Manage principal authentication"}
 	session := &cobra.Command{Use: "session", Short: "Manage durable auth sessions"}
 	session.AddCommand(NewAuthSessionListCommand(a), NewAuthSessionRevokeCommand(a), NewAuthSessionRevokeOtherCommand(a), NewAuthSessionCleanupCommand(a))
-	auth.AddCommand(NewAuthLoginCommand(a), NewAuthRefreshCommand(a), NewAuthLogoutCommand(a), NewAuthWhoAmICommand(a), session)
+	auth.AddCommand(NewAuthLoginCommand(a), NewAuthRefreshCommand(a), NewAuthLogoutCommand(a), NewAuthWhoAmICommand(a), NewAuthAccessCommand(a), session)
 	return auth
 }
 
@@ -67,6 +67,34 @@ func NewAuthWhoAmICommand(a *app.App) *cobra.Command {
 	}}
 }
 
+func NewAuthAccessCommand(a *app.App) *cobra.Command {
+	var scopeType string
+	var spaceID string
+	var domainID string
+	cmd := &cobra.Command{Use: "access", Short: "Show effective access for the authenticated principal", RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateAccessScope(scopeType); err != nil {
+			return err
+		}
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := commonv1.NewAuthServiceClient(conn).GetMyAccess(authCtx, &commonv1.GetMyAccessRequest{Scope: accessScope(scopeType, spaceID, domainID)})
+		if err != nil {
+			return err
+		}
+		if a.Output == "json" {
+			return a.Print(res, "")
+		}
+		return a.Print(res, accessSummaryText(res))
+	}}
+	cmd.Flags().StringVar(&scopeType, "scope", "", "optional scope filter: system, space, or domain")
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID for space/domain scope filtering")
+	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID for domain scope filtering")
+	return cmd
+}
+
 func NewAuthLogoutCommand(a *app.App) *cobra.Command {
 	var sessionID string
 	cmd := &cobra.Command{Use: "logout", Short: "Logout/revoke a principal auth session", RunE: func(cmd *cobra.Command, args []string) error {
@@ -87,6 +115,59 @@ func NewAuthLogoutCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&sessionID, "session-id", "", "session id to revoke; defaults to current login session")
 	return cmd
+}
+
+func validateAccessScope(scopeType string) error {
+	switch strings.ToLower(strings.TrimSpace(scopeType)) {
+	case "", "system", "space", "domain":
+		return nil
+	default:
+		return fmt.Errorf("--scope must be one of: system, space, domain")
+	}
+}
+
+func accessScope(scopeType, spaceID, domainID string) *commonv1.AccessScope {
+	scopeType = strings.ToLower(strings.TrimSpace(scopeType))
+	spaceID = strings.TrimSpace(spaceID)
+	domainID = strings.TrimSpace(domainID)
+	if scopeType == "" && spaceID == "" && domainID == "" {
+		return nil
+	}
+	typ := commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_SYSTEM
+	switch scopeType {
+	case "space":
+		typ = commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_SPACE
+	case "domain":
+		typ = commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_DOMAIN
+	case "system", "":
+		if domainID != "" {
+			typ = commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_DOMAIN
+		} else if spaceID != "" {
+			typ = commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_SPACE
+		}
+	}
+	return &commonv1.AccessScope{Type: typ, SpaceId: optionalTrimmedString(spaceID), DomainId: optionalTrimmedString(domainID)}
+}
+
+func accessSummaryText(res *commonv1.GetMyAccessResponse) string {
+	principal := res.GetPrincipal()
+	roles := res.GetEffectiveRoles()
+	capabilities := res.GetEffectiveCapabilities()
+	if len(roles) == 0 {
+		roles = []string{"none"}
+	}
+	if len(capabilities) == 0 {
+		capabilities = []string{"none"}
+	}
+	return fmt.Sprintf("principal: %s (%s)\nroles: %s\ncapabilities: %s\ncomplete: %t\n", principal.GetUsername(), principal.GetPrincipalId(), strings.Join(roles, ", "), strings.Join(capabilities, ", "), res.GetComplete())
+}
+
+func optionalTrimmedString(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func NewAuthSessionListCommand(a *app.App) *cobra.Command {

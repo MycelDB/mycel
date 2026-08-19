@@ -161,7 +161,7 @@ System-level resources:
 | Inference model | system | A logical model definition: operation, provider model name, modality, token/context limits, embedding dimensions, and supported connector types. |
 | Endpoint capability | system | A binding proving that an endpoint can run a model for an operation with known features. |
 | Vector store | system | Storage backend for embedding/vector search. This remains relevant to semantic indexes. |
-| Secret backend configuration | system | What secret reference schemes this daemon accepts, such as encrypted-inline and `env://`. |
+| Secret backend configuration | system | What secret reference schemes this daemon accepts, such as daemon-encrypted API keys. |
 
 Low-level connector adapters stay system-level because they are code capabilities
 of the mycel binary. Endpoint and model catalog entries may be installed from
@@ -363,7 +363,7 @@ type InferenceCredential struct {
     OwnerType     CredentialOwnerType // principal | space | system
     OwnerID       string
     AuthType      CredentialAuthType   // api_key | bearer | basic | none
-    SecretRef     string               // encrypted-inline://... | env://... | external://...
+    SecretRef     string               // encrypted-inline://... | daemon-stored API key | external://...
     SecretVersion string
     Status        CredentialStatus     // active | disabled | revoked
     CreatedBy     string
@@ -682,7 +682,7 @@ CLI/API should support both patterns:
 
 ```sh
 mycel inference credential rotate openai-prod \
-  --external-ref env://OPENAI_API_KEY_V2
+  --secret-stdin
 
 mycel inference grant expire '<grant-id>' --space-id '<space-id>'
 mycel inference grant openai-prod-v2 --space-id '<space-id>' --domain notes --operation chat
@@ -693,7 +693,7 @@ Secret representation:
 | Secret ref | Meaning |
 |---|---|
 | `encrypted-inline://...` | Daemon-encrypted secret material in mycel storage. Requires daemon encryption key. |
-| `env://NAME` | Read from daemon process environment. Good for local/dev and simple deployments. |
+| daemon-stored API keys | Read from daemon process environment. Good for local/dev and simple deployments. |
 | `external://provider/path` | Future external secret manager reference. Must be explicit and connector-backed. |
 
 If external secret manager support is not implemented, docs and validation must
@@ -907,12 +907,12 @@ mycel inference credential create openai-prod \
   --model-endpoint openai \
   --owner-type system \
   --owner-id daemon \
-  --external-ref env://OPENAI_API_KEY
+  --secret-stdin
 
 mycel inference credential list --owner-type system
 mycel inference credential disable openai-prod
 mycel inference credential revoke openai-prod
-mycel inference credential rotate openai-prod --external-ref env://OPENAI_API_KEY_V2
+printf '%s' "$OPENAI_API_KEY_V2" | mycel inference credential rotate openai-prod --secret-stdin
 mycel inference credential delete openai-prod --delete-secret
 ```
 
@@ -1313,7 +1313,7 @@ pricing/accounting model.
    use to grant their credential to a space automation? CLI may be enough first,
    but admin UI will need a safe consent model later.
 3. **External secret managers**: which schemes should mycel support initially?
-   If only `env://` and encrypted-inline are implemented, docs must say so.
+   If only daemon-encrypted API keys are implemented, docs must say so.
 4. **Rate limiting**: existing config hints at throttling, but real enforcement
    needs a concrete design for endpoint/profile/credential concurrency and rate
    limits.

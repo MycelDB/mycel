@@ -30,7 +30,7 @@ func TestGlobalManagerRoundTrip(t *testing.T) {
 	if _, err := mgr.UpsertCapability(ctx, domaininference.Capability{EndpointID: endpoint.ID, ModelID: model.ID, Operation: domaininference.OperationChat, Key: "openai-gpt-4o-mini-chat", SupportsJSONMode: true, Enabled: true}); err != nil {
 		t.Fatalf("upsert capability: %v", err)
 	}
-	secret, err := mgr.UpsertSecret(ctx, domaininference.Secret{OwnerType: domaininference.CredentialOwnerSystem, OwnerID: "daemon", Kind: "external_ref", ExternalRef: "env://OPENAI_API_KEY"})
+	secret, err := mgr.UpsertSecret(ctx, domaininference.Secret{OwnerType: domaininference.CredentialOwnerSystem, OwnerID: "daemon", Kind: "inline_encrypted", Ciphertext: &domaininference.EncryptedSecretPayload{Algorithm: "AES-256-GCM", NonceB64: "nonce", CipherB64: "cipher"}, SecretSuffix: "test"})
 	if err != nil {
 		t.Fatalf("upsert secret: %v", err)
 	}

@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"errors"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
@@ -91,6 +93,56 @@ func (s *AuthService) WhoAmI(ctx context.Context, req *commonv1.WhoAmIRequest) (
 		return nil, err
 	}
 	return &commonv1.WhoAmIResponse{Principal: &commonv1.AuthPrincipal{PrincipalId: principal.PrincipalID, Username: principal.Username}}, nil
+}
+
+func (s *AuthService) GetMyAccess(ctx context.Context, req *commonv1.GetMyAccessRequest) (*commonv1.GetMyAccessResponse, error) {
+	principal, err := authenticatedPrincipalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summary, err := s.principals.GetPrincipal(ctx, principal.PrincipalID)
+	if err != nil {
+		return nil, mapAuthError(err, "get current principal")
+	}
+	requested, scoped := myAccessScopeFromProto(req.GetScope())
+	roleBindings, err := s.principals.ListRoleBindings(ctx, principal.PrincipalID)
+	if err != nil {
+		return nil, mapAuthError(err, "list current principal roles")
+	}
+	capabilityGrants, err := s.principals.ListCapabilityGrants(ctx, principal.PrincipalID)
+	if err != nil {
+		return nil, mapAuthError(err, "list current principal capabilities")
+	}
+
+	roleSeen := map[string]bool{}
+	capSeen := map[string]bool{}
+	roles := make([]*commonv1.EffectiveRole, 0, len(roleBindings))
+	capabilities := make([]*commonv1.EffectiveCapability, 0, len(capabilityGrants))
+	for _, binding := range roleBindings {
+		if binding.State != principalservice.GrantStateActive || (scoped && !principalservice.ScopeApplies(binding.Scope, requested)) {
+			continue
+		}
+		role := principalservice.CanonicalRole(binding.Role)
+		roleSeen[role] = true
+		roles = append(roles, &commonv1.EffectiveRole{Role: role, Scope: myAccessScopeToProto(binding.Scope), Source: "role_grant"})
+		for _, capability := range principalservice.RoleCapabilities(role) {
+			capability = principalservice.CanonicalCapability(capability)
+			capSeen[capability] = true
+			capabilities = append(capabilities, &commonv1.EffectiveCapability{Capability: capability, Scope: myAccessScopeToProto(binding.Scope), Source: "role", Role: role})
+		}
+	}
+	for _, grant := range capabilityGrants {
+		if grant.State != principalservice.GrantStateActive || (scoped && !principalservice.ScopeApplies(grant.Scope, requested)) {
+			continue
+		}
+		capability := principalservice.CanonicalCapability(grant.Capability)
+		capSeen[capability] = true
+		capabilities = append(capabilities, &commonv1.EffectiveCapability{Capability: capability, Scope: myAccessScopeToProto(grant.Scope), Source: "grant"})
+	}
+
+	effectiveRoles := keys(roleSeen)
+	effectiveCapabilities := keys(capSeen)
+	return &commonv1.GetMyAccessResponse{Principal: mapPrincipal(summary), EffectiveRoles: effectiveRoles, EffectiveCapabilities: effectiveCapabilities, Roles: roles, Capabilities: capabilities, Complete: true}, nil
 }
 
 func (s *AuthService) ListAuthSessions(ctx context.Context, req *commonv1.ListAuthSessionsRequest) (*commonv1.ListAuthSessionsResponse, error) {
@@ -188,7 +240,18 @@ func authenticatedPrincipalFromContext(ctx context.Context) (daemonauth.Principa
 }
 
 func mapPrincipal(principal principalservice.PrincipalSummary) *commonv1.AuthPrincipal {
-	return &commonv1.AuthPrincipal{PrincipalId: principal.ID, Username: principal.Username}
+	return &commonv1.AuthPrincipal{PrincipalId: principal.ID, Username: principal.Username, Type: mapAuthPrincipalType(principal.Kind)}
+}
+
+func mapAuthPrincipalType(kind string) commonv1.PrincipalType {
+	switch kind {
+	case principalservice.PrincipalKindSystem:
+		return commonv1.PrincipalType_PRINCIPAL_TYPE_SYSTEM
+	case principalservice.PrincipalKindService:
+		return commonv1.PrincipalType_PRINCIPAL_TYPE_SERVICE
+	default:
+		return commonv1.PrincipalType_PRINCIPAL_TYPE_HUMAN
+	}
 }
 
 func clientMetadata(client *commonv1.ClientInfo) domainauth.RefreshSessionMetadata {
@@ -232,6 +295,54 @@ func normalizePageSize(size int32) int {
 		return maxListPageSize
 	}
 	return int(size)
+}
+
+func myAccessScopeFromProto(scope *commonv1.AccessScope) (principalservice.AccessScope, bool) {
+	if scope == nil {
+		return principalservice.AccessScope{}, false
+	}
+	typ := "system"
+	scoped := scope.GetType() != commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_UNSPECIFIED || scope.GetSpaceId() != "" || scope.GetDomainId() != ""
+	switch scope.GetType() {
+	case commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_SPACE:
+		typ = "space"
+	case commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_DOMAIN:
+		typ = "domain"
+	default:
+		if scope.GetDomainId() != "" {
+			typ = "domain"
+		} else if scope.GetSpaceId() != "" {
+			typ = "space"
+		}
+	}
+	return principalservice.AccessScope{Type: typ, SpaceID: scope.GetSpaceId(), DomainID: scope.GetDomainId()}, scoped
+}
+
+func myAccessScopeToProto(scope principalservice.AccessScope) *commonv1.AccessScope {
+	typ := commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_SYSTEM
+	switch strings.ToLower(strings.TrimSpace(scope.Type)) {
+	case "space":
+		typ = commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_SPACE
+	case "domain":
+		typ = commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_DOMAIN
+	}
+	return &commonv1.AccessScope{Type: typ, SpaceId: stringPtr(scope.SpaceID), DomainId: stringPtr(scope.DomainID)}
+}
+
+func stringPtr(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return &value
+}
+
+func keys(values map[string]bool) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func mapAuthError(err error, action string) error {

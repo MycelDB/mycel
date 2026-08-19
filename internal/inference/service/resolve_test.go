@@ -248,7 +248,7 @@ func newResolverFixture(t *testing.T, ctx context.Context) (*Module, resolverFix
 	if err != nil {
 		t.Fatalf("upsert capability: %v", err)
 	}
-	secret, err := module.GlobalManager().UpsertSecret(ctx, domaininference.Secret{OwnerType: domaininference.CredentialOwnerSystem, OwnerID: "system", Kind: "external_ref", ExternalRef: "env://OPENAI_API_KEY"})
+	secret, err := module.GlobalManager().UpsertSecret(ctx, domaininference.Secret{OwnerType: domaininference.CredentialOwnerSystem, OwnerID: "system", Kind: "inline_encrypted", Ciphertext: &domaininference.EncryptedSecretPayload{Algorithm: "AES-256-GCM", NonceB64: "nonce", CipherB64: "cipher"}, SecretSuffix: "test"})
 	if err != nil {
 		t.Fatalf("upsert secret: %v", err)
 	}

@@ -31,26 +31,15 @@ func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *admin
 	if ownerID == "" {
 		return nil, status.Error(codes.InvalidArgument, "owner_id is required")
 	}
-	secret := domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID}
-	if inline := req.GetInlineSecret(); inline != nil {
-		secret.Kind = domainsemantic.SecretKindInlineEncrypted
-		secret.Ciphertext = &domainsemantic.EncryptedSecretPayload{Algorithm: inline.GetAlgorithm(), NonceB64: inline.GetNonceB64(), CipherB64: inline.GetCipherB64()}
-	} else if strings.TrimSpace(req.GetSecretValue()) != "" {
-		ciphertext, err := s.semantic.EncryptSecret(ctx, req.GetSecretValue())
-		if err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "encrypt secret: %v", err)
-		}
-		secret.Kind = domainsemantic.SecretKindInlineEncrypted
-		secret.Ciphertext = ciphertext
-	} else if strings.TrimSpace(req.GetExternalRef()) != "" {
-		if err := validateExternalSecretRef(req.GetExternalRef()); err != nil {
-			return nil, err
-		}
-		secret.Kind = domainsemantic.SecretKindExternalRef
-		secret.ExternalRef = req.GetExternalRef()
-	} else {
-		return nil, status.Error(codes.InvalidArgument, "secret_value, inline_secret, or external_ref is required")
+	secretValue := strings.TrimSpace(req.GetSecretValue())
+	if secretValue == "" {
+		return nil, status.Error(codes.InvalidArgument, "api key is required")
 	}
+	ciphertext, err := s.semantic.EncryptSecret(ctx, secretValue)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "encrypt secret: %v", err)
+	}
+	secret := domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID, Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: ciphertext, SecretSuffix: secretSuffix(secretValue)}
 	ctx, release, err := s.beginSemanticMutation(ctx)
 	if err != nil {
 		return nil, err
@@ -64,7 +53,7 @@ func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *admin
 	if err := s.syncInferenceSecret(ctx, storedSecret); err != nil {
 		return nil, mapAdminInferenceError(err, "sync inference secret")
 	}
-	credential, err := mgr.UpsertCredential(ctx, domainsemantic.InferenceCredential{Key: req.GetKey(), Name: firstNonEmptyAdmin(req.GetDisplayName(), req.GetKey()), ModelEndpointID: endpointID, OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID, AuthType: domainsemantic.AuthMode(firstNonEmptyAdmin(req.GetAuthType(), string(domainsemantic.AuthModeAPIKey))), SecretRef: storedSecret.ID, Status: domainsemantic.CredentialStatusActive, IsDefault: req.GetIsDefault()})
+	credential, err := mgr.UpsertCredential(ctx, domainsemantic.InferenceCredential{Key: req.GetKey(), Name: firstNonEmptyAdmin(req.GetDisplayName(), req.GetKey()), ModelEndpointID: endpointID, OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID, AuthType: domainsemantic.AuthMode(firstNonEmptyAdmin(req.GetAuthType(), string(domainsemantic.AuthModeAPIKey))), SecretRef: storedSecret.ID, SecretSuffix: storedSecret.SecretSuffix, Status: domainsemantic.CredentialStatusActive, IsDefault: req.GetIsDefault()})
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert credential")
 	}
@@ -178,6 +167,7 @@ func (s *AdminInferenceService) RotateCredential(ctx context.Context, req *admin
 		return nil, mapAdminInferenceError(err, "sync rotated inference secret")
 	}
 	credential.SecretRef = storedSecret.ID
+	credential.SecretSuffix = storedSecret.SecretSuffix
 	storedCredential, err := s.semantic.GlobalManager().UpsertCredential(ctx, credential)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "update rotated credential")
@@ -189,30 +179,15 @@ func (s *AdminInferenceService) RotateCredential(ctx context.Context, req *admin
 }
 
 func (s *AdminInferenceService) rotatedSecretFromRequest(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceRotateCredentialRequest, credential domainsemantic.InferenceCredential) (domainsemantic.Secret, error) {
-	secret := domainsemantic.Secret{OwnerType: credential.OwnerType, OwnerID: credential.OwnerID}
-	if inline := req.GetInlineSecret(); inline != nil {
-		secret.Kind = domainsemantic.SecretKindInlineEncrypted
-		secret.Ciphertext = &domainsemantic.EncryptedSecretPayload{Algorithm: inline.GetAlgorithm(), NonceB64: inline.GetNonceB64(), CipherB64: inline.GetCipherB64()}
-		return secret, nil
+	secretValue := strings.TrimSpace(req.GetSecretValue())
+	if secretValue == "" {
+		return domainsemantic.Secret{}, status.Error(codes.InvalidArgument, "api key is required")
 	}
-	if strings.TrimSpace(req.GetSecretValue()) != "" {
-		ciphertext, err := s.semantic.EncryptSecret(ctx, req.GetSecretValue())
-		if err != nil {
-			return domainsemantic.Secret{}, status.Errorf(codes.FailedPrecondition, "encrypt secret: %v", err)
-		}
-		secret.Kind = domainsemantic.SecretKindInlineEncrypted
-		secret.Ciphertext = ciphertext
-		return secret, nil
+	ciphertext, err := s.semantic.EncryptSecret(ctx, secretValue)
+	if err != nil {
+		return domainsemantic.Secret{}, status.Errorf(codes.FailedPrecondition, "encrypt secret: %v", err)
 	}
-	if strings.TrimSpace(req.GetExternalRef()) != "" {
-		if err := validateExternalSecretRef(req.GetExternalRef()); err != nil {
-			return domainsemantic.Secret{}, err
-		}
-		secret.Kind = domainsemantic.SecretKindExternalRef
-		secret.ExternalRef = req.GetExternalRef()
-		return secret, nil
-	}
-	return domainsemantic.Secret{}, status.Error(codes.InvalidArgument, "secret_value, inline_secret, or external_ref is required")
+	return domainsemantic.Secret{OwnerType: credential.OwnerType, OwnerID: credential.OwnerID, Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: ciphertext, SecretSuffix: secretSuffix(secretValue)}, nil
 }
 
 func (s *AdminInferenceService) hydrateCredentialFromInferenceStore(ctx context.Context, credential *domainsemantic.InferenceCredential) error {
@@ -368,13 +343,10 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 	return &adminv1.AdminInferenceCredentialServiceDeleteCredentialResponse{CredentialId: id.String(), CredentialGrantsDeleted: deletedGrants, SecretDeleted: secretDeleted}, nil
 }
 
-func validateExternalSecretRef(ref string) error {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return status.Error(codes.InvalidArgument, "external_ref is required")
+func secretSuffix(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 4 {
+		return value
 	}
-	if !strings.HasPrefix(ref, "env://") || strings.TrimSpace(strings.TrimPrefix(ref, "env://")) == "" {
-		return status.Error(codes.InvalidArgument, "external_ref must use env://NAME")
-	}
-	return nil
+	return value[len(value)-4:]
 }

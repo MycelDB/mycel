@@ -102,12 +102,12 @@ Daemon-backed discovery:
 Daemon-backed credentials, grants, and policies:
 
 ```sh
-./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+printf '%s' "$OPENAI_API_KEY" | ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
   inference credential create openai-key \
   --model-endpoint openai \
   --owner-type system \
   --owner-id daemon \
-  --external-ref env://OPENAI_API_KEY
+  --secret-stdin
 
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
   inference grant openai-key \
@@ -122,7 +122,7 @@ Daemon-backed credentials, grants, and policies:
   --privacy-class third_party
 ```
 
-Inline `--api-key` material is encrypted by the daemon and requires `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` to be configured. Use `--external-ref` for external secret managers or for daemon deployments without an inline secret encryption key.
+API key material is encrypted by the daemon. Standalone daemons generate and persist a local encryption key under the data directory when `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` is not configured; mesh/cluster deployments should configure a shared `MYCELD_USER_STORE_ENCRYPTION_KEY_B64`. Prefer `--secret-stdin`; `--secret-value` is available for controlled automation but may be captured in shell history.
 
 Daemon-backed soft cleanup/lifecycle commands:
 

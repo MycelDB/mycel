@@ -463,7 +463,7 @@ func TestAdminListCommandFailsWhenDaemonUnavailable(t *testing.T) {
 func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "myceld")
-	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", NodeName: "node-a", Cluster: daemonconfig.ClusterConfig{Name: "dev", BackendAdvertiseAddr: "127.0.0.1:9093"}})
+	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", NodeName: "node-a", UserStoreEncryptionKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", Cluster: daemonconfig.ClusterConfig{Name: "dev", BackendAdvertiseAddr: "127.0.0.1:9093"}})
 	if err != nil {
 		t.Fatalf("initialize daemon admin store failed: %v", err)
 	}

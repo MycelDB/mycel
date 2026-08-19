@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,6 +49,9 @@ func (m *AutomationManager) conditionSchemaContext(ctx context.Context, tx sessi
 }
 
 func (m *AutomationManager) evaluateCondition(ctx context.Context, tx sessionservice.GraphTransaction, def automation.Definition, changed graph.Node, old *graph.Node) (conditionResult, error) {
+	if strings.TrimSpace(def.Condition.GQL) == "" {
+		return conditionResult{Matched: true, Aliases: map[string]any{"changed": execNode(changed)}}, nil
+	}
 	schemaCtx, err := m.conditionSchemaContext(ctx, tx)
 	if err != nil {
 		return conditionResult{}, err

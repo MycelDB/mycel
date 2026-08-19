@@ -150,7 +150,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		adminv1.RegisterAdminSchemaServiceServer(grpcServer, adminapi.NewAdminSchemaService(cfg.SchemaManager))
 	}
 	if cfg.AutomationManager != nil {
-		adminv1.RegisterAdminAutomationServiceServer(grpcServer, adminapi.NewAdminAutomationService(cfg.AutomationManager, cfg.PrincipalManager))
+		adminv1.RegisterAdminAutomationServiceServer(grpcServer, adminapi.NewAdminAutomationService(cfg.AutomationManager, cfg.PrincipalManager).WithDomainResolver(cfg.SpaceManager))
 	}
 	if cfg.ClusteringManager != nil {
 		clusterAdmin := adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.PrincipalManager).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups, cfg.RaftTransportDiagnostics)

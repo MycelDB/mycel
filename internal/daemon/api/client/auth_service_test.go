@@ -29,7 +29,7 @@ func TestAuthServiceLoginWhoAmIRefreshAndLogout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
-	if login.GetAccessToken() == "" || login.GetRefreshToken() == "" || login.GetPrincipal().GetPrincipalId() != user.ID || login.GetPrincipal().GetUsername() != "alice" {
+	if login.GetAccessToken() == "" || login.GetRefreshToken() == "" || login.GetPrincipal().GetPrincipalId() != user.ID || login.GetPrincipal().GetUsername() != "alice" || login.GetPrincipal().GetType() != commonv1.PrincipalType_PRINCIPAL_TYPE_HUMAN {
 		t.Fatalf("unexpected login response: %#v", login)
 	}
 	principal, err := tokens.Verify(login.GetAccessToken())
@@ -68,6 +68,48 @@ func TestAuthServiceLoginWhoAmIRefreshAndLogout(t *testing.T) {
 	}
 	if _, err := svc.Refresh(context.Background(), &commonv1.RefreshRequest{RefreshToken: refresh.RefreshToken}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected logged-out refresh token to fail, got %v", err)
+	}
+}
+
+func TestAuthServiceGetMyAccessReturnsSelfRolesAndCapabilities(t *testing.T) {
+	module := initAuthTestUserModule(t)
+	user, err := module.CreatePrincipal(context.Background(), principalservice.CreatePrincipalInput{Username: "alice", Password: "alice-pass", LoginEnabled: true})
+	if err != nil {
+		t.Fatalf("CreatePrincipal() error = %v", err)
+	}
+	if _, _, err := module.GrantRole(context.Background(), user.ID, principalservice.RoleAutomationAdmin, principalservice.AccessScope{Type: "domain", SpaceID: "space-1", DomainID: "domain-1"}, "test", "system"); err != nil {
+		t.Fatalf("GrantRole() error = %v", err)
+	}
+	tokens := daemonauth.NewTokenManager([]byte("01234567890123456789012345678901"), time.Minute)
+	svc := NewAuthService(module, tokens)
+	login, err := svc.Login(context.Background(), &commonv1.LoginRequest{Username: "alice", Password: "alice-pass"})
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	principal, err := tokens.Verify(login.GetAccessToken())
+	if err != nil {
+		t.Fatalf("Verify login token: %v", err)
+	}
+	access, err := svc.GetMyAccess(daemonauth.ContextWithPrincipal(context.Background(), principal), &commonv1.GetMyAccessRequest{})
+	if err != nil {
+		t.Fatalf("GetMyAccess() error = %v", err)
+	}
+	if access.GetPrincipal().GetPrincipalId() != user.ID || access.GetPrincipal().GetType() != commonv1.PrincipalType_PRINCIPAL_TYPE_HUMAN || !access.GetComplete() {
+		t.Fatalf("unexpected access principal/complete: %#v", access)
+	}
+	if !hasString(access.GetEffectiveRoles(), principalservice.RoleAutomationAdmin) || !hasString(access.GetEffectiveCapabilities(), "automation.read") || !hasString(access.GetEffectiveCapabilities(), "automation.manage") {
+		t.Fatalf("missing automation access: roles=%v caps=%v", access.GetEffectiveRoles(), access.GetEffectiveCapabilities())
+	}
+	if len(access.GetRoles()) != 1 || access.GetRoles()[0].GetScope().GetDomainId() != "domain-1" {
+		t.Fatalf("unexpected scoped roles: %#v", access.GetRoles())
+	}
+
+	filtered, err := svc.GetMyAccess(daemonauth.ContextWithPrincipal(context.Background(), principal), &commonv1.GetMyAccessRequest{Scope: &commonv1.AccessScope{Type: commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_DOMAIN, SpaceId: stringPtr("space-1"), DomainId: stringPtr("other-domain")}})
+	if err != nil {
+		t.Fatalf("filtered GetMyAccess() error = %v", err)
+	}
+	if len(filtered.GetEffectiveRoles()) != 0 || len(filtered.GetEffectiveCapabilities()) != 0 {
+		t.Fatalf("expected unrelated domain filter to omit grants, got roles=%v caps=%v", filtered.GetEffectiveRoles(), filtered.GetEffectiveCapabilities())
 	}
 }
 
@@ -119,6 +161,15 @@ func TestAuthServiceRevokeOtherAuthSessions(t *testing.T) {
 	if _, err := svc.Refresh(context.Background(), &commonv1.RefreshRequest{RefreshToken: second.RefreshToken}); err != nil {
 		t.Fatalf("expected current session refresh to remain valid: %v", err)
 	}
+}
+
+func hasString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func initAuthTestUserModule(t *testing.T) *principalservice.Module {

@@ -12,7 +12,7 @@ github.com/myceldb/mycel-api/api/proto/mycel/common/v1/auth.proto
 
 ## Purpose
 
-`mycel.common.v1.AuthService` is the common authentication API for the mycel daemon. It authenticates principals, issues short-lived access tokens, rotates durable refresh tokens, and lets a principal inspect or revoke its own auth sessions.
+`mycel.common.v1.AuthService` is the common authentication API for the mycel daemon. It authenticates principals, issues short-lived access tokens, rotates durable refresh tokens, lets a principal inspect its own effective access, and lets a principal inspect or revoke its own auth sessions.
 
 The service is intentionally in the Common API namespace. Admin and client/data-plane APIs use the same bearer tokens. Whether a caller can perform system management or graph/data operations is determined by principal roles, capability grants, and scoped authorization checks, not by a separate admin/user identity store.
 
@@ -33,6 +33,7 @@ Mycel daemon mode uses two different session concepts:
 - refresh
 - logout
 - identity lookup for the current access token
+- current-principal effective role/capability lookup
 - caller-owned auth session listing
 - revocation of one of the caller's auth sessions
 - revocation of all of the caller's other auth sessions
@@ -55,6 +56,7 @@ service AuthService {
   rpc Refresh(RefreshRequest) returns (RefreshResponse);
   rpc Logout(LogoutRequest) returns (LogoutResponse);
   rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+  rpc GetMyAccess(GetMyAccessRequest) returns (GetMyAccessResponse);
   rpc ListAuthSessions(ListAuthSessionsRequest) returns (ListAuthSessionsResponse);
   rpc RevokeAuthSession(RevokeAuthSessionRequest) returns (RevokeAuthSessionResponse);
   rpc RevokeOtherAuthSessions(RevokeOtherAuthSessionsRequest) returns (RevokeOtherAuthSessionsResponse);
@@ -68,11 +70,14 @@ service AuthService {
 The following methods require a valid access token or equivalent authenticated request context:
 
 - `WhoAmI`
+- `GetMyAccess`
 - `ListAuthSessions`
 - `RevokeAuthSession`
 - `RevokeOtherAuthSessions`
 
 `Logout` may be authorized by access token, refresh token, or cookie context depending on transport.
+
+`GetMyAccess` is self-service: it returns only the current principal's active role bindings, direct capability grants, and role-derived effective capabilities, optionally filtered to an `AccessScope`. It does not allow inspecting other principals and does not replace authoritative authorization checks.
 
 Authorization for admin and data-plane operations is performed by the target service using the authenticated `principal_id`, role bindings, capability grants, and resource scope.
 

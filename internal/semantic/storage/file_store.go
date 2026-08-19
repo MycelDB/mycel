@@ -1602,10 +1602,8 @@ func validateSecret(ctx context.Context, secret domainsemantic.Secret) error {
 	if secret.Kind == "" {
 		return fmt.Errorf("%w: secret kind is required", ErrInvalidInput)
 	}
-	hasCipher := secret.Ciphertext != nil && strings.TrimSpace(secret.Ciphertext.CipherB64) != ""
-	hasExternal := strings.TrimSpace(secret.ExternalRef) != ""
-	if hasCipher == hasExternal {
-		return fmt.Errorf("%w: exactly one of ciphertext or external_ref is required", ErrInvalidInput)
+	if secret.Ciphertext == nil || strings.TrimSpace(secret.Ciphertext.CipherB64) == "" {
+		return fmt.Errorf("%w: ciphertext is required", ErrInvalidInput)
 	}
 	return nil
 }

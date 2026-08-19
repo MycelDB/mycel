@@ -21,6 +21,14 @@ func TestValidateDefinitionAcceptsTemplateInput(t *testing.T) {
 	}
 }
 
+func TestValidateDefinitionAcceptsOmittedCondition(t *testing.T) {
+	def := baseDefinition()
+	def.Condition = Condition{}
+	if err := ValidateDefinition(def); err != nil {
+		t.Fatalf("ValidateDefinition() error = %v", err)
+	}
+}
+
 func TestValidateDefinitionAcceptsJSONOutputAndGraphActions(t *testing.T) {
 	def := baseDefinition()
 	def.Output = Output{
@@ -122,7 +130,7 @@ func TestValidateDefinitionRejectsMissingInferenceRef(t *testing.T) {
 
 func TestValidateDefinitionRejectsSecrets(t *testing.T) {
 	def := baseDefinition()
-	def.Inference.Profile = "env://OPENAI_API_KEY"
+	def.Inference.Profile = "secret://openai"
 	assertValidationError(t, def, "secret references")
 
 	def = baseDefinition()

@@ -186,12 +186,14 @@ func (s *FileStore) GetRun(ctx context.Context, domainID graph.DomainID, runID s
 	}
 	root := filepath.Join(s.root, "runs", domainID.String())
 	var out automation.Run
-	found := false
+	var invocationRun automation.Run
+	foundExact := false
+	foundInvocation := false
 	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if found || d.IsDir() || filepath.Ext(path) != ".json" {
+		if d.IsDir() || filepath.Ext(path) != ".json" {
 			return nil
 		}
 		var run automation.Run
@@ -199,7 +201,11 @@ func (s *FileStore) GetRun(ctx context.Context, domainID graph.DomainID, runID s
 			return err
 		}
 		if run.ID == runID {
-			out, found = run, true
+			out, foundExact = run, true
+			return nil
+		}
+		if run.InvocationID == runID && newerAutomationRun(run, invocationRun) {
+			invocationRun, foundInvocation = run, true
 		}
 		return nil
 	}); err != nil {
@@ -208,10 +214,26 @@ func (s *FileStore) GetRun(ctx context.Context, domainID graph.DomainID, runID s
 		}
 		return out, err
 	}
-	if !found {
-		return out, ErrNotFound
+	if foundExact {
+		return out, nil
 	}
-	return out, nil
+	if foundInvocation {
+		return invocationRun, nil
+	}
+	return out, ErrNotFound
+}
+
+func newerAutomationRun(candidate, current automation.Run) bool {
+	if current.ID == "" {
+		return true
+	}
+	if candidate.AttemptNumber != current.AttemptNumber {
+		return candidate.AttemptNumber > current.AttemptNumber
+	}
+	if !candidate.StartedAt.Equal(current.StartedAt) {
+		return candidate.StartedAt.After(current.StartedAt)
+	}
+	return candidate.ID > current.ID
 }
 
 func (s *FileStore) PutProposal(ctx context.Context, proposal automation.Proposal) error {

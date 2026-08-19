@@ -45,6 +45,10 @@ command; prefer `create` and `update` in new scripts.
 Use `--output json` with list and run-inspection commands when machine-readable
 responses are needed.
 
+If `condition.gql` is omitted, the automation treats the trigger as matched and
+uses the triggering node as `changed`. Keep `condition.gql` when the automation
+needs an additional GQL guard beyond the `on` event/label filter.
+
 ## Runs and invocations
 
 ```sh

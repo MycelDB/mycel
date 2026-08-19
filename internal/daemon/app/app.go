@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,6 +37,41 @@ import (
 )
 
 const LogFilename = "myceld.log"
+
+func ensureSecretEncryptionKey(cfg config.Config) (string, bool, error) {
+	configured := strings.TrimSpace(cfg.UserStoreEncryptionKeyB64)
+	if configured != "" {
+		return configured, false, nil
+	}
+	if strings.ToLower(strings.TrimSpace(cfg.Mode)) != config.DefaultMode {
+		return "", false, nil
+	}
+	path := localSecretEncryptionKeyPath(cfg.DataDir)
+	if raw, err := os.ReadFile(path); err == nil {
+		key := strings.TrimSpace(string(raw))
+		if key != "" {
+			return key, false, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", false, fmt.Errorf("read local secret encryption key: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", false, fmt.Errorf("create local secret key directory: %w", err)
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return "", false, fmt.Errorf("generate local secret encryption key: %w", err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(key)
+	if err := os.WriteFile(path, []byte(encoded+"\n"), 0o600); err != nil {
+		return "", false, fmt.Errorf("write local secret encryption key: %w", err)
+	}
+	return encoded, true, nil
+}
+
+func localSecretEncryptionKeyPath(dataDir string) string {
+	return filepath.Join(dataDir, "meta", "secrets", "local_encryption_key_b64")
+}
 
 func Run(ctx context.Context) int {
 	cfg, err := config.LoadFromEnv()
@@ -158,6 +196,14 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	logger.Info("daemon startup begins", "data_dir", cfg.DataDir, "mode", cfg.Mode)
 	logger.Info("data directory ready", "path", cfg.DataDir, "created", dataDirCreated)
 	logger.Info("log directory ready", "path", logDir, "created", logDirCreated)
+	secretKeyB64, generatedSecretKey, err := ensureSecretEncryptionKey(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cfg.UserStoreEncryptionKeyB64 = secretKeyB64
+	if generatedSecretKey {
+		logger.Info("generated local secret encryption key", "path", localSecretEncryptionKeyPath(cfg.DataDir))
+	}
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
 	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken, RaftMode: raftRuntimeConfigured(cfg), RaftLocalNodeID: uint64(cfg.Cluster.RaftLocalNodeID), RaftNodeCount: cfg.Cluster.RaftNodeCount}, logger)
@@ -203,6 +249,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)
 	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithInferenceManager(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
 	blobService := blobservice.NewModule(graphService)
+	inferenceService.SetSecretResolver(inferenceservice.NewEncryptedSecretResolver(cfg.UserStoreEncryptionKeyB64))
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
 		SecretKeyB64:     cfg.UserStoreEncryptionKeyB64,
 		SchemaManager:    schemaService,

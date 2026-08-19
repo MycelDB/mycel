@@ -595,6 +595,14 @@ func (m *Module) ListDomains(ctx context.Context, spaceID string, includeSystem 
 	})
 }
 
+func (m *Module) GetDomain(ctx context.Context, domainID string) (graph.Domain, error) {
+	id, err := uuid.Parse(strings.TrimSpace(domainID))
+	if err != nil || id == uuid.Nil {
+		return graph.Domain{}, fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
+	}
+	return m.domains.GetByID(ctx, graph.DomainID(id))
+}
+
 func (m *Module) GetDomainByRef(ctx context.Context, spaceID string, domainRef string) (graph.Domain, error) {
 	id, err := parseSpaceID(spaceID)
 	if err != nil {

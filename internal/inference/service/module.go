@@ -44,7 +44,7 @@ type Module struct {
 }
 
 func NewModule() *Module {
-	return &Module{spaces: map[string]inferencestorage.SpaceManager{}, connectors: defaultConnectors(), secretResolver: EnvSecretResolver{}, gate: quiesce.NewGate(ModuleName)}
+	return &Module{spaces: map[string]inferencestorage.SpaceManager{}, connectors: defaultConnectors(), secretResolver: EncryptedSecretResolver{}, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -98,7 +98,7 @@ func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.
 		m.connectors = defaultConnectors()
 	}
 	if m.secretResolver == nil {
-		m.secretResolver = EnvSecretResolver{}
+		m.secretResolver = EncryptedSecretResolver{}
 	}
 	m.logger = host.Log()
 	m.startedAt = time.Now().UTC()

@@ -104,11 +104,11 @@ model_endpoint_capabilities:
 	if index.GetKey() != "pkg-notes" {
 		t.Fatalf("unexpected semantic index: %#v", &index)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "create", "bad-secret-ref", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test", "--external-ref", "vault://OPENAI_API_KEY")
-	if err == nil || !strings.Contains(err.Error()+out, "env://NAME") {
-		t.Fatalf("expected unsupported external ref failure, err=%v out=%s", err, out)
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "create", "bad-secret", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test")
+	if err == nil || !strings.Contains(err.Error()+out, "API key is required") {
+		t.Fatalf("expected missing API key failure, err=%v out=%s", err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "create", "test-openai-key", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test", "--external-ref", "env://OPENAI_API_KEY")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "create", "test-openai-key", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test", "--secret-value", "sk-test-openai")
 	if err != nil {
 		t.Fatalf("credential add failed: %v\n%s", err, out)
 	}
@@ -116,7 +116,7 @@ model_endpoint_capabilities:
 	if err := json.Unmarshal([]byte(out), &createdCredential); err != nil {
 		t.Fatalf("decode credential add: %v\n%s", err, out)
 	}
-	if createdCredential.GetCredential().GetKey() != "test-openai-key" || createdCredential.GetSecret().GetKind() != "external_ref" {
+	if createdCredential.GetCredential().GetKey() != "test-openai-key" || createdCredential.GetSecret().GetKind() != "inline_encrypted" || createdCredential.GetCredential().GetSecretSuffix() != "enai" {
 		t.Fatalf("unexpected credential: %#v", &createdCredential)
 	}
 	inferenceGlobalAfterCredential := inferencestorage.NewGlobalManager()
@@ -160,7 +160,7 @@ model_endpoint_capabilities:
 	if err != nil || len(listedProfiles.GetInferenceProfiles()) != 1 {
 		t.Fatalf("list inference profiles failed: profiles=%#v err=%v", listedProfiles.GetInferenceProfiles(), err)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "rotate", "test-openai-key", "--external-ref", "env://OPENAI_API_KEY_V2")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "rotate", "test-openai-key", "--secret-value", "sk-rotated")
 	if err != nil {
 		t.Fatalf("rotate credential failed: %v\n%s", err, out)
 	}
@@ -168,7 +168,7 @@ model_endpoint_capabilities:
 	if err := json.Unmarshal([]byte(out), &rotated); err != nil {
 		t.Fatalf("decode rotated credential: %v\n%s", err, out)
 	}
-	if rotated.GetCredential().GetCredentialId() != createdCredential.GetCredential().GetCredentialId() || rotated.GetSecret().GetExternalRef() != "env://OPENAI_API_KEY_V2" {
+	if rotated.GetCredential().GetCredentialId() != createdCredential.GetCredential().GetCredentialId() || rotated.GetCredential().GetSecretSuffix() != "ated" {
 		t.Fatalf("unexpected rotated credential: %#v", &rotated)
 	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "list", "--owner-type", "system", "--owner-id", "daemon-test")

@@ -15,6 +15,7 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
+	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -25,10 +26,15 @@ const (
 	capAutomationRun    = "automation.run"
 )
 
+type AdminAutomationDomainResolver interface {
+	GetDomain(ctx context.Context, domainID string) (graph.Domain, error)
+}
+
 type AdminAutomationService struct {
 	adminv1.UnimplementedAdminAutomationServiceServer
-	automations automationservice.Manager
-	authorizer  OperatorAuthorizer
+	automations    automationservice.Manager
+	authorizer     OperatorAuthorizer
+	domainResolver AdminAutomationDomainResolver
 }
 
 func NewAdminAutomationService(automations automationservice.Manager, authorizer ...OperatorAuthorizer) *AdminAutomationService {
@@ -37,6 +43,11 @@ func NewAdminAutomationService(automations automationservice.Manager, authorizer
 		authz = authorizer[0]
 	}
 	return &AdminAutomationService{automations: automations, authorizer: authz}
+}
+
+func (s *AdminAutomationService) WithDomainResolver(resolver AdminAutomationDomainResolver) *AdminAutomationService {
+	s.domainResolver = resolver
+	return s
 }
 
 func (s *AdminAutomationService) ValidateAutomation(ctx context.Context, req *adminv1.ValidateAutomationRequest) (*adminv1.ValidateAutomationResponse, error) {
@@ -286,15 +297,17 @@ func mapAdminAutomationError(err error) error {
 }
 
 func (s *AdminAutomationService) requireAutomationCapability(ctx context.Context, domainID graph.DomainID, capability string) error {
-	if s.authorizer == nil {
-		_, err := principalFromContext(ctx)
-		return err
-	}
 	principal, err := principalFromContext(ctx)
 	if err != nil {
 		return err
 	}
-	scope := principalservice.AccessScope{Type: "domain", DomainID: domainID.String()}
+	if s.authorizer == nil {
+		return nil
+	}
+	scope, err := s.automationAccessScope(ctx, domainID)
+	if err != nil {
+		return err
+	}
 	if scoped, ok := s.authorizer.(ScopedOperatorAuthorizer); ok {
 		return scoped.Authorize(ctx, principal.PrincipalID, capability, scope)
 	}
@@ -306,6 +319,34 @@ func (s *AdminAutomationService) requireAutomationCapability(ctx context.Context
 		return status.Error(codes.PermissionDenied, "operator lacks required automation capability")
 	}
 	return nil
+}
+
+func (s *AdminAutomationService) automationAccessScope(ctx context.Context, domainID graph.DomainID) (principalservice.AccessScope, error) {
+	scope := principalservice.AccessScope{Type: "domain", DomainID: domainID.String()}
+	if s.domainResolver == nil {
+		return scope, nil
+	}
+	domain, err := s.domainResolver.GetDomain(ctx, domainID.String())
+	if err != nil {
+		return principalservice.AccessScope{}, mapAdminAutomationDomainResolveError(err)
+	}
+	if domain.SpaceID != uuid.Nil {
+		scope.SpaceID = domain.SpaceID.String()
+	}
+	return scope, nil
+}
+
+func mapAdminAutomationDomainResolveError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := status.FromError(err); ok {
+		return err
+	}
+	if errors.Is(err, storedomains.ErrDomainNotFound) {
+		return status.Error(codes.NotFound, "domain not found")
+	}
+	return status.Errorf(codes.Internal, "resolve automation domain scope: %v", err)
 }
 
 func automationActorFromContext(ctx context.Context) string {

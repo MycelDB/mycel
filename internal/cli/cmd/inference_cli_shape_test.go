@@ -34,6 +34,22 @@ func TestInferenceCommandTreeUsesSingularResourceNouns(t *testing.T) {
 	}
 }
 
+func TestInferenceCredentialCommandsUseDirectSecretProvisioning(t *testing.T) {
+	root := NewRootCommand(&app.App{}, false)
+	for _, path := range [][]string{{"inference", "credential", "create"}, {"inference", "credential", "rotate"}} {
+		cmd, _, err := root.Find(path)
+		if err != nil {
+			t.Fatalf("command path %v not found: %v", path, err)
+		}
+		if cmd.Flags().Lookup("secret-stdin") == nil || cmd.Flags().Lookup("secret-value") == nil {
+			t.Fatalf("command path %v missing direct secret flags", path)
+		}
+		if cmd.Flags().Lookup("external-ref") != nil || cmd.Flags().Lookup("api-key-env") != nil {
+			t.Fatalf("command path %v exposes removed external/environment provisioning flags", path)
+		}
+	}
+}
+
 func TestAutomationCommandTreeSupportsSpaceDomainRefs(t *testing.T) {
 	root := NewRootCommand(&app.App{}, false)
 	for _, path := range [][]string{

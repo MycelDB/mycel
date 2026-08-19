@@ -47,7 +47,7 @@ Role commands return grants with:
 | `role_grant_id` | Grant ID used for revocation. |
 | `principal_id` | Principal receiving the role. |
 | `role` | Role name, for example `system.admin` or `space.admin`. |
-| `scope` | Scope for the grant. Current CLI role grant defaults to system scope. |
+| `scope` | Scope for the grant. CLI role grant/set commands accept `--scope`, `--space-id`, and `--domain-id`. |
 | `reason` | Optional audit reason. |
 | `granted_by_principal_id` | Principal that created the grant. |
 | `create_time` | Grant creation timestamp. |
@@ -61,7 +61,7 @@ Capability commands return grants with:
 | `capability_grant_id` | Grant ID used for revocation. |
 | `principal_id` | Principal receiving the capability. |
 | `capability` | Capability enum, for example `CAPABILITY_IDENTITY_PRINCIPAL_UPDATE`. |
-| `scope` | Scope for the grant. Current CLI capability grant defaults to system scope. |
+| `scope` | Scope for the grant. CLI capability grant/set commands accept `--scope`, `--space-id`, and `--domain-id`. |
 | `reason` | Optional audit reason. |
 | `granted_by_principal_id` | Principal that created the grant. |
 | `create_time` | Grant creation timestamp. |
@@ -384,6 +384,8 @@ Grant a role to a principal.
 mycel principal role grant \
   --principal-id <principal-id> \
   --role space.admin \
+  --scope space \
+  --space-id <space-id> \
   --reason 'grant space administration'
 ```
 
@@ -393,6 +395,9 @@ Flags:
 | --- | --- |
 | `--principal-id` | Required principal ID. |
 | `--role` | Required role name. |
+| `--scope` | Grant scope: `system`, `space`, or `domain`. Defaults to `system`. |
+| `--space-id` | Space ID for space/domain-scoped grants. |
+| `--domain-id` | Domain ID for domain-scoped grants. |
 | `--reason` | Optional audit reason. |
 
 Text output: `principal role granted: <role-grant-id>`.
@@ -403,6 +408,35 @@ JSON output: object with:
 | --- | --- |
 | `grant` | Created `PrincipalRoleGrant`. Use `grant.role_grant_id` to revoke it later. |
 | `effective_capabilities` | Capability enum values effective after the role grant. |
+
+## `principal role set`
+
+Set direct role grants for one exact scope. Roles and direct capabilities remain additive; this command only changes direct role grants matching the supplied exact scope.
+
+```sh
+mycel principal role set \
+  --principal-id <principal-id> \
+  --scope space \
+  --space-id <space-id> \
+  --role space.viewer \
+  --role automation.admin \
+  --reason 'synchronize scoped roles'
+```
+
+Flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--principal-id` | Required principal ID. |
+| `--role` | Desired direct role for the exact scope. Repeatable. Omit all `--role` values to clear direct role grants for that scope. |
+| `--scope` | Exact scope: `system`, `space`, or `domain`. Defaults to `system`. |
+| `--space-id` | Space ID for space/domain scope. |
+| `--domain-id` | Domain ID for domain scope. |
+| `--reason` | Optional audit reason. |
+
+Text output: `principal roles set for scope: <count> direct grant(s)`.
+
+JSON output: object with `grants`, `effective_roles`, and `effective_capabilities`.
 
 ## `principal role revoke`
 
@@ -458,6 +492,8 @@ Grant a direct capability to a principal.
 mycel principal capability grant \
   --principal-id <principal-id> \
   --capability identity-principal-update \
+  --scope space \
+  --space-id <space-id> \
   --reason 'temporary identity maintenance'
 ```
 
@@ -467,6 +503,9 @@ Flags:
 | --- | --- |
 | `--principal-id` | Required principal ID. |
 | `--capability` | Required capability. CLI accepts kebab-case shortcuts such as `identity-principal-update` and maps them to the public enum. |
+| `--scope` | Grant scope: `system`, `space`, or `domain`. Defaults to `system`. |
+| `--space-id` | Space ID for space/domain-scoped grants. |
+| `--domain-id` | Domain ID for domain-scoped grants. |
 | `--reason` | Optional audit reason. |
 
 Text output: `principal capability granted: <capability-grant-id>`.
@@ -477,6 +516,35 @@ JSON output: object with:
 | --- | --- |
 | `grant` | Created `PrincipalCapabilityGrant`. Use `grant.capability_grant_id` to revoke it later. |
 | `effective_capabilities` | Capability enum values effective after the grant. |
+
+## `principal capability set`
+
+Set direct capability grants for one exact scope. Capabilities inherited through roles are not direct grants and are not removed by this command.
+
+```sh
+mycel principal capability set \
+  --principal-id <principal-id> \
+  --scope space \
+  --space-id <space-id> \
+  --capability graph-read \
+  --capability automation-run \
+  --reason 'synchronize scoped capabilities'
+```
+
+Flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--principal-id` | Required principal ID. |
+| `--capability` | Desired direct capability for the exact scope. Repeatable. Omit all `--capability` values to clear direct capability grants for that scope. |
+| `--scope` | Exact scope: `system`, `space`, or `domain`. Defaults to `system`. |
+| `--space-id` | Space ID for space/domain scope. |
+| `--domain-id` | Domain ID for domain scope. |
+| `--reason` | Optional audit reason. |
+
+Text output: `principal capabilities set for scope: <count> direct grant(s)`.
+
+JSON output: object with `grants` and `effective_capabilities`.
 
 ## `principal capability revoke`
 

@@ -79,12 +79,18 @@ func TestGenerateTextRecordsDenialWithoutConnectorCall(t *testing.T) {
 	if !errors.Is(err, inferenceservice.ErrDenied) {
 		t.Fatalf("generateWithInference() error = %v, want denied", err)
 	}
+	if !strings.Contains(err.Error(), "inference denied by policy") {
+		t.Fatalf("generateWithInference() error = %v, want policy decision reason", err)
+	}
 	_, chatCalls := fake.Calls()
 	if chatCalls != 0 {
 		t.Fatalf("denied inference should not call connector, got %d", chatCalls)
 	}
 	if run.PolicyDecisionID == "" {
 		t.Fatalf("denied run should retain policy decision: %+v", run)
+	}
+	if run.Usage.Status != string(domaininference.UsageStatusDenied) {
+		t.Fatalf("denied run usage status = %q, want %q", run.Usage.Status, domaininference.UsageStatusDenied)
 	}
 	events, err := inference.UsageLedger().ListUsageEvents(ctx)
 	if err != nil || len(events) != 1 || events[0].Status != domaininference.UsageStatusDenied || events[0].PolicyDecisionID.String() != run.PolicyDecisionID {

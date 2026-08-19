@@ -5,6 +5,22 @@ import (
 	"strings"
 )
 
+func CanonicalRole(role string) string {
+	return canonicalRole(role)
+}
+
+func CanonicalCapability(capability string) string {
+	return canonicalCapability(capability)
+}
+
+func RoleCapabilities(role string) []string {
+	return append([]string(nil), roleCapabilities(role)...)
+}
+
+func ScopeApplies(grant AccessScope, requested AccessScope) bool {
+	return scopeApplies(grant, requested)
+}
+
 func canonicalRole(role string) string {
 	switch strings.ToLower(strings.TrimSpace(role)) {
 	case "system_admin", "system.admin":
@@ -90,38 +106,42 @@ func canonicalCapability(capability string) string {
 		return "metadata.write"
 	case "CAPABILITY_QUERY_RUN", "query.run":
 		return "query.run"
-	case "CAPABILITY_SEMANTIC_SEARCH", "semantic.search", "semantic.manage":
+	case "CAPABILITY_SEMANTIC_SEARCH", "semantic.search":
 		return "semantic.search"
-	case "inference.catalog.read":
+	case "CAPABILITY_SEMANTIC_MANAGE", "semantic.manage":
+		return "semantic.manage"
+	case "CAPABILITY_INFERENCE_CATALOG_READ", "inference.catalog.read":
 		return "inference.catalog.read"
-	case "inference.catalog.manage":
+	case "CAPABILITY_INFERENCE_CATALOG_MANAGE", "inference.catalog.manage":
 		return "inference.catalog.manage"
-	case "inference.profile.read":
+	case "CAPABILITY_INFERENCE_PROFILE_READ", "inference.profile.read":
 		return "inference.profile.read"
-	case "inference.profile.manage":
+	case "CAPABILITY_INFERENCE_PROFILE_MANAGE", "inference.profile.manage":
 		return "inference.profile.manage"
-	case "inference.credential.read":
+	case "CAPABILITY_INFERENCE_CREDENTIAL_READ", "inference.credential.read":
 		return "inference.credential.read"
-	case "inference.credential.manage":
+	case "CAPABILITY_INFERENCE_CREDENTIAL_MANAGE", "inference.credential.manage":
 		return "inference.credential.manage"
-	case "inference.grant.manage":
+	case "CAPABILITY_INFERENCE_GRANT_MANAGE", "inference.grant.manage":
 		return "inference.grant.manage"
-	case "inference.policy.manage":
+	case "CAPABILITY_INFERENCE_POLICY_MANAGE", "inference.policy.manage":
 		return "inference.policy.manage"
-	case "inference.audit.read":
+	case "CAPABILITY_INFERENCE_AUDIT_READ", "inference.audit.read":
 		return "inference.audit.read"
-	case "inference.invoke":
+	case "CAPABILITY_INFERENCE_INVOKE", "inference.invoke":
 		return "inference.invoke"
-	case "automation.read":
+	case "CAPABILITY_AUTOMATION_READ", "automation.read":
 		return "automation.read"
-	case "automation.manage":
+	case "CAPABILITY_AUTOMATION_MANAGE", "automation.manage":
 		return "automation.manage"
-	case "automation.run":
+	case "CAPABILITY_AUTOMATION_RUN", "automation.run":
 		return "automation.run"
-	case "automation.worker":
+	case "CAPABILITY_AUTOMATION_WORKER", "automation.worker":
 		return "automation.worker"
 	case "CAPABILITY_DAEMON_CONFIGURE", "daemon.configure":
 		return "daemon.configure"
+	case "CAPABILITY_CLUSTER_READ", "cluster.read":
+		return "cluster.read"
 	case "CAPABILITY_MESH_MANAGE", "cluster.manage":
 		return "cluster.manage"
 	case "CAPABILITY_SYSTEM_BACKUP_SPACE", "backup.manage":

@@ -10,6 +10,7 @@ import (
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -57,7 +58,7 @@ func capabilityToInternal(capability commonv1.Capability) (string, error) {
 	if capability == commonv1.Capability_CAPABILITY_UNSPECIFIED {
 		return "", status.Error(codes.InvalidArgument, "capability is required")
 	}
-	return capability.String(), nil
+	return principalservice.CanonicalCapability(capability.String()), nil
 }
 
 func capabilityFromInternal(capability string) commonv1.Capability {
@@ -121,8 +122,40 @@ func capabilityFromInternal(capability string) commonv1.Capability {
 		return commonv1.Capability_CAPABILITY_METADATA_WRITE
 	case "query.run":
 		return commonv1.Capability_CAPABILITY_QUERY_RUN
-	case "semantic.search", "semantic.manage":
+	case "semantic.search":
 		return commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH
+	case "semantic.manage":
+		return commonv1.Capability_CAPABILITY_SEMANTIC_MANAGE
+	case "inference.catalog.read":
+		return commonv1.Capability_CAPABILITY_INFERENCE_CATALOG_READ
+	case "inference.catalog.manage":
+		return commonv1.Capability_CAPABILITY_INFERENCE_CATALOG_MANAGE
+	case "inference.profile.read":
+		return commonv1.Capability_CAPABILITY_INFERENCE_PROFILE_READ
+	case "inference.profile.manage":
+		return commonv1.Capability_CAPABILITY_INFERENCE_PROFILE_MANAGE
+	case "inference.credential.read":
+		return commonv1.Capability_CAPABILITY_INFERENCE_CREDENTIAL_READ
+	case "inference.credential.manage":
+		return commonv1.Capability_CAPABILITY_INFERENCE_CREDENTIAL_MANAGE
+	case "inference.grant.manage":
+		return commonv1.Capability_CAPABILITY_INFERENCE_GRANT_MANAGE
+	case "inference.policy.manage":
+		return commonv1.Capability_CAPABILITY_INFERENCE_POLICY_MANAGE
+	case "inference.audit.read":
+		return commonv1.Capability_CAPABILITY_INFERENCE_AUDIT_READ
+	case "inference.invoke":
+		return commonv1.Capability_CAPABILITY_INFERENCE_INVOKE
+	case "automation.read":
+		return commonv1.Capability_CAPABILITY_AUTOMATION_READ
+	case "automation.manage":
+		return commonv1.Capability_CAPABILITY_AUTOMATION_MANAGE
+	case "automation.run":
+		return commonv1.Capability_CAPABILITY_AUTOMATION_RUN
+	case "automation.worker":
+		return commonv1.Capability_CAPABILITY_AUTOMATION_WORKER
+	case "cluster.read":
+		return commonv1.Capability_CAPABILITY_CLUSTER_READ
 	case "daemon.configure":
 		return commonv1.Capability_CAPABILITY_DAEMON_CONFIGURE
 	case "cluster.manage":

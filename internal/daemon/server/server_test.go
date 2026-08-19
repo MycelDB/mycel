@@ -149,6 +149,9 @@ func (fakeSpaceManager) DomainEffectiveAccess(context.Context, string, string) (
 func (fakeSpaceManager) ListDomains(context.Context, string, bool) ([]graph.Domain, error) {
 	return []graph.Domain{{ID: uuid.MustParse("00000000-0000-0000-0000-000000000004"), SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Key: "default", Name: "Default", Default: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}}, nil
 }
+func (fakeSpaceManager) GetDomain(context.Context, string) (graph.Domain, error) {
+	return graph.Domain{ID: uuid.MustParse("00000000-0000-0000-0000-000000000004"), SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Key: "default", Name: "Default", Default: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
+}
 func (fakeSpaceManager) GetDomainByRef(context.Context, string, string) (graph.Domain, error) {
 	return graph.Domain{ID: uuid.MustParse("00000000-0000-0000-0000-000000000004"), SpaceID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Key: "default", Name: "Default", Default: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }

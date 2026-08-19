@@ -119,10 +119,11 @@ func TestGlobalManagerUpsertsDefinitions(t *testing.T) {
 		t.Fatalf("expected capability id")
 	}
 	secret, err := mgr.UpsertSecret(ctx, domainsemantic.Secret{
-		OwnerType:   domainsemantic.CredentialOwnerUser,
-		OwnerID:     uuid.NewString(),
-		Kind:        domainsemantic.SecretKindExternalRef,
-		ExternalRef: "vault://secret/openai",
+		OwnerType:    domainsemantic.CredentialOwnerUser,
+		OwnerID:      uuid.NewString(),
+		Kind:         domainsemantic.SecretKindInlineEncrypted,
+		Ciphertext:   &domainsemantic.EncryptedSecretPayload{Algorithm: "AES-256-GCM", NonceB64: "nonce", CipherB64: "cipher"},
+		SecretSuffix: "enai",
 	})
 	if err != nil {
 		t.Fatalf("upsert secret failed: %v", err)

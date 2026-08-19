@@ -164,6 +164,9 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: inv.ChangedElementID, Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: map[string]any{"automation_id": def.ID, "automation_version": def.Version, "automation_run_id": run.ID, "invocation_id": inv.ID, "automation_owner_principal_id": run.AutomationOwnerPrincipalID}}, Prompt: def.Prompt, Input: rendered, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: map[string]any{"invocation_id": inv.ID, "automation_version": def.Version, "automation_owner_principal_id": run.AutomationOwnerPrincipalID}})
 	populateRunFromInference(run, ref, resp)
 	if err != nil {
+		if errors.Is(err, inferenceservice.ErrDenied) && strings.TrimSpace(resp.Decision.Reason) != "" {
+			return "", fmt.Errorf("%w: %s", err, resp.Decision.Reason)
+		}
 		return "", err
 	}
 	if m.maxInputTokens > 0 && run.Usage.InputTokens > m.maxInputTokens {
@@ -201,11 +204,11 @@ func populateRunFromInference(run *automation.Run, ref automation.InferenceRef, 
 	run.CredentialGrantID = uuidString(resp.Decision.CredentialGrantID)
 	run.PolicyDecisionID = uuidString(resp.Decision.ID)
 	run.ProviderRequestID = resp.ProviderRequestID
-	status := resp.Usage.TokenCountSource
+	status := resp.Status
 	if status == "" {
-		status = string(domaininference.UsageStatusSucceeded)
+		status = domaininference.UsageStatusSucceeded
 	}
-	run.Usage = automation.TokenUsage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: resp.Usage.TotalTokens, Status: status, Metadata: map[string]any{"token_count_source": resp.Usage.TokenCountSource}}
+	run.Usage = automation.TokenUsage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: resp.Usage.TotalTokens, Status: string(status), Metadata: map[string]any{"token_count_source": resp.Usage.TokenCountSource}}
 }
 
 func uuidString[T ~[16]byte](id T) string {

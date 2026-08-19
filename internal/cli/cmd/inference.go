@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -460,19 +461,18 @@ func newInferenceCredentialDeleteCommand(a *app.App) *cobra.Command {
 }
 
 func newInferenceCredentialAddCommand(a *app.App) *cobra.Command {
-	var endpointRef, ownerUser, ownerType, ownerID, authType, apiKey, apiKeyEnv, externalRef, name string
-	var isDefault bool
+	var endpointRef, ownerUser, ownerType, ownerID, authType, secretValue, name string
+	var isDefault, secretStdin bool
 	cmd := &cobra.Command{Use: "create KEY", Aliases: []string{"add"}, Short: "Create an inference credential", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		return runDaemonInferenceCredentialAdd(cmd, a, args[0], endpointRef, ownerUser, ownerType, ownerID, authType, apiKey, apiKeyEnv, externalRef, name, isDefault)
+		return runDaemonInferenceCredentialAdd(cmd, a, args[0], endpointRef, ownerUser, ownerType, ownerID, authType, secretValue, secretStdin, name, isDefault)
 	}}
 	cmd.Flags().StringVar(&endpointRef, "model-endpoint", "", "model endpoint key or ID")
 	cmd.Flags().StringVar(&ownerUser, "owner-user", "", "user ref/ID that owns the credential")
 	cmd.Flags().StringVar(&ownerType, "owner-type", string(domainsemantic.CredentialOwnerUser), "owner type: user, space, organization, system")
 	cmd.Flags().StringVar(&ownerID, "owner-id", "", "owner ID/ref")
 	cmd.Flags().StringVar(&authType, "auth", string(domainsemantic.AuthModeAPIKey), "credential auth type")
-	cmd.Flags().StringVar(&apiKey, "api-key", "", "secret value (prefer --api-key-env)")
-	cmd.Flags().StringVar(&apiKeyEnv, "api-key-env", "", "environment variable containing the secret value")
-	cmd.Flags().StringVar(&externalRef, "external-ref", "", "external secret reference")
+	cmd.Flags().StringVar(&secretValue, "secret-value", "", "API key value (may be captured in shell history; prefer --secret-stdin)")
+	cmd.Flags().BoolVar(&secretStdin, "secret-stdin", false, "read the API key value from stdin")
 	cmd.Flags().StringVar(&name, "name", "", "credential display name")
 	cmd.Flags().BoolVar(&isDefault, "default", false, "mark credential as default metadata")
 	_ = cmd.MarkFlagRequired("model-endpoint")
@@ -480,31 +480,27 @@ func newInferenceCredentialAddCommand(a *app.App) *cobra.Command {
 }
 
 func newInferenceCredentialRotateCommand(a *app.App) *cobra.Command {
-	var apiKey, apiKeyEnv, externalRef string
+	var secretValue string
+	var secretStdin bool
 	cmd := &cobra.Command{Use: "rotate CREDENTIAL", Short: "Rotate an inference credential secret", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		if apiKey == "" && apiKeyEnv != "" {
-			apiKey = os.Getenv(apiKeyEnv)
+		value, err := secretValueFromInput(cmd, secretValue, secretStdin)
+		if err != nil {
+			return err
 		}
-		req := &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest{Credential: args[0]}
-		if externalRef != "" {
-			req.SecretMaterial = &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest_ExternalRef{ExternalRef: externalRef}
-		} else {
-			req.SecretMaterial = &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest_SecretValue{SecretValue: apiKey}
-		}
+		req := &adminv1.AdminInferenceCredentialServiceRotateCredentialRequest{Credential: args[0], SecretValue: value}
 		res, err := adminv1.NewAdminInferenceCredentialServiceClient(conn).RotateCredential(authCtx, req)
 		if err != nil {
 			return err
 		}
 		return a.Print(res, fmt.Sprintf("credential rotated: %s\n", res.GetCredential().GetCredentialId()))
 	}}
-	cmd.Flags().StringVar(&apiKey, "api-key", "", "secret value (prefer --api-key-env)")
-	cmd.Flags().StringVar(&apiKeyEnv, "api-key-env", "", "environment variable containing the secret value")
-	cmd.Flags().StringVar(&externalRef, "external-ref", "", "external secret reference")
+	cmd.Flags().StringVar(&secretValue, "secret-value", "", "API key value (may be captured in shell history; prefer --secret-stdin)")
+	cmd.Flags().BoolVar(&secretStdin, "secret-stdin", false, "read the API key value from stdin")
 	return cmd
 }
 
@@ -771,14 +767,15 @@ func newInferencePolicyListCommand(a *app.App) *cobra.Command {
 	return cmd
 }
 
-func runDaemonInferenceCredentialAdd(cmd *cobra.Command, a *app.App, key, endpointRef, ownerUser, ownerType, ownerID, authType, apiKey, apiKeyEnv, externalRef, name string, isDefault bool) error {
+func runDaemonInferenceCredentialAdd(cmd *cobra.Command, a *app.App, key, endpointRef, ownerUser, ownerType, ownerID, authType, secretValue string, secretStdin bool, name string, isDefault bool) error {
 	conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	if apiKey == "" && apiKeyEnv != "" {
-		apiKey = os.Getenv(apiKeyEnv)
+	value, err := secretValueFromInput(cmd, secretValue, secretStdin)
+	if err != nil {
+		return err
 	}
 	if ownerUser != "" {
 		ownerType = string(domainsemantic.CredentialOwnerUser)
@@ -787,17 +784,31 @@ func runDaemonInferenceCredentialAdd(cmd *cobra.Command, a *app.App, key, endpoi
 	if ownerType == "" {
 		ownerType = string(domainsemantic.CredentialOwnerUser)
 	}
-	req := &adminv1.AdminInferenceCredentialServiceCreateCredentialRequest{Key: key, DisplayName: firstNonEmpty(name, key), ModelEndpoint: endpointRef, OwnerType: ownerType, OwnerId: ownerID, AuthType: firstNonEmpty(authType, string(domainsemantic.AuthModeAPIKey)), IsDefault: isDefault}
-	if externalRef != "" {
-		req.SecretMaterial = &adminv1.AdminInferenceCredentialServiceCreateCredentialRequest_ExternalRef{ExternalRef: externalRef}
-	} else {
-		req.SecretMaterial = &adminv1.AdminInferenceCredentialServiceCreateCredentialRequest_SecretValue{SecretValue: apiKey}
-	}
+	req := &adminv1.AdminInferenceCredentialServiceCreateCredentialRequest{Key: key, DisplayName: firstNonEmpty(name, key), ModelEndpoint: endpointRef, OwnerType: ownerType, OwnerId: ownerID, AuthType: firstNonEmpty(authType, string(domainsemantic.AuthModeAPIKey)), SecretValue: value, IsDefault: isDefault}
 	res, err := adminv1.NewAdminInferenceCredentialServiceClient(conn).CreateCredential(authCtx, req)
 	if err != nil {
 		return err
 	}
 	return a.Print(res, fmt.Sprintf("credential added: %s\n", res.GetCredential().GetCredentialId()))
+}
+
+func secretValueFromInput(cmd *cobra.Command, flagValue string, fromStdin bool) (string, error) {
+	value := flagValue
+	if fromStdin {
+		if strings.TrimSpace(flagValue) != "" {
+			return "", fmt.Errorf("use only one of --secret-value or --secret-stdin")
+		}
+		data, err := io.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return "", err
+		}
+		value = string(data)
+	}
+	value = strings.TrimRight(value, "\r\n")
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("API key is required; pass --secret-stdin or --secret-value")
+	}
+	return value, nil
 }
 
 func runDaemonInferenceCredentialGrant(cmd *cobra.Command, a *app.App, credentialRef, spaceIDText, domainRef, indexRef, nodeText, endpointRef, modelRef string, operations, granteePrincipalIDs, allowOnBehalfPrincipalIDs []string, allowBackgroundUse, includeDescendants, isDefault bool, priority int) error {

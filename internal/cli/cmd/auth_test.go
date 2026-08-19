@@ -34,6 +34,18 @@ func TestAuthLoginWhoAmIAndSessionListUseDaemonGRPC(t *testing.T) {
 		t.Fatalf("auth whoami failed: %v\n%s", err, out)
 	}
 
+	out, err = runCLI(t, "--daemon-addr", addr, "--username", "alice", "--password", "alice-pass", "--output", "json", "auth", "access")
+	if err != nil {
+		t.Fatalf("auth access failed: %v\n%s", err, out)
+	}
+	var access commonv1.GetMyAccessResponse
+	if err := json.Unmarshal([]byte(out), &access); err != nil {
+		t.Fatalf("decode access output: %v\n%s", err, out)
+	}
+	if access.GetPrincipal().GetUsername() != "alice" || !access.GetComplete() {
+		t.Fatalf("unexpected access response: %#v", &access)
+	}
+
 	out, err = runCLI(t, "--daemon-addr", addr, "--username", "alice", "--password", "alice-pass", "--output", "json", "auth", "session", "list")
 	if err != nil {
 		t.Fatalf("auth session list failed: %v\n%s", err, out)

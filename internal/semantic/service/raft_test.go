@@ -119,7 +119,7 @@ func TestSemanticGlobalUsesSystemRaftWhenEnabled(t *testing.T) {
 	if !hasVectorStoreKey(stores, vectorStore.Key) {
 		t.Fatalf("vector stores=%#v want key %q", stores, vectorStore.Key)
 	}
-	secret, err := m.GlobalManager().UpsertSecret(ctx, domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerSystem, OwnerID: "system", Kind: domainsemantic.SecretKindExternalRef, ExternalRef: "env://MYCEL_TEST_KEY"})
+	secret, err := m.GlobalManager().UpsertSecret(ctx, domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerSystem, OwnerID: "system", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "AES-256-GCM", NonceB64: "nonce", CipherB64: "cipher"}, SecretSuffix: "test"})
 	if err != nil {
 		t.Fatalf("UpsertSecret() error = %v", err)
 	}

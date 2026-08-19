@@ -21,7 +21,7 @@ docs/design/api/graph.md
 
 `SemanticService` is the client-facing API for semantic search over graph data.
 
-The current daemon implementation uses semantic metadata stores under `meta/` and `graphs/<space-id>/semantic/`, the internal `mycel-file` vector backend, and the daemon semantic search planner. Inline encrypted secrets can be decrypted by the daemon when `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` is configured.
+The current daemon implementation uses semantic metadata stores under `meta/` and `graphs/<space-id>/semantic/`, the internal `mycel-file` vector backend, and the daemon semantic search planner. Inline encrypted secrets can be decrypted by the daemon using `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` or, for standalone daemons, the generated local encryption key under the data directory.
 
 The Client API owns using semantic search. The Admin API owns semantic infrastructure and operations, including:
 

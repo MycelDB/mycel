@@ -39,11 +39,6 @@ func TestInferenceExamplePackagesParse(t *testing.T) {
 			if strings.TrimSpace(endpoint.Key) == "" || strings.TrimSpace(string(endpoint.ConnectorType)) == "" {
 				t.Fatalf("%s: endpoint key and connector_type are required: %#v", path, endpoint)
 			}
-			for _, operation := range endpoint.Operations {
-				if strings.EqualFold(strings.TrimSpace(string(operation)), "chat") {
-					t.Fatalf("%s: MycelDB example packages must not include chat endpoint operations", path)
-				}
-			}
 			endpoints[endpoint.Key] = true
 		}
 		models := map[string]bool{}
@@ -51,15 +46,9 @@ func TestInferenceExamplePackagesParse(t *testing.T) {
 			if strings.TrimSpace(model.Key) == "" || strings.TrimSpace(string(model.Operation)) == "" || strings.TrimSpace(model.ModelName) == "" {
 				t.Fatalf("%s: model key, operation, and model_name are required: %#v", path, model)
 			}
-			if strings.EqualFold(strings.TrimSpace(string(model.Operation)), "chat") {
-				t.Fatalf("%s: MycelDB example packages must not include chat models", path)
-			}
 			models[model.Key] = true
 		}
 		for _, capability := range doc.ModelEndpointCapabilities {
-			if strings.EqualFold(strings.TrimSpace(string(capability.Operation)), "chat") {
-				t.Fatalf("%s: MycelDB example packages must not include chat capabilities", path)
-			}
 			if !endpoints[capability.ModelEndpoint] {
 				t.Fatalf("%s: capability references unknown endpoint %q", path, capability.ModelEndpoint)
 			}

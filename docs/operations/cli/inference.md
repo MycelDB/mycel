@@ -39,17 +39,17 @@ mycel inference vector-store list
 
 ## Credentials and grants
 
-Credential output is redacted; secret values are not printed.
+Credential output is redacted; API key values are not printed after submission. Prefer stdin so the key is not captured in shell history.
 
 ```sh
-mycel inference credential create openai-key \
+printf '%s' "$OPENAI_API_KEY" | mycel inference credential create openai-key \
   --model-endpoint openai \
   --owner-type system \
   --owner-id system \
-  --external-ref env://OPENAI_API_KEY
+  --secret-stdin
 
-mycel inference credential rotate openai-key \
-  --external-ref env://OPENAI_API_KEY_V2
+printf '%s' "$OPENAI_API_KEY_V2" | mycel inference credential rotate openai-key \
+  --secret-stdin
 
 mycel inference credential list --owner-type system
 mycel inference credential disable openai-key

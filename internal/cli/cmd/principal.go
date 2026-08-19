@@ -376,7 +376,7 @@ func NewPrincipalSessionRevokeAllCommand(a *app.App) *cobra.Command {
 
 func NewPrincipalRoleCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "role", Short: "Manage principal roles"}
-	cmd.AddCommand(NewPrincipalRoleListCommand(a), NewPrincipalRoleGrantCommand(a), NewPrincipalRoleRevokeCommand(a))
+	cmd.AddCommand(NewPrincipalRoleListCommand(a), NewPrincipalRoleGrantCommand(a), NewPrincipalRoleRevokeCommand(a), NewPrincipalRoleSetCommand(a))
 	return cmd
 }
 
@@ -402,17 +402,20 @@ func NewPrincipalRoleListCommand(a *app.App) *cobra.Command {
 }
 
 func NewPrincipalRoleGrantCommand(a *app.App) *cobra.Command {
-	var principalID, role, reason string
+	var principalID, role, reason, scopeType, spaceID, domainID string
 	cmd := &cobra.Command{Use: "grant", Short: "Grant a principal role", RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(principalID) == "" || strings.TrimSpace(role) == "" {
 			return fmt.Errorf("--principal-id and --role are required")
+		}
+		if err := validateAccessScope(scopeType); err != nil {
+			return err
 		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminPrincipalServiceClient(conn).GrantPrincipalRole(authCtx, &adminv1.GrantPrincipalRoleRequest{PrincipalId: principalID, Role: role, Reason: reason})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).GrantPrincipalRole(authCtx, &adminv1.GrantPrincipalRoleRequest{PrincipalId: principalID, Role: role, Scope: accessScope(scopeType, spaceID, domainID), Reason: reason})
 		if err != nil {
 			return err
 		}
@@ -420,6 +423,39 @@ func NewPrincipalRoleGrantCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&principalID, "principal-id", "", "principal ID")
 	cmd.Flags().StringVar(&role, "role", "", "role name")
+	cmd.Flags().StringVar(&scopeType, "scope", "system", "access scope: system, space, or domain")
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID for scoped grant")
+	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID for domain-scoped grant")
+	cmd.Flags().StringVar(&reason, "reason", "", "audit reason")
+	return cmd
+}
+
+func NewPrincipalRoleSetCommand(a *app.App) *cobra.Command {
+	var principalID, reason, scopeType, spaceID, domainID string
+	var roles []string
+	cmd := &cobra.Command{Use: "set", Short: "Set direct principal roles for an exact scope", RunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(principalID) == "" {
+			return fmt.Errorf("--principal-id is required")
+		}
+		if err := validateAccessScope(scopeType); err != nil {
+			return err
+		}
+		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).SetPrincipalRolesForScope(authCtx, &adminv1.SetPrincipalRolesForScopeRequest{PrincipalId: principalID, Scope: accessScope(scopeType, spaceID, domainID), Roles: roles, Reason: reason})
+		if err != nil {
+			return err
+		}
+		return a.Print(res, fmt.Sprintf("principal roles set for scope: %d direct grant(s)\n", len(res.GetGrants())))
+	}}
+	cmd.Flags().StringVar(&principalID, "principal-id", "", "principal ID")
+	cmd.Flags().StringSliceVar(&roles, "role", nil, "desired direct role for the exact scope; repeatable")
+	cmd.Flags().StringVar(&scopeType, "scope", "system", "access scope: system, space, or domain")
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID for scoped grants")
+	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID for domain-scoped grants")
 	cmd.Flags().StringVar(&reason, "reason", "", "audit reason")
 	return cmd
 }
@@ -449,7 +485,7 @@ func NewPrincipalRoleRevokeCommand(a *app.App) *cobra.Command {
 
 func NewPrincipalCapabilityCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "capability", Short: "Manage principal capabilities"}
-	cmd.AddCommand(NewPrincipalCapabilityListCommand(a), NewPrincipalCapabilityGrantCommand(a), NewPrincipalCapabilityRevokeCommand(a))
+	cmd.AddCommand(NewPrincipalCapabilityListCommand(a), NewPrincipalCapabilityGrantCommand(a), NewPrincipalCapabilityRevokeCommand(a), NewPrincipalCapabilitySetCommand(a))
 	return cmd
 }
 
@@ -475,7 +511,7 @@ func NewPrincipalCapabilityListCommand(a *app.App) *cobra.Command {
 }
 
 func NewPrincipalCapabilityGrantCommand(a *app.App) *cobra.Command {
-	var principalID, capability, reason string
+	var principalID, capability, reason, scopeType, spaceID, domainID string
 	cmd := &cobra.Command{Use: "grant", Short: "Grant a principal capability", RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(principalID) == "" || strings.TrimSpace(capability) == "" {
 			return fmt.Errorf("--principal-id and --capability are required")
@@ -484,12 +520,15 @@ func NewPrincipalCapabilityGrantCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
+		if err := validateAccessScope(scopeType); err != nil {
+			return err
+		}
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminPrincipalServiceClient(conn).GrantPrincipalCapability(authCtx, &adminv1.GrantPrincipalCapabilityRequest{PrincipalId: principalID, Capability: parsed, Reason: reason})
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).GrantPrincipalCapability(authCtx, &adminv1.GrantPrincipalCapabilityRequest{PrincipalId: principalID, Capability: parsed, Scope: accessScope(scopeType, spaceID, domainID), Reason: reason})
 		if err != nil {
 			return err
 		}
@@ -497,6 +536,47 @@ func NewPrincipalCapabilityGrantCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&principalID, "principal-id", "", "principal ID")
 	cmd.Flags().StringVar(&capability, "capability", "", "capability, e.g. identity-principal-update")
+	cmd.Flags().StringVar(&scopeType, "scope", "system", "access scope: system, space, or domain")
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID for scoped grant")
+	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID for domain-scoped grant")
+	cmd.Flags().StringVar(&reason, "reason", "", "audit reason")
+	return cmd
+}
+
+func NewPrincipalCapabilitySetCommand(a *app.App) *cobra.Command {
+	var principalID, reason, scopeType, spaceID, domainID string
+	var capabilities []string
+	cmd := &cobra.Command{Use: "set", Short: "Set direct principal capabilities for an exact scope", RunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(principalID) == "" {
+			return fmt.Errorf("--principal-id is required")
+		}
+		if err := validateAccessScope(scopeType); err != nil {
+			return err
+		}
+		parsed := make([]commonv1.Capability, 0, len(capabilities))
+		for _, capability := range capabilities {
+			value, err := parseCapability(capability)
+			if err != nil {
+				return err
+			}
+			parsed = append(parsed, value)
+		}
+		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := adminv1.NewAdminPrincipalServiceClient(conn).SetPrincipalCapabilitiesForScope(authCtx, &adminv1.SetPrincipalCapabilitiesForScopeRequest{PrincipalId: principalID, Scope: accessScope(scopeType, spaceID, domainID), Capabilities: parsed, Reason: reason})
+		if err != nil {
+			return err
+		}
+		return a.Print(res, fmt.Sprintf("principal capabilities set for scope: %d direct grant(s)\n", len(res.GetGrants())))
+	}}
+	cmd.Flags().StringVar(&principalID, "principal-id", "", "principal ID")
+	cmd.Flags().StringSliceVar(&capabilities, "capability", nil, "desired direct capability for the exact scope; repeatable")
+	cmd.Flags().StringVar(&scopeType, "scope", "system", "access scope: system, space, or domain")
+	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID for scoped grants")
+	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID for domain-scoped grants")
 	cmd.Flags().StringVar(&reason, "reason", "", "audit reason")
 	return cmd
 }

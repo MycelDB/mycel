@@ -13,7 +13,7 @@ file-backed global/space/usage stores, a runtime module, daemon initialization,
 and focused round-trip tests. INF3 is implemented as a management tranche:
 admin catalog and credential writes now mirror into the standalone inference
 stores, credential rotation preserves stable credential IDs, external secret refs
-fail closed to supported `env://NAME` references, and space-scoped profile
+fail closed to supported daemon-stored API keys, and space-scoped profile
 CRUD is exposed through the themed admin API and CLI. INF4 is implemented as a
 resolver tranche: the standalone inference subsystem can resolve profile,
 capability, credential grant, credential/secret, and policy matches; denies
@@ -307,7 +307,7 @@ and space-level profiles.
    - `system`.
 4. Implement secret ref validation and redaction:
    - encrypted inline secret references;
-   - `env://NAME` references;
+   - daemon-stored API keys;
    - explicit rejection of unsupported schemes.
 5. Implement credential rotation:
    - update secret ref/version on stable credential ID;
@@ -341,7 +341,7 @@ runtime paths remain unchanged. Profile CRUD is implemented directly against the
 standalone inference space manager and exposed through `inference profile` CLI
 commands. Credential rotation creates a new redacted secret record and updates
 the stable credential ID. External secret references are restricted to
-`env://NAME`; unsupported schemes are rejected.
+daemon-stored API keys; unsupported schemes are rejected.
 
 ### Functional endpoint for the phase
 
@@ -867,7 +867,7 @@ changes this assumption.
 1. Should inference profiles be strictly space-scoped, or should domain-scoped
    profiles be first-class resources?
 2. Which external secret reference schemes should mycel support in the first
-   implementation beyond encrypted-inline and `env://`?
+   implementation beyond daemon-encrypted API keys?
 3. How should principal-owned credential consent be exposed in CLI and admin UI?
 4. Should the usage ledger be global with indexes, per-space, or both?
 5. What retention/export controls are needed for usage telemetry?

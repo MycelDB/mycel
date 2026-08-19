@@ -121,15 +121,11 @@ func mapModelEndpointCapabilities(items []domainsemantic.ModelEndpointCapability
 }
 
 func mapSecret(in domainsemantic.Secret) *adminv1.Secret {
-	var inline *adminv1.InlineSecret
-	if in.Ciphertext != nil {
-		inline = &adminv1.InlineSecret{Algorithm: in.Ciphertext.Algorithm, NonceB64: in.Ciphertext.NonceB64, CipherB64: in.Ciphertext.CipherB64}
-	}
-	return &adminv1.Secret{SecretId: in.ID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, Kind: string(in.Kind), InlineSecret: inline, ExternalRef: in.ExternalRef, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt)}
+	return &adminv1.Secret{SecretId: in.ID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, Kind: string(in.Kind), CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt), SecretSuffix: in.SecretSuffix}
 }
 
 func mapCredential(in domainsemantic.InferenceCredential) *adminv1.InferenceCredential {
-	out := &adminv1.InferenceCredential{CredentialId: in.ID.String(), Key: in.Key, DisplayName: in.Name, ModelEndpointId: in.ModelEndpointID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, AuthType: string(in.AuthType), SecretId: in.SecretRef.String(), Status: string(in.Status), IsDefault: in.IsDefault, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt)}
+	out := &adminv1.InferenceCredential{CredentialId: in.ID.String(), Key: in.Key, DisplayName: in.Name, ModelEndpointId: in.ModelEndpointID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, AuthType: string(in.AuthType), SecretId: in.SecretRef.String(), SecretSuffix: in.SecretSuffix, Status: string(in.Status), IsDefault: in.IsDefault, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt)}
 	if in.LastUsedAt != nil {
 		out.LastUsedTime = timestamppb.New(*in.LastUsedAt)
 	}
@@ -679,11 +675,15 @@ func semanticVectorStoreToInference(in domainsemantic.VectorStoreBackend) domain
 }
 
 func semanticSecretToInference(in domainsemantic.Secret) domaininference.Secret {
-	return domaininference.Secret{ID: domaininference.SecretID(in.ID), OwnerType: inferenceOwnerTypeFromSemantic(in.OwnerType), OwnerID: in.OwnerID, Kind: string(in.Kind), ExternalRef: in.ExternalRef, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+	var ciphertext *domaininference.EncryptedSecretPayload
+	if in.Ciphertext != nil {
+		ciphertext = &domaininference.EncryptedSecretPayload{Algorithm: in.Ciphertext.Algorithm, NonceB64: in.Ciphertext.NonceB64, CipherB64: in.Ciphertext.CipherB64}
+	}
+	return domaininference.Secret{ID: domaininference.SecretID(in.ID), OwnerType: inferenceOwnerTypeFromSemantic(in.OwnerType), OwnerID: in.OwnerID, Kind: string(in.Kind), Ciphertext: ciphertext, SecretSuffix: in.SecretSuffix, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 }
 
 func semanticCredentialToInference(in domainsemantic.InferenceCredential) domaininference.Credential {
-	return domaininference.Credential{ID: domaininference.CredentialID(in.ID), Key: in.Key, DisplayName: in.Name, EndpointID: domaininference.EndpointID(in.ModelEndpointID), OwnerType: inferenceOwnerTypeFromSemantic(in.OwnerType), OwnerID: in.OwnerID, AuthType: inferenceAuthTypeFromSemantic(in.AuthType), SecretID: domaininference.SecretID(in.SecretRef), Status: inferenceCredentialStatusFromSemantic(in.Status), CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+	return domaininference.Credential{ID: domaininference.CredentialID(in.ID), Key: in.Key, DisplayName: in.Name, EndpointID: domaininference.EndpointID(in.ModelEndpointID), OwnerType: inferenceOwnerTypeFromSemantic(in.OwnerType), OwnerID: in.OwnerID, AuthType: inferenceAuthTypeFromSemantic(in.AuthType), SecretID: domaininference.SecretID(in.SecretRef), SecretSuffix: in.SecretSuffix, Status: inferenceCredentialStatusFromSemantic(in.Status), CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 }
 
 func inferenceNetworkClassFromSemantic(value domainsemantic.NetworkClass) domaininference.NetworkClass {

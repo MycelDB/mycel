@@ -206,15 +206,22 @@ type VectorStore struct {
 	UpdatedAt    time.Time      `json:"updated_at"`
 }
 
+type EncryptedSecretPayload struct {
+	Algorithm string `json:"algorithm,omitempty"`
+	NonceB64  string `json:"nonce_b64,omitempty"`
+	CipherB64 string `json:"cipher_b64,omitempty"`
+}
+
 type Secret struct {
-	ID            SecretID            `json:"id"`
-	OwnerType     CredentialOwnerType `json:"owner_type"`
-	OwnerID       string              `json:"owner_id"`
-	Kind          string              `json:"kind"`
-	ExternalRef   string              `json:"external_ref,omitempty"`
-	SecretVersion string              `json:"secret_version,omitempty"`
-	CreatedAt     time.Time           `json:"created_at"`
-	UpdatedAt     time.Time           `json:"updated_at"`
+	ID            SecretID                `json:"id"`
+	OwnerType     CredentialOwnerType     `json:"owner_type"`
+	OwnerID       string                  `json:"owner_id"`
+	Kind          string                  `json:"kind"`
+	Ciphertext    *EncryptedSecretPayload `json:"ciphertext,omitempty"`
+	SecretVersion string                  `json:"secret_version,omitempty"`
+	SecretSuffix  string                  `json:"secret_suffix,omitempty"`
+	CreatedAt     time.Time               `json:"created_at"`
+	UpdatedAt     time.Time               `json:"updated_at"`
 }
 
 type Credential struct {
@@ -227,6 +234,7 @@ type Credential struct {
 	AuthType      CredentialAuthType  `json:"auth_type"`
 	SecretID      SecretID            `json:"secret_id"`
 	SecretVersion string              `json:"secret_version,omitempty"`
+	SecretSuffix  string              `json:"secret_suffix,omitempty"`
 	Status        CredentialStatus    `json:"status"`
 	CreatedBy     string              `json:"created_by,omitempty"`
 	CreatedAt     time.Time           `json:"created_at"`

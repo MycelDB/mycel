@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/myceldb/mycel/internal/inference/connectors"
@@ -14,29 +16,53 @@ type SecretResolver interface {
 	ResolveSecret(ctx context.Context, secret domaininference.Secret) (string, error)
 }
 
-type EnvSecretResolver struct{}
+type EncryptedSecretResolver struct {
+	secretKeyB64 string
+}
 
-func (EnvSecretResolver) ResolveSecret(ctx context.Context, secret domaininference.Secret) (string, error) {
+func NewEncryptedSecretResolver(secretKeyB64 string) EncryptedSecretResolver {
+	return EncryptedSecretResolver{secretKeyB64: secretKeyB64}
+}
+
+func (r EncryptedSecretResolver) ResolveSecret(ctx context.Context, secret domaininference.Secret) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	switch strings.TrimSpace(secret.Kind) {
 	case "", "none":
 		return "", nil
-	case "external_ref":
-		ref := strings.TrimSpace(secret.ExternalRef)
-		if !strings.HasPrefix(ref, "env://") {
-			return "", fmt.Errorf("unsupported external secret reference")
+	case "inline_encrypted":
+		if secret.Ciphertext == nil || strings.TrimSpace(secret.Ciphertext.CipherB64) == "" {
+			return "", fmt.Errorf("encrypted secret payload is empty")
 		}
-		name := strings.TrimSpace(strings.TrimPrefix(ref, "env://"))
-		if name == "" {
-			return "", fmt.Errorf("environment secret reference is empty")
+		if !strings.EqualFold(strings.TrimSpace(secret.Ciphertext.Algorithm), "AES-256-GCM") {
+			return "", fmt.Errorf("unsupported secret encryption algorithm %q", secret.Ciphertext.Algorithm)
 		}
-		value := os.Getenv(name)
-		if value == "" {
-			return "", fmt.Errorf("environment secret %s is not set", name)
+		key, err := base64.StdEncoding.DecodeString(r.secretKeyB64)
+		if err != nil || len(key) != 32 {
+			return "", fmt.Errorf("valid 32-byte secret encryption key is required")
 		}
-		return value, nil
+		nonce, err := base64.StdEncoding.DecodeString(secret.Ciphertext.NonceB64)
+		if err != nil {
+			return "", fmt.Errorf("decode secret nonce: %w", err)
+		}
+		ciphertext, err := base64.StdEncoding.DecodeString(secret.Ciphertext.CipherB64)
+		if err != nil {
+			return "", fmt.Errorf("decode secret ciphertext: %w", err)
+		}
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			return "", err
+		}
+		gcm, err := cipher.NewGCM(block)
+		if err != nil {
+			return "", err
+		}
+		plain, err := gcm.Open(nil, nonce, ciphertext, nil)
+		if err != nil {
+			return "", fmt.Errorf("decrypt secret: %w", err)
+		}
+		return string(plain), nil
 	default:
 		return "", fmt.Errorf("unsupported secret kind %q", secret.Kind)
 	}
@@ -60,7 +86,7 @@ func (m *Module) SetSecretResolver(resolver SecretResolver) {
 	defer m.mu.Unlock()
 	m.secretResolver = resolver
 	if m.secretResolver == nil {
-		m.secretResolver = EnvSecretResolver{}
+		m.secretResolver = EncryptedSecretResolver{}
 	}
 }
 
@@ -78,7 +104,7 @@ func (m *Module) resolveSecret(ctx context.Context, secret domaininference.Secre
 	resolver := m.secretResolver
 	m.mu.Unlock()
 	if resolver == nil {
-		resolver = EnvSecretResolver{}
+		resolver = EncryptedSecretResolver{}
 	}
 	return resolver.ResolveSecret(ctx, secret)
 }

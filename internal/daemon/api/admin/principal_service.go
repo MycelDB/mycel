@@ -366,6 +366,72 @@ func (s *PrincipalService) RevokePrincipalRole(ctx context.Context, req *adminv1
 	return &adminv1.RevokePrincipalRoleResponse{EffectiveCapabilities: effective}, nil
 }
 
+func (s *PrincipalService) SetPrincipalRolesForScope(ctx context.Context, req *adminv1.SetPrincipalRolesForScopeRequest) (*adminv1.SetPrincipalRolesForScopeResponse, error) {
+	actor, err := s.requireCapability(ctx, commonv1.Capability_CAPABILITY_IDENTITY_GRANT_MANAGE)
+	if err != nil {
+		return nil, err
+	}
+	principalID := strings.TrimSpace(req.GetPrincipalId())
+	if principalID == "" {
+		return nil, status.Error(codes.InvalidArgument, "principal_id is required")
+	}
+	scope := principalScopeFromProto(req.GetScope())
+	desired := map[string]bool{}
+	for _, role := range req.GetRoles() {
+		role = principalservice.CanonicalRole(role)
+		if role != "" {
+			desired[role] = true
+		}
+	}
+	bindings, err := s.manager.ListRoleBindings(ctx, principalID)
+	if err != nil {
+		return nil, mapPrincipalServiceError(err, "list principal roles")
+	}
+	current := map[string]principalservice.RoleBinding{}
+	for _, binding := range bindings {
+		if binding.State != principalservice.GrantStateActive || !principalScopeEqual(binding.Scope, scope) {
+			continue
+		}
+		role := principalservice.CanonicalRole(binding.Role)
+		if desired[role] {
+			if _, exists := current[role]; !exists {
+				current[role] = binding
+				continue
+			}
+		}
+		if _, err := s.manager.RevokeRole(ctx, principalID, binding.ID, actor.PrincipalID); err != nil {
+			return nil, mapPrincipalServiceError(err, "set principal roles for scope")
+		}
+	}
+	for role := range desired {
+		if _, ok := current[role]; ok {
+			continue
+		}
+		if _, _, err := s.manager.GrantRole(ctx, principalID, role, scope, req.GetReason(), actor.PrincipalID); err != nil {
+			return nil, mapPrincipalServiceError(err, "set principal roles for scope")
+		}
+	}
+	bindings, err = s.manager.ListRoleBindings(ctx, principalID)
+	if err != nil {
+		return nil, mapPrincipalServiceError(err, "list principal roles")
+	}
+	grants := make([]*adminv1.PrincipalRoleGrant, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.State == principalservice.GrantStateActive && principalScopeEqual(binding.Scope, scope) {
+			grants = append(grants, mapPrincipalRoleGrant(binding))
+		}
+	}
+	access, err := s.manager.EffectiveAccess(ctx, principalID, scope)
+	if err != nil {
+		return nil, mapPrincipalServiceError(err, "get effective principal roles")
+	}
+	effectiveCaps, err := s.effectiveCapabilitiesForScope(ctx, principalID, scope)
+	if err != nil {
+		return nil, err
+	}
+	return &adminv1.SetPrincipalRolesForScopeResponse{Grants: grants, EffectiveRoles: access.Roles, EffectiveCapabilities: effectiveCaps}, nil
+}
+
 func (s *PrincipalService) ListPrincipalCapabilities(ctx context.Context, req *adminv1.ListPrincipalCapabilitiesRequest) (*adminv1.ListPrincipalCapabilitiesResponse, error) {
 	if _, err := s.requireCapability(ctx, commonv1.Capability_CAPABILITY_IDENTITY_GRANT_MANAGE); err != nil {
 		return nil, err
@@ -422,6 +488,71 @@ func (s *PrincipalService) RevokePrincipalCapability(ctx context.Context, req *a
 	return &adminv1.RevokePrincipalCapabilityResponse{EffectiveCapabilities: effective}, nil
 }
 
+func (s *PrincipalService) SetPrincipalCapabilitiesForScope(ctx context.Context, req *adminv1.SetPrincipalCapabilitiesForScopeRequest) (*adminv1.SetPrincipalCapabilitiesForScopeResponse, error) {
+	actor, err := s.requireCapability(ctx, commonv1.Capability_CAPABILITY_IDENTITY_GRANT_MANAGE)
+	if err != nil {
+		return nil, err
+	}
+	principalID := strings.TrimSpace(req.GetPrincipalId())
+	if principalID == "" {
+		return nil, status.Error(codes.InvalidArgument, "principal_id is required")
+	}
+	scope := principalScopeFromProto(req.GetScope())
+	desired := map[string]bool{}
+	for _, cap := range req.GetCapabilities() {
+		capability, err := capabilityToInternal(cap)
+		if err != nil {
+			return nil, err
+		}
+		if capability != "" {
+			desired[capability] = true
+		}
+	}
+	grants, err := s.manager.ListCapabilityGrants(ctx, principalID)
+	if err != nil {
+		return nil, mapPrincipalServiceError(err, "list principal capabilities")
+	}
+	current := map[string]principalservice.CapabilityGrant{}
+	for _, grant := range grants {
+		if grant.State != principalservice.GrantStateActive || !principalScopeEqual(grant.Scope, scope) {
+			continue
+		}
+		capability := principalservice.CanonicalCapability(grant.Capability)
+		if desired[capability] {
+			if _, exists := current[capability]; !exists {
+				current[capability] = grant
+				continue
+			}
+		}
+		if _, err := s.manager.RevokeCapability(ctx, principalID, grant.ID, actor.PrincipalID); err != nil {
+			return nil, mapPrincipalServiceError(err, "set principal capabilities for scope")
+		}
+	}
+	for capability := range desired {
+		if _, ok := current[capability]; ok {
+			continue
+		}
+		if _, _, err := s.manager.GrantCapability(ctx, principalID, capability, scope, req.GetReason(), actor.PrincipalID); err != nil {
+			return nil, mapPrincipalServiceError(err, "set principal capabilities for scope")
+		}
+	}
+	grants, err = s.manager.ListCapabilityGrants(ctx, principalID)
+	if err != nil {
+		return nil, mapPrincipalServiceError(err, "list principal capabilities")
+	}
+	out := make([]*adminv1.PrincipalCapabilityGrant, 0, len(grants))
+	for _, grant := range grants {
+		if grant.State == principalservice.GrantStateActive && principalScopeEqual(grant.Scope, scope) {
+			out = append(out, mapPrincipalCapabilityGrant(grant))
+		}
+	}
+	effective, err := s.effectiveCapabilitiesForScope(ctx, principalID, scope)
+	if err != nil {
+		return nil, err
+	}
+	return &adminv1.SetPrincipalCapabilitiesForScopeResponse{Grants: out, EffectiveCapabilities: effective}, nil
+}
+
 func (s *PrincipalService) principalAccess(ctx context.Context, principalID string) ([]*adminv1.PrincipalRoleGrant, []*adminv1.PrincipalCapabilityGrant, []commonv1.Capability, error) {
 	bindings, err := s.manager.ListRoleBindings(ctx, principalID)
 	if err != nil {
@@ -451,7 +582,11 @@ func (s *PrincipalService) principalAccess(ctx context.Context, principalID stri
 }
 
 func (s *PrincipalService) effectiveCapabilities(ctx context.Context, principalID string) ([]commonv1.Capability, error) {
-	access, err := s.manager.EffectiveAccess(ctx, principalID, principalservice.AccessScope{Type: "system"})
+	return s.effectiveCapabilitiesForScope(ctx, principalID, principalservice.AccessScope{Type: "system"})
+}
+
+func (s *PrincipalService) effectiveCapabilitiesForScope(ctx context.Context, principalID string, scope principalservice.AccessScope) ([]commonv1.Capability, error) {
+	access, err := s.manager.EffectiveAccess(ctx, principalID, scope)
 	if err != nil {
 		return nil, mapPrincipalServiceError(err, "get effective principal capabilities")
 	}
@@ -545,6 +680,20 @@ func protoScopeFromPrincipal(scope principalservice.AccessScope) *commonv1.Acces
 		typ = commonv1.AccessScopeType_ACCESS_SCOPE_TYPE_DOMAIN
 	}
 	return &commonv1.AccessScope{Type: typ, SpaceId: optionalString(scope.SpaceID), DomainId: optionalString(scope.DomainID)}
+}
+
+func principalScopeEqual(left principalservice.AccessScope, right principalservice.AccessScope) bool {
+	left = principalNormalizeScope(left)
+	right = principalNormalizeScope(right)
+	return left.Type == right.Type && left.SpaceID == right.SpaceID && left.DomainID == right.DomainID
+}
+
+func principalNormalizeScope(scope principalservice.AccessScope) principalservice.AccessScope {
+	typ := strings.TrimSpace(scope.Type)
+	if typ == "" {
+		typ = "system"
+	}
+	return principalservice.AccessScope{Type: typ, SpaceID: strings.TrimSpace(scope.SpaceID), DomainID: strings.TrimSpace(scope.DomainID)}
 }
 
 func mapPrincipalRoleGrant(grant principalservice.RoleBinding) *adminv1.PrincipalRoleGrant {

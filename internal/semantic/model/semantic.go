@@ -119,7 +119,6 @@ type SecretKind string
 
 const (
 	SecretKindInlineEncrypted SecretKind = "inline_encrypted"
-	SecretKindExternalRef     SecretKind = "external_ref"
 )
 
 // PolicyEffect describes how an inference policy contributes to the effective decision.
@@ -245,16 +244,16 @@ type EncryptedSecretPayload struct {
 	CipherB64 string `json:"cipher_b64,omitempty"`
 }
 
-// Secret stores encrypted secret payloads or external references.
+// Secret stores encrypted secret payloads.
 type Secret struct {
-	ID          SecretID                `json:"id"`
-	OwnerType   CredentialOwnerType     `json:"owner_type"`
-	OwnerID     string                  `json:"owner_id"`
-	Kind        SecretKind              `json:"kind"`
-	Ciphertext  *EncryptedSecretPayload `json:"ciphertext,omitempty"`
-	ExternalRef string                  `json:"external_ref,omitempty"`
-	CreatedAt   time.Time               `json:"created_at"`
-	UpdatedAt   time.Time               `json:"updated_at"`
+	ID           SecretID                `json:"id"`
+	OwnerType    CredentialOwnerType     `json:"owner_type"`
+	OwnerID      string                  `json:"owner_id"`
+	Kind         SecretKind              `json:"kind"`
+	Ciphertext   *EncryptedSecretPayload `json:"ciphertext,omitempty"`
+	SecretSuffix string                  `json:"secret_suffix,omitempty"`
+	CreatedAt    time.Time               `json:"created_at"`
+	UpdatedAt    time.Time               `json:"updated_at"`
 }
 
 // InferenceCredential stores metadata for authorization material for one model endpoint.
@@ -267,6 +266,7 @@ type InferenceCredential struct {
 	OwnerID         string                `json:"owner_id"`
 	AuthType        AuthMode              `json:"auth_type"`
 	SecretRef       SecretID              `json:"secret_ref,omitempty"`
+	SecretSuffix    string                `json:"secret_suffix,omitempty"`
 	Status          CredentialStatus      `json:"status"`
 	IsDefault       bool                  `json:"is_default,omitempty"`
 	CreatedAt       time.Time             `json:"created_at"`

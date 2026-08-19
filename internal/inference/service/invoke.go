@@ -33,6 +33,7 @@ type InvokeResponse struct {
 	JSON              map[string]any
 	Embedding         []float64
 	Usage             connectors.Usage
+	Status            domaininference.UsageStatus
 }
 
 func (m *Module) Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse, error) {
@@ -49,7 +50,7 @@ func (m *Module) Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse,
 	}
 	if !resolved.Allowed {
 		_, appendErr := m.appendUsage(ctx, req, resolved, connectors.Usage{}, "", domaininference.UsageStatusDenied, "inference_denied", resolved.Decision.Reason, started)
-		resp := InvokeResponse{Allowed: false, Decision: resolved.Decision}
+		resp := InvokeResponse{Allowed: false, Decision: resolved.Decision, Status: domaininference.UsageStatusDenied}
 		if appendErr != nil {
 			return resp, appendErr
 		}
@@ -58,9 +59,9 @@ func (m *Module) Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse,
 	if err := ctx.Err(); err != nil {
 		_, appendErr := m.appendUsage(context.Background(), req, resolved, connectors.Usage{}, "", domaininference.UsageStatusCanceled, "canceled", err.Error(), started)
 		if appendErr != nil {
-			return InvokeResponse{Allowed: true, Decision: resolved.Decision}, appendErr
+			return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusCanceled}, appendErr
 		}
-		return InvokeResponse{Allowed: true, Decision: resolved.Decision}, err
+		return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusCanceled}, err
 	}
 	secretValue := ""
 	if resolved.Credential.AuthType != domaininference.CredentialAuthNone {
@@ -68,9 +69,9 @@ func (m *Module) Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse,
 		if err != nil {
 			_, appendErr := m.appendUsage(ctx, req, resolved, connectors.Usage{}, "", domaininference.UsageStatusFailed, "secret_resolution_failed", err.Error(), started)
 			if appendErr != nil {
-				return InvokeResponse{Allowed: true, Decision: resolved.Decision}, fmt.Errorf("%w; additionally failed to append usage event: %v", err, appendErr)
+				return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, fmt.Errorf("%w; additionally failed to append usage event: %v", err, appendErr)
 			}
-			return InvokeResponse{Allowed: true, Decision: resolved.Decision}, err
+			return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, err
 		}
 	}
 	connector := m.connector(resolved.Endpoint.ConnectorType)
@@ -78,9 +79,9 @@ func (m *Module) Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse,
 		err := fmt.Errorf("connector %q is not registered", resolved.Endpoint.ConnectorType)
 		_, appendErr := m.appendUsage(ctx, req, resolved, connectors.Usage{}, "", domaininference.UsageStatusFailed, "connector_unavailable", err.Error(), started)
 		if appendErr != nil {
-			return InvokeResponse{Allowed: true, Decision: resolved.Decision}, fmt.Errorf("%w; additionally failed to append usage event: %v", err, appendErr)
+			return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, fmt.Errorf("%w; additionally failed to append usage event: %v", err, appendErr)
 		}
-		return InvokeResponse{Allowed: true, Decision: resolved.Decision}, err
+		return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, err
 	}
 	resp, err := m.invokeConnector(ctx, connector, req, resolved, secretValue)
 	status := domaininference.UsageStatusSucceeded
@@ -101,7 +102,7 @@ func (m *Module) Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse,
 		appendCtx = context.Background()
 	}
 	_, appendErr := m.appendUsage(appendCtx, req, resolved, resp.Usage, resp.ProviderRequestID, status, errorCode, errorMessage, started)
-	out := InvokeResponse{Allowed: true, Decision: resolved.Decision, ProviderRequestID: resp.ProviderRequestID, Text: resp.Text, JSON: resp.JSON, Embedding: resp.Embedding, Usage: resp.Usage}
+	out := InvokeResponse{Allowed: true, Decision: resolved.Decision, ProviderRequestID: resp.ProviderRequestID, Text: resp.Text, JSON: resp.JSON, Embedding: resp.Embedding, Usage: resp.Usage, Status: status}
 	if appendErr != nil {
 		if err != nil {
 			return out, fmt.Errorf("%w; additionally failed to append usage event: %v", err, appendErr)
