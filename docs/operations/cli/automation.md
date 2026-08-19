@@ -49,6 +49,40 @@ If `condition.gql` is omitted, the automation treats the trigger as matched and
 uses the triggering node as `changed`. Keep `condition.gql` when the automation
 needs an additional GQL guard beyond the `on` event/label filter.
 
+## Graph-context automations
+
+Conditions can return node aliases in addition to `changed`. Those aliases can be
+used as input targets and `update_node.target` values. For example, a
+`JournalEntry` trigger can select its parent `journal`:
+
+```json
+"condition": {
+  "gql": "MATCH (journal:Journal)-[r:HAS_ENTRY]->(changed:JournalEntry) RETURN changed, journal"
+},
+"input": {
+  "target": "journal",
+  "mode": "gql_template",
+  "context": {
+    "entries": {
+      "gql": "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry ORDER BY r.properties.position FETCH FIRST 200 ROWS ONLY",
+      "limit": 200
+    }
+  },
+  "template": "Date: {{journal.properties.date}}\n{{#each entries}}- {{entry.payload.text}}\n{{/each}}"
+}
+```
+
+Context queries are read-only and must be bounded in GQL with `FETCH FIRST`;
+the optional `limit` field further caps accepted rows. `gql_template`
+supports scalar interpolation plus `{{#each name}}...{{/each}}` loops over named
+context result sets. Target-scoped
+idempotency and debounce/coalescing are available under `safety.idempotency` and
+`safety.debounce`; see `examples/automations/summarize_daily_journal.json`.
+
+Run records expose graph-context diagnostics including `target_alias`,
+`target_node_id`, per-context row counts, and coalesced invocation IDs when a
+pending invocation is skipped in favor of a newer one.
+
 ## Runs and invocations
 
 ```sh

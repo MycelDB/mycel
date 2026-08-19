@@ -134,6 +134,131 @@ func TestGenerateTextEnforcesTokenCeilings(t *testing.T) {
 	}
 }
 
+func TestGraphContextAutomationUpdatesConditionTarget(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	store := storage.NewFileStore(t.TempDir())
+	journalID := uuid.New()
+	entryID := uuid.New()
+	entryID2 := uuid.New()
+	journal := graph.Node{ID: graph.NodeID(journalID), DomainID: ids.domainID, Labels: []string{"Journal"}, Properties: map[string]any{"date": "2026-08-18"}, Payload: map[string]any{}}
+	entry := graph.Node{ID: graph.NodeID(entryID), DomainID: ids.domainID, Labels: []string{"JournalEntry"}, Payload: map[string]any{"text": "Did a thing"}}
+	entry2 := graph.Node{ID: graph.NodeID(entryID2), DomainID: ids.domainID, Labels: []string{"JournalEntry"}, Payload: map[string]any{"text": "Did another thing"}}
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 1}}
+	edge2 := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry2.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 2}}
+	graphs := &automationE2EGraph{nodes: map[string]graph.Node{journal.ID.String(): journal, entry.ID.String(): entry, entry2.ID.String(): entry2}, edges: []graph.Edge{edge, edge2}}
+	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference)
+	def := automation.Definition{ID: "daily", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Trigger: automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"JournalEntry"}}, Condition: automation.Condition{GQL: "MATCH (journal:Journal)-[r:HAS_ENTRY]->(changed:JournalEntry) RETURN changed, journal"}, Input: automation.Input{Target: "journal", Mode: automation.InputModeGQLTemplate, Template: "# {{journal.properties.date}}\n{{#each entries}}- {{entry.payload.text}}\n{{/each}}", Context: map[string]automation.ContextQuery{"entries": {GQL: "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry ORDER BY r.properties.position FETCH FIRST 20 ROWS ONLY", Limit: 20}}}, Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize journal", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "journal", Set: map[string]string{"payload.summary": "$result.text"}}}}}, Safety: automation.Safety{Idempotency: automation.Idempotency{Scope: "target", Target: "journal", SkipIfOutputUnchanged: true}}}
+	if err := store.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: entry.ID.String(), Node: &entry}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatalf("HandleGraphChange() error = %v", err)
+	}
+	processed, err := mgr.ProcessPending(ctx, ids.domainID, 10)
+	if err != nil {
+		t.Fatalf("ProcessPending() error = %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("processed = %d", processed)
+	}
+	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) != 1 || invs[0].Status != "succeeded" {
+		t.Fatalf("unexpected invocation state: %+v", invs)
+	}
+	updatedJournal := graphs.nodes[journal.ID.String()]
+	if got := updatedJournal.Payload["summary"]; got != "result text" {
+		t.Fatalf("journal summary payload = %#v", got)
+	}
+	if _, ok := graphs.nodes[entry.ID.String()].Payload["summary"]; ok {
+		t.Fatal("entry should not have been updated")
+	}
+	_, chatCalls := fake.Calls()
+	if chatCalls != 1 {
+		t.Fatalf("chat calls after first run = %d", chatCalls)
+	}
+
+	event.ID = uuid.New()
+	event.Changes = []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: entry2.ID.String(), Node: &entry2}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatalf("HandleGraphChange(second) error = %v", err)
+	}
+	processed, err = mgr.ProcessPending(ctx, ids.domainID, 10)
+	if err != nil {
+		t.Fatalf("ProcessPending(second) error = %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("second processed = %d", processed)
+	}
+	_, chatCalls = fake.Calls()
+	if chatCalls != 1 {
+		t.Fatalf("target-scoped idempotency should skip duplicate context, chat calls = %d", chatCalls)
+	}
+}
+
+func TestGraphContextAutomationDebouncesByTarget(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	store := storage.NewFileStore(t.TempDir())
+	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	journalID := uuid.New()
+	entryID1 := uuid.New()
+	entryID2 := uuid.New()
+	journal := graph.Node{ID: graph.NodeID(journalID), DomainID: ids.domainID, Labels: []string{"Journal"}, Payload: map[string]any{}}
+	entry1 := graph.Node{ID: graph.NodeID(entryID1), DomainID: ids.domainID, Labels: []string{"JournalEntry"}, Payload: map[string]any{"text": "one"}}
+	entry2 := graph.Node{ID: graph.NodeID(entryID2), DomainID: ids.domainID, Labels: []string{"JournalEntry"}, Payload: map[string]any{"text": "two"}}
+	graphs := &automationE2EGraph{nodes: map[string]graph.Node{journal.ID.String(): journal, entry1.ID.String(): entry1, entry2.ID.String(): entry2}, edges: []graph.Edge{
+		{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry1.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 1}},
+		{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry2.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 2}},
+	}}
+	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference)
+	mgr.now = func() time.Time { return base }
+	def := automation.Definition{ID: "daily-debounce", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Trigger: automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"JournalEntry"}}, Condition: automation.Condition{GQL: "MATCH (journal:Journal)-[:HAS_ENTRY]->(changed:JournalEntry) RETURN changed, journal"}, Input: automation.Input{Target: "journal", Mode: automation.InputModeGQLTemplate, Template: "{{#each entries}}{{entry.payload.text}}\n{{/each}}", Context: map[string]automation.ContextQuery{"entries": {GQL: "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry ORDER BY r.properties.position FETCH FIRST 20 ROWS ONLY", Limit: 20}}}, Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize journal", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "journal", Set: map[string]string{"payload.summary": "$result.text"}}}}}, Safety: automation.Safety{Debounce: &automation.Debounce{Duration: "30s", CoalesceBy: "journal"}}}
+	if err := store.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []graph.Node{entry1, entry2} {
+		event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}}}
+		if err := mgr.HandleGraphChange(ctx, event); err != nil {
+			t.Fatalf("HandleGraphChange() error = %v", err)
+		}
+	}
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 0 {
+		t.Fatalf("early ProcessPending() processed=%d err=%v", processed, err)
+	}
+	mgr.now = func() time.Time { return base.Add(31 * time.Second) }
+	processed, err := mgr.ProcessPending(ctx, ids.domainID, 10)
+	if err != nil {
+		t.Fatalf("ProcessPending() error = %v", err)
+	}
+	if processed != 2 {
+		t.Fatalf("processed = %d", processed)
+	}
+	_, chatCalls := fake.Calls()
+	if chatCalls != 1 {
+		t.Fatalf("debounced context should call inference once, got %d", chatCalls)
+	}
+	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{AutomationID: def.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped := 0
+	for _, inv := range invs {
+		if inv.Status == "skipped" && inv.SkipReason == skipReasonCoalesced {
+			skipped++
+		}
+	}
+	if skipped != 1 {
+		t.Fatalf("coalesced skipped invocations = %d, invs=%+v", skipped, invs)
+	}
+}
+
 func TestGraphAutomationExecutesThroughInferenceEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, _ := newAutomationInferenceRuntime(t, ctx, false)
@@ -263,9 +388,30 @@ func (s automationE2ESessions) CloseTransaction(context.Context, string, string)
 	return sessionservice.GraphTransaction{}, nil
 }
 
-type automationE2EGraph struct{ node graph.Node }
+type automationE2EGraph struct {
+	node  graph.Node
+	nodes map[string]graph.Node
+	edges []graph.Edge
+}
+
+func (g *automationE2EGraph) allNodes() []graph.Node {
+	if len(g.nodes) == 0 {
+		return []graph.Node{g.node}
+	}
+	out := make([]graph.Node, 0, len(g.nodes))
+	for _, node := range g.nodes {
+		out = append(out, node)
+	}
+	return out
+}
 
 func (g *automationE2EGraph) GetNode(_ context.Context, _ sessionservice.GraphTransaction, id string) (graph.Node, error) {
+	if len(g.nodes) != 0 {
+		if node, ok := g.nodes[id]; ok {
+			return node, nil
+		}
+		return graph.Node{}, fmt.Errorf("node not found")
+	}
 	if g.node.ID.String() != id {
 		return graph.Node{}, fmt.Errorf("node not found")
 	}
@@ -275,24 +421,30 @@ func (g *automationE2EGraph) ListNodes(_ context.Context, _ sessionservice.Graph
 	if token != "" {
 		return nil, "", nil
 	}
-	return []graph.Node{g.node}, "", nil
+	return g.allNodes(), "", nil
 }
 func (g *automationE2EGraph) CreateNode(context.Context, sessionservice.GraphTransaction, graphservice.NodeInput) (graph.Node, error) {
 	return graph.Node{}, fmt.Errorf("unused")
 }
 func (g *automationE2EGraph) UpdateNode(_ context.Context, _ sessionservice.GraphTransaction, in graphservice.UpdateNodeInput) (graph.Node, error) {
-	if g.node.ID.String() != in.NodeID {
-		return graph.Node{}, fmt.Errorf("node not found")
+	node, err := g.GetNode(context.Background(), sessionservice.GraphTransaction{}, in.NodeID)
+	if err != nil {
+		return graph.Node{}, err
 	}
-	g.node.Labels = append([]string(nil), in.Labels...)
-	g.node.Properties = in.Properties
-	g.node.Payload = in.Payload
-	g.node.Meta = in.Meta
+	node.Labels = append([]string(nil), in.Labels...)
+	node.Properties = in.Properties
+	node.Payload = in.Payload
+	node.Meta = in.Meta
 	if in.Content != nil {
-		g.node.Content = *in.Content
+		node.Content = *in.Content
 	}
-	g.node.Props = in.Props
-	return g.node, nil
+	node.Props = in.Props
+	if len(g.nodes) != 0 {
+		g.nodes[in.NodeID] = node
+	} else {
+		g.node = node
+	}
+	return node, nil
 }
 func (g *automationE2EGraph) UpsertNode(context.Context, sessionservice.GraphTransaction, graphservice.NodeInput) (graph.Node, error) {
 	return graph.Node{}, fmt.Errorf("unused")
@@ -303,8 +455,11 @@ func (g *automationE2EGraph) DeleteNode(context.Context, sessionservice.GraphTra
 func (g *automationE2EGraph) GetEdge(context.Context, sessionservice.GraphTransaction, string) (graph.Edge, error) {
 	return graph.Edge{}, fmt.Errorf("unused")
 }
-func (g *automationE2EGraph) ListEdges(context.Context, sessionservice.GraphTransaction, int, string) ([]graph.Edge, string, error) {
-	return nil, "", nil
+func (g *automationE2EGraph) ListEdges(_ context.Context, _ sessionservice.GraphTransaction, _ int, token string) ([]graph.Edge, string, error) {
+	if token != "" {
+		return nil, "", nil
+	}
+	return g.edges, "", nil
 }
 func (g *automationE2EGraph) CreateEdge(context.Context, sessionservice.GraphTransaction, graphservice.EdgeInput) (graph.Edge, error) {
 	return graph.Edge{}, fmt.Errorf("unused")
@@ -344,12 +499,40 @@ func (g *automationE2EGraph) ScanTag(context.Context, sessionservice.GraphTransa
 func (g *automationE2EGraph) ScanNodePropertyOrdered(context.Context, sessionservice.GraphTransaction, graphservice.OrderedNodePropertyScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
 	return nil, "", graphservice.IndexedReadStats{}, fmt.Errorf("unused")
 }
-func (g *automationE2EGraph) ScanAdjacency(context.Context, sessionservice.GraphTransaction, graphservice.AdjacencyScan) ([]graph.Edge, string, graphservice.IndexedReadStats, error) {
-	return nil, "", graphservice.IndexedReadStats{}, fmt.Errorf("unused")
+func (g *automationE2EGraph) ScanAdjacency(_ context.Context, _ sessionservice.GraphTransaction, scan graphservice.AdjacencyScan) ([]graph.Edge, string, graphservice.IndexedReadStats, error) {
+	if scan.Cursor != "" {
+		return nil, "", graphservice.IndexedReadStats{}, nil
+	}
+	out := []graph.Edge{}
+	for _, edge := range g.edges {
+		if scan.Label != "" && !stringSliceContains(edge.Labels, scan.Label) {
+			continue
+		}
+		switch scan.Direction {
+		case graphservice.AdjacencyDirectionIn:
+			if edge.ToID.String() == scan.NodeID {
+				out = append(out, edge)
+			}
+		default:
+			if edge.FromID.String() == scan.NodeID {
+				out = append(out, edge)
+			}
+		}
+	}
+	return out, "", graphservice.IndexedReadStats{}, nil
 }
 func (g *automationE2EGraph) ScanSubtree(context.Context, sessionservice.GraphTransaction, graphservice.SubtreeScan) (graphservice.SubtreeResult, graphservice.IndexedReadStats, error) {
 	return graphservice.SubtreeResult{}, graphservice.IndexedReadStats{}, fmt.Errorf("unused")
 }
 func (g *automationE2EGraph) BlobRefCount(context.Context, string, string) (int, error) {
 	return 0, nil
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

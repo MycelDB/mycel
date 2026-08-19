@@ -80,6 +80,10 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 			if err := runREPLConnect(ctx, a, args[1:], out); err != nil {
 				fmt.Fprintln(out, "error:", err)
 			}
+		case "space":
+			if err := runREPLSpace(ctx, a, args[1:], out); err != nil {
+				fmt.Fprintln(out, "error:", err)
+			}
 		case "disconnect":
 			a.ClearCurrentConnection()
 			fmt.Fprintln(out, "disconnected")
@@ -118,6 +122,44 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 		}
 	}
 	return scanner.Err()
+}
+
+func runREPLSpace(ctx context.Context, a *app.App, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: space set SPACE_ID or space unset")
+	}
+	switch args[0] {
+	case "set":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: space set SPACE_ID")
+		}
+		id, err := app.ParseUUID[domainspace.SpaceID](args[1])
+		if err != nil {
+			return err
+		}
+		conn, authCtx, _, err := loginDaemonPrincipal(ctx, a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := clientv1.NewSpaceServiceClient(conn).GetSpace(authCtx, &clientv1.GetSpaceRequest{SpaceId: id.String()})
+		if err != nil {
+			return err
+		}
+		a.SetCurrentSpace(id, res.GetSpace().GetName())
+		a.ClearCurrentDomain()
+		fmt.Fprintf(out, "space set: %s\n", id)
+		return nil
+	case "unset":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: space unset")
+		}
+		a.ClearCurrentConnection()
+		fmt.Fprintln(out, "space unset")
+		return nil
+	default:
+		return fmt.Errorf("usage: space set SPACE_ID or space unset")
+	}
 }
 
 func runREPLConnectAlias(ctx context.Context, a *app.App, args []string, out io.Writer) error {

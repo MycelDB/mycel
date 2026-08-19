@@ -348,6 +348,45 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			_ = m.store.PutInvocation(ctx, inv)
 			continue
 		}
+		if def.Status != automation.StatusEnabled {
+			now := m.now()
+			inv.Status = "skipped"
+			inv.SkipReason = "automation_disabled"
+			inv.UpdatedAt = now
+			run := automation.Run{ID: newRunID(), DomainID: domainID, InvocationID: inv.ID, AttemptNumber: inv.AttemptCount + 1, Status: "skipped", Error: inv.SkipReason, StartedAt: now, CompletedAt: now}
+			if err := m.store.PutInvocation(ctx, inv); err != nil {
+				return processed, mapStoreError(err)
+			}
+			if err := m.store.PutRun(ctx, run); err != nil {
+				return processed, mapStoreError(err)
+			}
+			m.recordMetric(inv.Status)
+			processed++
+			continue
+		}
+		debounce, err := m.debounceInvocation(ctx, domainID, def, inv)
+		if err != nil {
+			return processed, err
+		}
+		if debounce.Wait {
+			continue
+		}
+		if debounce.Coalesced {
+			now := m.now()
+			inv.Status = "skipped"
+			inv.SkipReason = skipReasonCoalesced
+			inv.UpdatedAt = now
+			run := automation.Run{ID: newRunID(), DomainID: domainID, InvocationID: inv.ID, AttemptNumber: inv.AttemptCount + 1, Status: "skipped", Error: skipReasonCoalesced, TargetAlias: debounce.TargetAlias, TargetNodeID: debounce.TargetNodeID, CoalescedInvocationIDs: debounce.CoalescedByIDs, StartedAt: now, CompletedAt: now}
+			if err := m.store.PutInvocation(ctx, inv); err != nil {
+				return processed, mapStoreError(err)
+			}
+			if err := m.store.PutRun(ctx, run); err != nil {
+				return processed, mapStoreError(err)
+			}
+			m.recordMetric(inv.Status)
+			processed++
+			continue
+		}
 		if def.Workflow != nil {
 			_, err := m.startWorkflowInstance(ctx, def, inv)
 			now := m.now()
@@ -406,7 +445,7 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 		if err := m.store.PutRun(ctx, run); err != nil {
 			return processed, mapStoreError(err)
 		}
-		if err := m.recordSuccessfulInputHash(ctx, inv, run); err != nil {
+		if err := m.recordSuccessfulInputHash(ctx, def, inv, run); err != nil {
 			return processed, err
 		}
 		m.recordMetric(inv.Status)

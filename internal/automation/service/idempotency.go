@@ -10,11 +10,14 @@ import (
 
 const skipReasonDuplicateInput = "duplicate_input_hash"
 
-func (m *AutomationManager) hasSuccessfulInputHash(ctx context.Context, inv automation.Invocation, inputHash string) (bool, error) {
+func (m *AutomationManager) hasSuccessfulInputHash(ctx context.Context, inv automation.Invocation, inputHash string, elementID string) (bool, error) {
 	if inputHash == "" {
 		return false, nil
 	}
-	_, err := m.store.GetSuccessfulInputIndex(ctx, inv.DomainID, inv.AutomationID, inv.AutomationVersion, inv.ChangedElementID, inputHash)
+	if elementID == "" {
+		elementID = inv.ChangedElementID
+	}
+	_, err := m.store.GetSuccessfulInputIndex(ctx, inv.DomainID, inv.AutomationID, inv.AutomationVersion, elementID, inputHash)
 	if err == nil {
 		return true, nil
 	}
@@ -24,9 +27,10 @@ func (m *AutomationManager) hasSuccessfulInputHash(ctx context.Context, inv auto
 	return false, mapStoreError(err)
 }
 
-func (m *AutomationManager) recordSuccessfulInputHash(ctx context.Context, inv automation.Invocation, run automation.Run) error {
+func (m *AutomationManager) recordSuccessfulInputHash(ctx context.Context, def automation.Definition, inv automation.Invocation, run automation.Run) error {
 	if inv.InputHash == "" || run.Status != "succeeded" {
 		return nil
 	}
-	return mapStoreError(m.store.PutSuccessfulInputIndex(ctx, storage.SuccessfulInputIndex{DomainID: inv.DomainID, AutomationID: inv.AutomationID, Version: inv.AutomationVersion, ChangedElementID: inv.ChangedElementID, InputHash: inv.InputHash, InvocationID: inv.ID, RunID: run.ID}))
+	elementID := idempotencyElementID(def, run, inv, run.IdempotencyTargetNodeID)
+	return mapStoreError(m.store.PutSuccessfulInputIndex(ctx, storage.SuccessfulInputIndex{DomainID: inv.DomainID, AutomationID: inv.AutomationID, Version: inv.AutomationVersion, ChangedElementID: inv.ChangedElementID, TargetElementID: elementID, InputHash: inv.InputHash, InvocationID: inv.ID, RunID: run.ID}))
 }

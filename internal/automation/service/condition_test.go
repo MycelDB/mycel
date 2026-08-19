@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -9,7 +11,6 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
-	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
@@ -41,8 +42,8 @@ func TestEvaluateConditionDefaultsToChangedWhenOmitted(t *testing.T) {
 	if !res.Matched {
 		t.Fatal("expected omitted condition to match")
 	}
-	alias, ok := res.Aliases["changed"].(execmodel.Node)
-	if !ok || alias.ID != node.ID.String() {
+	alias, ok := res.Aliases["changed"].(graph.Node)
+	if !ok || alias.ID != node.ID {
 		t.Fatalf("expected changed alias for omitted condition, got %+v", res.Aliases)
 	}
 }
@@ -89,14 +90,38 @@ func TestEvaluateConditionFalseWhenChangedNotReturned(t *testing.T) {
 	}
 }
 
+func TestEvaluateConditionFailsClosedOnMultipleChangedRows(t *testing.T) {
+	domainID := graph.DomainID(uuid.New())
+	changed := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}}
+	journalA := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Journal"}}
+	journalB := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Journal"}}
+	edges := []graph.Edge{
+		{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: journalA.ID, ToID: changed.ID, Labels: []string{"HAS_ENTRY"}},
+		{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: journalB.ID, ToID: changed.ID, Labels: []string{"HAS_ENTRY"}},
+	}
+	mgr := NewManager(nil).WithGraphRuntime(nil, fakeConditionGraph{nodes: []graph.Node{changed, journalA, journalB}, edges: edges})
+	_, err := mgr.evaluateCondition(context.Background(), conditionTx(domainID), automation.Definition{Condition: automation.Condition{GQL: "MATCH (journal:Journal)-[:HAS_ENTRY]->(changed:JournalEntry) RETURN changed, journal"}}, changed, nil)
+	if err == nil || !strings.Contains(err.Error(), "returned multiple rows") {
+		t.Fatalf("expected multiple-row error, got %v", err)
+	}
+}
+
 func conditionTx(domainID graph.DomainID) sessionservice.GraphTransaction {
 	return sessionservice.GraphTransaction{ID: "tx", DomainID: domainID.String(), Mode: sessionservice.TransactionModeReadOnly, State: sessionservice.TransactionStateActive}
 }
 
-type fakeConditionGraph struct{ nodes []graph.Node }
+type fakeConditionGraph struct {
+	nodes []graph.Node
+	edges []graph.Edge
+}
 
-func (f fakeConditionGraph) GetNode(context.Context, sessionservice.GraphTransaction, string) (graph.Node, error) {
-	panic("unused")
+func (f fakeConditionGraph) GetNode(_ context.Context, _ sessionservice.GraphTransaction, id string) (graph.Node, error) {
+	for _, node := range f.nodes {
+		if node.ID.String() == id {
+			return node, nil
+		}
+	}
+	return graph.Node{}, fmt.Errorf("node not found")
 }
 func (f fakeConditionGraph) ListNodes(_ context.Context, _ sessionservice.GraphTransaction, _ int, token string) ([]graph.Node, string, error) {
 	if token != "" {
@@ -119,8 +144,11 @@ func (f fakeConditionGraph) DeleteNode(context.Context, sessionservice.GraphTran
 func (f fakeConditionGraph) GetEdge(context.Context, sessionservice.GraphTransaction, string) (graph.Edge, error) {
 	panic("unused")
 }
-func (f fakeConditionGraph) ListEdges(context.Context, sessionservice.GraphTransaction, int, string) ([]graph.Edge, string, error) {
-	return nil, "", nil
+func (f fakeConditionGraph) ListEdges(_ context.Context, _ sessionservice.GraphTransaction, _ int, token string) ([]graph.Edge, string, error) {
+	if token != "" {
+		return nil, "", nil
+	}
+	return f.edges, "", nil
 }
 func (f fakeConditionGraph) CreateEdge(context.Context, sessionservice.GraphTransaction, graphservice.EdgeInput) (graph.Edge, error) {
 	panic("unused")
@@ -160,12 +188,40 @@ func (f fakeConditionGraph) ScanTag(context.Context, sessionservice.GraphTransac
 func (f fakeConditionGraph) ScanNodePropertyOrdered(context.Context, sessionservice.GraphTransaction, graphservice.OrderedNodePropertyScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
 	panic("unused")
 }
-func (f fakeConditionGraph) ScanAdjacency(context.Context, sessionservice.GraphTransaction, graphservice.AdjacencyScan) ([]graph.Edge, string, graphservice.IndexedReadStats, error) {
-	panic("unused")
+func (f fakeConditionGraph) ScanAdjacency(_ context.Context, _ sessionservice.GraphTransaction, scan graphservice.AdjacencyScan) ([]graph.Edge, string, graphservice.IndexedReadStats, error) {
+	if scan.Cursor != "" {
+		return nil, "", graphservice.IndexedReadStats{}, nil
+	}
+	out := []graph.Edge{}
+	for _, edge := range f.edges {
+		if scan.Label != "" && !containsString(edge.Labels, scan.Label) {
+			continue
+		}
+		switch scan.Direction {
+		case graphservice.AdjacencyDirectionIn:
+			if edge.ToID.String() == scan.NodeID {
+				out = append(out, edge)
+			}
+		default:
+			if edge.FromID.String() == scan.NodeID {
+				out = append(out, edge)
+			}
+		}
+	}
+	return out, "", graphservice.IndexedReadStats{}, nil
 }
 func (f fakeConditionGraph) ScanSubtree(context.Context, sessionservice.GraphTransaction, graphservice.SubtreeScan) (graphservice.SubtreeResult, graphservice.IndexedReadStats, error) {
 	panic("unused")
 }
 func (f fakeConditionGraph) BlobRefCount(context.Context, string, string) (int, error) {
 	panic("unused")
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

@@ -241,6 +241,10 @@ Supported input kinds over time:
 
 Rendering should be deterministic and auditable. The rendered input or its hash should be recorded with the run. For LLM-backed runs, the rendered input is also the basis for prompt/input token telemetry.
 
+### Graph-context rendering
+
+Implemented graph-context automations can set `input.target` to a condition-returned node alias, run bounded read-only named GQL queries under `input.context`, and render those rows with `mode: "gql_template"` plus `{{#each name}}...{{/each}}` blocks. See [Graph context automations](graph-context-automations.md) and `examples/automations/summarize_daily_journal.json`.
+
 ## Output and actions
 
 Automation output should be constrained. The LLM should not get unrestricted write access to the graph.

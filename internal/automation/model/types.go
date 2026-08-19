@@ -15,9 +15,10 @@ const (
 	EventNodeCreated = "node.created"
 	EventNodeUpdated = "node.updated"
 
-	InputModeFields   = "fields"
-	InputModeMarkdown = "markdown"
-	InputModeTemplate = "template"
+	InputModeFields      = "fields"
+	InputModeMarkdown    = "markdown"
+	InputModeTemplate    = "template"
+	InputModeGQLTemplate = "gql_template"
 
 	OutputModeText = "text"
 	OutputModeJSON = "json"
@@ -92,10 +93,16 @@ type Condition struct {
 }
 
 type Input struct {
-	Target   string   `json:"target,omitempty"`
-	Fields   []string `json:"fields,omitempty"`
-	Mode     string   `json:"mode,omitempty"`
-	Template string   `json:"template,omitempty"`
+	Target   string                  `json:"target,omitempty"`
+	Fields   []string                `json:"fields,omitempty"`
+	Mode     string                  `json:"mode,omitempty"`
+	Template string                  `json:"template,omitempty"`
+	Context  map[string]ContextQuery `json:"context,omitempty"`
+}
+
+type ContextQuery struct {
+	GQL   string `json:"gql"`
+	Limit int    `json:"limit,omitempty"`
 }
 
 type InferenceRef struct {
@@ -154,13 +161,21 @@ type EdgeAction struct {
 type Safety struct {
 	IgnoreSelfWrites bool        `json:"ignoreSelfWrites"`
 	Idempotency      Idempotency `json:"idempotency,omitempty"`
+	Debounce         *Debounce   `json:"debounce,omitempty"`
 	MaxActionItems   int         `json:"maxActionItems,omitempty"`
 	MaxAttempts      int         `json:"maxAttempts,omitempty"`
 }
 
 type Idempotency struct {
+	Scope                 string   `json:"scope,omitempty"`
+	Target                string   `json:"target,omitempty"`
 	InputHashFields       []string `json:"inputHashFields,omitempty"`
 	SkipIfOutputUnchanged bool     `json:"skipIfOutputUnchanged,omitempty"`
+}
+
+type Debounce struct {
+	Duration   string `json:"duration"`
+	CoalesceBy string `json:"coalesceBy"`
 }
 
 type Invocation struct {
@@ -240,31 +255,43 @@ type WorkflowStepRun struct {
 }
 
 type Run struct {
-	ID                         string         `json:"id"`
-	DomainID                   graph.DomainID `json:"domain_id"`
-	InvocationID               string         `json:"invocation_id"`
-	AttemptNumber              int            `json:"attempt_number"`
-	Status                     string         `json:"status"`
-	RenderedInputHash          string         `json:"rendered_input_hash,omitempty"`
-	ActorPrincipalID           string         `json:"actor_principal_id,omitempty"`
-	OnBehalfOfPrincipalID      string         `json:"on_behalf_of_principal_id,omitempty"`
-	AutomationOwnerPrincipalID string         `json:"automation_owner_principal_id,omitempty"`
-	InferenceProfile           string         `json:"inference_profile,omitempty"`
-	InferenceProfileID         string         `json:"inference_profile_id,omitempty"`
-	ModelEndpointID            string         `json:"model_endpoint_id,omitempty"`
-	ModelID                    string         `json:"model_id,omitempty"`
-	CapabilityID               string         `json:"model_endpoint_capability_id,omitempty"`
-	CredentialID               string         `json:"credential_id,omitempty"`
-	CredentialGrantID          string         `json:"credential_grant_id,omitempty"`
-	PolicyDecisionID           string         `json:"policy_decision_id,omitempty"`
-	OutputHash                 string         `json:"output_hash,omitempty"`
-	ProviderRequestID          string         `json:"provider_request_id,omitempty"`
-	Usage                      TokenUsage     `json:"usage,omitempty"`
-	ActionFingerprint          string         `json:"action_fingerprint,omitempty"`
-	MutationID                 string         `json:"mutation_id,omitempty"`
-	Error                      string         `json:"error,omitempty"`
-	StartedAt                  time.Time      `json:"started_at,omitempty"`
-	CompletedAt                time.Time      `json:"completed_at,omitempty"`
+	ID                         string                       `json:"id"`
+	DomainID                   graph.DomainID               `json:"domain_id"`
+	InvocationID               string                       `json:"invocation_id"`
+	AttemptNumber              int                          `json:"attempt_number"`
+	Status                     string                       `json:"status"`
+	RenderedInputHash          string                       `json:"rendered_input_hash,omitempty"`
+	ActorPrincipalID           string                       `json:"actor_principal_id,omitempty"`
+	OnBehalfOfPrincipalID      string                       `json:"on_behalf_of_principal_id,omitempty"`
+	AutomationOwnerPrincipalID string                       `json:"automation_owner_principal_id,omitempty"`
+	InferenceProfile           string                       `json:"inference_profile,omitempty"`
+	InferenceProfileID         string                       `json:"inference_profile_id,omitempty"`
+	ModelEndpointID            string                       `json:"model_endpoint_id,omitempty"`
+	ModelID                    string                       `json:"model_id,omitempty"`
+	CapabilityID               string                       `json:"model_endpoint_capability_id,omitempty"`
+	CredentialID               string                       `json:"credential_id,omitempty"`
+	CredentialGrantID          string                       `json:"credential_grant_id,omitempty"`
+	PolicyDecisionID           string                       `json:"policy_decision_id,omitempty"`
+	OutputHash                 string                       `json:"output_hash,omitempty"`
+	ProviderRequestID          string                       `json:"provider_request_id,omitempty"`
+	Usage                      TokenUsage                   `json:"usage,omitempty"`
+	ActionFingerprint          string                       `json:"action_fingerprint,omitempty"`
+	MutationID                 string                       `json:"mutation_id,omitempty"`
+	Error                      string                       `json:"error,omitempty"`
+	TargetAlias                string                       `json:"target_alias,omitempty"`
+	TargetNodeID               string                       `json:"target_node_id,omitempty"`
+	IdempotencyTargetNodeID    string                       `json:"idempotency_target_node_id,omitempty"`
+	Context                    map[string]RunContextSummary `json:"context,omitempty"`
+	CoalescedInvocationIDs     []string                     `json:"coalesced_invocation_ids,omitempty"`
+	StartedAt                  time.Time                    `json:"started_at,omitempty"`
+	CompletedAt                time.Time                    `json:"completed_at,omitempty"`
+}
+
+type RunContextSummary struct {
+	Rows      int    `json:"rows"`
+	Limit     int    `json:"limit,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 type TokenUsage struct {
@@ -308,6 +335,12 @@ func (d Definition) Normalize() Definition {
 	}
 	for i := range d.Trigger.Labels {
 		d.Trigger.Labels[i] = strings.TrimSpace(d.Trigger.Labels[i])
+	}
+	d.Safety.Idempotency.Scope = strings.ToLower(strings.TrimSpace(d.Safety.Idempotency.Scope))
+	d.Safety.Idempotency.Target = strings.TrimSpace(d.Safety.Idempotency.Target)
+	if d.Safety.Debounce != nil {
+		d.Safety.Debounce.Duration = strings.TrimSpace(d.Safety.Debounce.Duration)
+		d.Safety.Debounce.CoalesceBy = strings.TrimSpace(d.Safety.Debounce.CoalesceBy)
 	}
 	if !d.Safety.IgnoreSelfWrites {
 		d.Safety.IgnoreSelfWrites = true

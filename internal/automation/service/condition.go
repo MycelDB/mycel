@@ -50,7 +50,7 @@ func (m *AutomationManager) conditionSchemaContext(ctx context.Context, tx sessi
 
 func (m *AutomationManager) evaluateCondition(ctx context.Context, tx sessionservice.GraphTransaction, def automation.Definition, changed graph.Node, old *graph.Node) (conditionResult, error) {
 	if strings.TrimSpace(def.Condition.GQL) == "" {
-		return conditionResult{Matched: true, Aliases: map[string]any{"changed": execNode(changed)}}, nil
+		return conditionResult{Matched: true, Aliases: map[string]any{"changed": changed}}, nil
 	}
 	schemaCtx, err := m.conditionSchemaContext(ctx, tx)
 	if err != nil {
@@ -72,10 +72,19 @@ func (m *AutomationManager) evaluateCondition(ctx context.Context, tx sessionser
 	if len(result.Rows) > conditionMaxRows {
 		return conditionResult{}, fmt.Errorf("automation condition returned too many rows")
 	}
+	var matched map[string]any
+	matchedRows := 0
 	for _, row := range result.Rows {
 		if rowContainsChanged(row, changed.ID.String()) {
-			return conditionResult{Matched: true, Aliases: rowAliases(row)}, nil
+			matchedRows++
+			if matchedRows > 1 {
+				return conditionResult{}, fmt.Errorf("automation condition returned multiple rows; refine condition or enable explicit fan-out")
+			}
+			matched = rowAliases(row)
 		}
+	}
+	if matchedRows == 1 {
+		return conditionResult{Matched: true, Aliases: matched}, nil
 	}
 	return conditionResult{Matched: false}, nil
 }
@@ -85,6 +94,7 @@ type automationGQLGraph struct {
 	tx      sessionservice.GraphTransaction
 	changed *graph.Node
 	old     *graph.Node
+	aliases map[string]any
 }
 
 func (g automationGQLGraph) InsertNode(context.Context, execution.InsertNode) (execmodel.NodeRef, error) {
@@ -112,7 +122,7 @@ func (g automationGQLGraph) DeleteEdge(context.Context, string) error {
 }
 
 func (g automationGQLGraph) QueryNodes(ctx context.Context, query execution.QueryNodes) ([]execmodel.Node, error) {
-	if isReservedBinding(query.Variable) {
+	if g.requiresBoundVariable(query.Variable) {
 		bound, ok := g.boundNode(query.Variable)
 		if !ok {
 			return nil, nil
@@ -140,19 +150,22 @@ func (g automationGQLGraph) QueryNodes(ctx context.Context, query execution.Quer
 }
 
 func (g automationGQLGraph) QueryPattern(ctx context.Context, query execution.QueryPattern) ([]execution.PatternRow, error) {
-	if isReservedBinding(query.Start.Variable) {
+	if g.requiresBoundVariable(query.Start.Variable) {
 		bound, ok := g.boundNode(query.Start.Variable)
 		if !ok {
 			return nil, nil
 		}
 		query.Start.Properties = withIDProperty(query.Start.Properties, bound.ID.String())
 	}
-	if isReservedBinding(query.End.Variable) {
+	if g.requiresBoundVariable(query.End.Variable) {
 		bound, ok := g.boundNode(query.End.Variable)
 		if !ok {
 			return nil, nil
 		}
 		query.End.Properties = withIDProperty(query.End.Properties, bound.ID.String())
+	}
+	if g.requiresBoundVariable(query.Start.Variable) || g.requiresBoundVariable(query.End.Variable) {
+		return g.queryBoundPattern(ctx, query)
 	}
 	nodes, err := listAllNodes(ctx, g.graphs, g.tx)
 	if err != nil {
@@ -198,6 +211,111 @@ func (g automationGQLGraph) QueryPattern(ctx context.Context, query execution.Qu
 	return out, nil
 }
 
+func (g automationGQLGraph) queryBoundPattern(ctx context.Context, query execution.QueryPattern) ([]execution.PatternRow, error) {
+	edges, err := g.boundPatternCandidateEdges(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	out := []execution.PatternRow{}
+	for _, edge := range edges {
+		if !hasLabels(edge.Labels, query.Relationship.Labels) || !hasProperties(edge.Properties, query.Relationship.Properties) {
+			continue
+		}
+		pairs := [][2]string{}
+		switch query.Relationship.Direction {
+		case execution.RelationshipIncoming:
+			pairs = append(pairs, [2]string{edge.ToID.String(), edge.FromID.String()})
+		case execution.RelationshipUndirected:
+			pairs = append(pairs, [2]string{edge.FromID.String(), edge.ToID.String()}, [2]string{edge.ToID.String(), edge.FromID.String()})
+		default:
+			pairs = append(pairs, [2]string{edge.FromID.String(), edge.ToID.String()})
+		}
+		for _, pair := range pairs {
+			if id, ok := query.Start.Properties["__id"].(string); ok && pair[0] != id {
+				continue
+			}
+			if id, ok := query.End.Properties["__id"].(string); ok && pair[1] != id {
+				continue
+			}
+			start, err := g.graphs.GetNode(ctx, g.tx, pair[0])
+			if err != nil {
+				continue
+			}
+			end, err := g.graphs.GetNode(ctx, g.tx, pair[1])
+			if err != nil {
+				continue
+			}
+			if !nodeMatchesConditionPattern(start, query.Start.Labels, query.Start.Properties) || !nodeMatchesConditionPattern(end, query.End.Labels, query.End.Properties) {
+				continue
+			}
+			out = append(out, execution.PatternRow{Start: execNode(start), Edge: execEdge(edge), End: execNode(end)})
+			if query.Limit > 0 && int64(len(out)) >= query.Limit {
+				return out, nil
+			}
+		}
+	}
+	return out, nil
+}
+
+func (g automationGQLGraph) boundPatternCandidateEdges(ctx context.Context, query execution.QueryPattern) ([]graph.Edge, error) {
+	startID, startBound := query.Start.Properties["__id"].(string)
+	endID, endBound := query.End.Properties["__id"].(string)
+	label := ""
+	if len(query.Relationship.Labels) > 0 {
+		label = query.Relationship.Labels[0]
+	}
+	if label == "" {
+		return listAllEdges(ctx, g.graphs, g.tx)
+	}
+	if startBound {
+		switch query.Relationship.Direction {
+		case execution.RelationshipIncoming:
+			return g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionIn)
+		case execution.RelationshipUndirected:
+			out, err := g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionOut)
+			if err != nil {
+				return nil, err
+			}
+			in, err := g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionIn)
+			return append(out, in...), err
+		default:
+			return g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionOut)
+		}
+	}
+	if endBound {
+		switch query.Relationship.Direction {
+		case execution.RelationshipIncoming:
+			return g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionOut)
+		case execution.RelationshipUndirected:
+			out, err := g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionIn)
+			if err != nil {
+				return nil, err
+			}
+			outgoing, err := g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionOut)
+			return append(out, outgoing...), err
+		default:
+			return g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionIn)
+		}
+	}
+	return listAllEdges(ctx, g.graphs, g.tx)
+}
+
+func (g automationGQLGraph) scanAdjacencyEdges(ctx context.Context, nodeID string, label string, direction graphservice.AdjacencyDirection) ([]graph.Edge, error) {
+	out := []graph.Edge{}
+	cursor := ""
+	for {
+		edges, next, _, err := g.graphs.ScanAdjacency(ctx, g.tx, graphservice.AdjacencyScan{NodeID: nodeID, Label: label, Direction: direction, Limit: 500, Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, edges...)
+		if next == "" {
+			return out, nil
+		}
+		cursor = next
+	}
+}
+
 func listAllNodes(ctx context.Context, graphs graphservice.Manager, tx sessionservice.GraphTransaction) ([]graph.Node, error) {
 	out := []graph.Node{}
 	token := ""
@@ -230,7 +348,13 @@ func listAllEdges(ctx context.Context, graphs graphservice.Manager, tx sessionse
 	}
 }
 
-func isReservedBinding(variable string) bool { return variable == "changed" || variable == "old" }
+func (g automationGQLGraph) requiresBoundVariable(variable string) bool {
+	if variable == "changed" || variable == "old" {
+		return true
+	}
+	_, ok := g.aliases[variable]
+	return ok
+}
 
 func (g automationGQLGraph) boundNode(variable string) (graph.Node, bool) {
 	switch variable {
@@ -243,7 +367,28 @@ func (g automationGQLGraph) boundNode(variable string) (graph.Node, bool) {
 			return *g.old, true
 		}
 	}
+	if g.aliases != nil {
+		if node, ok := aliasGraphNode(g.aliases[variable]); ok {
+			return node, true
+		}
+	}
 	return graph.Node{}, false
+}
+
+func aliasGraphNode(value any) (graph.Node, bool) {
+	switch v := value.(type) {
+	case graph.Node:
+		return v, true
+	case execmodel.Node:
+		id, err := uuid.Parse(v.ID)
+		if err != nil {
+			return graph.Node{}, false
+		}
+		domainID, _ := uuid.Parse(v.DomainID)
+		return graph.Node{ID: graph.NodeID(id), DomainID: graph.DomainID(domainID), Labels: append([]string(nil), v.Labels...), Properties: copyAnyMap(v.Properties), Payload: copyAnyMap(v.Payload), Meta: copyAnyMap(v.Meta)}, true
+	default:
+		return graph.Node{}, false
+	}
 }
 
 func withIDProperty(properties map[string]any, id string) map[string]any {
@@ -277,6 +422,9 @@ func hasLabels(labels []string, required []string) bool {
 
 func hasProperties(values map[string]any, required map[string]any) bool {
 	for key, value := range required {
+		if key == "__id" {
+			continue
+		}
 		if !reflect.DeepEqual(values[key], value) {
 			return false
 		}
@@ -313,12 +461,38 @@ func rowAliases(row execmodel.Row) map[string]any {
 	for key, value := range row {
 		switch {
 		case value.Node != nil:
-			out[key] = *value.Node
+			if node, ok := aliasGraphNode(*value.Node); ok {
+				out[key] = node
+			} else {
+				out[key] = *value.Node
+			}
 		case value.Edge != nil:
-			out[key] = *value.Edge
+			if edge, ok := aliasGraphEdge(*value.Edge); ok {
+				out[key] = edge
+			} else {
+				out[key] = *value.Edge
+			}
 		default:
 			out[key] = value.Scalar
 		}
 	}
 	return out
+}
+
+func aliasGraphEdge(value any) (graph.Edge, bool) {
+	switch v := value.(type) {
+	case graph.Edge:
+		return v, true
+	case execmodel.Edge:
+		id, err := uuid.Parse(v.ID)
+		if err != nil {
+			return graph.Edge{}, false
+		}
+		domainID, _ := uuid.Parse(v.DomainID)
+		fromID, _ := uuid.Parse(v.FromID)
+		toID, _ := uuid.Parse(v.ToID)
+		return graph.Edge{ID: graph.EdgeID(id), DomainID: graph.DomainID(domainID), FromID: graph.NodeID(fromID), ToID: graph.NodeID(toID), Labels: append([]string(nil), v.Labels...), Properties: copyAnyMap(v.Properties), Payload: copyAnyMap(v.Payload), Meta: copyAnyMap(v.Meta)}, true
+	default:
+		return graph.Edge{}, false
+	}
 }

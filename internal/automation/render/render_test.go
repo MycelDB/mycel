@@ -38,3 +38,31 @@ func TestRenderTemplateCanReferenceOldNode(t *testing.T) {
 		t.Fatalf("text = %q", res.Text)
 	}
 }
+
+func TestRenderGQLTemplateUsesAliasesAndCollections(t *testing.T) {
+	journal := graph.Node{Properties: map[string]any{"date": "2026-08-18"}}
+	res, err := Render(automation.Input{Target: "journal", Mode: automation.InputModeGQLTemplate, Template: "# {{journal.properties.date}}\n{{#each entries}}- {{entry.payload.text}}\n{{/each}}"}, Context{
+		Aliases: map[string]any{"journal": journal},
+		Collections: map[string][]map[string]any{"entries": {
+			{"entry": graph.Node{Payload: map[string]any{"text": "first"}}},
+			{"entry": graph.Node{Payload: map[string]any{"text": "second"}}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# 2026-08-18\n- first\n- second\n"
+	if res.Text != want {
+		t.Fatalf("text = %q, want %q", res.Text, want)
+	}
+}
+
+func TestRenderFieldsUsesInputTargetAlias(t *testing.T) {
+	res, err := Render(automation.Input{Target: "journal", Mode: automation.InputModeFields, Fields: []string{"properties.date"}}, Context{Changed: graph.Node{Properties: map[string]any{"date": "wrong"}}, Aliases: map[string]any{"journal": graph.Node{Properties: map[string]any{"date": "right"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Text, "right") || strings.Contains(res.Text, "wrong") {
+		t.Fatalf("unexpected text = %q", res.Text)
+	}
+}

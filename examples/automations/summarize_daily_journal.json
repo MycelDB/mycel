@@ -1,0 +1,61 @@
+{
+  "id": "summarize_daily_journal",
+  "name": "Summarize daily journal",
+  "version": 1,
+  "status": "disabled",
+  "on": {
+    "events": ["node.created", "node.updated"],
+    "labels": ["JournalEntry"]
+  },
+  "condition": {
+    "gql": "MATCH (journal:Journal)-[r:HAS_ENTRY]->(changed:JournalEntry) RETURN changed, journal"
+  },
+  "input": {
+    "target": "journal",
+    "mode": "gql_template",
+    "context": {
+      "entries": {
+        "gql": "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry, r ORDER BY r.properties.position FETCH FIRST 200 ROWS ONLY",
+        "limit": 200
+      }
+    },
+    "template": "Summarize this day.\n\nDate: {{journal.properties.date}}\n\nEntries:\n{{#each entries}}- {{entry.payload.text}}\n{{/each}}"
+  },
+  "inference": {
+    "operation": "chat",
+    "profile": "summarize-journal",
+    "parameters": {
+      "responseFormat": "text",
+      "maxInputTokens": 8000,
+      "maxOutputTokens": 1200
+    }
+  },
+  "prompt": "Write a concise daily journal summary from the ordered entries.",
+  "output": {
+    "mode": "text",
+    "actions": [
+      {
+        "update_node": {
+          "target": "journal",
+          "set": {
+            "payload.summaryMarkdown": "$result.text"
+          }
+        }
+      }
+    ]
+  },
+  "safety": {
+    "ignoreSelfWrites": true,
+    "idempotency": {
+      "scope": "target",
+      "target": "journal",
+      "skipIfOutputUnchanged": true
+    },
+    "debounce": {
+      "duration": "30s",
+      "coalesceBy": "journal"
+    },
+    "maxActionItems": 5,
+    "maxAttempts": 3
+  }
+}

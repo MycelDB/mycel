@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/query/gql"
+	"github.com/myceldb/mycel/internal/query/gql/analysis"
+	planmodel "github.com/myceldb/mycel/internal/query/gql/planning/model"
 )
 
 const defaultMaxActions = 10
@@ -52,6 +55,9 @@ func ValidateDefinition(def Definition) error {
 	}
 	if def.Workflow != nil {
 		return validateWorkflow(*def.Workflow)
+	}
+	if err := validateSafety(def.Safety); err != nil {
+		return err
 	}
 	if err := validateInferenceRef("automation inference", def.Inference, true); err != nil {
 		return err
@@ -129,17 +135,17 @@ func validateWorkflow(workflow Workflow) error {
 }
 
 func validateInput(input Input) error {
-	if input.Target != "changed" {
-		return fmt.Errorf("automation input target must be changed")
+	if err := validateIdentifierRef("automation input target", input.Target); err != nil {
+		return err
 	}
 	switch input.Mode {
 	case InputModeFields, InputModeMarkdown:
 		if len(input.Fields) == 0 {
 			return fmt.Errorf("automation input.fields must include at least one field")
 		}
-	case InputModeTemplate:
+	case InputModeTemplate, InputModeGQLTemplate:
 		if strings.TrimSpace(input.Template) == "" {
-			return fmt.Errorf("automation input.template is required for template mode")
+			return fmt.Errorf("automation input.template is required for %s mode", input.Mode)
 		}
 	default:
 		return fmt.Errorf("unsupported automation input.mode %q", input.Mode)
@@ -148,6 +154,162 @@ func validateInput(input Input) error {
 		if strings.TrimSpace(field) == "" {
 			return fmt.Errorf("automation input field path is required")
 		}
+	}
+	if err := validateContextQueries(input); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateContextQueries(input Input) error {
+	for name, query := range input.Context {
+		if err := validateIdentifierRef("automation input.context name", name); err != nil {
+			return err
+		}
+		queryText := strings.TrimSpace(query.GQL)
+		if queryText == "" {
+			return fmt.Errorf("automation input.context.%s.gql is required", name)
+		}
+		plan, err := gql.Compile(queryText)
+		if err != nil {
+			return fmt.Errorf("automation input.context.%s.gql is invalid: %w", name, err)
+		}
+		if plan.AccessMode == analysis.ReadWrite {
+			return fmt.Errorf("automation input.context.%s.gql must be read-only", name)
+		}
+		planLimit := queryPlanLimit(plan)
+		if planLimit <= 0 {
+			return fmt.Errorf("automation input.context.%s.gql must be bounded with FETCH FIRST", name)
+		}
+		if planLimit > 500 {
+			return fmt.Errorf("automation input.context.%s.gql limit must be <= 500", name)
+		}
+		if !queryPlanPatternsAreLabelBounded(plan) {
+			return fmt.Errorf("automation input.context.%s.gql relationship patterns must include a label", name)
+		}
+		if query.Limit < 0 {
+			return fmt.Errorf("automation input.context.%s.limit must be non-negative", name)
+		}
+		if query.Limit > 500 {
+			return fmt.Errorf("automation input.context.%s.limit must be <= 500", name)
+		}
+		if !queryPlanReferencesAlias(plan, []string{"changed", input.Target}) {
+			return fmt.Errorf("automation input.context.%s.gql must reference changed or the input target", name)
+		}
+	}
+	return nil
+}
+
+func queryPlanLimit(plan planmodel.Plan) int64 {
+	limit := int64(0)
+	for _, op := range plan.Operations {
+		opLimit := int64(0)
+		switch typed := op.(type) {
+		case planmodel.QueryNodesOperation:
+			opLimit = typed.Limit
+		case planmodel.QueryPatternOperation:
+			opLimit = typed.Limit
+		case planmodel.QueryPathOperation:
+			opLimit = typed.Limit
+		}
+		if opLimit <= 0 {
+			return 0
+		}
+		if limit == 0 || opLimit < limit {
+			limit = opLimit
+		}
+	}
+	return limit
+}
+
+func queryPlanReferencesAlias(plan planmodel.Plan, aliases []string) bool {
+	allowed := map[string]struct{}{}
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if alias != "" {
+			allowed[alias] = struct{}{}
+		}
+	}
+	for _, op := range plan.Operations {
+		switch typed := op.(type) {
+		case planmodel.QueryNodesOperation:
+			if _, ok := allowed[typed.Variable]; ok {
+				return true
+			}
+		case planmodel.QueryPatternOperation:
+			if _, ok := allowed[typed.Start.Variable]; ok {
+				return true
+			}
+			if _, ok := allowed[typed.End.Variable]; ok {
+				return true
+			}
+		case planmodel.QueryPathOperation:
+			if _, ok := allowed[typed.Start.Variable]; ok {
+				return true
+			}
+			for _, segment := range typed.Segments {
+				if _, ok := allowed[segment.Node.Variable]; ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func queryPlanPatternsAreLabelBounded(plan planmodel.Plan) bool {
+	for _, op := range plan.Operations {
+		switch typed := op.(type) {
+		case planmodel.QueryPatternOperation:
+			if len(typed.Relationship.Labels) == 0 {
+				return false
+			}
+		case planmodel.QueryPathOperation:
+			for _, segment := range typed.Segments {
+				if len(segment.Relationship.Labels) == 0 {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func validateSafety(safety Safety) error {
+	scope := strings.TrimSpace(safety.Idempotency.Scope)
+	if scope != "" && scope != "changed" && scope != "target" {
+		return fmt.Errorf("automation safety.idempotency.scope must be changed or target")
+	}
+	if scope == "target" && strings.TrimSpace(safety.Idempotency.Target) == "" {
+		return fmt.Errorf("automation safety.idempotency.target is required for target scope")
+	}
+	if strings.TrimSpace(safety.Idempotency.Target) != "" {
+		if err := validateIdentifierRef("automation safety.idempotency.target", safety.Idempotency.Target); err != nil {
+			return err
+		}
+	}
+	if safety.Debounce != nil {
+		duration, err := time.ParseDuration(strings.TrimSpace(safety.Debounce.Duration))
+		if err != nil || duration <= 0 {
+			return fmt.Errorf("automation safety.debounce.duration must be a positive duration")
+		}
+		if duration > 24*time.Hour {
+			return fmt.Errorf("automation safety.debounce.duration must be <= 24h")
+		}
+		if err := validateIdentifierRef("automation safety.debounce.coalesceBy", safety.Debounce.CoalesceBy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateIdentifierRef(path string, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s is required", path)
+	}
+	if strings.ContainsAny(value, " \t\n\r") {
+		return fmt.Errorf("%s must not contain whitespace", path)
 	}
 	return nil
 }

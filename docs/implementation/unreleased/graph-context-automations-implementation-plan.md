@@ -2,10 +2,10 @@
 
 ## Status
 
-Proposed. This plan implements the design in
-[Graph context automations](../../design/automation/graph-context-automations.md).
-It is intentionally split into independently reviewable tranches. Each tranche
-must leave the repository buildable, tested, documented, and safe by default.
+Implemented for the initial daily-journal use case. This plan tracks the design
+in [Graph context automations](../../design/automation/graph-context-automations.md)
+and remains useful for follow-up hardening. The GCA0-GCA8 tranche set landed in
+one implementation pass with some limitations noted below.
 
 The motivating workflow is a daily journal summary automation:
 
@@ -51,12 +51,11 @@ JournalEntry created/updated
 - `condition.gql` is now optional. If omitted, the engine treats the condition as
   matched and binds `changed` to the triggering node.
 - When a condition is present, it must reference `changed`.
-- Condition execution is read-only and can return aliases, but downstream action
-  support is still centered on `changed` and newly created `$refs`.
-- Input rendering supports fields and simple templates over `changed`, `old`, and
-  row aliases.
-- Structured output and create-node/create-edge/update-node actions exist, but
-  `update_node.target` only supports `changed`.
+- Condition execution is read-only and can return aliases. Node aliases can be
+  used as input targets and `update_node.target` values.
+- Input rendering supports fields, simple templates, and `gql_template` each
+  loops over bounded context-query result sets.
+- Structured output and create-node/create-edge/update-node actions exist.
 - Inference requests run as actor `automation` on behalf of the automation owner
   and require matching profiles, capabilities, credential grants, and policies.
 
@@ -212,7 +211,7 @@ Conceptual definition shape:
   "mode": "gql_template",
   "context": {
     "entries": {
-      "gql": "MATCH (journal:Journal)-[r:contains]->(entry:JournalEntry) RETURN entry, r ORDER BY r.order FETCH FIRST 200 ROWS ONLY"
+      "gql": "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry, r ORDER BY r.properties.position FETCH FIRST 200 ROWS ONLY"
     }
   },
   "template": "..."
@@ -228,8 +227,8 @@ Conceptual definition shape:
    - context names must be non-empty stable identifiers;
    - GQL must be non-empty;
    - GQL must be read-only;
-   - GQL must be bounded by `FETCH FIRST`, `LIMIT`, or an explicit context query
-     limit;
+   - GQL must be bounded by `FETCH FIRST`; an explicit context query `limit` can
+     only further cap accepted rows;
    - query must reference at least one existing alias or `changed`, unless a
      policy explicitly permits broad scans;
    - row limits must not exceed daemon maximums.
@@ -334,7 +333,7 @@ Conceptual shape:
     "inputHashFields": [
       "journal.properties.date",
       "entries[*].entry.payload.text",
-      "entries[*].r.properties.order"
+      "entries[*].r.properties.position"
     ],
     "skipIfOutputUnchanged": true
   }
@@ -499,7 +498,7 @@ requiring a real external LLM provider.
 2. Seed a domain graph:
    - one `Journal` node;
    - several `JournalEntry` child nodes;
-   - ordered `contains` edges.
+   - ordered `HAS_ENTRY` edges.
 3. Register a `summarize_daily_journal` automation using:
    - `on.labels: [JournalEntry]`;
    - condition selecting parent `journal`;
@@ -581,21 +580,20 @@ git diff --check
 - In raft mode, durable writes must remain raft-owned, derived/rebuildable, or
   fail closed according to repository safety rules.
 
-## Open questions to resolve before implementation
+## Resolved decisions and follow-ups
 
-1. Should the input context field be called `context`, `queries`, or
-   `collections`?
-2. Should multi-row condition results imply fan-out, or should fan-out require an
-   explicit mode in the first implementation?
-3. Should debounce live under `safety`, `execution`, or `schedule`?
-4. Should aggregate idempotency hash final rendered input, explicit field paths,
-   graph revision metadata, or a combination?
-5. Should context query results be persisted in run detail, or only hashes,
-   counts, diagnostics, and selected IDs?
-6. Should GCA1/GCA2 support edge action targets immediately, or only node alias
-   targets for the first tranche?
-7. How should token-limit truncation be expressed: fail-only initially, or an
-   explicit truncation policy?
+1. The input context field is `context`.
+2. Multi-row condition fan-out remains future work; the current runtime fails
+   closed if a condition returns multiple rows for `changed`.
+3. Debounce lives under `safety.debounce` for the first implementation.
+4. Aggregate idempotency hashes the final rendered input and can key by target
+   node ID.
+5. Run detail persists diagnostics (target alias/ID, context row counts,
+   coalesced invocation IDs) rather than full context rows.
+6. `update_node.target` supports node aliases; edge action targets are future
+   work.
+7. Context query rows are bounded by validation/runtime limits; token-limit
+   handling remains governed by inference profile/request limits.
 
 ## Suggested release gate
 

@@ -20,17 +20,18 @@ func TestHasSuccessfulInputHash(t *testing.T) {
 	if err := store.PutInvocation(context.Background(), prior); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.recordSuccessfulInputHash(context.Background(), prior, automation.Run{ID: "run-1", Status: "succeeded"}); err != nil {
+	def := automation.Definition{ID: "a", Version: 2}
+	if err := mgr.recordSuccessfulInputHash(context.Background(), def, prior, automation.Run{ID: "run-1", Status: "succeeded"}); err != nil {
 		t.Fatal(err)
 	}
-	dup, err := mgr.hasSuccessfulInputHash(context.Background(), automation.Invocation{ID: "current", DomainID: domainID, AutomationID: "a", AutomationVersion: 2, ChangedElementID: "node-1"}, "hash")
+	dup, err := mgr.hasSuccessfulInputHash(context.Background(), automation.Invocation{ID: "current", DomainID: domainID, AutomationID: "a", AutomationVersion: 2, ChangedElementID: "node-1"}, "hash", "node-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !dup {
 		t.Fatal("expected duplicate")
 	}
-	dup, err = mgr.hasSuccessfulInputHash(context.Background(), automation.Invocation{ID: "current", DomainID: domainID, AutomationID: "a", AutomationVersion: 3, ChangedElementID: "node-1"}, "hash")
+	dup, err = mgr.hasSuccessfulInputHash(context.Background(), automation.Invocation{ID: "current", DomainID: domainID, AutomationID: "a", AutomationVersion: 3, ChangedElementID: "node-1"}, "hash", "node-1")
 	if err != nil {
 		t.Fatal(err)
 	}

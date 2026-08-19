@@ -29,6 +29,43 @@ func TestValidateDefinitionAcceptsOmittedCondition(t *testing.T) {
 	}
 }
 
+func TestValidateDefinitionAcceptsGraphContextTemplate(t *testing.T) {
+	def := baseDefinition()
+	def.Condition = Condition{GQL: `MATCH (journal:Journal)-[r:HAS_ENTRY]->(changed:Page) RETURN changed, journal`}
+	def.Input = Input{
+		Target:   "journal",
+		Mode:     InputModeGQLTemplate,
+		Template: "{{journal.properties.date}}\n{{#each entries}}- {{entry.payload.text}}\n{{/each}}",
+		Context: map[string]ContextQuery{
+			"entries": {GQL: `MATCH (journal)-[r:HAS_ENTRY]->(entry:Page) RETURN entry ORDER BY r.properties.position FETCH FIRST 20 ROWS ONLY`, Limit: 20},
+		},
+	}
+	def.Safety.Idempotency = Idempotency{Scope: "target", Target: "journal", SkipIfOutputUnchanged: true}
+	def.Safety.Debounce = &Debounce{Duration: "30s", CoalesceBy: "journal"}
+	def.Output.Actions[0] = Action{UpdateNode: &UpdateNodeAction{Target: "journal", Set: map[string]string{"payload.summary": "$result.text"}}}
+	if err := ValidateDefinition(def); err != nil {
+		t.Fatalf("ValidateDefinition() error = %v", err)
+	}
+}
+
+func TestValidateDefinitionRejectsUnboundedContextQuery(t *testing.T) {
+	def := baseDefinition()
+	def.Input = Input{Target: "changed", Mode: InputModeGQLTemplate, Template: "{{#each entries}}{{entry.payload.text}}{{/each}}", Context: map[string]ContextQuery{"entries": {GQL: "MATCH (changed)-[:HAS_ENTRY]->(entry:Page) RETURN entry", Limit: 20}}}
+	assertValidationError(t, def, "must be bounded")
+}
+
+func TestValidateDefinitionRejectsUnanchoredContextQueryWithAliasSubstring(t *testing.T) {
+	def := baseDefinition()
+	def.Input = Input{Target: "journal", Mode: InputModeGQLTemplate, Template: "{{#each entries}}{{n.payload.text}}{{/each}}", Context: map[string]ContextQuery{"entries": {GQL: `MATCH (n:Page {kind: "journal"}) RETURN n FETCH FIRST 20 ROWS ONLY`, Limit: 20}}}
+	assertValidationError(t, def, "must reference changed or the input target")
+}
+
+func TestValidateDefinitionRejectsUnlabeledContextPattern(t *testing.T) {
+	def := baseDefinition()
+	def.Input = Input{Target: "changed", Mode: InputModeGQLTemplate, Template: "{{#each entries}}{{entry.payload.text}}{{/each}}", Context: map[string]ContextQuery{"entries": {GQL: "MATCH (changed)-->(entry:Page) RETURN entry FETCH FIRST 20 ROWS ONLY", Limit: 20}}}
+	assertValidationError(t, def, "relationship patterns must include a label")
+}
+
 func TestValidateDefinitionAcceptsJSONOutputAndGraphActions(t *testing.T) {
 	def := baseDefinition()
 	def.Output = Output{

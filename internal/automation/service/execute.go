@@ -13,6 +13,7 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	autooutput "github.com/myceldb/mycel/internal/automation/output"
 	"github.com/myceldb/mycel/internal/automation/render"
+	graph "github.com/myceldb/mycel/internal/graph/model"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
@@ -65,14 +66,41 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		run.CompletedAt = m.now()
 		return run, nil
 	}
-	rendered, err := render.Render(def.Input, render.Context{Changed: node, Old: inv.OldNode, Aliases: condition.Aliases})
+	run.TargetAlias = firstNonEmptyString(strings.TrimSpace(def.Input.Target), "changed")
+	run.TargetNodeID, err = requireNodeAliasID(run.TargetAlias, condition.Aliases, node)
+	if err != nil {
+		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		return run, err
+	}
+	idempotencyTargetID := run.TargetNodeID
+	if strings.TrimSpace(def.Safety.Idempotency.Scope) == "target" {
+		idempotencyAlias := firstNonEmptyString(def.Safety.Idempotency.Target, run.TargetAlias)
+		idempotencyTargetID, err = requireNodeAliasID(idempotencyAlias, condition.Aliases, node)
+		if err != nil {
+			_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+			return run, err
+		}
+		run.IdempotencyTargetNodeID = idempotencyTargetID
+	}
+	if err := preflightActionTargets(def, condition.Aliases, node); err != nil {
+		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		return run, err
+	}
+	inputContext, err := m.evaluateInputContext(ctx, tx, def, condition.Aliases)
+	if err != nil {
+		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		run.Context = inputContext.Summaries
+		return run, err
+	}
+	run.Context = inputContext.Summaries
+	rendered, err := render.Render(def.Input, render.Context{Changed: node, Old: inv.OldNode, Aliases: condition.Aliases, Collections: inputContext.Collections})
 	if err != nil {
 		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
 		return run, err
 	}
 	run.RenderedInputHash = rendered.Hash
 	if def.Safety.Idempotency.SkipIfOutputUnchanged {
-		duplicate, err := m.hasSuccessfulInputHash(ctx, inv, rendered.Hash)
+		duplicate, err := m.hasSuccessfulInputHash(ctx, inv, rendered.Hash, idempotencyElementID(def, run, inv, idempotencyTargetID))
 		if err != nil {
 			_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
 			return run, err
@@ -96,7 +124,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		return run, err
 	}
 	run.ActionFingerprint = actionFingerprint(def, parsed)
-	summary, err := (actions.Engine{Graphs: m.graphs}).Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, Changed: node, Result: parsed})
+	summary, err := (actions.Engine{Graphs: m.graphs}).Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, Changed: node, Aliases: condition.Aliases, Result: parsed})
 	if err != nil {
 		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
 		return run, err
@@ -124,6 +152,41 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 }
 
 func newRunID() string { return uuid.NewString() }
+
+func targetNodeID(alias string, aliases map[string]any, changed graph.Node) string {
+	id, _ := requireNodeAliasID(alias, aliases, changed)
+	return id
+}
+
+func requireNodeAliasID(alias string, aliases map[string]any, changed graph.Node) (string, error) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" || alias == "changed" {
+		return changed.ID.String(), nil
+	}
+	if node, ok := aliasGraphNode(aliases[alias]); ok {
+		return node.ID.String(), nil
+	}
+	return "", fmt.Errorf("automation target alias %q is not a node", alias)
+}
+
+func preflightActionTargets(def automation.Definition, aliases map[string]any, changed graph.Node) error {
+	for i, action := range def.Output.Actions {
+		if action.UpdateNode == nil {
+			continue
+		}
+		if _, err := requireNodeAliasID(action.UpdateNode.Target, aliases, changed); err != nil {
+			return fmt.Errorf("automation output.actions[%d].update_node.target: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func idempotencyElementID(def automation.Definition, run automation.Run, inv automation.Invocation, targetID string) string {
+	if strings.TrimSpace(def.Safety.Idempotency.Scope) == "target" {
+		return firstNonEmptyString(targetID, run.IdempotencyTargetNodeID, run.TargetNodeID, inv.ChangedElementID)
+	}
+	return inv.ChangedElementID
+}
 
 func (m *AutomationManager) generateWithInference(ctx context.Context, def automation.Definition, inv automation.Invocation, rendered string, run *automation.Run) (string, error) {
 	if m.inference == nil {
@@ -161,7 +224,7 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 	run.ActorPrincipalID = actor
 	run.OnBehalfOfPrincipalID = onBehalf
 	run.AutomationOwnerPrincipalID = firstNonEmptyString(inv.AutomationOwnerPrincipalID, def.OwnerPrincipalID)
-	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: inv.ChangedElementID, Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: map[string]any{"automation_id": def.ID, "automation_version": def.Version, "automation_run_id": run.ID, "invocation_id": inv.ID, "automation_owner_principal_id": run.AutomationOwnerPrincipalID}}, Prompt: def.Prompt, Input: rendered, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: map[string]any{"invocation_id": inv.ID, "automation_version": def.Version, "automation_owner_principal_id": run.AutomationOwnerPrincipalID}})
+	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: map[string]any{"automation_id": def.ID, "automation_version": def.Version, "automation_run_id": run.ID, "invocation_id": inv.ID, "automation_owner_principal_id": run.AutomationOwnerPrincipalID, "target_alias": run.TargetAlias, "target_node_id": run.TargetNodeID}}, Prompt: def.Prompt, Input: rendered, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: map[string]any{"invocation_id": inv.ID, "automation_version": def.Version, "automation_owner_principal_id": run.AutomationOwnerPrincipalID, "target_alias": run.TargetAlias, "target_node_id": run.TargetNodeID}})
 	populateRunFromInference(run, ref, resp)
 	if err != nil {
 		if errors.Is(err, inferenceservice.ErrDenied) && strings.TrimSpace(resp.Decision.Reason) != "" {

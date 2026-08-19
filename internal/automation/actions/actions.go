@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/output"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
 
@@ -18,6 +20,7 @@ type Context struct {
 	Definition automation.Definition
 	RunID      string
 	Changed    graph.Node
+	Aliases    map[string]any
 	Result     output.Result
 }
 
@@ -31,6 +34,11 @@ func (e Engine) Apply(ctx context.Context, tx sessionservice.GraphTransaction, i
 		return Summary{}, fmt.Errorf("graph manager is required")
 	}
 	refs := map[string]string{"changed": in.Changed.ID.String()}
+	for name, value := range in.Aliases {
+		if id, ok := aliasNodeID(value); ok {
+			refs[name] = id
+		}
+	}
 	summary := Summary{}
 	for _, action := range in.Definition.Output.Actions {
 		s, err := e.applyAction(ctx, tx, in, refs, action)
@@ -59,10 +67,10 @@ func (e Engine) applyAction(ctx context.Context, tx sessionservice.GraphTransact
 }
 
 func (e Engine) updateNode(ctx context.Context, tx sessionservice.GraphTransaction, in Context, action automation.UpdateNodeAction) (Summary, error) {
-	if action.Target != "changed" {
-		return Summary{}, fmt.Errorf("update_node target must be changed")
+	node, err := e.resolveUpdateTarget(ctx, tx, in, action.Target)
+	if err != nil {
+		return Summary{}, err
 	}
-	node := in.Changed
 	changed := false
 	for path, expr := range action.Set {
 		value, err := output.Resolve(in.Result, expr, nil)
@@ -79,11 +87,59 @@ func (e Engine) updateNode(ctx context.Context, tx sessionservice.GraphTransacti
 		return Summary{Changed: false}, nil
 	}
 	tagAutomation(&node, in)
-	_, err := e.Graphs.UpdateNode(ctx, tx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
+	_, err = e.Graphs.UpdateNode(ctx, tx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
 	if err != nil {
 		return Summary{}, err
 	}
 	return Summary{Mutations: 1, Changed: true}, nil
+}
+
+func (e Engine) resolveUpdateTarget(ctx context.Context, tx sessionservice.GraphTransaction, in Context, target string) (graph.Node, error) {
+	target = strings.TrimSpace(target)
+	if target == "" || target == "changed" {
+		return in.Changed, nil
+	}
+	id, ok := aliasNodeID(in.Aliases[target])
+	if !ok {
+		return graph.Node{}, fmt.Errorf("update_node target alias %q is not a node", target)
+	}
+	node, err := e.Graphs.GetNode(ctx, tx, id)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	return node, nil
+}
+
+func aliasNodeID(value any) (string, bool) {
+	switch v := value.(type) {
+	case graph.Node:
+		return v.ID.String(), v.ID != uuid.Nil
+	case *graph.Node:
+		if v == nil {
+			return "", false
+		}
+		return v.ID.String(), v.ID != uuid.Nil
+	case execmodel.Node:
+		if _, err := uuid.Parse(v.ID); err != nil {
+			return "", false
+		}
+		return v.ID, true
+	case *execmodel.Node:
+		if v == nil {
+			return "", false
+		}
+		if _, err := uuid.Parse(v.ID); err != nil {
+			return "", false
+		}
+		return v.ID, true
+	case string:
+		if _, err := uuid.Parse(strings.TrimSpace(v)); err != nil {
+			return "", false
+		}
+		return strings.TrimSpace(v), true
+	default:
+		return "", false
+	}
 }
 
 func (e Engine) createNode(ctx context.Context, tx sessionservice.GraphTransaction, in Context, refs map[string]string, action automation.CreateNodeAction) (Summary, error) {

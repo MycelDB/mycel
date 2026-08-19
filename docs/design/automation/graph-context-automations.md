@@ -2,15 +2,15 @@
 
 ## Status
 
-Design proposal. This document describes proposed changes to graph automations so
-an automation can summarize or otherwise derive data from a related graph
-subtree, not only from the single node that triggered the run.
+Initial implementation landed. This document describes graph-context automation
+behavior so an automation can summarize or otherwise derive data from a related
+graph subtree, not only from the single node that triggered the run.
 
 The motivating example is a daily journal:
 
 ```text
-(:Journal {date: "2026-08-19"})-[:contains {order: 1}]->(:JournalEntry)
-(:Journal {date: "2026-08-19"})-[:contains {order: 2}]->(:JournalEntry)
+(:Journal {date: "2026-08-19"})-[:HAS_ENTRY {position: 1}]->(:JournalEntry)
+(:Journal {date: "2026-08-19"})-[:HAS_ENTRY {position: 2}]->(:JournalEntry)
 ```
 
 When a `JournalEntry` changes, mycel should summarize all entries for the parent
@@ -87,7 +87,7 @@ additional aliases. Those aliases become available to later phases.
 Example parent selection:
 
 ```gql
-MATCH (journal:Journal)-[:contains]->(changed:JournalEntry)
+MATCH (journal:Journal)-[:HAS_ENTRY]->(changed:JournalEntry)
 RETURN journal, changed
 ```
 
@@ -95,8 +95,8 @@ Semantics:
 
 - zero matching rows: skip the invocation with a condition-false status;
 - one matching row: proceed and bind returned aliases;
-- multiple matching rows: either reject or require explicit fan-out/coalescing
-  policy. The default should be fail-closed to avoid ambiguous writes.
+- multiple matching rows: fail closed with an actionable error; explicit fan-out
+  remains future work.
 
 ### Target aliases
 
@@ -115,7 +115,7 @@ must fail before mutation.
 Add an input context query phase for cases where the model input is not only the
 changed element.
 
-Conceptual shape:
+Implemented shape:
 
 ```json
 "input": {
@@ -123,7 +123,8 @@ Conceptual shape:
   "mode": "gql_template",
   "context": {
     "entries": {
-      "gql": "MATCH (journal:Journal)-[r:contains]->(entry:JournalEntry) RETURN entry, r ORDER BY r.order"
+      "gql": "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry, r ORDER BY r.properties.position FETCH FIRST 200 ROWS ONLY",
+      "limit": 200
     }
   },
   "template": "..."
@@ -132,10 +133,12 @@ Conceptual shape:
 
 The context query runs after condition aliases are bound. It may reference those
 aliases, especially the selected `journal`. The query must be read-only and
-bounded by either query syntax, an input-level limit, or engine policy.
+bounded in GQL with `FETCH FIRST`; an input-level `limit` can further cap
+accepted rows.
 
 For the journal summary use case, the context query collects all entries that
-belong to the selected journal, ordered by the `contains.order` edge property.
+belong to the selected journal, ordered by a relationship property such as
+`HAS_ENTRY.position`.
 
 ### Multi-row rendering
 
@@ -162,9 +165,9 @@ Entries:
 {{/each}}
 ```
 
-The rendered input hash should be computed from the final rendered text and the
-resolved context identity/revision metadata, so the run can be audited and
-idempotency can be evaluated consistently.
+The rendered input hash is computed from the final rendered text. Context query
+row counts and target IDs are persisted as run diagnostics so idempotency can be
+evaluated consistently without storing provider secrets.
 
 ### Actions against context aliases
 
@@ -210,7 +213,7 @@ Conceptual shape:
     "inputHashFields": [
       "journal.properties.date",
       "entries[*].entry.payload.text",
-      "entries[*].r.properties.order"
+      "entries[*].r.properties.position"
     ],
     "skipIfOutputUnchanged": true
   }
@@ -226,12 +229,14 @@ the same journal context without changing the rendered input.
 Aggregate automations need a way to avoid one LLM call per child edit. The
 engine should support debouncing/coalescing by selected target.
 
-Conceptual shape:
+Implemented shape:
 
 ```json
-"schedule": {
-  "debounce": "30s",
-  "coalesceBy": "journal"
+"safety": {
+  "debounce": {
+    "duration": "30s",
+    "coalesceBy": "journal"
+  }
 }
 ```
 
@@ -258,21 +263,22 @@ Conceptual future automation definition:
     "labels": ["JournalEntry"]
   },
   "condition": {
-    "gql": "MATCH (journal:Journal)-[:contains]->(changed:JournalEntry) RETURN journal, changed"
+    "gql": "MATCH (journal:Journal)-[:HAS_ENTRY]->(changed:JournalEntry) RETURN journal, changed"
   },
   "input": {
     "target": "journal",
     "mode": "gql_template",
     "context": {
       "entries": {
-        "gql": "MATCH (journal:Journal)-[r:contains]->(entry:JournalEntry) RETURN entry, r ORDER BY r.order FETCH FIRST 200 ROWS ONLY"
+        "gql": "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry, r ORDER BY r.properties.position FETCH FIRST 200 ROWS ONLY",
+        "limit": 200
       }
     },
     "template": "Summarize this day.\n\n{{#each entries}}\n- {{ entry.payload.text }}\n{{/each}}"
   },
   "inference": {
     "operation": "chat",
-    "profile": "summarize-page",
+    "profile": "summarize-journal",
     "parameters": {
       "responseFormat": "json",
       "maxOutputTokens": 512
@@ -307,7 +313,7 @@ Conceptual future automation definition:
       "inputHashFields": [
         "journal.properties.date",
         "entries[*].entry.payload.text",
-        "entries[*].r.properties.order"
+        "entries[*].r.properties.position"
       ],
       "skipIfOutputUnchanged": true
     },
@@ -319,8 +325,8 @@ Conceptual future automation definition:
 }
 ```
 
-This example is intentionally conceptual. Exact field names should be finalized
-with the public API and validation model before implementation.
+A complete disabled example lives in
+`examples/automations/summarize_daily_journal.json`.
 
 ## Execution semantics
 
@@ -386,20 +392,18 @@ versions.
 - **Auditability:** rendered input hashes, target aliases, context query IDs, and
   selected graph revisions should be persisted without leaking provider secrets.
 
-## Open questions
+## Resolved decisions and remaining limitations
 
-1. Should context query results be stored in run records, or only hashes and
-   diagnostics?
-2. Should multi-row condition results imply fan-out automatically, or require an
-   explicit fan-out mode?
-3. Should debounce live under `safety`, `schedule`, or a top-level execution
-   policy section?
-4. How should context rendering handle truncation: fail closed, truncate with a
-   marker, or summarize in chunks?
-5. Should aggregate idempotency be based on rendered text only, or on explicit
-   field paths plus graph revision metadata?
-6. Should action target aliases support edges in the first context automation
-   tranche, or only nodes?
+- Context query collections live under `input.context`.
+- The renderer mode is `gql_template`.
+- Debounce lives under `safety.debounce` for the initial implementation.
+- Aggregate idempotency currently uses the final rendered input hash and can be
+  scoped to the selected target node.
+- `update_node.target` supports node aliases. Edge action targets remain future
+  work.
+- Run records store diagnostics such as target alias/ID, context row counts, and
+  coalesced invocation IDs; full context rows are not persisted.
+- Multiple condition rows fail closed; fan-out remains future work.
 
 ## Suggested implementation tranches
 

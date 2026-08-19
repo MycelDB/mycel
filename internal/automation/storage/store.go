@@ -24,7 +24,7 @@ type Store interface {
 	PutRun(ctx context.Context, run automation.Run) error
 	GetRun(ctx context.Context, domainID graph.DomainID, runID string) (automation.Run, error)
 	PutSuccessfulInputIndex(ctx context.Context, record SuccessfulInputIndex) error
-	GetSuccessfulInputIndex(ctx context.Context, domainID graph.DomainID, automationID string, version int, changedElementID string, inputHash string) (SuccessfulInputIndex, error)
+	GetSuccessfulInputIndex(ctx context.Context, domainID graph.DomainID, automationID string, version int, elementID string, inputHash string) (SuccessfulInputIndex, error)
 	PutWorkflowInstance(ctx context.Context, instance automation.WorkflowInstance) error
 	GetWorkflowInstance(ctx context.Context, domainID graph.DomainID, id string) (automation.WorkflowInstance, error)
 	ListWorkflowInstances(ctx context.Context, domainID graph.DomainID, status string, limit int) ([]automation.WorkflowInstance, error)
@@ -51,6 +51,7 @@ type SuccessfulInputIndex struct {
 	AutomationID     string         `json:"automation_id"`
 	Version          int            `json:"version"`
 	ChangedElementID string         `json:"changed_element_id"`
+	TargetElementID  string         `json:"target_element_id,omitempty"`
 	InputHash        string         `json:"input_hash"`
 	InvocationID     string         `json:"invocation_id"`
 	RunID            string         `json:"run_id"`
