@@ -602,8 +602,8 @@ Update:
 - [Cluster system backup design](../../design/backup-restore/cluster-system-backup.md)
 - [Cluster system backup and restore procedure](../../operations/procedures/cluster-system-backup-restore.md)
 - [Backup and restore procedures](../../operations/procedures/backup-restore.md)
-- [K3s cluster validation](../../operations/procedures/k3s-cluster-validation.md)
-- [Raft cluster test matrix](../../operations/procedures/raft-cluster-test-matrix.md)
+- [K3s cluster validation](../../system_integration/k3s-cluster-validation.md)
+- [System integration tests](../../system_integration/README.md)
 - CLI docs under `docs/operations/cli/`
 
 Validation:

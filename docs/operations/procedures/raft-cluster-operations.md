@@ -70,7 +70,7 @@ done
 
 ## Pre-release validation gates
 
-For the complete Raft-focused test matrix, including named tests and destructive Compose/K3s validation steps, see `raft-cluster-test-matrix.md`.
+For destructive Compose/K3s validation and raft disruption gates, see [System integration tests](../../system_integration/README.md).
 
 Run the fast Phase A, Phase D, Phase E, Phase F, and Phase G gates during normal development and before review:
 

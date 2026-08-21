@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-compose-cluster test-k3s-cluster test-k3s-system-backup-restore test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
+.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-cluster-raft-sensitive-gate test-compose-cluster test-k3s-cluster test-k3s-raft-disruption-smoke test-k3s-raft-disruption test-k3s-raft-disruption-edges test-k3s-system-backup-restore test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -13,6 +13,8 @@ MYCELD_DATA_DIR = $(HOME)/mycel_data
 MYCELD_GRPC_ADDR = 127.0.0.1:9091
 MYCELD_PID_FILE = $(MYCELD_DATA_DIR)/myceld.pid
 MYCELD_STDOUT_LOG = $(MYCELD_DATA_DIR)/log/myceld.stdout.log
+MYCEL_RAFT_DISRUPT_IMAGE ?= myceldb/mycel:raft-disrupt-local
+MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE ?= myceldb/mycel:system-backup-restore-local
 ANTLR_VERSION ?= 4.13.1
 ANTLR_JAR ?= bin/antlr-$(ANTLR_VERSION)-complete.jar
 ANTLR_DOCKER_IMAGE ?= eclipse-temurin:17-jre
@@ -93,7 +95,7 @@ test-phase-f: generate-proto generate-gql-parser
 
 test-phase-g: generate-proto generate-gql-parser
 	go test ./internal/graph/service ./internal/daemon/api/admin ./internal/clustering/backend ./internal/daemon/server ./internal/cli/cmd -count=1
-	bash -n scripts/validateComposeClusterDataPlane.sh scripts/validateK3sClusterDataPlane.sh scripts/testK3sCluster.sh scripts/testClusterSoak.sh scripts/testComposeUserBackupRestore.sh scripts/testK3sSystemBackupRestore.sh scripts/planGraphRepairWorkflow.sh
+	bash -n scripts/validateComposeClusterDataPlane.sh scripts/validateK3sClusterDataPlane.sh scripts/testK3sCluster.sh scripts/testClusterSoak.sh scripts/testComposeUserBackupRestore.sh scripts/planGraphRepairWorkflow.sh
 	@set -e; tmp="$$(mktemp)"; \
 	printf '%s\n' '{"node_summary":{"only_in_left":1,"only_in_right":0,"differing":0},"edge_summary":{"only_in_left":0,"only_in_right":0,"differing":0},"warnings":["one or both exports are truncated; diff only covers included entities"],"truncated":false}' > "$$tmp"; \
 	scripts/planGraphRepairWorkflow.sh --workflow classify-diff --i-have-snapshots --source-node pinned-good --diff "$$tmp" --authoritative-side left | grep -q incomplete_evidence; \
@@ -104,6 +106,8 @@ test-phase-g: generate-proto generate-gql-parser
 	rm -f "$$tmp" /tmp/mycel-g7-no-snap.out
 
 test-cluster-release-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-compose-cluster test-k3s-cluster test-k3s-system-backup-restore
+
+test-cluster-raft-sensitive-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-k3s-raft-disruption-smoke test-k3s-raft-disruption-edges
 
 test-compose-cluster:
 	cd ../../knot_pkm/knot_pkm_server && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" $(MAKE) compose-reset compose-up
@@ -121,8 +125,21 @@ test-compose-cluster:
 test-k3s-cluster:
 	./scripts/testK3sCluster.sh
 
+test-k3s-raft-disruption-smoke:
+	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
+	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile smoke --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+
+test-k3s-raft-disruption:
+	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
+	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile small --restart-node all --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+
+test-k3s-raft-disruption-edges:
+	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
+	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile small --workload edges --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+
 test-k3s-system-backup-restore:
-	./scripts/testK3sSystemBackupRestore.sh
+	docker build -f Dockerfile -t $(MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE) ..
+	go run ./cmd/mycel-system-backuptest --driver k3s --provisioner k3d --profile backup-smoke --workload edges --image $(MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE) --confirm-destructive
 
 test-compose-user-backup-restore:
 	./scripts/testComposeUserBackupRestore.sh

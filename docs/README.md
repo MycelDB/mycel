@@ -8,6 +8,7 @@ This directory is organized by audience and intent:
 
 - [Design](design/README.md) explains the current system architecture and major subsystems.
 - [Operations](operations/README.md) explains how to run, operate, validate, and recover mycel.
+- [System integration](system_integration/README.md) documents destructive Compose, K3s, backup/restore, soak, and raft disruption tests.
 - [Implementation](implementation/README.md) archives implementation plans by release.
 - [AI prompt templates](ai/README.md) provide optional reusable prompts for contributors.
 - Roadmaps track forward-looking query work: [GQL](roadmap/gql-roadmap.md) and [structured query API](roadmap/api-roadmap.md).
@@ -21,7 +22,7 @@ This directory is organized by audience and intent:
 | Find an admin/operator API contract | [Admin API design](design/admin/README.md) |
 | Run or script the CLI | [CLI operations](operations/cli/README.md) |
 | Operate a raft cluster | [Raft cluster operations](operations/procedures/raft-cluster-operations.md) |
-| Validate release/cluster behavior | [Raft cluster test matrix](operations/procedures/raft-cluster-test-matrix.md) |
+| Validate release/cluster behavior | [System integration tests](system_integration/README.md) |
 | Plan split-brain recovery | [Split-brain recovery](operations/procedures/split-brain-recovery.md) |
 | Review shipped implementation plans | [Implementation archive](implementation/README.md) |
 | Use AI assistance consistently | [AI prompt templates](ai/README.md) |

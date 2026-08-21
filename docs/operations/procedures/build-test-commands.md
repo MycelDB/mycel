@@ -11,7 +11,7 @@ Run these commands from the `mycel/` directory.
 
 ## Tests
 
-For the full Raft-focused test matrix and destructive cluster gate details, see `raft-cluster-test-matrix.md`.
+For destructive cluster gate and system integration details, see [System integration tests](../../system_integration/README.md).
 
 - `make test` — regenerate protobuf stubs, run boundary checks, and run `go test ./...`.
 - `make test-cluster-identity` — run the fast in-process clustering/readiness/CLI regression suite used to guard authoritative Raft metadata behavior.

@@ -25,6 +25,11 @@ func NewClusterCommand(a *app.App) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{Use: "health", Short: "Show aggregate cluster health", RunE: func(cmd *cobra.Command, args []string) error {
 		return runClusterHealth(cmd.Context(), a)
 	}})
+	readinessCmd := &cobra.Command{Use: "readiness", Short: "Check local daemon cluster readiness"}
+	readinessCmd.AddCommand(&cobra.Command{Use: "check", Short: "Exit successfully only when local daemon is client-ready", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterReadinessCheck(cmd.Context(), a)
+	}})
+	cmd.AddCommand(readinessCmd)
 	cmd.AddCommand(&cobra.Command{Use: "raft-groups", Short: "List local Raft group diagnostics", RunE: func(cmd *cobra.Command, args []string) error {
 		return runClusterRaftGroups(cmd.Context(), a)
 	}})
@@ -339,6 +344,46 @@ func clusterReadinessFromProto(readiness *adminv1.ClusterReadiness) clusterReadi
 		return clusterReadinessOutput{}
 	}
 	return clusterReadinessOutput{ClientReady: readiness.GetClientReady(), MetadataApplied: readiness.GetMetadataApplied(), MetadataValidated: readiness.GetMetadataValidated(), PartitionGroupsStarted: readiness.GetPartitionGroupsStarted(), AuthoritativeClusterID: readiness.GetAuthoritativeClusterId(), LocalClusterID: readiness.GetLocalClusterId(), ExpectedMemberCount: readiness.GetExpectedMemberCount(), ReadinessBlockers: append([]string(nil), readiness.GetReadinessBlockers()...)}
+}
+
+func runClusterReadinessCheck(ctx context.Context, a *app.App) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).GetClusterStatus(authCtx, &adminv1.GetClusterStatusRequest{})
+	if err != nil {
+		return fmt.Errorf("get cluster status: %w", err)
+	}
+	readiness := clusterReadinessFromProto(res.GetReadiness())
+	if err := validateClusterReadiness(readiness); err != nil {
+		return err
+	}
+	return a.Print(readiness, "cluster ready\n")
+}
+
+func validateClusterReadiness(readiness clusterReadinessOutput) error {
+	blockers := append([]string(nil), readiness.ReadinessBlockers...)
+	if !readiness.ClientReady {
+		blockers = append(blockers, "client_ready=false")
+	}
+	if !readiness.MetadataApplied {
+		blockers = append(blockers, "metadata_applied=false")
+	}
+	if !readiness.MetadataValidated {
+		blockers = append(blockers, "metadata_validated=false")
+	}
+	if !readiness.PartitionGroupsStarted {
+		blockers = append(blockers, "partition_groups_started=false")
+	}
+	if readiness.AuthoritativeClusterID != "" && readiness.LocalClusterID != "" && readiness.AuthoritativeClusterID != readiness.LocalClusterID {
+		blockers = append(blockers, fmt.Sprintf("cluster_id_mismatch authoritative=%s local=%s", readiness.AuthoritativeClusterID, readiness.LocalClusterID))
+	}
+	if len(blockers) > 0 {
+		return fmt.Errorf("cluster not ready: %s", strings.Join(blockers, "; "))
+	}
+	return nil
 }
 
 func runClusterHealth(ctx context.Context, a *app.App) error {
