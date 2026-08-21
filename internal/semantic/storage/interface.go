@@ -38,17 +38,24 @@ type GlobalManager interface {
 // SpaceManager stores space-owned semantic resource metadata under graphs/<space_id>/semantic/.
 type SpaceManager interface {
 	Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error
-	UpsertSemanticIndex(ctx context.Context, index domainsemantic.SemanticIndex) (domainsemantic.SemanticIndex, error)
-	ListSemanticIndexes(ctx context.Context) ([]domainsemantic.SemanticIndex, error)
-	DeleteSemanticIndex(ctx context.Context, id domainsemantic.SemanticIndexID, purgeDependents bool) error
+	UpsertSemanticRule(ctx context.Context, rule domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error)
+	ListSemanticRules(ctx context.Context) ([]domainsemantic.SemanticGenerationRule, error)
+	DeleteSemanticRule(ctx context.Context, id domainsemantic.SemanticRuleID, purgeDependents bool) error
+	UpsertSemanticIndex(ctx context.Context, index domainsemantic.SemanticIndex) (domainsemantic.SemanticIndex, error) // transitional wrapper until analyzer/search/API are rule-native
+	ListSemanticIndexes(ctx context.Context) ([]domainsemantic.SemanticIndex, error)                                   // transitional wrapper until analyzer/search/API are rule-native
+	DeleteSemanticIndex(ctx context.Context, id domainsemantic.SemanticIndexID, purgeDependents bool) error            // transitional wrapper until analyzer/search/API are rule-native
 	UpsertCredentialGrant(ctx context.Context, grant domainsemantic.CredentialGrant) (domainsemantic.CredentialGrant, error)
 	ListCredentialGrants(ctx context.Context) ([]domainsemantic.CredentialGrant, error)
 	DeleteCredentialGrant(ctx context.Context, id domainsemantic.CredentialGrantID) error
 	UpsertInferencePolicy(ctx context.Context, policy domainsemantic.InferencePolicy) (domainsemantic.InferencePolicy, error)
 	ListInferencePolicies(ctx context.Context) ([]domainsemantic.InferencePolicy, error)
 	DeleteInferencePolicy(ctx context.Context, id domainsemantic.InferencePolicyID) error
-	UpsertIndexState(ctx context.Context, state domainsemantic.SemanticIndexState) (domainsemantic.SemanticIndexState, error)
-	ListIndexStates(ctx context.Context) ([]domainsemantic.SemanticIndexState, error)
+	UpsertSemanticRuleState(ctx context.Context, state domainsemantic.SemanticRuleState) (domainsemantic.SemanticRuleState, error)
+	ListSemanticRuleStates(ctx context.Context) ([]domainsemantic.SemanticRuleState, error)
+	UpsertSearchIndexState(ctx context.Context, state domainsemantic.SemanticSearchIndexState) (domainsemantic.SemanticSearchIndexState, error)
+	ListSearchIndexStates(ctx context.Context) ([]domainsemantic.SemanticSearchIndexState, error)
+	UpsertIndexState(ctx context.Context, state domainsemantic.SemanticIndexState) (domainsemantic.SemanticIndexState, error) // transitional wrapper until maintenance/API are rule-native
+	ListIndexStates(ctx context.Context) ([]domainsemantic.SemanticIndexState, error)                                         // transitional wrapper until maintenance/API are rule-native
 	UpsertPolicyDecision(ctx context.Context, decision domainsemantic.PolicyDecision) (domainsemantic.PolicyDecision, error)
 	ListPolicyDecisions(ctx context.Context) ([]domainsemantic.PolicyDecision, error)
 }

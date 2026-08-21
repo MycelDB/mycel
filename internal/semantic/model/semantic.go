@@ -21,12 +21,17 @@ type (
 	InferenceCredentialID     = uuid.UUID
 	CredentialGrantID         = uuid.UUID
 	InferencePolicyID         = uuid.UUID
-	SemanticIndexID           = uuid.UUID
+	SemanticRuleID            = uuid.UUID
+	SemanticBindingID         = uuid.UUID
+	SemanticIndexID           = SemanticRuleID // transitional alias removed after rule storage replaces indexes
 	PolicyDecisionID          = uuid.UUID
-	AdvancedEmbeddingRecordID = uuid.UUID
+	SemanticRecordID          = uuid.UUID
+	AdvancedEmbeddingRecordID = SemanticRecordID // transitional alias removed after vector storage is rule-native
 	InferenceUsageEventID     = uuid.UUID
 	GraphDirtyEventID         = uuid.UUID
 	SemanticDirtyWorkItemID   = uuid.UUID
+	IntelligenceProfileID     = uuid.UUID
+	SearchIndexID             = uuid.UUID
 )
 
 // ConnectorType is the static, code-backed adapter/protocol family used to call a model endpoint.
@@ -167,6 +172,131 @@ const (
 	SourceExtractionSubtree SourceExtraction = "subtree"
 )
 
+const (
+	DefaultSemanticTriggerEventChanged = "changed"
+	SemanticPhysicalIndexExact         = "exact"
+)
+
+type SemanticTargetSelectorMode string
+
+const (
+	SemanticTargetSelectorNodeType SemanticTargetSelectorMode = "node_type"
+	SemanticTargetSelectorGQL      SemanticTargetSelectorMode = "gql"
+	SemanticTargetSelectorExplicit SemanticTargetSelectorMode = "explicit_nodes"
+)
+
+type SemanticSourceAssemblyMode string
+
+const (
+	SemanticSourceSelf         SemanticSourceAssemblyMode = "self"
+	SemanticSourceSubtree      SemanticSourceAssemblyMode = "subtree"
+	SemanticSourceContextQuery SemanticSourceAssemblyMode = "context_query"
+)
+
+// SemanticGenerationRule is the rule-native semantic generation definition.
+// The rule is user-authored, while concrete endpoint/model/capability choices
+// are resolved later through Intelligence Access and stored only as provenance
+// on generated vector records and usage events.
+type SemanticGenerationRule struct {
+	ID                   SemanticRuleID               `json:"id"`
+	SpaceID              domainspace.SpaceID          `json:"space_id"`
+	DomainID             graph.DomainID               `json:"domain_id"`
+	Key                  string                       `json:"key"`
+	DisplayName          string                       `json:"display_name"`
+	Description          string                       `json:"description,omitempty"`
+	Enabled              bool                         `json:"enabled"`
+	Trigger              SemanticTriggerPolicy        `json:"trigger"`
+	Selector             SemanticTargetSelector       `json:"selector"`
+	Source               SemanticSourceAssemblyPolicy `json:"source"`
+	Embeddings           []SemanticEmbeddingBinding   `json:"embeddings,omitempty"`
+	Maintenance          SemanticMaintenancePolicy    `json:"maintenance"`
+	Storage              SemanticStoragePolicy        `json:"storage"`
+	OwnerPrincipalID     identity.PrincipalID         `json:"owner_principal_id,omitempty"`
+	CreatedByPrincipalID identity.PrincipalID         `json:"created_by_principal_id,omitempty"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	UpdatedAt            time.Time                    `json:"updated_at"`
+	Metadata             map[string]any               `json:"metadata,omitempty"`
+}
+
+type SemanticTriggerPolicy struct {
+	Events   []string      `json:"events,omitempty"`
+	Labels   []string      `json:"labels,omitempty"`
+	Debounce time.Duration `json:"debounce,omitempty"`
+}
+
+type SemanticTargetSelector struct {
+	Mode        SemanticTargetSelectorMode `json:"mode"`
+	Labels      []string                   `json:"labels,omitempty"`
+	GQL         string                     `json:"gql,omitempty"`
+	TargetAlias string                     `json:"target_alias,omitempty"`
+	MaxResults  int                        `json:"max_results,omitempty"`
+	NodeIDs     []graph.NodeID             `json:"node_ids,omitempty"`
+}
+
+type SemanticSourceAssemblyPolicy struct {
+	Mode              SemanticSourceAssemblyMode `json:"mode"`
+	IncludeProperties []string                   `json:"include_properties,omitempty"`
+	ExcludeProperties []string                   `json:"exclude_properties,omitempty"`
+	MaxDepth          *int                       `json:"max_depth,omitempty"`
+	MinimumTextLength int                        `json:"minimum_text_length,omitempty"`
+	ContextGQL        string                     `json:"context_gql,omitempty"`
+}
+
+type SemanticEmbeddingBinding struct {
+	Key                   string                `json:"key"`
+	Purpose               string                `json:"purpose,omitempty"`
+	IntelligenceProfile   string                `json:"intelligence_profile,omitempty"`
+	IntelligenceProfileID IntelligenceProfileID `json:"intelligence_profile_id,omitempty"`
+	VectorStore           string                `json:"vector_store,omitempty"`
+	VectorStoreID         VectorStoreID         `json:"vector_store_id,omitempty"`
+	Enabled               bool                  `json:"enabled"`
+	Metadata              map[string]any        `json:"metadata,omitempty"`
+}
+
+type SemanticMaintenancePolicy struct {
+	DirtyCooldown     time.Duration `json:"dirty_cooldown,omitempty"`
+	MaxBatchSize      int           `json:"max_batch_size,omitempty"`
+	WorkerConcurrency int           `json:"worker_concurrency,omitempty"`
+}
+
+type SemanticStoragePolicy struct {
+	Searchable    bool   `json:"searchable"`
+	PhysicalIndex string `json:"physical_index,omitempty"`
+}
+
+func NormalizeSemanticRuleKey(key string) string {
+	return strings.ToLower(strings.TrimSpace(key))
+}
+
+func NormalizeSemanticTriggerPolicy(policy SemanticTriggerPolicy) SemanticTriggerPolicy {
+	if len(policy.Events) == 0 {
+		policy.Events = []string{DefaultSemanticTriggerEventChanged}
+	}
+	for i, event := range policy.Events {
+		policy.Events[i] = strings.ToLower(strings.TrimSpace(event))
+	}
+	for i, label := range policy.Labels {
+		policy.Labels[i] = strings.TrimSpace(label)
+	}
+	return policy
+}
+
+func NormalizeSemanticEmbeddingBinding(binding SemanticEmbeddingBinding) SemanticEmbeddingBinding {
+	binding.Key = strings.ToLower(strings.TrimSpace(binding.Key))
+	binding.Purpose = strings.TrimSpace(binding.Purpose)
+	binding.IntelligenceProfile = strings.TrimSpace(binding.IntelligenceProfile)
+	binding.VectorStore = strings.TrimSpace(binding.VectorStore)
+	return binding
+}
+
+func DefaultSemanticMaintenancePolicy() SemanticMaintenancePolicy {
+	return SemanticMaintenancePolicy{}
+}
+
+func DefaultSemanticStoragePolicy() SemanticStoragePolicy {
+	return SemanticStoragePolicy{Searchable: true, PhysicalIndex: SemanticPhysicalIndexExact}
+}
+
 // InferencePackage records an applied inference definition package.
 type InferencePackage struct {
 	ID               InferencePackageID `json:"id"`
@@ -276,11 +406,13 @@ type InferenceCredential struct {
 
 // ProcessingScope describes the graph/content scope of a grant or policy.
 type ProcessingScope struct {
-	SpaceID            domainspace.SpaceID `json:"space_id,omitempty"`
-	DomainID           graph.DomainID      `json:"domain_id,omitempty"`
-	SemanticIndexID    SemanticIndexID     `json:"semantic_index_id,omitempty"`
-	NodeID             graph.NodeID        `json:"node_id,omitempty"`
-	IncludeDescendants bool                `json:"include_descendants,omitempty"`
+	SpaceID             domainspace.SpaceID `json:"space_id,omitempty"`
+	DomainID            graph.DomainID      `json:"domain_id,omitempty"`
+	SemanticRuleID      SemanticRuleID      `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey string              `json:"embedding_binding_key,omitempty"`
+	SemanticIndexID     SemanticIndexID     `json:"semantic_index_id,omitempty"` // transitional alias for existing storage/runtime
+	NodeID              graph.NodeID        `json:"node_id,omitempty"`
+	IncludeDescendants  bool                `json:"include_descendants,omitempty"`
 }
 
 // CredentialGrant is a space-owned authorization to use one credential in one processing scope.
@@ -346,17 +478,51 @@ type SemanticIndex struct {
 	UpdatedAt                 time.Time                 `json:"updated_at"`
 }
 
+// SemanticVectorRecord is the rule-native vector record with binding and
+// resolved Intelligence Access/provider provenance.
+type SemanticVectorRecord struct {
+	ID                        SemanticRecordID          `json:"id"`
+	SpaceID                   domainspace.SpaceID       `json:"space_id"`
+	DomainID                  graph.DomainID            `json:"domain_id"`
+	SemanticRuleID            SemanticRuleID            `json:"semantic_rule_id"`
+	EmbeddingBindingKey       string                    `json:"embedding_binding_key"`
+	TargetNodeID              graph.NodeID              `json:"target_node_id"`
+	SourceHash                string                    `json:"source_hash"`
+	IntelligenceProfileID     IntelligenceProfileID     `json:"intelligence_profile_id,omitempty"`
+	ModelEndpointID           ModelEndpointID           `json:"model_endpoint_id,omitempty"`
+	ModelID                   InferenceModelID          `json:"model_id,omitempty"`
+	ModelEndpointCapabilityID ModelEndpointCapabilityID `json:"model_endpoint_capability_id,omitempty"`
+	CredentialID              InferenceCredentialID     `json:"credential_id,omitempty"`
+	CredentialGrantID         CredentialGrantID         `json:"credential_grant_id,omitempty"`
+	PolicyDecisionID          PolicyDecisionID          `json:"policy_decision_id,omitempty"`
+	VectorStoreID             VectorStoreID             `json:"vector_store_id"`
+	VectorSpaceKey            string                    `json:"vector_space_key,omitempty"`
+	SourceMode                string                    `json:"source_mode,omitempty"`
+	Dimensions                int                       `json:"dimensions"`
+	Vector                    []float64                 `json:"-"`
+	Tombstone                 bool                      `json:"tombstone,omitempty"`
+	DeleteTargetRecordID      SemanticRecordID          `json:"delete_target_record_id,omitempty"`
+	DeleteReason              string                    `json:"delete_reason,omitempty"`
+	CreatedAt                 time.Time                 `json:"created_at"`
+}
+
 // AdvancedEmbeddingRecord extends embedding provenance for semantic-index records.
+// It remains as a transitional runtime/storage shape until vector storage is
+// rewritten around SemanticVectorRecord in SGR2/SGR6.
 type AdvancedEmbeddingRecord struct {
 	ID                        AdvancedEmbeddingRecordID `json:"id"`
 	SpaceID                   domainspace.SpaceID       `json:"space_id"`
 	DomainID                  graph.DomainID            `json:"domain_id"`
-	SemanticIndexID           SemanticIndexID           `json:"semantic_index_id"`
+	SemanticRuleID            SemanticRuleID            `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey       string                    `json:"embedding_binding_key,omitempty"`
+	SemanticIndexID           SemanticIndexID           `json:"semantic_index_id,omitempty"` // transitional alias for existing vector storage
+	TargetNodeID              graph.NodeID              `json:"target_node_id,omitempty"`
 	NodeID                    graph.NodeID              `json:"node_id"`
 	SourceHash                string                    `json:"source_hash"`
 	ModelEndpointID           ModelEndpointID           `json:"model_endpoint_id"`
 	ModelID                   InferenceModelID          `json:"model_id"`
 	ModelEndpointCapabilityID ModelEndpointCapabilityID `json:"model_endpoint_capability_id,omitempty"`
+	IntelligenceProfileID     IntelligenceProfileID     `json:"intelligence_profile_id,omitempty"`
 	CredentialID              InferenceCredentialID     `json:"credential_id,omitempty"`
 	CredentialGrantID         CredentialGrantID         `json:"credential_grant_id,omitempty"`
 	PolicyDecisionID          PolicyDecisionID          `json:"policy_decision_id,omitempty"`
@@ -416,35 +582,57 @@ const (
 	SemanticDirtyWorkStatusCancelled SemanticDirtyWorkStatus = "cancelled"
 )
 
-// SemanticDirtyWorkItem is coalesced semantic maintenance work for one index/source root.
+// SemanticDirtyWorkItem is coalesced semantic maintenance work for one rule,
+// embedding binding, and target node. SemanticIndexID remains only as a
+// transitional alias for runtime code that is replaced in later SGR tranches.
 type SemanticDirtyWorkItem struct {
-	ID                 SemanticDirtyWorkItemID `json:"id"`
-	SemanticIndexID    SemanticIndexID         `json:"semantic_index_id"`
-	SpaceID            domainspace.SpaceID     `json:"space_id"`
-	DomainID           graph.DomainID          `json:"domain_id,omitempty"`
-	TargetNodeID       graph.NodeID            `json:"target_node_id"`
-	SourceNodeID       graph.NodeID            `json:"source_node_id,omitempty"`
-	SourceTxnIDs       []uuid.UUID             `json:"source_txn_ids,omitempty"`
-	FirstGraphRevision uint64                  `json:"first_graph_revision,omitempty"`
-	LastGraphRevision  uint64                  `json:"last_graph_revision,omitempty"`
-	Reason             string                  `json:"reason"`
-	Action             SemanticDirtyWorkAction `json:"action"`
-	Status             SemanticDirtyWorkStatus `json:"status"`
-	EarliestRunAt      *time.Time              `json:"earliest_run_at,omitempty"`
-	Generation         int                     `json:"generation,omitempty"`
-	Attempts           int                     `json:"attempts,omitempty"`
-	ClaimedBy          string                  `json:"claimed_by,omitempty"`
-	ClaimedUntil       *time.Time              `json:"claimed_until,omitempty"`
-	LastError          string                  `json:"last_error,omitempty"`
-	LastErrorCategory  string                  `json:"last_error_category,omitempty"`
-	CompletedAt        *time.Time              `json:"completed_at,omitempty"`
-	FailedAt           *time.Time              `json:"failed_at,omitempty"`
-	CreatedAt          time.Time               `json:"created_at"`
-	UpdatedAt          time.Time               `json:"updated_at"`
+	ID                  SemanticDirtyWorkItemID `json:"id"`
+	SemanticRuleID      SemanticRuleID          `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey string                  `json:"embedding_binding_key,omitempty"`
+	SemanticIndexID     SemanticIndexID         `json:"semantic_index_id,omitempty"`
+	SpaceID             domainspace.SpaceID     `json:"space_id"`
+	DomainID            graph.DomainID          `json:"domain_id,omitempty"`
+	TargetNodeID        graph.NodeID            `json:"target_node_id"`
+	SourceNodeID        graph.NodeID            `json:"source_node_id,omitempty"`
+	SourceTxnIDs        []uuid.UUID             `json:"source_txn_ids,omitempty"`
+	FirstGraphRevision  uint64                  `json:"first_graph_revision,omitempty"`
+	LastGraphRevision   uint64                  `json:"last_graph_revision,omitempty"`
+	Reason              string                  `json:"reason"`
+	Action              SemanticDirtyWorkAction `json:"action"`
+	Status              SemanticDirtyWorkStatus `json:"status"`
+	EarliestRunAt       *time.Time              `json:"earliest_run_at,omitempty"`
+	Generation          int                     `json:"generation,omitempty"`
+	Attempts            int                     `json:"attempts,omitempty"`
+	ClaimedBy           string                  `json:"claimed_by,omitempty"`
+	ClaimedUntil        *time.Time              `json:"claimed_until,omitempty"`
+	LastError           string                  `json:"last_error,omitempty"`
+	LastErrorCategory   string                  `json:"last_error_category,omitempty"`
+	CompletedAt         *time.Time              `json:"completed_at,omitempty"`
+	FailedAt            *time.Time              `json:"failed_at,omitempty"`
+	CreatedAt           time.Time               `json:"created_at"`
+	UpdatedAt           time.Time               `json:"updated_at"`
+}
+
+type SemanticDirtyWorkKey struct {
+	SemanticRuleID      SemanticRuleID `json:"semantic_rule_id"`
+	EmbeddingBindingKey string         `json:"embedding_binding_key"`
+	TargetNodeID        graph.NodeID   `json:"target_node_id"`
+}
+
+func (item SemanticDirtyWorkItem) RuleBindingTargetKey() SemanticDirtyWorkKey {
+	return SemanticDirtyWorkKey{SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, TargetNodeID: item.TargetNodeID}
+}
+
+func (item SemanticDirtyWorkItem) EffectiveSemanticRuleID() SemanticRuleID {
+	if item.SemanticRuleID != uuid.Nil {
+		return item.SemanticRuleID
+	}
+	return SemanticRuleID(item.SemanticIndexID)
 }
 
 type SemanticIndexState struct {
-	SemanticIndexID                  SemanticIndexID `json:"semantic_index_id"`
+	SemanticRuleID                   SemanticRuleID  `json:"semantic_rule_id,omitempty"`
+	SemanticIndexID                  SemanticIndexID `json:"semantic_index_id,omitempty"`
 	State                            string          `json:"state"`
 	LastBackfillAt                   *time.Time      `json:"last_backfill_at,omitempty"`
 	LastRefreshAt                    *time.Time      `json:"last_refresh_at,omitempty"`
@@ -457,6 +645,28 @@ type SemanticIndexState struct {
 	GraphDirtyCheckpointRevision     uint64          `json:"graph_dirty_checkpoint_revision,omitempty"`
 	SemanticConfigCheckpoint         string          `json:"semantic_config_checkpoint,omitempty"`
 	UpdatedAt                        time.Time       `json:"updated_at"`
+}
+
+type SemanticRuleState struct {
+	SemanticRuleID SemanticRuleID `json:"semantic_rule_id"`
+	State          string         `json:"state"`
+	LastBackfillAt *time.Time     `json:"last_backfill_at,omitempty"`
+	LastRefreshAt  *time.Time     `json:"last_refresh_at,omitempty"`
+	LastError      string         `json:"last_error,omitempty"`
+	DirtyCount     int            `json:"dirty_count,omitempty"`
+	RecordCount    int            `json:"record_count,omitempty"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+}
+
+type SemanticSearchIndexState struct {
+	ID                  SearchIndexID  `json:"id,omitempty"`
+	SemanticRuleID      SemanticRuleID `json:"semantic_rule_id"`
+	EmbeddingBindingKey string         `json:"embedding_binding_key"`
+	State               string         `json:"state"`
+	LiveRecordCount     int64          `json:"live_record_count,omitempty"`
+	LastRebuildAt       *time.Time     `json:"last_rebuild_at,omitempty"`
+	LastError           string         `json:"last_error,omitempty"`
+	UpdatedAt           time.Time      `json:"updated_at"`
 }
 
 type PolicyDecision struct {
@@ -485,6 +695,8 @@ type InferenceUsageEvent struct {
 	OnBehalfOfPrincipalID     identity.PrincipalID      `json:"on_behalf_of_principal_id,omitempty"`
 	SpaceID                   domainspace.SpaceID       `json:"space_id,omitempty"`
 	DomainID                  graph.DomainID            `json:"domain_id,omitempty"`
+	SemanticRuleID            SemanticRuleID            `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey       string                    `json:"embedding_binding_key,omitempty"`
 	SemanticIndexID           SemanticIndexID           `json:"semantic_index_id,omitempty"`
 	TargetNodeID              graph.NodeID              `json:"target_node_id,omitempty"`
 	SourceNodeIDs             []graph.NodeID            `json:"source_node_ids,omitempty"`

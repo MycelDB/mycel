@@ -28,10 +28,13 @@ const (
 	vectorStoresFileName      = "vector_stores.json"
 	secretsFileName           = "secrets.json"
 	credentialsFileName       = "credentials.json"
+	semanticRulesFileName     = "rules.json"
 	semanticIndexesFileName   = "indexes.json"
 	credentialGrantsFileName  = "credential_grants.json"
 	inferencePoliciesFileName = "inference_policies.json"
 	dirtyQueueFileName        = "dirty_queue.json"
+	ruleStateFileName         = "rule_state.json"
+	searchIndexStateFileName  = "search_index_state.json"
 	indexStateFileName        = "index_state.json"
 	policyDecisionsFileName   = "policy_decisions.json"
 	maintenanceDirName        = "maintenance"
@@ -73,6 +76,10 @@ type credentialsState struct {
 	Credentials []domainsemantic.InferenceCredential `json:"credentials"`
 }
 
+type semanticRulesState struct {
+	Rules []domainsemantic.SemanticGenerationRule `json:"rules"`
+}
+
 type semanticIndexesState struct {
 	Indexes []domainsemantic.SemanticIndex `json:"indexes"`
 }
@@ -98,6 +105,14 @@ type workLogRecord struct {
 	At    time.Time                              `json:"at"`
 	Item  domainsemantic.SemanticDirtyWorkItem   `json:"item,omitempty"`
 	Items []domainsemantic.SemanticDirtyWorkItem `json:"items,omitempty"`
+}
+
+type semanticRuleStatesState struct {
+	States []domainsemantic.SemanticRuleState `json:"states"`
+}
+
+type semanticSearchIndexStatesState struct {
+	States []domainsemantic.SemanticSearchIndexState `json:"states"`
 }
 
 type indexStatesState struct {
@@ -563,19 +578,23 @@ func (m *globalManager) path(name string) string {
 func (m *globalManager) persistLocked(path string, v any) error { return persistJSON(path, v) }
 
 type spaceManager struct {
-	mu              sync.RWMutex
-	location        string
-	spaceID         domainspace.SpaceID
-	indexes         semanticIndexesState
-	grants          credentialGrantsState
-	policies        inferencePoliciesState
-	indexStates     indexStatesState
-	policyDecisions policyDecisionsState
+	mu                sync.RWMutex
+	location          string
+	spaceID           domainspace.SpaceID
+	rules             semanticRulesState
+	indexes           semanticIndexesState
+	grants            credentialGrantsState
+	policies          inferencePoliciesState
+	ruleStates        semanticRuleStatesState
+	searchIndexStates semanticSearchIndexStatesState
+	indexStates       indexStatesState
+	policyDecisions   policyDecisionsState
 }
 
 type dirtyWorkKey struct {
-	semanticIndexID domainsemantic.SemanticIndexID
-	targetNodeID    graphmodel.NodeID
+	semanticRuleID      domainsemantic.SemanticRuleID
+	embeddingBindingKey string
+	targetNodeID        graphmodel.NodeID
 }
 
 type maintenanceManager struct {
@@ -607,6 +626,9 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	if err := os.MkdirAll(location, 0o755); err != nil {
 		return err
 	}
+	if err := loadJSON(m.path(semanticRulesFileName), &m.rules, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
+		return err
+	}
 	if err := loadJSON(m.path(semanticIndexesFileName), &m.indexes, semanticIndexesState{Indexes: []domainsemantic.SemanticIndex{}}); err != nil {
 		return err
 	}
@@ -616,6 +638,12 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	if err := loadJSON(m.path(inferencePoliciesFileName), &m.policies, inferencePoliciesState{Policies: []domainsemantic.InferencePolicy{}}); err != nil {
 		return err
 	}
+	if err := loadJSON(m.path(ruleStateFileName), &m.ruleStates, semanticRuleStatesState{States: []domainsemantic.SemanticRuleState{}}); err != nil {
+		return err
+	}
+	if err := loadJSON(m.path(searchIndexStateFileName), &m.searchIndexStates, semanticSearchIndexStatesState{States: []domainsemantic.SemanticSearchIndexState{}}); err != nil {
+		return err
+	}
 	if err := loadJSON(m.path(indexStateFileName), &m.indexStates, indexStatesState{States: []domainsemantic.SemanticIndexState{}}); err != nil {
 		return err
 	}
@@ -623,6 +651,151 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 		return err
 	}
 	return os.MkdirAll(filepath.Join(location, maintenanceDirName), 0o755)
+}
+
+func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {
+	if err := ctx.Err(); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	rule = normalizeSemanticRuleForStorage(rule)
+	if err := validateSemanticRule(ctx, m.spaceID, rule); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	if rule.ID == uuid.Nil {
+		rule.ID = newID()
+	}
+	if rule.CreatedAt.IsZero() {
+		rule.CreatedAt = now
+	}
+	if rule.UpdatedAt.IsZero() {
+		rule.UpdatedAt = now
+	}
+	match := -1
+	for i, existing := range m.rules.Rules {
+		if existing.ID == rule.ID {
+			match = i
+			break
+		}
+	}
+	for i, existing := range m.rules.Rules {
+		if existing.SpaceID == rule.SpaceID && existing.DomainID == rule.DomainID && normalizeKey(existing.Key) == rule.Key {
+			if match >= 0 && i != match {
+				return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule key conflicts with existing rule", ErrInvalidInput)
+			}
+			match = i
+			break
+		}
+	}
+	if match >= 0 {
+		rule.ID = m.rules.Rules[match].ID
+		rule.CreatedAt = m.rules.Rules[match].CreatedAt
+		m.rules.Rules[match] = rule
+		return rule, persistJSON(m.path(semanticRulesFileName), m.rules)
+	}
+	m.rules.Rules = append(m.rules.Rules, rule)
+	return rule, persistJSON(m.path(semanticRulesFileName), m.rules)
+}
+
+func (m *spaceManager) ListSemanticRules(ctx context.Context) ([]domainsemantic.SemanticGenerationRule, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]domainsemantic.SemanticGenerationRule(nil), m.rules.Rules...), nil
+}
+
+func (m *spaceManager) DeleteSemanticRule(ctx context.Context, id domainsemantic.SemanticRuleID, purgeDependents bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: semantic_rule_id is required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	found := false
+	for i, item := range m.rules.Rules {
+		if item.ID == id {
+			m.rules.Rules = append(m.rules.Rules[:i], m.rules.Rules[i+1:]...)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ErrNotFound
+	}
+	if purgeDependents {
+		grants := m.grants.Grants[:0]
+		for _, grant := range m.grants.Grants {
+			if !scopeMatchesSemanticRule(grant.Scope, id) {
+				grants = append(grants, grant)
+			}
+		}
+		m.grants.Grants = grants
+		policies := m.policies.Policies[:0]
+		for _, policy := range m.policies.Policies {
+			if !scopeMatchesSemanticRule(policy.Scope, id) {
+				policies = append(policies, policy)
+			}
+		}
+		m.policies.Policies = policies
+		ruleStates := m.ruleStates.States[:0]
+		for _, state := range m.ruleStates.States {
+			if state.SemanticRuleID != id {
+				ruleStates = append(ruleStates, state)
+			}
+		}
+		m.ruleStates.States = ruleStates
+		searchStates := m.searchIndexStates.States[:0]
+		for _, state := range m.searchIndexStates.States {
+			if state.SemanticRuleID != id {
+				searchStates = append(searchStates, state)
+			}
+		}
+		m.searchIndexStates.States = searchStates
+		states := m.indexStates.States[:0]
+		for _, state := range m.indexStates.States {
+			if state.SemanticIndexID != domainsemantic.SemanticIndexID(id) && state.SemanticRuleID != id {
+				states = append(states, state)
+			}
+		}
+		m.indexStates.States = states
+		decisions := m.policyDecisions.Decisions[:0]
+		for _, decision := range m.policyDecisions.Decisions {
+			if !scopeMatchesSemanticRule(decision.Scope, id) {
+				decisions = append(decisions, decision)
+			}
+		}
+		m.policyDecisions.Decisions = decisions
+	}
+	if err := persistJSON(m.path(semanticRulesFileName), m.rules); err != nil {
+		return err
+	}
+	if purgeDependents {
+		if err := persistJSON(m.path(credentialGrantsFileName), m.grants); err != nil {
+			return err
+		}
+		if err := persistJSON(m.path(inferencePoliciesFileName), m.policies); err != nil {
+			return err
+		}
+		if err := persistJSON(m.path(ruleStateFileName), m.ruleStates); err != nil {
+			return err
+		}
+		if err := persistJSON(m.path(searchIndexStateFileName), m.searchIndexStates); err != nil {
+			return err
+		}
+		if err := persistJSON(m.path(indexStateFileName), m.indexStates); err != nil {
+			return err
+		}
+		if err := persistJSON(m.path(policyDecisionsFileName), m.policyDecisions); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *spaceManager) UpsertSemanticIndex(ctx context.Context, index domainsemantic.SemanticIndex) (domainsemantic.SemanticIndex, error) {
@@ -749,28 +922,28 @@ func (m *spaceManager) DeleteSemanticIndex(ctx context.Context, id domainsemanti
 	if purgeDependents {
 		grants := m.grants.Grants[:0]
 		for _, grant := range m.grants.Grants {
-			if grant.Scope.SemanticIndexID != id {
+			if !scopeMatchesSemanticRule(grant.Scope, domainsemantic.SemanticRuleID(id)) {
 				grants = append(grants, grant)
 			}
 		}
 		m.grants.Grants = grants
 		policies := m.policies.Policies[:0]
 		for _, policy := range m.policies.Policies {
-			if policy.Scope.SemanticIndexID != id {
+			if !scopeMatchesSemanticRule(policy.Scope, domainsemantic.SemanticRuleID(id)) {
 				policies = append(policies, policy)
 			}
 		}
 		m.policies.Policies = policies
 		states := m.indexStates.States[:0]
 		for _, state := range m.indexStates.States {
-			if state.SemanticIndexID != id {
+			if state.SemanticIndexID != id && state.SemanticRuleID != domainsemantic.SemanticRuleID(id) {
 				states = append(states, state)
 			}
 		}
 		m.indexStates.States = states
 		decisions := m.policyDecisions.Decisions[:0]
 		for _, decision := range m.policyDecisions.Decisions {
-			if decision.Scope.SemanticIndexID != id {
+			if !scopeMatchesSemanticRule(decision.Scope, domainsemantic.SemanticRuleID(id)) {
 				decisions = append(decisions, decision)
 			}
 		}
@@ -870,6 +1043,9 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 		return err
 	}
 	m.dirtyEvents = events
+	for i, item := range m.dirtyQueue.Items {
+		m.dirtyQueue.Items[i] = normalizeDirtyWorkItem(item)
+	}
 	m.rebuildMaintenanceIndexesLocked()
 	if persistRebuiltWork {
 		return persistJSON(m.workStatePath(), m.dirtyQueue)
@@ -905,8 +1081,10 @@ func (m *maintenanceManager) rebuildCheckpointIndexLocked() {
 func (m *maintenanceManager) rebuildWorkItemIndexLocked() {
 	m.workItemByKey = map[dirtyWorkKey]int{}
 	for i, item := range m.dirtyQueue.Items {
-		if item.SemanticIndexID != uuid.Nil && item.TargetNodeID != uuid.Nil {
-			m.workItemByKey[dirtyWorkKey{semanticIndexID: item.SemanticIndexID, targetNodeID: item.TargetNodeID}] = i
+		item = normalizeDirtyWorkItem(item)
+		m.dirtyQueue.Items[i] = item
+		if item.EffectiveSemanticRuleID() != uuid.Nil && item.TargetNodeID != uuid.Nil {
+			m.workItemByKey[dirtyWorkKey{semanticRuleID: item.EffectiveSemanticRuleID(), embeddingBindingKey: strings.TrimSpace(item.EmbeddingBindingKey), targetNodeID: item.TargetNodeID}] = i
 		}
 	}
 }
@@ -1069,13 +1247,15 @@ func (m *maintenanceManager) UpsertDirtyWorkItems(ctx context.Context, items []d
 }
 
 func (m *maintenanceManager) validateDirtyWorkItem(item domainsemantic.SemanticDirtyWorkItem) error {
-	if item.SemanticIndexID == uuid.Nil || item.SpaceID != m.spaceID || item.TargetNodeID == uuid.Nil {
-		return fmt.Errorf("%w: semantic_index_id, matching space_id, and target_node_id are required", ErrInvalidInput)
+	item = normalizeDirtyWorkItem(item)
+	if item.EffectiveSemanticRuleID() == uuid.Nil || item.SpaceID != m.spaceID || item.TargetNodeID == uuid.Nil {
+		return fmt.Errorf("%w: semantic_rule_id, matching space_id, and target_node_id are required", ErrInvalidInput)
 	}
 	return nil
 }
 
 func (m *maintenanceManager) upsertDirtyWorkItemLocked(item domainsemantic.SemanticDirtyWorkItem, now time.Time) domainsemantic.SemanticDirtyWorkItem {
+	item = normalizeDirtyWorkItem(item)
 	if item.ID == uuid.Nil {
 		item.ID = newID()
 	}
@@ -1098,7 +1278,7 @@ func (m *maintenanceManager) upsertDirtyWorkItemLocked(item domainsemantic.Seman
 		item.FailedAt = nil
 	}
 	item.UpdatedAt = now
-	key := dirtyWorkKey{semanticIndexID: item.SemanticIndexID, targetNodeID: item.TargetNodeID}
+	key := dirtyWorkKey{semanticRuleID: item.EffectiveSemanticRuleID(), embeddingBindingKey: strings.TrimSpace(item.EmbeddingBindingKey), targetNodeID: item.TargetNodeID}
 	if idx, ok := m.workItemByKey[key]; ok && idx >= 0 && idx < len(m.dirtyQueue.Items) {
 		existing := m.dirtyQueue.Items[idx]
 		item.ID = existing.ID
@@ -1290,9 +1470,82 @@ func workItemReady(item domainsemantic.SemanticDirtyWorkItem, now time.Time) boo
 	return false
 }
 
+func (m *spaceManager) UpsertSemanticRuleState(ctx context.Context, state domainsemantic.SemanticRuleState) (domainsemantic.SemanticRuleState, error) {
+	if err := ctx.Err(); err != nil {
+		return domainsemantic.SemanticRuleState{}, err
+	}
+	if state.SemanticRuleID == uuid.Nil {
+		return domainsemantic.SemanticRuleState{}, fmt.Errorf("%w: semantic_rule_id is required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = time.Now().UTC()
+	}
+	for i, existing := range m.ruleStates.States {
+		if existing.SemanticRuleID == state.SemanticRuleID {
+			m.ruleStates.States[i] = state
+			return state, persistJSON(m.path(ruleStateFileName), m.ruleStates)
+		}
+	}
+	m.ruleStates.States = append(m.ruleStates.States, state)
+	return state, persistJSON(m.path(ruleStateFileName), m.ruleStates)
+}
+
+func (m *spaceManager) ListSemanticRuleStates(ctx context.Context) ([]domainsemantic.SemanticRuleState, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]domainsemantic.SemanticRuleState(nil), m.ruleStates.States...), nil
+}
+
+func (m *spaceManager) UpsertSearchIndexState(ctx context.Context, state domainsemantic.SemanticSearchIndexState) (domainsemantic.SemanticSearchIndexState, error) {
+	if err := ctx.Err(); err != nil {
+		return domainsemantic.SemanticSearchIndexState{}, err
+	}
+	if state.SemanticRuleID == uuid.Nil || strings.TrimSpace(state.EmbeddingBindingKey) == "" {
+		return domainsemantic.SemanticSearchIndexState{}, fmt.Errorf("%w: semantic_rule_id and embedding_binding_key are required", ErrInvalidInput)
+	}
+	state.EmbeddingBindingKey = strings.TrimSpace(state.EmbeddingBindingKey)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state.ID == uuid.Nil {
+		state.ID = newID()
+	}
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = time.Now().UTC()
+	}
+	for i, existing := range m.searchIndexStates.States {
+		if existing.SemanticRuleID == state.SemanticRuleID && strings.TrimSpace(existing.EmbeddingBindingKey) == state.EmbeddingBindingKey {
+			state.ID = existing.ID
+			m.searchIndexStates.States[i] = state
+			return state, persistJSON(m.path(searchIndexStateFileName), m.searchIndexStates)
+		}
+	}
+	m.searchIndexStates.States = append(m.searchIndexStates.States, state)
+	return state, persistJSON(m.path(searchIndexStateFileName), m.searchIndexStates)
+}
+
+func (m *spaceManager) ListSearchIndexStates(ctx context.Context) ([]domainsemantic.SemanticSearchIndexState, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]domainsemantic.SemanticSearchIndexState(nil), m.searchIndexStates.States...), nil
+}
+
 func (m *spaceManager) UpsertIndexState(ctx context.Context, state domainsemantic.SemanticIndexState) (domainsemantic.SemanticIndexState, error) {
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.SemanticIndexState{}, err
+	}
+	if state.SemanticRuleID == uuid.Nil {
+		state.SemanticRuleID = domainsemantic.SemanticRuleID(state.SemanticIndexID)
+	}
+	if state.SemanticIndexID == uuid.Nil {
+		state.SemanticIndexID = domainsemantic.SemanticIndexID(state.SemanticRuleID)
 	}
 	if state.SemanticIndexID == uuid.Nil {
 		return domainsemantic.SemanticIndexState{}, fmt.Errorf("%w: semantic_index_id is required", ErrInvalidInput)
@@ -1442,6 +1695,7 @@ func readWorkItemsFromLog(path string) ([]domainsemantic.SemanticDirtyWorkItem, 
 			loggedItems = record.Items
 		}
 		for _, item := range loggedItems {
+			item = normalizeDirtyWorkItem(item)
 			if item.ID == uuid.Nil {
 				continue
 			}
@@ -1630,6 +1884,66 @@ func validateCredential(ctx context.Context, credential domainsemantic.Inference
 	return nil
 }
 
+func normalizeSemanticRuleForStorage(rule domainsemantic.SemanticGenerationRule) domainsemantic.SemanticGenerationRule {
+	rule.Key = normalizeKey(rule.Key)
+	rule.Trigger = domainsemantic.NormalizeSemanticTriggerPolicy(rule.Trigger)
+	if rule.Storage.PhysicalIndex == "" {
+		rule.Storage = domainsemantic.DefaultSemanticStoragePolicy()
+	}
+	for i, binding := range rule.Embeddings {
+		rule.Embeddings[i] = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
+	}
+	return rule
+}
+
+func validateSemanticRule(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if rule.SpaceID == uuid.Nil {
+		return fmt.Errorf("%w: rule space_id is required", ErrInvalidInput)
+	}
+	if rule.SpaceID != spaceID {
+		return fmt.Errorf("%w: rule space_id does not match store", ErrInvalidInput)
+	}
+	if rule.DomainID == uuid.Nil {
+		return fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(rule.Key) == "" {
+		return fmt.Errorf("%w: rule key is required", ErrInvalidInput)
+	}
+	if len(rule.Embeddings) == 0 {
+		return fmt.Errorf("%w: at least one embedding binding is required", ErrInvalidInput)
+	}
+	seen := map[string]bool{}
+	for _, binding := range rule.Embeddings {
+		key := strings.TrimSpace(binding.Key)
+		if key == "" {
+			return fmt.Errorf("%w: embedding binding key is required", ErrInvalidInput)
+		}
+		if seen[key] {
+			return fmt.Errorf("%w: duplicate embedding binding key %q", ErrInvalidInput, key)
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+func scopeMatchesSemanticRule(scope domainsemantic.ProcessingScope, ruleID domainsemantic.SemanticRuleID) bool {
+	return scope.SemanticRuleID == ruleID || scope.SemanticIndexID == domainsemantic.SemanticIndexID(ruleID)
+}
+
+func normalizeDirtyWorkItem(item domainsemantic.SemanticDirtyWorkItem) domainsemantic.SemanticDirtyWorkItem {
+	if item.SemanticRuleID == uuid.Nil {
+		item.SemanticRuleID = domainsemantic.SemanticRuleID(item.SemanticIndexID)
+	}
+	if item.SemanticIndexID == uuid.Nil {
+		item.SemanticIndexID = domainsemantic.SemanticIndexID(item.SemanticRuleID)
+	}
+	item.EmbeddingBindingKey = strings.TrimSpace(item.EmbeddingBindingKey)
+	return item
+}
+
 func validateSemanticIndex(ctx context.Context, spaceID domainspace.SpaceID, index domainsemantic.SemanticIndex) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1691,7 +2005,7 @@ func validateScope(spaceID domainspace.SpaceID, scope domainsemantic.ProcessingS
 	if scope.SpaceID != spaceID {
 		return fmt.Errorf("%w: scope space_id does not match store", ErrInvalidInput)
 	}
-	if scope.DomainID == graphmodel.DomainID(uuid.Nil) && scope.SemanticIndexID == uuid.Nil && scope.NodeID == uuid.Nil {
+	if scope.DomainID == graphmodel.DomainID(uuid.Nil) && scope.SemanticRuleID == uuid.Nil && scope.SemanticIndexID == uuid.Nil && scope.NodeID == uuid.Nil {
 		// Space-wide scope is valid.
 		return nil
 	}

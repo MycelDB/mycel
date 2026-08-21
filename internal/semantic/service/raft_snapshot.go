@@ -48,15 +48,18 @@ type semanticGlobalSnapshot struct {
 }
 
 type semanticSpaceSnapshot struct {
-	SpaceID          domainspace.SpaceID                    `json:"space_id"`
-	Indexes          []domainsemantic.SemanticIndex         `json:"indexes,omitempty"`
-	CredentialGrants []domainsemantic.CredentialGrant       `json:"credential_grants,omitempty"`
-	Policies         []domainsemantic.InferencePolicy       `json:"policies,omitempty"`
-	IndexStates      []domainsemantic.SemanticIndexState    `json:"index_states,omitempty"`
-	PolicyDecisions  []domainsemantic.PolicyDecision        `json:"policy_decisions,omitempty"`
-	DirtyEvents      []domainsemantic.GraphDirtyEvent       `json:"dirty_events,omitempty"`
-	Checkpoints      []storesemantic.MaintenanceCheckpoint  `json:"checkpoints,omitempty"`
-	WorkItems        []domainsemantic.SemanticDirtyWorkItem `json:"work_items,omitempty"`
+	SpaceID           domainspace.SpaceID                       `json:"space_id"`
+	Rules             []domainsemantic.SemanticGenerationRule   `json:"rules,omitempty"`
+	Indexes           []domainsemantic.SemanticIndex            `json:"indexes,omitempty"`
+	CredentialGrants  []domainsemantic.CredentialGrant          `json:"credential_grants,omitempty"`
+	Policies          []domainsemantic.InferencePolicy          `json:"policies,omitempty"`
+	RuleStates        []domainsemantic.SemanticRuleState        `json:"rule_states,omitempty"`
+	SearchIndexStates []domainsemantic.SemanticSearchIndexState `json:"search_index_states,omitempty"`
+	IndexStates       []domainsemantic.SemanticIndexState       `json:"index_states,omitempty"`
+	PolicyDecisions   []domainsemantic.PolicyDecision           `json:"policy_decisions,omitempty"`
+	DirtyEvents       []domainsemantic.GraphDirtyEvent          `json:"dirty_events,omitempty"`
+	Checkpoints       []storesemantic.MaintenanceCheckpoint     `json:"checkpoints,omitempty"`
+	WorkItems         []domainsemantic.SemanticDirtyWorkItem    `json:"work_items,omitempty"`
 }
 
 func (s RaftStateMachine) Snapshot() ([]byte, error) {
@@ -262,6 +265,9 @@ func (m *Module) snapshotSemanticPartition(ctx context.Context, partitionID, par
 			return nil, nil, err
 		}
 		item := semanticSpaceSnapshot{SpaceID: spaceID}
+		if item.Rules, err = spaceMgr.ListSemanticRules(ctx); err != nil {
+			return nil, nil, err
+		}
 		if item.Indexes, err = spaceMgr.ListSemanticIndexes(ctx); err != nil {
 			return nil, nil, err
 		}
@@ -269,6 +275,12 @@ func (m *Module) snapshotSemanticPartition(ctx context.Context, partitionID, par
 			return nil, nil, err
 		}
 		if item.Policies, err = spaceMgr.ListInferencePolicies(ctx); err != nil {
+			return nil, nil, err
+		}
+		if item.RuleStates, err = spaceMgr.ListSemanticRuleStates(ctx); err != nil {
+			return nil, nil, err
+		}
+		if item.SearchIndexStates, err = spaceMgr.ListSearchIndexStates(ctx); err != nil {
 			return nil, nil, err
 		}
 		if item.IndexStates, err = spaceMgr.ListIndexStates(ctx); err != nil {
@@ -301,6 +313,11 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 		if err := spaceMgr.Init(ctx, m.spaceSemanticDir(space.SpaceID), space.SpaceID); err != nil {
 			return err
 		}
+		for _, v := range space.Rules {
+			if _, err := spaceMgr.UpsertSemanticRule(ctx, v); err != nil {
+				return err
+			}
+		}
 		for _, v := range space.Indexes {
 			if _, err := spaceMgr.UpsertSemanticIndex(ctx, v); err != nil {
 				return err
@@ -313,6 +330,16 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 		}
 		for _, v := range space.Policies {
 			if _, err := spaceMgr.UpsertInferencePolicy(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.RuleStates {
+			if _, err := spaceMgr.UpsertSemanticRuleState(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.SearchIndexStates {
+			if _, err := spaceMgr.UpsertSearchIndexState(ctx, v); err != nil {
 				return err
 			}
 		}

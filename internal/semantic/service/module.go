@@ -716,6 +716,24 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func (m *Module) ListRules(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticGenerationRule, error) {
+	mgr, err := m.SpaceManager(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := mgr.ListSemanticRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domainsemantic.SemanticGenerationRule, 0, len(rules))
+	for _, rule := range rules {
+		if rule.SpaceID == spaceID && rule.DomainID == domainID && rule.Enabled {
+			out = append(out, rule)
+		}
+	}
+	return out, nil
+}
+
 func (m *Module) ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticIndex, error) {
 	mgr, err := m.SpaceManager(ctx, spaceID)
 	if err != nil {

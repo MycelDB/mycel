@@ -168,6 +168,25 @@ func applySemanticGlobalMutation(ctx context.Context, g storesemantic.GlobalMana
 
 func applySemanticSpaceMutation(ctx context.Context, s storesemantic.SpaceManager, r semanticMutationRecord) error {
 	switch r.Kind {
+	case "semantic_rule.upsert":
+		var v domainsemantic.SemanticGenerationRule
+		_ = json.Unmarshal(r.Payload, &v)
+		_, err := s.UpsertSemanticRule(ctx, v)
+		return err
+	case "semantic_rule.delete":
+		var v domainsemantic.SemanticRuleID
+		_ = json.Unmarshal(r.Payload, &v)
+		return s.DeleteSemanticRule(ctx, v, r.Flag)
+	case "semantic_rule_state.upsert":
+		var v domainsemantic.SemanticRuleState
+		_ = json.Unmarshal(r.Payload, &v)
+		_, err := s.UpsertSemanticRuleState(ctx, v)
+		return err
+	case "semantic_search_index_state.upsert":
+		var v domainsemantic.SemanticSearchIndexState
+		_ = json.Unmarshal(r.Payload, &v)
+		_, err := s.UpsertSearchIndexState(ctx, v)
+		return err
 	case "semantic_index.upsert":
 		var v domainsemantic.SemanticIndex
 		_ = json.Unmarshal(r.Payload, &v)
