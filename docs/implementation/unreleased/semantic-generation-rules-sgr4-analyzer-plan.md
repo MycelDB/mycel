@@ -2,7 +2,10 @@
 
 ## Status
 
-Planned. This tranche follows SGR3 rule validation and selector compilation.
+Implemented for rule-native node-type and explicit-node analyzer paths. Bounded
+GQL selectors are validated in SGR3 but execution remains a documented follow-up
+because the current analyzer does not own a graph transaction/session execution
+context.
 
 ## Goal
 
@@ -279,6 +282,21 @@ SGR4 is complete when:
 - dirty counts/state updates are rule-native or clearly mirrored transitionally;
 - existing semantic package tests pass;
 - remaining old index analyzer assumptions are documented for SGR5-SGR8 removal.
+
+Implemented notes:
+
+- Analyzer prefers rule-native `ListSemanticRules` when rules exist and falls
+  back to transitional semantic-index analysis only for old runtime paths.
+- Node-type selectors enforce graph labels and enqueue one work item per enabled
+  binding.
+- Dirty work carries `semantic_rule_id`, `embedding_binding_key`, and a
+  transitional `semantic_index_id` mirror for old worker/backfill code.
+- Trigger filtering supports `changed`, node create/update/delete, and edge
+  change events.
+- Checkpoints are per rule/binding via
+  `semantic-analyzer/<rule_id>/<binding_key>`.
+- Rule state is updated through `SemanticRuleState`; old index state remains only
+  in fallback index analysis.
 
 ## Risks and follow-ups
 

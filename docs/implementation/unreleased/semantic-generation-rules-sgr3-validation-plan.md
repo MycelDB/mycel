@@ -2,7 +2,8 @@
 
 ## Status
 
-Planned. This tranche follows SGR2 rule-native storage work.
+Implemented. This tranche follows SGR2 rule-native storage work and adds
+structured semantic rule validation plus bounded/read-only GQL selector checks.
 
 ## Goal
 
@@ -246,6 +247,16 @@ SGR3 is complete when:
 - tests cover successful and failing validation cases;
 - analyzer/backfill/search behavior is unchanged except that invalid rules cannot
   enter storage.
+
+Implemented notes:
+
+- `ValidateSemanticGenerationRule` and `ValidateSemanticGenerationRuleForStorage`
+  return normalized rules plus structured diagnostics.
+- Node-type, explicit-node, and GQL selectors are validated.
+- GQL validation rejects read-write, unbounded, unlabeled relationship, and
+  missing target-alias queries.
+- Storage now uses the model validator before persisting rule-native definitions.
+- Context query source validation uses the same bounded/read-only GQL checks.
 
 ## Risks and follow-ups
 

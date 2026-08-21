@@ -657,10 +657,11 @@ func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemant
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.SemanticGenerationRule{}, err
 	}
-	rule = normalizeSemanticRuleForStorage(rule)
-	if err := validateSemanticRule(ctx, m.spaceID, rule); err != nil {
-		return domainsemantic.SemanticGenerationRule{}, err
+	validation := domainsemantic.ValidateSemanticGenerationRuleForStorage(m.spaceID, rule)
+	if !validation.Valid {
+		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: %s", ErrInvalidInput, semanticValidationMessage(validation.Diagnostics))
 	}
+	rule = validation.Rule
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
@@ -1884,49 +1885,19 @@ func validateCredential(ctx context.Context, credential domainsemantic.Inference
 	return nil
 }
 
-func normalizeSemanticRuleForStorage(rule domainsemantic.SemanticGenerationRule) domainsemantic.SemanticGenerationRule {
-	rule.Key = normalizeKey(rule.Key)
-	rule.Trigger = domainsemantic.NormalizeSemanticTriggerPolicy(rule.Trigger)
-	if rule.Storage.PhysicalIndex == "" {
-		rule.Storage = domainsemantic.DefaultSemanticStoragePolicy()
+func semanticValidationMessage(diagnostics []domainsemantic.ValidationDiagnostic) string {
+	if len(diagnostics) == 0 {
+		return "semantic rule is invalid"
 	}
-	for i, binding := range rule.Embeddings {
-		rule.Embeddings[i] = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
-	}
-	return rule
-}
-
-func validateSemanticRule(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if rule.SpaceID == uuid.Nil {
-		return fmt.Errorf("%w: rule space_id is required", ErrInvalidInput)
-	}
-	if rule.SpaceID != spaceID {
-		return fmt.Errorf("%w: rule space_id does not match store", ErrInvalidInput)
-	}
-	if rule.DomainID == uuid.Nil {
-		return fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
-	}
-	if strings.TrimSpace(rule.Key) == "" {
-		return fmt.Errorf("%w: rule key is required", ErrInvalidInput)
-	}
-	if len(rule.Embeddings) == 0 {
-		return fmt.Errorf("%w: at least one embedding binding is required", ErrInvalidInput)
-	}
-	seen := map[string]bool{}
-	for _, binding := range rule.Embeddings {
-		key := strings.TrimSpace(binding.Key)
-		if key == "" {
-			return fmt.Errorf("%w: embedding binding key is required", ErrInvalidInput)
+	parts := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		if strings.TrimSpace(diagnostic.Path) == "" {
+			parts = append(parts, diagnostic.Message)
+			continue
 		}
-		if seen[key] {
-			return fmt.Errorf("%w: duplicate embedding binding key %q", ErrInvalidInput, key)
-		}
-		seen[key] = true
+		parts = append(parts, diagnostic.Path+": "+diagnostic.Message)
 	}
-	return nil
+	return strings.Join(parts, "; ")
 }
 
 func scopeMatchesSemanticRule(scope domainsemantic.ProcessingScope, ruleID domainsemantic.SemanticRuleID) bool {

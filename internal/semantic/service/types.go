@@ -85,9 +85,11 @@ type SpaceSemanticManager struct {
 }
 
 type AnalyzeInput struct {
-	SpaceID         domainspace.SpaceID
-	SemanticIndexID domainsemantic.SemanticIndexID
-	Limit           int
+	SpaceID             domainspace.SpaceID
+	SemanticRuleID      domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
+	SemanticIndexID     domainsemantic.SemanticIndexID // transitional until maintenance APIs are regenerated
+	Limit               int
 }
 
 type MaintenanceStatusInput struct {

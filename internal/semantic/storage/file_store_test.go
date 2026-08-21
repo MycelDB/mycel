@@ -769,6 +769,7 @@ func TestSpaceManagerSemanticRulesPersistAndNormalize(t *testing.T) {
 		Key:         " Journal Search ",
 		DisplayName: "Journal Search",
 		Enabled:     true,
+		Selector:    domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}},
 		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{
 			Key:                 " Search ",
 			Purpose:             "semantic_search",
@@ -811,6 +812,7 @@ func TestSpaceManagerSemanticRulesPersistAndNormalize(t *testing.T) {
 		Key:         "journal search",
 		DisplayName: "Updated",
 		Enabled:     true,
+		Selector:    rules[0].Selector,
 		Embeddings:  rules[0].Embeddings,
 	})
 	if err != nil {
@@ -833,6 +835,7 @@ func TestSpaceManagerSemanticRuleRejectsDuplicateBindingKeys(t *testing.T) {
 		DomainID: graph.DomainID(uuid.New()),
 		Key:      "dup-bindings",
 		Enabled:  true,
+		Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}},
 		Embeddings: []domainsemantic.SemanticEmbeddingBinding{
 			{Key: "search", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true},
 			{Key: " search ", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true},
