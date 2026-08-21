@@ -55,3 +55,5 @@ assigned to a tagged release bucket.
 - [SGR0 semantic generation rules API surface plan](semantic-generation-rules-sgr0-api-surface-plan.md) — tranche-specific plan for replacing public semantic-index API terminology with semantic generation rules.
 - [SGR1 semantic generation rules domain model plan](semantic-generation-rules-sgr1-domain-model-plan.md) — tranche-specific plan for introducing the internal semantic generation rule model and binding-aware records/work.
 - [SGR2 semantic generation rules storage plan](semantic-generation-rules-sgr2-storage-plan.md) — tranche-specific plan for rule-native storage, WAL/raft mutations, and binding-aware maintenance work keys.
+- [SGR3 semantic generation rules validation plan](semantic-generation-rules-sgr3-validation-plan.md) — tranche-specific plan for rule validation, selector validation, and bounded GQL selector compilation.
+- [SGR4 semantic generation rules analyzer plan](semantic-generation-rules-sgr4-analyzer-plan.md) — tranche-specific plan for rule-native dirty-event analysis and binding-aware work enqueueing.
