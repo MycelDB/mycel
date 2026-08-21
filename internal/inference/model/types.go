@@ -244,11 +244,13 @@ type Credential struct {
 }
 
 type Scope struct {
-	SpaceID            string `json:"space_id,omitempty"`
-	DomainID           string `json:"domain_id,omitempty"`
-	SemanticIndexID    string `json:"semantic_index_id,omitempty"`
-	NodeID             string `json:"node_id,omitempty"`
-	IncludeDescendants bool   `json:"include_descendants,omitempty"`
+	SpaceID             string `json:"space_id,omitempty"`
+	DomainID            string `json:"domain_id,omitempty"`
+	SemanticRuleID      string `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey string `json:"embedding_binding_key,omitempty"`
+	SemanticIndexID     string `json:"semantic_index_id,omitempty"` // transitional alias until Intelligence Access storage is split
+	NodeID              string `json:"node_id,omitempty"`
+	IncludeDescendants  bool   `json:"include_descendants,omitempty"`
 }
 
 type Parameters struct {
@@ -338,6 +340,8 @@ type PolicyDecision struct {
 	SpaceID               string               `json:"space_id"`
 	DomainID              string               `json:"domain_id,omitempty"`
 	NodeID                string               `json:"node_id,omitempty"`
+	SemanticRuleID        string               `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey   string               `json:"embedding_binding_key,omitempty"`
 	Operation             Operation            `json:"operation"`
 	UsageMode             UsageMode            `json:"usage_mode"`
 	ProfileID             ProfileID            `json:"profile_id,omitempty"`
@@ -366,6 +370,8 @@ type UsageEvent struct {
 	NodeID                string            `json:"node_id,omitempty"`
 	AutomationID          string            `json:"automation_id,omitempty"`
 	AutomationRunID       string            `json:"automation_run_id,omitempty"`
+	SemanticRuleID        string            `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey   string            `json:"embedding_binding_key,omitempty"`
 	SemanticIndexID       string            `json:"semantic_index_id,omitempty"`
 	ActorPrincipalID      string            `json:"actor_principal_id,omitempty"`
 	OnBehalfOfPrincipalID string            `json:"on_behalf_of_principal_id,omitempty"`

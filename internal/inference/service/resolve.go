@@ -15,6 +15,8 @@ import (
 type ResolveRequest struct {
 	SpaceID               string
 	DomainID              string
+	SemanticRuleID        string
+	EmbeddingBindingKey   string
 	SemanticIndexID       string
 	NodeID                string
 	Operation             domaininference.Operation
@@ -371,7 +373,7 @@ func (r resolver) deny(ctx context.Context, spaceMgr inferencestorage.SpaceManag
 }
 
 func decisionFromResolve(req ResolveRequest, result ResolveResult, action domaininference.PolicyDecisionAction, policyIDs []string, reason string) domaininference.PolicyDecision {
-	return domaininference.PolicyDecision{SpaceID: req.SpaceID, DomainID: req.DomainID, NodeID: req.NodeID, Operation: req.Operation, UsageMode: req.UsageMode, ProfileID: result.Profile.ID, CapabilityID: result.Capability.ID, EndpointID: result.Endpoint.ID, ModelID: result.Model.ID, CredentialID: result.Credential.ID, CredentialGrantID: result.CredentialGrant.ID, ActorPrincipalID: req.ActorPrincipalID, OnBehalfOfPrincipalID: req.OnBehalfOfPrincipalID, Action: action, MatchedPolicyIDs: append([]string(nil), policyIDs...), Reason: reason, Metadata: copyMap(req.Metadata)}
+	return domaininference.PolicyDecision{SpaceID: req.SpaceID, DomainID: req.DomainID, NodeID: req.NodeID, SemanticRuleID: req.SemanticRuleID, EmbeddingBindingKey: req.EmbeddingBindingKey, Operation: req.Operation, UsageMode: req.UsageMode, ProfileID: result.Profile.ID, CapabilityID: result.Capability.ID, EndpointID: result.Endpoint.ID, ModelID: result.Model.ID, CredentialID: result.Credential.ID, CredentialGrantID: result.CredentialGrant.ID, ActorPrincipalID: req.ActorPrincipalID, OnBehalfOfPrincipalID: req.OnBehalfOfPrincipalID, Action: action, MatchedPolicyIDs: append([]string(nil), policyIDs...), Reason: reason, Metadata: copyMap(req.Metadata)}
 }
 
 func candidateEnabled(candidate capabilityCandidate) bool {
@@ -528,6 +530,12 @@ func scopeMatches(scope domaininference.Scope, req ResolveRequest) bool {
 	if scope.DomainID != "" && scope.DomainID != req.DomainID {
 		return false
 	}
+	if scope.SemanticRuleID != "" && scope.SemanticRuleID != req.SemanticRuleID {
+		return false
+	}
+	if scope.EmbeddingBindingKey != "" && scope.EmbeddingBindingKey != req.EmbeddingBindingKey {
+		return false
+	}
 	if scope.SemanticIndexID != "" && scope.SemanticIndexID != req.SemanticIndexID {
 		return false
 	}
@@ -544,6 +552,12 @@ func scopeSpecificity(scope domaininference.Scope, req ResolveRequest) int {
 	}
 	if scope.DomainID != "" {
 		score += 2
+	}
+	if scope.SemanticRuleID != "" {
+		score += 4
+	}
+	if scope.EmbeddingBindingKey != "" {
+		score += 4
 	}
 	if scope.SemanticIndexID != "" {
 		score += 4

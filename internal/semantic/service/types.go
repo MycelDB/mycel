@@ -115,9 +115,11 @@ type MaintenanceStatus struct {
 }
 
 type MaintenanceWorkListInput struct {
-	SpaceID domainspace.SpaceID
-	Status  string
-	Limit   int
+	SpaceID             domainspace.SpaceID
+	Status              string
+	Limit               int
+	SemanticRuleID      domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
 }
 
 type MaintenanceWorkControlInput struct {
@@ -129,7 +131,9 @@ type MaintenanceWorkItem struct {
 	ID                        uuid.UUID
 	SpaceID                   domainspace.SpaceID
 	DomainID                  graph.DomainID
-	SemanticIndexID           domainsemantic.SemanticIndexID
+	SemanticRuleID            domainsemantic.SemanticRuleID
+	EmbeddingBindingKey       string
+	SemanticIndexID           domainsemantic.SemanticIndexID // transitional
 	TargetNodeID              graph.NodeID
 	Action                    string
 	Status                    string
@@ -148,11 +152,13 @@ type ProcessInput struct {
 }
 
 type SearchInput struct {
-	SpaceID          domainspace.SpaceID
-	DomainID         graph.DomainID
-	SemanticIndexIDs []domainsemantic.SemanticIndexID
-	Text             string
-	Limit            int
-	MinScore         float64
-	ActorPrincipalID identity.PrincipalID
+	SpaceID             domainspace.SpaceID
+	DomainID            graph.DomainID
+	SemanticRuleIDs     []domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
+	SemanticIndexIDs    []domainsemantic.SemanticIndexID // transitional adapter filter; treated as rule IDs for rule-native search
+	Text                string
+	Limit               int
+	MinScore            float64
+	ActorPrincipalID    identity.PrincipalID
 }

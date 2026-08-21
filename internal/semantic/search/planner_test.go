@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/internal/graph/model"
-	"github.com/myceldb/mycel/internal/identity/model"
+	graph "github.com/myceldb/mycel/internal/graph/model"
+	identity "github.com/myceldb/mycel/internal/identity/model"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
@@ -18,87 +18,98 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-func TestPlannerSearchesAllowedIndexesAndWarnsForSkipped(t *testing.T) {
+func TestPlannerSearchesRuleBindingsAndWarnsForSkipped(t *testing.T) {
 	ctx := context.Background()
 	env := newSearchEnv(t)
-	allowed := env.addIndex(t, "allowed", env.domainID, true, true)
-	unprofiled := env.addIndex(t, "unprofiled", env.domainID, true, true)
-	unprofiled.Metadata = nil
-	if _, err := env.spaceMgr.UpsertSemanticIndex(ctx, unprofiled); err != nil {
-		t.Fatalf("update unprofiled index: %v", err)
-	}
-	if _, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticIndexID: allowed.ID, NodeID: graph.NodeID(uuid.New()), SourceHash: "sha256:1", SourceMode: "self", ModelEndpointID: env.endpoint.ID, ModelID: env.model.ID, ModelEndpointCapabilityID: env.capability.ID, CredentialID: env.credential.ID, CredentialGrantID: env.grants[allowed.ID].ID, VectorStoreID: env.vectorStore.ID, VectorSpaceKey: env.model.VectorSpaceKey, Dimensions: 3, Vector: []float64{1, 0, 0}, CreatedAt: time.Now().UTC()}); err != nil {
+	allowed := env.addRule(t, "allowed", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+	env.addRule(t, "missing-store", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", domainsemantic.VectorStoreID(uuid.New()))})
+	nodeID := graph.NodeID(uuid.New())
+	grantID := domainsemantic.CredentialGrantID(uuid.New())
+	if _, err := env.vector.Upsert(ctx, env.record(allowed.ID, "search", nodeID, []float64{1, 0, 0}, grantID)); err != nil {
 		t.Fatalf("upsert vector failed: %v", err)
 	}
+
 	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "focus notes", Limit: 10, ActorPrincipalID: env.userID})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
-	if len(result.Results) != 1 || result.Results[0].SemanticIndexID != allowed.ID || result.Results[0].CredentialGrantID != env.grants[allowed.ID].ID {
-		t.Fatalf("expected profiled index result with record grant provenance, got %+v", result)
+	if len(result.Results) != 1 || result.Results[0].SemanticRuleID != allowed.ID || result.Results[0].EmbeddingBindingKey != "search" || result.Results[0].CredentialGrantID != grantID {
+		t.Fatalf("expected profiled rule/binding result with record grant provenance, got %+v", result)
 	}
 	if len(env.connector.calls) != 1 || !strings.Contains(env.connector.calls[0], "focus notes") {
 		t.Fatalf("expected one query embedding call, calls=%+v", env.connector.calls)
 	}
 	warnings := strings.Join(result.Warnings, "\n")
-	if !strings.Contains(warnings, unprofiled.Key) || !strings.Contains(warnings, "does not declare an inference profile") {
-		t.Fatalf("expected warning for unprofiled index %s, got %+v", unprofiled.Key, result.Warnings)
+	if !strings.Contains(warnings, "missing-store") || !strings.Contains(warnings, "enabled vector store not found") {
+		t.Fatalf("expected warning for missing vector store, got %+v", result.Warnings)
 	}
 }
 
-func TestPlannerResolvesCompatibleIndexesIndividually(t *testing.T) {
+func TestPlannerSearchesBindingsIndividuallyAndMergesDuplicateTargets(t *testing.T) {
 	ctx := context.Background()
 	env := newSearchEnv(t)
-	idx1 := env.addIndex(t, "idx1", env.domainID, true, false)
-	idx2 := env.addIndex(t, "idx2", env.domainID, true, false)
-	sharedGrant, err := env.spaceMgr.UpsertCredentialGrant(ctx, domainsemantic.CredentialGrant{CredentialID: env.credential.ID, Scope: domainsemantic.ProcessingScope{SpaceID: env.spaceID, DomainID: env.domainID}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, ModelEndpointID: &env.endpoint.ID, ModelID: &env.model.ID, CreatedAt: time.Now().UTC()})
-	if err != nil {
-		t.Fatalf("shared grant upsert failed: %v", err)
+	rule := env.addRule(t, "multi", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID), env.binding("summary", env.vectorStore.ID)})
+	nodeID := graph.NodeID(uuid.New())
+	if _, err := env.vector.Upsert(ctx, env.record(rule.ID, "search", nodeID, []float64{0.90, 0.10, 0}, domainsemantic.CredentialGrantID(uuid.New()))); err != nil {
+		t.Fatalf("upsert search vector failed: %v", err)
 	}
-	for _, idx := range []domainsemantic.SemanticIndex{idx1, idx2} {
-		if _, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticIndexID: idx.ID, NodeID: graph.NodeID(uuid.New()), SourceHash: "sha256:" + idx.Key, SourceMode: "self", ModelEndpointID: env.endpoint.ID, ModelID: env.model.ID, ModelEndpointCapabilityID: env.capability.ID, CredentialID: env.credential.ID, CredentialGrantID: sharedGrant.ID, VectorStoreID: env.vectorStore.ID, VectorSpaceKey: env.model.VectorSpaceKey, Dimensions: 3, Vector: []float64{1, 0, 0}, CreatedAt: time.Now().UTC()}); err != nil {
-			t.Fatalf("upsert vector failed: %v", err)
-		}
+	if _, err := env.vector.Upsert(ctx, env.record(rule.ID, "summary", nodeID, []float64{1, 0, 0}, domainsemantic.CredentialGrantID(uuid.New()))); err != nil {
+		t.Fatalf("upsert summary vector failed: %v", err)
 	}
+
 	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "grouped", Limit: 10})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
-	if len(env.connector.calls) != 2 || env.connector.inputs[0].SemanticIndexID == env.connector.inputs[1].SemanticIndexID {
-		t.Fatalf("expected one query embedding per semantic index, inputs=%+v", env.connector.inputs)
+	if len(env.connector.inputs) != 2 || env.connector.inputs[0].EmbeddingBindingKey == env.connector.inputs[1].EmbeddingBindingKey {
+		t.Fatalf("expected one query embedding per binding, inputs=%+v", env.connector.inputs)
 	}
-	if len(result.Results) != 2 || len(result.Groups) != 2 {
-		t.Fatalf("expected two results in two per-index groups, got %+v", result)
+	if len(result.Groups) != 2 {
+		t.Fatalf("expected two binding groups, got %+v", result.Groups)
+	}
+	if len(result.Results) != 1 || result.Results[0].NodeID != nodeID || len(result.Results[0].MatchedBindings) != 2 || len(result.Results[0].MatchedRecordIDs) != 2 {
+		t.Fatalf("expected duplicate target merge with provenance, got %+v", result.Results)
+	}
+	if result.Results[0].EmbeddingBindingKey != "summary" {
+		t.Fatalf("expected best-scoring binding to be primary result, got %+v", result.Results[0])
 	}
 }
 
-func TestPlannerSkipsIndexWhenProfileResolutionFails(t *testing.T) {
+func TestPlannerSkipsBindingWhenProfileResolutionFails(t *testing.T) {
 	ctx := context.Background()
 	env := newSearchEnv(t)
-	idx1 := env.addIndex(t, "idx1", env.domainID, true, false)
-	idx2 := env.addIndex(t, "idx2", env.domainID, true, false)
-	sharedGrant, err := env.spaceMgr.UpsertCredentialGrant(ctx, domainsemantic.CredentialGrant{CredentialID: env.credential.ID, Scope: domainsemantic.ProcessingScope{SpaceID: env.spaceID, DomainID: env.domainID}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, ModelEndpointID: &env.endpoint.ID, ModelID: &env.model.ID, CreatedAt: time.Now().UTC()})
-	if err != nil {
-		t.Fatalf("shared grant upsert failed: %v", err)
+	rule := env.addRule(t, "multi", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID), env.binding("summary", env.vectorStore.ID)})
+	if _, err := env.vector.Upsert(ctx, env.record(rule.ID, "search", graph.NodeID(uuid.New()), []float64{1, 0, 0}, domainsemantic.CredentialGrantID(uuid.New()))); err != nil {
+		t.Fatalf("upsert search vector failed: %v", err)
 	}
-	for _, idx := range []domainsemantic.SemanticIndex{idx1, idx2} {
-		if _, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticIndexID: idx.ID, NodeID: graph.NodeID(uuid.New()), SourceHash: "sha256:" + idx.Key, SourceMode: "self", ModelEndpointID: env.endpoint.ID, ModelID: env.model.ID, ModelEndpointCapabilityID: env.capability.ID, CredentialID: env.credential.ID, CredentialGrantID: sharedGrant.ID, VectorStoreID: env.vectorStore.ID, VectorSpaceKey: env.model.VectorSpaceKey, Dimensions: 3, Vector: []float64{1, 0, 0}, CreatedAt: time.Now().UTC()}); err != nil {
-			t.Fatalf("upsert vector failed: %v", err)
-		}
+	if _, err := env.vector.Upsert(ctx, env.record(rule.ID, "summary", graph.NodeID(uuid.New()), []float64{1, 0, 0}, domainsemantic.CredentialGrantID(uuid.New()))); err != nil {
+		t.Fatalf("upsert summary vector failed: %v", err)
 	}
-	env.connector.denyIndexes = map[domainsemantic.SemanticIndexID]error{idx2.ID: errors.New("policy denies semantic index")}
+	env.connector.denyBindings = map[string]error{rule.ID.String() + "/summary": errors.New("policy denies semantic binding")}
+
 	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
 	if len(env.connector.inputs) != 2 {
-		t.Fatalf("expected embedding resolution for both indexes, inputs=%+v", env.connector.inputs)
+		t.Fatalf("expected embedding resolution for both bindings, inputs=%+v", env.connector.inputs)
 	}
-	if len(result.Results) != 1 || result.Results[0].SemanticIndexID != idx1.ID {
-		t.Fatalf("expected only allowed index result, got %+v", result.Results)
+	if len(result.Results) != 1 || result.Results[0].EmbeddingBindingKey != "search" {
+		t.Fatalf("expected only allowed binding result, got %+v", result.Results)
 	}
-	if !strings.Contains(strings.Join(result.Warnings, "\n"), "policy denies semantic index") {
-		t.Fatalf("expected denied index warning, got %+v", result.Warnings)
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "policy denies semantic binding") {
+		t.Fatalf("expected denied binding warning, got %+v", result.Warnings)
+	}
+}
+
+func TestPlannerAllBindingsSkippedReturnsError(t *testing.T) {
+	ctx := context.Background()
+	env := newSearchEnv(t)
+	rule := env.addRule(t, "denied", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+	env.connector.denyBindings = map[string]error{rule.ID.String() + "/search": errors.New("policy denies semantic binding")}
+	_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
+	if err == nil || !strings.Contains(err.Error(), "all semantic search bindings") {
+		t.Fatalf("expected all-skipped error, got %v", err)
 	}
 }
 
@@ -116,7 +127,6 @@ type searchEnv struct {
 	capability  domainsemantic.ModelEndpointCapability
 	vectorStore domainsemantic.VectorStoreBackend
 	credential  domainsemantic.InferenceCredential
-	grants      map[domainsemantic.SemanticIndexID]domainsemantic.CredentialGrant
 }
 
 func newSearchEnv(t *testing.T) *searchEnv {
@@ -154,50 +164,44 @@ func newSearchEnv(t *testing.T) *searchEnv {
 			t.Fatalf("upsert setup failed: %v", err)
 		}
 	}
-	connector := &fakeSearchConnector{}
+	connector := &fakeSearchConnector{endpoint: endpoint, model: model, capability: cap}
 	vector := vectorstore.MycelFileBackend{GraphsDir: filepath.Join(root, "graphs")}
-	env := &searchEnv{spaceID: spaceID, domainID: domainID, userID: userID, globalMgr: globalMgr, spaceMgr: spaceMgr, vector: vector, connector: connector, endpoint: endpoint, model: model, capability: cap, vectorStore: vectorStore, credential: credential, grants: map[domainsemantic.SemanticIndexID]domainsemantic.CredentialGrant{}}
+	env := &searchEnv{spaceID: spaceID, domainID: domainID, userID: userID, globalMgr: globalMgr, spaceMgr: spaceMgr, vector: vector, connector: connector, endpoint: endpoint, model: model, capability: cap, vectorStore: vectorStore, credential: credential}
 	env.planner = Planner{GlobalManager: globalMgr, SpaceManager: spaceMgr, Connector: connector, VectorBackend: vector}
 	return env
 }
 
-func (e *searchEnv) addIndex(t *testing.T, key string, domainID graph.DomainID, allowed bool, grant bool) domainsemantic.SemanticIndex {
+func (e *searchEnv) binding(key string, vectorStoreID domainsemantic.VectorStoreID) domainsemantic.SemanticEmbeddingBinding {
+	return domainsemantic.SemanticEmbeddingBinding{Key: key, Purpose: string(domainsemantic.SemanticIndexPurposeSearch), IntelligenceProfile: "semantic-profile", VectorStoreID: vectorStoreID, Enabled: true}
+}
+
+func (e *searchEnv) addRule(t *testing.T, key string, bindings []domainsemantic.SemanticEmbeddingBinding) domainsemantic.SemanticGenerationRule {
 	t.Helper()
-	ctx := context.Background()
-	idx, err := e.spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: e.spaceID, DomainID: domainID, Key: key, Name: key, Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf}, ModelEndpointID: e.endpoint.ID, ModelID: e.model.ID, ModelEndpointCapabilityID: e.capability.ID, VectorStoreID: e.vectorStore.ID, Enabled: true, Metadata: map[string]any{"inference_profile": "semantic-profile"}})
+	rule, err := e.spaceMgr.UpsertSemanticRule(context.Background(), domainsemantic.SemanticGenerationRule{SpaceID: e.spaceID, DomainID: e.domainID, Key: key, DisplayName: key, Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf, IncludeProperties: []string{"payload.text"}}, Embeddings: bindings, Storage: domainsemantic.DefaultSemanticStoragePolicy(), OwnerPrincipalID: e.userID, CreatedByPrincipalID: e.userID})
 	if err != nil {
-		t.Fatalf("index upsert failed: %v", err)
+		t.Fatalf("rule upsert failed: %v", err)
 	}
-	effect := domainsemantic.PolicyEffectDeny
-	privacy := []domainsemantic.PrivacyClass(nil)
-	if allowed {
-		effect = domainsemantic.PolicyEffectAllow
-		privacy = []domainsemantic.PrivacyClass{domainsemantic.PrivacyClassThirdParty}
-	}
-	if _, err := e.spaceMgr.UpsertInferencePolicy(ctx, domainsemantic.InferencePolicy{Scope: domainsemantic.ProcessingScope{SpaceID: e.spaceID, DomainID: domainID, SemanticIndexID: idx.ID}, Effect: effect, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, AllowedPrivacyClasses: privacy, CreatedAt: time.Now().UTC()}); err != nil {
-		t.Fatalf("policy upsert failed: %v", err)
-	}
-	if grant {
-		g, err := e.spaceMgr.UpsertCredentialGrant(ctx, domainsemantic.CredentialGrant{CredentialID: e.credential.ID, Scope: domainsemantic.ProcessingScope{SpaceID: e.spaceID, DomainID: domainID, SemanticIndexID: idx.ID}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, ModelEndpointID: &e.endpoint.ID, ModelID: &e.model.ID, CreatedAt: time.Now().UTC()})
-		if err != nil {
-			t.Fatalf("grant upsert failed: %v", err)
-		}
-		e.grants[idx.ID] = g
-	}
-	return idx
+	return rule
+}
+
+func (e *searchEnv) record(ruleID domainsemantic.SemanticRuleID, bindingKey string, nodeID graph.NodeID, vector []float64, grantID domainsemantic.CredentialGrantID) domainsemantic.AdvancedEmbeddingRecord {
+	return domainsemantic.AdvancedEmbeddingRecord{SpaceID: e.spaceID, DomainID: e.domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "sha256:" + bindingKey, SourceMode: "self", ModelEndpointID: e.endpoint.ID, ModelID: e.model.ID, ModelEndpointCapabilityID: e.capability.ID, CredentialID: e.credential.ID, CredentialGrantID: grantID, VectorStoreID: e.vectorStore.ID, VectorSpaceKey: e.model.VectorSpaceKey, Dimensions: len(vector), Vector: vector, CreatedAt: time.Now().UTC()}
 }
 
 type fakeSearchConnector struct {
-	calls       []string
-	inputs      []connectors.EmbedInput
-	denyIndexes map[domainsemantic.SemanticIndexID]error
+	calls        []string
+	inputs       []connectors.EmbedInput
+	denyBindings map[string]error
+	endpoint     domainsemantic.ModelEndpoint
+	model        domainsemantic.InferenceModel
+	capability   domainsemantic.ModelEndpointCapability
 }
 
 func (f *fakeSearchConnector) Embed(ctx context.Context, in connectors.EmbedInput) (connectors.EmbeddingResponse, error) {
 	f.calls = append(f.calls, in.Input)
 	f.inputs = append(f.inputs, in)
-	if err := f.denyIndexes[in.SemanticIndexID]; err != nil {
+	if err := f.denyBindings[in.SemanticRuleID.String()+"/"+in.EmbeddingBindingKey]; err != nil {
 		return connectors.EmbeddingResponse{}, err
 	}
-	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "estimated"}, nil
+	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "estimated", EndpointID: f.endpoint.ID, ModelID: f.model.ID, CapabilityID: f.capability.ID, CredentialGrantID: domainsemantic.CredentialGrantID(uuid.New())}, nil
 }

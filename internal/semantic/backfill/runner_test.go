@@ -129,20 +129,20 @@ func TestRunnerBackfillsThroughStandaloneInferenceProfile(t *testing.T) {
 	fake := &inferenceconnectors.FakeConnector{Vector: []float64{0.2, 0.8, 0}}
 	inference.SetConnector(domaininference.ConnectorOpenAICompatible, fake)
 	profileID := uuid.New()
-	env.index.Metadata = map[string]any{"inference_profile_id": profileID.String()}
-	if _, err := env.spaceMgr.UpsertSemanticIndex(ctx, env.index); err != nil {
-		t.Fatalf("upsert profiled semantic index: %v", err)
+	rule, err := env.spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(env.index.ID), SpaceID: env.spaceID, DomainID: env.domainID, Key: "standalone-rule", DisplayName: "Standalone Rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorExplicit, NodeIDs: []graph.NodeID{root.ID}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSubtree}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: string(domainsemantic.SemanticIndexPurposeSearch), IntelligenceProfileID: domainsemantic.IntelligenceProfileID(profileID), VectorStoreID: env.index.VectorStoreID, Enabled: true}}})
+	if err != nil {
+		t.Fatalf("rule upsert failed: %v", err)
 	}
 	seedStandaloneInferenceForBackfill(t, ctx, inference, env, profileID)
 	runner := env.runner
 	runner.Connector = connectors.InferenceAdapter{Manager: inference}
 
-	result, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticIndexID: env.index.ID})
+	result, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID})
 	if err != nil {
 		t.Fatalf("backfill through inference failed: %v", err)
 	}
-	if result.GeneratedCount != 1 || result.Records[0].NodeID != root.ID || result.Records[0].PolicyDecisionID == uuid.Nil {
-		t.Fatalf("expected generated record with policy decision, result=%+v", result)
+	if result.GeneratedCount != 1 || result.Records[0].NodeID != root.ID || result.Records[0].SemanticRuleID != rule.ID || result.Records[0].EmbeddingBindingKey != "search" || result.Records[0].PolicyDecisionID == uuid.Nil {
+		t.Fatalf("expected generated rule record with policy decision, result=%+v", result)
 	}
 	if len(env.connector.calls) != 0 {
 		t.Fatalf("legacy semantic connector should not be called, calls=%+v", env.connector.calls)
@@ -160,7 +160,7 @@ func TestRunnerBackfillsThroughStandaloneInferenceProfile(t *testing.T) {
 		t.Fatalf("unexpected semantic search result: %+v", search)
 	}
 	events, err := inference.UsageLedger().ListUsageEvents(ctx)
-	if err != nil || len(events) != 2 || events[0].Status != domaininference.UsageStatusSucceeded || events[1].Status != domaininference.UsageStatusSucceeded || events[0].SemanticIndexID != env.index.ID.String() || events[1].SemanticIndexID != env.index.ID.String() {
+	if err != nil || len(events) != 2 || events[0].Status != domaininference.UsageStatusSucceeded || events[1].Status != domaininference.UsageStatusSucceeded || events[0].SemanticRuleID != rule.ID.String() || events[1].SemanticRuleID != rule.ID.String() || events[0].EmbeddingBindingKey != "search" || events[1].EmbeddingBindingKey != "search" {
 		t.Fatalf("unexpected standalone inference usage events: %#v err=%v", events, err)
 	}
 }
@@ -272,7 +272,7 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	if _, err := spaceMgr.UpsertInferencePolicy(ctx, domainsemantic.InferencePolicy{Scope: domainsemantic.ProcessingScope{SpaceID: spaceID, DomainID: domainID}, Effect: domainsemantic.PolicyEffectAllow, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, AllowedPrivacyClasses: []domainsemantic.PrivacyClass{domainsemantic.PrivacyClassThirdParty}, CreatedAt: now}); err != nil {
 		t.Fatalf("policy upsert failed: %v", err)
 	}
-	connector := &fakeConnector{}
+	connector := &fakeConnector{endpointID: endpointID, modelID: modelID, capID: capID}
 	vector := vectorstore.MycelFileBackend{GraphsDir: filepath.Join(root, "graphs")}
 	env := &backfillTestEnv{spaceID: spaceID, domainID: domainID, userID: userID, graph: graphReader, globalMgr: globalMgr, spaceMgr: spaceMgr, vector: vector, connector: connector, index: index, grant: grant}
 	env.runner = Runner{GraphReader: graphReader, GlobalManager: globalMgr, SpaceManager: spaceMgr, Connector: connector, VectorBackend: vector}
@@ -335,12 +335,115 @@ func (s *memoryGraphSource) ListEdges(_ context.Context, domainID graph.DomainID
 }
 
 type fakeConnector struct {
-	calls  []string
-	inputs []connectors.EmbedInput
+	calls      []string
+	inputs     []connectors.EmbedInput
+	endpointID domainsemantic.ModelEndpointID
+	modelID    domainsemantic.InferenceModelID
+	capID      domainsemantic.ModelEndpointCapabilityID
 }
 
 func (f *fakeConnector) Embed(ctx context.Context, in connectors.EmbedInput) (connectors.EmbeddingResponse, error) {
 	f.calls = append(f.calls, in.Input)
 	f.inputs = append(f.inputs, in)
-	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "estimated"}, nil
+	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "estimated", EndpointID: f.endpointID, ModelID: f.modelID, CapabilityID: f.capID}, nil
+}
+
+func TestRunnerBackfillsSemanticRuleBinding(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root, child := env.addRootWithChild(t, "root note", "child note")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	env.graph.nodes[1].Labels = []string{"Note"}
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true), env.semanticBinding("summary", true)})
+
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: "search"})
+	if err != nil {
+		t.Fatalf("rule backfill failed: %v", err)
+	}
+	if result.SemanticRuleID != rule.ID || result.EmbeddingBindingKey != "search" || result.SelectedCount != 1 || result.GeneratedCount != 1 {
+		t.Fatalf("unexpected rule backfill result: %+v", result)
+	}
+	if len(env.connector.inputs) != 1 || env.connector.inputs[0].SemanticRuleID != rule.ID || env.connector.inputs[0].EmbeddingBindingKey != "search" || env.connector.inputs[0].InferenceProfile != "semantic-profile" {
+		t.Fatalf("unexpected connector input: %+v", env.connector.inputs)
+	}
+	if !strings.Contains(env.connector.calls[0], "child note") {
+		t.Fatalf("expected subtree source in connector call, got %+v", env.connector.calls)
+	}
+	if len(result.Records) != 1 || result.Records[0].SemanticRuleID != rule.ID || result.Records[0].EmbeddingBindingKey != "search" || result.Records[0].TargetNodeID != root.ID || result.Records[0].NodeID != root.ID {
+		t.Fatalf("record missing rule/binding attribution: %+v child=%s", result.Records, child.ID)
+	}
+	search, err := env.vector.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), Query: []float64{1, 0, 0}, Limit: 10, MinScore: 0.5})
+	if err != nil || len(search) != 1 || search[0].Record.SemanticRuleID != rule.ID || search[0].Record.EmbeddingBindingKey != "search" {
+		t.Fatalf("unexpected rule vector search: search=%+v err=%v", search, err)
+	}
+}
+
+func TestRunnerBackfillsAllEnabledRuleBindingsAndSkipsCurrentHash(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	env.addRootWithChild(t, "root", "child")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	env.graph.nodes[1].Labels = []string{"Note"}
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true), env.semanticBinding("summary", true), env.semanticBinding("disabled", false)})
+
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID})
+	if err != nil {
+		t.Fatalf("rule backfill failed: %v", err)
+	}
+	if result.GeneratedCount != 2 || len(env.connector.inputs) != 2 {
+		t.Fatalf("expected two enabled bindings, result=%+v inputs=%+v", result, env.connector.inputs)
+	}
+	result, err = env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID})
+	if err != nil {
+		t.Fatalf("second rule backfill failed: %v", err)
+	}
+	if result.GeneratedCount != 0 || result.SkippedCount != 2 || len(env.connector.inputs) != 2 {
+		t.Fatalf("expected current hash skip per binding, result=%+v inputs=%+v", result, env.connector.inputs)
+	}
+}
+
+func TestRunnerRuleBackfillTombstonesShortSource(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root, child := env.addRootWithChild(t, "root note", "child note")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	env.graph.nodes[1].Labels = []string{"Note"}
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	if _, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID}); err != nil {
+		t.Fatalf("initial rule backfill failed: %v", err)
+	}
+	env.graph.UpdateNode(root.ID, " ")
+	env.graph.UpdateNode(child.ID, " ")
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID})
+	if err != nil {
+		t.Fatalf("short source backfill failed: %v", err)
+	}
+	if result.GeneratedCount != 0 || result.SkippedCount != 1 {
+		t.Fatalf("expected skipped tombstone, result=%+v", result)
+	}
+	search, err := env.vector.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), Query: []float64{1, 0, 0}, Limit: 10, MinScore: 0.5})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(search) != 0 {
+		t.Fatalf("expected tombstoned rule vector to be absent, got %+v", search)
+	}
+}
+
+func (e *backfillTestEnv) semanticBinding(key string, enabled bool) domainsemantic.SemanticEmbeddingBinding {
+	return domainsemantic.SemanticEmbeddingBinding{Key: key, Purpose: "semantic_search", IntelligenceProfile: "semantic-profile", VectorStoreID: e.index.VectorStoreID, Enabled: enabled}
+}
+
+func (e *backfillTestEnv) semanticRule(t *testing.T, bindings []domainsemantic.SemanticEmbeddingBinding) domainsemantic.SemanticGenerationRule {
+	t.Helper()
+	return e.semanticRuleWithID(t, uuid.Nil, bindings)
+}
+
+func (e *backfillTestEnv) semanticRuleWithID(t *testing.T, id domainsemantic.SemanticRuleID, bindings []domainsemantic.SemanticEmbeddingBinding) domainsemantic.SemanticGenerationRule {
+	t.Helper()
+	rule, err := e.spaceMgr.UpsertSemanticRule(context.Background(), domainsemantic.SemanticGenerationRule{ID: id, SpaceID: e.spaceID, DomainID: e.domainID, Key: "notes-rule-" + uuid.NewString(), DisplayName: "Notes Rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSubtree}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), Embeddings: bindings})
+	if err != nil {
+		t.Fatalf("rule upsert failed: %v", err)
+	}
+	return rule
 }

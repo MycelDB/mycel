@@ -15,8 +15,8 @@ import (
 
 // Credential and secret RPC handlers for AdminInferenceService.
 
-func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceCreateCredentialRequest) (*adminv1.AdminInferenceCredentialServiceCreateCredentialResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferenceCredentialManage, inferenceScope("", "")); err != nil {
+func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *adminv1.AdminIntelligenceAccessCredentialServiceCreateCredentialRequest) (*adminv1.AdminIntelligenceAccessCredentialServiceCreateCredentialResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capIntelligenceCredentialManage, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(req.GetKey()) == "" {
@@ -57,14 +57,14 @@ func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *admin
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert credential")
 	}
-	if err := s.syncInferenceCredential(ctx, credential); err != nil {
+	if err := s.syncIntelligenceCredential(ctx, credential); err != nil {
 		return nil, mapAdminInferenceError(err, "sync inference credential")
 	}
-	return &adminv1.AdminInferenceCredentialServiceCreateCredentialResponse{Secret: mapSecret(storedSecret), Credential: mapCredential(credential)}, nil
+	return &adminv1.AdminIntelligenceAccessCredentialServiceCreateCredentialResponse{Secret: mapSecret(storedSecret), Credential: mapCredential(credential)}, nil
 }
 
-func (s *AdminInferenceService) ListCredentials(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceListCredentialsRequest) (*adminv1.AdminInferenceCredentialServiceListCredentialsResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferenceCredentialRead, inferenceScope("", "")); err != nil {
+func (s *AdminInferenceService) ListCredentials(ctx context.Context, req *adminv1.AdminIntelligenceAccessCredentialServiceListCredentialsRequest) (*adminv1.AdminIntelligenceAccessCredentialServiceListCredentialsResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capIntelligenceCredentialRead, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	items, err := s.semantic.GlobalManager().ListCredentials(ctx)
@@ -92,11 +92,11 @@ func (s *AdminInferenceService) ListCredentials(ctx context.Context, req *adminv
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &adminv1.AdminInferenceCredentialServiceListCredentialsResponse{Credentials: mapCredentials(page), NextPageToken: next}, nil
+	return &adminv1.AdminIntelligenceAccessCredentialServiceListCredentialsResponse{Credentials: mapCredentials(page), NextPageToken: next}, nil
 }
 
-func (s *AdminInferenceService) SetCredentialStatus(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceSetCredentialStatusRequest) (*adminv1.AdminInferenceCredentialServiceSetCredentialStatusResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferenceCredentialManage, inferenceScope("", "")); err != nil {
+func (s *AdminInferenceService) SetCredentialStatus(ctx context.Context, req *adminv1.AdminIntelligenceAccessCredentialServiceSetCredentialStatusRequest) (*adminv1.AdminIntelligenceAccessCredentialServiceSetCredentialStatusResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capIntelligenceCredentialManage, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	id, err := s.resolveCredentialID(ctx, firstNonEmptyAdmin(req.GetCredentialId(), req.GetCredential()))
@@ -126,17 +126,17 @@ func (s *AdminInferenceService) SetCredentialStatus(ctx context.Context, req *ad
 			if err != nil {
 				return nil, mapAdminInferenceError(err, "update credential")
 			}
-			if err := s.syncInferenceCredential(ctx, stored); err != nil {
+			if err := s.syncIntelligenceCredential(ctx, stored); err != nil {
 				return nil, mapAdminInferenceError(err, "sync inference credential")
 			}
-			return &adminv1.AdminInferenceCredentialServiceSetCredentialStatusResponse{Credential: mapCredential(stored)}, nil
+			return &adminv1.AdminIntelligenceAccessCredentialServiceSetCredentialStatusResponse{Credential: mapCredential(stored)}, nil
 		}
 	}
 	return nil, status.Error(codes.NotFound, "credential not found")
 }
 
-func (s *AdminInferenceService) RotateCredential(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceRotateCredentialRequest) (*adminv1.AdminInferenceCredentialServiceRotateCredentialResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferenceCredentialManage, inferenceScope("", "")); err != nil {
+func (s *AdminInferenceService) RotateCredential(ctx context.Context, req *adminv1.AdminIntelligenceAccessCredentialServiceRotateCredentialRequest) (*adminv1.AdminIntelligenceAccessCredentialServiceRotateCredentialResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capIntelligenceCredentialManage, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	id, err := s.resolveCredentialID(ctx, firstNonEmptyAdmin(req.GetCredentialId(), req.GetCredential()))
@@ -172,13 +172,13 @@ func (s *AdminInferenceService) RotateCredential(ctx context.Context, req *admin
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "update rotated credential")
 	}
-	if err := s.syncInferenceCredential(ctx, storedCredential); err != nil {
+	if err := s.syncIntelligenceCredential(ctx, storedCredential); err != nil {
 		return nil, mapAdminInferenceError(err, "sync rotated inference credential")
 	}
-	return &adminv1.AdminInferenceCredentialServiceRotateCredentialResponse{Secret: mapSecret(storedSecret), Credential: mapCredential(storedCredential)}, nil
+	return &adminv1.AdminIntelligenceAccessCredentialServiceRotateCredentialResponse{Secret: mapSecret(storedSecret), Credential: mapCredential(storedCredential)}, nil
 }
 
-func (s *AdminInferenceService) rotatedSecretFromRequest(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceRotateCredentialRequest, credential domainsemantic.InferenceCredential) (domainsemantic.Secret, error) {
+func (s *AdminInferenceService) rotatedSecretFromRequest(ctx context.Context, req *adminv1.AdminIntelligenceAccessCredentialServiceRotateCredentialRequest, credential domainsemantic.InferenceCredential) (domainsemantic.Secret, error) {
 	secretValue := strings.TrimSpace(req.GetSecretValue())
 	if secretValue == "" {
 		return domainsemantic.Secret{}, status.Error(codes.InvalidArgument, "api key is required")
@@ -210,8 +210,8 @@ func (s *AdminInferenceService) hydrateCredentialFromInferenceStore(ctx context.
 	return nil
 }
 
-func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *adminv1.AdminInferenceCredentialServiceDeleteCredentialRequest) (*adminv1.AdminInferenceCredentialServiceDeleteCredentialResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferenceCredentialManage, inferenceScope("", "")); err != nil {
+func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *adminv1.AdminIntelligenceAccessCredentialServiceDeleteCredentialRequest) (*adminv1.AdminIntelligenceAccessCredentialServiceDeleteCredentialResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capIntelligenceCredentialManage, inferenceScope("", "")); err != nil {
 		return nil, err
 	}
 	id, err := s.resolveCredentialID(ctx, firstNonEmptyAdmin(req.GetCredentialId(), req.GetCredential()))
@@ -244,7 +244,7 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 	for _, space := range spaces {
 		refs, err := s.standaloneDecisionReferences(ctx, space.SpaceID.String(), func(decision domaininference.PolicyDecision) bool { return decision.CredentialID == id })
 		if err != nil {
-			return nil, mapAdminInferenceError(err, "list standalone inference policy decisions")
+			return nil, mapAdminInferenceError(err, "list standalone access policy decisions")
 		}
 		standaloneDecisionRefs = append(standaloneDecisionRefs, refs...)
 	}
@@ -340,7 +340,7 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 			return nil, mapAdminInferenceError(err, "delete inference credential")
 		}
 	}
-	return &adminv1.AdminInferenceCredentialServiceDeleteCredentialResponse{CredentialId: id.String(), CredentialGrantsDeleted: deletedGrants, SecretDeleted: secretDeleted}, nil
+	return &adminv1.AdminIntelligenceAccessCredentialServiceDeleteCredentialResponse{CredentialId: id.String(), CredentialGrantsDeleted: deletedGrants, SecretDeleted: secretDeleted}, nil
 }
 
 func secretSuffix(value string) string {

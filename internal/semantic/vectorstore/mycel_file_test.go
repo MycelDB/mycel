@@ -185,3 +185,123 @@ func writeV2Record(t *testing.T, path string, rec domainsemantic.AdvancedEmbeddi
 		t.Fatalf("sync v2 record failed: %v", err)
 	}
 }
+
+func TestMycelFilePhysicalSearchIndexRuleBindingLatestLive(t *testing.T) {
+	ctx := context.Background()
+	graphsDir := filepath.Join(t.TempDir(), "graphs")
+	backend := MycelFileBackend{GraphsDir: graphsDir}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(ruleID)
+	nodeID := graph.NodeID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	endpointID := domainsemantic.ModelEndpointID(uuid.New())
+	modelID := domainsemantic.InferenceModelID(uuid.New())
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+
+	oldRec, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: indexID, TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "old", SourceMode: "self", ModelEndpointID: endpointID, ModelID: modelID, VectorStoreID: storeID, VectorSpaceKey: "v3", Dimensions: 3, Vector: []float64{1, 0, 0}, CreatedAt: now})
+	if err != nil {
+		t.Fatalf("old upsert failed: %v", err)
+	}
+	latestRec, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: indexID, TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "new", SourceMode: "self", ModelEndpointID: endpointID, ModelID: modelID, VectorStoreID: storeID, VectorSpaceKey: "v3", Dimensions: 3, Vector: []float64{0, 1, 0}, CreatedAt: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("latest upsert failed: %v", err)
+	}
+
+	results, err := backend.Search(ctx, SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", VectorStoreID: storeID, VectorSpaceKey: "v3", Query: []float64{0, 1, 0}, Limit: 10})
+	if err != nil {
+		t.Fatalf("physical search failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Record.ID != latestRec.ID || results[0].Record.ID == oldRec.ID || results[0].SemanticRuleID != ruleID || results[0].EmbeddingBindingKey != "search" {
+		t.Fatalf("expected latest live rule/binding result, got %+v", results)
+	}
+	latestPath := filepath.Join(graphsDir, spaceID.String(), "semantic", searchIndexesDir, ruleID.String(), "search", searchIndexLatestFile)
+	if _, err := os.Stat(latestPath); err != nil {
+		t.Fatalf("expected latest-live index file: %v", err)
+	}
+}
+
+func TestMycelFilePhysicalSearchIndexBindingIsolationAndTombstone(t *testing.T) {
+	ctx := context.Background()
+	backend := MycelFileBackend{GraphsDir: filepath.Join(t.TempDir(), "graphs")}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(ruleID)
+	nodeID := graph.NodeID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	endpointID := domainsemantic.ModelEndpointID(uuid.New())
+	modelID := domainsemantic.InferenceModelID(uuid.New())
+	now := time.Now().UTC()
+
+	searchRec, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: indexID, TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "search", SourceMode: "self", ModelEndpointID: endpointID, ModelID: modelID, VectorStoreID: storeID, VectorSpaceKey: "v3", Dimensions: 3, Vector: []float64{1, 0, 0}, CreatedAt: now})
+	if err != nil {
+		t.Fatalf("search binding upsert failed: %v", err)
+	}
+	if _, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "summary", SemanticIndexID: indexID, TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "summary", SourceMode: "self", ModelEndpointID: endpointID, ModelID: modelID, VectorStoreID: storeID, VectorSpaceKey: "v3", Dimensions: 3, Vector: []float64{0, 1, 0}, CreatedAt: now}); err != nil {
+		t.Fatalf("summary binding upsert failed: %v", err)
+	}
+	if _, err := backend.Delete(ctx, DeleteInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: indexID, NodeID: nodeID, VectorStoreID: storeID, TargetRecordID: searchRec.ID, SourceMode: "self", Reason: "test", ModelEndpointID: endpointID, ModelID: modelID, CreatedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("search binding delete failed: %v", err)
+	}
+
+	searchResults, err := backend.Search(ctx, SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", VectorStoreID: storeID, VectorSpaceKey: "v3", Query: []float64{1, 0, 0}, Limit: 10})
+	if err != nil {
+		t.Fatalf("search binding query failed: %v", err)
+	}
+	if len(searchResults) != 0 {
+		t.Fatalf("expected tombstoned search binding removed, got %+v", searchResults)
+	}
+	summaryResults, err := backend.Search(ctx, SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "summary", VectorStoreID: storeID, VectorSpaceKey: "v3", Query: []float64{0, 1, 0}, Limit: 10})
+	if err != nil {
+		t.Fatalf("summary binding query failed: %v", err)
+	}
+	if len(summaryResults) != 1 || summaryResults[0].EmbeddingBindingKey != "summary" {
+		t.Fatalf("expected summary binding isolated, got %+v", summaryResults)
+	}
+}
+
+func TestMycelFilePhysicalSearchIndexMissingFailsClosedAndBoundedRebuild(t *testing.T) {
+	ctx := context.Background()
+	backend := MycelFileBackend{GraphsDir: filepath.Join(t.TempDir(), "graphs")}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(ruleID)
+	nodeID := graph.NodeID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	endpointID := domainsemantic.ModelEndpointID(uuid.New())
+	modelID := domainsemantic.InferenceModelID(uuid.New())
+
+	if _, err := backend.Search(ctx, SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", VectorStoreID: storeID, VectorSpaceKey: "v3", Query: []float64{1, 0, 0}, Limit: 10}); err == nil {
+		t.Fatal("expected missing rule-native physical index to fail closed")
+	}
+	if _, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: indexID, TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "search", SourceMode: "self", ModelEndpointID: endpointID, ModelID: modelID, VectorStoreID: storeID, VectorSpaceKey: "v3", Dimensions: 3, Vector: []float64{1, 0, 0}, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("upsert failed: %v", err)
+	}
+	key := SearchIndexKey{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", VectorStoreID: storeID, VectorSpaceKey: "v3"}
+	if err := os.Remove(backend.searchLatestPath(key)); err != nil {
+		t.Fatalf("remove physical index failed: %v", err)
+	}
+	if _, err := backend.Search(ctx, SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", VectorStoreID: storeID, VectorSpaceKey: "v3", Query: []float64{1, 0, 0}, Limit: 10}); err == nil {
+		t.Fatal("expected removed physical index to fail closed")
+	}
+	state, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 10})
+	if err != nil || state.State != "ready" || state.LiveRecordCount != 1 {
+		t.Fatalf("unexpected rebuild state=%+v err=%v", state, err)
+	}
+	results, err := backend.Search(ctx, SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", VectorStoreID: storeID, VectorSpaceKey: "v3", Query: []float64{1, 0, 0}, Limit: 10})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("expected rebuilt physical index search result, results=%+v err=%v", results, err)
+	}
+	if _, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 0}); err != nil {
+		t.Fatalf("unlimited rebuild should work: %v", err)
+	}
+	if _, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 0}); err != nil {
+		t.Fatalf("repeat unlimited rebuild should work: %v", err)
+	}
+	if _, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 0}); err != nil {
+		t.Fatalf("third unlimited rebuild should work: %v", err)
+	}
+}

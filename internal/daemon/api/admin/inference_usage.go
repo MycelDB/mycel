@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func (s *AdminInferenceService) ListUsageEvents(ctx context.Context, req *adminv1.AdminInferenceUsageServiceListUsageEventsRequest) (*adminv1.AdminInferenceUsageServiceListUsageEventsResponse, error) {
+func (s *AdminInferenceService) ListUsageEvents(ctx context.Context, req *adminv1.AdminIntelligenceAccessUsageServiceListUsageEventsRequest) (*adminv1.AdminIntelligenceAccessUsageServiceListUsageEventsResponse, error) {
 	if _, err := s.requireInferenceCapability(ctx, capInferenceAuditRead, inferenceScope(req.GetSpaceId(), req.GetScope().GetDomainId())); err != nil {
 		return nil, err
 	}
@@ -30,10 +30,10 @@ func (s *AdminInferenceService) ListUsageEvents(ctx context.Context, req *adminv
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &adminv1.AdminInferenceUsageServiceListUsageEventsResponse{UsageEvents: mapStandaloneUsageEvents(page), NextPageToken: next}, nil
+	return &adminv1.AdminIntelligenceAccessUsageServiceListUsageEventsResponse{UsageEvents: mapStandaloneUsageEvents(page), NextPageToken: next}, nil
 }
 
-func (s *AdminInferenceService) SummarizeUsage(ctx context.Context, req *adminv1.AdminInferenceUsageServiceSummarizeUsageRequest) (*adminv1.AdminInferenceUsageServiceSummarizeUsageResponse, error) {
+func (s *AdminInferenceService) SummarizeUsage(ctx context.Context, req *adminv1.AdminIntelligenceAccessUsageServiceSummarizeUsageRequest) (*adminv1.AdminIntelligenceAccessUsageServiceSummarizeUsageResponse, error) {
 	if _, err := s.requireInferenceCapability(ctx, capInferenceAuditRead, inferenceScope(req.GetSpaceId(), req.GetScope().GetDomainId())); err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (s *AdminInferenceService) SummarizeUsage(ctx context.Context, req *adminv1
 	}
 	items = filterStandaloneUsageEvents(items, usageFilter{SpaceID: req.GetSpaceId(), Scope: inferenceScopeFromProto(req.GetScope()), Since: timeValueFromProto(req.GetSince()), Until: timeValueFromProto(req.GetUntil())})
 	groups := summarizeStandaloneUsage(items, req.GetGroupBy())
-	return &adminv1.AdminInferenceUsageServiceSummarizeUsageResponse{Summaries: groups}, nil
+	return &adminv1.AdminIntelligenceAccessUsageServiceSummarizeUsageResponse{Summaries: groups}, nil
 }
 
 type usageFilter struct {
@@ -61,15 +61,16 @@ type usageFilter struct {
 	CredentialGrantID     string
 	AutomationID          string
 	AutomationRunID       string
-	SemanticIndexID       string
+	SemanticRuleID        string
+	EmbeddingBindingKey   string
 	ActorPrincipalID      string
 	OnBehalfOfPrincipalID string
 	Since                 time.Time
 	Until                 time.Time
 }
 
-func usageFilterFromListRequest(req *adminv1.AdminInferenceUsageServiceListUsageEventsRequest) usageFilter {
-	return usageFilter{SpaceID: req.GetSpaceId(), Scope: inferenceScopeFromProto(req.GetScope()), Operation: inferenceOperationFromProto(req.GetOperation()), UsageMode: inferenceUsageModeFromProto(req.GetUsageMode()), Status: inferenceUsageStatusFromProto(req.GetStatus()), ProfileID: req.GetInferenceProfileId(), EndpointID: req.GetModelEndpointId(), ModelID: req.GetModelId(), CredentialGrantID: req.GetCredentialGrantId(), AutomationID: req.GetAutomationId(), AutomationRunID: req.GetAutomationRunId(), SemanticIndexID: req.GetSemanticIndexId(), ActorPrincipalID: req.GetActorPrincipalId(), OnBehalfOfPrincipalID: req.GetOnBehalfOfPrincipalId(), Since: timeValueFromProto(req.GetSince()), Until: timeValueFromProto(req.GetUntil())}
+func usageFilterFromListRequest(req *adminv1.AdminIntelligenceAccessUsageServiceListUsageEventsRequest) usageFilter {
+	return usageFilter{SpaceID: req.GetSpaceId(), Scope: inferenceScopeFromProto(req.GetScope()), Operation: inferenceOperationFromProto(req.GetOperation()), UsageMode: inferenceUsageModeFromProto(req.GetUsageMode()), Status: inferenceUsageStatusFromProto(req.GetStatus()), ProfileID: req.GetIntelligenceProfileId(), EndpointID: req.GetModelEndpointId(), ModelID: req.GetModelId(), CredentialGrantID: req.GetCredentialGrantId(), AutomationID: req.GetAutomationId(), AutomationRunID: req.GetAutomationRunId(), SemanticRuleID: req.GetSemanticRuleId(), EmbeddingBindingKey: req.GetEmbeddingBindingKey(), ActorPrincipalID: req.GetActorPrincipalId(), OnBehalfOfPrincipalID: req.GetOnBehalfOfPrincipalId(), Since: timeValueFromProto(req.GetSince()), Until: timeValueFromProto(req.GetUntil())}
 }
 
 func filterStandaloneUsageEvents(items []domaininference.UsageEvent, filter usageFilter) []domaininference.UsageEvent {
@@ -84,7 +85,7 @@ func filterStandaloneUsageEvents(items []domaininference.UsageEvent, filter usag
 		if filter.Scope.DomainID != "" && item.DomainID != filter.Scope.DomainID {
 			continue
 		}
-		if filter.Scope.SemanticIndexID != "" && item.SemanticIndexID != filter.Scope.SemanticIndexID {
+		if filter.Scope.SemanticRuleID != "" && item.SemanticRuleID != filter.Scope.SemanticRuleID {
 			continue
 		}
 		if filter.Scope.NodeID != "" && item.NodeID != filter.Scope.NodeID {
@@ -117,7 +118,10 @@ func filterStandaloneUsageEvents(items []domaininference.UsageEvent, filter usag
 		if filter.AutomationRunID != "" && item.AutomationRunID != filter.AutomationRunID {
 			continue
 		}
-		if filter.SemanticIndexID != "" && item.SemanticIndexID != filter.SemanticIndexID {
+		if filter.SemanticRuleID != "" && item.SemanticRuleID != filter.SemanticRuleID {
+			continue
+		}
+		if filter.EmbeddingBindingKey != "" && item.EmbeddingBindingKey != filter.EmbeddingBindingKey {
 			continue
 		}
 		if filter.ActorPrincipalID != "" && item.ActorPrincipalID != filter.ActorPrincipalID {
@@ -137,17 +141,17 @@ func filterStandaloneUsageEvents(items []domaininference.UsageEvent, filter usag
 	return out
 }
 
-func summarizeStandaloneUsage(items []domaininference.UsageEvent, groupBy []string) []*adminv1.InferenceUsageSummary {
+func summarizeStandaloneUsage(items []domaininference.UsageEvent, groupBy []string) []*adminv1.IntelligenceAccessUsageSummary {
 	if len(groupBy) == 0 {
 		groupBy = []string{"space_id", "operation", "usage_mode", "status"}
 	}
-	byKey := map[string]*adminv1.InferenceUsageSummary{}
+	byKey := map[string]*adminv1.IntelligenceAccessUsageSummary{}
 	for _, item := range items {
 		group := usageGroup(item, groupBy)
 		key := usageGroupKey(groupBy, group)
 		summary := byKey[key]
 		if summary == nil {
-			summary = &adminv1.InferenceUsageSummary{Group: group}
+			summary = &adminv1.IntelligenceAccessUsageSummary{Group: group}
 			byKey[key] = summary
 		}
 		summary.RequestCount++
@@ -164,7 +168,7 @@ func summarizeStandaloneUsage(items []domaininference.UsageEvent, groupBy []stri
 		summary.TotalTokens += item.TotalTokens
 		summary.TotalLatencyMillis += item.LatencyMillis
 	}
-	out := make([]*adminv1.InferenceUsageSummary, 0, len(byKey))
+	out := make([]*adminv1.IntelligenceAccessUsageSummary, 0, len(byKey))
 	for _, summary := range byKey {
 		out = append(out, summary)
 	}
@@ -189,7 +193,7 @@ func usageGroup(item domaininference.UsageEvent, groupBy []string) map[string]st
 			out[field] = string(item.UsageMode)
 		case "status":
 			out[field] = string(item.Status)
-		case "profile", "profile_id", "inference_profile_id":
+		case "profile", "profile_id", "intelligence_profile_id":
 			out[field] = uuidOrEmptyAdmin(item.ProfileID)
 		case "endpoint", "model_endpoint_id":
 			out[field] = uuidOrEmptyAdmin(item.EndpointID)
@@ -199,8 +203,10 @@ func usageGroup(item domaininference.UsageEvent, groupBy []string) map[string]st
 			out[field] = uuidOrEmptyAdmin(item.CredentialGrantID)
 		case "automation", "automation_id":
 			out[field] = item.AutomationID
-		case "semantic_index", "semantic_index_id":
-			out[field] = item.SemanticIndexID
+		case "semantic_rule", "semantic_rule_id", "semantic_index", "semantic_index_id":
+			out[field] = firstNonEmptyAdmin(item.SemanticRuleID, item.SemanticIndexID)
+		case "embedding_binding", "embedding_binding_key":
+			out[field] = item.EmbeddingBindingKey
 		case "actor", "actor_principal_id":
 			out[field] = item.ActorPrincipalID
 		}
@@ -219,14 +225,14 @@ func usageGroupKey(groupBy []string, group map[string]string) string {
 func inferenceScopeFromProto(in interface {
 	GetSpaceId() string
 	GetDomainId() string
-	GetSemanticIndexId() string
+	GetSemanticRuleId() string
 	GetNodeId() string
 	GetIncludeDescendants() bool
 }) domaininference.Scope {
 	if in == nil {
 		return domaininference.Scope{}
 	}
-	return domaininference.Scope{SpaceID: in.GetSpaceId(), DomainID: in.GetDomainId(), SemanticIndexID: in.GetSemanticIndexId(), NodeID: in.GetNodeId(), IncludeDescendants: in.GetIncludeDescendants()}
+	return domaininference.Scope{SpaceID: in.GetSpaceId(), DomainID: in.GetDomainId(), SemanticRuleID: in.GetSemanticRuleId(), SemanticIndexID: in.GetSemanticRuleId(), NodeID: in.GetNodeId(), IncludeDescendants: in.GetIncludeDescendants()}
 }
 
 func timeValueFromProto(ts *timestamppb.Timestamp) time.Time {

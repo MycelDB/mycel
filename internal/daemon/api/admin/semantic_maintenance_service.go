@@ -49,7 +49,11 @@ func (s *AdminSemanticMaintenanceService) ListSemanticMaintenanceWork(ctx contex
 	if err != nil {
 		return nil, err
 	}
-	items, err := s.semantic.ListMaintenanceWork(ctx, daemonsemantic.MaintenanceWorkListInput{SpaceID: spaceID, Status: req.GetStatus(), Limit: int(req.GetLimit())})
+	ruleID, err := optionalSemanticUUID[domainsemantic.SemanticRuleID](req.GetSemanticRuleId(), "semantic_rule_id")
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.semantic.ListMaintenanceWork(ctx, daemonsemantic.MaintenanceWorkListInput{SpaceID: spaceID, Status: req.GetStatus(), Limit: int(req.GetLimit()), SemanticRuleID: ruleID, EmbeddingBindingKey: req.GetEmbeddingBindingKey()})
 	if err != nil {
 		return nil, mapAdminSemanticMaintenanceError(err, "list semantic maintenance work")
 	}
@@ -98,11 +102,11 @@ func (s *AdminSemanticMaintenanceService) AnalyzeSemanticDirtyWork(ctx context.C
 	if err != nil {
 		return nil, err
 	}
-	indexID, err := optionalSemanticUUID[domainsemantic.SemanticIndexID](req.GetSemanticIndexId(), "semantic_index_id")
+	ruleID, err := optionalSemanticUUID[domainsemantic.SemanticRuleID](req.GetSemanticRuleId(), "semantic_rule_id")
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.semantic.AnalyzeDirtyWork(ctx, daemonsemantic.AnalyzeInput{SpaceID: spaceID, SemanticIndexID: indexID, Limit: int(req.GetLimit())})
+	res, err := s.semantic.AnalyzeDirtyWork(ctx, daemonsemantic.AnalyzeInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: req.GetEmbeddingBindingKey(), Limit: int(req.GetLimit())})
 	if err != nil {
 		return nil, mapAdminSemanticMaintenanceError(err, "analyze semantic dirty work")
 	}
@@ -124,7 +128,7 @@ func (s *AdminSemanticMaintenanceService) ProcessSemanticDirtyWork(ctx context.C
 	return &adminv1.ProcessSemanticDirtyWorkResponse{ProcessedItems: int32(res.Processed), CompletedItems: int32(res.Completed), FailedItems: int32(res.Failed)}, nil
 }
 
-func (s *AdminSemanticMaintenanceService) BackfillSemanticIndex(ctx context.Context, req *adminv1.BackfillSemanticIndexRequest) (*adminv1.BackfillSemanticIndexResponse, error) {
+func (s *AdminSemanticMaintenanceService) BackfillSemanticRule(ctx context.Context, req *adminv1.BackfillSemanticRuleRequest) (*adminv1.BackfillSemanticRuleResponse, error) {
 	if err := s.requireMaintenance(ctx); err != nil {
 		return nil, err
 	}
@@ -132,7 +136,7 @@ func (s *AdminSemanticMaintenanceService) BackfillSemanticIndex(ctx context.Cont
 	if err != nil {
 		return nil, err
 	}
-	indexID, err := parseSemanticUUID[domainsemantic.SemanticIndexID](req.GetSemanticIndexId(), "semantic_index_id")
+	ruleID, err := parseSemanticUUID[domainsemantic.SemanticRuleID](req.GetSemanticRuleId(), "semantic_rule_id")
 	if err != nil {
 		return nil, err
 	}
@@ -144,9 +148,9 @@ func (s *AdminSemanticMaintenanceService) BackfillSemanticIndex(ctx context.Cont
 		}
 		nodeIDs = append(nodeIDs, id)
 	}
-	res, err := s.semantic.BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticIndexID: indexID, NodeIDs: nodeIDs, Force: req.GetForce(), Limit: int(req.GetLimit()), ContinueOnError: req.GetContinueOnError()})
+	res, err := s.semantic.BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: req.GetEmbeddingBindingKey(), NodeIDs: nodeIDs, Force: req.GetForce(), Limit: int(req.GetLimit()), ContinueOnError: req.GetContinueOnError()})
 	if err != nil {
-		return nil, mapAdminSemanticMaintenanceError(err, "backfill semantic index")
+		return nil, mapAdminSemanticMaintenanceError(err, "backfill semantic rule")
 	}
 	return mapBackfillResponse(res), nil
 }
@@ -179,7 +183,7 @@ func parseMaintenanceWorkControl(spaceIDText string, workIDText string) (domains
 }
 
 func mapMaintenanceWorkItem(item daemonsemantic.MaintenanceWorkItem) *adminv1.SemanticMaintenanceWorkItem {
-	return &adminv1.SemanticMaintenanceWorkItem{WorkItemId: item.ID.String(), SpaceId: item.SpaceID.String(), DomainId: item.DomainID.String(), SemanticIndexId: item.SemanticIndexID.String(), TargetNodeId: item.TargetNodeID.String(), Action: item.Action, Status: item.Status, AttemptCount: int32(item.AttemptCount), NotBefore: formatMaintenanceTime(item.NotBefore), ClaimedUntil: formatMaintenanceTime(item.ClaimedUntil), LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: item.LastErrorMessageSanitized, CreatedAt: formatMaintenanceTime(item.CreatedAt), UpdatedAt: formatMaintenanceTime(item.UpdatedAt)}
+	return &adminv1.SemanticMaintenanceWorkItem{WorkItemId: item.ID.String(), SpaceId: item.SpaceID.String(), DomainId: item.DomainID.String(), SemanticRuleId: item.SemanticRuleID.String(), EmbeddingBindingKey: item.EmbeddingBindingKey, TargetNodeId: item.TargetNodeID.String(), Action: item.Action, Status: item.Status, AttemptCount: int32(item.AttemptCount), NotBefore: formatMaintenanceTime(item.NotBefore), ClaimedUntil: formatMaintenanceTime(item.ClaimedUntil), LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: item.LastErrorMessageSanitized, CreatedAt: formatMaintenanceTime(item.CreatedAt), UpdatedAt: formatMaintenanceTime(item.UpdatedAt)}
 }
 
 func formatMaintenanceTime(value time.Time) string {
@@ -189,8 +193,8 @@ func formatMaintenanceTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-func mapBackfillResponse(res semanticbackfill.Result) *adminv1.BackfillSemanticIndexResponse {
-	out := &adminv1.BackfillSemanticIndexResponse{SemanticIndexId: uuid.UUID(res.SemanticIndexID).String(), SelectedCount: int32(res.SelectedCount), GeneratedCount: int32(res.GeneratedCount), SkippedCount: int32(res.SkippedCount), FailedCount: int32(res.FailedCount)}
+func mapBackfillResponse(res semanticbackfill.Result) *adminv1.BackfillSemanticRuleResponse {
+	out := &adminv1.BackfillSemanticRuleResponse{SemanticRuleId: uuid.UUID(res.SemanticRuleID).String(), EmbeddingBindingKey: res.EmbeddingBindingKey, SelectedCount: int32(res.SelectedCount), GeneratedCount: int32(res.GeneratedCount), SkippedCount: int32(res.SkippedCount), FailedCount: int32(res.FailedCount)}
 	for _, skipped := range res.Skipped {
 		out.Skipped = append(out.Skipped, &adminv1.BackfillSkipped{NodeId: uuid.UUID(skipped.NodeID).String(), Reason: skipped.Reason})
 	}

@@ -117,15 +117,15 @@ func (s *AdminInferenceService) resolveCredentialID(ctx context.Context, ref str
 }
 
 const (
-	capInferenceCatalogRead      = "inference.catalog.read"
-	capInferenceCatalogManage    = "inference.catalog.manage"
-	capInferenceProfileRead      = "inference.profile.read"
-	capInferenceProfileManage    = "inference.profile.manage"
-	capInferenceCredentialRead   = "inference.credential.read"
-	capInferenceCredentialManage = "inference.credential.manage"
-	capInferenceGrantManage      = "inference.grant.manage"
-	capInferencePolicyManage     = "inference.policy.manage"
-	capInferenceAuditRead        = "inference.audit.read"
+	capInferenceCatalogRead         = "inference.catalog.read"
+	capInferenceCatalogManage       = "inference.catalog.manage"
+	capIntelligenceProfileRead      = "inference.profile.read"
+	capIntelligenceProfileManage    = "inference.profile.manage"
+	capIntelligenceCredentialRead   = "inference.credential.read"
+	capIntelligenceCredentialManage = "inference.credential.manage"
+	capInferenceGrantManage         = "inference.grant.manage"
+	capAccessPolicyManage           = "inference.policy.manage"
+	capInferenceAuditRead           = "inference.audit.read"
 )
 
 type ScopedOperatorAuthorizer interface {

@@ -14,8 +14,8 @@ import (
 
 // Profile RPC handlers for the standalone inference subsystem.
 
-func (s *AdminInferenceService) CreateInferenceProfile(ctx context.Context, req *adminv1.AdminInferenceProfileServiceCreateInferenceProfileRequest) (*adminv1.AdminInferenceProfileServiceCreateInferenceProfileResponse, error) {
-	principal, err := s.requireInferenceCapability(ctx, capInferenceProfileManage, inferenceScope(req.GetSpaceId(), ""))
+func (s *AdminInferenceService) CreateIntelligenceProfile(ctx context.Context, req *adminv1.AdminIntelligenceAccessProfileServiceCreateIntelligenceProfileRequest) (*adminv1.AdminIntelligenceAccessProfileServiceCreateIntelligenceProfileResponse, error) {
+	principal, err := s.requireInferenceCapability(ctx, capIntelligenceProfileManage, inferenceScope(req.GetSpaceId(), ""))
 	if err != nil {
 		return nil, err
 	}
@@ -34,12 +34,12 @@ func (s *AdminInferenceService) CreateInferenceProfile(ctx context.Context, req 
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert inference profile")
 	}
-	return &adminv1.AdminInferenceProfileServiceCreateInferenceProfileResponse{InferenceProfile: mapInferenceProfile(stored)}, nil
+	return &adminv1.AdminIntelligenceAccessProfileServiceCreateIntelligenceProfileResponse{IntelligenceProfile: mapIntelligenceProfile(stored)}, nil
 }
 
-func (s *AdminInferenceService) ListInferenceProfiles(ctx context.Context, req *adminv1.AdminInferenceProfileServiceListInferenceProfilesRequest) (*adminv1.AdminInferenceProfileServiceListInferenceProfilesResponse, error) {
+func (s *AdminInferenceService) ListIntelligenceProfiles(ctx context.Context, req *adminv1.AdminIntelligenceAccessProfileServiceListIntelligenceProfilesRequest) (*adminv1.AdminIntelligenceAccessProfileServiceListIntelligenceProfilesResponse, error) {
 	spaceID := strings.TrimSpace(req.GetSpaceId())
-	if _, err := s.requireInferenceCapability(ctx, capInferenceProfileRead, inferenceScope(spaceID, req.GetDomainId())); err != nil {
+	if _, err := s.requireInferenceCapability(ctx, capIntelligenceProfileRead, inferenceScope(spaceID, req.GetDomainId())); err != nil {
 		return nil, err
 	}
 	if s.inference == nil {
@@ -73,25 +73,25 @@ func (s *AdminInferenceService) ListInferenceProfiles(ctx context.Context, req *
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &adminv1.AdminInferenceProfileServiceListInferenceProfilesResponse{InferenceProfiles: mapInferenceProfiles(page), NextPageToken: next}, nil
+	return &adminv1.AdminIntelligenceAccessProfileServiceListIntelligenceProfilesResponse{IntelligenceProfiles: mapIntelligenceProfiles(page), NextPageToken: next}, nil
 }
 
-func (s *AdminInferenceService) GetInferenceProfile(ctx context.Context, req *adminv1.AdminInferenceProfileServiceGetInferenceProfileRequest) (*adminv1.AdminInferenceProfileServiceGetInferenceProfileResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferenceProfileRead, inferenceScope(req.GetSpaceId(), "")); err != nil {
+func (s *AdminInferenceService) GetIntelligenceProfile(ctx context.Context, req *adminv1.AdminIntelligenceAccessProfileServiceGetIntelligenceProfileRequest) (*adminv1.AdminIntelligenceAccessProfileServiceGetIntelligenceProfileResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capIntelligenceProfileRead, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
-	profile, err := s.resolveInferenceProfile(ctx, req.GetSpaceId(), firstNonEmptyAdmin(req.GetInferenceProfileId(), req.GetInferenceProfile()))
+	profile, err := s.resolveIntelligenceProfile(ctx, req.GetSpaceId(), firstNonEmptyAdmin(req.GetIntelligenceProfileId(), req.GetIntelligenceProfile()))
 	if err != nil {
 		return nil, err
 	}
-	return &adminv1.AdminInferenceProfileServiceGetInferenceProfileResponse{InferenceProfile: mapInferenceProfile(profile)}, nil
+	return &adminv1.AdminIntelligenceAccessProfileServiceGetIntelligenceProfileResponse{IntelligenceProfile: mapIntelligenceProfile(profile)}, nil
 }
 
-func (s *AdminInferenceService) SetInferenceProfileEnabled(ctx context.Context, req *adminv1.AdminInferenceProfileServiceSetInferenceProfileEnabledRequest) (*adminv1.AdminInferenceProfileServiceSetInferenceProfileEnabledResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferenceProfileManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
+func (s *AdminInferenceService) SetIntelligenceProfileEnabled(ctx context.Context, req *adminv1.AdminIntelligenceAccessProfileServiceSetIntelligenceProfileEnabledRequest) (*adminv1.AdminIntelligenceAccessProfileServiceSetIntelligenceProfileEnabledResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capIntelligenceProfileManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
-	profile, err := s.resolveInferenceProfile(ctx, req.GetSpaceId(), firstNonEmptyAdmin(req.GetInferenceProfileId(), req.GetInferenceProfile()))
+	profile, err := s.resolveIntelligenceProfile(ctx, req.GetSpaceId(), firstNonEmptyAdmin(req.GetIntelligenceProfileId(), req.GetIntelligenceProfile()))
 	if err != nil {
 		return nil, err
 	}
@@ -104,14 +104,14 @@ func (s *AdminInferenceService) SetInferenceProfileEnabled(ctx context.Context, 
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "update inference profile")
 	}
-	return &adminv1.AdminInferenceProfileServiceSetInferenceProfileEnabledResponse{InferenceProfile: mapInferenceProfile(stored)}, nil
+	return &adminv1.AdminIntelligenceAccessProfileServiceSetIntelligenceProfileEnabledResponse{IntelligenceProfile: mapIntelligenceProfile(stored)}, nil
 }
 
-func (s *AdminInferenceService) DeleteInferenceProfile(ctx context.Context, req *adminv1.AdminInferenceProfileServiceDeleteInferenceProfileRequest) (*adminv1.AdminInferenceProfileServiceDeleteInferenceProfileResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferenceProfileManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
+func (s *AdminInferenceService) DeleteIntelligenceProfile(ctx context.Context, req *adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileRequest) (*adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capIntelligenceProfileManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
-	profile, err := s.resolveInferenceProfile(ctx, req.GetSpaceId(), firstNonEmptyAdmin(req.GetInferenceProfileId(), req.GetInferenceProfile()))
+	profile, err := s.resolveIntelligenceProfile(ctx, req.GetSpaceId(), firstNonEmptyAdmin(req.GetIntelligenceProfileId(), req.GetIntelligenceProfile()))
 	if err != nil {
 		return nil, err
 	}
@@ -129,10 +129,10 @@ func (s *AdminInferenceService) DeleteInferenceProfile(ctx context.Context, req 
 	if err := mgr.DeleteProfile(ctx, profile.ID); err != nil {
 		return nil, mapAdminInferenceError(err, "delete inference profile")
 	}
-	return &adminv1.AdminInferenceProfileServiceDeleteInferenceProfileResponse{InferenceProfileId: profile.ID.String()}, nil
+	return &adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileResponse{IntelligenceProfileId: profile.ID.String()}, nil
 }
 
-func (s *AdminInferenceService) resolveInferenceProfile(ctx context.Context, spaceID string, ref string) (domaininference.Profile, error) {
+func (s *AdminInferenceService) resolveIntelligenceProfile(ctx context.Context, spaceID string, ref string) (domaininference.Profile, error) {
 	if s.inference == nil {
 		return domaininference.Profile{}, status.Error(codes.FailedPrecondition, "inference subsystem is not configured")
 	}

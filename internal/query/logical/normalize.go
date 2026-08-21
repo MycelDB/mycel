@@ -183,7 +183,7 @@ func fromStructuredPredicate(expr *clientv1.Expr) *Predicate {
 		return leafPredicate(classifyLeaf(Leaf{Kind: LeafText, Alias: v.Text.GetAlias(), Namespace: ns, Property: prop, Query: v.Text.GetQuery()}))
 	case *clientv1.Expr_Semantic:
 		ns, prop := propertyParts(v.Semantic.GetField())
-		return leafPredicate(classifyLeaf(Leaf{Kind: LeafSemantic, Alias: v.Semantic.GetAlias(), Namespace: ns, Property: prop, Query: v.Semantic.GetQuery(), IndexRef: v.Semantic.GetIndexRef(), Limit: v.Semantic.GetLimit()}))
+		return leafPredicate(classifyLeaf(Leaf{Kind: LeafSemantic, Alias: v.Semantic.GetAlias(), Namespace: ns, Property: prop, Query: v.Semantic.GetQuery(), IndexRef: v.Semantic.GetRuleRef(), Limit: v.Semantic.GetLimit()}))
 	case *clientv1.Expr_LessThan:
 		left := fromStructuredValue(v.LessThan.GetLeft())
 		right := fromStructuredValue(v.LessThan.GetRight())

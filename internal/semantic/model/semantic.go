@@ -537,6 +537,13 @@ type AdvancedEmbeddingRecord struct {
 	CreatedAt                 time.Time                 `json:"created_at"`
 }
 
+func (rec AdvancedEmbeddingRecord) EffectiveSemanticRuleID() SemanticRuleID {
+	if rec.SemanticRuleID != uuid.Nil {
+		return rec.SemanticRuleID
+	}
+	return SemanticRuleID(rec.SemanticIndexID)
+}
+
 type GraphDirtyEdgeChange struct {
 	EdgeID graph.EdgeID `json:"edge_id"`
 	Labels []string     `json:"labels,omitempty"`

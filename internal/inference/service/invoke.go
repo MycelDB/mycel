@@ -14,15 +14,17 @@ import (
 var ErrDenied = errors.New("inference request denied")
 
 type InvokeRequest struct {
-	Resolve         ResolveRequest
-	Input           string
-	Prompt          string
-	Messages        []connectors.Message
-	RequestID       string
-	AutomationID    string
-	AutomationRunID string
-	SemanticIndexID string
-	Metadata        map[string]any
+	Resolve             ResolveRequest
+	Input               string
+	Prompt              string
+	Messages            []connectors.Message
+	RequestID           string
+	AutomationID        string
+	AutomationRunID     string
+	SemanticRuleID      string
+	EmbeddingBindingKey string
+	SemanticIndexID     string
+	Metadata            map[string]any
 }
 
 type InvokeResponse struct {
@@ -170,6 +172,6 @@ func (m *Module) appendUsage(ctx context.Context, req InvokeRequest, resolved Re
 		}
 		metadata["token_count_source"] = usage.TokenCountSource
 	}
-	event := domaininference.UsageEvent{RequestID: req.RequestID, Operation: req.Resolve.Operation, UsageMode: req.Resolve.UsageMode, Status: status, SpaceID: req.Resolve.SpaceID, DomainID: req.Resolve.DomainID, NodeID: req.Resolve.NodeID, AutomationID: req.AutomationID, AutomationRunID: req.AutomationRunID, SemanticIndexID: firstNonEmpty(req.Resolve.SemanticIndexID, req.SemanticIndexID), ActorPrincipalID: req.Resolve.ActorPrincipalID, OnBehalfOfPrincipalID: req.Resolve.OnBehalfOfPrincipalID, ProfileID: resolved.Profile.ID, EndpointID: resolved.Endpoint.ID, ModelID: resolved.Model.ID, CapabilityID: resolved.Capability.ID, CredentialID: resolved.Credential.ID, CredentialGrantID: resolved.CredentialGrant.ID, PolicyDecisionID: resolved.Decision.ID, ProviderRequestID: providerRequestID, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, LatencyMillis: completed.Sub(started).Milliseconds(), ErrorCode: errorCode, ErrorMessage: errorMessage, StartedAt: started, CompletedAt: completed, Metadata: metadata}
+	event := domaininference.UsageEvent{RequestID: req.RequestID, Operation: req.Resolve.Operation, UsageMode: req.Resolve.UsageMode, Status: status, SpaceID: req.Resolve.SpaceID, DomainID: req.Resolve.DomainID, NodeID: req.Resolve.NodeID, AutomationID: req.AutomationID, AutomationRunID: req.AutomationRunID, SemanticRuleID: firstNonEmpty(req.Resolve.SemanticRuleID, req.SemanticRuleID), EmbeddingBindingKey: firstNonEmpty(req.Resolve.EmbeddingBindingKey, req.EmbeddingBindingKey), SemanticIndexID: firstNonEmpty(req.Resolve.SemanticIndexID, req.SemanticIndexID), ActorPrincipalID: req.Resolve.ActorPrincipalID, OnBehalfOfPrincipalID: req.Resolve.OnBehalfOfPrincipalID, ProfileID: resolved.Profile.ID, EndpointID: resolved.Endpoint.ID, ModelID: resolved.Model.ID, CapabilityID: resolved.Capability.ID, CredentialID: resolved.Credential.ID, CredentialGrantID: resolved.CredentialGrant.ID, PolicyDecisionID: resolved.Decision.ID, ProviderRequestID: providerRequestID, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, LatencyMillis: completed.Sub(started).Milliseconds(), ErrorCode: errorCode, ErrorMessage: errorMessage, StartedAt: started, CompletedAt: completed, Metadata: metadata}
 	return m.UsageLedger().AppendUsageEvent(ctx, event)
 }

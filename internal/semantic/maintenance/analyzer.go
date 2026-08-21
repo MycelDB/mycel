@@ -771,7 +771,7 @@ func (w Worker) runItem(ctx context.Context, item domainsemantic.SemanticDirtyWo
 				nodeIDs = nil
 			}
 		}
-		_, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true})
+		_, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true})
 		return err
 	}
 	if item.Action == domainsemantic.SemanticDirtyWorkActionDelete || item.Action == domainsemantic.SemanticDirtyWorkActionCleanup {
@@ -793,10 +793,27 @@ func (w Worker) deleteVector(ctx context.Context, item domainsemantic.SemanticDi
 		if index.ID != item.SemanticIndexID {
 			continue
 		}
-		_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticIndexID: item.SemanticIndexID, NodeID: item.TargetNodeID, VectorStoreID: index.VectorStoreID, Reason: item.Reason})
+		_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeID: item.TargetNodeID, VectorStoreID: index.VectorStoreID, Reason: item.Reason})
 		return err
 	}
-	return fmt.Errorf("semantic index %s not found", item.SemanticIndexID)
+	rules, err := w.SpaceManager.ListSemanticRules(ctx)
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		if rule.ID != item.EffectiveSemanticRuleID() {
+			continue
+		}
+		for _, binding := range rule.Embeddings {
+			binding = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
+			if binding.Key != item.EmbeddingBindingKey || binding.VectorStoreID == uuid.Nil {
+				continue
+			}
+			_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: item.TargetNodeID, VectorStoreID: binding.VectorStoreID, Reason: item.Reason})
+			return err
+		}
+	}
+	return fmt.Errorf("semantic rule %s not found", item.EffectiveSemanticRuleID())
 }
 
 func (w Worker) effectiveConfig(limit int) WorkerConfig {
