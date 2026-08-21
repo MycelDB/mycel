@@ -11,6 +11,7 @@ assigned to a tagged release bucket.
 
 - [Cluster system backup implementation plan](cluster-system-backup-implementation-plan.md) — complete for the initial coordinated backup set path.
 - [Cluster system backup raft freeze implementation plan](cluster-system-backup-raft-freeze-implementation-plan.md) — complete through RF6 for raft-storage-safe archive capture and release-gate docs.
+- [Workload-driven system backup/restore test implementation plan](workload-driven-system-backup-restore-test-implementation-plan.md) — implemented rewrite of the destructive K3s backup/restore gate using normal graph workloads, PVC deletion, restore, and convergence verification.
 
 ## Graph/change notification
 
@@ -33,6 +34,10 @@ assigned to a tagged release bucket.
 - [Top query priorities completion implementation plan](top-query-priorities-completion-implementation-plan.md) — remaining work to make predicate pushdown, semantic/vector execution, broader indexed paths, aggregation, result shaping, diagnostics, SDKs, and Console support production-complete.
 - [REPL space connection and GQL execution implementation plan](repl-space-gql-connect-implementation-plan.md) — psql-like REPL connection state for spaces/domains and convenient GQL execution without repeating IDs.
 
+## Clustering and raft reliability
+
+- [Raft disruption test harness implementation plan](raft-disruption-test-harness-implementation-plan.md) — reusable destructive K3s/k3d raft pod-restart pressure harness with disposable cluster lifecycle and artifact capture.
+
 ## Cleanup
 
 - [Legacy file-session and embedding migration cleanup implementation plan](legacy-filesession-and-embedding-cleanup-implementation-plan.md) — staged removal plan for `internal/graph/filesession`, `internal/session/api`, legacy embedding migration, and related compatibility surfaces.
@@ -45,3 +50,5 @@ assigned to a tagged release bucket.
 ## Admin/UI follow-ups
 
 - [Admin template service and UI implementation plan](admin-template-service-and-ui-implementation-plan.md)
+- [mycel-console Intelligence navigation implementation plan](mycel-console-intelligence-navigation-implementation-plan.md) — planned console navigation and page restructure for Intelligence/Access, Automations, and Semantic management.
+- [Semantic generation rules implementation plan](semantic-generation-rules-implementation-plan.md) — replacement plan for semantic indexes as constrained graph-reactive embedding rules with fast physical search indexes.

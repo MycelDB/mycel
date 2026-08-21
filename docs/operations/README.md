@@ -13,7 +13,7 @@ operator procedures.
 
 - [Raft cluster operations](procedures/raft-cluster-operations.md)
 - [Raft manual repair workflows](procedures/raft-cluster-manual-repair-workflows.md)
-- [Raft cluster test matrix](procedures/raft-cluster-test-matrix.md)
+- [System integration tests](../system_integration/README.md)
 - [Backup and restore](procedures/backup-restore.md)
 - [Split-brain recovery](procedures/split-brain-recovery.md)
 - [Build and test commands](procedures/build-test-commands.md)

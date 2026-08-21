@@ -32,6 +32,26 @@ func TestClusterStatusCommandUsesAdminAPI(t *testing.T) {
 	}
 }
 
+func TestClusterReadinessCheckCommandUsesAdminAPI(t *testing.T) {
+	_, addr, password, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+
+	out, err := runCLI(t, "--daemon-addr", addr, "--username", "admin", "--password", password, "cluster", "readiness", "check")
+	if err != nil {
+		t.Fatalf("cluster readiness check failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "cluster ready") {
+		t.Fatalf("unexpected readiness output: %s", out)
+	}
+}
+
+func TestValidateClusterReadinessReportsBlockers(t *testing.T) {
+	err := validateClusterReadiness(clusterReadinessOutput{ClientReady: true, MetadataApplied: true, MetadataValidated: false, PartitionGroupsStarted: true, ReadinessBlockers: []string{"waiting for raft"}})
+	if err == nil || !strings.Contains(err.Error(), "metadata_validated=false") || !strings.Contains(err.Error(), "waiting for raft") {
+		t.Fatalf("validateClusterReadiness error = %v", err)
+	}
+}
+
 func TestClusterRaftGroupsCommandUsesAdminAPI(t *testing.T) {
 	_, addr, password, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()

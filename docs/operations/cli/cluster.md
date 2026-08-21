@@ -8,12 +8,17 @@ Authentication mode: **operator**.
 
 - Check cluster identity and health.
 - List raft groups.
+- Check local application-level readiness for Kubernetes probes.
 - Run graph consistency reports and local forensic exports.
 
 ## Examples
 
 ```sh
 mycel --output json cluster status
+```
+
+```sh
+mycel cluster readiness check
 ```
 
 ```sh
