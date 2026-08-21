@@ -20,7 +20,7 @@ Target model:
 
 ```text
 graph change -> trigger filter -> target selector -> source assembly ->
-inference access resolution -> embedding generation -> physical search index ->
+Intelligence Access resolution -> embedding generation -> physical search index ->
 usage accounting
 ```
 
@@ -66,12 +66,14 @@ Decisions:
 
 - Replace public concept `SemanticIndex` with `SemanticGenerationRule`.
 - Replace index-level endpoint/model fields with embedding bindings referencing
-  inference profiles and vector stores.
+  Intelligence Access profiles and vector stores.
 - Replace `RecordTypes` with explicit node-type/label selector.
 - Replace `RootQuery` with bounded selector/source GQL fields.
 - Replace index-level purpose with binding-level purpose.
 - Make work items binding-aware.
 - Add physical search-index status concepts.
+- Split shared profile, credential, grant, policy, decision, and usage APIs into
+  an explicit Intelligence Access surface.
 
 Tasks:
 
@@ -79,9 +81,10 @@ Tasks:
   approved for this tranche.
 - Regenerate daemon stubs under `internal/gen/` only after source protobufs are
   updated.
-- Do not commit generated public SDK/API code unless explicitly approved.
-- If protobuf update is deferred, implement internal model/storage first and
-  keep API work as a later phase gate.
+- Keep daemon-local generated stubs deferred until semantic model/storage/runtime
+  replacement begins, unless this tranche is expanded to include compile fixes.
+- Keep public SDK regeneration as a later handoff unless a downstream compile
+  check requires it.
 
 Acceptance:
 
@@ -104,7 +107,7 @@ Tasks:
   - `SemanticTargetSelector`;
   - `SemanticSourceAssemblyPolicy`;
   - `SemanticEmbeddingBinding`;
-  - `SemanticAccessPolicy`;
+  - owner/on-behalf-of attribution fields that resolve through Intelligence Access;
   - `SemanticMaintenancePolicy`;
   - `SemanticStoragePolicy`.
 - Remove/demote old fields:
@@ -255,13 +258,13 @@ Tasks:
   - included/excluded properties;
   - max depth;
   - minimum text length.
-- Resolve embedding through binding inference profile only.
-- Reuse inference access-control path used by graph automations:
+- Resolve embedding through binding Intelligence Access profile only.
+- Reuse Intelligence Access path used by graph automations:
   - service actor;
   - on-behalf-of rule owner;
   - profile resolution;
   - credential grants allowing background use;
-  - inference policies;
+  - Intelligence Access policies;
   - denial diagnostics.
 - Store resolved endpoint/model/capability/credential/policy details only as
   vector-record and usage provenance.
@@ -429,7 +432,7 @@ Tasks:
   - node-type selector;
   - bounded GQL selector when enabled;
   - source assembly;
-  - embedding bindings from inference profiles/vector stores;
+  - embedding bindings from Intelligence Access profiles/vector stores;
   - validation preview.
 - Show per-rule and per-binding:
   - status;

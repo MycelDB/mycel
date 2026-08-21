@@ -52,3 +52,4 @@ assigned to a tagged release bucket.
 - [Admin template service and UI implementation plan](admin-template-service-and-ui-implementation-plan.md)
 - [mycel-console Intelligence navigation implementation plan](mycel-console-intelligence-navigation-implementation-plan.md) — planned console navigation and page restructure for Intelligence/Access, Automations, and Semantic management.
 - [Semantic generation rules implementation plan](semantic-generation-rules-implementation-plan.md) — replacement plan for semantic indexes as constrained graph-reactive embedding rules with fast physical search indexes.
+- [SGR0 semantic generation rules API surface plan](semantic-generation-rules-sgr0-api-surface-plan.md) — tranche-specific plan for replacing public semantic-index API terminology with semantic generation rules.
