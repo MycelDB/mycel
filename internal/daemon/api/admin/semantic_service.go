@@ -17,6 +17,7 @@ import (
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	identity "github.com/myceldb/mycel/internal/identity/model"
+	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -40,14 +41,18 @@ func NewAdminSemanticService(semantic daemonsemantic.Manager, spaces daemonspace
 }
 
 func (s *AdminSemanticService) ListSemanticRules(ctx context.Context, req *adminv1.ListSemanticRulesRequest) (*adminv1.ListSemanticRulesResponse, error) {
-	if _, err := s.requireSemanticManage(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, domainID, err := s.validateSpaceDomain(ctx, req.GetSpaceId(), req.GetDomainId())
 	if err != nil {
 		return nil, err
 	}
-	rules, err := s.semantic.ListRules(ctx, spaceID, domainID)
+	if _, err := s.requireSemanticManage(ctx, semanticScope(spaceID, domainID)); err != nil {
+		return nil, err
+	}
+	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
+	if err != nil {
+		return nil, mapAdminSemanticError(err, "open semantic space manager")
+	}
+	rules, err := spaceMgr.ListSemanticRules(ctx)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "list semantic rules")
 	}
@@ -57,7 +62,7 @@ func (s *AdminSemanticService) ListSemanticRules(ctx context.Context, req *admin
 	}
 	items := make([]*clientv1.SemanticGenerationRuleSummary, 0, len(rules))
 	for _, rule := range rules {
-		if !req.GetIncludeDisabled() && !rule.Enabled {
+		if rule.SpaceID != spaceID || (domainID != uuid.Nil && rule.DomainID != domainID) || (!req.GetIncludeDisabled() && !rule.Enabled) {
 			continue
 		}
 		items = append(items, clientapi.MapSemanticRuleSummaryProto(rule, stateByRule[rule.ID], searchByBinding, stores))
@@ -71,9 +76,6 @@ func (s *AdminSemanticService) ListSemanticRules(ctx context.Context, req *admin
 }
 
 func (s *AdminSemanticService) GetSemanticRule(ctx context.Context, req *adminv1.GetSemanticRuleRequest) (*adminv1.GetSemanticRuleResponse, error) {
-	if _, err := s.requireSemanticManage(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
 		return nil, err
@@ -89,6 +91,9 @@ func (s *AdminSemanticService) GetSemanticRule(ctx context.Context, req *adminv1
 	if err != nil {
 		return nil, err
 	}
+	if _, err := s.requireSemanticManage(ctx, semanticScope(spaceID, rule.DomainID)); err != nil {
+		return nil, err
+	}
 	stateByRule, searchByBinding, stores, err := s.ruleSummaryMetadata(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "load semantic rule metadata")
@@ -97,11 +102,11 @@ func (s *AdminSemanticService) GetSemanticRule(ctx context.Context, req *adminv1
 }
 
 func (s *AdminSemanticService) ValidateSemanticRule(ctx context.Context, req *adminv1.ValidateSemanticRuleRequest) (*adminv1.ValidateSemanticRuleResponse, error) {
-	if _, err := s.requireSemanticManage(ctx); err != nil {
-		return nil, err
-	}
 	rule, err := semanticRuleFromProto(req.GetRule())
 	if err != nil {
+		return nil, err
+	}
+	if _, err := s.requireSemanticManage(ctx, semanticScope(rule.SpaceID, rule.DomainID)); err != nil {
 		return nil, err
 	}
 	validation := domainsemantic.ValidateSemanticGenerationRule(rule)
@@ -109,9 +114,6 @@ func (s *AdminSemanticService) ValidateSemanticRule(ctx context.Context, req *ad
 }
 
 func (s *AdminSemanticService) CreateSemanticRule(ctx context.Context, req *adminv1.CreateSemanticRuleRequest) (*adminv1.CreateSemanticRuleResponse, error) {
-	if _, err := s.requireSemanticManage(ctx); err != nil {
-		return nil, err
-	}
 	rule, err := semanticRuleFromProto(req.GetRule())
 	if err != nil {
 		return nil, err
@@ -120,6 +122,9 @@ func (s *AdminSemanticService) CreateSemanticRule(ctx context.Context, req *admi
 		return nil, status.Error(codes.InvalidArgument, "semantic_rule_id must be omitted on create")
 	}
 	if _, _, err := s.validateSpaceDomain(ctx, rule.SpaceID.String(), rule.DomainID.String()); err != nil {
+		return nil, err
+	}
+	if _, err := s.requireSemanticManage(ctx, semanticScope(rule.SpaceID, rule.DomainID)); err != nil {
 		return nil, err
 	}
 	ctx, release, err := s.semantic.BeginMutation(ctx)
@@ -143,9 +148,6 @@ func (s *AdminSemanticService) CreateSemanticRule(ctx context.Context, req *admi
 }
 
 func (s *AdminSemanticService) UpdateSemanticRule(ctx context.Context, req *adminv1.UpdateSemanticRuleRequest) (*adminv1.UpdateSemanticRuleResponse, error) {
-	if _, err := s.requireSemanticManage(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
 		return nil, err
@@ -156,6 +158,9 @@ func (s *AdminSemanticService) UpdateSemanticRule(ctx context.Context, req *admi
 	}
 	existing, err := s.getRule(ctx, spaceID, ruleID)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := s.requireSemanticManage(ctx, semanticScope(spaceID, existing.DomainID)); err != nil {
 		return nil, err
 	}
 	rule, err := semanticRuleFromProto(req.GetRule())
@@ -197,9 +202,6 @@ func (s *AdminSemanticService) UpdateSemanticRule(ctx context.Context, req *admi
 }
 
 func (s *AdminSemanticService) SetSemanticRuleEnabled(ctx context.Context, req *adminv1.SetSemanticRuleEnabledRequest) (*adminv1.SetSemanticRuleEnabledResponse, error) {
-	if _, err := s.requireSemanticManage(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
 		return nil, err
@@ -210,6 +212,9 @@ func (s *AdminSemanticService) SetSemanticRuleEnabled(ctx context.Context, req *
 	}
 	rule, err := s.getRule(ctx, spaceID, ruleID)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := s.requireSemanticManage(ctx, semanticScope(spaceID, rule.DomainID)); err != nil {
 		return nil, err
 	}
 	rule.Enabled = req.GetEnabled()
@@ -235,9 +240,6 @@ func (s *AdminSemanticService) SetSemanticRuleEnabled(ctx context.Context, req *
 }
 
 func (s *AdminSemanticService) DeleteSemanticRule(ctx context.Context, req *adminv1.DeleteSemanticRuleRequest) (*adminv1.DeleteSemanticRuleResponse, error) {
-	if _, err := s.requireSemanticManage(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
 		return nil, err
@@ -246,7 +248,11 @@ func (s *AdminSemanticService) DeleteSemanticRule(ctx context.Context, req *admi
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.getRule(ctx, spaceID, ruleID); err != nil {
+	rule, err := s.getRule(ctx, spaceID, ruleID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.requireSemanticManage(ctx, semanticScope(spaceID, rule.DomainID)); err != nil {
 		return nil, err
 	}
 	ctx, release, err := s.semantic.BeginMutation(ctx)
@@ -301,7 +307,7 @@ func (s *AdminSemanticService) validateSpaceDomain(ctx context.Context, spaceIDT
 	if err != nil {
 		return uuid.Nil, uuid.Nil, err
 	}
-	domainID, err := parseSemanticUUID[graph.DomainID](domainIDText, "domain_id")
+	domainID, err := optionalSemanticUUID[graph.DomainID](domainIDText, "domain_id")
 	if err != nil {
 		return uuid.Nil, uuid.Nil, err
 	}
@@ -343,12 +349,18 @@ func (s *AdminSemanticService) ruleSummaryMetadata(ctx context.Context, spaceID 
 	return stateByRule, searchByBinding, storeByID, nil
 }
 
-func (s *AdminSemanticService) requireSemanticManage(ctx context.Context) (daemonauth.Principal, error) {
+func (s *AdminSemanticService) requireSemanticManage(ctx context.Context, scope principalservice.AccessScope) (daemonauth.Principal, error) {
 	principal, err := principalFromContext(ctx)
 	if err != nil {
 		return daemonauth.Principal{}, err
 	}
-	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH.String())
+	if scoped, ok := s.authorizer.(ScopedOperatorAuthorizer); ok {
+		if err := scoped.Authorize(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SEMANTIC_MANAGE.String(), scope); err != nil {
+			return daemonauth.Principal{}, err
+		}
+		return principal, nil
+	}
+	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SEMANTIC_MANAGE.String())
 	if err != nil {
 		return daemonauth.Principal{}, status.Errorf(codes.Internal, "authorize operator: %v", err)
 	}
@@ -356,6 +368,16 @@ func (s *AdminSemanticService) requireSemanticManage(ctx context.Context) (daemo
 		return daemonauth.Principal{}, status.Error(codes.PermissionDenied, "operator lacks required semantic capability")
 	}
 	return principal, nil
+}
+
+func semanticScope(spaceID domainspace.SpaceID, domainID graph.DomainID) principalservice.AccessScope {
+	if domainID != uuid.Nil {
+		return principalservice.AccessScope{Type: "domain", SpaceID: spaceID.String(), DomainID: domainID.String()}
+	}
+	if spaceID != uuid.Nil {
+		return principalservice.AccessScope{Type: "space", SpaceID: spaceID.String()}
+	}
+	return principalservice.AccessScope{Type: "system"}
 }
 
 func semanticRuleFromProto(in *adminv1.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {

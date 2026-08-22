@@ -9,13 +9,13 @@ a constrained, system-owned automation that reacts to graph changes and
 maintains embedding/vector records for selected graph targets.
 
 Because the product is not released, this design does not preserve backward
-compatibility with the older `SemanticIndex` API/storage shape. The next
-semantic indexing tranche should replace incompatible fields and commands rather
-than carry long-term compatibility aliases.
+compatibility with the older `SemanticIndex` API/storage shape. Current APIs,
+CLI commands, Console surfaces, and storage terminology should expose semantic
+generation rules directly rather than compatibility aliases.
 
 ## Summary
 
-Semantic indexing should be treated as a specialized graph automation:
+Semantic generation should be treated as a specialized graph automation:
 
 ```text
 graph change -> trigger filter -> target selector -> source assembly ->
@@ -30,12 +30,12 @@ prompt templates, or mutation actions. Their action is fixed:
 maintain embeddings for selected graph targets
 ```
 
-This gives semantic indexing the same operational shape as graph automation while
+This gives semantic generation the same operational shape as graph automation while
 keeping it safer, simpler, and easier to optimize.
 
 ## Goals
 
-- Make semantic indexing understandable as declarative graph-reactive behavior.
+- Make semantic generation understandable as declarative graph-reactive behavior.
 - Support simple node-type/label rules and bounded GQL target selectors.
 - Reuse graph automation/Intelligence Access concepts:
   - service actor;
@@ -168,8 +168,8 @@ semantic embedding maintainer
 
 ## Rule model
 
-Internally, replace the existing `SemanticIndex` model with a
-`SemanticGenerationRule` model.
+Internally, use the `SemanticGenerationRule` model as the authoritative semantic
+configuration.
 
 Recommended conceptual fields:
 
@@ -372,8 +372,8 @@ graphs/<space_id>/semantic/rules/<rule_id>/rule.json
 ```
 
 The existing space semantic manager storage should be rewritten around rules.
-Because there is no released compatibility contract, do not preserve
-`SemanticIndex` as a compatibility view.
+Because there is no released compatibility contract, do not preserve a legacy
+static-index compatibility view.
 
 Required indexes/materialized views:
 
@@ -672,7 +672,7 @@ The following existing concepts should be removed or renamed because they no
 longer fit the semantic-generation-rule model. Since the product is unreleased,
 prefer direct replacement over compatibility layers.
 
-### Remove direct endpoint/model ownership from user-facing semantic indexes
+### Remove direct endpoint/model ownership from user-facing semantic rules
 
 Current fields:
 
@@ -738,7 +738,7 @@ This matches graph automation's split between trigger/condition/context/action.
 
 ### Make work items binding-aware
 
-Current dirty work is keyed around semantic index + target.
+Dirty work is keyed around semantic rule + embedding binding + target.
 
 Target behavior:
 
@@ -771,8 +771,8 @@ New Admin API concepts should expose:
 - backfill rule or binding;
 - summarize usage by rule/binding.
 
-Existing semantic index RPCs/CLI commands should be replaced or renamed rather
-than maintained as compatibility aliases.
+Older index-oriented RPCs/CLI commands should be replaced rather than maintained
+as compatibility aliases.
 
 ## Console implications
 
@@ -824,7 +824,7 @@ Space pages should keep contextual shortcuts:
 
 ## Acceptance criteria for the target design
 
-- A user can define semantic indexing with a node type or bounded GQL selector.
+- A user can define semantic generation with a node type or bounded GQL selector.
 - A user can configure the set of embedding bindings without raw credentials.
 - Semantic maintenance uses the same Intelligence Access path as graph
   automations.
@@ -834,5 +834,5 @@ Space pages should keep contextual shortcuts:
   not unbounded full scans of historical vector records.
 - Caches and physical search indexes are rebuildable and safely invalidated on
   graph/rule/inference/vector changes.
-- Old semantic index terminology and storage fields are removed instead of
+- Old index-oriented terminology and storage fields are removed instead of
   preserved as compatibility aliases.

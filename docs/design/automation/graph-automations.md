@@ -26,7 +26,7 @@ Examples:
 
 Graph automations are not intended to replace:
 
-- semantic indexing maintenance
+- semantic generation-rule maintenance
 - full-text indexing maintenance
 - general background jobs
 - arbitrary user-supplied server-side code

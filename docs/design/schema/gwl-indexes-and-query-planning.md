@@ -164,7 +164,7 @@ can reason about exact coverage.
 |---|---|
 | Edge property index | Filter traversed or matched edges by property. |
 | Full-text index | Back text predicates over payload/properties. |
-| Semantic index | Back semantic similarity predicates. |
+| Semantic search index | Back semantic similarity predicates. |
 | Covering index | Store selected scalar values to reduce entity fetches. |
 | Composite index | Support multi-field filters/orderings. |
 

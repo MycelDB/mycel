@@ -94,7 +94,7 @@ Responsibilities include:
 - transactions or session-like write scopes
 - queries and traversal
 - metadata operations
-- semantic search and semantic index operations where appropriate
+- semantic search and semantic rule operations where appropriate
 - subscriptions/change streams when available
 
 ### Admin API
@@ -209,7 +209,7 @@ The daemon should reuse existing Mycel components wherever possible:
 - graph storage
 - internal session abstractions
 - metadata indexes
-- semantic indexes and maintenance
+- semantic generation rules and maintenance
 - auth/session primitives
 - CLI logic where appropriate
 
@@ -233,7 +233,7 @@ Keeps frequently used spaces and sessions open for performance. Responsibilities
 - LRU or TTL eviction
 - per-space concurrency control
 - active reader/writer tracking
-- warm metadata/semantic indexes
+- warm metadata/semantic rules and derived search indexes
 - dirty-state tracking
 - future routing of space ownership/replica reads
 

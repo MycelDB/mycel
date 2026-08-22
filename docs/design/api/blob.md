@@ -69,7 +69,7 @@ The daemon API preserves this split:
 - graph node creation
 - graph node deletion
 - graph mutation
-- semantic indexing
+- semantic generation-rule source assembly and maintenance
 - template validation
 
 ## Service definition

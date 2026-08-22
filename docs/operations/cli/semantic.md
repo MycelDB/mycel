@@ -26,7 +26,7 @@ mycel semantic rule delete notes-search --space-id <space-id> --purge-vectors
 but JSON/YAML files are preferred for repeatable operator workflows. Use
 `--file -` to read a rule definition from stdin.
 
-Minimal rule file:
+Minimal rule file (see also `examples/semantic/notes-rule.json`):
 
 ```yaml
 space_id: <space-id>

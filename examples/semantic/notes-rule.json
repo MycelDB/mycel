@@ -1,0 +1,40 @@
+{
+  "space_id": "<space-id>",
+  "domain_id": "<domain-id>",
+  "key": "notes-search",
+  "display_name": "Notes Search",
+  "description": "Maintain searchable embeddings for Note nodes.",
+  "enabled": true,
+  "trigger": {
+    "events": ["changed"],
+    "labels": ["Note"],
+    "debounce": "120s"
+  },
+  "selector": {
+    "mode": "node_type",
+    "labels": ["Note"]
+  },
+  "source": {
+    "mode": "self",
+    "include_properties": ["title", "body", "summary"],
+    "minimum_text_length": 1
+  },
+  "embeddings": [
+    {
+      "key": "search",
+      "purpose": "search",
+      "intelligence_profile": "embedding-default",
+      "vector_store": "mycel-file",
+      "enabled": true
+    }
+  ],
+  "maintenance": {
+    "dirty_cooldown": "120s",
+    "max_batch_size": 100,
+    "worker_concurrency": 1
+  },
+  "storage": {
+    "searchable": true,
+    "physical_index": "exact"
+  }
+}

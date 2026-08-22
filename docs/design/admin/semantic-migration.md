@@ -27,7 +27,7 @@ Compatibility RPC:
 `MigrateLegacyEmbeddings` authenticates the operator and then returns:
 
 ```text
-FailedPrecondition: legacy embedding migration window is closed; configure inference credentials, grants, policies, and semantic indexes directly
+FailedPrecondition: legacy embedding migration window is closed; configure Intelligence Access resources and semantic generation rules directly
 ```
 
 No automatic migration, repair, restore, merge, rebalance, or authoritative-node
@@ -49,11 +49,11 @@ Configure current semantic/inference resources directly:
 - inference models and model endpoint capabilities;
 - credentials;
 - credential grants;
-- semantic indexes;
+- semantic generation rules;
 - inference policies when required.
 
 After configuration, use Admin Semantic Maintenance backfill to generate current
-advanced semantic records.
+advanced semantic records for each rule binding.
 
 ## CLI
 
@@ -68,5 +68,5 @@ RPC:
   --dry-run
 ```
 
-It returns the same closed-window error. Use `inference` and `semantic index`
+It returns the same closed-window error. Use `inference` and `semantic rule`
 commands instead.

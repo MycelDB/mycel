@@ -75,7 +75,7 @@ Desirability values are relative priorities:
 | Meta projection | Return Mycel-controlled metadata fields. | Medium | Medium | Y |
 | Full-text search predicate | Match text payload/properties using text predicate filtering. | High | Very High | Y |
 | Full-text index pushdown | Execute text predicates through an indexed text-search plan instead of local filtering. | High | Very High | N |
-| Semantic/vector predicate | Query semantically similar nodes. Initial implementation uses local textual fallback until semantic index pushdown is wired. | Medium | Very High | Y |
+| Semantic/vector predicate | Query semantically similar nodes. Initial implementation uses local textual fallback until semantic rule/search-index pushdown is wired. | Medium | Very High | Y |
 | Semantic/vector index pushdown | Execute semantic predicates through semantic/vector indexes instead of local textual fallback. | Medium | Very High | N |
 | Schema-aware predicates | Filter/query using schema labels, record semantics, or schema-derived metadata. | Medium | High | Partial |
 | Degree predicates | Filter by incoming/outgoing edge counts. | Medium | High | N |
@@ -203,7 +203,7 @@ Near-term priorities should focus on those three feature bundles before adding b
 
 1. Add accepted indexed structured multi-hop traversal with path binding/projection and dedicated diagnostics.
 2. Add GQL aggregation/result-shaping basics: `COUNT`, `RETURN DISTINCT`, and `OFFSET`, then align structured API aggregation once the public API shape is settled.
-3. Add richer predicates and pushdown: GQL `OR`/parentheses/null/string predicates, structured indexed tag/property predicates, and full-text/semantic index-backed execution.
+3. Add richer predicates and pushdown: GQL `OR`/parentheses/null/string predicates, structured indexed tag/property predicates, and full-text/semantic rule/search-index-backed execution.
 4. Add `EXPLAIN`/planner diagnostics for unsupported or fallback query shapes.
 5. Add richer result values, including list/map literals and a dedicated public path value representation when the protobuf API is ready.
 

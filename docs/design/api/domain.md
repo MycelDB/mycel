@@ -198,7 +198,7 @@ Domain policy separates discovery, graph search/query, semantic behavior, and mu
 
 ### Semantic mode
 
-`semantic_mode` controls semantic indexing and semantic search:
+`semantic_mode` controls semantic generation-rule maintenance and semantic search:
 
 - `normal`: indexed and included in ordinary semantic search.
 - `explicit_only`: indexed and semantically searchable only when explicitly targeted.

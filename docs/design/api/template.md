@@ -42,7 +42,7 @@ Templates define reusable, versioned node shapes. Nodes reference templates by `
 - graph node mutation
 - graph query
 - blob upload/download
-- semantic index configuration
+- semantic generation rule configuration
 - space creation
 
 Template references on nodes are mutated through `GraphService`.

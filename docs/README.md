@@ -34,7 +34,7 @@ This directory is organized by audience and intent:
 - Graph and query: transactional node/edge operations, GQL/query execution, metadata catalogs, and change streams.
 - Blobs: content-addressed blob storage exposed through raw blob APIs and blob-backed graph nodes.
 - Schema: domain-scoped schema management and schema-aware graph/query validation.
-- Semantic and inference: semantic indexes, embedding/inference configuration, maintenance, and migration APIs.
+- Semantic and inference: semantic generation rules, embedding/inference configuration, maintenance, and migration APIs.
 - Automation: graph-triggered automation design and implementation plans.
 - Clustering: system raft metadata, partitioned raft ownership, strong reads, diagnostics, and manual recovery workflows.
 - Backup and restore: quiesce/backup design plus user-scoped export/import procedures.

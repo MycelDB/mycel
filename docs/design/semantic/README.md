@@ -1,7 +1,7 @@
 # Semantic and Inference Design
 
-Semantic docs cover embeddings, semantic indexes, inference configuration, and
-maintenance/migration surfaces.
+Semantic docs cover semantic generation rules, embeddings, Intelligence Access,
+physical search indexes, and maintenance/migration surfaces.
 
 - [Semantic generation rules](semantic-generation-rules.md)
 - [Standalone inference model for graph automations](inference-for-graph-automations.md)

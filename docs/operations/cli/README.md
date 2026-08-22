@@ -32,7 +32,7 @@ Use `--output json` for scripting.
 | [principal](principal.md) | Principal identity, role, capability, and session management. |
 | [query](query.md) | Query nodes or execute GQL. |
 | [schema](schema.md) | Domain schema get/put/delete/validate. |
-| [semantic](semantic.md) | Semantic index/search/maintenance operations. |
+| [semantic](semantic.md) | Semantic rule, search, and maintenance operations. |
 | [session](session.md) | Graph session and transaction helper commands. |
 | [space](space.md) | Space create/list/show/delete operations. |
 | [transaction](transaction.md) | Transaction helper commands. |

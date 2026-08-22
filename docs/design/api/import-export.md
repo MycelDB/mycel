@@ -24,7 +24,7 @@ docs/design/api/template.md
 
 `ImportExportService` provides client/application data portability for graph/domain data.
 
-The current daemon implementation supports transaction-scoped structured Mycel stream export/import of graph nodes, edges, optional templates, optional blob payloads, and `REPLACE_DOMAIN` mode. Raw JSON/NDJSON gRPC chunk formats and semantic-index export remain future hardening slices.
+The current daemon implementation supports transaction-scoped structured Mycel stream export/import of graph nodes, edges, optional templates, optional blob payloads, and `REPLACE_DOMAIN` mode. Raw JSON/NDJSON gRPC chunk formats and semantic rule/vector export remain future hardening slices.
 
 It is distinct from Admin API backup/restore. Admin backup/restore may include users, access grants, daemon configuration, mesh metadata, semantic credentials, and other operational state. Client import/export is for application data inside authorized spaces/domains.
 
@@ -75,7 +75,7 @@ If import fails, the importer rolls back the transaction.
 - admin configuration
 - mesh configuration
 - semantic credentials
-- semantic index content/configuration
+- semantic generation rule, vector record, or physical search-index content/configuration
 - full daemon backup/restore
 
 ## Service definition
@@ -140,7 +140,7 @@ The JSON document shape is intentionally simple for the MVP:
 - Template records are supported when `include_templates` is set.
 - Blob metadata/chunk records are supported when `include_blobs` is set.
 - `APPEND`, basic `UPSERT`, and `REPLACE_DOMAIN` modes are supported for graph records.
-- Raw JSON chunks, NDJSON chunks, and semantic-index export are not yet implemented.
+- Raw JSON chunks, NDJSON chunks, and semantic rule/vector export are not yet implemented.
 - Import mutates only the transaction overlay; callers still commit or roll back through `TransactionService`.
 - Export reads through the active transaction. Read-write transactions include read-your-writes from their overlay; read-only exports use the current committed graph read path and may observe commits newer than `base_revision`.
 
@@ -322,13 +322,13 @@ Template policy and lifecycle rules are defined in:
 docs/design/api/template.md
 ```
 
-## Semantic indexes
+## Semantic rules and vectors
 
-Client ImportExportService does not export semantic index configuration or semantic index content in v1.
+Client ImportExportService does not export semantic generation rule configuration, durable vector records, or derived physical search-index state in v1.
 
-Semantic index configuration, provider credentials, policies, maintenance, and backups are Admin API concerns.
+Semantic rule configuration, provider credentials, Intelligence Access policies, maintenance, and backups are Admin API concerns.
 
-If a client requests semantic index export through `include_semantic_indexes`, the daemon should return a clear unsupported/failed-precondition error.
+If a client requests semantic export through a future include flag, the daemon should return a clear unsupported/failed-precondition error until that surface is explicitly designed.
 
 ## Authorization
 
