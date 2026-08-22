@@ -11,9 +11,9 @@ import (
 
 	"github.com/google/uuid"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
-	"github.com/myceldb/mycel/internal/graph/model"
+	graph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
-	"github.com/myceldb/mycel/internal/identity/model"
+	identity "github.com/myceldb/mycel/internal/identity/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
@@ -37,30 +37,32 @@ func NewSemanticService(semantic daemonsemantic.Manager, spaces daemonspace.Mana
 	return &SemanticService{semantic: semantic, spaces: spaces, graphs: graphs}
 }
 
-func (s *SemanticService) ListSemanticIndexes(ctx context.Context, req *clientv1.ListSemanticIndexesRequest) (*clientv1.ListSemanticIndexesResponse, error) {
-	principal, spaceID, domainID, err := s.authorizeDomainRead(ctx, req.GetSpaceId(), req.GetDomainId())
+func (s *SemanticService) ListSemanticRules(ctx context.Context, req *clientv1.ListSemanticRulesRequest) (*clientv1.ListSemanticRulesResponse, error) {
+	_, spaceID, domainID, err := s.authorizeDomainRead(ctx, req.GetSpaceId(), req.GetDomainId())
 	if err != nil {
 		return nil, err
 	}
-	_ = principal
-	indexes, err := s.semantic.ListIndexes(ctx, spaceID, domainID)
+	rules, err := s.semantic.ListRules(ctx, spaceID, domainID)
 	if err != nil {
-		return nil, mapSemanticError(err, "list semantic indexes")
+		return nil, mapSemanticError(err, "list semantic rules")
 	}
-	states, endpoints, models, stores, err := s.semanticDisplayMetadata(ctx, spaceID)
+	stateByRule, searchByBinding, stores, err := s.semanticRuleSummaryMetadata(ctx, spaceID)
 	if err != nil {
-		return nil, mapSemanticError(err, "load semantic metadata")
+		return nil, mapSemanticError(err, "load semantic rule metadata")
 	}
-	items := make([]*clientv1.SemanticIndex, 0, len(indexes))
-	for _, index := range indexes {
-		items = append(items, MapSemanticIndexProto(index, states[index.ID], endpoints, models, stores))
+	items := make([]*clientv1.SemanticGenerationRuleSummary, 0, len(rules))
+	for _, rule := range rules {
+		if !req.GetIncludeDisabled() && (!rule.Enabled || !ruleHasSearchBinding(rule)) {
+			continue
+		}
+		items = append(items, MapSemanticRuleSummaryProto(rule, stateByRule[rule.ID], searchByBinding, stores))
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].GetKey() < items[j].GetKey() })
 	page, next, err := paginateSemantic(items, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &clientv1.ListSemanticIndexesResponse{Indexes: page, NextPageToken: next}, nil
+	return &clientv1.ListSemanticRulesResponse{Rules: page, NextPageToken: next}, nil
 }
 
 func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.SemanticSearchRequest) (*clientv1.SemanticSearchResponse, error) {
@@ -79,7 +81,11 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if limit > semanticMaxPageSize {
 		return nil, status.Errorf(codes.ResourceExhausted, "limit must be <= %d", semanticMaxPageSize)
 	}
-	selectedIndexIDs, err := s.resolveSearchIndexes(ctx, spaceID, domainID, req.GetSemanticIndexId())
+	bindingKey := strings.TrimSpace(req.GetEmbeddingBindingKey())
+	if bindingKey != "" && strings.TrimSpace(req.GetSemanticRuleId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "embedding_binding_key requires semantic_rule_id")
+	}
+	selectedRuleIDs, err := s.resolveSearchRules(ctx, spaceID, domainID, req.GetSemanticRuleId())
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +97,7 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if req.MinScore != nil {
 		minScore = req.GetMinScore()
 	}
-	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticIndexIDs: selectedIndexIDs, Text: query, Limit: limit, MinScore: minScore, ActorPrincipalID: actorID})
+	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: query, Limit: limit, MinScore: minScore, ActorPrincipalID: actorID})
 	if err != nil {
 		return nil, mapSemanticError(err, "semantic search")
 	}
@@ -102,7 +108,8 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 		if node == nil {
 			continue
 		}
-		out = append(out, &clientv1.SemanticSearchResult{NodeId: item.NodeID.String(), Score: item.Score, Node: node, MatchedChunkIds: []string{item.RecordID.String()}, Snippet: semanticSnippet(nodePayloadText(node))})
+		matched := recordIDsForResult(item)
+		out = append(out, &clientv1.SemanticSearchResult{SemanticRuleId: item.SemanticRuleID.String(), EmbeddingBindingKey: item.EmbeddingBindingKey, RecordId: item.RecordID.String(), NodeId: item.NodeID.String(), Score: item.Score, Node: node, MatchedChunkIds: matched, Snippet: semanticSnippet(nodePayloadText(node))})
 	}
 	allWarnings := append([]string{}, result.Warnings...)
 	allWarnings = append(allWarnings, warnings...)
@@ -134,77 +141,81 @@ func (s *SemanticService) authorizeDomainRead(ctx context.Context, spaceIDText, 
 
 type principalUser struct{ PrincipalID string }
 
-func (s *SemanticService) semanticDisplayMetadata(ctx context.Context, spaceID domainspace.SpaceID) (map[domainsemantic.SemanticIndexID]domainsemantic.SemanticIndexState, map[domainsemantic.ModelEndpointID]domainsemantic.ModelEndpoint, map[domainsemantic.InferenceModelID]domainsemantic.InferenceModel, map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend, error) {
+func (s *SemanticService) semanticRuleSummaryMetadata(ctx context.Context, spaceID domainspace.SpaceID) (map[domainsemantic.SemanticRuleID]domainsemantic.SemanticRuleState, map[string]domainsemantic.SemanticSearchIndexState, map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend, error) {
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, err
 	}
-	stateRows, err := spaceMgr.ListIndexStates(ctx)
+	ruleStates, err := spaceMgr.ListSemanticRuleStates(ctx)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, err
 	}
-	states := map[domainsemantic.SemanticIndexID]domainsemantic.SemanticIndexState{}
-	for _, st := range stateRows {
-		states[st.SemanticIndexID] = st
+	stateByRule := map[domainsemantic.SemanticRuleID]domainsemantic.SemanticRuleState{}
+	for _, state := range ruleStates {
+		stateByRule[state.SemanticRuleID] = state
 	}
-	global := s.semantic.GlobalManager()
-	endpointRows, err := global.ListModelEndpoints(ctx)
+	searchStates, err := spaceMgr.ListSearchIndexStates(ctx)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, err
 	}
-	modelRows, err := global.ListModels(ctx)
+	searchByBinding := map[string]domainsemantic.SemanticSearchIndexState{}
+	for _, state := range searchStates {
+		searchByBinding[ruleBindingKey(state.SemanticRuleID, state.EmbeddingBindingKey)] = state
+	}
+	storeRows, err := s.semantic.GlobalManager().ListVectorStores(ctx)
 	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	storeRows, err := global.ListVectorStores(ctx)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	endpoints := map[domainsemantic.ModelEndpointID]domainsemantic.ModelEndpoint{}
-	for _, endpoint := range endpointRows {
-		endpoints[endpoint.ID] = endpoint
-	}
-	models := map[domainsemantic.InferenceModelID]domainsemantic.InferenceModel{}
-	for _, model := range modelRows {
-		models[model.ID] = model
+		return nil, nil, nil, err
 	}
 	stores := map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend{}
 	for _, store := range storeRows {
 		stores[store.ID] = store
 	}
-	return states, endpoints, models, stores, nil
+	return stateByRule, searchByBinding, stores, nil
 }
 
-func (s *SemanticService) resolveSearchIndexes(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID, rawIndexID string) ([]domainsemantic.SemanticIndexID, error) {
-	indexes, err := s.semantic.ListIndexes(ctx, spaceID, domainID)
+func (s *SemanticService) resolveSearchRules(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID, rawRuleID string) ([]domainsemantic.SemanticRuleID, error) {
+	rules, err := s.semantic.ListRules(ctx, spaceID, domainID)
 	if err != nil {
-		return nil, mapSemanticError(err, "resolve semantic indexes")
+		return nil, mapSemanticError(err, "resolve semantic rules")
 	}
-	if strings.TrimSpace(rawIndexID) == "" {
-		out := []domainsemantic.SemanticIndexID{}
-		for _, index := range indexes {
-			if index.Enabled {
-				out = append(out, index.ID)
+	if strings.TrimSpace(rawRuleID) == "" {
+		out := []domainsemantic.SemanticRuleID{}
+		for _, rule := range rules {
+			if rule.Enabled && ruleHasSearchBinding(rule) {
+				out = append(out, rule.ID)
 			}
 		}
 		if len(out) == 0 {
-			return nil, status.Error(codes.FailedPrecondition, "no enabled semantic index is available for the domain")
+			return nil, status.Error(codes.FailedPrecondition, "no enabled semantic search rule is available for the domain")
 		}
 		return out, nil
 	}
-	id, err := parseSemanticIndexID(rawIndexID)
+	id, err := parseSemanticRuleID(rawRuleID)
 	if err != nil {
 		return nil, err
 	}
-	for _, index := range indexes {
-		if index.ID == id {
-			if !index.Enabled {
-				return nil, status.Error(codes.FailedPrecondition, "semantic index is disabled")
+	for _, rule := range rules {
+		if rule.ID == id {
+			if !rule.Enabled {
+				return nil, status.Error(codes.FailedPrecondition, "semantic rule is disabled")
 			}
-			return []domainsemantic.SemanticIndexID{id}, nil
+			if !ruleHasSearchBinding(rule) {
+				return nil, status.Error(codes.FailedPrecondition, "semantic rule has no enabled search binding")
+			}
+			return []domainsemantic.SemanticRuleID{id}, nil
 		}
 	}
-	return nil, status.Error(codes.NotFound, "semantic index not found")
+	return nil, status.Error(codes.NotFound, "semantic rule not found")
+}
+
+func ruleHasSearchBinding(rule domainsemantic.SemanticGenerationRule) bool {
+	for _, raw := range rule.Embeddings {
+		binding := domainsemantic.NormalizeSemanticEmbeddingBinding(raw)
+		if binding.Enabled && domainsemantic.IsSearchSemanticIndexPurpose(domainsemantic.SemanticIndexPurpose(binding.Purpose)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *SemanticService) loadSearchNodes(ctx context.Context, principalID string, spaceID domainspace.SpaceID, domainID graph.DomainID, results []semanticsearch.SearchResult) (map[graph.NodeID]*clientv1.Node, []string) {
@@ -227,51 +238,97 @@ func (s *SemanticService) loadSearchNodes(ctx context.Context, principalID strin
 	return out, warnings
 }
 
-func MapSemanticIndexProto(index domainsemantic.SemanticIndex, state domainsemantic.SemanticIndexState, endpoints map[domainsemantic.ModelEndpointID]domainsemantic.ModelEndpoint, models map[domainsemantic.InferenceModelID]domainsemantic.InferenceModel, stores map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend) *clientv1.SemanticIndex {
-	modelLabel := index.ModelID.String()
-	if model, ok := models[index.ModelID]; ok {
-		modelLabel = firstNonEmptyString(model.Key, model.ModelName, model.ID.String())
+func MapSemanticRuleSummaryProto(rule domainsemantic.SemanticGenerationRule, state domainsemantic.SemanticRuleState, searchByBinding map[string]domainsemantic.SemanticSearchIndexState, stores map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend) *clientv1.SemanticGenerationRuleSummary {
+	bindings := make([]*clientv1.SemanticEmbeddingBindingSummary, 0, len(rule.Embeddings))
+	for _, raw := range rule.Embeddings {
+		binding := domainsemantic.NormalizeSemanticEmbeddingBinding(raw)
+		storeKey := strings.TrimSpace(binding.VectorStore)
+		if store, ok := stores[binding.VectorStoreID]; ok {
+			storeKey = firstNonEmptyString(store.Key, store.Name, store.ID.String())
+		}
+		bindings = append(bindings, &clientv1.SemanticEmbeddingBindingSummary{Key: binding.Key, Purpose: binding.Purpose, IntelligenceProfileId: semanticUUIDString(binding.IntelligenceProfileID), IntelligenceProfileKey: binding.IntelligenceProfile, VectorStoreId: semanticUUIDString(binding.VectorStoreID), VectorStoreKey: storeKey, Enabled: binding.Enabled, SearchIndex: mapSearchIndexStatus(searchByBinding[ruleBindingKey(rule.ID, binding.Key)])})
 	}
-	storeLabel := index.VectorStoreID.String()
-	if store, ok := stores[index.VectorStoreID]; ok {
-		storeLabel = firstNonEmptyString(store.Name, store.Key, store.ID.String())
-	}
-	if endpoint, ok := endpoints[index.ModelEndpointID]; ok && endpoint.Name != "" && modelLabel != "" {
-		modelLabel = modelLabel + " via " + endpoint.Name
-	}
-	return &clientv1.SemanticIndex{SemanticIndexId: index.ID.String(), Key: index.Key, DisplayName: index.Name, Description: semanticIndexDescription(index), SpaceId: index.SpaceID.String(), DomainId: index.DomainID.String(), ModelLabel: modelLabel, VectorStoreLabel: storeLabel, State: mapSemanticIndexState(index, state)}
+	return &clientv1.SemanticGenerationRuleSummary{SemanticRuleId: rule.ID.String(), Key: rule.Key, DisplayName: rule.DisplayName, Description: rule.Description, SpaceId: rule.SpaceID.String(), DomainId: rule.DomainID.String(), Enabled: rule.Enabled, State: mapSemanticRuleState(rule, state), Bindings: bindings, Status: mapSemanticRuleStatus(state)}
 }
 
-func mapSemanticIndexState(index domainsemantic.SemanticIndex, state domainsemantic.SemanticIndexState) clientv1.SemanticIndexState {
-	if !index.Enabled {
-		return clientv1.SemanticIndexState_SEMANTIC_INDEX_STATE_DISABLED
+func mapSemanticRuleState(rule domainsemantic.SemanticGenerationRule, state domainsemantic.SemanticRuleState) clientv1.SemanticRuleState {
+	if !rule.Enabled {
+		return clientv1.SemanticRuleState_SEMANTIC_RULE_STATE_DISABLED
 	}
 	switch strings.ToLower(strings.TrimSpace(state.State)) {
 	case "building", "running", "backfilling":
-		return clientv1.SemanticIndexState_SEMANTIC_INDEX_STATE_BUILDING
+		return clientv1.SemanticRuleState_SEMANTIC_RULE_STATE_BUILDING
 	case "stale", "dirty":
-		return clientv1.SemanticIndexState_SEMANTIC_INDEX_STATE_STALE
+		return clientv1.SemanticRuleState_SEMANTIC_RULE_STATE_STALE
 	case "disabled":
-		return clientv1.SemanticIndexState_SEMANTIC_INDEX_STATE_DISABLED
+		return clientv1.SemanticRuleState_SEMANTIC_RULE_STATE_DISABLED
 	case "error", "failed":
-		return clientv1.SemanticIndexState_SEMANTIC_INDEX_STATE_ERROR
+		return clientv1.SemanticRuleState_SEMANTIC_RULE_STATE_ERROR
 	default:
-		return clientv1.SemanticIndexState_SEMANTIC_INDEX_STATE_ACTIVE
+		return clientv1.SemanticRuleState_SEMANTIC_RULE_STATE_ACTIVE
 	}
 }
 
-func semanticIndexDescription(index domainsemantic.SemanticIndex) string {
-	parts := []string{}
-	if index.Purpose != "" {
-		parts = append(parts, string(index.Purpose))
+func mapSemanticRuleStatus(state domainsemantic.SemanticRuleState) *clientv1.SemanticRuleStatus {
+	return &clientv1.SemanticRuleStatus{QueueDepthPending: int32(state.DirtyCount), LastRefreshAt: timeString(state.LastRefreshAt), LastBackfillAt: timeString(state.LastBackfillAt), LastError: state.LastError}
+}
+
+func mapSearchIndexStatus(state domainsemantic.SemanticSearchIndexState) *clientv1.SearchIndexStatus {
+	return &clientv1.SearchIndexStatus{State: mapSearchIndexState(state.State), LiveRecordCount: state.LiveRecordCount, LastRebuildAt: timeString(state.LastRebuildAt), LastError: state.LastError}
+}
+
+func mapSearchIndexState(raw string) clientv1.SearchIndexState {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "ready", "active":
+		return clientv1.SearchIndexState_SEARCH_INDEX_STATE_READY
+	case "building", "rebuilding":
+		return clientv1.SearchIndexState_SEARCH_INDEX_STATE_BUILDING
+	case "degraded", "stale":
+		return clientv1.SearchIndexState_SEARCH_INDEX_STATE_DEGRADED
+	case "missing", "":
+		return clientv1.SearchIndexState_SEARCH_INDEX_STATE_MISSING
+	case "error", "failed":
+		return clientv1.SearchIndexState_SEARCH_INDEX_STATE_ERROR
+	default:
+		return clientv1.SearchIndexState_SEARCH_INDEX_STATE_UNSPECIFIED
 	}
-	if index.SourcePolicy.Extraction != "" {
-		parts = append(parts, "source="+string(index.SourcePolicy.Extraction))
+}
+
+func recordIDsForResult(item semanticsearch.SearchResult) []string {
+	ids := []string{}
+	seen := map[string]bool{}
+	for _, id := range item.MatchedRecordIDs {
+		if id == uuid.Nil {
+			continue
+		}
+		value := id.String()
+		if !seen[value] {
+			ids = append(ids, value)
+			seen[value] = true
+		}
 	}
-	if len(index.SourcePolicy.RecordTypes) > 0 {
-		parts = append(parts, "record_types="+strings.Join(index.SourcePolicy.RecordTypes, ","))
+	if len(ids) == 0 && item.RecordID != uuid.Nil {
+		ids = append(ids, item.RecordID.String())
 	}
-	return strings.Join(parts, "; ")
+	return ids
+}
+
+func ruleBindingKey(ruleID domainsemantic.SemanticRuleID, bindingKey string) string {
+	return ruleID.String() + "/" + strings.ToLower(strings.TrimSpace(bindingKey))
+}
+
+func timeString(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func semanticUUIDString(id uuid.UUID) string {
+	if id == uuid.Nil {
+		return ""
+	}
+	return id.String()
 }
 
 func nodePayloadText(node *clientv1.Node) string {
@@ -340,6 +397,14 @@ func parseSemanticIndexID(raw string) (domainsemantic.SemanticIndexID, error) {
 	return domainsemantic.SemanticIndexID(id), nil
 }
 
+func parseSemanticRuleID(raw string) (domainsemantic.SemanticRuleID, error) {
+	id, err := uuid.Parse(strings.TrimSpace(raw))
+	if err != nil || id == uuid.Nil {
+		return uuid.Nil, status.Error(codes.InvalidArgument, "semantic_rule_id must be a UUID")
+	}
+	return domainsemantic.SemanticRuleID(id), nil
+}
+
 func parseIdentityPrincipalID(raw string) (identity.PrincipalID, error) {
 	id, err := uuid.Parse(strings.TrimSpace(raw))
 	if err != nil || id == uuid.Nil {
@@ -362,8 +427,8 @@ func mapSemanticError(err error, action string) error {
 	if strings.Contains(msg, "not found") {
 		return status.Error(codes.NotFound, msg)
 	}
-	if strings.Contains(msg, "required") || strings.Contains(msg, "invalid") {
-		return status.Error(codes.InvalidArgument, msg)
+	if strings.Contains(msg, "required") || strings.Contains(msg, "invalid") || strings.Contains(msg, "no enabled") || strings.Contains(msg, "skipped") || strings.Contains(msg, "disabled") {
+		return status.Error(codes.FailedPrecondition, msg)
 	}
 	if strings.Contains(msg, "denies") || strings.Contains(msg, "policy") {
 		return status.Error(codes.PermissionDenied, msg)

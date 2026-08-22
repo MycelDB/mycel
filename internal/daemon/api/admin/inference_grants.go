@@ -16,7 +16,7 @@ import (
 
 // Credential grant RPC handlers for AdminInferenceService.
 
-func (s *AdminInferenceService) CreateCredentialGrant(ctx context.Context, req *adminv1.AdminInferenceGrantServiceCreateCredentialGrantRequest) (*adminv1.AdminInferenceGrantServiceCreateCredentialGrantResponse, error) {
+func (s *AdminInferenceService) CreateCredentialGrant(ctx context.Context, req *adminv1.AdminIntelligenceAccessGrantServiceCreateCredentialGrantRequest) (*adminv1.AdminIntelligenceAccessGrantServiceCreateCredentialGrantResponse, error) {
 	principal, err := s.requireInferenceCapability(ctx, capInferenceGrantManage, inferenceScope(req.GetSpaceId(), ""))
 	if err != nil {
 		return nil, err
@@ -62,13 +62,13 @@ func (s *AdminInferenceService) CreateCredentialGrant(ctx context.Context, req *
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert credential grant")
 	}
-	if err := s.syncInferenceCredentialGrant(ctx, spaceID.String(), grant); err != nil {
+	if err := s.syncIntelligenceCredentialGrant(ctx, spaceID.String(), grant); err != nil {
 		return nil, mapAdminInferenceError(err, "sync inference credential grant")
 	}
-	return &adminv1.AdminInferenceGrantServiceCreateCredentialGrantResponse{CredentialGrant: mapCredentialGrant(grant)}, nil
+	return &adminv1.AdminIntelligenceAccessGrantServiceCreateCredentialGrantResponse{CredentialGrant: mapCredentialGrant(grant)}, nil
 }
 
-func (s *AdminInferenceService) ListCredentialGrants(ctx context.Context, req *adminv1.AdminInferenceGrantServiceListCredentialGrantsRequest) (*adminv1.AdminInferenceGrantServiceListCredentialGrantsResponse, error) {
+func (s *AdminInferenceService) ListCredentialGrants(ctx context.Context, req *adminv1.AdminIntelligenceAccessGrantServiceListCredentialGrantsRequest) (*adminv1.AdminIntelligenceAccessGrantServiceListCredentialGrantsResponse, error) {
 	if _, err := s.requireInferenceCapability(ctx, capInferenceGrantManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
@@ -99,10 +99,10 @@ func (s *AdminInferenceService) ListCredentialGrants(ctx context.Context, req *a
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &adminv1.AdminInferenceGrantServiceListCredentialGrantsResponse{CredentialGrants: mapCredentialGrants(page), NextPageToken: next}, nil
+	return &adminv1.AdminIntelligenceAccessGrantServiceListCredentialGrantsResponse{CredentialGrants: mapCredentialGrants(page), NextPageToken: next}, nil
 }
 
-func (s *AdminInferenceService) ExpireCredentialGrant(ctx context.Context, req *adminv1.AdminInferenceGrantServiceExpireCredentialGrantRequest) (*adminv1.AdminInferenceGrantServiceExpireCredentialGrantResponse, error) {
+func (s *AdminInferenceService) ExpireCredentialGrant(ctx context.Context, req *adminv1.AdminIntelligenceAccessGrantServiceExpireCredentialGrantRequest) (*adminv1.AdminIntelligenceAccessGrantServiceExpireCredentialGrantResponse, error) {
 	if _, err := s.requireInferenceCapability(ctx, capInferenceGrantManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
@@ -135,16 +135,16 @@ func (s *AdminInferenceService) ExpireCredentialGrant(ctx context.Context, req *
 			if err != nil {
 				return nil, mapAdminInferenceError(err, "expire credential grant")
 			}
-			if err := s.syncInferenceCredentialGrant(ctx, spaceID.String(), stored); err != nil {
+			if err := s.syncIntelligenceCredentialGrant(ctx, spaceID.String(), stored); err != nil {
 				return nil, mapAdminInferenceError(err, "sync inference credential grant")
 			}
-			return &adminv1.AdminInferenceGrantServiceExpireCredentialGrantResponse{CredentialGrant: mapCredentialGrant(stored)}, nil
+			return &adminv1.AdminIntelligenceAccessGrantServiceExpireCredentialGrantResponse{CredentialGrant: mapCredentialGrant(stored)}, nil
 		}
 	}
 	return nil, status.Error(codes.NotFound, "credential grant not found")
 }
 
-func (s *AdminInferenceService) DeleteCredentialGrant(ctx context.Context, req *adminv1.AdminInferenceGrantServiceDeleteCredentialGrantRequest) (*adminv1.AdminInferenceGrantServiceDeleteCredentialGrantResponse, error) {
+func (s *AdminInferenceService) DeleteCredentialGrant(ctx context.Context, req *adminv1.AdminIntelligenceAccessGrantServiceDeleteCredentialGrantRequest) (*adminv1.AdminIntelligenceAccessGrantServiceDeleteCredentialGrantResponse, error) {
 	if _, err := s.requireInferenceCapability(ctx, capInferenceGrantManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
@@ -162,7 +162,7 @@ func (s *AdminInferenceService) DeleteCredentialGrant(ctx context.Context, req *
 		return nil, referencedPrecondition("credential grant", refs)
 	}
 	if refs, err := s.standaloneDecisionReferences(ctx, spaceID.String(), func(decision domaininference.PolicyDecision) bool { return decision.CredentialGrantID == grantID }); err != nil {
-		return nil, mapAdminInferenceError(err, "list standalone inference policy decisions")
+		return nil, mapAdminInferenceError(err, "list standalone access policy decisions")
 	} else if len(refs) > 0 {
 		return nil, referencedPrecondition("credential grant", refs)
 	}
@@ -187,5 +187,5 @@ func (s *AdminInferenceService) DeleteCredentialGrant(ctx context.Context, req *
 			return nil, mapAdminInferenceError(err, "delete inference credential grant")
 		}
 	}
-	return &adminv1.AdminInferenceGrantServiceDeleteCredentialGrantResponse{CredentialGrantId: grantID.String()}, nil
+	return &adminv1.AdminIntelligenceAccessGrantServiceDeleteCredentialGrantResponse{CredentialGrantId: grantID.String()}, nil
 }

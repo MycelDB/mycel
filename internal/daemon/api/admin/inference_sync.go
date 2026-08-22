@@ -58,7 +58,7 @@ func (s *AdminInferenceService) syncInferenceSecret(ctx context.Context, secret 
 	return err
 }
 
-func (s *AdminInferenceService) syncInferenceCredential(ctx context.Context, credential domainsemantic.InferenceCredential) error {
+func (s *AdminInferenceService) syncIntelligenceCredential(ctx context.Context, credential domainsemantic.InferenceCredential) error {
 	if s.inference == nil {
 		return nil
 	}
@@ -66,7 +66,7 @@ func (s *AdminInferenceService) syncInferenceCredential(ctx context.Context, cre
 	return err
 }
 
-func (s *AdminInferenceService) syncInferenceCredentialGrant(ctx context.Context, spaceID string, grant domainsemantic.CredentialGrant) error {
+func (s *AdminInferenceService) syncIntelligenceCredentialGrant(ctx context.Context, spaceID string, grant domainsemantic.CredentialGrant) error {
 	if s.inference == nil {
 		return nil
 	}
@@ -78,7 +78,7 @@ func (s *AdminInferenceService) syncInferenceCredentialGrant(ctx context.Context
 	return err
 }
 
-func (s *AdminInferenceService) syncInferencePolicy(ctx context.Context, spaceID string, policy domainsemantic.InferencePolicy) error {
+func (s *AdminInferenceService) syncAccessPolicy(ctx context.Context, spaceID string, policy domainsemantic.InferencePolicy) error {
 	if s.inference == nil {
 		return nil
 	}

@@ -31,14 +31,14 @@ func TestAdminInferenceUsageListsAndSummarizesStandaloneEvents(t *testing.T) {
 		t.Fatalf("append usage: %v", err)
 	}
 	svc := NewAdminInferenceService(nil, inference, fakeAuthorizer{allowed: true})
-	listed, err := svc.ListUsageEvents(authenticatedContext(), &adminv1.AdminInferenceUsageServiceListUsageEventsRequest{SpaceId: "space-a", Operation: commonv1.InferenceOperation_INFERENCE_OPERATION_CHAT})
+	listed, err := svc.ListUsageEvents(authenticatedContext(), &adminv1.AdminIntelligenceAccessUsageServiceListUsageEventsRequest{SpaceId: "space-a", Operation: commonv1.InferenceOperation_INFERENCE_OPERATION_CHAT})
 	if err != nil {
 		t.Fatalf("ListUsageEvents() error = %v", err)
 	}
 	if len(listed.GetUsageEvents()) != 2 || listed.GetUsageEvents()[0].GetSpaceId() != "space-a" {
 		t.Fatalf("unexpected usage events: %#v", listed.GetUsageEvents())
 	}
-	summary, err := svc.SummarizeUsage(authenticatedContext(), &adminv1.AdminInferenceUsageServiceSummarizeUsageRequest{SpaceId: "space-a", GroupBy: []string{"space_id", "operation"}})
+	summary, err := svc.SummarizeUsage(authenticatedContext(), &adminv1.AdminIntelligenceAccessUsageServiceSummarizeUsageRequest{SpaceId: "space-a", GroupBy: []string{"space_id", "operation"}})
 	if err != nil {
 		t.Fatalf("SummarizeUsage() error = %v", err)
 	}

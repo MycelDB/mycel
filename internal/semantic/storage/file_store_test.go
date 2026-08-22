@@ -752,3 +752,185 @@ func TestSpaceManagerRejectsMismatchedSpaceScope(t *testing.T) {
 		t.Fatalf("expected invalid input, got %v", err)
 	}
 }
+
+func TestSpaceManagerSemanticRulesPersistAndNormalize(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	mgr := NewSpaceManager()
+	dir := t.TempDir()
+	if err := mgr.Init(ctx, dir, spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID:     spaceID,
+		DomainID:    domainID,
+		Key:         " Journal Search ",
+		DisplayName: "Journal Search",
+		Enabled:     true,
+		Selector:    domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{
+			Key:                 " Search ",
+			Purpose:             "semantic_search",
+			IntelligenceProfile: " embeddings-default ",
+			VectorStoreID:       domainsemantic.VectorStoreID(uuid.New()),
+			Enabled:             true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("UpsertSemanticRule() error = %v", err)
+	}
+	if created.Key != "journal search" || created.Embeddings[0].Key != "search" || created.Embeddings[0].IntelligenceProfile != "embeddings-default" {
+		t.Fatalf("rule was not normalized: %+v", created)
+	}
+	if len(created.Trigger.Events) != 1 || created.Trigger.Events[0] != domainsemantic.DefaultSemanticTriggerEventChanged {
+		t.Fatalf("default trigger = %+v", created.Trigger)
+	}
+	if !created.Storage.Searchable || created.Storage.PhysicalIndex != domainsemantic.SemanticPhysicalIndexExact {
+		t.Fatalf("default storage = %+v", created.Storage)
+	}
+	if _, err := os.Stat(filepath.Join(dir, semanticRulesFileName)); err != nil {
+		t.Fatalf("expected rules file: %v", err)
+	}
+
+	reloaded := NewSpaceManager()
+	if err := reloaded.Init(ctx, dir, spaceID); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	rules, err := reloaded.ListSemanticRules(ctx)
+	if err != nil {
+		t.Fatalf("ListSemanticRules() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].ID != created.ID {
+		t.Fatalf("unexpected reloaded rules: %+v", rules)
+	}
+
+	updated, err := reloaded.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID:     spaceID,
+		DomainID:    domainID,
+		Key:         "journal search",
+		DisplayName: "Updated",
+		Enabled:     true,
+		Selector:    rules[0].Selector,
+		Embeddings:  rules[0].Embeddings,
+	})
+	if err != nil {
+		t.Fatalf("key-based update failed: %v", err)
+	}
+	if updated.ID != created.ID || !updated.CreatedAt.Equal(created.CreatedAt) || updated.DisplayName != "Updated" {
+		t.Fatalf("key-based update did not preserve identity: created=%+v updated=%+v", created, updated)
+	}
+}
+
+func TestSpaceManagerSemanticRuleRejectsDuplicateBindingKeys(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	mgr := NewSpaceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	_, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID:  spaceID,
+		DomainID: graph.DomainID(uuid.New()),
+		Key:      "dup-bindings",
+		Enabled:  true,
+		Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{
+			{Key: "search", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true},
+			{Key: " search ", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate embedding binding key") {
+		t.Fatalf("expected duplicate binding key error, got %v", err)
+	}
+}
+
+func TestSpaceManagerRuleAndSearchIndexStatesPersistByRuleBinding(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	mgr := NewSpaceManager()
+	dir := t.TempDir()
+	if err := mgr.Init(ctx, dir, spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", RecordCount: 2}); err != nil {
+		t.Fatalf("UpsertSemanticRuleState() error = %v", err)
+	}
+	first, err := mgr.UpsertSearchIndexState(ctx, domainsemantic.SemanticSearchIndexState{SemanticRuleID: ruleID, EmbeddingBindingKey: "search", State: "ready", LiveRecordCount: 2})
+	if err != nil {
+		t.Fatalf("UpsertSearchIndexState() error = %v", err)
+	}
+	second, err := mgr.UpsertSearchIndexState(ctx, domainsemantic.SemanticSearchIndexState{SemanticRuleID: ruleID, EmbeddingBindingKey: "search", State: "degraded", LiveRecordCount: 1})
+	if err != nil {
+		t.Fatalf("second UpsertSearchIndexState() error = %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("search index state should upsert by rule/binding: first=%s second=%s", first.ID, second.ID)
+	}
+	reloaded := NewSpaceManager()
+	if err := reloaded.Init(ctx, dir, spaceID); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	ruleStates, err := reloaded.ListSemanticRuleStates(ctx)
+	if err != nil || len(ruleStates) != 1 || ruleStates[0].SemanticRuleID != ruleID {
+		t.Fatalf("unexpected rule states: states=%+v err=%v", ruleStates, err)
+	}
+	searchStates, err := reloaded.ListSearchIndexStates(ctx)
+	if err != nil || len(searchStates) != 1 || searchStates[0].State != "degraded" {
+		t.Fatalf("unexpected search states: states=%+v err=%v", searchStates, err)
+	}
+}
+
+func TestMaintenanceWorkCoalescesByRuleBindingAndTarget(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	targetID := graph.NodeID(uuid.New())
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	first, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", TargetNodeID: targetID})
+	if err != nil {
+		t.Fatalf("first UpsertDirtyWorkItem() error = %v", err)
+	}
+	second, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "summary", TargetNodeID: targetID})
+	if err != nil {
+		t.Fatalf("second UpsertDirtyWorkItem() error = %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("different binding keys should not coalesce: first=%s second=%s", first.ID, second.ID)
+	}
+	again, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", TargetNodeID: targetID})
+	if err != nil {
+		t.Fatalf("third UpsertDirtyWorkItem() error = %v", err)
+	}
+	if again.ID != first.ID {
+		t.Fatalf("same rule/binding/target should coalesce: first=%s again=%s", first.ID, again.ID)
+	}
+	items, err := mgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("expected two binding-aware work items, got items=%+v err=%v", items, err)
+	}
+}
+
+func TestMaintenanceWorkNormalizesLegacyIndexIDToRuleID(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	targetID := graph.NodeID(uuid.New())
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	item, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, SemanticIndexID: indexID, TargetNodeID: targetID})
+	if err != nil {
+		t.Fatalf("UpsertDirtyWorkItem() error = %v", err)
+	}
+	if item.SemanticRuleID != domainsemantic.SemanticRuleID(indexID) || item.SemanticIndexID != indexID {
+		t.Fatalf("legacy item was not normalized: %+v", item)
+	}
+}

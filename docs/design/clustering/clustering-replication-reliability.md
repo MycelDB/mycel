@@ -214,7 +214,7 @@ Required V1 guarantees:
 | Graph nodes/edges | Partition raft. All commits quorum-replicated; reads leader/read-index consistent. |
 | Blobs | Metadata through raft; payload replication must be durable and verified, or payload store must be shared/object-backed. |
 | Schemas | Partition raft or system raft by domain ownership; must not be pod-local in cluster mode. |
-| Semantic indexes | Derived/rebuildable state may be local, but authoritative index metadata/config/checkpoints must be rafted. Search results must document freshness. |
+| Semantic rules and vectors | Authoritative rule metadata/config/checkpoints must be rafted. Durable vector records and derived physical search indexes may be local/rebuildable depending on policy. Search results must document freshness. |
 | Automations | Definitions/invocations/audit records must be rafted or explicitly owned by one scheduler leader. Derived worker state can be local. |
 | Backups | Policy/config must be rafted; execution should be leader-elected/single-runner. |
 | Change streams | Events generated from committed raft graph changes; checkpoints must be comparable across replicas. |

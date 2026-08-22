@@ -19,7 +19,7 @@ func newSemanticMigrateLegacyEmbeddingsCommand(a *app.App) *cobra.Command {
 	var spaceIDText, domainRef, profileRef, ownerPrincipalID string
 	var limit int
 	var allowBackgroundUse, addAllowPolicy, strict, dryRun bool
-	cmd := &cobra.Command{Use: "legacy-embeddings", Short: "Deprecated: legacy embedding migration window is closed", Long: "Deprecated: the legacy embedding migration window is closed. Configure inference credentials, grants, policies, and semantic indexes directly.", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "legacy-embeddings", Short: "Deprecated: legacy embedding migration window is closed", Long: "Deprecated: the legacy embedding migration window is closed. Configure Intelligence Access credentials, grants, policies, and semantic generation rules directly.", RunE: func(cmd *cobra.Command, args []string) error {
 		return runDaemonSemanticMigrateLegacyEmbeddings(cmd, a, spaceIDText, domainRef, profileRef, ownerPrincipalID, allowBackgroundUse, addAllowPolicy, strict, dryRun, limit)
 	}}
 	cmd.Flags().StringVar(&spaceIDText, "space-id", "", "space ID")
@@ -48,7 +48,7 @@ func runDaemonSemanticMigrateLegacyEmbeddings(cmd *cobra.Command, a *app.App, sp
 	if err != nil {
 		return err
 	}
-	res, err := adminv1.NewAdminSemanticMigrationServiceClient(conn).MigrateLegacyEmbeddings(authCtx, &adminv1.MigrateLegacyEmbeddingsRequest{SpaceId: spaceID.String(), DomainId: domainID, OwnerPrincipalId: ownerPrincipalID, ProfileRef: profileRef, AllowBackgroundUse: allowBackgroundUse, AddAllowPolicy: addAllowPolicy, Strict: strict, DryRun: dryRun, Limit: int32(limit)})
+	res, err := adminv1.NewAdminSemanticMigrationServiceClient(conn).MigrateLegacyEmbeddings(authCtx, &adminv1.MigrateLegacyEmbeddingsRequest{SpaceId: spaceID.String(), DomainId: domainID, OwnerPrincipalId: ownerPrincipalID, IntelligenceProfileRef: profileRef, AllowBackgroundUse: allowBackgroundUse, AddAllowPolicy: addAllowPolicy, Strict: strict, DryRun: dryRun, Limit: int32(limit)})
 	if err != nil {
 		return err
 	}
@@ -57,8 +57,8 @@ func runDaemonSemanticMigrateLegacyEmbeddings(cmd *cobra.Command, a *app.App, sp
 	for _, warning := range res.GetWarnings() {
 		fmt.Fprintf(&b, "warning\t%s\n", warning)
 	}
-	for _, id := range res.GetSemanticIndexIds() {
-		fmt.Fprintf(&b, "semantic_index=%s\n", id)
+	for _, id := range res.GetSemanticRuleIds() {
+		fmt.Fprintf(&b, "semantic_rule=%s\n", id)
 	}
 	return a.Print(res, b.String())
 }

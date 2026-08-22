@@ -3,6 +3,7 @@ coverage.out
 /coverage/
 bin/
 data/
+artifacts/
 internal/gen/
 internal/query/gql/antlr/generated/
 .cache/

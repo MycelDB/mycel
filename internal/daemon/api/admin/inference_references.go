@@ -90,7 +90,7 @@ func (s *AdminInferenceService) modelEndpointReferences(ctx context.Context, id 
 			idText := id.String()
 			if stringSliceContains(profile.EndpointRefs, idText) || stringSliceContains(grant.EndpointRefs, idText) {
 				if stringSliceContains(profile.EndpointRefs, idText) {
-					out = append(out, "inference_profile:"+profile.ID.String())
+					out = append(out, "intelligence_profile:"+profile.ID.String())
 				}
 				if stringSliceContains(grant.EndpointRefs, idText) {
 					out = append(out, "credential_grant:"+grant.ID.String())
@@ -171,7 +171,7 @@ func (s *AdminInferenceService) modelReferences(ctx context.Context, id domainse
 			out := []string{}
 			idText := id.String()
 			if stringSliceContains(profile.ModelRefs, idText) {
-				out = append(out, "inference_profile:"+profile.ID.String())
+				out = append(out, "intelligence_profile:"+profile.ID.String())
 			}
 			if stringSliceContains(grant.ModelRefs, idText) {
 				out = append(out, "credential_grant:"+grant.ID.String())
@@ -234,7 +234,7 @@ func (s *AdminInferenceService) capabilityReferences(ctx context.Context, id dom
 			out := []string{}
 			idText := id.String()
 			if stringSliceContains(profile.CapabilityRefs, idText) {
-				out = append(out, "inference_profile:"+profile.ID.String())
+				out = append(out, "intelligence_profile:"+profile.ID.String())
 			}
 			if stringSliceContains(grant.CapabilityRefs, idText) {
 				out = append(out, "credential_grant:"+grant.ID.String())
@@ -321,7 +321,7 @@ func (s *AdminInferenceService) profileReferences(ctx context.Context, profile d
 				return nil, err
 			}
 			for _, index := range indexes {
-				if metadataMatchesAny(index.Metadata, []string{"inference_profile_id", "inference_profile", "inference_profile_key", "embedding_profile"}, idText, key) {
+				if metadataMatchesAny(index.Metadata, []string{"intelligence_profile_id", "intelligence_profile", "intelligence_profile_key", "embedding_profile"}, idText, key) {
 					refs = append(refs, "semantic_index:"+index.ID.String())
 				}
 			}
@@ -488,7 +488,7 @@ func (s *AdminInferenceService) standaloneSpaceReferences(ctx context.Context, s
 	}
 	policies, err := mgr.ListPolicies(ctx)
 	if err != nil {
-		return nil, mapAdminInferenceError(err, "list standalone inference policies")
+		return nil, mapAdminInferenceError(err, "list standalone access policies")
 	}
 	decisions, err := mgr.ListPolicyDecisions(ctx)
 	if err != nil {

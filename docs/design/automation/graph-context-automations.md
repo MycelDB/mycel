@@ -55,7 +55,7 @@ multiple related nodes.
 - Synchronous transaction hooks.
 - Unbounded graph-wide scans.
 - Implicit destructive graph repair or merge behavior.
-- Replacing semantic indexing or other system maintenance pipelines.
+- Replacing semantic generation-rule maintenance or other system maintenance pipelines.
 
 ## Proposed model
 

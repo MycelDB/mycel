@@ -12,18 +12,12 @@ import (
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 )
 
-type modelBinding struct {
-	index       domainsemantic.SemanticIndex
-	endpoint    domainsemantic.ModelEndpoint
-	model       domainsemantic.InferenceModel
-	capability  domainsemantic.ModelEndpointCapability
-	vectorStore domainsemantic.VectorStoreBackend
-}
+const maxPerBindingLimit = 100
 
-type group struct {
-	key     string
-	binding modelBinding
-	indexes []domainsemantic.SemanticIndex
+type selectedBinding struct {
+	rule        domainsemantic.SemanticGenerationRule
+	binding     domainsemantic.SemanticEmbeddingBinding
+	vectorStore domainsemantic.VectorStoreBackend
 }
 
 func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
@@ -39,179 +33,272 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 	if in.Limit <= 0 {
 		in.Limit = 10
 	}
-	indexes, err := p.selectIndexes(ctx, in)
+	res := Result{Results: []SearchResult{}, Warnings: []string{}, WarningDetails: []Warning{}, Groups: []GroupSummary{}}
+	models, vectorStores, err := p.globalSearchDefinitions(ctx)
 	if err != nil {
 		return Result{}, err
 	}
-	endpoints, models, caps, vectorStores, err := p.globalDefinitions(ctx)
+	selected, selectionWarnings, err := p.selectRuleBindings(ctx, in, vectorStores)
+	for _, warning := range selectionWarnings {
+		addWarning(&res, warning)
+	}
 	if err != nil {
-		return Result{}, err
+		return res, err
 	}
-	res := Result{Results: []SearchResult{}, Warnings: []string{}, Groups: []GroupSummary{}}
-	groups := map[string]*group{}
-	for _, index := range indexes {
-		binding, err := resolveBinding(index, endpoints, models, caps, vectorStores)
+	if len(selected) == 0 {
+		return res, fmt.Errorf("no enabled semantic search bindings are available for the domain")
+	}
+	perBindingLimit := perBindingLimit(in.Limit)
+	successfulSearches := 0
+	for _, item := range selected {
+		profileRef, profileID := bindingProfile(item.binding)
+		query, err := p.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), ActorPrincipalID: in.ActorPrincipalID, OnBehalfOfPrincipalID: item.rule.OwnerPrincipalID, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: strings.TrimSpace(in.Text), Reason: "semantic_query"})
 		if err != nil {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("index %s skipped: %v", index.Key, err))
+			addWarning(&res, Warning{Code: embeddingWarningCode(err), Message: fmt.Sprintf("rule %s binding %q skipped: %v", item.rule.Key, item.binding.Key, err), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue
 		}
-		if profileRef, profileID := semanticInferenceProfileRef(index); strings.TrimSpace(profileRef) == "" && profileID == uuid.Nil {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("index %s skipped: semantic index does not declare an inference profile", index.Key))
-			continue
-		}
-		key := binding.model.VectorSpaceKey + "|" + binding.endpoint.ID.String() + "|" + binding.model.ID.String() + "|" + index.ID.String()
-		g := groups[key]
-		if g == nil {
-			g = &group{key: key, binding: binding}
-			groups[key] = g
-		}
-		g.indexes = append(g.indexes, index)
-	}
-	ordered := make([]*group, 0, len(groups))
-	for _, g := range groups {
-		ordered = append(ordered, g)
-	}
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].key < ordered[j].key })
-	for _, g := range ordered {
-		profileRef, profileID := semanticInferenceProfileRef(g.indexes[0])
-		query, err := p.Connector.Embed(ctx, connectors.EmbedInput{ModelEndpointID: g.binding.endpoint.ID, ModelID: g.binding.model.ID, ModelEndpointCapabilityID: g.binding.capability.ID, SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticIndexID: g.indexes[0].ID, ActorPrincipalID: in.ActorPrincipalID, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: strings.TrimSpace(in.Text), Reason: "semantic_query"})
+		vectorSpaceKey := vectorSpaceForModel(query.ModelID, models)
+		results, err := p.VectorBackend.Search(ctx, vectorstore.SearchInput{SpaceID: item.rule.SpaceID, DomainID: item.rule.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), VectorStoreID: item.vectorStore.ID, VectorSpaceKey: vectorSpaceKey, Query: query.Vector, Limit: perBindingLimit, MinScore: in.MinScore})
 		if err != nil {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("vector space %s skipped: %v", g.binding.model.VectorSpaceKey, err))
+			addWarning(&res, Warning{Code: searchIndexWarningCode(err), Message: fmt.Sprintf("rule %s binding %q search skipped: %v", item.rule.Key, item.binding.Key, err), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue
 		}
+		successfulSearches++
 		groupCount := 0
-		indexIDs := []domainsemantic.SemanticIndexID{}
-		for _, index := range g.indexes {
-			indexIDs = append(indexIDs, index.ID)
-			results, err := p.VectorBackend.Search(ctx, vectorstore.SearchInput{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, Query: query.Vector, Limit: in.Limit, MinScore: in.MinScore})
-			if err != nil {
-				res.Warnings = append(res.Warnings, fmt.Sprintf("index %s search skipped: %v", index.Key, err))
-				continue
+		for _, result := range results {
+			rec := result.Record
+			semanticRuleID := result.SemanticRuleID
+			if semanticRuleID == uuid.Nil {
+				semanticRuleID = item.rule.ID
 			}
-			for _, item := range results {
-				rec := item.Record
-				res.Results = append(res.Results, SearchResult{SemanticIndexID: index.ID, NodeID: item.NodeID, RecordID: rec.ID, Score: item.Score, ModelEndpointID: rec.ModelEndpointID, ModelID: rec.ModelID, VectorStoreID: rec.VectorStoreID, CredentialGrantID: rec.CredentialGrantID, VectorSpaceKey: rec.VectorSpaceKey, SourceHash: rec.SourceHash, SourceMode: rec.SourceMode})
-				groupCount++
+			bindingKey := strings.TrimSpace(result.EmbeddingBindingKey)
+			if bindingKey == "" {
+				bindingKey = item.binding.Key
 			}
+			targetID := rec.TargetNodeID
+			if targetID == uuid.Nil {
+				targetID = result.NodeID
+			}
+			res.Results = append(res.Results, SearchResult{SemanticRuleID: semanticRuleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: result.SemanticIndexID, NodeID: result.NodeID, TargetNodeID: targetID, RecordID: rec.ID, MatchedRecordIDs: []domainsemantic.AdvancedEmbeddingRecordID{rec.ID}, MatchedBindings: []MatchedBinding{{SemanticRuleID: semanticRuleID, EmbeddingBindingKey: bindingKey, RecordID: rec.ID, Score: result.Score}}, Score: result.Score, ModelEndpointID: rec.ModelEndpointID, ModelID: rec.ModelID, VectorStoreID: rec.VectorStoreID, CredentialGrantID: rec.CredentialGrantID, VectorSpaceKey: rec.VectorSpaceKey, SourceHash: rec.SourceHash, SourceMode: rec.SourceMode, CreatedAt: rec.CreatedAt})
+			groupCount++
 		}
-		res.Groups = append(res.Groups, GroupSummary{VectorSpaceKey: g.binding.model.VectorSpaceKey, ModelEndpointID: g.binding.endpoint.ID, ModelID: g.binding.model.ID, CredentialGrantID: query.CredentialGrantID, SemanticIndexIDs: indexIDs, ResultCount: groupCount})
+		res.Groups = append(res.Groups, GroupSummary{SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, VectorSpaceKey: vectorSpaceKey, ModelEndpointID: query.EndpointID, ModelID: query.ModelID, CredentialGrantID: query.CredentialGrantID, SemanticIndexIDs: []domainsemantic.SemanticIndexID{domainsemantic.SemanticIndexID(item.rule.ID)}, SemanticRuleIDs: []domainsemantic.SemanticRuleID{item.rule.ID}, ResultCount: groupCount})
 	}
-	if len(ordered) == 1 {
-		sort.SliceStable(res.Results, func(i, j int) bool {
-			if res.Results[i].Score == res.Results[j].Score {
-				return res.Results[i].NodeID.String() < res.Results[j].NodeID.String()
-			}
-			return res.Results[i].Score > res.Results[j].Score
-		})
-		if len(res.Results) > in.Limit {
-			res.Results = res.Results[:in.Limit]
-		}
+	res.Results = mergeAndRank(res.Results, in.Limit)
+	if successfulSearches == 0 {
+		return res, fmt.Errorf("all semantic search bindings were skipped or unavailable")
 	}
 	return res, nil
 }
 
-func (p Planner) selectIndexes(ctx context.Context, in Input) ([]domainsemantic.SemanticIndex, error) {
-	indexes, err := p.SpaceManager.ListSemanticIndexes(ctx)
+func (p Planner) selectRuleBindings(ctx context.Context, in Input, vectorStores []domainsemantic.VectorStoreBackend) ([]selectedBinding, []Warning, error) {
+	rules, err := p.SpaceManager.ListSemanticRules(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	wanted := map[domainsemantic.SemanticIndexID]bool{}
+	wantedRules := map[domainsemantic.SemanticRuleID]bool{}
+	for _, id := range in.SemanticRuleIDs {
+		if id != uuid.Nil {
+			wantedRules[id] = true
+		}
+	}
 	for _, id := range in.SemanticIndexIDs {
 		if id != uuid.Nil {
-			wanted[id] = true
+			wantedRules[domainsemantic.SemanticRuleID(id)] = true
 		}
 	}
+	wantedBinding := strings.ToLower(strings.TrimSpace(in.EmbeddingBindingKey))
 	purpose := domainsemantic.NormalizeSemanticIndexPurpose(in.Purpose)
-	out := []domainsemantic.SemanticIndex{}
-	for _, index := range indexes {
-		if !index.Enabled || index.SpaceID != in.SpaceID || index.DomainID != in.DomainID || domainsemantic.NormalizeSemanticIndexPurpose(index.Purpose) != purpose {
-			continue
-		}
-		if len(wanted) > 0 && !wanted[index.ID] {
-			continue
-		}
-		out = append(out, index)
+	storesByID := map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend{}
+	storesByKey := map[string]domainsemantic.VectorStoreBackend{}
+	for _, store := range vectorStores {
+		storesByID[store.ID] = store
+		storesByKey[strings.ToLower(strings.TrimSpace(store.Key))] = store
 	}
-	return out, nil
+	out := []selectedBinding{}
+	warnings := []Warning{}
+	for _, rule := range rules {
+		if !rule.Enabled || rule.SpaceID != in.SpaceID || rule.DomainID != in.DomainID {
+			continue
+		}
+		if len(wantedRules) > 0 && !wantedRules[rule.ID] {
+			continue
+		}
+		for _, rawBinding := range rule.Embeddings {
+			binding := domainsemantic.NormalizeSemanticEmbeddingBinding(rawBinding)
+			if !binding.Enabled {
+				continue
+			}
+			if wantedBinding != "" && binding.Key != wantedBinding {
+				continue
+			}
+			if domainsemantic.NormalizeSemanticIndexPurpose(domainsemantic.SemanticIndexPurpose(binding.Purpose)) != purpose {
+				continue
+			}
+			profileRef, profileID := bindingProfile(binding)
+			if strings.TrimSpace(profileRef) == "" && profileID == uuid.Nil {
+				warnings = append(warnings, Warning{Code: "profile_missing", Message: fmt.Sprintf("rule %s binding %q skipped: binding does not declare an Intelligence Access profile", rule.Key, binding.Key), SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key})
+				continue
+			}
+			store, ok := resolveBindingVectorStore(binding, storesByID, storesByKey)
+			if !ok || !store.Enabled {
+				warnings = append(warnings, Warning{Code: "vector_store_missing", Message: fmt.Sprintf("rule %s binding %q skipped: enabled vector store not found", rule.Key, binding.Key), SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, Retryable: true})
+				continue
+			}
+			if store.Type != domainsemantic.VectorStoreMycelFile {
+				warnings = append(warnings, Warning{Code: "vector_store_unsupported", Message: fmt.Sprintf("rule %s binding %q skipped: unsupported vector store type %s", rule.Key, binding.Key, store.Type), SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key})
+				continue
+			}
+			out = append(out, selectedBinding{rule: rule, binding: binding, vectorStore: store})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].rule.Key == out[j].rule.Key {
+			return out[i].binding.Key < out[j].binding.Key
+		}
+		return out[i].rule.Key < out[j].rule.Key
+	})
+	return out, warnings, nil
 }
 
-func (p Planner) globalDefinitions(ctx context.Context) ([]domainsemantic.ModelEndpoint, []domainsemantic.InferenceModel, []domainsemantic.ModelEndpointCapability, []domainsemantic.VectorStoreBackend, error) {
-	endpoints, err := p.GlobalManager.ListModelEndpoints(ctx)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
+func (p Planner) globalSearchDefinitions(ctx context.Context) ([]domainsemantic.InferenceModel, []domainsemantic.VectorStoreBackend, error) {
 	models, err := p.GlobalManager.ListModels(ctx)
 	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	caps, err := p.GlobalManager.ListModelEndpointCapabilities(ctx)
-	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, err
 	}
 	vectorStores, err := p.GlobalManager.ListVectorStores(ctx)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, err
 	}
-	return endpoints, models, caps, vectorStores, nil
+	return models, vectorStores, nil
 }
 
-func resolveBinding(index domainsemantic.SemanticIndex, endpoints []domainsemantic.ModelEndpoint, models []domainsemantic.InferenceModel, caps []domainsemantic.ModelEndpointCapability, vectorStores []domainsemantic.VectorStoreBackend) (modelBinding, error) {
-	var endpoint *domainsemantic.ModelEndpoint
-	for i := range endpoints {
-		if endpoints[i].ID == index.ModelEndpointID && endpoints[i].Enabled {
-			endpoint = &endpoints[i]
-			break
-		}
-	}
-	if endpoint == nil {
-		return modelBinding{}, fmt.Errorf("enabled endpoint %s not found", index.ModelEndpointID)
-	}
-	var model *domainsemantic.InferenceModel
-	for i := range models {
-		if models[i].ID == index.ModelID && models[i].Operation == domainsemantic.OperationEmbeddings {
-			model = &models[i]
-			break
-		}
-	}
-	if model == nil {
-		return modelBinding{}, fmt.Errorf("embedding model %s not found", index.ModelID)
-	}
-	var vectorStore *domainsemantic.VectorStoreBackend
-	for i := range vectorStores {
-		if vectorStores[i].ID == index.VectorStoreID && vectorStores[i].Enabled {
-			vectorStore = &vectorStores[i]
-			break
-		}
-	}
-	if vectorStore == nil {
-		return modelBinding{}, fmt.Errorf("enabled vector store %s not found", index.VectorStoreID)
-	}
-	if vectorStore.Type != domainsemantic.VectorStoreMycelFile {
-		return modelBinding{}, fmt.Errorf("unsupported vector store type %s", vectorStore.Type)
-	}
-	for _, cap := range caps {
-		if cap.ModelEndpointID == endpoint.ID && cap.ModelID == model.ID && cap.Operation == domainsemantic.OperationEmbeddings && cap.Enabled {
-			return modelBinding{index: index, endpoint: *endpoint, model: *model, capability: cap, vectorStore: *vectorStore}, nil
-		}
-	}
-	return modelBinding{}, fmt.Errorf("enabled capability not found for endpoint=%s model=%s", endpoint.ID, model.ID)
+func bindingProfile(binding domainsemantic.SemanticEmbeddingBinding) (string, uuid.UUID) {
+	return strings.TrimSpace(binding.IntelligenceProfile), uuid.UUID(binding.IntelligenceProfileID)
 }
 
-func semanticInferenceProfileRef(index domainsemantic.SemanticIndex) (string, uuid.UUID) {
-	if len(index.Metadata) == 0 {
-		return "", uuid.Nil
+func resolveBindingVectorStore(binding domainsemantic.SemanticEmbeddingBinding, byID map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend, byKey map[string]domainsemantic.VectorStoreBackend) (domainsemantic.VectorStoreBackend, bool) {
+	if binding.VectorStoreID != uuid.Nil {
+		store, ok := byID[binding.VectorStoreID]
+		return store, ok
 	}
-	if raw, ok := index.Metadata["inference_profile_id"]; ok {
-		if id, err := uuid.Parse(strings.TrimSpace(fmt.Sprint(raw))); err == nil {
-			return "", id
+	if strings.TrimSpace(binding.VectorStore) != "" {
+		store, ok := byKey[strings.ToLower(strings.TrimSpace(binding.VectorStore))]
+		return store, ok
+	}
+	return domainsemantic.VectorStoreBackend{}, false
+}
+
+func vectorSpaceForModel(modelID domainsemantic.InferenceModelID, models []domainsemantic.InferenceModel) string {
+	for _, model := range models {
+		if model.ID == modelID {
+			return strings.TrimSpace(model.VectorSpaceKey)
 		}
 	}
-	for _, key := range []string{"inference_profile", "inference_profile_key", "embedding_profile"} {
-		if raw, ok := index.Metadata[key]; ok {
-			if value := strings.TrimSpace(fmt.Sprint(raw)); value != "" {
-				return value, uuid.Nil
-			}
+	return ""
+}
+
+func embeddingWarningCode(err error) string {
+	if connectors.IsInferenceDenied(err) {
+		return "profile_denied"
+	}
+	return "embedding_failed"
+}
+
+func searchIndexWarningCode(err error) string {
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "missing") || strings.Contains(msg, "no such file") || strings.Contains(msg, "unavailable") {
+		return "search_index_missing"
+	}
+	return "search_index_degraded"
+}
+
+func perBindingLimit(limit int) int {
+	if limit <= 0 {
+		limit = 10
+	}
+	candidate := limit * 3
+	if candidate < limit {
+		candidate = limit
+	}
+	if candidate > maxPerBindingLimit {
+		candidate = maxPerBindingLimit
+	}
+	if candidate < limit {
+		candidate = limit
+	}
+	return candidate
+}
+
+func addWarning(res *Result, warning Warning) {
+	res.WarningDetails = append(res.WarningDetails, warning)
+	if strings.TrimSpace(warning.Message) != "" {
+		res.Warnings = append(res.Warnings, warning.Message)
+	}
+}
+
+func mergeAndRank(results []SearchResult, limit int) []SearchResult {
+	if limit <= 0 {
+		limit = 10
+	}
+	byNode := map[string]int{}
+	merged := []SearchResult{}
+	for _, result := range results {
+		key := result.NodeID.String()
+		idx, ok := byNode[key]
+		if !ok {
+			byNode[key] = len(merged)
+			merged = append(merged, result)
+			continue
+		}
+		existing := &merged[idx]
+		existing.MatchedRecordIDs = appendUniqueRecordIDs(existing.MatchedRecordIDs, result.MatchedRecordIDs...)
+		existing.MatchedBindings = append(existing.MatchedBindings, result.MatchedBindings...)
+		if betterResult(result, *existing) {
+			bestRecords := existing.MatchedRecordIDs
+			bestBindings := existing.MatchedBindings
+			*existing = result
+			existing.MatchedRecordIDs = bestRecords
+			existing.MatchedBindings = bestBindings
 		}
 	}
-	return "", uuid.Nil
+	sort.SliceStable(merged, func(i, j int) bool { return betterResult(merged[i], merged[j]) })
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged
+}
+
+func betterResult(a, b SearchResult) bool {
+	if a.Score != b.Score {
+		return a.Score > b.Score
+	}
+	if a.NodeID != b.NodeID {
+		return a.NodeID.String() < b.NodeID.String()
+	}
+	if a.SemanticRuleID != b.SemanticRuleID {
+		return a.SemanticRuleID.String() < b.SemanticRuleID.String()
+	}
+	if a.EmbeddingBindingKey != b.EmbeddingBindingKey {
+		return a.EmbeddingBindingKey < b.EmbeddingBindingKey
+	}
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	return a.RecordID.String() < b.RecordID.String()
+}
+
+func appendUniqueRecordIDs(ids []domainsemantic.AdvancedEmbeddingRecordID, more ...domainsemantic.AdvancedEmbeddingRecordID) []domainsemantic.AdvancedEmbeddingRecordID {
+	seen := map[domainsemantic.AdvancedEmbeddingRecordID]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	for _, id := range more {
+		if id == uuid.Nil || seen[id] {
+			continue
+		}
+		ids = append(ids, id)
+		seen[id] = true
+	}
+	return ids
 }

@@ -12,9 +12,9 @@ github.com/myceldb/mycel-api/api/proto/mycel/admin/v1/inference.proto
 
 ## Purpose
 
-Admin inference APIs manage daemon inference catalog/configuration resources used by semantic indexes, semantic search, and graph automations. The API is split into themed services: `AdminInferenceCatalogService`, `AdminInferenceProfileService`, `AdminInferenceCredentialService`, `AdminInferenceGrantService`, `AdminInferencePolicyService`, and `AdminInferenceUsageService`.
+Admin inference APIs manage daemon inference catalog/configuration resources used by semantic generation rules, semantic search, and graph automations. The API is split into themed services: `AdminInferenceCatalogService`, `AdminInferenceProfileService`, `AdminInferenceCredentialService`, `AdminInferenceGrantService`, `AdminInferencePolicyService`, and `AdminInferenceUsageService`.
 
-mycel owns semantic and embedding infrastructure: embedding model endpoints, embedding model definitions, vector stores, semantic indexes, embedding credentials/grants/policies, and semantic search execution. mycel may understand connector types such as `openai-compatible` or `ollama`, but only for operations mycel owns, primarily `embeddings`.
+mycel owns semantic and embedding infrastructure: embedding model endpoints, embedding model definitions, vector stores, semantic generation rules, embedding credentials/grants/policies, and semantic search execution. mycel may understand connector types such as `openai-compatible` or `ollama`, but only for operations mycel owns, primarily `embeddings`.
 
 mycel does not own application chat catalogs, chat prompts, chat tools, conversation UX, or browser-user chat credentials. Applications such as Knot PKM own chat orchestration and may maintain their own chat catalog while using mycel for embeddings and semantic search.
 
@@ -136,7 +136,7 @@ Daemon-backed soft cleanup/lifecycle commands:
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference policy expire '<policy-id>' --space-id '<space-id>'
 ```
 
-Daemon-backed hard-delete commands are reference-safe. Endpoint/model/vector-store/capability deletes fail with `FAILED_PRECONDITION` if semantic indexes, capabilities, credentials, grants, or policy decisions still reference them. Credential deletes fail while grants reference the credential unless `--delete-grants` is set; `--delete-secret` deletes the underlying secret only when it is not shared.
+Daemon-backed hard-delete commands are reference-safe. Endpoint/model/vector-store/capability deletes fail with `FAILED_PRECONDITION` if semantic generation rules, capabilities, credentials, grants, or policy decisions still reference them. Credential deletes fail while grants reference the credential unless `--delete-grants` is set; `--delete-secret` deletes the underlying secret only when it is not shared.
 
 ```sh
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference credential delete openai-key --delete-grants --delete-secret
@@ -148,16 +148,11 @@ Daemon-backed hard-delete commands are reference-safe. Endpoint/model/vector-sto
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' inference vector-store delete mycel-file
 ```
 
-After applying a package, daemon-mode semantic index creation can use keys for inference resources:
+After applying a package, daemon-mode semantic rule creation can use Intelligence Access profile and vector-store keys:
 
 ```sh
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
-  semantic index add notes-search \
-  --space-id '<space-id>' \
-  --domain '<domain-id>' \
-  --model-endpoint openai \
-  --model openai/text-embedding-3-small \
-  --vector-store mycel-file
+  semantic rule create --file examples/semantic/notes-rule.json
 ```
 
-Domain lookup for daemon-mode `semantic index add` still requires a domain UUID until an Admin Domain lookup/list API is added or the CLI performs a standard-user domain lookup separately.
+Domain lookup for daemon-mode semantic rule commands accepts domain UUIDs or stable domain keys such as `default`.

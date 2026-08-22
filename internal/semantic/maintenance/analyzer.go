@@ -38,9 +38,11 @@ type dirtyWorkBatchUpserter interface {
 const defaultDirtyWorkUpsertBatchSize = 128
 
 type AnalyzeInput struct {
-	SemanticIndexID domainsemantic.SemanticIndexID
-	Limit           int
-	Now             time.Time
+	SemanticRuleID      domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
+	SemanticIndexID     domainsemantic.SemanticIndexID // transitional until maintenance APIs are regenerated
+	Limit               int
+	Now                 time.Time
 }
 
 type AnalyzeResult struct {
@@ -58,6 +60,13 @@ func (a Analyzer) AnalyzeOnce(ctx context.Context, in AnalyzeInput) (AnalyzeResu
 	now := in.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
+	}
+	rules, err := a.SpaceManager.ListSemanticRules(ctx)
+	if err != nil {
+		return AnalyzeResult{}, err
+	}
+	if len(rules) > 0 {
+		return a.analyzeRules(ctx, rules, in, now)
 	}
 	indexes, err := a.SpaceManager.ListSemanticIndexes(ctx)
 	if err != nil {
@@ -144,6 +153,138 @@ func (a Analyzer) AnalyzeOnce(ctx context.Context, in AnalyzeInput) (AnalyzeResu
 		}
 	}
 	return result, nil
+}
+
+func (a Analyzer) analyzeRules(ctx context.Context, rules []domainsemantic.SemanticGenerationRule, in AnalyzeInput, now time.Time) (AnalyzeResult, error) {
+	if in.SemanticRuleID == uuid.Nil && in.SemanticIndexID != uuid.Nil {
+		in.SemanticRuleID = domainsemantic.SemanticRuleID(in.SemanticIndexID)
+	}
+	states, err := a.SpaceManager.ListSemanticRuleStates(ctx)
+	if err != nil {
+		return AnalyzeResult{}, err
+	}
+	stateByRule := map[domainsemantic.SemanticRuleID]domainsemantic.SemanticRuleState{}
+	for _, st := range states {
+		stateByRule[st.SemanticRuleID] = st
+	}
+	events, err := a.MaintenanceManager.ListGraphDirtyEvents(ctx)
+	if err != nil {
+		return AnalyzeResult{}, err
+	}
+	result := AnalyzeResult{}
+	for _, rule := range rules {
+		rule = domainsemantic.NormalizeSemanticGenerationRule(rule)
+		if !rule.Enabled || (in.SemanticRuleID != uuid.Nil && rule.ID != in.SemanticRuleID) {
+			continue
+		}
+		bindings := enabledRuleBindings(rule, in.EmbeddingBindingKey)
+		if len(bindings) == 0 {
+			continue
+		}
+		state := stateByRule[rule.ID]
+		state.SemanticRuleID = rule.ID
+		if state.State == "" {
+			state.State = "active"
+		}
+		for _, binding := range bindings {
+			checkpoint, err := a.MaintenanceManager.GetCheckpoint(ctx, analyzerRuleBindingConsumer(rule.ID, binding.Key))
+			if err != nil {
+				return result, err
+			}
+			checkpointRevision := checkpoint.LastGraphRevision
+			for _, event := range events {
+				if event.GraphRevision <= checkpointRevision {
+					continue
+				}
+				if !eventTouchesDomain(event, rule.DomainID) || !a.eventMatchesRuleTrigger(ctx, rule, event) {
+					checkpoint.LastGraphRevision = event.GraphRevision
+					checkpoint.LastGraphDirtyEventID = event.ID
+					checkpoint.UpdatedAt = now
+					if err := a.MaintenanceManager.SaveCheckpoint(ctx, checkpoint); err != nil {
+						return result, err
+					}
+					continue
+				}
+				count, err := a.enqueueRuleBindingForEvent(ctx, rule, binding, event, now)
+				if err != nil {
+					state.State = "failed"
+					state.LastError = err.Error()
+					state.UpdatedAt = now
+					_, _ = a.SpaceManager.UpsertSemanticRuleState(ctx, state)
+					return result, err
+				}
+				result.EnqueuedItems += count
+				result.ProcessedEvents++
+				checkpoint.LastGraphRevision = event.GraphRevision
+				checkpoint.LastGraphDirtyEventID = event.ID
+				checkpoint.UpdatedAt = now
+				if err := a.MaintenanceManager.SaveCheckpoint(ctx, checkpoint); err != nil {
+					return result, err
+				}
+				if in.Limit > 0 && result.ProcessedEvents >= in.Limit {
+					break
+				}
+			}
+			if in.Limit > 0 && result.ProcessedEvents >= in.Limit {
+				break
+			}
+		}
+		items, _ := a.MaintenanceManager.ListDirtyWorkItems(ctx)
+		state.DirtyCount = countPendingRule(items, rule.ID)
+		state.State = "active"
+		state.LastError = ""
+		state.UpdatedAt = now
+		if _, err := a.SpaceManager.UpsertSemanticRuleState(ctx, state); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func (a Analyzer) enqueueRuleBindingForEvent(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, event domainsemantic.GraphDirtyEvent, now time.Time) (int, error) {
+	if a.GraphReader == nil {
+		return 0, fmt.Errorf("graph reader is required")
+	}
+	targets := a.resolveRuleTargets(ctx, rule, event)
+	batchSize := a.MaxBatchSize
+	if batchSize <= 0 {
+		batchSize = defaultDirtyWorkUpsertBatchSize
+	}
+	count := 0
+	batch := make([]domainsemantic.SemanticDirtyWorkItem, 0, min(batchSize, len(targets)))
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		flushed, err := a.upsertDirtyWorkItems(ctx, batch)
+		count += flushed
+		batch = batch[:0]
+		return err
+	}
+	for targetID, target := range targets {
+		if err := ctx.Err(); err != nil {
+			return count, err
+		}
+		item := domainsemantic.SemanticDirtyWorkItem{SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), SpaceID: rule.SpaceID, DomainID: rule.DomainID, TargetNodeID: targetID, SourceNodeID: targetID, SourceTxnIDs: []uuid.UUID{event.TxnID}, FirstGraphRevision: event.GraphRevision, LastGraphRevision: event.GraphRevision, Reason: target.Reason, Action: target.Action, Status: domainsemantic.SemanticDirtyWorkStatusPending}
+		cooldown := a.DirtyCooldown
+		if rule.Maintenance.DirtyCooldown > 0 {
+			cooldown = rule.Maintenance.DirtyCooldown
+		}
+		if cooldown > 0 {
+			runAt := now.Add(cooldown)
+			item.EarliestRunAt = &runAt
+		}
+		batch = append(batch, item)
+		if len(batch) >= batchSize {
+			if err := flush(); err != nil {
+				return count, err
+			}
+		}
+	}
+	if err := flush(); err != nil {
+		return count, err
+	}
+	return count, nil
 }
 
 func (a Analyzer) enqueueForEvent(ctx context.Context, index domainsemantic.SemanticIndex, event domainsemantic.GraphDirtyEvent, now time.Time) (int, error) {
@@ -263,6 +404,144 @@ func (a Analyzer) resolveTargets(ctx context.Context, index domainsemantic.Seman
 	return out
 }
 
+func (a Analyzer) eventMatchesRuleTrigger(ctx context.Context, rule domainsemantic.SemanticGenerationRule, event domainsemantic.GraphDirtyEvent) bool {
+	trigger := domainsemantic.NormalizeSemanticTriggerPolicy(rule.Trigger)
+	matchesEvent := false
+	for _, eventName := range trigger.Events {
+		switch strings.TrimSpace(eventName) {
+		case domainsemantic.DefaultSemanticTriggerEventChanged:
+			matchesEvent = true
+		case "node_created":
+			matchesEvent = len(event.CreatedNodeIDs) > 0
+		case "node_updated":
+			matchesEvent = len(event.UpdatedNodeIDs) > 0
+		case "node_deleted":
+			matchesEvent = len(event.DeletedNodeIDs) > 0
+		case "edge_changed", "edge_created", "edge_deleted":
+			matchesEvent = len(event.ChangedEdges) > 0
+		}
+		if matchesEvent {
+			break
+		}
+	}
+	if !matchesEvent {
+		return false
+	}
+	if len(trigger.Labels) == 0 {
+		return true
+	}
+	for _, nodeID := range candidateNodeIDs(event) {
+		if containsNode(event.DeletedNodeIDs, nodeID) {
+			// Deleted node labels are not always available in dirty events; evaluate
+			// the selector rather than incorrectly dropping possible tombstone work.
+			return true
+		}
+		node, err := a.GraphReader.GetNode(ctx, rule.DomainID, nodeID)
+		if err == nil && graph.HasLabels(node, trigger.Labels) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a Analyzer) resolveRuleTargets(ctx context.Context, rule domainsemantic.SemanticGenerationRule, event domainsemantic.GraphDirtyEvent) map[graph.NodeID]resolvedTarget {
+	out := map[graph.NodeID]resolvedTarget{}
+	add := func(id graph.NodeID, action domainsemantic.SemanticDirtyWorkAction, reason string) {
+		if id == uuid.Nil {
+			return
+		}
+		if existing, ok := out[id]; ok {
+			if existing.Action != domainsemantic.SemanticDirtyWorkActionDelete || action != domainsemantic.SemanticDirtyWorkActionRefresh {
+				return
+			}
+		}
+		out[id] = resolvedTarget{Action: action, Reason: reason}
+	}
+	switch rule.Selector.Mode {
+	case domainsemantic.SemanticTargetSelectorExplicit:
+		for _, id := range rule.Selector.NodeIDs {
+			add(id, domainsemantic.SemanticDirtyWorkActionRefresh, "explicit_selector")
+		}
+		return out
+	case domainsemantic.SemanticTargetSelectorGQL:
+		// GQL execution needs a graph transaction/session context and is wired in a
+		// later analyzer follow-up. SGR3 validation already prevents unsafe GQL
+		// selectors from being stored.
+		return out
+	}
+	for _, nodeID := range candidateNodeIDs(event) {
+		reason := reasonForEvent(event, nodeID)
+		if containsNode(event.DeletedNodeIDs, nodeID) {
+			if targetID, action, ok := a.deletedRuleTarget(ctx, rule, event, nodeID); ok {
+				add(targetID, action, reason)
+			}
+			continue
+		}
+		if targetID, ok := a.targetForRuleNode(ctx, rule, nodeID); ok {
+			add(targetID, domainsemantic.SemanticDirtyWorkActionRefresh, reason)
+		}
+		if oldParentID := event.OldParentByNodeID[nodeID]; oldParentID != uuid.Nil {
+			if targetID, ok := a.targetForRuleNode(ctx, rule, oldParentID); ok {
+				add(targetID, domainsemantic.SemanticDirtyWorkActionRefresh, reason)
+			}
+		}
+		if newParentID := event.NewParentByNodeID[nodeID]; newParentID != uuid.Nil {
+			if targetID, ok := a.targetForRuleNode(ctx, rule, newParentID); ok {
+				add(targetID, domainsemantic.SemanticDirtyWorkActionRefresh, reason)
+			}
+		}
+	}
+	return out
+}
+
+func (a Analyzer) targetForRuleNode(ctx context.Context, rule domainsemantic.SemanticGenerationRule, nodeID graph.NodeID) (graph.NodeID, bool) {
+	node, err := a.GraphReader.GetNode(ctx, rule.DomainID, nodeID)
+	if err != nil || node.DomainID != rule.DomainID {
+		return uuid.Nil, false
+	}
+	if rule.Source.Mode == domainsemantic.SemanticSourceSelf || rule.Source.Mode == "" {
+		if graph.HasLabels(node, rule.Selector.Labels) {
+			return node.ID, true
+		}
+		return uuid.Nil, false
+	}
+	if graph.HasLabels(node, rule.Selector.Labels) {
+		return node.ID, true
+	}
+	parentID := nodeID
+	maxDepth := 256
+	if rule.Source.MaxDepth != nil && *rule.Source.MaxDepth > 0 && *rule.Source.MaxDepth < maxDepth {
+		maxDepth = *rule.Source.MaxDepth
+	}
+	for depth := 0; depth < maxDepth; depth++ {
+		parent, err := a.GraphReader.Parent(ctx, rule.DomainID, parentID)
+		if err != nil || parent == nil || parent.FromID == uuid.Nil {
+			return uuid.Nil, false
+		}
+		parentNode, err := a.GraphReader.GetNode(ctx, rule.DomainID, parent.FromID)
+		if err != nil || parentNode.DomainID != rule.DomainID {
+			return uuid.Nil, false
+		}
+		if graph.HasLabels(parentNode, rule.Selector.Labels) {
+			return parentNode.ID, true
+		}
+		parentID = parentNode.ID
+	}
+	return uuid.Nil, false
+}
+
+func (a Analyzer) deletedRuleTarget(ctx context.Context, rule domainsemantic.SemanticGenerationRule, event domainsemantic.GraphDirtyEvent, nodeID graph.NodeID) (graph.NodeID, domainsemantic.SemanticDirtyWorkAction, bool) {
+	if rule.Source.Mode == domainsemantic.SemanticSourceSelf || rule.Source.Mode == "" {
+		return nodeID, domainsemantic.SemanticDirtyWorkActionDelete, true
+	}
+	if oldParentID := event.OldParentByNodeID[nodeID]; oldParentID != uuid.Nil {
+		if targetID, ok := a.targetForRuleNode(ctx, rule, oldParentID); ok {
+			return targetID, domainsemantic.SemanticDirtyWorkActionRefresh, true
+		}
+	}
+	return nodeID, domainsemantic.SemanticDirtyWorkActionDelete, true
+}
+
 func (a Analyzer) targetForNode(ctx context.Context, index domainsemantic.SemanticIndex, nodeID graph.NodeID) (graph.NodeID, bool) {
 	node, err := a.GraphReader.GetNode(ctx, index.DomainID, nodeID)
 	if err != nil || node.DomainID != index.DomainID {
@@ -329,6 +608,32 @@ func countPending(items []domainsemantic.SemanticDirtyWorkItem, indexID domainse
 		}
 	}
 	return count
+}
+
+func countPendingRule(items []domainsemantic.SemanticDirtyWorkItem, ruleID domainsemantic.SemanticRuleID) int {
+	count := 0
+	for _, item := range items {
+		if item.EffectiveSemanticRuleID() == ruleID && item.Status == domainsemantic.SemanticDirtyWorkStatusPending {
+			count++
+		}
+	}
+	return count
+}
+
+func enabledRuleBindings(rule domainsemantic.SemanticGenerationRule, filter string) []domainsemantic.SemanticEmbeddingBinding {
+	filter = strings.TrimSpace(filter)
+	out := []domainsemantic.SemanticEmbeddingBinding{}
+	for _, binding := range rule.Embeddings {
+		binding = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
+		if !binding.Enabled {
+			continue
+		}
+		if filter != "" && binding.Key != filter {
+			continue
+		}
+		out = append(out, binding)
+	}
+	return out
 }
 
 type BackfillRunner interface {
@@ -466,7 +771,7 @@ func (w Worker) runItem(ctx context.Context, item domainsemantic.SemanticDirtyWo
 				nodeIDs = nil
 			}
 		}
-		_, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true})
+		_, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true})
 		return err
 	}
 	if item.Action == domainsemantic.SemanticDirtyWorkActionDelete || item.Action == domainsemantic.SemanticDirtyWorkActionCleanup {
@@ -488,10 +793,27 @@ func (w Worker) deleteVector(ctx context.Context, item domainsemantic.SemanticDi
 		if index.ID != item.SemanticIndexID {
 			continue
 		}
-		_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticIndexID: item.SemanticIndexID, NodeID: item.TargetNodeID, VectorStoreID: index.VectorStoreID, Reason: item.Reason})
+		_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeID: item.TargetNodeID, VectorStoreID: index.VectorStoreID, Reason: item.Reason})
 		return err
 	}
-	return fmt.Errorf("semantic index %s not found", item.SemanticIndexID)
+	rules, err := w.SpaceManager.ListSemanticRules(ctx)
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		if rule.ID != item.EffectiveSemanticRuleID() {
+			continue
+		}
+		for _, binding := range rule.Embeddings {
+			binding = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
+			if binding.Key != item.EmbeddingBindingKey || binding.VectorStoreID == uuid.Nil {
+				continue
+			}
+			_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: item.TargetNodeID, VectorStoreID: binding.VectorStoreID, Reason: item.Reason})
+			return err
+		}
+	}
+	return fmt.Errorf("semantic rule %s not found", item.EffectiveSemanticRuleID())
 }
 
 func (w Worker) effectiveConfig(limit int) WorkerConfig {
@@ -591,6 +913,10 @@ func minInt(a, b int) int {
 
 func analyzerConsumer(indexID domainsemantic.SemanticIndexID) string {
 	return "semantic-analyzer:" + indexID.String()
+}
+
+func analyzerRuleBindingConsumer(ruleID domainsemantic.SemanticRuleID, bindingKey string) string {
+	return "semantic-analyzer/" + ruleID.String() + "/" + strings.TrimSpace(bindingKey)
 }
 
 func maxUint64(a, b uint64) uint64 {

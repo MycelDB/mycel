@@ -95,7 +95,7 @@ Each space partition group owns all durable state scoped to spaces assigned to t
 - templates in those spaces
 - graph nodes/edges/files for those spaces
 - blob metadata for those spaces
-- semantic indexes/metadata for those spaces
+- semantic generation rule metadata, maintenance metadata, and checkpoints for those spaces
 - semantic maintenance/accounting records for those spaces
 
 Blob payload files are materialized replicated data associated with the owning partition. Metadata must not become visible unless the corresponding payload is locally readable.

@@ -108,6 +108,20 @@ func (w *walGlobalManager) resolveCredential(ctx context.Context, v domainsemant
 	return v, nil
 }
 
+func (w *walSpaceManager) resolveSemanticRule(ctx context.Context, v domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {
+	items, err := w.inner.ListSemanticRules(ctx)
+	if err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	key := semanticKey(v.Key)
+	for _, item := range items {
+		if item.SpaceID == v.SpaceID && item.DomainID == v.DomainID && semanticKey(item.Key) == key {
+			return item, nil
+		}
+	}
+	return v, nil
+}
+
 func (w *walSpaceManager) resolveSemanticIndex(ctx context.Context, v domainsemantic.SemanticIndex) (domainsemantic.SemanticIndex, error) {
 	items, err := w.inner.ListSemanticIndexes(ctx)
 	if err != nil {

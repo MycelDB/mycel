@@ -2658,10 +2658,11 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 }
 
 type semanticPredicateTerm struct {
-	alias    string
-	query    string
-	indexRef string
-	limit    int32
+	alias               string
+	query               string
+	ruleRef             string
+	embeddingBindingKey string
+	limit               int32
 }
 
 func isSemanticPredicateNodeQuery(query *clientv1.GraphQuery) bool {
@@ -2708,19 +2709,19 @@ func (s *QueryService) tryExecuteSemanticPredicateQuery(ctx context.Context, req
 		return true, nil, err
 	}
 	term := terms[0]
-	semanticIndexIDs := []domainsemantic.SemanticIndexID{}
-	if strings.TrimSpace(term.indexRef) != "" {
-		id, err := parseSemanticIndexID(term.indexRef)
+	semanticRuleIDs := []domainsemantic.SemanticRuleID{}
+	if strings.TrimSpace(term.ruleRef) != "" {
+		id, err := parseSemanticRuleID(term.ruleRef)
 		if err != nil {
 			return true, nil, err
 		}
-		semanticIndexIDs = append(semanticIndexIDs, id)
+		semanticRuleIDs = append(semanticRuleIDs, id)
 	}
 	limit := int(term.limit)
 	if limit <= 0 {
 		limit = effectiveIndexedLimit(req.GetPageSize(), query.GetLimit())
 	}
-	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticIndexIDs: semanticIndexIDs, Text: term.query, Limit: limit, ActorPrincipalID: actorID})
+	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: semanticRuleIDs, EmbeddingBindingKey: term.embeddingBindingKey, Text: term.query, Limit: limit, ActorPrincipalID: actorID})
 	if err != nil {
 		return true, nil, mapSemanticError(err, "semantic predicate search")
 	}
@@ -2730,7 +2731,11 @@ func (s *QueryService) tryExecuteSemanticPredicateQuery(ctx context.Context, req
 	seen := map[string]struct{}{}
 	indexNames := map[string]struct{}{}
 	for _, item := range result.Results {
-		indexNames[item.SemanticIndexID.String()] = struct{}{}
+		if item.SemanticRuleID != uuid.Nil {
+			indexNames[item.SemanticRuleID.String()] = struct{}{}
+		} else if item.SemanticIndexID != uuid.Nil {
+			indexNames[item.SemanticIndexID.String()] = struct{}{}
+		}
 		id := item.NodeID.String()
 		if _, ok := seen[id]; ok {
 			continue
@@ -2778,7 +2783,7 @@ func semanticPredicateTerms(expr *clientv1.Expr, alias string) ([]semanticPredic
 		if sem.GetAlias() != alias || strings.TrimSpace(sem.GetQuery()) == "" {
 			return nil, true, status.Error(codes.FailedPrecondition, "semantic predicate must target the start alias and include query text")
 		}
-		return []semanticPredicateTerm{{alias: sem.GetAlias(), query: sem.GetQuery(), indexRef: sem.GetIndexRef(), limit: sem.GetLimit()}}, true, nil
+		return []semanticPredicateTerm{{alias: sem.GetAlias(), query: sem.GetQuery(), ruleRef: sem.GetRuleRef(), embeddingBindingKey: sem.GetEmbeddingBindingKey(), limit: sem.GetLimit()}}, true, nil
 	}
 	if and := expr.GetAnd(); and != nil {
 		terms := []semanticPredicateTerm{}

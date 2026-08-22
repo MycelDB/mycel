@@ -74,7 +74,8 @@ type Manager interface {
 	AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanticmaintenance.AnalyzeResult, error)
 	ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error)
 	BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error)
-	ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticIndex, error)
+	ListRules(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticGenerationRule, error)
+	ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticIndex, error) // transitional until API/search are rule-native
 	Search(ctx context.Context, in SearchInput) (semanticsearch.Result, error)
 }
 
@@ -84,9 +85,11 @@ type SpaceSemanticManager struct {
 }
 
 type AnalyzeInput struct {
-	SpaceID         domainspace.SpaceID
-	SemanticIndexID domainsemantic.SemanticIndexID
-	Limit           int
+	SpaceID             domainspace.SpaceID
+	SemanticRuleID      domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
+	SemanticIndexID     domainsemantic.SemanticIndexID // transitional until maintenance APIs are regenerated
+	Limit               int
 }
 
 type MaintenanceStatusInput struct {
@@ -112,9 +115,11 @@ type MaintenanceStatus struct {
 }
 
 type MaintenanceWorkListInput struct {
-	SpaceID domainspace.SpaceID
-	Status  string
-	Limit   int
+	SpaceID             domainspace.SpaceID
+	Status              string
+	Limit               int
+	SemanticRuleID      domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
 }
 
 type MaintenanceWorkControlInput struct {
@@ -126,7 +131,9 @@ type MaintenanceWorkItem struct {
 	ID                        uuid.UUID
 	SpaceID                   domainspace.SpaceID
 	DomainID                  graph.DomainID
-	SemanticIndexID           domainsemantic.SemanticIndexID
+	SemanticRuleID            domainsemantic.SemanticRuleID
+	EmbeddingBindingKey       string
+	SemanticIndexID           domainsemantic.SemanticIndexID // transitional
 	TargetNodeID              graph.NodeID
 	Action                    string
 	Status                    string
@@ -145,11 +152,13 @@ type ProcessInput struct {
 }
 
 type SearchInput struct {
-	SpaceID          domainspace.SpaceID
-	DomainID         graph.DomainID
-	SemanticIndexIDs []domainsemantic.SemanticIndexID
-	Text             string
-	Limit            int
-	MinScore         float64
-	ActorPrincipalID identity.PrincipalID
+	SpaceID             domainspace.SpaceID
+	DomainID            graph.DomainID
+	SemanticRuleIDs     []domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
+	SemanticIndexIDs    []domainsemantic.SemanticIndexID // transitional adapter filter; treated as rule IDs for rule-native search
+	Text                string
+	Limit               int
+	MinScore            float64
+	ActorPrincipalID    identity.PrincipalID
 }

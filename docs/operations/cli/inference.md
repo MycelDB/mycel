@@ -63,6 +63,7 @@ on-behalf-of principals when the automation worker acts for another principal.
 mycel inference grant openai-key \
   --space-id <space-id> \
   --domain default \
+  --semantic-rule notes-search \
   --operation chat \
   --model-endpoint openai \
   --model gpt-4o-mini \
@@ -96,6 +97,7 @@ mycel inference profile enable summarize-page --space-id <space-id>
 mycel inference policy allow \
   --space-id <space-id> \
   --domain default \
+  --semantic-rule notes-search \
   --operation chat \
   --privacy-class third_party \
   --reason "automation summaries allowed"
@@ -113,6 +115,7 @@ mycel inference decision get <policy-decision-id> --space-id <space-id>
 mycel inference usage list \
   --space-id <space-id> \
   --domain default \
+  --semantic-rule notes-search \
   --usage-mode automation \
   --status succeeded \
   --page-size 50

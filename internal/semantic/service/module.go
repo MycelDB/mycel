@@ -619,6 +619,12 @@ func (m *Module) ListMaintenanceWork(ctx context.Context, in MaintenanceWorkList
 		if in.Status != "" && string(item.Status) != in.Status {
 			continue
 		}
+		if in.SemanticRuleID != uuid.Nil && item.EffectiveSemanticRuleID() != in.SemanticRuleID {
+			continue
+		}
+		if in.EmbeddingBindingKey != "" && item.EmbeddingBindingKey != in.EmbeddingBindingKey {
+			continue
+		}
 		out = append(out, toMaintenanceWorkItem(item))
 		if in.Limit > 0 && len(out) >= in.Limit {
 			break
@@ -689,7 +695,7 @@ func (m *Module) mutateMaintenanceWork(ctx context.Context, in MaintenanceWorkCo
 }
 
 func toMaintenanceWorkItem(item domainsemantic.SemanticDirtyWorkItem) MaintenanceWorkItem {
-	out := MaintenanceWorkItem{ID: item.ID, SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticIndexID: item.SemanticIndexID, TargetNodeID: item.TargetNodeID, Action: string(item.Action), Status: string(item.Status), AttemptCount: item.Attempts, LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: sanitizeMaintenanceError(item.LastError), CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	out := MaintenanceWorkItem{ID: item.ID, SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, TargetNodeID: item.TargetNodeID, Action: string(item.Action), Status: string(item.Status), AttemptCount: item.Attempts, LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: sanitizeMaintenanceError(item.LastError), CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 	if item.EarliestRunAt != nil {
 		out.NotBefore = *item.EarliestRunAt
 	}
@@ -714,6 +720,24 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func (m *Module) ListRules(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticGenerationRule, error) {
+	mgr, err := m.SpaceManager(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := mgr.ListSemanticRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domainsemantic.SemanticGenerationRule, 0, len(rules))
+	for _, rule := range rules {
+		if rule.SpaceID == spaceID && rule.DomainID == domainID && rule.Enabled {
+			out = append(out, rule)
+		}
+	}
+	return out, nil
 }
 
 func (m *Module) ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticIndex, error) {
@@ -752,7 +776,7 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, MaxBatchSize: m.maintenanceConfig.MaxBatchSize, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, MaxBatchSize: m.maintenanceConfig.MaxBatchSize, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 }
 
 func (m *Module) schemaDirtyCooldownForTarget(reader semanticmaintenance.GraphReader) func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error) {
@@ -1071,5 +1095,5 @@ func (m *Module) Search(ctx context.Context, in SearchInput) (semanticsearch.Res
 	}
 	global := m.GlobalManager()
 	planner := semanticsearch.Planner{GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, in.ActorPrincipalID), VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}
-	return planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
+	return planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleIDs: in.SemanticRuleIDs, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
 }

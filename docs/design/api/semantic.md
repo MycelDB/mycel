@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented daemon-oriented Client Semantic API MVP on the `refactor_daemon` branch.
+Implemented daemon-oriented Client Semantic API for semantic generation rules.
 
 The protobuf source of truth is:
 
@@ -13,46 +13,43 @@ github.com/myceldb/mycel-api/api/proto/mycel/client/v1/semantic.proto
 This document depends on:
 
 ```text
-docs/design/access-control.md
 docs/design/api/graph.md
 ```
 
 ## Purpose
 
 `SemanticService` is the client-facing API for semantic search over graph data.
+Clients search enabled semantic rule bindings that are visible to the caller.
+Operators manage rule definitions, Intelligence Access resources, maintenance,
+and backfill through Admin APIs.
 
-The current daemon implementation uses semantic metadata stores under `meta/` and `graphs/<space-id>/semantic/`, the internal `mycel-file` vector backend, and the daemon semantic search planner. Inline encrypted secrets can be decrypted by the daemon using `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` or, for standalone daemons, the generated local encryption key under the data directory.
-
-The Client API owns using semantic search. The Admin API owns semantic infrastructure and operations, including:
-
-- semantic index creation
-- semantic index configuration
-- provider/model/vector-store setup
-- credential grants and policies
-- semantic maintenance
-- backfill controls
+The current daemon implementation uses semantic metadata under
+`graphs/<space-id>/semantic/`, durable vector records, derived physical
+per-rule/per-binding search indexes, and the daemon semantic search planner.
+Inline encrypted secrets are resolved only through Intelligence Access and are
+never returned by the Client API.
 
 ## Scope
 
 `SemanticService` includes:
 
-- listing semantic indexes available to the caller for a space/domain
-- running semantic search over committed semantic index state
+- listing searchable semantic generation rules and embedding bindings available
+  to the caller for a space/domain;
+- running semantic search over committed, fast-index-backed rule binding state.
 
 `SemanticService` does not include:
 
-- semantic index creation/configuration
-- credential management
-- provider/model configuration
-- maintenance/backfill commands
-- graph mutation
-- query-language hybrid retrieval
+- semantic rule creation/configuration;
+- credential, profile, provider, or vector-store management;
+- maintenance/backfill commands;
+- graph mutation;
+- query-language hybrid retrieval.
 
 ## Service definition
 
 ```protobuf
 service SemanticService {
-  rpc ListSemanticIndexes(ListSemanticIndexesRequest) returns (ListSemanticIndexesResponse);
+  rpc ListSemanticRules(ListSemanticRulesRequest) returns (ListSemanticRulesResponse);
   rpc SemanticSearch(SemanticSearchRequest) returns (SemanticSearchResponse);
 }
 ```
@@ -63,27 +60,38 @@ Daemon-backed Client SemanticService commands:
 
 ```sh
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u alice -p '<password>' \
-  semantic index list --space-id '<space-id>' --domain personal-pkm
+  semantic rule list --space-id '<space-id>' --domain personal-pkm
 
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u alice -p '<password>' \
-  semantic search --space-id '<space-id>' --domain personal-pkm --index notes-search --text 'query text'
+  semantic search --space-id '<space-id>' --domain personal-pkm --rule notes-search --binding search --text 'query text'
 ```
 
-`semantic search` uses daemon gRPC. Local embedded search workflows are not supported application interfaces.
+`semantic search` uses daemon gRPC. Local embedded search workflows are not
+supported application interfaces.
 
 ## Current implementation notes
 
-- `ListSemanticIndexes` validates caller graph/domain visibility and returns safe display metadata only.
-- `SemanticSearch` validates caller graph/domain visibility, resolves an explicit semantic index or all enabled search indexes in the domain, runs the existing semantic search planner, and loads committed graph nodes for returned hits.
-- Search is not transaction-scoped and may lag graph commits until semantic maintenance/backfill has generated vector records.
-- Search warnings are returned for safe non-fatal conditions such as missing grants/policies, provider failures, or stale node references.
-- Admin-side semantic index, inference provisioning, credentials, policies, maintenance, and backfill operations are daemon Admin API responsibilities.
+- `ListSemanticRules` validates caller graph/domain visibility and returns safe
+  rule and binding display metadata only.
+- `SemanticSearch` validates caller graph/domain visibility, resolves an
+  explicit rule/binding or all enabled searchable bindings in the domain,
+  resolves query embeddings through Intelligence Access, searches physical
+  per-binding vector indexes, and loads committed graph nodes for returned hits.
+- Search is not transaction-scoped and may lag graph commits until semantic
+  maintenance/backfill has generated vector records.
+- Search warnings are returned for safe non-fatal conditions such as missing
+  grants/policies, provider failures, degraded physical search indexes, or stale
+  node references.
+- Admin-side semantic rule, Intelligence Access provisioning, credentials,
+  policies, maintenance, and backfill operations are daemon Admin API
+  responsibilities.
 
 ## Transaction scoping
 
 `SemanticService` is not transaction-scoped in v1.
 
-Semantic search operates over committed semantic index state and may lag behind the latest graph writes. Requests use:
+Semantic search operates over committed rule binding state and may lag behind the
+latest graph writes. Requests use:
 
 ```text
 space_id + domain_id
@@ -91,16 +99,18 @@ space_id + domain_id
 
 rather than `transaction_id`.
 
-Response warnings may report stale/building/unavailable index conditions.
+Response warnings may report stale, building, missing, or degraded search-index
+conditions.
 
-## ListSemanticIndexes
+## ListSemanticRules
 
-Lists searchable semantic indexes available to the authenticated caller for a space/domain.
+Lists searchable semantic generation rules and bindings available to the
+authenticated caller for a space/domain.
 
-Suggested request:
+Request shape:
 
 ```protobuf
-message ListSemanticIndexesRequest {
+message ListSemanticRulesRequest {
   string space_id = 1;
   string domain_id = 2;
   int32 page_size = 3;
@@ -108,16 +118,16 @@ message ListSemanticIndexesRequest {
 }
 ```
 
-Suggested response:
+Response shape:
 
 ```protobuf
-message ListSemanticIndexesResponse {
-  repeated SemanticIndex indexes = 1;
+message ListSemanticRulesResponse {
+  repeated SemanticGenerationRuleSummary rules = 1;
   string next_page_token = 2;
 }
 ```
 
-Returned index metadata must be safe for normal clients.
+Returned metadata must be safe for normal clients.
 
 Do not expose:
 
@@ -126,39 +136,45 @@ Do not expose:
 - secrets
 - raw policy internals
 - provider configuration that could leak sensitive deployment details
+- raw source text or embedding vectors
 
 Safe fields include:
 
-- index id
+- semantic rule id
 - key
 - display name
 - description
 - space id
 - domain id
-- model display label
-- vector store display label
-- index state
+- enabled/state
+- embedding binding keys and purposes
+- safe Intelligence Access profile/vector-store labels
+- derived search-index state and record counts
 
 ## SemanticSearch
 
-Runs semantic search over committed index state.
+Runs semantic search over committed rule binding state.
 
-Suggested request:
+Request shape:
 
 ```protobuf
 message SemanticSearchRequest {
   string space_id = 1;
   string domain_id = 2;
-  optional string semantic_index_id = 3;
-  string query = 4;
-  int32 limit = 5;
-  optional double min_score = 6;
+  string semantic_rule_id = 3;
+  string embedding_binding_key = 4;
+  string query = 5;
+  int32 limit = 6;
+  optional double min_score = 7;
 }
 ```
 
-If `semantic_index_id` is omitted, the daemon uses all enabled searchable semantic indexes for the domain in the current MVP. A future default-index selector may narrow that behavior.
+If `semantic_rule_id` is omitted, the daemon uses all enabled searchable rule
+bindings for the domain that the caller is allowed to read. If
+`embedding_binding_key` is supplied, `semantic_rule_id` should identify the rule
+that owns the binding.
 
-Suggested response:
+Response shape:
 
 ```protobuf
 message SemanticSearchResponse {
@@ -176,29 +192,49 @@ message SemanticSearchResult {
   Node node = 3;
   repeated string matched_chunk_ids = 4;
   string snippet = 5;
+  string semantic_rule_id = 6;
+  string embedding_binding_key = 7;
+  string vector_record_id = 8;
 }
 ```
 
-Including `Node` is a convenience for clients. The daemon must still enforce graph visibility.
+Including `Node` is a convenience for clients. The daemon must still enforce
+graph visibility after vector candidates are selected.
+
+## Physical search-index behavior
+
+Semantic search must use physical per-rule/per-binding search indexes or bounded
+rebuilds. Historical vector records, tombstones, and old revisions are durable
+for provenance/rebuild purposes but are not scanned on every query.
+
+If a physical search index is missing or corrupt, the daemon may rebuild it
+synchronously only within a bounded limit. Otherwise it returns a degraded
+warning or `FAILED_PRECONDITION`; it must not silently fall back to an unbounded
+historical vector scan.
+
+Physical search indexes are derived state and may be deleted/rebuilt from
+durable vector records. Purging a semantic rule removes the durable records and
+the derived search-index state for that rule.
 
 ## Filters
 
 v1 does not include complex semantic filters.
 
-Graph/metadata filtering belongs to `QueryService`; semantic search belongs to `SemanticService`. Hybrid retrieval that composes graph predicates with semantic search may be designed later.
+Graph/metadata filtering belongs to `QueryService`; semantic search belongs to
+`SemanticService`. Hybrid retrieval that composes graph predicates with semantic
+search may be designed later.
 
 ## Maintenance behavior
 
 Client `SemanticSearch` does not guarantee maintenance/backfill execution.
-
-The daemon may opportunistically maintain indexes, but maintenance/backfill controls are Admin API responsibilities.
+Maintenance/backfill controls are Admin API responsibilities.
 
 Search responses may include warnings such as:
 
-- index is stale
-- index is building
-- vector space unavailable
-- provider skipped
+- rule binding is disabled or stale
+- physical search index is missing, building, or degraded
+- vector space is unavailable
+- provider skipped or denied by policy
 - credentials unavailable
 
 Warnings must not include secrets, API keys, or sensitive credential material.
@@ -212,18 +248,20 @@ semantic.search
 graph.read
 ```
 
-`semantic.search` authorizes semantic retrieval. `graph.read` is required because results expose graph nodes.
+`semantic.search` authorizes semantic retrieval. `graph.read` is required because
+results expose graph nodes.
 
-Suggested capability mapping:
+Capability mapping:
 
 | Operation | Required capability |
 | --- | --- |
-| ListSemanticIndexes | `semantic.search` |
+| ListSemanticRules | `semantic.search` |
 | SemanticSearch | `semantic.search` and `graph.read` |
 
 ## Error model
 
-The protobuf does not define custom error messages for this draft. Implementations should use standard gRPC status codes.
+The protobuf does not define custom error messages. Implementations should use
+standard gRPC status codes.
 
 Suggested mappings:
 
@@ -233,9 +271,10 @@ Suggested mappings:
 | missing semantic capability | `PERMISSION_DENIED` |
 | missing graph read capability | `PERMISSION_DENIED` |
 | malformed request | `INVALID_ARGUMENT` |
-| semantic index not found | `NOT_FOUND` |
-| no default semantic index | `FAILED_PRECONDITION` |
-| index disabled/unavailable | `FAILED_PRECONDITION` |
+| semantic rule not found | `NOT_FOUND` |
+| no enabled searchable binding | `FAILED_PRECONDITION` |
+| rule/binding disabled or unavailable | `FAILED_PRECONDITION` |
+| physical search index missing/degraded beyond bounded rebuild | `FAILED_PRECONDITION` |
 | provider unavailable | `UNAVAILABLE` |
 | query/limit too large | `RESOURCE_EXHAUSTED` |
 | service unavailable | `UNAVAILABLE` |
@@ -244,15 +283,22 @@ Non-fatal partial failures should be returned as warnings where safe.
 
 ## Mesh implications
 
-Semantic index configuration is durable metadata and should replicate according to Admin API/mesh rules.
+Semantic generation rules are durable metadata and should replicate according to
+Admin API/mesh rules.
 
-Semantic index contents may be rebuilt locally or replicated depending on future mesh policy. Client semantic search should not assume that every daemon has equally fresh vector state.
+Durable vector records and derived physical search indexes may be rebuilt locally
+or replicated depending on future mesh policy. Client semantic search should not
+assume that every daemon has equally fresh vector state.
 
-A daemon should report stale/building/unavailable index conditions through safe warnings or status fields.
+A daemon should report stale/building/unavailable search-index conditions
+through safe warnings or status fields.
 
 ## Open questions
 
-- Should hybrid graph+semantic retrieval become a QueryService extension or a separate service later?
-- Should semantic result snippets be daemon-generated, index-generated, or connector-generated?
+- Should hybrid graph+semantic retrieval become a QueryService extension or a
+  separate service later?
+- Should semantic result snippets be daemon-generated, rule-generated, or
+  connector-generated?
 - Should result chunks expose offsets/ranges in addition to chunk ids?
-- Should clients be able to request no embedded `Node` payload for lighter responses?
+- Should clients be able to request no embedded `Node` payload for lighter
+  responses?

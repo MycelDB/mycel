@@ -63,8 +63,8 @@ func (s *ImportExportService) ExportDomain(req *clientv1.ExportDomainRequest, st
 	if format != clientv1.DomainExportFormat_DOMAIN_EXPORT_FORMAT_MYCEL_STREAM {
 		return status.Error(codes.Unimplemented, "only MYCEL_STREAM export is currently implemented")
 	}
-	if opts := req.GetOptions(); opts != nil && opts.GetIncludeSemanticIndexes() {
-		return status.Error(codes.Unimplemented, "semantic index export is not supported by the client API")
+	if opts := req.GetOptions(); opts != nil && opts.GetIncludeSemanticRules() {
+		return status.Error(codes.Unimplemented, "semantic rule export is not supported by the client API")
 	}
 	manifest := &clientv1.DomainExportManifest{Format: format, SpaceId: tx.SpaceID, DomainId: tx.DomainID, BaseRevision: tx.BaseRevision, ExportTime: timestamppb.Now(), Options: req.GetOptions()}
 	if err := stream.Send(&clientv1.ExportDomainResponse{Part: &clientv1.ExportDomainResponse_Manifest{Manifest: manifest}}); err != nil {

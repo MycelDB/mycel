@@ -9,17 +9,17 @@ a constrained, system-owned automation that reacts to graph changes and
 maintains embedding/vector records for selected graph targets.
 
 Because the product is not released, this design does not preserve backward
-compatibility with the older `SemanticIndex` API/storage shape. The next
-semantic indexing tranche should replace incompatible fields and commands rather
-than carry long-term compatibility aliases.
+compatibility with the older `SemanticIndex` API/storage shape. Current APIs,
+CLI commands, Console surfaces, and storage terminology should expose semantic
+generation rules directly rather than compatibility aliases.
 
 ## Summary
 
-Semantic indexing should be treated as a specialized graph automation:
+Semantic generation should be treated as a specialized graph automation:
 
 ```text
 graph change -> trigger filter -> target selector -> source assembly ->
-inference access resolution -> embedding generation -> vector/index write ->
+Intelligence Access resolution -> embedding generation -> vector/index write ->
 usage accounting
 ```
 
@@ -30,19 +30,19 @@ prompt templates, or mutation actions. Their action is fixed:
 maintain embeddings for selected graph targets
 ```
 
-This gives semantic indexing the same operational shape as graph automation while
+This gives semantic generation the same operational shape as graph automation while
 keeping it safer, simpler, and easier to optimize.
 
 ## Goals
 
-- Make semantic indexing understandable as declarative graph-reactive behavior.
+- Make semantic generation understandable as declarative graph-reactive behavior.
 - Support simple node-type/label rules and bounded GQL target selectors.
-- Reuse graph automation/inference access-control concepts:
+- Reuse graph automation/Intelligence Access concepts:
   - service actor;
   - owner/on-behalf-of principal;
-  - inference profiles;
+  - Intelligence Access profiles;
   - credential grants;
-  - inference policies;
+  - Intelligence Access policies;
   - usage accounting and denial diagnostics.
 - Support one semantic rule maintaining one or more embedding bindings.
 - Preserve deterministic derived-state behavior: vectors are generated artifacts
@@ -78,10 +78,10 @@ A semantic generation rule answers five questions:
    - minimum text length.
 4. **Which embeddings should be generated?**
    - one or more embedding bindings;
-   - each binding references an inference profile and vector store.
+   - each binding references an Intelligence Access profile and vector store.
 5. **Who is allowed to do the work and who pays for it?**
    - owner/on-behalf-of principal;
-   - standard inference grants/policies;
+   - standard Intelligence Access grants/policies;
    - usage events attributed to the semantic rule and binding.
 
 Example rule shape:
@@ -168,8 +168,8 @@ semantic embedding maintainer
 
 ## Rule model
 
-Internally, replace the existing `SemanticIndex` model with a
-`SemanticGenerationRule` model.
+Internally, use the `SemanticGenerationRule` model as the authoritative semantic
+configuration.
 
 Recommended conceptual fields:
 
@@ -186,7 +186,8 @@ type SemanticGenerationRule struct {
     Selector     SemanticTargetSelector
     Source       SemanticSourceAssemblyPolicy
     Embeddings   []SemanticEmbeddingBinding
-    Access       SemanticAccessPolicy
+    // Access is resolved through Intelligence Access using owner/on-behalf-of
+    // attribution plus each binding's profile reference.
     Maintenance  SemanticMaintenancePolicy
     Storage      SemanticStoragePolicy
 
@@ -276,8 +277,8 @@ is the answer to "the set of embeddings to use".
 type SemanticEmbeddingBinding struct {
     Key              string
     Purpose          SemanticRulePurpose
-    InferenceProfile string
-    InferenceProfileID uuid.UUID
+    IntelligenceProfile string
+    IntelligenceProfileID uuid.UUID
     VectorStore      string
     VectorStoreID    uuid.UUID
     Enabled          bool
@@ -295,7 +296,7 @@ Examples:
 
 Rules:
 
-- Bindings reference inference profiles, not raw endpoints/models/credentials.
+- Bindings reference Intelligence Access profiles, not raw endpoints/models/credentials.
 - Profile resolution determines endpoint/model/capability.
 - Credential grants and policies decide whether the service actor may generate
   embeddings on behalf of the rule owner.
@@ -318,9 +319,9 @@ Access checks:
 - rule management requires semantic manage capability on the relevant scope;
 - graph reads require domain visibility/read access for the rule owner or an
   explicit system-owned semantic role;
-- embedding calls resolve through inference profiles;
+- embedding calls resolve through Intelligence Access profiles;
 - credential grants must allow background/service use;
-- inference policies can allow/deny/restrict by space, domain, semantic rule,
+- Intelligence Access policies can allow/deny/restrict by space, domain, semantic rule,
   node, model, endpoint, operation, privacy class, and data class.
 
 Usage events must include at least:
@@ -329,7 +330,7 @@ Usage events must include at least:
 - `domain_id`;
 - `semantic_rule_id`;
 - `semantic_binding_key` or binding ID;
-- inference profile ID;
+- Intelligence Access profile ID;
 - endpoint/model/capability IDs;
 - credential grant/policy decision IDs;
 - actor and on-behalf-of principal IDs;
@@ -371,8 +372,8 @@ graphs/<space_id>/semantic/rules/<rule_id>/rule.json
 ```
 
 The existing space semantic manager storage should be rewritten around rules.
-Because there is no released compatibility contract, do not preserve
-`SemanticIndex` as a compatibility view.
+Because there is no released compatibility contract, do not preserve a legacy
+static-index compatibility view.
 
 Required indexes/materialized views:
 
@@ -522,7 +523,7 @@ Cache contents:
 Invalidation:
 
 - rule create/update/delete;
-- inference profile changes that affect a binding;
+- Intelligence Access profile changes that affect a binding;
 - vector store/model/endpoint/capability changes;
 - WAL/raft applied command for semantic metadata.
 
@@ -644,7 +645,7 @@ Worker steps:
 2. Re-check rule and binding are still enabled.
 3. Assemble source.
 4. If source is empty/below minimum, tombstone latest record if needed.
-5. Resolve inference profile, endpoint, model, capability, credential grant, and
+5. Resolve Intelligence Access profile, endpoint, model, capability, credential grant, and
    policy decision.
 6. If latest record has same source hash/binding, complete as skipped.
 7. Generate embedding.
@@ -658,7 +659,7 @@ Search steps:
 
 1. Authorize domain read.
 2. Select enabled bindings with search purpose.
-3. Resolve inference profile/access for query embedding.
+3. Resolve Intelligence Access profile/access for query embedding.
 4. Generate query embedding and record usage.
 5. Search the physical per-binding vector index for top-k record candidates.
 6. Merge/rank candidates across selected bindings.
@@ -671,7 +672,7 @@ The following existing concepts should be removed or renamed because they no
 longer fit the semantic-generation-rule model. Since the product is unreleased,
 prefer direct replacement over compatibility layers.
 
-### Remove direct endpoint/model ownership from user-facing semantic indexes
+### Remove direct endpoint/model ownership from user-facing semantic rules
 
 Current fields:
 
@@ -683,7 +684,7 @@ ModelEndpointCapabilityID
 
 Target behavior:
 
-- user-facing rules reference inference profiles in embedding bindings;
+- user-facing rules reference Intelligence Access profiles in embedding bindings;
 - endpoint/model/capability are resolved at runtime through the profile/catalog;
 - stored records keep resolved endpoint/model/capability for provenance.
 
@@ -737,7 +738,7 @@ This matches graph automation's split between trigger/condition/context/action.
 
 ### Make work items binding-aware
 
-Current dirty work is keyed around semantic index + target.
+Dirty work is keyed around semantic rule + embedding binding + target.
 
 Target behavior:
 
@@ -770,8 +771,8 @@ New Admin API concepts should expose:
 - backfill rule or binding;
 - summarize usage by rule/binding.
 
-Existing semantic index RPCs/CLI commands should be replaced or renamed rather
-than maintained as compatibility aliases.
+Older index-oriented RPCs/CLI commands should be replaced rather than maintained
+as compatibility aliases.
 
 ## Console implications
 
@@ -786,7 +787,7 @@ It should support:
 - create/edit structured rules;
 - select node type/labels or bounded GQL selector;
 - configure source assembly;
-- configure embedding bindings from available inference profiles/vector stores;
+- configure embedding bindings from available Intelligence Access profiles/vector stores;
 - validate before save;
 - explicit backfill/analyze/process actions.
 
@@ -803,7 +804,7 @@ Space pages should keep contextual shortcuts:
    ambiguous root query behavior in the same tranche.
 3. Update analyzer/work items to include rule ID and binding key/ID.
 4. Update backfill/search to resolve embeddings exclusively through binding
-   inference profiles.
+   Intelligence Access profiles.
 5. Replace Admin/Client APIs and CLI docs with semantic rule terminology.
 6. Update console to create/edit structured semantic generation rules.
 7. Regenerate or delete old generated public API code only when explicitly
@@ -823,9 +824,9 @@ Space pages should keep contextual shortcuts:
 
 ## Acceptance criteria for the target design
 
-- A user can define semantic indexing with a node type or bounded GQL selector.
+- A user can define semantic generation with a node type or bounded GQL selector.
 - A user can configure the set of embedding bindings without raw credentials.
-- Semantic maintenance uses the same inference access-control path as graph
+- Semantic maintenance uses the same Intelligence Access path as graph
   automations.
 - Work items and usage are attributable to rule and embedding binding.
 - Vector records are idempotent by source hash and binding.
@@ -833,5 +834,5 @@ Space pages should keep contextual shortcuts:
   not unbounded full scans of historical vector records.
 - Caches and physical search indexes are rebuildable and safely invalidated on
   graph/rule/inference/vector changes.
-- Old semantic index terminology and storage fields are removed instead of
+- Old index-oriented terminology and storage fields are removed instead of
   preserved as compatibility aliases.

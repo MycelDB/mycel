@@ -207,6 +207,38 @@ func (w *walGlobalManager) canonicalCredential(ctx context.Context, v domainsema
 	return v, nil
 }
 
+func (w *walSpaceManager) canonicalSemanticRule(ctx context.Context, v domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {
+	now := time.Now().UTC()
+	v.Key = semanticKey(v.Key)
+	v.Trigger = domainsemantic.NormalizeSemanticTriggerPolicy(v.Trigger)
+	if v.Storage.PhysicalIndex == "" {
+		v.Storage = domainsemantic.DefaultSemanticStoragePolicy()
+	}
+	for i, binding := range v.Embeddings {
+		v.Embeddings[i] = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
+	}
+	items, err := w.inner.ListSemanticRules(ctx)
+	if err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	for _, existing := range items {
+		if existing.SpaceID == v.SpaceID && existing.DomainID == v.DomainID && semanticKey(existing.Key) == v.Key {
+			v.ID = existing.ID
+			v.CreatedAt = existing.CreatedAt
+			v.UpdatedAt = now
+			return v, nil
+		}
+	}
+	if v.ID == uuid.Nil {
+		v.ID = semanticNewID()
+	}
+	if v.CreatedAt.IsZero() {
+		v.CreatedAt = now
+	}
+	v.UpdatedAt = now
+	return v, nil
+}
+
 func (w *walSpaceManager) canonicalSemanticIndex(ctx context.Context, v domainsemantic.SemanticIndex) (domainsemantic.SemanticIndex, error) {
 	now := time.Now().UTC()
 	v.Purpose = domainsemantic.NormalizeSemanticIndexPurpose(v.Purpose)

@@ -8,6 +8,7 @@ import (
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
+	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
@@ -27,11 +28,11 @@ func NewAdminSemanticMaintenanceService(semantic daemonsemantic.Manager, authori
 }
 
 func (s *AdminSemanticMaintenanceService) GetSemanticMaintenanceStatus(ctx context.Context, req *adminv1.GetSemanticMaintenanceStatusRequest) (*adminv1.GetSemanticMaintenanceStatusResponse, error) {
-	if err := s.requireMaintenance(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireMaintenance(ctx, semanticScope(spaceID, uuid.Nil)); err != nil {
 		return nil, err
 	}
 	res, err := s.semantic.GetMaintenanceStatus(ctx, daemonsemantic.MaintenanceStatusInput{SpaceID: spaceID})
@@ -42,14 +43,18 @@ func (s *AdminSemanticMaintenanceService) GetSemanticMaintenanceStatus(ctx conte
 }
 
 func (s *AdminSemanticMaintenanceService) ListSemanticMaintenanceWork(ctx context.Context, req *adminv1.ListSemanticMaintenanceWorkRequest) (*adminv1.ListSemanticMaintenanceWorkResponse, error) {
-	if err := s.requireMaintenance(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
 		return nil, err
 	}
-	items, err := s.semantic.ListMaintenanceWork(ctx, daemonsemantic.MaintenanceWorkListInput{SpaceID: spaceID, Status: req.GetStatus(), Limit: int(req.GetLimit())})
+	ruleID, err := optionalSemanticUUID[domainsemantic.SemanticRuleID](req.GetSemanticRuleId(), "semantic_rule_id")
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireMaintenance(ctx, semanticScope(spaceID, uuid.Nil)); err != nil {
+		return nil, err
+	}
+	items, err := s.semantic.ListMaintenanceWork(ctx, daemonsemantic.MaintenanceWorkListInput{SpaceID: spaceID, Status: req.GetStatus(), Limit: int(req.GetLimit()), SemanticRuleID: ruleID, EmbeddingBindingKey: req.GetEmbeddingBindingKey()})
 	if err != nil {
 		return nil, mapAdminSemanticMaintenanceError(err, "list semantic maintenance work")
 	}
@@ -61,11 +66,11 @@ func (s *AdminSemanticMaintenanceService) ListSemanticMaintenanceWork(ctx contex
 }
 
 func (s *AdminSemanticMaintenanceService) RetrySemanticMaintenanceWork(ctx context.Context, req *adminv1.RetrySemanticMaintenanceWorkRequest) (*adminv1.RetrySemanticMaintenanceWorkResponse, error) {
-	if err := s.requireMaintenance(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, workID, err := parseMaintenanceWorkControl(req.GetSpaceId(), req.GetWorkItemId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireMaintenance(ctx, semanticScope(spaceID, uuid.Nil)); err != nil {
 		return nil, err
 	}
 	item, err := s.semantic.RetryMaintenanceWork(ctx, daemonsemantic.MaintenanceWorkControlInput{SpaceID: spaceID, WorkItemID: workID})
@@ -76,11 +81,11 @@ func (s *AdminSemanticMaintenanceService) RetrySemanticMaintenanceWork(ctx conte
 }
 
 func (s *AdminSemanticMaintenanceService) CancelSemanticMaintenanceWork(ctx context.Context, req *adminv1.CancelSemanticMaintenanceWorkRequest) (*adminv1.CancelSemanticMaintenanceWorkResponse, error) {
-	if err := s.requireMaintenance(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, workID, err := parseMaintenanceWorkControl(req.GetSpaceId(), req.GetWorkItemId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireMaintenance(ctx, semanticScope(spaceID, uuid.Nil)); err != nil {
 		return nil, err
 	}
 	item, err := s.semantic.CancelMaintenanceWork(ctx, daemonsemantic.MaintenanceWorkControlInput{SpaceID: spaceID, WorkItemID: workID})
@@ -91,18 +96,18 @@ func (s *AdminSemanticMaintenanceService) CancelSemanticMaintenanceWork(ctx cont
 }
 
 func (s *AdminSemanticMaintenanceService) AnalyzeSemanticDirtyWork(ctx context.Context, req *adminv1.AnalyzeSemanticDirtyWorkRequest) (*adminv1.AnalyzeSemanticDirtyWorkResponse, error) {
-	if err := s.requireMaintenance(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
 		return nil, err
 	}
-	indexID, err := optionalSemanticUUID[domainsemantic.SemanticIndexID](req.GetSemanticIndexId(), "semantic_index_id")
+	ruleID, err := optionalSemanticUUID[domainsemantic.SemanticRuleID](req.GetSemanticRuleId(), "semantic_rule_id")
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.semantic.AnalyzeDirtyWork(ctx, daemonsemantic.AnalyzeInput{SpaceID: spaceID, SemanticIndexID: indexID, Limit: int(req.GetLimit())})
+	if err := s.requireMaintenance(ctx, semanticScope(spaceID, uuid.Nil)); err != nil {
+		return nil, err
+	}
+	res, err := s.semantic.AnalyzeDirtyWork(ctx, daemonsemantic.AnalyzeInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: req.GetEmbeddingBindingKey(), Limit: int(req.GetLimit())})
 	if err != nil {
 		return nil, mapAdminSemanticMaintenanceError(err, "analyze semantic dirty work")
 	}
@@ -110,11 +115,11 @@ func (s *AdminSemanticMaintenanceService) AnalyzeSemanticDirtyWork(ctx context.C
 }
 
 func (s *AdminSemanticMaintenanceService) ProcessSemanticDirtyWork(ctx context.Context, req *adminv1.ProcessSemanticDirtyWorkRequest) (*adminv1.ProcessSemanticDirtyWorkResponse, error) {
-	if err := s.requireMaintenance(ctx); err != nil {
-		return nil, err
-	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireMaintenance(ctx, semanticScope(spaceID, uuid.Nil)); err != nil {
 		return nil, err
 	}
 	res, err := s.semantic.ProcessDirtyWork(ctx, daemonsemantic.ProcessInput{SpaceID: spaceID, Limit: int(req.GetLimit())})
@@ -124,16 +129,16 @@ func (s *AdminSemanticMaintenanceService) ProcessSemanticDirtyWork(ctx context.C
 	return &adminv1.ProcessSemanticDirtyWorkResponse{ProcessedItems: int32(res.Processed), CompletedItems: int32(res.Completed), FailedItems: int32(res.Failed)}, nil
 }
 
-func (s *AdminSemanticMaintenanceService) BackfillSemanticIndex(ctx context.Context, req *adminv1.BackfillSemanticIndexRequest) (*adminv1.BackfillSemanticIndexResponse, error) {
-	if err := s.requireMaintenance(ctx); err != nil {
-		return nil, err
-	}
+func (s *AdminSemanticMaintenanceService) BackfillSemanticRule(ctx context.Context, req *adminv1.BackfillSemanticRuleRequest) (*adminv1.BackfillSemanticRuleResponse, error) {
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
 		return nil, err
 	}
-	indexID, err := parseSemanticUUID[domainsemantic.SemanticIndexID](req.GetSemanticIndexId(), "semantic_index_id")
+	ruleID, err := parseSemanticUUID[domainsemantic.SemanticRuleID](req.GetSemanticRuleId(), "semantic_rule_id")
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireMaintenance(ctx, semanticScope(spaceID, uuid.Nil)); err != nil {
 		return nil, err
 	}
 	nodeIDs := make([]graph.NodeID, 0, len(req.GetNodeIds()))
@@ -144,19 +149,22 @@ func (s *AdminSemanticMaintenanceService) BackfillSemanticIndex(ctx context.Cont
 		}
 		nodeIDs = append(nodeIDs, id)
 	}
-	res, err := s.semantic.BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticIndexID: indexID, NodeIDs: nodeIDs, Force: req.GetForce(), Limit: int(req.GetLimit()), ContinueOnError: req.GetContinueOnError()})
+	res, err := s.semantic.BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: req.GetEmbeddingBindingKey(), NodeIDs: nodeIDs, Force: req.GetForce(), Limit: int(req.GetLimit()), ContinueOnError: req.GetContinueOnError()})
 	if err != nil {
-		return nil, mapAdminSemanticMaintenanceError(err, "backfill semantic index")
+		return nil, mapAdminSemanticMaintenanceError(err, "backfill semantic rule")
 	}
 	return mapBackfillResponse(res), nil
 }
 
-func (s *AdminSemanticMaintenanceService) requireMaintenance(ctx context.Context) error {
+func (s *AdminSemanticMaintenanceService) requireMaintenance(ctx context.Context, scope principalservice.AccessScope) error {
 	principal, err := principalFromContext(ctx)
 	if err != nil {
 		return err
 	}
-	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH.String())
+	if scoped, ok := s.authorizer.(ScopedOperatorAuthorizer); ok {
+		return scoped.Authorize(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SEMANTIC_MANAGE.String(), scope)
+	}
+	ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, commonv1.Capability_CAPABILITY_SEMANTIC_MANAGE.String())
 	if err != nil {
 		return status.Errorf(codes.Internal, "authorize operator: %v", err)
 	}
@@ -179,7 +187,7 @@ func parseMaintenanceWorkControl(spaceIDText string, workIDText string) (domains
 }
 
 func mapMaintenanceWorkItem(item daemonsemantic.MaintenanceWorkItem) *adminv1.SemanticMaintenanceWorkItem {
-	return &adminv1.SemanticMaintenanceWorkItem{WorkItemId: item.ID.String(), SpaceId: item.SpaceID.String(), DomainId: item.DomainID.String(), SemanticIndexId: item.SemanticIndexID.String(), TargetNodeId: item.TargetNodeID.String(), Action: item.Action, Status: item.Status, AttemptCount: int32(item.AttemptCount), NotBefore: formatMaintenanceTime(item.NotBefore), ClaimedUntil: formatMaintenanceTime(item.ClaimedUntil), LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: item.LastErrorMessageSanitized, CreatedAt: formatMaintenanceTime(item.CreatedAt), UpdatedAt: formatMaintenanceTime(item.UpdatedAt)}
+	return &adminv1.SemanticMaintenanceWorkItem{WorkItemId: item.ID.String(), SpaceId: item.SpaceID.String(), DomainId: item.DomainID.String(), SemanticRuleId: item.SemanticRuleID.String(), EmbeddingBindingKey: item.EmbeddingBindingKey, TargetNodeId: item.TargetNodeID.String(), Action: item.Action, Status: item.Status, AttemptCount: int32(item.AttemptCount), NotBefore: formatMaintenanceTime(item.NotBefore), ClaimedUntil: formatMaintenanceTime(item.ClaimedUntil), LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: item.LastErrorMessageSanitized, CreatedAt: formatMaintenanceTime(item.CreatedAt), UpdatedAt: formatMaintenanceTime(item.UpdatedAt)}
 }
 
 func formatMaintenanceTime(value time.Time) string {
@@ -189,8 +197,8 @@ func formatMaintenanceTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-func mapBackfillResponse(res semanticbackfill.Result) *adminv1.BackfillSemanticIndexResponse {
-	out := &adminv1.BackfillSemanticIndexResponse{SemanticIndexId: uuid.UUID(res.SemanticIndexID).String(), SelectedCount: int32(res.SelectedCount), GeneratedCount: int32(res.GeneratedCount), SkippedCount: int32(res.SkippedCount), FailedCount: int32(res.FailedCount)}
+func mapBackfillResponse(res semanticbackfill.Result) *adminv1.BackfillSemanticRuleResponse {
+	out := &adminv1.BackfillSemanticRuleResponse{SemanticRuleId: uuid.UUID(res.SemanticRuleID).String(), EmbeddingBindingKey: res.EmbeddingBindingKey, SelectedCount: int32(res.SelectedCount), GeneratedCount: int32(res.GeneratedCount), SkippedCount: int32(res.SkippedCount), FailedCount: int32(res.FailedCount)}
 	for _, skipped := range res.Skipped {
 		out.Skipped = append(out.Skipped, &adminv1.BackfillSkipped{NodeId: uuid.UUID(skipped.NodeID).String(), Reason: skipped.Reason})
 	}

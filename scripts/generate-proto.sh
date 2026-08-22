@@ -24,3 +24,4 @@ rm -rf "${repo_root}/internal/gen"
     go run github.com/bufbuild/buf/cmd/buf@v1.50.1 generate "${repo_root}/internal/clustering/proto" --template buf.gen.yaml
   fi
 )
+"${repo_root}/scripts/write-gen-compat.sh"

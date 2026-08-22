@@ -16,8 +16,8 @@ import (
 
 // Inference policy RPC handlers for AdminInferenceService.
 
-func (s *AdminInferenceService) CreateInferencePolicy(ctx context.Context, req *adminv1.AdminInferencePolicyServiceCreateInferencePolicyRequest) (*adminv1.AdminInferencePolicyServiceCreateInferencePolicyResponse, error) {
-	principal, err := s.requireInferenceCapability(ctx, capInferencePolicyManage, inferenceScope(req.GetSpaceId(), ""))
+func (s *AdminInferenceService) CreateAccessPolicy(ctx context.Context, req *adminv1.AdminIntelligenceAccessPolicyServiceCreateAccessPolicyRequest) (*adminv1.AdminIntelligenceAccessPolicyServiceCreateAccessPolicyResponse, error) {
+	principal, err := s.requireInferenceCapability(ctx, capAccessPolicyManage, inferenceScope(req.GetSpaceId(), ""))
 	if err != nil {
 		return nil, err
 	}
@@ -38,18 +38,18 @@ func (s *AdminInferenceService) CreateInferencePolicy(ctx context.Context, req *
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
 	}
-	policy, err := spaceMgr.UpsertInferencePolicy(ctx, domainsemantic.InferencePolicy{Scope: scope, Effect: domainsemantic.PolicyEffect(req.GetEffect()), Operations: operationsFromStringsAdmin(req.GetOperations()), NoInference: req.GetNoInference(), AllowedPrivacyClasses: privacyClassesFromStringsAdmin(req.GetAllowedPrivacyClasses()), DisallowThirdParty: req.GetDisallowThirdParty(), RequireLocalEndpoint: req.GetRequireLocalEndpoint(), Reason: req.GetReason(), CreatedBy: principal.PrincipalID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
+	policy, err := spaceMgr.UpsertInferencePolicy(ctx, domainsemantic.InferencePolicy{Scope: scope, Effect: domainsemantic.PolicyEffect(req.GetEffect()), Operations: operationsFromStringsAdmin(req.GetOperations()), NoInference: req.GetNoIntelligence(), AllowedPrivacyClasses: privacyClassesFromStringsAdmin(req.GetAllowedPrivacyClasses()), DisallowThirdParty: req.GetDisallowThirdParty(), RequireLocalEndpoint: req.GetRequireLocalEndpoint(), Reason: req.GetReason(), CreatedBy: principal.PrincipalID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
 	if err != nil {
-		return nil, mapAdminInferenceError(err, "upsert inference policy")
+		return nil, mapAdminInferenceError(err, "upsert access policy")
 	}
-	if err := s.syncInferencePolicy(ctx, spaceID.String(), policy); err != nil {
-		return nil, mapAdminInferenceError(err, "sync inference policy")
+	if err := s.syncAccessPolicy(ctx, spaceID.String(), policy); err != nil {
+		return nil, mapAdminInferenceError(err, "sync access policy")
 	}
-	return &adminv1.AdminInferencePolicyServiceCreateInferencePolicyResponse{InferencePolicy: mapInferencePolicy(policy)}, nil
+	return &adminv1.AdminIntelligenceAccessPolicyServiceCreateAccessPolicyResponse{AccessPolicy: mapAccessPolicy(policy)}, nil
 }
 
-func (s *AdminInferenceService) ListInferencePolicies(ctx context.Context, req *adminv1.AdminInferencePolicyServiceListInferencePoliciesRequest) (*adminv1.AdminInferencePolicyServiceListInferencePoliciesResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferencePolicyManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
+func (s *AdminInferenceService) ListAccessPolicies(ctx context.Context, req *adminv1.AdminIntelligenceAccessPolicyServiceListAccessPoliciesRequest) (*adminv1.AdminIntelligenceAccessPolicyServiceListAccessPoliciesResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capAccessPolicyManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
@@ -62,7 +62,7 @@ func (s *AdminInferenceService) ListInferencePolicies(ctx context.Context, req *
 	}
 	items, err := spaceMgr.ListInferencePolicies(ctx)
 	if err != nil {
-		return nil, mapAdminInferenceError(err, "list inference policies")
+		return nil, mapAdminInferenceError(err, "list access policies")
 	}
 	if strings.TrimSpace(req.GetEffect()) != "" {
 		items = filterPoliciesByEffect(items, domainsemantic.PolicyEffect(req.GetEffect()))
@@ -75,18 +75,18 @@ func (s *AdminInferenceService) ListInferencePolicies(ctx context.Context, req *
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &adminv1.AdminInferencePolicyServiceListInferencePoliciesResponse{InferencePolicies: mapInferencePolicies(page), NextPageToken: next}, nil
+	return &adminv1.AdminIntelligenceAccessPolicyServiceListAccessPoliciesResponse{AccessPolicies: mapAccessPolicies(page), NextPageToken: next}, nil
 }
 
-func (s *AdminInferenceService) ExpireInferencePolicy(ctx context.Context, req *adminv1.AdminInferencePolicyServiceExpireInferencePolicyRequest) (*adminv1.AdminInferencePolicyServiceExpireInferencePolicyResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferencePolicyManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
+func (s *AdminInferenceService) ExpireAccessPolicy(ctx context.Context, req *adminv1.AdminIntelligenceAccessPolicyServiceExpireAccessPolicyRequest) (*adminv1.AdminIntelligenceAccessPolicyServiceExpireAccessPolicyResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capAccessPolicyManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
 		return nil, err
 	}
-	policyID, err := parseSemanticUUID[domainsemantic.InferencePolicyID](req.GetInferencePolicyId(), "inference_policy_id")
+	policyID, err := parseSemanticUUID[domainsemantic.InferencePolicyID](req.GetAccessPolicyId(), "inference_policy_id")
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func (s *AdminInferenceService) ExpireInferencePolicy(ctx context.Context, req *
 	}
 	items, err := spaceMgr.ListInferencePolicies(ctx)
 	if err != nil {
-		return nil, mapAdminInferenceError(err, "list inference policies")
+		return nil, mapAdminInferenceError(err, "list access policies")
 	}
 	for _, item := range items {
 		if item.ID == policyID {
@@ -109,26 +109,26 @@ func (s *AdminInferenceService) ExpireInferencePolicy(ctx context.Context, req *
 			item.ExpiresAt = &now
 			stored, err := spaceMgr.UpsertInferencePolicy(ctx, item)
 			if err != nil {
-				return nil, mapAdminInferenceError(err, "expire inference policy")
+				return nil, mapAdminInferenceError(err, "expire access policy")
 			}
-			if err := s.syncInferencePolicy(ctx, spaceID.String(), stored); err != nil {
-				return nil, mapAdminInferenceError(err, "sync inference policy")
+			if err := s.syncAccessPolicy(ctx, spaceID.String(), stored); err != nil {
+				return nil, mapAdminInferenceError(err, "sync access policy")
 			}
-			return &adminv1.AdminInferencePolicyServiceExpireInferencePolicyResponse{InferencePolicy: mapInferencePolicy(stored)}, nil
+			return &adminv1.AdminIntelligenceAccessPolicyServiceExpireAccessPolicyResponse{AccessPolicy: mapAccessPolicy(stored)}, nil
 		}
 	}
-	return nil, status.Error(codes.NotFound, "inference policy not found")
+	return nil, status.Error(codes.NotFound, "access policy not found")
 }
 
-func (s *AdminInferenceService) DeleteInferencePolicy(ctx context.Context, req *adminv1.AdminInferencePolicyServiceDeleteInferencePolicyRequest) (*adminv1.AdminInferencePolicyServiceDeleteInferencePolicyResponse, error) {
-	if _, err := s.requireInferenceCapability(ctx, capInferencePolicyManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
+func (s *AdminInferenceService) DeleteAccessPolicy(ctx context.Context, req *adminv1.AdminIntelligenceAccessPolicyServiceDeleteAccessPolicyRequest) (*adminv1.AdminIntelligenceAccessPolicyServiceDeleteAccessPolicyResponse, error) {
+	if _, err := s.requireInferenceCapability(ctx, capAccessPolicyManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
 		return nil, err
 	}
-	policyID, err := parseSemanticUUID[domainsemantic.InferencePolicyID](req.GetInferencePolicyId(), "inference_policy_id")
+	policyID, err := parseSemanticUUID[domainsemantic.InferencePolicyID](req.GetAccessPolicyId(), "inference_policy_id")
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +154,7 @@ func (s *AdminInferenceService) DeleteInferencePolicy(ctx context.Context, req *
 		}
 	}
 	if len(refs) > 0 {
-		return nil, referencedPrecondition("inference policy", refs)
+		return nil, referencedPrecondition("access policy", refs)
 	}
 	standaloneRefs, err := s.standaloneDecisionReferences(ctx, spaceID.String(), func(decision domaininference.PolicyDecision) bool {
 		for _, matched := range decision.MatchedPolicyIDs {
@@ -165,13 +165,13 @@ func (s *AdminInferenceService) DeleteInferencePolicy(ctx context.Context, req *
 		return false
 	})
 	if err != nil {
-		return nil, mapAdminInferenceError(err, "list standalone inference policy decisions")
+		return nil, mapAdminInferenceError(err, "list standalone access policy decisions")
 	}
 	if len(standaloneRefs) > 0 {
-		return nil, referencedPrecondition("inference policy", standaloneRefs)
+		return nil, referencedPrecondition("access policy", standaloneRefs)
 	}
 	if err := spaceMgr.DeleteInferencePolicy(ctx, policyID); err != nil {
-		return nil, mapAdminInferenceError(err, "delete inference policy")
+		return nil, mapAdminInferenceError(err, "delete access policy")
 	}
 	if s.inference != nil {
 		inferenceSpace, err := s.inference.SpaceManager(ctx, spaceID.String())
@@ -179,13 +179,13 @@ func (s *AdminInferenceService) DeleteInferencePolicy(ctx context.Context, req *
 			return nil, mapAdminInferenceError(err, "open inference space manager")
 		}
 		if err := inferenceSpace.DeletePolicy(ctx, policyID); err != nil {
-			return nil, mapAdminInferenceError(err, "delete standalone inference policy")
+			return nil, mapAdminInferenceError(err, "delete standalone access policy")
 		}
 	}
-	return &adminv1.AdminInferencePolicyServiceDeleteInferencePolicyResponse{InferencePolicyId: policyID.String()}, nil
+	return &adminv1.AdminIntelligenceAccessPolicyServiceDeleteAccessPolicyResponse{AccessPolicyId: policyID.String()}, nil
 }
 
-func (s *AdminInferenceService) GetPolicyDecision(ctx context.Context, req *adminv1.AdminInferencePolicyServiceGetPolicyDecisionRequest) (*adminv1.AdminInferencePolicyServiceGetPolicyDecisionResponse, error) {
+func (s *AdminInferenceService) GetPolicyDecision(ctx context.Context, req *adminv1.AdminIntelligenceAccessPolicyServiceGetPolicyDecisionRequest) (*adminv1.AdminIntelligenceAccessPolicyServiceGetPolicyDecisionResponse, error) {
 	if _, err := s.requireInferenceCapability(ctx, capInferenceAuditRead, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
@@ -210,7 +210,7 @@ func (s *AdminInferenceService) GetPolicyDecision(ctx context.Context, req *admi
 	}
 	for _, item := range items {
 		if item.ID == decisionID {
-			return &adminv1.AdminInferencePolicyServiceGetPolicyDecisionResponse{PolicyDecision: mapStandalonePolicyDecision(item)}, nil
+			return &adminv1.AdminIntelligenceAccessPolicyServiceGetPolicyDecisionResponse{PolicyDecision: mapStandalonePolicyDecision(item)}, nil
 		}
 	}
 	return nil, status.Error(codes.NotFound, "policy decision not found")

@@ -270,7 +270,7 @@ Delete is not included in write.
 | `query.run` | Run structured graph/metadata queries. |
 | `semantic.search` | Run semantic search over permitted data. |
 
-Semantic index creation/configuration is not a Client API capability. It belongs to the Admin API.
+Semantic generation rule creation/configuration is not a Client API capability. It belongs to the Admin API.
 
 ### Session capabilities
 
@@ -472,7 +472,7 @@ Admin-facing operations include:
 - delete archived spaces
 - assign/revoke space admins
 - manage system-owned spaces
-- configure semantic indexes
+- configure semantic generation rules
 - daemon/system maintenance
 - mesh management
 

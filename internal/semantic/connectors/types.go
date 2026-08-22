@@ -19,6 +19,8 @@ type EmbedInput struct {
 	InferenceProfileID        uuid.UUID
 	SpaceID                   domainspace.SpaceID
 	DomainID                  graph.DomainID
+	SemanticRuleID            domainsemantic.SemanticRuleID
+	EmbeddingBindingKey       string
 	SemanticIndexID           domainsemantic.SemanticIndexID
 	TargetNodeID              graph.NodeID
 	ActorPrincipalID          identity.PrincipalID

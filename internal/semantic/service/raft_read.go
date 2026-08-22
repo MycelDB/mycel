@@ -19,6 +19,9 @@ type raftSemanticReadRequest struct {
 	SpaceID  domainspace.SpaceID `json:"space_id"`
 	Consumer string              `json:"consumer,omitempty"`
 }
+type raftSemanticRulesResponse struct {
+	Rules []domainsemantic.SemanticGenerationRule `json:"rules"`
+}
 type raftSemanticIndexesResponse struct {
 	Indexes []domainsemantic.SemanticIndex `json:"indexes"`
 }
@@ -92,6 +95,16 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 	m.raftGroups = nil
 	defer func() { m.raftGroups = saved }()
 	switch req.Op {
+	case "list_rules":
+		mgr, err := m.SpaceManager(ctx, req.SpaceID)
+		if err != nil {
+			return nil, err
+		}
+		v, err := mgr.ListSemanticRules(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftSemanticRulesResponse{Rules: v})
 	case "list_indexes":
 		mgr, err := m.SpaceManager(ctx, req.SpaceID)
 		if err != nil {

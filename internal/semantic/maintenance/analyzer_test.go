@@ -401,3 +401,133 @@ func (r fakeGraphReader) Parent(_ context.Context, _ graph.DomainID, childID gra
 	}
 	return &graph.Edge{ID: graph.EdgeID(uuid.New()), FromID: parentID, ToID: childID, Labels: []string{"contains"}}, nil
 }
+
+func TestAnalyzerSemanticRuleEnqueuesOneWorkItemPerBinding(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	rule := analyzerRule(spaceID, domainID, []string{"Note"}, []domainsemantic.SemanticEmbeddingBinding{
+		analyzerBinding("search", true),
+		analyzerBinding("summary", true),
+		analyzerBinding("disabled", false),
+	})
+	rule, err := spaceMgr.UpsertSemanticRule(ctx, rule)
+	if err != nil {
+		t.Fatalf("rule upsert failed: %v", err)
+	}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Labels: []string{"Note"}}}}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, CreatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("append event failed: %v", err)
+	}
+	res, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}).AnalyzeOnce(ctx, AnalyzeInput{})
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	if res.ProcessedEvents != 2 || res.EnqueuedItems != 2 {
+		t.Fatalf("unexpected result %+v", res)
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("expected two work items, got %+v err=%v", items, err)
+	}
+	seen := map[string]bool{}
+	for _, item := range items {
+		if item.SemanticRuleID != rule.ID || item.SemanticIndexID != domainsemantic.SemanticIndexID(rule.ID) || item.TargetNodeID != nodeID {
+			t.Fatalf("unexpected work item %+v", item)
+		}
+		seen[item.EmbeddingBindingKey] = true
+	}
+	if !seen["search"] || !seen["summary"] || seen["disabled"] {
+		t.Fatalf("unexpected binding keys %+v", seen)
+	}
+}
+
+func TestAnalyzerSemanticRuleFiltersLabelsAndBinding(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	noteID := graph.NodeID(uuid.New())
+	taskID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	rule, err := spaceMgr.UpsertSemanticRule(ctx, analyzerRule(spaceID, domainID, []string{"Note"}, []domainsemantic.SemanticEmbeddingBinding{analyzerBinding("search", true), analyzerBinding("summary", true)}))
+	if err != nil {
+		t.Fatalf("rule upsert failed: %v", err)
+	}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{
+		noteID: {ID: noteID, DomainID: domainID, Labels: []string{"Note"}},
+		taskID: {ID: taskID, DomainID: domainID, Labels: []string{"Task"}},
+	}}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{noteID, taskID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("append event failed: %v", err)
+	}
+	res, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}).AnalyzeOnce(ctx, AnalyzeInput{SemanticRuleID: rule.ID, EmbeddingBindingKey: "summary"})
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	if res.EnqueuedItems != 1 {
+		t.Fatalf("expected one enqueued item, got %+v", res)
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("expected one work item, got %+v err=%v", items, err)
+	}
+	if items[0].TargetNodeID != noteID || items[0].EmbeddingBindingKey != "summary" {
+		t.Fatalf("unexpected filtered item %+v", items[0])
+	}
+}
+
+func TestAnalyzerSemanticRuleTriggerAndCheckpointsAreBindingAware(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	rule := analyzerRule(spaceID, domainID, []string{"Note"}, []domainsemantic.SemanticEmbeddingBinding{analyzerBinding("search", true), analyzerBinding("summary", true)})
+	rule.Trigger = domainsemantic.SemanticTriggerPolicy{Events: []string{"node_created"}}
+	rule, err := spaceMgr.UpsertSemanticRule(ctx, rule)
+	if err != nil {
+		t.Fatalf("rule upsert failed: %v", err)
+	}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Labels: []string{"Note"}}}}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("append update event failed: %v", err)
+	}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 2, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, CreatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("append create event failed: %v", err)
+	}
+	res, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}).AnalyzeOnce(ctx, AnalyzeInput{})
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	if res.ProcessedEvents != 2 || res.EnqueuedItems != 2 {
+		t.Fatalf("expected create event once per binding, got %+v", res)
+	}
+	for _, binding := range []string{"search", "summary"} {
+		checkpoint, err := maintenanceMgr.GetCheckpoint(ctx, analyzerRuleBindingConsumer(rule.ID, binding))
+		if err != nil {
+			t.Fatalf("checkpoint %s error: %v", binding, err)
+		}
+		if checkpoint.LastGraphRevision != 2 {
+			t.Fatalf("checkpoint %s revision = %d, want 2", binding, checkpoint.LastGraphRevision)
+		}
+	}
+}
+
+func analyzerRule(spaceID domainspace.SpaceID, domainID graph.DomainID, labels []string, bindings []domainsemantic.SemanticEmbeddingBinding) domainsemantic.SemanticGenerationRule {
+	return domainsemantic.SemanticGenerationRule{
+		SpaceID:    spaceID,
+		DomainID:   domainID,
+		Key:        "rule-" + uuid.NewString(),
+		Enabled:    true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: labels},
+		Source:     domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf},
+		Storage:    domainsemantic.DefaultSemanticStoragePolicy(),
+		Embeddings: bindings,
+	}
+}
+
+func analyzerBinding(key string, enabled bool) domainsemantic.SemanticEmbeddingBinding {
+	return domainsemantic.SemanticEmbeddingBinding{Key: key, Purpose: "semantic_search", IntelligenceProfile: "default-embeddings", VectorStore: "local", Enabled: enabled}
+}

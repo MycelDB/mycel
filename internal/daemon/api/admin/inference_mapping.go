@@ -124,16 +124,16 @@ func mapSecret(in domainsemantic.Secret) *adminv1.Secret {
 	return &adminv1.Secret{SecretId: in.ID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, Kind: string(in.Kind), CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt), SecretSuffix: in.SecretSuffix}
 }
 
-func mapCredential(in domainsemantic.InferenceCredential) *adminv1.InferenceCredential {
-	out := &adminv1.InferenceCredential{CredentialId: in.ID.String(), Key: in.Key, DisplayName: in.Name, ModelEndpointId: in.ModelEndpointID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, AuthType: string(in.AuthType), SecretId: in.SecretRef.String(), SecretSuffix: in.SecretSuffix, Status: string(in.Status), IsDefault: in.IsDefault, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt)}
+func mapCredential(in domainsemantic.InferenceCredential) *adminv1.IntelligenceCredential {
+	out := &adminv1.IntelligenceCredential{CredentialId: in.ID.String(), Key: in.Key, DisplayName: in.Name, ModelEndpointId: in.ModelEndpointID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, AuthType: string(in.AuthType), SecretId: in.SecretRef.String(), SecretSuffix: in.SecretSuffix, Status: string(in.Status), IsDefault: in.IsDefault, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt)}
 	if in.LastUsedAt != nil {
 		out.LastUsedTime = timestamppb.New(*in.LastUsedAt)
 	}
 	return out
 }
 
-func mapCredentials(items []domainsemantic.InferenceCredential) []*adminv1.InferenceCredential {
-	out := make([]*adminv1.InferenceCredential, 0, len(items))
+func mapCredentials(items []domainsemantic.InferenceCredential) []*adminv1.IntelligenceCredential {
+	out := make([]*adminv1.IntelligenceCredential, 0, len(items))
 	for _, item := range items {
 		out = append(out, mapCredential(item))
 	}
@@ -141,7 +141,7 @@ func mapCredentials(items []domainsemantic.InferenceCredential) []*adminv1.Infer
 }
 
 func mapProcessingScope(in domainsemantic.ProcessingScope) *adminv1.ProcessingScope {
-	return &adminv1.ProcessingScope{SpaceId: in.SpaceID.String(), DomainId: uuidOrEmptyAdmin(in.DomainID), SemanticIndexId: uuidOrEmptyAdmin(in.SemanticIndexID), NodeId: uuidOrEmptyAdmin(in.NodeID), IncludeDescendants: in.IncludeDescendants}
+	return &adminv1.ProcessingScope{SpaceId: in.SpaceID.String(), DomainId: uuidOrEmptyAdmin(in.DomainID), SemanticRuleId: firstNonEmptyAdmin(uuidOrEmptyAdmin(in.SemanticRuleID), uuidOrEmptyAdmin(in.SemanticIndexID)), NodeId: uuidOrEmptyAdmin(in.NodeID), IncludeDescendants: in.IncludeDescendants}
 }
 
 func mapCredentialGrant(in domainsemantic.CredentialGrant) *adminv1.CredentialGrant {
@@ -166,18 +166,18 @@ func mapCredentialGrants(items []domainsemantic.CredentialGrant) []*adminv1.Cred
 	return out
 }
 
-func mapInferencePolicy(in domainsemantic.InferencePolicy) *adminv1.InferencePolicy {
-	out := &adminv1.InferencePolicy{InferencePolicyId: in.ID.String(), Scope: mapProcessingScope(in.Scope), Effect: string(in.Effect), Operations: stringsFromOperations(in.Operations), NoInference: in.NoInference, AllowedPrivacyClasses: stringsFromPrivacyClasses(in.AllowedPrivacyClasses), DisallowThirdParty: in.DisallowThirdParty, RequireLocalEndpoint: in.RequireLocalEndpoint, Reason: in.Reason, CreatedBy: in.CreatedBy, CreateTime: timestamppb.New(in.CreatedAt)}
+func mapAccessPolicy(in domainsemantic.InferencePolicy) *adminv1.AccessPolicy {
+	out := &adminv1.AccessPolicy{AccessPolicyId: in.ID.String(), Scope: mapProcessingScope(in.Scope), Effect: string(in.Effect), Operations: stringsFromOperations(in.Operations), NoIntelligence: in.NoInference, AllowedPrivacyClasses: stringsFromPrivacyClasses(in.AllowedPrivacyClasses), DisallowThirdParty: in.DisallowThirdParty, RequireLocalEndpoint: in.RequireLocalEndpoint, Reason: in.Reason, CreatedBy: in.CreatedBy, CreateTime: timestamppb.New(in.CreatedAt)}
 	if in.ExpiresAt != nil {
 		out.ExpireTime = timestamppb.New(*in.ExpiresAt)
 	}
 	return out
 }
 
-func mapInferencePolicies(items []domainsemantic.InferencePolicy) []*adminv1.InferencePolicy {
-	out := make([]*adminv1.InferencePolicy, 0, len(items))
+func mapAccessPolicies(items []domainsemantic.InferencePolicy) []*adminv1.AccessPolicy {
+	out := make([]*adminv1.AccessPolicy, 0, len(items))
 	for _, item := range items {
-		out = append(out, mapInferencePolicy(item))
+		out = append(out, mapAccessPolicy(item))
 	}
 	return out
 }
@@ -198,7 +198,7 @@ func processingScopeFromProto(in *adminv1.ProcessingScope, defaultSpaceID domain
 	if err != nil {
 		return domainsemantic.ProcessingScope{}, err
 	}
-	indexID, err := optionalSemanticUUID[domainsemantic.SemanticIndexID](in.GetSemanticIndexId(), "scope.semantic_index_id")
+	ruleID, err := optionalSemanticUUID[domainsemantic.SemanticRuleID](in.GetSemanticRuleId(), "scope.semantic_rule_id")
 	if err != nil {
 		return domainsemantic.ProcessingScope{}, err
 	}
@@ -206,7 +206,7 @@ func processingScopeFromProto(in *adminv1.ProcessingScope, defaultSpaceID domain
 	if err != nil {
 		return domainsemantic.ProcessingScope{}, err
 	}
-	return domainsemantic.ProcessingScope{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, NodeID: nodeID, IncludeDescendants: in.GetIncludeDescendants()}, nil
+	return domainsemantic.ProcessingScope{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, IncludeDescendants: in.GetIncludeDescendants()}, nil
 }
 
 func uuidOrEmptyAdmin[T ~[16]byte](id T) string {
@@ -524,7 +524,7 @@ func mapAdminInferenceError(err error, action string) error {
 	return status.Errorf(codes.Internal, "%s: %v", action, err)
 }
 
-func inferenceProfileFromProto(in *adminv1.AdminInferenceProfileServiceCreateInferenceProfileRequest, principalID string) (domaininference.Profile, error) {
+func inferenceProfileFromProto(in *adminv1.AdminIntelligenceAccessProfileServiceCreateIntelligenceProfileRequest, principalID string) (domaininference.Profile, error) {
 	if in == nil {
 		return domaininference.Profile{}, status.Error(codes.InvalidArgument, "inference profile is required")
 	}
@@ -545,14 +545,14 @@ func inferenceProfileFromProto(in *adminv1.AdminInferenceProfileServiceCreateInf
 	return domaininference.Profile{SpaceID: spaceID, Key: in.GetKey(), DisplayName: firstNonEmptyAdmin(in.GetDisplayName(), in.GetKey()), Description: in.GetDescription(), Operation: op, Purpose: in.GetPurpose(), DomainIDs: append([]string(nil), in.GetDomainIds()...), CapabilityRefs: append([]string(nil), in.GetCapabilityRefs()...), EndpointRefs: append([]string(nil), in.GetEndpointRefs()...), ModelRefs: append([]string(nil), in.GetModelRefs()...), RequiredFeatures: append([]string(nil), in.GetRequiredFeatures()...), PrivacyRequirement: privacyRequirementFromProto(in.GetPrivacyRequirement()), DefaultParameters: parametersFromProto(in.GetDefaultParameters()), Enabled: in.GetEnabled(), CreatedBy: principalID, Metadata: structToMap(in.GetMetadata())}, nil
 }
 
-func mapInferenceProfile(in domaininference.Profile) *adminv1.InferenceProfile {
-	return &adminv1.InferenceProfile{InferenceProfileId: in.ID.String(), SpaceId: in.SpaceID, Key: in.Key, DisplayName: in.DisplayName, Description: in.Description, Operation: inferenceOperationToProto(in.Operation), Purpose: in.Purpose, DomainIds: append([]string(nil), in.DomainIDs...), CapabilityRefs: append([]string(nil), in.CapabilityRefs...), EndpointRefs: append([]string(nil), in.EndpointRefs...), ModelRefs: append([]string(nil), in.ModelRefs...), RequiredFeatures: append([]string(nil), in.RequiredFeatures...), PrivacyRequirement: privacyRequirementToProto(in.PrivacyRequirement), DefaultParameters: parametersToProto(in.DefaultParameters), Enabled: in.Enabled, CreatedBy: in.CreatedBy, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt), Metadata: protoStructAdmin(in.Metadata)}
+func mapIntelligenceProfile(in domaininference.Profile) *adminv1.IntelligenceProfile {
+	return &adminv1.IntelligenceProfile{IntelligenceProfileId: in.ID.String(), SpaceId: in.SpaceID, Key: in.Key, DisplayName: in.DisplayName, Description: in.Description, Operation: inferenceOperationToProto(in.Operation), Purpose: in.Purpose, DomainIds: append([]string(nil), in.DomainIDs...), CapabilityRefs: append([]string(nil), in.CapabilityRefs...), EndpointRefs: append([]string(nil), in.EndpointRefs...), ModelRefs: append([]string(nil), in.ModelRefs...), RequiredFeatures: append([]string(nil), in.RequiredFeatures...), PrivacyRequirement: privacyRequirementToProto(in.PrivacyRequirement), DefaultParameters: parametersToProto(in.DefaultParameters), Enabled: in.Enabled, CreatedBy: in.CreatedBy, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt), Metadata: protoStructAdmin(in.Metadata)}
 }
 
-func mapInferenceProfiles(items []domaininference.Profile) []*adminv1.InferenceProfile {
-	out := make([]*adminv1.InferenceProfile, 0, len(items))
+func mapIntelligenceProfiles(items []domaininference.Profile) []*adminv1.IntelligenceProfile {
+	out := make([]*adminv1.IntelligenceProfile, 0, len(items))
 	for _, item := range items {
-		out = append(out, mapInferenceProfile(item))
+		out = append(out, mapIntelligenceProfile(item))
 	}
 	return out
 }
@@ -826,7 +826,7 @@ func inferencePrivacyClassesFromSemantic(values []domainsemantic.PrivacyClass) [
 }
 
 func mapStandalonePolicyDecision(in domaininference.PolicyDecision) *adminv1.PolicyDecision {
-	return &adminv1.PolicyDecision{PolicyDecisionId: in.ID.String(), SpaceId: in.SpaceID, DomainId: in.DomainID, NodeId: in.NodeID, Operation: inferenceOperationToProto(in.Operation), UsageMode: inferenceUsageModeToProto(in.UsageMode), InferenceProfileId: uuidOrEmptyAdmin(in.ProfileID), ModelEndpointCapabilityId: uuidOrEmptyAdmin(in.CapabilityID), ModelEndpointId: uuidOrEmptyAdmin(in.EndpointID), ModelId: uuidOrEmptyAdmin(in.ModelID), CredentialId: uuidOrEmptyAdmin(in.CredentialID), CredentialGrantId: uuidOrEmptyAdmin(in.CredentialGrantID), ActorPrincipalId: in.ActorPrincipalID, OnBehalfOfPrincipalId: in.OnBehalfOfPrincipalID, Action: inferencePolicyDecisionActionToProto(in.Action), MatchedPolicyIds: append([]string(nil), in.MatchedPolicyIDs...), Reason: in.Reason, DecidedAt: timestamppb.New(in.DecidedAt), Metadata: protoStructAdmin(in.Metadata)}
+	return &adminv1.PolicyDecision{PolicyDecisionId: in.ID.String(), SpaceId: in.SpaceID, DomainId: in.DomainID, NodeId: in.NodeID, Operation: inferenceOperationToProto(in.Operation), UsageMode: inferenceUsageModeToProto(in.UsageMode), IntelligenceProfileId: uuidOrEmptyAdmin(in.ProfileID), ModelEndpointCapabilityId: uuidOrEmptyAdmin(in.CapabilityID), ModelEndpointId: uuidOrEmptyAdmin(in.EndpointID), ModelId: uuidOrEmptyAdmin(in.ModelID), CredentialId: uuidOrEmptyAdmin(in.CredentialID), CredentialGrantId: uuidOrEmptyAdmin(in.CredentialGrantID), ActorPrincipalId: in.ActorPrincipalID, OnBehalfOfPrincipalId: in.OnBehalfOfPrincipalID, Action: inferencePolicyDecisionActionToProto(in.Action), MatchedAccessPolicyIds: append([]string(nil), in.MatchedPolicyIDs...), Reason: in.Reason, DecidedAt: timestamppb.New(in.DecidedAt), Metadata: protoStructAdmin(in.Metadata)}
 }
 
 func inferenceUsageModeToProto(value domaininference.UsageMode) commonv1.InferenceUsageMode {
@@ -844,23 +844,23 @@ func inferenceUsageModeToProto(value domaininference.UsageMode) commonv1.Inferen
 	}
 }
 
-func inferencePolicyDecisionActionToProto(value domaininference.PolicyDecisionAction) commonv1.InferencePolicyDecisionAction {
+func inferencePolicyDecisionActionToProto(value domaininference.PolicyDecisionAction) commonv1.AccessPolicyDecisionAction {
 	switch value {
 	case domaininference.PolicyDecisionAllowed:
-		return commonv1.InferencePolicyDecisionAction_INFERENCE_POLICY_DECISION_ACTION_ALLOWED
+		return commonv1.AccessPolicyDecisionAction_INFERENCE_POLICY_DECISION_ACTION_ALLOWED
 	case domaininference.PolicyDecisionDenied:
-		return commonv1.InferencePolicyDecisionAction_INFERENCE_POLICY_DECISION_ACTION_DENIED
+		return commonv1.AccessPolicyDecisionAction_INFERENCE_POLICY_DECISION_ACTION_DENIED
 	default:
-		return commonv1.InferencePolicyDecisionAction_INFERENCE_POLICY_DECISION_ACTION_UNSPECIFIED
+		return commonv1.AccessPolicyDecisionAction_INFERENCE_POLICY_DECISION_ACTION_UNSPECIFIED
 	}
 }
 
-func mapStandaloneUsageEvent(in domaininference.UsageEvent) *adminv1.InferenceUsageEvent {
-	return &adminv1.InferenceUsageEvent{UsageEventId: in.ID.String(), RequestId: in.RequestID, Operation: inferenceOperationToProto(in.Operation), UsageMode: inferenceUsageModeToProto(in.UsageMode), Status: inferenceUsageStatusToProto(in.Status), SpaceId: in.SpaceID, DomainId: in.DomainID, NodeId: in.NodeID, AutomationId: in.AutomationID, AutomationRunId: in.AutomationRunID, SemanticIndexId: in.SemanticIndexID, ActorPrincipalId: in.ActorPrincipalID, OnBehalfOfPrincipalId: in.OnBehalfOfPrincipalID, InferenceProfileId: uuidOrEmptyAdmin(in.ProfileID), ModelEndpointId: uuidOrEmptyAdmin(in.EndpointID), ModelId: uuidOrEmptyAdmin(in.ModelID), ModelEndpointCapabilityId: uuidOrEmptyAdmin(in.CapabilityID), CredentialId: uuidOrEmptyAdmin(in.CredentialID), CredentialGrantId: uuidOrEmptyAdmin(in.CredentialGrantID), PolicyDecisionId: uuidOrEmptyAdmin(in.PolicyDecisionID), ProviderRequestId: in.ProviderRequestID, InputTokens: in.InputTokens, OutputTokens: in.OutputTokens, TotalTokens: in.TotalTokens, LatencyMillis: in.LatencyMillis, ErrorCode: in.ErrorCode, ErrorMessage: in.ErrorMessage, StartedAt: timestamppb.New(in.StartedAt), CompletedAt: timestamppb.New(in.CompletedAt), Metadata: protoStructAdmin(in.Metadata)}
+func mapStandaloneUsageEvent(in domaininference.UsageEvent) *adminv1.IntelligenceAccessUsageEvent {
+	return &adminv1.IntelligenceAccessUsageEvent{UsageEventId: in.ID.String(), RequestId: in.RequestID, Operation: inferenceOperationToProto(in.Operation), UsageMode: inferenceUsageModeToProto(in.UsageMode), Status: inferenceUsageStatusToProto(in.Status), SpaceId: in.SpaceID, DomainId: in.DomainID, NodeId: in.NodeID, AutomationId: in.AutomationID, AutomationRunId: in.AutomationRunID, SemanticRuleId: firstNonEmptyAdmin(in.SemanticRuleID, in.SemanticIndexID), EmbeddingBindingKey: in.EmbeddingBindingKey, ActorPrincipalId: in.ActorPrincipalID, OnBehalfOfPrincipalId: in.OnBehalfOfPrincipalID, IntelligenceProfileId: uuidOrEmptyAdmin(in.ProfileID), ModelEndpointId: uuidOrEmptyAdmin(in.EndpointID), ModelId: uuidOrEmptyAdmin(in.ModelID), ModelEndpointCapabilityId: uuidOrEmptyAdmin(in.CapabilityID), CredentialId: uuidOrEmptyAdmin(in.CredentialID), CredentialGrantId: uuidOrEmptyAdmin(in.CredentialGrantID), PolicyDecisionId: uuidOrEmptyAdmin(in.PolicyDecisionID), ProviderRequestId: in.ProviderRequestID, InputTokens: in.InputTokens, OutputTokens: in.OutputTokens, TotalTokens: in.TotalTokens, LatencyMillis: in.LatencyMillis, ErrorCode: in.ErrorCode, ErrorMessage: in.ErrorMessage, StartedAt: timestamppb.New(in.StartedAt), CompletedAt: timestamppb.New(in.CompletedAt), Metadata: protoStructAdmin(in.Metadata)}
 }
 
-func mapStandaloneUsageEvents(items []domaininference.UsageEvent) []*adminv1.InferenceUsageEvent {
-	out := make([]*adminv1.InferenceUsageEvent, 0, len(items))
+func mapStandaloneUsageEvents(items []domaininference.UsageEvent) []*adminv1.IntelligenceAccessUsageEvent {
+	out := make([]*adminv1.IntelligenceAccessUsageEvent, 0, len(items))
 	for _, item := range items {
 		out = append(out, mapStandaloneUsageEvent(item))
 	}

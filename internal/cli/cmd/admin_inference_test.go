@@ -93,16 +93,16 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("admin domain get failed: %v\n%s", err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "index", "add", "pkg-notes", "--space-id", spaceID, "--domain", "default", "--source", "self", "--model-endpoint", "test-openai", "--model", "test/text-embedding", "--vector-store", "mycel-file")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "rule", "create", "pkg-notes", "--space-id", spaceID, "--domain", "default", "--source", "self", "--profile", "test/text-embedding", "--vector-store", "mycel-file")
 	if err != nil {
-		t.Fatalf("semantic index add with inference keys failed: %v\n%s", err, out)
+		t.Fatalf("semantic rule create with inference keys failed: %v\n%s", err, out)
 	}
-	var index clientv1.SemanticIndex
-	if err := json.Unmarshal([]byte(out), &index); err != nil {
-		t.Fatalf("decode semantic index: %v\n%s", err, out)
+	var rule clientv1.SemanticGenerationRuleSummary
+	if err := json.Unmarshal([]byte(out), &rule); err != nil {
+		t.Fatalf("decode semantic rule: %v\n%s", err, out)
 	}
-	if index.GetKey() != "pkg-notes" {
-		t.Fatalf("unexpected semantic index: %#v", &index)
+	if rule.GetKey() != "pkg-notes" {
+		t.Fatalf("unexpected semantic rule: %#v", &rule)
 	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "create", "bad-secret", "--model-endpoint", "test-openai", "--owner-type", "system", "--owner-id", "daemon-test")
 	if err == nil || !strings.Contains(err.Error()+out, "API key is required") {
@@ -179,7 +179,7 @@ model_endpoint_capabilities:
 	if err := json.Unmarshal([]byte(out), &credentials); err != nil || len(credentials.GetCredentials()) != 1 || credentials.GetCredentials()[0].GetKey() != "test-openai-key" {
 		t.Fatalf("unexpected credentials: %#v err=%v out=%s", &credentials, err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "grant", "test-openai-key", "--space-id", spaceID, "--domain", "default", "--semantic-index", index.GetSemanticIndexId(), "--model-endpoint", "test-openai", "--model", "test/text-embedding", "--allow-background-use", "--grantee-principal-id", "automation", "--allow-on-behalf-of-principal-id", "principal-a")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "grant", "test-openai-key", "--space-id", spaceID, "--domain", "default", "--semantic-rule", rule.GetSemanticRuleId(), "--model-endpoint", "test-openai", "--model", "test/text-embedding", "--allow-background-use", "--grantee-principal-id", "automation", "--allow-on-behalf-of-principal-id", "principal-a")
 	if err != nil {
 		t.Fatalf("credential grant failed: %v\n%s", err, out)
 	}
@@ -241,10 +241,7 @@ model_endpoint_capabilities:
 	if err == nil || !strings.Contains(err.Error()+out, "referenced") {
 		t.Fatalf("expected referenced credential delete failure, err=%v out=%s", err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "index", "delete", index.GetSemanticIndexId(), "--space-id", spaceID)
-	if err == nil || !strings.Contains(err.Error()+out, "purge_references") {
-		t.Fatalf("expected referenced semantic index delete failure, err=%v out=%s", err, out)
-	}
+
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "grant", "expire", createdGrant.GetCredentialGrant().GetCredentialGrantId(), "--space-id", spaceID)
 	if err != nil {
 		t.Fatalf("credential grant expire failed: %v\n%s", err, out)
@@ -253,13 +250,13 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("policy expire failed: %v\n%s", err, out)
 	}
-	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "index", "delete", index.GetSemanticIndexId(), "--space-id", spaceID, "--purge-references", "--purge-vectors")
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "rule", "delete", rule.GetSemanticRuleId(), "--space-id", spaceID, "--purge-vectors")
 	if err != nil {
-		t.Fatalf("semantic index delete failed: %v\n%s", err, out)
+		t.Fatalf("semantic rule delete failed: %v\n%s", err, out)
 	}
-	var deletedIndex adminv1.DeleteSemanticIndexResponse
-	if err := json.Unmarshal([]byte(out), &deletedIndex); err != nil || deletedIndex.GetCredentialGrantsDeleted() != 1 || !deletedIndex.GetVectorsPurged() {
-		t.Fatalf("unexpected semantic index delete response: %#v err=%v out=%s", &deletedIndex, err, out)
+	var deletedRule adminv1.DeleteSemanticRuleResponse
+	if err := json.Unmarshal([]byte(out), &deletedRule); err != nil || !deletedRule.GetVectorsPurged() {
+		t.Fatalf("unexpected semantic rule delete response: %#v err=%v out=%s", &deletedRule, err, out)
 	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "delete", "test-openai-key", "--delete-grants", "--delete-secret")
 	if err != nil {

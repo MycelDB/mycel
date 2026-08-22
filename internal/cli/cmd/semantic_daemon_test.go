@@ -29,33 +29,26 @@ func TestSemanticServiceCommandsUseDaemonGRPC(t *testing.T) {
 	}
 	spaceID := createdSpace.GetSpace().GetSpaceId()
 	domainID := createdSpace.GetDefaultDomainId()
-	indexID := seedDaemonSemanticIndex(t, dataDir, spaceID, domainID)
+	ruleID := seedDaemonSemanticRule(t, dataDir, spaceID, domainID)
 	base := []string{"--daemon-addr", addr, "-u", "semantic-user", "-p", "semantic-pass", "--output", "json"}
-	out, err = runCLI(t, append(base, "semantic", "index", "list", "--space-id", spaceID, "--domain", graph.DefaultDomainKey)...)
+	out, err = runCLI(t, append(base, "semantic", "rule", "list", "--space-id", spaceID, "--domain", graph.DefaultDomainKey)...)
 	if err != nil {
-		t.Fatalf("semantic index list failed: %v\n%s", err, out)
+		t.Fatalf("semantic rule list failed: %v\n%s", err, out)
 	}
-	var list clientv1.ListSemanticIndexesResponse
+	var list clientv1.ListSemanticRulesResponse
 	if err := json.Unmarshal([]byte(out), &list); err != nil {
-		t.Fatalf("decode index list: %v\n%s", err, out)
+		t.Fatalf("decode rule list: %v\n%s", err, out)
 	}
-	if len(list.GetIndexes()) != 1 || list.GetIndexes()[0].GetSemanticIndexId() != indexID.String() || list.GetIndexes()[0].GetKey() != "notes-search" {
-		t.Fatalf("unexpected semantic indexes: %#v", list.GetIndexes())
+	if len(list.GetRules()) != 1 || list.GetRules()[0].GetSemanticRuleId() != ruleID.String() || list.GetRules()[0].GetKey() != "notes-search" {
+		t.Fatalf("unexpected semantic rules: %#v", list.GetRules())
 	}
-	out, err = runCLI(t, append(base, "semantic", "search", "--space-id", spaceID, "--domain", graph.DefaultDomainKey, "--index", "notes-search", "--text", "hello")...)
-	if err != nil {
-		t.Fatalf("semantic search failed: %v\n%s", err, out)
-	}
-	var search clientv1.SemanticSearchResponse
-	if err := json.Unmarshal([]byte(out), &search); err != nil {
-		t.Fatalf("decode search: %v\n%s", err, out)
-	}
-	if len(search.GetWarnings()) == 0 {
-		t.Fatalf("expected safe warning for unprovisioned policy/grant, got %#v", search)
+	out, err = runCLI(t, append(base, "semantic", "search", "--space-id", spaceID, "--domain", graph.DefaultDomainKey, "--rule", "notes-search", "--binding", "search", "--text", "hello")...)
+	if err == nil {
+		t.Fatalf("expected fail-closed semantic search without a physical search index, out=%s", out)
 	}
 }
 
-func seedDaemonSemanticIndex(t *testing.T, dataDir string, spaceIDText string, domainIDText string) domainsemantic.SemanticIndexID {
+func seedDaemonSemanticRule(t *testing.T, dataDir string, spaceIDText string, domainIDText string) domainsemantic.SemanticRuleID {
 	t.Helper()
 	ctx := context.Background()
 	spaceID, err := uuid.Parse(spaceIDText)
@@ -91,9 +84,10 @@ func seedDaemonSemanticIndex(t *testing.T, dataDir string, spaceIDText string, d
 	if err := spaceMgr.Init(ctx, filepath.Join(dataDir, "graphs", spaceID.String(), "semantic"), spaceID); err != nil {
 		t.Fatalf("init space semantic manager: %v", err)
 	}
-	index, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "notes-search", Name: "Notes Search", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf}, ModelEndpointID: endpoint.ID, ModelID: model.ID, ModelEndpointCapabilityID: capability.ID, VectorStoreID: vectorStore.ID, Enabled: true, CreatedAt: now, UpdatedAt: now})
+	_ = capability
+	rule, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{SpaceID: spaceID, DomainID: domainID, Key: "notes-search", DisplayName: "Notes Search", Enabled: true, Trigger: domainsemantic.SemanticTriggerPolicy{Events: []string{domainsemantic.DefaultSemanticTriggerEventChanged}, Labels: []string{"Note"}}, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: string(domainsemantic.SemanticIndexPurposeSearch), IntelligenceProfile: "test-profile", VectorStoreID: vectorStore.ID, Enabled: true}}, Storage: domainsemantic.SemanticStoragePolicy{Searchable: true, PhysicalIndex: domainsemantic.SemanticPhysicalIndexExact}, CreatedAt: now, UpdatedAt: now})
 	if err != nil {
-		t.Fatalf("upsert semantic index: %v", err)
+		t.Fatalf("upsert semantic rule: %v", err)
 	}
-	return index.ID
+	return rule.ID
 }

@@ -50,11 +50,12 @@ The semantic capability allowance lets semantic/inference admins resolve domains
   admin domain get default --space-id '<space-id>'
 ```
 
-Daemon admin semantic/inference commands now accept domain keys:
+Daemon admin semantic/inference commands accept domain keys:
 
 ```sh
-semantic index add notes-search --space-id '<space-id>' --domain default ...
+semantic rule list --space-id '<space-id>' --domain default
+semantic rule create --file examples/semantic/notes-rule.json
+semantic rule backfill notes-search --space-id '<space-id>' --binding search
 inference grant openai-key --space-id '<space-id>' --domain default ...
 inference policy allow --space-id '<space-id>' --domain default
-semantic index backfill notes-search --space-id '<space-id>' --domain default
 ```
