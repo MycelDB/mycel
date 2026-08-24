@@ -381,10 +381,34 @@ func candidateEnabled(candidate capabilityCandidate) bool {
 }
 
 func candidateMatchesOperation(candidate capabilityCandidate, operation domaininference.Operation) bool {
-	if candidate.capability.Operation != operation || candidate.model.Operation != operation {
+	if candidate.capability.Operation != operation || !modelSupportsOperation(candidate.model, operation) {
 		return false
 	}
 	return len(candidate.endpoint.Operations) == 0 || operationListContains(candidate.endpoint.Operations, operation)
+}
+
+func modelSupportsOperation(model domaininference.Model, operation domaininference.Operation) bool {
+	switch operation {
+	case domaininference.OperationEmbeddings:
+		return model.Kind == domaininference.ModelKindEmbedding
+	case domaininference.OperationRerank:
+		return model.Kind == domaininference.ModelKindReranker
+	case domaininference.OperationChat, domaininference.OperationSummarize, domaininference.OperationClassify:
+		return model.Kind == domaininference.ModelKindGenerative
+	case domaininference.OperationImageAnalysis:
+		return model.Kind == domaininference.ModelKindGenerative && modalityListContains(model.InputModalities, "image") && (modalityListContains(model.OutputModalities, "text") || modalityListContains(model.OutputModalities, "json"))
+	default:
+		return false
+	}
+}
+
+func modalityListContains(values []string, value string) bool {
+	for _, item := range values {
+		if strings.EqualFold(strings.TrimSpace(item), value) {
+			return true
+		}
+	}
+	return false
 }
 
 func candidateMatchesRefs(candidate capabilityCandidate, req ResolveRequest, profile domaininference.Profile) bool {

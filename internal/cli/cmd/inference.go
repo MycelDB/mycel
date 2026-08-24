@@ -296,14 +296,14 @@ func newInferenceModelCommand(a *app.App) *cobra.Command {
 
 func newInferenceModelListCommand(a *app.App) *cobra.Command {
 	var pageSize int32
-	var pageToken, operation string
+	var pageToken, kind string
 	cmd := &cobra.Command{Use: "list", Short: "List inference models via daemon gRPC", RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonOperator(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).ListModels(authCtx, &adminv1.AdminInferenceCatalogServiceListModelsRequest{PageSize: pageSize, PageToken: pageToken, Operation: operation})
+		res, err := adminv1.NewAdminInferenceCatalogServiceClient(conn).ListModels(authCtx, &adminv1.AdminInferenceCatalogServiceListModelsRequest{PageSize: pageSize, PageToken: pageToken, Kind: kind})
 		if err != nil {
 			return err
 		}
@@ -311,7 +311,7 @@ func newInferenceModelListCommand(a *app.App) *cobra.Command {
 			return a.Print(res, "")
 		}
 		for _, model := range res.GetModels() {
-			fmt.Printf("%s\t%s\t%s\tdimensions=%d\n", model.GetModelId(), model.GetKey(), model.GetOperation(), model.GetDimensions())
+			fmt.Printf("%s\t%s\tkind=%s\tdimensions=%d\n", model.GetModelId(), model.GetKey(), model.GetKind(), model.GetDimensions())
 		}
 		if res.GetNextPageToken() != "" {
 			fmt.Printf("next page token: %s\n", res.GetNextPageToken())
@@ -320,7 +320,7 @@ func newInferenceModelListCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().Int32Var(&pageSize, "page-size", 100, "page size")
 	cmd.Flags().StringVar(&pageToken, "page-token", "", "page token")
-	cmd.Flags().StringVar(&operation, "operation", "", "operation filter")
+	cmd.Flags().StringVar(&kind, "kind", "", "model kind filter: generative, embedding, reranker")
 	return cmd
 }
 
@@ -872,7 +872,7 @@ func newInferenceUsageListCommand(a *app.App) *cobra.Command {
 		return runInferenceUsageList(cmd, a, f)
 	}}
 	bindInferenceUsageScopeFlags(cmd, &f)
-	cmd.Flags().StringVar(&f.Operation, "operation", "", "operation filter: embeddings, chat, rerank, summarize, classify")
+	cmd.Flags().StringVar(&f.Operation, "operation", "", "operation filter: embeddings, chat, rerank, summarize, classify, image_analysis")
 	cmd.Flags().StringVar(&f.UsageMode, "usage-mode", "", "usage mode filter: interactive, automation, background, semantic")
 	cmd.Flags().StringVar(&f.Status, "status", "", "status filter: succeeded, failed, denied, canceled")
 	cmd.Flags().StringVar(&f.ProfileID, "profile-id", "", "inference profile UUID filter")
@@ -1130,7 +1130,7 @@ func newInferenceProfileCreateCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name")
 	cmd.Flags().StringVar(&description, "description", "", "description")
-	cmd.Flags().StringVar(&operation, "operation", string(domainsemantic.OperationEmbeddings), "operation: embeddings, chat, rerank, summarize, classify")
+	cmd.Flags().StringVar(&operation, "operation", string(domainsemantic.OperationEmbeddings), "operation: embeddings, chat, rerank, summarize, classify, image_analysis")
 	cmd.Flags().StringVar(&purpose, "purpose", "", "purpose label, such as automation or semantic")
 	cmd.Flags().StringArrayVar(&domains, "domain", nil, "domain ID/ref allowed by this profile")
 	cmd.Flags().StringArrayVar(&capabilities, "capability", nil, "capability ID/key candidate")
@@ -1300,6 +1300,8 @@ func optionalInferenceOperationFromFlag(value string) (commonv1.InferenceOperati
 		return commonv1.InferenceOperation_INFERENCE_OPERATION_SUMMARIZE, nil
 	case "classify", "classification":
 		return commonv1.InferenceOperation_INFERENCE_OPERATION_CLASSIFY, nil
+	case "image_analysis", "image-analysis", "vision":
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_IMAGE_ANALYSIS, nil
 	default:
 		return commonv1.InferenceOperation_INFERENCE_OPERATION_UNSPECIFIED, fmt.Errorf("unsupported inference operation %q", value)
 	}
@@ -1337,7 +1339,7 @@ func adminInferenceModelFromDomain(model domainsemantic.InferenceModel) *adminv1
 	if model.ID != [16]byte{} {
 		id = model.ID.String()
 	}
-	return &adminv1.InferenceModel{ModelId: id, Key: model.Key, Operation: string(model.Operation), ModelName: model.ModelName, ConnectorTypes: stringsFromSemanticConnectorTypes(model.ConnectorTypes), Dimensions: int32(model.Dimensions), Modality: model.Modality, VectorSpaceKey: model.VectorSpaceKey, Metadata: cliProtoStruct(model.Metadata)}
+	return &adminv1.InferenceModel{ModelId: id, Key: model.Key, Kind: string(model.Kind), ModelName: model.ModelName, ConnectorTypes: stringsFromSemanticConnectorTypes(model.ConnectorTypes), Dimensions: int32(model.Dimensions), InputModalities: append([]string(nil), model.InputModalities...), OutputModalities: append([]string(nil), model.OutputModalities...), VectorSpaceKey: model.VectorSpaceKey, Metadata: cliProtoStruct(model.Metadata)}
 }
 
 func adminVectorStoreFromDomain(store domainsemantic.VectorStoreBackend) *adminv1.VectorStore {

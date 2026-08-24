@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -18,6 +19,98 @@ import (
 type FileStore struct{ root string }
 
 func NewFileStore(root string) *FileStore { return &FileStore{root: root} }
+
+func (s *FileStore) PutProcedure(ctx context.Context, procedure automation.Procedure) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeJSONAtomic(s.procedurePath(procedure.DomainID, procedure.ID), procedure)
+}
+
+func (s *FileStore) GetProcedure(ctx context.Context, domainID graph.DomainID, id string) (automation.Procedure, error) {
+	if err := ctx.Err(); err != nil {
+		return automation.Procedure{}, err
+	}
+	var out automation.Procedure
+	if err := readJSON(s.procedurePath(domainID, id), &out); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, ErrNotFound
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *FileStore) DeleteProcedure(ctx context.Context, domainID graph.DomainID, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(s.procedurePath(domainID, id))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListProcedureDomains(ctx context.Context) ([]graph.DomainID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.listDomains("procedures")
+}
+
+func (s *FileStore) ListProcedures(ctx context.Context, domainID graph.DomainID) ([]automation.Procedure, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listJSONFiles[automation.Procedure](filepath.Join(s.root, "procedures", domainID.String()))
+}
+
+func (s *FileStore) PutBinding(ctx context.Context, binding automation.Binding) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeJSONAtomic(s.bindingPath(binding.DomainID, binding.ID), binding)
+}
+
+func (s *FileStore) GetBinding(ctx context.Context, domainID graph.DomainID, id string) (automation.Binding, error) {
+	if err := ctx.Err(); err != nil {
+		return automation.Binding{}, err
+	}
+	var out automation.Binding
+	if err := readJSON(s.bindingPath(domainID, id), &out); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, ErrNotFound
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *FileStore) DeleteBinding(ctx context.Context, domainID graph.DomainID, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(s.bindingPath(domainID, id))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListBindingDomains(ctx context.Context) ([]graph.DomainID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.listDomains("bindings")
+}
+
+func (s *FileStore) ListBindings(ctx context.Context, domainID graph.DomainID) ([]automation.Binding, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listJSONFiles[automation.Binding](filepath.Join(s.root, "bindings", domainID.String()))
+}
 
 func (s *FileStore) PutDefinition(ctx context.Context, def automation.Definition) error {
 	if err := ctx.Err(); err != nil {
@@ -56,52 +149,14 @@ func (s *FileStore) ListDefinitionDomains(ctx context.Context) ([]graph.DomainID
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(s.root, "definitions")
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	out := []graph.DomainID{}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		id, err := uuid.Parse(entry.Name())
-		if err == nil {
-			out = append(out, graph.DomainID(id))
-		}
-	}
-	return out, nil
+	return s.listDomains("definitions")
 }
 
 func (s *FileStore) ListDefinitions(ctx context.Context, domainID graph.DomainID) ([]automation.Definition, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(s.root, "definitions", domainID.String())
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	out := []automation.Definition{}
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		var def automation.Definition
-		if err := readJSON(filepath.Join(dir, entry.Name()), &def); err != nil {
-			return nil, err
-		}
-		out = append(out, def)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
+	return listJSONFiles[automation.Definition](filepath.Join(s.root, "definitions", domainID.String()))
 }
 
 func (s *FileStore) PutInvocation(ctx context.Context, inv automation.Invocation) error {
@@ -461,8 +516,77 @@ func (s *FileStore) GetSuccessfulInputIndex(ctx context.Context, domainID graph.
 	return out, nil
 }
 
+func (s *FileStore) procedurePath(domainID graph.DomainID, id string) string {
+	return filepath.Join(s.root, "procedures", domainID.String(), safeName(id)+".json")
+}
+
+func (s *FileStore) bindingPath(domainID graph.DomainID, id string) string {
+	return filepath.Join(s.root, "bindings", domainID.String(), safeName(id)+".json")
+}
+
 func (s *FileStore) definitionPath(domainID graph.DomainID, id string) string {
 	return filepath.Join(s.root, "definitions", domainID.String(), safeName(id)+".json")
+}
+
+func (s *FileStore) listDomains(kind string) ([]graph.DomainID, error) {
+	dir := filepath.Join(s.root, kind)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := []graph.DomainID{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		id, err := uuid.Parse(entry.Name())
+		if err == nil {
+			out = append(out, graph.DomainID(id))
+		}
+	}
+	return out, nil
+}
+
+func listJSONFiles[T any](dir string) ([]T, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := []T{}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		var item T
+		if err := readJSON(filepath.Join(dir, entry.Name()), &item); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool { return jsonSortKey(out[i]) < jsonSortKey(out[j]) })
+	return out, nil
+}
+
+func jsonSortKey(value any) string {
+	v := reflect.ValueOf(value)
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	if v.IsValid() && v.Kind() == reflect.Struct {
+		for _, name := range []string{"ID", "AutomationID"} {
+			field := v.FieldByName(name)
+			if field.IsValid() && field.Kind() == reflect.String {
+				return field.String()
+			}
+		}
+	}
+	return fmt.Sprint(value)
 }
 
 func (s *FileStore) successfulInputIndexPath(domainID graph.DomainID, automationID string, version int, elementID string, inputHash string) string {

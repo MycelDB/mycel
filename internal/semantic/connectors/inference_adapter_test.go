@@ -73,7 +73,7 @@ func seedStandaloneInferenceForSemanticAdapter(t *testing.T, ctx context.Context
 	if _, err := module.GlobalManager().UpsertEndpoint(ctx, domaininference.Endpoint{ID: domaininference.EndpointID(ids.endpointID), Key: "endpoint", ConnectorType: domaininference.ConnectorOpenAICompatible, NetworkClass: domaininference.NetworkClassPublicInternet, PrivacyClass: domaininference.PrivacyClassThirdParty, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, Enabled: true}); err != nil {
 		t.Fatalf("upsert endpoint: %v", err)
 	}
-	if _, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{ID: domaininference.ModelID(ids.modelID), Key: "model", Operation: domaininference.OperationEmbeddings, ProviderModelName: "embed", Enabled: true}); err != nil {
+	if _, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{ID: domaininference.ModelID(ids.modelID), Key: "model", Kind: domaininference.ModelKindEmbedding, ProviderModelName: "embed", Enabled: true}); err != nil {
 		t.Fatalf("upsert model: %v", err)
 	}
 	if _, err := module.GlobalManager().UpsertCapability(ctx, domaininference.Capability{ID: domaininference.CapabilityID(ids.capID), EndpointID: domaininference.EndpointID(ids.endpointID), ModelID: domaininference.ModelID(ids.modelID), Operation: domaininference.OperationEmbeddings, Enabled: true}); err != nil {

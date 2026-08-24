@@ -51,11 +51,20 @@ const (
 type Operation string
 
 const (
-	OperationEmbeddings Operation = "embeddings"
-	OperationChat       Operation = "chat"
-	OperationRerank     Operation = "rerank"
-	OperationSummarize  Operation = "summarize"
-	OperationClassify   Operation = "classify"
+	OperationEmbeddings    Operation = "embeddings"
+	OperationChat          Operation = "chat"
+	OperationRerank        Operation = "rerank"
+	OperationSummarize     Operation = "summarize"
+	OperationClassify      Operation = "classify"
+	OperationImageAnalysis Operation = "image_analysis"
+)
+
+type ModelKind string
+
+const (
+	ModelKindGenerative ModelKind = "generative"
+	ModelKindEmbedding  ModelKind = "embedding"
+	ModelKindReranker   ModelKind = "reranker"
 )
 
 // NetworkClass describes where an endpoint is reachable.
@@ -328,17 +337,18 @@ type ModelEndpoint struct {
 
 // InferenceModel is metadata for a model executable by compatible endpoints.
 type InferenceModel struct {
-	ID             InferenceModelID `json:"id"`
-	Key            string           `json:"key"`
-	Operation      Operation        `json:"operation"`
-	ModelName      string           `json:"model_name"`
-	ConnectorTypes []ConnectorType  `json:"connector_types,omitempty"`
-	Dimensions     int              `json:"dimensions,omitempty"`
-	Modality       string           `json:"modality,omitempty"`
-	VectorSpaceKey string           `json:"vector_space_key,omitempty"`
-	Metadata       map[string]any   `json:"metadata,omitempty"`
-	CreatedAt      time.Time        `json:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
+	ID               InferenceModelID `json:"id"`
+	Key              string           `json:"key"`
+	Kind             ModelKind        `json:"kind"`
+	ModelName        string           `json:"model_name"`
+	ConnectorTypes   []ConnectorType  `json:"connector_types,omitempty"`
+	Dimensions       int              `json:"dimensions,omitempty"`
+	InputModalities  []string         `json:"input_modalities,omitempty"`
+	OutputModalities []string         `json:"output_modalities,omitempty"`
+	VectorSpaceKey   string           `json:"vector_space_key,omitempty"`
+	Metadata         map[string]any   `json:"metadata,omitempty"`
+	CreatedAt        time.Time        `json:"created_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
 }
 
 // ModelEndpointCapability states that one endpoint can serve one model for one operation.

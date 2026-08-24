@@ -47,11 +47,13 @@ model_endpoints:
     enabled: true
 models:
   - key: test/text-embedding
-    operation: embeddings
+    kind: embedding
     model_name: text-embedding
     dimensions: 3
     vector_space_key: test/text-embedding
     connector_types: [openai-compatible]
+    input_modalities: [text]
+    output_modalities: [embedding]
 model_endpoint_capabilities:
   - model_endpoint: test-openai
     model: test/text-embedding

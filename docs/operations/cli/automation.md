@@ -7,6 +7,11 @@ Authentication mode: **user**.
 Automations reference inference profiles and model/capability refs. They do not
 embed provider API keys, raw endpoint URLs, or credential secret refs.
 
+The daemon supports splitting reusable graph procedures from runtime automation
+bindings. The `mycel automation` CLI remains a compatibility surface for combined
+automation definitions; use `mycel procedure` and `mycel automation-binding` for
+first-class split-model management.
+
 ## Domain scope
 
 Prefer space plus domain refs:
@@ -19,7 +24,32 @@ Prefer space plus domain refs:
 UUID still works for compatibility. `--domain-id` is also accepted for scripts
 that already store the resolved domain UUID.
 
-## Definition commands
+## Procedure and binding commands
+
+```sh
+mycel procedure validate examples/procedures/page-summary.json
+mycel procedure create examples/procedures/page-summary.json --space-id <space-id> --domain default
+mycel procedure update page-summary examples/procedures/page-summary.json --space-id <space-id> --domain default
+mycel procedure list --space-id <space-id> --domain default
+mycel procedure get page-summary --space-id <space-id> --domain default
+mycel procedure delete page-summary --space-id <space-id> --domain default
+
+mycel automation-binding validate examples/automation-bindings/page-summary-user.json
+mycel automation-binding create examples/automation-bindings/page-summary-user.json --space-id <space-id> --domain default
+mycel automation-binding update page-summary-user examples/automation-bindings/page-summary-user.json --space-id <space-id> --domain default
+mycel automation-binding list --space-id <space-id> --domain default
+mycel automation-binding get page-summary-user --space-id <space-id> --domain default
+mycel automation-binding enable page-summary-user --space-id <space-id> --domain default
+mycel automation-binding disable page-summary-user --space-id <space-id> --domain default
+mycel automation-binding delete page-summary-user --space-id <space-id> --domain default
+```
+
+Binding summaries show procedure refs, trigger type, and runtime
+actor/on-behalf/owner fields. A binding can be created by an operator/user while
+its runtime context executes later as the `automation` actor on behalf of a
+configured principal, subject to inference grants and policies.
+
+## Legacy definition commands
 
 ```sh
 mycel automation validate examples/automations/summarize_page.json
@@ -41,6 +71,20 @@ mycel automation delete summarize_page --space-id <space-id> --domain default
 
 `mycel automation put` remains available as a create-or-update compatibility
 command; prefer `create` and `update` in new scripts.
+
+To migrate old combined definitions into explicit procedure+binding records while
+keeping the legacy file readable:
+
+```sh
+mycel automation migrate-combined --space-id <space-id> --domain default --dry-run
+mycel automation migrate-combined --space-id <space-id> --domain default
+```
+
+Migration prints the source automation ID, generated procedure ID, binding ID,
+runtime owner/on-behalf principal, and a warning when the legacy owner looks like
+an operator/admin principal. The generated binding uses the same ID as the legacy
+automation, so runtime selection prefers the explicit binding and avoids duplicate
+execution while the legacy definition remains available for compatibility.
 
 Use `--output json` with list and run-inspection commands when machine-readable
 responses are needed.
@@ -101,7 +145,14 @@ mycel automation invocation cancel <invocation-id> --space-id <space-id> --domai
 
 Run records include neutral inference provenance such as profile, capability,
 credential grant, policy decision, provider request ID, token usage, actor,
-on-behalf-of, and automation owner references.
+on-behalf-of, and automation owner references. Newer run records may also include
+`binding_id`, `procedure_id`, `owner_principal_id`, and
+`event_origin_principal_id`.
+
+Legacy combined automations still infer ownership from the creating principal for
+compatibility. Procedure/binding-backed automations store runtime context on the
+binding so an operator-created binding can execute as the built-in `automation`
+actor on behalf of a user principal under explicit grants/policies.
 
 ## Related docs
 

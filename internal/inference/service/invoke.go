@@ -127,7 +127,7 @@ func (m *Module) invokeConnector(ctx context.Context, connector connectors.Conne
 	case domaininference.OperationEmbeddings:
 		resp, err := connector.Embed(ctx, connectors.EmbeddingRequest{Endpoint: resolved.Endpoint, Model: resolved.Model, Capability: resolved.Capability, Credential: resolved.Credential, Secret: secretValue, Input: req.Input})
 		return connectorResponse{ProviderRequestID: resp.ProviderRequestID, Embedding: resp.Vector, Usage: resp.Usage}, err
-	case domaininference.OperationChat, domaininference.OperationSummarize, domaininference.OperationClassify:
+	case domaininference.OperationChat, domaininference.OperationSummarize, domaininference.OperationClassify, domaininference.OperationImageAnalysis:
 		messages := normalizedMessages(req)
 		resp, err := connector.Chat(ctx, connectors.ChatRequest{Endpoint: resolved.Endpoint, Model: resolved.Model, Capability: resolved.Capability, Credential: resolved.Credential, Secret: secretValue, Messages: messages, Parameters: mergeParameters(resolved.Profile.DefaultParameters, req.Resolve.Parameters)})
 		return connectorResponse{ProviderRequestID: resp.ProviderRequestID, Text: resp.Text, JSON: resp.JSON, Usage: resp.Usage}, err

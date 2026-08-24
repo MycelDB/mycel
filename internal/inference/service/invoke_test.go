@@ -100,7 +100,7 @@ func TestInvokeFakeEmbeddingsThroughFullPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert embedding profile: %v", err)
 	}
-	embeddingModel, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{Key: "embed-model", Operation: domaininference.OperationEmbeddings, ProviderModelName: "embed-model", Enabled: true})
+	embeddingModel, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{Key: "embed-model", Kind: domaininference.ModelKindEmbedding, ProviderModelName: "embed-model", Enabled: true})
 	if err != nil {
 		t.Fatalf("upsert embedding model: %v", err)
 	}

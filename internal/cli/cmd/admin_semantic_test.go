@@ -107,7 +107,7 @@ func seedDaemonSemanticGlobals(t *testing.T, dataDir string) daemonSemanticGloba
 	if err != nil {
 		t.Fatalf("upsert endpoint: %v", err)
 	}
-	model, err := global.UpsertModel(ctx, domainsemantic.InferenceModel{Key: "admin-test/embedding", Operation: domainsemantic.OperationEmbeddings, ModelName: "embedding", Dimensions: 3, VectorSpaceKey: "admin-test/embedding", CreatedAt: now, UpdatedAt: now})
+	model, err := global.UpsertModel(ctx, domainsemantic.InferenceModel{Key: "admin-test/embedding", Kind: domainsemantic.ModelKindEmbedding, ModelName: "embedding", Dimensions: 3, VectorSpaceKey: "admin-test/embedding", CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		t.Fatalf("upsert model: %v", err)
 	}

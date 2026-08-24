@@ -32,7 +32,7 @@ mycel inference endpoint list
 mycel inference endpoint disable openai
 mycel inference endpoint enable openai
 
-mycel inference model list --operation embeddings
+mycel inference model list --kind embedding
 mycel inference capability list --operation embeddings
 mycel inference vector-store list
 ```

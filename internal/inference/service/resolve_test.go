@@ -32,6 +32,62 @@ func TestResolveAllowsMatchingProfileGrantAndPolicy(t *testing.T) {
 	}
 }
 
+func TestResolveAllowsSummarizeCapabilityOnGenerativeModel(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	fixture.endpoint.Operations = []domaininference.Operation{domaininference.OperationSummarize}
+	if _, err := module.GlobalManager().UpsertEndpoint(ctx, fixture.endpoint); err != nil {
+		t.Fatalf("update endpoint: %v", err)
+	}
+	fixture.capability.Operation = domaininference.OperationSummarize
+	if _, err := module.GlobalManager().UpsertCapability(ctx, fixture.capability); err != nil {
+		t.Fatalf("update capability: %v", err)
+	}
+	fixture.profile.Operation = domaininference.OperationSummarize
+	if _, err := fixture.spaceMgr.UpsertProfile(ctx, fixture.profile); err != nil {
+		t.Fatalf("update profile: %v", err)
+	}
+	fixture.grant.Operations = []domaininference.Operation{domaininference.OperationSummarize}
+	if _, err := fixture.spaceMgr.UpsertCredentialGrant(ctx, fixture.grant); err != nil {
+		t.Fatalf("update grant: %v", err)
+	}
+	fixture.policy.Operations = []domaininference.Operation{domaininference.OperationSummarize}
+	if _, err := fixture.spaceMgr.UpsertPolicy(ctx, fixture.policy); err != nil {
+		t.Fatalf("update policy: %v", err)
+	}
+
+	result, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationSummarize, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if !result.Allowed || result.Model.Kind != domaininference.ModelKindGenerative || result.Capability.Operation != domaininference.OperationSummarize {
+		t.Fatalf("expected summarize to resolve on generative model, got allowed=%t model=%#v capability=%#v decision=%#v", result.Allowed, result.Model, result.Capability, result.Decision)
+	}
+}
+
+func TestModelSupportsOperationUsesKindAndModalities(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     domaininference.Model
+		operation domaininference.Operation
+		want      bool
+	}{
+		{name: "summarize generative", model: domaininference.Model{Kind: domaininference.ModelKindGenerative}, operation: domaininference.OperationSummarize, want: true},
+		{name: "embedding for embeddings", model: domaininference.Model{Kind: domaininference.ModelKindEmbedding}, operation: domaininference.OperationEmbeddings, want: true},
+		{name: "embedding not chat", model: domaininference.Model{Kind: domaininference.ModelKindEmbedding}, operation: domaininference.OperationChat, want: false},
+		{name: "image analysis requires image input", model: domaininference.Model{Kind: domaininference.ModelKindGenerative, InputModalities: []string{"text"}}, operation: domaininference.OperationImageAnalysis, want: false},
+		{name: "image analysis requires text/json output", model: domaininference.Model{Kind: domaininference.ModelKindGenerative, InputModalities: []string{"text", "image"}, OutputModalities: []string{"embedding"}}, operation: domaininference.OperationImageAnalysis, want: false},
+		{name: "image analysis vision model", model: domaininference.Model{Kind: domaininference.ModelKindGenerative, InputModalities: []string{"text", "image"}, OutputModalities: []string{"text", "json"}}, operation: domaininference.OperationImageAnalysis, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := modelSupportsOperation(tc.model, tc.operation); got != tc.want {
+				t.Fatalf("modelSupportsOperation() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveDeniesWhenGrantMissing(t *testing.T) {
 	ctx := context.Background()
 	module, fixture := newResolverFixture(t, ctx)
@@ -240,7 +296,7 @@ func newResolverFixture(t *testing.T, ctx context.Context) (*Module, resolverFix
 	if err != nil {
 		t.Fatalf("upsert endpoint: %v", err)
 	}
-	model, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{Key: "gpt-test", Operation: domaininference.OperationChat, ProviderModelName: "gpt-test", ConnectorTypes: []domaininference.ConnectorType{domaininference.ConnectorOpenAICompatible}, Enabled: true})
+	model, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{Key: "gpt-test", Kind: domaininference.ModelKindGenerative, ProviderModelName: "gpt-test", ConnectorTypes: []domaininference.ConnectorType{domaininference.ConnectorOpenAICompatible}, Enabled: true})
 	if err != nil {
 		t.Fatalf("upsert model: %v", err)
 	}

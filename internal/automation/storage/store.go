@@ -13,6 +13,16 @@ var (
 )
 
 type Store interface {
+	PutProcedure(ctx context.Context, procedure automation.Procedure) error
+	GetProcedure(ctx context.Context, domainID graph.DomainID, id string) (automation.Procedure, error)
+	DeleteProcedure(ctx context.Context, domainID graph.DomainID, id string) error
+	ListProcedureDomains(ctx context.Context) ([]graph.DomainID, error)
+	ListProcedures(ctx context.Context, domainID graph.DomainID) ([]automation.Procedure, error)
+	PutBinding(ctx context.Context, binding automation.Binding) error
+	GetBinding(ctx context.Context, domainID graph.DomainID, id string) (automation.Binding, error)
+	DeleteBinding(ctx context.Context, domainID graph.DomainID, id string) error
+	ListBindingDomains(ctx context.Context) ([]graph.DomainID, error)
+	ListBindings(ctx context.Context, domainID graph.DomainID) ([]automation.Binding, error)
 	PutDefinition(ctx context.Context, def automation.Definition) error
 	GetDefinition(ctx context.Context, domainID graph.DomainID, id string) (automation.Definition, error)
 	DeleteDefinition(ctx context.Context, domainID graph.DomainID, id string) error

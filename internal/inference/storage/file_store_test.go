@@ -23,7 +23,7 @@ func TestGlobalManagerRoundTrip(t *testing.T) {
 	if endpoint.ID == uuid.Nil {
 		t.Fatalf("expected endpoint id")
 	}
-	model, err := mgr.UpsertModel(ctx, domaininference.Model{Key: "openai/gpt-4o-mini", Operation: domaininference.OperationChat, ProviderModelName: "gpt-4o-mini", ConnectorTypes: []domaininference.ConnectorType{domaininference.ConnectorOpenAICompatible}, Enabled: true})
+	model, err := mgr.UpsertModel(ctx, domaininference.Model{Key: "openai/gpt-4o-mini", Kind: domaininference.ModelKindGenerative, ProviderModelName: "gpt-4o-mini", ConnectorTypes: []domaininference.ConnectorType{domaininference.ConnectorOpenAICompatible}, Enabled: true})
 	if err != nil {
 		t.Fatalf("upsert model: %v", err)
 	}

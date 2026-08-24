@@ -1798,10 +1798,10 @@ func validateModel(ctx context.Context, model domainsemantic.InferenceModel) err
 	if strings.TrimSpace(model.Key) == "" {
 		return fmt.Errorf("%w: model key is required", ErrInvalidInput)
 	}
-	if model.Operation == "" {
-		return fmt.Errorf("%w: operation is required", ErrInvalidInput)
+	if model.Kind == "" {
+		return fmt.Errorf("%w: model kind is required", ErrInvalidInput)
 	}
-	if model.Operation == domainsemantic.OperationEmbeddings {
+	if model.Kind == domainsemantic.ModelKindEmbedding {
 		if model.Dimensions <= 0 {
 			return fmt.Errorf("%w: embedding dimensions must be positive", ErrInvalidInput)
 		}

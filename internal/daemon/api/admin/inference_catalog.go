@@ -147,11 +147,11 @@ func (s *AdminInferenceService) ListModels(ctx context.Context, req *adminv1.Adm
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "list models")
 	}
-	operation := strings.TrimSpace(req.GetOperation())
-	if operation != "" {
+	kind := strings.TrimSpace(req.GetKind())
+	if kind != "" {
 		filtered := items[:0]
 		for _, item := range items {
-			if string(item.Operation) == operation {
+			if string(item.Kind) == kind {
 				filtered = append(filtered, item)
 			}
 		}

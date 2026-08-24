@@ -1,0 +1,34 @@
+{
+  "id": "knot-pkm.user.example.page-summary.entry-trigger",
+  "name": "Summarize pages when entries change",
+  "procedure_id": "knot-pkm.page-summary",
+  "procedure_version": 1,
+  "status": "enabled",
+  "scope": {
+    "space_id": "af368527-3b7a-4070-87c3-8cd55ac51553",
+    "domain_id": "a844c894-6f3b-4b13-bacd-e007bc49e0cb"
+  },
+  "trigger": {
+    "type": "graph_event",
+    "events": ["node.created", "node.updated"],
+    "labels": ["pkm.page_entry"],
+    "condition": {
+      "gql": "MATCH (page:pkm.page)-[:contains*1..2]->(changed:pkm.page_entry) RETURN changed, page"
+    }
+  },
+  "runtime": {
+    "actor_principal_id": "automation",
+    "owner_principal_id": "6e87ad16-b92e-41c3-80ba-3ea8ad2df9ab",
+    "on_behalf_of_principal_id": "6e87ad16-b92e-41c3-80ba-3ea8ad2df9ab",
+    "inference_profile_id": "01a0300b-fafd-77aa-b491-cff1231d7432"
+  },
+  "debounce": {
+    "duration": "45s",
+    "coalesceBy": "page"
+  },
+  "idempotency": {
+    "scope": "target",
+    "target": "page",
+    "skipIfOutputUnchanged": true
+  }
+}

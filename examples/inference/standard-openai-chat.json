@@ -11,7 +11,7 @@
       "network_class": "public_internet",
       "privacy_class": "third_party",
       "auth_modes": ["api_key"],
-      "operations": ["chat", "summarize", "classify"],
+      "operations": ["chat", "summarize", "classify", "image_analysis"],
       "enabled": true,
       "metadata": {
         "provider": "openai",
@@ -23,10 +23,9 @@
   "models": [
     {
       "key": "openai/gpt-5.6-mini",
-      "operation": "chat",
+      "kind": "generative",
       "model_name": "gpt-5.6-mini",
       "connector_types": ["openai-compatible"],
-      "modality": "text",
       "input_modalities": ["text"],
       "output_modalities": ["text", "json"],
       "context_tokens": 1047576,
@@ -40,11 +39,10 @@
     },
     {
       "key": "openai/gpt-5.6",
-      "operation": "chat",
+      "kind": "generative",
       "model_name": "gpt-5.6",
       "connector_types": ["openai-compatible"],
-      "modality": "text",
-      "input_modalities": ["text"],
+      "input_modalities": ["text", "image"],
       "output_modalities": ["text", "json"],
       "context_tokens": 1047576,
       "max_output_tokens": 32768,
@@ -52,15 +50,14 @@
       "metadata": {
         "provider": "openai",
         "display_name": "OpenAI GPT-5.6",
-        "recommended_for": ["graph automation", "high-quality summarization", "structured extraction"]
+        "recommended_for": ["graph automation", "high-quality summarization", "structured extraction", "image analysis"]
       }
     },
     {
       "key": "openai/gpt-5.6-pro",
-      "operation": "chat",
+      "kind": "generative",
       "model_name": "gpt-5.6-pro",
       "connector_types": ["openai-compatible"],
-      "modality": "text",
       "input_modalities": ["text"],
       "output_modalities": ["text", "json"],
       "context_tokens": 1047576,
@@ -135,6 +132,17 @@
       "model_endpoint": "openai",
       "model": "openai/gpt-5.6",
       "operation": "classify",
+      "enabled": true,
+      "metadata": {
+        "supports_json_mode": true,
+        "max_input_tokens": 1047576,
+        "max_output_tokens": 32768
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6",
+      "operation": "image_analysis",
       "enabled": true,
       "metadata": {
         "supports_json_mode": true,

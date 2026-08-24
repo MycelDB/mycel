@@ -25,7 +25,7 @@ var ErrInferenceUnavailable = errors.New("automation inference subsystem is not 
 
 func (m *AutomationManager) executeInvocation(ctx context.Context, def automation.Definition, inv automation.Invocation) (automation.Run, error) {
 	now := m.now()
-	run := automation.Run{ID: newRunID(), DomainID: inv.DomainID, InvocationID: inv.ID, AttemptNumber: inv.AttemptCount + 1, Status: "running", ActorPrincipalID: firstNonEmptyString(inv.ActorPrincipalID, automationActor), OnBehalfOfPrincipalID: firstNonEmptyString(inv.OnBehalfOfPrincipalID, def.OwnerPrincipalID, automationActor), AutomationOwnerPrincipalID: firstNonEmptyString(inv.AutomationOwnerPrincipalID, def.OwnerPrincipalID), InferenceProfile: strings.TrimSpace(def.Inference.Profile), InferenceProfileID: strings.TrimSpace(def.Inference.ProfileID), StartedAt: now}
+	run := automation.Run{ID: newRunID(), DomainID: inv.DomainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: inv.AttemptCount + 1, Status: "running", ActorPrincipalID: firstNonEmptyString(inv.ActorPrincipalID, automationActor), OnBehalfOfPrincipalID: firstNonEmptyString(inv.OnBehalfOfPrincipalID, inv.OwnerPrincipalID, def.OwnerPrincipalID, automationActor), OwnerPrincipalID: firstNonEmptyString(inv.OwnerPrincipalID, inv.AutomationOwnerPrincipalID, def.OwnerPrincipalID), AutomationOwnerPrincipalID: firstNonEmptyString(inv.AutomationOwnerPrincipalID, inv.OwnerPrincipalID, def.OwnerPrincipalID), EventOriginPrincipalID: inv.EventOriginPrincipalID, InferenceProfile: strings.TrimSpace(def.Inference.Profile), InferenceProfileID: strings.TrimSpace(def.Inference.ProfileID), StartedAt: now}
 	if m.sessions == nil || m.graphs == nil {
 		result, err := render.Render(def.Input, render.Context{})
 		if err != nil {
@@ -42,25 +42,26 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		run.OutputHash = hex.EncodeToString(outSum[:])
 		return run, nil
 	}
-	sess, err := m.sessions.OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: automationActor, SpaceID: inv.SpaceID, DomainID: inv.DomainID.String()})
+	executionPrincipal := firstNonEmptyString(run.ActorPrincipalID, automationActor)
+	sess, err := m.sessions.OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: executionPrincipal, SpaceID: inv.SpaceID, DomainID: inv.DomainID.String()})
 	if err != nil {
 		return run, err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: automationActor, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite})
+	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite})
 	if err != nil {
 		return run, err
 	}
 	node, err := m.graphs.GetNode(ctx, tx, inv.ChangedElementID)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	condition, err := m.evaluateCondition(ctx, tx, def, node, inv.OldNode)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	} else if !condition.Matched {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		run.Status = "skipped"
 		run.Error = conditionFalseReason
 		run.CompletedAt = m.now()
@@ -69,7 +70,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	run.TargetAlias = firstNonEmptyString(strings.TrimSpace(def.Input.Target), "changed")
 	run.TargetNodeID, err = requireNodeAliasID(run.TargetAlias, condition.Aliases, node)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	idempotencyTargetID := run.TargetNodeID
@@ -77,36 +78,36 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		idempotencyAlias := firstNonEmptyString(def.Safety.Idempotency.Target, run.TargetAlias)
 		idempotencyTargetID, err = requireNodeAliasID(idempotencyAlias, condition.Aliases, node)
 		if err != nil {
-			_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+			_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 			return run, err
 		}
 		run.IdempotencyTargetNodeID = idempotencyTargetID
 	}
 	if err := preflightActionTargets(def, condition.Aliases, node); err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	inputContext, err := m.evaluateInputContext(ctx, tx, def, condition.Aliases)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		run.Context = inputContext.Summaries
 		return run, err
 	}
 	run.Context = inputContext.Summaries
 	rendered, err := render.Render(def.Input, render.Context{Changed: node, Old: inv.OldNode, Aliases: condition.Aliases, Collections: inputContext.Collections})
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	run.RenderedInputHash = rendered.Hash
 	if def.Safety.Idempotency.SkipIfOutputUnchanged {
 		duplicate, err := m.hasSuccessfulInputHash(ctx, inv, rendered.Hash, idempotencyElementID(def, run, inv, idempotencyTargetID))
 		if err != nil {
-			_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+			_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 			return run, err
 		}
 		if duplicate {
-			_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+			_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 			run.Status = "skipped"
 			run.Error = skipReasonDuplicateInput
 			run.CompletedAt = m.now()
@@ -115,22 +116,22 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	}
 	output, err := m.generateWithInference(ctx, def, inv, rendered.Text, &run)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	parsed, err := autooutput.Parse(def.Output.Mode, def.Output.Schema, output)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	run.ActionFingerprint = actionFingerprint(def, parsed)
 	summary, err := (actions.Engine{Graphs: m.graphs}).Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, Changed: node, Aliases: condition.Aliases, Result: parsed})
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	if !summary.Changed {
-		_, _ = m.sessions.RollbackTransaction(ctx, automationActor, tx.ID)
+		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		run.Status = "skipped"
 		run.CompletedAt = m.now()
 		return run, nil
@@ -139,7 +140,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	if err != nil {
 		return run, err
 	}
-	commit, err := m.sessions.CommitTransactionAtRevision(ctx, automationActor, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
+	commit, err := m.sessions.CommitTransactionAtRevision(ctx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
 	if err != nil {
 		return run, err
 	}
@@ -220,11 +221,22 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 		operation = domaininference.OperationChat
 	}
 	actor := firstNonEmptyString(inv.ActorPrincipalID, automationActor)
-	onBehalf := firstNonEmptyString(inv.OnBehalfOfPrincipalID, inv.ActorPrincipalID, automationActor)
+	onBehalf := firstNonEmptyString(inv.OnBehalfOfPrincipalID, inv.OwnerPrincipalID, inv.ActorPrincipalID, automationActor)
 	run.ActorPrincipalID = actor
 	run.OnBehalfOfPrincipalID = onBehalf
-	run.AutomationOwnerPrincipalID = firstNonEmptyString(inv.AutomationOwnerPrincipalID, def.OwnerPrincipalID)
-	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: map[string]any{"automation_id": def.ID, "automation_version": def.Version, "automation_run_id": run.ID, "invocation_id": inv.ID, "automation_owner_principal_id": run.AutomationOwnerPrincipalID, "target_alias": run.TargetAlias, "target_node_id": run.TargetNodeID}}, Prompt: def.Prompt, Input: rendered, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: map[string]any{"invocation_id": inv.ID, "automation_version": def.Version, "automation_owner_principal_id": run.AutomationOwnerPrincipalID, "target_alias": run.TargetAlias, "target_node_id": run.TargetNodeID}})
+	run.OwnerPrincipalID = firstNonEmptyString(inv.OwnerPrincipalID, inv.AutomationOwnerPrincipalID, def.OwnerPrincipalID)
+	run.AutomationOwnerPrincipalID = firstNonEmptyString(inv.AutomationOwnerPrincipalID, run.OwnerPrincipalID)
+	run.EventOriginPrincipalID = inv.EventOriginPrincipalID
+	metadata := map[string]any{"automation_id": def.ID, "automation_version": def.Version, "automation_run_id": run.ID, "invocation_id": inv.ID, "automation_owner_principal_id": run.AutomationOwnerPrincipalID, "owner_principal_id": run.OwnerPrincipalID, "event_origin_principal_id": run.EventOriginPrincipalID, "target_alias": run.TargetAlias, "target_node_id": run.TargetNodeID}
+	if run.BindingID != "" {
+		metadata["binding_id"] = run.BindingID
+		metadata["binding_version"] = run.BindingVersion
+	}
+	if run.ProcedureID != "" {
+		metadata["procedure_id"] = run.ProcedureID
+		metadata["procedure_version"] = run.ProcedureVersion
+	}
+	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: metadata}, Prompt: def.Prompt, Input: rendered, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: metadata})
 	populateRunFromInference(run, ref, resp)
 	if err != nil {
 		if errors.Is(err, inferenceservice.ErrDenied) && strings.TrimSpace(resp.Decision.Reason) != "" {

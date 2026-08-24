@@ -290,7 +290,7 @@ func (r Runner) resolveEndpointModelCapability(ctx context.Context, index domain
 	}
 	var model *domainsemantic.InferenceModel
 	for i := range models {
-		if models[i].ID == index.ModelID && models[i].Operation == domainsemantic.OperationEmbeddings {
+		if models[i].ID == index.ModelID && models[i].Kind == domainsemantic.ModelKindEmbedding {
 			v := models[i]
 			model = &v
 		}

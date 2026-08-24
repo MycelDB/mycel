@@ -1,0 +1,45 @@
+{
+  "id": "knot-pkm.page-summary",
+  "name": "Summarize PKM page",
+  "version": 1,
+  "status": "enabled",
+  "input": {
+    "target": "page",
+    "mode": "gql_template",
+    "context": {
+      "children": {
+        "gql": "MATCH (page)-[r:contains]->(entry:pkm.page_entry) RETURN entry, r FETCH FIRST 200 ROWS ONLY",
+        "limit": 200
+      }
+    },
+    "template": "{{page.properties.title}}\n{{#each children}}{{entry.payload.text}}\n{{/each}}"
+  },
+  "inference": {
+    "operation": "summarize",
+    "parameters": {
+      "responseFormat": "json",
+      "maxInputTokens": 12000
+    }
+  },
+  "prompt": "Create a concise summary and return JSON.",
+  "output": {
+    "mode": "json",
+    "schema": {
+      "type": "object",
+      "required": ["summary"],
+      "properties": {
+        "summary": {"type": "object"}
+      }
+    },
+    "actions": [
+      {
+        "update_node": {
+          "target": "page",
+          "set": {
+            "properties.summary": "$result.summary"
+          }
+        }
+      }
+    ]
+  }
+}

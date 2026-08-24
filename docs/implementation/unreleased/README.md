@@ -24,7 +24,9 @@ assigned to a tagged release bucket.
 
 - [Standalone inference for graph automations implementation plan](standalone-inference-for-graph-automations-implementation-plan.md) — breaking phased plan for a standalone inference subsystem shared by semantic embeddings/search and graph automations.
 - [Graph context automations implementation plan](graph-context-automations-implementation-plan.md) — phased plan for aggregate/context automations that select a target alias, collect related graph context, render multi-row input, and update the selected graph element.
+- [Graph procedures and automation bindings implementation plan](graph-procedures-and-automation-bindings-implementation-plan.md) — phased plan to split reusable graph procedures from trigger/scope/runtime-principal automation bindings while preserving legacy automation definitions.
 - [Semantic maintenance loaded state implementation plan](semantic-maintenance-loaded-state-implementation-plan.md) — per-space loaded maintenance managers and in-memory indexes for dirty events, work items, and checkpoints.
+- [Intelligence Access model kind implementation plan](intelligence-access-model-kind-implementation-plan.md) — breaking cleanup that replaces model-level workload operations with model kind/category while keeping endpoint capabilities authoritative for workload support.
 
 ## Query and schema indexes
 

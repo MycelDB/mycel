@@ -320,7 +320,7 @@ func newAutomationInferenceRuntime(t *testing.T, ctx context.Context, deny bool)
 	if _, err := module.GlobalManager().UpsertEndpoint(ctx, domaininference.Endpoint{ID: domaininference.EndpointID(ids.endpointID), Key: "fake", ConnectorType: domaininference.ConnectorFake, NetworkClass: domaininference.NetworkClassLocal, PrivacyClass: domaininference.PrivacyClassLocalOnly, Operations: []domaininference.Operation{domaininference.OperationChat}, Enabled: true}); err != nil {
 		t.Fatalf("upsert endpoint: %v", err)
 	}
-	if _, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{ID: domaininference.ModelID(ids.modelID), Key: "fake-chat", Operation: domaininference.OperationChat, ProviderModelName: "fake-chat", Enabled: true}); err != nil {
+	if _, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{ID: domaininference.ModelID(ids.modelID), Key: "fake-chat", Kind: domaininference.ModelKindGenerative, ProviderModelName: "fake-chat", Enabled: true}); err != nil {
 		t.Fatalf("upsert model: %v", err)
 	}
 	if _, err := module.GlobalManager().UpsertCapability(ctx, domaininference.Capability{ID: domaininference.CapabilityID(ids.capabilityID), EndpointID: domaininference.EndpointID(ids.endpointID), ModelID: domaininference.ModelID(ids.modelID), Operation: domaininference.OperationChat, Enabled: true}); err != nil {
@@ -339,7 +339,7 @@ func newAutomationInferenceRuntime(t *testing.T, ctx context.Context, deny bool)
 	if _, err := spaceMgr.UpsertProfile(ctx, domaininference.Profile{ID: domaininference.ProfileID(ids.profileID), SpaceID: ids.spaceID, Key: "summarize", Operation: domaininference.OperationChat, DomainIDs: []string{ids.domainID.String()}, CapabilityRefs: []string{ids.capabilityID.String()}, Enabled: true}); err != nil {
 		t.Fatalf("upsert profile: %v", err)
 	}
-	if _, err := spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(ids.grantID), SpaceID: ids.spaceID, CredentialID: domaininference.CredentialID(ids.credentialID), Scope: domaininference.Scope{SpaceID: ids.spaceID, DomainID: ids.domainID.String()}, Operations: []domaininference.Operation{domaininference.OperationChat}, ProfileRefs: []string{ids.profileID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeAutomation}, AllowOnBehalfOfPrincipals: []string{"principal-a"}, State: domaininference.GrantStateActive}); err != nil {
+	if _, err := spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(ids.grantID), SpaceID: ids.spaceID, CredentialID: domaininference.CredentialID(ids.credentialID), Scope: domaininference.Scope{SpaceID: ids.spaceID, DomainID: ids.domainID.String()}, Operations: []domaininference.Operation{domaininference.OperationChat}, ProfileRefs: []string{ids.profileID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeAutomation}, GranteePrincipals: []string{automationActor}, AllowOnBehalfOfPrincipals: []string{"principal-a"}, State: domaininference.GrantStateActive}); err != nil {
 		t.Fatalf("upsert grant: %v", err)
 	}
 	action := domaininference.PolicyActionAllow

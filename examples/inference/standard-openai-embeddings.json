@@ -21,12 +21,13 @@
   "models": [
     {
       "key": "openai/text-embedding-3-small",
-      "operation": "embeddings",
+      "kind": "embedding",
       "model_name": "text-embedding-3-small",
       "dimensions": 1536,
       "vector_space_key": "openai/text-embedding-3-small",
       "connector_types": ["openai-compatible"],
-      "modality": "text",
+      "input_modalities": ["text"],
+      "output_modalities": ["embedding"],
       "metadata": {
         "provider": "openai",
         "display_name": "OpenAI text-embedding-3-small"
@@ -34,12 +35,13 @@
     },
     {
       "key": "openai/text-embedding-3-large",
-      "operation": "embeddings",
+      "kind": "embedding",
       "model_name": "text-embedding-3-large",
       "dimensions": 3072,
       "vector_space_key": "openai/text-embedding-3-large",
       "connector_types": ["openai-compatible"],
-      "modality": "text",
+      "input_modalities": ["text"],
+      "output_modalities": ["embedding"],
       "metadata": {
         "provider": "openai",
         "display_name": "OpenAI text-embedding-3-large"

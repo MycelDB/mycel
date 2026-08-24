@@ -146,7 +146,7 @@ func newSearchEnv(t *testing.T) *searchEnv {
 	}
 	now := time.Now().UTC()
 	endpoint := domainsemantic.ModelEndpoint{ID: uuid.New(), Key: "endpoint", Name: "Endpoint", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "http://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true, CreatedAt: now, UpdatedAt: now}
-	model := domainsemantic.InferenceModel{ID: uuid.New(), Key: "model", Operation: domainsemantic.OperationEmbeddings, ModelName: "model", Dimensions: 3, VectorSpaceKey: "test/model", CreatedAt: now, UpdatedAt: now}
+	model := domainsemantic.InferenceModel{ID: uuid.New(), Key: "model", Kind: domainsemantic.ModelKindEmbedding, ModelName: "model", Dimensions: 3, VectorSpaceKey: "test/model", CreatedAt: now, UpdatedAt: now}
 	cap := domainsemantic.ModelEndpointCapability{ID: uuid.New(), ModelEndpointID: endpoint.ID, ModelID: model.ID, Operation: domainsemantic.OperationEmbeddings, Enabled: true, CreatedAt: now, UpdatedAt: now}
 	vectorStore := domainsemantic.VectorStoreBackend{ID: uuid.New(), Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}
 	credential := domainsemantic.InferenceCredential{ID: uuid.New(), Key: "cred", Name: "Credential", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: userID.String(), AuthType: domainsemantic.AuthModeNone, Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}

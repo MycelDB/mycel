@@ -33,11 +33,20 @@ const (
 type Operation string
 
 const (
-	OperationEmbeddings Operation = "embeddings"
-	OperationChat       Operation = "chat"
-	OperationRerank     Operation = "rerank"
-	OperationSummarize  Operation = "summarize"
-	OperationClassify   Operation = "classify"
+	OperationEmbeddings    Operation = "embeddings"
+	OperationChat          Operation = "chat"
+	OperationRerank        Operation = "rerank"
+	OperationSummarize     Operation = "summarize"
+	OperationClassify      Operation = "classify"
+	OperationImageAnalysis Operation = "image_analysis"
+)
+
+type ModelKind string
+
+const (
+	ModelKindGenerative ModelKind = "generative"
+	ModelKindEmbedding  ModelKind = "embedding"
+	ModelKindReranker   ModelKind = "reranker"
 )
 
 type UsageMode string
@@ -161,7 +170,7 @@ type Model struct {
 	ID                ModelID         `json:"id"`
 	Key               string          `json:"key"`
 	DisplayName       string          `json:"display_name,omitempty"`
-	Operation         Operation       `json:"operation"`
+	Kind              ModelKind       `json:"kind"`
 	ProviderModelName string          `json:"provider_model_name"`
 	ConnectorTypes    []ConnectorType `json:"connector_types,omitempty"`
 	InputModalities   []string        `json:"input_modalities,omitempty"`

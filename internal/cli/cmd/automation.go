@@ -14,11 +14,13 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func NewAutomationCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "automation", Aliases: []string{"automations"}, Short: "Manage graph automations"}
-	cmd.AddCommand(newAutomationValidateCommand(), newAutomationCreateCommand(a), newAutomationUpdateCommand(a), newAutomationPutCommand(a), newAutomationListCommand(a), newAutomationGetCommand(a), newAutomationEnableCommand(a), newAutomationDisableCommand(a), newAutomationDeleteCommand(a), newAutomationRunsCommand(a), newAutomationRunGetCommand(a), newAutomationInvocationCommand(a))
+	cmd.AddCommand(newAutomationValidateCommand(), newAutomationCreateCommand(a), newAutomationUpdateCommand(a), newAutomationPutCommand(a), newAutomationListCommand(a), newAutomationGetCommand(a), newAutomationEnableCommand(a), newAutomationDisableCommand(a), newAutomationDeleteCommand(a), newAutomationMigrateCombinedCommand(a), newAutomationRunsCommand(a), newAutomationRunGetCommand(a), newAutomationInvocationCommand(a))
 	return cmd
 }
 
@@ -194,6 +196,107 @@ func newAutomationDeleteCommand(a *app.App) *cobra.Command {
 		_, err := client.DeleteAutomation(ctx, &clientv1.DeleteAutomationRequest{DomainId: domainID, AutomationId: id})
 		return "deleted", err
 	})
+}
+
+func newAutomationMigrateCombinedCommand(a *app.App) *cobra.Command {
+	var flags automationDomainFlags
+	var dryRun bool
+	var statusFilter string
+	cmd := &cobra.Command{Use: "migrate-combined", Short: "Migrate legacy combined automations to procedures and bindings", RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		domainID, err := resolveAutomationDomainID(cmd, a, conn, authCtx, flags)
+		if err != nil {
+			return err
+		}
+		client := clientv1.NewAutomationServiceClient(conn)
+		list, err := client.ListAutomations(authCtx, &clientv1.ListAutomationsRequest{DomainId: domainID, Status: statusFilter})
+		if err != nil {
+			return err
+		}
+		if len(list.GetAutomations()) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "no legacy combined automations found")
+			return nil
+		}
+		for _, summary := range list.GetAutomations() {
+			got, err := client.GetAutomation(authCtx, &clientv1.GetAutomationRequest{DomainId: domainID, AutomationId: summary.GetId()})
+			if err != nil {
+				return err
+			}
+			var def automationmodel.Definition
+			if err := json.Unmarshal([]byte(got.GetDefinitionJson()), &def); err != nil {
+				return fmt.Errorf("decode automation %s: %w", summary.GetId(), err)
+			}
+			procedure, binding := automationmodel.ExpandDefinition(def)
+			procedureJSON, err := json.MarshalIndent(procedure, "", "  ")
+			if err != nil {
+				return err
+			}
+			bindingJSON, err := json.MarshalIndent(binding, "", "  ")
+			if err != nil {
+				return err
+			}
+			warning := legacyMigrationWarning(binding.Runtime.OwnerPrincipalID)
+			line := fmt.Sprintf("%s -> procedure=%s binding=%s runtime_owner=%s on_behalf=%s", def.ID, procedure.ID, binding.ID, binding.Runtime.OwnerPrincipalID, binding.Runtime.OnBehalfOfPrincipalID)
+			if warning != "" {
+				line += " warning=" + warning
+			}
+			if dryRun {
+				fmt.Fprintln(cmd.OutOrStdout(), "dry-run", line)
+				continue
+			}
+			if err := upsertGraphProcedureForMigration(authCtx, client, domainID, procedure.ID, string(procedureJSON)); err != nil {
+				return err
+			}
+			if err := upsertGraphBindingForMigration(authCtx, client, domainID, binding.ID, string(bindingJSON)); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "migrated", line)
+		}
+		return nil
+	}}
+	bindAutomationDomainFlags(cmd, &flags)
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show migration plan without writing procedures or bindings")
+	cmd.Flags().StringVar(&statusFilter, "status", "", "filter legacy automations by status")
+	return cmd
+}
+
+func upsertGraphProcedureForMigration(ctx context.Context, client clientv1.AutomationServiceClient, domainID, procedureID, procedureJSON string) error {
+	if _, err := client.GetGraphProcedure(ctx, &clientv1.GetGraphProcedureRequest{DomainId: domainID, ProcedureId: procedureID}); err != nil {
+		if status.Code(err) != codes.NotFound {
+			return err
+		}
+		_, err = client.CreateGraphProcedure(ctx, &clientv1.CreateGraphProcedureRequest{DomainId: domainID, ProcedureJson: procedureJSON})
+		return err
+	}
+	_, err := client.UpdateGraphProcedure(ctx, &clientv1.UpdateGraphProcedureRequest{DomainId: domainID, ProcedureId: procedureID, ProcedureJson: procedureJSON})
+	return err
+}
+
+func upsertGraphBindingForMigration(ctx context.Context, client clientv1.AutomationServiceClient, domainID, bindingID, bindingJSON string) error {
+	if _, err := client.GetGraphAutomationBinding(ctx, &clientv1.GetGraphAutomationBindingRequest{DomainId: domainID, BindingId: bindingID}); err != nil {
+		if status.Code(err) != codes.NotFound {
+			return err
+		}
+		_, err = client.CreateGraphAutomationBinding(ctx, &clientv1.CreateGraphAutomationBindingRequest{DomainId: domainID, BindingJson: bindingJSON})
+		return err
+	}
+	_, err := client.UpdateGraphAutomationBinding(ctx, &clientv1.UpdateGraphAutomationBindingRequest{DomainId: domainID, BindingId: bindingID, BindingJson: bindingJSON})
+	return err
+}
+
+func legacyMigrationWarning(ownerPrincipalID string) string {
+	owner := strings.ToLower(strings.TrimSpace(ownerPrincipalID))
+	if owner == "" {
+		return "missing-runtime-owner"
+	}
+	if strings.Contains(owner, "operator") || strings.Contains(owner, "admin") {
+		return "legacy-owner-may-be-operator-admin"
+	}
+	return ""
 }
 
 func automationIDCommand(a *app.App, use, short string, run func(clientv1.AutomationServiceClient, context.Context, string, string) (string, error)) *cobra.Command {

@@ -184,6 +184,10 @@ type Invocation struct {
 	SpaceID                    string         `json:"space_id,omitempty"`
 	AutomationID               string         `json:"automation_id"`
 	AutomationVersion          int            `json:"automation_version"`
+	BindingID                  string         `json:"binding_id,omitempty"`
+	BindingVersion             int            `json:"binding_version,omitempty"`
+	ProcedureID                string         `json:"procedure_id,omitempty"`
+	ProcedureVersion           int            `json:"procedure_version,omitempty"`
 	EventID                    string         `json:"event_id"`
 	ChangedElementID           string         `json:"changed_element_id"`
 	ChangedElementKind         string         `json:"changed_element_kind"`
@@ -191,7 +195,9 @@ type Invocation struct {
 	EventType                  string         `json:"event_type"`
 	ActorPrincipalID           string         `json:"actor_principal_id,omitempty"`
 	OnBehalfOfPrincipalID      string         `json:"on_behalf_of_principal_id,omitempty"`
+	OwnerPrincipalID           string         `json:"owner_principal_id,omitempty"`
 	AutomationOwnerPrincipalID string         `json:"automation_owner_principal_id,omitempty"`
+	EventOriginPrincipalID     string         `json:"event_origin_principal_id,omitempty"`
 	InputHash                  string         `json:"input_hash,omitempty"`
 	Status                     string         `json:"status"`
 	SkipReason                 string         `json:"skip_reason,omitempty"`
@@ -258,12 +264,18 @@ type Run struct {
 	ID                         string                       `json:"id"`
 	DomainID                   graph.DomainID               `json:"domain_id"`
 	InvocationID               string                       `json:"invocation_id"`
+	BindingID                  string                       `json:"binding_id,omitempty"`
+	BindingVersion             int                          `json:"binding_version,omitempty"`
+	ProcedureID                string                       `json:"procedure_id,omitempty"`
+	ProcedureVersion           int                          `json:"procedure_version,omitempty"`
 	AttemptNumber              int                          `json:"attempt_number"`
 	Status                     string                       `json:"status"`
 	RenderedInputHash          string                       `json:"rendered_input_hash,omitempty"`
 	ActorPrincipalID           string                       `json:"actor_principal_id,omitempty"`
 	OnBehalfOfPrincipalID      string                       `json:"on_behalf_of_principal_id,omitempty"`
+	OwnerPrincipalID           string                       `json:"owner_principal_id,omitempty"`
 	AutomationOwnerPrincipalID string                       `json:"automation_owner_principal_id,omitempty"`
+	EventOriginPrincipalID     string                       `json:"event_origin_principal_id,omitempty"`
 	InferenceProfile           string                       `json:"inference_profile,omitempty"`
 	InferenceProfileID         string                       `json:"inference_profile_id,omitempty"`
 	ModelEndpointID            string                       `json:"model_endpoint_id,omitempty"`

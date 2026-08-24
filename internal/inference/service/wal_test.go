@@ -131,7 +131,7 @@ func TestInferenceWALRecoveryReplaysMissingFiles(t *testing.T) {
 	if result := module.Init(ctx, host); !result.OK {
 		t.Fatalf("init: %#v", result)
 	}
-	if _, err := module.GlobalManager().UpsertModel(ctx, model.Model{Key: "gpt", Operation: model.OperationChat, ProviderModelName: "gpt", Enabled: true}); err != nil {
+	if _, err := module.GlobalManager().UpsertModel(ctx, model.Model{Key: "gpt", Kind: model.ModelKindGenerative, ProviderModelName: "gpt", Enabled: true}); err != nil {
 		t.Fatalf("upsert model: %v", err)
 	}
 	if _, err := mustInferenceSpace(t, module, "space-1").UpsertPolicy(ctx, model.Policy{SpaceID: "space-1", Action: model.PolicyActionAllow, State: model.PolicyStateActive}); err != nil {

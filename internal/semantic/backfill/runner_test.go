@@ -67,7 +67,7 @@ func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	}
 	newModelID := domainsemantic.InferenceModelID(uuid.New())
 	newCapID := domainsemantic.ModelEndpointCapabilityID(uuid.New())
-	if _, err := env.globalMgr.UpsertModel(ctx, domainsemantic.InferenceModel{ID: newModelID, Key: "test/embedding-v2", Operation: domainsemantic.OperationEmbeddings, ModelName: "embedding-v2", Dimensions: 3, VectorSpaceKey: "test/embedding-v2", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+	if _, err := env.globalMgr.UpsertModel(ctx, domainsemantic.InferenceModel{ID: newModelID, Key: "test/embedding-v2", Kind: domainsemantic.ModelKindEmbedding, ModelName: "embedding-v2", Dimensions: 3, VectorSpaceKey: "test/embedding-v2", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("new model upsert failed: %v", err)
 	}
 	if _, err := env.globalMgr.UpsertModelEndpointCapability(ctx, domainsemantic.ModelEndpointCapability{ID: newCapID, ModelEndpointID: env.index.ModelEndpointID, ModelID: newModelID, Operation: domainsemantic.OperationEmbeddings, Enabled: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
@@ -170,7 +170,7 @@ func seedStandaloneInferenceForBackfill(t *testing.T, ctx context.Context, infer
 	if _, err := inference.GlobalManager().UpsertEndpoint(ctx, domaininference.Endpoint{ID: domaininference.EndpointID(env.index.ModelEndpointID), Key: "openai", ConnectorType: domaininference.ConnectorOpenAICompatible, NetworkClass: domaininference.NetworkClassPublicInternet, PrivacyClass: domaininference.PrivacyClassThirdParty, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, Enabled: true}); err != nil {
 		t.Fatalf("upsert inference endpoint: %v", err)
 	}
-	if _, err := inference.GlobalManager().UpsertModel(ctx, domaininference.Model{ID: domaininference.ModelID(env.index.ModelID), Key: "test/embedding", Operation: domaininference.OperationEmbeddings, ProviderModelName: "embedding", EmbeddingDims: 3, VectorSpace: "test/embedding", Enabled: true}); err != nil {
+	if _, err := inference.GlobalManager().UpsertModel(ctx, domaininference.Model{ID: domaininference.ModelID(env.index.ModelID), Key: "test/embedding", Kind: domaininference.ModelKindEmbedding, ProviderModelName: "embedding", EmbeddingDims: 3, VectorSpace: "test/embedding", Enabled: true}); err != nil {
 		t.Fatalf("upsert inference model: %v", err)
 	}
 	if _, err := inference.GlobalManager().UpsertCapability(ctx, domaininference.Capability{ID: domaininference.CapabilityID(env.index.ModelEndpointCapabilityID), EndpointID: domaininference.EndpointID(env.index.ModelEndpointID), ModelID: domaininference.ModelID(env.index.ModelID), Operation: domaininference.OperationEmbeddings, Enabled: true}); err != nil {
@@ -249,7 +249,7 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	if _, err := globalMgr.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{ID: endpointID, Key: "openai", Name: "OpenAI", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "http://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("endpoint upsert failed: %v", err)
 	}
-	if _, err := globalMgr.UpsertModel(ctx, domainsemantic.InferenceModel{ID: modelID, Key: "test/embedding", Operation: domainsemantic.OperationEmbeddings, ModelName: "embedding", Dimensions: 3, VectorSpaceKey: "test/embedding", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := globalMgr.UpsertModel(ctx, domainsemantic.InferenceModel{ID: modelID, Key: "test/embedding", Kind: domainsemantic.ModelKindEmbedding, ModelName: "embedding", Dimensions: 3, VectorSpaceKey: "test/embedding", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("model upsert failed: %v", err)
 	}
 	if _, err := globalMgr.UpsertModelEndpointCapability(ctx, domainsemantic.ModelEndpointCapability{ID: capID, ModelEndpointID: endpointID, ModelID: modelID, Operation: domainsemantic.OperationEmbeddings, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {

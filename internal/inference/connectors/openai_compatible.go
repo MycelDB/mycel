@@ -147,7 +147,7 @@ func validateEmbeddingRequest(req EmbeddingRequest) error {
 	if req.Endpoint.ConnectorType != domaininference.ConnectorOpenAICompatible {
 		return ConnectorError{Code: "unsupported_connector", Err: fmt.Errorf("connector %q is not openai-compatible", req.Endpoint.ConnectorType)}
 	}
-	if req.Model.Operation != domaininference.OperationEmbeddings || req.Capability.Operation != domaininference.OperationEmbeddings {
+	if req.Model.Kind != domaininference.ModelKindEmbedding || req.Capability.Operation != domaininference.OperationEmbeddings {
 		return ConnectorError{Code: "unsupported_operation", Err: fmt.Errorf("model/capability does not support embeddings")}
 	}
 	if req.Capability.EndpointID != req.Endpoint.ID || req.Capability.ModelID != req.Model.ID || !req.Capability.Enabled {
@@ -172,8 +172,11 @@ func validateChatRequest(req ChatRequest) error {
 	if req.Endpoint.ConnectorType != domaininference.ConnectorOpenAICompatible {
 		return ConnectorError{Code: "unsupported_connector", Err: fmt.Errorf("connector %q is not openai-compatible", req.Endpoint.ConnectorType)}
 	}
-	if !isChatLike(req.Model.Operation) || !isChatLike(req.Capability.Operation) {
+	if req.Model.Kind != domaininference.ModelKindGenerative || !isChatLike(req.Capability.Operation) {
 		return ConnectorError{Code: "unsupported_operation", Err: fmt.Errorf("model/capability does not support chat generation")}
+	}
+	if req.Capability.Operation == domaininference.OperationImageAnalysis && (!connectorModalityListContains(req.Model.InputModalities, "image") || (!connectorModalityListContains(req.Model.OutputModalities, "text") && !connectorModalityListContains(req.Model.OutputModalities, "json"))) {
+		return ConnectorError{Code: "unsupported_operation", Err: fmt.Errorf("model/capability does not support image analysis modalities")}
 	}
 	if req.Capability.EndpointID != req.Endpoint.ID || req.Capability.ModelID != req.Model.ID || !req.Capability.Enabled {
 		return ConnectorError{Code: "capability_mismatch", Err: fmt.Errorf("enabled capability not found for endpoint/model")}
@@ -192,11 +195,20 @@ func validateChatRequest(req ChatRequest) error {
 
 func isChatLike(op domaininference.Operation) bool {
 	switch op {
-	case domaininference.OperationChat, domaininference.OperationSummarize, domaininference.OperationClassify:
+	case domaininference.OperationChat, domaininference.OperationSummarize, domaininference.OperationClassify, domaininference.OperationImageAnalysis:
 		return true
 	default:
 		return false
 	}
+}
+
+func connectorModalityListContains(values []string, value string) bool {
+	for _, item := range values {
+		if strings.EqualFold(strings.TrimSpace(item), value) {
+			return true
+		}
+	}
+	return false
 }
 
 func providerModelName(model domaininference.Model, capability domaininference.Capability) string {

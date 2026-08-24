@@ -42,7 +42,7 @@ func inferenceModelFromProto(in *adminv1.InferenceModel) (domainsemantic.Inferen
 	if err != nil {
 		return domainsemantic.InferenceModel{}, err
 	}
-	return domainsemantic.InferenceModel{ID: id, Key: in.GetKey(), Operation: domainsemantic.Operation(in.GetOperation()), ModelName: in.GetModelName(), ConnectorTypes: connectorTypesFromStrings(in.GetConnectorTypes()), Dimensions: int(in.GetDimensions()), Modality: in.GetModality(), VectorSpaceKey: in.GetVectorSpaceKey(), Metadata: structToMap(in.GetMetadata())}, nil
+	return domainsemantic.InferenceModel{ID: id, Key: in.GetKey(), Kind: semanticModelKindFromProto(in), ModelName: in.GetModelName(), ConnectorTypes: connectorTypesFromStrings(in.GetConnectorTypes()), Dimensions: int(in.GetDimensions()), InputModalities: append([]string(nil), in.GetInputModalities()...), OutputModalities: append([]string(nil), in.GetOutputModalities()...), VectorSpaceKey: in.GetVectorSpaceKey(), Metadata: structToMap(in.GetMetadata())}, nil
 }
 
 func vectorStoreFromProto(in *adminv1.VectorStore) (domainsemantic.VectorStoreBackend, error) {
@@ -85,7 +85,7 @@ func mapModelEndpoints(items []domainsemantic.ModelEndpoint) []*adminv1.ModelEnd
 }
 
 func mapInferenceModel(in domainsemantic.InferenceModel) *adminv1.InferenceModel {
-	return &adminv1.InferenceModel{ModelId: in.ID.String(), Key: in.Key, Operation: string(in.Operation), ModelName: in.ModelName, ConnectorTypes: stringsFromConnectorTypes(in.ConnectorTypes), Dimensions: int32(in.Dimensions), Modality: in.Modality, VectorSpaceKey: in.VectorSpaceKey, Metadata: protoStructAdmin(in.Metadata)}
+	return &adminv1.InferenceModel{ModelId: in.ID.String(), Key: in.Key, Kind: string(in.Kind), KindValue: semanticModelKindToProto(in.Kind), ModelName: in.ModelName, ConnectorTypes: stringsFromConnectorTypes(in.ConnectorTypes), Dimensions: int32(in.Dimensions), InputModalities: append([]string(nil), in.InputModalities...), OutputModalities: append([]string(nil), in.OutputModalities...), VectorSpaceKey: in.VectorSpaceKey, Metadata: protoStructAdmin(in.Metadata)}
 }
 
 func mapInferenceModels(items []domainsemantic.InferenceModel) []*adminv1.InferenceModel {
@@ -610,6 +610,8 @@ func inferenceOperationFromProto(value commonv1.InferenceOperation) domaininfere
 		return domaininference.OperationSummarize
 	case commonv1.InferenceOperation_INFERENCE_OPERATION_CLASSIFY:
 		return domaininference.OperationClassify
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_IMAGE_ANALYSIS:
+		return domaininference.OperationImageAnalysis
 	default:
 		return ""
 	}
@@ -627,8 +629,52 @@ func inferenceOperationToProto(value domaininference.Operation) commonv1.Inferen
 		return commonv1.InferenceOperation_INFERENCE_OPERATION_SUMMARIZE
 	case domaininference.OperationClassify:
 		return commonv1.InferenceOperation_INFERENCE_OPERATION_CLASSIFY
+	case domaininference.OperationImageAnalysis:
+		return commonv1.InferenceOperation_INFERENCE_OPERATION_IMAGE_ANALYSIS
 	default:
 		return commonv1.InferenceOperation_INFERENCE_OPERATION_UNSPECIFIED
+	}
+}
+
+func semanticModelKindFromProto(in *adminv1.InferenceModel) domainsemantic.ModelKind {
+	if kind := strings.TrimSpace(in.GetKind()); kind != "" {
+		return domainsemantic.ModelKind(kind)
+	}
+	switch in.GetKindValue() {
+	case commonv1.InferenceModelKind_INFERENCE_MODEL_KIND_GENERATIVE:
+		return domainsemantic.ModelKindGenerative
+	case commonv1.InferenceModelKind_INFERENCE_MODEL_KIND_EMBEDDING:
+		return domainsemantic.ModelKindEmbedding
+	case commonv1.InferenceModelKind_INFERENCE_MODEL_KIND_RERANKER:
+		return domainsemantic.ModelKindReranker
+	default:
+		return ""
+	}
+}
+
+func semanticModelKindToProto(value domainsemantic.ModelKind) commonv1.InferenceModelKind {
+	switch value {
+	case domainsemantic.ModelKindGenerative:
+		return commonv1.InferenceModelKind_INFERENCE_MODEL_KIND_GENERATIVE
+	case domainsemantic.ModelKindEmbedding:
+		return commonv1.InferenceModelKind_INFERENCE_MODEL_KIND_EMBEDDING
+	case domainsemantic.ModelKindReranker:
+		return commonv1.InferenceModelKind_INFERENCE_MODEL_KIND_RERANKER
+	default:
+		return commonv1.InferenceModelKind_INFERENCE_MODEL_KIND_UNSPECIFIED
+	}
+}
+
+func inferenceModelKindFromSemantic(value domainsemantic.ModelKind) domaininference.ModelKind {
+	switch value {
+	case domainsemantic.ModelKindGenerative:
+		return domaininference.ModelKindGenerative
+	case domainsemantic.ModelKindEmbedding:
+		return domaininference.ModelKindEmbedding
+	case domainsemantic.ModelKindReranker:
+		return domaininference.ModelKindReranker
+	default:
+		return ""
 	}
 }
 
@@ -663,7 +709,7 @@ func semanticEndpointToInference(in domainsemantic.ModelEndpoint) domaininferenc
 }
 
 func semanticModelToInference(in domainsemantic.InferenceModel) domaininference.Model {
-	return domaininference.Model{ID: domaininference.ModelID(in.ID), Key: in.Key, Operation: domaininference.Operation(in.Operation), ProviderModelName: in.ModelName, ConnectorTypes: inferenceConnectorTypesFromSemantic(in.ConnectorTypes), EmbeddingDims: in.Dimensions, VectorSpace: in.VectorSpaceKey, Enabled: true, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt, Metadata: in.Metadata}
+	return domaininference.Model{ID: domaininference.ModelID(in.ID), Key: in.Key, Kind: inferenceModelKindFromSemantic(in.Kind), ProviderModelName: in.ModelName, ConnectorTypes: inferenceConnectorTypesFromSemantic(in.ConnectorTypes), InputModalities: append([]string(nil), in.InputModalities...), OutputModalities: append([]string(nil), in.OutputModalities...), EmbeddingDims: in.Dimensions, VectorSpace: in.VectorSpaceKey, Enabled: true, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt, Metadata: in.Metadata}
 }
 
 func semanticCapabilityToInference(in domainsemantic.ModelEndpointCapability) domaininference.Capability {

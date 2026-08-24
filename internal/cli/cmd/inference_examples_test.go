@@ -43,8 +43,8 @@ func TestInferenceExamplePackagesParse(t *testing.T) {
 		}
 		models := map[string]bool{}
 		for _, model := range doc.Models {
-			if strings.TrimSpace(model.Key) == "" || strings.TrimSpace(string(model.Operation)) == "" || strings.TrimSpace(model.ModelName) == "" {
-				t.Fatalf("%s: model key, operation, and model_name are required: %#v", path, model)
+			if strings.TrimSpace(model.Key) == "" || strings.TrimSpace(string(model.Kind)) == "" || strings.TrimSpace(model.ModelName) == "" {
+				t.Fatalf("%s: model key, kind, and model_name are required: %#v", path, model)
 			}
 			models[model.Key] = true
 		}

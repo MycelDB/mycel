@@ -95,13 +95,14 @@ func TestGlobalManagerUpsertsDefinitions(t *testing.T) {
 		t.Fatalf("unexpected endpoint: %+v", endpoint)
 	}
 	model, err := mgr.UpsertModel(ctx, domainsemantic.InferenceModel{
-		Key:            "OpenAI/Text-Embedding-3-Small",
-		Operation:      domainsemantic.OperationEmbeddings,
-		ModelName:      "text-embedding-3-small",
-		ConnectorTypes: []domainsemantic.ConnectorType{domainsemantic.ConnectorOpenAICompatible},
-		Dimensions:     1536,
-		Modality:       "text",
-		VectorSpaceKey: "openai/text-embedding-3-small",
+		Key:              "OpenAI/Text-Embedding-3-Small",
+		Kind:             domainsemantic.ModelKindEmbedding,
+		ModelName:        "text-embedding-3-small",
+		ConnectorTypes:   []domainsemantic.ConnectorType{domainsemantic.ConnectorOpenAICompatible},
+		Dimensions:       1536,
+		InputModalities:  []string{"text"},
+		OutputModalities: []string{"embedding"},
+		VectorSpaceKey:   "openai/text-embedding-3-small",
 	})
 	if err != nil {
 		t.Fatalf("upsert model failed: %v", err)
@@ -171,7 +172,7 @@ func TestGlobalManagerRejectsEmbeddingModelWithoutVectorSpace(t *testing.T) {
 	if err := mgr.Init(ctx, t.TempDir()); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	_, err := mgr.UpsertModel(ctx, domainsemantic.InferenceModel{Key: "bad", Operation: domainsemantic.OperationEmbeddings, Dimensions: 1536})
+	_, err := mgr.UpsertModel(ctx, domainsemantic.InferenceModel{Key: "bad", Kind: domainsemantic.ModelKindEmbedding, Dimensions: 1536})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected invalid input, got %v", err)
 	}

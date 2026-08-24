@@ -84,11 +84,18 @@ func endpoint(baseURL string, op domaininference.Operation) domaininference.Endp
 }
 
 func model(op domaininference.Operation) domaininference.Model {
-	return domaininference.Model{ID: fixedModelID, Key: "model", Operation: op, ProviderModelName: "provider-model", Enabled: true}
+	return domaininference.Model{ID: fixedModelID, Key: "model", Kind: modelKindForOperation(op), ProviderModelName: "provider-model", Enabled: true}
 }
 
 func capability(op domaininference.Operation) domaininference.Capability {
 	return domaininference.Capability{ID: uuid.New(), EndpointID: fixedEndpointID, ModelID: fixedModelID, Operation: op, Enabled: true}
+}
+
+func modelKindForOperation(op domaininference.Operation) domaininference.ModelKind {
+	if op == domaininference.OperationEmbeddings {
+		return domaininference.ModelKindEmbedding
+	}
+	return domaininference.ModelKindGenerative
 }
 
 func credential(auth domaininference.CredentialAuthType) domaininference.Credential {

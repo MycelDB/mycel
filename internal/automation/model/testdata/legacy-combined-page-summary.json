@@ -1,0 +1,35 @@
+{
+  "id": "summarize_page",
+  "name": "Summarize page",
+  "version": 1,
+  "status": "enabled",
+  "on": {
+    "events": ["node.created", "node.updated"],
+    "labels": ["Page"]
+  },
+  "condition": {
+    "gql": "MATCH (changed:Page) RETURN changed"
+  },
+  "input": {
+    "target": "changed",
+    "fields": ["properties.title", "payload.text"]
+  },
+  "inference": {
+    "operation": "chat",
+    "profile": "summarize-page"
+  },
+  "prompt": "Summarize this page in concise markdown.",
+  "output": {
+    "mode": "text",
+    "actions": [
+      {
+        "update_node": {
+          "target": "changed",
+          "set": {
+            "payload.summaryMarkdown": "$result.text"
+          }
+        }
+      }
+    ]
+  }
+}

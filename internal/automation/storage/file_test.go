@@ -10,6 +10,41 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 )
 
+func TestFileStoreProcedureAndBindingRoundTrip(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	domainID := graph.DomainID(uuid.New())
+	ctx := context.Background()
+
+	procedure := automation.Procedure{ID: "proc", DomainID: domainID, Version: 1, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"payload.text"}}, Prompt: "Summarize", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.summary": "$result.text"}}}}}}
+	binding := automation.Binding{ID: "binding", DomainID: domainID, ProcedureID: procedure.ID, Version: 1, Status: automation.StatusEnabled, Scope: automation.BindingScope{DomainID: domainID}, Trigger: automation.BindingTrigger{Events: []string{automation.EventNodeUpdated}}, Runtime: automation.RuntimeContext{ActorPrincipalID: "automation", OwnerPrincipalID: "user", OnBehalfOfPrincipalID: "user"}}
+	if err := store.PutProcedure(ctx, procedure); err != nil {
+		t.Fatalf("put procedure: %v", err)
+	}
+	if err := store.PutBinding(ctx, binding); err != nil {
+		t.Fatalf("put binding: %v", err)
+	}
+	gotProcedure, err := store.GetProcedure(ctx, domainID, procedure.ID)
+	if err != nil || gotProcedure.ID != procedure.ID {
+		t.Fatalf("get procedure = %+v err=%v", gotProcedure, err)
+	}
+	gotBinding, err := store.GetBinding(ctx, domainID, binding.ID)
+	if err != nil || gotBinding.ID != binding.ID || gotBinding.Runtime.OnBehalfOfPrincipalID != "user" {
+		t.Fatalf("get binding = %+v err=%v", gotBinding, err)
+	}
+	procedures, err := store.ListProcedures(ctx, domainID)
+	if err != nil || len(procedures) != 1 || procedures[0].ID != procedure.ID {
+		t.Fatalf("list procedures = %+v err=%v", procedures, err)
+	}
+	bindings, err := store.ListBindings(ctx, domainID)
+	if err != nil || len(bindings) != 1 || bindings[0].ID != binding.ID {
+		t.Fatalf("list bindings = %+v err=%v", bindings, err)
+	}
+	bindingDomains, err := store.ListBindingDomains(ctx)
+	if err != nil || len(bindingDomains) != 1 || bindingDomains[0] != domainID {
+		t.Fatalf("list binding domains = %+v err=%v", bindingDomains, err)
+	}
+}
+
 func TestFileStoreGetRunAcceptsInvocationID(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	domainID := graph.DomainID(uuid.New())

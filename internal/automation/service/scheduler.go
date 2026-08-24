@@ -15,12 +15,13 @@ func (m *AutomationManager) ProcessScheduled(ctx context.Context, domainID graph
 	if err := m.requireWriteAllowed(); err != nil {
 		return 0, err
 	}
-	defs, err := m.ListAutomations(ctx, domainID, automation.StatusEnabled)
+	items, err := m.listRunnableAutomations(ctx, domainID, automation.StatusEnabled)
 	if err != nil {
 		return 0, err
 	}
 	count := 0
-	for _, def := range defs {
+	for _, item := range items {
+		def := item.Definition
 		if limit > 0 && count >= limit {
 			break
 		}
@@ -31,7 +32,7 @@ func (m *AutomationManager) ProcessScheduled(ctx context.Context, domainID graph
 		if err != nil {
 			continue
 		}
-		checkpoint, err := m.store.GetScheduleCheckpoint(ctx, domainID, def.ID)
+		checkpoint, err := m.store.GetScheduleCheckpoint(ctx, domainID, item.Binding.ID)
 		if err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return count, mapStoreError(err)
 		}
@@ -40,13 +41,12 @@ func (m *AutomationManager) ProcessScheduled(ctx context.Context, domainID graph
 				continue
 			}
 		}
-		owner := firstNonEmptyString(def.OwnerPrincipalID, automationActor)
-		inv := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, AutomationID: def.ID, AutomationVersion: def.Version, EventID: "schedule:" + def.ID + ":" + m.now().Format(time.RFC3339), ChangedElementKind: "schedule", EventType: "schedule", ActorPrincipalID: automationActor, OnBehalfOfPrincipalID: owner, AutomationOwnerPrincipalID: def.OwnerPrincipalID, Status: "pending", CreatedAt: m.now(), UpdatedAt: m.now()}
+		inv := invocationForRunnable(m.now, domainID, item, automation.Invocation{ID: uuid.NewString(), EventID: "schedule:" + item.Binding.ID + ":" + m.now().Format(time.RFC3339), ChangedElementKind: "schedule", EventType: "schedule"}, "")
 		if err := m.store.PutInvocation(ctx, inv); err != nil {
 			return count, mapStoreError(err)
 		}
 		nowText := m.now().Format(time.RFC3339)
-		_ = m.store.PutScheduleCheckpoint(ctx, storage.ScheduleCheckpoint{DomainID: domainID, AutomationID: def.ID, LastRunAt: nowText, UpdatedAt: nowText})
+		_ = m.store.PutScheduleCheckpoint(ctx, storage.ScheduleCheckpoint{DomainID: domainID, AutomationID: item.Binding.ID, LastRunAt: nowText, UpdatedAt: nowText})
 		count++
 	}
 	return count, nil
