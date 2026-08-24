@@ -132,7 +132,7 @@ func (b Binding) Normalize() Binding {
 		}
 	}
 	for i := range b.Trigger.Events {
-		b.Trigger.Events[i] = strings.ToLower(strings.TrimSpace(b.Trigger.Events[i]))
+		b.Trigger.Events[i] = NormalizeAutomationEventType(b.Trigger.Events[i])
 	}
 	for i := range b.Trigger.Labels {
 		b.Trigger.Labels[i] = strings.TrimSpace(b.Trigger.Labels[i])

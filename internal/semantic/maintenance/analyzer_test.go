@@ -56,7 +56,7 @@ func TestAnalyzerCoalescesGraphDirtyEvents(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("expected one dirty item, items=%+v err=%v", items, err)
 	}
-	if items[0].SemanticIndexID != idx.ID || items[0].TargetNodeID != nodeID || items[0].Reason != "node_created" || items[0].Status != domainsemantic.SemanticDirtyWorkStatusPending {
+	if items[0].SemanticIndexID != idx.ID || items[0].TargetNodeID != nodeID || items[0].Reason != "node.created" || items[0].Status != domainsemantic.SemanticDirtyWorkStatusPending {
 		t.Fatalf("unexpected dirty item %+v", items[0])
 	}
 	states, err := mgr.ListIndexStates(ctx)
@@ -105,7 +105,7 @@ func TestAnalyzerResolvesSubtreeTargetsAndCooldown(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("expected one item, got %+v err=%v", items, err)
 	}
-	if items[0].SemanticIndexID != idx.ID || items[0].TargetNodeID != childID || items[0].Action != domainsemantic.SemanticDirtyWorkActionRefresh || items[0].Reason != "node_updated" {
+	if items[0].SemanticIndexID != idx.ID || items[0].TargetNodeID != childID || items[0].Action != domainsemantic.SemanticDirtyWorkActionRefresh || items[0].Reason != "node.updated" {
 		t.Fatalf("unexpected subtree item: %+v", items[0])
 	}
 	if items[0].EarliestRunAt == nil || !items[0].EarliestRunAt.Equal(now.Add(time.Minute)) {
@@ -249,7 +249,7 @@ func TestAnalyzerDeleteRefreshesContainingSubtreeRoot(t *testing.T) {
 		t.Fatalf("expected one item, got %+v", res)
 	}
 	items, _ := maintenanceMgr.ListDirtyWorkItems(ctx)
-	if items[0].TargetNodeID != rootID || items[0].Action != domainsemantic.SemanticDirtyWorkActionRefresh || items[0].Reason != "node_deleted" {
+	if items[0].TargetNodeID != rootID || items[0].Action != domainsemantic.SemanticDirtyWorkActionRefresh || items[0].Reason != "node.deleted" {
 		t.Fatalf("unexpected delete item: %+v", items[0])
 	}
 }
@@ -444,6 +444,35 @@ func TestAnalyzerSemanticRuleEnqueuesOneWorkItemPerBinding(t *testing.T) {
 	}
 }
 
+func TestAnalyzerSemanticRuleTreatsSelectorAndTriggerLabelsAsAnyOf(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	taskID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	rule := analyzerRule(spaceID, domainID, []string{"Note", "Task"}, []domainsemantic.SemanticEmbeddingBinding{analyzerBinding("search", true)})
+	rule.Trigger = domainsemantic.SemanticTriggerPolicy{Events: []string{"node.updated"}, Labels: []string{"Note", "Task"}}
+	rule, err := spaceMgr.UpsertSemanticRule(ctx, rule)
+	if err != nil {
+		t.Fatalf("rule upsert failed: %v", err)
+	}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{taskID: {ID: taskID, DomainID: domainID, Labels: []string{"Task"}}}}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{taskID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("append event failed: %v", err)
+	}
+	res, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}).AnalyzeOnce(ctx, AnalyzeInput{})
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	if res.EnqueuedItems != 1 {
+		t.Fatalf("expected one enqueued item for any matching label, got %+v", res)
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 1 || items[0].SemanticRuleID != rule.ID || items[0].TargetNodeID != taskID {
+		t.Fatalf("unexpected work items %+v err=%v", items, err)
+	}
+}
+
 func TestAnalyzerSemanticRuleFiltersLabelsAndBinding(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
@@ -485,7 +514,7 @@ func TestAnalyzerSemanticRuleTriggerAndCheckpointsAreBindingAware(t *testing.T) 
 	nodeID := graph.NodeID(uuid.New())
 	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
 	rule := analyzerRule(spaceID, domainID, []string{"Note"}, []domainsemantic.SemanticEmbeddingBinding{analyzerBinding("search", true), analyzerBinding("summary", true)})
-	rule.Trigger = domainsemantic.SemanticTriggerPolicy{Events: []string{"node_created"}}
+	rule.Trigger = domainsemantic.SemanticTriggerPolicy{Events: []string{"node.created"}}
 	rule, err := spaceMgr.UpsertSemanticRule(ctx, rule)
 	if err != nil {
 		t.Fatalf("rule upsert failed: %v", err)

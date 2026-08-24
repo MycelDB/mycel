@@ -281,13 +281,38 @@ func NormalizeSemanticTriggerPolicy(policy SemanticTriggerPolicy) SemanticTrigge
 	if len(policy.Events) == 0 {
 		policy.Events = []string{DefaultSemanticTriggerEventChanged}
 	}
+	events := make([]string, len(policy.Events))
 	for i, event := range policy.Events {
-		policy.Events[i] = strings.ToLower(strings.TrimSpace(event))
+		events[i] = normalizeSemanticTriggerEvent(event)
 	}
+	policy.Events = events
+	labels := make([]string, len(policy.Labels))
 	for i, label := range policy.Labels {
-		policy.Labels[i] = strings.TrimSpace(label)
+		labels[i] = strings.TrimSpace(label)
 	}
+	policy.Labels = labels
 	return policy
+}
+
+func normalizeSemanticTriggerEvent(event string) string {
+	switch strings.ToLower(strings.TrimSpace(event)) {
+	case "node_created", "node.created":
+		return "node.created"
+	case "node_updated", "node.updated":
+		return "node.updated"
+	case "node_deleted", "node.deleted":
+		return "node.deleted"
+	case "edge_changed", "edge.changed":
+		return "edge.changed"
+	case "edge_created", "edge.created":
+		return "edge.created"
+	case "edge_updated", "edge.updated":
+		return "edge.updated"
+	case "edge_deleted", "edge.deleted":
+		return "edge.deleted"
+	default:
+		return strings.ToLower(strings.TrimSpace(event))
+	}
 }
 
 func NormalizeSemanticEmbeddingBinding(binding SemanticEmbeddingBinding) SemanticEmbeddingBinding {

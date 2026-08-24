@@ -411,13 +411,13 @@ func (a Analyzer) eventMatchesRuleTrigger(ctx context.Context, rule domainsemant
 		switch strings.TrimSpace(eventName) {
 		case domainsemantic.DefaultSemanticTriggerEventChanged:
 			matchesEvent = true
-		case "node_created":
+		case "node.created":
 			matchesEvent = len(event.CreatedNodeIDs) > 0
-		case "node_updated":
+		case "node.updated":
 			matchesEvent = len(event.UpdatedNodeIDs) > 0
-		case "node_deleted":
+		case "node.deleted":
 			matchesEvent = len(event.DeletedNodeIDs) > 0
-		case "edge_changed", "edge_created", "edge_deleted":
+		case "edge.changed", "edge.created", "edge.updated", "edge.deleted":
 			matchesEvent = len(event.ChangedEdges) > 0
 		}
 		if matchesEvent {
@@ -437,7 +437,7 @@ func (a Analyzer) eventMatchesRuleTrigger(ctx context.Context, rule domainsemant
 			return true
 		}
 		node, err := a.GraphReader.GetNode(ctx, rule.DomainID, nodeID)
-		if err == nil && graph.HasLabels(node, trigger.Labels) {
+		if err == nil && nodeHasAnyLabel(node, trigger.Labels) {
 			return true
 		}
 	}
@@ -500,12 +500,12 @@ func (a Analyzer) targetForRuleNode(ctx context.Context, rule domainsemantic.Sem
 		return uuid.Nil, false
 	}
 	if rule.Source.Mode == domainsemantic.SemanticSourceSelf || rule.Source.Mode == "" {
-		if graph.HasLabels(node, rule.Selector.Labels) {
+		if nodeHasAnyLabel(node, rule.Selector.Labels) {
 			return node.ID, true
 		}
 		return uuid.Nil, false
 	}
-	if graph.HasLabels(node, rule.Selector.Labels) {
+	if nodeHasAnyLabel(node, rule.Selector.Labels) {
 		return node.ID, true
 	}
 	parentID := nodeID
@@ -522,7 +522,7 @@ func (a Analyzer) targetForRuleNode(ctx context.Context, rule domainsemantic.Sem
 		if err != nil || parentNode.DomainID != rule.DomainID {
 			return uuid.Nil, false
 		}
-		if graph.HasLabels(parentNode, rule.Selector.Labels) {
+		if nodeHasAnyLabel(parentNode, rule.Selector.Labels) {
 			return parentNode.ID, true
 		}
 		parentID = parentNode.ID
@@ -584,6 +584,22 @@ func (a Analyzer) deletedTarget(ctx context.Context, index domainsemantic.Semant
 		}
 	}
 	return nodeID, domainsemantic.SemanticDirtyWorkActionDelete, true
+}
+
+func nodeHasAnyLabel(node graph.Node, labels []string) bool {
+	if len(labels) == 0 {
+		return true
+	}
+	seen := map[string]struct{}{}
+	for _, label := range node.Labels {
+		seen[strings.TrimSpace(label)] = struct{}{}
+	}
+	for _, label := range labels {
+		if _, ok := seen[strings.TrimSpace(label)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func nodeMatchesPolicy(node graph.Node, policy domainsemantic.SemanticSourcePolicy) bool {
@@ -966,13 +982,13 @@ func candidateNodeIDs(event domainsemantic.GraphDirtyEvent) []graph.NodeID {
 
 func reasonForEvent(event domainsemantic.GraphDirtyEvent, nodeID graph.NodeID) string {
 	if containsNode(event.CreatedNodeIDs, nodeID) {
-		return "node_created"
+		return "node.created"
 	}
 	if containsNode(event.UpdatedNodeIDs, nodeID) {
-		return "node_updated"
+		return "node.updated"
 	}
 	if containsNode(event.DeletedNodeIDs, nodeID) {
-		return "node_deleted"
+		return "node.deleted"
 	}
-	return "node_moved"
+	return "node.moved"
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -628,6 +629,19 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	}
 	if err := loadJSON(m.path(semanticRulesFileName), &m.rules, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
 		return err
+	}
+	rulesChanged := false
+	for i, rule := range m.rules.Rules {
+		normalized := domainsemantic.NormalizeSemanticGenerationRule(rule)
+		if !reflect.DeepEqual(rule, normalized) {
+			rulesChanged = true
+		}
+		m.rules.Rules[i] = normalized
+	}
+	if rulesChanged {
+		if err := persistJSON(m.path(semanticRulesFileName), m.rules); err != nil {
+			return err
+		}
 	}
 	if err := loadJSON(m.path(semanticIndexesFileName), &m.indexes, semanticIndexesState{Indexes: []domainsemantic.SemanticIndex{}}); err != nil {
 		return err

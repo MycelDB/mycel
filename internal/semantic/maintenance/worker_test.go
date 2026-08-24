@@ -124,7 +124,7 @@ func TestWorkerDeleteUsesVectorBackend(t *testing.T) {
 	indexID := domainsemantic.SemanticIndexID(uuid.New())
 	nodeID := graph.NodeID(uuid.New())
 	spaceMgr, maintenanceMgr := newWorkerManagers(t, ctx, spaceID, domainID, indexID)
-	item, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionDelete, Reason: "node_deleted"})
+	item, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionDelete, Reason: "node.deleted"})
 	if err != nil {
 		t.Fatalf("upsert delete work: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestWorkerDeleteUsesVectorBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("process: %v", err)
 	}
-	if res.Completed != 1 || len(backend.deletes) != 1 || backend.deletes[0].NodeID != nodeID || backend.deletes[0].Reason != "node_deleted" {
+	if res.Completed != 1 || len(backend.deletes) != 1 || backend.deletes[0].NodeID != nodeID || backend.deletes[0].Reason != "node.deleted" {
 		t.Fatalf("unexpected delete result=%+v deletes=%+v", res, backend.deletes)
 	}
 	items, _ := maintenanceMgr.ListDirtyWorkItems(ctx)

@@ -3,6 +3,7 @@ package graphchange
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,20 +13,53 @@ import (
 
 // ChangeType identifies the kind of committed graph mutation.
 //
-// The V1 internal constants preserve the existing change-stream string values so
-// persisted daemon-local replay logs and public stream mappings remain
-// compatible while the canonical model is consolidated.
+// Dotted notation is canonical for graph event strings. Legacy underscore
+// aliases are accepted by NormalizeChangeType for storage/WAL/API compatibility.
 type ChangeType string
 
 const (
-	ChangeTypeNodeCreated      ChangeType = "node_created"
-	ChangeTypeNodeUpdated      ChangeType = "node_updated"
-	ChangeTypeNodeDeleted      ChangeType = "node_deleted"
-	ChangeTypeEdgeCreated      ChangeType = "edge_created"
-	ChangeTypeEdgeUpdated      ChangeType = "edge_updated"
-	ChangeTypeEdgeDeleted      ChangeType = "edge_deleted"
-	ChangeTypeRevisionAdvanced ChangeType = "revision_advanced"
+	ChangeTypeNodeCreated      ChangeType = "node.created"
+	ChangeTypeNodeUpdated      ChangeType = "node.updated"
+	ChangeTypeNodeDeleted      ChangeType = "node.deleted"
+	ChangeTypeEdgeCreated      ChangeType = "edge.created"
+	ChangeTypeEdgeUpdated      ChangeType = "edge.updated"
+	ChangeTypeEdgeDeleted      ChangeType = "edge.deleted"
+	ChangeTypeRevisionAdvanced ChangeType = "revision.advanced"
 )
+
+func NormalizeChangeType(value string) ChangeType {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "node_created", "node.created":
+		return ChangeTypeNodeCreated
+	case "node_updated", "node.updated":
+		return ChangeTypeNodeUpdated
+	case "node_deleted", "node.deleted":
+		return ChangeTypeNodeDeleted
+	case "edge_created", "edge.created":
+		return ChangeTypeEdgeCreated
+	case "edge_updated", "edge.updated":
+		return ChangeTypeEdgeUpdated
+	case "edge_deleted", "edge.deleted":
+		return ChangeTypeEdgeDeleted
+	case "revision_advanced", "revision.advanced":
+		return ChangeTypeRevisionAdvanced
+	default:
+		return ChangeType(strings.ToLower(strings.TrimSpace(value)))
+	}
+}
+
+func NormalizeEventTypeString(value string) string {
+	return string(NormalizeChangeType(value))
+}
+
+func IsGraphChangeType(value string) bool {
+	switch NormalizeChangeType(value) {
+	case ChangeTypeNodeCreated, ChangeTypeNodeUpdated, ChangeTypeNodeDeleted, ChangeTypeEdgeCreated, ChangeTypeEdgeUpdated, ChangeTypeEdgeDeleted, ChangeTypeRevisionAdvanced:
+		return true
+	default:
+		return false
+	}
+}
 
 // OriginMetadata describes advisory client/write origin information. Trusted
 // fields such as user, session, and transaction identifiers must be populated by
@@ -207,6 +241,7 @@ func (e *CommittedEvent) Normalize() {
 	}
 	for i := range e.Changes {
 		change := &e.Changes[i]
+		change.Type = NormalizeChangeType(string(change.Type))
 		for _, id := range change.AffectedNodeIDs {
 			if parsed, err := uuid.Parse(id); err == nil && parsed != uuid.Nil {
 				affectedNodes[graph.NodeID(parsed)] = true

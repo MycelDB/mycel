@@ -13,6 +13,18 @@ func TestValidateDefinitionAcceptsV1Definition(t *testing.T) {
 	}
 }
 
+func TestValidateDefinitionAcceptsLegacyUnderscoreEventAliases(t *testing.T) {
+	def := baseDefinition()
+	def.Trigger.Events = []string{"node_created", "node_updated"}
+	if err := ValidateDefinition(def); err != nil {
+		t.Fatalf("ValidateDefinition() error = %v", err)
+	}
+	got := def.Normalize().Trigger.Events
+	if len(got) != 2 || got[0] != EventNodeCreated || got[1] != EventNodeUpdated {
+		t.Fatalf("normalized events = %#v", got)
+	}
+}
+
 func TestValidateDefinitionAcceptsTemplateInput(t *testing.T) {
 	def := baseDefinition()
 	def.Input = Input{Target: "changed", Mode: InputModeTemplate, Template: "# {{changed.properties.title}}"}

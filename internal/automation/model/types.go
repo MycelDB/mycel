@@ -343,7 +343,7 @@ func (d Definition) Normalize() Definition {
 		d.Output.Mode = OutputModeText
 	}
 	for i := range d.Trigger.Events {
-		d.Trigger.Events[i] = strings.ToLower(strings.TrimSpace(d.Trigger.Events[i]))
+		d.Trigger.Events[i] = NormalizeAutomationEventType(d.Trigger.Events[i])
 	}
 	for i := range d.Trigger.Labels {
 		d.Trigger.Labels[i] = strings.TrimSpace(d.Trigger.Labels[i])
@@ -358,6 +358,17 @@ func (d Definition) Normalize() Definition {
 		d.Safety.IgnoreSelfWrites = true
 	}
 	return d
+}
+
+func NormalizeAutomationEventType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "node_created", EventNodeCreated:
+		return EventNodeCreated
+	case "node_updated", EventNodeUpdated:
+		return EventNodeUpdated
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
 }
 
 func firstNonEmpty(values ...string) string {

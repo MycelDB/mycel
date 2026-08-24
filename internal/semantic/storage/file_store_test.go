@@ -2,9 +2,11 @@ package semantic
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -821,6 +823,56 @@ func TestSpaceManagerSemanticRulesPersistAndNormalize(t *testing.T) {
 	}
 	if updated.ID != created.ID || !updated.CreatedAt.Equal(created.CreatedAt) || updated.DisplayName != "Updated" {
 		t.Fatalf("key-based update did not preserve identity: created=%+v updated=%+v", created, updated)
+	}
+}
+
+func TestSpaceManagerSemanticRulesLoadLegacyUnderscoreEventsAsDotted(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	dir := t.TempDir()
+	legacy := semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{{
+		ID:        domainsemantic.SemanticRuleID(uuid.New()),
+		SpaceID:   spaceID,
+		DomainID:  domainID,
+		Key:       "notes-search",
+		Enabled:   true,
+		Trigger:   domainsemantic.SemanticTriggerPolicy{Events: []string{"node_created", "node_updated", "edge_created", "edge_deleted"}},
+		Selector:  domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}},
+		Source:    domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf},
+		Storage:   domainsemantic.SemanticStoragePolicy{Searchable: true, PhysicalIndex: domainsemantic.SemanticPhysicalIndexExact},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}}}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy rules: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, semanticRulesFileName), data, 0o600); err != nil {
+		t.Fatalf("write legacy rules: %v", err)
+	}
+	mgr := NewSpaceManager()
+	if err := mgr.Init(ctx, dir, spaceID); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	rules, err := mgr.ListSemanticRules(ctx)
+	if err != nil {
+		t.Fatalf("ListSemanticRules() error = %v", err)
+	}
+	want := []string{"node.created", "node.updated", "edge.created", "edge.deleted"}
+	if len(rules) != 1 || !reflect.DeepEqual(rules[0].Trigger.Events, want) {
+		t.Fatalf("loaded trigger events = %+v, want %v", rules, want)
+	}
+	var persisted semanticRulesState
+	data, err = os.ReadFile(filepath.Join(dir, semanticRulesFileName))
+	if err != nil {
+		t.Fatalf("read persisted rules: %v", err)
+	}
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatalf("unmarshal persisted rules: %v", err)
+	}
+	if len(persisted.Rules) != 1 || !reflect.DeepEqual(persisted.Rules[0].Trigger.Events, want) {
+		t.Fatalf("persisted trigger events = %+v, want %v", persisted.Rules, want)
 	}
 }
 

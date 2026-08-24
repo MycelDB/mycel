@@ -54,6 +54,27 @@ func TestMultiSinkJoinsErrorsAndContinues(t *testing.T) {
 	}
 }
 
+func TestNormalizeChangeTypeAcceptsLegacyUnderscoreAliases(t *testing.T) {
+	cases := map[string]ChangeType{
+		"node.created":      ChangeTypeNodeCreated,
+		"node_created":      ChangeTypeNodeCreated,
+		" NODE_UPDATED ":    ChangeTypeNodeUpdated,
+		"node.deleted":      ChangeTypeNodeDeleted,
+		"edge_created":      ChangeTypeEdgeCreated,
+		"edge.updated":      ChangeTypeEdgeUpdated,
+		"edge_deleted":      ChangeTypeEdgeDeleted,
+		"revision_advanced": ChangeTypeRevisionAdvanced,
+	}
+	for input, want := range cases {
+		if got := NormalizeChangeType(input); got != want {
+			t.Fatalf("NormalizeChangeType(%q) = %q, want %q", input, got, want)
+		}
+	}
+	if !IsGraphChangeType("node_created") || !IsGraphChangeType("node.created") {
+		t.Fatalf("expected dotted and legacy node created event names to be recognized")
+	}
+}
+
 func TestCommittedEventNormalizeDerivesAffectedIDsAndRevisionAliases(t *testing.T) {
 	fromID := graph.NodeID(uuid.MustParse("00000000-0000-0000-0000-000000000001"))
 	toID := graph.NodeID(uuid.MustParse("00000000-0000-0000-0000-000000000003"))
@@ -65,7 +86,7 @@ func TestCommittedEventNormalizeDerivesAffectedIDsAndRevisionAliases(t *testing.
 		GraphRevision:  42,
 		CreatedNodeIDs: []graph.NodeID{nodeID},
 		ChangedEdges:   []EdgeChange{{EdgeID: edgeID, FromID: fromID, ToID: toID, Change: "updated"}},
-		Changes:        []Change{{Type: ChangeTypeEdgeUpdated, EdgeID: edgeID.String(), AffectedNodeIDs: []string{fromID.String()}}},
+		Changes:        []Change{{Type: ChangeType("edge_updated"), EdgeID: edgeID.String(), AffectedNodeIDs: []string{fromID.String()}}},
 	}
 
 	event.Normalize()
@@ -82,6 +103,9 @@ func TestCommittedEventNormalizeDerivesAffectedIDsAndRevisionAliases(t *testing.
 	}
 	if wantEdges := []graph.EdgeID{edgeID}; !reflect.DeepEqual(event.AffectedEdgeIDs, wantEdges) {
 		t.Fatalf("AffectedEdgeIDs = %#v, want %#v", event.AffectedEdgeIDs, wantEdges)
+	}
+	if event.Changes[0].Type != ChangeTypeEdgeUpdated {
+		t.Fatalf("change type = %q, want %q", event.Changes[0].Type, ChangeTypeEdgeUpdated)
 	}
 }
 

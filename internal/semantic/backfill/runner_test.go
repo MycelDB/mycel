@@ -129,7 +129,7 @@ func TestRunnerBackfillsThroughStandaloneInferenceProfile(t *testing.T) {
 	fake := &inferenceconnectors.FakeConnector{Vector: []float64{0.2, 0.8, 0}}
 	inference.SetConnector(domaininference.ConnectorOpenAICompatible, fake)
 	profileID := uuid.New()
-	rule, err := env.spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(env.index.ID), SpaceID: env.spaceID, DomainID: env.domainID, Key: "standalone-rule", DisplayName: "Standalone Rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorExplicit, NodeIDs: []graph.NodeID{root.ID}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSubtree}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: string(domainsemantic.SemanticIndexPurposeSearch), IntelligenceProfileID: domainsemantic.IntelligenceProfileID(profileID), VectorStoreID: env.index.VectorStoreID, Enabled: true}}})
+	rule, err := env.spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(env.index.ID), SpaceID: env.spaceID, DomainID: env.domainID, Key: "standalone-rule", DisplayName: "Standalone Rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorExplicit, NodeIDs: []graph.NodeID{root.ID}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSubtree}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: string(domainsemantic.SemanticIndexPurposeSearch), IntelligenceProfileID: domainsemantic.IntelligenceProfileID(profileID), VectorStoreID: env.index.VectorStoreID, Enabled: true}}, OwnerPrincipalID: env.userID})
 	if err != nil {
 		t.Fatalf("rule upsert failed: %v", err)
 	}
@@ -189,7 +189,7 @@ func seedStandaloneInferenceForBackfill(t *testing.T, ctx context.Context, infer
 	if _, err := spaceMgr.UpsertProfile(ctx, domaininference.Profile{ID: domaininference.ProfileID(profileID), SpaceID: env.spaceID.String(), Key: "semantic-profile", Operation: domaininference.OperationEmbeddings, DomainIDs: []string{env.domainID.String()}, EndpointRefs: []string{env.index.ModelEndpointID.String()}, ModelRefs: []string{env.index.ModelID.String()}, CapabilityRefs: []string{env.index.ModelEndpointCapabilityID.String()}, Enabled: true}); err != nil {
 		t.Fatalf("upsert inference profile: %v", err)
 	}
-	if _, err := spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(env.grant.ID), SpaceID: env.spaceID.String(), CredentialID: domaininference.CredentialID(env.grant.CredentialID), Scope: domaininference.Scope{SpaceID: env.spaceID.String(), DomainID: env.domainID.String(), SemanticIndexID: env.index.ID.String()}, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, ProfileRefs: []string{profileID.String()}, EndpointRefs: []string{env.index.ModelEndpointID.String()}, ModelRefs: []string{env.index.ModelID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeSemantic}, State: domaininference.GrantStateActive}); err != nil {
+	if _, err := spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(env.grant.ID), SpaceID: env.spaceID.String(), CredentialID: domaininference.CredentialID(env.grant.CredentialID), Scope: domaininference.Scope{SpaceID: env.spaceID.String(), DomainID: env.domainID.String(), SemanticIndexID: env.index.ID.String()}, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, ProfileRefs: []string{profileID.String()}, EndpointRefs: []string{env.index.ModelEndpointID.String()}, ModelRefs: []string{env.index.ModelID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeSemantic}, GranteePrincipals: []string{env.userID.String()}, State: domaininference.GrantStateActive}); err != nil {
 		t.Fatalf("upsert inference grant: %v", err)
 	}
 	if _, err := spaceMgr.UpsertPolicy(ctx, domaininference.Policy{SpaceID: env.spaceID.String(), Scope: domaininference.Scope{SpaceID: env.spaceID.String(), DomainID: env.domainID.String(), SemanticIndexID: env.index.ID.String()}, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, ProfileRefs: []string{profileID.String()}, Action: domaininference.PolicyActionAllow, AllowedPrivacyClasses: []domaininference.PrivacyClass{domaininference.PrivacyClassThirdParty}, State: domaininference.PolicyStateActive}); err != nil {
@@ -363,7 +363,7 @@ func TestRunnerBackfillsSemanticRuleBinding(t *testing.T) {
 	if result.SemanticRuleID != rule.ID || result.EmbeddingBindingKey != "search" || result.SelectedCount != 1 || result.GeneratedCount != 1 {
 		t.Fatalf("unexpected rule backfill result: %+v", result)
 	}
-	if len(env.connector.inputs) != 1 || env.connector.inputs[0].SemanticRuleID != rule.ID || env.connector.inputs[0].EmbeddingBindingKey != "search" || env.connector.inputs[0].InferenceProfile != "semantic-profile" {
+	if len(env.connector.inputs) != 1 || env.connector.inputs[0].SemanticRuleID != rule.ID || env.connector.inputs[0].EmbeddingBindingKey != "search" || env.connector.inputs[0].InferenceProfile != "semantic-profile" || env.connector.inputs[0].ActorPrincipalID != env.userID {
 		t.Fatalf("unexpected connector input: %+v", env.connector.inputs)
 	}
 	if !strings.Contains(env.connector.calls[0], "child note") {
@@ -375,6 +375,21 @@ func TestRunnerBackfillsSemanticRuleBinding(t *testing.T) {
 	search, err := env.vector.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), Query: []float64{1, 0, 0}, Limit: 10, MinScore: 0.5})
 	if err != nil || len(search) != 1 || search[0].Record.SemanticRuleID != rule.ID || search[0].Record.EmbeddingBindingKey != "search" {
 		t.Fatalf("unexpected rule vector search: search=%+v err=%v", search, err)
+	}
+}
+
+func TestSelectRuleTargetsTreatsNodeTypeLabelsAsAnyOf(t *testing.T) {
+	domainID := graph.DomainID(uuid.New())
+	note := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Note"}}
+	task := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Task"}}
+	other := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Other"}}
+	rule := domainsemantic.SemanticGenerationRule{DomainID: domainID, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note", "Task"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}}
+	selected, err := selectRuleTargets([]graph.Node{note, task, other}, nil, rule, nil)
+	if err != nil {
+		t.Fatalf("selectRuleTargets() error = %v", err)
+	}
+	if len(selected) != 2 || selected[0].ID != note.ID || selected[1].ID != task.ID {
+		t.Fatalf("selected = %+v, want note and task", selected)
 	}
 }
 
@@ -441,7 +456,7 @@ func (e *backfillTestEnv) semanticRule(t *testing.T, bindings []domainsemantic.S
 
 func (e *backfillTestEnv) semanticRuleWithID(t *testing.T, id domainsemantic.SemanticRuleID, bindings []domainsemantic.SemanticEmbeddingBinding) domainsemantic.SemanticGenerationRule {
 	t.Helper()
-	rule, err := e.spaceMgr.UpsertSemanticRule(context.Background(), domainsemantic.SemanticGenerationRule{ID: id, SpaceID: e.spaceID, DomainID: e.domainID, Key: "notes-rule-" + uuid.NewString(), DisplayName: "Notes Rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSubtree}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), Embeddings: bindings})
+	rule, err := e.spaceMgr.UpsertSemanticRule(context.Background(), domainsemantic.SemanticGenerationRule{ID: id, SpaceID: e.spaceID, DomainID: e.domainID, Key: "notes-rule-" + uuid.NewString(), DisplayName: "Notes Rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSubtree}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), Embeddings: bindings, OwnerPrincipalID: e.userID})
 	if err != nil {
 		t.Fatalf("rule upsert failed: %v", err)
 	}

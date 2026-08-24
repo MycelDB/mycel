@@ -11,6 +11,7 @@ import (
 	"github.com/myceldb/mycel/internal/embedding"
 	domainembedding "github.com/myceldb/mycel/internal/embedding/domain"
 	"github.com/myceldb/mycel/internal/graph/model"
+	identity "github.com/myceldb/mycel/internal/identity/model"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
@@ -199,7 +200,8 @@ func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.Semanti
 			return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "current source hash already embedded"}, nil
 		}
 	}
-	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), TargetNodeID: root.ID, InferenceProfile: binding.IntelligenceProfile, InferenceProfileID: uuid.UUID(binding.IntelligenceProfileID), Input: source.Text, Reason: "semantic_backfill"})
+	actorPrincipalID := semanticRuleActorPrincipal(rule)
+	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), TargetNodeID: root.ID, ActorPrincipalID: actorPrincipalID, InferenceProfile: binding.IntelligenceProfile, InferenceProfileID: uuid.UUID(binding.IntelligenceProfileID), Input: source.Text, Reason: "semantic_backfill"})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
@@ -212,6 +214,13 @@ func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.Semanti
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
 	return rec, nil, nil
+}
+
+func semanticRuleActorPrincipal(rule domainsemantic.SemanticGenerationRule) identity.PrincipalID {
+	if strings.TrimSpace(rule.OwnerPrincipalID.String()) != "" {
+		return rule.OwnerPrincipalID
+	}
+	return rule.CreatedByPrincipalID
 }
 
 func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIndex, endpoint domainsemantic.ModelEndpoint, model domainsemantic.InferenceModel, cap domainsemantic.ModelEndpointCapability, root graph.Node, nodes []graph.Node, edges []graph.Edge, force bool) (domainsemantic.AdvancedEmbeddingRecord, *Skipped, *Failure) {
@@ -389,6 +398,22 @@ func selectRuleBindings(rule domainsemantic.SemanticGenerationRule, bindingKey s
 	return out
 }
 
+func nodeHasAnyLabel(node graph.Node, labels []string) bool {
+	if len(labels) == 0 {
+		return true
+	}
+	seen := map[string]struct{}{}
+	for _, label := range node.Labels {
+		seen[strings.TrimSpace(label)] = struct{}{}
+	}
+	for _, label := range labels {
+		if _, ok := seen[strings.TrimSpace(label)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func selectRuleTargets(nodes []graph.Node, edges []graph.Edge, rule domainsemantic.SemanticGenerationRule, explicit []graph.NodeID) ([]graph.Node, error) {
 	explicitSet := map[graph.NodeID]bool{}
 	for _, id := range explicit {
@@ -398,7 +423,7 @@ func selectRuleTargets(nodes []graph.Node, edges []graph.Edge, rule domainsemant
 	switch rule.Selector.Mode {
 	case domainsemantic.SemanticTargetSelectorNodeType:
 		for _, node := range nodes {
-			if node.DomainID != rule.DomainID || (len(explicitSet) > 0 && !explicitSet[node.ID]) || !graph.HasLabels(node, rule.Selector.Labels) {
+			if node.DomainID != rule.DomainID || (len(explicitSet) > 0 && !explicitSet[node.ID]) || !nodeHasAnyLabel(node, rule.Selector.Labels) {
 				continue
 			}
 			selected = append(selected, node)

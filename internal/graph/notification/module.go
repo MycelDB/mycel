@@ -645,7 +645,7 @@ func eventHasAnyEdge(event graphchange.CommittedEvent, edgeIDs []string) bool {
 func eventHasAnyType(event graphchange.CommittedEvent, types []graphchange.ChangeType) bool {
 	want := map[graphchange.ChangeType]bool{}
 	for _, typ := range types {
-		want[typ] = true
+		want[graphchange.NormalizeChangeType(string(typ))] = true
 	}
 	for _, change := range event.Changes {
 		if want[change.Type] {

@@ -126,13 +126,16 @@ type Change struct {
 type ChangeType string
 
 const (
-    ChangeTypeNodeCreated ChangeType = "node_created"
-    ChangeTypeNodeUpdated ChangeType = "node_updated"
-    ChangeTypeNodeDeleted ChangeType = "node_deleted"
-    ChangeTypeEdgeCreated ChangeType = "edge_created"
-    ChangeTypeEdgeUpdated ChangeType = "edge_updated"
-    ChangeTypeEdgeDeleted ChangeType = "edge_deleted"
-    ChangeTypeRevisionAdvanced ChangeType = "revision_advanced"
+    ChangeTypeNodeCreated ChangeType = "node.created"
+    ChangeTypeNodeUpdated ChangeType = "node.updated"
+    ChangeTypeNodeDeleted ChangeType = "node.deleted"
+    ChangeTypeEdgeCreated ChangeType = "edge.created"
+    ChangeTypeEdgeUpdated ChangeType = "edge.updated"
+    ChangeTypeEdgeDeleted ChangeType = "edge.deleted"
+    ChangeTypeRevisionAdvanced ChangeType = "revision.advanced"
+
+    // Legacy underscore aliases such as "node_created" are accepted at replay
+    // and API boundaries but are normalized to dotted notation before use.
 )
 
 type OriginMetadata struct {

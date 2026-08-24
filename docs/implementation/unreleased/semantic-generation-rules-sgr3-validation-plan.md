@@ -98,8 +98,9 @@ all actionable diagnostics instead of failing fast. Storage/API adapters can tur
 
 Validate:
 
-- supported event names initially include `changed`, `node_created`,
-  `node_updated`, `node_deleted`, and edge change events if already represented
+- supported event names initially include `changed`, `node.created`,
+  `node.updated`, `node.deleted`, and edge change events if already represented;
+  legacy underscore aliases are accepted only for compatibility and normalize to dotted notation
   by dirty events;
 - empty trigger normalizes to `changed`;
 - event names are lower-case/trimmed;
