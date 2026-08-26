@@ -24,6 +24,7 @@ then use the component indexes below for detail.
 | [Clustering](clustering/README.md) | Raft clustering, system metadata authority, consistency, and reliability. |
 | [Backup and restore](backup-restore/README.md) | Quiescing, backup, restore, and user-scoped portability design. |
 | [Runtime](runtime/README.md) | Daemon/runtime boundaries, subsystem lifecycle, initialization, and service contracts. |
+| [Activity events](activity/README.md) | Durable operator-facing event stream for daemon lifecycle, identity/access, spaces/domains, backup, cluster, semantic, automation, and external pod events. |
 | [Persistence](persistence/README.md) | WAL and persistence-oriented design. |
 
 ## Historical planning

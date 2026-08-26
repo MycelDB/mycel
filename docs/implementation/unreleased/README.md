@@ -49,6 +49,10 @@ assigned to a tagged release bucket.
 - [Unified principal identity implementation plan](unified-principal-identity-implementation-plan.md) — breaking replacement of split administrator/user identity stores with one principal, role-binding, and capability-grant model.
 - [Unified principal identity remaining work plan](unified-principal-identity-remaining-work-plan.md) — follow-up checklist for completing the missing UP1-UP11 work after the partial unified-principal branch implementation.
 
+## SDKs and downstream integrations
+
+- [SDK error classification and login UX implementation plan](sdk-error-classification-and-login-ux-implementation-plan.md) — cross-repo plan for Rust/Go SDK error classification, structured downstream app errors, and Console login severity handling.
+
 ## Admin/UI follow-ups
 
 - [Admin template service and UI implementation plan](admin-template-service-and-ui-implementation-plan.md)

@@ -36,6 +36,7 @@ This directory is organized by audience and intent:
 - Schema: domain-scoped schema management and schema-aware graph/query validation.
 - Semantic and inference: semantic generation rules, embedding/inference configuration, maintenance, and migration APIs.
 - Automation: graph-triggered automation design and implementation plans.
+- Activity events: durable operator-facing lifecycle, audit-adjacent, cluster, backup, automation, semantic, and external pod event history.
 - Clustering: system raft metadata, partitioned raft ownership, strong reads, diagnostics, and manual recovery workflows.
 - Backup and restore: quiesce/backup design plus user-scoped export/import procedures.
 
