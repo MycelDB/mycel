@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	activitymodel "github.com/myceldb/mycel/internal/activity/model"
+	activityservice "github.com/myceldb/mycel/internal/activity/service"
 	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
@@ -430,7 +432,45 @@ func reconcileSystemMetadata(ctx context.Context, rt *daemonruntime.Runtime, sm 
 	if rt.Logger != nil {
 		rt.Logger.Info("system raft metadata applied", "cluster_id", meta.ClusterID, "cluster_name", meta.ClusterName, "local_raft_node_id", cfg.RaftLocalNodeID)
 	}
+	emitClusterMetadataActivity(ctx, rt, meta)
 	return nil
+}
+
+func emitClusterMetadataActivity(ctx context.Context, rt *daemonruntime.Runtime, meta consensus.SystemMetadata) {
+	activity, ok := daemonruntime.ServiceAs[*activityservice.Module](rt, activityservice.ModuleName)
+	if !ok || activity == nil || strings.TrimSpace(meta.ClusterID) == "" {
+		return
+	}
+	_ = activity.Emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryCluster, "cluster.metadata.applied", "System Raft metadata applied", func(event *activitymodel.Event) {
+		event.Resource = activitymodel.Resource{Kind: "cluster", ID: meta.ClusterID, Name: meta.ClusterName}
+		event.IdempotencyKey = "cluster.metadata.applied:" + meta.ClusterID
+	})
+	if rt != nil && rt.ClusterManager != nil && rt.ClusterManager.Readiness().PartitionGroupsStarted {
+		_ = activity.Emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryCluster, "cluster.partitions.started", "Raft partition groups started", func(event *activitymodel.Event) {
+			event.Resource = activitymodel.Resource{Kind: "cluster", ID: meta.ClusterID, Name: meta.ClusterName}
+			event.IdempotencyKey = fmt.Sprintf("cluster.partitions.started:%s:%d", meta.ClusterID, rt.Config.Cluster.RaftLocalNodeID)
+		})
+	}
+	for _, node := range meta.Nodes {
+		nodeID := strings.TrimSpace(node.NodeID)
+		name := firstNonEmptyApp(node.NodeName, nodeID)
+		if nodeID == "" && name == "" {
+			continue
+		}
+		_ = activity.Emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryCluster, "cluster.node.joined", fmt.Sprintf("%s joined the cluster", name), func(event *activitymodel.Event) {
+			event.Resource = activitymodel.Resource{Kind: "cluster_node", ID: nodeID, Name: name}
+			event.IdempotencyKey = "cluster.node.joined:" + meta.ClusterID + ":" + firstNonEmptyApp(nodeID, name)
+		})
+	}
+}
+
+func firstNonEmptyApp(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func expectedLocalPartitionGroups(meta consensus.SystemMetadata, raftNodeID consensus.NodeID) int {

@@ -9,6 +9,7 @@ Authentication mode: **principal auth with admin capabilities**.
 - Legacy aliases for principal identity management.
 - Create/delete spaces as an admin-capable principal.
 - Run node-local daemon backup, raft-storage-safe coordinated cluster backup, and principal-scoped backup/restore commands.
+- Inspect and append curated Activity Events with `mycel admin activity`.
 
 ## Examples
 
@@ -33,6 +34,10 @@ records raft barriers, requires raft freeze/checkpoint evidence in the final
 
 ```sh
 mycel admin user-backup validate --file user.tar.zst
+```
+
+```sh
+mycel admin activity list --category lifecycle
 ```
 
 ## Related docs

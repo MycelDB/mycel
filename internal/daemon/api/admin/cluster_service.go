@@ -87,8 +87,14 @@ func (s *AdminClusterService) GetClusterRuntimeStatus(ctx context.Context, req *
 	if _, err := principalFromContext(ctx); err != nil {
 		return nil, err
 	}
-	out := &adminv1.GetClusterRuntimeStatusResponse{Engine: adminv1.ClusterEngine_CLUSTER_ENGINE_RAFT, ClusterName: s.clusterConfig.Name, RaftNodeCount: uint32(s.clusterConfig.RaftNodeCount), RaftPartitionCount: uint32(s.clusterConfig.RaftPartitionCount), RaftReplicaFactor: uint32(s.clusterConfig.RaftReplicaFactor), LocalRaftNodeId: uint64(s.clusterConfig.RaftLocalNodeID), RaftNodeAddrs: append([]string(nil), s.clusterConfig.RaftNodeAddrs...)}
+	out := &adminv1.GetClusterRuntimeStatusResponse{Engine: adminv1.ClusterEngine_CLUSTER_ENGINE_UNSPECIFIED, ClusterName: s.clusterConfig.Name}
 	if s.raftGroups != nil {
+		out.Engine = adminv1.ClusterEngine_CLUSTER_ENGINE_RAFT
+		out.RaftNodeCount = uint32(s.clusterConfig.RaftNodeCount)
+		out.RaftPartitionCount = uint32(s.clusterConfig.RaftPartitionCount)
+		out.RaftReplicaFactor = uint32(s.clusterConfig.RaftReplicaFactor)
+		out.LocalRaftNodeId = uint64(s.clusterConfig.RaftLocalNodeID)
+		out.RaftNodeAddrs = append([]string(nil), s.clusterConfig.RaftNodeAddrs...)
 		statuses := s.raftGroups.Status()
 		out.RaftGroupCount = int32(len(statuses))
 		for _, st := range statuses {
@@ -96,8 +102,8 @@ func (s *AdminClusterService) GetClusterRuntimeStatus(ctx context.Context, req *
 				out.RaftGroupsWithLeader++
 			}
 		}
+		out.RaftTransport = raftTransportDiagnosticsToProto(s.raftTransportDiagnostics)
 	}
-	out.RaftTransport = raftTransportDiagnosticsToProto(s.raftTransportDiagnostics)
 	return out, nil
 }
 

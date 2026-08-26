@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	activitymodel "github.com/myceldb/mycel/internal/activity/model"
+	activityservice "github.com/myceldb/mycel/internal/activity/service"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
@@ -28,12 +30,17 @@ type PrincipalManager = principalservice.Manager
 
 type PrincipalService struct {
 	adminv1.UnimplementedAdminPrincipalServiceServer
-	manager principalservice.Manager
-	tokens  *daemonauth.TokenManager
+	manager  principalservice.Manager
+	tokens   *daemonauth.TokenManager
+	activity activityservice.Manager
 }
 
-func NewPrincipalService(manager principalservice.Manager, tokens *daemonauth.TokenManager) *PrincipalService {
-	return &PrincipalService{manager: manager, tokens: tokens}
+func NewPrincipalService(manager principalservice.Manager, tokens *daemonauth.TokenManager, activity ...activityservice.Manager) *PrincipalService {
+	svc := &PrincipalService{manager: manager, tokens: tokens}
+	if len(activity) > 0 {
+		svc.activity = activity[0]
+	}
+	return svc
 }
 
 func (s *PrincipalService) ListPrincipals(ctx context.Context, req *adminv1.ListPrincipalsRequest) (*adminv1.ListPrincipalsResponse, error) {
@@ -123,6 +130,10 @@ func (s *PrincipalService) CreatePrincipal(ctx context.Context, req *adminv1.Cre
 	if err != nil {
 		return nil, err
 	}
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryIdentity, "principal.created", "Principal created", func(event *activitymodel.Event) {
+		event.Actor = activitymodel.Actor{PrincipalID: actor.PrincipalID}
+		event.Resource = activitymodel.Resource{Kind: "principal", ID: string(principal.ID), Name: principal.Username}
+	})
 	return &adminv1.CreatePrincipalResponse{Principal: mapPrincipalSummary(principal), RoleGrants: roles, CapabilityGrants: caps, EffectiveCapabilities: effective}, nil
 }
 
@@ -180,6 +191,7 @@ func (s *PrincipalService) DisablePrincipal(ctx context.Context, req *adminv1.Di
 			return nil, mapPrincipalServiceError(err, "revoke principal sessions")
 		}
 	}
+	s.emitPrincipalEvent(ctx, "principal.disabled", "Principal disabled", string(principal.ID), principal.Username)
 	return &adminv1.DisablePrincipalResponse{Principal: mapPrincipalSummary(principal)}, nil
 }
 
@@ -226,6 +238,7 @@ func (s *PrincipalService) SetPrincipalPassword(ctx context.Context, req *adminv
 			return nil, mapPrincipalServiceError(err, "revoke principal sessions")
 		}
 	}
+	s.emitPrincipalEvent(ctx, "principal.password.changed", "Principal password changed", string(principal.ID), principal.Username)
 	return &adminv1.SetPrincipalPasswordResponse{Principal: mapPrincipalSummary(principal)}, nil
 }
 
@@ -300,6 +313,7 @@ func (s *PrincipalService) RevokePrincipalSession(ctx context.Context, req *admi
 	if err := s.manager.RevokePrincipalSession(ctx, req.GetPrincipalId(), req.GetAuthSessionId()); err != nil {
 		return nil, mapPrincipalServiceError(err, "revoke principal session")
 	}
+	s.emitPrincipalEvent(ctx, "principal.session.revoked", "Principal session revoked", req.GetPrincipalId(), "")
 	return &adminv1.RevokePrincipalSessionResponse{}, nil
 }
 
@@ -311,6 +325,7 @@ func (s *PrincipalService) RevokePrincipalSessions(ctx context.Context, req *adm
 	if err != nil {
 		return nil, mapPrincipalServiceError(err, "revoke principal sessions")
 	}
+	s.emitPrincipalEvent(ctx, "principal.session.revoked", "Principal sessions revoked", req.GetPrincipalId(), "")
 	return &adminv1.RevokePrincipalSessionsResponse{RevokedCount: int32(count)}, nil
 }
 
@@ -348,6 +363,10 @@ func (s *PrincipalService) GrantPrincipalRole(ctx context.Context, req *adminv1.
 	if err != nil {
 		return nil, err
 	}
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryAccess, "role.granted", "Role granted", func(event *activitymodel.Event) {
+		event.Actor = activitymodel.Actor{PrincipalID: actor.PrincipalID, Username: actor.Username}
+		event.Resource = activitymodel.Resource{Kind: "principal", ID: req.GetPrincipalId(), Name: grant.Role}
+	})
 	return &adminv1.GrantPrincipalRoleResponse{Grant: mapPrincipalRoleGrant(grant), EffectiveCapabilities: effective}, nil
 }
 
@@ -363,6 +382,10 @@ func (s *PrincipalService) RevokePrincipalRole(ctx context.Context, req *adminv1
 	if err != nil {
 		return nil, err
 	}
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryAccess, "role.revoked", "Role revoked", func(event *activitymodel.Event) {
+		event.Actor = activitymodel.Actor{PrincipalID: actor.PrincipalID, Username: actor.Username}
+		event.Resource = activitymodel.Resource{Kind: "principal", ID: req.GetPrincipalId()}
+	})
 	return &adminv1.RevokePrincipalRoleResponse{EffectiveCapabilities: effective}, nil
 }
 
@@ -470,6 +493,10 @@ func (s *PrincipalService) GrantPrincipalCapability(ctx context.Context, req *ad
 	if err != nil {
 		return nil, err
 	}
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryAccess, "capability.granted", "Capability granted", func(event *activitymodel.Event) {
+		event.Actor = activitymodel.Actor{PrincipalID: actor.PrincipalID, Username: actor.Username}
+		event.Resource = activitymodel.Resource{Kind: "principal", ID: req.GetPrincipalId(), Name: grant.Capability}
+	})
 	return &adminv1.GrantPrincipalCapabilityResponse{Grant: mapPrincipalCapabilityGrant(grant), EffectiveCapabilities: effective}, nil
 }
 
@@ -485,6 +512,10 @@ func (s *PrincipalService) RevokePrincipalCapability(ctx context.Context, req *a
 	if err != nil {
 		return nil, err
 	}
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryAccess, "capability.revoked", "Capability revoked", func(event *activitymodel.Event) {
+		event.Actor = activitymodel.Actor{PrincipalID: actor.PrincipalID, Username: actor.Username}
+		event.Resource = activitymodel.Resource{Kind: "principal", ID: req.GetPrincipalId()}
+	})
 	return &adminv1.RevokePrincipalCapabilityResponse{EffectiveCapabilities: effective}, nil
 }
 
@@ -713,6 +744,22 @@ func daemonPrincipal(principal principalservice.PrincipalSummary, sessionID stri
 		kind = daemonauth.PrincipalKindSystem
 	}
 	return daemonauth.Principal{Kind: kind, PrincipalID: principal.ID, AuthSessionID: sessionID, Username: principal.Username, CreatedAt: principal.CreatedAt}
+}
+
+func (s *PrincipalService) emitPrincipalEvent(ctx context.Context, eventType, message, principalID, username string) {
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryIdentity, eventType, message, func(event *activitymodel.Event) {
+		if actor, err := principalFromContext(ctx); err == nil {
+			event.Actor = activitymodel.Actor{PrincipalID: actor.PrincipalID, Username: actor.Username}
+		}
+		event.Resource = activitymodel.Resource{Kind: "principal", ID: principalID, Name: username}
+	})
+}
+
+func (s *PrincipalService) emit(ctx context.Context, severity, category, eventType, message string, mutate func(*activitymodel.Event)) {
+	if s.activity == nil {
+		return
+	}
+	_ = s.activity.Emit(ctx, severity, category, eventType, message, mutate)
 }
 
 func mapPrincipalServiceError(err error, action string) error {

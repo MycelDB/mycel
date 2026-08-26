@@ -152,6 +152,119 @@ func (m *Module) RequireLocalWriteAllowed() error {
 	return fn()
 }
 
+// Derived sync methods update the standalone inference mirror from the
+// raft-owned semantic catalog. They intentionally bypass the local write gate:
+// semantic raft metadata is the authority, while this store is a rebuildable
+// runtime projection used by inference execution paths.
+func (m *Module) UpsertDerivedPackage(ctx context.Context, pkg domaininference.InferencePackage) (domaininference.InferencePackage, error) {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return domaininference.InferencePackage{}, fmt.Errorf("inference module is not initialized")
+	}
+	return mgr.UpsertPackage(ctx, pkg)
+}
+
+func (m *Module) UpsertDerivedEndpoint(ctx context.Context, endpoint domaininference.Endpoint) (domaininference.Endpoint, error) {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return domaininference.Endpoint{}, fmt.Errorf("inference module is not initialized")
+	}
+	return mgr.UpsertEndpoint(ctx, endpoint)
+}
+
+func (m *Module) UpsertDerivedModel(ctx context.Context, model domaininference.Model) (domaininference.Model, error) {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return domaininference.Model{}, fmt.Errorf("inference module is not initialized")
+	}
+	return mgr.UpsertModel(ctx, model)
+}
+
+func (m *Module) UpsertDerivedCapability(ctx context.Context, capability domaininference.Capability) (domaininference.Capability, error) {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return domaininference.Capability{}, fmt.Errorf("inference module is not initialized")
+	}
+	return mgr.UpsertCapability(ctx, capability)
+}
+
+func (m *Module) UpsertDerivedVectorStore(ctx context.Context, vectorStore domaininference.VectorStore) (domaininference.VectorStore, error) {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return domaininference.VectorStore{}, fmt.Errorf("inference module is not initialized")
+	}
+	return mgr.UpsertVectorStore(ctx, vectorStore)
+}
+
+func (m *Module) UpsertDerivedSecret(ctx context.Context, secret domaininference.Secret) (domaininference.Secret, error) {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return domaininference.Secret{}, fmt.Errorf("inference module is not initialized")
+	}
+	return mgr.UpsertSecret(ctx, secret)
+}
+
+func (m *Module) UpsertDerivedCredential(ctx context.Context, credential domaininference.Credential) (domaininference.Credential, error) {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return domaininference.Credential{}, fmt.Errorf("inference module is not initialized")
+	}
+	return mgr.UpsertCredential(ctx, credential)
+}
+
+func (m *Module) UpsertDerivedCredentialGrant(ctx context.Context, spaceID string, grant domaininference.CredentialGrant) (domaininference.CredentialGrant, error) {
+	mgr, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		return domaininference.CredentialGrant{}, err
+	}
+	return mgr.UpsertCredentialGrant(ctx, grant)
+}
+
+func (m *Module) UpsertDerivedPolicy(ctx context.Context, spaceID string, policy domaininference.Policy) (domaininference.Policy, error) {
+	mgr, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		return domaininference.Policy{}, err
+	}
+	return mgr.UpsertPolicy(ctx, policy)
+}
+
+func (m *Module) baseGlobalManager() inferencestorage.GlobalManager {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.globalBase
+}
+
+func (m *Module) baseSpaceManager(ctx context.Context, spaceID string) (inferencestorage.SpaceManager, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	if spaceID == "" {
+		return nil, fmt.Errorf("%w: spaceID is required", inferencestorage.ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if mgr, ok := m.spaces[spaceID]; ok {
+		if wrapped, ok := mgr.(*walSpaceManager); ok {
+			return wrapped.inner, nil
+		}
+		return mgr, nil
+	}
+	if strings.TrimSpace(m.dataDir) == "" {
+		return nil, fmt.Errorf("inference module is not initialized")
+	}
+	mgr := inferencestorage.NewSpaceManager()
+	if err := mgr.Init(ctx, m.spaceInferenceDir(spaceID), spaceID); err != nil {
+		return nil, err
+	}
+	if m.useMutationWrappers {
+		m.spaces[spaceID] = &walSpaceManager{inner: mgr, module: m, spaceID: spaceID}
+	} else {
+		m.spaces[spaceID] = mgr
+	}
+	return mgr, nil
+}
+
 func (m *Module) SpaceManager(ctx context.Context, spaceID string) (inferencestorage.SpaceManager, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

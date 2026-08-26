@@ -17,6 +17,7 @@ Use `--output json` for scripting.
 | Command | Purpose |
 | --- | --- |
 | [admin](admin.md) | Operator/admin management surfaces. |
+| [admin activity](activity.md) | Durable operator activity event history. |
 | [auth](auth.md) | Principal authentication and auth sessions. |
 | [automation](automation.md) | Graph automation management. |
 | [blob](blob.md) | Raw blob upload/download/metadata/delete. |

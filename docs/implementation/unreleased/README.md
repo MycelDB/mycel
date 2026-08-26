@@ -13,8 +13,9 @@ assigned to a tagged release bucket.
 - [Cluster system backup raft freeze implementation plan](cluster-system-backup-raft-freeze-implementation-plan.md) — complete through RF6 for raft-storage-safe archive capture and release-gate docs.
 - [Workload-driven system backup/restore test implementation plan](workload-driven-system-backup-restore-test-implementation-plan.md) — implemented rewrite of the destructive K3s backup/restore gate using normal graph workloads, PVC deletion, restore, and convergence verification.
 
-## Graph/change notification
+## Graph/change notification and activity
 
+- [Activity events implementation plan](activity-events-implementation-plan.md) — phased plan for a durable operator-facing event stream, Admin APIs, daemon/external emitters, Console Activity page, retention, and export.
 - [Graph adjacency index implementation plan](graph-adjacency-index-implementation-plan.md) — derived per-space in-memory adjacency index for faster hierarchy validation and Logseq-shaped imports.
 - [Graph-change notification implementation plan](graph-change-notification-implementation-plan.md) — internal committed graph-change model, process-local consumer registrations, projection, replay, and raft-safe notification delivery.
 - [add_callbacks parking-lot implementation plan](add-callbacks-parking-lot-implementation-plan.md) — remaining downstream compatibility, examples, integration notes, and final validation work after parking the coordinated graph-change watch/operation-correlation branches.
@@ -27,6 +28,7 @@ assigned to a tagged release bucket.
 - [Graph procedures and automation bindings implementation plan](graph-procedures-and-automation-bindings-implementation-plan.md) — phased plan to split reusable graph procedures from trigger/scope/runtime-principal automation bindings while preserving legacy automation definitions.
 - [Semantic maintenance loaded state implementation plan](semantic-maintenance-loaded-state-implementation-plan.md) — per-space loaded maintenance managers and in-memory indexes for dirty events, work items, and checkpoints.
 - [Intelligence Access model kind implementation plan](intelligence-access-model-kind-implementation-plan.md) — breaking cleanup that replaces model-level workload operations with model kind/category while keeping endpoint capabilities authoritative for workload support.
+- [Intelligence Access Raft authority implementation plan](intelligence-access-raft-authority-implementation-plan.md) — phased plan to make Intelligence profiles semantic/Raft-owned and keep standalone inference state as a derived projection in clustered mode.
 
 ## Query and schema indexes
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	activitymodel "github.com/myceldb/mycel/internal/activity/model"
+	activityservice "github.com/myceldb/mycel/internal/activity/service"
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
@@ -24,10 +26,15 @@ type AdminSpaceService struct {
 	spaces     daemonspace.Manager
 	principals principalservice.Manager
 	authorizer OperatorAuthorizer
+	activity   activityservice.Manager
 }
 
-func NewAdminSpaceService(spaces daemonspace.Manager, principals principalservice.Manager, authorizer OperatorAuthorizer) *AdminSpaceService {
-	return &AdminSpaceService{spaces: spaces, principals: principals, authorizer: authorizer}
+func NewAdminSpaceService(spaces daemonspace.Manager, principals principalservice.Manager, authorizer OperatorAuthorizer, activity ...activityservice.Manager) *AdminSpaceService {
+	svc := &AdminSpaceService{spaces: spaces, principals: principals, authorizer: authorizer}
+	if len(activity) > 0 {
+		svc.activity = activity[0]
+	}
+	return svc
 }
 
 func (s *AdminSpaceService) ListSpaces(ctx context.Context, req *adminv1.AdminSpaceServiceListSpacesRequest) (*adminv1.AdminSpaceServiceListSpacesResponse, error) {
@@ -85,6 +92,18 @@ func (s *AdminSpaceService) CreateSpace(ctx context.Context, req *adminv1.Create
 		return nil, mapSpaceError(err, "create space")
 	}
 	mapped := clientapi.MapSpace(sp, daemonspace.EffectiveAccess{Roles: []string{"owner"}, Capabilities: []string{"CAPABILITY_SPACE_READ", "CAPABILITY_SPACE_MANAGE_ACCESS", "CAPABILITY_SPACE_DELETE"}})
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategorySpace, "space.created", "Space created", func(event *activitymodel.Event) {
+		event.Resource = activitymodel.Resource{Kind: "space", ID: sp.SpaceID.String(), Name: sp.Name}
+		if principal, err := principalFromContext(ctx); err == nil {
+			event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
+		}
+	})
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryDomain, "domain.created", "Default domain created", func(event *activitymodel.Event) {
+		event.Resource = activitymodel.Resource{Kind: "domain", ID: domain.ID.String(), Name: domain.Name}
+		if principal, err := principalFromContext(ctx); err == nil {
+			event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
+		}
+	})
 	return &adminv1.CreateSpaceResponse{Space: mapped, DefaultDomainId: domain.ID.String()}, nil
 }
 
@@ -95,6 +114,12 @@ func (s *AdminSpaceService) DeleteSpace(ctx context.Context, req *adminv1.Delete
 	if err := s.spaces.DeleteSpace(ctx, req.GetSpaceId()); err != nil {
 		return nil, mapSpaceError(err, "delete space")
 	}
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategorySpace, "space.deleted", "Space deleted", func(event *activitymodel.Event) {
+		event.Resource = activitymodel.Resource{Kind: "space", ID: req.GetSpaceId()}
+		if principal, err := principalFromContext(ctx); err == nil {
+			event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
+		}
+	})
 	return &adminv1.DeleteSpaceResponse{}, nil
 }
 
@@ -115,6 +140,13 @@ func (s *AdminSpaceService) GrantSpacePrincipal(ctx context.Context, req *adminv
 		return nil, mapSpaceError(err, "grant space principal")
 	}
 	return &adminv1.GrantSpacePrincipalResponse{Grant: mapAdminSpaceGrant(grant)}, nil
+}
+
+func (s *AdminSpaceService) emit(ctx context.Context, severity, category, eventType, message string, mutate func(*activitymodel.Event)) {
+	if s.activity == nil {
+		return
+	}
+	_ = s.activity.Emit(ctx, severity, category, eventType, message, mutate)
 }
 
 func idempotencyKeyFromContext(ctx context.Context) string {

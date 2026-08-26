@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 
+	activityservice "github.com/myceldb/mycel/internal/activity/service"
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
@@ -39,6 +40,7 @@ import (
 type Config struct {
 	Addr                     string
 	PrincipalManager         adminapi.PrincipalManager
+	ActivityManager          activityservice.Manager
 	BackupManager            daemonbackup.Manager
 	SpaceManager             daemonspace.Manager
 	SessionManager           daemonsession.Manager
@@ -133,9 +135,12 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		clusterpb.RegisterClusterBackendServiceServer(grpcServer, cfg.ClusteringServer)
 	}
 	commonv1.RegisterAuthServiceServer(grpcServer, clientapi.NewAuthService(cfg.PrincipalManager, cfg.TokenManager))
-	adminv1.RegisterAdminPrincipalServiceServer(grpcServer, adminapi.NewPrincipalService(cfg.PrincipalManager, cfg.TokenManager))
-	adminv1.RegisterAdminSpaceServiceServer(grpcServer, adminapi.NewAdminSpaceService(cfg.SpaceManager, cfg.PrincipalManager, cfg.PrincipalManager))
+	adminv1.RegisterAdminPrincipalServiceServer(grpcServer, adminapi.NewPrincipalService(cfg.PrincipalManager, cfg.TokenManager, cfg.ActivityManager))
+	adminv1.RegisterAdminSpaceServiceServer(grpcServer, adminapi.NewAdminSpaceService(cfg.SpaceManager, cfg.PrincipalManager, cfg.PrincipalManager, cfg.ActivityManager))
 	adminv1.RegisterAdminDomainServiceServer(grpcServer, adminapi.NewAdminDomainService(cfg.SpaceManager, cfg.PrincipalManager))
+	if cfg.ActivityManager != nil {
+		adminv1.RegisterAdminActivityServiceServer(grpcServer, adminapi.NewAdminActivityService(cfg.ActivityManager, cfg.PrincipalManager))
+	}
 	adminInference := adminapi.NewAdminInferenceService(cfg.SemanticManager, cfg.InferenceManager, cfg.PrincipalManager)
 	adminv1.RegisterAdminInferenceCatalogServiceServer(grpcServer, adminInference)
 	adminv1.RegisterAdminIntelligenceAccessProfileServiceServer(grpcServer, adminInference)
@@ -163,7 +168,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		adminv1.RegisterAdminClusterServiceServer(grpcServer, clusterAdmin)
 	}
 	if cfg.BackupManager != nil {
-		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.PrincipalManager).WithClusterRuntime(cfg.ClusteringManager, cfg.ClusterConfig))
+		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.PrincipalManager, cfg.ActivityManager).WithClusterRuntime(cfg.ClusteringManager, cfg.ClusterConfig))
 	}
 	var clientRouter clientapi.ClientRequestRouter
 	localNode := consensus.NodeID(cfg.ClusterConfig.RaftLocalNodeID)

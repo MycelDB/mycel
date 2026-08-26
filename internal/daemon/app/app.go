@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	activitymodel "github.com/myceldb/mycel/internal/activity/model"
+	activityservice "github.com/myceldb/mycel/internal/activity/service"
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	backupservice "github.com/myceldb/mycel/internal/backup/service"
 	blobservice "github.com/myceldb/mycel/internal/blob/service"
@@ -132,6 +134,11 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: automation service is not registered\n")
 		return 1
 	}
+	activityService, ok := daemonruntime.ServiceAs[*activityservice.Module](rt, activityservice.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: activity service is not registered\n")
+		return 1
+	}
 	backupService, ok := daemonruntime.ServiceAs[*backupservice.Module](rt, backupservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: backup service is not registered\n")
@@ -152,7 +159,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: inference service is not registered\n")
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, PrincipalManager: principalService, BackupManager: backupService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, InferenceManager: inferenceService, SemanticManager: semanticService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, PrincipalManager: principalService, ActivityManager: activityService, BackupManager: backupService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, InferenceManager: inferenceService, SemanticManager: semanticService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -160,6 +167,7 @@ func Run(ctx context.Context) int {
 	defer stopServer()
 
 	rt.Logger.Info("daemon ready", "grpc_addr", grpcServer.Addr())
+	_ = activityService.Emit(context.Background(), activitymodel.SeverityInfo, activitymodel.CategoryLifecycle, "daemon.started", "Daemon started", nil)
 	if rt.ClusterManager != nil {
 		_ = rt.ClusterManager.Start(serverCtx)
 	}
@@ -170,6 +178,7 @@ func Run(ctx context.Context) int {
 		rt.Logger.Error("grpc server stopped with error", "error", err)
 		return 1
 	}
+	_ = activityService.Emit(context.Background(), activitymodel.SeverityInfo, activitymodel.CategoryLifecycle, "daemon.stopped", "Daemon stopped", nil)
 	rt.Logger.Info("daemon shutdown complete")
 	return 0
 }
@@ -241,6 +250,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		logger.Info("wal ready", "path", walDir, "last_committed_lsn", walManager.LastCommittedLSN())
 	}
 	principalService := identityservice.NewPrincipalManager()
+	activityService := activityservice.NewModule()
 	spaceService := spaceservice.NewModule()
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
@@ -290,9 +300,12 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	})
-	if err := rt.InitServices(ctx, []daemonruntime.Service{principalService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, inferenceService, semanticService, backupService}); err != nil {
+	if err := rt.InitServices(ctx, []daemonruntime.Service{principalService, activityService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, inferenceService, semanticService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
+	}
+	if rt.ClusterManager != nil {
+		rt.ClusterManager.SetActivityEmitter(activityService)
 	}
 	graphService.SetBlobReferenceChecker(blobService)
 	graphNotificationService.WithLeaderGate(func(ctx context.Context, event graphchange.CommittedEvent) error {

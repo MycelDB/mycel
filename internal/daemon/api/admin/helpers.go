@@ -156,6 +156,10 @@ func capabilityFromInternal(capability string) commonv1.Capability {
 		return commonv1.Capability_CAPABILITY_AUTOMATION_WORKER
 	case "cluster.read":
 		return commonv1.Capability_CAPABILITY_CLUSTER_READ
+	case "audit.read":
+		return commonv1.Capability_CAPABILITY_AUDIT_READ
+	case "audit.write":
+		return commonv1.Capability_CAPABILITY_AUDIT_WRITE
 	case "daemon.configure":
 		return commonv1.Capability_CAPABILITY_DAEMON_CONFIGURE
 	case "cluster.manage":

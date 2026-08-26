@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
+	activitymodel "github.com/myceldb/mycel/internal/activity/model"
+	activityservice "github.com/myceldb/mycel/internal/activity/service"
 	backupservice "github.com/myceldb/mycel/internal/backup/service"
 	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	"github.com/myceldb/mycel/internal/clustering"
@@ -25,12 +29,18 @@ import (
 func TestReconcileSystemMetadataBootstrapsSingleNodeRaft(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Config{DataDir: t.TempDir(), NodeName: "node-a", Cluster: config.ClusterConfig{Name: "dev", BackendAdvertiseAddr: "127.0.0.1:19093", RaftNodeCount: 1, RaftPartitionCount: 4, RaftReplicaFactor: 1, RaftLocalNodeID: 1}}
-	rt := daemonruntime.New(cfg, nil, "", nil)
+	rt := daemonruntime.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), "", nil)
 	mgr, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, RaftMode: true, RaftLocalNodeID: 1, RaftNodeCount: 1}, nil)
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
 	rt.ClusterManager = mgr
+	identity := mgr.Identity()
+	rt.NodeIdentity = &identity
+	activityService := activityservice.NewModule()
+	if err := rt.InitServices(ctx, []daemonruntime.Service{activityService}); err != nil {
+		t.Fatalf("InitServices(activity) error = %v", err)
+	}
 	sm := consensus.NewSystemStateMachine()
 	if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine { return sm }, nil); err != nil {
 		t.Fatalf("initializeExperimentalRaft() error = %v", err)
@@ -49,6 +59,22 @@ func TestReconcileSystemMetadataBootstrapsSingleNodeRaft(t *testing.T) {
 	if !mgr.Readiness().ClientReady || !mgr.Readiness().PartitionGroupsStarted {
 		t.Fatalf("manager not marked ready after partition startup: %#v", mgr.Readiness())
 	}
+	activity, err := activityService.List(ctx, activitymodel.ListFilter{Categories: []string{activitymodel.CategoryCluster}, PageSize: 10})
+	if err != nil {
+		t.Fatalf("list cluster activity: %v", err)
+	}
+	if !hasActivityType(activity.Events, "cluster.metadata.applied") || !hasActivityType(activity.Events, "cluster.partitions.started") || !hasActivityType(activity.Events, "cluster.node.joined") {
+		t.Fatalf("expected cluster activity events, got %#v", activity.Events)
+	}
+}
+
+func hasActivityType(events []activitymodel.Event, eventType string) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 func TestExpectedLocalPartitionGroupsUsesPlacement(t *testing.T) {

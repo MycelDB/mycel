@@ -99,8 +99,8 @@ func TestAdminClusterServiceGetStatus(t *testing.T) {
 	if len(res.GetPeers()) == 0 || res.GetPeers()[0].GetState() != adminv1.ClusterPeerState_CLUSTER_PEER_STATE_SELF {
 		t.Fatalf("expected self peer, got %#v", res.GetPeers())
 	}
-	if !res.GetReadiness().GetClientReady() || !res.GetReadiness().GetMetadataApplied() || !res.GetReadiness().GetMetadataValidated() || !res.GetReadiness().GetPartitionGroupsStarted() {
-		t.Fatalf("expected standalone manager to be client-ready, got %#v", res.GetReadiness())
+	if !res.GetReadiness().GetClientReady() || !res.GetReadiness().GetMetadataApplied() || !res.GetReadiness().GetMetadataValidated() || !res.GetReadiness().GetPartitionGroupsStarted() || res.GetReadiness().GetExpectedMemberCount() != 1 {
+		t.Fatalf("expected standalone manager to be client-ready with one expected member, got %#v", res.GetReadiness())
 	}
 }
 
@@ -313,11 +313,8 @@ func TestAdminClusterServiceRuntimeStatusAndSpaceRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runtime status: %v", err)
 	}
-	if res.GetEngine() != adminv1.ClusterEngine_CLUSTER_ENGINE_RAFT || res.GetRaftPartitionCount() != 16 || res.GetLocalRaftNodeId() != 2 || len(res.GetRaftNodeAddrs()) != 3 {
+	if res.GetEngine() != adminv1.ClusterEngine_CLUSTER_ENGINE_UNSPECIFIED || res.GetRaftGroupCount() != 0 || res.GetRaftGroupsWithLeader() != 0 || res.GetRaftPartitionCount() != 0 || res.GetLocalRaftNodeId() != 0 || len(res.GetRaftNodeAddrs()) != 0 || res.GetRaftTransport() != nil {
 		t.Fatalf("unexpected runtime status: %#v", res)
-	}
-	if res.GetRaftTransport().GetSendAttempts() != 1 || res.GetRaftTransport().GetMissingSenderFailures() != 1 || res.GetRaftTransport().GetLastTargetNodeId() != 3 {
-		t.Fatalf("unexpected transport diagnostics: %#v", res.GetRaftTransport())
 	}
 	route, err := svc.LookupSpaceRoute(ctx, &adminv1.LookupSpaceRouteRequest{SpaceId: "490851b9-0038-4afc-b1f0-d1bd9e829bc8"})
 	if err != nil {
@@ -328,5 +325,28 @@ func TestAdminClusterServiceRuntimeStatusAndSpaceRoute(t *testing.T) {
 	}
 	if _, err := svc.LookupSpaceRoute(ctx, &adminv1.LookupSpaceRouteRequest{SpaceId: "not-a-uuid"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected invalid argument, got %v", err)
+	}
+}
+
+func TestAdminClusterServiceRuntimeStatusReportsRaftWhenGroupsStarted(t *testing.T) {
+	diagnostics := consensus.NewTransportDiagnostics(nil)
+	transport := consensus.RoutedTransport{Diagnostics: diagnostics, Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return nil, false })}
+	transport.Send(context.Background(), "system", 1, []raftpb.Message{{Type: raftpb.MsgHeartbeat, From: 1, To: 2}})
+	groups, err := consensus.StartMultiGroup(context.Background(), consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 2, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine { return &consensus.MemoryStateMachine{} }}, ElectionTick: 50, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("StartMultiGroup() error = %v", err)
+	}
+	defer groups.Stop()
+
+	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithClusterRuntime(daemonconfig.ClusterConfig{Name: "dev", RaftNodeCount: 1, RaftPartitionCount: 2, RaftReplicaFactor: 1, RaftLocalNodeID: 1, RaftNodeAddrs: []string{"a:9091"}}, groups, diagnostics)
+	res, err := svc.GetClusterRuntimeStatus(authenticatedClusterContext(), &adminv1.GetClusterRuntimeStatusRequest{})
+	if err != nil {
+		t.Fatalf("runtime status: %v", err)
+	}
+	if res.GetEngine() != adminv1.ClusterEngine_CLUSTER_ENGINE_RAFT || res.GetRaftGroupCount() != 3 || res.GetRaftPartitionCount() != 2 || res.GetLocalRaftNodeId() != 1 || len(res.GetRaftNodeAddrs()) != 1 {
+		t.Fatalf("expected raft runtime with 3 groups, got %#v", res)
+	}
+	if res.GetRaftTransport().GetSendAttempts() != 1 || res.GetRaftTransport().GetMissingSenderFailures() != 1 || res.GetRaftTransport().GetLastTargetNodeId() != 2 {
+		t.Fatalf("unexpected transport diagnostics: %#v", res.GetRaftTransport())
 	}
 }

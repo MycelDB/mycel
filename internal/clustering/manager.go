@@ -75,6 +75,13 @@ func (m *Manager) Stop(ctx context.Context) error {
 	return WriteLocalState(m.dataDir, model.NodeStateStopped, time.Now().UTC())
 }
 
+func (m *Manager) SetActivityEmitter(emitter backend.ActivityEmitter) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.WithActivityEmitter(emitter)
+}
+
 func (m *Manager) Identity() model.NodeIdentity {
 	if m == nil {
 		return model.NodeIdentity{}
@@ -356,8 +363,9 @@ func removeReadinessBlocker(blockers []string, blocker string) []string {
 }
 
 func initialReadiness(id model.NodeIdentity, state model.NodeState, opts Options) ClusterReadiness {
-	out := ClusterReadiness{LocalClusterID: id.ClusterID, ExpectedMemberCount: opts.RaftNodeCount}
+	out := ClusterReadiness{LocalClusterID: id.ClusterID}
 	if !opts.RaftMode {
+		out.ExpectedMemberCount = 1
 		out.ClientReady = state == NodeStateStandalone || state == NodeStateClustered
 		out.MetadataApplied = true
 		out.MetadataValidated = true
@@ -365,6 +373,7 @@ func initialReadiness(id model.NodeIdentity, state model.NodeState, opts Options
 		out.AuthoritativeClusterID = id.ClusterID
 		return out
 	}
+	out.ExpectedMemberCount = opts.RaftNodeCount
 	out.MetadataApplied = strings.TrimSpace(id.ClusterID) != "" && id.ClusterAdmitted
 	out.MetadataValidated = false
 	out.PartitionGroupsStarted = false

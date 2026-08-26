@@ -112,6 +112,26 @@ func TestInferenceMutationRespectsLocalWriteGate(t *testing.T) {
 	}
 }
 
+func TestInferenceDerivedSyncBypassesLocalWriteGate(t *testing.T) {
+	ctx := context.Background()
+	host := runtimetest.New(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	hostWithGate := &rejectingWriteHost{Host: host}
+	module := NewModule()
+	if result := module.Init(ctx, hostWithGate); !result.OK {
+		t.Fatalf("init: %#v", result)
+	}
+	if _, err := module.UpsertDerivedEndpoint(ctx, model.Endpoint{Key: "openai", ConnectorType: model.ConnectorOpenAICompatible, PrivacyClass: model.PrivacyClassThirdParty, Enabled: true}); err != nil {
+		t.Fatalf("derived endpoint sync failed: %v", err)
+	}
+	items, err := module.GlobalManager().ListEndpoints(ctx)
+	if err != nil {
+		t.Fatalf("list endpoints: %v", err)
+	}
+	if len(items) != 1 || items[0].Key != "openai" {
+		t.Fatalf("unexpected derived endpoints: %#v", items)
+	}
+}
+
 type rejectingWriteHost struct{ *runtimetest.Host }
 
 func (h *rejectingWriteHost) RequireLocalWriteAllowed() error { return errors.New("rejected") }

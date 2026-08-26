@@ -128,6 +128,10 @@ func canonicalCapability(capability string) string {
 		return "inference.policy.manage"
 	case "CAPABILITY_INFERENCE_AUDIT_READ", "inference.audit.read":
 		return "inference.audit.read"
+	case "CAPABILITY_AUDIT_READ", "audit.read":
+		return "audit.read"
+	case "CAPABILITY_AUDIT_WRITE", "audit.write":
+		return "audit.write"
 	case "CAPABILITY_INFERENCE_INVOKE", "inference.invoke":
 		return "inference.invoke"
 	case "CAPABILITY_AUTOMATION_READ", "automation.read":

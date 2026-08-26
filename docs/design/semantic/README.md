@@ -11,5 +11,6 @@ physical search indexes, and maintenance/migration surfaces.
 - [Client semantic API](../api/semantic.md)
 - [Admin semantic API](../admin/semantic.md)
 - [Admin inference API](../admin/inference.md)
+- [Intelligence Access Raft authority](../admin/intelligence-access-raft-authority.md)
 - [Semantic maintenance](../admin/semantic-maintenance.md)
 - [Semantic migration](../admin/semantic-migration.md)

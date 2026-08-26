@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	activitymodel "github.com/myceldb/mycel/internal/activity/model"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/membership"
 	"github.com/myceldb/mycel/internal/clustering/model"
@@ -15,6 +16,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+type ActivityEmitter interface {
+	Emit(ctx context.Context, severity, category, eventType, message string, mutate func(*activitymodel.Event)) error
+}
 
 type Service struct {
 	clusterpb.UnimplementedClusterBackendServiceServer
@@ -29,6 +34,7 @@ type Service struct {
 	SemanticReader         any
 	ClientRequestForwarder ForwardedClientRequestHandler
 	ClusterBackupProvider  ClusterBackupProvider
+	ActivityEmitter        ActivityEmitter
 
 	forwardMu          sync.Mutex
 	forwardDiagnostics ForwardClientDiagnostics
@@ -45,6 +51,11 @@ func (s *Service) WithMembership(store *membership.FileStore) *Service {
 
 func (s *Service) WithRaftRouter(router consensus.MessageSender) *Service {
 	s.RaftRouter = router
+	return s
+}
+
+func (s *Service) WithActivityEmitter(emitter ActivityEmitter) *Service {
+	s.ActivityEmitter = emitter
 	return s
 }
 
@@ -75,6 +86,7 @@ func (s *Service) RegisterNode(ctx context.Context, req *clusterpb.RegisterNodeR
 	if err := s.Topology.Upsert(ctx, peer); err != nil {
 		return nil, err
 	}
+	s.emitClusterActivity(ctx, activitymodel.SeverityInfo, "cluster.node.joined", fmt.Sprintf("%s joined the cluster", firstNonEmpty(id.NodeName, id.NodeID)), id, "joined")
 	for _, protoPeer := range req.GetKnownPeers() {
 		known, err := PeerFromProto(protoPeer)
 		if err != nil {
@@ -128,11 +140,24 @@ func (s *Service) UpdateNodeStatus(ctx context.Context, req *clusterpb.UpdateNod
 	if err := s.Topology.Upsert(ctx, model.Peer{NodeID: id.NodeID, NodeName: id.NodeName, ClusterID: id.ClusterID, ClusterName: id.ClusterName, BackendAdvertiseAddr: id.BackendAdvertiseAddr, State: peerState, Source: model.PeerSourceDiscovered, LastSeenAt: &seen}); err != nil {
 		return nil, err
 	}
+	if peerState == model.PeerStateUnreachable {
+		s.emitClusterActivity(ctx, activitymodel.SeverityWarning, "cluster.node.unreachable", fmt.Sprintf("%s is unreachable", firstNonEmpty(id.NodeName, id.NodeID)), id, fmt.Sprintf("unreachable:%s", seen.Format(time.RFC3339)))
+	}
 	return &clusterpb.UpdateNodeStatusResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Accepted: true}, nil
 }
 
 func (s *Service) WatchClusterUpdates(req *clusterpb.WatchClusterUpdatesRequest, stream clusterpb.ClusterBackendService_WatchClusterUpdatesServer) error {
 	return status.Error(codes.Unimplemented, "cluster update watch is not implemented")
+}
+
+func (s *Service) emitClusterActivity(ctx context.Context, severity, eventType, message string, id model.NodeIdentity, action string) {
+	if s.ActivityEmitter == nil {
+		return
+	}
+	_ = s.ActivityEmitter.Emit(ctx, severity, activitymodel.CategoryCluster, eventType, message, func(event *activitymodel.Event) {
+		event.Resource = activitymodel.Resource{Kind: "cluster_node", ID: id.NodeID, Name: firstNonEmpty(id.NodeName, id.NodeID)}
+		event.IdempotencyKey = fmt.Sprintf("%s:%s", action, firstNonEmpty(id.NodeID, id.NodeName))
+	})
 }
 
 func firstNonEmpty(values ...string) string {

@@ -6,11 +6,23 @@ import (
 	"testing"
 	"time"
 
+	activitymodel "github.com/myceldb/mycel/internal/activity/model"
 	"github.com/myceldb/mycel/internal/clustering/membership"
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/clustering/topology"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 )
+
+type activityEmitterStub struct{ events []activitymodel.Event }
+
+func (s *activityEmitterStub) Emit(ctx context.Context, severity, category, eventType, message string, mutate func(*activitymodel.Event)) error {
+	event := activitymodel.Event{Severity: severity, Category: category, Type: eventType, Message: message}
+	if mutate != nil {
+		mutate(&event)
+	}
+	s.events = append(s.events, event)
+	return nil
+}
 
 func TestRegisterNodeUpdatesTopologyAndReturnsView(t *testing.T) {
 	ctx := context.Background()
@@ -24,7 +36,8 @@ func TestRegisterNodeUpdatesTopologyAndReturnsView(t *testing.T) {
 	if err := store.UpsertMember(ctx, membership.Member{NodeName: "node-b", NodeID: "node_b", State: membership.MemberStateActive}); err != nil {
 		t.Fatal(err)
 	}
-	svc := NewService(self, model.NodeStateClustered, reg).WithMembership(store)
+	emitter := &activityEmitterStub{}
+	svc := NewService(self, model.NodeStateClustered, reg).WithMembership(store).WithActivityEmitter(emitter)
 	remote := model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: "node_b", NodeName: "node-b", ClusterID: "cluster_a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9094", CreatedAt: now, UpdatedAt: now}
 	res, err := svc.RegisterNode(ctx, &clusterpb.RegisterNodeRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Identity: IdentityToProto(remote), State: NodeStateToProto(model.NodeStateClustered)})
 	if err != nil {
@@ -44,6 +57,9 @@ func TestRegisterNodeUpdatesTopologyAndReturnsView(t *testing.T) {
 	}
 	if len(res.GetClusterView().GetPeers()) < 2 {
 		t.Fatalf("cluster view missing peers: %#v", res.GetClusterView().GetPeers())
+	}
+	if len(emitter.events) != 1 || emitter.events[0].Type != "cluster.node.joined" || emitter.events[0].Category != activitymodel.CategoryCluster || emitter.events[0].Resource.ID != "node_b" {
+		t.Fatalf("expected cluster node joined activity event, got %#v", emitter.events)
 	}
 }
 

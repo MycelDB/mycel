@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	activitymodel "github.com/myceldb/mycel/internal/activity/model"
+	activityservice "github.com/myceldb/mycel/internal/activity/service"
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
@@ -36,10 +38,22 @@ type AdminBackupService struct {
 	cluster       *clustering.Manager
 	clusterConfig daemonconfig.ClusterConfig
 	authorizer    OperatorAuthorizer
+	activity      activityservice.Manager
 }
 
-func NewAdminBackupService(manager daemonbackup.Manager, quiesce *quiesce.Coordinator, authorizer OperatorAuthorizer) *AdminBackupService {
-	return &AdminBackupService{manager: manager, quiesce: quiesce, authorizer: authorizer}
+func NewAdminBackupService(manager daemonbackup.Manager, quiesce *quiesce.Coordinator, authorizer OperatorAuthorizer, activity ...activityservice.Manager) *AdminBackupService {
+	svc := &AdminBackupService{manager: manager, quiesce: quiesce, authorizer: authorizer}
+	if len(activity) > 0 {
+		svc.activity = activity[0]
+	}
+	return svc
+}
+
+func (s *AdminBackupService) emit(ctx context.Context, severity, category, eventType, message string, mutate func(*activitymodel.Event)) {
+	if s.activity == nil {
+		return
+	}
+	_ = s.activity.Emit(ctx, severity, category, eventType, message, mutate)
 }
 
 func (s *AdminBackupService) WithClusterRuntime(cluster *clustering.Manager, cfg daemonconfig.ClusterConfig) *AdminBackupService {
@@ -74,11 +88,23 @@ func (s *AdminBackupService) TriggerBackup(ctx context.Context, req *adminv1.Tri
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.manager.Trigger(ctx, backupcore.TriggerInput{Source: principal.PrincipalID, Reason: firstNonEmptyAdmin(req.GetReason(), "manual backup")})
+	reason := firstNonEmptyAdmin(req.GetReason(), "manual backup")
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryBackup, "backup.started", "Backup started", func(event *activitymodel.Event) {
+		event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
+		event.IdempotencyKey = "backup.started:" + reason
+	})
+	result, err := s.manager.Trigger(ctx, backupcore.TriggerInput{Source: principal.PrincipalID, Reason: reason})
 	if err != nil {
+		s.emit(ctx, activitymodel.SeverityError, activitymodel.CategoryBackup, "backup.failed", "Backup failed", func(event *activitymodel.Event) {
+			event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
+		})
 		return nil, mapBackupError(err, "trigger backup")
 	}
 	statusValue := s.manager.RunStatus()
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryBackup, "backup.completed", "Backup completed", func(event *activitymodel.Event) {
+		event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
+		event.Resource = activitymodel.Resource{Kind: "backup", ID: result.Manifest.BackupID, Name: result.Manifest.ArchiveName}
+	})
 	return &adminv1.TriggerBackupResponse{Status: s.mapStatus(statusValue), Backup: mapBackupSummary(result.Manifest)}, nil
 }
 
