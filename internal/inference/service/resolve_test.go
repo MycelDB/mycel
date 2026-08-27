@@ -120,6 +120,52 @@ func TestResolveDenyPolicyWins(t *testing.T) {
 	}
 }
 
+func TestResolveIncludeDescendantsUsesExplicitAncestryAndDeniesFailClosed(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	parentID := uuid.NewString()
+	childID := uuid.NewString()
+	fixture.grant.Scope = domaininference.Scope{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: parentID, IncludeDescendants: true}
+	if _, err := fixture.spaceMgr.UpsertCredentialGrant(ctx, fixture.grant); err != nil {
+		t.Fatalf("update grant: %v", err)
+	}
+	fixture.policy.Scope = domaininference.Scope{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: parentID, IncludeDescendants: true}
+	if _, err := fixture.spaceMgr.UpsertPolicy(ctx, fixture.policy); err != nil {
+		t.Fatalf("update policy: %v", err)
+	}
+
+	allowed, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: childID, NodeAncestorIDs: []string{parentID}, Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if !allowed.Allowed {
+		t.Fatalf("expected descendant with ancestry context to be allowed, got %#v", allowed.Decision)
+	}
+
+	withoutAncestry, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: childID, Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if withoutAncestry.Allowed || !strings.Contains(withoutAncestry.Decision.Reason, "credential grant") {
+		t.Fatalf("expected descendant grant without ancestry context to fail closed, got %#v", withoutAncestry.Decision)
+	}
+
+	fixture.grant.Scope = domaininference.Scope{SpaceID: fixture.spaceID, DomainID: "domain-a"}
+	if _, err := fixture.spaceMgr.UpsertCredentialGrant(ctx, fixture.grant); err != nil {
+		t.Fatalf("reset grant: %v", err)
+	}
+	if _, err := fixture.spaceMgr.UpsertPolicy(ctx, domaininference.Policy{SpaceID: fixture.spaceID, Scope: domaininference.Scope{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: parentID, IncludeDescendants: true}, Operations: []domaininference.Operation{domaininference.OperationChat}, Action: domaininference.PolicyActionDeny, State: domaininference.PolicyStateActive, Reason: "parent subtree denied"}); err != nil {
+		t.Fatalf("upsert descendant deny: %v", err)
+	}
+	denied, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: childID, Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if denied.Allowed || denied.Decision.Reason != "parent subtree denied" {
+		t.Fatalf("expected descendant deny to fail closed without ancestry context, got %#v", denied.Decision)
+	}
+}
+
 func TestResolveRestrictPolicyEnforcesTokenCeiling(t *testing.T) {
 	ctx := context.Background()
 	module, fixture := newResolverFixture(t, ctx)

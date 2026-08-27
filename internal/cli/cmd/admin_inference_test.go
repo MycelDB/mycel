@@ -75,7 +75,7 @@ model_endpoint_capabilities:
 		t.Fatalf("unexpected applied package: %#v", &applied)
 	}
 	inferenceGlobal := inferencestorage.NewGlobalManager()
-	if err := inferenceGlobal.Init(context.Background(), filepath.Join(dataDir, "meta")); err != nil {
+	if err := inferenceGlobal.Init(context.Background(), filepath.Join(dataDir, "meta", "inference_runtime")); err != nil {
 		t.Fatalf("init standalone inference global manager: %v", err)
 	}
 	inferenceEndpoints, err := inferenceGlobal.ListEndpoints(context.Background())

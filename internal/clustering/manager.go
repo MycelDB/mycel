@@ -174,6 +174,13 @@ func (m *Manager) SetBackendSemanticReader(reader any) {
 	m.backend.SemanticReader = reader
 }
 
+func (m *Manager) SetBackendAutomationRuntimeReader(reader any) {
+	if m == nil || m.backend == nil {
+		return
+	}
+	m.backend.AutomationRuntimeReader = reader
+}
+
 func (m *Manager) SetBackendBlobPayloadProvider(provider backend.BlobPayloadProvider) {
 	if m == nil || m.backend == nil {
 		return

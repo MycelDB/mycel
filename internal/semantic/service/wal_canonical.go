@@ -268,6 +268,31 @@ func (w *walSpaceManager) canonicalSemanticIndex(ctx context.Context, v domainse
 	return v, nil
 }
 
+func (w *walSpaceManager) canonicalIntelligenceProfile(ctx context.Context, v domainsemantic.IntelligenceProfile) (domainsemantic.IntelligenceProfile, error) {
+	now := time.Now().UTC()
+	v = domainsemantic.NormalizeIntelligenceProfile(v)
+	items, err := w.inner.ListIntelligenceProfiles(ctx)
+	if err != nil {
+		return domainsemantic.IntelligenceProfile{}, err
+	}
+	for _, existing := range items {
+		if existing.SpaceID == v.SpaceID && semanticKey(existing.Key) == semanticKey(v.Key) {
+			v.ID = existing.ID
+			v.CreatedAt = existing.CreatedAt
+			v.UpdatedAt = now
+			return v, nil
+		}
+	}
+	if v.ID == uuid.Nil {
+		v.ID = semanticNewID()
+	}
+	if v.CreatedAt.IsZero() {
+		v.CreatedAt = now
+	}
+	v.UpdatedAt = now
+	return v, nil
+}
+
 func (w *walSpaceManager) canonicalGrant(ctx context.Context, v domainsemantic.CredentialGrant) (domainsemantic.CredentialGrant, error) {
 	if v.ID != uuid.Nil {
 		items, err := w.inner.ListCredentialGrants(ctx)

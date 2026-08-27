@@ -27,6 +27,21 @@ func (m *AutomationManager) pendingInvocations(ctx context.Context, domainID gra
 			out = append(out, inv)
 		}
 	}
+	if m.raftEnabled() {
+		running, err := m.store.ListInvocations(ctx, domainID, storage.InvocationFilter{Status: "running", Limit: limit})
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+		for _, inv := range running {
+			if inv.ClaimExpiresAt.IsZero() {
+				m.recordClaimAbandoned()
+				continue
+			}
+			if !inv.ClaimExpiresAt.After(now) {
+				out = append(out, inv)
+			}
+		}
+	}
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}

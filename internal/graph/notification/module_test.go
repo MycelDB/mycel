@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -214,9 +213,8 @@ func TestLeaderGatePreventsFollowerDelivery(t *testing.T) {
 	}
 	defer reg.Close()
 
-	err = m.OnGraphCommitted(ctx, committedEvent(spaceID, domainID, 1, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()}))
-	if err == nil || !strings.Contains(err.Error(), "not local leader") {
-		t.Fatalf("OnGraphCommitted() error = %v, want not local leader", err)
+	if err := m.OnGraphCommitted(ctx, committedEvent(spaceID, domainID, 1, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()})); err != nil {
+		t.Fatalf("OnGraphCommitted() error = %v, want suppressed follower delivery without publish failure", err)
 	}
 	time.Sleep(50 * time.Millisecond)
 	events, gaps := consumer.snapshot()
@@ -225,6 +223,15 @@ func TestLeaderGatePreventsFollowerDelivery(t *testing.T) {
 	}
 	if diag := m.Diagnostics(); diag.LastFailure == "" {
 		t.Fatalf("diagnostics did not record leader gate failure: %+v", diag)
+	}
+	after := uint64(0)
+	replayConsumer := newRecordingConsumer()
+	if err := m.Replay(ctx, ConsumerSpec{ConsumerName: "replay", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}, Start: StartPosition{AfterRevision: &after}}, replayConsumer); err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+	replayed, replayGaps := replayConsumer.snapshot()
+	if len(replayed) != 1 || len(replayGaps) != 0 {
+		t.Fatalf("replay after suppressed follower delivery events=%+v gaps=%+v", replayed, replayGaps)
 	}
 }
 

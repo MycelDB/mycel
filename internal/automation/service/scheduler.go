@@ -3,17 +3,19 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 )
 
 func (m *AutomationManager) ProcessScheduled(ctx context.Context, domainID graph.DomainID, limit int) (int, error) {
-	if err := m.requireWriteAllowed(); err != nil {
-		return 0, err
+	if !m.raftEnabled() {
+		if err := m.requireWriteAllowed(); err != nil {
+			return 0, err
+		}
 	}
 	items, err := m.listRunnableAutomations(ctx, domainID, automation.StatusEnabled)
 	if err != nil {
@@ -21,12 +23,25 @@ func (m *AutomationManager) ProcessScheduled(ctx context.Context, domainID graph
 	}
 	count := 0
 	for _, item := range items {
-		def := item.Definition
 		if limit > 0 && count >= limit {
 			break
 		}
+		def := item.Definition
 		if def.Workflow == nil || def.Trigger.Schedule == nil {
 			continue
+		}
+		spaceID := strings.TrimSpace(item.Binding.Scope.SpaceID)
+		if m.raftEnabled() {
+			if spaceID == "" {
+				continue
+			}
+			leader, local, _, _, err := m.executionRoute(spaceID)
+			if err != nil {
+				return count, err
+			}
+			if leader != local {
+				continue
+			}
 		}
 		interval, err := time.ParseDuration(def.Trigger.Schedule.Interval)
 		if err != nil {
@@ -36,17 +51,25 @@ func (m *AutomationManager) ProcessScheduled(ctx context.Context, domainID graph
 		if err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return count, mapStoreError(err)
 		}
+		now := m.now().UTC()
+		scheduledAt := now.Truncate(interval)
 		if checkpoint.LastRunAt != "" {
-			if last, err := time.Parse(time.RFC3339, checkpoint.LastRunAt); err == nil && m.now().Sub(last) < interval {
-				continue
+			if last, err := time.Parse(time.RFC3339, checkpoint.LastRunAt); err == nil {
+				if now.Sub(last) < interval {
+					continue
+				}
+				scheduledAt = last.Add(interval).UTC()
 			}
 		}
-		inv := invocationForRunnable(m.now, domainID, item, automation.Invocation{ID: uuid.NewString(), EventID: "schedule:" + item.Binding.ID + ":" + m.now().Format(time.RFC3339), ChangedElementKind: "schedule", EventType: "schedule"}, "")
-		if err := m.store.PutInvocation(ctx, inv); err != nil {
-			return count, mapStoreError(err)
+		inv := invocationForRunnable(m.now, domainID, item, automation.Invocation{ID: scheduledInvocationID(spaceID, domainID, item.Binding.ID, scheduledAt), SpaceID: spaceID, EventID: "schedule:" + item.Binding.ID + ":" + scheduledAt.Format(time.RFC3339), ChangedElementKind: "schedule", EventType: "schedule"}, "")
+		if err := m.putInvocationIdempotent(ctx, inv); err != nil {
+			return count, err
 		}
-		nowText := m.now().Format(time.RFC3339)
-		_ = m.store.PutScheduleCheckpoint(ctx, storage.ScheduleCheckpoint{DomainID: domainID, AutomationID: item.Binding.ID, LastRunAt: nowText, UpdatedAt: nowText})
+		nowText := now.Format(time.RFC3339)
+		checkpoint = storage.ScheduleCheckpoint{DomainID: domainID, SpaceID: spaceID, AutomationID: item.Binding.ID, LastRunAt: scheduledAt.Format(time.RFC3339), UpdatedAt: nowText}
+		if err := m.putScheduleCheckpointRuntime(ctx, spaceID, checkpoint); err != nil {
+			return count, err
+		}
 		count++
 	}
 	return count, nil

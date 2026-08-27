@@ -14,6 +14,7 @@ import (
 	autooutput "github.com/myceldb/mycel/internal/automation/output"
 	"github.com/myceldb/mycel/internal/automation/render"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
@@ -25,7 +26,8 @@ var ErrInferenceUnavailable = errors.New("automation inference subsystem is not 
 
 func (m *AutomationManager) executeInvocation(ctx context.Context, def automation.Definition, inv automation.Invocation) (automation.Run, error) {
 	now := m.now()
-	run := automation.Run{ID: newRunID(), DomainID: inv.DomainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: inv.AttemptCount + 1, Status: "running", ActorPrincipalID: firstNonEmptyString(inv.ActorPrincipalID, automationActor), OnBehalfOfPrincipalID: firstNonEmptyString(inv.OnBehalfOfPrincipalID, inv.OwnerPrincipalID, def.OwnerPrincipalID, automationActor), OwnerPrincipalID: firstNonEmptyString(inv.OwnerPrincipalID, inv.AutomationOwnerPrincipalID, def.OwnerPrincipalID), AutomationOwnerPrincipalID: firstNonEmptyString(inv.AutomationOwnerPrincipalID, inv.OwnerPrincipalID, def.OwnerPrincipalID), EventOriginPrincipalID: inv.EventOriginPrincipalID, InferenceProfile: strings.TrimSpace(def.Inference.Profile), InferenceProfileID: strings.TrimSpace(def.Inference.ProfileID), StartedAt: now}
+	runID := newRunID()
+	run := automation.Run{ID: runID, DomainID: inv.DomainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: inv.AttemptCount + 1, Status: "running", ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: automationOutputIdempotencyKey(inv, runID), ActorPrincipalID: firstNonEmptyString(inv.ActorPrincipalID, automationActor), OnBehalfOfPrincipalID: firstNonEmptyString(inv.OnBehalfOfPrincipalID, inv.OwnerPrincipalID, def.OwnerPrincipalID, automationActor), OwnerPrincipalID: firstNonEmptyString(inv.OwnerPrincipalID, inv.AutomationOwnerPrincipalID, def.OwnerPrincipalID), AutomationOwnerPrincipalID: firstNonEmptyString(inv.AutomationOwnerPrincipalID, inv.OwnerPrincipalID, def.OwnerPrincipalID), EventOriginPrincipalID: inv.EventOriginPrincipalID, InferenceProfile: strings.TrimSpace(def.Inference.Profile), InferenceProfileID: strings.TrimSpace(def.Inference.ProfileID), StartedAt: now}
 	if m.sessions == nil || m.graphs == nil {
 		result, err := render.Render(def.Input, render.Context{})
 		if err != nil {
@@ -47,21 +49,25 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	if err != nil {
 		return run, err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite})
+	baseRevision, err := m.graphs.CurrentRevision(ctx, inv.SpaceID)
+	if err != nil {
+		return run, err
+	}
+	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite, BaseRevision: &baseRevision})
 	if err != nil {
 		return run, err
 	}
 	node, err := m.graphs.GetNode(ctx, tx, inv.ChangedElementID)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	condition, err := m.evaluateCondition(ctx, tx, def, node, inv.OldNode)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	} else if !condition.Matched {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		run.Status = "skipped"
 		run.Error = conditionFalseReason
 		run.CompletedAt = m.now()
@@ -70,7 +76,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	run.TargetAlias = firstNonEmptyString(strings.TrimSpace(def.Input.Target), "changed")
 	run.TargetNodeID, err = requireNodeAliasID(run.TargetAlias, condition.Aliases, node)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	idempotencyTargetID := run.TargetNodeID
@@ -78,78 +84,214 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		idempotencyAlias := firstNonEmptyString(def.Safety.Idempotency.Target, run.TargetAlias)
 		idempotencyTargetID, err = requireNodeAliasID(idempotencyAlias, condition.Aliases, node)
 		if err != nil {
-			_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return run, err
 		}
 		run.IdempotencyTargetNodeID = idempotencyTargetID
 	}
 	if err := preflightActionTargets(def, condition.Aliases, node); err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	inputContext, err := m.evaluateInputContext(ctx, tx, def, condition.Aliases)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		run.Context = inputContext.Summaries
 		return run, err
 	}
 	run.Context = inputContext.Summaries
 	rendered, err := render.Render(def.Input, render.Context{Changed: node, Old: inv.OldNode, Aliases: condition.Aliases, Collections: inputContext.Collections})
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	run.RenderedInputHash = rendered.Hash
 	if def.Safety.Idempotency.SkipIfOutputUnchanged {
 		duplicate, err := m.hasSuccessfulInputHash(ctx, inv, rendered.Hash, idempotencyElementID(def, run, inv, idempotencyTargetID))
 		if err != nil {
-			_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return run, err
 		}
 		if duplicate {
-			_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			run.Status = "skipped"
 			run.Error = skipReasonDuplicateInput
 			run.CompletedAt = m.now()
 			return run, nil
 		}
 	}
+	engine := actions.Engine{Graphs: m.graphs}
+	applied, err := engine.OutputAlreadyApplied(ctx, tx, run.OutputIdempotencyKey)
+	if err != nil {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+		return run, err
+	}
+	if applied {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+		run.Status = "skipped"
+		run.Error = skipReasonDuplicateOutput
+		run.CompletedAt = m.now()
+		return run, nil
+	}
+	if err := m.ensureClaimStillOwned(ctx, inv); err != nil {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+		return run, err
+	}
 	output, err := m.generateWithInference(ctx, def, inv, rendered.Text, &run)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	parsed, err := autooutput.Parse(def.Output.Mode, def.Output.Schema, output)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
 	run.ActionFingerprint = actionFingerprint(def, parsed)
-	summary, err := (actions.Engine{Graphs: m.graphs}).Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, Changed: node, Aliases: condition.Aliases, Result: parsed})
+	changed, err := m.commitAutomationOutputWithConflictRetry(ctx, executionPrincipal, sess, tx, def, &inv, &run, node, condition.Aliases, parsed)
 	if err != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
-	if !summary.Changed {
-		_, _ = m.sessions.RollbackTransaction(ctx, executionPrincipal, tx.ID)
+	if !changed {
 		run.Status = "skipped"
 		run.CompletedAt = m.now()
 		return run, nil
 	}
-	graphCommit, err := m.graphs.CommitTransactionGraph(ctx, tx)
-	if err != nil {
-		return run, err
-	}
-	commit, err := m.sessions.CommitTransactionAtRevision(ctx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
-	if err != nil {
-		return run, err
-	}
-	run.MutationID = commit.ID
 	run.Status = "succeeded"
 	run.CompletedAt = m.now()
 	outSum := sha256.Sum256([]byte(output))
 	run.OutputHash = hex.EncodeToString(outSum[:])
 	return run, nil
+}
+
+func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.Context, executionPrincipal string, sess sessionservice.GraphSession, firstTx sessionservice.GraphTransaction, def automation.Definition, inv *automation.Invocation, run *automation.Run, firstNode graph.Node, firstAliases map[string]any, parsed autooutput.Result) (bool, error) {
+	const maxAttempts = 3
+	engine := actions.Engine{Graphs: m.graphs}
+	tx := firstTx
+	node := firstNode
+	aliases := firstAliases
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			var err error
+			tx, node, aliases, err = m.reopenAutomationOutputTransaction(ctx, executionPrincipal, sess, def, *inv, run)
+			if err != nil {
+				return false, err
+			}
+		}
+		if err := m.ensureClaimStillOwned(ctx, *inv); err != nil {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			return false, err
+		}
+		if err := m.renewClaim(ctx, inv); err != nil {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			return false, err
+		}
+		run.ClaimOwnerNodeID = inv.ClaimOwnerNodeID
+		run.ClaimVersion = inv.ClaimVersion
+		run.ClaimToken = inv.ClaimToken
+		applied, err := engine.OutputAlreadyApplied(ctx, tx, run.OutputIdempotencyKey)
+		if err != nil {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			return false, err
+		}
+		if applied {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			run.Status = "skipped"
+			run.Error = skipReasonDuplicateOutput
+			return false, nil
+		}
+		summary, err := engine.Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, InvocationID: inv.ID, BindingID: inv.BindingID, TargetNodeID: run.TargetNodeID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: run.OutputIdempotencyKey, Changed: node, Aliases: aliases, Result: parsed})
+		if err != nil {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			return false, err
+		}
+		if !summary.Changed {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			return false, nil
+		}
+		if err := m.renewClaim(ctx, inv); err != nil {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			return false, err
+		}
+		run.ClaimOwnerNodeID = inv.ClaimOwnerNodeID
+		run.ClaimVersion = inv.ClaimVersion
+		run.ClaimToken = inv.ClaimToken
+		graphCommit, err := m.graphs.CommitTransactionGraph(ctx, tx)
+		if err != nil {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			if isGraphConflict(err) && attempt < maxAttempts {
+				continue
+			}
+			return false, err
+		}
+		commit, err := m.sessions.CommitTransactionAtRevision(ctx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
+		if err != nil {
+			return false, err
+		}
+		run.MutationID = commit.ID
+		return true, nil
+	}
+	return false, graphservice.ErrConflict
+}
+
+func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Context, executionPrincipal string, sess sessionservice.GraphSession, def automation.Definition, inv automation.Invocation, run *automation.Run) (sessionservice.GraphTransaction, graph.Node, map[string]any, error) {
+	baseRevision, err := m.graphs.CurrentRevision(ctx, inv.SpaceID)
+	if err != nil {
+		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+	}
+	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite, BaseRevision: &baseRevision})
+	if err != nil {
+		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+	}
+	node, err := m.graphs.GetNode(ctx, tx, inv.ChangedElementID)
+	if err != nil {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+	}
+	condition, err := m.evaluateCondition(ctx, tx, def, node, inv.OldNode)
+	if err != nil {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+	}
+	if !condition.Matched {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+		return sessionservice.GraphTransaction{}, graph.Node{}, nil, fmt.Errorf(conditionFalseReason)
+	}
+	targetAlias := firstNonEmptyString(strings.TrimSpace(def.Input.Target), "changed")
+	targetNodeID, err := requireNodeAliasID(targetAlias, condition.Aliases, node)
+	if err != nil {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+	}
+	run.TargetAlias = targetAlias
+	run.TargetNodeID = targetNodeID
+	if strings.TrimSpace(def.Safety.Idempotency.Scope) == "target" {
+		idempotencyAlias := firstNonEmptyString(def.Safety.Idempotency.Target, run.TargetAlias)
+		idempotencyTargetID, err := requireNodeAliasID(idempotencyAlias, condition.Aliases, node)
+		if err != nil {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		}
+		run.IdempotencyTargetNodeID = idempotencyTargetID
+	}
+	if err := preflightActionTargets(def, condition.Aliases, node); err != nil {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+	}
+	return tx, node, condition.Aliases, nil
+}
+
+func (m *AutomationManager) rollbackAutomationOutputTransaction(ctx context.Context, principalID string, transactionID string) {
+	if m.graphs != nil {
+		m.graphs.DiscardTransactionGraph(ctx, transactionID)
+	}
+	if m.sessions != nil {
+		_, _ = m.sessions.RollbackTransaction(ctx, principalID, transactionID)
+	}
+}
+
+func isGraphConflict(err error) bool {
+	return errors.Is(err, graphservice.ErrConflict) || strings.Contains(strings.ToLower(err.Error()), "graph conflict")
 }
 
 func newRunID() string { return uuid.NewString() }

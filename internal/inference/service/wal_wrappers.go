@@ -40,7 +40,7 @@ type walUsageLedger struct {
 }
 
 func (m *Module) commitInferenceMutation(ctx context.Context, typ wal.RecordType, rec inferenceMutationRecord) error {
-	if m.writeAllowed != nil {
+	if m.writeAllowed != nil && !inferenceRuntimeEvidenceMutation(typ, rec) {
 		if err := m.writeAllowed(); err != nil {
 			return err
 		}
@@ -88,6 +88,18 @@ func (m *Module) commitInferenceMutation(ctx context.Context, typ wal.RecordType
 		m.walWaiter.SetApplied(lsn)
 	}
 	return nil
+}
+
+func inferenceRuntimeEvidenceMutation(typ wal.RecordType, rec inferenceMutationRecord) bool {
+	switch typ {
+	case recordTypeInferenceUsage:
+		return strings.TrimSpace(rec.Kind) == "usage_event.append"
+	case recordTypeInferenceSpace:
+		kind := strings.TrimSpace(rec.Kind)
+		return kind == "policy_decision.upsert" || kind == "policy_decision.delete"
+	default:
+		return false
+	}
 }
 
 func (m *Module) applyInferenceGlobal(ctx context.Context, rec wal.Record) error {

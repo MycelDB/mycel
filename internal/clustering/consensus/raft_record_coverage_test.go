@@ -38,6 +38,7 @@ var phaseDRaftRecordCoverage = map[string]raftRecordCoverage{
 	"inference.global.mutation.v1":         {Subsystem: "inference", Scope: "system WAL; raft gated until inference raft executor", Status: "covered", Tranche: "INF10"},
 	"inference.space.mutation.v1":          {Subsystem: "inference", Scope: "space WAL; raft gated until inference raft executor", Status: "covered", Tranche: "INF10"},
 	"inference.usage.mutation.v1":          {Subsystem: "inference usage", Scope: "system WAL; raft gated until inference raft executor", Status: "covered", Tranche: "INF10"},
+	"automation.mutation.v1":               {Subsystem: "automation", Scope: "partition raft by domain UUID", Status: "covered", Tranche: "automation raft provisioning"},
 	"daemon.backup.policy.update.v1":       {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "D5 verify"},
 	"daemon.backup.delete.v1":              {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "D5 verify"},
 	"daemon.backup.cluster.request.v1":     {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},

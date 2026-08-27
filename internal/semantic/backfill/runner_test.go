@@ -388,8 +388,18 @@ func TestSelectRuleTargetsTreatsNodeTypeLabelsAsAnyOf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selectRuleTargets() error = %v", err)
 	}
-	if len(selected) != 2 || selected[0].ID != note.ID || selected[1].ID != task.ID {
+	selectedIDs := map[graph.NodeID]struct{}{}
+	for _, node := range selected {
+		selectedIDs[node.ID] = struct{}{}
+	}
+	if len(selectedIDs) != 2 {
 		t.Fatalf("selected = %+v, want note and task", selected)
+	}
+	if _, ok := selectedIDs[note.ID]; !ok {
+		t.Fatalf("selected = %+v, want note", selected)
+	}
+	if _, ok := selectedIDs[task.ID]; !ok {
+		t.Fatalf("selected = %+v, want task", selected)
 	}
 }
 

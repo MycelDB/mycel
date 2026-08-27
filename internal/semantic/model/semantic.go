@@ -484,6 +484,75 @@ type InferencePolicy struct {
 	ExpiresAt             *time.Time        `json:"expires_at,omitempty"`
 }
 
+// IntelligenceParameters stores default runtime parameters for an Intelligence profile.
+type IntelligenceParameters struct {
+	Temperature     *float64       `json:"temperature,omitempty"`
+	MaxInputTokens  int            `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
+	ResponseFormat  string         `json:"response_format,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+}
+
+// IntelligencePrivacyRequirement constrains provider privacy for an Intelligence profile.
+type IntelligencePrivacyRequirement struct {
+	AllowedPrivacyClasses []PrivacyClass `json:"allowed_privacy_classes,omitempty"`
+	RequireLocalEndpoint  bool           `json:"require_local_endpoint,omitempty"`
+	DisallowThirdParty    bool           `json:"disallow_third_party,omitempty"`
+}
+
+// IntelligenceProfile is the semantic-authoritative, space-scoped runtime
+// access profile used by semantic rules, semantic search, and graph automations.
+type IntelligenceProfile struct {
+	ID                 IntelligenceProfileID          `json:"id"`
+	SpaceID            domainspace.SpaceID            `json:"space_id"`
+	Key                string                         `json:"key"`
+	DisplayName        string                         `json:"display_name,omitempty"`
+	Description        string                         `json:"description,omitempty"`
+	Operation          Operation                      `json:"operation"`
+	Purpose            string                         `json:"purpose,omitempty"`
+	DomainIDs          []string                       `json:"domain_ids,omitempty"`
+	CapabilityRefs     []string                       `json:"capability_refs,omitempty"`
+	EndpointRefs       []string                       `json:"endpoint_refs,omitempty"`
+	ModelRefs          []string                       `json:"model_refs,omitempty"`
+	RequiredFeatures   []string                       `json:"required_features,omitempty"`
+	PrivacyRequirement IntelligencePrivacyRequirement `json:"privacy_requirement,omitempty"`
+	DefaultParameters  IntelligenceParameters         `json:"default_parameters,omitempty"`
+	Enabled            bool                           `json:"enabled"`
+	CreatedBy          string                         `json:"created_by,omitempty"`
+	CreatedAt          time.Time                      `json:"created_at"`
+	UpdatedAt          time.Time                      `json:"updated_at"`
+	Metadata           map[string]any                 `json:"metadata,omitempty"`
+}
+
+// NormalizeIntelligenceProfile trims fields and normalizes profile keys.
+func NormalizeIntelligenceProfile(profile IntelligenceProfile) IntelligenceProfile {
+	profile.Key = strings.ToLower(strings.TrimSpace(profile.Key))
+	profile.DisplayName = strings.TrimSpace(profile.DisplayName)
+	profile.Description = strings.TrimSpace(profile.Description)
+	profile.Purpose = strings.TrimSpace(profile.Purpose)
+	profile.CreatedBy = strings.TrimSpace(profile.CreatedBy)
+	profile.DomainIDs = trimStringSlice(profile.DomainIDs)
+	profile.CapabilityRefs = trimStringSlice(profile.CapabilityRefs)
+	profile.EndpointRefs = trimStringSlice(profile.EndpointRefs)
+	profile.ModelRefs = trimStringSlice(profile.ModelRefs)
+	profile.RequiredFeatures = trimStringSlice(profile.RequiredFeatures)
+	profile.DefaultParameters.ResponseFormat = strings.TrimSpace(profile.DefaultParameters.ResponseFormat)
+	if profile.DisplayName == "" {
+		profile.DisplayName = profile.Key
+	}
+	return profile
+}
+
+func trimStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 // SemanticSourcePolicy selects roots and describes source assembly for a semantic index.
 type SemanticSourcePolicy struct {
 	RootQuery         string           `json:"root_query,omitempty"`

@@ -19,34 +19,35 @@ import (
 )
 
 const (
-	inferenceDirName          = "inference"
-	secretsDirName            = "secrets"
-	credentialsDirName        = "credentials"
-	packagesFileName          = "packages.json"
-	modelEndpointsFileName    = "model_endpoints.json"
-	modelsFileName            = "models.json"
-	modelEndpointCapsFileName = "model_endpoint_capabilities.json"
-	vectorStoresFileName      = "vector_stores.json"
-	secretsFileName           = "secrets.json"
-	credentialsFileName       = "credentials.json"
-	semanticRulesFileName     = "rules.json"
-	semanticIndexesFileName   = "indexes.json"
-	credentialGrantsFileName  = "credential_grants.json"
-	inferencePoliciesFileName = "inference_policies.json"
-	dirtyQueueFileName        = "dirty_queue.json"
-	ruleStateFileName         = "rule_state.json"
-	searchIndexStateFileName  = "search_index_state.json"
-	indexStateFileName        = "index_state.json"
-	policyDecisionsFileName   = "policy_decisions.json"
-	maintenanceDirName        = "maintenance"
-	graphDirtyEventsDirName   = "dirty"
-	graphDirtyEventsFileName  = "graph-dirty-000001.ksem"
-	workStateDirName          = "work"
-	workStateFileName         = "state.json"
-	workEventsFileName        = "work-000001.ksem"
-	checkpointsFileName       = "checkpoints.json"
-	defaultVectorStoreKey     = "mycel-file"
-	defaultVectorStoreName    = "Mycel embedded file vector store"
+	inferenceDirName             = "inference"
+	secretsDirName               = "secrets"
+	credentialsDirName           = "credentials"
+	packagesFileName             = "packages.json"
+	modelEndpointsFileName       = "model_endpoints.json"
+	modelsFileName               = "models.json"
+	modelEndpointCapsFileName    = "model_endpoint_capabilities.json"
+	vectorStoresFileName         = "vector_stores.json"
+	secretsFileName              = "secrets.json"
+	credentialsFileName          = "credentials.json"
+	semanticRulesFileName        = "rules.json"
+	semanticIndexesFileName      = "indexes.json"
+	intelligenceProfilesFileName = "intelligence_profiles.json"
+	credentialGrantsFileName     = "credential_grants.json"
+	inferencePoliciesFileName    = "inference_policies.json"
+	dirtyQueueFileName           = "dirty_queue.json"
+	ruleStateFileName            = "rule_state.json"
+	searchIndexStateFileName     = "search_index_state.json"
+	indexStateFileName           = "index_state.json"
+	policyDecisionsFileName      = "policy_decisions.json"
+	maintenanceDirName           = "maintenance"
+	graphDirtyEventsDirName      = "dirty"
+	graphDirtyEventsFileName     = "graph-dirty-000001.ksem"
+	workStateDirName             = "work"
+	workStateFileName            = "state.json"
+	workEventsFileName           = "work-000001.ksem"
+	checkpointsFileName          = "checkpoints.json"
+	defaultVectorStoreKey        = "mycel-file"
+	defaultVectorStoreName       = "Mycel embedded file vector store"
 )
 
 type packagesState struct {
@@ -83,6 +84,10 @@ type semanticRulesState struct {
 
 type semanticIndexesState struct {
 	Indexes []domainsemantic.SemanticIndex `json:"indexes"`
+}
+
+type intelligenceProfilesState struct {
+	Profiles []domainsemantic.IntelligenceProfile `json:"profiles"`
 }
 
 type credentialGrantsState struct {
@@ -584,6 +589,7 @@ type spaceManager struct {
 	spaceID           domainspace.SpaceID
 	rules             semanticRulesState
 	indexes           semanticIndexesState
+	profiles          intelligenceProfilesState
 	grants            credentialGrantsState
 	policies          inferencePoliciesState
 	ruleStates        semanticRuleStatesState
@@ -645,6 +651,22 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	}
 	if err := loadJSON(m.path(semanticIndexesFileName), &m.indexes, semanticIndexesState{Indexes: []domainsemantic.SemanticIndex{}}); err != nil {
 		return err
+	}
+	if err := loadJSON(m.path(intelligenceProfilesFileName), &m.profiles, intelligenceProfilesState{Profiles: []domainsemantic.IntelligenceProfile{}}); err != nil {
+		return err
+	}
+	profilesChanged := false
+	for i, profile := range m.profiles.Profiles {
+		normalized := domainsemantic.NormalizeIntelligenceProfile(profile)
+		if !reflect.DeepEqual(profile, normalized) {
+			profilesChanged = true
+		}
+		m.profiles.Profiles[i] = normalized
+	}
+	if profilesChanged {
+		if err := persistJSON(m.path(intelligenceProfilesFileName), m.profiles); err != nil {
+			return err
+		}
 	}
 	if err := loadJSON(m.path(credentialGrantsFileName), &m.grants, credentialGrantsState{Grants: []domainsemantic.CredentialGrant{}}); err != nil {
 		return err
@@ -853,6 +875,76 @@ func (m *spaceManager) ListSemanticIndexes(ctx context.Context) ([]domainsemanti
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return append([]domainsemantic.SemanticIndex(nil), m.indexes.Indexes...), nil
+}
+
+func (m *spaceManager) UpsertIntelligenceProfile(ctx context.Context, profile domainsemantic.IntelligenceProfile) (domainsemantic.IntelligenceProfile, error) {
+	if err := validateIntelligenceProfile(ctx, m.spaceID, profile); err != nil {
+		return domainsemantic.IntelligenceProfile{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	profile = domainsemantic.NormalizeIntelligenceProfile(profile)
+	if profile.ID == uuid.Nil {
+		profile.ID = newID()
+	}
+	if profile.CreatedAt.IsZero() {
+		profile.CreatedAt = now
+	}
+	if profile.UpdatedAt.IsZero() {
+		profile.UpdatedAt = now
+	}
+	match := -1
+	for i, existing := range m.profiles.Profiles {
+		if existing.ID == profile.ID {
+			match = i
+			break
+		}
+	}
+	for i, existing := range m.profiles.Profiles {
+		if existing.SpaceID == profile.SpaceID && normalizeKey(existing.Key) == profile.Key {
+			if match >= 0 && i != match {
+				return domainsemantic.IntelligenceProfile{}, fmt.Errorf("%w: intelligence profile key conflicts with existing profile", ErrInvalidInput)
+			}
+			match = i
+			break
+		}
+	}
+	if match >= 0 {
+		profile.ID = m.profiles.Profiles[match].ID
+		profile.CreatedAt = m.profiles.Profiles[match].CreatedAt
+		m.profiles.Profiles[match] = profile
+		return profile, persistJSON(m.path(intelligenceProfilesFileName), m.profiles)
+	}
+	m.profiles.Profiles = append(m.profiles.Profiles, profile)
+	return profile, persistJSON(m.path(intelligenceProfilesFileName), m.profiles)
+}
+
+func (m *spaceManager) ListIntelligenceProfiles(ctx context.Context) ([]domainsemantic.IntelligenceProfile, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]domainsemantic.IntelligenceProfile(nil), m.profiles.Profiles...), nil
+}
+
+func (m *spaceManager) DeleteIntelligenceProfile(ctx context.Context, id domainsemantic.IntelligenceProfileID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: intelligence_profile_id is required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range m.profiles.Profiles {
+		if item.ID == id {
+			m.profiles.Profiles = append(m.profiles.Profiles[:i], m.profiles.Profiles[i+1:]...)
+			return persistJSON(m.path(intelligenceProfilesFileName), m.profiles)
+		}
+	}
+	return ErrNotFound
 }
 
 func (m *spaceManager) UpsertCredentialGrant(ctx context.Context, grant domainsemantic.CredentialGrant) (domainsemantic.CredentialGrant, error) {
@@ -1959,6 +2051,26 @@ func validateSemanticIndex(ctx context.Context, spaceID domainspace.SpaceID, ind
 	}
 	if index.VectorStoreID == uuid.Nil {
 		return fmt.Errorf("%w: vector_store_id is required", ErrInvalidInput)
+	}
+	return nil
+}
+
+func validateIntelligenceProfile(ctx context.Context, spaceID domainspace.SpaceID, profile domainsemantic.IntelligenceProfile) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	profile = domainsemantic.NormalizeIntelligenceProfile(profile)
+	if profile.SpaceID == uuid.Nil {
+		return fmt.Errorf("%w: profile space_id is required", ErrInvalidInput)
+	}
+	if profile.SpaceID != spaceID {
+		return fmt.Errorf("%w: profile space_id does not match store", ErrInvalidInput)
+	}
+	if strings.TrimSpace(profile.Key) == "" {
+		return fmt.Errorf("%w: profile key is required", ErrInvalidInput)
+	}
+	if profile.Operation == "" {
+		return fmt.Errorf("%w: profile operation is required", ErrInvalidInput)
 	}
 	return nil
 }

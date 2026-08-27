@@ -112,6 +112,26 @@ func TestInferenceMutationRespectsLocalWriteGate(t *testing.T) {
 	}
 }
 
+func TestInferenceRuntimeEvidenceBypassesLocalWriteGate(t *testing.T) {
+	ctx := context.Background()
+	host := runtimetest.New(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	hostWithGate := &rejectingWriteHost{Host: host}
+	module := NewModule()
+	if result := module.Init(ctx, hostWithGate); !result.OK {
+		t.Fatalf("init: %#v", result)
+	}
+	spaceMgr, err := module.SpaceManager(ctx, "space-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceMgr.UpsertPolicyDecision(ctx, model.PolicyDecision{SpaceID: "space-1", Action: model.PolicyDecisionAllowed}); err != nil {
+		t.Fatalf("policy decision evidence should bypass local write gate: %v", err)
+	}
+	if _, err := module.UsageLedger().AppendUsageEvent(ctx, model.UsageEvent{SpaceID: "space-1", Operation: model.OperationChat, Status: model.UsageStatusSucceeded}); err != nil {
+		t.Fatalf("usage evidence should bypass local write gate: %v", err)
+	}
+}
+
 func TestInferenceDerivedSyncBypassesLocalWriteGate(t *testing.T) {
 	ctx := context.Background()
 	host := runtimetest.New(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))

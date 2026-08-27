@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
@@ -167,7 +168,11 @@ func (s *FileStore) PutInvocation(ctx context.Context, inv automation.Invocation
 	if day == "0001-01-01" {
 		day = "undated"
 	}
-	return writeJSONAtomic(filepath.Join(s.root, "invocations", inv.DomainID.String(), day, safeName(inv.ID)+".json"), inv)
+	path := filepath.Join(s.root, "invocations", inv.DomainID.String(), day, safeName(inv.ID)+".json")
+	if err := writeJSONAtomic(path, inv); err != nil {
+		return err
+	}
+	return s.deleteDuplicateInvocationFiles(ctx, inv.DomainID, inv.ID, path)
 }
 
 func (s *FileStore) GetInvocation(ctx context.Context, domainID graph.DomainID, id string) (automation.Invocation, error) {
@@ -184,6 +189,71 @@ func (s *FileStore) GetInvocation(ctx context.Context, domainID graph.DomainID, 
 		}
 	}
 	return automation.Invocation{}, ErrNotFound
+}
+
+func (s *FileStore) DeleteInvocation(ctx context.Context, domainID graph.DomainID, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	root := filepath.Join(s.root, "invocations", domainID.String())
+	removed := false
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		var inv automation.Invocation
+		if err := readJSON(path, &inv); err != nil {
+			return err
+		}
+		if inv.ID == id {
+			removed = true
+			return os.Remove(path)
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !removed {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *FileStore) deleteDuplicateInvocationFiles(ctx context.Context, domainID graph.DomainID, id string, keepPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	root := filepath.Join(s.root, "invocations", domainID.String())
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" || path == keepPath {
+			return nil
+		}
+		var inv automation.Invocation
+		if err := readJSON(path, &inv); err != nil {
+			return err
+		}
+		if inv.ID == id {
+			return os.Remove(path)
+		}
+		return nil
+	})
+}
+
+func (s *FileStore) ListInvocationDomains(ctx context.Context) ([]graph.DomainID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.listDomains("invocations")
 }
 
 func (s *FileStore) ListInvocations(ctx context.Context, domainID graph.DomainID, filter InvocationFilter) ([]automation.Invocation, error) {
@@ -291,6 +361,77 @@ func newerAutomationRun(candidate, current automation.Run) bool {
 	return candidate.ID > current.ID
 }
 
+func (s *FileStore) DeleteRun(ctx context.Context, domainID graph.DomainID, runID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	root := filepath.Join(s.root, "runs", domainID.String())
+	removed := false
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		var run automation.Run
+		if err := readJSON(path, &run); err != nil {
+			return err
+		}
+		if run.ID == runID {
+			removed = true
+			return os.Remove(path)
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !removed {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *FileStore) ListRunDomains(ctx context.Context) ([]graph.DomainID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.listDomains("runs")
+}
+
+func (s *FileStore) ListRuns(ctx context.Context, domainID graph.DomainID) ([]automation.Run, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(s.root, "runs", domainID.String())
+	out := []automation.Run{}
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		var run automation.Run
+		if err := readJSON(path, &run); err != nil {
+			return err
+		}
+		out = append(out, run)
+		return nil
+	}); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
+	return out, nil
+}
+
 func (s *FileStore) PutProposal(ctx context.Context, proposal automation.Proposal) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -383,7 +524,7 @@ func (s *FileStore) GetScheduleCheckpoint(ctx context.Context, domainID graph.Do
 		return ScheduleCheckpoint{}, err
 	}
 	var out ScheduleCheckpoint
-	if err := readJSON(filepath.Join(s.root, "schedule-checkpoints", domainID.String(), safeName(automationID)+".json"), &out); err != nil {
+	if err := readJSON(s.scheduleCheckpointPath(domainID, automationID), &out); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return out, ErrNotFound
 		}
@@ -392,15 +533,102 @@ func (s *FileStore) GetScheduleCheckpoint(ctx context.Context, domainID graph.Do
 	return out, nil
 }
 
+func (s *FileStore) DeleteScheduleCheckpoint(ctx context.Context, domainID graph.DomainID, automationID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(s.scheduleCheckpointPath(domainID, automationID))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListScheduleCheckpointDomains(ctx context.Context) ([]graph.DomainID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.listDomains("schedule-checkpoints")
+}
+
+func (s *FileStore) ListScheduleCheckpoints(ctx context.Context, domainID graph.DomainID) ([]ScheduleCheckpoint, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listJSONFiles[ScheduleCheckpoint](filepath.Join(s.root, "schedule-checkpoints", domainID.String()))
+}
+
+func (s *FileStore) PutGraphReplayCursor(ctx context.Context, cursor GraphReplayCursor) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeJSONAtomic(s.graphReplayCursorPath(cursor.SpaceID, cursor.DomainID), cursor)
+}
+
+func (s *FileStore) GetGraphReplayCursor(ctx context.Context, spaceID string, domainID graph.DomainID) (GraphReplayCursor, error) {
+	if err := ctx.Err(); err != nil {
+		return GraphReplayCursor{}, err
+	}
+	var out GraphReplayCursor
+	if err := readJSON(s.graphReplayCursorPath(spaceID, domainID), &out); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, ErrNotFound
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *FileStore) DeleteGraphReplayCursor(ctx context.Context, spaceID string, domainID graph.DomainID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(s.graphReplayCursorPath(spaceID, domainID))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListGraphReplayCursors(ctx context.Context) ([]GraphReplayCursor, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(s.root, "graph-replay-cursors")
+	out := []GraphReplayCursor{}
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		var cursor GraphReplayCursor
+		if err := readJSON(path, &cursor); err != nil {
+			return err
+		}
+		out = append(out, cursor)
+		return nil
+	}); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SpaceID != out[j].SpaceID {
+			return out[i].SpaceID < out[j].SpaceID
+		}
+		return out[i].DomainID.String() < out[j].DomainID.String()
+	})
+	return out, nil
+}
+
 func (s *FileStore) PutWorkflowInstance(ctx context.Context, instance automation.WorkflowInstance) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	day := instance.CreatedAt.Format("2006-01-02")
-	if day == "0001-01-01" {
-		day = "undated"
-	}
-	return writeJSONAtomic(filepath.Join(s.root, "workflow-instances", instance.DomainID.String(), day, safeName(instance.ID)+".json"), instance)
+	return writeJSONAtomic(s.workflowInstancePath(instance.DomainID, instance.CreatedAt, instance.ID), instance)
 }
 
 func (s *FileStore) GetWorkflowInstance(ctx context.Context, domainID graph.DomainID, id string) (automation.WorkflowInstance, error) {
@@ -414,6 +642,33 @@ func (s *FileStore) GetWorkflowInstance(ctx context.Context, domainID graph.Doma
 		}
 	}
 	return automation.WorkflowInstance{}, ErrNotFound
+}
+
+func (s *FileStore) DeleteWorkflowInstance(ctx context.Context, domainID graph.DomainID, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	items, err := s.ListWorkflowInstances(ctx, domainID, "", 0)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item.ID == id {
+			err := os.Remove(s.workflowInstancePath(domainID, item.CreatedAt, id))
+			if errors.Is(err, os.ErrNotExist) {
+				return ErrNotFound
+			}
+			return err
+		}
+	}
+	return ErrNotFound
+}
+
+func (s *FileStore) ListWorkflowInstanceDomains(ctx context.Context) ([]graph.DomainID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.listDomains("workflow-instances")
 }
 
 func (s *FileStore) ListWorkflowInstances(ctx context.Context, domainID graph.DomainID, status string, limit int) ([]automation.WorkflowInstance, error) {
@@ -455,11 +710,34 @@ func (s *FileStore) PutWorkflowStepRun(ctx context.Context, run automation.Workf
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	day := run.StartedAt.Format("2006-01-02")
-	if day == "0001-01-01" {
-		day = "undated"
+	return writeJSONAtomic(s.workflowStepRunPath(run.DomainID, run.StartedAt, run.ID), run)
+}
+
+func (s *FileStore) DeleteWorkflowStepRun(ctx context.Context, domainID graph.DomainID, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return writeJSONAtomic(filepath.Join(s.root, "workflow-steps", run.DomainID.String(), day, safeName(run.ID)+".json"), run)
+	runs, err := s.ListWorkflowStepRuns(ctx, domainID, "")
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run.ID == id {
+			err := os.Remove(s.workflowStepRunPath(domainID, run.StartedAt, id))
+			if errors.Is(err, os.ErrNotExist) {
+				return ErrNotFound
+			}
+			return err
+		}
+	}
+	return ErrNotFound
+}
+
+func (s *FileStore) ListWorkflowStepRunDomains(ctx context.Context) ([]graph.DomainID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.listDomains("workflow-steps")
 }
 
 func (s *FileStore) ListWorkflowStepRuns(ctx context.Context, domainID graph.DomainID, instanceID string) ([]automation.WorkflowStepRun, error) {
@@ -528,6 +806,30 @@ func (s *FileStore) definitionPath(domainID graph.DomainID, id string) string {
 	return filepath.Join(s.root, "definitions", domainID.String(), safeName(id)+".json")
 }
 
+func (s *FileStore) scheduleCheckpointPath(domainID graph.DomainID, automationID string) string {
+	return filepath.Join(s.root, "schedule-checkpoints", domainID.String(), safeName(automationID)+".json")
+}
+
+func (s *FileStore) graphReplayCursorPath(spaceID string, domainID graph.DomainID) string {
+	return filepath.Join(s.root, "graph-replay-cursors", safeName(spaceID), domainID.String()+".json")
+}
+
+func (s *FileStore) workflowInstancePath(domainID graph.DomainID, createdAt time.Time, id string) string {
+	day := createdAt.Format("2006-01-02")
+	if day == "0001-01-01" {
+		day = "undated"
+	}
+	return filepath.Join(s.root, "workflow-instances", domainID.String(), day, safeName(id)+".json")
+}
+
+func (s *FileStore) workflowStepRunPath(domainID graph.DomainID, startedAt time.Time, id string) string {
+	day := startedAt.Format("2006-01-02")
+	if day == "0001-01-01" {
+		day = "undated"
+	}
+	return filepath.Join(s.root, "workflow-steps", domainID.String(), day, safeName(id)+".json")
+}
+
 func (s *FileStore) listDomains(kind string) ([]graph.DomainID, error) {
 	dir := filepath.Join(s.root, kind)
 	entries, err := os.ReadDir(dir)
@@ -587,6 +889,54 @@ func jsonSortKey(value any) string {
 		}
 	}
 	return fmt.Sprint(value)
+}
+
+func (s *FileStore) DeleteSuccessfulInputIndex(ctx context.Context, record SuccessfulInputIndex) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	elementID := firstNonEmpty(record.TargetElementID, record.ChangedElementID)
+	err := os.Remove(s.successfulInputIndexPath(record.DomainID, record.AutomationID, record.Version, elementID, record.InputHash))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListSuccessfulInputIndexDomains(ctx context.Context) ([]graph.DomainID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.listDomains(filepath.Join("indexes", "successful-input"))
+}
+
+func (s *FileStore) ListSuccessfulInputIndexes(ctx context.Context, domainID graph.DomainID) ([]SuccessfulInputIndex, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(s.root, "indexes", "successful-input", domainID.String())
+	out := []SuccessfulInputIndex{}
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		var record SuccessfulInputIndex
+		if err := readJSON(path, &record); err != nil {
+			return err
+		}
+		out = append(out, record)
+		return nil
+	}); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return jsonSortKey(out[i]) < jsonSortKey(out[j]) })
+	return out, nil
 }
 
 func (s *FileStore) successfulInputIndexPath(domainID graph.DomainID, automationID string, version int, elementID string, inputHash string) string {

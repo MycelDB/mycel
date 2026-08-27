@@ -182,6 +182,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			logger.Info("semantic maintenance disabled")
 		}
 	}
+	if err := m.rebuildInferenceProjection(ctx); err != nil {
+		return runtime.Abort(ModuleName, "inference_projection", "failed to rebuild inference projection", err)
+	}
 	return runtime.OK(ModuleName)
 }
 
@@ -399,7 +402,18 @@ func (m *Module) GlobalManager() storesemantic.GlobalManager {
 }
 
 func (m *Module) ListVectorRecords(ctx context.Context, spaceID domainspace.SpaceID, indexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
-	return vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}.ListRecords(ctx, spaceID, indexID)
+	if leader, forward, err := m.shouldForwardRaftSemanticRead(spaceID); err != nil {
+		return nil, err
+	} else if m.raftGroups != nil && leader == 0 {
+		return nil, fmt.Errorf("semantic raft partition for space %s has no leader", spaceID)
+	} else if forward {
+		var res raftSemanticVectorRecordsResponse
+		if err := m.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "list_vector_records", SpaceID: spaceID, IndexID: indexID}, &res); err != nil {
+			return nil, err
+		}
+		return res.Records, nil
+	}
+	return m.localVectorBackend().ListRecords(ctx, spaceID, indexID)
 }
 
 func (m *Module) PurgeVectorIndex(ctx context.Context, spaceID domainspace.SpaceID, indexID domainsemantic.SemanticIndexID) error {
@@ -408,7 +422,19 @@ func (m *Module) PurgeVectorIndex(ctx context.Context, spaceID domainspace.Space
 		return err
 	}
 	defer release()
-	return vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}.PurgeIndex(ctx, spaceID, indexID)
+	if leader, forward, err := m.shouldForwardRaftSemanticRead(spaceID); err != nil {
+		return err
+	} else if m.raftGroups != nil && leader == 0 {
+		return fmt.Errorf("semantic raft partition for space %s has no leader", spaceID)
+	} else if forward {
+		var res struct{}
+		return m.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "purge_vector_index", SpaceID: spaceID, IndexID: indexID}, &res)
+	}
+	return m.localVectorBackend().PurgeIndex(ctx, spaceID, indexID)
+}
+
+func (m *Module) localVectorBackend() vectorstore.MycelFileBackend {
+	return vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}
 }
 
 func (m *Module) EncryptSecret(ctx context.Context, plain string) (*domainsemantic.EncryptedSecretPayload, error) {
@@ -436,6 +462,14 @@ func (m *Module) EncryptSecret(ctx context.Context, plain string) (*domainsemant
 }
 
 func (m *Module) ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager, error) {
+	return m.listSpaceManagers(ctx, false)
+}
+
+func (m *Module) listBaseSpaceManagers(ctx context.Context) ([]SpaceSemanticManager, error) {
+	return m.listSpaceManagers(ctx, true)
+}
+
+func (m *Module) listSpaceManagers(ctx context.Context, baseOnly bool) ([]SpaceSemanticManager, error) {
 	graphsDir := filepath.Join(m.dataDir, "graphs")
 	entries, err := os.ReadDir(graphsDir)
 	if err != nil {
@@ -454,7 +488,12 @@ func (m *Module) ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager,
 			continue
 		}
 		spaceID := domainspace.SpaceID(id)
-		mgr, err := m.SpaceManager(ctx, spaceID)
+		var mgr storesemantic.SpaceManager
+		if baseOnly {
+			mgr, err = m.baseSpaceManager(ctx, spaceID)
+		} else {
+			mgr, err = m.SpaceManager(ctx, spaceID)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -521,6 +560,17 @@ func (m *Module) DirtyEventAppender(ctx context.Context, spaceID domainspace.Spa
 }
 
 func (m *Module) SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.SpaceManager, error) {
+	mgr, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	if m.wal != nil || m.raftGroups != nil {
+		return &walSpaceManager{inner: mgr, module: m, spaceID: spaceID}, nil
+	}
+	return mgr, nil
+}
+
+func (m *Module) baseSpaceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.SpaceManager, error) {
 	if spaceID == domainspace.SpaceID(uuid.Nil) {
 		return nil, fmt.Errorf("space_id is required")
 	}
@@ -530,14 +580,15 @@ func (m *Module) SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) 
 	if err := mgr.Init(ctx, m.spaceSemanticDir(spaceID), spaceID); err != nil {
 		return nil, err
 	}
-	if m.wal != nil || m.raftGroups != nil {
-		return &walSpaceManager{inner: mgr, module: m, spaceID: spaceID}, nil
-	}
 	return mgr, nil
 }
 
 func (m *Module) spaceSemanticDir(spaceID domainspace.SpaceID) string {
 	return filepath.Join(m.dataDir, "graphs", spaceID.String(), "semantic")
+}
+
+func (m *Module) spaceInferenceProjectionDir(spaceID domainspace.SpaceID) string {
+	return filepath.Join(m.dataDir, "graphs", spaceID.String(), "inference")
 }
 
 func (m *Module) GetMaintenanceStatus(ctx context.Context, in MaintenanceStatusInput) (MaintenanceStatus, error) {
@@ -1089,11 +1140,26 @@ func workerConfigFromDaemon(cfg MaintenanceConfig) semanticmaintenance.WorkerCon
 }
 
 func (m *Module) Search(ctx context.Context, in SearchInput) (semanticsearch.Result, error) {
-	mgr, err := m.SpaceManager(ctx, in.SpaceID)
+	if leader, forward, err := m.shouldForwardRaftSemanticRead(in.SpaceID); err != nil {
+		return semanticsearch.Result{}, err
+	} else if m.raftGroups != nil && leader == 0 {
+		return semanticsearch.Result{}, fmt.Errorf("semantic raft partition for space %s has no leader", in.SpaceID)
+	} else if forward {
+		var res raftSemanticSearchResponse
+		if err := m.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "search", SpaceID: in.SpaceID, Search: in}, &res); err != nil {
+			return semanticsearch.Result{}, err
+		}
+		return res.Result, nil
+	}
+	return m.searchLocal(ctx, in)
+}
+
+func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearch.Result, error) {
+	mgr, err := m.baseSpaceManager(ctx, in.SpaceID)
 	if err != nil {
 		return semanticsearch.Result{}, err
 	}
 	global := m.GlobalManager()
-	planner := semanticsearch.Planner{GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, in.ActorPrincipalID), VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}
+	planner := semanticsearch.Planner{GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, in.ActorPrincipalID), VectorBackend: m.localVectorBackend()}
 	return planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleIDs: in.SemanticRuleIDs, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
 }

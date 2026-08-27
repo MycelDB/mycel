@@ -274,16 +274,10 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 					if err := space.Manager.DeleteCredentialGrant(ctx, grant.ID); err != nil {
 						return nil, mapAdminInferenceError(err, "delete credential grant")
 					}
-					if s.inference != nil {
-						inferenceSpace, err := s.inference.SpaceManager(ctx, space.SpaceID.String())
-						if err != nil {
-							return nil, mapAdminInferenceError(err, "open inference space manager")
-						}
-						if err := inferenceSpace.DeleteCredentialGrant(ctx, grant.ID); err != nil {
-							return nil, mapAdminInferenceError(err, "delete inference credential grant")
-						}
-						deletedStandaloneGrants[grant.ID.String()] = struct{}{}
+					if err := s.deleteSyncedIntelligenceCredentialGrant(ctx, space.SpaceID.String(), grant.ID); err != nil {
+						return nil, mapAdminInferenceError(err, "delete inference credential grant")
 					}
+					deletedStandaloneGrants[grant.ID.String()] = struct{}{}
 					deletedGrants++
 				}
 			}
@@ -305,7 +299,7 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 					} else if len(refs) > 0 {
 						return nil, referencedPrecondition("credential grant", refs)
 					}
-					if err := inferenceSpace.DeleteCredentialGrant(ctx, grant.ID); err != nil {
+					if err := s.deleteSyncedIntelligenceCredentialGrant(ctx, space.SpaceID.String(), domainsemantic.CredentialGrantID(grant.ID)); err != nil {
 						return nil, mapAdminInferenceError(err, "delete inference credential grant")
 					}
 					if _, seen := deletedStandaloneGrants[grant.ID.String()]; !seen {
@@ -325,20 +319,16 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 		if err := s.semantic.GlobalManager().DeleteSecret(ctx, credential.SecretRef); err != nil {
 			return nil, mapAdminInferenceError(err, "delete secret")
 		}
-		if s.inference != nil {
-			if err := s.inference.GlobalManager().DeleteSecret(ctx, credential.SecretRef); err != nil {
-				return nil, mapAdminInferenceError(err, "delete inference secret")
-			}
+		if err := s.deleteSyncedInferenceSecret(ctx, credential.SecretRef); err != nil {
+			return nil, mapAdminInferenceError(err, "delete inference secret")
 		}
 		secretDeleted = true
 	}
 	if err := s.semantic.GlobalManager().DeleteCredential(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete credential")
 	}
-	if s.inference != nil {
-		if err := s.inference.GlobalManager().DeleteCredential(ctx, id); err != nil {
-			return nil, mapAdminInferenceError(err, "delete inference credential")
-		}
+	if err := s.deleteSyncedIntelligenceCredential(ctx, id); err != nil {
+		return nil, mapAdminInferenceError(err, "delete inference credential")
 	}
 	return &adminv1.AdminIntelligenceAccessCredentialServiceDeleteCredentialResponse{CredentialId: id.String(), CredentialGrantsDeleted: deletedGrants, SecretDeleted: secretDeleted}, nil
 }

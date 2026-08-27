@@ -332,10 +332,8 @@ func (s *AdminInferenceService) DeleteModelEndpoint(ctx context.Context, req *ad
 	if err := s.semantic.GlobalManager().DeleteModelEndpoint(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete model endpoint")
 	}
-	if s.inference != nil {
-		if err := s.inference.GlobalManager().DeleteEndpoint(ctx, id); err != nil {
-			return nil, mapAdminInferenceError(err, "delete inference endpoint")
-		}
+	if err := s.deleteSyncedInferenceEndpoint(ctx, id); err != nil {
+		return nil, mapAdminInferenceError(err, "delete inference endpoint")
 	}
 	return &adminv1.AdminInferenceCatalogServiceDeleteModelEndpointResponse{ModelEndpointId: id.String()}, nil
 }
@@ -363,10 +361,8 @@ func (s *AdminInferenceService) DeleteModel(ctx context.Context, req *adminv1.Ad
 	if err := s.semantic.GlobalManager().DeleteModel(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete model")
 	}
-	if s.inference != nil {
-		if err := s.inference.GlobalManager().DeleteModel(ctx, id); err != nil {
-			return nil, mapAdminInferenceError(err, "delete inference model")
-		}
+	if err := s.deleteSyncedInferenceModel(ctx, id); err != nil {
+		return nil, mapAdminInferenceError(err, "delete inference model")
 	}
 	return &adminv1.AdminInferenceCatalogServiceDeleteModelResponse{ModelId: id.String()}, nil
 }
@@ -394,10 +390,8 @@ func (s *AdminInferenceService) DeleteVectorStore(ctx context.Context, req *admi
 	if err := s.semantic.GlobalManager().DeleteVectorStore(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete vector store")
 	}
-	if s.inference != nil {
-		if err := s.inference.GlobalManager().DeleteVectorStore(ctx, id); err != nil {
-			return nil, mapAdminInferenceError(err, "delete inference vector store")
-		}
+	if err := s.deleteSyncedInferenceVectorStore(ctx, id); err != nil {
+		return nil, mapAdminInferenceError(err, "delete inference vector store")
 	}
 	return &adminv1.AdminInferenceCatalogServiceDeleteVectorStoreResponse{VectorStoreId: id.String()}, nil
 }
@@ -425,10 +419,8 @@ func (s *AdminInferenceService) DeleteModelEndpointCapability(ctx context.Contex
 	if err := s.semantic.GlobalManager().DeleteModelEndpointCapability(ctx, id); err != nil {
 		return nil, mapAdminInferenceError(err, "delete model endpoint capability")
 	}
-	if s.inference != nil {
-		if err := s.inference.GlobalManager().DeleteCapability(ctx, id); err != nil {
-			return nil, mapAdminInferenceError(err, "delete inference capability")
-		}
+	if err := s.deleteSyncedInferenceCapability(ctx, id); err != nil {
+		return nil, mapAdminInferenceError(err, "delete inference capability")
 	}
 	return &adminv1.AdminInferenceCatalogServiceDeleteModelEndpointCapabilityResponse{ModelEndpointCapabilityId: id.String()}, nil
 }

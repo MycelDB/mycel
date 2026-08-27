@@ -110,12 +110,12 @@ test-cluster-release-gate: test test-phase-d test-phase-e test-phase-f test-phas
 test-cluster-raft-sensitive-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-k3s-raft-disruption-smoke test-k3s-raft-disruption-edges
 
 test-compose-cluster:
-	cd ../../knot_pkm/knot_pkm_server && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" $(MAKE) compose-reset compose-up
+	cd ../../knot_pkm/knot_pkm_server && COMPOSE_PROFILES=mycel-cluster COMPOSE_MYCEL_SERVICES="myceld-a myceld-b myceld-c" MYCEL_IMAGE=local/mycel:dev MYCEL_PULL_POLICY=never MYCELD_CLUSTER_RAFT_NODE_COUNT=3 MYCELD_CLUSTER_RAFT_REPLICA_FACTOR=3 MYCELD_CLUSTER_RAFT_NODE_ADDRS=myceld-a:9091,myceld-b:9091,myceld-c:9091 MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" $(MAKE) compose-reset compose-up
 	./scripts/validateComposeClusterIdentity.sh
 	@set -e; root="$$(pwd)"; state="$$(mktemp)"; \
 	MYCEL_COMPOSE_DATA_PLANE_STATE="$$state" ./scripts/validateComposeClusterDataPlane.sh; \
-	cd "$$root/../../knot_pkm/knot_pkm_server" && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f compose.dev.yml restart myceld-a myceld-b myceld-c; \
-	cd "$$root/../../knot_pkm/knot_pkm_server" && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f compose.dev.yml up -d --wait myceld-a myceld-b myceld-c knot-pkm-server; \
+	cd "$$root/../../knot_pkm/knot_pkm_server" && COMPOSE_PROFILES=mycel-cluster MYCEL_IMAGE=local/mycel:dev MYCEL_PULL_POLICY=never MYCELD_CLUSTER_RAFT_NODE_COUNT=3 MYCELD_CLUSTER_RAFT_REPLICA_FACTOR=3 MYCELD_CLUSTER_RAFT_NODE_ADDRS=myceld-a:9091,myceld-b:9091,myceld-c:9091 MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f compose.dev.yml restart myceld-a myceld-b myceld-c; \
+	cd "$$root/../../knot_pkm/knot_pkm_server" && COMPOSE_PROFILES=mycel-cluster MYCEL_IMAGE=local/mycel:dev MYCEL_PULL_POLICY=never MYCELD_CLUSTER_RAFT_NODE_COUNT=3 MYCELD_CLUSTER_RAFT_REPLICA_FACTOR=3 MYCELD_CLUSTER_RAFT_NODE_ADDRS=myceld-a:9091,myceld-b:9091,myceld-c:9091 MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f compose.dev.yml up -d --wait myceld-a myceld-b myceld-c knot-pkm-server; \
 	cd "$$root"; \
 	./scripts/validateComposeClusterIdentity.sh; \
 	MYCEL_DATA_PLANE_CREATE_IF_MISSING=false MYCEL_COMPOSE_DATA_PLANE_STATE="$$state" ./scripts/validateComposeClusterDataPlane.sh; \

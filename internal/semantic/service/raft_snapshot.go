@@ -51,6 +51,7 @@ type semanticSpaceSnapshot struct {
 	SpaceID           domainspace.SpaceID                       `json:"space_id"`
 	Rules             []domainsemantic.SemanticGenerationRule   `json:"rules,omitempty"`
 	Indexes           []domainsemantic.SemanticIndex            `json:"indexes,omitempty"`
+	Profiles          []domainsemantic.IntelligenceProfile      `json:"intelligence_profiles,omitempty"`
 	CredentialGrants  []domainsemantic.CredentialGrant          `json:"credential_grants,omitempty"`
 	Policies          []domainsemantic.InferencePolicy          `json:"policies,omitempty"`
 	RuleStates        []domainsemantic.SemanticRuleState        `json:"rule_states,omitempty"`
@@ -189,6 +190,9 @@ func (m *Module) snapshotSemanticGlobal(ctx context.Context) (semanticGlobalSnap
 }
 
 func (m *Module) restoreSemanticGlobal(ctx context.Context, snap semanticGlobalSnapshot) error {
+	if err := validateSemanticGlobalSnapshotByApply(ctx, snap); err != nil {
+		return err
+	}
 	if err := resetSemanticGlobalFiles(m.dataDir); err != nil {
 		return err
 	}
@@ -244,6 +248,9 @@ func (m *Module) restoreSemanticGlobal(ctx context.Context, snap semanticGlobalS
 		m.global = global
 	}
 	m.mu.Unlock()
+	if err := m.rebuildInferenceGlobalProjection(ctx); err != nil {
+		m.logSnapshotProjectionError("global", err)
+	}
 	return nil
 }
 
@@ -269,6 +276,9 @@ func (m *Module) snapshotSemanticPartition(ctx context.Context, partitionID, par
 			return nil, nil, err
 		}
 		if item.Indexes, err = spaceMgr.ListSemanticIndexes(ctx); err != nil {
+			return nil, nil, err
+		}
+		if item.Profiles, err = spaceMgr.ListIntelligenceProfiles(ctx); err != nil {
 			return nil, nil, err
 		}
 		if item.CredentialGrants, err = spaceMgr.ListCredentialGrants(ctx); err != nil {
@@ -305,8 +315,20 @@ func (m *Module) snapshotSemanticPartition(ctx context.Context, partitionID, par
 }
 
 func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semanticSpaceSnapshot, partitionID, partitionCount uint32) error {
+	if err := validateSemanticPartitionSnapshotByApply(ctx, spaces); err != nil {
+		return err
+	}
+	if err := m.reloadInferenceProjectionCache(ctx); err != nil {
+		return err
+	}
+	if err := m.deleteInferenceProjectionPartitionDirs(partitionID, partitionCount); err != nil {
+		m.logSnapshotProjectionError("partition-cleanup", err)
+	}
 	if err := m.deleteSemanticPartitionDirs(partitionID, partitionCount); err != nil {
 		return err
+	}
+	if err := m.reloadInferenceProjectionCache(ctx); err != nil {
+		m.logSnapshotProjectionError("partition-cache", err)
 	}
 	for _, space := range spaces {
 		spaceMgr := storesemantic.NewSpaceManager()
@@ -320,6 +342,11 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 		}
 		for _, v := range space.Indexes {
 			if _, err := spaceMgr.UpsertSemanticIndex(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.Profiles {
+			if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, v); err != nil {
 				return err
 			}
 		}
@@ -377,6 +404,154 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
 	m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
 	m.mu.Unlock()
+	for _, space := range spaces {
+		spaceMgr := storesemantic.NewSpaceManager()
+		if err := spaceMgr.Init(ctx, m.spaceSemanticDir(space.SpaceID), space.SpaceID); err != nil {
+			return err
+		}
+		if err := m.rebuildInferenceSpaceProjection(ctx, space.SpaceID.String(), spaceMgr); err != nil {
+			m.logSnapshotProjectionError(space.SpaceID.String(), err)
+		}
+	}
+	return nil
+}
+
+func (m *Module) logSnapshotProjectionError(scope string, err error) {
+	if err == nil {
+		return
+	}
+	m.mu.Lock()
+	logger := m.logger
+	m.mu.Unlock()
+	if logger != nil {
+		logger.Warn("semantic snapshot inference projection rebuild failed", "scope", scope, "error", err)
+	}
+}
+
+func validateSemanticGlobalSnapshotByApply(ctx context.Context, snap semanticGlobalSnapshot) error {
+	dir, err := os.MkdirTemp("", "mycel-semantic-global-snapshot-validate-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	global := storesemantic.NewGlobalManager()
+	if err := global.Init(ctx, filepath.Join(dir, "meta")); err != nil {
+		return err
+	}
+	for _, v := range snap.Packages {
+		if _, err := global.UpsertPackage(ctx, v); err != nil {
+			return err
+		}
+	}
+	for _, v := range snap.Endpoints {
+		if _, err := global.UpsertModelEndpoint(ctx, v); err != nil {
+			return err
+		}
+	}
+	for _, v := range snap.Models {
+		if _, err := global.UpsertModel(ctx, v); err != nil {
+			return err
+		}
+	}
+	for _, v := range snap.Capabilities {
+		if _, err := global.UpsertModelEndpointCapability(ctx, v); err != nil {
+			return err
+		}
+	}
+	for _, v := range snap.VectorStores {
+		if _, err := global.UpsertVectorStore(ctx, v); err != nil {
+			return err
+		}
+	}
+	for _, v := range snap.Secrets {
+		if _, err := global.UpsertSecret(ctx, v); err != nil {
+			return err
+		}
+	}
+	for _, v := range snap.Credentials {
+		if _, err := global.UpsertCredential(ctx, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSemanticPartitionSnapshotByApply(ctx context.Context, spaces []semanticSpaceSnapshot) error {
+	dir, err := os.MkdirTemp("", "mycel-semantic-partition-snapshot-validate-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	for _, space := range spaces {
+		spaceMgr := storesemantic.NewSpaceManager()
+		if err := spaceMgr.Init(ctx, filepath.Join(dir, "graphs", space.SpaceID.String(), "semantic"), space.SpaceID); err != nil {
+			return err
+		}
+		for _, v := range space.Rules {
+			if _, err := spaceMgr.UpsertSemanticRule(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.Indexes {
+			if _, err := spaceMgr.UpsertSemanticIndex(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.Profiles {
+			if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.CredentialGrants {
+			if _, err := spaceMgr.UpsertCredentialGrant(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.Policies {
+			if _, err := spaceMgr.UpsertInferencePolicy(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.RuleStates {
+			if _, err := spaceMgr.UpsertSemanticRuleState(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.SearchIndexStates {
+			if _, err := spaceMgr.UpsertSearchIndexState(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.IndexStates {
+			if _, err := spaceMgr.UpsertIndexState(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.PolicyDecisions {
+			if _, err := spaceMgr.UpsertPolicyDecision(ctx, v); err != nil {
+				return err
+			}
+		}
+		maintMgr := storesemantic.NewMaintenanceManager()
+		if err := maintMgr.Init(ctx, filepath.Join(dir, "graphs", space.SpaceID.String(), "semantic", "maintenance"), space.SpaceID); err != nil {
+			return err
+		}
+		for _, v := range space.DirtyEvents {
+			if _, err := maintMgr.AppendGraphDirtyEvent(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.Checkpoints {
+			if err := maintMgr.SaveCheckpoint(ctx, v); err != nil {
+				return err
+			}
+		}
+		for _, v := range space.WorkItems {
+			if _, err := maintMgr.UpsertDirtyWorkItem(ctx, normalizeRestoredSemanticWork(v)); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -400,6 +575,11 @@ func validateSemanticPartitionSnapshot(spaces []semanticSpaceSnapshot, partition
 		for _, v := range space.Indexes {
 			if v.SpaceID != space.SpaceID {
 				return fmt.Errorf("semantic index %s references space %s, want %s", v.ID, v.SpaceID, space.SpaceID)
+			}
+		}
+		for _, v := range space.Profiles {
+			if v.SpaceID != space.SpaceID {
+				return fmt.Errorf("intelligence profile %s references space %s, want %s", v.ID, v.SpaceID, space.SpaceID)
 			}
 		}
 		for _, v := range space.CredentialGrants {
@@ -476,6 +656,62 @@ func (m *Module) deleteSemanticPartitionDirs(partitionID, partitionCount uint32)
 	for _, id := range ids {
 		if err := os.RemoveAll(m.spaceSemanticDir(id)); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (m *Module) inferenceProjectionSpaceIDsForPartition(partitionID, partitionCount uint32) ([]domainspace.SpaceID, error) {
+	graphsDir := filepath.Join(m.dataDir, "graphs")
+	entries, err := os.ReadDir(graphsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []domainspace.SpaceID
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		id, err := uuid.Parse(entry.Name())
+		if err != nil || id == uuid.Nil {
+			continue
+		}
+		spaceID := domainspace.SpaceID(id)
+		if _, err := os.Stat(m.spaceInferenceProjectionDir(spaceID)); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		pid, err := partitioning.PartitionForSpaceID(spaceID, partitionCount)
+		if err != nil {
+			return nil, err
+		}
+		if pid.Uint32() == partitionID {
+			out = append(out, spaceID)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out, nil
+}
+
+func (m *Module) deleteInferenceProjectionPartitionDirs(partitionID, partitionCount uint32) error {
+	ids, err := m.inferenceProjectionSpaceIDsForPartition(partitionID, partitionCount)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		for _, path := range []string{
+			filepath.Join(m.spaceInferenceProjectionDir(id), "profiles.json"),
+			filepath.Join(m.spaceInferenceProjectionDir(id), "credential_grants.json"),
+			filepath.Join(m.spaceInferenceProjectionDir(id), "policies.json"),
+		} {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
 		}
 	}
 	return nil

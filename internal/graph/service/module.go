@@ -37,9 +37,11 @@ type Module struct {
 	stores                 map[string]*graphstorage.LocalStore
 	overlays               map[string]*overlay
 	changeSink             graphchange.Sink
+	raftApplyChangeSink    graphchange.Sink
 	schemaManager          schemaservice.Manager
-	blobRefs               BlobReferenceChecker
-	lastGraphChangeSinkErr error
+	blobRefs                       BlobReferenceChecker
+	automationOutputFenceValidator AutomationOutputFenceValidator
+	lastGraphChangeSinkErr         error
 	gate                   *quiesce.Gate
 	wal                    *wal.Manager
 	walProgress            wal.AppliedLSNStore
@@ -71,6 +73,12 @@ func (m *Module) SetChangeSink(sink graphchange.Sink) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.changeSink = sink
+}
+
+func (m *Module) SetRaftApplyChangeSink(sink graphchange.Sink) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.raftApplyChangeSink = sink
 }
 
 func (m *Module) LastGraphChangeSinkError() error {
@@ -1031,13 +1039,21 @@ func (m *Module) requireLocalWriteAllowed() error {
 }
 
 func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
-	if event.Empty() {
-		return
-	}
 	m.mu.Lock()
 	sink := m.changeSink
 	m.mu.Unlock()
-	if sink == nil {
+	m.notifyChangeSink(ctx, sink, info, event)
+}
+
+func (m *Module) notifyRaftApplyChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
+	m.mu.Lock()
+	sink := m.raftApplyChangeSink
+	m.mu.Unlock()
+	m.notifyChangeSink(ctx, sink, info, event)
+}
+
+func (m *Module) notifyChangeSink(ctx context.Context, sink graphchange.Sink, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
+	if sink == nil || event.Empty() {
 		return
 	}
 	event.TxnID = info.TxnID

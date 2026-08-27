@@ -37,6 +37,7 @@ type Registrar interface {
 type Manager interface {
 	Registrar
 	CurrentRevision(ctx context.Context, spaceID string, domainID string) (uint64, error)
+	Replay(ctx context.Context, spec ConsumerSpec, consumer Consumer) error
 }
 
 type Registration interface {
@@ -277,14 +278,6 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 	m.mu.Lock()
 	leaderGate := m.leaderGate
 	m.mu.Unlock()
-	if leaderGate != nil {
-		if err := leaderGate(ctx, event); err != nil {
-			m.mu.Lock()
-			m.recordFailureLocked(err)
-			m.mu.Unlock()
-			return err
-		}
-	}
 	if event.CommittedAt.IsZero() {
 		event.CommittedAt = time.Now().UTC()
 	}
@@ -319,6 +312,13 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 		}
 	}
 	m.diagnostics.EventsPublished++
+	if leaderGate != nil {
+		if err := leaderGate(ctx, event); err != nil {
+			m.recordFailureLocked(err)
+			m.mu.Unlock()
+			return nil
+		}
+	}
 	for _, reg := range m.registrations {
 		if matchesSpec(event, reg.spec) {
 			registrations = append(registrations, reg)
@@ -328,6 +328,66 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 
 	for _, reg := range registrations {
 		reg.offer(event.ApplyProjection(reg.spec.Projection))
+	}
+	return nil
+}
+
+func (m *Module) Replay(ctx context.Context, spec ConsumerSpec, consumer Consumer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if consumer == nil {
+		return fmt.Errorf("%w: consumer is required", ErrInvalidInput)
+	}
+	key := scopeKey(spec.Scope.SpaceID, spec.Scope.DomainID)
+	if key == "" {
+		return fmt.Errorf("%w: scoped space_id and domain_id are required for replay", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	if m.dataDir == "" {
+		m.dataDir = filepath.Join(os.TempDir(), "mycel-graph-change-notification")
+	}
+	if err := m.loadHistoryLocked(key, spec.Scope.SpaceID, spec.Scope.DomainID); err != nil {
+		m.recordFailureLocked(err)
+		m.mu.Unlock()
+		return err
+	}
+	after := uint64(0)
+	if spec.Start.AfterRevision != nil {
+		after = *spec.Start.AfterRevision
+	}
+	oldest := uint64(0)
+	if events := m.history[key]; len(events) > 0 {
+		oldest = eventRevision(events[0])
+	}
+	current := m.current[key]
+	if oldest > 0 && after < oldest-1 {
+		gap := graphchange.Gap{SpaceID: spec.Scope.SpaceID, DomainID: spec.Scope.DomainID, RequestedAfterRevision: after, OldestAvailableRevision: oldest, CurrentRevision: current}
+		m.mu.Unlock()
+		return consumer.HandleGraphChangeGap(ctx, gap)
+	}
+	if oldest == 0 && current > after {
+		gap := graphchange.Gap{SpaceID: spec.Scope.SpaceID, DomainID: spec.Scope.DomainID, RequestedAfterRevision: after, CurrentRevision: current}
+		if current < ^uint64(0) {
+			gap.OldestAvailableRevision = current + 1
+		}
+		m.mu.Unlock()
+		return consumer.HandleGraphChangeGap(ctx, gap)
+	}
+	replay := []graphchange.CommittedEvent{}
+	for _, event := range m.history[key] {
+		if eventRevision(event) > after && matchesSpec(event, spec) {
+			replay = append(replay, event.ApplyProjection(spec.Projection))
+		}
+	}
+	m.mu.Unlock()
+	for _, event := range replay {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := consumer.HandleGraphChange(ctx, event); err != nil {
+			return err
+		}
 	}
 	return nil
 }

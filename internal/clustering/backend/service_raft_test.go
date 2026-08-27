@@ -29,6 +29,15 @@ func (r fakeLocalRaftGraphReader) ExecuteLocalRaftGraphRead(ctx context.Context,
 	return r.payload, r.err
 }
 
+type fakeLocalRaftAutomationRuntimeReader struct {
+	payload []byte
+	err     error
+}
+
+func (r fakeLocalRaftAutomationRuntimeReader) ExecuteLocalRaftAutomationRuntimeRead(ctx context.Context, partitionID uint32, payload []byte) ([]byte, error) {
+	return r.payload, r.err
+}
+
 func TestDeliverRaftMessagesRoutesDecodedEnvelope(t *testing.T) {
 	msg := raftpb.Message{From: 1, To: 2, Type: raftpb.MsgHeartbeat, Term: 7}
 	data, err := msg.Marshal()
@@ -61,5 +70,23 @@ func TestExecuteRaftGraphReadWrapsPlainErrorAsInternal(t *testing.T) {
 	_, err := svc.ExecuteRaftGraphRead(context.Background(), &clusterpb.ExecuteRaftGraphReadRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, SpaceId: "space-1", Payload: []byte("read")})
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("ExecuteRaftGraphRead() code=%v want Internal (err=%v)", status.Code(err), err)
+	}
+}
+
+func TestExecuteRaftAutomationRuntimeReadDispatchesReader(t *testing.T) {
+	svc := NewService(model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: "node_a", ClusterID: "cluster_a"}, model.NodeStateClustered, nil)
+	svc.AutomationRuntimeReader = fakeLocalRaftAutomationRuntimeReader{payload: []byte(`{"ok":true}`)}
+	res, err := svc.ExecuteRaftAutomationRuntimeRead(context.Background(), &clusterpb.ExecuteRaftAutomationRuntimeReadRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, PartitionId: 3, Payload: []byte("read")})
+	if err != nil || string(res.GetPayload()) != `{"ok":true}` {
+		t.Fatalf("ExecuteRaftAutomationRuntimeRead() res=%q err=%v", string(res.GetPayload()), err)
+	}
+}
+
+func TestExecuteRaftAutomationRuntimeReadPreservesStatusError(t *testing.T) {
+	svc := NewService(model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: "node_a", ClusterID: "cluster_a"}, model.NodeStateClustered, nil)
+	svc.AutomationRuntimeReader = fakeLocalRaftAutomationRuntimeReader{err: status.Error(codes.Unavailable, "not local leader")}
+	_, err := svc.ExecuteRaftAutomationRuntimeRead(context.Background(), &clusterpb.ExecuteRaftAutomationRuntimeReadRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, PartitionId: 3, Payload: []byte("read")})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("ExecuteRaftAutomationRuntimeRead() code=%v want Unavailable (err=%v)", status.Code(err), err)
 	}
 }

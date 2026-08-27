@@ -557,6 +557,138 @@ func mapIntelligenceProfiles(items []domaininference.Profile) []*adminv1.Intelli
 	return out
 }
 
+func semanticProfileFromProto(in *adminv1.AdminIntelligenceAccessProfileServiceCreateIntelligenceProfileRequest, principalID string) (domainsemantic.IntelligenceProfile, error) {
+	if in == nil {
+		return domainsemantic.IntelligenceProfile{}, status.Error(codes.InvalidArgument, "inference profile is required")
+	}
+	spaceIDText := strings.TrimSpace(in.GetSpaceId())
+	if spaceIDText == "" {
+		return domainsemantic.IntelligenceProfile{}, status.Error(codes.InvalidArgument, "space_id is required")
+	}
+	spaceID, err := uuid.Parse(spaceIDText)
+	if err != nil {
+		return domainsemantic.IntelligenceProfile{}, status.Error(codes.InvalidArgument, "space_id must be a UUID")
+	}
+	if strings.TrimSpace(in.GetKey()) == "" {
+		return domainsemantic.IntelligenceProfile{}, status.Error(codes.InvalidArgument, "key is required")
+	}
+	op := semanticOperationFromProto(in.GetOperation())
+	if op == "" {
+		return domainsemantic.IntelligenceProfile{}, status.Error(codes.InvalidArgument, "operation is required")
+	}
+	profile := domainsemantic.IntelligenceProfile{SpaceID: domainspace.SpaceID(spaceID), Key: in.GetKey(), DisplayName: firstNonEmptyAdmin(in.GetDisplayName(), in.GetKey()), Description: in.GetDescription(), Operation: op, Purpose: in.GetPurpose(), DomainIDs: append([]string(nil), in.GetDomainIds()...), CapabilityRefs: append([]string(nil), in.GetCapabilityRefs()...), EndpointRefs: append([]string(nil), in.GetEndpointRefs()...), ModelRefs: append([]string(nil), in.GetModelRefs()...), RequiredFeatures: append([]string(nil), in.GetRequiredFeatures()...), PrivacyRequirement: semanticPrivacyRequirementFromProto(in.GetPrivacyRequirement()), DefaultParameters: semanticParametersFromProto(in.GetDefaultParameters()), Enabled: in.GetEnabled(), CreatedBy: principalID, Metadata: structToMap(in.GetMetadata())}
+	return domainsemantic.NormalizeIntelligenceProfile(profile), nil
+}
+
+func mapSemanticIntelligenceProfile(in domainsemantic.IntelligenceProfile) *adminv1.IntelligenceProfile {
+	return mapIntelligenceProfile(semanticProfileToInference(in))
+}
+
+func mapSemanticIntelligenceProfiles(items []domainsemantic.IntelligenceProfile) []*adminv1.IntelligenceProfile {
+	out := make([]*adminv1.IntelligenceProfile, 0, len(items))
+	for _, item := range items {
+		out = append(out, mapSemanticIntelligenceProfile(item))
+	}
+	return out
+}
+
+func semanticProfileToInference(in domainsemantic.IntelligenceProfile) domaininference.Profile {
+	return domaininference.Profile{ID: domaininference.ProfileID(in.ID), SpaceID: in.SpaceID.String(), Key: in.Key, DisplayName: in.DisplayName, Description: in.Description, Operation: domaininference.Operation(in.Operation), Purpose: in.Purpose, DomainIDs: append([]string(nil), in.DomainIDs...), CapabilityRefs: append([]string(nil), in.CapabilityRefs...), EndpointRefs: append([]string(nil), in.EndpointRefs...), ModelRefs: append([]string(nil), in.ModelRefs...), RequiredFeatures: append([]string(nil), in.RequiredFeatures...), PrivacyRequirement: semanticPrivacyRequirementToInference(in.PrivacyRequirement), DefaultParameters: semanticParametersToInference(in.DefaultParameters), Enabled: in.Enabled, CreatedBy: in.CreatedBy, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt, Metadata: in.Metadata}
+}
+
+func semanticProfileFromInference(in domaininference.Profile) domainsemantic.IntelligenceProfile {
+	spaceID, _ := uuid.Parse(strings.TrimSpace(in.SpaceID))
+	return domainsemantic.NormalizeIntelligenceProfile(domainsemantic.IntelligenceProfile{ID: domainsemantic.IntelligenceProfileID(in.ID), SpaceID: domainspace.SpaceID(spaceID), Key: in.Key, DisplayName: in.DisplayName, Description: in.Description, Operation: domainsemantic.Operation(in.Operation), Purpose: in.Purpose, DomainIDs: append([]string(nil), in.DomainIDs...), CapabilityRefs: append([]string(nil), in.CapabilityRefs...), EndpointRefs: append([]string(nil), in.EndpointRefs...), ModelRefs: append([]string(nil), in.ModelRefs...), RequiredFeatures: append([]string(nil), in.RequiredFeatures...), PrivacyRequirement: semanticPrivacyRequirementFromInference(in.PrivacyRequirement), DefaultParameters: semanticParametersFromInference(in.DefaultParameters), Enabled: in.Enabled, CreatedBy: in.CreatedBy, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt, Metadata: in.Metadata})
+}
+
+func semanticPrivacyRequirementFromProto(in *commonv1.InferencePrivacyRequirement) domainsemantic.IntelligencePrivacyRequirement {
+	if in == nil {
+		return domainsemantic.IntelligencePrivacyRequirement{}
+	}
+	classes := make([]domainsemantic.PrivacyClass, 0, len(in.GetAllowedPrivacyClasses()))
+	for _, value := range in.GetAllowedPrivacyClasses() {
+		if cls := semanticPrivacyClassFromProto(value); cls != "" {
+			classes = append(classes, cls)
+		}
+	}
+	return domainsemantic.IntelligencePrivacyRequirement{AllowedPrivacyClasses: classes, RequireLocalEndpoint: in.GetRequireLocalEndpoint(), DisallowThirdParty: in.GetDisallowThirdParty()}
+}
+
+func semanticPrivacyRequirementToInference(in domainsemantic.IntelligencePrivacyRequirement) domaininference.PrivacyRequirement {
+	classes := make([]domaininference.PrivacyClass, 0, len(in.AllowedPrivacyClasses))
+	for _, value := range in.AllowedPrivacyClasses {
+		classes = append(classes, inferencePrivacyClassFromSemantic(value))
+	}
+	return domaininference.PrivacyRequirement{AllowedPrivacyClasses: classes, RequireLocalEndpoint: in.RequireLocalEndpoint, DisallowThirdParty: in.DisallowThirdParty}
+}
+
+func semanticPrivacyRequirementFromInference(in domaininference.PrivacyRequirement) domainsemantic.IntelligencePrivacyRequirement {
+	classes := make([]domainsemantic.PrivacyClass, 0, len(in.AllowedPrivacyClasses))
+	for _, value := range in.AllowedPrivacyClasses {
+		switch value {
+		case domaininference.PrivacyClassLocalOnly:
+			classes = append(classes, domainsemantic.PrivacyClassLocalOnly)
+		case domaininference.PrivacyClassPrivate:
+			classes = append(classes, domainsemantic.PrivacyClassEnterprisePrivate)
+		case domaininference.PrivacyClassThirdParty:
+			classes = append(classes, domainsemantic.PrivacyClassThirdParty)
+		}
+	}
+	return domainsemantic.IntelligencePrivacyRequirement{AllowedPrivacyClasses: classes, RequireLocalEndpoint: in.RequireLocalEndpoint, DisallowThirdParty: in.DisallowThirdParty}
+}
+
+func semanticParametersFromProto(in *commonv1.InferenceParameters) domainsemantic.IntelligenceParameters {
+	if in == nil {
+		return domainsemantic.IntelligenceParameters{}
+	}
+	var temp *float64
+	if in.Temperature != nil {
+		v := in.GetTemperature()
+		temp = &v
+	}
+	return domainsemantic.IntelligenceParameters{Temperature: temp, MaxInputTokens: int(in.GetMaxInputTokens()), MaxOutputTokens: int(in.GetMaxOutputTokens()), ResponseFormat: in.GetResponseFormat(), Metadata: structToMap(in.GetMetadata())}
+}
+
+func semanticParametersToInference(in domainsemantic.IntelligenceParameters) domaininference.Parameters {
+	return domaininference.Parameters{Temperature: in.Temperature, MaxInputTokens: in.MaxInputTokens, MaxOutputTokens: in.MaxOutputTokens, ResponseFormat: in.ResponseFormat, Metadata: in.Metadata}
+}
+
+func semanticParametersFromInference(in domaininference.Parameters) domainsemantic.IntelligenceParameters {
+	return domainsemantic.IntelligenceParameters{Temperature: in.Temperature, MaxInputTokens: in.MaxInputTokens, MaxOutputTokens: in.MaxOutputTokens, ResponseFormat: in.ResponseFormat, Metadata: in.Metadata}
+}
+
+func semanticOperationFromProto(value commonv1.InferenceOperation) domainsemantic.Operation {
+	switch value {
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_EMBEDDINGS:
+		return domainsemantic.OperationEmbeddings
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_CHAT:
+		return domainsemantic.OperationChat
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_RERANK:
+		return domainsemantic.OperationRerank
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_SUMMARIZE:
+		return domainsemantic.OperationSummarize
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_CLASSIFY:
+		return domainsemantic.OperationClassify
+	case commonv1.InferenceOperation_INFERENCE_OPERATION_IMAGE_ANALYSIS:
+		return domainsemantic.OperationImageAnalysis
+	default:
+		return ""
+	}
+}
+
+func semanticPrivacyClassFromProto(value commonv1.InferencePrivacyClass) domainsemantic.PrivacyClass {
+	switch value {
+	case commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_LOCAL_ONLY:
+		return domainsemantic.PrivacyClassLocalOnly
+	case commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_PRIVATE:
+		return domainsemantic.PrivacyClassEnterprisePrivate
+	case commonv1.InferencePrivacyClass_INFERENCE_PRIVACY_CLASS_THIRD_PARTY:
+		return domainsemantic.PrivacyClassThirdParty
+	default:
+		return ""
+	}
+}
+
 func privacyRequirementFromProto(in *commonv1.InferencePrivacyRequirement) domaininference.PrivacyRequirement {
 	if in == nil {
 		return domaininference.PrivacyRequirement{}
@@ -816,7 +948,7 @@ func semanticPackageToInference(in domainsemantic.InferencePackage) domaininfere
 }
 
 func semanticScopeToInference(in domainsemantic.ProcessingScope) domaininference.Scope {
-	return domaininference.Scope{SpaceID: uuidOrEmptyAdmin(in.SpaceID), DomainID: uuidOrEmptyAdmin(in.DomainID), SemanticIndexID: uuidOrEmptyAdmin(in.SemanticIndexID), NodeID: uuidOrEmptyAdmin(in.NodeID), IncludeDescendants: in.IncludeDescendants}
+	return domaininference.Scope{SpaceID: uuidOrEmptyAdmin(in.SpaceID), DomainID: uuidOrEmptyAdmin(in.DomainID), SemanticRuleID: uuidOrEmptyAdmin(in.SemanticRuleID), EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: uuidOrEmptyAdmin(in.SemanticIndexID), NodeID: uuidOrEmptyAdmin(in.NodeID), IncludeDescendants: in.IncludeDescendants}
 }
 
 func semanticGrantToInference(spaceID string, in domainsemantic.CredentialGrant) domaininference.CredentialGrant {

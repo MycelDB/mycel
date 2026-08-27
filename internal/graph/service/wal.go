@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	"github.com/myceldb/mycel/internal/wal"
@@ -12,17 +13,19 @@ import (
 const recordTypeGraphCommit wal.RecordType = "graph.commit.v1"
 
 type graphCommitRecord struct {
-	SpaceID        string               `json:"space_id"`
-	BaseRevision   int64                `json:"base_revision"`
-	PutNodes       []domaingraph.Node   `json:"put_nodes,omitempty"`
-	DeleteNodeIDs  []domaingraph.NodeID `json:"delete_node_ids,omitempty"`
-	PutEdges       []domaingraph.Edge   `json:"put_edges,omitempty"`
-	DeleteEdgeIDs  []domaingraph.EdgeID `json:"delete_edge_ids,omitempty"`
-	OperationCount int32                `json:"operation_count"`
+	SpaceID        string                     `json:"space_id"`
+	DomainID       string                     `json:"domain_id,omitempty"`
+	Origin         graphchange.OriginMetadata `json:"origin,omitempty"`
+	BaseRevision   int64                      `json:"base_revision"`
+	PutNodes       []domaingraph.Node         `json:"put_nodes,omitempty"`
+	DeleteNodeIDs  []domaingraph.NodeID       `json:"delete_node_ids,omitempty"`
+	PutEdges       []domaingraph.Edge         `json:"put_edges,omitempty"`
+	DeleteEdgeIDs  []domaingraph.EdgeID       `json:"delete_edge_ids,omitempty"`
+	OperationCount int32                      `json:"operation_count"`
 }
 
 func graphCommitRecordFromSnapshot(tx daemonsession.GraphTransaction, snapshot *overlay) graphCommitRecord {
-	return graphCommitRecord{SpaceID: tx.SpaceID, BaseRevision: tx.BaseRevision, PutNodes: sortedNodes(snapshot.putNodes), DeleteNodeIDs: sortedNodeIDs(snapshot.deleteNodes), PutEdges: sortedEdges(snapshot.putEdges), DeleteEdgeIDs: sortedEdgeIDs(snapshot.deleteEdges), OperationCount: snapshot.opCount}
+	return graphCommitRecord{SpaceID: tx.SpaceID, DomainID: tx.DomainID, Origin: tx.Origin, BaseRevision: tx.BaseRevision, PutNodes: sortedNodes(snapshot.putNodes), DeleteNodeIDs: sortedNodeIDs(snapshot.deleteNodes), PutEdges: sortedEdges(snapshot.putEdges), DeleteEdgeIDs: sortedEdgeIDs(snapshot.deleteEdges), OperationCount: snapshot.opCount}
 }
 
 func (m *Module) applyGraphCommit(ctx context.Context, rec wal.Record) error {

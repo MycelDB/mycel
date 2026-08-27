@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/graph/model"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
+	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	daemonconfig "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -22,6 +25,47 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestInitRebuildsInferenceProjectionFromSemanticProfiles(t *testing.T) {
+	ctx := context.Background()
+	rt := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})
+	spaceID := domainspace.SpaceID(uuid.New())
+	profileStore := storesemantic.NewSpaceManager()
+	if err := profileStore.Init(ctx, filepath.Join(rt.Config.DataDir, "graphs", spaceID.String(), "semantic"), spaceID); err != nil {
+		t.Fatalf("init semantic profile store: %v", err)
+	}
+	profile, err := profileStore.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "semantic", Operation: domainsemantic.OperationEmbeddings, Enabled: true})
+	if err != nil {
+		t.Fatalf("upsert semantic profile: %v", err)
+	}
+
+	inference := inferenceservice.NewModule()
+	if result := inference.Init(ctx, rt); !result.OK {
+		t.Fatalf("init inference module: %#v", result)
+	}
+	staleMgr, err := inference.SpaceManager(ctx, spaceID.String())
+	if err != nil {
+		t.Fatalf("open stale inference manager: %v", err)
+	}
+	if _, err := staleMgr.UpsertProfile(ctx, domaininference.Profile{SpaceID: spaceID.String(), Key: "stale", Operation: domaininference.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatalf("seed stale projected profile: %v", err)
+	}
+	semantic := NewModule(Config{InferenceManager: inference})
+	if result := semantic.Init(ctx, rt); !result.OK {
+		t.Fatalf("init semantic module: %#v", result)
+	}
+	projectedMgr, err := inference.SpaceManager(ctx, spaceID.String())
+	if err != nil {
+		t.Fatalf("open projected inference manager: %v", err)
+	}
+	projected, err := projectedMgr.ListProfiles(ctx)
+	if err != nil {
+		t.Fatalf("list projected profiles: %v", err)
+	}
+	if len(projected) != 1 || projected[0].ID.String() != profile.ID.String() || projected[0].Key != "semantic" {
+		t.Fatalf("unexpected projected profiles: %+v", projected)
+	}
+}
 
 func TestPhase8BackupWaitsForSemanticWorkAndBlocksManualMutation(t *testing.T) {
 	ctx := context.Background()

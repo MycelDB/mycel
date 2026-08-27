@@ -164,6 +164,13 @@ func (w *walMaintenanceManager) ListDirtyWorkItems(ctx context.Context) ([]domai
 	return w.inner.ListDirtyWorkItems(ctx)
 }
 func (w *walMaintenanceManager) ClaimReadyWork(ctx context.Context, in storesemantic.ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+	leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID)
+	if err != nil {
+		return nil, err
+	}
+	if w.module.raftGroups != nil && (leader == 0 || forward) {
+		return []domainsemantic.SemanticDirtyWorkItem{}, nil
+	}
 	return w.inner.ClaimReadyWork(ctx, in)
 }
 func (w *walMaintenanceManager) AppendGraphDirtyEvent(ctx context.Context, e domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error) {

@@ -19,6 +19,7 @@ type ResolveRequest struct {
 	EmbeddingBindingKey   string
 	SemanticIndexID       string
 	NodeID                string
+	NodeAncestorIDs       []string
 	Operation             domaininference.Operation
 	UsageMode             domaininference.UsageMode
 	ProfileRef            string
@@ -49,6 +50,9 @@ type ResolveResult struct {
 }
 
 func (m *Module) Resolve(ctx context.Context, req ResolveRequest) (ResolveResult, error) {
+	if err := m.requireDerivedProjectionHealthy(); err != nil {
+		return ResolveResult{}, err
+	}
 	resolver := resolver{manager: m}
 	return resolver.resolve(ctx, req)
 }
@@ -544,10 +548,19 @@ func policyMatches(policy domaininference.Policy, req ResolveRequest, profile do
 	if !policy.ExpiresAt.IsZero() && !policy.ExpiresAt.After(now) {
 		return false
 	}
-	return scopeMatches(policy.Scope, req) && operationRefsMatch(policy.Operations, req.Operation) && refsAllow(policy.ProfileRefs, profile.ID, profile.Key)
+	// Descendant-scoped deny policies must fail closed when the caller cannot
+	// provide ancestry context. Allow/restrict policies still require exact or
+	// explicit ancestry matches so an unevaluable descendant scope cannot broaden
+	// access.
+	unknownDescendantMatches := policy.NoInference || policy.Action == domaininference.PolicyActionDeny
+	return scopeMatchesWithDescendants(policy.Scope, req, unknownDescendantMatches) && operationRefsMatch(policy.Operations, req.Operation) && refsAllow(policy.ProfileRefs, profile.ID, profile.Key)
 }
 
 func scopeMatches(scope domaininference.Scope, req ResolveRequest) bool {
+	return scopeMatchesWithDescendants(scope, req, false)
+}
+
+func scopeMatchesWithDescendants(scope domaininference.Scope, req ResolveRequest, unknownDescendantMatches bool) bool {
 	if scope.SpaceID != "" && scope.SpaceID != req.SpaceID {
 		return false
 	}
@@ -563,10 +576,43 @@ func scopeMatches(scope domaininference.Scope, req ResolveRequest) bool {
 	if scope.SemanticIndexID != "" && scope.SemanticIndexID != req.SemanticIndexID {
 		return false
 	}
-	if scope.NodeID != "" && scope.NodeID != req.NodeID {
-		return false
+	if scope.NodeID != "" {
+		if scope.NodeID == req.NodeID {
+			return true
+		}
+		if !scope.IncludeDescendants {
+			return false
+		}
+		ancestors := requestNodeAncestorIDs(req)
+		for _, ancestor := range ancestors {
+			if strings.TrimSpace(ancestor) == scope.NodeID {
+				return true
+			}
+		}
+		return unknownDescendantMatches && strings.TrimSpace(req.NodeID) != ""
 	}
 	return true
+}
+
+func requestNodeAncestorIDs(req ResolveRequest) []string {
+	out := append([]string(nil), req.NodeAncestorIDs...)
+	if req.Metadata == nil {
+		return out
+	}
+	if values, ok := req.Metadata["node_ancestor_ids"].([]string); ok {
+		out = append(out, values...)
+	}
+	if values, ok := req.Metadata["node_ancestor_ids"].([]any); ok {
+		for _, value := range values {
+			if text, ok := value.(string); ok {
+				out = append(out, text)
+			}
+		}
+	}
+	if value, ok := req.Metadata["node_parent_id"].(string); ok {
+		out = append(out, value)
+	}
+	return out
 }
 
 func scopeSpecificity(scope domaininference.Scope, req ResolveRequest) int {

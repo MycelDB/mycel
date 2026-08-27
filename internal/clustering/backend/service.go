@@ -23,18 +23,19 @@ type ActivityEmitter interface {
 
 type Service struct {
 	clusterpb.UnimplementedClusterBackendServiceServer
-	Identity               model.NodeIdentity
-	State                  model.NodeState
-	Topology               *topology.Registry
-	Membership             *membership.FileStore
-	BlobPayloadProvider    BlobPayloadProvider
-	RaftRouter             consensus.MessageSender
-	SpaceReader            SpaceReader
-	GraphReader            any
-	SemanticReader         any
-	ClientRequestForwarder ForwardedClientRequestHandler
-	ClusterBackupProvider  ClusterBackupProvider
-	ActivityEmitter        ActivityEmitter
+	Identity                model.NodeIdentity
+	State                   model.NodeState
+	Topology                *topology.Registry
+	Membership              *membership.FileStore
+	BlobPayloadProvider     BlobPayloadProvider
+	RaftRouter              consensus.MessageSender
+	SpaceReader             SpaceReader
+	GraphReader             any
+	SemanticReader          any
+	AutomationRuntimeReader any
+	ClientRequestForwarder  ForwardedClientRequestHandler
+	ClusterBackupProvider   ClusterBackupProvider
+	ActivityEmitter         ActivityEmitter
 
 	forwardMu          sync.Mutex
 	forwardDiagnostics ForwardClientDiagnostics

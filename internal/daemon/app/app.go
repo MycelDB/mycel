@@ -308,6 +308,8 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		rt.ClusterManager.SetActivityEmitter(activityService)
 	}
 	graphService.SetBlobReferenceChecker(blobService)
+	graphService.SetAutomationOutputFenceValidator(automationService)
+	automationService.WithGraphChangeReplayer(graphNotificationService)
 	graphNotificationService.WithLeaderGate(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		return graphService.RequireLocalGraphWriteLeader(ctx, event.SpaceID.String())
 	})
@@ -328,6 +330,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 				graphservice.RaftStateMachine{Module: graphService, PartitionID: partitionID, PartitionCount: partitionCount},
 				blobservice.RaftStateMachine{Module: blobService, PartitionID: partitionID, PartitionCount: partitionCount},
 				daemonsemantic.RaftStateMachine{Module: semanticService, PartitionID: partitionID, PartitionCount: partitionCount},
+				automationservice.RaftStateMachine{Manager: automationService.AutomationManager, PartitionID: partitionID, PartitionCount: partitionCount},
 			}
 		}); err != nil {
 			_ = rt.Close()
@@ -341,6 +344,8 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		blobService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken, identity.ClusterID)
 		semanticService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
+		automationService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
+		automationService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		backupService.EnableExperimentalRaft(rt.RaftGroups)
 		backupService.EnableClusterBackupNetworking(uint64(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		principalService.EnableExperimentalRaft(rt.RaftGroups)
@@ -351,6 +356,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	clusterManager.SetBackendSpaceReader(spaceService)
 	clusterManager.SetBackendGraphReader(graphService)
 	clusterManager.SetBackendSemanticReader(semanticService)
+	clusterManager.SetBackendAutomationRuntimeReader(automationService)
 	if rt.WALRecovery != nil {
 		started := time.Now()
 		applied, err := rt.WALRecovery.Recover(ctx)
@@ -372,7 +378,12 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		}
 		return appender.OnGraphCommitted(ctx, event)
 	})
-	graphService.SetChangeSink(graphchange.MultiSink{graphNotificationService, semanticSink})
+	if raftRuntimeConfigured(cfg) {
+		graphService.SetChangeSink(semanticSink)
+		graphService.SetRaftApplyChangeSink(graphNotificationService)
+	} else {
+		graphService.SetChangeSink(graphchange.MultiSink{graphNotificationService, semanticSink})
+	}
 	if err := rt.StartServices(ctx); err != nil {
 		_ = rt.Close()
 		return nil, err

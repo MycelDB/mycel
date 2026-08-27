@@ -173,14 +173,8 @@ func (s *AdminInferenceService) DeleteAccessPolicy(ctx context.Context, req *adm
 	if err := spaceMgr.DeleteInferencePolicy(ctx, policyID); err != nil {
 		return nil, mapAdminInferenceError(err, "delete access policy")
 	}
-	if s.inference != nil {
-		inferenceSpace, err := s.inference.SpaceManager(ctx, spaceID.String())
-		if err != nil {
-			return nil, mapAdminInferenceError(err, "open inference space manager")
-		}
-		if err := inferenceSpace.DeletePolicy(ctx, policyID); err != nil {
-			return nil, mapAdminInferenceError(err, "delete standalone access policy")
-		}
+	if err := s.deleteSyncedAccessPolicy(ctx, spaceID.String(), policyID); err != nil {
+		return nil, mapAdminInferenceError(err, "delete standalone access policy")
 	}
 	return &adminv1.AdminIntelligenceAccessPolicyServiceDeleteAccessPolicyResponse{AccessPolicyId: policyID.String()}, nil
 }

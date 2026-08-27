@@ -23,6 +23,7 @@ func TestClusterBackendUnaryAuthInterceptorRequiresTokenForBackendMethods(t *tes
 		clusterpb.ClusterBackendService_ListRaftSpaces_FullMethodName,
 		clusterpb.ClusterBackendService_ExecuteRaftGraphRead_FullMethodName,
 		clusterpb.ClusterBackendService_ExecuteRaftSemanticRead_FullMethodName,
+		clusterpb.ClusterBackendService_ExecuteRaftAutomationRuntimeRead_FullMethodName,
 	}
 	interceptor := clusterBackendUnaryAuthInterceptor("secret")
 	for _, method := range methods {

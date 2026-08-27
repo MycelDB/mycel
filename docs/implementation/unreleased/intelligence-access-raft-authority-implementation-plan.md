@@ -2,18 +2,18 @@
 
 ## Status
 
-Planned. This plan implements the design in
+Implemented. This plan implements the design in
 [Design / Admin / Intelligence Access Raft authority](../../design/admin/intelligence-access-raft-authority.md).
 
-The immediate production bug is that `CreateIntelligenceProfile` still writes to
+The production bug was that `CreateIntelligenceProfile` still wrote to
 the standalone inference subsystem. In clustered/Raft mode that path correctly
-fails closed because the inference Raft executor is not wired:
+failed closed because the inference Raft executor is not wired:
 
 ```text
 clustered local write rejected: raft executor is not configured for this subsystem
 ```
 
-The fix is to make Intelligence profiles semantic-authoritative, raft-owned
+The fix makes Intelligence profiles semantic-authoritative, raft-owned
 space configuration, matching credential grants and access policies.
 
 ## Goals

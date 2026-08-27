@@ -17,16 +17,81 @@ import (
 type Engine struct{ Graphs graphservice.Manager }
 
 type Context struct {
-	Definition automation.Definition
-	RunID      string
-	Changed    graph.Node
-	Aliases    map[string]any
-	Result     output.Result
+	Definition           automation.Definition
+	RunID                string
+	InvocationID         string
+	BindingID            string
+	TargetNodeID         string
+	ClaimOwnerNodeID     uint64
+	ClaimVersion         uint64
+	ClaimToken           string
+	OutputIdempotencyKey string
+	Changed              graph.Node
+	Aliases              map[string]any
+	Result               output.Result
 }
 
 type Summary struct {
 	Mutations int
 	Changed   bool
+}
+
+func (e Engine) OutputAlreadyApplied(ctx context.Context, tx sessionservice.GraphTransaction, outputIdempotencyKey string) (bool, error) {
+	key := strings.TrimSpace(outputIdempotencyKey)
+	if key == "" {
+		return false, nil
+	}
+	if e.Graphs == nil {
+		return false, fmt.Errorf("graph manager is required")
+	}
+	nodeToken := ""
+	for {
+		nodes, next, err := e.Graphs.ListNodes(ctx, tx, 500, nodeToken)
+		if err != nil {
+			return false, err
+		}
+		for _, node := range nodes {
+			if automationOutputKey(node.Meta) == key {
+				return true, nil
+			}
+		}
+		if next == "" {
+			break
+		}
+		nodeToken = next
+	}
+	edgeToken := ""
+	for {
+		edges, next, err := e.Graphs.ListEdges(ctx, tx, 500, edgeToken)
+		if err != nil {
+			return false, err
+		}
+		for _, edge := range edges {
+			if automationOutputKey(edge.Meta) == key {
+				return true, nil
+			}
+		}
+		if next == "" {
+			break
+		}
+		edgeToken = next
+	}
+	return false, nil
+}
+
+func automationOutputKey(meta map[string]any) string {
+	automationMeta, ok := meta["automation"]
+	if !ok {
+		return ""
+	}
+	switch value := automationMeta.(type) {
+	case map[string]any:
+		return strings.TrimSpace(fmt.Sprint(value["output_idempotency_key"]))
+	case map[string]string:
+		return strings.TrimSpace(value["output_idempotency_key"])
+	default:
+		return ""
+	}
 }
 
 func (e Engine) Apply(ctx context.Context, tx sessionservice.GraphTransaction, in Context) (Summary, error) {
@@ -255,7 +320,29 @@ func tagAutomation(node *graph.Node, in Context) {
 	node.Meta["automation"] = automationMeta(in)
 }
 func automationMeta(in Context) map[string]any {
-	return map[string]any{"run_id": in.RunID, "automation_id": in.Definition.ID, "generated": true, "depth": 1}
+	meta := map[string]any{"run_id": in.RunID, "automation_id": in.Definition.ID, "generated": true, "depth": 1}
+	if in.InvocationID != "" {
+		meta["invocation_id"] = in.InvocationID
+	}
+	if in.BindingID != "" {
+		meta["binding_id"] = in.BindingID
+	}
+	if in.TargetNodeID != "" {
+		meta["target_node_id"] = in.TargetNodeID
+	}
+	if in.ClaimOwnerNodeID != 0 {
+		meta["claim_owner_node_id"] = in.ClaimOwnerNodeID
+	}
+	if in.ClaimVersion != 0 {
+		meta["claim_version"] = in.ClaimVersion
+	}
+	if in.ClaimToken != "" {
+		meta["claim_token"] = in.ClaimToken
+	}
+	if in.OutputIdempotencyKey != "" {
+		meta["output_idempotency_key"] = in.OutputIdempotencyKey
+	}
+	return meta
 }
 func hasLabel(labels []string, label string) bool {
 	for _, l := range labels {

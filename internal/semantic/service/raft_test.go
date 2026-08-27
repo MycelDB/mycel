@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	clusterbackend "github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	clustermodel "github.com/myceldb/mycel/internal/clustering/model"
+	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -16,6 +20,7 @@ import (
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -498,6 +503,138 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("node %d did not apply semantic index: %v", nodeID, err)
 		}
+	}
+}
+
+func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	peers := []consensus.NodeID{1, 2, 3}
+	partitionCount := uint32(4)
+	modules := map[consensus.NodeID]*Module{}
+	routers := map[consensus.NodeID]*consensus.LocalMessageRouter{1: consensus.NewLocalMessageRouter(), 2: consensus.NewLocalMessageRouter(), 3: consensus.NewLocalMessageRouter()}
+	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { r, ok := routers[nodeID]; return r, ok })}
+	groupsByNode := map[consensus.NodeID]*consensus.MultiGroup{}
+	for _, nodeID := range peers {
+		m := NewModule()
+		if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+			t.Fatalf("init node %d failed: %v", nodeID, result.Error)
+		}
+		modules[nodeID] = m
+		mg, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: nodeID, PeerNodeIDs: peers, PartitionCount: partitionCount, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine {
+			return RaftStateMachine{Module: m, PartitionCount: partitionCount}
+		}}, ElectionTick: 5, HeartbeatTick: 1})
+		if err != nil {
+			t.Fatalf("StartMultiGroup(%d) error = %v", nodeID, err)
+		}
+		groupsByNode[nodeID] = mg
+		m.EnableExperimentalRaft(mg, partitionCount)
+		for _, g := range mg.Groups() {
+			for _, router := range routers {
+				router.Register(g)
+			}
+		}
+	}
+	defer func() {
+		for _, mg := range groupsByNode {
+			mg.Stop()
+		}
+	}()
+	servers := map[consensus.NodeID]*grpc.Server{}
+	addrs := make([]string, len(peers))
+	for _, nodeID := range peers {
+		lis, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := grpc.NewServer()
+		backend := clusterbackend.NewService(clustermodel.NodeIdentity{}, clustermodel.NodeStateClustered, nil)
+		backend.SemanticReader = modules[nodeID]
+		clusterpb.RegisterClusterBackendServiceServer(srv, backend)
+		servers[nodeID] = srv
+		addrs[int(nodeID)-1] = lis.Addr().String()
+		go func() { _ = srv.Serve(lis) }()
+	}
+	defer func() {
+		for _, srv := range servers {
+			srv.Stop()
+		}
+	}()
+	for _, nodeID := range peers {
+		modules[nodeID].EnableExperimentalRaftNetworking(nodeID, addrs, "")
+	}
+	stopTick := make(chan struct{})
+	defer close(stopTick)
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopTick:
+				return
+			case <-ticker.C:
+				for _, mg := range groupsByNode {
+					mg.Tick()
+				}
+			}
+		}
+	}()
+	spaceID := domainspace.SpaceID(uuid.New())
+	probe, err := modules[1].buildSemanticSpaceRaftCommand(semanticMutationRecord{Kind: "semantic_index.upsert", SpaceID: spaceID}, []byte(`{}`), "probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaderForPartition := func() consensus.NodeID {
+		leaders := map[consensus.NodeID]int{}
+		for _, mg := range groupsByNode {
+			if g, ok := mg.Group(consensus.PartitionGroupID(probe.PartitionID)); ok && g.Leader() != 0 {
+				leaders[g.Leader()]++
+			}
+		}
+		for leader, count := range leaders {
+			if count >= 2 {
+				return leader
+			}
+		}
+		return 0
+	}
+	if err := consensus.TickUntil(ctx, 20*time.Millisecond, func() {
+		for _, mg := range groupsByNode {
+			mg.Tick()
+		}
+	}, func() bool { return leaderForPartition() != 0 }); err != nil {
+		t.Fatalf("leader not elected: %v", err)
+	}
+	leaderID := leaderForPartition()
+	followerID := consensus.NodeID(1)
+	if followerID == leaderID {
+		followerID = 2
+	}
+	idx := semanticIndex(spaceID)
+	mgr, err := modules[leaderID].SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.UpsertSemanticIndex(ctx, idx); err != nil {
+		t.Fatalf("UpsertSemanticIndex() error = %v", err)
+	}
+	rec, err := modules[leaderID].localVectorBackend().Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: idx.DomainID, SemanticIndexID: idx.ID, NodeID: graphmodel.NodeID(uuid.New()), SourceHash: "sha256:test", SourceMode: "self", ModelEndpointID: idx.ModelEndpointID, ModelID: idx.ModelID, VectorStoreID: idx.VectorStoreID, VectorSpaceKey: "test/3", Dimensions: 3, Vector: []float64{1, 0, 0}, CreatedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("leader vector upsert: %v", err)
+	}
+	local, err := modules[followerID].localVectorBackend().ListRecords(ctx, spaceID, idx.ID)
+	if err != nil {
+		t.Fatalf("follower local vector list: %v", err)
+	}
+	if len(local) != 0 {
+		t.Fatalf("follower unexpectedly had local vector records: %#v", local)
+	}
+	forwarded, err := modules[followerID].ListVectorRecords(ctx, spaceID, idx.ID)
+	if err != nil {
+		t.Fatalf("follower forwarded vector list: %v", err)
+	}
+	if len(forwarded) != 1 || forwarded[0].ID != rec.ID {
+		t.Fatalf("forwarded records=%#v want %s from leader %d via follower %d", forwarded, rec.ID, leaderID, followerID)
 	}
 }
 

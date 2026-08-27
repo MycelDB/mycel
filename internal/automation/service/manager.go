@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
@@ -56,20 +57,35 @@ type Manager interface {
 }
 
 type AutomationManager struct {
-	store            storage.Store
-	now              func() time.Time
-	sessions         sessionservice.Manager
-	graphs           graphservice.Manager
-	schemas          schemaservice.Manager
-	inference        inferenceservice.Manager
-	maxInputTokens   int64
-	maxOutputTokens  int64
-	metricsProcessed int64
-	metricsSucceeded int64
-	metricsSkipped   int64
-	metricsFailed    int64
-	metricsRetryable int64
-	writeAllowed     func() error
+	store                                 storage.Store
+	now                                   func() time.Time
+	sessions                              sessionservice.Manager
+	graphs                                graphservice.Manager
+	schemas                               schemaservice.Manager
+	inference                             inferenceservice.Manager
+	raftGroups                            *consensus.MultiGroup
+	raftPartitionCount                    uint32
+	raftLocalNode                         consensus.NodeID
+	raftNodeAddrs                         []string
+	raftBackendAuthToken                  string
+	maxInputTokens                        int64
+	maxOutputTokens                       int64
+	metricsProcessed                      int64
+	metricsSucceeded                      int64
+	metricsSkipped                        int64
+	metricsFailed                         int64
+	metricsRetryable                      int64
+	metricsGraphReplayScopes              int64
+	metricsGraphReplayFollowerSkips       int64
+	metricsGraphReplayEvents              int64
+	metricsGraphReplaySkippedEvents       int64
+	metricsGraphReplayInvocationsCreated  int64
+	metricsGraphReplayInvocationsExisting int64
+	metricsGraphReplayCursorAdvances      int64
+	metricsGraphReplayGaps                int64
+	metricsClaimReclaims                  int64
+	metricsClaimAbandoned                 int64
+	writeAllowed                          func() error
 }
 
 func NewManager(store storage.Store) *AutomationManager {
@@ -108,6 +124,10 @@ func (m *AutomationManager) requireWriteAllowed() error {
 		return nil
 	}
 	return m.writeAllowed()
+}
+
+func (m *AutomationManager) raftEnabled() bool {
+	return m.raftGroups != nil
 }
 
 func (m *AutomationManager) ValidateAutomation(ctx context.Context, domainID graph.DomainID, rawJSON string) (automation.Definition, error) {
@@ -221,9 +241,6 @@ func (m *AutomationManager) ValidateProcedure(ctx context.Context, domainID grap
 }
 
 func (m *AutomationManager) CreateProcedureAs(ctx context.Context, domainID graph.DomainID, rawJSON string, principalID string) (automation.Procedure, error) {
-	if err := m.requireWriteAllowed(); err != nil {
-		return automation.Procedure{}, err
-	}
 	procedure, err := m.ValidateProcedure(ctx, domainID, rawJSON)
 	if err != nil {
 		return procedure, err
@@ -239,16 +256,13 @@ func (m *AutomationManager) CreateProcedureAs(ctx context.Context, domainID grap
 	procedure.UpdatedByPrincipalID = principalID
 	procedure.CreatedAt = now
 	procedure.UpdatedAt = now
-	if err := m.store.PutProcedure(ctx, procedure); err != nil {
+	if err := m.commitAutomationMutation(ctx, automationMutationRecord{Kind: "procedure.create", DomainID: domainID, ID: procedure.ID, Payload: rawAutomation(procedure)}); err != nil {
 		return procedure, mapStoreError(err)
 	}
 	return procedure, nil
 }
 
 func (m *AutomationManager) UpdateProcedureAs(ctx context.Context, domainID graph.DomainID, id string, rawJSON string, principalID string) (automation.Procedure, error) {
-	if err := m.requireWriteAllowed(); err != nil {
-		return automation.Procedure{}, err
-	}
 	current, err := m.store.GetProcedure(ctx, domainID, strings.TrimSpace(id))
 	if err != nil {
 		return automation.Procedure{}, mapStoreError(err)
@@ -265,17 +279,14 @@ func (m *AutomationManager) UpdateProcedureAs(ctx context.Context, domainID grap
 	if err := automation.ValidateProcedure(procedure); err != nil {
 		return procedure, err
 	}
-	if err := m.store.PutProcedure(ctx, procedure); err != nil {
+	if err := m.commitAutomationMutation(ctx, automationMutationRecord{Kind: "procedure.update", DomainID: domainID, ID: procedure.ID, Payload: rawAutomation(procedure)}); err != nil {
 		return procedure, mapStoreError(err)
 	}
 	return procedure, nil
 }
 
 func (m *AutomationManager) DeleteProcedure(ctx context.Context, domainID graph.DomainID, id string) error {
-	if err := m.requireWriteAllowed(); err != nil {
-		return err
-	}
-	return mapStoreError(m.store.DeleteProcedure(ctx, domainID, strings.TrimSpace(id)))
+	return mapStoreError(m.commitAutomationMutation(ctx, automationMutationRecord{Kind: "procedure.delete", DomainID: domainID, ID: strings.TrimSpace(id)}))
 }
 
 func (m *AutomationManager) GetProcedure(ctx context.Context, domainID graph.DomainID, id string) (automation.Procedure, error) {
@@ -324,9 +335,6 @@ func (m *AutomationManager) ValidateBinding(ctx context.Context, domainID graph.
 }
 
 func (m *AutomationManager) CreateBindingAs(ctx context.Context, domainID graph.DomainID, rawJSON string, principalID string) (automation.Binding, error) {
-	if err := m.requireWriteAllowed(); err != nil {
-		return automation.Binding{}, err
-	}
 	binding, err := m.ValidateBinding(ctx, domainID, rawJSON)
 	if err != nil {
 		return binding, err
@@ -342,16 +350,13 @@ func (m *AutomationManager) CreateBindingAs(ctx context.Context, domainID graph.
 	binding.UpdatedByPrincipalID = principalID
 	binding.CreatedAt = now
 	binding.UpdatedAt = now
-	if err := m.store.PutBinding(ctx, binding); err != nil {
+	if err := m.commitAutomationMutation(ctx, automationMutationRecord{Kind: "binding.create", DomainID: domainID, ID: binding.ID, Payload: rawAutomation(binding)}); err != nil {
 		return binding, mapStoreError(err)
 	}
 	return binding, nil
 }
 
 func (m *AutomationManager) UpdateBindingAs(ctx context.Context, domainID graph.DomainID, id string, rawJSON string, principalID string) (automation.Binding, error) {
-	if err := m.requireWriteAllowed(); err != nil {
-		return automation.Binding{}, err
-	}
 	current, err := m.store.GetBinding(ctx, domainID, strings.TrimSpace(id))
 	if err != nil {
 		return automation.Binding{}, mapStoreError(err)
@@ -372,17 +377,14 @@ func (m *AutomationManager) UpdateBindingAs(ctx context.Context, domainID graph.
 	if err := automation.ValidateBinding(binding, &procedure); err != nil {
 		return binding, err
 	}
-	if err := m.store.PutBinding(ctx, binding); err != nil {
+	if err := m.commitAutomationMutation(ctx, automationMutationRecord{Kind: "binding.update", DomainID: domainID, ID: binding.ID, Payload: rawAutomation(binding)}); err != nil {
 		return binding, mapStoreError(err)
 	}
 	return binding, nil
 }
 
 func (m *AutomationManager) DeleteBinding(ctx context.Context, domainID graph.DomainID, id string) error {
-	if err := m.requireWriteAllowed(); err != nil {
-		return err
-	}
-	return mapStoreError(m.store.DeleteBinding(ctx, domainID, strings.TrimSpace(id)))
+	return mapStoreError(m.commitAutomationMutation(ctx, automationMutationRecord{Kind: "binding.delete", DomainID: domainID, ID: strings.TrimSpace(id)}))
 }
 
 func (m *AutomationManager) GetBinding(ctx context.Context, domainID graph.DomainID, id string) (automation.Binding, error) {
@@ -409,9 +411,6 @@ func (m *AutomationManager) ListBindings(ctx context.Context, domainID graph.Dom
 }
 
 func (m *AutomationManager) SetBindingStatusAs(ctx context.Context, domainID graph.DomainID, id string, status string, principalID string) (automation.Binding, error) {
-	if err := m.requireWriteAllowed(); err != nil {
-		return automation.Binding{}, err
-	}
 	status = strings.TrimSpace(strings.ToLower(status))
 	if status != automation.StatusEnabled && status != automation.StatusDisabled {
 		return automation.Binding{}, fmt.Errorf("invalid graph automation binding status %q", status)
@@ -432,7 +431,7 @@ func (m *AutomationManager) SetBindingStatusAs(ctx context.Context, domainID gra
 			return binding, err
 		}
 	}
-	if err := m.store.PutBinding(ctx, binding); err != nil {
+	if err := m.commitAutomationMutation(ctx, automationMutationRecord{Kind: "binding.update", DomainID: domainID, ID: binding.ID, Payload: rawAutomation(binding)}); err != nil {
 		return binding, mapStoreError(err)
 	}
 	return binding, nil
@@ -510,17 +509,31 @@ func (m *AutomationManager) SetAutomationStatusAs(ctx context.Context, domainID 
 }
 
 func (m *AutomationManager) ListInvocations(ctx context.Context, domainID graph.DomainID, filter storage.InvocationFilter) ([]automation.Invocation, error) {
+	if m.forwardedAutomationRuntimeReadsEnabled() {
+		out, err := m.listInvocationsRaftForwarded(ctx, domainID, filter)
+		return out, mapStoreError(err)
+	}
+	if err := m.ensureCommittedExecutionRead(ctx); err != nil {
+		return nil, err
+	}
 	out, err := m.store.ListInvocations(ctx, domainID, filter)
 	return out, mapStoreError(err)
 }
 
 func (m *AutomationManager) GetRun(ctx context.Context, domainID graph.DomainID, runID string) (automation.Run, error) {
+	if m.forwardedAutomationRuntimeReadsEnabled() {
+		run, err := m.getRunRaftForwarded(ctx, domainID, runID)
+		return run, mapStoreError(err)
+	}
+	if err := m.ensureCommittedExecutionRead(ctx); err != nil {
+		return automation.Run{}, err
+	}
 	run, err := m.store.GetRun(ctx, domainID, strings.TrimSpace(runID))
 	return run, mapStoreError(err)
 }
 
 func (m *AutomationManager) RetryInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error) {
-	if err := m.requireWriteAllowed(); err != nil {
+	if err := m.ensureCommittedExecutionRead(ctx); err != nil {
 		return automation.Invocation{}, err
 	}
 	inv, err := m.store.GetInvocation(ctx, domainID, strings.TrimSpace(invocationID))
@@ -530,36 +543,51 @@ func (m *AutomationManager) RetryInvocation(ctx context.Context, domainID graph.
 	inv.Status = "pending"
 	inv.SkipReason = ""
 	inv.NextAttemptAt = time.Time{}
+	inv.ClaimOwnerNodeID = 0
+	inv.ClaimVersion++
+	inv.ClaimToken = ""
+	inv.ClaimExpiresAt = time.Time{}
 	inv.UpdatedAt = m.now()
-	if err := m.store.PutInvocation(ctx, inv); err != nil {
-		return inv, mapStoreError(err)
+	if err := m.putInvocationRuntime(ctx, inv); err != nil {
+		return inv, err
 	}
 	return inv, nil
 }
 
 func (m *AutomationManager) CancelInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error) {
-	if err := m.requireWriteAllowed(); err != nil {
+	if err := m.ensureCommittedExecutionRead(ctx); err != nil {
 		return automation.Invocation{}, err
 	}
 	inv, err := m.store.GetInvocation(ctx, domainID, strings.TrimSpace(invocationID))
 	if err != nil {
 		return inv, mapStoreError(err)
 	}
+	if m.raftEnabled() && inv.Status == "running" {
+		return inv, fmt.Errorf("cannot cancel a running automation invocation in clustered raft mode; wait for completion or retry after claim expiry")
+	}
 	inv.Status = "cancelled"
 	inv.SkipReason = "cancelled"
 	inv.NextAttemptAt = time.Time{}
+	inv.ClaimOwnerNodeID = 0
+	inv.ClaimVersion++
+	inv.ClaimToken = ""
+	inv.ClaimExpiresAt = time.Time{}
 	inv.UpdatedAt = m.now()
-	if err := m.store.PutInvocation(ctx, inv); err != nil {
-		return inv, mapStoreError(err)
+	if err := m.putInvocationRuntime(ctx, inv); err != nil {
+		return inv, err
 	}
 	return inv, nil
 }
 
 func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphchange.CommittedEvent) error {
-	if err := m.requireWriteAllowed(); err != nil {
+	event.Normalize()
+	if m.raftEnabled() {
+		if err := m.requireLocalExecutionLeader(ctx, event.SpaceID.String()); err != nil {
+			return err
+		}
+	} else if err := m.requireWriteAllowed(); err != nil {
 		return err
 	}
-	event.Normalize()
 	if event.DomainID == uuid.Nil {
 		return nil
 	}
@@ -575,6 +603,9 @@ func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphch
 		}
 		for _, item := range items {
 			def := item.Definition
+			if !item.Binding.CreatedAt.IsZero() && !event.CommittedAt.IsZero() && event.CommittedAt.Before(item.Binding.CreatedAt) {
+				continue
+			}
 			if item.Binding.Scope.SpaceID != "" && item.Binding.Scope.SpaceID != event.SpaceID.String() {
 				continue
 			}
@@ -589,20 +620,71 @@ func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphch
 				copy := *change.OldNode
 				oldNode = &copy
 			}
-			inv := invocationForRunnable(m.now, domainID, item, automation.Invocation{ID: uuid.NewString(), SpaceID: event.SpaceID.String(), EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType}, event.Origin.PrincipalID)
-			_ = m.store.PutInvocation(ctx, inv)
+			invID := graphTriggeredInvocationID(event.SpaceID.String(), domainID, event.ID.String(), item.Binding.ID, change.NodeID)
+			inv := invocationForRunnable(m.now, domainID, item, automation.Invocation{ID: invID, SpaceID: event.SpaceID.String(), EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType}, event.Origin.PrincipalID)
+			if err := m.putInvocationIdempotent(ctx, inv); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
+	return m.advanceGraphReplayCursor(ctx, event)
 }
 
-func (m *AutomationManager) HandleGraphChangeGap(ctx context.Context, gap graphchange.Gap) error {
-	return nil
+func (m *AutomationManager) putInvocationIdempotent(ctx context.Context, inv automation.Invocation) error {
+	current, err := m.store.GetInvocation(ctx, inv.DomainID, inv.ID)
+	if err == nil {
+		if !sameInvocationTrigger(current, inv) {
+			return fmt.Errorf("automation invocation %q already exists with different trigger metadata", inv.ID)
+		}
+		return nil
+	}
+	if !errors.Is(err, storage.ErrNotFound) {
+		return mapStoreError(err)
+	}
+	return m.putInvocationRuntime(ctx, inv)
+}
+
+func sameInvocationTrigger(a, b automation.Invocation) bool {
+	return a.ID == b.ID &&
+		a.DomainID == b.DomainID &&
+		strings.TrimSpace(a.SpaceID) == strings.TrimSpace(b.SpaceID) &&
+		strings.TrimSpace(a.AutomationID) == strings.TrimSpace(b.AutomationID) &&
+		a.AutomationVersion == b.AutomationVersion &&
+		strings.TrimSpace(a.BindingID) == strings.TrimSpace(b.BindingID) &&
+		a.BindingVersion == b.BindingVersion &&
+		strings.TrimSpace(a.ProcedureID) == strings.TrimSpace(b.ProcedureID) &&
+		a.ProcedureVersion == b.ProcedureVersion &&
+		strings.TrimSpace(a.EventID) == strings.TrimSpace(b.EventID) &&
+		strings.TrimSpace(a.ChangedElementID) == strings.TrimSpace(b.ChangedElementID) &&
+		strings.TrimSpace(a.ChangedElementKind) == strings.TrimSpace(b.ChangedElementKind) &&
+		strings.TrimSpace(a.EventType) == strings.TrimSpace(b.EventType) &&
+		strings.TrimSpace(a.ActorPrincipalID) == strings.TrimSpace(b.ActorPrincipalID) &&
+		strings.TrimSpace(a.OwnerPrincipalID) == strings.TrimSpace(b.OwnerPrincipalID) &&
+		strings.TrimSpace(a.OnBehalfOfPrincipalID) == strings.TrimSpace(b.OnBehalfOfPrincipalID) &&
+		strings.TrimSpace(a.AutomationOwnerPrincipalID) == strings.TrimSpace(b.AutomationOwnerPrincipalID) &&
+		strings.TrimSpace(a.EventOriginPrincipalID) == strings.TrimSpace(b.EventOriginPrincipalID)
+}
+
+func graphTriggeredInvocationID(spaceID string, domainID graph.DomainID, eventID string, bindingID string, targetNodeID string) string {
+	key := strings.Join([]string{
+		"mycel",
+		"automation",
+		"graph-invocation",
+		"v1",
+		strings.TrimSpace(spaceID),
+		domainID.String(),
+		strings.TrimSpace(eventID),
+		strings.TrimSpace(bindingID),
+		strings.TrimSpace(targetNodeID),
+	}, "\x00")
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)).String()
 }
 
 func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.DomainID, limit int) (int, error) {
-	if err := m.requireWriteAllowed(); err != nil {
-		return 0, err
+	if !m.raftEnabled() {
+		if err := m.requireWriteAllowed(); err != nil {
+			return 0, err
+		}
 	}
 	items, err := m.pendingInvocations(ctx, domainID, limit)
 	if err != nil {
@@ -610,12 +692,31 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 	}
 	processed := 0
 	for _, inv := range items {
-		item, err := m.resolveInvocationAutomation(ctx, domainID, inv)
+		item, resolveErr := m.resolveInvocationAutomation(ctx, domainID, inv)
+		var debounce debounceDecision
+		if resolveErr == nil && item.Definition.Status == automation.StatusEnabled {
+			var err error
+			debounce, err = m.debounceInvocation(ctx, domainID, item.Definition, inv)
+			if err != nil {
+				return processed, err
+			}
+			if debounce.Wait {
+				continue
+			}
+		}
+		claimed, ok, err := m.claimInvocation(ctx, inv)
 		if err != nil {
+			return processed, err
+		}
+		if !ok {
+			continue
+		}
+		inv = claimed
+		if resolveErr != nil {
 			inv.Status = "failed"
-			inv.SkipReason = err.Error()
+			inv.SkipReason = resolveErr.Error()
 			inv.UpdatedAt = m.now()
-			_ = m.store.PutInvocation(ctx, inv)
+			_ = m.putInvocationRuntime(ctx, inv)
 			continue
 		}
 		def := item.Definition
@@ -624,22 +725,16 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			inv.Status = "skipped"
 			inv.SkipReason = "automation_disabled"
 			inv.UpdatedAt = now
-			run := automation.Run{ID: newRunID(), DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: inv.AttemptCount + 1, Status: "skipped", Error: inv.SkipReason, ActorPrincipalID: inv.ActorPrincipalID, OnBehalfOfPrincipalID: inv.OnBehalfOfPrincipalID, OwnerPrincipalID: inv.OwnerPrincipalID, AutomationOwnerPrincipalID: inv.AutomationOwnerPrincipalID, EventOriginPrincipalID: inv.EventOriginPrincipalID, StartedAt: now, CompletedAt: now}
-			if err := m.store.PutInvocation(ctx, inv); err != nil {
-				return processed, mapStoreError(err)
+			runID := newRunID()
+			run := automation.Run{ID: runID, DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: inv.AttemptCount + 1, Status: "skipped", Error: inv.SkipReason, ActorPrincipalID: inv.ActorPrincipalID, OnBehalfOfPrincipalID: inv.OnBehalfOfPrincipalID, OwnerPrincipalID: inv.OwnerPrincipalID, AutomationOwnerPrincipalID: inv.AutomationOwnerPrincipalID, EventOriginPrincipalID: inv.EventOriginPrincipalID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: automationOutputIdempotencyKey(inv, runID), StartedAt: now, CompletedAt: now}
+			if err := m.putInvocationRuntime(ctx, inv); err != nil {
+				return processed, err
 			}
-			if err := m.store.PutRun(ctx, run); err != nil {
-				return processed, mapStoreError(err)
+			if err := m.putRunRuntime(ctx, inv.SpaceID, run); err != nil {
+				return processed, err
 			}
 			m.recordMetric(inv.Status)
 			processed++
-			continue
-		}
-		debounce, err := m.debounceInvocation(ctx, domainID, def, inv)
-		if err != nil {
-			return processed, err
-		}
-		if debounce.Wait {
 			continue
 		}
 		if debounce.Coalesced {
@@ -647,12 +742,13 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			inv.Status = "skipped"
 			inv.SkipReason = skipReasonCoalesced
 			inv.UpdatedAt = now
-			run := automation.Run{ID: newRunID(), DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: inv.AttemptCount + 1, Status: "skipped", Error: skipReasonCoalesced, ActorPrincipalID: inv.ActorPrincipalID, OnBehalfOfPrincipalID: inv.OnBehalfOfPrincipalID, OwnerPrincipalID: inv.OwnerPrincipalID, AutomationOwnerPrincipalID: inv.AutomationOwnerPrincipalID, EventOriginPrincipalID: inv.EventOriginPrincipalID, TargetAlias: debounce.TargetAlias, TargetNodeID: debounce.TargetNodeID, CoalescedInvocationIDs: debounce.CoalescedByIDs, StartedAt: now, CompletedAt: now}
-			if err := m.store.PutInvocation(ctx, inv); err != nil {
-				return processed, mapStoreError(err)
+			runID := newRunID()
+			run := automation.Run{ID: runID, DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: inv.AttemptCount + 1, Status: "skipped", Error: skipReasonCoalesced, ActorPrincipalID: inv.ActorPrincipalID, OnBehalfOfPrincipalID: inv.OnBehalfOfPrincipalID, OwnerPrincipalID: inv.OwnerPrincipalID, AutomationOwnerPrincipalID: inv.AutomationOwnerPrincipalID, EventOriginPrincipalID: inv.EventOriginPrincipalID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: automationOutputIdempotencyKey(inv, runID), TargetAlias: debounce.TargetAlias, TargetNodeID: debounce.TargetNodeID, CoalescedInvocationIDs: debounce.CoalescedByIDs, StartedAt: now, CompletedAt: now}
+			if err := m.putInvocationRuntime(ctx, inv); err != nil {
+				return processed, err
 			}
-			if err := m.store.PutRun(ctx, run); err != nil {
-				return processed, mapStoreError(err)
+			if err := m.putRunRuntime(ctx, inv.SpaceID, run); err != nil {
+				return processed, err
 			}
 			m.recordMetric(inv.Status)
 			processed++
@@ -669,8 +765,8 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 				inv.Status = "succeeded"
 				inv.UpdatedAt = now
 			}
-			if err := m.store.PutInvocation(ctx, inv); err != nil {
-				return processed, mapStoreError(err)
+			if err := m.putInvocationRuntime(ctx, inv); err != nil {
+				return processed, err
 			}
 			m.recordMetric(inv.Status)
 			processed++
@@ -710,11 +806,15 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			}
 			inv.UpdatedAt = run.CompletedAt
 		}
-		if err := m.store.PutInvocation(ctx, inv); err != nil {
-			return processed, mapStoreError(err)
+		run.ClaimOwnerNodeID = inv.ClaimOwnerNodeID
+		run.ClaimVersion = inv.ClaimVersion
+		run.ClaimToken = inv.ClaimToken
+		run.OutputIdempotencyKey = automationOutputIdempotencyKey(inv, run.ID)
+		if err := m.putInvocationRuntime(ctx, inv); err != nil {
+			return processed, err
 		}
-		if err := m.store.PutRun(ctx, run); err != nil {
-			return processed, mapStoreError(err)
+		if err := m.putRunRuntime(ctx, inv.SpaceID, run); err != nil {
+			return processed, err
 		}
 		if err := m.recordSuccessfulInputHash(ctx, def, inv, run); err != nil {
 			return processed, err

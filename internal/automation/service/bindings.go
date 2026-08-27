@@ -43,6 +43,14 @@ func (m *AutomationManager) listRunnableAutomations(ctx context.Context, domainI
 		def := automation.ComposeDefinition(procedure, binding)
 		byID[binding.ID] = runnableAutomation{Procedure: procedure, Binding: binding, Definition: def}
 	}
+	if m.raftEnabled() {
+		out := make([]runnableAutomation, 0, len(byID))
+		for _, item := range byID {
+			out = append(out, item)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Binding.ID < out[j].Binding.ID })
+		return out, nil
+	}
 	defs, err := m.store.ListDefinitions(ctx, domainID)
 	if err != nil {
 		return nil, mapStoreError(err)
@@ -84,6 +92,9 @@ func (m *AutomationManager) resolveInvocationAutomation(ctx context.Context, dom
 		if !errors.Is(err, storage.ErrNotFound) {
 			return runnableAutomation{}, mapStoreError(err)
 		}
+	}
+	if m.raftEnabled() {
+		return runnableAutomation{}, ErrAutomationNotFound
 	}
 	def, err := m.GetAutomation(ctx, domainID, inv.AutomationID)
 	if err != nil {

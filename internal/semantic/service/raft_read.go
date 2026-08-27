@@ -10,20 +10,26 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 type raftSemanticReadRequest struct {
-	Op       string              `json:"op"`
-	SpaceID  domainspace.SpaceID `json:"space_id"`
-	Consumer string              `json:"consumer,omitempty"`
+	Op       string                         `json:"op"`
+	SpaceID  domainspace.SpaceID            `json:"space_id"`
+	Consumer string                         `json:"consumer,omitempty"`
+	IndexID  domainsemantic.SemanticIndexID `json:"index_id,omitempty"`
+	Search   SearchInput                    `json:"search,omitempty"`
 }
 type raftSemanticRulesResponse struct {
 	Rules []domainsemantic.SemanticGenerationRule `json:"rules"`
 }
 type raftSemanticIndexesResponse struct {
 	Indexes []domainsemantic.SemanticIndex `json:"indexes"`
+}
+type raftSemanticProfilesResponse struct {
+	Profiles []domainsemantic.IntelligenceProfile `json:"profiles"`
 }
 type raftSemanticGrantsResponse struct {
 	Grants []domainsemantic.CredentialGrant `json:"grants"`
@@ -39,6 +45,14 @@ type raftSemanticWorkItemsResponse struct {
 }
 type raftSemanticCheckpointResponse struct {
 	Checkpoint storesemantic.MaintenanceCheckpoint `json:"checkpoint"`
+}
+
+type raftSemanticVectorRecordsResponse struct {
+	Records []domainsemantic.AdvancedEmbeddingRecord `json:"records"`
+}
+
+type raftSemanticSearchResponse struct {
+	Result semanticsearch.Result `json:"result"`
 }
 
 func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs []string, token string) {
@@ -91,12 +105,9 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		}
 		req.SpaceID = domainspace.SpaceID(parsed)
 	}
-	saved := m.raftGroups
-	m.raftGroups = nil
-	defer func() { m.raftGroups = saved }()
 	switch req.Op {
 	case "list_rules":
-		mgr, err := m.SpaceManager(ctx, req.SpaceID)
+		mgr, err := m.baseSpaceManager(ctx, req.SpaceID)
 		if err != nil {
 			return nil, err
 		}
@@ -106,7 +117,7 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		}
 		return json.Marshal(raftSemanticRulesResponse{Rules: v})
 	case "list_indexes":
-		mgr, err := m.SpaceManager(ctx, req.SpaceID)
+		mgr, err := m.baseSpaceManager(ctx, req.SpaceID)
 		if err != nil {
 			return nil, err
 		}
@@ -115,8 +126,18 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 			return nil, err
 		}
 		return json.Marshal(raftSemanticIndexesResponse{Indexes: v})
+	case "list_profiles":
+		mgr, err := m.baseSpaceManager(ctx, req.SpaceID)
+		if err != nil {
+			return nil, err
+		}
+		v, err := mgr.ListIntelligenceProfiles(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftSemanticProfilesResponse{Profiles: v})
 	case "list_grants":
-		mgr, err := m.SpaceManager(ctx, req.SpaceID)
+		mgr, err := m.baseSpaceManager(ctx, req.SpaceID)
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +147,7 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		}
 		return json.Marshal(raftSemanticGrantsResponse{Grants: v})
 	case "list_policies":
-		mgr, err := m.SpaceManager(ctx, req.SpaceID)
+		mgr, err := m.baseSpaceManager(ctx, req.SpaceID)
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +157,7 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		}
 		return json.Marshal(raftSemanticPoliciesResponse{Policies: v})
 	case "list_dirty_events":
-		mgr, err := m.MaintenanceManager(ctx, req.SpaceID)
+		mgr, err := m.baseMaintenanceManager(ctx, req.SpaceID)
 		if err != nil {
 			return nil, err
 		}
@@ -146,7 +167,7 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		}
 		return json.Marshal(raftSemanticDirtyEventsResponse{Events: v})
 	case "list_work_items":
-		mgr, err := m.MaintenanceManager(ctx, req.SpaceID)
+		mgr, err := m.baseMaintenanceManager(ctx, req.SpaceID)
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +177,7 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		}
 		return json.Marshal(raftSemanticWorkItemsResponse{Items: v})
 	case "get_checkpoint":
-		mgr, err := m.MaintenanceManager(ctx, req.SpaceID)
+		mgr, err := m.baseMaintenanceManager(ctx, req.SpaceID)
 		if err != nil {
 			return nil, err
 		}
@@ -165,6 +186,26 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 			return nil, err
 		}
 		return json.Marshal(raftSemanticCheckpointResponse{Checkpoint: v})
+	case "list_vector_records":
+		v, err := m.localVectorBackend().ListRecords(ctx, req.SpaceID, req.IndexID)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftSemanticVectorRecordsResponse{Records: v})
+	case "purge_vector_index":
+		if err := m.localVectorBackend().PurgeIndex(ctx, req.SpaceID, req.IndexID); err != nil {
+			return nil, err
+		}
+		return json.Marshal(struct{}{})
+	case "search":
+		if req.Search.SpaceID == (domainspace.SpaceID{}) {
+			req.Search.SpaceID = req.SpaceID
+		}
+		v, err := m.searchLocal(ctx, req.Search)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftSemanticSearchResponse{Result: v})
 	default:
 		return nil, fmt.Errorf("unsupported raft semantic read op %q", req.Op)
 	}

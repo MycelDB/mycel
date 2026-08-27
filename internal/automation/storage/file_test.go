@@ -45,6 +45,25 @@ func TestFileStoreProcedureAndBindingRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFileStorePutInvocationDeduplicatesStableIDAcrossCreatedAtDays(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	domainID := graph.DomainID(uuid.New())
+	ctx := context.Background()
+	inv := automation.Invocation{ID: "inv-stable", DomainID: domainID, Status: "pending", CreatedAt: time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)}
+	if err := store.PutInvocation(ctx, inv); err != nil {
+		t.Fatalf("put first invocation: %v", err)
+	}
+	inv.Status = "running"
+	inv.CreatedAt = inv.CreatedAt.Add(24 * time.Hour)
+	if err := store.PutInvocation(ctx, inv); err != nil {
+		t.Fatalf("put moved invocation: %v", err)
+	}
+	items, err := store.ListInvocations(ctx, domainID, InvocationFilter{})
+	if err != nil || len(items) != 1 || items[0].Status != "running" {
+		t.Fatalf("ListInvocations() = %+v err=%v, want one updated invocation", items, err)
+	}
+}
+
 func TestFileStoreGetRunAcceptsInvocationID(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	domainID := graph.DomainID(uuid.New())

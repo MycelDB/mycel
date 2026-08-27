@@ -29,9 +29,9 @@ func (m *AutomationManager) debounceInvocation(ctx context.Context, domainID gra
 	if err != nil || duration <= 0 {
 		return debounceDecision{}, nil
 	}
-	base := inv.UpdatedAt
+	base := inv.CreatedAt
 	if base.IsZero() {
-		base = inv.CreatedAt
+		base = inv.UpdatedAt
 	}
 	if m.now().Before(base.Add(duration)) {
 		return debounceDecision{Wait: true}, nil

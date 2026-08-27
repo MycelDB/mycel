@@ -50,6 +50,18 @@ func (w *walSpaceManager) ListSemanticIndexes(ctx context.Context) ([]domainsema
 	}
 	return w.inner.ListSemanticIndexes(ctx)
 }
+func (w *walSpaceManager) ListIntelligenceProfiles(ctx context.Context) ([]domainsemantic.IntelligenceProfile, error) {
+	if leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID); err != nil {
+		return nil, err
+	} else if forward {
+		var res raftSemanticProfilesResponse
+		if err := w.module.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "list_profiles", SpaceID: w.spaceID}, &res); err != nil {
+			return nil, err
+		}
+		return res.Profiles, nil
+	}
+	return w.inner.ListIntelligenceProfiles(ctx)
+}
 func (w *walSpaceManager) ListCredentialGrants(ctx context.Context) ([]domainsemantic.CredentialGrant, error) {
 	if leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID); err != nil {
 		return nil, err
@@ -116,6 +128,19 @@ func (w *walSpaceManager) UpsertSemanticIndex(ctx context.Context, v domainseman
 }
 func (w *walSpaceManager) DeleteSemanticIndex(ctx context.Context, id domainsemantic.SemanticIndexID, purge bool) error {
 	return w.module.commitSemanticMutation(ctx, recordTypeSemanticSpace, semanticMutationRecord{Kind: "semantic_index.delete", SpaceID: w.spaceID, Payload: raw(id), Flag: purge})
+}
+func (w *walSpaceManager) UpsertIntelligenceProfile(ctx context.Context, v domainsemantic.IntelligenceProfile) (domainsemantic.IntelligenceProfile, error) {
+	v, err := w.canonicalIntelligenceProfile(ctx, v)
+	if err != nil {
+		return domainsemantic.IntelligenceProfile{}, err
+	}
+	if err := w.module.commitSemanticMutation(ctx, recordTypeSemanticSpace, semanticMutationRecord{Kind: "intelligence_profile.upsert", SpaceID: w.spaceID, Payload: raw(v)}); err != nil {
+		return domainsemantic.IntelligenceProfile{}, err
+	}
+	return w.resolveIntelligenceProfile(ctx, v)
+}
+func (w *walSpaceManager) DeleteIntelligenceProfile(ctx context.Context, id domainsemantic.IntelligenceProfileID) error {
+	return w.module.commitSemanticMutation(ctx, recordTypeSemanticSpace, semanticMutationRecord{Kind: "intelligence_profile.delete", SpaceID: w.spaceID, Payload: raw(id)})
 }
 func (w *walSpaceManager) UpsertCredentialGrant(ctx context.Context, v domainsemantic.CredentialGrant) (domainsemantic.CredentialGrant, error) {
 	v, err := w.canonicalGrant(ctx, v)

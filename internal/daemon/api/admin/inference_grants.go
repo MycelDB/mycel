@@ -178,14 +178,8 @@ func (s *AdminInferenceService) DeleteCredentialGrant(ctx context.Context, req *
 	if err := spaceMgr.DeleteCredentialGrant(ctx, grantID); err != nil {
 		return nil, mapAdminInferenceError(err, "delete credential grant")
 	}
-	if s.inference != nil {
-		inferenceSpace, err := s.inference.SpaceManager(ctx, spaceID.String())
-		if err != nil {
-			return nil, mapAdminInferenceError(err, "open inference space manager")
-		}
-		if err := inferenceSpace.DeleteCredentialGrant(ctx, grantID); err != nil {
-			return nil, mapAdminInferenceError(err, "delete inference credential grant")
-		}
+	if err := s.deleteSyncedIntelligenceCredentialGrant(ctx, spaceID.String(), grantID); err != nil {
+		return nil, mapAdminInferenceError(err, "delete inference credential grant")
 	}
 	return &adminv1.AdminIntelligenceAccessGrantServiceDeleteCredentialGrantResponse{CredentialGrantId: grantID.String()}, nil
 }

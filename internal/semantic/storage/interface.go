@@ -44,6 +44,9 @@ type SpaceManager interface {
 	UpsertSemanticIndex(ctx context.Context, index domainsemantic.SemanticIndex) (domainsemantic.SemanticIndex, error) // transitional wrapper until analyzer/search/API are rule-native
 	ListSemanticIndexes(ctx context.Context) ([]domainsemantic.SemanticIndex, error)                                   // transitional wrapper until analyzer/search/API are rule-native
 	DeleteSemanticIndex(ctx context.Context, id domainsemantic.SemanticIndexID, purgeDependents bool) error            // transitional wrapper until analyzer/search/API are rule-native
+	UpsertIntelligenceProfile(ctx context.Context, profile domainsemantic.IntelligenceProfile) (domainsemantic.IntelligenceProfile, error)
+	ListIntelligenceProfiles(ctx context.Context) ([]domainsemantic.IntelligenceProfile, error)
+	DeleteIntelligenceProfile(ctx context.Context, id domainsemantic.IntelligenceProfileID) error
 	UpsertCredentialGrant(ctx context.Context, grant domainsemantic.CredentialGrant) (domainsemantic.CredentialGrant, error)
 	ListCredentialGrants(ctx context.Context) ([]domainsemantic.CredentialGrant, error)
 	DeleteCredentialGrant(ctx context.Context, id domainsemantic.CredentialGrantID) error

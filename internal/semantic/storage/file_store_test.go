@@ -196,6 +196,7 @@ func TestSpaceManagerUpsertsScopedSemanticResources(t *testing.T) {
 	}
 	for _, path := range []string{
 		filepath.Join(location, semanticIndexesFileName),
+		filepath.Join(location, intelligenceProfilesFileName),
 		filepath.Join(location, credentialGrantsFileName),
 		filepath.Join(location, inferencePoliciesFileName),
 	} {
@@ -220,6 +221,27 @@ func TestSpaceManagerUpsertsScopedSemanticResources(t *testing.T) {
 	}
 	if index.ID == uuid.Nil || index.Key != "notes-search" {
 		t.Fatalf("unexpected index: %+v", index)
+	}
+	profile, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{
+		SpaceID:   spaceID,
+		Key:       "Notes-Embeddings",
+		Operation: domainsemantic.OperationEmbeddings,
+		Purpose:   "semantic_search",
+		DomainIDs: []string{domainID.String()},
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatalf("upsert intelligence profile failed: %v", err)
+	}
+	if profile.ID == uuid.Nil || profile.Key != "notes-embeddings" || profile.CreatedAt.IsZero() || profile.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected profile: %+v", profile)
+	}
+	retried, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "notes-embeddings", Operation: domainsemantic.OperationEmbeddings, Enabled: true})
+	if err != nil {
+		t.Fatalf("retry intelligence profile failed: %v", err)
+	}
+	if retried.ID != profile.ID || retried.CreatedAt != profile.CreatedAt {
+		t.Fatalf("profile retry did not preserve identity: first=%+v retried=%+v", profile, retried)
 	}
 	grant, err := mgr.UpsertCredentialGrant(ctx, domainsemantic.CredentialGrant{
 		CredentialID:       credentialID,
@@ -252,6 +274,17 @@ func TestSpaceManagerUpsertsScopedSemanticResources(t *testing.T) {
 	indexes, err := reloaded.ListSemanticIndexes(ctx)
 	if err != nil || len(indexes) != 1 || indexes[0].ID != index.ID {
 		t.Fatalf("unexpected reloaded indexes: indexes=%+v err=%v", indexes, err)
+	}
+	profiles, err := reloaded.ListIntelligenceProfiles(ctx)
+	if err != nil || len(profiles) != 1 || profiles[0].ID != profile.ID {
+		t.Fatalf("unexpected reloaded profiles: profiles=%+v err=%v", profiles, err)
+	}
+	if err := reloaded.DeleteIntelligenceProfile(ctx, profile.ID); err != nil {
+		t.Fatalf("delete profile failed: %v", err)
+	}
+	profiles, err = reloaded.ListIntelligenceProfiles(ctx)
+	if err != nil || len(profiles) != 0 {
+		t.Fatalf("unexpected profiles after delete: profiles=%+v err=%v", profiles, err)
 	}
 }
 

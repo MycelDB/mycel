@@ -21,6 +21,17 @@ func (s *AdminInferenceService) modelEndpointReferences(ctx context.Context, id 
 	}
 	refs = append(refs, usageRefs...)
 	global := s.semantic.GlobalManager()
+	endpointKey := ""
+	endpoints, err := global.ListModelEndpoints(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, endpoint := range endpoints {
+		if endpoint.ID == id {
+			endpointKey = strings.TrimSpace(endpoint.Key)
+			break
+		}
+	}
 	caps, err := global.ListModelEndpointCapabilities(ctx)
 	if err != nil {
 		return nil, err
@@ -65,6 +76,15 @@ func (s *AdminInferenceService) modelEndpointReferences(ctx context.Context, id 
 		for _, index := range indexes {
 			if index.ModelEndpointID == id {
 				refs = append(refs, "semantic_index:"+index.ID.String())
+			}
+		}
+		profiles, err := space.Manager.ListIntelligenceProfiles(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, profile := range profiles {
+			if semanticStringRefsContain(profile.EndpointRefs, id.String(), endpointKey) {
+				refs = append(refs, "intelligence_profile:"+profile.ID.String())
 			}
 		}
 		grants, err := space.Manager.ListCredentialGrants(ctx)
@@ -116,7 +136,19 @@ func (s *AdminInferenceService) modelReferences(ctx context.Context, id domainse
 		return nil, err
 	}
 	refs = append(refs, usageRefs...)
-	caps, err := s.semantic.GlobalManager().ListModelEndpointCapabilities(ctx)
+	global := s.semantic.GlobalManager()
+	modelKey := ""
+	models, err := global.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, model := range models {
+		if model.ID == id {
+			modelKey = strings.TrimSpace(model.Key)
+			break
+		}
+	}
+	caps, err := global.ListModelEndpointCapabilities(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +179,15 @@ func (s *AdminInferenceService) modelReferences(ctx context.Context, id domainse
 		for _, index := range indexes {
 			if index.ModelID == id {
 				refs = append(refs, "semantic_index:"+index.ID.String())
+			}
+		}
+		profiles, err := space.Manager.ListIntelligenceProfiles(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, profile := range profiles {
+			if semanticStringRefsContain(profile.ModelRefs, id.String(), modelKey) {
+				refs = append(refs, "intelligence_profile:"+profile.ID.String())
 			}
 		}
 		grants, err := space.Manager.ListCredentialGrants(ctx)
@@ -228,6 +269,15 @@ func (s *AdminInferenceService) capabilityReferences(ctx context.Context, id dom
 		for _, index := range indexes {
 			if index.ModelEndpointCapabilityID == id {
 				refs = append(refs, "semantic_index:"+index.ID.String())
+			}
+		}
+		profiles, err := space.Manager.ListIntelligenceProfiles(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, profile := range profiles {
+			if semanticStringRefsContain(profile.CapabilityRefs, id.String(), "") {
+				refs = append(refs, "intelligence_profile:"+profile.ID.String())
 			}
 		}
 		standaloneRefs, err := s.standaloneSpaceReferences(ctx, space.SpaceID.String(), func(profile domaininference.Profile, grant domaininference.CredentialGrant, policy domaininference.Policy, decision domaininference.PolicyDecision) []string {
@@ -316,6 +366,21 @@ func (s *AdminInferenceService) profileReferences(ctx context.Context, profile d
 			return nil, err
 		}
 		for _, space := range spaces {
+			if space.SpaceID.String() != profile.SpaceID {
+				continue
+			}
+			rules, err := space.Manager.ListSemanticRules(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for _, rule := range rules {
+				for _, binding := range rule.Embeddings {
+					bindingProfile := strings.ToLower(strings.TrimSpace(binding.IntelligenceProfile))
+					if binding.IntelligenceProfileID.String() == idText || (key != "" && bindingProfile == strings.ToLower(key)) {
+						refs = append(refs, "semantic_rule:"+rule.ID.String()+":binding:"+binding.Key)
+					}
+				}
+			}
 			indexes, err := space.Manager.ListSemanticIndexes(ctx)
 			if err != nil {
 				return nil, err
@@ -517,6 +582,21 @@ func stringSliceContains(values []string, want string) bool {
 	}
 	for _, value := range values {
 		if strings.TrimSpace(value) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticStringRefsContain(values []string, id string, key string) bool {
+	id = strings.TrimSpace(id)
+	key = strings.ToLower(strings.TrimSpace(key))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if id != "" && value == id {
+			return true
+		}
+		if key != "" && strings.ToLower(value) == key {
 			return true
 		}
 	}

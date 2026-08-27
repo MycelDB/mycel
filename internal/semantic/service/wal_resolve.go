@@ -136,6 +136,20 @@ func (w *walSpaceManager) resolveSemanticIndex(ctx context.Context, v domainsema
 	return v, nil
 }
 
+func (w *walSpaceManager) resolveIntelligenceProfile(ctx context.Context, v domainsemantic.IntelligenceProfile) (domainsemantic.IntelligenceProfile, error) {
+	items, err := w.inner.ListIntelligenceProfiles(ctx)
+	if err != nil {
+		return domainsemantic.IntelligenceProfile{}, err
+	}
+	key := semanticKey(v.Key)
+	for _, item := range items {
+		if item.ID == v.ID || (item.SpaceID == v.SpaceID && semanticKey(item.Key) == key) {
+			return item, nil
+		}
+	}
+	return v, nil
+}
+
 func (w *walSpaceManager) resolveGrant(ctx context.Context, v domainsemantic.CredentialGrant) (domainsemantic.CredentialGrant, error) {
 	items, err := w.inner.ListCredentialGrants(ctx)
 	if err != nil {

@@ -85,7 +85,10 @@ func (m *Module) applySemanticGlobal(ctx context.Context, rec wal.Record) error 
 	if err := json.Unmarshal(rec.Payload, &r); err != nil {
 		return err
 	}
-	return applySemanticGlobalMutation(ctx, m.globalBase, r)
+	if err := applySemanticGlobalMutation(ctx, m.globalBase, r); err != nil {
+		return err
+	}
+	return m.projectSemanticGlobalMutation(ctx, r)
 }
 func (m *Module) applySemanticSpace(ctx context.Context, rec wal.Record) error {
 	var r semanticMutationRecord
@@ -96,7 +99,10 @@ func (m *Module) applySemanticSpace(ctx context.Context, rec wal.Record) error {
 	if err := mgr.Init(ctx, m.spaceSemanticDir(r.SpaceID), r.SpaceID); err != nil {
 		return err
 	}
-	return applySemanticSpaceMutation(ctx, mgr, r)
+	if err := applySemanticSpaceMutation(ctx, mgr, r); err != nil {
+		return err
+	}
+	return m.projectSemanticSpaceMutation(ctx, r)
 }
 
 func raw(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
@@ -196,6 +202,15 @@ func applySemanticSpaceMutation(ctx context.Context, s storesemantic.SpaceManage
 		var v domainsemantic.SemanticIndexID
 		_ = json.Unmarshal(r.Payload, &v)
 		return s.DeleteSemanticIndex(ctx, v, r.Flag)
+	case "intelligence_profile.upsert":
+		var v domainsemantic.IntelligenceProfile
+		_ = json.Unmarshal(r.Payload, &v)
+		_, err := s.UpsertIntelligenceProfile(ctx, v)
+		return err
+	case "intelligence_profile.delete":
+		var v domainsemantic.IntelligenceProfileID
+		_ = json.Unmarshal(r.Payload, &v)
+		return s.DeleteIntelligenceProfile(ctx, v)
 	case "credential_grant.upsert":
 		var v domainsemantic.CredentialGrant
 		_ = json.Unmarshal(r.Payload, &v)

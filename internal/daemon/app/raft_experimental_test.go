@@ -12,6 +12,7 @@ import (
 
 	activitymodel "github.com/myceldb/mycel/internal/activity/model"
 	activityservice "github.com/myceldb/mycel/internal/activity/service"
+	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	backupservice "github.com/myceldb/mycel/internal/backup/service"
 	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	"github.com/myceldb/mycel/internal/clustering"
@@ -292,6 +293,7 @@ func TestCompositeStateMachineRecordOwnershipIsUnique(t *testing.T) {
 		graphservice.RaftStateMachine{},
 		blobservice.RaftStateMachine{},
 		semanticservice.RaftStateMachine{},
+		automationservice.RaftStateMachine{},
 	}
 	systemRecords := map[wal.RecordType]string{
 		consensus.SystemRecordBootstrapMetadata: "system.metadata",
@@ -318,6 +320,7 @@ func TestCompositeStateMachineRecordOwnershipIsUnique(t *testing.T) {
 		"blob.meta.delete.v1":                 "blob",
 		"semantic.space.mutation.v1":          "semantic",
 		"semantic.maintenance.mutation.v1":    "semantic",
+		"automation.mutation.v1":              "automation",
 	}
 	for recordType, want := range systemRecords {
 		cmd := consensus.RaftCommand{Scope: consensus.CommandScopeSystem, RecordType: recordType, CommandID: "test"}

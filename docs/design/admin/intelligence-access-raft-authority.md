@@ -2,14 +2,15 @@
 
 ## Status
 
-Design target for clustered/Raft mode. This document defines the authority model
-for Intelligence Access resources used by semantic generation rules, semantic
-search, graph automations, and future daemon-owned AI workloads.
+Implemented design for clustered/Raft mode. This document defines the authority
+model for Intelligence Access resources used by semantic generation rules,
+semantic search, graph automations, and future daemon-owned AI workloads.
 
-The current implementation is in transition: several Intelligence Access
-resources are already committed through the semantic subsystem's Raft paths, but
-space-scoped Intelligence profiles still use the standalone inference local-write
-path. In clustered mode that local path correctly fails closed with:
+The bug that motivated this design was a transitional implementation gap: several
+Intelligence Access resources were already committed through the semantic
+subsystem's Raft paths, but space-scoped Intelligence profiles still used the
+standalone inference local-write path. In clustered mode that local path
+correctly failed closed with:
 
 ```text
 clustered local write rejected: raft executor is not configured for this subsystem

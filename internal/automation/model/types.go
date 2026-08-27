@@ -203,6 +203,10 @@ type Invocation struct {
 	SkipReason                 string         `json:"skip_reason,omitempty"`
 	AttemptCount               int            `json:"attempt_count,omitempty"`
 	NextAttemptAt              time.Time      `json:"next_attempt_at,omitempty"`
+	ClaimOwnerNodeID           uint64         `json:"claim_owner_node_id,omitempty"`
+	ClaimVersion               uint64         `json:"claim_version,omitempty"`
+	ClaimToken                 string         `json:"claim_token,omitempty"`
+	ClaimExpiresAt             time.Time      `json:"claim_expires_at,omitempty"`
 	CreatedAt                  time.Time      `json:"created_at,omitempty"`
 	UpdatedAt                  time.Time      `json:"updated_at,omitempty"`
 }
@@ -270,6 +274,10 @@ type Run struct {
 	ProcedureVersion           int                          `json:"procedure_version,omitempty"`
 	AttemptNumber              int                          `json:"attempt_number"`
 	Status                     string                       `json:"status"`
+	ClaimOwnerNodeID           uint64                       `json:"claim_owner_node_id,omitempty"`
+	ClaimVersion               uint64                       `json:"claim_version,omitempty"`
+	ClaimToken                 string                       `json:"claim_token,omitempty"`
+	OutputIdempotencyKey       string                       `json:"output_idempotency_key,omitempty"`
 	RenderedInputHash          string                       `json:"rendered_input_hash,omitempty"`
 	ActorPrincipalID           string                       `json:"actor_principal_id,omitempty"`
 	OnBehalfOfPrincipalID      string                       `json:"on_behalf_of_principal_id,omitempty"`

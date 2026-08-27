@@ -23,24 +23,25 @@ var _ mycelruntime.SnapshotReloadable = (*Module)(nil)
 var _ Manager = (*Module)(nil)
 
 type Module struct {
-	mu                  sync.Mutex
-	dataDir             string
-	globalBase          inferencestorage.GlobalManager
-	global              inferencestorage.GlobalManager
-	usageBase           inferencestorage.UsageLedger
-	usage               inferencestorage.UsageLedger
-	spaces              map[string]inferencestorage.SpaceManager
-	wal                 *wal.Manager
-	walProgress         wal.AppliedLSNStore
-	walWaiter           *wal.ApplyWaiter
-	writeAllowed        func() error
-	useMutationWrappers bool
-	connectors          map[domaininference.ConnectorType]connectors.Connector
-	secretResolver      SecretResolver
-	principals          PrincipalStatusChecker
-	logger              *slog.Logger
-	gate                *quiesce.Gate
-	startedAt           time.Time
+	mu                   sync.Mutex
+	dataDir              string
+	globalBase           inferencestorage.GlobalManager
+	global               inferencestorage.GlobalManager
+	usageBase            inferencestorage.UsageLedger
+	usage                inferencestorage.UsageLedger
+	spaces               map[string]inferencestorage.SpaceManager
+	wal                  *wal.Manager
+	walProgress          wal.AppliedLSNStore
+	walWaiter            *wal.ApplyWaiter
+	writeAllowed         func() error
+	useMutationWrappers  bool
+	connectors           map[domaininference.ConnectorType]connectors.Connector
+	secretResolver       SecretResolver
+	principals           PrincipalStatusChecker
+	derivedProjectionErr string
+	logger               *slog.Logger
+	gate                 *quiesce.Gate
+	startedAt            time.Time
 }
 
 func NewModule() *Module {
@@ -64,11 +65,11 @@ func (m *Module) principalStatusChecker() PrincipalStatusChecker {
 
 func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.InitResult {
 	global := inferencestorage.NewGlobalManager()
-	if err := global.Init(ctx, filepath.Join(host.DataDir(), "meta")); err != nil {
+	if err := global.Init(ctx, filepath.Join(host.DataDir(), "meta", "inference_runtime")); err != nil {
 		return mycelruntime.Abort(ModuleName, "store", "failed to open inference global store", err)
 	}
 	usage := inferencestorage.NewUsageLedger()
-	if err := usage.Init(ctx, filepath.Join(host.DataDir(), "meta", "accounting")); err != nil {
+	if err := usage.Init(ctx, filepath.Join(host.DataDir(), "meta", "inference_runtime", "accounting")); err != nil {
 		return mycelruntime.Abort(ModuleName, "store", "failed to open inference usage ledger", err)
 	}
 	m.mu.Lock()
@@ -130,6 +131,26 @@ func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.
 	return mycelruntime.OK(ModuleName)
 }
 
+func (m *Module) ReloadDerivedProjection(ctx context.Context) error {
+	if m == nil || m.dataDir == "" {
+		return nil
+	}
+	global := inferencestorage.NewGlobalManager()
+	if err := global.Init(ctx, filepath.Join(m.dataDir, "meta", "inference_runtime")); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.globalBase = global
+	if m.useMutationWrappers {
+		m.global = &walGlobalManager{inner: global, module: m}
+	} else {
+		m.global = global
+	}
+	m.spaces = map[string]inferencestorage.SpaceManager{}
+	m.mu.Unlock()
+	return nil
+}
+
 func (m *Module) GlobalManager() inferencestorage.GlobalManager {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -152,6 +173,36 @@ func (m *Module) RequireLocalWriteAllowed() error {
 	return fn()
 }
 
+func (m *Module) requireDerivedProjectionHealthy() error {
+	m.mu.Lock()
+	degraded := m.derivedProjectionErr
+	m.mu.Unlock()
+	if degraded == "" {
+		return nil
+	}
+	return fmt.Errorf("inference projection is degraded: %s", degraded)
+}
+
+func (m *Module) markDerivedProjectionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	m.mu.Lock()
+	m.derivedProjectionErr = err.Error()
+	logger := m.logger
+	m.mu.Unlock()
+	if logger != nil {
+		logger.Warn("inference projection marked degraded", "error", err)
+	}
+	return err
+}
+
+func (m *Module) MarkDerivedProjectionHealthy() {
+	m.mu.Lock()
+	m.derivedProjectionErr = ""
+	m.mu.Unlock()
+}
+
 // Derived sync methods update the standalone inference mirror from the
 // raft-owned semantic catalog. They intentionally bypass the local write gate:
 // semantic raft metadata is the authority, while this store is a rebuildable
@@ -161,7 +212,16 @@ func (m *Module) UpsertDerivedPackage(ctx context.Context, pkg domaininference.I
 	if mgr == nil {
 		return domaininference.InferencePackage{}, fmt.Errorf("inference module is not initialized")
 	}
-	return mgr.UpsertPackage(ctx, pkg)
+	stored, err := mgr.UpsertPackage(ctx, pkg)
+	return stored, m.markDerivedProjectionError(err)
+}
+
+func (m *Module) DeleteDerivedPackage(ctx context.Context, id domaininference.InferencePackageID) error {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return fmt.Errorf("inference module is not initialized")
+	}
+	return m.markDerivedProjectionError(mgr.DeletePackage(ctx, id))
 }
 
 func (m *Module) UpsertDerivedEndpoint(ctx context.Context, endpoint domaininference.Endpoint) (domaininference.Endpoint, error) {
@@ -169,7 +229,8 @@ func (m *Module) UpsertDerivedEndpoint(ctx context.Context, endpoint domaininfer
 	if mgr == nil {
 		return domaininference.Endpoint{}, fmt.Errorf("inference module is not initialized")
 	}
-	return mgr.UpsertEndpoint(ctx, endpoint)
+	stored, err := mgr.UpsertEndpoint(ctx, endpoint)
+	return stored, m.markDerivedProjectionError(err)
 }
 
 func (m *Module) UpsertDerivedModel(ctx context.Context, model domaininference.Model) (domaininference.Model, error) {
@@ -177,7 +238,8 @@ func (m *Module) UpsertDerivedModel(ctx context.Context, model domaininference.M
 	if mgr == nil {
 		return domaininference.Model{}, fmt.Errorf("inference module is not initialized")
 	}
-	return mgr.UpsertModel(ctx, model)
+	stored, err := mgr.UpsertModel(ctx, model)
+	return stored, m.markDerivedProjectionError(err)
 }
 
 func (m *Module) UpsertDerivedCapability(ctx context.Context, capability domaininference.Capability) (domaininference.Capability, error) {
@@ -185,7 +247,8 @@ func (m *Module) UpsertDerivedCapability(ctx context.Context, capability domaini
 	if mgr == nil {
 		return domaininference.Capability{}, fmt.Errorf("inference module is not initialized")
 	}
-	return mgr.UpsertCapability(ctx, capability)
+	stored, err := mgr.UpsertCapability(ctx, capability)
+	return stored, m.markDerivedProjectionError(err)
 }
 
 func (m *Module) UpsertDerivedVectorStore(ctx context.Context, vectorStore domaininference.VectorStore) (domaininference.VectorStore, error) {
@@ -193,7 +256,8 @@ func (m *Module) UpsertDerivedVectorStore(ctx context.Context, vectorStore domai
 	if mgr == nil {
 		return domaininference.VectorStore{}, fmt.Errorf("inference module is not initialized")
 	}
-	return mgr.UpsertVectorStore(ctx, vectorStore)
+	stored, err := mgr.UpsertVectorStore(ctx, vectorStore)
+	return stored, m.markDerivedProjectionError(err)
 }
 
 func (m *Module) UpsertDerivedSecret(ctx context.Context, secret domaininference.Secret) (domaininference.Secret, error) {
@@ -201,7 +265,8 @@ func (m *Module) UpsertDerivedSecret(ctx context.Context, secret domaininference
 	if mgr == nil {
 		return domaininference.Secret{}, fmt.Errorf("inference module is not initialized")
 	}
-	return mgr.UpsertSecret(ctx, secret)
+	stored, err := mgr.UpsertSecret(ctx, secret)
+	return stored, m.markDerivedProjectionError(err)
 }
 
 func (m *Module) UpsertDerivedCredential(ctx context.Context, credential domaininference.Credential) (domaininference.Credential, error) {
@@ -209,23 +274,107 @@ func (m *Module) UpsertDerivedCredential(ctx context.Context, credential domaini
 	if mgr == nil {
 		return domaininference.Credential{}, fmt.Errorf("inference module is not initialized")
 	}
-	return mgr.UpsertCredential(ctx, credential)
+	stored, err := mgr.UpsertCredential(ctx, credential)
+	return stored, m.markDerivedProjectionError(err)
+}
+
+func (m *Module) DeleteDerivedEndpoint(ctx context.Context, id domaininference.EndpointID) error {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return fmt.Errorf("inference module is not initialized")
+	}
+	return m.markDerivedProjectionError(mgr.DeleteEndpoint(ctx, id))
+}
+
+func (m *Module) DeleteDerivedModel(ctx context.Context, id domaininference.ModelID) error {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return fmt.Errorf("inference module is not initialized")
+	}
+	return m.markDerivedProjectionError(mgr.DeleteModel(ctx, id))
+}
+
+func (m *Module) DeleteDerivedCapability(ctx context.Context, id domaininference.CapabilityID) error {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return fmt.Errorf("inference module is not initialized")
+	}
+	return m.markDerivedProjectionError(mgr.DeleteCapability(ctx, id))
+}
+
+func (m *Module) DeleteDerivedVectorStore(ctx context.Context, id domaininference.VectorStoreID) error {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return fmt.Errorf("inference module is not initialized")
+	}
+	return m.markDerivedProjectionError(mgr.DeleteVectorStore(ctx, id))
+}
+
+func (m *Module) DeleteDerivedSecret(ctx context.Context, id domaininference.SecretID) error {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return fmt.Errorf("inference module is not initialized")
+	}
+	return m.markDerivedProjectionError(mgr.DeleteSecret(ctx, id))
+}
+
+func (m *Module) DeleteDerivedCredential(ctx context.Context, id domaininference.CredentialID) error {
+	mgr := m.baseGlobalManager()
+	if mgr == nil {
+		return fmt.Errorf("inference module is not initialized")
+	}
+	return m.markDerivedProjectionError(mgr.DeleteCredential(ctx, id))
+}
+
+func (m *Module) UpsertDerivedProfile(ctx context.Context, spaceID string, profile domaininference.Profile) (domaininference.Profile, error) {
+	mgr, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		return domaininference.Profile{}, m.markDerivedProjectionError(err)
+	}
+	stored, err := mgr.UpsertProfile(ctx, profile)
+	return stored, m.markDerivedProjectionError(err)
+}
+
+func (m *Module) DeleteDerivedProfile(ctx context.Context, spaceID string, id domaininference.ProfileID) error {
+	mgr, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		return m.markDerivedProjectionError(err)
+	}
+	return m.markDerivedProjectionError(mgr.DeleteProfile(ctx, id))
 }
 
 func (m *Module) UpsertDerivedCredentialGrant(ctx context.Context, spaceID string, grant domaininference.CredentialGrant) (domaininference.CredentialGrant, error) {
 	mgr, err := m.baseSpaceManager(ctx, spaceID)
 	if err != nil {
-		return domaininference.CredentialGrant{}, err
+		return domaininference.CredentialGrant{}, m.markDerivedProjectionError(err)
 	}
-	return mgr.UpsertCredentialGrant(ctx, grant)
+	stored, err := mgr.UpsertCredentialGrant(ctx, grant)
+	return stored, m.markDerivedProjectionError(err)
+}
+
+func (m *Module) DeleteDerivedCredentialGrant(ctx context.Context, spaceID string, id domaininference.CredentialGrantID) error {
+	mgr, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		return m.markDerivedProjectionError(err)
+	}
+	return m.markDerivedProjectionError(mgr.DeleteCredentialGrant(ctx, id))
 }
 
 func (m *Module) UpsertDerivedPolicy(ctx context.Context, spaceID string, policy domaininference.Policy) (domaininference.Policy, error) {
 	mgr, err := m.baseSpaceManager(ctx, spaceID)
 	if err != nil {
-		return domaininference.Policy{}, err
+		return domaininference.Policy{}, m.markDerivedProjectionError(err)
 	}
-	return mgr.UpsertPolicy(ctx, policy)
+	stored, err := mgr.UpsertPolicy(ctx, policy)
+	return stored, m.markDerivedProjectionError(err)
+}
+
+func (m *Module) DeleteDerivedPolicy(ctx context.Context, spaceID string, id domaininference.PolicyID) error {
+	mgr, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		return m.markDerivedProjectionError(err)
+	}
+	return m.markDerivedProjectionError(mgr.DeletePolicy(ctx, id))
 }
 
 func (m *Module) baseGlobalManager() inferencestorage.GlobalManager {
@@ -300,11 +449,11 @@ func (m *Module) spaceInferenceDir(spaceID string) string {
 
 func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
 	global := inferencestorage.NewGlobalManager()
-	if err := global.Init(ctx, filepath.Join(m.dataDir, "meta")); err != nil {
+	if err := global.Init(ctx, filepath.Join(m.dataDir, "meta", "inference_runtime")); err != nil {
 		return err
 	}
 	usage := inferencestorage.NewUsageLedger()
-	if err := usage.Init(ctx, filepath.Join(m.dataDir, "meta", "accounting")); err != nil {
+	if err := usage.Init(ctx, filepath.Join(m.dataDir, "meta", "inference_runtime", "accounting")); err != nil {
 		return err
 	}
 	m.mu.Lock()

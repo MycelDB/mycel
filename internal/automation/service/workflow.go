@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 )
 
@@ -13,14 +12,14 @@ func (m *AutomationManager) startWorkflowInstance(ctx context.Context, def autom
 		return automation.WorkflowInstance{}, fmt.Errorf("workflow definition is required")
 	}
 	now := m.now()
-	inst := automation.WorkflowInstance{ID: uuid.NewString(), DomainID: inv.DomainID, AutomationID: def.ID, AutomationVersion: def.Version, InvocationID: inv.ID, ChangedElementID: inv.ChangedElementID, Status: "pending", CreatedAt: now, UpdatedAt: now}
-	if err := m.store.PutWorkflowInstance(ctx, inst); err != nil {
-		return inst, mapStoreError(err)
+	inst := automation.WorkflowInstance{ID: workflowInstanceID(inv), DomainID: inv.DomainID, AutomationID: def.ID, AutomationVersion: def.Version, InvocationID: inv.ID, ChangedElementID: inv.ChangedElementID, Status: "pending", CreatedAt: now, UpdatedAt: now}
+	if err := m.putWorkflowInstanceRuntime(ctx, inv.SpaceID, inst); err != nil {
+		return inst, err
 	}
 	for _, step := range runnableWorkflowSteps(*def.Workflow, nil) {
-		run := automation.WorkflowStepRun{ID: uuid.NewString(), DomainID: inv.DomainID, InstanceID: inst.ID, StepID: step.ID, AttemptNumber: 0, Status: "pending", StartedAt: now}
-		if err := m.store.PutWorkflowStepRun(ctx, run); err != nil {
-			return inst, mapStoreError(err)
+		run := automation.WorkflowStepRun{ID: workflowStepRunID(inst.ID, step.ID), DomainID: inv.DomainID, InstanceID: inst.ID, StepID: step.ID, AttemptNumber: 0, Status: "pending", StartedAt: now}
+		if err := m.putWorkflowStepRunRuntime(ctx, inv.SpaceID, run); err != nil {
+			return inst, err
 		}
 	}
 	return inst, nil

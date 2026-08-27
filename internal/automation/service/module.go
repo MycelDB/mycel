@@ -35,6 +35,7 @@ type Module struct {
 	graphs    graphservice.Manager
 	schemas   schemaservice.Manager
 	inference inferenceservice.Manager
+	replayer  GraphChangeReplayer
 	worker    WorkerConfig
 }
 
@@ -55,6 +56,11 @@ func (m *Module) WithSchemaManager(schemas schemaservice.Manager) *Module {
 
 func (m *Module) WithInferenceManager(inference inferenceservice.Manager) *Module {
 	m.inference = inference
+	return m
+}
+
+func (m *Module) WithGraphChangeReplayer(replayer GraphChangeReplayer) *Module {
+	m.replayer = replayer
 	return m
 }
 
@@ -97,8 +103,10 @@ func (m *Module) Start(ctx context.Context) error {
 	if m.AutomationManager == nil || m.cancel != nil || !m.worker.Enabled {
 		return nil
 	}
-	if err := m.AutomationManager.requireWriteAllowed(); err != nil {
-		return nil
+	if !m.AutomationManager.raftEnabled() {
+		if err := m.AutomationManager.requireWriteAllowed(); err != nil {
+			return nil
+		}
 	}
 	workerCtx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
@@ -118,6 +126,9 @@ func (m *Module) Start(ctx context.Context) error {
 				}
 				sem := make(chan struct{}, m.worker.Concurrency)
 				var batchWG sync.WaitGroup
+				if m.replayer != nil {
+					_ = m.RecoverGraphChanges(workerCtx, m.replayer)
+				}
 				for _, domainID := range domains {
 					_, _ = m.ProcessScheduled(workerCtx, domainID, m.worker.BatchSize)
 					sem <- struct{}{}

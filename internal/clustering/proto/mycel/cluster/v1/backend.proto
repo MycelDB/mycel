@@ -55,6 +55,11 @@ service ClusterBackendService {
   // The request/response payloads are daemon-internal JSON envelopes.
   rpc ExecuteRaftSemanticRead(ExecuteRaftSemanticReadRequest) returns (ExecuteRaftSemanticReadResponse);
 
+  // ExecuteRaftAutomationRuntimeRead forwards an automation runtime read to a
+  // partition leader. The request/response payloads are daemon-internal JSON
+  // envelopes.
+  rpc ExecuteRaftAutomationRuntimeRead(ExecuteRaftAutomationRuntimeReadRequest) returns (ExecuteRaftAutomationRuntimeReadResponse);
+
   // ForwardClientRequest forwards a daemon client API request to the node that
   // owns the in-flight session/transaction state. The request/response payloads
   // are daemon-internal protobuf or JSON envelopes selected by operation.
@@ -326,6 +331,17 @@ message ExecuteRaftSemanticReadRequest {
 }
 
 message ExecuteRaftSemanticReadResponse {
+  ClusterProtocolVersion protocol_version = 1;
+  bytes payload = 2;
+}
+
+message ExecuteRaftAutomationRuntimeReadRequest {
+  ClusterProtocolVersion protocol_version = 1;
+  uint32 partition_id = 2;
+  bytes payload = 3;
+}
+
+message ExecuteRaftAutomationRuntimeReadResponse {
   ClusterProtocolVersion protocol_version = 1;
   bytes payload = 2;
 }

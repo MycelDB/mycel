@@ -17,7 +17,6 @@ func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
 		return err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.globalBase = global
 	if m.wal != nil || m.raftGroups != nil {
 		m.global = &walGlobalManager{inner: global, module: m}
@@ -26,5 +25,9 @@ func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
 	}
 	m.spaces = map[domainspace.SpaceID]storesemantic.SpaceManager{}
 	m.maintenanceManagers = map[domainspace.SpaceID]storesemantic.MaintenanceManager{}
-	return nil
+	m.mu.Unlock()
+	if err := m.reloadInferenceProjectionCache(ctx); err != nil {
+		return err
+	}
+	return m.rebuildInferenceProjection(ctx)
 }
