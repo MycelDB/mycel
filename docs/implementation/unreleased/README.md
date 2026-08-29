@@ -60,6 +60,7 @@ assigned to a tagged release bucket.
 
 - [Admin template service and UI implementation plan](admin-template-service-and-ui-implementation-plan.md)
 - [mycel-console Intelligence navigation implementation plan](mycel-console-intelligence-navigation-implementation-plan.md) — planned console navigation and page restructure for Intelligence/Access, Automations, and Semantic management.
+- [mycel-console friendly resource labels implementation plan](mycel-console-friendly-resource-labels-implementation-plan.md) — planned cleanup to prefer names, keys, shared badges, and copyable secondary IDs over raw protobuf enum strings and UUID-like identifiers in normal Console UX.
 - [Semantic generation rules implementation plan](semantic-generation-rules-implementation-plan.md) — replacement plan for semantic indexes as constrained graph-reactive embedding rules with fast physical search indexes.
 - [SGR0 semantic generation rules API surface plan](semantic-generation-rules-sgr0-api-surface-plan.md) — tranche-specific plan for replacing public semantic-index API terminology with semantic generation rules.
 - [SGR1 semantic generation rules domain model plan](semantic-generation-rules-sgr1-domain-model-plan.md) — tranche-specific plan for introducing the internal semantic generation rule model and binding-aware records/work.

@@ -58,7 +58,15 @@ func (s *AdminActivityService) ListActivityEvents(ctx context.Context, req *admi
 	for _, event := range result.Events {
 		events = append(events, eventToProto(event))
 	}
-	return &adminv1.ListActivityEventsResponse{Events: events, NextPageToken: result.NextPageToken}, nil
+	return &adminv1.ListActivityEventsResponse{
+		Events:        events,
+		NextPageToken: result.NextPageToken,
+		Summary: &adminv1.ActivityEventSummary{
+			TotalCount:   result.Summary.TotalCount,
+			WarningCount: result.Summary.WarningCount,
+			ErrorCount:   result.Summary.ErrorCount,
+		},
+	}, nil
 }
 
 func (s *AdminActivityService) GetActivityEvent(ctx context.Context, req *adminv1.GetActivityEventRequest) (*adminv1.GetActivityEventResponse, error) {

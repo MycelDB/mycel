@@ -29,7 +29,7 @@ func (m *activityManagerStub) Append(context.Context, model.Event) (storage.Appe
 }
 func (m *activityManagerStub) Get(context.Context, string) (model.Event, error) { return m.event, nil }
 func (m *activityManagerStub) List(context.Context, model.ListFilter) (model.ListResult, error) {
-	return model.ListResult{Events: []model.Event{m.event}}, nil
+	return model.ListResult{Events: []model.Event{m.event}, Summary: model.ListSummary{TotalCount: 7, WarningCount: 2, ErrorCount: 1}}, nil
 }
 func (m *activityManagerStub) Emit(context.Context, string, string, string, string, func(*model.Event)) error {
 	return nil
@@ -40,8 +40,12 @@ func TestAdminActivityRequiresAuditCapabilities(t *testing.T) {
 	event := model.Event{EventID: "evt_1", Severity: model.SeverityInfo, Category: model.CategoryLifecycle, Type: "daemon.started", Message: "Daemon started", Source: model.Source{Component: "daemon"}}
 	authz := &activityAuthz{ok: true}
 	svc := NewAdminActivityService(&activityManagerStub{event: event}, authz)
-	if _, err := svc.ListActivityEvents(ctx, &adminv1.ListActivityEventsRequest{}); err != nil {
+	listResponse, err := svc.ListActivityEvents(ctx, &adminv1.ListActivityEventsRequest{})
+	if err != nil {
 		t.Fatalf("list: %v", err)
+	}
+	if listResponse.GetSummary().GetTotalCount() != 7 || listResponse.GetSummary().GetWarningCount() != 2 || listResponse.GetSummary().GetErrorCount() != 1 {
+		t.Fatalf("unexpected summary %#v", listResponse.GetSummary())
 	}
 	if authz.capability != capAuditRead {
 		t.Fatalf("list capability = %q", authz.capability)

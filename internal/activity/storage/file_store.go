@@ -20,7 +20,6 @@ import (
 
 const defaultPageSize = 50
 const maxPageSize = 500
-const maxListScan = 10000
 
 type FileStore struct {
 	path          string
@@ -164,28 +163,45 @@ func (s *FileStore) List(ctx context.Context, filter model.ListFilter) (model.Li
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]model.Event, 0, pageSize)
-	scanned := 0
-	for _, event := range s.events {
-		if scanned >= maxListScan {
-			break
-		}
-		scanned++
-		if !startAfter.IsZero() && !event.IngestedAt.Before(startAfter) {
-			continue
+	summary := model.ListSummary{}
+	pageFilled := false
+	hasMore := false
+	for index, event := range s.events {
+		if index%1024 == 0 {
+			select {
+			case <-ctx.Done():
+				return model.ListResult{}, ctx.Err()
+			default:
+			}
 		}
 		if !matches(event, filter) {
 			continue
 		}
+		summary.TotalCount++
+		switch strings.ToLower(event.Severity) {
+		case model.SeverityWarning:
+			summary.WarningCount++
+		case model.SeverityError:
+			summary.ErrorCount++
+		}
+		pageEligible := startAfter.IsZero() || event.IngestedAt.Before(startAfter)
+		if !pageEligible {
+			continue
+		}
+		if pageFilled {
+			hasMore = true
+			continue
+		}
 		out = append(out, event)
 		if len(out) == pageSize {
-			break
+			pageFilled = true
 		}
 	}
 	next := ""
-	if len(out) == pageSize {
+	if hasMore && len(out) > 0 {
 		next = encodePageToken(out[len(out)-1].IngestedAt)
 	}
-	return model.ListResult{Events: out, NextPageToken: next}, nil
+	return model.ListResult{Events: out, NextPageToken: next, Summary: summary}, nil
 }
 
 func (s *FileStore) sortLocked() {

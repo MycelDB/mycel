@@ -82,7 +82,14 @@ type ListFilter struct {
 	PageToken        string
 }
 
+type ListSummary struct {
+	TotalCount   uint64
+	WarningCount uint64
+	ErrorCount   uint64
+}
+
 type ListResult struct {
 	Events        []Event
 	NextPageToken string
+	Summary       ListSummary
 }

@@ -77,11 +77,47 @@ func TestFileStorePagination(t *testing.T) {
 	if len(first.Events) != 2 || first.NextPageToken == "" {
 		t.Fatalf("unexpected first page %#v", first)
 	}
+	if first.Summary.TotalCount != 3 {
+		t.Fatalf("expected total count 3 across all pages, got %#v", first.Summary)
+	}
 	second, err := store.List(ctx, model.ListFilter{PageSize: 2, PageToken: first.NextPageToken})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(second.Events) != 1 {
 		t.Fatalf("expected second page size 1, got %d", len(second.Events))
+	}
+	if second.Summary.TotalCount != 3 {
+		t.Fatalf("expected second page total count 3, got %#v", second.Summary)
+	}
+}
+
+func TestFileStoreListSummaryCountsFilteredSeverities(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir() + "/events.jsonl")
+	if err := store.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fixtures := []model.Event{
+		{OccurredAt: time.Now().Add(-3 * time.Second), Severity: model.SeverityInfo, Category: model.CategoryIdentity, Type: "principal.created", Message: "Principal created", Source: model.Source{Service: "test"}},
+		{OccurredAt: time.Now().Add(-2 * time.Second), Severity: model.SeverityWarning, Category: model.CategoryIdentity, Type: "principal.warning", Message: "Principal warning", Source: model.Source{Service: "test"}},
+		{OccurredAt: time.Now().Add(-time.Second), Severity: model.SeverityError, Category: model.CategoryIdentity, Type: "principal.error", Message: "Principal error", Source: model.Source{Service: "test"}},
+		{OccurredAt: time.Now(), Severity: model.SeverityError, Category: model.CategoryCluster, Type: "cluster.error", Message: "Cluster error", Source: model.Source{Service: "test"}},
+	}
+	for _, event := range fixtures {
+		if _, err := store.Append(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	listed, err := store.List(ctx, model.ListFilter{Categories: []string{model.CategoryIdentity}, PageSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Events) != 1 {
+		t.Fatalf("expected one loaded event, got %d", len(listed.Events))
+	}
+	if listed.Summary.TotalCount != 3 || listed.Summary.WarningCount != 1 || listed.Summary.ErrorCount != 1 {
+		t.Fatalf("unexpected summary %#v", listed.Summary)
 	}
 }
