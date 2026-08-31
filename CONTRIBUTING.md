@@ -169,9 +169,9 @@ private customer/user data, or confidential infrastructure details in issues,
 PRs, tests, fixtures, logs, screenshots, or AI prompts.
 
 If you believe you found a vulnerability, do not open a public issue with
-exploit details. Use the private security reporting channel published with the
-open-source release, or contact the maintainers privately until that channel is
-available.
+exploit details. Use the private security reporting guidance in
+[SECURITY.md](SECURITY.md), or contact the maintainers privately until that
+channel is available.
 
 ## AI-assisted contributions
 
