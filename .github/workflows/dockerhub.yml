@@ -24,7 +24,6 @@ jobs:
           repository: MycelDB/mycel-api
           ref: ${{ github.ref_name }}
           path: mycel-api
-          token: ${{ secrets.MYCELDB_GITHUB_TOKEN || github.token }}
 
       - name: Verify tag is on main
         working-directory: mycel

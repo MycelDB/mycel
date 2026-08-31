@@ -28,7 +28,6 @@ jobs:
           repository: MycelDB/mycel-api
           ref: ${{ github.ref_type == 'tag' && github.ref_name || (github.head_ref || github.ref_name) }}
           path: mycel-api
-          token: ${{ secrets.MYCELDB_GITHUB_TOKEN || github.token }}
 
       - name: Remove incomplete API checkout
         if: steps.checkout-api.outcome == 'failure'
@@ -41,7 +40,6 @@ jobs:
           repository: MycelDB/mycel-api
           ref: develop
           path: mycel-api
-          token: ${{ secrets.MYCELDB_GITHUB_TOKEN || github.token }}
 
       - uses: actions/setup-go@v5
         with:
