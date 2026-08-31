@@ -1,5 +1,9 @@
 # mycel
 
+[![CI](https://github.com/MycelDB/mycel/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/MycelDB/mycel/actions/workflows/ci.yml)
+[![Docker](https://img.shields.io/docker/v/myceldb/mycel?label=docker)](https://hub.docker.com/r/myceldb/mycel)
+[![License](https://img.shields.io/github/license/MycelDB/mycel)](LICENSE)
+
 Daemon and CLI for mycel graph spaces.
 
 Module path: `github.com/myceldb/mycel`.
@@ -162,3 +166,15 @@ TLS/mTLS daemon connection flags are available:
 - Run once: `make test` (includes daemon-only and public-surface checks)
 - Verbose + coverage: `make test-verbose`
 - Watch mode: `make test-watch` (requires `watchexec`)
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidelines, repository boundaries, validation expectations, and AI-assisted contribution guidance. See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community standards and [`CHANGELOG.md`](CHANGELOG.md) for release notes.
+
+## Security
+
+Please report suspected vulnerabilities privately through GitHub Security Advisories / private vulnerability reporting. See [`SECURITY.md`](SECURITY.md).
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE).

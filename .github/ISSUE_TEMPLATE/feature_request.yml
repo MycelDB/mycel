@@ -1,0 +1,63 @@
+name: Feature request
+description: Suggest a daemon, CLI, operations, or documentation improvement
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Protobuf/API contract changes belong in `mycel-api` first; SDK-only improvements belong in the corresponding SDK repository.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Daemon behavior
+        - CLI/operator UX
+        - Configuration
+        - Authentication/authorization
+        - TLS/mTLS/transport
+        - Spaces/domains/schema
+        - Graph transactions/query
+        - Blob storage
+        - Semantic/inference/automation
+        - Backup/restore/import/export
+        - Raft/clustering/recovery
+        - Docker/deployment
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should mycel provide or change?
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and operations impact
+      description: Would this affect raft/clustering, consistency, recovery, backup/restore, import/export, storage formats, auth, TLS, or destructive operations?
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility impact
+      description: Would this affect daemon behavior, CLI flags, configuration, storage formats, protobuf/API contracts, SDK behavior, or existing deployments?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workaround or lower-risk approach.
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context

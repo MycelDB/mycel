@@ -1,0 +1,89 @@
+name: Bug report
+description: Report a reproducible mycel daemon or CLI problem
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. If this involves credentials, tokens, TLS key material, private data, production data, confidential infrastructure, or a suspected vulnerability, stop here and use the private security reporting link instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: mycel version, commit SHA, release tag, or Docker image tag.
+      placeholder: v0.8.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Daemon startup/configuration
+        - CLI
+        - Authentication/authorization
+        - TLS/mTLS/transport
+        - Spaces/domains/schema
+        - Graph transactions/query
+        - Blob storage
+        - Semantic/inference/automation
+        - Backup/restore/import/export
+        - Raft/clustering/recovery
+        - Docker/deployment
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Provide a minimal reproducible example when possible.
+      placeholder: |
+        1. Configure ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized errors or logs. Do not paste secrets or private data.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Go version if built locally, OS/architecture, deployment mode, storage/backend, and relevant sanitized configuration.
+      placeholder: |
+        OS/arch: ...
+        Deployment: local binary / Docker / Compose / K3s
+        Mode: standalone / clustered
+        Data/storage: ...
+        Relevant sanitized MYCELD_* settings: ...
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety-sensitive context
+      description: If relevant, describe raft/cluster state, backup/restore state, recent migrations, import/export activity, or recovery steps already attempted.
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links, related issues, or notes.
