@@ -6,16 +6,25 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.9.0] - 2026-08-31
+
 ### Added
 
-- Open-source project documentation: security policy, code of conduct, changelog, pull request template, and issue templates.
+- First public-release baseline for the MycelDB daemon and CLI.
+- Open-source project documentation: README links, contributing guide, security policy, code of conduct, changelog, pull request template, issue templates, and gitleaks false-positive baseline.
+- Operator-facing daemon/CLI coverage for spaces, domains, graph/query workflows, semantic/inference setup, automation, activity, backups, and raft/cluster reliability.
+
+### Changed
+
+- Documented daemon-only repository boundaries and SDK/API consumption guidance.
+- Documented release validation expectations for daemon-only checks, public Go surface checks, docs checks, tests, builds, and cluster-sensitive gates.
 
 ## Release notes policy
 
 For each release, add a dated section such as:
 
 ```md
-## [v0.8.0] - YYYY-MM-DD
+## [v0.9.0] - YYYY-MM-DD
 
 ### Added
 ### Changed

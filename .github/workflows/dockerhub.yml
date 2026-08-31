@@ -13,21 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout daemon
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           path: mycel
           fetch-depth: 0
 
-      - name: Checkout API protos
-        uses: actions/checkout@v5
+      - name: Checkout API protos at matching release tag
+        uses: actions/checkout@v4
         with:
           repository: MycelDB/mycel-api
-          ref: v0.8.0
+          ref: ${{ github.ref_name }}
           path: mycel-api
-          # GITHUB_TOKEN is scoped to this repository and cannot read sibling
-          # private repos. Use a fine-grained PAT with read-only Contents access
-          # to MycelDB/mycel-api while the API repo remains private.
-          token: ${{ secrets.MYCELDB_GITHUB_TOKEN }}
+          token: ${{ secrets.MYCELDB_GITHUB_TOKEN || github.token }}
 
       - name: Verify tag is on main
         working-directory: mycel

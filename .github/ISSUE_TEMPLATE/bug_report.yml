@@ -12,7 +12,7 @@ body:
     attributes:
       label: Version
       description: mycel version, commit SHA, release tag, or Docker image tag.
-      placeholder: v0.8.0 or commit SHA
+      placeholder: v0.9.0 or commit SHA
     validations:
       required: true
   - type: dropdown
