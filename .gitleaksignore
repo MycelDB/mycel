@@ -1,0 +1,15 @@
+# False positives: deterministic test/example credentials, not real secrets.
+
+# Current deterministic test user-store encryption key.
+internal/cli/cmd/admin_test.go:generic-api-key:466
+
+# Historical deterministic test user-store encryption key.
+bf3e7b8df13fb5edeb7c482628d645cfbfc2bce7:internal/cli/cmd/admin_test.go:generic-api-key:466
+
+# Historical cluster join-token test fixtures and documentation placeholders.
+fd6612ae288c9da38ca61da7023dc740a87cf4d2:docs/v2/design/clustering-membership-admission-implementation-plan.md:generic-api-key:242
+fd6612ae288c9da38ca61da7023dc740a87cf4d2:internal/clustering/backend/service_test.go:generic-api-key:73
+fd6612ae288c9da38ca61da7023dc740a87cf4d2:internal/clustering/backend/service_test.go:generic-api-key:111
+
+# Historical deterministic semantic provisioning test encryption key.
+39e3cef1eb222052b55813250cf6ccdfa7cadbc8:internal/cli/cmd/semantic_provisioning_test.go:generic-api-key:123
