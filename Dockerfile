@@ -7,7 +7,10 @@
 ARG GO_VERSION=1.25.5
 ARG ALPINE_VERSION=3.21
 
-FROM golang:${GO_VERSION}-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH
 
 RUN apk add --no-cache bash ca-certificates curl git make openjdk17-jre
 
@@ -26,8 +29,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     ./scripts/generate-proto.sh && \
     make generate-gql-parser && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/myceld ./cmd/myceld && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mycel ./cmd/mycel
+    target_arch="${TARGETARCH:-$(go env GOARCH)}" && \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${target_arch}" go build -trimpath -ldflags="-s -w" -o /out/myceld ./cmd/myceld && \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${target_arch}" go build -trimpath -ldflags="-s -w" -o /out/mycel ./cmd/mycel
 
 FROM alpine:${ALPINE_VERSION}
 

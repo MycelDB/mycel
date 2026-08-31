@@ -45,6 +45,18 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Write Docker build context ignore
+        run: |
+          cat > .dockerignore <<'EOF'
+          **/.git
+          **/bin
+          **/coverage
+          **/coverage.out
+          **/data
+          **/node_modules
+          **/target
+          EOF
+
       - name: Build and push mycel image
         uses: docker/build-push-action@v6
         with:
