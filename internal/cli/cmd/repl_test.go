@@ -77,3 +77,50 @@ func TestREPLSpaceSetUsesDaemon(t *testing.T) {
 		t.Fatalf("expected current space %s, got %v; output:\n%s", spaceID, a.CurrentSpaceID, out.String())
 	}
 }
+
+func TestREPLPasteFriendlySemicolonsAndContinuations(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+
+	a := &app.App{DaemonAddr: addr}
+	input := strings.NewReader(strings.Join([]string{
+		"login admin " + adminPassword + ";",
+		`space add "Pasted Space" \`,
+		`  --owner-username admin \`,
+		`  --default-domain-key default \`,
+		`  --default-domain-name Default;`,
+		`connect space "Pasted Space";`,
+		`gql INSERT (:Note {title: 'Hello Paste'});`,
+		`gql MATCH (n:Note) RETURN n.title FETCH FIRST 10 ROWS ONLY;`,
+		`exit;`,
+	}, "\n"))
+	var out bytes.Buffer
+	if err := RunREPL(t.Context(), a, input, &out); err != nil {
+		t.Fatalf("RunREPL() error = %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "logged in as admin") || !strings.Contains(out.String(), "connected to space Pasted Space") || !strings.Contains(out.String(), "nodes_inserted=1 edges_inserted=0") || !strings.Contains(out.String(), "Hello Paste") {
+		t.Fatalf("unexpected paste-friendly REPL output:\n%s", out.String())
+	}
+}
+
+func TestREPLCommandBufferSplitsPastedSemicolonCommands(t *testing.T) {
+	var buf replCommandBuffer
+	commands, err := buf.feed(`login admin pass; gql INSERT (:Note {title: 'Semi; colon'}); exit;`)
+	if err != nil {
+		t.Fatalf("feed() error = %v", err)
+	}
+	want := []string{"login admin pass", "gql INSERT (:Note {title: 'Semi; colon'})", "exit"}
+	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands = %#v, want %#v", commands, want)
+	}
+}
+
+func TestREPLIncompleteContinuationReturnsHelpfulError(t *testing.T) {
+	a := &app.App{}
+	input := strings.NewReader("help \\\n")
+	var out bytes.Buffer
+	err := RunREPL(t.Context(), a, input, &out)
+	if err == nil || !strings.Contains(err.Error(), "incomplete continued REPL command") {
+		t.Fatalf("RunREPL() error = %v, want incomplete continuation; output:\n%s", err, out.String())
+	}
+}
