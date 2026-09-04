@@ -78,6 +78,36 @@ func TestREPLSpaceSetUsesDaemon(t *testing.T) {
 	}
 }
 
+func TestREPLSpaceAddListGetAndDeleteCommandsFallThrough(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	precreatedID, _ := createImportExportTestSpace(t, addr, adminPassword, "admin", "REPL Delete Space")
+
+	a := &app.App{DaemonAddr: addr}
+	input := strings.NewReader(strings.Join([]string{
+		"login admin " + adminPassword,
+		`space add "REPL Add Space" --owner-username admin --default-domain-key default --default-domain-name Default`,
+		`space list`,
+		`space get ` + precreatedID,
+		`space delete ` + precreatedID,
+		`connect space "REPL Add Space"`,
+		`exit`,
+	}, "\n"))
+	var out bytes.Buffer
+	if err := RunREPL(t.Context(), a, input, &out); err != nil {
+		t.Fatalf("RunREPL() error = %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "usage: space set SPACE_ID or space unset") || strings.Contains(out.String(), "error:") {
+		t.Fatalf("space subcommands should fall through to Cobra without REPL shadowing; output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "connected to space REPL Add Space") {
+		t.Fatalf("space add/connect did not succeed through REPL; output:\n%s", out.String())
+	}
+	if got, err := runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "space", "get", precreatedID); err == nil {
+		t.Fatalf("space delete in REPL did not delete %s; get output:\n%s", precreatedID, got)
+	}
+}
+
 func TestREPLPasteFriendlySemicolonsAndContinuations(t *testing.T) {
 	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
