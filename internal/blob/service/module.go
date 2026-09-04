@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +30,9 @@ type Module struct {
 	dataDir              string
 	metaDir              string
 	stores               map[string]*blobstorage.Store
+	config               Config
+	s3Store              *s3PayloadStore
+	logger               *slog.Logger
 	refCounter           RefCounter
 	gate                 *quiesce.Gate
 	wal                  *wal.Manager
@@ -44,13 +48,22 @@ type Module struct {
 	raftAppliedCommands  map[string]struct{}
 }
 
-func NewModule(refCounter RefCounter) *Module {
-	return &Module{stores: map[string]*blobstorage.Store{}, refCounter: refCounter, gate: quiesce.NewGate(ModuleName)}
+func NewModule(refCounter RefCounter, configs ...Config) *Module {
+	cfg := Config{}
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+	return &Module{stores: map[string]*blobstorage.Store{}, config: effectiveBlobConfig(cfg), refCounter: refCounter, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
+	m.logger = host.Log()
+	m.config = effectiveBlobConfig(m.config)
+	if err := validateBlobConfig(m.config); err != nil {
+		return runtime.Abort(ModuleName, "config", "validate blob storage configuration", err)
+	}
 	m.dataDir = filepath.Join(host.DataDir(), "blobs")
 	m.metaDir = filepath.Join(host.DataDir(), "blob_meta")
 	for _, dir := range []string{m.dataDir, m.metaDir} {
@@ -63,6 +76,13 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
+	}
+	if m.config.Backend == blobBackendS3 && m.s3Store == nil {
+		store, err := newS3PayloadStore(ctx, m.config, filepath.Join(m.dataDir, "_s3_staging"))
+		if err != nil {
+			return runtime.Abort(ModuleName, "storage", "initialize S3 blob backend", err)
+		}
+		m.s3Store = store
 	}
 	m.loadRaftAppliedCommands()
 	if provider, ok := host.(runtime.WALProvider); ok {
@@ -87,9 +107,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			return runtime.Abort(ModuleName, "quiesce", "register blob quiesce participant", err)
 		}
 	}
-	if logger := host.Log(); logger != nil {
-		logger.Info("blob module initialized", "storage", "file", "path", m.dataDir)
-	}
+	logBlobBackend(host.Log(), m.config, m.dataDir)
 	return runtime.OK(ModuleName)
 }
 
@@ -106,10 +124,6 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 	if spaceID == "" || input.Reader == nil {
 		return BlobMeta{}, fmt.Errorf("%w: space_id and reader are required", ErrInvalidInput)
 	}
-	store, err := m.store(spaceID)
-	if err != nil {
-		return BlobMeta{}, err
-	}
 	head := make([]byte, sniffLen)
 	n, err := io.ReadFull(input.Reader, head)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -117,7 +131,7 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 	}
 	head = head[:n]
 	mimeType := normalizeMimeType(http.DetectContentType(head))
-	id, size, err := store.Put(ctx, io.MultiReader(bytes.NewReader(head), input.Reader))
+	id, size, payload, err := m.putPayload(ctx, spaceID, mimeType, io.MultiReader(bytes.NewReader(head), input.Reader))
 	if err != nil {
 		return BlobMeta{}, mapStorageError(err)
 	}
@@ -127,6 +141,11 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 		return BlobMeta{}, err
 	}
 	if existing, ok := metas[blobID]; ok {
+		if !samePayloadLocation(descriptorFromMeta(existing), payload) {
+			if err := m.deletePayload(ctx, payload); err != nil && payloadBackend(payload) == blobBackendS3 {
+				m.logBestEffortPayloadDeleteFailure(payload, err)
+			}
+		}
 		// Keep original create time and size/digest, but refresh client-declared metadata.
 		existing.MimeType = firstNonEmpty(existing.MimeType, mimeType)
 		if strings.TrimSpace(input.DeclaredMimeType) != "" {
@@ -146,7 +165,7 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 		}
 		return existing, nil
 	}
-	meta := BlobMeta{BlobID: blobID, SpaceID: spaceID, Digest: "sha256:" + blobID, SizeBytes: size, MimeType: mimeType, DeclaredMimeType: strings.TrimSpace(input.DeclaredMimeType), OriginalFilename: filepath.Base(strings.TrimSpace(input.OriginalFilename)), CreateTime: time.Now().UTC()}
+	meta := BlobMeta{BlobID: blobID, SpaceID: spaceID, Digest: "sha256:" + blobID, SizeBytes: size, MimeType: mimeType, DeclaredMimeType: strings.TrimSpace(input.DeclaredMimeType), OriginalFilename: filepath.Base(strings.TrimSpace(input.OriginalFilename)), CreateTime: time.Now().UTC(), Payload: &payload}
 	if m.raftGroups != nil {
 		return m.commitMetaPutRaft(ctx, meta)
 	}
@@ -167,11 +186,7 @@ func (m *Module) GetBlob(ctx context.Context, spaceID string, blobID string) (Bl
 	if err != nil {
 		return BlobMeta{}, err
 	}
-	store, err := m.store(meta.SpaceID)
-	if err != nil {
-		return BlobMeta{}, err
-	}
-	exists, err := store.Exists(ctx, domaingraph.BlobID(meta.BlobID))
+	exists, err := m.payloadExists(ctx, descriptorFromMeta(meta))
 	if err != nil {
 		return BlobMeta{}, mapStorageError(err)
 	}
@@ -186,11 +201,7 @@ func (m *Module) OpenBlob(ctx context.Context, spaceID string, blobID string) (B
 	if err != nil {
 		return BlobMeta{}, nil, err
 	}
-	store, err := m.store(meta.SpaceID)
-	if err != nil {
-		return BlobMeta{}, nil, err
-	}
-	reader, err := store.Open(ctx, domaingraph.BlobID(meta.BlobID))
+	reader, err := m.openPayload(ctx, descriptorFromMeta(meta))
 	if err != nil {
 		return BlobMeta{}, nil, mapStorageError(err)
 	}

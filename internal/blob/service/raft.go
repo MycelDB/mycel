@@ -12,7 +12,6 @@ import (
 	clusterbackend "github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
-	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
@@ -108,6 +107,9 @@ func (m *Module) ensureRaftPayloadWritePolicy(ctx context.Context, desc PayloadD
 	if err := m.ensureRaftPayloadAvailable(ctx, desc); err != nil {
 		return err
 	}
+	if payloadBackend(desc) == blobBackendS3 {
+		return nil
+	}
 	if !m.hasRemoteRaftPeerAddress() {
 		if len(m.raftNodeAddrs) > 1 {
 			return status.Error(codes.Unavailable, "blob raft payload replication requires remote peer backend addresses")
@@ -136,6 +138,9 @@ func (m *Module) ensureRaftPayloadAvailable(ctx context.Context, desc PayloadDes
 	}
 	if ok, err := m.raftPayloadExists(ctx, desc); err != nil || ok {
 		return err
+	}
+	if payloadBackend(desc) == blobBackendS3 {
+		return fmt.Errorf("S3 blob payload %s is not available", desc.BlobID)
 	}
 	if len(m.raftNodeAddrs) == 0 {
 		return fmt.Errorf("blob payload %s is not locally available", desc.BlobID)
@@ -172,11 +177,7 @@ func (m *Module) ensureRaftPayloadAvailableForApply(ctx context.Context, desc Pa
 }
 
 func (m *Module) raftPayloadExists(ctx context.Context, desc PayloadDescriptor) (bool, error) {
-	store, err := m.store(desc.SpaceID)
-	if err != nil {
-		return false, err
-	}
-	return store.Exists(ctx, graphmodel.BlobID(desc.BlobID))
+	return m.payloadExists(ctx, desc)
 }
 
 func (m *Module) fetchRaftPayloadFromPeers(ctx context.Context, desc PayloadDescriptor) error {
@@ -218,6 +219,10 @@ func (m *Module) applyBlobRaftCommand(ctx context.Context, cmd consensus.RaftCom
 		}
 		if strings.TrimSpace(payload.Meta.SpaceID) != strings.TrimSpace(cmd.SpaceID) {
 			return fmt.Errorf("blob raft command space_id mismatch: command=%s payload=%s", cmd.SpaceID, payload.Meta.SpaceID)
+		}
+		if payload.Meta.Payload == nil && payload.PayloadDescriptor.BlobID != "" {
+			desc := payload.PayloadDescriptor
+			payload.Meta.Payload = &desc
 		}
 		if err := m.ensureRaftPayloadAvailableForApply(ctx, descriptorFromMeta(payload.Meta)); err != nil {
 			return err
