@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	blobstorage "github.com/myceldb/mycel/internal/blob/storage"
-	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
@@ -30,6 +29,10 @@ func (m *Module) applyBlobMetaPut(ctx context.Context, rec wal.Record) error {
 	var payload blobMetaPutRecord
 	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
 		return err
+	}
+	if payload.Meta.Payload == nil && payload.PayloadDescriptor.BlobID != "" {
+		desc := payload.PayloadDescriptor
+		payload.Meta.Payload = &desc
 	}
 	return m.applyMetaPut(ctx, payload.Meta)
 }
@@ -139,12 +142,13 @@ func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, blobID str
 			return fmt.Errorf("%w: %s has %d graph references", ErrReferenced, blobID, count)
 		}
 	}
-	if id := domaingraph.BlobID(blobID); id != "" {
-		store, err := m.store(spaceID)
-		if err != nil {
-			return err
-		}
-		if err := store.Delete(ctx, id); err != nil && !errors.Is(err, blobstorage.ErrNotFound) {
+	meta, metaErr := m.meta(spaceID, blobID)
+	if metaErr != nil && !errors.Is(metaErr, ErrNotFound) {
+		return metaErr
+	}
+	desc := descriptorFromMeta(meta)
+	if metaErr == nil && payloadBackend(desc) != blobBackendS3 {
+		if err := m.deletePayload(ctx, desc); err != nil && !errors.Is(err, blobstorage.ErrNotFound) {
 			return mapStorageError(err)
 		}
 	}
@@ -155,7 +159,15 @@ func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, blobID str
 		return err
 	}
 	delete(metas, blobID)
-	return m.saveSpaceMetaLocked(spaceID, metas)
+	if err := m.saveSpaceMetaLocked(spaceID, metas); err != nil {
+		return err
+	}
+	if metaErr == nil && payloadBackend(desc) == blobBackendS3 {
+		if err := m.deletePayload(ctx, desc); err != nil {
+			m.logBestEffortPayloadDeleteFailure(desc, err)
+		}
+	}
+	return nil
 }
 
 func (m *Module) markWALApplied(ctx context.Context, lsn wal.LSN) error {

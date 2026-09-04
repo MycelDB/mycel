@@ -38,6 +38,7 @@ const (
 	DefaultAccessTokenTTL                   = 15 * time.Minute
 	DefaultWALSegmentBytes                  = int64(64 * 1024 * 1024)
 	DefaultWALSyncPolicy                    = "always"
+	DefaultBlobBackend                      = "local"
 	DefaultClusterDiscoveryInterval         = 5 * time.Second
 	DefaultClusterRaftNodeCount             = 3
 	DefaultClusterRaftPartitionCount        = 64
@@ -96,6 +97,16 @@ type WALConfig struct {
 	SyncPolicy   string
 }
 
+type BlobConfig struct {
+	Backend          string
+	S3Bucket         string
+	S3Prefix         string
+	S3Region         string
+	S3KMSKeyID       string
+	S3EndpointURL    string
+	S3ForcePathStyle bool
+}
+
 type ClusterConfig struct {
 	Name                         string
 	BackendAdvertiseAddr         string
@@ -132,6 +143,7 @@ type Config struct {
 	Automation                AutomationConfig
 	Backup                    BackupConfig
 	WAL                       WALConfig
+	Blob                      BlobConfig
 	Cluster                   ClusterConfig
 }
 
@@ -164,6 +176,15 @@ func LoadFromEnv() (Config, error) {
 			Dir:          strings.TrimSpace(os.Getenv("MYCELD_WAL_DIR")),
 			SegmentBytes: int64(parseIntEnv(os.Getenv("MYCELD_WAL_SEGMENT_BYTES"), int(DefaultWALSegmentBytes))),
 			SyncPolicy:   valueOrDefault(os.Getenv("MYCELD_WAL_SYNC_POLICY"), DefaultWALSyncPolicy),
+		},
+		Blob: BlobConfig{
+			Backend:          valueOrDefault(os.Getenv("MYCELD_BLOB_BACKEND"), DefaultBlobBackend),
+			S3Bucket:         strings.TrimSpace(os.Getenv("MYCELD_BLOB_S3_BUCKET")),
+			S3Prefix:         strings.TrimSpace(os.Getenv("MYCELD_BLOB_S3_PREFIX")),
+			S3Region:         strings.TrimSpace(os.Getenv("MYCELD_BLOB_S3_REGION")),
+			S3KMSKeyID:       strings.TrimSpace(os.Getenv("MYCELD_BLOB_S3_KMS_KEY_ID")),
+			S3EndpointURL:    strings.TrimSpace(os.Getenv("MYCELD_BLOB_S3_ENDPOINT_URL")),
+			S3ForcePathStyle: parseBoolEnv(os.Getenv("MYCELD_BLOB_S3_FORCE_PATH_STYLE")),
 		},
 		Cluster: ClusterConfig{
 			Name:                         strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
@@ -283,10 +304,31 @@ func (c Config) Validate() error {
 	if err := c.WAL.Validate(); err != nil {
 		return err
 	}
+	if err := c.Blob.Validate(); err != nil {
+		return err
+	}
 	if err := c.Cluster.Validate(); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (c BlobConfig) Validate() error {
+	backend := strings.ToLower(strings.TrimSpace(c.Backend))
+	if backend == "" {
+		backend = DefaultBlobBackend
+	}
+	switch backend {
+	case "local":
+		return nil
+	case "s3":
+		if strings.TrimSpace(c.S3Bucket) == "" {
+			return fmt.Errorf("MYCELD_BLOB_S3_BUCKET is required when MYCELD_BLOB_BACKEND=s3")
+		}
+		return nil
+	default:
+		return fmt.Errorf("MYCELD_BLOB_BACKEND must be local or s3")
+	}
 }
 
 func (c ClusterConfig) Validate() error {

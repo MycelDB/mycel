@@ -35,6 +35,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.Backup.Enabled || cfg.Backup.Interval != DefaultBackupInterval || cfg.Backup.RetentionCount != DefaultBackupRetentionCount || cfg.Backup.Compression != DefaultBackupCompression || cfg.Backup.QuiesceDrainTimeout != DefaultBackupQuiesceDrainTimeout || cfg.Backup.BackupTimeout != DefaultBackupTimeout || cfg.Backup.RetryAfter != DefaultBackupRetryAfter || cfg.Backup.StatusHistoryLimit != DefaultBackupStatusHistoryLimit || cfg.Backup.AllowReadsDuringBackup {
 		t.Fatalf("unexpected backup defaults: %+v", cfg.Backup)
 	}
+	if cfg.Blob.Backend != DefaultBlobBackend || cfg.Blob.S3Bucket != "" || cfg.Blob.S3ForcePathStyle {
+		t.Fatalf("unexpected blob defaults: %+v", cfg.Blob)
+	}
 	if cfg.AccessTokenTTL != DefaultAccessTokenTTL {
 		t.Fatalf("unexpected access token TTL default: %s", cfg.AccessTokenTTL)
 	}
@@ -162,6 +165,41 @@ func TestLoadFromEnvSemanticMaintenanceOverrides(t *testing.T) {
 	sem := cfg.SemanticMaintenance
 	if sem.Enabled || sem.DirtyCooldown != 2*time.Minute || sem.AnalyzerInterval != 3*time.Second || sem.WorkerInterval != 4*time.Second || sem.WorkerCount != 5 || sem.MaxBatchSize != 50 || sem.CredentialDefaults.MaxRequestsPerMinute != 12 {
 		t.Fatalf("unexpected semantic overrides: %+v", sem)
+	}
+}
+
+func TestLoadFromEnvBlobS3Overrides(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_BLOB_BACKEND", "s3")
+	t.Setenv("MYCELD_BLOB_S3_BUCKET", "mycel-blobs")
+	t.Setenv("MYCELD_BLOB_S3_PREFIX", "prod/a")
+	t.Setenv("MYCELD_BLOB_S3_REGION", "us-east-1")
+	t.Setenv("MYCELD_BLOB_S3_KMS_KEY_ID", "alias/mycel")
+	t.Setenv("MYCELD_BLOB_S3_ENDPOINT_URL", "http://127.0.0.1:4566")
+	t.Setenv("MYCELD_BLOB_S3_FORCE_PATH_STYLE", "true")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.Blob.Backend != "s3" || cfg.Blob.S3Bucket != "mycel-blobs" || cfg.Blob.S3Prefix != "prod/a" || cfg.Blob.S3Region != "us-east-1" || cfg.Blob.S3KMSKeyID != "alias/mycel" || cfg.Blob.S3EndpointURL != "http://127.0.0.1:4566" || !cfg.Blob.S3ForcePathStyle {
+		t.Fatalf("unexpected blob config: %+v", cfg.Blob)
+	}
+}
+
+func TestLoadFromEnvBlobS3RequiresBucket(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_BLOB_BACKEND", "s3")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected S3 backend without bucket to fail")
+	}
+}
+
+func TestLoadFromEnvBlobBackendValidation(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_BLOB_BACKEND", "gcs")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected invalid blob backend to fail")
 	}
 }
 
