@@ -104,6 +104,27 @@ func TestAdminClusterServiceGetStatus(t *testing.T) {
 	}
 }
 
+func TestAdminClusterServiceHealthStandaloneReadyIsHealthy(t *testing.T) {
+	mgr, err := clustering.NewManager(context.Background(), clustering.Options{DataDir: t.TempDir(), NodeName: "node-a"}, nil)
+	if err != nil {
+		t.Fatalf("new standalone manager: %v", err)
+	}
+	if mgr.State() != clustering.NodeStateStandalone || mgr.IsAdmitted() {
+		t.Fatalf("unexpected standalone state/admission: state=%s admitted=%t", mgr.State(), mgr.IsAdmitted())
+	}
+	svc := NewAdminClusterService(mgr, clusterAuthz{allow: true}).WithClusterRuntime(daemonconfig.ClusterConfig{}, nil)
+	res, err := svc.GetClusterHealth(authenticatedClusterContext(), &adminv1.GetClusterHealthRequest{})
+	if err != nil {
+		t.Fatalf("GetClusterHealth() error = %v", err)
+	}
+	if res.GetStatus() != "healthy" || !res.GetReadiness().GetClientReady() {
+		t.Fatalf("expected standalone ready daemon to be healthy, got %#v", res)
+	}
+	if containsString(res.GetWarnings(), "local node is not admitted") {
+		t.Fatalf("standalone health should not warn about cluster admission: %#v", res.GetWarnings())
+	}
+}
+
 func TestAdminClusterServiceHealthUsesMetadataReadiness(t *testing.T) {
 	mgr, err := clustering.NewManager(context.Background(), clustering.Options{DataDir: t.TempDir(), NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", RaftMode: true, RaftLocalNodeID: 1, RaftNodeCount: 3}, nil)
 	if err != nil {
