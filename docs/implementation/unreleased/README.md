@@ -9,6 +9,7 @@ docs before treating any plan here as authoritative current behavior.
 These plans are complete on the post-v0.6 `for_wednesday` line but are not yet
 assigned to a tagged release bucket.
 
+- [S3-backed blob payload storage implementation plan](s3-backed-blob-payload-storage-implementation-plan.md) — issue #6 plan and review checklist for storing immutable blob payload bytes in S3 while keeping metadata/Raft/WAL local.
 - [Cluster system backup implementation plan](cluster-system-backup-implementation-plan.md) — complete for the initial coordinated backup set path.
 - [Cluster system backup raft freeze implementation plan](cluster-system-backup-raft-freeze-implementation-plan.md) — complete through RF6 for raft-storage-safe archive capture and release-gate docs.
 - [Workload-driven system backup/restore test implementation plan](workload-driven-system-backup-restore-test-implementation-plan.md) — implemented rewrite of the destructive K3s backup/restore gate using normal graph workloads, PVC deletion, restore, and convergence verification.
