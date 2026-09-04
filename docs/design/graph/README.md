@@ -9,4 +9,4 @@ schema validation.
 - [Graph adjacency index](graph-adjacency-index.md)
 - [Node content/meta/labels](node-content-meta-labels.md)
 - [GQL schema behavior](../schema/gql-schema-behavior.md)
-- [GQL roadmap](../../roadmap/gql-roadmap.md)
+- [Public roadmap appendix](https://myceldb.com)

@@ -78,7 +78,7 @@ PY
 | `docs/graph-automations.md` | `docs/design/automation/graph-automations-overview.md` or stub to design doc | duplicate/current overview | review then move or replace with stub |
 | `docs/makefile_commands.md` | `docs/operations/procedures/build-test-commands.md` or `docs/operations/makefile-commands.md` | operator/developer operations reference | move in operations phase |
 | `docs/schema-subsystem.md` | `docs/design/schema/schema-subsystem-overview.md` | current overview | move in Phase 5; keep compatibility stub initially |
-| `docs/roadmap/gql-roadmap.md` | `docs/roadmap/gql-roadmap.md` | roadmap | keep; link from root README |
+| `docs/roadmap/gql-roadmap.md` | public manual Roadmap appendix | product roadmap | moved out of repository docs; keep only compatibility pointer if internal links remain |
 
 ## Design docs migration map
 
