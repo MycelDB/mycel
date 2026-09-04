@@ -10,7 +10,6 @@ See also:
 - [Client blob API](../api/blob.md)
 - [Blob design index](README.md)
 - [S3 blob storage operations procedure](../../operations/procedures/s3-blob-storage.md)
-- [S3-backed blob payload storage implementation plan](../../implementation/unreleased/s3-backed-blob-payload-storage-implementation-plan.md)
 
 ## Summary
 
