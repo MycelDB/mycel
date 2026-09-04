@@ -11,7 +11,7 @@ This directory is organized by audience and intent:
 - [System integration](system_integration/README.md) documents destructive Compose, K3s, backup/restore, soak, and raft disruption tests.
 - [Implementation](implementation/README.md) archives implementation plans by release.
 - [AI prompt templates](ai/README.md) provide optional reusable prompts for contributors.
-- Roadmaps track forward-looking query work: [GQL](roadmap/gql-roadmap.md) and [structured query API](roadmap/api-roadmap.md).
+- Product roadmap/status material lives in the public MycelDB manual Roadmap appendix: <https://myceldb.com>.
 
 ## Quick links
 

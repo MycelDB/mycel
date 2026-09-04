@@ -7,10 +7,9 @@ Implemented for the initial QP0-QP7 MVP. This plan covers the implemented baseli
 - textual Mycel GQL via `QueryService.ExecuteGQL` / `ExecuteGQLScript`;
 - structured protobuf queries via `QueryService.ExecuteQuery`.
 
-Roadmap sources:
+Roadmap/design sources:
 
-- [GQL roadmap](../../roadmap/gql-roadmap.md)
-- [Structured Query API roadmap](../../roadmap/api-roadmap.md)
+- [Public roadmap appendix](https://myceldb.com)
 - [Query expansion design](../../design/api/query-expansion.md)
 - [GWL indexes and query planning](../../design/schema/gwl-indexes-and-query-planning.md)
 

@@ -622,7 +622,7 @@ Semantic results should usually be score ordered. Coordinate with `ORDER BY` des
 
 Each completed feature should update:
 
-- `docs/roadmap/gql-roadmap.md`
+- the public roadmap appendix on myceldb.com for product-facing status, if needed
 - the relevant implementation plan or a feature-specific implementation note
 - CLI/admin examples if user-facing syntax changes
 - API/SDK notes if result value shapes or public request structures change

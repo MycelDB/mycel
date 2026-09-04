@@ -504,9 +504,7 @@ Status: implemented for design, roadmap, API, operations, and implementation-pla
 ### Tasks
 
 1. Update design docs if implementation decisions differ from this plan.
-2. Update roadmaps:
-   - `docs/roadmap/gql-roadmap.md`;
-   - `docs/roadmap/api-roadmap.md`.
+2. Update the public roadmap appendix on myceldb.com for product-facing status, if needed.
 3. Update API docs:
    - `docs/design/api/query.md`;
    - `docs/design/api/query-expansion.md` if needed.

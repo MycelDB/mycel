@@ -15,10 +15,9 @@ The MVP delivered:
 
 This completion plan turns those MVP features into accepted production query support by removing broad fallback dependence from accepted shapes, adding index pushdown, completing aggregate/result-shaping semantics, and adding planner diagnostics.
 
-Roadmap sources:
+Roadmap/design sources:
 
-- [GQL roadmap](../../roadmap/gql-roadmap.md)
-- [Structured Query API roadmap](../../roadmap/api-roadmap.md)
+- [Public roadmap appendix](https://myceldb.com)
 - [Top query priorities MVP implementation plan](top-query-priorities-implementation-plan.md)
 - [Query expansion design](../../design/api/query-expansion.md)
 - [GWL indexes and query planning](../../design/schema/gwl-indexes-and-query-planning.md)
