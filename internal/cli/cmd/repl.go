@@ -13,6 +13,7 @@ import (
 	"github.com/myceldb/mycel/internal/cli/app"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"github.com/peterh/liner"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -23,26 +24,47 @@ func NewReplCommand(a *app.App) *cobra.Command {
 		Use:   "repl",
 		Short: "Start an interactive MycelDB REPL",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if shouldUseInteractiveREPL(os.Stdin, os.Stdout) {
+				return RunInteractiveREPL(cmd.Context(), a, os.Stdout)
+			}
 			return RunREPL(cmd.Context(), a, os.Stdin, os.Stdout)
 		},
 	}
 }
 
 func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error {
+	return runREPL(ctx, a, out, newScannerREPLLineReader(in, out))
+}
+
+func RunInteractiveREPL(ctx context.Context, a *app.App, out io.Writer) error {
+	reader := newLinerREPLLineReader()
+	defer reader.Close()
+	return runREPL(ctx, a, out, reader)
+}
+
+func runREPL(ctx context.Context, a *app.App, out io.Writer, reader replLineReader) error {
 	fmt.Fprintln(out, "mycel REPL. Use login <username> <password>, connect space <space>, connect domain <domain>, gql <query>, help, or exit.")
-	scanner := bufio.NewScanner(in)
 	commands := replCommandBuffer{}
 	for {
-		fmt.Fprint(out, a.Prompt())
-		if !scanner.Scan() {
+		line, err := reader.ReadLine(a.Prompt())
+		if errors.Is(err, io.EOF) {
 			break
 		}
-		completed, err := commands.feed(scanner.Text())
+		if errors.Is(err, liner.ErrPromptAborted) {
+			commands.reset()
+			fmt.Fprintln(out)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		completed, err := commands.feed(line)
 		if err != nil {
 			fmt.Fprintln(out, "error:", err)
 			continue
 		}
 		for _, line := range completed {
+			reader.AppendHistory(line)
 			exit, err := runREPLCommand(ctx, a, line, out)
 			if err != nil {
 				if !errors.Is(err, context.Canceled) {
@@ -54,9 +76,6 @@ func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error
 				return nil
 			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return err
 	}
 	if commands.pending() {
 		return fmt.Errorf("incomplete continued REPL command; finish the command or remove the trailing \\")
@@ -144,6 +163,97 @@ func runREPLCobraCommand(ctx context.Context, a *app.App, args []string, out io.
 	return root.ExecuteContext(ctx)
 }
 
+type replLineReader interface {
+	ReadLine(prompt string) (string, error)
+	AppendHistory(line string)
+}
+
+type scannerREPLLineReader struct {
+	scanner *bufio.Scanner
+	out     io.Writer
+}
+
+func newScannerREPLLineReader(in io.Reader, out io.Writer) scannerREPLLineReader {
+	return scannerREPLLineReader{scanner: bufio.NewScanner(in), out: out}
+}
+
+func (r scannerREPLLineReader) ReadLine(prompt string) (string, error) {
+	fmt.Fprint(r.out, prompt)
+	if !r.scanner.Scan() {
+		if err := r.scanner.Err(); err != nil {
+			return "", err
+		}
+		return "", io.EOF
+	}
+	return r.scanner.Text(), nil
+}
+
+func (r scannerREPLLineReader) AppendHistory(string) {}
+
+type linerREPLLineReader struct {
+	state *liner.State
+}
+
+func newLinerREPLLineReader() *linerREPLLineReader {
+	state := liner.NewLiner()
+	state.SetCtrlCAborts(true)
+	state.SetMultiLineMode(true)
+	return &linerREPLLineReader{state: state}
+}
+
+func (r *linerREPLLineReader) ReadLine(prompt string) (string, error) {
+	return r.state.Prompt(prompt)
+}
+
+func (r *linerREPLLineReader) AppendHistory(line string) {
+	if shouldRecordREPLHistory(line) {
+		r.state.AppendHistory(line)
+	}
+}
+
+func (r *linerREPLLineReader) Close() error {
+	return r.state.Close()
+}
+
+func shouldUseInteractiveREPL(in *os.File, out *os.File) bool {
+	return liner.TerminalSupported() && isTerminalFile(in) && isTerminalFile(out)
+}
+
+func isTerminalFile(file *os.File) bool {
+	if file == nil {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func shouldRecordREPLHistory(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	args, err := splitArgs(line)
+	if err != nil || len(args) == 0 {
+		return true
+	}
+	if args[0] == "login" || args[0] == "exit" || args[0] == "quit" {
+		return false
+	}
+	for i, arg := range args {
+		switch arg {
+		case "--password", "-p", "--new-password", "--secret-value", "--secret-stdin":
+			return false
+		}
+		if strings.HasPrefix(arg, "--password=") || strings.HasPrefix(arg, "--new-password=") || strings.HasPrefix(arg, "--secret-value=") {
+			return false
+		}
+		if i > 0 && strings.HasPrefix(args[i-1], "--") && strings.Contains(args[i-1], "password") {
+			return false
+		}
+	}
+	return true
+}
+
 type replCommandBuffer struct {
 	buf strings.Builder
 }
@@ -171,6 +281,10 @@ func (b *replCommandBuffer) feed(line string) ([]string, error) {
 
 func (b *replCommandBuffer) pending() bool {
 	return strings.TrimSpace(b.buf.String()) != ""
+}
+
+func (b *replCommandBuffer) reset() {
+	b.buf.Reset()
 }
 
 func stripREPLLineContinuation(line string) (string, bool) {

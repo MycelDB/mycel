@@ -154,3 +154,23 @@ func TestREPLIncompleteContinuationReturnsHelpfulError(t *testing.T) {
 		t.Fatalf("RunREPL() error = %v, want incomplete continuation; output:\n%s", err, out.String())
 	}
 }
+
+func TestREPLHistorySkipsSensitiveCommands(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{line: `connect space "Getting Started"`, want: true},
+		{line: `gql MATCH (n:Note) RETURN n.title`, want: true},
+		{line: `login admin admin-password`, want: false},
+		{line: `auth whoami --password admin-password`, want: false},
+		{line: `principal create --principal-username alice --new-password alice-password`, want: false},
+		{line: `inference credential create key --secret-value sk-test`, want: false},
+		{line: `exit`, want: false},
+	}
+	for _, tc := range cases {
+		if got := shouldRecordREPLHistory(tc.line); got != tc.want {
+			t.Fatalf("shouldRecordREPLHistory(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
