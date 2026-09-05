@@ -416,6 +416,7 @@ func TestAutomationGraphReplayRecoveryAfterPartitionLeaderCrashDuringRunningInvo
 		t.Fatalf("new leader ProcessPending() processed=%d err=%v", processed, err)
 	}
 	cluster.waitForInvocationStatusOnLiveNodes(t, domainID, inv.ID, "skipped")
+	cluster.waitForRunIDOnLiveNodes(t, domainID, inv.ID)
 	for id, mgr := range cluster.managers {
 		if cluster.crashed[id] {
 			continue
@@ -1416,10 +1417,23 @@ func (c automationExecutionRaftCluster) waitForRun(t *testing.T, domainID graph.
 
 func (c automationExecutionRaftCluster) waitForRunID(t *testing.T, domainID graph.DomainID, runID string) {
 	t.Helper()
+	c.waitForRunIDMatching(t, domainID, runID, false)
+}
+
+func (c automationExecutionRaftCluster) waitForRunIDOnLiveNodes(t *testing.T, domainID graph.DomainID, runID string) {
+	t.Helper()
+	c.waitForRunIDMatching(t, domainID, runID, true)
+}
+
+func (c automationExecutionRaftCluster) waitForRunIDMatching(t *testing.T, domainID graph.DomainID, runID string, liveOnly bool) {
+	t.Helper()
 	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := consensus.WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
-		for _, mgr := range c.managers {
+		for id, mgr := range c.managers {
+			if liveOnly && c.crashed[id] {
+				continue
+			}
 			if _, err := mgr.store.GetRun(context.Background(), domainID, runID); err != nil {
 				return false
 			}
