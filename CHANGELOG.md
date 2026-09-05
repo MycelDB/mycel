@@ -6,6 +6,24 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.10.0] - 2026-09-04
+
+### Added
+
+- Added S3-backed blob payload storage for new blob uploads, with local storage remaining the default and existing local blobs remaining local (#6).
+- Added REPL line editing and command history, with sensitive command filtering (#12).
+- Added REPL paste-friendly command handling for semicolon-terminated commands, continuation lines, and pasted multi-command blocks (#5).
+
+### Changed
+
+- Moved product-facing query roadmap pages out of repository docs and replaced them with public-manual pointers (#14).
+- Improved standalone daemon health semantics so a ready standalone node is not marked unhealthy solely because cluster admission does not apply (#17).
+
+### Fixed
+
+- Fixed `space` subcommands when run inside the REPL (#7).
+- Fixed a backup scheduler retry-after state race after transient backup failures (#9).
+
 ## [v0.9.0] - 2026-08-31
 
 ### Added
