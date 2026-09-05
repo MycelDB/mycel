@@ -111,7 +111,7 @@ Notes:
 - Use `operations`, not `operation`, because the repo already uses `docs/operations/` and it is the common term for runbooks.
 - `design/system-overview.md` should be the canonical high-level system document.
 - `implementation/README.md` should explicitly say that implementation plans are historical or planning artifacts, not operator instructions.
-- Existing `docs/roadmap/` can remain as-is initially. It can be linked from root `README.md` and revisited later.
+- Product-facing roadmap/status pages should live in the public manual Roadmap appendix; repository `docs/roadmap/` files should be removed or kept only as compatibility pointers.
 
 ## Current docs inventory snapshot
 
@@ -125,7 +125,7 @@ Current root-level docs include:
 - `docs/design/**`
 - `docs/operations/**`
 - `docs/implementation/**`
-- `docs/roadmap/**`
+- `docs/roadmap/**` compatibility pointers, if any
 
 Important existing groupings:
 

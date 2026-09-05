@@ -258,7 +258,15 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	graphNotificationService := graphnotification.NewModule()
 	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)
 	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithInferenceManager(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
-	blobService := blobservice.NewModule(graphService)
+	blobService := blobservice.NewModule(graphService, blobservice.Config{
+		Backend:          cfg.Blob.Backend,
+		S3Bucket:         cfg.Blob.S3Bucket,
+		S3Prefix:         cfg.Blob.S3Prefix,
+		S3Region:         cfg.Blob.S3Region,
+		S3KMSKeyID:       cfg.Blob.S3KMSKeyID,
+		S3EndpointURL:    cfg.Blob.S3EndpointURL,
+		S3ForcePathStyle: cfg.Blob.S3ForcePathStyle,
+	})
 	inferenceService.SetSecretResolver(inferenceservice.NewEncryptedSecretResolver(cfg.UserStoreEncryptionKeyB64))
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
 		SecretKeyB64:     cfg.UserStoreEncryptionKeyB64,

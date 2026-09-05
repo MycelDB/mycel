@@ -139,7 +139,10 @@ For example:
 - ordinary Go changes: affected package tests, then `make test`;
 - raft/cluster changes: targeted phase tests plus release-gate discussion;
 - backup/restore changes: archive/unit tests plus explicit Compose validation
-  when destructive testing is appropriate.
+  when destructive testing is appropriate;
+- S3 blob storage changes: fake-client unit tests by default, plus the opt-in
+  integration test when an S3 or S3-compatible endpoint is available:
+  `MYCELD_TEST_S3_BUCKET=... go test ./internal/blob/service -run TestS3BlobBackendIntegration -count=1`.
 
 If you cannot run a relevant test, say so in the PR and explain why.
 

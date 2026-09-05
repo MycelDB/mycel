@@ -77,3 +77,100 @@ func TestREPLSpaceSetUsesDaemon(t *testing.T) {
 		t.Fatalf("expected current space %s, got %v; output:\n%s", spaceID, a.CurrentSpaceID, out.String())
 	}
 }
+
+func TestREPLSpaceAddListGetAndDeleteCommandsFallThrough(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	precreatedID, _ := createImportExportTestSpace(t, addr, adminPassword, "admin", "REPL Delete Space")
+
+	a := &app.App{DaemonAddr: addr}
+	input := strings.NewReader(strings.Join([]string{
+		"login admin " + adminPassword,
+		`space add "REPL Add Space" --owner-username admin --default-domain-key default --default-domain-name Default`,
+		`space list`,
+		`space get ` + precreatedID,
+		`space delete ` + precreatedID,
+		`connect space "REPL Add Space"`,
+		`exit`,
+	}, "\n"))
+	var out bytes.Buffer
+	if err := RunREPL(t.Context(), a, input, &out); err != nil {
+		t.Fatalf("RunREPL() error = %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "usage: space set SPACE_ID or space unset") || strings.Contains(out.String(), "error:") {
+		t.Fatalf("space subcommands should fall through to Cobra without REPL shadowing; output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "connected to space REPL Add Space") {
+		t.Fatalf("space add/connect did not succeed through REPL; output:\n%s", out.String())
+	}
+	if got, err := runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "space", "get", precreatedID); err == nil {
+		t.Fatalf("space delete in REPL did not delete %s; get output:\n%s", precreatedID, got)
+	}
+}
+
+func TestREPLPasteFriendlySemicolonsAndContinuations(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+
+	a := &app.App{DaemonAddr: addr}
+	input := strings.NewReader(strings.Join([]string{
+		"login admin " + adminPassword + ";",
+		`space add "Pasted Space" \`,
+		`  --owner-username admin \`,
+		`  --default-domain-key default \`,
+		`  --default-domain-name Default;`,
+		`connect space "Pasted Space";`,
+		`gql INSERT (:Note {title: 'Hello Paste'});`,
+		`gql MATCH (n:Note) RETURN n.title FETCH FIRST 10 ROWS ONLY;`,
+		`exit;`,
+	}, "\n"))
+	var out bytes.Buffer
+	if err := RunREPL(t.Context(), a, input, &out); err != nil {
+		t.Fatalf("RunREPL() error = %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "logged in as admin") || !strings.Contains(out.String(), "connected to space Pasted Space") || !strings.Contains(out.String(), "nodes_inserted=1 edges_inserted=0") || !strings.Contains(out.String(), "Hello Paste") {
+		t.Fatalf("unexpected paste-friendly REPL output:\n%s", out.String())
+	}
+}
+
+func TestREPLCommandBufferSplitsPastedSemicolonCommands(t *testing.T) {
+	var buf replCommandBuffer
+	commands, err := buf.feed(`login admin pass; gql INSERT (:Note {title: 'Semi; colon'}); exit;`)
+	if err != nil {
+		t.Fatalf("feed() error = %v", err)
+	}
+	want := []string{"login admin pass", "gql INSERT (:Note {title: 'Semi; colon'})", "exit"}
+	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands = %#v, want %#v", commands, want)
+	}
+}
+
+func TestREPLIncompleteContinuationReturnsHelpfulError(t *testing.T) {
+	a := &app.App{}
+	input := strings.NewReader("help \\\n")
+	var out bytes.Buffer
+	err := RunREPL(t.Context(), a, input, &out)
+	if err == nil || !strings.Contains(err.Error(), "incomplete continued REPL command") {
+		t.Fatalf("RunREPL() error = %v, want incomplete continuation; output:\n%s", err, out.String())
+	}
+}
+
+func TestREPLHistorySkipsSensitiveCommands(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{line: `connect space "Getting Started"`, want: true},
+		{line: `gql MATCH (n:Note) RETURN n.title`, want: true},
+		{line: `login admin admin-password`, want: false},
+		{line: `auth whoami --password admin-password`, want: false},
+		{line: `principal create --principal-username alice --new-password alice-password`, want: false},
+		{line: `inference credential create key --secret-value sk-test`, want: false},
+		{line: `exit`, want: false},
+	}
+	for _, tc := range cases {
+		if got := shouldRecordREPLHistory(tc.line); got != tc.want {
+			t.Fatalf("shouldRecordREPLHistory(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}

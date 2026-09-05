@@ -8,8 +8,7 @@ Related documents:
 
 - [Client Query API](query.md)
 - [Client Graph API](graph.md)
-- [GQL roadmap](../../roadmap/gql-roadmap.md)
-- [Structured Query API roadmap](../../roadmap/api-roadmap.md)
+- [Public roadmap appendix](https://myceldb.com)
 - [GWL indexes and query planning](../schema/gwl-indexes-and-query-planning.md)
 
 ## Purpose

@@ -43,6 +43,8 @@ Expected prompt:
 mycel>
 ```
 
+When standard input and output are attached to a terminal, the REPL supports readline-style line editing and in-session command history with the up/down arrow keys. Piped input still uses plain line-by-line execution for scripts and documentation examples.
+
 ## Log in
 
 Inside the REPL:

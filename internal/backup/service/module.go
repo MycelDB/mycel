@@ -43,10 +43,10 @@ type Module struct {
 	dataDir               string
 	localIdentity         runtime.LocalRouteIdentity
 	activeClusterBackupID string
-	clusterBackups          map[string]clusterBackupRun
-	clusterBackupLeases     map[string]*quiesce.CompositeLease
-	clusterBackupFreeze     map[string]*clusterBackupFreezeLease
-	clusterBackendClient    backendClient
+	clusterBackups        map[string]clusterBackupRun
+	clusterBackupLeases   map[string]*quiesce.CompositeLease
+	clusterBackupFreeze   map[string]*clusterBackupFreezeLease
+	clusterBackendClient  backendClient
 	clusterNodeAddrs      []string
 	clusterLocalRaftNode  consensus.NodeID
 }
@@ -441,13 +441,11 @@ func (m *Module) schedulerLoop(ctx context.Context) {
 			_, err = m.triggerWithWALCheckpoint(ctx, backupcore.TriggerInput{Source: "scheduler", Reason: "scheduled backup"})
 		}
 		if err != nil && ctx.Err() == nil {
-			m.mu.Lock()
-			m.lastError = err.Error()
-			m.mu.Unlock()
+			retryAfter := m.Policy().RetryAfter
+			m.setScheduledErrorNextRunAfter(err, retryAfter, time.Now().UTC())
 			if m.logger != nil {
 				m.logger.Warn("scheduled backup failed", "error", err)
 			}
-			m.setNextRunAfter(m.Policy().RetryAfter, time.Now().UTC())
 		} else if err == nil {
 			m.mu.Lock()
 			m.lastError = ""
@@ -472,12 +470,13 @@ func (m *Module) setNextRun(fallback time.Time) {
 	m.nextRunAt = m.computeNextRunAtLocked(fallback)
 }
 
-func (m *Module) setNextRunAfter(delay time.Duration, base time.Time) {
+func (m *Module) setScheduledErrorNextRunAfter(err error, delay time.Duration, base time.Time) {
 	if delay <= 0 {
 		delay = backupcore.DefaultRetryAfter
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastError = err.Error()
 	m.nextRunAt = base.Add(delay)
 }
 

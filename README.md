@@ -111,6 +111,27 @@ Stop it with:
 make stop
 ```
 
+## Blob payload storage
+
+Blob payload bytes are stored locally by default under `MYCELD_DATA_DIR`:
+
+```text
+MYCELD_BLOB_BACKEND=local
+```
+
+For AWS deployments, new blob payloads can be stored in S3 while graph state, WAL, Raft logs, indexes, and blob metadata remain on local/block storage:
+
+```text
+MYCELD_BLOB_BACKEND=s3
+MYCELD_BLOB_S3_BUCKET=mycel-prod-blobs
+MYCELD_BLOB_S3_PREFIX=clusters/prod-a
+MYCELD_BLOB_S3_REGION=us-east-1
+```
+
+S3 credentials are loaded with the AWS SDK default credential chain (for example IAM role, web identity, shared config/profile, or environment credentials). Mycel does not define custom S3 access-key environment variables. Optional S3-compatible/local-test settings are `MYCELD_BLOB_S3_ENDPOINT_URL` and `MYCELD_BLOB_S3_FORCE_PATH_STYLE=true`. Existing local blobs remain local; enabling S3 affects new uploads only.
+
+See [`docs/operations/procedures/s3-blob-storage.md`](docs/operations/procedures/s3-blob-storage.md).
+
 ## Authentication and sessions
 
 Daemon Client and Admin APIs use short-lived bearer access tokens plus durable refresh sessions. SDK callers should use `mycel-go-sdk` or another SDK generated from `mycel-api` so access-token expiry, refresh-token rotation, and one retry on expired-token `Unauthenticated` are handled automatically.

@@ -13,6 +13,7 @@ import (
 	"github.com/myceldb/mycel/internal/cli/app"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"github.com/peterh/liner"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -23,105 +24,349 @@ func NewReplCommand(a *app.App) *cobra.Command {
 		Use:   "repl",
 		Short: "Start an interactive MycelDB REPL",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if shouldUseInteractiveREPL(os.Stdin, os.Stdout) {
+				return RunInteractiveREPL(cmd.Context(), a, os.Stdout)
+			}
 			return RunREPL(cmd.Context(), a, os.Stdin, os.Stdout)
 		},
 	}
 }
 
 func RunREPL(ctx context.Context, a *app.App, in io.Reader, out io.Writer) error {
+	return runREPL(ctx, a, out, newScannerREPLLineReader(in, out))
+}
+
+func RunInteractiveREPL(ctx context.Context, a *app.App, out io.Writer) error {
+	reader := newLinerREPLLineReader()
+	defer reader.Close()
+	return runREPL(ctx, a, out, reader)
+}
+
+func runREPL(ctx context.Context, a *app.App, out io.Writer, reader replLineReader) error {
 	fmt.Fprintln(out, "mycel REPL. Use login <username> <password>, connect space <space>, connect domain <domain>, gql <query>, help, or exit.")
-	scanner := bufio.NewScanner(in)
+	commands := replCommandBuffer{}
 	for {
-		fmt.Fprint(out, a.Prompt())
-		if !scanner.Scan() {
+		line, err := reader.ReadLine(a.Prompt())
+		if errors.Is(err, io.EOF) {
 			break
 		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+		if errors.Is(err, liner.ErrPromptAborted) {
+			commands.reset()
+			fmt.Fprintln(out)
 			continue
 		}
-		if strings.HasPrefix(line, "gql ") {
-			if err := runREPLGQL(ctx, a, strings.TrimSpace(strings.TrimPrefix(line, "gql ")), out); err != nil {
-				fmt.Fprintln(out, "error:", err)
-			}
-			continue
+		if err != nil {
+			return err
 		}
-		args, err := splitArgs(line)
+		completed, err := commands.feed(line)
 		if err != nil {
 			fmt.Fprintln(out, "error:", err)
 			continue
 		}
-		if len(args) == 0 {
-			continue
-		}
-		switch args[0] {
-		case "exit", "quit":
-			return nil
-		case "login":
-			if len(args) < 3 {
-				fmt.Fprintln(out, "usage: login USERNAME PASSWORD")
-				continue
-			}
-			a.UserRef = args[1]
-			a.Password = args[2]
-			conn, _, login, err := loginDaemonPrincipal(ctx, a)
+		for _, line := range completed {
+			reader.AppendHistory(line)
+			exit, err := runREPLCommand(ctx, a, line, out)
 			if err != nil {
-				fmt.Fprintln(out, "error:", err)
-				continue
-			}
-			_ = conn.Close()
-			fmt.Fprintf(out, "logged in as %s\n", login.GetPrincipal().GetUsername())
-		case "logout":
-			a.UserRef = ""
-			a.Password = ""
-			a.ClearCurrentConnection()
-			fmt.Fprintln(out, "logged out")
-		case "connect":
-			if err := runREPLConnect(ctx, a, args[1:], out); err != nil {
-				fmt.Fprintln(out, "error:", err)
-			}
-		case "space":
-			if err := runREPLSpace(ctx, a, args[1:], out); err != nil {
-				fmt.Fprintln(out, "error:", err)
-			}
-		case "disconnect":
-			a.ClearCurrentConnection()
-			fmt.Fprintln(out, "disconnected")
-		case "\\c":
-			if err := runREPLConnectAlias(ctx, a, args[1:], out); err != nil {
-				fmt.Fprintln(out, "error:", err)
-			}
-		case "set_space":
-			fmt.Fprintln(out, "usage: space set SPACE_ID")
-			continue
-		case "unset_space":
-			fmt.Fprintln(out, "usage: space unset")
-			continue
-		case "help":
-			root := NewRootCommand(a, true)
-			root.SetOut(out)
-			root.SetErr(out)
-			_ = root.Help()
-			fmt.Fprintln(out, "\nREPL shortcuts:")
-			fmt.Fprintln(out, "  connect space <space-id-or-name>")
-			fmt.Fprintln(out, "  connect domain <domain-id-or-key-or-name>")
-			fmt.Fprintln(out, "  connect <space-id-or-name>[/<domain-id-or-key-or-name>]")
-			fmt.Fprintln(out, "  \\c <space-id-or-name>[/<domain-id-or-key-or-name>]")
-			fmt.Fprintln(out, "  disconnect")
-			fmt.Fprintln(out, "  gql <GQL query text>")
-		default:
-			root := NewRootCommand(a, true)
-			root.SetArgs(args)
-			root.SetOut(out)
-			root.SetErr(out)
-			if err := root.ExecuteContext(ctx); err != nil {
 				if !errors.Is(err, context.Canceled) {
 					fmt.Fprintln(out, "error:", err)
 				}
+				continue
+			}
+			if exit {
+				return nil
 			}
 		}
 	}
-	return scanner.Err()
+	if commands.pending() {
+		return fmt.Errorf("incomplete continued REPL command; finish the command or remove the trailing \\")
+	}
+	return nil
+}
+
+func runREPLCommand(ctx context.Context, a *app.App, line string, out io.Writer) (bool, error) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false, nil
+	}
+	if strings.HasPrefix(line, "gql ") {
+		return false, runREPLGQL(ctx, a, strings.TrimSpace(strings.TrimPrefix(line, "gql ")), out)
+	}
+	args, err := splitArgs(line)
+	if err != nil {
+		return false, err
+	}
+	if len(args) == 0 {
+		return false, nil
+	}
+	switch args[0] {
+	case "exit", "quit":
+		return true, nil
+	case "login":
+		if len(args) < 3 {
+			return false, fmt.Errorf("usage: login USERNAME PASSWORD")
+		}
+		a.UserRef = args[1]
+		a.Password = args[2]
+		conn, _, login, err := loginDaemonPrincipal(ctx, a)
+		if err != nil {
+			return false, err
+		}
+		_ = conn.Close()
+		fmt.Fprintf(out, "logged in as %s\n", login.GetPrincipal().GetUsername())
+		return false, nil
+	case "logout":
+		a.UserRef = ""
+		a.Password = ""
+		a.ClearCurrentConnection()
+		fmt.Fprintln(out, "logged out")
+		return false, nil
+	case "connect":
+		return false, runREPLConnect(ctx, a, args[1:], out)
+	case "space":
+		if len(args) > 1 && (args[1] == "set" || args[1] == "unset") {
+			return false, runREPLSpace(ctx, a, args[1:], out)
+		}
+		return false, runREPLCobraCommand(ctx, a, args, out)
+	case "disconnect":
+		a.ClearCurrentConnection()
+		fmt.Fprintln(out, "disconnected")
+		return false, nil
+	case "\\c":
+		return false, runREPLConnectAlias(ctx, a, args[1:], out)
+	case "set_space":
+		return false, fmt.Errorf("usage: space set SPACE_ID")
+	case "unset_space":
+		return false, fmt.Errorf("usage: space unset")
+	case "help":
+		root := NewRootCommand(a, true)
+		root.SetOut(out)
+		root.SetErr(out)
+		_ = root.Help()
+		fmt.Fprintln(out, "\nREPL shortcuts:")
+		fmt.Fprintln(out, "  connect space <space-id-or-name>")
+		fmt.Fprintln(out, "  connect domain <domain-id-or-key-or-name>")
+		fmt.Fprintln(out, "  connect <space-id-or-name>[/<domain-id-or-key-or-name>]")
+		fmt.Fprintln(out, "  \\c <space-id-or-name>[/<domain-id-or-key-or-name>]")
+		fmt.Fprintln(out, "  disconnect")
+		fmt.Fprintln(out, "  gql <GQL query text>")
+		return false, nil
+	default:
+		return false, runREPLCobraCommand(ctx, a, args, out)
+	}
+}
+
+func runREPLCobraCommand(ctx context.Context, a *app.App, args []string, out io.Writer) error {
+	root := NewRootCommand(a, true)
+	root.SetArgs(args)
+	root.SetOut(out)
+	root.SetErr(out)
+	return root.ExecuteContext(ctx)
+}
+
+type replLineReader interface {
+	ReadLine(prompt string) (string, error)
+	AppendHistory(line string)
+}
+
+type scannerREPLLineReader struct {
+	scanner *bufio.Scanner
+	out     io.Writer
+}
+
+func newScannerREPLLineReader(in io.Reader, out io.Writer) scannerREPLLineReader {
+	return scannerREPLLineReader{scanner: bufio.NewScanner(in), out: out}
+}
+
+func (r scannerREPLLineReader) ReadLine(prompt string) (string, error) {
+	fmt.Fprint(r.out, prompt)
+	if !r.scanner.Scan() {
+		if err := r.scanner.Err(); err != nil {
+			return "", err
+		}
+		return "", io.EOF
+	}
+	return r.scanner.Text(), nil
+}
+
+func (r scannerREPLLineReader) AppendHistory(string) {}
+
+type linerREPLLineReader struct {
+	state *liner.State
+}
+
+func newLinerREPLLineReader() *linerREPLLineReader {
+	state := liner.NewLiner()
+	state.SetCtrlCAborts(true)
+	state.SetMultiLineMode(true)
+	return &linerREPLLineReader{state: state}
+}
+
+func (r *linerREPLLineReader) ReadLine(prompt string) (string, error) {
+	return r.state.Prompt(prompt)
+}
+
+func (r *linerREPLLineReader) AppendHistory(line string) {
+	if shouldRecordREPLHistory(line) {
+		r.state.AppendHistory(line)
+	}
+}
+
+func (r *linerREPLLineReader) Close() error {
+	return r.state.Close()
+}
+
+func shouldUseInteractiveREPL(in *os.File, out *os.File) bool {
+	return liner.TerminalSupported() && isTerminalFile(in) && isTerminalFile(out)
+}
+
+func isTerminalFile(file *os.File) bool {
+	if file == nil {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func shouldRecordREPLHistory(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	args, err := splitArgs(line)
+	if err != nil || len(args) == 0 {
+		return true
+	}
+	if args[0] == "login" || args[0] == "exit" || args[0] == "quit" {
+		return false
+	}
+	for i, arg := range args {
+		switch arg {
+		case "--password", "-p", "--new-password", "--secret-value", "--secret-stdin":
+			return false
+		}
+		if strings.HasPrefix(arg, "--password=") || strings.HasPrefix(arg, "--new-password=") || strings.HasPrefix(arg, "--secret-value=") {
+			return false
+		}
+		if i > 0 && strings.HasPrefix(args[i-1], "--") && strings.Contains(args[i-1], "password") {
+			return false
+		}
+	}
+	return true
+}
+
+type replCommandBuffer struct {
+	buf strings.Builder
+}
+
+func (b *replCommandBuffer) feed(line string) ([]string, error) {
+	line, continued := stripREPLLineContinuation(line)
+	line = strings.TrimSpace(line)
+	if line == "" && b.buf.Len() == 0 {
+		return nil, nil
+	}
+	if b.buf.Len() > 0 && line != "" {
+		b.buf.WriteByte(' ')
+	}
+	b.buf.WriteString(line)
+	if continued {
+		return nil, nil
+	}
+	assembled := strings.TrimSpace(b.buf.String())
+	b.buf.Reset()
+	if assembled == "" {
+		return nil, nil
+	}
+	return splitREPLCommands(assembled), nil
+}
+
+func (b *replCommandBuffer) pending() bool {
+	return strings.TrimSpace(b.buf.String()) != ""
+}
+
+func (b *replCommandBuffer) reset() {
+	b.buf.Reset()
+}
+
+func stripREPLLineContinuation(line string) (string, bool) {
+	trimmed := strings.TrimRight(line, " \t\r")
+	if trimmed == "" || !strings.HasSuffix(trimmed, "\\") || trailingBackslashInQuote(trimmed) {
+		return line, false
+	}
+	return strings.TrimRight(trimmed[:len(trimmed)-1], " \t\r"), true
+}
+
+func trailingBackslashInQuote(s string) bool {
+	inQuote := rune(0)
+	escaped := false
+	runes := []rune(s)
+	for i, r := range runes {
+		if i == len(runes)-1 && r == '\\' {
+			return inQuote != 0
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if inQuote != 0 {
+			if r == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' {
+			inQuote = r
+		}
+	}
+	return false
+}
+
+func splitREPLCommands(s string) []string {
+	var commands []string
+	var current strings.Builder
+	inQuote := rune(0)
+	escaped := false
+	flush := func() {
+		cmd := strings.TrimSpace(current.String())
+		if cmd != "" {
+			commands = append(commands, cmd)
+		}
+		current.Reset()
+	}
+	for _, r := range s {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			current.WriteRune(r)
+			escaped = true
+			continue
+		}
+		if inQuote != 0 {
+			current.WriteRune(r)
+			if r == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' {
+			current.WriteRune(r)
+			inQuote = r
+			continue
+		}
+		if r == ';' {
+			flush()
+			continue
+		}
+		current.WriteRune(r)
+	}
+	flush()
+	return commands
 }
 
 func runREPLSpace(ctx context.Context, a *app.App, args []string, out io.Writer) error {

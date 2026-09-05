@@ -211,7 +211,8 @@ func (s *AdminClusterService) GetClusterHealth(ctx context.Context, req *adminv1
 	for _, blocker := range readiness.ReadinessBlockers {
 		warnings = append(warnings, blocker)
 	}
-	if !s.cluster.IsAdmitted() {
+	admissionRequired := s.clusterAdmissionRequired()
+	if admissionRequired && !s.cluster.IsAdmitted() {
 		warnings = append(warnings, "local node is not admitted")
 	}
 	if readiness.MetadataApplied && readiness.AuthoritativeClusterID != "" && readiness.LocalClusterID != "" && readiness.AuthoritativeClusterID != readiness.LocalClusterID {
@@ -233,10 +234,20 @@ func (s *AdminClusterService) GetClusterHealth(ctx context.Context, req *adminv1
 	if len(warnings) > 0 {
 		health = "degraded"
 	}
-	if !s.cluster.IsAdmitted() || !readiness.ClientReady {
+	if !readiness.ClientReady || (admissionRequired && !s.cluster.IsAdmitted()) {
 		health = "unhealthy"
 	}
 	return &adminv1.GetClusterHealthResponse{Status: health, Warnings: warnings, ActiveMembers: active, PendingMembers: pending, UnreachablePeers: unreachable, Readiness: clusterReadinessToProto(readiness)}, nil
+}
+
+func (s *AdminClusterService) clusterAdmissionRequired() bool {
+	if s == nil || s.cluster == nil {
+		return false
+	}
+	if s.raftGroups != nil || s.clusterConfig.RaftNodeCount == 1 || len(s.clusterConfig.RaftNodeAddrs) > 0 {
+		return true
+	}
+	return s.cluster.State() != model.NodeStateStandalone
 }
 
 func clusterReadinessToProto(readiness clustering.ClusterReadiness) *adminv1.ClusterReadiness {
