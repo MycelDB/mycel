@@ -357,7 +357,7 @@ Acceptance:
 
 ### LS6 — Index writer and BM25 searcher
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repo: `mycel`.
 
@@ -385,7 +385,7 @@ Acceptance:
 
 ### LS7 — Index maintenance service
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repo: `mycel`.
 
@@ -414,7 +414,7 @@ Acceptance:
 
 ### LS8 — Cluster ownership and forwarding
 
-Status: planned.
+Status: complete for the initial ownership/forwarding seam tranche. Daemon backend/API adapter wiring remains in LS9.
 
 Repo: `mycel`.
 
