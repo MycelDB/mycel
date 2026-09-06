@@ -31,8 +31,9 @@ assigned to a tagged release bucket.
 - [Intelligence Access model kind implementation plan](intelligence-access-model-kind-implementation-plan.md) — breaking cleanup that replaces model-level workload operations with model kind/category while keeping endpoint capabilities authoritative for workload support.
 - [Intelligence Access Raft authority implementation plan](intelligence-access-raft-authority-implementation-plan.md) — phased plan to make Intelligence profiles semantic/Raft-owned and keep standalone inference state as a derived projection in clustered mode.
 
-## Query and schema indexes
+## Query, search, and schema indexes
 
+- [Lexical search implementation plan](lexical-search-implementation-plan.md) — dedicated Search API, per-space/domain BM25 lexical indexes, Lucene-style query subset, leader-owned indexing, follower forwarding, and cross-repo rollout.
 - [GWL indexes and indexed query execution implementation plan](gwl-indexes-and-indexed-query-execution-implementation-plan.md) — schema-declared node/edge indexes, graph index persistence, synchronous maintenance, backfill, and indexed structured/GQL query planning.
 - [Query expansion implementation plan](query-expansion-implementation-plan.md) — GQL delete/merge, parameters, aliased projections, indexed structured query parity, and path projection.
 - [Top query priorities implementation plan](top-query-priorities-implementation-plan.md) — indexed structured multi-hop traversal/path projection, aggregation/result shaping, and predicate/index-pushdown MVP baseline.
