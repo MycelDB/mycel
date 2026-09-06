@@ -128,17 +128,18 @@ This mirrors semantic indexing: asynchronously update derived search state from 
 
 ### Leader/ownership behavior
 
-Implementation should decide whether indexing work is:
+V1 indexing should be owned by the authoritative leader/master for the space/domain. In the current Raft placement model, that means the node that owns the relevant space partition for committed writes and domain-scoped work.
 
-- leader-only per space partition, with search forwarded/routed as needed; or
-- locally maintained on every replica that may serve reads.
+The leader/master should:
 
-For v1, prefer the simplest safe model:
+- consume committed graph changes for its owned space/domain scopes;
+- update the lexical index and durable lexical indexing cursor;
+- serve lexical Search API requests for those scopes, or receive forwarded requests from followers;
+- resume indexing from the durable cursor after leadership changes, restart, or recovery.
 
-- maintain local index progress on nodes that need to serve lexical search;
-- fail closed or report `unavailable/rebuilding` when the local index is not ready;
-- do not return unauthorized or cross-domain results;
-- preserve existing Raft fail-closed behavior for unsafe local writes.
+Followers should not independently advance authoritative lexical indexing progress in v1. A follower that receives a lexical search request should route/forward it to the current owner, or fail closed with a clear unavailable/routing diagnostic if no safe owner is known.
+
+Replica-local read indexes can be added later as an optimization, but they should be derived caches with explicit freshness diagnostics, not independent sources of authoritative indexing progress.
 
 ## Query syntax
 
@@ -378,7 +379,7 @@ Implementation should include tests for:
 The implementation plan should resolve:
 
 1. Exact protobuf API package/service/message names.
-2. Whether v1 indexing runs on every read-capable replica or only on space leaders.
+2. Exact owner-routing mechanics for forwarding Search API requests to the current space/domain leader/master.
 3. Physical index file format and compaction strategy.
 4. Cursor/progress storage and Raft/WAL ownership.
 5. Default implicit boolean operator: `AND` vs `OR`.
