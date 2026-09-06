@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned. Do not start implementation until this plan and the design document are reviewed.
+LS0-LS2 complete on the `lexical_search` coordination branches. Do not start LS3+ daemon implementation until the design document and implementation plan are reviewed.
 
 Design source: [Lexical search design](../../design/search/lexical-search.md)
 
@@ -221,16 +221,19 @@ Add backend forwarding support for lexical search requests, similar to existing 
 
 ### LS0 — Finalize API/design details
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
-Tasks:
+Decisions:
 
-1. Review this plan and `docs/design/search/lexical-search.md`.
-2. Decide exact protobuf package/service names.
-3. Confirm default implicit operator: `AND`.
-4. Decide stale result request fields and response freshness enums.
-5. Decide whether rebuild/status RPCs are client-facing, admin-facing, or split.
-6. Decide cursor ownership mechanism for clustered mode.
+1. Client search API: `mycel.client.v1.SearchService` in `mycel/client/v1/search.proto`.
+2. Admin maintenance API: `mycel.admin.v1.AdminLexicalMaintenanceService` in `mycel/admin/v1/lexical_maintenance.proto`.
+3. Default implicit query operator: `AND`.
+4. Stale results are opt-in with `allow_stale`; callers may also set `max_revision_lag`.
+5. Client-facing status is available through `GetLexicalIndexStatus`; manual rebuild is admin-only through `RebuildLexicalIndex`.
+6. Clustered cursor/progress is Raft/WAL-owned per space/domain. Local `cursor.json` remains diagnostic/cache state only.
+7. BM25 defaults are `k1=1.2` and `b=0.75`; phrase matches receive a deterministic `1.25` multiplier boost.
+8. Logical/export-style backups do not need to include derived lexical index files; restored data dirs validate and rebuild indexes when needed.
+9. Automatic compaction is deferred; tombstones plus manual rebuild are the v1 cleanup path.
 
 Acceptance:
 
@@ -238,7 +241,7 @@ Acceptance:
 
 ### LS1 — Search API protobufs
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repo: `mycel-api`.
 
@@ -257,7 +260,7 @@ Acceptance:
 
 ### LS2 — Regenerate daemon/SDK bindings
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repos: `mycel`, `mycel-go-sdk`, `mycel-rust-sdk`.
 

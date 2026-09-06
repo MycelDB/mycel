@@ -266,6 +266,8 @@ The user-facing syntax should be Lucene-style but deliberately scoped for v1.
 
 ### v1 supported syntax
 
+The implicit default operator is `AND`.
+
 - term search:
 
   ```text
@@ -493,15 +495,19 @@ Implementation should include tests for:
 - Raft-mode fail-closed behavior and replicated graph-change replay;
 - Search API pagination and diagnostics.
 
-## Open implementation decisions
+## LS0 implementation decisions
 
-The implementation plan should resolve:
+The following decisions are fixed for the initial implementation tranche:
 
-1. Exact protobuf API package/service/message names.
-2. Exact owner-routing mechanics for forwarding Search API requests to the current space/domain leader/master.
-3. Cursor/progress storage and Raft/WAL ownership.
-4. Default implicit boolean operator confirmation: v1 currently prefers `AND`.
-5. Exact BM25 parameters and phrase boost constants.
-6. Backup/restore default: include derived index files or always rebuild.
-7. How manual rebuilds are requested and authorized.
-8. Segment compaction cadence and tombstone cleanup policy.
+1. API package and services:
+   - client search API: `mycel.client.v1.SearchService` in `mycel/client/v1/search.proto`;
+   - admin maintenance API: `mycel.admin.v1.AdminLexicalMaintenanceService` in `mycel/admin/v1/lexical_maintenance.proto`.
+2. Client API exposes `Search` and `GetLexicalIndexStatus`; manual rebuild is admin-only.
+3. V1 `SearchRequest.mode` supports `SEARCH_MODE_LEXICAL`; unspecified mode defaults to lexical while lexical is the only supported mode.
+4. The implicit boolean operator is `AND`.
+5. Stale results are opt-in through `allow_stale`; callers may also set `max_revision_lag` when the latest graph revision is known.
+6. Followers use authenticated backend forwarding to the current space/domain owner. Unknown or unsafe owner routing fails closed.
+7. Clustered cursor/progress is Raft/WAL-owned per space/domain. Local `cursor.json` is diagnostic/cache state only and cannot be used by stale followers to publish authoritative progress.
+8. BM25 defaults are `k1=1.2` and `b=0.75`. Phrase matches receive a deterministic multiplier boost of `1.25` after base term scoring.
+9. Logical/export-style backups do not need to include derived lexical index files. Data-directory backups may include them, but restore must validate manifest/analyzer/cursor state and rebuild when invalid, missing, stale, or unsafe.
+10. Automatic segment compaction is deferred. V1 must define compaction interfaces and tombstone behavior, and manual rebuild is the operational cleanup path.
