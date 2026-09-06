@@ -88,13 +88,106 @@ space_id + domain_id
 
 A search request must specify the space/domain scope. This keeps access control simple and avoids cross-tenant/global index leakage.
 
-Physical index files should live under the daemon data directory, for example:
+Physical index files should live under the daemon data directory:
 
 ```text
 <MYCELD_DATA_DIR>/search/lexical/<space-id>/<domain-id>/
 ```
 
-The exact path can change during implementation, but it must remain daemon-owned and safe for backup/restore procedures.
+The path is daemon-owned derived state and must be safe for backup/restore procedures.
+
+## Physical file format
+
+V1 should use a Mycel-native, Lucene-inspired segment format:
+
+```text
+<MYCELD_DATA_DIR>/search/lexical/<space-id>/<domain-id>/
+├── manifest.json
+├── cursor.json
+├── segments/
+│   ├── seg_000001/
+│   │   ├── segment.json
+│   │   ├── terms.idx
+│   │   ├── postings.bin
+│   │   ├── docs.bin
+│   │   └── checksum.sha256
+│   └── seg_000002/
+└── locks/
+```
+
+Use JSON for small control/diagnostic files and binary varint-oriented files for high-volume index data.
+
+### `manifest.json`
+
+`manifest.json` is the atomically-written index manifest. It records the format/analyzer versions and the active immutable segment list:
+
+```json
+{
+  "format_version": 1,
+  "analyzer_version": "lexical-analyzer-v1",
+  "space_id": "...",
+  "domain_id": "...",
+  "segments": ["seg_000001", "seg_000002"],
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+Manifest updates must use write-temp/fsync/rename semantics where practical so a crash never publishes a partial segment list.
+
+### `cursor.json`
+
+`cursor.json` mirrors local freshness/progress for diagnostics and startup:
+
+```json
+{
+  "indexed_graph_revision": 12345,
+  "updated_at": "...",
+  "last_error": ""
+}
+```
+
+The authoritative progress model must still be cluster-safe. The local cursor file is not a substitute for Raft/WAL-owned progress where that is required for failover correctness.
+
+### Immutable segment directories
+
+Each indexing batch writes a complete immutable segment under `segments/seg_<n>/`, validates checksums, then atomically publishes it by updating `manifest.json`. This avoids a single large mutable index file and simplifies crash recovery.
+
+`segment.json` records per-segment metadata:
+
+```json
+{
+  "segment_id": "seg_000001",
+  "format_version": 1,
+  "doc_count": 10000,
+  "deleted_count": 42,
+  "term_count": 50000,
+  "avg_doc_length": 153.2,
+  "min_graph_revision": 100,
+  "max_graph_revision": 12345
+}
+```
+
+`terms.idx` is a sorted term dictionary mapping each normalized term to its postings offset, postings length, and document frequency.
+
+`postings.bin` stores varint-encoded postings lists. Each posting should include enough data for BM25 and phrase search:
+
+```text
+doc_id_delta
+term_frequency
+positions_delta[]
+field_ids_or_field_mask
+```
+
+`docs.bin` maps internal index document IDs to graph nodes and scoring stats:
+
+```text
+doc_id -> node_id, graph_revision, token_count, field lengths
+```
+
+Do not store full source node text in the lexical index in v1. The graph store remains the source of truth for full content.
+
+Compaction can merge immutable segments and tombstones later without changing query semantics.
 
 ## Consistency model
 
@@ -119,12 +212,13 @@ Recommended model:
 
 1. Graph writes commit through existing graph/Raft ownership.
 2. Graph change events become the source of truth for index updates.
-3. Each daemon maintains its own local lexical index for domains it serves/queries.
-4. A durable per-space/domain lexical cursor records the highest graph revision indexed.
-5. Cursor/progress state must be cluster-safe and recoverable.
-6. On startup or after snapshot restore, the daemon resumes indexing from the last durable cursor or rebuilds if the physical index is missing/corrupt.
+3. The current leader/master for a space/domain is the only v1 component that advances authoritative lexical indexing progress for that scope.
+4. Followers do not independently advance authoritative lexical cursors.
+5. A durable per-space/domain lexical cursor records the highest graph revision indexed.
+6. Cursor/progress state must be cluster-safe and recoverable.
+7. On startup, leadership change, or snapshot restore, the current owner resumes indexing from the last durable cursor or rebuilds if the physical index is missing/corrupt.
 
-This mirrors semantic indexing: asynchronously update derived search state from committed graph data, report staleness, and avoid treating derived indexes as authoritative cluster state.
+This mirrors semantic indexing at the consistency level: asynchronously update derived search state from committed graph data, report staleness, and avoid treating derived indexes as authoritative cluster state. It differs from broad replica-local indexing by making v1 progress advancement owner-only.
 
 ### Leader/ownership behavior
 
@@ -140,6 +234,31 @@ The leader/master should:
 Followers should not independently advance authoritative lexical indexing progress in v1. A follower that receives a lexical search request should route/forward it to the current owner, or fail closed with a clear unavailable/routing diagnostic if no safe owner is known.
 
 Replica-local read indexes can be added later as an optimization, but they should be derived caches with explicit freshness diagnostics, not independent sources of authoritative indexing progress.
+
+### Distributed request routing
+
+Search requests are scoped by `space_id + domain_id`. In clustered mode:
+
+1. The receiving node authenticates and authorizes the request enough to decide whether forwarding is allowed.
+2. The receiving node resolves the current owner/leader for the target space/domain.
+3. If the receiver is the owner, it executes lexical search against its local derived index.
+4. If the receiver is not the owner, it forwards the request to the owner using authenticated backend routing.
+5. If no safe owner is known, the request fails closed with an unavailable/routing diagnostic.
+
+The owner returns index freshness with the result. A follower must not silently serve from a stale local cache in v1 unless a future API explicitly models replica-cache reads and freshness constraints.
+
+### Leadership changes and failover
+
+When leadership changes:
+
+- the old leader stops advancing lexical indexing progress for scopes it no longer owns;
+- the old leader stops serving authoritative lexical search for those scopes and forwards or returns unavailable;
+- the new leader validates its local index manifest/analyzer version/cursor;
+- if the index is valid but behind, the new leader catches up from committed graph changes;
+- if the index is missing, corrupt, or incompatible, the new leader rebuilds from graph state;
+- while rebuilding, the Search API returns `rebuilding`/`unavailable`, or returns stale results only when explicitly allowed and clearly reported.
+
+Physical index files are never the source of truth. Losing them should affect search availability/freshness, not graph correctness.
 
 ## Query syntax
 
@@ -380,9 +499,9 @@ The implementation plan should resolve:
 
 1. Exact protobuf API package/service/message names.
 2. Exact owner-routing mechanics for forwarding Search API requests to the current space/domain leader/master.
-3. Physical index file format and compaction strategy.
-4. Cursor/progress storage and Raft/WAL ownership.
-5. Default implicit boolean operator: `AND` vs `OR`.
-6. Exact BM25 parameters and phrase boost constants.
-7. Backup/restore default: include derived index files or always rebuild.
-8. How manual rebuilds are requested and authorized.
+3. Cursor/progress storage and Raft/WAL ownership.
+4. Default implicit boolean operator confirmation: v1 currently prefers `AND`.
+5. Exact BM25 parameters and phrase boost constants.
+6. Backup/restore default: include derived index files or always rebuild.
+7. How manual rebuilds are requested and authorized.
+8. Segment compaction cadence and tombstone cleanup policy.
