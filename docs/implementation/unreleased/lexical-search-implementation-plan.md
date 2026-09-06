@@ -278,7 +278,7 @@ Acceptance:
 
 ### LS3 — Analyzer and document extraction
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repo: `mycel`.
 
@@ -304,7 +304,7 @@ Acceptance:
 
 ### LS4 — Lucene-style query parser
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repo: `mycel`.
 
@@ -330,7 +330,7 @@ Acceptance:
 
 ### LS5 — Segment storage engine
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repo: `mycel`.
 
