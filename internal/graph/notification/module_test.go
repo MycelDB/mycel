@@ -12,6 +12,8 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/runtime"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type testHost struct{ dataDir string }
@@ -74,6 +76,38 @@ func (c *recordingConsumer) snapshot() ([]graphchange.CommittedEvent, []graphcha
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]graphchange.CommittedEvent(nil), c.events...), append([]graphchange.Gap(nil), c.gaps...)
+}
+
+type transientFailureConsumer struct {
+	mu                sync.Mutex
+	remainingFailures int
+	count             int
+	ch                chan struct{}
+}
+
+func (c *transientFailureConsumer) HandleGraphChange(ctx context.Context, event graphchange.CommittedEvent) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.count++
+	if c.remainingFailures > 0 {
+		c.remainingFailures--
+		return status.Error(codes.Unavailable, "transient leader unavailable")
+	}
+	select {
+	case c.ch <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (c *transientFailureConsumer) HandleGraphChangeGap(ctx context.Context, gap graphchange.Gap) error {
+	return nil
+}
+
+func (c *transientFailureConsumer) attempts() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.count
 }
 
 func TestRegisterConsumerReceivesMatchingProjectedEvent(t *testing.T) {
@@ -263,6 +297,33 @@ func TestCacheConsumerInvalidatesAffectedNodesAndDomainOnGap(t *testing.T) {
 	cache.wait(t)
 	if !cache.domainInvalidated(spaceID, domainID) {
 		t.Fatalf("domain was not invalidated on gap")
+	}
+}
+
+func TestLosslessConsumerRetriesTransientDeliveryFailure(t *testing.T) {
+	ctx := context.Background()
+	m := initTestModule(t)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	consumer := &transientFailureConsumer{remainingFailures: 2, ch: make(chan struct{}, 1)}
+	reg, err := m.RegisterConsumer(ctx, ConsumerSpec{ConsumerName: "lossless", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}, Lossless: true}, consumer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	if err := m.OnGraphCommitted(ctx, committedEvent(spaceID, domainID, 1, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()})); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-consumer.ch:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for successful retry")
+	}
+	if got := consumer.attempts(); got != 3 {
+		t.Fatalf("attempts=%d, want 3", got)
+	}
+	if diag := m.Diagnostics(); diag.HandlerFailures != 0 || diag.EventsDelivered != 1 || diag.EventsDropped != 0 {
+		t.Fatalf("diagnostics after transient retry = %+v", diag)
 	}
 }
 

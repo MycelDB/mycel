@@ -138,12 +138,15 @@ Add a dedicated Search API in `mycel-api`, likely under:
 api/proto/mycel/client/v1/search.proto
 ```
 
-Initial conceptual service:
+Initial services:
 
 ```proto
 service SearchService {
   rpc Search(SearchRequest) returns (SearchResponse);
   rpc GetLexicalIndexStatus(GetLexicalIndexStatusRequest) returns (GetLexicalIndexStatusResponse);
+}
+
+service AdminLexicalMaintenanceService {
   rpc RebuildLexicalIndex(RebuildLexicalIndexRequest) returns (RebuildLexicalIndexResponse);
 }
 ```
@@ -442,7 +445,7 @@ Acceptance:
 
 ### LS9 — Daemon Search API adapter
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repo: `mycel`.
 
@@ -469,7 +472,7 @@ Acceptance:
 
 ### LS10 — CLI support
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repo: `mycel`.
 
@@ -499,7 +502,7 @@ Acceptance:
 
 ### LS11 — Console support
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repo: `mycel-console`.
 
@@ -524,7 +527,7 @@ Acceptance:
 
 ### LS12 — Documentation and operations
 
-Status: planned.
+Status: complete for the initial implementation tranche.
 
 Repos: primarily `mycel`; console docs as needed.
 
@@ -544,7 +547,7 @@ Acceptance:
 
 ### LS13 — Release validation
 
-Status: planned.
+Status: complete for the initial implementation tranche. Validation evidence is captured in [LS13-LS14 validation and handoff report](lexical-search-ls13-ls14-validation-handoff-report.md).
 
 Tasks:
 
@@ -584,6 +587,21 @@ Acceptance:
 
 - All changed repos pass required CI.
 - Release notes document feature scope and limitations.
+
+### LS14 — Cross-repo release handoff
+
+Status: complete for the initial implementation tranche. Handoff details are captured in [LS13-LS14 validation and handoff report](lexical-search-ls13-ls14-validation-handoff-report.md).
+
+Tasks:
+
+1. Record coordinated release-note summaries across `mycel`, `mycel-api`, SDKs, and Console.
+2. Record dependency ordering for PRs and final merge/release gates.
+3. Document compatibility, migration, limitations, and residual risks.
+4. Verify the Rust SDK API submodule pointer matches the lexical API contract used for generation.
+
+Acceptance:
+
+- Maintainers have a concise handoff artifact for PR review, release notes, and final gate reruns.
 
 ## Security and privacy checklist
 

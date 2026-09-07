@@ -31,6 +31,8 @@ const (
 type Service struct {
 	mu       sync.RWMutex
 	store    storage.Store
+	spaceID  string
+	domainID string
 	analyzer analyzer.Analyzer
 	paused   bool
 }
@@ -51,7 +53,7 @@ type Status struct {
 }
 
 func New(root, spaceID, domainID string) *Service {
-	return &Service{store: storage.NewStore(root, spaceID, domainID), analyzer: analyzer.New()}
+	return &Service{store: storage.NewStore(root, spaceID, domainID), spaceID: spaceID, domainID: domainID, analyzer: analyzer.New()}
 }
 
 func (s *Service) PauseIndexing() {
@@ -117,7 +119,7 @@ func (s *Service) Search(input string, opts index.SearchOptions) (index.SearchRe
 func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	status := Status{AnalyzerVersion: s.analyzer.Version(), IndexFormatVersion: storage.IndexFormatVersion}
+	status := Status{SpaceID: s.spaceID, DomainID: s.domainID, AnalyzerVersion: s.analyzer.Version(), IndexFormatVersion: storage.IndexFormatVersion}
 	manifest, err := s.store.ReadManifest()
 	if err != nil {
 		status.State = StateUnavailable

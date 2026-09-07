@@ -34,6 +34,7 @@ assigned to a tagged release bucket.
 ## Query, search, and schema indexes
 
 - [Lexical search implementation plan](lexical-search-implementation-plan.md) — dedicated Search API, per-space/domain BM25 lexical indexes, Lucene-style query subset, leader-owned indexing, follower forwarding, and cross-repo rollout.
+- [Lexical search LS13-LS14 validation and handoff report](lexical-search-ls13-ls14-validation-handoff-report.md) — cross-repo validation evidence, release notes summary, compatibility notes, and merge/release handoff checklist.
 - [GWL indexes and indexed query execution implementation plan](gwl-indexes-and-indexed-query-execution-implementation-plan.md) — schema-declared node/edge indexes, graph index persistence, synchronous maintenance, backfill, and indexed structured/GQL query planning.
 - [Query expansion implementation plan](query-expansion-implementation-plan.md) — GQL delete/merge, parameters, aliased projections, indexed structured query parity, and path projection.
 - [Top query priorities implementation plan](top-query-priorities-implementation-plan.md) — indexed structured multi-hop traversal/path projection, aggregation/result shaping, and predicate/index-pushdown MVP baseline.
