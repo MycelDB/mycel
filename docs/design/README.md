@@ -20,6 +20,7 @@ then use the component indexes below for detail.
 | [Blobs](blobs/README.md) | Blob-backed graph nodes and raw blob APIs. |
 | [Schema](schema/README.md) | Domain schemas, schema management, and schema-aware validation. |
 | [Semantic](semantic/README.md) | Semantic generation rules, embeddings, inference packages, physical search indexes, and maintenance surfaces. |
+| [Search](search/README.md) | Lexical search and future search orchestration across lexical, semantic, and metadata signals. |
 | [Automation](automation/README.md) | Graph automation design and automation roadmaps. |
 | [Clustering](clustering/README.md) | Raft clustering, system metadata authority, consistency, and reliability. |
 | [Backup and restore](backup-restore/README.md) | Quiescing, backup, restore, and user-scoped portability design. |

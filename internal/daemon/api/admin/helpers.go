@@ -162,6 +162,10 @@ func capabilityFromInternal(capability string) commonv1.Capability {
 		return commonv1.Capability_CAPABILITY_AUDIT_WRITE
 	case "daemon.configure":
 		return commonv1.Capability_CAPABILITY_DAEMON_CONFIGURE
+	case "system.compact_space":
+		return commonv1.Capability_CAPABILITY_SYSTEM_COMPACT_SPACE
+	case "system.maintain_space":
+		return commonv1.Capability_CAPABILITY_SYSTEM_MAINTAIN_SPACE
 	case "cluster.manage":
 		return commonv1.Capability_CAPABILITY_MESH_MANAGE
 	case "backup.manage":

@@ -6,6 +6,16 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.11.0] - 2026-09-07
+
+### Added
+
+- Added lexical search v1: per-space/domain BM25 indexes, `SearchService` gRPC endpoints, freshness diagnostics, leader-owned indexing/forwarding seams, CLI search/status/rebuild commands, and operator documentation.
+
+### Fixed
+
+- Reduced raft-heavy release gate flakes by retrying transient lossless graph notification delivery failures and serializing raft-sensitive package phases by default.
+
 ## [v0.10.0] - 2026-09-04
 
 ### Added

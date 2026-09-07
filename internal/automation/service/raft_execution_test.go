@@ -1042,28 +1042,49 @@ func (c automationGraphExecutionRaftCluster) beginReadOnlyTransaction(t *testing
 
 func (c automationGraphExecutionRaftCluster) commitGraphMutation(t *testing.T, ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID, mutate func(sessionservice.GraphTransaction) error) {
 	t.Helper()
-	sess, err := c.sessions[nodeID].OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: "operator", SpaceID: spaceID.String(), DomainID: domainID.String()})
-	if err != nil {
-		t.Fatalf("OpenSession(write): %v", err)
+	const maxAttempts = 8
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		sess, err := c.sessions[nodeID].OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: "operator", SpaceID: spaceID.String(), DomainID: domainID.String()})
+		if err != nil {
+			t.Fatalf("OpenSession(write): %v", err)
+		}
+		tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: "operator", SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite})
+		if err != nil {
+			t.Fatalf("BeginTransaction(write): %v", err)
+		}
+		if err := mutate(tx); err != nil {
+			c.graphs[nodeID].DiscardTransactionGraph(ctx, tx.ID)
+			_, _ = c.sessions[nodeID].RollbackTransaction(ctx, "operator", tx.ID)
+			t.Fatalf("mutate graph: %v", err)
+		}
+		commit, err := c.graphs[nodeID].CommitTransactionGraph(ctx, tx)
+		if err != nil {
+			c.graphs[nodeID].DiscardTransactionGraph(ctx, tx.ID)
+			_, _ = c.sessions[nodeID].RollbackTransaction(ctx, "operator", tx.ID)
+			lastErr = err
+			if isRetryableGraphCommitError(err) && attempt < maxAttempts {
+				time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+				continue
+			}
+			t.Fatalf("CommitTransactionGraph: %v", err)
+		}
+		if _, err := c.sessions[nodeID].CommitTransactionAtRevision(ctx, "operator", tx.ID, commit.OperationCount, commit.CommittedRevision); err != nil {
+			t.Fatalf("CommitTransactionAtRevision: %v", err)
+		}
+		return
 	}
-	tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: "operator", SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite})
-	if err != nil {
-		t.Fatalf("BeginTransaction(write): %v", err)
+	t.Fatalf("CommitTransactionGraph did not succeed after retries: %v", lastErr)
+}
+
+func isRetryableGraphCommitError(err error) bool {
+	if err == nil {
+		return false
 	}
-	if err := mutate(tx); err != nil {
-		c.graphs[nodeID].DiscardTransactionGraph(ctx, tx.ID)
-		_, _ = c.sessions[nodeID].RollbackTransaction(ctx, "operator", tx.ID)
-		t.Fatalf("mutate graph: %v", err)
+	if status.Code(err) == codes.Unavailable && strings.Contains(strings.ToLower(err.Error()), "graph conflict") {
+		return true
 	}
-	commit, err := c.graphs[nodeID].CommitTransactionGraph(ctx, tx)
-	if err != nil {
-		c.graphs[nodeID].DiscardTransactionGraph(ctx, tx.ID)
-		_, _ = c.sessions[nodeID].RollbackTransaction(ctx, "operator", tx.ID)
-		t.Fatalf("CommitTransactionGraph: %v", err)
-	}
-	if _, err := c.sessions[nodeID].CommitTransactionAtRevision(ctx, "operator", tx.ID, commit.OperationCount, commit.CommittedRevision); err != nil {
-		t.Fatalf("CommitTransactionAtRevision: %v", err)
-	}
+	return false
 }
 
 func (c automationGraphExecutionRaftCluster) waitForNotificationEventsHandled(t *testing.T, wantPublished uint64) {

@@ -17,6 +17,7 @@ type ForwardedClientHandler struct {
 	Transactions *TransactionService
 	Graphs       *GraphService
 	Queries      *QueryService
+	Search       *SearchService
 	Metadata     *MetadataCatalogService
 }
 
@@ -86,6 +87,10 @@ func (h ForwardedClientHandler) HandleForwardedClientRequest(ctx context.Context
 		return h.handleQueryExplainGQL(ctx, req)
 	case clientv1.QueryService_ExecuteGQLScript_FullMethodName:
 		return h.handleQueryGQLScript(ctx, req)
+	case clientv1.SearchService_Search_FullMethodName:
+		return h.handleSearch(ctx, req)
+	case clientv1.SearchService_GetLexicalIndexStatus_FullMethodName:
+		return h.handleSearchStatus(ctx, req)
 	case clientv1.MetadataCatalogService_ListTags_FullMethodName:
 		return h.handleMetadataListTags(ctx, req)
 	case clientv1.MetadataCatalogService_ListPropertyNames_FullMethodName:
@@ -527,6 +532,34 @@ func (h ForwardedClientHandler) handleQueryGQLScript(ctx context.Context, in clu
 		return clusterbackend.ForwardedClientResponse{}, err
 	}
 	res, err := h.Queries.ExecuteGQLScript(ctx, req)
+	if err != nil {
+		return clusterbackend.ForwardedClientResponse{}, err
+	}
+	return encodeForwarded(res)
+}
+func (h ForwardedClientHandler) handleSearch(ctx context.Context, in clusterbackend.ForwardedClientRequest) (clusterbackend.ForwardedClientResponse, error) {
+	if h.Search == nil {
+		return clusterbackend.ForwardedClientResponse{}, status.Error(codes.FailedPrecondition, "search service is not configured")
+	}
+	req := &clientv1.SearchRequest{}
+	if err := decodeForwarded(in.Payload, req); err != nil {
+		return clusterbackend.ForwardedClientResponse{}, err
+	}
+	res, err := h.Search.Search(ctx, req)
+	if err != nil {
+		return clusterbackend.ForwardedClientResponse{}, err
+	}
+	return encodeForwarded(res)
+}
+func (h ForwardedClientHandler) handleSearchStatus(ctx context.Context, in clusterbackend.ForwardedClientRequest) (clusterbackend.ForwardedClientResponse, error) {
+	if h.Search == nil {
+		return clusterbackend.ForwardedClientResponse{}, status.Error(codes.FailedPrecondition, "search service is not configured")
+	}
+	req := &clientv1.GetLexicalIndexStatusRequest{}
+	if err := decodeForwarded(in.Payload, req); err != nil {
+		return clusterbackend.ForwardedClientResponse{}, err
+	}
+	res, err := h.Search.GetLexicalIndexStatus(ctx, req)
 	if err != nil {
 		return clusterbackend.ForwardedClientResponse{}, err
 	}

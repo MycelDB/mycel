@@ -16,13 +16,18 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/runtime"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
-	ModuleName                = "graph_change_notification"
-	DefaultRetentionMaxEvents = 10_000
-	DefaultRetentionMaxAge    = 24 * time.Hour
-	defaultDeliveryBuffer     = 64
+	ModuleName                 = "graph_change_notification"
+	DefaultRetentionMaxEvents  = 10_000
+	DefaultRetentionMaxAge     = 24 * time.Hour
+	defaultDeliveryBuffer      = 64
+	losslessDeliveryAttempts   = 16
+	losslessDeliveryBackoff    = 10 * time.Millisecond
+	losslessDeliveryMaxBackoff = 250 * time.Millisecond
 )
 
 var (
@@ -432,6 +437,34 @@ func (r *registration) run() {
 }
 
 func (r *registration) deliver(event graphchange.CommittedEvent) {
+	attempts := 1
+	if r.spec.Lossless {
+		attempts = losslessDeliveryAttempts
+	}
+	backoff := losslessDeliveryBackoff
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err, panicked := r.callHandleGraphChange(event)
+		if panicked {
+			return
+		}
+		if err == nil {
+			r.module.mu.Lock()
+			r.module.diagnostics.EventsDelivered++
+			r.module.mu.Unlock()
+			return
+		}
+		if !r.spec.Lossless || !isTransientDeliveryError(err) || attempt == attempts {
+			r.recordHandlerFailure("handler", err)
+			return
+		}
+		if !r.waitBeforeRetry(backoff) {
+			return
+		}
+		backoff = minDuration(backoff*2, losslessDeliveryMaxBackoff)
+	}
+}
+
+func (r *registration) callHandleGraphChange(event graphchange.CommittedEvent) (err error, panicked bool) {
 	defer func() {
 		if value := recover(); value != nil {
 			r.module.mu.Lock()
@@ -439,22 +472,35 @@ func (r *registration) deliver(event graphchange.CommittedEvent) {
 			r.module.diagnostics.LastFailure = fmt.Sprintf("consumer %s panic: %v", r.spec.ConsumerName, value)
 			r.module.diagnostics.LastFailureAt = time.Now().UTC()
 			r.module.mu.Unlock()
+			panicked = true
 		}
 	}()
-	if err := r.consumer.HandleGraphChange(context.Background(), event); err != nil {
-		r.module.mu.Lock()
-		r.module.diagnostics.HandlerFailures++
-		r.module.diagnostics.LastFailure = fmt.Sprintf("consumer %s handler: %v", r.spec.ConsumerName, err)
-		r.module.diagnostics.LastFailureAt = time.Now().UTC()
-		r.module.mu.Unlock()
-		return
-	}
-	r.module.mu.Lock()
-	r.module.diagnostics.EventsDelivered++
-	r.module.mu.Unlock()
+	return r.consumer.HandleGraphChange(context.Background(), event), false
 }
 
 func (r *registration) deliverGap(gap graphchange.Gap) {
+	attempts := 1
+	if r.spec.Lossless {
+		attempts = losslessDeliveryAttempts
+	}
+	backoff := losslessDeliveryBackoff
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err, panicked := r.callHandleGraphChangeGap(gap)
+		if panicked || err == nil {
+			return
+		}
+		if !r.spec.Lossless || !isTransientDeliveryError(err) || attempt == attempts {
+			r.recordHandlerFailure("gap handler", err)
+			return
+		}
+		if !r.waitBeforeRetry(backoff) {
+			return
+		}
+		backoff = minDuration(backoff*2, losslessDeliveryMaxBackoff)
+	}
+}
+
+func (r *registration) callHandleGraphChangeGap(gap graphchange.Gap) (err error, panicked bool) {
 	defer func() {
 		if value := recover(); value != nil {
 			r.module.mu.Lock()
@@ -462,15 +508,44 @@ func (r *registration) deliverGap(gap graphchange.Gap) {
 			r.module.diagnostics.LastFailure = fmt.Sprintf("consumer %s gap panic: %v", r.spec.ConsumerName, value)
 			r.module.diagnostics.LastFailureAt = time.Now().UTC()
 			r.module.mu.Unlock()
+			panicked = true
 		}
 	}()
-	if err := r.consumer.HandleGraphChangeGap(context.Background(), gap); err != nil {
-		r.module.mu.Lock()
-		r.module.diagnostics.HandlerFailures++
-		r.module.diagnostics.LastFailure = fmt.Sprintf("consumer %s gap handler: %v", r.spec.ConsumerName, err)
-		r.module.diagnostics.LastFailureAt = time.Now().UTC()
-		r.module.mu.Unlock()
+	return r.consumer.HandleGraphChangeGap(context.Background(), gap), false
+}
+
+func (r *registration) waitBeforeRetry(delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-r.done:
+		return false
+	case <-timer.C:
+		return true
 	}
+}
+
+func (r *registration) recordHandlerFailure(kind string, err error) {
+	r.module.mu.Lock()
+	r.module.diagnostics.HandlerFailures++
+	r.module.diagnostics.LastFailure = fmt.Sprintf("consumer %s %s: %v", r.spec.ConsumerName, kind, err)
+	r.module.diagnostics.LastFailureAt = time.Now().UTC()
+	r.module.mu.Unlock()
+}
+
+func isTransientDeliveryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	code := status.Code(err)
+	return code == codes.Unavailable || code == codes.DeadlineExceeded || code == codes.ResourceExhausted
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (m *Module) recordFailureLocked(err error) {
