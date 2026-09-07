@@ -66,10 +66,10 @@ check-public-surface:
 	scripts/check-public-surface.sh
 
 test: generate-proto generate-gql-parser check-daemon-only check-public-surface
-	go test ./...
+	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./...
 
 test-verbose: generate-proto generate-gql-parser check-daemon-only check-public-surface
-	go test -v -count=1 -cover -coverprofile=coverage.out ./...
+	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) -v -count=1 -cover -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
 test-watch:
@@ -152,7 +152,7 @@ test-cluster-soak:
 
 coverage: generate-proto generate-gql-parser check-daemon-only check-public-surface
 	mkdir -p $(COVERAGE_DIR)
-	go test ./... -coverprofile=$(COVERAGE_OUT)
+	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./... -coverprofile=$(COVERAGE_OUT)
 	go tool cover -func=$(COVERAGE_OUT)
 
 coverage-html: coverage
