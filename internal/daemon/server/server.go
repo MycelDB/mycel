@@ -29,6 +29,7 @@ import (
 	daemoninference "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
+	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -49,6 +50,7 @@ type Config struct {
 	BlobManager              daemonblob.Manager
 	InferenceManager         daemoninference.Manager
 	SemanticManager          daemonsemantic.Manager
+	LexicalManager           lexicalservice.Manager
 	SchemaManager            schemaservice.Manager
 	AutomationManager        automationservice.Manager
 	TokenManager             *daemonauth.TokenManager
@@ -149,6 +151,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	adminv1.RegisterAdminIntelligenceAccessPolicyServiceServer(grpcServer, adminInference)
 	adminv1.RegisterAdminIntelligenceAccessUsageServiceServer(grpcServer, adminInference)
 	adminv1.RegisterAdminSemanticServiceServer(grpcServer, adminapi.NewAdminSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.PrincipalManager))
+	if cfg.LexicalManager != nil {
+		adminv1.RegisterAdminLexicalMaintenanceServiceServer(grpcServer, adminapi.NewAdminLexicalMaintenanceService(cfg.LexicalManager, cfg.GraphManager, cfg.SpaceManager, cfg.PrincipalManager))
+	}
 	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.PrincipalManager))
 	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.PrincipalManager))
 	if cfg.SchemaManager != nil {
@@ -183,10 +188,14 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	transactionAPI := clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	graphAPI := clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager).WithClientRequestRouter(clientRouter)
 	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSemanticManager(cfg.SemanticManager).WithClientRequestRouter(clientRouter)
+	searchAPI := clientapi.NewSearchService(cfg.LexicalManager, cfg.SpaceManager, cfg.GraphManager).WithClientRequestRouter(clientRouter)
+	if provider, ok := cfg.GraphManager.(clientapi.GraphWriteRouteProvider); ok {
+		searchAPI.WithGraphWriteRouteProvider(provider)
+	}
 	importExportAPI := clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	metadataCatalogAPI := clientapi.NewMetadataCatalogService(cfg.SessionManager, cfg.GraphManager).WithClientRequestRouter(clientRouter)
 	if cfg.ClusteringManager != nil {
-		cfg.ClusteringManager.SetBackendClientRequestForwarder(clientapi.ForwardedClientHandler{LocalNode: localNode, Sessions: sessionAPI, Transactions: transactionAPI, Graphs: graphAPI, Queries: queryAPI, Metadata: metadataCatalogAPI})
+		cfg.ClusteringManager.SetBackendClientRequestForwarder(clientapi.ForwardedClientHandler{LocalNode: localNode, Sessions: sessionAPI, Transactions: transactionAPI, Graphs: graphAPI, Queries: queryAPI, Search: searchAPI, Metadata: metadataCatalogAPI})
 	}
 	clientv1.RegisterSpaceServiceServer(grpcServer, clientapi.NewSpaceService(cfg.SpaceManager))
 	clientv1.RegisterDomainServiceServer(grpcServer, clientapi.NewDomainService(cfg.SpaceManager))
@@ -195,6 +204,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	clientv1.RegisterGraphServiceServer(grpcServer, graphAPI)
 	clientv1.RegisterBlobServiceServer(grpcServer, clientapi.NewBlobService(cfg.BlobManager, cfg.SpaceManager))
 	clientv1.RegisterQueryServiceServer(grpcServer, queryAPI)
+	if cfg.LexicalManager != nil {
+		clientv1.RegisterSearchServiceServer(grpcServer, searchAPI)
+	}
 	if cfg.SchemaManager != nil {
 		clientv1.RegisterSchemaServiceServer(grpcServer, clientapi.NewSchemaService(cfg.SchemaManager))
 	}

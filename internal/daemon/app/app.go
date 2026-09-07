@@ -32,6 +32,7 @@ import (
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
+	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
@@ -124,6 +125,11 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: semantic service is not registered\n")
 		return 1
 	}
+	lexicalService, ok := daemonruntime.ServiceAs[*lexicalservice.Module](rt, lexicalservice.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: lexical search service is not registered\n")
+		return 1
+	}
 	schemaService, ok := daemonruntime.ServiceAs[*schemaservice.Module](rt, schemaservice.ModuleName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: schema service is not registered\n")
@@ -159,7 +165,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: inference service is not registered\n")
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, PrincipalManager: principalService, ActivityManager: activityService, BackupManager: backupService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, InferenceManager: inferenceService, SemanticManager: semanticService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, PrincipalManager: principalService, ActivityManager: activityService, BackupManager: backupService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, InferenceManager: inferenceService, SemanticManager: semanticService, LexicalManager: lexicalService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -268,6 +274,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		S3ForcePathStyle: cfg.Blob.S3ForcePathStyle,
 	})
 	inferenceService.SetSecretResolver(inferenceservice.NewEncryptedSecretResolver(cfg.UserStoreEncryptionKeyB64))
+	lexicalService := lexicalservice.NewModule()
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
 		SecretKeyB64:     cfg.UserStoreEncryptionKeyB64,
 		SchemaManager:    schemaService,
@@ -308,7 +315,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	})
-	if err := rt.InitServices(ctx, []daemonruntime.Service{principalService, activityService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, inferenceService, semanticService, backupService}); err != nil {
+	if err := rt.InitServices(ctx, []daemonruntime.Service{principalService, activityService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, inferenceService, semanticService, lexicalService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}
@@ -386,11 +393,14 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		}
 		return appender.OnGraphCommitted(ctx, event)
 	})
+	lexicalSink := graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
+		return lexicalService.OnGraphCommitted(ctx, event)
+	})
 	if raftRuntimeConfigured(cfg) {
-		graphService.SetChangeSink(semanticSink)
+		graphService.SetChangeSink(graphchange.MultiSink{semanticSink, lexicalSink})
 		graphService.SetRaftApplyChangeSink(graphNotificationService)
 	} else {
-		graphService.SetChangeSink(graphchange.MultiSink{graphNotificationService, semanticSink})
+		graphService.SetChangeSink(graphchange.MultiSink{graphNotificationService, semanticSink, lexicalSink})
 	}
 	if err := rt.StartServices(ctx); err != nil {
 		_ = rt.Close()

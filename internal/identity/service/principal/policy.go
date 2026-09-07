@@ -148,6 +148,10 @@ func canonicalCapability(capability string) string {
 		return "cluster.read"
 	case "CAPABILITY_MESH_MANAGE", "cluster.manage":
 		return "cluster.manage"
+	case "CAPABILITY_SYSTEM_COMPACT_SPACE", "system.compact_space":
+		return "system.compact_space"
+	case "CAPABILITY_SYSTEM_MAINTAIN_SPACE", "system.maintain_space":
+		return "system.maintain_space"
 	case "CAPABILITY_SYSTEM_BACKUP_SPACE", "backup.manage":
 		return "backup.manage"
 	default:

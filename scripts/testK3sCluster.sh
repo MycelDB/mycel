@@ -7,6 +7,7 @@ CLUSTER="${MYCEL_K3S_CLUSTER:-knotbase-dev}"
 NAMESPACE="${MYCEL_K3S_NAMESPACE:-knotbase-dev}"
 EXPECTED_NODES="${MYCELD_CLUSTER_RAFT_NODE_COUNT:-3}"
 IMAGE="${MYCEL_K3S_IMAGE:-myceldb/mycel:k3s-local-$(git -C "$ROOT_DIR" rev-parse --short HEAD)}"
+IMAGE_PULL_POLICY="${MYCEL_K3S_IMAGE_PULL_POLICY:-IfNotPresent}"
 RESET="${MYCEL_K3S_RESET:-true}"
 BUILD_IMAGE="${MYCEL_K3S_BUILD_IMAGE:-true}"
 IMPORT_IMAGE="${MYCEL_K3S_IMPORT_IMAGE:-auto}"
@@ -80,23 +81,31 @@ apply_myceld_manifests() {
     -f "$ORCH_DIR/base/apps/myceld/service-headless.yaml" \
     -f "$ORCH_DIR/base/apps/myceld/service.yaml" \
     -f "$ORCH_DIR/base/apps/myceld/service-admin.yaml"
-  IMAGE="$IMAGE" STATEFULSET_PATH="$ORCH_DIR/base/apps/myceld/statefulset.yaml" python3 <<'PY' | kubectl -n "$NAMESPACE" apply -f -
+  IMAGE="$IMAGE" IMAGE_PULL_POLICY="$IMAGE_PULL_POLICY" STATEFULSET_PATH="$ORCH_DIR/base/apps/myceld/statefulset.yaml" python3 <<'PY' | kubectl -n "$NAMESPACE" apply -f -
 import os
 from pathlib import Path
 image = os.environ["IMAGE"]
+image_pull_policy = os.environ["IMAGE_PULL_POLICY"]
 path = Path(os.environ["STATEFULSET_PATH"])
 text = path.read_text()
 lines = []
-replaced = False
+replaced_image = False
+replaced_pull_policy = False
 for line in text.splitlines():
     if line.strip().startswith("image: ") and "mycel" in line:
         indent = line[: len(line) - len(line.lstrip())]
         lines.append(f"{indent}image: {image}")
-        replaced = True
+        replaced_image = True
+    elif line.strip().startswith("imagePullPolicy: "):
+        indent = line[: len(line) - len(line.lstrip())]
+        lines.append(f"{indent}imagePullPolicy: {image_pull_policy}")
+        replaced_pull_policy = True
     else:
         lines.append(line)
-if not replaced:
+if not replaced_image:
     raise SystemExit("did not find myceld image line to replace")
+if not replaced_pull_policy:
+    raise SystemExit("did not find myceld imagePullPolicy line to replace")
 print("\n".join(lines))
 PY
   kubectl -n "$NAMESPACE" rollout status statefulset/myceld --timeout=10m

@@ -15,6 +15,7 @@ MYCELD_PID_FILE = $(MYCELD_DATA_DIR)/myceld.pid
 MYCELD_STDOUT_LOG = $(MYCELD_DATA_DIR)/log/myceld.stdout.log
 MYCEL_RAFT_DISRUPT_IMAGE ?= myceldb/mycel:raft-disrupt-local
 MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE ?= myceldb/mycel:system-backup-restore-local
+RAFT_TEST_PACKAGE_PARALLELISM ?= 1
 ANTLR_VERSION ?= 4.13.1
 ANTLR_JAR ?= bin/antlr-$(ANTLR_VERSION)-complete.jar
 ANTLR_DOCKER_IMAGE ?= eclipse-temurin:17-jre
@@ -65,10 +66,10 @@ check-public-surface:
 	scripts/check-public-surface.sh
 
 test: generate-proto generate-gql-parser check-daemon-only check-public-surface
-	go test ./...
+	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./...
 
 test-verbose: generate-proto generate-gql-parser check-daemon-only check-public-surface
-	go test -v -count=1 -cover -coverprofile=coverage.out ./...
+	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) -v -count=1 -cover -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
 test-watch:
@@ -85,16 +86,18 @@ test-phase-a: generate-proto generate-gql-parser
 	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/daemon/api/client ./internal/daemon/config ./internal/daemon/runtime ./internal/daemon/server ./internal/graph/service ./internal/cli/cmd -count=1
 
 test-phase-d: generate-proto generate-gql-parser
-	go test ./internal/clustering/consensus ./internal/daemon/app ./internal/space/service ./internal/schema/service ./internal/graph/service ./internal/blob/service ./internal/semantic/service ./internal/backup/service ./internal/automation/service ./internal/graph/notification -count=1
+	# Serialize raft-heavy packages by default to avoid host scheduler contention
+	# causing false no-leader/proposal-timeout flakes under release-gate load.
+	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/clustering/consensus ./internal/daemon/app ./internal/space/service ./internal/schema/service ./internal/graph/service ./internal/blob/service ./internal/semantic/service ./internal/backup/service ./internal/automation/service ./internal/graph/notification -count=1
 
 test-phase-e: generate-proto generate-gql-parser
-	go test ./internal/clustering/routing ./internal/session/service ./internal/clustering/backend ./internal/daemon/api/client ./internal/graph/service -count=1
+	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/clustering/routing ./internal/session/service ./internal/clustering/backend ./internal/daemon/api/client ./internal/graph/service -count=1
 
 test-phase-f: generate-proto generate-gql-parser
-	go test ./internal/clustering/consensus ./internal/clustering/backend ./internal/graph/service ./internal/daemon/api/client ./internal/daemon/api/admin ./internal/cli/cmd -count=1
+	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/clustering/consensus ./internal/clustering/backend ./internal/graph/service ./internal/daemon/api/client ./internal/daemon/api/admin ./internal/cli/cmd -count=1
 
 test-phase-g: generate-proto generate-gql-parser
-	go test ./internal/graph/service ./internal/daemon/api/admin ./internal/clustering/backend ./internal/daemon/server ./internal/cli/cmd -count=1
+	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/graph/service ./internal/daemon/api/admin ./internal/clustering/backend ./internal/daemon/server ./internal/cli/cmd -count=1
 	bash -n scripts/validateComposeClusterDataPlane.sh scripts/validateK3sClusterDataPlane.sh scripts/testK3sCluster.sh scripts/testClusterSoak.sh scripts/testComposeUserBackupRestore.sh scripts/planGraphRepairWorkflow.sh
 	@set -e; tmp="$$(mktemp)"; \
 	printf '%s\n' '{"node_summary":{"only_in_left":1,"only_in_right":0,"differing":0},"edge_summary":{"only_in_left":0,"only_in_right":0,"differing":0},"warnings":["one or both exports are truncated; diff only covers included entities"],"truncated":false}' > "$$tmp"; \
@@ -149,7 +152,7 @@ test-cluster-soak:
 
 coverage: generate-proto generate-gql-parser check-daemon-only check-public-surface
 	mkdir -p $(COVERAGE_DIR)
-	go test ./... -coverprofile=$(COVERAGE_OUT)
+	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./... -coverprofile=$(COVERAGE_OUT)
 	go tool cover -func=$(COVERAGE_OUT)
 
 coverage-html: coverage
