@@ -44,6 +44,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.Cluster.RaftNodeCount != DefaultClusterRaftNodeCount || cfg.Cluster.RaftPartitionCount != DefaultClusterRaftPartitionCount || cfg.Cluster.RaftReplicaFactor != DefaultClusterRaftReplicaFactor || cfg.Cluster.RaftLocalNodeID != DefaultClusterRaftLocalNodeID {
 		t.Fatalf("unexpected cluster raft defaults: %+v", cfg.Cluster)
 	}
+	if cfg.Cluster.RaftElectionTick != DefaultClusterRaftElectionTick || cfg.Cluster.RaftHeartbeatTick != DefaultClusterRaftHeartbeatTick || cfg.Cluster.RaftSendTimeout != DefaultClusterRaftSendTimeout {
+		t.Fatalf("unexpected cluster raft timing defaults: %+v", cfg.Cluster)
+	}
 	if cfg.Cluster.RaftCompactionMode != DefaultClusterRaftCompactionMode || cfg.Cluster.RaftSnapshotEntries != 0 || cfg.Cluster.RaftSnapshotInterval != 0 || cfg.Cluster.RaftSnapshotMaxLogBytes != 0 || cfg.Cluster.RaftSnapshotMinRetainEntries != 0 {
 		t.Fatalf("unexpected cluster raft compaction defaults: %+v", cfg.Cluster)
 	}
@@ -56,6 +59,9 @@ func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 	t.Setenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR", "3")
 	t.Setenv("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID", "4")
 	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS", "127.0.0.1:9101,127.0.0.1:9102,127.0.0.1:9103,127.0.0.1:9104,127.0.0.1:9105")
+	t.Setenv("MYCELD_CLUSTER_RAFT_ELECTION_TICK", "40")
+	t.Setenv("MYCELD_CLUSTER_RAFT_HEARTBEAT_TICK", "2")
+	t.Setenv("MYCELD_CLUSTER_RAFT_SEND_TIMEOUT", "750ms")
 	t.Setenv("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN", "test-cluster-token")
 
 	cfg, err := LoadFromEnv()
@@ -67,6 +73,9 @@ func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 	}
 	if len(cfg.Cluster.RaftNodeAddrs) != 5 || cfg.Cluster.RaftNodeAddrs[3] != "127.0.0.1:9104" {
 		t.Fatalf("unexpected raft node addrs: %+v", cfg.Cluster.RaftNodeAddrs)
+	}
+	if cfg.Cluster.RaftElectionTick != 40 || cfg.Cluster.RaftHeartbeatTick != 2 || cfg.Cluster.RaftSendTimeout != 750*time.Millisecond {
+		t.Fatalf("unexpected raft timing overrides: %+v", cfg.Cluster)
 	}
 }
 
@@ -101,6 +110,15 @@ func TestLoadFromEnvRaftNodeAddrsValidation(t *testing.T) {
 	t.Setenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS", "127.0.0.1:9101,127.0.0.1:9102")
 	if _, err := LoadFromEnv(); err == nil {
 		t.Fatal("expected raft node address count mismatch to fail")
+	}
+}
+
+func TestLoadFromEnvRaftTimingValidation(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_CLUSTER_RAFT_ELECTION_TICK", "2")
+	t.Setenv("MYCELD_CLUSTER_RAFT_HEARTBEAT_TICK", "2")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected raft heartbeat/election tick validation to fail")
 	}
 }
 
