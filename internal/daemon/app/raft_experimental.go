@@ -292,13 +292,19 @@ func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, 
 		Partition: partitionStateMachine,
 	}
 	diagnostics := consensus.NewTransportDiagnostics(rt.Logger)
+	raftBackendClient := backend.Client{AuthToken: cfg.BackendAuthToken}
+	raftBackendPool := backend.NewRaftClientConnPool(raftBackendClient)
+	go func() {
+		<-ctx.Done()
+		_ = raftBackendPool.Close()
+	}()
 	transport := consensus.RoutedTransport{Diagnostics: diagnostics, Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) {
 		if nodeID == consensus.NodeID(cfg.RaftLocalNodeID) {
 			return router, true
 		}
 		idx := int(nodeID) - 1
 		if idx >= 0 && idx < len(cfg.RaftNodeAddrs) && cfg.RaftNodeAddrs[idx] != "" {
-			return backend.RaftMessageSender{Client: backend.Client{AuthToken: cfg.BackendAuthToken}, Addr: cfg.RaftNodeAddrs[idx]}, true
+			return backend.RaftMessageSender{Client: raftBackendClient, Addr: cfg.RaftNodeAddrs[idx], Pool: raftBackendPool, Timeout: cfg.RaftSendTimeout}, true
 		}
 		return nil, false
 	})}
@@ -306,7 +312,7 @@ func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, 
 	if strings.TrimSpace(rt.Config.DataDir) != "" {
 		storageDir = filepath.Join(rt.Config.DataDir, "meta", "raft")
 	}
-	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: consensus.NodeID(cfg.RaftLocalNodeID), PeerNodeIDs: peers, PartitionCount: uint32(cfg.RaftPartitionCount), Transport: transport, StateMachines: factory, StorageDir: storageDir, DeferPartitionGroups: true})
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: consensus.NodeID(cfg.RaftLocalNodeID), PeerNodeIDs: peers, PartitionCount: uint32(cfg.RaftPartitionCount), Transport: transport, StateMachines: factory, ElectionTick: cfg.RaftElectionTick, HeartbeatTick: cfg.RaftHeartbeatTick, StorageDir: storageDir, DeferPartitionGroups: true})
 	if err != nil {
 		return fmt.Errorf("start experimental raft groups: %w", err)
 	}
@@ -332,7 +338,7 @@ func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, 
 		}
 	}()
 	if rt.Logger != nil {
-		rt.Logger.Info("experimental raft groups started", "local_node_id", cfg.RaftLocalNodeID, "node_count", cfg.RaftNodeCount, "partition_count", cfg.RaftPartitionCount, "group_count", groups.GroupCount())
+		rt.Logger.Info("experimental raft groups started", "local_node_id", cfg.RaftLocalNodeID, "node_count", cfg.RaftNodeCount, "partition_count", cfg.RaftPartitionCount, "group_count", groups.GroupCount(), "election_tick", cfg.RaftElectionTick, "heartbeat_tick", cfg.RaftHeartbeatTick, "send_timeout", cfg.RaftSendTimeout)
 	}
 	return nil
 }
