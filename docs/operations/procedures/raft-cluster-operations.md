@@ -106,7 +106,7 @@ Or use the bundled release gate:
 make test-cluster-release-gate
 ```
 
-The bundled release gate runs `make test`, `make test-phase-d`, `make test-phase-e`, `make test-phase-f`, `make test-phase-g`, then the destructive compose and K3s validations. `make test-compose-cluster` resets the sibling compose environment under `../../knot_pkm/knot_pkm_server`. `make test-k3s-cluster` resets/reuses the local K3s/k3d environment. Treat both as manual/pre-release checks, not default per-PR CI.
+The bundled release gate runs `make test`, `make test-phase-d`, `make test-phase-e`, `make test-phase-f`, `make test-phase-g`, then the destructive compose and K3s validations. `make test-compose-cluster` resets the Mycel-owned Docker Compose fixture under `tests/compose/cluster/`. `make test-k3s-cluster` resets/reuses the local K3s/k3d environment. Treat both as manual/pre-release checks, not default per-PR CI.
 
 ## Snapshot and compaction policy
 

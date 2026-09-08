@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_FILE="${MYCEL_COMPOSE_FILE:-${ROOT_DIR}/../../knot_pkm/knot_pkm_server/compose.dev.yml}"
+COMPOSE_FILE="${MYCEL_COMPOSE_FILE:-${ROOT_DIR}/tests/compose/cluster/compose.yml}"
 COMPOSE_PROJECT_DIR="$(cd "$(dirname "$COMPOSE_FILE")" && pwd)"
 SERVICES_CSV="${MYCEL_COMPOSE_SERVICES:-myceld-a,myceld-b,myceld-c}"
 ADMIN_USERNAME="${MYCEL_OPERATOR_USERNAME:-${MYCELD_BOOTSTRAP_ADMIN_USERNAME:-admin}}"
