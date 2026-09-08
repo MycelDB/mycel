@@ -82,7 +82,7 @@ This ownership rule includes backups. Operators should use `mycel.admin.v1.Admin
 
 ## Refactor phases after this boundary
 
-1. **CLI daemon-only cleanup**: remove `EnsureEngine`, embedded auth helpers, and remaining local command paths. Initial cleanup is implemented: the `mycel` binary no longer depends on `engine` or `session` runtime packages, top-level node commands route to daemon graph commands, and embedded-only init/ACL/accounting/legacy embeddings paths now fail with daemon-only guidance.
+1. **CLI daemon-only cleanup**: remove `EnsureEngine`, embedded auth helpers, and remaining local command paths. Initial cleanup is implemented: the `mycel` binary no longer depends on `engine` or `session` runtime packages, top-level node commands route to daemon graph commands, the obsolete root-level `init`, `acl`, and `accounting` commands are no longer registered, and the legacy embeddings path now fails with daemon-only guidance.
 2. **Engine removal**: implemented. The public wrapper and remaining `engine/internal` legacy scaffold were deleted; daemon modules own runtime behavior directly.
 3. **Session public package internalization and legacy file-session removal**: implemented. Public `session` constructors and type aliases were removed; the later legacy `internal/session/api` and `internal/graph/filesession` scaffolding were also deleted. Daemon internals use subsystem services and storage directly.
 4. **Config cleanup**: implemented. Active CLI config no longer reads embedded `MYCELDB_*` settings or exposes local runtime flags (`--data-dir`, auth TTLs, blob limits, semantic toggles). The CLI uses `MYCEL_CONFIG` for optional CLI config files and `MYCELD_*` for daemon connection/TLS settings.
