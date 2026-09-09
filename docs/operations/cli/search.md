@@ -34,6 +34,53 @@ Useful flags:
 
 Text output prints score, node ID, indexed graph revision, warnings, next-page token, and freshness summary. Fetch current node content with `mycel graph node get` after selecting result IDs.
 
+## Hybrid search
+
+Hybrid search combines lexical BM25 candidates and semantic/vector candidates into one fused, non-streaming result set. Metadata filters are hard eligibility filters: a node either satisfies the filter or is excluded; metadata does not change the score.
+
+```sh
+mycel search hybrid \
+  --space-id <space-id> \
+  --domain default \
+  --lexical-weight 0.6 \
+  --semantic-weight 0.4 \
+  'raft recovery after pod restart'
+```
+
+Useful hybrid flags:
+
+| Flag | Purpose |
+| --- | --- |
+| `--lexical-weight <n>` | Lexical contribution to fused rank. Defaults to `0.5`. |
+| `--semantic-weight <n>` | Semantic contribution to fused rank. Defaults to `0.5`. |
+| `--require-both` | Return only nodes found by both lexical and semantic retrieval. |
+| `--lexical-candidates <n>` | Lexical candidates to fetch before filtering/fusion. Server defaults when unset. |
+| `--semantic-candidates <n>` | Semantic candidates to fetch before filtering/fusion. Server defaults when unset. |
+| `--semantic-rule-id <id>` | Restrict semantic retrieval to one searchable semantic rule. |
+| `--embedding-binding-key <key>` | Restrict semantic retrieval to one binding; requires `--semantic-rule-id`. |
+| `--semantic-min-score <n>` | Pass a minimum semantic score threshold to semantic retrieval. |
+| `--label <label>` | Require a node label. Repeatable. |
+| `--node-id <id>` | Restrict results to an allow-list of node IDs. Repeatable. |
+| `--property-filter <spec>` | Require a property filter. Repeatable. Format: `path:operator:value[,value]`. |
+
+Supported property filter operators are `equals`, `not-equals`, `in`, `contains`, and `exists`.
+
+Example with hard metadata filters:
+
+```sh
+mycel search hybrid \
+  --space-id <space-id> \
+  --domain default \
+  --label Note \
+  --property-filter tags:contains:k3s \
+  --property-filter status:equals:published \
+  'raft recovery'
+```
+
+Hybrid scoring uses weighted reciprocal-rank fusion. The daemon normalizes non-negative weights, so `--lexical-weight 2 --semantic-weight 1` behaves like roughly `0.67 / 0.33`. Raw BM25 and vector scores are reported as source diagnostics when available, but the top-level score is the fused score.
+
+Hybrid mode does not support `--page-token` in v1. Request the desired top-K with `--page-size`.
+
 ## Index status
 
 ```sh
@@ -88,3 +135,4 @@ In clustered mode, the authoritative owner for a space/domain builds and serves 
 - [CLI index](README.md)
 - [Lexical search operations](../procedures/lexical-search.md)
 - [Lexical search design](../../design/search/lexical-search.md)
+- [Hybrid search design](../../design/search/hybrid-search.md)

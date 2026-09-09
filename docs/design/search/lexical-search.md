@@ -10,7 +10,7 @@ Lexical search is a first-class MycelDB search mechanism for exact/token-based f
 
 The first version provides per-space/domain lexical indexing over user-authored string content, Lucene-style query syntax, BM25-style scoring, and a dedicated Search API. Indexing is eventually consistent, like semantic indexing, and slightly stale results are acceptable when freshness is reported.
 
-Future search orchestration can combine lexical, semantic, and metadata signals for hybrid retrieval and reranking.
+Future search orchestration can combine lexical and semantic signals for hybrid retrieval, with metadata/tag/property constraints applied as hard filters.
 
 ## Goals
 
@@ -50,9 +50,9 @@ Lexical search should be independently useful, but the API should not prevent fu
 
 - lexical BM25 score;
 - semantic/vector similarity score;
-- metadata filters and boosts;
-- recency or graph-structure boosts;
-- reranking diagnostics.
+- metadata hard filters;
+- future non-metadata ranking signals such as recency or graph-structure boosts if explicitly designed;
+- fusion diagnostics.
 
 ## Indexed content
 
@@ -459,11 +459,11 @@ Lexical search should fail safely:
 - unsafe Raft/local state must fail closed rather than serving from untrusted state;
 - partial internal failures must not leak unauthorized data.
 
-## Future hybrid reranking
+## Future hybrid search
 
-A later search orchestration layer can combine lexical, semantic, and metadata signals.
+A later search orchestration layer can combine lexical and semantic signals while applying metadata filters as hard eligibility constraints.
 
-The lexical subsystem should therefore expose enough stable result data for reranking:
+The lexical subsystem should therefore expose enough stable result data for fusion:
 
 - node IDs;
 - lexical score;
@@ -474,9 +474,9 @@ The lexical subsystem should therefore expose enough stable result data for rera
 Hybrid search can then perform:
 
 1. lexical candidate generation;
-2. metadata filtering/boosting;
-3. semantic candidate generation or semantic reranking;
-4. final score normalization and explanation.
+2. semantic candidate generation;
+3. metadata hard filtering;
+4. final score fusion and explanation.
 
 This should be designed as an orchestrator above individual search mechanisms, not by entangling BM25 internals with vector search internals.
 
