@@ -3,6 +3,7 @@ package consensus
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -190,6 +191,148 @@ func TestInMemoryRaftGroupRecoversAfterOneNodeStopped(t *testing.T) {
 	cmd := NewCommand(CommandScopeSystem, wal.RecordType("system.test"), []byte(`{"ok":true}`), "cmd-after-fail")
 	if _, err := leader.Propose(ctx, cmd); err != nil {
 		t.Fatalf("Propose() after one node stopped error = %v", err)
+	}
+}
+
+func TestPersistentRaftGroupEmptyStorageJoinExistingCatchesUp(t *testing.T) {
+	transport := newMemoryTransport()
+	ctx := context.Background()
+	peers := []NodeID{1, 2, 3}
+	dirs := map[NodeID]string{}
+	groups := map[NodeID]*Group{}
+	sms := map[NodeID]*MemoryStateMachine{}
+	var groupsMu sync.RWMutex
+	stopTick := make(chan struct{})
+	defer func() {
+		close(stopTick)
+		groupsMu.Lock()
+		defer groupsMu.Unlock()
+		for _, g := range groups {
+			g.Stop()
+		}
+	}()
+	for _, id := range peers {
+		dirs[id] = t.TempDir()
+		store, err := NewPersistentStorage(dirs[id])
+		if err != nil {
+			t.Fatalf("NewPersistentStorage(%d) error = %v", id, err)
+		}
+		sm := &MemoryStateMachine{}
+		g, err := StartGroup(ctx, GroupOptions{ID: "test", NodeID: id, Peers: peers, PartitionCount: 64, StateMachine: sm, Transport: transport, Storage: store, ReplayCommittedEntries: true, ElectionTick: 5, HeartbeatTick: 1})
+		if err != nil {
+			t.Fatalf("StartGroup(%d) error = %v", id, err)
+		}
+		groupsMu.Lock()
+		groups[id] = g
+		sms[id] = sm
+		groupsMu.Unlock()
+		transport.register(g)
+	}
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopTick:
+				return
+			case <-ticker.C:
+				groupsMu.RLock()
+				for _, g := range groups {
+					g.Tick()
+				}
+				groupsMu.RUnlock()
+			}
+		}
+	}()
+	leader := func() *Group {
+		groupsMu.RLock()
+		defer groupsMu.RUnlock()
+		leaders := map[NodeID]int{}
+		for _, g := range groups {
+			if l := g.Leader(); l != 0 {
+				leaders[l]++
+			}
+		}
+		for id, count := range leaders {
+			if count >= 2 {
+				return groups[id]
+			}
+		}
+		return nil
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	waitLeader := func() *Group {
+		t.Helper()
+		var out *Group
+		if err := WaitUntil(waitCtx, 20*time.Millisecond, func() bool { out = leader(); return out != nil }); err != nil {
+			t.Fatalf("leader election timed out: %v", err)
+		}
+		return out
+	}
+	waitLeader()
+	for i := 0; i < 3; i++ {
+		cmd := NewCommand(CommandScopeSystem, wal.RecordType("system.test"), []byte(`{"ok":true}`), "cmd-before-wipe-"+string(rune('0'+i)))
+		if _, err := waitLeader().Propose(waitCtx, cmd); err != nil {
+			t.Fatalf("Propose(before wipe %d) error = %v", i, err)
+		}
+	}
+	if err := WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		for _, sm := range sms {
+			if sm.AppliedCount() < 3 {
+				return false
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("initial commands did not apply everywhere: %v", err)
+	}
+	wipedID := NodeID(3)
+	transport.unregister(wipedID)
+	groupsMu.Lock()
+	groups[wipedID].Stop()
+	delete(groups, wipedID)
+	delete(sms, wipedID)
+	groupsMu.Unlock()
+	if err := os.RemoveAll(dirs[wipedID]); err != nil {
+		t.Fatalf("RemoveAll(wiped dir) error = %v", err)
+	}
+	if err := os.MkdirAll(dirs[wipedID], 0o755); err != nil {
+		t.Fatalf("MkdirAll(wiped dir) error = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		cmd := NewCommand(CommandScopeSystem, wal.RecordType("system.test"), []byte(`{"ok":true}`), "cmd-while-wiped-"+string(rune('0'+i)))
+		if _, err := waitLeader().Propose(waitCtx, cmd); err != nil {
+			t.Fatalf("Propose(while wiped %d) error = %v", i, err)
+		}
+	}
+	store, err := NewPersistentStorage(dirs[wipedID])
+	if err != nil {
+		t.Fatalf("rejoin NewPersistentStorage() error = %v", err)
+	}
+	rejoinedSM := &MemoryStateMachine{}
+	rejoined, err := StartGroup(ctx, GroupOptions{ID: "test", NodeID: wipedID, Peers: peers, PartitionCount: 64, StateMachine: rejoinedSM, Transport: transport, Storage: store, ReplayCommittedEntries: true, JoinExisting: true, ElectionTick: 5, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("rejoin StartGroup() error = %v", err)
+	}
+	groupsMu.Lock()
+	groups[wipedID] = rejoined
+	sms[wipedID] = rejoinedSM
+	groupsMu.Unlock()
+	transport.mu.Lock()
+	delete(transport.drop, wipedID)
+	transport.mu.Unlock()
+	transport.register(rejoined)
+
+	cmd := NewCommand(CommandScopeSystem, wal.RecordType("system.test"), []byte(`{"ok":true}`), "cmd-after-rejoin")
+	if _, err := waitLeader().Propose(waitCtx, cmd); err != nil {
+		t.Fatalf("Propose(after rejoin) error = %v", err)
+	}
+
+	if err := WaitUntil(waitCtx, 20*time.Millisecond, func() bool { return rejoinedSM.AppliedCount() >= 7 }); err != nil {
+		term, commit, applied := rejoined.Progress()
+		last, snap := rejoined.StorageProgress()
+		t.Fatalf("wiped same-ID rejoin did not catch up: applied_commands=%d term=%d commit=%d applied=%d last=%d snapshot=%d err=%v", rejoinedSM.AppliedCount(), term, commit, applied, last, snap, err)
 	}
 }
 

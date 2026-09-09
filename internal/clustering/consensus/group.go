@@ -60,16 +60,18 @@ type Group struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	mu              sync.Mutex
-	backupMu        sync.RWMutex
-	leader          NodeID
-	term            uint64
-	commitIndex     uint64
-	appliedIndex    uint64
-	waiters         map[string]chan proposalOutcome
-	readSeq         uint64
-	readWaiters     map[string]chan readIndexOutcome
-	readDiagnostics ReadDiagnostics
+	mu                  sync.Mutex
+	backupMu            sync.RWMutex
+	leader              NodeID
+	term                uint64
+	commitIndex         uint64
+	appliedIndex        uint64
+	waiters             map[string]chan proposalOutcome
+	readSeq             uint64
+	readWaiters         map[string]chan readIndexOutcome
+	readDiagnostics     ReadDiagnostics
+	joinExisting        bool
+	catchupRecoveryOnce sync.Once
 }
 
 type proposalOutcome struct {
@@ -105,6 +107,12 @@ type GroupOptions struct {
 	// before raft restarts. Enable this only for state machines whose snapshot
 	// restore and ApplyCommand paths are safe to run into a fresh instance.
 	ReplayCommittedEntries bool
+
+	// JoinExisting marks an empty-storage node as a member rejoining an already
+	// bootstrapped raft group. Same-ID data loss can leave the leader's volatile
+	// progress for this peer ahead of the re-created local log; rejoin mode enables
+	// bounded catch-up nudges when that condition is observed.
+	JoinExisting bool
 }
 
 func StartGroup(ctx context.Context, opts GroupOptions) (*Group, error) {
@@ -144,13 +152,14 @@ func StartGroup(ctx context.Context, opts GroupOptions) (*Group, error) {
 	}
 	cfg := &raft.Config{ID: uint64(opts.NodeID), ElectionTick: electionTick, HeartbeatTick: heartbeatTick, Storage: storage, Applied: initialAppliedIndex, MaxSizePerMsg: 1024 * 1024, MaxInflightMsgs: 256}
 	ctx, cancel := context.WithCancel(ctx)
+	hasState := hasPersistentRaftState(storage)
 	var node raft.Node
-	if hasPersistentRaftState(storage) {
+	if hasState {
 		node = raft.RestartNode(cfg)
 	} else {
 		node = raft.StartNode(cfg, peers)
 	}
-	g := &Group{id: opts.ID, nodeID: opts.NodeID, partitionCount: opts.PartitionCount, peers: append([]NodeID(nil), opts.Peers...), node: node, storage: storage, transport: opts.Transport, sm: opts.StateMachine, ctx: ctx, cancel: cancel, done: make(chan struct{}), term: hs.Term, commitIndex: hs.Commit, appliedIndex: initialAppliedIndex, waiters: map[string]chan proposalOutcome{}, readWaiters: map[string]chan readIndexOutcome{}}
+	g := &Group{id: opts.ID, nodeID: opts.NodeID, partitionCount: opts.PartitionCount, peers: append([]NodeID(nil), opts.Peers...), node: node, storage: storage, transport: opts.Transport, sm: opts.StateMachine, ctx: ctx, cancel: cancel, done: make(chan struct{}), term: hs.Term, commitIndex: hs.Commit, appliedIndex: initialAppliedIndex, waiters: map[string]chan proposalOutcome{}, readWaiters: map[string]chan readIndexOutcome{}, joinExisting: opts.JoinExisting}
 	go g.run()
 	return g, nil
 }
@@ -252,13 +261,68 @@ func (g *Group) Stop() {
 func (g *Group) Tick() { g.node.Tick() }
 
 func (g *Group) Step(ctx context.Context, msg raftpb.Message) error {
-	if msg.Type == raftpb.MsgHeartbeat && msg.Commit > 0 && g.storage != nil {
+	if g.storage != nil {
 		last, err := g.storage.LastIndex()
-		if err == nil && msg.Commit > last {
-			msg.Commit = last
+		if err == nil {
+			if msg.Type == raftpb.MsgHeartbeat && msg.Commit > 0 && msg.Commit > last {
+				originalCommit := msg.Commit
+				msg.Commit = last
+				g.nudgeLeaderToProbeFollower(ctx, msg, originalCommit, last)
+				g.triggerCatchupRecovery(originalCommit)
+			}
 		}
 	}
 	return g.node.Step(ctx, msg)
+}
+
+func (g *Group) triggerCatchupRecovery(targetIndex uint64) {
+	if g == nil || !g.joinExisting || targetIndex == 0 {
+		return
+	}
+	// Raft leaders may keep volatile Progress.Match from before this same-ID
+	// member lost storage. Rejected appends cannot reduce Match, so force a
+	// bounded election cycle after startup/config entries settle; the new leader
+	// rebuilds follower progress from zero and can probe/catch this member up.
+	g.catchupRecoveryOnce.Do(func() {
+		go func() {
+			staleTimer := time.NewTimer(2 * time.Second)
+			defer staleTimer.Stop()
+			select {
+			case <-g.ctx.Done():
+				return
+			case <-staleTimer.C:
+			}
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+			for attempts := 0; attempts < 8; attempts++ {
+				if g.storage != nil {
+					last, err := g.storage.LastIndex()
+					if err == nil && last >= targetIndex {
+						return
+					}
+				}
+				_ = g.node.Campaign(g.ctx)
+				select {
+				case <-g.ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	})
+}
+
+func (g *Group) nudgeLeaderToProbeFollower(ctx context.Context, heartbeat raftpb.Message, leaderCommit uint64, localLast uint64) {
+	if g == nil || g.transport == nil || heartbeat.From == 0 {
+		return
+	}
+	term := uint64(0)
+	if g.storage != nil && localLast > 0 {
+		if t, err := g.storage.Term(localLast); err == nil {
+			term = t
+		}
+	}
+	g.transport.Send(ctx, g.id, g.nodeID, []raftpb.Message{{Type: raftpb.MsgAppResp, From: uint64(g.nodeID), To: heartbeat.From, Term: heartbeat.Term, Index: leaderCommit, Reject: true, RejectHint: localLast, LogTerm: term}})
 }
 
 func (g *Group) Leader() NodeID {
