@@ -6,6 +6,8 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.12.0] - 2026-09-09
+
 ### Added
 
 - Added hybrid search design/implementation planning and internal weighted reciprocal-rank fusion primitives for lexical + semantic search orchestration.
