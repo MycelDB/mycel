@@ -24,7 +24,7 @@ The first release tranche adds:
 - CLI and documentation surfaces;
 - SDK regeneration and basic client helpers where appropriate.
 
-Hybrid reranking across lexical, semantic, and metadata signals is planned as a later layer and must not block lexical search v1.
+Hybrid lexical + semantic fusion with metadata hard filters is planned as a later layer and must not block lexical search v1.
 
 ## Approved product/design decisions
 
