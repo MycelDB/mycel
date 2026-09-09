@@ -89,7 +89,9 @@ Not supported in v1:
 - wildcard, prefix, fuzzy, range, and fielded Lucene clauses;
 - blob text extraction;
 - result snippets/highlighting;
-- hybrid lexical/semantic/metadata reranking.
+- streaming or paginated hybrid fusion responses.
+
+Hybrid lexical + semantic search is exposed through `mycel search hybrid` and the same client `SearchService/Search` API, with metadata filters as hard filters rather than reranking signals.
 
 ## Clustered mode
 
@@ -109,4 +111,5 @@ The authoritative owner for the space/domain builds the lexical index and advanc
 
 - [Search CLI reference](../cli/search.md)
 - [Lexical search design](../../design/search/lexical-search.md)
+- [Hybrid search design](../../design/search/hybrid-search.md)
 - [Backup and restore](backup-restore.md)

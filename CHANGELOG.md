@@ -6,6 +6,16 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.12.0] - 2026-09-09
+
+### Added
+
+- Added hybrid search design/implementation planning and internal weighted reciprocal-rank fusion primitives for lexical + semantic search orchestration.
+
+### Fixed
+
+- Reduced K3s raft disruption gate flakes by retrying transient committed-read probes and treating restarted pod process availability, not Kubernetes readiness, as the active-disruption restart barrier (#42).
+
 ## [v0.11.1] - 2026-09-09
 
 ### Added

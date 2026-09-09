@@ -190,9 +190,21 @@ func (d *K3SDriver) RestartNode(ctx context.Context, node NodeRef) error {
 		return err
 	}
 	deadline := time.Now().Add(10 * time.Minute)
+	nextLog := time.Now().Add(15 * time.Second)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		if err := d.WaitReady(ctx, node); err == nil {
+		if err := d.waitPodRunning(ctx, node); err != nil {
+			lastErr = err
+		} else if endpoint, cleanup, err := d.PortForward(ctx, node, 9091); err != nil {
+			lastErr = err
+		} else {
+			cleanup()
+			_ = endpoint
 			return nil
+		}
+		if time.Now().After(nextLog) {
+			fmt.Fprintf(os.Stderr, "[raft-disrupt] still waiting for restarted pod %s process availability; last error: %s\n", node.Name, summarizeError(lastErr, 300))
+			nextLog = time.Now().Add(15 * time.Second)
 		}
 		select {
 		case <-ctx.Done():
@@ -200,7 +212,21 @@ func (d *K3SDriver) RestartNode(ctx context.Context, node NodeRef) error {
 		case <-time.After(2 * time.Second):
 		}
 	}
-	return fmt.Errorf("timed out waiting for restarted pod %s", node.Name)
+	return fmt.Errorf("timed out waiting for restarted pod %s process availability: %w", node.Name, lastErr)
+}
+
+func (d *K3SDriver) waitPodRunning(ctx context.Context, node NodeRef) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	res, err := d.Runner.Run(cmdCtx, "kubectl", d.kubectlArgs("--request-timeout=5s", "-n", d.Namespace, "get", "pod", node.Name, "-o", "jsonpath={.status.phase}")...)
+	if err != nil {
+		return err
+	}
+	phase := strings.TrimSpace(res.Stdout)
+	if phase != "Running" {
+		return fmt.Errorf("pod %s phase=%s", node.Name, phase)
+	}
+	return nil
 }
 
 func (d *K3SDriver) PortForward(ctx context.Context, node NodeRef, port int) (Endpoint, func(), error) {
