@@ -27,10 +27,7 @@ passwords or active sessions/tokens.
 
 ## Parameters
 
-The target executes `scripts/testComposeUserBackupRestore.sh`. Relevant
-parameters are provided by that script and the Compose environment. Common local
-knobs include the Compose project configuration and backend auth token inherited
-from the development environment.
+The target executes `scripts/testComposeUserBackupRestore.sh`. By default it uses the Mycel-owned Compose fixture at `tests/compose/cluster/compose.yml`. Common local knobs include `MYCEL_COMPOSE_FILE`, `MYCEL_COMPOSE_SERVICES`, `MYCEL_IMAGE`, and `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN`.
 
 ## How to interpret results
 
@@ -47,6 +44,8 @@ Investigate failures as follows:
 
 ## Cleanup
 
-The script manages its own destructive Compose lifecycle. If interrupted, clean
-up the local Compose cluster from the sibling development environment before
-rerunning.
+The script manages its own destructive Compose lifecycle. If interrupted, clean up the local Compose cluster before rerunning:
+
+```sh
+docker compose -f tests/compose/cluster/compose.yml down -v --remove-orphans
+```

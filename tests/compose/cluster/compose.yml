@@ -1,0 +1,87 @@
+services:
+  myceld-a:
+    image: ${MYCEL_IMAGE:-local/mycel:dev}
+    pull_policy: ${MYCEL_PULL_POLICY:-never}
+    environment: &myceld-env
+      MYCELD_DATA_DIR: /data/mycel
+      MYCELD_GRPC_ADDR: 0.0.0.0:9091
+      MYCELD_LOG_LEVEL: ${MYCELD_LOG_LEVEL:-info}
+      MYCELD_LOG_FORMAT: ${MYCELD_LOG_FORMAT:-json}
+      MYCELD_NODE_NAME: myceld-a
+      MYCELD_BOOTSTRAP_ADMIN_USERNAME: ${MYCELD_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      MYCELD_BOOTSTRAP_ADMIN_PASSWORD: ${MYCELD_BOOTSTRAP_ADMIN_PASSWORD:-admin-password}
+      MYCELD_USER_STORE_ENCRYPTION_KEY_B64: ${MYCELD_USER_STORE_ENCRYPTION_KEY_B64:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+      MYCELD_CLUSTER_NAME: ${MYCELD_CLUSTER_NAME:-mycel-compose}
+      MYCELD_CLUSTER_BACKEND_AUTH_TOKEN: ${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}
+      MYCELD_CLUSTER_RAFT_NODE_COUNT: ${MYCELD_CLUSTER_RAFT_NODE_COUNT:-3}
+      MYCELD_CLUSTER_RAFT_PARTITION_COUNT: ${MYCELD_CLUSTER_RAFT_PARTITION_COUNT:-16}
+      MYCELD_CLUSTER_RAFT_REPLICA_FACTOR: ${MYCELD_CLUSTER_RAFT_REPLICA_FACTOR:-3}
+      MYCELD_CLUSTER_RAFT_NODE_ADDRS: ${MYCELD_CLUSTER_RAFT_NODE_ADDRS:-myceld-a:9091,myceld-b:9091,myceld-c:9091}
+      MYCELD_CLUSTER_RAFT_ELECTION_TICK: ${MYCELD_CLUSTER_RAFT_ELECTION_TICK:-25}
+      MYCELD_CLUSTER_RAFT_HEARTBEAT_TICK: ${MYCELD_CLUSTER_RAFT_HEARTBEAT_TICK:-1}
+      MYCELD_CLUSTER_RAFT_SEND_TIMEOUT: ${MYCELD_CLUSTER_RAFT_SEND_TIMEOUT:-500ms}
+      MYCELD_CLUSTER_DISCOVERY_INTERVAL: ${MYCELD_CLUSTER_DISCOVERY_INTERVAL:-1s}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID=1
+        export MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR=myceld-a:9091
+        exec myceld
+    volumes:
+      - myceld-a-data:/data/mycel
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9091"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+  myceld-b:
+    image: ${MYCEL_IMAGE:-local/mycel:dev}
+    pull_policy: ${MYCEL_PULL_POLICY:-never}
+    environment:
+      <<: *myceld-env
+      MYCELD_NODE_NAME: myceld-b
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID=2
+        export MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR=myceld-b:9091
+        exec myceld
+    volumes:
+      - myceld-b-data:/data/mycel
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9091"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+  myceld-c:
+    image: ${MYCEL_IMAGE:-local/mycel:dev}
+    pull_policy: ${MYCEL_PULL_POLICY:-never}
+    environment:
+      <<: *myceld-env
+      MYCELD_NODE_NAME: myceld-c
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID=3
+        export MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR=myceld-c:9091
+        exec myceld
+    volumes:
+      - myceld-c-data:/data/mycel
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9091"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+volumes:
+  myceld-a-data:
+  myceld-b-data:
+  myceld-c-data:

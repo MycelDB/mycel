@@ -10,8 +10,7 @@ Run from the `mycel/` directory.
 
 ## What it does
 
-This destructive Docker Compose test validates the local Compose raft cluster
-used by the sibling Knot PKM development environment. It:
+This destructive Docker Compose test validates the local Mycel-owned Compose raft cluster fixture under `tests/compose/cluster/`. It:
 
 1. resets Compose resources and starts the cluster;
 2. validates fresh bootstrap and shared cluster identity;
@@ -24,11 +23,13 @@ used by the sibling Knot PKM development environment. It:
 
 ## Parameters
 
-The make target uses the sibling repository at `../../knot_pkm/knot_pkm_server`.
-The main environment override is:
+The make target builds the current checkout as `local/mycel:dev` by default and uses `tests/compose/cluster/compose.yml`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `MYCEL_COMPOSE_IMAGE` | `local/mycel:dev` | Local image tag built by the target. |
+| `MYCEL_COMPOSE_FILE` | `tests/compose/cluster/compose.yml` | Compose file used by validators and lifecycle commands. |
+| `MYCEL_COMPOSE_SERVICES` | `myceld-a,myceld-b,myceld-c` | Comma-separated service list used by validators. |
 | `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN` | `mycel-compose-cluster-token` | Backend auth token used by the Compose cluster. |
 
 The target also creates a temporary `MYCEL_COMPOSE_DATA_PLANE_STATE` file to
@@ -50,5 +51,8 @@ Important failure classes:
 
 ## Cleanup
 
-The target resets Compose resources at start. If interrupted, clean up from the
-sibling Compose project with its normal Compose reset/down commands.
+The target resets Compose resources at start. If interrupted, clean up with:
+
+```sh
+docker compose -f tests/compose/cluster/compose.yml down -v --remove-orphans
+```
