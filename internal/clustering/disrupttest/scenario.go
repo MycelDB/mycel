@@ -38,6 +38,7 @@ type ReadEvent struct {
 	RunID     string    `json:"runId"`
 	Worker    string    `json:"worker"`
 	Seq       int64     `json:"seq"`
+	Attempt   int       `json:"attempt,omitempty"`
 	Success   bool      `json:"success"`
 	Transient bool      `json:"transient"`
 	Error     string    `json:"error,omitempty"`
@@ -440,11 +441,6 @@ func (r *scenarioRuntime) run(ctx context.Context) (ScenarioSummary, error) {
 				wg.Wait()
 				return ScenarioSummary{}, err
 			}
-			if err := r.driver.WaitAllReady(ctx); err != nil {
-				cancel()
-				wg.Wait()
-				return ScenarioSummary{}, err
-			}
 			if err := r.waitWorkloadReady(ctx, client, workload, scopes); err != nil {
 				cancel()
 				wg.Wait()
@@ -640,23 +636,7 @@ func (r *scenarioRuntime) writeWithRetry(ctx context.Context, stopAt time.Time, 
 			r.recordEvent(WriteEvent{Time: time.Now().UTC(), RunID: scopes[0].RunID, Worker: worker, Seq: seq, Attempt: attempt, Success: true})
 			r.addExpected(workload.ExpectedWriteCounts(scopes, worker, seq))
 			if seq%10 == 0 {
-				if _, readErr := workload.Count(ctx, client, scopes); readErr != nil {
-					if ctx.Err() != nil || (!stopAt.IsZero() && !time.Now().Before(stopAt)) {
-						return
-					}
-					transientRead := IsTransientError(readErr)
-					r.readChecks.Add(1)
-					r.readFailures.Add(1)
-					if transientRead {
-						r.readTransient.Add(1)
-					} else {
-						r.readPermanent.Add(1)
-					}
-					r.recordReadEvent(ReadEvent{Time: time.Now().UTC(), RunID: scopes[0].RunID, Worker: worker, Seq: seq, Success: false, Transient: transientRead, Error: readErr.Error()})
-				} else {
-					r.readChecks.Add(1)
-					r.recordReadEvent(ReadEvent{Time: time.Now().UTC(), RunID: scopes[0].RunID, Worker: worker, Seq: seq, Success: true})
-				}
+				r.committedReadCheck(ctx, stopAt, client, workload, scopes, worker, seq)
 			}
 			return
 		}
@@ -681,6 +661,53 @@ func (r *scenarioRuntime) writeWithRetry(ctx context.Context, stopAt time.Time, 
 			backoff *= 2
 		}
 	}
+}
+
+func (r *scenarioRuntime) committedReadCheck(ctx context.Context, stopAt time.Time, client *serviceClient, workload Workload, scopes []TestScope, worker string, seq int64) {
+	r.readChecks.Add(1)
+	backoff := 100 * time.Millisecond
+	var lastErr error
+	var lastTransient bool
+	lastAttempt := 0
+	for attempt := 1; attempt <= 4; attempt++ {
+		if ctx.Err() != nil || (!stopAt.IsZero() && !time.Now().Before(stopAt)) {
+			return
+		}
+		_, err := workload.Count(ctx, client, scopes)
+		if err == nil {
+			r.recordReadEvent(ReadEvent{Time: time.Now().UTC(), RunID: scopes[0].RunID, Worker: worker, Seq: seq, Attempt: attempt, Success: true})
+			return
+		}
+		lastErr = err
+		lastTransient = IsTransientError(err)
+		lastAttempt = attempt
+		if ctx.Err() != nil || (!stopAt.IsZero() && !time.Now().Before(stopAt)) {
+			return
+		}
+		if !lastTransient {
+			break
+		}
+		r.recordReadEvent(ReadEvent{Time: time.Now().UTC(), RunID: scopes[0].RunID, Worker: worker, Seq: seq, Attempt: attempt, Success: false, Transient: true, Error: err.Error()})
+		if client != nil {
+			_ = client.Reconnect(ctx)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+			backoff *= 2
+		}
+	}
+	if lastErr == nil {
+		return
+	}
+	r.readFailures.Add(1)
+	if lastTransient {
+		r.readTransient.Add(1)
+	} else {
+		r.readPermanent.Add(1)
+	}
+	r.recordReadEvent(ReadEvent{Time: time.Now().UTC(), RunID: scopes[0].RunID, Worker: worker, Seq: seq, Attempt: lastAttempt, Success: false, Transient: lastTransient, Error: lastErr.Error()})
 }
 
 func (r *scenarioRuntime) addExpected(counts map[string]WorkloadCounts) {
