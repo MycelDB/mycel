@@ -81,6 +81,8 @@ apply_myceld_manifests() {
     -f "$ORCH_DIR/base/apps/myceld/service-headless.yaml" \
     -f "$ORCH_DIR/base/apps/myceld/service.yaml" \
     -f "$ORCH_DIR/base/apps/myceld/service-admin.yaml"
+  kubectl -n "$NAMESPACE" patch configmap myceld-config --type merge \
+    -p '{"data":{"MYCELD_CLUSTER_RAFT_EMPTY_STORAGE_REJOIN_RECOVERY":"true"}}'
   IMAGE="$IMAGE" IMAGE_PULL_POLICY="$IMAGE_PULL_POLICY" STATEFULSET_PATH="$ORCH_DIR/base/apps/myceld/statefulset.yaml" python3 <<'PY' | kubectl -n "$NAMESPACE" apply -f -
 import os
 from pathlib import Path

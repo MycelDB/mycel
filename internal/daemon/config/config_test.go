@@ -47,6 +47,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.Cluster.RaftElectionTick != DefaultClusterRaftElectionTick || cfg.Cluster.RaftHeartbeatTick != DefaultClusterRaftHeartbeatTick || cfg.Cluster.RaftSendTimeout != DefaultClusterRaftSendTimeout {
 		t.Fatalf("unexpected cluster raft timing defaults: %+v", cfg.Cluster)
 	}
+	if cfg.Cluster.RaftEmptyStorageRejoinRecovery {
+		t.Fatalf("unexpected empty-storage rejoin recovery default: %+v", cfg.Cluster)
+	}
 	if cfg.Cluster.RaftCompactionMode != DefaultClusterRaftCompactionMode || cfg.Cluster.RaftSnapshotEntries != 0 || cfg.Cluster.RaftSnapshotInterval != 0 || cfg.Cluster.RaftSnapshotMaxLogBytes != 0 || cfg.Cluster.RaftSnapshotMinRetainEntries != 0 {
 		t.Fatalf("unexpected cluster raft compaction defaults: %+v", cfg.Cluster)
 	}
@@ -62,6 +65,7 @@ func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 	t.Setenv("MYCELD_CLUSTER_RAFT_ELECTION_TICK", "40")
 	t.Setenv("MYCELD_CLUSTER_RAFT_HEARTBEAT_TICK", "2")
 	t.Setenv("MYCELD_CLUSTER_RAFT_SEND_TIMEOUT", "750ms")
+	t.Setenv("MYCELD_CLUSTER_RAFT_EMPTY_STORAGE_REJOIN_RECOVERY", "true")
 	t.Setenv("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN", "test-cluster-token")
 
 	cfg, err := LoadFromEnv()
@@ -76,6 +80,9 @@ func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 	}
 	if cfg.Cluster.RaftElectionTick != 40 || cfg.Cluster.RaftHeartbeatTick != 2 || cfg.Cluster.RaftSendTimeout != 750*time.Millisecond {
 		t.Fatalf("unexpected raft timing overrides: %+v", cfg.Cluster)
+	}
+	if !cfg.Cluster.RaftEmptyStorageRejoinRecovery {
+		t.Fatalf("expected empty-storage rejoin recovery override: %+v", cfg.Cluster)
 	}
 }
 

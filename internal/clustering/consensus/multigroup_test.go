@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 func TestPreferredLeaderNodeRoundRobin(t *testing.T) {
@@ -145,6 +147,90 @@ func TestStartPartitionGroupsUsesMetadataReplicaPlacement(t *testing.T) {
 	}
 	if _, ok := mg.Group(PartitionGroupID(2)); !ok {
 		t.Fatal("node 3 should start partition 2; replicas include node 3")
+	}
+}
+
+func TestMultiGroupPersistentFreshPartitionsCommitWithJoinExistingReplicas(t *testing.T) {
+	transport := newMemoryTransport()
+	peers := []NodeID{1, 2, 3}
+	groups := map[NodeID]*MultiGroup{}
+	sms := map[NodeID]map[uint32]*MemoryStateMachine{}
+	stopTick := make(chan struct{})
+	defer close(stopTick)
+	defer func() {
+		for _, mg := range groups {
+			mg.Stop()
+		}
+	}()
+	factory := func(nodeID NodeID) StateMachineFactory {
+		sms[nodeID] = map[uint32]*MemoryStateMachine{}
+		return StateMachineFactoryFunc{System: func() StateMachine { return NewSystemStateMachine() }, Partition: func(partitionID uint32) StateMachine {
+			sm := &MemoryStateMachine{}
+			sms[nodeID][partitionID] = sm
+			return sm
+		}}
+	}
+	for _, id := range peers {
+		mg, err := StartMultiGroup(context.Background(), MultiGroupOptions{NodeID: id, PeerNodeIDs: peers, PartitionCount: 3, Transport: transport, StateMachines: factory(id), ElectionTick: 5, HeartbeatTick: 1, StorageDir: t.TempDir(), RecoverEmptyStorageRejoin: true})
+		if err != nil {
+			t.Fatalf("StartMultiGroup(%d) error = %v", id, err)
+		}
+		groups[id] = mg
+		for _, g := range mg.Groups() {
+			transport.register(g)
+		}
+	}
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopTick:
+				return
+			case <-ticker.C:
+				for _, mg := range groups {
+					mg.Tick()
+				}
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	var leader *Group
+	if err := WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		leaders := map[NodeID]int{}
+		for _, mg := range groups {
+			g, ok := mg.Group(PartitionGroupID(0))
+			if !ok {
+				return false
+			}
+			if l := g.Leader(); l != 0 {
+				leaders[l]++
+			}
+		}
+		for id, count := range leaders {
+			if count >= 2 {
+				leader, _ = groups[id].Group(PartitionGroupID(0))
+				return leader != nil
+			}
+		}
+		return false
+	}); err != nil {
+		t.Fatalf("persistent partition leader not elected: %v", err)
+	}
+	cmd := NewCommand(CommandScopeSystem, wal.RecordType("partition.test"), []byte(`{"ok":true}`), "persistent-partition-commit")
+	if _, err := leader.Propose(ctx, cmd); err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+	if err := WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		for _, id := range peers {
+			if sms[id][0].AppliedCount() != 1 {
+				return false
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("partition command did not apply on all persistent replicas: %v", err)
 	}
 }
 

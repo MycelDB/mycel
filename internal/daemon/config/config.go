@@ -111,23 +111,24 @@ type BlobConfig struct {
 }
 
 type ClusterConfig struct {
-	Name                         string
-	BackendAdvertiseAddr         string
-	BackendAuthToken             string
-	DiscoveryInterval            time.Duration
-	RaftNodeCount                int
-	RaftPartitionCount           int
-	RaftReplicaFactor            int
-	RaftLocalNodeID              int
-	RaftNodeAddrs                []string
-	RaftElectionTick             int
-	RaftHeartbeatTick            int
-	RaftSendTimeout              time.Duration
-	RaftCompactionMode           string
-	RaftSnapshotEntries          int
-	RaftSnapshotInterval         time.Duration
-	RaftSnapshotMaxLogBytes      int64
-	RaftSnapshotMinRetainEntries int
+	Name                           string
+	BackendAdvertiseAddr           string
+	BackendAuthToken               string
+	DiscoveryInterval              time.Duration
+	RaftNodeCount                  int
+	RaftPartitionCount             int
+	RaftReplicaFactor              int
+	RaftLocalNodeID                int
+	RaftNodeAddrs                  []string
+	RaftElectionTick               int
+	RaftHeartbeatTick              int
+	RaftSendTimeout                time.Duration
+	RaftEmptyStorageRejoinRecovery bool
+	RaftCompactionMode             string
+	RaftSnapshotEntries            int
+	RaftSnapshotInterval           time.Duration
+	RaftSnapshotMaxLogBytes        int64
+	RaftSnapshotMinRetainEntries   int
 }
 
 type Config struct {
@@ -193,23 +194,24 @@ func LoadFromEnv() (Config, error) {
 			S3ForcePathStyle: parseBoolEnv(os.Getenv("MYCELD_BLOB_S3_FORCE_PATH_STYLE")),
 		},
 		Cluster: ClusterConfig{
-			Name:                         strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
-			BackendAdvertiseAddr:         strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR")),
-			BackendAuthToken:             strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN")),
-			DiscoveryInterval:            parseDurationEnv(os.Getenv("MYCELD_CLUSTER_DISCOVERY_INTERVAL"), DefaultClusterDiscoveryInterval),
-			RaftNodeCount:                parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_COUNT"), DefaultClusterRaftNodeCount),
-			RaftPartitionCount:           parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_PARTITION_COUNT"), DefaultClusterRaftPartitionCount),
-			RaftReplicaFactor:            parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR"), DefaultClusterRaftReplicaFactor),
-			RaftLocalNodeID:              parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID"), DefaultClusterRaftLocalNodeID),
-			RaftNodeAddrs:                parseCSVEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS")),
-			RaftElectionTick:             parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_ELECTION_TICK"), DefaultClusterRaftElectionTick),
-			RaftHeartbeatTick:            parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_HEARTBEAT_TICK"), DefaultClusterRaftHeartbeatTick),
-			RaftSendTimeout:              parseDurationEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SEND_TIMEOUT"), DefaultClusterRaftSendTimeout),
-			RaftCompactionMode:           valueOrDefault(os.Getenv("MYCELD_CLUSTER_RAFT_COMPACTION_MODE"), DefaultClusterRaftCompactionMode),
-			RaftSnapshotEntries:          parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_ENTRIES"), 0),
-			RaftSnapshotInterval:         parseDurationEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_INTERVAL"), 0),
-			RaftSnapshotMaxLogBytes:      int64(parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MAX_LOG_BYTES"), 0)),
-			RaftSnapshotMinRetainEntries: parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MIN_RETAIN_ENTRIES"), 0),
+			Name:                           strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
+			BackendAdvertiseAddr:           strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR")),
+			BackendAuthToken:               strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_BACKEND_AUTH_TOKEN")),
+			DiscoveryInterval:              parseDurationEnv(os.Getenv("MYCELD_CLUSTER_DISCOVERY_INTERVAL"), DefaultClusterDiscoveryInterval),
+			RaftNodeCount:                  parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_COUNT"), DefaultClusterRaftNodeCount),
+			RaftPartitionCount:             parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_PARTITION_COUNT"), DefaultClusterRaftPartitionCount),
+			RaftReplicaFactor:              parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_REPLICA_FACTOR"), DefaultClusterRaftReplicaFactor),
+			RaftLocalNodeID:                parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID"), DefaultClusterRaftLocalNodeID),
+			RaftNodeAddrs:                  parseCSVEnv(os.Getenv("MYCELD_CLUSTER_RAFT_NODE_ADDRS")),
+			RaftElectionTick:               parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_ELECTION_TICK"), DefaultClusterRaftElectionTick),
+			RaftHeartbeatTick:              parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_HEARTBEAT_TICK"), DefaultClusterRaftHeartbeatTick),
+			RaftSendTimeout:                parseDurationEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SEND_TIMEOUT"), DefaultClusterRaftSendTimeout),
+			RaftEmptyStorageRejoinRecovery: parseBoolEnv(os.Getenv("MYCELD_CLUSTER_RAFT_EMPTY_STORAGE_REJOIN_RECOVERY")),
+			RaftCompactionMode:             valueOrDefault(os.Getenv("MYCELD_CLUSTER_RAFT_COMPACTION_MODE"), DefaultClusterRaftCompactionMode),
+			RaftSnapshotEntries:            parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_ENTRIES"), 0),
+			RaftSnapshotInterval:           parseDurationEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_INTERVAL"), 0),
+			RaftSnapshotMaxLogBytes:        int64(parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MAX_LOG_BYTES"), 0)),
+			RaftSnapshotMinRetainEntries:   parseIntEnv(os.Getenv("MYCELD_CLUSTER_RAFT_SNAPSHOT_MIN_RETAIN_ENTRIES"), 0),
 		},
 		Automation: AutomationConfig{
 			WorkerEnabled:     parseBoolEnvDefault(os.Getenv("MYCELD_AUTOMATION_WORKER_ENABLED"), true),

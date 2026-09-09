@@ -312,7 +312,7 @@ func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, 
 	if strings.TrimSpace(rt.Config.DataDir) != "" {
 		storageDir = filepath.Join(rt.Config.DataDir, "meta", "raft")
 	}
-	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: consensus.NodeID(cfg.RaftLocalNodeID), PeerNodeIDs: peers, PartitionCount: uint32(cfg.RaftPartitionCount), Transport: transport, StateMachines: factory, ElectionTick: cfg.RaftElectionTick, HeartbeatTick: cfg.RaftHeartbeatTick, StorageDir: storageDir, DeferPartitionGroups: true})
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: consensus.NodeID(cfg.RaftLocalNodeID), PeerNodeIDs: peers, PartitionCount: uint32(cfg.RaftPartitionCount), Transport: transport, StateMachines: factory, ElectionTick: cfg.RaftElectionTick, HeartbeatTick: cfg.RaftHeartbeatTick, StorageDir: storageDir, DeferPartitionGroups: true, RecoverEmptyStorageRejoin: cfg.RaftEmptyStorageRejoinRecovery})
 	if err != nil {
 		return fmt.Errorf("start experimental raft groups: %w", err)
 	}
