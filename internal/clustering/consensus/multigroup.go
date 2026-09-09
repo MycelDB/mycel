@@ -55,6 +55,12 @@ type MultiGroupOptions struct {
 	// DeferPartitionGroups starts only the system group. Partition groups must be
 	// started later from committed system metadata.
 	DeferPartitionGroups bool
+
+	// RecoverEmptyStorageRejoin enables bounded catch-up recovery nudges when a
+	// durable same-ID member starts with empty raft storage and observes committed
+	// leader progress beyond its local log. This is intended for orchestrated PVC
+	// replacement recovery, not ordinary unit-test fresh bootstraps.
+	RecoverEmptyStorageRejoin bool
 }
 
 type StateMachineFactory interface {
@@ -73,29 +79,31 @@ func (f StateMachineFactoryFunc) PartitionStateMachine(partitionID uint32) State
 }
 
 type MultiGroup struct {
-	mu             sync.RWMutex
-	nodeID         NodeID
-	peerNodeIDs    []NodeID
-	partitionCount uint32
-	transport      Transport
-	stateMachines  StateMachineFactory
-	electionTick   int
-	heartbeatTick  int
-	groups         map[GroupID]*Group
-	preferred      map[GroupID]NodeID
-	storageDir     string
+	mu                        sync.RWMutex
+	nodeID                    NodeID
+	peerNodeIDs               []NodeID
+	partitionCount            uint32
+	transport                 Transport
+	stateMachines             StateMachineFactory
+	electionTick              int
+	heartbeatTick             int
+	groups                    map[GroupID]*Group
+	preferred                 map[GroupID]NodeID
+	storageDir                string
+	recoverEmptyStorageRejoin bool
 }
 
 func StartMultiGroup(ctx context.Context, opts MultiGroupOptions) (*MultiGroup, error) {
 	if opts.NodeID == 0 || len(opts.PeerNodeIDs) == 0 || opts.PartitionCount == 0 || opts.Transport == nil || opts.StateMachines == nil {
 		return nil, fmt.Errorf("node id, peers, partition count, transport, and state machines are required")
 	}
-	mg := &MultiGroup{nodeID: opts.NodeID, peerNodeIDs: append([]NodeID(nil), opts.PeerNodeIDs...), partitionCount: opts.PartitionCount, transport: opts.Transport, stateMachines: opts.StateMachines, electionTick: opts.ElectionTick, heartbeatTick: opts.HeartbeatTick, groups: map[GroupID]*Group{}, preferred: map[GroupID]NodeID{}, storageDir: opts.StorageDir}
+	mg := &MultiGroup{nodeID: opts.NodeID, peerNodeIDs: append([]NodeID(nil), opts.PeerNodeIDs...), partitionCount: opts.PartitionCount, transport: opts.Transport, stateMachines: opts.StateMachines, electionTick: opts.ElectionTick, heartbeatTick: opts.HeartbeatTick, groups: map[GroupID]*Group{}, preferred: map[GroupID]NodeID{}, storageDir: opts.StorageDir, recoverEmptyStorageRejoin: opts.RecoverEmptyStorageRejoin}
 	systemStorage, err := systemGroupStorage(opts.StorageDir)
 	if err != nil {
 		return nil, err
 	}
-	system, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: opts.NodeID, Peers: opts.PeerNodeIDs, PartitionCount: opts.PartitionCount, StateMachine: opts.StateMachines.SystemStateMachine(), Transport: opts.Transport, ElectionTick: opts.ElectionTick, HeartbeatTick: opts.HeartbeatTick, Storage: systemStorage, ReplayCommittedEntries: true})
+	systemJoinExisting := opts.RecoverEmptyStorageRejoin && systemStorage != nil && !hasPersistentRaftState(systemStorage)
+	system, err := StartGroup(ctx, GroupOptions{ID: SystemGroupID, NodeID: opts.NodeID, Peers: opts.PeerNodeIDs, PartitionCount: opts.PartitionCount, StateMachine: opts.StateMachines.SystemStateMachine(), Transport: opts.Transport, ElectionTick: opts.ElectionTick, HeartbeatTick: opts.HeartbeatTick, Storage: systemStorage, ReplayCommittedEntries: true, JoinExisting: systemJoinExisting})
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +170,8 @@ func (m *MultiGroup) StartPartitionGroups(ctx context.Context, meta SystemMetada
 		if err != nil {
 			return err
 		}
-		g, err := StartGroup(ctx, GroupOptions{ID: gid, NodeID: m.nodeID, Peers: replicas, PartitionCount: partitionCount, StateMachine: m.stateMachines.PartitionStateMachine(p), Transport: m.transport, ElectionTick: m.electionTick, HeartbeatTick: m.heartbeatTick, Storage: storage, ReplayCommittedEntries: storage != nil})
+		joinExisting := m.recoverEmptyStorageRejoin && storage != nil && !hasPersistentRaftState(storage)
+		g, err := StartGroup(ctx, GroupOptions{ID: gid, NodeID: m.nodeID, Peers: replicas, PartitionCount: partitionCount, StateMachine: m.stateMachines.PartitionStateMachine(p), Transport: m.transport, ElectionTick: m.electionTick, HeartbeatTick: m.heartbeatTick, Storage: storage, ReplayCommittedEntries: storage != nil, JoinExisting: joinExisting})
 		if err != nil {
 			return err
 		}

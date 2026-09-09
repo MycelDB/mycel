@@ -6,6 +6,22 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.11.1] - 2026-09-09
+
+### Added
+
+- Added third-party notices and license inventory for release compliance.
+
+### Removed
+
+- Removed deprecated root CLI commands: `mycel init`, `mycel acl`, and `mycel accounting`.
+
+### Fixed
+
+- Fixed raft backend transport churn by reusing pooled per-peer gRPC connections and bounding raft send timeouts.
+- Made compose cluster release gates self-contained under `tests/compose/cluster`.
+- Fixed K3s PVC replacement recovery so a same-node-ID raft member with empty persistent storage catches up instead of remaining stale after rejoin.
+
 ## [v0.11.0] - 2026-09-07
 
 ### Added

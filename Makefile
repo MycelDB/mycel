@@ -13,6 +13,11 @@ MYCELD_DATA_DIR = $(HOME)/mycel_data
 MYCELD_GRPC_ADDR = 127.0.0.1:9091
 MYCELD_PID_FILE = $(MYCELD_DATA_DIR)/myceld.pid
 MYCELD_STDOUT_LOG = $(MYCELD_DATA_DIR)/log/myceld.stdout.log
+MYCEL_COMPOSE_IMAGE ?= local/mycel:dev
+MYCEL_COMPOSE_FILE ?= $(CURDIR)/tests/compose/cluster/compose.yml
+MYCEL_COMPOSE_ROOT ?= $(CURDIR)/tests/compose/cluster
+MYCEL_COMPOSE_SERVICES ?= myceld-a,myceld-b,myceld-c
+MYCEL_COMPOSE_SERVICE_ARGS ?= myceld-a myceld-b myceld-c
 MYCEL_RAFT_DISRUPT_IMAGE ?= myceldb/mycel:raft-disrupt-local
 MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE ?= myceldb/mycel:system-backup-restore-local
 RAFT_TEST_PACKAGE_PARALLELISM ?= 1
@@ -113,16 +118,16 @@ test-cluster-release-gate: test test-phase-d test-phase-e test-phase-f test-phas
 test-cluster-raft-sensitive-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-k3s-raft-disruption-smoke test-k3s-raft-disruption-edges
 
 test-compose-cluster:
-	cd ../../knot_pkm/knot_pkm_server && COMPOSE_PROFILES=mycel-cluster COMPOSE_MYCEL_SERVICES="myceld-a myceld-b myceld-c" MYCEL_IMAGE=local/mycel:dev MYCEL_PULL_POLICY=never MYCELD_CLUSTER_RAFT_NODE_COUNT=3 MYCELD_CLUSTER_RAFT_REPLICA_FACTOR=3 MYCELD_CLUSTER_RAFT_NODE_ADDRS=myceld-a:9091,myceld-b:9091,myceld-c:9091 MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" $(MAKE) compose-reset compose-up
-	./scripts/validateComposeClusterIdentity.sh
-	@set -e; root="$$(pwd)"; state="$$(mktemp)"; \
-	MYCEL_COMPOSE_DATA_PLANE_STATE="$$state" ./scripts/validateComposeClusterDataPlane.sh; \
-	cd "$$root/../../knot_pkm/knot_pkm_server" && COMPOSE_PROFILES=mycel-cluster MYCEL_IMAGE=local/mycel:dev MYCEL_PULL_POLICY=never MYCELD_CLUSTER_RAFT_NODE_COUNT=3 MYCELD_CLUSTER_RAFT_REPLICA_FACTOR=3 MYCELD_CLUSTER_RAFT_NODE_ADDRS=myceld-a:9091,myceld-b:9091,myceld-c:9091 MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f compose.dev.yml restart myceld-a myceld-b myceld-c; \
-	cd "$$root/../../knot_pkm/knot_pkm_server" && COMPOSE_PROFILES=mycel-cluster MYCEL_IMAGE=local/mycel:dev MYCEL_PULL_POLICY=never MYCELD_CLUSTER_RAFT_NODE_COUNT=3 MYCELD_CLUSTER_RAFT_REPLICA_FACTOR=3 MYCELD_CLUSTER_RAFT_NODE_ADDRS=myceld-a:9091,myceld-b:9091,myceld-c:9091 MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f compose.dev.yml up -d --wait myceld-a myceld-b myceld-c knot-pkm-server; \
-	cd "$$root"; \
-	./scripts/validateComposeClusterIdentity.sh; \
-	MYCEL_DATA_PLANE_CREATE_IF_MISSING=false MYCEL_COMPOSE_DATA_PLANE_STATE="$$state" ./scripts/validateComposeClusterDataPlane.sh; \
-	MYCEL_COMPOSE_VALIDATE_SOURCE=files ./scripts/validateComposeClusterIdentity.sh; \
+	docker build -f Dockerfile -t $(MYCEL_COMPOSE_IMAGE) ..
+	cd $(MYCEL_COMPOSE_ROOT) && MYCEL_IMAGE=$(MYCEL_COMPOSE_IMAGE) MYCEL_PULL_POLICY=never MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" $(MAKE) compose-reset compose-up
+	MYCEL_COMPOSE_FILE=$(MYCEL_COMPOSE_FILE) MYCEL_COMPOSE_SERVICES=$(MYCEL_COMPOSE_SERVICES) ./scripts/validateComposeClusterIdentity.sh
+	@set -e; state="$$(mktemp)"; \
+	MYCEL_COMPOSE_FILE=$(MYCEL_COMPOSE_FILE) MYCEL_COMPOSE_SERVICES=$(MYCEL_COMPOSE_SERVICES) MYCEL_COMPOSE_DATA_PLANE_STATE="$$state" ./scripts/validateComposeClusterDataPlane.sh; \
+	MYCEL_IMAGE=$(MYCEL_COMPOSE_IMAGE) MYCEL_PULL_POLICY=never MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f $(MYCEL_COMPOSE_FILE) restart $(MYCEL_COMPOSE_SERVICE_ARGS); \
+	MYCEL_IMAGE=$(MYCEL_COMPOSE_IMAGE) MYCEL_PULL_POLICY=never MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f $(MYCEL_COMPOSE_FILE) up -d --wait $(MYCEL_COMPOSE_SERVICE_ARGS); \
+	MYCEL_COMPOSE_FILE=$(MYCEL_COMPOSE_FILE) MYCEL_COMPOSE_SERVICES=$(MYCEL_COMPOSE_SERVICES) ./scripts/validateComposeClusterIdentity.sh; \
+	MYCEL_COMPOSE_FILE=$(MYCEL_COMPOSE_FILE) MYCEL_COMPOSE_SERVICES=$(MYCEL_COMPOSE_SERVICES) MYCEL_DATA_PLANE_CREATE_IF_MISSING=false MYCEL_COMPOSE_DATA_PLANE_STATE="$$state" ./scripts/validateComposeClusterDataPlane.sh; \
+	MYCEL_COMPOSE_FILE=$(MYCEL_COMPOSE_FILE) MYCEL_COMPOSE_SERVICES=$(MYCEL_COMPOSE_SERVICES) MYCEL_COMPOSE_VALIDATE_SOURCE=files ./scripts/validateComposeClusterIdentity.sh; \
 	rm -f "$$state"
 
 test-k3s-cluster:

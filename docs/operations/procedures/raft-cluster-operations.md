@@ -106,7 +106,7 @@ Or use the bundled release gate:
 make test-cluster-release-gate
 ```
 
-The bundled release gate runs `make test`, `make test-phase-d`, `make test-phase-e`, `make test-phase-f`, `make test-phase-g`, then the destructive compose and K3s validations. `make test-compose-cluster` resets the sibling compose environment under `../../knot_pkm/knot_pkm_server`. `make test-k3s-cluster` resets/reuses the local K3s/k3d environment. Treat both as manual/pre-release checks, not default per-PR CI.
+The bundled release gate runs `make test`, `make test-phase-d`, `make test-phase-e`, `make test-phase-f`, `make test-phase-g`, then the destructive compose and K3s validations. `make test-compose-cluster` resets the Mycel-owned Docker Compose fixture under `tests/compose/cluster/`. `make test-k3s-cluster` resets/reuses the local K3s/k3d environment. Treat both as manual/pre-release checks, not default per-PR CI.
 
 ## Snapshot and compaction policy
 
@@ -122,6 +122,20 @@ MYCELD_CLUSTER_RAFT_SNAPSHOT_INTERVAL=0s
 MYCELD_CLUSTER_RAFT_SNAPSHOT_MAX_LOG_BYTES=0
 MYCELD_CLUSTER_RAFT_SNAPSHOT_MIN_RETAIN_ENTRIES=0
 ```
+
+## Raft timing and backend transport
+
+Raft backend message transport reuses long-lived gRPC connections per peer address. This avoids opening and closing a TCP/HTTP2 connection for every raft heartbeat or append message. Each backend raft send also has a bounded timeout so a stuck peer RPC cannot block a raft ready loop indefinitely.
+
+Timing knobs are available for production tuning:
+
+```sh
+MYCELD_CLUSTER_RAFT_ELECTION_TICK=25     # default; with 100ms ticks this is roughly a 2.5s election timeout
+MYCELD_CLUSTER_RAFT_HEARTBEAT_TICK=1     # default; heartbeat tick must be lower than election tick
+MYCELD_CLUSTER_RAFT_SEND_TIMEOUT=500ms   # default per backend raft send
+```
+
+Increase `MYCELD_CLUSTER_RAFT_ELECTION_TICK` if a multi-node Kubernetes cluster shows leader churn during otherwise healthy pod-to-pod connectivity. Keep the heartbeat tick lower than the election tick.
 
 Current snapshot capability matrix:
 

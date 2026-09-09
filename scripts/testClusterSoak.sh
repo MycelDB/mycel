@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_ROOT="${MYCEL_CLUSTER_SOAK_COMPOSE_ROOT:-${ROOT_DIR}/../../knot_pkm/knot_pkm_server}"
-COMPOSE_FILE="${MYCEL_COMPOSE_FILE:-${COMPOSE_ROOT}/compose.dev.yml}"
+COMPOSE_ROOT="${MYCEL_CLUSTER_SOAK_COMPOSE_ROOT:-${ROOT_DIR}/tests/compose/cluster}"
+COMPOSE_FILE="${MYCEL_COMPOSE_FILE:-${COMPOSE_ROOT}/compose.yml}"
 ITERATIONS="${MYCEL_CLUSTER_SOAK_ITERATIONS:-3}"
 WRITES="${MYCEL_CLUSTER_SOAK_WRITES:-1}"
 RESTART_EVERY="${MYCEL_CLUSTER_SOAK_RESTART_EVERY:-2}"
@@ -45,7 +45,7 @@ trap 'rm -f "$state"' EXIT
 if [[ "$RESET" == "true" || "$RESET" == "1" ]]; then
   (cd "$COMPOSE_ROOT" && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$BACKEND_TOKEN" make compose-reset compose-up)
 else
-  (cd "$COMPOSE_ROOT" && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$BACKEND_TOKEN" docker compose -f "$COMPOSE_FILE" up -d --wait myceld-a myceld-b myceld-c knot-pkm-server)
+  (cd "$COMPOSE_ROOT" && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$BACKEND_TOKEN" docker compose -f "$COMPOSE_FILE" up -d --wait myceld-a myceld-b myceld-c)
 fi
 
 "$ROOT_DIR/scripts/validateComposeClusterIdentity.sh"
@@ -60,7 +60,7 @@ for i in $(seq 1 "$ITERATIONS"); do
   if [[ "$RESTART_EVERY" -gt 0 && $((i % RESTART_EVERY)) -eq 0 && "$i" -lt "$ITERATIONS" ]]; then
     echo "== cluster soak rolling compose restart after iteration $i =="
     (cd "$COMPOSE_ROOT" && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$BACKEND_TOKEN" docker compose -f "$COMPOSE_FILE" restart myceld-a myceld-b myceld-c)
-    (cd "$COMPOSE_ROOT" && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$BACKEND_TOKEN" docker compose -f "$COMPOSE_FILE" up -d --wait myceld-a myceld-b myceld-c knot-pkm-server)
+    (cd "$COMPOSE_ROOT" && MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$BACKEND_TOKEN" docker compose -f "$COMPOSE_FILE" up -d --wait myceld-a myceld-b myceld-c)
   fi
 done
 
