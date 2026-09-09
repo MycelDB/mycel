@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"google.golang.org/grpc/codes"
@@ -104,4 +106,61 @@ func TestCountFromResult(t *testing.T) {
 	if err != nil || count != 42 {
 		t.Fatalf("CountFromResult() = %d, %v", count, err)
 	}
+}
+
+func TestCommittedReadCheckRetriesTransientFailure(t *testing.T) {
+	workload := &fakeReadWorkload{errors: []error{status.Error(codes.Unavailable, "raft partition group 2 has no leader"), nil}}
+	r := &scenarioRuntime{}
+	r.committedReadCheck(context.Background(), time.Time{}, nil, workload, []TestScope{{RunID: "run-1"}}, "worker-0", 10)
+	if got := r.readChecks.Load(); got != 1 {
+		t.Fatalf("readChecks = %d, want 1", got)
+	}
+	if got := r.readFailures.Load(); got != 0 {
+		t.Fatalf("readFailures = %d, want 0", got)
+	}
+	if got := workload.calls.Load(); got != 2 {
+		t.Fatalf("Count calls = %d, want 2", got)
+	}
+}
+
+func TestCommittedReadCheckRecordsPermanentFailure(t *testing.T) {
+	workload := &fakeReadWorkload{errors: []error{status.Error(codes.InvalidArgument, "bad query")}}
+	r := &scenarioRuntime{}
+	r.committedReadCheck(context.Background(), time.Time{}, nil, workload, []TestScope{{RunID: "run-1"}}, "worker-0", 10)
+	if got := r.readChecks.Load(); got != 1 {
+		t.Fatalf("readChecks = %d, want 1", got)
+	}
+	if got := r.readFailures.Load(); got != 1 {
+		t.Fatalf("readFailures = %d, want 1", got)
+	}
+	if got := r.readPermanent.Load(); got != 1 {
+		t.Fatalf("readPermanent = %d, want 1", got)
+	}
+	if got := workload.calls.Load(); got != 1 {
+		t.Fatalf("Count calls = %d, want 1", got)
+	}
+}
+
+type fakeReadWorkload struct {
+	errors []error
+	calls  atomic.Int64
+}
+
+func (w *fakeReadWorkload) Name() string { return "fake-read" }
+func (w *fakeReadWorkload) Setup(context.Context, WorkloadClient, string) ([]TestScope, error) {
+	return nil, nil
+}
+func (w *fakeReadWorkload) Write(context.Context, WorkloadClient, []TestScope, string, int64) error {
+	return nil
+}
+func (w *fakeReadWorkload) Count(context.Context, WorkloadClient, []TestScope) (WorkloadCounts, error) {
+	call := int(w.calls.Add(1)) - 1
+	if call >= 0 && call < len(w.errors) && w.errors[call] != nil {
+		return WorkloadCounts{}, w.errors[call]
+	}
+	return WorkloadCounts{Nodes: 1}, nil
+}
+func (w *fakeReadWorkload) ExpectedMinimum(int64) WorkloadCounts { return WorkloadCounts{} }
+func (w *fakeReadWorkload) ExpectedWriteCounts([]TestScope, string, int64) map[string]WorkloadCounts {
+	return nil
 }
