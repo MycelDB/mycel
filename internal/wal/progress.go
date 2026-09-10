@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/filestore"
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 // AppliedLSNStore persists the highest WAL LSN fully applied to durable state.
@@ -55,7 +56,7 @@ func (s *FileProgressStore) SetAppliedLSN(ctx context.Context, lsn LSN) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	doc := progressDocument{AppliedLSN: lsn, UpdatedAt: time.Now().UTC()}
@@ -64,5 +65,5 @@ func (s *FileProgressStore) SetAppliedLSN(ctx context.Context, lsn LSN) error {
 		return err
 	}
 	raw = append(raw, '\n')
-	return filestore.WriteFileAtomic(s.path, raw, 0o600)
+	return filestore.WriteFileAtomic(s.path, raw, fsperm.PrivateFile)
 }

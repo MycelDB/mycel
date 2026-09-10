@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	backupcluster "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/clustering/disrupttest"
 )
@@ -103,7 +105,7 @@ func (h *Harness) Run(ctx context.Context) (summary Summary, err error) {
 	if cfg.DryRun {
 		return summary, nil
 	}
-	if err := os.MkdirAll(h.ArtifactRoot, 0o755); err != nil {
+	if err := os.MkdirAll(h.ArtifactRoot, fsperm.SharedDir); err != nil {
 		return summary, err
 	}
 	clusterCfg, err := h.clusterConfig()
@@ -115,7 +117,7 @@ func (h *Harness) Run(ctx context.Context) (summary Summary, err error) {
 		if err != nil {
 			summary.Status = "FAIL"
 			summary.Error = summarize(err.Error(), 500)
-			_ = os.WriteFile(filepath.Join(h.ArtifactRoot, "error.txt"), []byte(err.Error()+"\n"), 0o644)
+			_ = os.WriteFile(filepath.Join(h.ArtifactRoot, "error.txt"), []byte(err.Error()+"\n"), fsperm.SharedFile)
 		}
 		_ = writeJSON(filepath.Join(h.ArtifactRoot, "result-summary.json"), summary)
 	}()
@@ -289,14 +291,14 @@ func (r *runState) appendJSONL(path string, value any) {
 	if strings.TrimSpace(path) == "" {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
 		return
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		return
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, fsperm.SharedFile)
 	if err != nil {
 		return
 	}
@@ -359,7 +361,7 @@ func (r *runState) captureBackup(ctx context.Context) (*backupResult, error) {
 		return nil, fmt.Errorf("backup status missing raft barrier evidence")
 	}
 	backupArtifactDir := filepath.Join(r.artifactRoot, "backup")
-	if err := os.MkdirAll(backupArtifactDir, 0o755); err != nil {
+	if err := os.MkdirAll(backupArtifactDir, fsperm.SharedDir); err != nil {
 		return nil, err
 	}
 	if err := r.copyFromPod(ctx, nodes[0].Name, filepath.Join(r.backupDir, "backup-set.json"), filepath.Join(backupArtifactDir, "backup-set.json")); err != nil {
@@ -373,7 +375,7 @@ func (r *runState) captureBackup(ctx context.Context) (*backupResult, error) {
 	for _, node := range st.GetNodes() {
 		pod := node.GetPodName()
 		podDir := filepath.Join(backupArtifactDir, pod)
-		if err := os.MkdirAll(podDir, 0o755); err != nil {
+		if err := os.MkdirAll(podDir, fsperm.SharedDir); err != nil {
 			return nil, err
 		}
 		archiveDest := filepath.Join(podDir, node.GetArchiveName())
@@ -509,10 +511,10 @@ func (r *runState) applyStatefulSet(ctx context.Context) error {
 
 func (r *runState) applyYAML(ctx context.Context, manifest, redactedArtifactPath string) error {
 	if strings.TrimSpace(redactedArtifactPath) != "" {
-		if err := os.MkdirAll(filepath.Dir(redactedArtifactPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(redactedArtifactPath), fsperm.SharedDir); err != nil {
 			return err
 		}
-		if err := os.WriteFile(redactedArtifactPath, []byte(redactManifest(manifest)), 0o644); err != nil {
+		if err := os.WriteFile(redactedArtifactPath, []byte(redactManifest(manifest)), fsperm.SharedFile); err != nil {
 			return err
 		}
 	}
@@ -628,7 +630,7 @@ spec:
 `, r.cfg.StatefulSet, i, r.cfg.Namespace, selectorApp(r.cfg.Selector, r.cfg.StatefulSet))
 	}
 	path := filepath.Join(r.artifactRoot, "restore", "pvcs.yaml")
-	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(b.String()), fsperm.SharedFile); err != nil {
 		return err
 	}
 	_, err := r.kubectl(ctx, "apply", "-f", path)
@@ -663,7 +665,7 @@ spec:
       emptyDir: {}
 `, restorePod, r.cfg.Namespace, pvc)
 		path := filepath.Join(r.artifactRoot, "restore", restorePod+".yaml")
-		if err := os.WriteFile(path, []byte(manifest), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(manifest), fsperm.SharedFile); err != nil {
 			return err
 		}
 		if _, err := r.kubectl(ctx, "apply", "-f", path); err != nil {
@@ -778,7 +780,7 @@ func (r *runState) connectPod(ctx context.Context, node disrupttest.NodeRef) (*d
 }
 
 func (r *runState) copyFromPod(ctx context.Context, pod, remote, local string) error {
-	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(local), fsperm.SharedDir); err != nil {
 		return err
 	}
 	_, err := r.kubectl(ctx, "-n", r.cfg.Namespace, "cp", pod+":"+remote, local)
@@ -874,12 +876,12 @@ func progressf(format string, args ...any) {
 }
 
 func writeJSON(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, fsperm.SharedFile)
 }

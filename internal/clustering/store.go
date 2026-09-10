@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
 )
 
@@ -31,7 +33,7 @@ func LoadOrCreate(ctx context.Context, opts Options) (LocalNode, error) {
 	}
 	dir := filepath.Join(opts.DataDir, "meta", "clustering")
 	path := filepath.Join(dir, nodeFileName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, fsperm.PrivateDir); err != nil {
 		return LocalNode{State: NodeStateFailed}, fmt.Errorf("create clustering metadata directory: %w", err)
 	}
 	id, err := readIdentity(path)
@@ -165,7 +167,7 @@ func writeIdentity(path string, id NodeIdentity) error {
 	}
 	raw = append(raw, '\n')
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := os.WriteFile(tmp, raw, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

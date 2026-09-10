@@ -12,11 +12,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/routing"
-	"github.com/myceldb/mycel/internal/graph/model"
-	"github.com/myceldb/mycel/internal/identity/model"
+	graph "github.com/myceldb/mycel/internal/graph/model"
+	identity "github.com/myceldb/mycel/internal/identity/model"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/space/access"
@@ -85,7 +88,7 @@ func (m *Module) Name() string { return ModuleName }
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	metaDir := filepath.Join(host.DataDir(), "meta")
-	created, err := ensureDir(metaDir, 0o700)
+	created, err := ensureDir(metaDir, fsperm.PrivateDir)
 	if err != nil {
 		return runtime.Abort(ModuleName, "filesystem", "failed to create meta directory", err)
 	}

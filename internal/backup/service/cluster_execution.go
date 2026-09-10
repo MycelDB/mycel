@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/clustering/backend"
@@ -560,7 +562,7 @@ func validateLocalClusterBackupDestination(dataDir, outputDir string) error {
 	if sameOrChild(absOutput, absData) {
 		return fmt.Errorf("output_dir must be outside data dir")
 	}
-	if err := os.MkdirAll(absOutput, 0o700); err != nil {
+	if err := os.MkdirAll(absOutput, fsperm.PrivateDir); err != nil {
 		return fmt.Errorf("create output_dir: %w", err)
 	}
 	probe, err := os.CreateTemp(absOutput, ".mycel-cluster-backup-probe-*")

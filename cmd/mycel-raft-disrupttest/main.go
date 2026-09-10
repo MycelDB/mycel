@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering/disrupttest"
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 func main() {
@@ -167,11 +168,11 @@ func writeResultSummary(result resultSummary) error {
 	if result.ArtifactDir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(result.ArtifactDir, 0o755); err != nil {
+	if err := os.MkdirAll(result.ArtifactDir, fsperm.SharedDir); err != nil {
 		return err
 	}
 	if result.rawError != "" {
-		if err := os.WriteFile(filepath.Join(result.ArtifactDir, "error.txt"), []byte(result.rawError+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(result.ArtifactDir, "error.txt"), []byte(result.rawError+"\n"), fsperm.SharedFile); err != nil {
 			return err
 		}
 	}
@@ -179,7 +180,7 @@ func writeResultSummary(result resultSummary) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(result.ArtifactDir, "result-summary.json"), data, 0o644)
+	return os.WriteFile(filepath.Join(result.ArtifactDir, "result-summary.json"), data, fsperm.SharedFile)
 }
 
 func printResultSummary(result resultSummary) {

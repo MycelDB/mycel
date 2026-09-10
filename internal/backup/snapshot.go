@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 func validateBackupDir(dataDir string, backupDir string) (string, string, error) {
@@ -36,7 +38,7 @@ func validateBackupDir(dataDir string, backupDir string) (string, string, error)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve data dir: %w", err)
 	}
-	if err := os.MkdirAll(backupAbs, 0o700); err != nil {
+	if err := os.MkdirAll(backupAbs, fsperm.PrivateDir); err != nil {
 		return "", "", fmt.Errorf("create backup dir: %w", err)
 	}
 	backupReal, err := filepath.EvalSymlinks(backupAbs)
@@ -66,7 +68,7 @@ func validateBackupDir(dataDir string, backupDir string) (string, string, error)
 }
 
 func stageSnapshot(ctx context.Context, dataDir string, stagingDir string, includeLogs bool) error {
-	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+	if err := os.MkdirAll(stagingDir, fsperm.PrivateDir); err != nil {
 		return err
 	}
 	return filepath.WalkDir(dataDir, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -119,7 +121,7 @@ func isLogPath(rel string) bool {
 }
 
 func copyFile(src string, dst string, mode fs.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	in, err := os.Open(src)
@@ -145,10 +147,10 @@ func copyFile(src string, dst string, mode fs.FileMode) error {
 }
 
 func createZipArchive(ctx context.Context, sourceDir string, archivePath string) error {
-	if err := os.MkdirAll(filepath.Dir(archivePath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(archivePath), fsperm.PrivateDir); err != nil {
 		return err
 	}
-	out, err := os.OpenFile(archivePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	out, err := os.OpenFile(archivePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return err
 	}

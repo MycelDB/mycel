@@ -13,7 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
@@ -491,7 +494,7 @@ func loadPersistedPolicy(dataDir string) (Policy, error) {
 
 func persistPolicy(dataDir string, policy Policy) error {
 	path := policyPath(dataDir)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	raw, err := json.MarshalIndent(policy, "", "  ")
@@ -499,7 +502,7 @@ func persistPolicy(dataDir string, policy Policy) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(tmp, append(raw, '\n'), fsperm.PrivateFile); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -554,14 +557,14 @@ func writeManifestAtomic(path string, manifest Manifest) error {
 }
 
 func writeManifestFile(path string, manifest Manifest) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(raw, '\n'), 0o600)
+	return os.WriteFile(path, append(raw, '\n'), fsperm.PrivateFile)
 }
 
 func firstNonEmpty(values ...string) string {

@@ -14,7 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+
 	"github.com/myceldb/mycel/internal/activity/model"
 )
 
@@ -34,7 +37,7 @@ func NewFileStore(path string) *FileStore {
 }
 
 func (s *FileStore) Open(ctx context.Context) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	file, err := os.Open(s.path)
@@ -104,7 +107,7 @@ func (s *FileStore) Append(ctx context.Context, event model.Event) (AppendResult
 	if err != nil {
 		return AppendResult{}, err
 	}
-	file, err := os.OpenFile(s.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(s.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return AppendResult{}, err
 	}

@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	activitymodel "github.com/myceldb/mycel/internal/activity/model"
 	activityservice "github.com/myceldb/mycel/internal/activity/service"
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
@@ -26,7 +28,7 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/logging"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
-	"github.com/myceldb/mycel/internal/graph/change"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
@@ -58,7 +60,7 @@ func ensureSecretEncryptionKey(cfg config.Config) (string, bool, error) {
 	} else if !os.IsNotExist(err) {
 		return "", false, fmt.Errorf("read local secret encryption key: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return "", false, fmt.Errorf("create local secret key directory: %w", err)
 	}
 	key := make([]byte, 32)
@@ -66,7 +68,7 @@ func ensureSecretEncryptionKey(cfg config.Config) (string, bool, error) {
 		return "", false, fmt.Errorf("generate local secret encryption key: %w", err)
 	}
 	encoded := base64.StdEncoding.EncodeToString(key)
-	if err := os.WriteFile(path, []byte(encoded+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(encoded+"\n"), fsperm.PrivateFile); err != nil {
 		return "", false, fmt.Errorf("write local secret encryption key: %w", err)
 	}
 	return encoded, true, nil
@@ -193,12 +195,12 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	dataDirCreated, err := ensureDir(cfg.DataDir, 0o700)
+	dataDirCreated, err := ensureDir(cfg.DataDir, fsperm.PrivateDir)
 	if err != nil {
 		return nil, fmt.Errorf("ensure data directory: %w", err)
 	}
 	logDir := filepath.Join(cfg.DataDir, "log")
-	logDirCreated, err := ensureDir(logDir, 0o700)
+	logDirCreated, err := ensureDir(logDir, fsperm.PrivateDir)
 	if err != nil {
 		return nil, fmt.Errorf("ensure log directory: %w", err)
 	}

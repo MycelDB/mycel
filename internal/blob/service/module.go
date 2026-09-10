@@ -15,8 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/myceldb/mycel/internal/blob/storage"
+	blobstorage "github.com/myceldb/mycel/internal/blob/storage"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/fsperm"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
@@ -67,7 +68,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	m.dataDir = filepath.Join(host.DataDir(), "blobs")
 	m.metaDir = filepath.Join(host.DataDir(), "blob_meta")
 	for _, dir := range []string{m.dataDir, m.metaDir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := os.MkdirAll(dir, fsperm.PrivateDir); err != nil {
 			return runtime.Abort(ModuleName, "storage", "create blob data directory", err)
 		}
 	}
@@ -332,7 +333,7 @@ func (m *Module) loadSpaceMetaLocked(spaceID string) (map[string]BlobMeta, error
 
 func (m *Module) saveSpaceMetaLocked(spaceID string, metas map[string]BlobMeta) error {
 	path := filepath.Join(m.metaDir, spaceID+".json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	raw, err := json.MarshalIndent(metas, "", "  ")
@@ -341,7 +342,7 @@ func (m *Module) saveSpaceMetaLocked(spaceID string, metas map[string]BlobMeta) 
 	}
 	raw = append(raw, '\n')
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := os.WriteFile(tmp, raw, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

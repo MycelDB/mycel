@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/filestore"
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 type Checkpoint struct {
@@ -45,14 +46,14 @@ func (s *CheckpointStore) Save(ctx context.Context, cp Checkpoint) error {
 	if cp.CreatedAt.IsZero() {
 		cp.CreatedAt = time.Now().UTC()
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	raw, err := json.MarshalIndent(cp, "", "  ")
 	if err != nil {
 		return err
 	}
-	return filestore.WriteFileAtomic(s.path, append(raw, '\n'), 0o600)
+	return filestore.WriteFileAtomic(s.path, append(raw, '\n'), fsperm.PrivateFile)
 }
 
 func CreateCheckpoint(ctx context.Context, progress AppliedLSNStore, store *CheckpointStore, target LSN) (Checkpoint, error) {

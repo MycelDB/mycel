@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -291,7 +293,7 @@ func cleanEntryPath(p string) (string, error) {
 }
 
 func writeTarFile(tw *tar.Writer, name string, data []byte) error {
-	hdr := &tar.Header{Name: name, Mode: 0o600, Size: int64(len(data)), ModTime: time.Unix(0, 0).UTC(), Typeflag: tar.TypeReg}
+	hdr := &tar.Header{Name: name, Mode: fsperm.PrivateFile, Size: int64(len(data)), ModTime: time.Unix(0, 0).UTC(), Typeflag: tar.TypeReg}
 	if err := tw.WriteHeader(hdr); err != nil {
 		return fmt.Errorf("write tar header %s: %w", name, err)
 	}

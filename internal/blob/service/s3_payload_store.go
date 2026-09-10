@@ -10,10 +10,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 )
 
@@ -67,7 +70,7 @@ func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, mimeType strin
 	if strings.TrimSpace(spaceID) == "" || r == nil {
 		return "", 0, PayloadDescriptor{}, fmt.Errorf("%w: space_id and reader are required", ErrInvalidInput)
 	}
-	if err := os.MkdirAll(s.tmpDir, 0o700); err != nil {
+	if err := os.MkdirAll(s.tmpDir, fsperm.PrivateDir); err != nil {
 		return "", 0, PayloadDescriptor{}, err
 	}
 	tmp, err := os.CreateTemp(s.tmpDir, "s3-put-*.blob")

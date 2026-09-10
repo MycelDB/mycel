@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 type Options struct {
@@ -39,7 +41,7 @@ func Open(ctx context.Context, opts Options) (*Manager, error) {
 	if opts.SegmentBytes <= 0 {
 		opts.SegmentBytes = 64 * 1024 * 1024
 	}
-	if err := os.MkdirAll(opts.Dir, 0o700); err != nil {
+	if err := os.MkdirAll(opts.Dir, fsperm.PrivateDir); err != nil {
 		return nil, err
 	}
 	m := &Manager{dir: opts.Dir, segmentBytes: opts.SegmentBytes}
@@ -226,7 +228,7 @@ func (m *Manager) scanAndOpen() error {
 	}
 	m.last = last
 	lastSeg := segments[len(segments)-1]
-	f, err := os.OpenFile(lastSeg.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(lastSeg.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return err
 	}
@@ -248,9 +250,9 @@ func (m *Manager) rotateLocked(start LSN) error {
 		}
 	}
 	path := filepath.Join(m.dir, segmentName(start))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if os.IsExist(err) {
-		f, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+		f, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	}
 	if err != nil {
 		return err

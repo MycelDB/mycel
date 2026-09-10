@@ -12,12 +12,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/runtime"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const (
@@ -150,7 +153,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		m.registrations = map[string]*registration{}
 	}
 	m.dataDir = filepath.Join(host.DataDir(), "graph-change-notification")
-	if err := os.MkdirAll(m.dataDir, 0o700); err != nil {
+	if err := os.MkdirAll(m.dataDir, fsperm.PrivateDir); err != nil {
 		return runtime.Abort(ModuleName, "storage", "create graph-change notification data directory", err)
 	}
 	if logger := host.Log(); logger != nil {
@@ -623,11 +626,11 @@ func (m *Module) compactHistoryLocked(key string) {
 
 func (m *Module) persistHistoryLocked(key, spaceID, domainID string) error {
 	path := m.eventLogPath(spaceID, domainID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return err
 	}
@@ -667,7 +670,7 @@ func (m *Module) loadCurrentState(spaceID, domainID string) (currentState, error
 
 func (m *Module) persistCurrentState(spaceID, domainID string, state currentState) error {
 	path := m.currentStatePath(spaceID, domainID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
@@ -675,7 +678,7 @@ func (m *Module) persistCurrentState(spaceID, domainID string, state currentStat
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(tmp, append(raw, '\n'), fsperm.PrivateFile); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
