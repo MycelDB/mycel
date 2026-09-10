@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 var ErrNotFound = errors.New("lexical index storage not found")
@@ -82,7 +84,7 @@ func (s Store) PublishSegment(data SegmentData) error {
 		return err
 	}
 	segmentsDir := filepath.Join(s.ScopeDir(), "segments")
-	if err := os.MkdirAll(segmentsDir, 0o755); err != nil {
+	if err := os.MkdirAll(segmentsDir, fsperm.SharedDir); err != nil {
 		return err
 	}
 	tmpDir, err := os.MkdirTemp(segmentsDir, ".tmp-"+data.Metadata.SegmentID+"-")
@@ -135,7 +137,7 @@ func WriteSegment(dir string, data SegmentData) error {
 	if err := validateSegmentID(data.Metadata.SegmentID); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, fsperm.SharedDir); err != nil {
 		return err
 	}
 	data = normalizeSegmentData(data)
@@ -143,21 +145,21 @@ func WriteSegment(dir string, data SegmentData) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "postings.bin"), postingsBytes, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "postings.bin"), postingsBytes, fsperm.SharedFile); err != nil {
 		return err
 	}
 	termsBytes, err := encodeTermIndex(termInfos)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "terms.idx"), termsBytes, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "terms.idx"), termsBytes, fsperm.SharedFile); err != nil {
 		return err
 	}
 	docsBytes, err := encodeDocs(data.Docs)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "docs.bin"), docsBytes, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "docs.bin"), docsBytes, fsperm.SharedFile); err != nil {
 		return err
 	}
 	if err := writeJSON(filepath.Join(dir, "segment.json"), data.Metadata); err != nil {
@@ -167,7 +169,7 @@ func WriteSegment(dir string, data SegmentData) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "checksum.sha256"), []byte(checksum+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "checksum.sha256"), []byte(checksum+"\n"), fsperm.SharedFile); err != nil {
 		return err
 	}
 	return fsyncFilesAndDir(dir, []string{"segment.json", "terms.idx", "postings.bin", "docs.bin", "checksum.sha256"})
@@ -525,11 +527,11 @@ func writeJSON(path string, value any) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, fsperm.SharedFile)
 }
 
 func writeJSONAtomic(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(value, "", "  ")

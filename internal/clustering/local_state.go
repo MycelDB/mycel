@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering/model"
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 const LocalStateVersion = 1
@@ -42,7 +43,7 @@ func WriteLocalState(dataDir string, state NodeState, now time.Time) error {
 		now = time.Now().UTC()
 	}
 	path := StatePath(dataDir)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return fmt.Errorf("create clustering state directory: %w", err)
 	}
 	local := LocalState{Version: LocalStateVersion, Mode: ModeForState(state), State: state, UpdatedAt: now.UTC()}
@@ -52,7 +53,7 @@ func WriteLocalState(dataDir string, state NodeState, now time.Time) error {
 	}
 	raw = append(raw, '\n')
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := os.WriteFile(tmp, raw, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

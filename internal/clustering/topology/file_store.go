@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/myceldb/mycel/internal/clustering/model"
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 type FileStore struct{ Path string }
@@ -46,7 +47,7 @@ func (s *FileStore) Save(ctx context.Context, snap model.Snapshot) error {
 	if snap.Version == 0 {
 		snap.Version = model.PeerStoreVersion
 	}
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.Path), fsperm.PrivateDir); err != nil {
 		return fmt.Errorf("create clustering peers directory: %w", err)
 	}
 	raw, err := json.MarshalIndent(snap, "", "  ")
@@ -55,7 +56,7 @@ func (s *FileStore) Save(ctx context.Context, snap model.Snapshot) error {
 	}
 	raw = append(raw, '\n')
 	tmp := s.Path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := os.WriteFile(tmp, raw, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, s.Path); err != nil {

@@ -12,6 +12,31 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/myceldb/mycel/internal/fsperm"
+)
+
+const (
+	daemonGRPCPort = 9091
+
+	activeDisruptionWarmupCap     = 5 * time.Second
+	activeDisruptionWarmupDivisor = 4
+
+	workloadReadyTimeout     = 90 * time.Second
+	workloadReadyLogInterval = 10 * time.Second
+	workloadReadyPollDelay   = 2 * time.Second
+
+	workloadProgressInterval = 30 * time.Second
+
+	writeRetryInitialBackoff = 100 * time.Millisecond
+	writeRetryMaxAttempts    = 4
+	readRetryInitialBackoff  = 100 * time.Millisecond
+	readRetryMaxAttempts     = 4
+	readCheckEveryWrites     = 10
+
+	finalConvergenceTimeout     = 2 * time.Minute
+	finalConvergenceLogInterval = 10 * time.Second
+	finalConvergencePollDelay   = 2 * time.Second
 )
 
 type ScenarioConfig struct {
@@ -133,7 +158,7 @@ func (s *serviceClient) openConnectionLocked(ctx context.Context) (Endpoint, fun
 	var cleanup func()
 	var err error
 	if s.pinned != nil {
-		endpoint, cleanup, err = s.driver.PortForward(ctx, *s.pinned, 9091)
+		endpoint, cleanup, err = s.driver.PortForward(ctx, *s.pinned, daemonGRPCPort)
 	} else {
 		endpoint, cleanup, err = s.driver.ServiceEndpoint(ctx)
 	}
@@ -347,7 +372,7 @@ func RunScenario(ctx context.Context, cfg Config, profile Profile, driver Cluste
 		profile = resolvedProfile
 	}
 	r := &scenarioRuntime{cfg: cfg, profile: profile, driver: driver, adminPassword: adminPassword, artifactDir: artifactDir, expectedScope: map[string]WorkloadCounts{}}
-	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+	if err := os.MkdirAll(artifactDir, fsperm.SharedDir); err != nil {
 		return ScenarioSummary{}, err
 	}
 	eventPath := filepath.Join(artifactDir, "write-events.jsonl")
@@ -368,7 +393,7 @@ func RunScenario(ctx context.Context, cfg Config, profile Profile, driver Cluste
 }
 
 func (r *scenarioRuntime) run(ctx context.Context) (ScenarioSummary, error) {
-	runID := time.Now().UTC().Format("20060102-150405")
+	runID := time.Now().UTC().Format(runIDTimestampLayout)
 	r.progressf("connecting service endpoint")
 	client := newServiceClient(r.driver, r.cfg.AdminUsername, r.adminPassword)
 	if err := client.Connect(ctx); err != nil {
@@ -425,7 +450,7 @@ func (r *scenarioRuntime) run(ctx context.Context) (ScenarioSummary, error) {
 	}
 	var recoveryDuration time.Duration
 	if len(restartNodes) > 0 {
-		warmup := minDuration(5*time.Second, r.profile.Duration/4)
+		warmup := minDuration(activeDisruptionWarmupCap, r.profile.Duration/activeDisruptionWarmupDivisor)
 		select {
 		case <-ctx.Done():
 			cancel()
@@ -515,7 +540,7 @@ func (r *scenarioRuntime) selectWorkloadSessionNode(ctx context.Context, workloa
 	}
 	var lastErr error
 	for _, node := range nodes {
-		endpoint, cleanup, err := r.driver.PortForward(ctx, node, 9091)
+		endpoint, cleanup, err := r.driver.PortForward(ctx, node, daemonGRPCPort)
 		if err != nil {
 			lastErr = fmt.Errorf("pod %s port-forward: %w", node.Name, err)
 			continue
@@ -538,8 +563,8 @@ func (r *scenarioRuntime) selectWorkloadSessionNode(ctx context.Context, workloa
 }
 
 func (r *scenarioRuntime) waitWorkloadReady(ctx context.Context, client *serviceClient, workload Workload, scopes []TestScope) error {
-	deadline := time.Now().Add(90 * time.Second)
-	nextLog := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(workloadReadyTimeout)
+	nextLog := time.Now().Add(workloadReadyLogInterval)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		if _, err := workload.Count(ctx, client, scopes); err != nil {
@@ -551,12 +576,12 @@ func (r *scenarioRuntime) waitWorkloadReady(ctx context.Context, client *service
 		}
 		if time.Now().After(nextLog) {
 			r.progressf("still waiting for workload scope readiness; last error: %v", lastErr)
-			nextLog = time.Now().Add(10 * time.Second)
+			nextLog = time.Now().Add(workloadReadyLogInterval)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-time.After(workloadReadyPollDelay):
 		}
 	}
 	return fmt.Errorf("workload scope did not become ready on all endpoints: %w", lastErr)
@@ -568,7 +593,7 @@ func (r *scenarioRuntime) countWorkloadThroughPods(ctx context.Context, workload
 		return err
 	}
 	for _, node := range nodes {
-		endpoint, cleanup, err := r.driver.PortForward(ctx, node, 9091)
+		endpoint, cleanup, err := r.driver.PortForward(ctx, node, daemonGRPCPort)
 		if err != nil {
 			return fmt.Errorf("pod %s port-forward: %w", node.Name, err)
 		}
@@ -588,7 +613,7 @@ func (r *scenarioRuntime) countWorkloadThroughPods(ctx context.Context, workload
 }
 
 func (r *scenarioRuntime) workloadProgress(ctx context.Context, stopAt time.Time) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(workloadProgressInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -624,8 +649,8 @@ func (r *scenarioRuntime) writer(ctx context.Context, stopAt time.Time, client *
 }
 
 func (r *scenarioRuntime) writeWithRetry(ctx context.Context, stopAt time.Time, client *serviceClient, workload Workload, scopes []TestScope, worker string, seq int64) {
-	backoff := 100 * time.Millisecond
-	for attempt := 1; attempt <= 4; attempt++ {
+	backoff := writeRetryInitialBackoff
+	for attempt := 1; attempt <= writeRetryMaxAttempts; attempt++ {
 		if !stopAt.IsZero() && !time.Now().Before(stopAt) {
 			return
 		}
@@ -635,7 +660,7 @@ func (r *scenarioRuntime) writeWithRetry(ctx context.Context, stopAt time.Time, 
 			r.succeeded.Add(1)
 			r.recordEvent(WriteEvent{Time: time.Now().UTC(), RunID: scopes[0].RunID, Worker: worker, Seq: seq, Attempt: attempt, Success: true})
 			r.addExpected(workload.ExpectedWriteCounts(scopes, worker, seq))
-			if seq%10 == 0 {
+			if seq%readCheckEveryWrites == 0 {
 				r.committedReadCheck(ctx, stopAt, client, workload, scopes, worker, seq)
 			}
 			return
@@ -650,7 +675,7 @@ func (r *scenarioRuntime) writeWithRetry(ctx context.Context, stopAt time.Time, 
 			r.permanent.Add(1)
 		}
 		r.recordEvent(WriteEvent{Time: time.Now().UTC(), RunID: scopes[0].RunID, Worker: worker, Seq: seq, Attempt: attempt, Success: false, Transient: transient, Error: err.Error()})
-		if !transient || attempt == 4 {
+		if !transient || attempt == writeRetryMaxAttempts {
 			return
 		}
 		_ = client.Reconnect(ctx)
@@ -665,11 +690,11 @@ func (r *scenarioRuntime) writeWithRetry(ctx context.Context, stopAt time.Time, 
 
 func (r *scenarioRuntime) committedReadCheck(ctx context.Context, stopAt time.Time, client *serviceClient, workload Workload, scopes []TestScope, worker string, seq int64) {
 	r.readChecks.Add(1)
-	backoff := 100 * time.Millisecond
+	backoff := readRetryInitialBackoff
 	var lastErr error
 	var lastTransient bool
 	lastAttempt := 0
-	for attempt := 1; attempt <= 4; attempt++ {
+	for attempt := 1; attempt <= readRetryMaxAttempts; attempt++ {
 		if ctx.Err() != nil || (!stopAt.IsZero() && !time.Now().Before(stopAt)) {
 			return
 		}
@@ -749,8 +774,8 @@ func (r *scenarioRuntime) recordReadEvent(ev ReadEvent) {
 }
 
 func (r *scenarioRuntime) waitFinalConvergence(ctx context.Context, client *serviceClient, workload Workload, scopes []TestScope) (map[string]WorkloadCounts, []Diagnostics, []string, error) {
-	deadline := time.Now().Add(2 * time.Minute)
-	nextLog := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(finalConvergenceTimeout)
+	nextLog := time.Now().Add(finalConvergenceLogInterval)
 	minimum := workload.ExpectedMinimum(r.succeeded.Load())
 	expected := r.expectedScopeSnapshot()
 	var lastCounts map[string]WorkloadCounts
@@ -776,12 +801,12 @@ func (r *scenarioRuntime) waitFinalConvergence(ctx context.Context, client *serv
 		}
 		if time.Now().After(nextLog) {
 			r.progressf("still waiting for final count convergence; last error: %v", lastErr)
-			nextLog = time.Now().Add(10 * time.Second)
+			nextLog = time.Now().Add(finalConvergenceLogInterval)
 		}
 		select {
 		case <-ctx.Done():
 			return nil, nil, nil, ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-time.After(finalConvergencePollDelay):
 		}
 	}
 	if lastCounts != nil || lastDiags != nil || lastWarnings != nil {
@@ -817,7 +842,7 @@ func (r *scenarioRuntime) perPodCounts(ctx context.Context, workload Workload, s
 	var diagnostics []Diagnostics
 	var warnings []string
 	for _, node := range nodes {
-		endpoint, cleanup, err := r.driver.PortForward(ctx, node, 9091)
+		endpoint, cleanup, err := r.driver.PortForward(ctx, node, daemonGRPCPort)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("pod %s port-forward: %w", node.Name, err)
 		}
@@ -843,7 +868,7 @@ func (r *scenarioRuntime) writeJSON(name string, value any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(r.artifactDir, name), data, 0o644)
+	return os.WriteFile(filepath.Join(r.artifactDir, name), data, fsperm.SharedFile)
 }
 
 func ResolveRestartNodes(ctx context.Context, driver ClusterDriver, ref string) ([]string, error) {

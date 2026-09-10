@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 type Harness struct {
@@ -166,14 +168,14 @@ func (h *Harness) artifactDir(kind string) string {
 
 func (h *Harness) writeConfigArtifact(summary Summary) error {
 	dir := h.artifactDir("setup")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, fsperm.SharedDir); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "summary.json"), data, 0o644)
+	return os.WriteFile(filepath.Join(dir, "summary.json"), data, fsperm.SharedFile)
 }
 
 func randomB64(n int) (string, error) {

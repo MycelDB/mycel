@@ -7,9 +7,12 @@ import (
 	"io"
 	"os"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
+	"github.com/spf13/cobra"
+
 	"github.com/myceldb/mycel/internal/cli/app"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
-	"github.com/spf13/cobra"
 )
 
 type domainJSONDocument struct {
@@ -77,7 +80,7 @@ func NewExportDomainCommand(a *app.App) *cobra.Command {
 			_, err = os.Stdout.Write(raw)
 			return err
 		}
-		if err := os.WriteFile(filePath, raw, 0o600); err != nil {
+		if err := os.WriteFile(filePath, raw, fsperm.PrivateFile); err != nil {
 			return err
 		}
 		return a.Print(map[string]any{"file": filePath, "blobs": len(doc.BlobMetadata), "nodes": len(doc.Nodes), "edges": len(doc.Edges)}, fmt.Sprintf("domain exported: %s (%d blobs, %d nodes, %d edges)\n", filePath, len(doc.BlobMetadata), len(doc.Nodes), len(doc.Edges)))

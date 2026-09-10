@@ -19,7 +19,31 @@ const (
 	DefaultImage        = "myceldb/mycel:raft-disrupt-local"
 	DefaultAdminUser    = "admin"
 	DefaultPartitionCnt = 16
-	DefaultNodeCount    = 3
+	DefaultNodeCount    = initialHarnessNodeCount
+)
+
+const (
+	runIDTimestampLayout    = "20060102-150405"
+	clusterNameMaxLen       = 32
+	initialHarnessNodeCount = 3
+)
+
+const (
+	smokeProfileDuration = 30 * time.Second
+	smokeProfileWriters  = 1
+	smokeProfileRate     = 5
+
+	smallProfileDuration = 2 * time.Minute
+	smallProfileWriters  = 2
+	smallProfileRate     = 20
+
+	mediumProfileDuration = 10 * time.Minute
+	mediumProfileWriters  = 4
+	mediumProfileRate     = 50
+
+	soakProfileDuration = time.Hour
+	soakProfileWriters  = 8
+	soakProfileRate     = 100
 )
 
 type Config struct {
@@ -72,7 +96,7 @@ func DefaultConfig(now time.Time) Config {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	suffix := now.Format("20060102-150405")
+	suffix := now.Format(runIDTimestampLayout)
 	return Config{
 		Driver:         DefaultDriver,
 		Provisioner:    DefaultProvisioner,
@@ -123,8 +147,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Provisioner) != "k3d" {
 		return fmt.Errorf("unsupported provisioner %q", c.Provisioner)
 	}
-	if len(strings.TrimSpace(c.ClusterName)) > 32 {
-		return fmt.Errorf("cluster name must be <= 32 characters for k3d")
+	if len(strings.TrimSpace(c.ClusterName)) > clusterNameMaxLen {
+		return fmt.Errorf("cluster name must be <= %d characters for k3d", clusterNameMaxLen)
 	}
 	for name, value := range map[string]string{"cluster name": c.ClusterName, "namespace": c.Namespace, "selector": c.Selector, "service": c.Service, "statefulset": c.StatefulSet, "image": c.Image, "admin username": c.AdminUsername, "profile": c.Profile, "artifacts dir": c.ArtifactsDir, "workload": c.Workload} {
 		if strings.TrimSpace(value) == "" {
@@ -134,8 +158,8 @@ func (c Config) Validate() error {
 	if _, err := appSelectorValue(c.Selector); err != nil {
 		return err
 	}
-	if c.NodeCount != 3 {
-		return fmt.Errorf("node count must be 3 for the initial disruption harness")
+	if c.NodeCount != initialHarnessNodeCount {
+		return fmt.Errorf("node count must be %d for the initial disruption harness", initialHarnessNodeCount)
 	}
 	if c.PartitionCount <= 0 {
 		return fmt.Errorf("partition count must be positive")
@@ -155,13 +179,13 @@ func (c Config) Validate() error {
 func ResolveProfile(name string) (Profile, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "smoke":
-		return Profile{Name: "smoke", Duration: 30 * time.Second, Writers: 1, Rate: 5}, nil
+		return Profile{Name: "smoke", Duration: smokeProfileDuration, Writers: smokeProfileWriters, Rate: smokeProfileRate}, nil
 	case "small":
-		return Profile{Name: "small", Duration: 2 * time.Minute, Writers: 2, Rate: 20}, nil
+		return Profile{Name: "small", Duration: smallProfileDuration, Writers: smallProfileWriters, Rate: smallProfileRate}, nil
 	case "medium":
-		return Profile{Name: "medium", Duration: 10 * time.Minute, Writers: 4, Rate: 50}, nil
+		return Profile{Name: "medium", Duration: mediumProfileDuration, Writers: mediumProfileWriters, Rate: mediumProfileRate}, nil
 	case "soak":
-		return Profile{Name: "soak", Duration: time.Hour, Writers: 8, Rate: 100}, nil
+		return Profile{Name: "soak", Duration: soakProfileDuration, Writers: soakProfileWriters, Rate: soakProfileRate}, nil
 	default:
 		return Profile{}, fmt.Errorf("unsupported pressure profile %q", name)
 	}

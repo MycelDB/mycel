@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 
 	"github.com/google/uuid"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 var segmentMagic = [4]byte{'K', 'S', 'E', 'G'}
@@ -17,8 +19,33 @@ var recordMagic = [4]byte{'K', 'R', 'E', 'C'}
 
 const segmentVersion uint16 = 1
 const recordVersion uint16 = 1
-const segmentHeaderLen = 8
-const recordHeaderLen = 48
+
+const (
+	magicLen    = 4
+	versionLen  = 2
+	kindLen     = 1
+	reservedLen = 1
+	uuidLen     = 16
+	uint32Len   = 4
+)
+
+const (
+	segmentMagicOffset   = 0
+	segmentVersionOffset = segmentMagicOffset + magicLen
+	segmentKindOffset    = segmentVersionOffset + versionLen
+	segmentHeaderLen     = segmentKindOffset + kindLen + reservedLen
+)
+
+const (
+	recordMagicOffset      = 0
+	recordVersionOffset    = recordMagicOffset + magicLen
+	recordKindOffset       = recordVersionOffset + versionLen
+	recordTxnIDOffset      = recordKindOffset + kindLen + reservedLen
+	recordEntityIDOffset   = recordTxnIDOffset + uuidLen
+	recordPayloadLenOffset = recordEntityIDOffset + uuidLen
+	recordCRCOffset        = recordPayloadLenOffset + uint32Len
+	recordHeaderLen        = recordCRCOffset + uint32Len
+)
 
 type segment struct {
 	id   string
@@ -40,7 +67,7 @@ type scannedRecord struct {
 }
 
 func openSegment(path string, kind SegmentKind) (*segment, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return nil, err
 	}
 	exists := true
@@ -51,7 +78,7 @@ func openSegment(path string, kind SegmentKind) (*segment, error) {
 			return nil, err
 		}
 	}
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, fsperm.PrivateFile)
 	if err != nil {
 		return nil, err
 	}
@@ -73,9 +100,9 @@ func (s *segment) writeHeader() error {
 		return err
 	}
 	buf := make([]byte, segmentHeaderLen)
-	copy(buf[0:4], segmentMagic[:])
-	binary.BigEndian.PutUint16(buf[4:6], segmentVersion)
-	buf[6] = byte(s.kind)
+	copy(buf[segmentMagicOffset:segmentVersionOffset], segmentMagic[:])
+	binary.BigEndian.PutUint16(buf[segmentVersionOffset:segmentKindOffset], segmentVersion)
+	buf[segmentKindOffset] = byte(s.kind)
 	_, err := s.file.Write(buf)
 	return err
 }
@@ -89,7 +116,7 @@ func (s *segment) verifyHeader() error {
 	if _, err := io.ReadFull(f, buf); err != nil {
 		return err
 	}
-	if string(buf[0:4]) != string(segmentMagic[:]) || binary.BigEndian.Uint16(buf[4:6]) != segmentVersion || buf[6] != byte(s.kind) {
+	if string(buf[segmentMagicOffset:segmentVersionOffset]) != string(segmentMagic[:]) || binary.BigEndian.Uint16(buf[segmentVersionOffset:segmentKindOffset]) != segmentVersion || buf[segmentKindOffset] != byte(s.kind) {
 		return fmt.Errorf("%w: bad segment header %s", ErrInvalidRecord, s.path)
 	}
 	return nil
@@ -100,13 +127,13 @@ func (s *segment) appendRecord(kind RecordKind, txnID, entityID uuid.UUID, paylo
 		return RecordLocation{}, err
 	}
 	header := make([]byte, recordHeaderLen)
-	copy(header[0:4], recordMagic[:])
-	binary.BigEndian.PutUint16(header[4:6], recordVersion)
-	header[6] = byte(kind)
-	copy(header[8:24], txnID[:])
-	copy(header[24:40], entityID[:])
-	binary.BigEndian.PutUint32(header[40:44], uint32(len(payload)))
-	binary.BigEndian.PutUint32(header[44:48], crc32.ChecksumIEEE(payload))
+	copy(header[recordMagicOffset:recordVersionOffset], recordMagic[:])
+	binary.BigEndian.PutUint16(header[recordVersionOffset:recordKindOffset], recordVersion)
+	header[recordKindOffset] = byte(kind)
+	copy(header[recordTxnIDOffset:recordEntityIDOffset], txnID[:])
+	copy(header[recordEntityIDOffset:recordPayloadLenOffset], entityID[:])
+	binary.BigEndian.PutUint32(header[recordPayloadLenOffset:recordCRCOffset], uint32(len(payload)))
+	binary.BigEndian.PutUint32(header[recordCRCOffset:recordHeaderLen], crc32.ChecksumIEEE(payload))
 	if _, err := s.file.Write(header); err != nil {
 		return RecordLocation{}, err
 	}
@@ -130,7 +157,7 @@ func scanSegment(path string, kind SegmentKind, visit func(scannedRecord) error)
 	if _, err := io.ReadFull(f, h); err != nil {
 		return err
 	}
-	if string(h[0:4]) != string(segmentMagic[:]) || binary.BigEndian.Uint16(h[4:6]) != segmentVersion || h[6] != byte(kind) {
+	if string(h[segmentMagicOffset:segmentVersionOffset]) != string(segmentMagic[:]) || binary.BigEndian.Uint16(h[segmentVersionOffset:segmentKindOffset]) != segmentVersion || h[segmentKindOffset] != byte(kind) {
 		return fmt.Errorf("%w: bad segment header %s", ErrInvalidRecord, path)
 	}
 	for {
@@ -143,14 +170,14 @@ func scanSegment(path string, kind SegmentKind, visit func(scannedRecord) error)
 			}
 			return err
 		}
-		if string(buf[0:4]) != string(recordMagic[:]) || binary.BigEndian.Uint16(buf[4:6]) != recordVersion {
+		if string(buf[recordMagicOffset:recordVersionOffset]) != string(recordMagic[:]) || binary.BigEndian.Uint16(buf[recordVersionOffset:recordKindOffset]) != recordVersion {
 			return fmt.Errorf("%w: bad record header at %s:%d", ErrInvalidRecord, path, off)
 		}
 		var txnID, entityID uuid.UUID
-		copy(txnID[:], buf[8:24])
-		copy(entityID[:], buf[24:40])
-		l := binary.BigEndian.Uint32(buf[40:44])
-		crc := binary.BigEndian.Uint32(buf[44:48])
+		copy(txnID[:], buf[recordTxnIDOffset:recordEntityIDOffset])
+		copy(entityID[:], buf[recordEntityIDOffset:recordPayloadLenOffset])
+		l := binary.BigEndian.Uint32(buf[recordPayloadLenOffset:recordCRCOffset])
+		crc := binary.BigEndian.Uint32(buf[recordCRCOffset:recordHeaderLen])
 		payload := make([]byte, l)
 		if l > 0 {
 			if _, err := io.ReadFull(f, payload); err != nil {
@@ -163,7 +190,7 @@ func scanSegment(path string, kind SegmentKind, visit func(scannedRecord) error)
 		if crc32.ChecksumIEEE(payload) != crc {
 			return fmt.Errorf("%w: bad crc at %s:%d", ErrInvalidRecord, path, off)
 		}
-		if err := visit(scannedRecord{header: recordHeader{kind: RecordKind(buf[6]), txnID: txnID, entityID: entityID, payloadLen: l, crc: crc}, location: RecordLocation{Segment: filepath.Base(path), Offset: off, Length: uint32(recordHeaderLen) + l}, payload: payload}); err != nil {
+		if err := visit(scannedRecord{header: recordHeader{kind: RecordKind(buf[recordKindOffset]), txnID: txnID, entityID: entityID, payloadLen: l, crc: crc}, location: RecordLocation{Segment: filepath.Base(path), Offset: off, Length: uint32(recordHeaderLen) + l}, payload: payload}); err != nil {
 			return err
 		}
 	}

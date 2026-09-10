@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 func (m *Module) loadRaftAppliedCommands() {
@@ -66,11 +68,11 @@ func (m *Module) rememberRaftAppliedCommand(ctx context.Context, commandID strin
 		return err
 	}
 	path := m.raftAppliedCommandsPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
+	if err := os.WriteFile(tmp, payload, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

@@ -14,7 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+
 	"github.com/myceldb/mycel/internal/filestore"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 )
@@ -440,14 +443,14 @@ func (b MycelFileBackend) readLatestSearchIndex(key SearchIndexKey) (latestSearc
 
 func (b MycelFileBackend) writeLatestSearchIndex(file latestSearchIndexFile) error {
 	path := b.searchLatestPath(file.Key)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
 		return err
 	}
 	raw, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return err
 	}
-	return filestore.WriteFileAtomic(path, append(raw, '\n'), 0o600)
+	return filestore.WriteFileAtomic(path, append(raw, '\n'), fsperm.PrivateFile)
 }
 
 func (b MycelFileBackend) writeSearchIndexState(key SearchIndexKey, state string, liveCount int64, lastErr string) (domainsemantic.SemanticSearchIndexState, error) {
@@ -457,14 +460,14 @@ func (b MycelFileBackend) writeSearchIndexState(key SearchIndexKey, state string
 		value.LastRebuildAt = &now
 	}
 	path := b.searchStatePath(key)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
 		return value, err
 	}
 	raw, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return value, err
 	}
-	return value, filestore.WriteFileAtomic(path, append(raw, '\n'), 0o600)
+	return value, filestore.WriteFileAtomic(path, append(raw, '\n'), fsperm.PrivateFile)
 }
 
 func (b MycelFileBackend) searchIndexDir(key SearchIndexKey) string {
@@ -521,7 +524,7 @@ func (b MycelFileBackend) ensure(ctx context.Context, spaceID uuid.UUID, indexID
 	}
 	dir := filepath.Join(b.GraphsDir, spaceID.String(), "semantic", "indexes", indexID.String())
 	segments := filepath.Join(dir, recordsDir)
-	if err := os.MkdirAll(segments, 0o755); err != nil {
+	if err := os.MkdirAll(segments, fsperm.SharedDir); err != nil {
 		return "", err
 	}
 	if err := ensureManifest(dir, indexID, vectorStoreID); err != nil {
@@ -591,7 +594,7 @@ func appendRecord(path string, rec domainsemantic.AdvancedEmbeddingRecord) error
 	}
 	vector := encodeVector32(rec.Vector)
 	crc := crc32.ChecksumIEEE(append(append([]byte{}, meta...), vector...))
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return err
 	}
@@ -738,7 +741,7 @@ func readRecord(r io.Reader) (domainsemantic.AdvancedEmbeddingRecord, error) {
 }
 
 func ensureManifest(dir string, indexID domainsemantic.SemanticIndexID, vectorStoreID domainsemantic.VectorStoreID) error {
-	if err := os.MkdirAll(filepath.Join(dir, recordsDir), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, recordsDir), fsperm.SharedDir); err != nil {
 		return err
 	}
 	path := filepath.Join(dir, manifestFile)
@@ -785,7 +788,7 @@ func ensureSegment(path string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return err
 	}
@@ -828,7 +831,7 @@ func persistJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	return filestore.WriteFileAtomic(path, append(raw, '\n'), 0o600)
+	return filestore.WriteFileAtomic(path, append(raw, '\n'), fsperm.PrivateFile)
 }
 
 func encodeVector32(v []float64) []byte {
