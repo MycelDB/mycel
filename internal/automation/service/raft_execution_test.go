@@ -1011,14 +1011,7 @@ func newAutomationGraphExecutionRaftCluster(t *testing.T, ctx context.Context, p
 func (c automationGraphExecutionRaftCluster) leaderForSpace(t *testing.T, spaceID domainspace.SpaceID) consensus.NodeID {
 	t.Helper()
 	partitionID := automationSpacePartitionForTest(t, spaceID, c.partitionCount)
-	for _, mg := range c.groups {
-		group, ok := mg.Group(consensus.PartitionGroupID(partitionID))
-		if ok && group.Leader() != 0 {
-			return group.Leader()
-		}
-	}
-	t.Fatalf("no leader for space partition %d", partitionID)
-	return 0
+	return waitForAgreedAutomationPartitionLeader(t, c.groups, partitionID, nil)
 }
 
 func (c automationGraphExecutionRaftCluster) enableGraphAutomationSinks() {
@@ -1287,15 +1280,7 @@ func (c automationExecutionRaftCluster) startAutomationRuntimeReadBackends(t *te
 func (c automationExecutionRaftCluster) leaderForSpace(t *testing.T, spaceID domainspace.SpaceID) consensus.NodeID {
 	t.Helper()
 	partitionID := automationSpacePartitionForTest(t, spaceID, c.partitionCount)
-	for nodeID, mg := range c.groups {
-		group, ok := mg.Group(consensus.PartitionGroupID(partitionID))
-		if ok && group.Leader() != 0 {
-			return group.Leader()
-		}
-		_ = nodeID
-	}
-	t.Fatalf("no leader for space partition %d", partitionID)
-	return 0
+	return waitForAgreedAutomationPartitionLeader(t, c.groups, partitionID, c.crashed)
 }
 
 func (c automationExecutionRaftCluster) waitForInvocation(t *testing.T, domainID graph.DomainID, invocationID string) {
@@ -1324,6 +1309,50 @@ func (c automationExecutionRaftCluster) crashNode(nodeID consensus.NodeID) {
 	if mg := c.groups[nodeID]; mg != nil {
 		mg.Stop()
 	}
+}
+
+func waitForAgreedAutomationPartitionLeader(t *testing.T, groups map[consensus.NodeID]*consensus.MultiGroup, partitionID uint32, crashed map[consensus.NodeID]bool) consensus.NodeID {
+	t.Helper()
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var leader consensus.NodeID
+	stable := 0
+	if err := consensus.WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		candidate := consensus.NodeID(0)
+		for nodeID, mg := range groups {
+			if crashed != nil && crashed[nodeID] {
+				continue
+			}
+			group, ok := mg.Group(consensus.PartitionGroupID(partitionID))
+			if !ok {
+				stable = 0
+				return false
+			}
+			observed := group.Leader()
+			if observed == 0 || (crashed != nil && crashed[observed]) {
+				stable = 0
+				return false
+			}
+			if candidate == 0 {
+				candidate = observed
+				continue
+			}
+			if observed != candidate {
+				stable = 0
+				return false
+			}
+		}
+		if candidate == 0 {
+			stable = 0
+			return false
+		}
+		leader = candidate
+		stable++
+		return stable >= 3
+	}); err != nil {
+		t.Fatalf("raft leader not stable for space partition %d: %v", partitionID, err)
+	}
+	return leader
 }
 
 func (c automationExecutionRaftCluster) waitForNewLeaderForSpace(t *testing.T, spaceID domainspace.SpaceID, previous consensus.NodeID) consensus.NodeID {
