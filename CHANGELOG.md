@@ -6,6 +6,10 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+### Added
+
+- Added `object_store` blob backend configuration with first-class S3-compatible provider settings for AWS S3, MinIO, and LocalStack while retaining legacy `s3` aliases (#48).
+
 ## [v0.12.0] - 2026-09-09
 
 ### Added

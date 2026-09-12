@@ -131,6 +131,33 @@ func TestS3PayloadStorePutOpenDelete(t *testing.T) {
 	}
 }
 
+func TestObjectStorePayloadStorePutUsesObjectStoreBackendDescriptor(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeS3PayloadClient()
+	store, err := newS3PayloadStoreWithClient(Config{Backend: "object_store", ObjectStoreProvider: "s3-compatible", S3Bucket: "my-bucket", S3Prefix: "tenant-a"}, t.TempDir(), fake)
+	if err != nil {
+		t.Fatalf("newS3PayloadStoreWithClient() error = %v", err)
+	}
+	_, _, desc, err := store.Put(ctx, "space-1", "text/plain", strings.NewReader("hello object store"))
+	if err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	if desc.Backend != "object_store" || desc.S3Bucket != "my-bucket" || !strings.HasPrefix(desc.S3Key, "tenant-a/spaces/space-1/objects/") {
+		t.Fatalf("unexpected descriptor: %+v", desc)
+	}
+	ok, err := store.Exists(ctx, desc)
+	if err != nil || !ok {
+		t.Fatalf("Exists() = %v, %v; want true, nil", ok, err)
+	}
+}
+
+func TestEffectiveBlobConfigDefaultsObjectStoreProvider(t *testing.T) {
+	cfg := effectiveBlobConfig(Config{Backend: "object_store", S3Bucket: "my-bucket"})
+	if cfg.ObjectStoreProvider != "s3-compatible" {
+		t.Fatalf("ObjectStoreProvider = %q, want s3-compatible", cfg.ObjectStoreProvider)
+	}
+}
+
 func TestModuleS3DeleteIsBestEffortAfterMetadataDelete(t *testing.T) {
 	ctx := context.Background()
 	fake := newFakeS3PayloadClient()

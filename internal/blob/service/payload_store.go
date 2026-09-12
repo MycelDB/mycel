@@ -13,14 +13,20 @@ import (
 )
 
 const (
-	blobBackendLocal = "local"
-	blobBackendS3    = "s3"
+	blobBackendLocal       = "local"
+	blobBackendS3          = "s3"
+	blobBackendObjectStore = "object_store"
+	objectStoreProviderS3  = "s3-compatible"
 )
 
 func effectiveBlobConfig(cfg Config) Config {
 	cfg.Backend = strings.ToLower(strings.TrimSpace(cfg.Backend))
 	if cfg.Backend == "" {
 		cfg.Backend = blobBackendLocal
+	}
+	cfg.ObjectStoreProvider = strings.ToLower(strings.TrimSpace(cfg.ObjectStoreProvider))
+	if cfg.ObjectStoreProvider == "" && isObjectStoreBackend(cfg.Backend) {
+		cfg.ObjectStoreProvider = objectStoreProviderS3
 	}
 	cfg.S3Bucket = strings.TrimSpace(cfg.S3Bucket)
 	cfg.S3Prefix = strings.Trim(strings.TrimSpace(cfg.S3Prefix), "/")
@@ -35,9 +41,12 @@ func validateBlobConfig(cfg Config) error {
 	switch cfg.Backend {
 	case blobBackendLocal:
 		return nil
-	case blobBackendS3:
+	case blobBackendS3, blobBackendObjectStore:
+		if provider := strings.TrimSpace(cfg.ObjectStoreProvider); provider != "" && provider != objectStoreProviderS3 {
+			return fmt.Errorf("object store blob backend provider must be %s", objectStoreProviderS3)
+		}
 		if cfg.S3Bucket == "" {
-			return fmt.Errorf("S3 blob backend requires MYCELD_BLOB_S3_BUCKET")
+			return fmt.Errorf("object store blob backend requires MYCELD_BLOB_OBJECT_STORE_BUCKET")
 		}
 		return nil
 	default:
@@ -45,10 +54,15 @@ func validateBlobConfig(cfg Config) error {
 	}
 }
 
+func isObjectStoreBackend(backend string) bool {
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	return backend == blobBackendS3 || backend == blobBackendObjectStore
+}
+
 func (m *Module) putPayload(ctx context.Context, spaceID string, mimeType string, r io.Reader) (graphmodel.BlobID, int64, PayloadDescriptor, error) {
-	if m.config.Backend == blobBackendS3 {
+	if isObjectStoreBackend(m.config.Backend) {
 		if m.s3Store == nil {
-			return "", 0, PayloadDescriptor{}, fmt.Errorf("S3 blob backend is not initialized")
+			return "", 0, PayloadDescriptor{}, fmt.Errorf("object store blob backend is not initialized")
 		}
 		return m.s3Store.Put(ctx, spaceID, mimeType, r)
 	}
@@ -65,9 +79,9 @@ func (m *Module) putPayload(ctx context.Context, spaceID string, mimeType string
 
 func (m *Module) payloadExists(ctx context.Context, desc PayloadDescriptor) (bool, error) {
 	switch payloadBackend(desc) {
-	case blobBackendS3:
+	case blobBackendS3, blobBackendObjectStore:
 		if m.s3Store == nil {
-			return false, fmt.Errorf("S3 blob backend is not initialized")
+			return false, fmt.Errorf("object store blob backend is not initialized")
 		}
 		return m.s3Store.Exists(ctx, desc)
 	default:
@@ -81,9 +95,9 @@ func (m *Module) payloadExists(ctx context.Context, desc PayloadDescriptor) (boo
 
 func (m *Module) openPayload(ctx context.Context, desc PayloadDescriptor) (io.ReadCloser, error) {
 	switch payloadBackend(desc) {
-	case blobBackendS3:
+	case blobBackendS3, blobBackendObjectStore:
 		if m.s3Store == nil {
-			return nil, fmt.Errorf("S3 blob backend is not initialized")
+			return nil, fmt.Errorf("object store blob backend is not initialized")
 		}
 		return m.s3Store.Open(ctx, desc)
 	default:
@@ -97,9 +111,9 @@ func (m *Module) openPayload(ctx context.Context, desc PayloadDescriptor) (io.Re
 
 func (m *Module) deletePayload(ctx context.Context, desc PayloadDescriptor) error {
 	switch payloadBackend(desc) {
-	case blobBackendS3:
+	case blobBackendS3, blobBackendObjectStore:
 		if m.s3Store == nil {
-			return fmt.Errorf("S3 blob backend is not initialized")
+			return fmt.Errorf("object store blob backend is not initialized")
 		}
 		return m.s3Store.Delete(ctx, desc)
 	default:
@@ -126,7 +140,7 @@ func samePayloadLocation(a PayloadDescriptor, b PayloadDescriptor) bool {
 	if a.BlobID != b.BlobID || a.SpaceID != b.SpaceID {
 		return false
 	}
-	if payloadBackend(a) == blobBackendS3 {
+	if isObjectStoreBackend(payloadBackend(a)) {
 		return strings.TrimSpace(a.S3Bucket) == strings.TrimSpace(b.S3Bucket) && strings.TrimSpace(a.S3Key) == strings.TrimSpace(b.S3Key)
 	}
 	return true
@@ -136,7 +150,7 @@ func (m *Module) logBestEffortPayloadDeleteFailure(desc PayloadDescriptor, err e
 	if err == nil || m.logger == nil {
 		return
 	}
-	m.logger.Warn("S3 blob payload delete failed after metadata delete; object may need garbage collection", "space_id", desc.SpaceID, "blob_id", desc.BlobID, "s3_bucket", desc.S3Bucket, "s3_key", desc.S3Key, "error", err)
+	m.logger.Warn("object store blob payload delete failed after metadata delete; object may need garbage collection", "space_id", desc.SpaceID, "blob_id", desc.BlobID, "bucket", desc.S3Bucket, "key", desc.S3Key, "error", err)
 }
 
 func (m *Module) openLocalStore(spaceID string) (*blobstorage.Store, error) {
@@ -147,8 +161,8 @@ func logBlobBackend(logger *slog.Logger, cfg Config, dataDir string) {
 	if logger == nil {
 		return
 	}
-	if cfg.Backend == blobBackendS3 {
-		logger.Info("blob module initialized", "storage", "s3", "bucket", cfg.S3Bucket, "prefix", cfg.S3Prefix, "local_staging_path", dataDir)
+	if isObjectStoreBackend(cfg.Backend) {
+		logger.Info("blob module initialized", "storage", "object_store", "provider", cfg.ObjectStoreProvider, "bucket", cfg.S3Bucket, "prefix", cfg.S3Prefix, "local_staging_path", dataDir)
 		return
 	}
 	logger.Info("blob module initialized", "storage", "file", "path", dataDir)

@@ -78,10 +78,10 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
-	if m.config.Backend == blobBackendS3 && m.s3Store == nil {
-		store, err := newS3PayloadStore(ctx, m.config, filepath.Join(m.dataDir, "_s3_staging"))
+	if isObjectStoreBackend(m.config.Backend) && m.s3Store == nil {
+		store, err := newS3PayloadStore(ctx, m.config, filepath.Join(m.dataDir, "_object_store_staging"))
 		if err != nil {
-			return runtime.Abort(ModuleName, "storage", "initialize S3 blob backend", err)
+			return runtime.Abort(ModuleName, "storage", "initialize object store blob backend", err)
 		}
 		m.s3Store = store
 	}
@@ -143,7 +143,7 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 	}
 	if existing, ok := metas[blobID]; ok {
 		if !samePayloadLocation(descriptorFromMeta(existing), payload) {
-			if err := m.deletePayload(ctx, payload); err != nil && payloadBackend(payload) == blobBackendS3 {
+			if err := m.deletePayload(ctx, payload); err != nil && isObjectStoreBackend(payloadBackend(payload)) {
 				m.logBestEffortPayloadDeleteFailure(payload, err)
 			}
 		}
