@@ -58,6 +58,41 @@ func TestStandaloneBootstrapCreatesSystemAdminPrincipal(t *testing.T) {
 	}
 }
 
+func TestMeshBootstrapCreatesConfiguredSystemAdminPrincipal(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	host := runtimetest.New(runtimetest.Config{DataDir: filepath.Join(t.TempDir(), "data"), Mode: "mesh", BootstrapAdminUsername: "admin", BootstrapAdminPassword: "admin-pass"}, nil)
+	if res := m.Init(ctx, host); !res.OK {
+		t.Fatalf("Init() failed: %v", res.Error)
+	}
+	admin, err := m.FindPrincipal(ctx, "admin", "")
+	if err != nil {
+		t.Fatalf("FindPrincipal(admin) error = %v", err)
+	}
+	if admin.Username != "admin" || admin.Kind != PrincipalKindHuman || admin.State != PrincipalStateActive || !admin.LoginEnabled {
+		t.Fatalf("unexpected bootstrap principal: %#v", admin)
+	}
+	ok, err := m.HasCapability(ctx, admin.ID, "identity.principal.update")
+	if err != nil || !ok {
+		t.Fatalf("bootstrap principal should have system-admin capabilities, ok=%v err=%v", ok, err)
+	}
+	if _, err := m.AuthenticatePrincipal(ctx, "admin", "admin-pass"); err != nil {
+		t.Fatalf("AuthenticatePrincipal(bootstrap) error = %v", err)
+	}
+}
+
+func TestMeshBootstrapWithoutConfiguredCredentialsDoesNotCreateHumanAdmin(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	host := runtimetest.New(runtimetest.Config{DataDir: filepath.Join(t.TempDir(), "data"), Mode: "mesh"}, nil)
+	if res := m.Init(ctx, host); !res.OK {
+		t.Fatalf("Init() failed: %v", res.Error)
+	}
+	if _, err := m.FindPrincipal(ctx, "admin", ""); !errors.Is(err, ErrPrincipalNotFound) {
+		t.Fatalf("FindPrincipal(admin) error = %v, want ErrPrincipalNotFound", err)
+	}
+}
+
 func TestPrincipalCRUDGrantsSessionsAndLastAdminInvariant(t *testing.T) {
 	m, ctx := newTestModule(t)
 	admin, err := m.FindPrincipal(ctx, "admin", "")
