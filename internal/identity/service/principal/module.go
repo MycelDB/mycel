@@ -117,8 +117,8 @@ func (m *Module) EnsureBootstrapPrincipals(ctx context.Context, mode, bootstrapU
 	if err := m.ensureBuiltinServicePrincipals(ctx, logger); err != nil {
 		return err
 	}
-	if strings.EqualFold(strings.TrimSpace(mode), "standalone") {
-		if err := m.ensureStandaloneSystemAdmin(ctx, logger, bootstrapUsername, bootstrapPassword); err != nil {
+	if shouldEnsureBootstrapSystemAdmin(mode, bootstrapUsername, bootstrapPassword) {
+		if err := m.ensureBootstrapSystemAdmin(ctx, logger, bootstrapUsername, bootstrapPassword); err != nil {
 			return err
 		}
 	}
@@ -610,7 +610,11 @@ func (m *Module) hasCapabilityInScope(ctx context.Context, principalID string, c
 	return false, nil
 }
 
-func (m *Module) ensureStandaloneSystemAdmin(ctx context.Context, logger *slog.Logger, username string, password string) error {
+func shouldEnsureBootstrapSystemAdmin(mode, bootstrapUsername, bootstrapPassword string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), "standalone") || strings.TrimSpace(bootstrapUsername) != "" || bootstrapPassword != ""
+}
+
+func (m *Module) ensureBootstrapSystemAdmin(ctx context.Context, logger *slog.Logger, username string, password string) error {
 	if m.hasActiveSystemAdmin(ctx) {
 		return nil
 	}
@@ -642,9 +646,9 @@ func (m *Module) ensureStandaloneSystemAdmin(ctx context.Context, logger *slog.L
 	}
 	if logger != nil {
 		if generated {
-			logger.Warn("default standalone principal created; change this password immediately", "username", username, "password", password, "change_password_required", true)
+			logger.Warn("default bootstrap system-admin principal created; change this password immediately", "username", username, "password", password, "change_password_required", true)
 		} else {
-			logger.Warn("default standalone principal created from configured bootstrap credentials", "username", username, "password_configured", true, "change_password_required", true)
+			logger.Warn("default bootstrap system-admin principal created from configured bootstrap credentials", "username", username, "password_configured", true, "change_password_required", true)
 		}
 	}
 	return nil
