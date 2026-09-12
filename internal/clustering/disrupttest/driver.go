@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 type NodeRef struct {
@@ -316,7 +318,7 @@ func (d *K3SDriver) CollectArtifacts(ctx context.Context, dir string) error {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, fsperm.SharedDir); err != nil {
 		return err
 	}
 	commands := map[string][]string{
@@ -330,7 +332,7 @@ func (d *K3SDriver) CollectArtifacts(ctx context.Context, dir string) error {
 		if err != nil {
 			content += "\nERROR: " + err.Error() + "\n" + res.Stderr
 		}
-		if writeErr := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); writeErr != nil {
+		if writeErr := os.WriteFile(filepath.Join(dir, name), []byte(content), fsperm.SharedFile); writeErr != nil {
 			return writeErr
 		}
 	}

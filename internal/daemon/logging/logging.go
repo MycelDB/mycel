@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 type Config struct {
@@ -25,7 +27,7 @@ func Configure(cfg Config) (*Logger, error) {
 	if err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}

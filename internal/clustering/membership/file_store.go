@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 type FileStore struct {
@@ -67,7 +69,7 @@ func (s *FileStore) Save(ctx context.Context, data StoreData) error {
 	if data.Members == nil {
 		data.Members = []Member{}
 	}
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.Path), fsperm.PrivateDir); err != nil {
 		return fmt.Errorf("create membership directory: %w", err)
 	}
 	raw, err := json.MarshalIndent(data, "", "  ")
@@ -76,7 +78,7 @@ func (s *FileStore) Save(ctx context.Context, data StoreData) error {
 	}
 	raw = append(raw, '\n')
 	tmp := s.Path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := os.WriteFile(tmp, raw, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, s.Path); err != nil {

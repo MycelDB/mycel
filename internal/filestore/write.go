@@ -3,12 +3,14 @@ package filestore
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 // WriteFileAtomic writes data to path by writing a temporary file in the same
 // directory, syncing it, and renaming it over the target path.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")

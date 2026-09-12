@@ -8,7 +8,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	schema "github.com/myceldb/mycel/internal/schema/model"
 )
@@ -401,7 +404,7 @@ func (s *LocalStore) loadIndexManifestLocked() error {
 }
 
 func (s *LocalStore) writeIndexManifestLocked() error {
-	if err := os.MkdirAll(filepath.Join(s.path, "indexes"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(s.path, "indexes"), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	manifest := indexManifestFile{FormatVersion: 1}
@@ -425,7 +428,7 @@ func (s *LocalStore) writeIndexManifestLocked() error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(filepath.Join(s.path, "indexes", "manifest.json"), data, 0o600)
+	return os.WriteFile(filepath.Join(s.path, "indexes", "manifest.json"), data, fsperm.PrivateFile)
 }
 
 func normalizeConfiguredIndexes(indexes []schema.IndexDefinition) []schema.IndexDefinition {

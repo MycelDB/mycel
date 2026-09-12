@@ -107,7 +107,7 @@ func (m *Module) ensureRaftPayloadWritePolicy(ctx context.Context, desc PayloadD
 	if err := m.ensureRaftPayloadAvailable(ctx, desc); err != nil {
 		return err
 	}
-	if payloadBackend(desc) == blobBackendS3 {
+	if isObjectStoreBackend(payloadBackend(desc)) {
 		return nil
 	}
 	if !m.hasRemoteRaftPeerAddress() {
@@ -139,8 +139,8 @@ func (m *Module) ensureRaftPayloadAvailable(ctx context.Context, desc PayloadDes
 	if ok, err := m.raftPayloadExists(ctx, desc); err != nil || ok {
 		return err
 	}
-	if payloadBackend(desc) == blobBackendS3 {
-		return fmt.Errorf("S3 blob payload %s is not available", desc.BlobID)
+	if isObjectStoreBackend(payloadBackend(desc)) {
+		return fmt.Errorf("object store blob payload %s is not available", desc.BlobID)
 	}
 	if len(m.raftNodeAddrs) == 0 {
 		return fmt.Errorf("blob payload %s is not locally available", desc.BlobID)

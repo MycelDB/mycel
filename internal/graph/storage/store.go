@@ -9,9 +9,12 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+
 	"github.com/myceldb/mycel/internal/graph/adjacency"
-	"github.com/myceldb/mycel/internal/graph/model"
+	graph "github.com/myceldb/mycel/internal/graph/model"
 	schema "github.com/myceldb/mycel/internal/schema/model"
 )
 
@@ -75,7 +78,7 @@ func (s *LocalStore) State() StoreState { s.mu.RLock(); defer s.mu.RUnlock(); re
 func (s *LocalStore) Revision() uint64 { s.mu.RLock(); defer s.mu.RUnlock(); return s.revision }
 
 func (s *LocalStore) open(ctx context.Context) error {
-	if err := os.MkdirAll(filepath.Join(s.path, "segments"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(s.path, "segments"), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	m, err := s.loadManifest()
@@ -119,7 +122,7 @@ func (s *LocalStore) loadManifest() (manifest, error) {
 	m := manifest{FormatVersion: 1, NodeSegments: []string{"segments/nodes-000001.kseg"}, EdgeSegments: []string{"segments/edges-000001.kseg"}, TxnSegments: []string{"segments/txns-000001.kseg"}, ActiveNodeSegment: "segments/nodes-000001.kseg", ActiveEdgeSegment: "segments/edges-000001.kseg", ActiveTxnSegment: "segments/txns-000001.kseg"}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	b = append(b, '\n')
-	return m, os.WriteFile(path, b, 0o600)
+	return m, os.WriteFile(path, b, fsperm.PrivateFile)
 }
 
 func (s *LocalStore) rebuildIndexes(ctx context.Context) error {

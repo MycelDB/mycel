@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 type raftAppliedCommandLogRecord struct {
@@ -18,7 +20,7 @@ func (m *Module) loadRaftAppliedCommands() {
 	if m.dataDir == "" {
 		return
 	}
-	_ = os.MkdirAll(filepath.Dir(m.raftAppliedCommandsPath()), 0o700)
+	_ = os.MkdirAll(filepath.Dir(m.raftAppliedCommandsPath()), fsperm.PrivateDir)
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
@@ -99,13 +101,13 @@ func (m *Module) appendRaftAppliedCommand(ctx context.Context, commandID string)
 		return err
 	}
 	path := m.raftAppliedCommandsLogPath()
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if mkErr := os.MkdirAll(filepath.Dir(path), 0o700); mkErr != nil {
+			if mkErr := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); mkErr != nil {
 				return mkErr
 			}
-			f, err = os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			f, err = os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 		}
 		if err != nil {
 			return err
@@ -138,11 +140,11 @@ func (m *Module) persistRaftAppliedCommands(ctx context.Context) error {
 		return err
 	}
 	path := m.raftAppliedCommandsPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
+	if err := os.WriteFile(tmp, payload, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

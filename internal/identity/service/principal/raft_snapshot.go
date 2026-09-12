@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
 )
 
@@ -52,19 +54,19 @@ func (s RaftStateMachine) RestoreSnapshot(data []byte) error {
 		return fmt.Errorf("unsupported principal raft snapshot version %d", snap.Version)
 	}
 	identityDir := filepath.Join(s.Module.dataDir, "identity")
-	if err := os.MkdirAll(filepath.Join(identityDir, "sessions"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(identityDir, "sessions"), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	if len(snap.StoreJSON) == 0 {
 		snap.StoreJSON = []byte(`{"principals":[],"role_bindings":[],"capability_grants":[]}`)
 	}
-	if err := os.WriteFile(filepath.Join(identityDir, StoreFilename), snap.StoreJSON, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(identityDir, StoreFilename), snap.StoreJSON, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	if len(snap.SessionsJSON) == 0 {
 		snap.SessionsJSON = []byte(`{"refresh_sessions":[]}`)
 	}
-	if err := os.WriteFile(filepath.Join(identityDir, "sessions", "refresh_sessions.json"), snap.SessionsJSON, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(identityDir, "sessions", "refresh_sessions.json"), snap.SessionsJSON, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	store, err := OpenExistingStore(identityDir)

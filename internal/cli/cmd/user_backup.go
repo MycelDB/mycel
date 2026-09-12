@@ -11,17 +11,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/myceldb/mycel/internal/cli/app"
-	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
-	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
-	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
-	"github.com/myceldb/mycel/internal/userbackup/archive"
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+
+	"github.com/myceldb/mycel/internal/cli/app"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
+	"github.com/myceldb/mycel/internal/userbackup/archive"
 )
 
 func NewAdminUserBackupCommand(a *app.App) *cobra.Command {
@@ -89,7 +92,7 @@ func NewAdminUserBackupExportCommand(a *app.App) *cobra.Command {
 			}
 			manifest.Spaces = append(manifest.Spaces, spaceEntry)
 		}
-		file, err := os.OpenFile(outputPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		file, err := os.OpenFile(outputPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fsperm.PrivateFile)
 		if err != nil {
 			return err
 		}

@@ -13,11 +13,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/myceldb/mycel/internal/clustering/consensus"
-	"github.com/myceldb/mycel/internal/graph/change"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
-	"github.com/myceldb/mycel/internal/graph/storage"
+	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -25,34 +30,32 @@ import (
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const childOrderStep = 1000
 
 type Module struct {
-	mu                     sync.Mutex
-	dataDir                string
-	stores                 map[string]*graphstorage.LocalStore
-	overlays               map[string]*overlay
-	changeSink             graphchange.Sink
-	raftApplyChangeSink    graphchange.Sink
-	schemaManager          schemaservice.Manager
+	mu                             sync.Mutex
+	dataDir                        string
+	stores                         map[string]*graphstorage.LocalStore
+	overlays                       map[string]*overlay
+	changeSink                     graphchange.Sink
+	raftApplyChangeSink            graphchange.Sink
+	schemaManager                  schemaservice.Manager
 	blobRefs                       BlobReferenceChecker
 	automationOutputFenceValidator AutomationOutputFenceValidator
 	lastGraphChangeSinkErr         error
-	gate                   *quiesce.Gate
-	wal                    *wal.Manager
-	walProgress            wal.AppliedLSNStore
-	walWaiter              *wal.ApplyWaiter
-	writeAllowed           func() error
-	raftGroups             *consensus.MultiGroup
-	raftPartitionCount     uint32
-	raftLocalNode          consensus.NodeID
-	raftNodeAddrs          []string
-	raftBackendAuthToken   string
-	raftAppliedCommands    map[string]struct{}
+	gate                           *quiesce.Gate
+	wal                            *wal.Manager
+	walProgress                    wal.AppliedLSNStore
+	walWaiter                      *wal.ApplyWaiter
+	writeAllowed                   func() error
+	raftGroups                     *consensus.MultiGroup
+	raftPartitionCount             uint32
+	raftLocalNode                  consensus.NodeID
+	raftNodeAddrs                  []string
+	raftBackendAuthToken           string
+	raftAppliedCommands            map[string]struct{}
 }
 
 type overlay struct {
@@ -241,7 +244,7 @@ func formatSchemaIssues(issues []schemaservice.ValidationIssue) string {
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	m.dataDir = filepath.Join(host.DataDir(), "graphs")
-	if err := os.MkdirAll(m.dataDir, 0o700); err != nil {
+	if err := os.MkdirAll(m.dataDir, fsperm.PrivateDir); err != nil {
 		return runtime.Abort(ModuleName, "storage", "create graph data directory", err)
 	}
 	if m.stores == nil {

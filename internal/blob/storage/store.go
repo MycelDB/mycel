@@ -18,7 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/fsperm"
+
+	graph "github.com/myceldb/mycel/internal/graph/model"
 )
 
 var (
@@ -56,7 +58,7 @@ func OpenWithConfig(path string, cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("%w: path is required", ErrInvalidInput)
 	}
 	for _, dir := range []string{path, filepath.Join(path, objectsDirName), filepath.Join(path, tmpDirName)} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := os.MkdirAll(dir, fsperm.PrivateDir); err != nil {
 			return nil, err
 		}
 	}
@@ -170,7 +172,7 @@ func (s *Store) Promote(ctx context.Context, staged StagedBlob) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(objPath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(objPath), fsperm.PrivateDir); err != nil {
 		return err
 	}
 	return os.Rename(staged.tmpPath, objPath)

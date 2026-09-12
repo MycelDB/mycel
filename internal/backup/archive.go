@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -61,10 +63,10 @@ type nopWriteCloser struct {
 func (n nopWriteCloser) Close() error { return nil }
 
 func createTarArchive(ctx context.Context, sourceDir string, archivePath string, wrap func(io.Writer) (io.WriteCloser, error)) error {
-	if err := os.MkdirAll(filepath.Dir(archivePath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(archivePath), fsperm.PrivateDir); err != nil {
 		return err
 	}
-	out, err := os.OpenFile(archivePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	out, err := os.OpenFile(archivePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return err
 	}

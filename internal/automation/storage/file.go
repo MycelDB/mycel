@@ -12,7 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 )
@@ -967,7 +970,7 @@ func readJSON(path string, out any) error {
 }
 
 func writeJSONAtomic(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
@@ -976,7 +979,7 @@ func writeJSONAtomic(path string, value any) error {
 	}
 	data = append(data, '\n')
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := os.WriteFile(tmp, data, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

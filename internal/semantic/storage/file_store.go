@@ -11,7 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+
 	"github.com/myceldb/mycel/internal/filestore"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
@@ -151,13 +154,13 @@ func (m *globalManager) Init(ctx context.Context, metaDir string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.metaDir = metaDir
-	if err := os.MkdirAll(filepath.Join(metaDir, inferenceDirName), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(metaDir, inferenceDirName), fsperm.SharedDir); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(metaDir, secretsDirName), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(metaDir, secretsDirName), fsperm.SharedDir); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(metaDir, credentialsDirName), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(metaDir, credentialsDirName), fsperm.SharedDir); err != nil {
 		return err
 	}
 	if err := loadJSON(m.path(packagesFileName), &m.packages, packagesState{Packages: []domainsemantic.InferencePackage{}}); err != nil {
@@ -630,7 +633,7 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	defer m.mu.Unlock()
 	m.location = location
 	m.spaceID = spaceID
-	if err := os.MkdirAll(location, 0o755); err != nil {
+	if err := os.MkdirAll(location, fsperm.SharedDir); err != nil {
 		return err
 	}
 	if err := loadJSON(m.path(semanticRulesFileName), &m.rules, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
@@ -686,7 +689,7 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	if err := loadJSON(m.path(policyDecisionsFileName), &m.policyDecisions, policyDecisionsState{Decisions: []domainsemantic.PolicyDecision{}}); err != nil {
 		return err
 	}
-	return os.MkdirAll(filepath.Join(location, maintenanceDirName), 0o755)
+	return os.MkdirAll(filepath.Join(location, maintenanceDirName), fsperm.SharedDir)
 }
 
 func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {
@@ -1120,10 +1123,10 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 	defer m.mu.Unlock()
 	m.location = location
 	m.spaceID = spaceID
-	if err := os.MkdirAll(filepath.Join(location, graphDirtyEventsDirName), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(location, graphDirtyEventsDirName), fsperm.SharedDir); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(location, workStateDirName), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(location, workStateDirName), fsperm.SharedDir); err != nil {
 		return err
 	}
 	if err := loadJSON(m.checkpointsPath(), &m.checkpoints, maintenanceCheckpointState{Checkpoints: []MaintenanceCheckpoint{}}); err != nil {
@@ -1220,14 +1223,14 @@ func (m *maintenanceManager) AppendGraphDirtyEvent(ctx context.Context, event do
 	if event.CommittedAt.IsZero() {
 		event.CommittedAt = time.Now().UTC()
 	}
-	if err := os.MkdirAll(filepath.Dir(m.graphDirtyEventsPath()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(m.graphDirtyEventsPath()), fsperm.SharedDir); err != nil {
 		return domainsemantic.GraphDirtyEvent{}, err
 	}
 	raw, err := json.Marshal(event)
 	if err != nil {
 		return domainsemantic.GraphDirtyEvent{}, err
 	}
-	f, err := os.OpenFile(m.graphDirtyEventsPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(m.graphDirtyEventsPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return domainsemantic.GraphDirtyEvent{}, err
 	}
@@ -1744,7 +1747,7 @@ func (m *maintenanceManager) appendWorkLog(record workLogRecord) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(m.workEventsPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(m.workEventsPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return err
 	}
@@ -1855,7 +1858,7 @@ func persistJSON(path string, v any) error {
 		return err
 	}
 	raw = append(raw, '\n')
-	return filestore.WriteFileAtomic(path, raw, 0o600)
+	return filestore.WriteFileAtomic(path, raw, fsperm.PrivateFile)
 }
 
 func newID() uuid.UUID {

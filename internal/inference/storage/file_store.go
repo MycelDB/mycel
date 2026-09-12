@@ -11,7 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+
 	"github.com/myceldb/mycel/internal/filestore"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
@@ -96,7 +99,7 @@ func (m *globalManager) Init(ctx context.Context, metaDir string) error {
 	defer m.mu.Unlock()
 	m.metaDir = metaDir
 	for _, dir := range []string{filepath.Join(metaDir, inferenceDirName), filepath.Join(metaDir, secretsDirName), filepath.Join(metaDir, credentialsDirName)} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, fsperm.SharedDir); err != nil {
 			return err
 		}
 	}
@@ -414,7 +417,7 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID string
 	defer m.mu.Unlock()
 	m.location = location
 	m.spaceID = spaceID
-	if err := os.MkdirAll(location, 0o755); err != nil {
+	if err := os.MkdirAll(location, fsperm.SharedDir); err != nil {
 		return err
 	}
 	if err := readJSON(m.profilesPath(), &m.profiles); err != nil {
@@ -600,7 +603,7 @@ func (m *usageLedger) Init(ctx context.Context, location string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.location = location
-	if err := os.MkdirAll(location, 0o755); err != nil {
+	if err := os.MkdirAll(location, fsperm.SharedDir); err != nil {
 		return err
 	}
 	return readJSON(m.path(), &m.state)
@@ -675,5 +678,5 @@ func writeJSON(path string, value any) error {
 		return err
 	}
 	data = append(data, '\n')
-	return filestore.WriteFileAtomic(path, data, 0o600)
+	return filestore.WriteFileAtomic(path, data, fsperm.PrivateFile)
 }

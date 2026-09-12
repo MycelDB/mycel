@@ -95,22 +95,25 @@ stable blob fields only.
 
 ## Configuration
 
-Blob payload backend is selected at daemon startup:
+Blob payload backend is selected at daemon startup. The preferred object-store configuration is:
 
 ```sh
-MYCELD_BLOB_BACKEND=local|s3
-MYCELD_BLOB_S3_BUCKET=<bucket>        # required for s3
-MYCELD_BLOB_S3_PREFIX=<prefix>        # optional
-MYCELD_BLOB_S3_REGION=<region>        # optional but recommended
-MYCELD_BLOB_S3_KMS_KEY_ID=<kms-key>   # optional SSE-KMS
+MYCELD_BLOB_BACKEND=local|object_store
+MYCELD_BLOB_OBJECT_STORE_PROVIDER=s3-compatible
+MYCELD_BLOB_OBJECT_STORE_BUCKET=<bucket>        # required for object_store
+MYCELD_BLOB_OBJECT_STORE_PREFIX=<prefix>        # optional
+MYCELD_BLOB_OBJECT_STORE_REGION=<region>        # optional but recommended
+MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID=<kms-key>   # optional SSE-KMS
 ```
 
-LocalStack and S3-compatible testing can also use:
+MinIO, LocalStack, and S3-compatible testing can also use:
 
 ```sh
-MYCELD_BLOB_S3_ENDPOINT_URL=<endpoint-url>
-MYCELD_BLOB_S3_FORCE_PATH_STYLE=true|false
+MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL=<endpoint-url>
+MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true|false
 ```
+
+Legacy `MYCELD_BLOB_BACKEND=s3` and `MYCELD_BLOB_S3_*` variables remain supported as backward-compatible aliases. Generic `MYCELD_BLOB_OBJECT_STORE_*` values take precedence when both forms are set.
 
 Authentication uses the AWS SDK default credential chain. In production that
 should normally be an EC2 instance profile, ECS task role, or EKS IRSA/web

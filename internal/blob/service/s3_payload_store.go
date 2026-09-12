@@ -10,10 +10,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 )
 
@@ -33,7 +36,7 @@ type s3PayloadStore struct {
 func newS3PayloadStore(ctx context.Context, cfg Config, tmpDir string) (*s3PayloadStore, error) {
 	cfg = effectiveBlobConfig(cfg)
 	if cfg.S3Bucket == "" {
-		return nil, fmt.Errorf("S3 blob backend requires bucket")
+		return nil, fmt.Errorf("object store blob backend requires bucket")
 	}
 	loadOptions := []func(*awsconfig.LoadOptions) error{}
 	if cfg.S3Region != "" {
@@ -55,7 +58,7 @@ func newS3PayloadStore(ctx context.Context, cfg Config, tmpDir string) (*s3Paylo
 func newS3PayloadStoreWithClient(cfg Config, tmpDir string, client s3PayloadAPI) (*s3PayloadStore, error) {
 	cfg = effectiveBlobConfig(cfg)
 	if cfg.S3Bucket == "" {
-		return nil, fmt.Errorf("S3 blob backend requires bucket")
+		return nil, fmt.Errorf("object store blob backend requires bucket")
 	}
 	if client == nil {
 		return nil, fmt.Errorf("S3 client is required")
@@ -67,7 +70,7 @@ func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, mimeType strin
 	if strings.TrimSpace(spaceID) == "" || r == nil {
 		return "", 0, PayloadDescriptor{}, fmt.Errorf("%w: space_id and reader are required", ErrInvalidInput)
 	}
-	if err := os.MkdirAll(s.tmpDir, 0o700); err != nil {
+	if err := os.MkdirAll(s.tmpDir, fsperm.PrivateDir); err != nil {
 		return "", 0, PayloadDescriptor{}, err
 	}
 	tmp, err := os.CreateTemp(s.tmpDir, "s3-put-*.blob")
@@ -124,14 +127,14 @@ func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, mimeType strin
 	if err != nil {
 		return "", 0, PayloadDescriptor{}, err
 	}
-	desc := PayloadDescriptor{Backend: blobBackendS3, SpaceID: spaceID, BlobID: string(id), SizeBytes: size, ChecksumAlgorithm: "sha256", ChecksumHex: string(id), S3Bucket: s.cfg.S3Bucket, S3Key: key, S3Region: s.cfg.S3Region}
+	desc := PayloadDescriptor{Backend: s.cfg.Backend, SpaceID: spaceID, BlobID: string(id), SizeBytes: size, ChecksumAlgorithm: "sha256", ChecksumHex: string(id), S3Bucket: s.cfg.S3Bucket, S3Key: key, S3Region: s.cfg.S3Region}
 	if out != nil && out.ETag != nil {
 		desc.S3ETag = strings.Trim(*out.ETag, "\"")
 	}
 	if ok, err := s.Exists(ctx, desc); err != nil {
 		return "", 0, PayloadDescriptor{}, err
 	} else if !ok {
-		return "", 0, PayloadDescriptor{}, fmt.Errorf("S3 object %s/%s was not visible after upload", s.cfg.S3Bucket, key)
+		return "", 0, PayloadDescriptor{}, fmt.Errorf("object store object %s/%s was not visible after upload", s.cfg.S3Bucket, key)
 	}
 	return id, size, desc, nil
 }
@@ -139,7 +142,7 @@ func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, mimeType strin
 func (s *s3PayloadStore) Exists(ctx context.Context, desc PayloadDescriptor) (bool, error) {
 	bucket, key := s.bucketKey(desc)
 	if bucket == "" || key == "" {
-		return false, fmt.Errorf("%w: S3 bucket and key are required", ErrInvalidInput)
+		return false, fmt.Errorf("%w: object store bucket and key are required", ErrInvalidInput)
 	}
 	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	if err != nil {
@@ -149,7 +152,7 @@ func (s *s3PayloadStore) Exists(ctx context.Context, desc PayloadDescriptor) (bo
 		return false, err
 	}
 	if desc.SizeBytes >= 0 && out != nil && out.ContentLength != nil && *out.ContentLength != desc.SizeBytes {
-		return false, fmt.Errorf("S3 object %s/%s size mismatch: got %d want %d", bucket, key, *out.ContentLength, desc.SizeBytes)
+		return false, fmt.Errorf("object store object %s/%s size mismatch: got %d want %d", bucket, key, *out.ContentLength, desc.SizeBytes)
 	}
 	return true, nil
 }
@@ -157,7 +160,7 @@ func (s *s3PayloadStore) Exists(ctx context.Context, desc PayloadDescriptor) (bo
 func (s *s3PayloadStore) Open(ctx context.Context, desc PayloadDescriptor) (io.ReadCloser, error) {
 	bucket, key := s.bucketKey(desc)
 	if bucket == "" || key == "" {
-		return nil, fmt.Errorf("%w: S3 bucket and key are required", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: object store bucket and key are required", ErrInvalidInput)
 	}
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	if err != nil {
@@ -175,7 +178,7 @@ func (s *s3PayloadStore) Open(ctx context.Context, desc PayloadDescriptor) (io.R
 func (s *s3PayloadStore) Delete(ctx context.Context, desc PayloadDescriptor) error {
 	bucket, key := s.bucketKey(desc)
 	if bucket == "" || key == "" {
-		return fmt.Errorf("%w: S3 bucket and key are required", ErrInvalidInput)
+		return fmt.Errorf("%w: object store bucket and key are required", ErrInvalidInput)
 	}
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	return err

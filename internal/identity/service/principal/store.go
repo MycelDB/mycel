@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 const StoreFilename = "store.json"
@@ -38,7 +40,7 @@ type storeDocument struct {
 }
 
 func OpenStore(dir string) (*FileStore, bool, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, fsperm.PrivateDir); err != nil {
 		return nil, false, err
 	}
 	path := filepath.Join(dir, StoreFilename)
@@ -289,7 +291,7 @@ func (s *FileStore) write(doc storeDocument) error {
 	}
 	data = append(data, '\n')
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := os.WriteFile(tmp, data, fsperm.PrivateFile); err != nil {
 		return fmt.Errorf("write principal store: %w", err)
 	}
 	if err := os.Rename(tmp, s.path); err != nil {

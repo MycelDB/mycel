@@ -6,6 +6,17 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.13.0] - 2026-09-12
+
+### Added
+
+- Added `object_store` blob backend configuration with first-class S3-compatible provider settings for AWS S3, MinIO, and LocalStack while retaining legacy `s3` aliases (#48).
+- Made the local compose cluster start MinIO and use it as the default object-store blob backend for Mycel daemons (#48).
+
+### Fixed
+
+- Cleaned up production magic numbers by moving operational knobs into configuration and replacing storage/protocol literals with named constants (#46).
+
 ## [v0.12.0] - 2026-09-09
 
 ### Added

@@ -119,16 +119,17 @@ Blob payload bytes are stored locally by default under `MYCELD_DATA_DIR`:
 MYCELD_BLOB_BACKEND=local
 ```
 
-For AWS deployments, new blob payloads can be stored in S3 while graph state, WAL, Raft logs, indexes, and blob metadata remain on local/block storage:
+For AWS S3, MinIO, LocalStack, or another S3-compatible endpoint, new blob payloads can be stored in an object store while graph state, WAL, Raft logs, indexes, and blob metadata remain on local/block storage:
 
 ```text
-MYCELD_BLOB_BACKEND=s3
-MYCELD_BLOB_S3_BUCKET=mycel-prod-blobs
-MYCELD_BLOB_S3_PREFIX=clusters/prod-a
-MYCELD_BLOB_S3_REGION=us-east-1
+MYCELD_BLOB_BACKEND=object_store
+MYCELD_BLOB_OBJECT_STORE_PROVIDER=s3-compatible
+MYCELD_BLOB_OBJECT_STORE_BUCKET=mycel-prod-blobs
+MYCELD_BLOB_OBJECT_STORE_PREFIX=clusters/prod-a
+MYCELD_BLOB_OBJECT_STORE_REGION=us-east-1
 ```
 
-S3 credentials are loaded with the AWS SDK default credential chain (for example IAM role, web identity, shared config/profile, or environment credentials). Mycel does not define custom S3 access-key environment variables. Optional S3-compatible/local-test settings are `MYCELD_BLOB_S3_ENDPOINT_URL` and `MYCELD_BLOB_S3_FORCE_PATH_STYLE=true`. Existing local blobs remain local; enabling S3 affects new uploads only.
+Object-store credentials are loaded with the AWS SDK default credential chain because the current provider is S3-compatible (for example IAM role, web identity, shared config/profile, or environment credentials). Mycel does not define custom object-store access-key environment variables. Optional MinIO/local-test settings are `MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL` and `MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true`. Legacy `MYCELD_BLOB_BACKEND=s3` and `MYCELD_BLOB_S3_*` settings remain supported. Existing local blobs remain local; enabling object-store storage affects new uploads only.
 
 See [`docs/operations/procedures/s3-blob-storage.md`](docs/operations/procedures/s3-blob-storage.md).
 

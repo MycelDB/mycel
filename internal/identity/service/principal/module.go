@@ -12,16 +12,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
-	"github.com/myceldb/mycel/internal/identity/model"
+	identity "github.com/myceldb/mycel/internal/identity/model"
 	storesession "github.com/myceldb/mycel/internal/identity/storage/session"
 	"github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type Module struct {
@@ -44,7 +47,7 @@ func (m *Module) Name() string { return ModuleName }
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	identityDir := filepath.Join(host.DataDir(), "identity")
-	if err := ensureDir(identityDir, 0o700); err != nil {
+	if err := ensureDir(identityDir, fsperm.PrivateDir); err != nil {
 		return runtime.Abort(ModuleName, "filesystem", "failed to create identity directory", err)
 	}
 	store, storeCreated, err := OpenStore(identityDir)
@@ -54,7 +57,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	m.store = store
 	m.dataDir = host.DataDir()
 	sessionsDir := filepath.Join(identityDir, "sessions")
-	if err := ensureDir(sessionsDir, 0o700); err != nil {
+	if err := ensureDir(sessionsDir, fsperm.PrivateDir); err != nil {
 		return runtime.Abort(ModuleName, "filesystem", "failed to create identity sessions directory", err)
 	}
 	sessions := storesession.NewManager()

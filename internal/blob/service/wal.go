@@ -147,7 +147,7 @@ func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, blobID str
 		return metaErr
 	}
 	desc := descriptorFromMeta(meta)
-	if metaErr == nil && payloadBackend(desc) != blobBackendS3 {
+	if metaErr == nil && !isObjectStoreBackend(payloadBackend(desc)) {
 		if err := m.deletePayload(ctx, desc); err != nil && !errors.Is(err, blobstorage.ErrNotFound) {
 			return mapStorageError(err)
 		}
@@ -162,7 +162,7 @@ func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, blobID str
 	if err := m.saveSpaceMetaLocked(spaceID, metas); err != nil {
 		return err
 	}
-	if metaErr == nil && payloadBackend(desc) == blobBackendS3 {
+	if metaErr == nil && isObjectStoreBackend(payloadBackend(desc)) {
 		if err := m.deletePayload(ctx, desc); err != nil {
 			m.logBestEffortPayloadDeleteFailure(desc, err)
 		}

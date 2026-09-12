@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	schema "github.com/myceldb/mycel/internal/schema/model"
 )
@@ -72,7 +74,7 @@ func (s *FileStore) PutDomainSchema(ctx context.Context, value schema.DomainSche
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+	if err := os.MkdirAll(s.dir, fsperm.PrivateDir); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(value.Normalize(), "", "  ")

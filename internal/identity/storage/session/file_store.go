@@ -9,10 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"github.com/google/uuid"
+
 	"github.com/myceldb/mycel/internal/filestore"
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
-	"github.com/myceldb/mycel/internal/identity/model"
+	identity "github.com/myceldb/mycel/internal/identity/model"
 )
 
 const refreshSessionsStoreFile = "refresh_sessions.json"
@@ -44,7 +47,7 @@ func (m *defaultManager) Init(ctx context.Context, location string) error {
 	if strings.TrimSpace(location) == "" {
 		return fmt.Errorf("%w: location is required", ErrInvalidInput)
 	}
-	if err := os.MkdirAll(location, 0o755); err != nil {
+	if err := os.MkdirAll(location, fsperm.SharedDir); err != nil {
 		return err
 	}
 	m.location = location
@@ -407,7 +410,7 @@ func (m *defaultManager) persist() error {
 		return err
 	}
 	b = append(b, '\n')
-	return filestore.WriteFileAtomic(m.storePath, b, 0o600)
+	return filestore.WriteFileAtomic(m.storePath, b, fsperm.PrivateFile)
 }
 
 func validateSession(rec domainauth.RefreshSession, creating bool) error {

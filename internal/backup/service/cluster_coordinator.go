@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/clustering/backend"
@@ -294,7 +296,7 @@ func (m *Module) buildClusterBackupManifest(backupSetID, clusterID, reason strin
 }
 
 func writeClusterBackupSetManifest(outputDir string, manifest clusterbackup.Manifest) error {
-	if err := os.MkdirAll(outputDir, 0o700); err != nil {
+	if err := os.MkdirAll(outputDir, fsperm.PrivateDir); err != nil {
 		return err
 	}
 	raw, err := manifest.MarshalDeterministic()
@@ -303,7 +305,7 @@ func writeClusterBackupSetManifest(outputDir string, manifest clusterbackup.Mani
 	}
 	path := filepath.Join(outputDir, "backup-set.json")
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(tmp, append(raw, '\n'), fsperm.PrivateFile); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

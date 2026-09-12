@@ -1,7 +1,37 @@
 services:
+  minio:
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:latest}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mycelminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-mycelminiosecret}
+    volumes:
+      - minio-data:/data
+
+  minio-bucket:
+    image: ${MINIO_MC_IMAGE:-quay.io/minio/mc:latest}
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mycelminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-mycelminiosecret}
+      MYCELD_BLOB_OBJECT_STORE_BUCKET: ${MYCELD_BLOB_OBJECT_STORE_BUCKET:-mycel-compose-blobs}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do
+          sleep 1
+        done
+        mc mb --ignore-existing "local/$${MYCELD_BLOB_OBJECT_STORE_BUCKET}"
+
   myceld-a:
     image: ${MYCEL_IMAGE:-local/mycel:dev}
     pull_policy: ${MYCEL_PULL_POLICY:-never}
+    depends_on: &myceld-depends
+      minio-bucket:
+        condition: service_completed_successfully
     environment: &myceld-env
       MYCELD_DATA_DIR: /data/mycel
       MYCELD_GRPC_ADDR: 0.0.0.0:9091
@@ -21,6 +51,15 @@ services:
       MYCELD_CLUSTER_RAFT_HEARTBEAT_TICK: ${MYCELD_CLUSTER_RAFT_HEARTBEAT_TICK:-1}
       MYCELD_CLUSTER_RAFT_SEND_TIMEOUT: ${MYCELD_CLUSTER_RAFT_SEND_TIMEOUT:-500ms}
       MYCELD_CLUSTER_DISCOVERY_INTERVAL: ${MYCELD_CLUSTER_DISCOVERY_INTERVAL:-1s}
+      MYCELD_BLOB_BACKEND: ${MYCELD_BLOB_BACKEND:-object_store}
+      MYCELD_BLOB_OBJECT_STORE_PROVIDER: ${MYCELD_BLOB_OBJECT_STORE_PROVIDER:-s3-compatible}
+      MYCELD_BLOB_OBJECT_STORE_BUCKET: ${MYCELD_BLOB_OBJECT_STORE_BUCKET:-mycel-compose-blobs}
+      MYCELD_BLOB_OBJECT_STORE_REGION: ${MYCELD_BLOB_OBJECT_STORE_REGION:-us-east-1}
+      MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL: ${MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL:-http://minio:9000}
+      MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE: ${MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE:-true}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-mycelminio}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-mycelminiosecret}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
     entrypoint:
       - /bin/sh
       - -ec
@@ -40,6 +79,7 @@ services:
   myceld-b:
     image: ${MYCEL_IMAGE:-local/mycel:dev}
     pull_policy: ${MYCEL_PULL_POLICY:-never}
+    depends_on: *myceld-depends
     environment:
       <<: *myceld-env
       MYCELD_NODE_NAME: myceld-b
@@ -62,6 +102,7 @@ services:
   myceld-c:
     image: ${MYCEL_IMAGE:-local/mycel:dev}
     pull_policy: ${MYCEL_PULL_POLICY:-never}
+    depends_on: *myceld-depends
     environment:
       <<: *myceld-env
       MYCELD_NODE_NAME: myceld-c
@@ -82,6 +123,7 @@ services:
       start_period: 5s
 
 volumes:
+  minio-data:
   myceld-a-data:
   myceld-b-data:
   myceld-c-data:

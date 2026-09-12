@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/myceldb/mycel/internal/fsperm"
+
 	"go.etcd.io/raft/v3"
 	raftpb "go.etcd.io/raft/v3/raftpb"
 )
@@ -39,7 +41,7 @@ func NewPersistentStorage(dir string) (*PersistentStorage, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("raft storage dir is required")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, fsperm.SharedDir); err != nil {
 		return nil, err
 	}
 	mem := raft.NewMemoryStorage()
@@ -318,11 +320,11 @@ func readEntries(path string) ([]raftpb.Entry, error) {
 	return entries, nil
 }
 func writeAtomic(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, fsperm.SharedFile); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
