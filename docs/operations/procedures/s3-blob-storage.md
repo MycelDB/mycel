@@ -48,6 +48,20 @@ mc alias set local http://127.0.0.1:9000 minioadmin minioadmin
 mc mb local/mycel-dev-blobs
 ```
 
+## Compose defaults
+
+The local compose cluster in `tests/compose/cluster` starts MinIO by default, creates the configured bucket, and configures each `myceld` node with:
+
+```sh
+MYCELD_BLOB_BACKEND=object_store
+MYCELD_BLOB_OBJECT_STORE_PROVIDER=s3-compatible
+MYCELD_BLOB_OBJECT_STORE_BUCKET=mycel-compose-blobs
+MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL=http://minio:9000
+MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true
+```
+
+Override `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MYCELD_BLOB_OBJECT_STORE_BUCKET`, or the `MYCELD_BLOB_OBJECT_STORE_*` variables when invoking compose targets if a different local object-store setup is needed.
+
 ## Backward-compatible aliases
 
 Existing S3-specific settings remain supported:
