@@ -1,39 +1,78 @@
-# S3 blob payload storage
+# Object-store blob payload storage
 
-Mycel can store blob payload bytes in S3 for AWS deployments. This moves large immutable blob content out of node-local disks while keeping graph state, WAL, Raft logs, indexes, and blob metadata on local/block storage.
+Mycel can store blob payload bytes in an S3-compatible object store, including AWS S3, MinIO, and LocalStack. This moves large immutable blob content out of node-local disks while keeping graph state, WAL, Raft logs, indexes, and blob metadata on local/block storage.
 
 The default remains local file storage.
 
 ## Configuration
 
-Required for S3-backed new uploads:
+Preferred configuration for object-store-backed new uploads:
 
 ```sh
-export MYCELD_BLOB_BACKEND=s3
-export MYCELD_BLOB_S3_BUCKET=mycel-prod-blobs
-export MYCELD_BLOB_S3_REGION=us-east-1
+export MYCELD_BLOB_BACKEND=object_store
+export MYCELD_BLOB_OBJECT_STORE_PROVIDER=s3-compatible
+export MYCELD_BLOB_OBJECT_STORE_BUCKET=mycel-prod-blobs
+export MYCELD_BLOB_OBJECT_STORE_REGION=us-east-1
 ```
 
 Optional:
 
 ```sh
+export MYCELD_BLOB_OBJECT_STORE_PREFIX=clusters/prod-a
+export MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID=alias/mycel-blobs
+export MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL=http://127.0.0.1:4566
+export MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true
+```
+
+`MYCELD_BLOB_OBJECT_STORE_PROVIDER` currently supports `s3-compatible`. When it is omitted, `s3-compatible` is assumed for `object_store` and legacy `s3` backends.
+
+Use `MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL` and `MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true` for MinIO, LocalStack, or S3-compatible endpoints that require path-style requests.
+
+## MinIO example
+
+```sh
+export MYCELD_BLOB_BACKEND=object_store
+export MYCELD_BLOB_OBJECT_STORE_PROVIDER=s3-compatible
+export MYCELD_BLOB_OBJECT_STORE_BUCKET=mycel-dev-blobs
+export MYCELD_BLOB_OBJECT_STORE_REGION=us-east-1
+export MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL=http://minio:9000
+export MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true
+export AWS_ACCESS_KEY_ID=minioadmin
+export AWS_SECRET_ACCESS_KEY=minioadmin
+```
+
+Create the bucket before starting the daemon, for example:
+
+```sh
+mc alias set local http://127.0.0.1:9000 minioadmin minioadmin
+mc mb local/mycel-dev-blobs
+```
+
+## Backward-compatible aliases
+
+Existing S3-specific settings remain supported:
+
+```sh
+export MYCELD_BLOB_BACKEND=s3
+export MYCELD_BLOB_S3_BUCKET=mycel-prod-blobs
+export MYCELD_BLOB_S3_REGION=us-east-1
 export MYCELD_BLOB_S3_PREFIX=clusters/prod-a
 export MYCELD_BLOB_S3_KMS_KEY_ID=alias/mycel-blobs
 export MYCELD_BLOB_S3_ENDPOINT_URL=http://127.0.0.1:4566
 export MYCELD_BLOB_S3_FORCE_PATH_STYLE=true
 ```
 
-Use `MYCELD_BLOB_S3_ENDPOINT_URL` and `MYCELD_BLOB_S3_FORCE_PATH_STYLE=true` for LocalStack or S3-compatible endpoints that require path-style requests.
+When both generic object-store variables and legacy `MYCELD_BLOB_S3_*` variables are set, the generic `MYCELD_BLOB_OBJECT_STORE_*` values take precedence.
 
 ## Credentials
 
-Runtime authentication uses the AWS SDK default credential chain. Prefer IAM roles for EC2/ECS/EKS or web identity for Kubernetes. Mycel does not provide custom S3 access-key or secret-key environment variables.
+Runtime authentication uses the AWS SDK default credential chain because the current provider is S3-compatible. Prefer IAM roles for EC2/ECS/EKS or web identity for Kubernetes. Mycel does not provide custom object-store access-key or secret-key environment variables.
 
 For local testing, use standard AWS SDK mechanisms, such as:
 
 ```sh
 export AWS_PROFILE=mycel-dev
-# or, for LocalStack-style tests only:
+# or, for MinIO/LocalStack-style tests only:
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_REGION=us-east-1
@@ -51,17 +90,19 @@ Blob IDs remain the SHA-256 hex digest of the payload bytes, and the public blob
 
 ## Migration behavior
 
-Enabling S3 affects new uploads only. Existing local blob metadata without an S3 payload descriptor continues to read from local storage. This change does not automatically migrate existing local blobs to S3.
+Enabling object-store storage affects new uploads only. Existing local blob metadata without an object-store payload descriptor continues to read from local storage. This change does not automatically migrate existing local blobs to object-store storage.
+
+Legacy S3 payload descriptors remain readable. New `object_store` uploads use the same S3-compatible object layout and descriptor fields.
 
 ## Delete behavior
 
-For S3-backed blobs, Mycel deletes metadata first and then attempts S3 object deletion on a best-effort basis. A transient S3 delete failure does not fail the blob delete after metadata has been removed; the daemon logs a warning with the bucket/key for later cleanup.
+For object-store-backed blobs, Mycel deletes metadata first and then attempts object deletion on a best-effort basis. A transient object-store delete failure does not fail the blob delete after metadata has been removed; the daemon logs a warning with the bucket/key for later cleanup.
 
 Local blob payload deletion remains strict before metadata removal.
 
-## Minimal IAM permissions
+## Minimal AWS IAM permissions
 
-Grant the daemon principal access only to the configured bucket/prefix:
+For AWS S3, grant the daemon principal access only to the configured bucket/prefix:
 
 ```json
 {
@@ -76,11 +117,11 @@ Grant the daemon principal access only to the configured bucket/prefix:
 }
 ```
 
-If `MYCELD_BLOB_S3_KMS_KEY_ID` is set, also allow the required KMS operations for that key.
+If `MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID` or legacy `MYCELD_BLOB_S3_KMS_KEY_ID` is set, also allow the required KMS operations for that key.
 
 ## Integration tests
 
-Unit tests use a fake S3 client and require no AWS credentials. The opt-in integration test is skipped unless `MYCELD_TEST_S3_BUCKET` is set:
+Unit tests use a fake S3-compatible client and require no AWS credentials. The opt-in integration test is skipped unless `MYCELD_TEST_S3_BUCKET` is set:
 
 ```sh
 MYCELD_TEST_S3_BUCKET=mycel-test-blobs \
@@ -88,7 +129,7 @@ MYCELD_TEST_S3_REGION=us-east-1 \
 go test ./internal/blob/service -run TestS3BlobBackendIntegration -count=1
 ```
 
-For LocalStack/S3-compatible endpoints:
+For MinIO, LocalStack, or other S3-compatible endpoints:
 
 ```sh
 MYCELD_TEST_S3_BUCKET=mycel-test-blobs \

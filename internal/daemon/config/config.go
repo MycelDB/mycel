@@ -101,13 +101,14 @@ type WALConfig struct {
 }
 
 type BlobConfig struct {
-	Backend          string
-	S3Bucket         string
-	S3Prefix         string
-	S3Region         string
-	S3KMSKeyID       string
-	S3EndpointURL    string
-	S3ForcePathStyle bool
+	Backend             string
+	ObjectStoreProvider string
+	S3Bucket            string
+	S3Prefix            string
+	S3Region            string
+	S3KMSKeyID          string
+	S3EndpointURL       string
+	S3ForcePathStyle    bool
 }
 
 type ClusterConfig struct {
@@ -185,13 +186,14 @@ func LoadFromEnv() (Config, error) {
 			SyncPolicy:   valueOrDefault(os.Getenv("MYCELD_WAL_SYNC_POLICY"), DefaultWALSyncPolicy),
 		},
 		Blob: BlobConfig{
-			Backend:          valueOrDefault(os.Getenv("MYCELD_BLOB_BACKEND"), DefaultBlobBackend),
-			S3Bucket:         strings.TrimSpace(os.Getenv("MYCELD_BLOB_S3_BUCKET")),
-			S3Prefix:         strings.TrimSpace(os.Getenv("MYCELD_BLOB_S3_PREFIX")),
-			S3Region:         strings.TrimSpace(os.Getenv("MYCELD_BLOB_S3_REGION")),
-			S3KMSKeyID:       strings.TrimSpace(os.Getenv("MYCELD_BLOB_S3_KMS_KEY_ID")),
-			S3EndpointURL:    strings.TrimSpace(os.Getenv("MYCELD_BLOB_S3_ENDPOINT_URL")),
-			S3ForcePathStyle: parseBoolEnv(os.Getenv("MYCELD_BLOB_S3_FORCE_PATH_STYLE")),
+			Backend:             valueOrDefault(os.Getenv("MYCELD_BLOB_BACKEND"), DefaultBlobBackend),
+			ObjectStoreProvider: strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PROVIDER")),
+			S3Bucket:            objectStoreValue(os.Getenv("MYCELD_BLOB_OBJECT_STORE_BUCKET"), os.Getenv("MYCELD_BLOB_S3_BUCKET")),
+			S3Prefix:            objectStoreValue(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PREFIX"), os.Getenv("MYCELD_BLOB_S3_PREFIX")),
+			S3Region:            objectStoreValue(os.Getenv("MYCELD_BLOB_OBJECT_STORE_REGION"), os.Getenv("MYCELD_BLOB_S3_REGION")),
+			S3KMSKeyID:          objectStoreValue(os.Getenv("MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID"), os.Getenv("MYCELD_BLOB_S3_KMS_KEY_ID")),
+			S3EndpointURL:       objectStoreValue(os.Getenv("MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL"), os.Getenv("MYCELD_BLOB_S3_ENDPOINT_URL")),
+			S3ForcePathStyle:    objectStoreBool(os.Getenv("MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE"), os.Getenv("MYCELD_BLOB_S3_FORCE_PATH_STYLE")),
 		},
 		Cluster: ClusterConfig{
 			Name:                           strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
@@ -332,13 +334,20 @@ func (c BlobConfig) Validate() error {
 	switch backend {
 	case "local":
 		return nil
-	case "s3":
+	case "s3", "object_store":
+		provider := strings.ToLower(strings.TrimSpace(c.ObjectStoreProvider))
+		if provider == "" {
+			provider = "s3-compatible"
+		}
+		if provider != "s3-compatible" {
+			return fmt.Errorf("MYCELD_BLOB_OBJECT_STORE_PROVIDER must be s3-compatible")
+		}
 		if strings.TrimSpace(c.S3Bucket) == "" {
-			return fmt.Errorf("MYCELD_BLOB_S3_BUCKET is required when MYCELD_BLOB_BACKEND=s3")
+			return fmt.Errorf("MYCELD_BLOB_OBJECT_STORE_BUCKET is required when MYCELD_BLOB_BACKEND=object_store or s3")
 		}
 		return nil
 	default:
-		return fmt.Errorf("MYCELD_BLOB_BACKEND must be local or s3")
+		return fmt.Errorf("MYCELD_BLOB_BACKEND must be local, object_store, or s3")
 	}
 }
 
@@ -588,6 +597,20 @@ func parseCSVEnv(value string) []string {
 		}
 	}
 	return out
+}
+
+func objectStoreValue(preferred, legacy string) string {
+	if strings.TrimSpace(preferred) != "" {
+		return strings.TrimSpace(preferred)
+	}
+	return strings.TrimSpace(legacy)
+}
+
+func objectStoreBool(preferred, legacy string) bool {
+	if strings.TrimSpace(preferred) != "" {
+		return parseBoolEnv(preferred)
+	}
+	return parseBoolEnv(legacy)
 }
 
 func valueOrDefault(value, fallback string) string {

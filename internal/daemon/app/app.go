@@ -267,13 +267,14 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)
 	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithInferenceManager(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
 	blobService := blobservice.NewModule(graphService, blobservice.Config{
-		Backend:          cfg.Blob.Backend,
-		S3Bucket:         cfg.Blob.S3Bucket,
-		S3Prefix:         cfg.Blob.S3Prefix,
-		S3Region:         cfg.Blob.S3Region,
-		S3KMSKeyID:       cfg.Blob.S3KMSKeyID,
-		S3EndpointURL:    cfg.Blob.S3EndpointURL,
-		S3ForcePathStyle: cfg.Blob.S3ForcePathStyle,
+		Backend:             cfg.Blob.Backend,
+		ObjectStoreProvider: cfg.Blob.ObjectStoreProvider,
+		S3Bucket:            cfg.Blob.S3Bucket,
+		S3Prefix:            cfg.Blob.S3Prefix,
+		S3Region:            cfg.Blob.S3Region,
+		S3KMSKeyID:          cfg.Blob.S3KMSKeyID,
+		S3EndpointURL:       cfg.Blob.S3EndpointURL,
+		S3ForcePathStyle:    cfg.Blob.S3ForcePathStyle,
 	})
 	inferenceService.SetSecretResolver(inferenceservice.NewEncryptedSecretResolver(cfg.UserStoreEncryptionKeyB64))
 	lexicalService := lexicalservice.NewModule()
