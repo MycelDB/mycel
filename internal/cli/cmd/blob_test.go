@@ -23,12 +23,16 @@ func TestBlobCommandsUseDaemonGRPC(t *testing.T) {
 		t.Fatalf("decode space add: %v\n%s", err, out)
 	}
 	spaceID := createdSpace.GetSpace().GetSpaceId()
+	domainID := createdSpace.GetDefaultDomainId()
+	if domainID == "" {
+		t.Fatal("space add returned empty default domain id")
+	}
 	sourcePath := filepath.Join(t.TempDir(), "hello.txt")
 	if err := os.WriteFile(sourcePath, []byte("hello daemon blob"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	base := []string{"--daemon-addr", addr, "-u", "blob-user", "-p", "blob-pass", "--output", "json"}
-	out, err = runCLI(t, append(base, "blob", "upload", "--space-id", spaceID, "--mime-type", "text/plain", sourcePath)...)
+	out, err = runCLI(t, append(base, "blob", "upload", "--space-id", spaceID, "--domain-id", domainID, "--mime-type", "text/plain", sourcePath)...)
 	if err != nil {
 		t.Fatalf("blob upload failed: %v\n%s", err, out)
 	}
@@ -39,7 +43,7 @@ func TestBlobCommandsUseDaemonGRPC(t *testing.T) {
 	if uploaded.GetBlobId() == "" || uploaded.GetSizeBytes() != int64(len("hello daemon blob")) || uploaded.GetDeclaredMimeType() != "text/plain" {
 		t.Fatalf("unexpected uploaded blob: %#v", &uploaded)
 	}
-	out, err = runCLI(t, append(base, "blob", "get", "--space-id", spaceID, uploaded.GetBlobId())...)
+	out, err = runCLI(t, append(base, "blob", "get", "--space-id", spaceID, "--domain-id", domainID, uploaded.GetBlobId())...)
 	if err != nil {
 		t.Fatalf("blob get failed: %v\n%s", err, out)
 	}
@@ -48,7 +52,7 @@ func TestBlobCommandsUseDaemonGRPC(t *testing.T) {
 		t.Fatalf("unexpected get err=%v blob=%#v raw=%s", err, &got, out)
 	}
 	downloadPath := filepath.Join(t.TempDir(), "download.txt")
-	out, err = runCLI(t, append(base, "blob", "download", "--space-id", spaceID, "--output-file", downloadPath, uploaded.GetBlobId())...)
+	out, err = runCLI(t, append(base, "blob", "download", "--space-id", spaceID, "--domain-id", domainID, "--output-file", downloadPath, uploaded.GetBlobId())...)
 	if err != nil {
 		t.Fatalf("blob download failed: %v\n%s", err, out)
 	}
@@ -56,7 +60,7 @@ func TestBlobCommandsUseDaemonGRPC(t *testing.T) {
 	if err != nil || string(raw) != "hello daemon blob" {
 		t.Fatalf("downloaded bytes=%q err=%v output=%s", raw, err, out)
 	}
-	out, err = runCLI(t, append(base, "blob", "delete", "--space-id", spaceID, uploaded.GetBlobId())...)
+	out, err = runCLI(t, append(base, "blob", "delete", "--space-id", spaceID, "--domain-id", domainID, uploaded.GetBlobId())...)
 	if err != nil {
 		t.Fatalf("blob delete failed: %v\n%s", err, out)
 	}

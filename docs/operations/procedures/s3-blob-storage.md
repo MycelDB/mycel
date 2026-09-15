@@ -94,19 +94,19 @@ export AWS_REGION=us-east-1
 
 ## Object layout
 
-Object keys are deterministic and content-addressed:
+Object keys are deterministic, content-addressed, and domain-scoped:
 
 ```text
-<prefix>/spaces/<space-id>/objects/<sha256-fanout>/<sha256-hex>
+<prefix>/spaces/<space-id>/domains/<domain-id>/objects/<sha256-fanout>/<sha256-hex>
 ```
 
-Blob IDs remain the SHA-256 hex digest of the payload bytes, and the public blob API is unchanged.
+Blob IDs remain the SHA-256 hex digest of the payload bytes. The domain segment is part of the object-store storage layout so operational inspection, lifecycle management, and future prefix policy work align with domain-level isolation. Mycel API authorization remains authoritative; object-store key layout is defense-in-depth and operational structure, not a replacement for Mycel/Commonfolio authorization.
 
 ## Migration behavior
 
 Enabling object-store storage affects new uploads only. Existing local blob metadata without an object-store payload descriptor continues to read from local storage. This change does not automatically migrate existing local blobs to object-store storage.
 
-Legacy S3 payload descriptors remain readable. New `object_store` uploads use the same S3-compatible object layout and descriptor fields.
+Object-store uploads require a domain id from the graph transaction that creates or imports the blob. Space-only object-store key layouts are not supported for new uploads.
 
 ## Delete behavior
 

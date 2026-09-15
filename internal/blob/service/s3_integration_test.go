@@ -35,7 +35,7 @@ func TestS3BlobBackendIntegration(t *testing.T) {
 		t.Fatalf("init failed: %v", result.Error)
 	}
 	body := []byte("mycel s3 integration test")
-	meta, err := m.UploadBlob(ctx, UploadInput{SpaceID: "integration-space", DeclaredMimeType: "text/plain", OriginalFilename: "s3.txt", Reader: bytes.NewReader(body)})
+	meta, err := m.UploadBlob(ctx, UploadInput{SpaceID: "integration-space", DomainID: "integration-domain", DeclaredMimeType: "text/plain", OriginalFilename: "s3.txt", Reader: bytes.NewReader(body)})
 	if err != nil {
 		t.Fatalf("UploadBlob() error = %v", err)
 	}

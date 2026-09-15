@@ -15,7 +15,7 @@ import (
 const blobUploadChunkSize = 256 * 1024
 
 func NewUploadBlobCommand(a *app.App) *cobra.Command {
-	var spaceID, declaredMimeType, originalFilename string
+	var spaceID, domainID, declaredMimeType, originalFilename string
 	cmd := &cobra.Command{Use: "upload FILE", Aliases: []string{"add"}, Short: "Upload raw blob content through daemon gRPC", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		file, err := os.Open(args[0])
 		if err != nil {
@@ -34,7 +34,7 @@ func NewUploadBlobCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if err := stream.Send(&clientv1.UploadBlobRequest{Part: &clientv1.UploadBlobRequest_Metadata{Metadata: &clientv1.UploadBlobMetadata{SpaceId: spaceID, DeclaredMimeType: declaredMimeType, OriginalFilename: originalFilename}}}); err != nil {
+		if err := stream.Send(&clientv1.UploadBlobRequest{Part: &clientv1.UploadBlobRequest_Metadata{Metadata: &clientv1.UploadBlobMetadata{SpaceId: spaceID, DomainId: domainID, DeclaredMimeType: declaredMimeType, OriginalFilename: originalFilename}}}); err != nil {
 			return err
 		}
 		buf := make([]byte, blobUploadChunkSize)
@@ -60,40 +60,44 @@ func NewUploadBlobCommand(a *app.App) *cobra.Command {
 		return a.Print(res.GetBlob(), fmt.Sprintf("blob uploaded: %s (%d bytes, %s)\n", res.GetBlob().GetBlobId(), res.GetBlob().GetSizeBytes(), res.GetBlob().GetMimeType()))
 	}}
 	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID")
 	cmd.Flags().StringVar(&declaredMimeType, "mime-type", "", "declared MIME type")
 	cmd.Flags().StringVar(&originalFilename, "filename", "", "original filename metadata")
 	_ = cmd.MarkFlagRequired("space-id")
+	_ = cmd.MarkFlagRequired("domain-id")
 	return cmd
 }
 
 func NewGetRawBlobCommand(a *app.App) *cobra.Command {
-	var spaceID string
+	var spaceID, domainID string
 	cmd := &cobra.Command{Use: "get BLOB_ID", Aliases: []string{"metadata", "show"}, Short: "Get raw blob metadata", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := clientv1.NewBlobServiceClient(conn).GetBlob(authCtx, &clientv1.GetBlobRequest{SpaceId: spaceID, BlobId: args[0]})
+		res, err := clientv1.NewBlobServiceClient(conn).GetBlob(authCtx, &clientv1.GetBlobRequest{SpaceId: spaceID, DomainId: domainID, BlobId: args[0]})
 		if err != nil {
 			return err
 		}
 		return a.Print(res.GetBlob(), fmt.Sprintf("blob: %s (%d bytes, %s)\n", res.GetBlob().GetBlobId(), res.GetBlob().GetSizeBytes(), res.GetBlob().GetMimeType()))
 	}}
 	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID")
 	_ = cmd.MarkFlagRequired("space-id")
+	_ = cmd.MarkFlagRequired("domain-id")
 	return cmd
 }
 
 func NewDownloadRawBlobCommand(a *app.App) *cobra.Command {
-	var spaceID, outputPath string
+	var spaceID, domainID, outputPath string
 	cmd := &cobra.Command{Use: "download BLOB_ID", Short: "Download raw blob content", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		stream, err := clientv1.NewBlobServiceClient(conn).DownloadBlob(authCtx, &clientv1.DownloadBlobRequest{SpaceId: spaceID, BlobId: args[0]})
+		stream, err := clientv1.NewBlobServiceClient(conn).DownloadBlob(authCtx, &clientv1.DownloadBlobRequest{SpaceId: spaceID, DomainId: domainID, BlobId: args[0]})
 		if err != nil {
 			return err
 		}
@@ -145,29 +149,33 @@ func NewDownloadRawBlobCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		out = nil
-		return a.Print(map[string]any{"blob_id": meta.GetBlobId(), "space_id": meta.GetSpaceId(), "output": outputPath, "size_bytes": meta.GetSizeBytes(), "mime_type": meta.GetMimeType()}, fmt.Sprintf("blob written: %s (%d bytes, %s)\n", outputPath, meta.GetSizeBytes(), meta.GetMimeType()))
+		return a.Print(map[string]any{"blob_id": meta.GetBlobId(), "space_id": meta.GetSpaceId(), "domain_id": meta.GetDomainId(), "output": outputPath, "size_bytes": meta.GetSizeBytes(), "mime_type": meta.GetMimeType()}, fmt.Sprintf("blob written: %s (%d bytes, %s)\n", outputPath, meta.GetSizeBytes(), meta.GetMimeType()))
 	}}
 	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID")
 	cmd.Flags().StringVarP(&outputPath, "output-file", "o", "", "output file path")
 	_ = cmd.MarkFlagRequired("space-id")
+	_ = cmd.MarkFlagRequired("domain-id")
 	return cmd
 }
 
 func NewDeleteRawBlobCommand(a *app.App) *cobra.Command {
-	var spaceID string
+	var spaceID, domainID string
 	cmd := &cobra.Command{Use: "delete BLOB_ID", Aliases: []string{"del", "remove", "rm"}, Short: "Delete an unreferenced raw blob", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		res, err := clientv1.NewBlobServiceClient(conn).DeleteBlob(authCtx, &clientv1.DeleteBlobRequest{SpaceId: spaceID, BlobId: args[0]})
+		res, err := clientv1.NewBlobServiceClient(conn).DeleteBlob(authCtx, &clientv1.DeleteBlobRequest{SpaceId: spaceID, DomainId: domainID, BlobId: args[0]})
 		if err != nil {
 			return err
 		}
 		return a.Print(res, fmt.Sprintf("blob deleted: %s\n", res.GetDeletedBlobId()))
 	}}
 	cmd.Flags().StringVar(&spaceID, "space-id", "", "space ID")
+	cmd.Flags().StringVar(&domainID, "domain-id", "", "domain ID")
 	_ = cmd.MarkFlagRequired("space-id")
+	_ = cmd.MarkFlagRequired("domain-id")
 	return cmd
 }

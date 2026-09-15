@@ -22,12 +22,16 @@ type RefCounter interface {
 type Manager interface {
 	UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, error)
 	GetBlob(ctx context.Context, spaceID string, blobID string) (BlobMeta, error)
+	GetBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, error)
 	OpenBlob(ctx context.Context, spaceID string, blobID string) (BlobMeta, io.ReadCloser, error)
+	OpenBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, io.ReadCloser, error)
 	DeleteBlob(ctx context.Context, spaceID string, blobID string) (string, error)
+	DeleteBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (string, error)
 }
 
 type UploadInput struct {
 	SpaceID          string
+	DomainID         string
 	DeclaredMimeType string
 	OriginalFilename string
 	Reader           io.Reader
@@ -47,6 +51,7 @@ type Config struct {
 type BlobMeta struct {
 	BlobID           string             `json:"blob_id"`
 	SpaceID          string             `json:"space_id"`
+	DomainID         string             `json:"domain_id,omitempty"`
 	Digest           string             `json:"digest"`
 	SizeBytes        int64              `json:"size_bytes"`
 	MimeType         string             `json:"mime_type"`

@@ -66,9 +66,11 @@ func newS3PayloadStoreWithClient(cfg Config, tmpDir string, client s3PayloadAPI)
 	return &s3PayloadStore{cfg: cfg, client: client, tmpDir: tmpDir}, nil
 }
 
-func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, mimeType string, r io.Reader) (graphmodel.BlobID, int64, PayloadDescriptor, error) {
-	if strings.TrimSpace(spaceID) == "" || r == nil {
-		return "", 0, PayloadDescriptor{}, fmt.Errorf("%w: space_id and reader are required", ErrInvalidInput)
+func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, domainID string, mimeType string, r io.Reader) (graphmodel.BlobID, int64, PayloadDescriptor, error) {
+	spaceID = strings.TrimSpace(spaceID)
+	domainID = strings.TrimSpace(domainID)
+	if spaceID == "" || domainID == "" || r == nil {
+		return "", 0, PayloadDescriptor{}, fmt.Errorf("%w: space_id, domain_id, and reader are required", ErrInvalidInput)
 	}
 	if err := os.MkdirAll(s.tmpDir, fsperm.PrivateDir); err != nil {
 		return "", 0, PayloadDescriptor{}, err
@@ -104,7 +106,7 @@ func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, mimeType strin
 		_ = os.Remove(tmpPath)
 		return "", 0, PayloadDescriptor{}, err
 	}
-	key := s.objectKey(spaceID, string(id))
+	key := s.objectKey(spaceID, domainID, string(id))
 	body, err := os.Open(tmpPath)
 	if err != nil {
 		_ = os.Remove(tmpPath)
@@ -127,7 +129,7 @@ func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, mimeType strin
 	if err != nil {
 		return "", 0, PayloadDescriptor{}, err
 	}
-	desc := PayloadDescriptor{Backend: s.cfg.Backend, SpaceID: spaceID, BlobID: string(id), SizeBytes: size, ChecksumAlgorithm: "sha256", ChecksumHex: string(id), S3Bucket: s.cfg.S3Bucket, S3Key: key, S3Region: s.cfg.S3Region}
+	desc := PayloadDescriptor{Backend: s.cfg.Backend, SpaceID: spaceID, DomainID: domainID, BlobID: string(id), SizeBytes: size, ChecksumAlgorithm: "sha256", ChecksumHex: string(id), S3Bucket: s.cfg.S3Bucket, S3Key: key, S3Region: s.cfg.S3Region}
 	if out != nil && out.ETag != nil {
 		desc.S3ETag = strings.Trim(*out.ETag, "\"")
 	}
@@ -184,12 +186,12 @@ func (s *s3PayloadStore) Delete(ctx context.Context, desc PayloadDescriptor) err
 	return err
 }
 
-func (s *s3PayloadStore) objectKey(spaceID string, blobID string) string {
+func (s *s3PayloadStore) objectKey(spaceID string, domainID string, blobID string) string {
 	fanout := blobID
 	if len(fanout) > 2 {
 		fanout = fanout[:2]
 	}
-	parts := []string{s.cfg.S3Prefix, "spaces", strings.TrimSpace(spaceID), "objects", fanout, strings.TrimSpace(blobID)}
+	parts := []string{s.cfg.S3Prefix, "spaces", strings.TrimSpace(spaceID), "domains", strings.TrimSpace(domainID), "objects", fanout, strings.TrimSpace(blobID)}
 	clean := make([]string, 0, len(parts))
 	for _, part := range parts {
 		part = strings.Trim(part, "/")
@@ -203,8 +205,8 @@ func (s *s3PayloadStore) objectKey(spaceID string, blobID string) string {
 func (s *s3PayloadStore) bucketKey(desc PayloadDescriptor) (string, string) {
 	bucket := firstNonEmpty(desc.S3Bucket, s.cfg.S3Bucket)
 	key := strings.TrimSpace(desc.S3Key)
-	if key == "" && desc.SpaceID != "" && desc.BlobID != "" {
-		key = s.objectKey(desc.SpaceID, desc.BlobID)
+	if key == "" && desc.SpaceID != "" && desc.DomainID != "" && desc.BlobID != "" {
+		key = s.objectKey(desc.SpaceID, desc.DomainID, desc.BlobID)
 	}
 	return bucket, key
 }

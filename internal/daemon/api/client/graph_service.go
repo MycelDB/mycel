@@ -155,7 +155,7 @@ func (s *GraphService) CreateBlobNode(stream clientv1.GraphService_CreateBlobNod
 	if tx.Mode != daemonsession.TransactionModeReadWrite {
 		return mapGraphError(daegraph.ErrReadOnly, "create blob node")
 	}
-	blob, err := s.blobs.UploadBlob(ctx, daemonblob.UploadInput{SpaceID: tx.SpaceID, DeclaredMimeType: meta.GetDeclaredMimeType(), OriginalFilename: meta.GetOriginalFilename(), Reader: bytes.NewReader(buf.Bytes())})
+	blob, err := s.blobs.UploadBlob(ctx, daemonblob.UploadInput{SpaceID: tx.SpaceID, DomainID: tx.DomainID, DeclaredMimeType: meta.GetDeclaredMimeType(), OriginalFilename: meta.GetOriginalFilename(), Reader: bytes.NewReader(buf.Bytes())})
 	if err != nil {
 		return mapBlobError(err, "upload blob node content")
 	}

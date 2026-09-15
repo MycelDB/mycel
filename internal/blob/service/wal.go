@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	blobstorage "github.com/myceldb/mycel/internal/blob/storage"
@@ -21,8 +22,9 @@ type blobMetaPutRecord struct {
 	PayloadDescriptor PayloadDescriptor `json:"payload_descriptor,omitempty"`
 }
 type blobMetaDeleteRecord struct {
-	SpaceID string `json:"space_id"`
-	BlobID  string `json:"blob_id"`
+	SpaceID  string `json:"space_id"`
+	DomainID string `json:"domain_id,omitempty"`
+	BlobID   string `json:"blob_id"`
 }
 
 func (m *Module) applyBlobMetaPut(ctx context.Context, rec wal.Record) error {
@@ -42,7 +44,7 @@ func (m *Module) applyBlobMetaDelete(ctx context.Context, rec wal.Record) error 
 	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
 		return err
 	}
-	return m.applyMetaDelete(ctx, payload.SpaceID, payload.BlobID)
+	return m.applyMetaDelete(ctx, payload.SpaceID, payload.DomainID, payload.BlobID)
 }
 
 func (m *Module) commitMetaPutRaft(ctx context.Context, meta BlobMeta) (BlobMeta, error) {
@@ -85,8 +87,8 @@ func (m *Module) commitMetaPut(ctx context.Context, meta BlobMeta) (BlobMeta, er
 	return meta, nil
 }
 
-func (m *Module) commitMetaDeleteRaft(ctx context.Context, spaceID string, blobID string) error {
-	payload, err := json.Marshal(blobMetaDeleteRecord{SpaceID: spaceID, BlobID: blobID})
+func (m *Module) commitMetaDeleteRaft(ctx context.Context, spaceID string, domainID string, blobID string) error {
+	payload, err := json.Marshal(blobMetaDeleteRecord{SpaceID: spaceID, DomainID: domainID, BlobID: blobID})
 	if err != nil {
 		return err
 	}
@@ -97,8 +99,8 @@ func (m *Module) commitMetaDeleteRaft(ctx context.Context, spaceID string, blobI
 	return m.proposeBlobRaftCommand(ctx, cmd)
 }
 
-func (m *Module) commitMetaDelete(ctx context.Context, spaceID string, blobID string) error {
-	payload, err := json.Marshal(blobMetaDeleteRecord{SpaceID: spaceID, BlobID: blobID})
+func (m *Module) commitMetaDelete(ctx context.Context, spaceID string, domainID string, blobID string) error {
+	payload, err := json.Marshal(blobMetaDeleteRecord{SpaceID: spaceID, DomainID: domainID, BlobID: blobID})
 	if err != nil {
 		return err
 	}
@@ -109,7 +111,7 @@ func (m *Module) commitMetaDelete(ctx context.Context, spaceID string, blobID st
 	if err := m.wal.Sync(ctx, lsn); err != nil {
 		return err
 	}
-	if err := m.applyMetaDelete(ctx, spaceID, blobID); err != nil {
+	if err := m.applyMetaDelete(ctx, spaceID, domainID, blobID); err != nil {
 		return err
 	}
 	return m.markWALApplied(ctx, lsn)
@@ -125,11 +127,11 @@ func (m *Module) applyMetaPut(ctx context.Context, meta BlobMeta) error {
 	if err != nil {
 		return err
 	}
-	metas[meta.BlobID] = meta
+	metas[blobMetaStorageKey(meta)] = meta
 	return m.saveSpaceMetaLocked(meta.SpaceID, metas)
 }
 
-func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, blobID string) error {
+func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, domainID string, blobID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -142,7 +144,13 @@ func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, blobID str
 			return fmt.Errorf("%w: %s has %d graph references", ErrReferenced, blobID, count)
 		}
 	}
-	meta, metaErr := m.meta(spaceID, blobID)
+	var meta BlobMeta
+	var metaErr error
+	if strings.TrimSpace(domainID) != "" {
+		meta, metaErr = m.metaInDomain(spaceID, strings.TrimSpace(domainID), blobID)
+	} else {
+		meta, metaErr = m.meta(spaceID, blobID)
+	}
 	if metaErr != nil && !errors.Is(metaErr, ErrNotFound) {
 		return metaErr
 	}
@@ -158,7 +166,11 @@ func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, blobID str
 	if err != nil {
 		return err
 	}
-	delete(metas, blobID)
+	if metaErr == nil {
+		delete(metas, blobMetaStorageKey(meta))
+	} else {
+		delete(metas, blobID)
+	}
 	if err := m.saveSpaceMetaLocked(spaceID, metas); err != nil {
 		return err
 	}

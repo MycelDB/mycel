@@ -59,12 +59,15 @@ func isObjectStoreBackend(backend string) bool {
 	return backend == blobBackendS3 || backend == blobBackendObjectStore
 }
 
-func (m *Module) putPayload(ctx context.Context, spaceID string, mimeType string, r io.Reader) (graphmodel.BlobID, int64, PayloadDescriptor, error) {
+func (m *Module) putPayload(ctx context.Context, spaceID string, domainID string, mimeType string, r io.Reader) (graphmodel.BlobID, int64, PayloadDescriptor, error) {
 	if isObjectStoreBackend(m.config.Backend) {
+		if strings.TrimSpace(domainID) == "" {
+			return "", 0, PayloadDescriptor{}, fmt.Errorf("%w: domain_id is required for object store blob payloads", ErrInvalidInput)
+		}
 		if m.s3Store == nil {
 			return "", 0, PayloadDescriptor{}, fmt.Errorf("object store blob backend is not initialized")
 		}
-		return m.s3Store.Put(ctx, spaceID, mimeType, r)
+		return m.s3Store.Put(ctx, spaceID, domainID, mimeType, r)
 	}
 	store, err := m.store(spaceID)
 	if err != nil {
@@ -74,7 +77,7 @@ func (m *Module) putPayload(ctx context.Context, spaceID string, mimeType string
 	if err != nil {
 		return "", 0, PayloadDescriptor{}, err
 	}
-	return id, size, PayloadDescriptor{Backend: blobBackendLocal, SpaceID: spaceID, BlobID: string(id), SizeBytes: size, ChecksumAlgorithm: "sha256", ChecksumHex: string(id)}, nil
+	return id, size, PayloadDescriptor{Backend: blobBackendLocal, SpaceID: spaceID, DomainID: domainID, BlobID: string(id), SizeBytes: size, ChecksumAlgorithm: "sha256", ChecksumHex: string(id)}, nil
 }
 
 func (m *Module) payloadExists(ctx context.Context, desc PayloadDescriptor) (bool, error) {
@@ -137,7 +140,7 @@ func samePayloadLocation(a PayloadDescriptor, b PayloadDescriptor) bool {
 	if payloadBackend(a) != payloadBackend(b) {
 		return false
 	}
-	if a.BlobID != b.BlobID || a.SpaceID != b.SpaceID {
+	if a.BlobID != b.BlobID || a.SpaceID != b.SpaceID || strings.TrimSpace(a.DomainID) != strings.TrimSpace(b.DomainID) {
 		return false
 	}
 	if isObjectStoreBackend(payloadBackend(a)) {
@@ -150,7 +153,7 @@ func (m *Module) logBestEffortPayloadDeleteFailure(desc PayloadDescriptor, err e
 	if err == nil || m.logger == nil {
 		return
 	}
-	m.logger.Warn("object store blob payload delete failed after metadata delete; object may need garbage collection", "space_id", desc.SpaceID, "blob_id", desc.BlobID, "bucket", desc.S3Bucket, "key", desc.S3Key, "error", err)
+	m.logger.Warn("object store blob payload delete failed after metadata delete; object may need garbage collection", "space_id", desc.SpaceID, "domain_id", desc.DomainID, "blob_id", desc.BlobID, "bucket", desc.S3Bucket, "key", desc.S3Key, "error", err)
 }
 
 func (m *Module) openLocalStore(spaceID string) (*blobstorage.Store, error) {
