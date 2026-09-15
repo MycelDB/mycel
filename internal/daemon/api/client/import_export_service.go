@@ -263,7 +263,7 @@ func (s *ImportExportService) importRecord(ctx context.Context, tx daemonsession
 		pending := &pendingImportBlob{metadata: value.BlobMetadata}
 		state.blobs[value.BlobMetadata.GetImportBlobId()] = pending
 		if value.BlobMetadata.GetSizeBytes() == 0 {
-			meta, err := s.blobs.UploadBlob(ctx, daemonblob.UploadInput{SpaceID: tx.SpaceID, DeclaredMimeType: value.BlobMetadata.GetDeclaredMimeType(), OriginalFilename: value.BlobMetadata.GetOriginalFilename(), Reader: bytes.NewReader(nil)})
+			meta, err := s.blobs.UploadBlob(ctx, daemonblob.UploadInput{SpaceID: tx.SpaceID, DomainID: tx.DomainID, DeclaredMimeType: value.BlobMetadata.GetDeclaredMimeType(), OriginalFilename: value.BlobMetadata.GetOriginalFilename(), Reader: bytes.NewReader(nil)})
 			if err != nil {
 				return mapBlobError(err, "import blob")
 			}
@@ -283,7 +283,7 @@ func (s *ImportExportService) importRecord(ctx context.Context, tx daemonsession
 			return err
 		}
 		if pending.metadata.GetSizeBytes() > 0 && int64(pending.buf.Len()) >= pending.metadata.GetSizeBytes() && pending.uploaded == "" {
-			meta, err := s.blobs.UploadBlob(ctx, daemonblob.UploadInput{SpaceID: tx.SpaceID, DeclaredMimeType: pending.metadata.GetDeclaredMimeType(), OriginalFilename: pending.metadata.GetOriginalFilename(), Reader: bytes.NewReader(pending.buf.Bytes())})
+			meta, err := s.blobs.UploadBlob(ctx, daemonblob.UploadInput{SpaceID: tx.SpaceID, DomainID: tx.DomainID, DeclaredMimeType: pending.metadata.GetDeclaredMimeType(), OriginalFilename: pending.metadata.GetOriginalFilename(), Reader: bytes.NewReader(pending.buf.Bytes())})
 			if err != nil {
 				return mapBlobError(err, "import blob")
 			}
@@ -307,7 +307,7 @@ func (s *ImportExportService) exportBlobs(ctx context.Context, spaceID string, n
 			continue
 		}
 		seen[blobID] = true
-		meta, reader, err := s.blobs.OpenBlob(ctx, spaceID, blobID)
+		meta, reader, err := s.blobs.OpenBlobInDomain(ctx, spaceID, node.DomainID.String(), blobID)
 		if err != nil {
 			return mapBlobError(err, "export blob")
 		}

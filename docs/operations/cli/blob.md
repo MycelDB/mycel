@@ -12,12 +12,15 @@ Authentication mode: **user**.
 ## Examples
 
 ```sh
-mycel blob upload file.txt --space-id <space-id>
+mycel blob upload file.txt --space-id <space-id> --domain-id <domain-id>
 ```
 
 ```sh
-mycel blob download <blob-id> --space-id <space-id>
+mycel blob download <blob-id> --space-id <space-id> --domain-id <domain-id>
 ```
+
+Raw blob metadata, download, and delete commands require both `--space-id` and
+`--domain-id` because object-store payload metadata is domain-scoped.
 
 ## Related docs
 

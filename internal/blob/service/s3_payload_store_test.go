@@ -96,11 +96,11 @@ func TestS3PayloadStorePutOpenDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newS3PayloadStoreWithClient() error = %v", err)
 	}
-	id, size, desc, err := store.Put(ctx, "space-1", "text/plain", strings.NewReader("hello s3"))
+	id, size, desc, err := store.Put(ctx, "space-1", "domain-1", "text/plain", strings.NewReader("hello s3"))
 	if err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
-	if id == "" || size != int64(len("hello s3")) || desc.Backend != "s3" || desc.S3Bucket != "my-bucket" || !strings.HasPrefix(desc.S3Key, "tenant-a/spaces/space-1/objects/") || desc.S3ETag != "fake-etag" {
+	if id == "" || size != int64(len("hello s3")) || desc.Backend != "s3" || desc.S3Bucket != "my-bucket" || desc.DomainID != "domain-1" || !strings.HasPrefix(desc.S3Key, "tenant-a/spaces/space-1/domains/domain-1/objects/") || desc.S3ETag != "fake-etag" {
 		t.Fatalf("unexpected descriptor: id=%s size=%d desc=%+v", id, size, desc)
 	}
 	fake.mu.Lock()
@@ -138,16 +138,59 @@ func TestObjectStorePayloadStorePutUsesObjectStoreBackendDescriptor(t *testing.T
 	if err != nil {
 		t.Fatalf("newS3PayloadStoreWithClient() error = %v", err)
 	}
-	_, _, desc, err := store.Put(ctx, "space-1", "text/plain", strings.NewReader("hello object store"))
+	_, _, desc, err := store.Put(ctx, "space-1", "domain-1", "text/plain", strings.NewReader("hello object store"))
 	if err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
-	if desc.Backend != "object_store" || desc.S3Bucket != "my-bucket" || !strings.HasPrefix(desc.S3Key, "tenant-a/spaces/space-1/objects/") {
+	if desc.Backend != "object_store" || desc.S3Bucket != "my-bucket" || desc.DomainID != "domain-1" || !strings.HasPrefix(desc.S3Key, "tenant-a/spaces/space-1/domains/domain-1/objects/") {
 		t.Fatalf("unexpected descriptor: %+v", desc)
 	}
 	ok, err := store.Exists(ctx, desc)
 	if err != nil || !ok {
 		t.Fatalf("Exists() = %v, %v; want true, nil", ok, err)
+	}
+}
+
+func TestS3PayloadStorePutRequiresDomainID(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeS3PayloadClient()
+	store, err := newS3PayloadStoreWithClient(Config{Backend: "object_store", ObjectStoreProvider: "s3-compatible", S3Bucket: "my-bucket"}, t.TempDir(), fake)
+	if err != nil {
+		t.Fatalf("newS3PayloadStoreWithClient() error = %v", err)
+	}
+	if _, _, _, err := store.Put(ctx, "space-1", "", "text/plain", strings.NewReader("missing domain")); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("Put() error = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestModuleObjectStoreSameBlobIDDifferentDomainsUsesSeparateKeys(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeS3PayloadClient()
+	store, err := newS3PayloadStoreWithClient(Config{Backend: "object_store", ObjectStoreProvider: "s3-compatible", S3Bucket: "my-bucket", S3Prefix: "tenant-a"}, t.TempDir(), fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewModule(fakeRefCounter{}, Config{Backend: "object_store", ObjectStoreProvider: "s3-compatible", S3Bucket: "my-bucket", S3Prefix: "tenant-a"})
+	m.s3Store = store
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	first, err := m.UploadBlob(ctx, UploadInput{SpaceID: "space-1", DomainID: "domain-a", Reader: strings.NewReader("same bytes")})
+	if err != nil {
+		t.Fatalf("first UploadBlob() error = %v", err)
+	}
+	second, err := m.UploadBlob(ctx, UploadInput{SpaceID: "space-1", DomainID: "domain-b", Reader: strings.NewReader("same bytes")})
+	if err != nil {
+		t.Fatalf("second UploadBlob() error = %v", err)
+	}
+	if first.BlobID != second.BlobID {
+		t.Fatalf("BlobID mismatch for identical payload: %s vs %s", first.BlobID, second.BlobID)
+	}
+	if first.Payload == nil || second.Payload == nil || first.Payload.S3Key == second.Payload.S3Key {
+		t.Fatalf("expected separate domain-scoped keys, got first=%+v second=%+v", first.Payload, second.Payload)
+	}
+	if !strings.Contains(first.Payload.S3Key, "/domains/domain-a/objects/") || !strings.Contains(second.Payload.S3Key, "/domains/domain-b/objects/") {
+		t.Fatalf("unexpected object keys: first=%q second=%q", first.Payload.S3Key, second.Payload.S3Key)
 	}
 }
 
@@ -170,7 +213,7 @@ func TestModuleS3DeleteIsBestEffortAfterMetadataDelete(t *testing.T) {
 	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	meta, err := m.UploadBlob(ctx, UploadInput{SpaceID: "space-1", Reader: strings.NewReader("delete me")})
+	meta, err := m.UploadBlob(ctx, UploadInput{SpaceID: "space-1", DomainID: "domain-1", Reader: strings.NewReader("delete me")})
 	if err != nil {
 		t.Fatalf("UploadBlob() error = %v", err)
 	}

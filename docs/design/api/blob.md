@@ -85,7 +85,7 @@ service BlobService {
 
 ## Blob model
 
-A blob represents content-addressed binary content in a space.
+A blob represents content-addressed binary content in a space/domain scope.
 
 Recommended fields:
 
@@ -93,16 +93,17 @@ Recommended fields:
 message Blob {
   string blob_id = 1;
   string space_id = 2;
-  string digest = 3;
-  int64 size_bytes = 4;
-  string mime_type = 5;
-  string declared_mime_type = 6;
-  string original_filename = 7;
-  google.protobuf.Timestamp create_time = 8;
+  string domain_id = 3;
+  string digest = 4;
+  int64 size_bytes = 5;
+  string mime_type = 6;
+  string declared_mime_type = 7;
+  string original_filename = 8;
+  google.protobuf.Timestamp create_time = 9;
 }
 ```
 
-The daemon may deduplicate content by digest. The API exposes digest/blob metadata without requiring clients to know storage internals.
+The daemon may deduplicate content by digest within a domain scope. The API exposes digest/blob metadata without requiring clients to know storage internals.
 
 ## UploadBlob
 
@@ -119,9 +120,9 @@ message UploadBlobRequest {
 }
 ```
 
-The first message should contain metadata, followed by one or more chunk messages.
+The first message should contain metadata, including `space_id` and `domain_id`, followed by one or more chunk messages.
 
-`UploadBlob` creates raw blob content but does not create a graph node. This supports upload-then-attach workflows and low-level blob storage use cases.
+`UploadBlob` creates raw blob content but does not create a graph node. This supports upload-then-attach workflows and low-level blob storage use cases. Raw blob metadata is domain-scoped so object-store payload keys can align with domain ownership.
 
 Requires:
 
@@ -207,10 +208,10 @@ docs/design/api/graph.md
 Daemon-backed raw blob commands:
 
 ```sh
-./bin/mycel -u alice -p '<password>' blob upload --space-id '<space-id>' --mime-type text/plain ./note.txt
-./bin/mycel -u alice -p '<password>' blob get --space-id '<space-id>' '<blob-id>'
-./bin/mycel -u alice -p '<password>' blob download --space-id '<space-id>' '<blob-id>' --output-file ./note.txt
-./bin/mycel -u alice -p '<password>' blob delete --space-id '<space-id>' '<blob-id>'
+./bin/mycel -u alice -p '<password>' blob upload --space-id '<space-id>' --domain-id '<domain-id>' --mime-type text/plain ./note.txt
+./bin/mycel -u alice -p '<password>' blob get --space-id '<space-id>' --domain-id '<domain-id>' '<blob-id>'
+./bin/mycel -u alice -p '<password>' blob download --space-id '<space-id>' --domain-id '<domain-id>' '<blob-id>' --output-file ./note.txt
+./bin/mycel -u alice -p '<password>' blob delete --space-id '<space-id>' --domain-id '<domain-id>' '<blob-id>'
 ```
 
 `blob upload` is raw blob upload only. Transaction-scoped graph attachment is available through `GraphService.CreateBlobNode` and the CLI command:
@@ -223,7 +224,7 @@ Daemon-backed raw blob commands:
 
 - Client and server streaming RPCs are protected by the same bearer-token auth as unary client RPCs.
 - Raw blob IDs are SHA-256 content addresses; the API `digest` field is exposed as `sha256:<blob-id>`.
-- Uploads are deduplicated by content address.
+- Uploads are deduplicated by content address within domain-scoped blob metadata.
 - `DeleteBlob` checks daemon graph storage and rejects blobs with live graph references.
 - `GraphService.CreateBlobNode` uploads blob content, creates a blob-backed graph node in the transaction overlay, and auto-populates blob metadata props.
 
