@@ -43,9 +43,10 @@ assigned to a tagged release bucket.
 - [Top query priorities completion implementation plan](top-query-priorities-completion-implementation-plan.md) — remaining work to make predicate pushdown, semantic/vector execution, broader indexed paths, aggregation, result shaping, diagnostics, SDKs, and Console support production-complete.
 - [REPL space connection and GQL execution implementation plan](repl-space-gql-connect-implementation-plan.md) — psql-like REPL connection state for spaces/domains and convenient GQL execution without repeating IDs.
 
-## Clustering and raft reliability
+## Clustering, raft reliability, and security
 
 - [Raft disruption test harness implementation plan](raft-disruption-test-harness-implementation-plan.md) — reusable destructive K3s/k3d raft pod-restart pressure harness with disposable cluster lifecycle and artifact capture.
+- [Encryption at rest implementation plan](encryption-at-rest-implementation-plan.md) — phased plan for envelope encryption across WAL/Raft, graph/blob stores, backups, indexes, derived artifacts, key providers, migration, and rotation.
 
 ## Cleanup
 
