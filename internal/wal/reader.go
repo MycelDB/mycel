@@ -4,19 +4,22 @@ import (
 	"context"
 	"io"
 	"os"
+
+	"github.com/myceldb/mycel/internal/encryption"
 )
 
 type Iterator struct {
-	ctx      context.Context
-	segments []segmentInfo
-	min      LSN
-	idx      int
-	file     *os.File
-	closed   bool
+	ctx        context.Context
+	segments   []segmentInfo
+	min        LSN
+	idx        int
+	file       *os.File
+	closed     bool
+	encryption *encryption.Service
 }
 
-func newIterator(ctx context.Context, segments []segmentInfo, min LSN) *Iterator {
-	return &Iterator{ctx: ctx, segments: segments, min: min}
+func newIterator(ctx context.Context, segments []segmentInfo, min LSN, enc *encryption.Service) *Iterator {
+	return &Iterator{ctx: ctx, segments: segments, min: min, encryption: enc}
 }
 
 func (it *Iterator) Next() (Record, bool, error) {
@@ -43,6 +46,13 @@ func (it *Iterator) Next() (Record, bool, error) {
 		}
 		switch st {
 		case frameOK:
+			if it.encryption != nil {
+				payload, err := it.encryption.DecryptRecord(it.ctx, rec.Payload, walRecordAAD(rec))
+				if err != nil {
+					return Record{}, false, err
+				}
+				rec.Payload = payload
+			}
 			if rec.LSN < it.min {
 				continue
 			}

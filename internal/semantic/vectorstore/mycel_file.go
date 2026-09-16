@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 
 	"github.com/google/uuid"
@@ -37,7 +38,10 @@ const (
 	flagTombstone         = uint16(1)
 )
 
-type MycelFileBackend struct{ GraphsDir string }
+type MycelFileBackend struct {
+	GraphsDir  string
+	Encryption *encryption.Service
+}
 
 type indexManifest struct {
 	Format              string                         `json:"format"`
@@ -105,7 +109,7 @@ func (b MycelFileBackend) Upsert(ctx context.Context, rec domainsemantic.Advance
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
-	if err := appendRecord(path, rec); err != nil {
+	if err := b.appendRecord(ctx, path, rec); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
 	_ = b.touchManifest(rec.SpaceID, rec.SemanticIndexID)
@@ -155,7 +159,7 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
-	if err := appendRecord(path, rec); err != nil {
+	if err := b.appendRecord(ctx, path, rec); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
 	_ = b.touchManifest(rec.SpaceID, rec.SemanticIndexID)
@@ -430,7 +434,7 @@ func (b MycelFileBackend) tombstonePhysicalSearchRecord(ctx context.Context, rec
 }
 
 func (b MycelFileBackend) readLatestSearchIndex(key SearchIndexKey) (latestSearchIndexFile, error) {
-	raw, err := os.ReadFile(b.searchLatestPath(key))
+	raw, err := b.readMaybeEncrypted(context.Background(), b.searchLatestPath(key))
 	if err != nil {
 		return latestSearchIndexFile{}, err
 	}
@@ -450,7 +454,7 @@ func (b MycelFileBackend) writeLatestSearchIndex(file latestSearchIndexFile) err
 	if err != nil {
 		return err
 	}
-	return filestore.WriteFileAtomic(path, append(raw, '\n'), fsperm.PrivateFile)
+	return b.writeMaybeEncrypted(context.Background(), path, append(raw, '\n'))
 }
 
 func (b MycelFileBackend) writeSearchIndexState(key SearchIndexKey, state string, liveCount int64, lastErr string) (domainsemantic.SemanticSearchIndexState, error) {
@@ -467,7 +471,30 @@ func (b MycelFileBackend) writeSearchIndexState(key SearchIndexKey, state string
 	if err != nil {
 		return value, err
 	}
-	return value, filestore.WriteFileAtomic(path, append(raw, '\n'), fsperm.PrivateFile)
+	return value, b.writeMaybeEncrypted(context.Background(), path, append(raw, '\n'))
+}
+
+func (b MycelFileBackend) readMaybeEncrypted(ctx context.Context, path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if b.Encryption == nil || !b.Encryption.Enabled() {
+		return data, nil
+	}
+	return b.Encryption.DecryptRecord(ctx, data, []byte("semantic-vector-json:v1:path="+filepath.ToSlash(path)))
+}
+
+func (b MycelFileBackend) writeMaybeEncrypted(ctx context.Context, path string, plaintext []byte) error {
+	data := plaintext
+	if b.Encryption != nil && b.Encryption.Enabled() {
+		ciphertext, err := b.Encryption.EncryptRecord(ctx, plaintext, []byte("semantic-vector-json:v1:path="+filepath.ToSlash(path)))
+		if err != nil {
+			return err
+		}
+		data = ciphertext
+	}
+	return filestore.WriteFileAtomic(path, data, fsperm.PrivateFile)
 }
 
 func (b MycelFileBackend) searchIndexDir(key SearchIndexKey) string {
@@ -556,7 +583,7 @@ func (b MycelFileBackend) readAll(spaceID uuid.UUID, indexID domainsemantic.Sema
 	}
 	out := []domainsemantic.AdvancedEmbeddingRecord{}
 	for {
-		rec, err := readRecord(f)
+		rec, err := b.readRecord(context.Background(), f)
 		if err == io.EOF {
 			break
 		}
@@ -581,7 +608,7 @@ func validateUpsert(rec domainsemantic.AdvancedEmbeddingRecord) error {
 	return nil
 }
 
-func appendRecord(path string, rec domainsemantic.AdvancedEmbeddingRecord) error {
+func (b MycelFileBackend) appendRecord(ctx context.Context, path string, rec domainsemantic.AdvancedEmbeddingRecord) error {
 	if rec.SemanticRuleID == uuid.Nil {
 		rec.SemanticRuleID = domainsemantic.SemanticRuleID(rec.SemanticIndexID)
 	}
@@ -593,6 +620,16 @@ func appendRecord(path string, rec domainsemantic.AdvancedEmbeddingRecord) error
 		return err
 	}
 	vector := encodeVector32(rec.Vector)
+	if b.Encryption != nil && b.Encryption.Enabled() {
+		meta, err = b.Encryption.EncryptRecord(ctx, meta, []byte("semantic-vector-record-meta:v1:id="+rec.ID.String()))
+		if err != nil {
+			return err
+		}
+		vector, err = b.Encryption.EncryptRecord(ctx, vector, []byte("semantic-vector-record-vector:v1:id="+rec.ID.String()))
+		if err != nil {
+			return err
+		}
+	}
 	crc := crc32.ChecksumIEEE(append(append([]byte{}, meta...), vector...))
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
@@ -634,7 +671,7 @@ func appendRecord(path string, rec domainsemantic.AdvancedEmbeddingRecord) error
 	return f.Sync()
 }
 
-func readRecord(r io.Reader) (domainsemantic.AdvancedEmbeddingRecord, error) {
+func (b MycelFileBackend) readRecord(ctx context.Context, r io.Reader) (domainsemantic.AdvancedEmbeddingRecord, error) {
 	var magic uint32
 	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
@@ -682,9 +719,6 @@ func readRecord(r io.Reader) (domainsemantic.AdvancedEmbeddingRecord, error) {
 			return domainsemantic.AdvancedEmbeddingRecord{}, err
 		}
 	}
-	if vectorLen != dimensions*4 {
-		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("invalid semantic vector length")
-	}
 	meta := make([]byte, metaLen)
 	if _, err := io.ReadFull(r, meta); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
@@ -695,6 +729,20 @@ func readRecord(r io.Reader) (domainsemantic.AdvancedEmbeddingRecord, error) {
 	}
 	if crc32.ChecksumIEEE(append(append([]byte{}, meta...), vectorBytes...)) != expectedCRC {
 		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("semantic vector record crc mismatch")
+	}
+	if b.Encryption != nil && b.Encryption.Enabled() {
+		var err error
+		meta, err = b.Encryption.DecryptRecord(ctx, meta, []byte("semantic-vector-record-meta:v1:id="+rec.ID.String()))
+		if err != nil {
+			return domainsemantic.AdvancedEmbeddingRecord{}, err
+		}
+		vectorBytes, err = b.Encryption.DecryptRecord(ctx, vectorBytes, []byte("semantic-vector-record-vector:v1:id="+rec.ID.String()))
+		if err != nil {
+			return domainsemantic.AdvancedEmbeddingRecord{}, err
+		}
+	}
+	if uint32(len(vectorBytes)) != dimensions*4 {
+		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("invalid semantic vector length")
 	}
 	var md recordMetadata
 	if err := json.Unmarshal(meta, &md); err != nil {

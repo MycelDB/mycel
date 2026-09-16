@@ -14,7 +14,6 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
-	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -74,14 +73,6 @@ model_endpoint_capabilities:
 	if applied.GetPackage().GetName() != "test-openai" || len(applied.GetModelEndpoints()) != 1 || len(applied.GetModels()) != 1 || len(applied.GetModelEndpointCapabilities()) != 1 {
 		t.Fatalf("unexpected applied package: %#v", &applied)
 	}
-	inferenceGlobal := inferencestorage.NewGlobalManager()
-	if err := inferenceGlobal.Init(context.Background(), filepath.Join(dataDir, "meta", "inference_runtime")); err != nil {
-		t.Fatalf("init standalone inference global manager: %v", err)
-	}
-	inferenceEndpoints, err := inferenceGlobal.ListEndpoints(context.Background())
-	if err != nil || len(inferenceEndpoints) != 1 || inferenceEndpoints[0].Key != "test-openai" {
-		t.Fatalf("standalone inference endpoint sync failed: %#v err=%v", inferenceEndpoints, err)
-	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "endpoint", "list")
 	if err != nil {
 		t.Fatalf("model endpoint list failed: %v\n%s", err, out)
@@ -120,14 +111,6 @@ model_endpoint_capabilities:
 	}
 	if createdCredential.GetCredential().GetKey() != "test-openai-key" || createdCredential.GetSecret().GetKind() != "inline_encrypted" || createdCredential.GetCredential().GetSecretSuffix() != "enai" {
 		t.Fatalf("unexpected credential: %#v", &createdCredential)
-	}
-	inferenceGlobalAfterCredential := inferencestorage.NewGlobalManager()
-	if err := inferenceGlobalAfterCredential.Init(context.Background(), filepath.Join(dataDir, "meta")); err != nil {
-		t.Fatalf("reload standalone inference global manager: %v", err)
-	}
-	standaloneCredentials, err := inferenceGlobalAfterCredential.ListCredentials(context.Background())
-	if err != nil || len(standaloneCredentials) != 1 || standaloneCredentials[0].Key != "test-openai-key" {
-		t.Fatalf("standalone inference credential sync failed: %#v err=%v", standaloneCredentials, err)
 	}
 	conn, authCtx, _, err := loginDaemonPrincipal(context.Background(), &cliapp.App{DaemonAddr: addr, UserRef: "admin", Password: adminPassword})
 	if err != nil {
@@ -202,18 +185,6 @@ model_endpoint_capabilities:
 	}
 	if createdPolicy.GetInferencePolicy().GetEffect() != "allow" {
 		t.Fatalf("unexpected policy: %#v", &createdPolicy)
-	}
-	inferenceSpace := inferencestorage.NewSpaceManager()
-	if err := inferenceSpace.Init(context.Background(), filepath.Join(dataDir, "graphs", spaceID, "inference"), spaceID); err != nil {
-		t.Fatalf("init standalone inference space manager: %v", err)
-	}
-	standaloneGrants, err := inferenceSpace.ListCredentialGrants(context.Background())
-	if err != nil || len(standaloneGrants) != 1 || standaloneGrants[0].ID.String() != createdGrant.GetCredentialGrant().GetCredentialGrantId() {
-		t.Fatalf("standalone inference grant sync failed: %#v err=%v", standaloneGrants, err)
-	}
-	standalonePolicies, err := inferenceSpace.ListPolicies(context.Background())
-	if err != nil || len(standalonePolicies) != 1 || standalonePolicies[0].ID.String() != createdPolicy.GetInferencePolicy().GetInferencePolicyId() {
-		t.Fatalf("standalone inference policy sync failed: %#v err=%v", standalonePolicies, err)
 	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "policy", "list", "--space-id", spaceID, "--effect", "allow")
 	if err != nil {

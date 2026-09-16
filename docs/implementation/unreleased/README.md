@@ -46,7 +46,8 @@ assigned to a tagged release bucket.
 ## Clustering, raft reliability, and security
 
 - [Raft disruption test harness implementation plan](raft-disruption-test-harness-implementation-plan.md) — reusable destructive K3s/k3d raft pod-restart pressure harness with disposable cluster lifecycle and artifact capture.
-- [Encryption at rest implementation plan](encryption-at-rest-implementation-plan.md) — phased plan for envelope encryption across WAL/Raft, graph/blob stores, backups, indexes, derived artifacts, key providers, migration, and rotation.
+- [Encryption at rest implementation plan](encryption-at-rest-implementation-plan.md) — phased plan for fresh-deployment envelope encryption across WAL/Raft, graph/blob stores, backups, indexes, derived artifacts, key providers, validation, and rotation.
+- [Encryption at rest storage inventory](encryption-at-rest-storage-inventory.md) — EAR0 classification of persistent artifacts by encryption requirement and implementation milestone.
 
 ## Cleanup
 

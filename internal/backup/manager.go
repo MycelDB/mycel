@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 
 	"github.com/google/uuid"
@@ -39,15 +40,17 @@ type Manager struct {
 	lastSuccess time.Time
 	last        RunStatus
 	history     []RunStatus
+	encryption  *encryption.Service
 }
 
 type ManagerConfig struct {
-	DataDir string
-	Policy  Policy
-	Logger  *slog.Logger
-	Quiesce *quiesce.Coordinator
-	Version string
-	Now     func() time.Time
+	DataDir    string
+	Policy     Policy
+	Logger     *slog.Logger
+	Quiesce    *quiesce.Coordinator
+	Version    string
+	Now        func() time.Time
+	Encryption *encryption.Service
 }
 
 type TriggerInput struct {
@@ -102,7 +105,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if persisted, err := loadPersistedPolicy(cfg.DataDir); err == nil {
 		policy = EffectivePolicy(cfg.DataDir, persisted)
 	}
-	return &Manager{dataDir: cfg.DataDir, policy: policy, logger: cfg.Logger, quiesce: cfg.Quiesce, version: cfg.Version, now: now, last: RunStatus{State: RunStateIdle}}
+	return &Manager{dataDir: cfg.DataDir, policy: policy, logger: cfg.Logger, quiesce: cfg.Quiesce, version: cfg.Version, now: now, encryption: cfg.Encryption, last: RunStatus{State: RunStateIdle}}
 }
 
 func (m *Manager) Policy() Policy {
@@ -401,6 +404,11 @@ func (m *Manager) createArchiveWithPolicy(ctx context.Context, backupID string, 
 	if err := WriteArchive(runCtx, policy.ArchiveFormat, stagingDir, archiveTmp); err != nil {
 		return TriggerResult{}, fmt.Errorf("create archive: %w", err)
 	}
+	if m.encryption != nil && m.encryption.Enabled() {
+		if err := m.encryptArchive(runCtx, archiveTmp, backupID, archiveName); err != nil {
+			return TriggerResult{}, fmt.Errorf("encrypt archive: %w", err)
+		}
+	}
 	checksum, size, err := fileSHA256(archiveTmp)
 	if err != nil {
 		return TriggerResult{}, fmt.Errorf("checksum archive: %w", err)
@@ -530,6 +538,18 @@ func pathWithinDir(dir string, path string) bool {
 	path = filepath.Clean(path)
 	rel, err := filepath.Rel(dir, path)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "."
+}
+
+func (m *Manager) encryptArchive(ctx context.Context, path string, backupID string, archiveName string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	ciphertext, err := m.encryption.EncryptRecord(ctx, raw, []byte("backup-archive:v1:id="+backupID+":name="+archiveName))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, ciphertext, fsperm.PrivateFile)
 }
 
 func readManifestFile(path string) (Manifest, error) {

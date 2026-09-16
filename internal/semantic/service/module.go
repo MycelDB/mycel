@@ -2,13 +2,9 @@ package service
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -19,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	identity "github.com/myceldb/mycel/internal/identity/model"
@@ -49,7 +46,7 @@ type semanticGateContextKey struct{}
 type Module struct {
 	mu                   sync.Mutex
 	dataDir              string
-	secretKeyB64         string
+	encryption           *encryption.Service
 	global               storesemantic.GlobalManager
 	globalBase           storesemantic.GlobalManager
 	spaces               map[domainspace.SpaceID]storesemantic.SpaceManager
@@ -94,7 +91,7 @@ func NewModule(config ...Config) *Module {
 		cfg = config[0]
 	}
 
-	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, maintenanceManagers: map[domainspace.SpaceID]storesemantic.MaintenanceManager{}, gate: quiesce.NewGate(ModuleName), secretKeyB64: cfg.SecretKeyB64, maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager, graphReaderManager: cfg.GraphReadManager, inferenceManager: cfg.InferenceManager}
+	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, maintenanceManagers: map[domainspace.SpaceID]storesemantic.MaintenanceManager{}, gate: quiesce.NewGate(ModuleName), maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager, graphReaderManager: cfg.GraphReadManager, inferenceManager: cfg.InferenceManager}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -114,7 +111,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		return runtime.Abort(ModuleName, "store", "failed to ensure default vector store", err)
 	}
 	m.dataDir = host.DataDir()
-	m.secretKeyB64 = firstNonEmpty(m.secretKeyB64, hostStringConfigField(host, "UserStoreEncryptionKeyB64"))
+	if provider, ok := host.(runtime.EncryptionProvider); ok {
+		m.encryption = provider.EncryptionService()
+	}
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
@@ -434,31 +433,21 @@ func (m *Module) PurgeVectorIndex(ctx context.Context, spaceID domainspace.Space
 }
 
 func (m *Module) localVectorBackend() vectorstore.MycelFileBackend {
-	return vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}
+	return vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs"), Encryption: m.encryption}
 }
 
 func (m *Module) EncryptSecret(ctx context.Context, plain string) (*domainsemantic.EncryptedSecretPayload, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	key, err := base64.StdEncoding.DecodeString(m.secretKeyB64)
-	if err != nil || len(key) != 32 {
-		return nil, fmt.Errorf("valid 32-byte secret encryption key is required")
+	if m.encryption == nil || !m.encryption.Enabled() {
+		return nil, fmt.Errorf("encryption at rest is required for inline secrets")
 	}
-	block, err := aes.NewCipher(key)
+	ciphertext, err := m.encryption.EncryptRecord(ctx, []byte(plain), []byte("inference-secret:v1"))
 	if err != nil {
 		return nil, err
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	ciphertext := gcm.Seal(nil, nonce, []byte(plain), nil)
-	return &domainsemantic.EncryptedSecretPayload{Algorithm: "AES-256-GCM", NonceB64: base64.StdEncoding.EncodeToString(nonce), CipherB64: base64.StdEncoding.EncodeToString(ciphertext)}, nil
+	return &domainsemantic.EncryptedSecretPayload{Algorithm: "MYCEL-ENVELOPE-V1", CipherB64: base64.StdEncoding.EncodeToString(ciphertext)}, nil
 }
 
 func (m *Module) ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager, error) {
@@ -970,7 +959,7 @@ func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID
 		return semanticbackfill.Runner{}, err
 	}
 	global := m.GlobalManager()
-	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, ""), VectorBackend: vectorstore.MycelFileBackend{GraphsDir: filepath.Join(m.dataDir, "graphs")}}, nil
+	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, ""), VectorBackend: m.localVectorBackend()}, nil
 }
 
 type semanticGraphReader struct {
@@ -1068,22 +1057,6 @@ func maintenanceConfigFromHost(host runtime.Host) MaintenanceConfig {
 		ProviderDefaults:           throttleField(semanticField, "ProviderDefaults"),
 		CredentialDefaults:         throttleField(semanticField, "CredentialDefaults"),
 	}
-}
-
-func hostStringConfigField(host runtime.Host, name string) string {
-	value := reflect.Indirect(reflect.ValueOf(host))
-	if !value.IsValid() || value.Kind() != reflect.Struct {
-		return ""
-	}
-	configField := value.FieldByName("Config")
-	if !configField.IsValid() {
-		return ""
-	}
-	field := configField.FieldByName(name)
-	if !field.IsValid() || field.Kind() != reflect.String {
-		return ""
-	}
-	return field.String()
 }
 
 func boolField(value reflect.Value, name string) bool {

@@ -1,16 +1,16 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
-	"github.com/myceldb/mycel/internal/fsperm"
+	"github.com/myceldb/mycel/internal/encryption"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -28,12 +28,13 @@ type s3PayloadAPI interface {
 }
 
 type s3PayloadStore struct {
-	cfg    Config
-	client s3PayloadAPI
-	tmpDir string
+	cfg        Config
+	client     s3PayloadAPI
+	tmpDir     string
+	encryption *encryption.Service
 }
 
-func newS3PayloadStore(ctx context.Context, cfg Config, tmpDir string) (*s3PayloadStore, error) {
+func newS3PayloadStore(ctx context.Context, cfg Config, tmpDir string, enc ...*encryption.Service) (*s3PayloadStore, error) {
 	cfg = effectiveBlobConfig(cfg)
 	if cfg.S3Bucket == "" {
 		return nil, fmt.Errorf("object store blob backend requires bucket")
@@ -52,10 +53,14 @@ func newS3PayloadStore(ctx context.Context, cfg Config, tmpDir string) (*s3Paylo
 		}
 		o.UsePathStyle = cfg.S3ForcePathStyle
 	})
-	return &s3PayloadStore{cfg: cfg, client: client, tmpDir: tmpDir}, nil
+	var svc *encryption.Service
+	if len(enc) > 0 {
+		svc = enc[0]
+	}
+	return &s3PayloadStore{cfg: cfg, client: client, tmpDir: tmpDir, encryption: svc}, nil
 }
 
-func newS3PayloadStoreWithClient(cfg Config, tmpDir string, client s3PayloadAPI) (*s3PayloadStore, error) {
+func newS3PayloadStoreWithClient(cfg Config, tmpDir string, client s3PayloadAPI, enc ...*encryption.Service) (*s3PayloadStore, error) {
 	cfg = effectiveBlobConfig(cfg)
 	if cfg.S3Bucket == "" {
 		return nil, fmt.Errorf("object store blob backend requires bucket")
@@ -63,7 +68,11 @@ func newS3PayloadStoreWithClient(cfg Config, tmpDir string, client s3PayloadAPI)
 	if client == nil {
 		return nil, fmt.Errorf("S3 client is required")
 	}
-	return &s3PayloadStore{cfg: cfg, client: client, tmpDir: tmpDir}, nil
+	var svc *encryption.Service
+	if len(enc) > 0 {
+		svc = enc[0]
+	}
+	return &s3PayloadStore{cfg: cfg, client: client, tmpDir: tmpDir, encryption: svc}, nil
 }
 
 func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, domainID string, mimeType string, r io.Reader) (graphmodel.BlobID, int64, PayloadDescriptor, error) {
@@ -72,52 +81,29 @@ func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, domainID strin
 	if spaceID == "" || domainID == "" || r == nil {
 		return "", 0, PayloadDescriptor{}, fmt.Errorf("%w: space_id, domain_id, and reader are required", ErrInvalidInput)
 	}
-	if err := os.MkdirAll(s.tmpDir, fsperm.PrivateDir); err != nil {
-		return "", 0, PayloadDescriptor{}, err
-	}
-	tmp, err := os.CreateTemp(s.tmpDir, "s3-put-*.blob")
+	plaintext, err := io.ReadAll(r)
 	if err != nil {
 		return "", 0, PayloadDescriptor{}, err
 	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}
-
-	hasher := sha256.New()
-	size, err := io.Copy(io.MultiWriter(tmp, hasher), r)
-	if err != nil {
-		cleanup()
-		return "", 0, PayloadDescriptor{}, err
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return "", 0, PayloadDescriptor{}, err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", 0, PayloadDescriptor{}, err
-	}
-
-	digestBytes := hasher.Sum(nil)
+	size := int64(len(plaintext))
+	digest := sha256.Sum256(plaintext)
+	digestBytes := digest[:]
 	id, err := graphmodel.BlobIDFromBytes(digestBytes)
 	if err != nil {
-		_ = os.Remove(tmpPath)
 		return "", 0, PayloadDescriptor{}, err
 	}
 	key := s.objectKey(spaceID, domainID, string(id))
-	body, err := os.Open(tmpPath)
-	if err != nil {
-		_ = os.Remove(tmpPath)
-		return "", 0, PayloadDescriptor{}, err
+	stored := plaintext
+	if s.encryption != nil && s.encryption.Enabled() {
+		stored, err = s.encryption.EncryptRecord(ctx, plaintext, s3BlobAAD(spaceID, domainID, id))
+		if err != nil {
+			return "", 0, PayloadDescriptor{}, err
+		}
 	}
-	defer func() {
-		_ = body.Close()
-		_ = os.Remove(tmpPath)
-	}()
+	storedDigest := sha256.Sum256(stored)
+	body := bytes.NewReader(stored)
 
-	put := &s3.PutObjectInput{Bucket: aws.String(s.cfg.S3Bucket), Key: aws.String(key), Body: body, ContentLength: aws.Int64(size), ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(digestBytes))}
+	put := &s3.PutObjectInput{Bucket: aws.String(s.cfg.S3Bucket), Key: aws.String(key), Body: body, ContentLength: aws.Int64(int64(len(stored))), ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(storedDigest[:]))}
 	if strings.TrimSpace(mimeType) != "" {
 		put.ContentType = aws.String(strings.TrimSpace(mimeType))
 	}
@@ -153,7 +139,7 @@ func (s *s3PayloadStore) Exists(ctx context.Context, desc PayloadDescriptor) (bo
 		}
 		return false, err
 	}
-	if desc.SizeBytes >= 0 && out != nil && out.ContentLength != nil && *out.ContentLength != desc.SizeBytes {
+	if (s.encryption == nil || !s.encryption.Enabled()) && desc.SizeBytes >= 0 && out != nil && out.ContentLength != nil && *out.ContentLength != desc.SizeBytes {
 		return false, fmt.Errorf("object store object %s/%s size mismatch: got %d want %d", bucket, key, *out.ContentLength, desc.SizeBytes)
 	}
 	return true, nil
@@ -174,7 +160,19 @@ func (s *s3PayloadStore) Open(ctx context.Context, desc PayloadDescriptor) (io.R
 	if out == nil || out.Body == nil {
 		return nil, ErrNotFound
 	}
-	return out.Body, nil
+	if s.encryption == nil {
+		return out.Body, nil
+	}
+	defer out.Body.Close()
+	data, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, err
+	}
+	data, err = s.encryption.DecryptRecord(ctx, data, s3BlobAAD(desc.SpaceID, desc.DomainID, graphmodel.BlobID(desc.BlobID)))
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 func (s *s3PayloadStore) Delete(ctx context.Context, desc PayloadDescriptor) error {
@@ -184,6 +182,10 @@ func (s *s3PayloadStore) Delete(ctx context.Context, desc PayloadDescriptor) err
 	}
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	return err
+}
+
+func s3BlobAAD(spaceID string, domainID string, blobID graphmodel.BlobID) []byte {
+	return []byte("blob-object-store:v1:space=" + strings.TrimSpace(spaceID) + ":domain=" + strings.TrimSpace(domainID) + ":id=" + string(blobID))
 }
 
 func (s *s3PayloadStore) objectKey(spaceID string, domainID string, blobID string) string {

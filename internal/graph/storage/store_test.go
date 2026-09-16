@@ -307,7 +307,7 @@ func TestScanSegmentRejectsCorruptCRC(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = f.Close()
-	if err := scanSegment(filepath.Join(dir, "nodes.kseg"), SegmentKindNode, func(scannedRecord) error { return nil }); err == nil {
+	if err := scanSegment(filepath.Join(dir, "nodes.kseg"), SegmentKindNode, nil, func(scannedRecord) error { return nil }); err == nil {
 		t.Fatal("expected crc error")
 	}
 }

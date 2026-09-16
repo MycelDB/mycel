@@ -9,6 +9,7 @@ import (
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/encryption"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
@@ -49,6 +50,7 @@ type Module struct {
 	clusterBackendClient  backendClient
 	clusterNodeAddrs      []string
 	clusterLocalRaftNode  consensus.NodeID
+	encryption            *encryption.Service
 }
 
 func NewModule(config ...Config) *Module {
@@ -76,7 +78,10 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if provider, ok := host.(runtime.LocalRouteIdentityProvider); ok {
 		m.localIdentity = provider.LocalRouteIdentity()
 	}
-	m.manager = backupcore.NewManager(backupcore.ManagerConfig{DataDir: host.DataDir(), Policy: policy, Logger: host.Log(), Quiesce: quiesceCoordinator})
+	if provider, ok := host.(runtime.EncryptionProvider); ok {
+		m.encryption = provider.EncryptionService()
+	}
+	m.manager = backupcore.NewManager(backupcore.ManagerConfig{DataDir: host.DataDir(), Policy: policy, Logger: host.Log(), Quiesce: quiesceCoordinator, Encryption: m.encryption})
 	policy = m.manager.Policy()
 	m.policy = policy
 	m.logger = host.Log()

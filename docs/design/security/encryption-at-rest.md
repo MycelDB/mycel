@@ -3,14 +3,16 @@
 Mycel needs first-class encryption at rest for user data and user-derived
 persistent artifacts. This design defines the target architecture for encrypted
 local/block storage, client-side encrypted object-store payloads, encrypted
-consensus/recovery data, encrypted derived indexes, key management, migration,
-and verification.
+consensus/recovery data, encrypted derived indexes, key management, and
+verification for new encrypted deployments.
 
-This is broader than the existing `MYCELD_USER_STORE_ENCRYPTION_KEY_B64`
-setting. That setting currently encrypts inline daemon-managed secrets, such as
-inference provider API-key material. It does not encrypt graph data, blob
+This supersedes the removed `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` setting.
+That legacy setting encrypted only inline daemon-managed secrets, such as
+inference provider API-key material. It did not encrypt graph data, blob
 payloads, WAL records, Raft logs, snapshots, backups, search indexes, semantic
-vectors, or most metadata.
+vectors, or most metadata. New deployments use the `MYCELD_ENCRYPTION_*`
+envelope-encryption configuration for both user-data artifacts and inline
+secrets; `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` is rejected at startup.
 
 ## Goals
 
@@ -26,8 +28,8 @@ vectors, or most metadata.
 - Preserve Mycel API authorization as the source of truth. Storage encryption is
   defense-in-depth, not an authorization mechanism.
 - Make encryption observable and testable: operators should be able to tell
-  whether encryption is enabled, which provider is in use, and whether plaintext
-  legacy artifacts remain.
+  whether encryption is enabled, which provider is in use, and whether persisted
+  user-data artifacts are encrypted.
 
 ## Non-goals
 
@@ -72,8 +74,7 @@ Use envelope encryption with authenticated encryption:
 - **AAD**: authenticated additional data that binds ciphertext to its storage
   context.
 
-AES-256-GCM is already used by Mycel for inline inference/API-key secret
-payloads, is widely reviewed, is hardware-accelerated on common platforms, and
+AES-256-GCM is widely reviewed, hardware-accelerated on common platforms, and
 provides confidentiality plus integrity.
 
 Nonce/key reuse must be impossible by construction. Each encrypted record or
@@ -92,25 +93,57 @@ DEK records
 storage records, files, chunks, snapshots, and object payloads
 ```
 
-### KEK providers
+### KEK providers and deployment modes
 
-Initial providers:
+Encryption-at-rest must support both frictionless development and production
+key-management. The daemon should distinguish the encryption mode from the KEK
+provider:
 
-1. `local-file`
-   - local standalone/default development provider;
-   - stores a generated wrapping key in the data directory with private file
-     permissions;
-   - not recommended for multi-node clusters unless deliberately distributed by
-     the operator.
+1. `disabled`
+   - no application-level encryption at rest;
+   - intended for local development, tests, disposable lab clusters, and
+     debugging workflows where operators need to inspect persisted fixtures;
+   - must be explicit and observable in startup logs, health/admin status, and
+     diagnostics;
+   - should remain available even when production deployments default to
+     encrypted mode in a later release.
 2. `static-env`
-   - explicit base64-encoded 32-byte KEK from environment/config;
+   - envelope encryption is enabled;
+   - the KEK is supplied as an explicit base64-encoded 32-byte value from
+     environment/config;
    - useful for tests and small self-managed deployments;
-   - secret rotation requires replacing the value and rewrapping DEKs.
-3. `external-kms`
-   - abstraction for AWS KMS, GCP KMS, Azure Key Vault, Vault Transit, or
-     compatible providers;
-   - stores only wrapped DEKs and KEK/key identifiers in Mycel metadata;
-   - preferred for production clusters.
+   - acceptable when deployment simplicity matters, but not preferred for
+     production Kubernetes because environment variables can leak through pod
+     specs, process environments, shell history, and operational tooling;
+   - rotation requires replacing the value and rewrapping DEKs.
+3. `static-file`
+   - envelope encryption is enabled;
+   - the KEK is read from a root-readable or daemon-readable file, typically a
+     mounted Kubernetes Secret or sealed-secret material;
+   - preferred over `static-env` for simple K3s/Kubernetes deployments;
+   - when used in K3s, operators should enable K3s `--secrets-encryption` so the
+     Kubernetes Secret that carries the KEK is encrypted in Kubernetes storage.
+4. `vault-transit`
+   - envelope encryption is enabled;
+   - Vault Transit wraps/unwraps DEKs and Mycel stores only wrapped DEKs plus
+     Vault key identifiers in metadata;
+   - preferred for production self-managed K3s/on-prem deployments;
+   - Vault Transit is a Vault secrets engine, not a standalone service, so this
+     mode requires operating Vault;
+   - Vault may run inside the K3s cluster for MVP/small production, but an
+     external Vault cluster provides stronger isolation and disaster recovery.
+5. `cloud-kms`
+   - envelope encryption is enabled;
+   - AWS KMS, GCP Cloud KMS, Azure Key Vault/Managed HSM, or a compatible cloud
+     KMS wraps/unwraps DEKs;
+   - preferred for cloud-hosted deployments that already rely on a cloud control
+     plane.
+
+A generated `local-file` KEK stored beside the data directory is not a preferred
+full encryption-at-rest mode because compromise of the data directory is likely
+to expose both ciphertext and KEK. Full user-data encryption should default to
+`disabled` for development rather than pretending a colocated generated key is a
+strong at-rest boundary.
 
 Provider interface:
 
@@ -123,9 +156,16 @@ type KeyProvider interface {
 }
 ```
 
-The implementation should keep a short-lived in-memory DEK cache keyed by DEK ID
-and wrapped-key version. Cache entries must be cleared on daemon shutdown and
-when key-provider configuration changes.
+Vault/KMS providers must not be used on the per-record read/write hot path. They
+are used at startup, partition/store open, key creation, and rotation boundaries
+to wrap or unwrap DEKs. The daemon performs bulk data encryption/decryption
+locally with AES-256-GCM after caching unwrapped DEKs in process memory.
+
+The implementation should keep an in-memory DEK cache keyed by DEK ID and
+wrapped-key version. Cache entries must be cleared on daemon shutdown and when
+key-provider configuration changes. Operators should be able to bound cache
+lifetimes, but cache expiry must not cause KMS/Vault calls for every graph/blob
+record.
 
 ### DEK scopes
 
@@ -158,7 +198,7 @@ Common envelope header:
   "magic": "MYCELENC",
   "version": 1,
   "algorithm": "AES-256-GCM",
-  "key_provider": "local-file|static-env|external-kms",
+  "key_provider": "static-env|static-file|vault-transit|cloud-kms",
   "kek_key_id": "...",
   "dek_id": "uuid",
   "wrapped_dek": "base64",
@@ -251,8 +291,11 @@ Encrypt or separately classify:
 - authentication refresh token state and any persisted credential material;
 - inference provider API keys and external service secrets.
 
-The existing inline secret encryption should be migrated to the envelope system
-or implemented as a compatibility adapter using the same key provider.
+The existing inline secret encryption should be replaced by the envelope system
+using the configured `MYCELD_ENCRYPTION_*` key provider. Support for
+`MYCELD_USER_STORE_ENCRYPTION_KEY_B64` is not required for this change. This
+encryption-at-rest work targets brand-new encrypted systems, not migration of
+previous installations.
 
 ### Backups, exports, and diagnostics
 
@@ -286,24 +329,44 @@ should be opaque UUIDs or content hashes, not user-derived strings.
 Introduce explicit encryption-at-rest configuration:
 
 ```text
-MYCELD_ENCRYPTION_AT_REST_ENABLED=true|false
-MYCELD_ENCRYPTION_KEY_PROVIDER=local-file|static-env|external-kms
+MYCELD_ENCRYPTION_AT_REST=disabled|enabled
+MYCELD_ENCRYPTION_KEK_PROVIDER=static-env|static-file|vault-transit|cloud-kms
 MYCELD_ENCRYPTION_STATIC_KEY_B64=<base64-32-byte-key>
-MYCELD_ENCRYPTION_LOCAL_KEY_PATH=<path>
-MYCELD_ENCRYPTION_KMS_PROVIDER=aws|gcp|azure|vault|custom
-MYCELD_ENCRYPTION_KMS_KEY_ID=<provider-key-id>
-MYCELD_ENCRYPTION_KMS_ENDPOINT=<optional-endpoint>
+MYCELD_ENCRYPTION_STATIC_KEY_FILE=<path-to-base64-32-byte-key>
+MYCELD_ENCRYPTION_VAULT_ADDR=<https://vault.example:8200>
+MYCELD_ENCRYPTION_VAULT_TRANSIT_KEY=<transit-key-name>
+MYCELD_ENCRYPTION_VAULT_NAMESPACE=<optional-vault-namespace>
+MYCELD_ENCRYPTION_VAULT_AUTH_METHOD=token|kubernetes|approle
+MYCELD_ENCRYPTION_CLOUD_KMS_PROVIDER=aws|gcp|azure
+MYCELD_ENCRYPTION_CLOUD_KMS_KEY_ID=<provider-key-id>
+MYCELD_ENCRYPTION_CLOUD_KMS_ENDPOINT=<optional-endpoint>
 MYCELD_ENCRYPTION_DEK_CACHE_TTL=5m
-MYCELD_ENCRYPTION_LEGACY_SECRET_KEY_B64=<optional-compatibility-key>
 ```
 
-Compatibility:
+Replacement rules:
 
-- `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` remains supported for decrypting
-  existing inline inference/API-key secrets during migration.
-- New deployments should use `MYCELD_ENCRYPTION_*` settings.
-- Cluster deployments must use a shared key provider or shared KMS access for
-  every node that can own/read encrypted partitions.
+- `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` is superseded and should be removed.
+  Support for this setting is not required for the encryption-at-rest
+  implementation.
+- New deployments must use `MYCELD_ENCRYPTION_*` settings instead of
+  `MYCELD_USER_STORE_ENCRYPTION_KEY_B64`.
+- If `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` is present after removal, startup
+  should reject it with a clear error rather than silently treating it as a full
+  encryption-at-rest key.
+- Cluster deployments must use a shared key provider or shared KMS/Vault access
+  for every node that can own/read encrypted partitions.
+- Cluster/mesh deployments must not silently auto-generate incompatible per-node
+  KEKs.
+
+Recommended deployment configuration:
+
+| Deployment | Recommended mode |
+| --- | --- |
+| Local development/tests/lab | `MYCELD_ENCRYPTION_AT_REST=disabled` |
+| Tiny self-managed install | `enabled` + `static-env` |
+| Simple K3s/Kubernetes install | `enabled` + `static-file` from a mounted Secret; enable K3s `--secrets-encryption` |
+| Production self-managed K3s/on-prem | `enabled` + `vault-transit` |
+| Cloud-hosted production | `enabled` + `cloud-kms` |
 
 If encryption is enabled but the daemon cannot unlock required DEKs, startup or
 partition activation must fail closed.
@@ -313,11 +376,13 @@ partition activation must fail closed.
 At startup, the daemon should:
 
 1. load encryption configuration;
-2. initialize the key provider;
-3. run a provider health/unlock check;
-4. load encryption metadata for stores that are opened during startup;
-5. refuse writes if encryption is required but unavailable;
-6. surface encryption state in readiness/health/admin diagnostics without
+2. if encryption is disabled, log and expose a clear non-secret warning that
+   user data is stored unencrypted;
+3. if encryption is enabled, initialize the configured key provider;
+4. run a provider health/unlock check;
+5. load encryption metadata for stores that are opened during startup;
+6. refuse writes if encryption is required but unavailable;
+7. surface encryption state in readiness/health/admin diagnostics without
    exposing key material.
 
 Cluster readiness should fail when a node cannot unwrap DEKs for partitions it
@@ -358,22 +423,23 @@ Support two kinds of rotation:
 KEK rewrap is required for the first production-ready release. DEK rotation may
 be phased by storage class.
 
-## Migration
+## New deployment boundary
 
-Encryption-at-rest is a storage-format change. The migration path should be
-explicit and fail-safe.
+Encryption-at-rest is a storage-format change for brand-new encrypted systems.
+The first implementation does not need to convert previous plaintext data
+directories, WAL/Raft artifacts, blob stores, derived indexes, or inline
+daemon-managed secrets.
 
-Recommended modes:
+Supported initial deployment modes:
 
-- `disabled`: existing plaintext behavior.
-- `encrypt-new`: new writes are encrypted; old artifacts remain readable.
-- `require-encrypted`: all reads must use encrypted artifacts; plaintext legacy
-  artifacts fail validation.
-- `migrate`: background/offline task rewrites plaintext artifacts into encrypted
-  form.
+- `disabled`: plaintext development/test/lab behavior.
+- `enabled`: encrypted-at-rest behavior for freshly initialized systems.
 
-The first release can support `disabled` and `encrypt-new` plus validation tools.
-A later release should add full migration and `require-encrypted` gates.
+If encryption is enabled against a data directory that already contains
+plaintext user-data artifacts, startup should fail closed with a clear error.
+Operators should create a new encrypted deployment and import/recreate data
+through explicit product-level workflows rather than relying on in-place storage
+conversion.
 
 ## Observability and verification
 
@@ -383,7 +449,7 @@ Expose non-secret encryption status:
 - provider type;
 - active KEK key ID;
 - number of wrapped DEKs by data class;
-- migration mode and plaintext legacy counts;
+- whether any plaintext artifacts are detected in an encrypted deployment;
 - last key-provider error;
 - per-store encryption readiness.
 
@@ -404,10 +470,12 @@ or test logs.
 
 ## Open questions
 
-- Should the first production mode default to `encrypt-new` or remain opt-in?
+- Should new production deployments default to encryption enabled or remain
+  opt-in for the first release?
 - Should object-store blobs use per-object DEKs from day one, or domain-scoped
   DEKs with object-level AAD?
-- Which external KMS provider should be implemented first?
+- Should `vault-transit` or a cloud KMS provider be implemented first after
+  `static-env`/`static-file`?
 - Should identity/ACL metadata be encrypted in the first tranche or classified
   as phase-two privacy-sensitive metadata?
 - What admin API surface should expose encryption status and rotation controls?

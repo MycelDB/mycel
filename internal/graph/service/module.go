@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/encryption"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
@@ -49,6 +50,7 @@ type Module struct {
 	wal                            *wal.Manager
 	walProgress                    wal.AppliedLSNStore
 	walWaiter                      *wal.ApplyWaiter
+	encryption                     *encryption.Service
 	writeAllowed                   func() error
 	raftGroups                     *consensus.MultiGroup
 	raftPartitionCount             uint32
@@ -268,6 +270,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		m.wal = provider.WALManager()
 		m.walProgress = provider.WALProgressStore()
 		m.walWaiter = provider.WALWaiterStore()
+	}
+	if provider, ok := host.(runtime.EncryptionProvider); ok {
+		m.encryption = provider.EncryptionService()
 	}
 	m.writeAllowed = func() error { return nil }
 	if gate, ok := host.(runtime.LocalWriteGate); ok {
@@ -1275,7 +1280,7 @@ func (m *Module) store(ctx context.Context, spaceID string) (*graphstorage.Local
 	if store := m.stores[spaceID]; store != nil {
 		return store, nil
 	}
-	store, err := graphstorage.Open(ctx, filepath.Join(m.dataDir, spaceID))
+	store, err := graphstorage.OpenWithOptions(ctx, filepath.Join(m.dataDir, spaceID), graphstorage.Options{Encryption: m.encryption})
 	if err != nil {
 		return nil, err
 	}

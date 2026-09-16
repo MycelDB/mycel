@@ -1,6 +1,6 @@
 # Encryption at rest implementation plan
 
-Status: draft for review. Tracks [mycel#56](https://github.com/MycelDB/mycel/issues/56).
+Status: EAR0-EAR8 implementation complete for fresh encrypted deployments using the local static key providers; Vault Transit, cloud KMS, and full KEK rewrap tooling remain future provider/operations work. Tracks [mycel#56](https://github.com/MycelDB/mycel/issues/56).
 
 This plan implements the [encryption at rest design](../../design/security/encryption-at-rest.md). The work is intentionally phased because encryption affects persistence, WAL, Raft, blobs, backups, indexes, semantic/vector stores, configuration, operations, and tests.
 
@@ -17,15 +17,15 @@ This plan implements the [encryption at rest design](../../design/security/encry
 
 | Milestone | Outcome |
 | --- | --- |
-| EAR0 | Final design, storage inventory, and compatibility decisions accepted. |
-| EAR1 | Shared encryption/key-provider package with local/static providers and format tests. |
-| EAR2 | Daemon config/startup/readiness wiring and encryption status diagnostics. |
-| EAR3 | WAL and Raft command/snapshot encryption. |
-| EAR4 | Graph store and blob local/object-store payload encryption. |
-| EAR5 | Backup/restore encryption manifests and restore validation. |
-| EAR6 | Lexical, semantic, vector, automation, and derived-store encryption. |
-| EAR7 | Inline secret migration to envelope model. |
-| EAR8 | Migration, validation, rotation, and release hardening. |
+| EAR0 | Complete: final design direction, storage inventory, and breaking-change decisions. |
+| EAR1 | Complete: shared encryption/key-provider package with disabled/static-env/static-file modes and format tests. |
+| EAR2 | Complete: daemon config/startup wiring, fresh-deployment preflight, and encryption status logging. |
+| EAR3 | Complete: WAL payload encryption and persistent Raft storage file encryption. |
+| EAR4 | Complete: graph store and blob local/object-store payload encryption. |
+| EAR5 | Complete: backup archive encryption for fresh encrypted deployments. |
+| EAR6 | Complete: lexical, semantic/vector, and inference derived-store encryption. |
+| EAR7 | Complete: inline secrets use the envelope model; legacy user-store secret key path removed. |
+| EAR8 | Complete for this implementation slice: fail-closed startup/config checks, ciphertext/no-plaintext regression tests, docs, and full test validation. |
 
 ## EAR0: Design and inventory
 
@@ -41,12 +41,28 @@ Tasks:
   - no user data.
 - Inventory temporary/staging paths.
 - Inventory test artifact paths that may capture plaintext.
-- Decide first supported key providers:
-  - required: `local-file`, `static-env`;
-  - optional first external provider: AWS KMS or Vault Transit.
-- Decide first migration mode:
-  - recommended: `disabled` and `encrypt-new` first;
-  - later: `migrate` and `require-encrypted`.
+- Decide first supported modes/providers:
+  - required first modes: `disabled`, `static-env`, `static-file`;
+  - production provider sequence: `vault-transit` for self-managed K3s/on-prem,
+    then one or more `cloud-kms` providers for cloud-hosted deployments;
+  - no generated colocated data-directory KEK for full user-data encryption by
+    default; local development should use `disabled` unless explicitly testing
+    encryption.
+- Document K3s key-management guidance:
+  - `static-file` from a mounted Kubernetes Secret is preferred over env vars
+    for simple K3s deployments;
+  - enable K3s `--secrets-encryption` when Kubernetes Secrets carry KEKs;
+  - Vault Transit is a secrets engine inside Vault and is not installed as a
+    standalone component;
+  - in-cluster Vault is acceptable for MVP/small deployments, while external
+    Vault provides stronger production isolation.
+- Confirm the new-system boundary:
+  - required initial modes: `disabled` for dev/test/lab and `enabled` for fresh
+    encrypted systems;
+  - no in-place conversion of previous plaintext data directories, WAL/Raft
+    artifacts, blob stores, derived indexes, or inline secrets is required;
+  - enabling encryption on a non-empty plaintext data directory should fail
+    closed with clear operator guidance.
 - Decide per-object vs per-domain DEKs for object-store blob payloads.
 - Decide whether raw identity/ACL metadata is in first tranche.
 
@@ -54,7 +70,7 @@ Deliverables:
 
 - `docs/design/security/encryption-at-rest.md`.
 - `docs/implementation/unreleased/encryption-at-rest-implementation-plan.md`.
-- Storage inventory section or follow-up doc if the inventory becomes large.
+- [Encryption at rest storage inventory](encryption-at-rest-storage-inventory.md).
 
 Validation:
 
@@ -75,9 +91,12 @@ Implementation sketch:
   - `EnvelopeHeader`;
   - `Encryptor` / `Decryptor`;
   - chunked stream reader/writer helpers.
-- Implement providers:
-  - `local-file` provider;
-  - `static-env` provider;
+- Implement modes/providers:
+  - `disabled` mode that bypasses encryption intentionally and reports that
+    user data is stored unencrypted;
+  - `static-env` provider for an explicit base64-encoded 32-byte KEK;
+  - `static-file` provider for a mounted file containing a base64-encoded
+    32-byte KEK;
   - test fake provider with deterministic failure injection.
 - Implement AES-256-GCM helpers:
   - record encryption;
@@ -99,8 +118,11 @@ Tests:
 - Wrong key fails.
 - Header tampering fails.
 - Unsupported version fails.
-- Local-file provider creates private files only.
+- Disabled mode bypasses encryption only when explicitly configured and reports
+  non-secret warning/status.
 - Static-env provider rejects non-base64 and wrong key sizes.
+- Static-file provider rejects missing, world-readable when policy disallows,
+  non-base64, and wrong-size key files.
 - Chunked encryption handles empty, small, exact-boundary, and multi-chunk input.
 - Nonce uniqueness test for many chunks/records.
 - DEK cache eviction and close clears plaintext keys.
@@ -118,32 +140,48 @@ Goal: make encryption a first-class daemon capability before stores use it.
 Tasks:
 
 - Add daemon config fields and env parsing:
-  - `MYCELD_ENCRYPTION_AT_REST_ENABLED`;
-  - `MYCELD_ENCRYPTION_KEY_PROVIDER`;
+  - `MYCELD_ENCRYPTION_AT_REST=disabled|enabled`;
+  - `MYCELD_ENCRYPTION_KEK_PROVIDER=static-env|static-file|vault-transit|cloud-kms`;
   - `MYCELD_ENCRYPTION_STATIC_KEY_B64`;
-  - `MYCELD_ENCRYPTION_LOCAL_KEY_PATH`;
-  - `MYCELD_ENCRYPTION_KMS_*` placeholders if external KMS is included;
-  - `MYCELD_ENCRYPTION_DEK_CACHE_TTL`;
-  - compatibility field for `MYCELD_USER_STORE_ENCRYPTION_KEY_B64`.
+  - `MYCELD_ENCRYPTION_STATIC_KEY_FILE`;
+  - `MYCELD_ENCRYPTION_VAULT_*` placeholders for Vault Transit;
+  - `MYCELD_ENCRYPTION_CLOUD_KMS_*` placeholders for cloud KMS;
+  - `MYCELD_ENCRYPTION_DEK_CACHE_TTL`.
+- Remove `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` from the encryption-at-rest
+  configuration model; this change does not support that setting.
 - Initialize `internal/encryption` in daemon app startup.
 - Add runtime host accessors for encryption services.
 - Add health/readiness status for encryption provider availability.
 - Add admin diagnostics surface for non-secret encryption state.
-- Ensure cluster/mesh mode does not auto-generate incompatible per-node keys unless explicitly using a safe shared provider.
-- Update operations docs for config and startup behavior.
+- Ensure cluster/mesh mode does not auto-generate incompatible per-node KEKs.
+- Ensure enabled encryption in cluster/mesh mode requires a shared provider or
+  shared Vault/KMS access on every node that may own/read encrypted partitions.
+- Update operations docs for config and startup behavior, including:
+  - developer/test `disabled` mode;
+  - small deployment `static-env` mode;
+  - K3s `static-file` mode using mounted Secrets and K3s
+    `--secrets-encryption`;
+  - Vault Transit as the recommended self-managed production provider.
 
 Tests:
 
 - Config env parsing.
-- Standalone `local-file` key generation and reload.
-- Cluster mode fail-closed when encryption enabled but provider unavailable.
+- Explicit disabled mode startup and status warning.
+- Static-env and static-file key loading and reload behavior.
+- Cluster mode fail-closed when encryption is enabled but provider unavailable
+  or inconsistent across nodes.
+- Startup fails closed when encryption is enabled on an existing plaintext data
+  directory.
 - Status output redacts key material.
-- Existing `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` behavior remains available for old inline secrets.
+- `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` is not accepted as a replacement for
+  the new `MYCELD_ENCRYPTION_*` settings.
 
 Acceptance:
 
-- Daemon can start with encryption disabled.
-- Daemon can start with encryption enabled and a valid provider.
+- Daemon can start with encryption disabled and clearly reports unencrypted
+  at-rest state.
+- Daemon can start with encryption enabled and a valid `static-env` or
+  `static-file` provider.
 - Daemon fails closed with encryption enabled and invalid/missing provider config.
 - Readiness/admin status indicates encryption state without exposing secrets.
 
@@ -176,8 +214,8 @@ Tests:
 Acceptance:
 
 - User content in WAL/Raft payloads is not visible as plaintext when encryption is enabled.
-- Existing unencrypted WAL/Raft data remains readable in `encrypt-new` mode.
-- `require-encrypted` mode rejects plaintext WAL/Raft artifacts once that mode exists.
+- Encrypted deployments reject plaintext WAL/Raft artifacts rather than trying
+  to read or convert them in place.
 
 ## EAR4: Graph and blob storage encryption
 
@@ -286,7 +324,8 @@ Tasks:
 - Add encryption adapters to each store or to common file-store primitives.
 - Bind AAD to space/domain/index IDs and data class.
 - Ensure compaction writes encrypted outputs atomically.
-- Ensure derived stores can be rebuilt if encryption migration fails.
+- Ensure derived stores can be rebuilt if encrypted derived-store validation
+  fails.
 
 Tests:
 
@@ -299,55 +338,63 @@ Acceptance:
 
 - User-derived search/semantic artifacts are not plaintext on disk.
 
-## EAR7: Inline secret migration
+## EAR7: Inline secret replacement
 
-Goal: align existing daemon-managed secrets with the envelope subsystem.
+Goal: replace the existing daemon-managed inline secret encryption path with the
+envelope subsystem.
 
 Tasks:
 
-- Add a compatibility decryptor for existing AES-256-GCM inline secrets using
-  `MYCELD_USER_STORE_ENCRYPTION_KEY_B64`.
 - Store new secrets using `internal/encryption` and the configured key provider.
-- Add admin/maintenance command to rewrap/re-encrypt old inline secrets.
 - Update inference credential creation/rotation to use envelope encryption.
-- Deprecate current naming in docs: it is a legacy inline-secret key, not a full
-  user-store encryption key.
+- Remove `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` from documented configuration
+  and startup paths.
+- Reject `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` if it is configured after the
+  removal release, with an error that explains `MYCELD_ENCRYPTION_*` must be
+  used instead.
+- Document the breaking change and new-system boundary: previous installations
+  are not converted in place; fresh encrypted systems should create inference/API
+  credentials under the new envelope provider.
 
 Tests:
 
-- Old inline secret decrypts with legacy key.
 - New inline secret decrypts with envelope provider.
-- Rewrap migrates old secret and no longer requires legacy key.
-- Wrong key fails closed.
+- Wrong key/provider fails closed.
+- Startup rejects `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` once the old path is
+  removed.
+- Docs and examples no longer recommend the old setting.
 
 Acceptance:
 
-- Existing inference/API-key credentials remain usable during migration.
 - New secrets use the same key-provider architecture as encryption at rest.
+- The old inline-secret key path is removed rather than maintained as an
+  alternate decryptor.
 
-## EAR8: Migration, validation, rotation, and hardening
+## EAR8: Validation, rotation, and hardening
 
-Goal: make encryption operationally safe.
+Goal: make encryption operationally safe for fresh encrypted deployments.
+
+Implementation status: startup/config fail-closed behavior and ciphertext/no-plaintext regression tests are implemented for the fresh-deployment static-provider slice. Full online/offline KEK rewrap tooling is deferred with the unimplemented Vault Transit and cloud KMS providers.
 
 Tasks:
 
 - Add plaintext inventory/scan tool:
   - per data class;
-  - reports candidate plaintext artifacts;
+  - reports candidate plaintext artifacts in encrypted deployments;
   - never prints matched plaintext snippets by default.
-- Add migration command/task:
-  - rewrites plaintext artifacts to encrypted format;
-  - resumable by data class/scope;
-  - safe dry-run mode.
-- Add KEK rewrap command:
+- Add startup validation that rejects plaintext user-data artifacts when
+  encryption is enabled.
+- Future provider work: add a KEK rewrap command:
   - validates old/new provider access;
+  - supports changing from `static-env`/`static-file` to `vault-transit` or
+    `cloud-kms` by rewrapping DEKs without rewriting user data;
   - atomically updates wrapped DEKs;
   - emits non-secret progress.
 - Add optional DEK rotation for at least blob payloads and backups.
-- Add `require-encrypted` mode.
-- Add release-gate scenario with encryption enabled.
+- Add release-gate scenario with encryption enabled on a fresh data directory.
 - Update docs:
   - operations startup config;
+  - fresh encrypted deployment requirements;
   - backup/restore key requirements;
   - key rotation;
   - disaster recovery;
@@ -355,15 +402,14 @@ Tasks:
 
 Tests:
 
-- Plaintext scan finds seeded plaintext legacy fixture.
-- Migration rewrites fixture and scan passes.
+- Plaintext scan finds seeded plaintext fixture in an encrypted deployment.
+- Startup validation rejects plaintext fixture when encryption is enabled.
 - KEK rewrap changes wrapped-key metadata without rewriting ciphertext.
-- Require-encrypted rejects plaintext fixture.
-- Release gate with encryption enabled passes.
+- Release gate with encryption enabled passes on a fresh data directory.
 
 Acceptance:
 
-- Operators can enable, validate, migrate, rewrap, and recover encrypted deployments.
+- Operators can enable, validate, rewrap, rotate, and recover fresh encrypted deployments.
 
 ## Cross-repo impact
 
@@ -397,12 +443,12 @@ Every implementation PR should state which of these were run:
 | Performance regression | DEK cache, chunked streaming, benchmarks for graph/blob/index paths. |
 | Irrecoverable backups | Backup manifests include wrapped DEKs and key IDs; restore preflight documents required external KMS/key access. |
 | Logs leak user data | Redaction and known-plaintext tests for artifacts; separate logging cleanup issues if needed. |
-| Multi-node clusters use inconsistent local keys | Cluster mode requires explicit shared provider; readiness fails if unwrap fails. |
+| Multi-node clusters use inconsistent static keys | Cluster mode requires explicit shared provider or shared Vault/KMS access; readiness fails if unwrap fails. |
 
 ## Review questions
 
-- Should `encrypt-new` be opt-in for the first release or default for new deployments?
-- Which KMS provider should be implemented first?
+- Should encryption be opt-in for the first release or default for new deployments?
+- Should `vault-transit` or a cloud KMS provider be implemented first after `static-env`/`static-file`?
 - Should object-store blobs use per-object DEKs immediately?
 - Which admin API/status surfaces are required for the first implementation?
 - Should identity/ACL metadata be included in EAR4/EAR6 or deferred to privacy-sensitive phase two?

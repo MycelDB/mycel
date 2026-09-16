@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/myceldb/mycel/internal/encryption"
 )
 
 func TestAppendReadReopenAndRotate(t *testing.T) {
@@ -200,5 +202,51 @@ func TestTornFinalFrameIsTruncated(t *testing.T) {
 	b, _ := os.ReadFile(path)
 	if bytes.HasSuffix(b, []byte{0x4d, 0x57, 0x41}) {
 		t.Fatal("torn bytes were not truncated")
+	}
+}
+
+func TestEncryptedWALDoesNotPersistPlaintextAndReopens(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	enc, err := encryption.NewService(ctx, encryption.Config{AtRest: encryption.ModeEnabled, KEKProvider: encryption.ProviderStaticEnv, StaticKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	m, err := Open(ctx, Options{Dir: dir, Encryption: enc})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	plaintext := []byte("wal-secret-plaintext")
+	lsn, err := m.Append(ctx, PendingRecord{Type: "test.v1", SchemaVersion: 1, Payload: plaintext})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if err := m.Sync(ctx, lsn); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.Close()
+	data, err := os.ReadFile(filepath.Join(dir, segmentName(1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, plaintext) {
+		t.Fatal("WAL segment contains plaintext payload")
+	}
+	m, err = Open(ctx, Options{Dir: dir, Encryption: enc})
+	if err != nil {
+		t.Fatalf("reopen encrypted WAL: %v", err)
+	}
+	defer m.Close()
+	it, err := m.ReadFrom(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer it.Close()
+	rec, ok, err := it.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if !ok || !bytes.Equal(rec.Payload, plaintext) {
+		t.Fatalf("payload=%q ok=%v", rec.Payload, ok)
 	}
 }

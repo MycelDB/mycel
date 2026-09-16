@@ -17,17 +17,16 @@ const (
 )
 
 type Config struct {
-	DataDir                   string
-	Mode                      string
-	LogLevel                  string
-	LogFormat                 string
-	GRPCAddr                  string
-	BootstrapAdminUsername    string
-	BootstrapAdminPassword    string
-	UserStoreEncryptionKeyB64 string
-	Cluster                   ClusterConfig
-	SemanticMaintenance       SemanticMaintenanceConfig
-	Backup                    BackupConfig
+	DataDir                string
+	Mode                   string
+	LogLevel               string
+	LogFormat              string
+	GRPCAddr               string
+	BootstrapAdminUsername string
+	BootstrapAdminPassword string
+	Cluster                ClusterConfig
+	SemanticMaintenance    SemanticMaintenanceConfig
+	Backup                 BackupConfig
 }
 
 type ClusterConfig struct{ RaftPartitionCount int }
