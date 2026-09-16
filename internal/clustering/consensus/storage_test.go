@@ -2,7 +2,12 @@ package consensus
 
 import (
 	"bytes"
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/myceldb/mycel/internal/encryption"
 
 	raftpb "go.etcd.io/raft/v3/raftpb"
 )
@@ -128,5 +133,51 @@ func TestPersistentStorageApplySnapshotPersists(t *testing.T) {
 	}
 	if got.Metadata.Index != 7 || got.Metadata.Term != 4 || !bytes.Equal(got.Data, []byte("installed")) {
 		t.Fatalf("unexpected snapshot: %+v", got)
+	}
+}
+
+func TestPersistentStorageEncryptedFilesReopen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	enc, err := encryption.NewService(ctx, encryption.Config{AtRest: encryption.ModeEnabled, KEKProvider: encryption.ProviderStaticEnv, StaticKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	store, err := NewPersistentStorageWithOptions(PersistentStorageOptions{Dir: dir, GroupID: "test-group", Encryption: enc})
+	if err != nil {
+		t.Fatalf("NewPersistentStorageWithOptions() error = %v", err)
+	}
+	secret := []byte("raft-secret-plaintext")
+	if err := store.Append([]raftpb.Entry{{Term: 1, Index: 1, Type: raftpb.EntryNormal, Data: secret}}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "entries.pb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, secret) {
+		t.Fatal("raft entries file contains plaintext entry data")
+	}
+	snapshotSecret := []byte("raft-snapshot-secret-plaintext")
+	if _, err := store.CreateSnapshot(1, &raftpb.ConfState{Voters: []uint64{1}}, snapshotSecret); err != nil {
+		t.Fatalf("CreateSnapshot() error = %v", err)
+	}
+	snapshotData, err := os.ReadFile(filepath.Join(dir, "snapshot.pb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(snapshotData, snapshotSecret) {
+		t.Fatal("raft snapshot file contains plaintext snapshot data")
+	}
+	reopened, err := NewPersistentStorageWithOptions(PersistentStorageOptions{Dir: dir, GroupID: "test-group", Encryption: enc})
+	if err != nil {
+		t.Fatalf("reopen encrypted storage: %v", err)
+	}
+	snap, err := reopened.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if !bytes.Equal(snap.Data, snapshotSecret) {
+		t.Fatalf("snapshot data=%q", snap.Data)
 	}
 }

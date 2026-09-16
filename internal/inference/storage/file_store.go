@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 
 	"github.com/google/uuid"
@@ -78,6 +80,7 @@ type usageState struct {
 
 type globalManager struct {
 	mu           sync.RWMutex
+	encryption   *encryption.Service
 	metaDir      string
 	packages     packagesState
 	endpoints    endpointsState
@@ -103,25 +106,25 @@ func (m *globalManager) Init(ctx context.Context, metaDir string) error {
 			return err
 		}
 	}
-	if err := readJSON(m.packagesPath(), &m.packages); err != nil {
+	if err := m.readJSON(ctx, m.packagesPath(), &m.packages); err != nil {
 		return err
 	}
-	if err := readJSON(m.endpointsPath(), &m.endpoints); err != nil {
+	if err := m.readJSON(ctx, m.endpointsPath(), &m.endpoints); err != nil {
 		return err
 	}
-	if err := readJSON(m.modelsPath(), &m.models); err != nil {
+	if err := m.readJSON(ctx, m.modelsPath(), &m.models); err != nil {
 		return err
 	}
-	if err := readJSON(m.capabilitiesPath(), &m.capabilities); err != nil {
+	if err := m.readJSON(ctx, m.capabilitiesPath(), &m.capabilities); err != nil {
 		return err
 	}
-	if err := readJSON(m.vectorStoresPath(), &m.vectorStores); err != nil {
+	if err := m.readJSON(ctx, m.vectorStoresPath(), &m.vectorStores); err != nil {
 		return err
 	}
-	if err := readJSON(m.secretsPath(), &m.secrets); err != nil {
+	if err := m.readJSON(ctx, m.secretsPath(), &m.secrets); err != nil {
 		return err
 	}
-	if err := readJSON(m.credentialsPath(), &m.credentials); err != nil {
+	if err := m.readJSON(ctx, m.credentialsPath(), &m.credentials); err != nil {
 		return err
 	}
 	return nil
@@ -163,7 +166,7 @@ func (m *globalManager) UpsertPackage(ctx context.Context, item domaininference.
 		item.InstalledAt = now
 	}
 	m.packages.Packages = upsert(m.packages.Packages, item, func(v domaininference.InferencePackage) uuid.UUID { return v.ID })
-	return item, writeJSON(m.packagesPath(), m.packages)
+	return item, m.writeJSON(ctx, m.packagesPath(), m.packages)
 }
 func (m *globalManager) ListPackages(ctx context.Context) ([]domaininference.InferencePackage, error) {
 	m.mu.RLock()
@@ -180,7 +183,7 @@ func (m *globalManager) DeletePackage(ctx context.Context, id domaininference.In
 		return err
 	}
 	m.packages.Packages = deleteByID(m.packages.Packages, id, func(v domaininference.InferencePackage) uuid.UUID { return v.ID })
-	return writeJSON(m.packagesPath(), m.packages)
+	return m.writeJSON(ctx, m.packagesPath(), m.packages)
 }
 
 func (m *globalManager) UpsertEndpoint(ctx context.Context, item domaininference.Endpoint) (domaininference.Endpoint, error) {
@@ -198,7 +201,7 @@ func (m *globalManager) UpsertEndpoint(ctx context.Context, item domaininference
 	}
 	item.UpdatedAt = now
 	m.endpoints.Endpoints = upsert(m.endpoints.Endpoints, item, func(v domaininference.Endpoint) uuid.UUID { return v.ID })
-	return item, writeJSON(m.endpointsPath(), m.endpoints)
+	return item, m.writeJSON(ctx, m.endpointsPath(), m.endpoints)
 }
 func (m *globalManager) ListEndpoints(ctx context.Context) ([]domaininference.Endpoint, error) {
 	m.mu.RLock()
@@ -215,7 +218,7 @@ func (m *globalManager) DeleteEndpoint(ctx context.Context, id domaininference.E
 		return err
 	}
 	m.endpoints.Endpoints = deleteByID(m.endpoints.Endpoints, id, func(v domaininference.Endpoint) uuid.UUID { return v.ID })
-	return writeJSON(m.endpointsPath(), m.endpoints)
+	return m.writeJSON(ctx, m.endpointsPath(), m.endpoints)
 }
 
 func (m *globalManager) UpsertModel(ctx context.Context, item domaininference.Model) (domaininference.Model, error) {
@@ -233,7 +236,7 @@ func (m *globalManager) UpsertModel(ctx context.Context, item domaininference.Mo
 	}
 	item.UpdatedAt = now
 	m.models.Models = upsert(m.models.Models, item, func(v domaininference.Model) uuid.UUID { return v.ID })
-	return item, writeJSON(m.modelsPath(), m.models)
+	return item, m.writeJSON(ctx, m.modelsPath(), m.models)
 }
 func (m *globalManager) ListModels(ctx context.Context) ([]domaininference.Model, error) {
 	m.mu.RLock()
@@ -250,7 +253,7 @@ func (m *globalManager) DeleteModel(ctx context.Context, id domaininference.Mode
 		return err
 	}
 	m.models.Models = deleteByID(m.models.Models, id, func(v domaininference.Model) uuid.UUID { return v.ID })
-	return writeJSON(m.modelsPath(), m.models)
+	return m.writeJSON(ctx, m.modelsPath(), m.models)
 }
 
 func (m *globalManager) UpsertCapability(ctx context.Context, item domaininference.Capability) (domaininference.Capability, error) {
@@ -268,7 +271,7 @@ func (m *globalManager) UpsertCapability(ctx context.Context, item domaininferen
 	}
 	item.UpdatedAt = now
 	m.capabilities.Capabilities = upsert(m.capabilities.Capabilities, item, func(v domaininference.Capability) uuid.UUID { return v.ID })
-	return item, writeJSON(m.capabilitiesPath(), m.capabilities)
+	return item, m.writeJSON(ctx, m.capabilitiesPath(), m.capabilities)
 }
 func (m *globalManager) ListCapabilities(ctx context.Context) ([]domaininference.Capability, error) {
 	m.mu.RLock()
@@ -285,7 +288,7 @@ func (m *globalManager) DeleteCapability(ctx context.Context, id domaininference
 		return err
 	}
 	m.capabilities.Capabilities = deleteByID(m.capabilities.Capabilities, id, func(v domaininference.Capability) uuid.UUID { return v.ID })
-	return writeJSON(m.capabilitiesPath(), m.capabilities)
+	return m.writeJSON(ctx, m.capabilitiesPath(), m.capabilities)
 }
 
 func (m *globalManager) UpsertVectorStore(ctx context.Context, item domaininference.VectorStore) (domaininference.VectorStore, error) {
@@ -303,7 +306,7 @@ func (m *globalManager) UpsertVectorStore(ctx context.Context, item domaininfere
 	}
 	item.UpdatedAt = now
 	m.vectorStores.VectorStores = upsert(m.vectorStores.VectorStores, item, func(v domaininference.VectorStore) uuid.UUID { return v.ID })
-	return item, writeJSON(m.vectorStoresPath(), m.vectorStores)
+	return item, m.writeJSON(ctx, m.vectorStoresPath(), m.vectorStores)
 }
 func (m *globalManager) ListVectorStores(ctx context.Context) ([]domaininference.VectorStore, error) {
 	m.mu.RLock()
@@ -320,7 +323,7 @@ func (m *globalManager) DeleteVectorStore(ctx context.Context, id domaininferenc
 		return err
 	}
 	m.vectorStores.VectorStores = deleteByID(m.vectorStores.VectorStores, id, func(v domaininference.VectorStore) uuid.UUID { return v.ID })
-	return writeJSON(m.vectorStoresPath(), m.vectorStores)
+	return m.writeJSON(ctx, m.vectorStoresPath(), m.vectorStores)
 }
 
 func (m *globalManager) UpsertSecret(ctx context.Context, item domaininference.Secret) (domaininference.Secret, error) {
@@ -338,7 +341,7 @@ func (m *globalManager) UpsertSecret(ctx context.Context, item domaininference.S
 	}
 	item.UpdatedAt = now
 	m.secrets.Secrets = upsert(m.secrets.Secrets, item, func(v domaininference.Secret) uuid.UUID { return v.ID })
-	return item, writeJSON(m.secretsPath(), m.secrets)
+	return item, m.writeJSON(ctx, m.secretsPath(), m.secrets)
 }
 func (m *globalManager) ListSecrets(ctx context.Context) ([]domaininference.Secret, error) {
 	m.mu.RLock()
@@ -355,7 +358,7 @@ func (m *globalManager) DeleteSecret(ctx context.Context, id domaininference.Sec
 		return err
 	}
 	m.secrets.Secrets = deleteByID(m.secrets.Secrets, id, func(v domaininference.Secret) uuid.UUID { return v.ID })
-	return writeJSON(m.secretsPath(), m.secrets)
+	return m.writeJSON(ctx, m.secretsPath(), m.secrets)
 }
 
 func (m *globalManager) UpsertCredential(ctx context.Context, item domaininference.Credential) (domaininference.Credential, error) {
@@ -373,7 +376,7 @@ func (m *globalManager) UpsertCredential(ctx context.Context, item domaininferen
 	}
 	item.UpdatedAt = now
 	m.credentials.Credentials = upsert(m.credentials.Credentials, item, func(v domaininference.Credential) uuid.UUID { return v.ID })
-	return item, writeJSON(m.credentialsPath(), m.credentials)
+	return item, m.writeJSON(ctx, m.credentialsPath(), m.credentials)
 }
 func (m *globalManager) ListCredentials(ctx context.Context) ([]domaininference.Credential, error) {
 	m.mu.RLock()
@@ -390,17 +393,18 @@ func (m *globalManager) DeleteCredential(ctx context.Context, id domaininference
 		return err
 	}
 	m.credentials.Credentials = deleteByID(m.credentials.Credentials, id, func(v domaininference.Credential) uuid.UUID { return v.ID })
-	return writeJSON(m.credentialsPath(), m.credentials)
+	return m.writeJSON(ctx, m.credentialsPath(), m.credentials)
 }
 
 type spaceManager struct {
-	mu        sync.RWMutex
-	location  string
-	spaceID   string
-	profiles  profilesState
-	grants    grantsState
-	policies  policiesState
-	decisions decisionsState
+	mu         sync.RWMutex
+	encryption *encryption.Service
+	location   string
+	spaceID    string
+	profiles   profilesState
+	grants     grantsState
+	policies   policiesState
+	decisions  decisionsState
 }
 
 func (m *spaceManager) Init(ctx context.Context, location string, spaceID string) error {
@@ -420,16 +424,16 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID string
 	if err := os.MkdirAll(location, fsperm.SharedDir); err != nil {
 		return err
 	}
-	if err := readJSON(m.profilesPath(), &m.profiles); err != nil {
+	if err := m.readJSON(ctx, m.profilesPath(), &m.profiles); err != nil {
 		return err
 	}
-	if err := readJSON(m.grantsPath(), &m.grants); err != nil {
+	if err := m.readJSON(ctx, m.grantsPath(), &m.grants); err != nil {
 		return err
 	}
-	if err := readJSON(m.policiesPath(), &m.policies); err != nil {
+	if err := m.readJSON(ctx, m.policiesPath(), &m.policies); err != nil {
 		return err
 	}
-	if err := readJSON(m.decisionsPath(), &m.decisions); err != nil {
+	if err := m.readJSON(ctx, m.decisionsPath(), &m.decisions); err != nil {
 		return err
 	}
 	return nil
@@ -457,7 +461,7 @@ func (m *spaceManager) UpsertProfile(ctx context.Context, item domaininference.P
 	}
 	item.UpdatedAt = now
 	m.profiles.Profiles = upsert(m.profiles.Profiles, item, func(v domaininference.Profile) uuid.UUID { return v.ID })
-	return item, writeJSON(m.profilesPath(), m.profiles)
+	return item, m.writeJSON(ctx, m.profilesPath(), m.profiles)
 }
 func (m *spaceManager) ListProfiles(ctx context.Context) ([]domaininference.Profile, error) {
 	m.mu.RLock()
@@ -474,7 +478,7 @@ func (m *spaceManager) DeleteProfile(ctx context.Context, id domaininference.Pro
 		return err
 	}
 	m.profiles.Profiles = deleteByID(m.profiles.Profiles, id, func(v domaininference.Profile) uuid.UUID { return v.ID })
-	return writeJSON(m.profilesPath(), m.profiles)
+	return m.writeJSON(ctx, m.profilesPath(), m.profiles)
 }
 
 func (m *spaceManager) UpsertCredentialGrant(ctx context.Context, item domaininference.CredentialGrant) (domaininference.CredentialGrant, error) {
@@ -494,7 +498,7 @@ func (m *spaceManager) UpsertCredentialGrant(ctx context.Context, item domaininf
 		item.CreatedAt = now
 	}
 	m.grants.Grants = upsert(m.grants.Grants, item, func(v domaininference.CredentialGrant) uuid.UUID { return v.ID })
-	return item, writeJSON(m.grantsPath(), m.grants)
+	return item, m.writeJSON(ctx, m.grantsPath(), m.grants)
 }
 func (m *spaceManager) ListCredentialGrants(ctx context.Context) ([]domaininference.CredentialGrant, error) {
 	m.mu.RLock()
@@ -511,7 +515,7 @@ func (m *spaceManager) DeleteCredentialGrant(ctx context.Context, id domaininfer
 		return err
 	}
 	m.grants.Grants = deleteByID(m.grants.Grants, id, func(v domaininference.CredentialGrant) uuid.UUID { return v.ID })
-	return writeJSON(m.grantsPath(), m.grants)
+	return m.writeJSON(ctx, m.grantsPath(), m.grants)
 }
 
 func (m *spaceManager) UpsertPolicy(ctx context.Context, item domaininference.Policy) (domaininference.Policy, error) {
@@ -531,7 +535,7 @@ func (m *spaceManager) UpsertPolicy(ctx context.Context, item domaininference.Po
 		item.CreatedAt = now
 	}
 	m.policies.Policies = upsert(m.policies.Policies, item, func(v domaininference.Policy) uuid.UUID { return v.ID })
-	return item, writeJSON(m.policiesPath(), m.policies)
+	return item, m.writeJSON(ctx, m.policiesPath(), m.policies)
 }
 func (m *spaceManager) ListPolicies(ctx context.Context) ([]domaininference.Policy, error) {
 	m.mu.RLock()
@@ -548,7 +552,7 @@ func (m *spaceManager) DeletePolicy(ctx context.Context, id domaininference.Poli
 		return err
 	}
 	m.policies.Policies = deleteByID(m.policies.Policies, id, func(v domaininference.Policy) uuid.UUID { return v.ID })
-	return writeJSON(m.policiesPath(), m.policies)
+	return m.writeJSON(ctx, m.policiesPath(), m.policies)
 }
 
 func (m *spaceManager) UpsertPolicyDecision(ctx context.Context, item domaininference.PolicyDecision) (domaininference.PolicyDecision, error) {
@@ -567,7 +571,7 @@ func (m *spaceManager) UpsertPolicyDecision(ctx context.Context, item domaininfe
 		item.DecidedAt = time.Now().UTC()
 	}
 	m.decisions.Decisions = upsert(m.decisions.Decisions, item, func(v domaininference.PolicyDecision) uuid.UUID { return v.ID })
-	return item, writeJSON(m.decisionsPath(), m.decisions)
+	return item, m.writeJSON(ctx, m.decisionsPath(), m.decisions)
 }
 func (m *spaceManager) ListPolicyDecisions(ctx context.Context) ([]domaininference.PolicyDecision, error) {
 	m.mu.RLock()
@@ -584,13 +588,14 @@ func (m *spaceManager) DeletePolicyDecision(ctx context.Context, id domaininfere
 		return err
 	}
 	m.decisions.Decisions = deleteByID(m.decisions.Decisions, id, func(v domaininference.PolicyDecision) uuid.UUID { return v.ID })
-	return writeJSON(m.decisionsPath(), m.decisions)
+	return m.writeJSON(ctx, m.decisionsPath(), m.decisions)
 }
 
 type usageLedger struct {
-	mu       sync.RWMutex
-	location string
-	state    usageState
+	mu         sync.RWMutex
+	encryption *encryption.Service
+	location   string
+	state      usageState
 }
 
 func (m *usageLedger) Init(ctx context.Context, location string) error {
@@ -606,7 +611,7 @@ func (m *usageLedger) Init(ctx context.Context, location string) error {
 	if err := os.MkdirAll(location, fsperm.SharedDir); err != nil {
 		return err
 	}
-	return readJSON(m.path(), &m.state)
+	return m.readJSON(ctx, m.path(), &m.state)
 }
 func (m *usageLedger) path() string { return filepath.Join(m.location, usageFileName) }
 func (m *usageLedger) AppendUsageEvent(ctx context.Context, item domaininference.UsageEvent) (domaininference.UsageEvent, error) {
@@ -624,11 +629,11 @@ func (m *usageLedger) AppendUsageEvent(ctx context.Context, item domaininference
 	for i, existing := range m.state.Events {
 		if existing.ID == item.ID {
 			m.state.Events[i] = item
-			return item, writeJSON(m.path(), m.state)
+			return item, m.writeJSON(ctx, m.path(), m.state)
 		}
 	}
 	m.state.Events = append(m.state.Events, item)
-	return item, writeJSON(m.path(), m.state)
+	return item, m.writeJSON(ctx, m.path(), m.state)
 }
 func (m *usageLedger) ListUsageEvents(ctx context.Context) ([]domaininference.UsageEvent, error) {
 	m.mu.RLock()
@@ -659,7 +664,39 @@ func deleteByID[T any](items []T, id uuid.UUID, getID func(T) uuid.UUID) []T {
 	return out
 }
 
+func (m *globalManager) readJSON(ctx context.Context, path string, target any) error {
+	return readJSONEncrypted(ctx, path, target, m.encryption)
+}
+
+func (m *globalManager) writeJSON(ctx context.Context, path string, value any) error {
+	return writeJSONEncrypted(ctx, path, value, m.encryption)
+}
+
+func (m *spaceManager) readJSON(ctx context.Context, path string, target any) error {
+	return readJSONEncrypted(ctx, path, target, m.encryption)
+}
+
+func (m *spaceManager) writeJSON(ctx context.Context, path string, value any) error {
+	return writeJSONEncrypted(ctx, path, value, m.encryption)
+}
+
+func (m *usageLedger) readJSON(ctx context.Context, path string, target any) error {
+	return readJSONEncrypted(ctx, path, target, m.encryption)
+}
+
+func (m *usageLedger) writeJSON(ctx context.Context, path string, value any) error {
+	return writeJSONEncrypted(ctx, path, value, m.encryption)
+}
+
 func readJSON(path string, target any) error {
+	return readJSONEncrypted(context.Background(), path, target, nil)
+}
+
+func writeJSON(path string, value any) error {
+	return writeJSONEncrypted(context.Background(), path, value, nil)
+}
+
+func readJSONEncrypted(ctx context.Context, path string, target any, enc *encryption.Service) error {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -670,13 +707,29 @@ func readJSON(path string, target any) error {
 	if len(data) == 0 {
 		return nil
 	}
+	if enc != nil && enc.Enabled() {
+		data, err = enc.DecryptRecord(ctx, data, []byte("inference-store-json:v1:path="+filepath.ToSlash(path)))
+		if err != nil {
+			return err
+		}
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil
+	}
 	return json.Unmarshal(data, target)
 }
-func writeJSON(path string, value any) error {
+
+func writeJSONEncrypted(ctx context.Context, path string, value any, enc *encryption.Service) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
+	if enc != nil && enc.Enabled() {
+		data, err = enc.EncryptRecord(ctx, data, []byte("inference-store-json:v1:path="+filepath.ToSlash(path)))
+		if err != nil {
+			return err
+		}
+	}
 	return filestore.WriteFileAtomic(path, data, fsperm.PrivateFile)
 }

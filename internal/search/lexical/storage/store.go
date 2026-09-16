@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -15,19 +16,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 var ErrNotFound = errors.New("lexical index storage not found")
 
 type Store struct {
-	root     string
-	spaceID  string
-	domainID string
+	root       string
+	spaceID    string
+	domainID   string
+	encryption *encryption.Service
 }
 
 func NewStore(root, spaceID, domainID string) Store {
 	return Store{root: root, spaceID: spaceID, domainID: domainID}
+}
+
+func NewEncryptedStore(root, spaceID, domainID string, enc *encryption.Service) Store {
+	return Store{root: root, spaceID: spaceID, domainID: domainID, encryption: enc}
 }
 
 func (s Store) ScopeDir() string {
@@ -97,7 +104,7 @@ func (s Store) PublishSegment(data SegmentData) error {
 			_ = os.RemoveAll(tmpDir)
 		}
 	}()
-	if err := WriteSegment(tmpDir, data); err != nil {
+	if err := WriteSegmentWithEncryption(tmpDir, data, s.encryption); err != nil {
 		return err
 	}
 	if err := fsyncDir(tmpDir); err != nil {
@@ -130,10 +137,14 @@ func (s Store) ReadSegment(segmentID string) (SegmentData, error) {
 	if err := validateSegmentID(segmentID); err != nil {
 		return SegmentData{}, err
 	}
-	return ReadSegment(filepath.Join(s.ScopeDir(), "segments", segmentID))
+	return ReadSegmentWithEncryption(filepath.Join(s.ScopeDir(), "segments", segmentID), s.encryption)
 }
 
 func WriteSegment(dir string, data SegmentData) error {
+	return WriteSegmentWithEncryption(dir, data, nil)
+}
+
+func WriteSegmentWithEncryption(dir string, data SegmentData, enc *encryption.Service) error {
 	if err := validateSegmentID(data.Metadata.SegmentID); err != nil {
 		return err
 	}
@@ -145,21 +156,21 @@ func WriteSegment(dir string, data SegmentData) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "postings.bin"), postingsBytes, fsperm.SharedFile); err != nil {
+	if err := writeMaybeEncrypted(filepath.Join(dir, "postings.bin"), postingsBytes, enc); err != nil {
 		return err
 	}
 	termsBytes, err := encodeTermIndex(termInfos)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "terms.idx"), termsBytes, fsperm.SharedFile); err != nil {
+	if err := writeMaybeEncrypted(filepath.Join(dir, "terms.idx"), termsBytes, enc); err != nil {
 		return err
 	}
 	docsBytes, err := encodeDocs(data.Docs)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "docs.bin"), docsBytes, fsperm.SharedFile); err != nil {
+	if err := writeMaybeEncrypted(filepath.Join(dir, "docs.bin"), docsBytes, enc); err != nil {
 		return err
 	}
 	if err := writeJSON(filepath.Join(dir, "segment.json"), data.Metadata); err != nil {
@@ -176,6 +187,10 @@ func WriteSegment(dir string, data SegmentData) error {
 }
 
 func ReadSegment(dir string) (SegmentData, error) {
+	return ReadSegmentWithEncryption(dir, nil)
+}
+
+func ReadSegmentWithEncryption(dir string, enc *encryption.Service) (SegmentData, error) {
 	storedChecksum, err := os.ReadFile(filepath.Join(dir, "checksum.sha256"))
 	if err != nil {
 		return SegmentData{}, mapNotExist(err)
@@ -194,7 +209,7 @@ func ReadSegment(dir string) (SegmentData, error) {
 	if meta.FormatVersion != FormatVersion {
 		return SegmentData{}, fmt.Errorf("unsupported lexical segment format version %d", meta.FormatVersion)
 	}
-	docsBytes, err := os.ReadFile(filepath.Join(dir, "docs.bin"))
+	docsBytes, err := readMaybeEncrypted(filepath.Join(dir, "docs.bin"), enc)
 	if err != nil {
 		return SegmentData{}, err
 	}
@@ -202,7 +217,7 @@ func ReadSegment(dir string) (SegmentData, error) {
 	if err != nil {
 		return SegmentData{}, err
 	}
-	termsBytes, err := os.ReadFile(filepath.Join(dir, "terms.idx"))
+	termsBytes, err := readMaybeEncrypted(filepath.Join(dir, "terms.idx"), enc)
 	if err != nil {
 		return SegmentData{}, err
 	}
@@ -210,7 +225,7 @@ func ReadSegment(dir string) (SegmentData, error) {
 	if err != nil {
 		return SegmentData{}, err
 	}
-	postingsBytes, err := os.ReadFile(filepath.Join(dir, "postings.bin"))
+	postingsBytes, err := readMaybeEncrypted(filepath.Join(dir, "postings.bin"), enc)
 	if err != nil {
 		return SegmentData{}, err
 	}
@@ -219,6 +234,33 @@ func ReadSegment(dir string) (SegmentData, error) {
 		return SegmentData{}, err
 	}
 	return SegmentData{Metadata: meta, Docs: docs, Terms: terms}, nil
+}
+
+func writeMaybeEncrypted(path string, plaintext []byte, enc *encryption.Service) error {
+	data := plaintext
+	if enc != nil && enc.Enabled() {
+		ciphertext, err := enc.EncryptRecord(context.Background(), plaintext, lexicalFileAAD(path))
+		if err != nil {
+			return err
+		}
+		data = ciphertext
+	}
+	return os.WriteFile(path, data, fsperm.SharedFile)
+}
+
+func readMaybeEncrypted(path string, enc *encryption.Service) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if enc == nil || !enc.Enabled() {
+		return data, nil
+	}
+	return enc.DecryptRecord(context.Background(), data, lexicalFileAAD(path))
+}
+
+func lexicalFileAAD(path string) []byte {
+	return []byte("lexical-segment:v1:file=" + filepath.Base(path))
 }
 
 func normalizeSegmentData(data SegmentData) SegmentData {

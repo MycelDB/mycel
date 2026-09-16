@@ -153,7 +153,7 @@ func (m *Module) restoreGraphSpace(ctx context.Context, state graphRaftSpaceStat
 	if err := os.RemoveAll(spacePath); err != nil {
 		return err
 	}
-	store, err := graphstorage.Open(ctx, spacePath)
+	store, err := graphstorage.OpenWithOptions(ctx, spacePath, graphstorage.Options{Encryption: m.encryption})
 	if err != nil {
 		return err
 	}

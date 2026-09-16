@@ -2,8 +2,11 @@ package config
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/myceldb/mycel/internal/encryption"
 )
 
 func TestLoadFromEnvDefaults(t *testing.T) {
@@ -52,6 +55,14 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.Cluster.RaftCompactionMode != DefaultClusterRaftCompactionMode || cfg.Cluster.RaftSnapshotEntries != 0 || cfg.Cluster.RaftSnapshotInterval != 0 || cfg.Cluster.RaftSnapshotMaxLogBytes != 0 || cfg.Cluster.RaftSnapshotMinRetainEntries != 0 {
 		t.Fatalf("unexpected cluster raft compaction defaults: %+v", cfg.Cluster)
+	}
+}
+
+func TestLoadFromEnvRejectsLegacyUserStoreEncryptionKey(t *testing.T) {
+	t.Setenv("MYCELD_USER_STORE_ENCRYPTION_KEY_B64", "legacy")
+	_, err := LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "MYCELD_USER_STORE_ENCRYPTION_KEY_B64 is superseded") {
+		t.Fatalf("LoadFromEnv() error = %v, want legacy key rejection", err)
 	}
 }
 
@@ -330,5 +341,39 @@ func TestConfigValidateRejectsBadValues(t *testing.T) {
 		if err := tc.Validate(); err == nil {
 			t.Fatalf("Validate(%+v) expected error", tc)
 		}
+	}
+}
+
+func TestLoadFromEnvEncryptionDefaultsDisabled(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.Encryption.NormalizedMode() != encryption.ModeDisabled || cfg.Encryption.Enabled() {
+		t.Fatalf("unexpected encryption defaults: %+v", cfg.Encryption)
+	}
+}
+
+func TestLoadFromEnvEncryptionStaticEnv(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_ENCRYPTION_AT_REST", "enabled")
+	t.Setenv("MYCELD_ENCRYPTION_KEK_PROVIDER", "static-env")
+	t.Setenv("MYCELD_ENCRYPTION_STATIC_KEY_B64", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	t.Setenv("MYCELD_ENCRYPTION_DEK_CACHE_TTL", "30s")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.Encryption.Enabled() || cfg.Encryption.KEKProvider != encryption.ProviderStaticEnv || cfg.Encryption.DEKCacheTTL != 30*time.Second {
+		t.Fatalf("unexpected encryption config: %+v", cfg.Encryption)
+	}
+}
+
+func TestLoadFromEnvEncryptionEnabledRequiresProvider(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_ENCRYPTION_AT_REST", "enabled")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected enabled encryption without provider to fail")
 	}
 }

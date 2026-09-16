@@ -1,6 +1,7 @@
 package graphstorage
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 )
 
@@ -48,10 +50,11 @@ const (
 )
 
 type segment struct {
-	id   string
-	path string
-	kind SegmentKind
-	file *os.File
+	id         string
+	path       string
+	kind       SegmentKind
+	file       *os.File
+	encryption *encryption.Service
 }
 type recordHeader struct {
 	kind       RecordKind
@@ -66,7 +69,7 @@ type scannedRecord struct {
 	payload  []byte
 }
 
-func openSegment(path string, kind SegmentKind) (*segment, error) {
+func openSegment(path string, kind SegmentKind, enc ...*encryption.Service) (*segment, error) {
 	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return nil, err
 	}
@@ -82,7 +85,11 @@ func openSegment(path string, kind SegmentKind) (*segment, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &segment{id: filepath.Base(path), path: path, kind: kind, file: f}
+	var svc *encryption.Service
+	if len(enc) > 0 {
+		svc = enc[0]
+	}
+	s := &segment{id: filepath.Base(path), path: path, kind: kind, file: f, encryption: svc}
 	if !exists || fileSize(f) == 0 {
 		if err := s.writeHeader(); err != nil {
 			_ = f.Close()
@@ -126,6 +133,12 @@ func (s *segment) appendRecord(kind RecordKind, txnID, entityID uuid.UUID, paylo
 	if err != nil {
 		return RecordLocation{}, err
 	}
+	if s.encryption != nil && s.encryption.Enabled() {
+		payload, err = s.encryption.EncryptRecord(context.Background(), payload, graphRecordAAD(s.id, s.kind, kind, txnID, entityID))
+		if err != nil {
+			return RecordLocation{}, err
+		}
+	}
 	header := make([]byte, recordHeaderLen)
 	copy(header[recordMagicOffset:recordVersionOffset], recordMagic[:])
 	binary.BigEndian.PutUint16(header[recordVersionOffset:recordKindOffset], recordVersion)
@@ -147,7 +160,7 @@ func (s *segment) appendRecord(kind RecordKind, txnID, entityID uuid.UUID, paylo
 func (s *segment) sync() error  { return s.file.Sync() }
 func (s *segment) close() error { return s.file.Close() }
 
-func scanSegment(path string, kind SegmentKind, visit func(scannedRecord) error) error {
+func scanSegment(path string, kind SegmentKind, enc *encryption.Service, visit func(scannedRecord) error) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -190,11 +203,23 @@ func scanSegment(path string, kind SegmentKind, visit func(scannedRecord) error)
 		if crc32.ChecksumIEEE(payload) != crc {
 			return fmt.Errorf("%w: bad crc at %s:%d", ErrInvalidRecord, path, off)
 		}
-		if err := visit(scannedRecord{header: recordHeader{kind: RecordKind(buf[recordKindOffset]), txnID: txnID, entityID: entityID, payloadLen: l, crc: crc}, location: RecordLocation{Segment: filepath.Base(path), Offset: off, Length: uint32(recordHeaderLen) + l}, payload: payload}); err != nil {
+		recordKind := RecordKind(buf[recordKindOffset])
+		if enc != nil {
+			var err error
+			payload, err = enc.DecryptRecord(context.Background(), payload, graphRecordAAD(filepath.Base(path), kind, recordKind, txnID, entityID))
+			if err != nil {
+				return err
+			}
+		}
+		if err := visit(scannedRecord{header: recordHeader{kind: recordKind, txnID: txnID, entityID: entityID, payloadLen: l, crc: crc}, location: RecordLocation{Segment: filepath.Base(path), Offset: off, Length: uint32(recordHeaderLen) + l}, payload: payload}); err != nil {
 			return err
 		}
 	}
 }
+func graphRecordAAD(segmentID string, segmentKind SegmentKind, recordKind RecordKind, txnID, entityID uuid.UUID) []byte {
+	return []byte(fmt.Sprintf("graph-segment:v1:segment=%s:segment_kind=%d:record_kind=%d:txn=%s:entity=%s", segmentID, segmentKind, recordKind, txnID, entityID))
+}
+
 func fileSize(f *os.File) int64 {
 	st, err := f.Stat()
 	if err != nil {

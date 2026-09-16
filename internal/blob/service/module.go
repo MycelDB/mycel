@@ -17,6 +17,7 @@ import (
 
 	blobstorage "github.com/myceldb/mycel/internal/blob/storage"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	runtime "github.com/myceldb/mycel/internal/runtime"
@@ -39,6 +40,7 @@ type Module struct {
 	wal                  *wal.Manager
 	walProgress          wal.AppliedLSNStore
 	walWaiter            *wal.ApplyWaiter
+	encryption           *encryption.Service
 	writeAllowed         func() error
 	raftGroups           *consensus.MultiGroup
 	raftPartitionCount   uint32
@@ -78,8 +80,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
+	if provider, ok := host.(runtime.EncryptionProvider); ok {
+		m.encryption = provider.EncryptionService()
+	}
 	if isObjectStoreBackend(m.config.Backend) && m.s3Store == nil {
-		store, err := newS3PayloadStore(ctx, m.config, filepath.Join(m.dataDir, "_object_store_staging"))
+		store, err := newS3PayloadStore(ctx, m.config, filepath.Join(m.dataDir, "_object_store_staging"), m.encryption)
 		if err != nil {
 			return runtime.Abort(ModuleName, "storage", "initialize object store blob backend", err)
 		}
@@ -311,7 +316,7 @@ func (m *Module) store(spaceID string) (*blobstorage.Store, error) {
 	if store := m.stores[spaceID]; store != nil {
 		return store, nil
 	}
-	store, err := blobstorage.Open(filepath.Join(m.dataDir, spaceID))
+	store, err := blobstorage.OpenWithConfig(filepath.Join(m.dataDir, spaceID), blobstorage.Config{Encryption: m.encryption})
 	if err != nil {
 		return nil, err
 	}

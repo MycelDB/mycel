@@ -8,6 +8,7 @@
 package blobstorage
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 
 	graph "github.com/myceldb/mycel/internal/graph/model"
@@ -39,12 +41,14 @@ const (
 // Config carries runtime knobs for a blob store.
 type Config struct {
 	StaleTmpAge time.Duration
+	Encryption  *encryption.Service
 }
 
 // Store is a content-addressed blob store rooted at a per-space directory.
 type Store struct {
 	path        string
 	staleTmpAge time.Duration
+	encryption  *encryption.Service
 }
 
 // Open initializes (creating if needed) the blob store layout at path.
@@ -66,7 +70,7 @@ func OpenWithConfig(path string, cfg Config) (*Store, error) {
 	if staleAge <= 0 {
 		staleAge = staleTmpAge
 	}
-	return &Store{path: path, staleTmpAge: staleAge}, nil
+	return &Store{path: path, staleTmpAge: staleAge, encryption: cfg.Encryption}, nil
 }
 
 // StagedBlob is a prepared blob write. New content remains in tmp until
@@ -106,19 +110,43 @@ func (s *Store) Stage(ctx context.Context, r io.Reader) (StagedBlob, error) {
 	if r == nil {
 		return StagedBlob{}, fmt.Errorf("%w: reader is required", ErrInvalidInput)
 	}
+	plaintext, err := io.ReadAll(r)
+	if err != nil {
+		return StagedBlob{}, err
+	}
+	size := int64(len(plaintext))
+	sum := sha256.Sum256(plaintext)
+	id, err := graph.BlobIDFromBytes(sum[:])
+	if err != nil {
+		return StagedBlob{}, err
+	}
+	objPath, err := s.objectPath(id)
+	if err != nil {
+		return StagedBlob{}, err
+	}
+	if _, err := os.Stat(objPath); err == nil {
+		return StagedBlob{ID: id, SizeBytes: size, existing: true}, nil
+	} else if !os.IsNotExist(err) {
+		return StagedBlob{}, err
+	}
 	tmp, err := os.CreateTemp(filepath.Join(s.path, tmpDirName), "put-*.blob")
 	if err != nil {
 		return StagedBlob{}, err
 	}
 	tmpPath := tmp.Name()
 	cleanup := func() {
-		tmp.Close()
-		os.Remove(tmpPath)
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
 	}
-
-	hasher := sha256.New()
-	size, err := io.Copy(io.MultiWriter(tmp, hasher), r)
-	if err != nil {
+	stored := plaintext
+	if s.encryption != nil && s.encryption.Enabled() {
+		stored, err = s.encryption.EncryptRecord(ctx, plaintext, blobAAD(id))
+		if err != nil {
+			cleanup()
+			return StagedBlob{}, err
+		}
+	}
+	if _, err := tmp.Write(stored); err != nil {
 		cleanup()
 		return StagedBlob{}, err
 	}
@@ -127,25 +155,7 @@ func (s *Store) Stage(ctx context.Context, r io.Reader) (StagedBlob, error) {
 		return StagedBlob{}, err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return StagedBlob{}, err
-	}
-
-	id, err := graph.BlobIDFromBytes(hasher.Sum(nil))
-	if err != nil {
-		os.Remove(tmpPath)
-		return StagedBlob{}, err
-	}
-	objPath, err := s.objectPath(id)
-	if err != nil {
-		os.Remove(tmpPath)
-		return StagedBlob{}, err
-	}
-	if _, err := os.Stat(objPath); err == nil {
-		os.Remove(tmpPath)
-		return StagedBlob{ID: id, SizeBytes: size, existing: true}, nil
-	} else if !os.IsNotExist(err) {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return StagedBlob{}, err
 	}
 	return StagedBlob{ID: id, SizeBytes: size, tmpPath: tmpPath}, nil
@@ -202,14 +212,20 @@ func (s *Store) Open(ctx context.Context, id graph.BlobID) (io.ReadCloser, error
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.Open(objPath)
+	data, err := os.ReadFile(objPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	return f, nil
+	if s.encryption != nil {
+		data, err = s.encryption.DecryptRecord(ctx, data, blobAAD(id))
+		if err != nil {
+			return nil, err
+		}
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 // Exists reports whether a blob is stored.
@@ -238,6 +254,18 @@ func (s *Store) Size(ctx context.Context, id graph.BlobID) (int64, error) {
 	objPath, err := s.objectPath(id)
 	if err != nil {
 		return 0, err
+	}
+	if s.encryption != nil && s.encryption.Enabled() {
+		r, err := s.Open(ctx, id)
+		if err != nil {
+			return 0, err
+		}
+		defer r.Close()
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return 0, err
+		}
+		return int64(len(data)), nil
 	}
 	info, err := os.Stat(objPath)
 	if err != nil {
@@ -324,6 +352,10 @@ func (s *Store) SweepTmp(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func blobAAD(id graph.BlobID) []byte {
+	return []byte("blob-local:v1:id=" + string(id))
 }
 
 func (s *Store) objectPath(id graph.BlobID) (string, error) {

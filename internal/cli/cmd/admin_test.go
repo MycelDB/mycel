@@ -16,6 +16,7 @@ import (
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
+	mycelencryption "github.com/myceldb/mycel/internal/encryption"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
@@ -463,7 +464,7 @@ func TestAdminListCommandFailsWhenDaemonUnavailable(t *testing.T) {
 func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "myceld")
-	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", NodeName: "node-a", UserStoreEncryptionKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", Cluster: daemonconfig.ClusterConfig{Name: "dev", BackendAdvertiseAddr: "127.0.0.1:9093"}})
+	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", NodeName: "node-a", Encryption: mycelencryption.Config{AtRest: "enabled", KEKProvider: "static-env", StaticKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}, Cluster: daemonconfig.ClusterConfig{Name: "dev", BackendAdvertiseAddr: "127.0.0.1:9093"}})
 	if err != nil {
 		t.Fatalf("initialize daemon admin store failed: %v", err)
 	}

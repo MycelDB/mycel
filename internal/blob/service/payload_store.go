@@ -157,7 +157,7 @@ func (m *Module) logBestEffortPayloadDeleteFailure(desc PayloadDescriptor, err e
 }
 
 func (m *Module) openLocalStore(spaceID string) (*blobstorage.Store, error) {
-	return blobstorage.Open(filepath.Join(m.dataDir, spaceID))
+	return blobstorage.OpenWithConfig(filepath.Join(m.dataDir, spaceID), blobstorage.Config{Encryption: m.encryption})
 }
 
 func logBlobBackend(logger *slog.Logger, cfg Config, dataDir string) {

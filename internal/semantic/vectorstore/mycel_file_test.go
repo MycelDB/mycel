@@ -1,6 +1,7 @@
 package vectorstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -11,10 +12,50 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/graph/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
+
+func TestMycelFileVectorBackendEncryptionHidesRecordMetadata(t *testing.T) {
+	ctx := context.Background()
+	enc := testEncryptionService(t)
+	graphsDir := filepath.Join(t.TempDir(), "graphs")
+	backend := MycelFileBackend{GraphsDir: graphsDir, Encryption: enc}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	if _, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, NodeID: nodeID, SourceHash: "plain-semantic-marker", SourceMode: "self", ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), CredentialGrantID: domainsemantic.CredentialGrantID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "test/3", Dimensions: 3, Vector: []float64{1, 0, 0}}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	segmentPath := filepath.Join(graphsDir, spaceID.String(), "semantic", "indexes", indexID.String(), "records", activeSegment)
+	raw, err := os.ReadFile(segmentPath)
+	if err != nil {
+		t.Fatalf("read segment: %v", err)
+	}
+	if bytes.Contains(raw, []byte("plain-semantic-marker")) {
+		t.Fatalf("encrypted vector segment exposes plaintext metadata")
+	}
+	records, err := backend.ListRecords(ctx, spaceID, indexID)
+	if err != nil {
+		t.Fatalf("ListRecords() error = %v", err)
+	}
+	if len(records) != 1 || records[0].SourceHash != "plain-semantic-marker" {
+		t.Fatalf("decrypted records = %#v", records)
+	}
+}
+
+func testEncryptionService(t *testing.T) *encryption.Service {
+	t.Helper()
+	enc, err := encryption.NewService(context.Background(), encryption.Config{AtRest: encryption.ModeEnabled, KEKProvider: encryption.ProviderStaticEnv, StaticKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	return enc
+}
 
 func TestMycelFileVectorBackendUpsertSearchDelete(t *testing.T) {
 	ctx := context.Background()

@@ -12,6 +12,7 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	"github.com/myceldb/mycel/internal/encryption"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	"github.com/myceldb/mycel/internal/wal"
 )
@@ -253,5 +254,23 @@ func unzipArchive(t *testing.T, archivePath string, dst string) {
 		if copyErr != nil || closeInErr != nil || closeOutErr != nil {
 			t.Fatalf("restore file %s failed: copy=%v closeIn=%v closeOut=%v", file.Name, copyErr, closeInErr, closeOutErr)
 		}
+	}
+}
+
+func TestInitializeEncryptionEnabledRejectsExistingPlaintextArtifactRoot(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataDir, "wal"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		DataDir:    dataDir,
+		Mode:       "mesh",
+		LogLevel:   "debug",
+		LogFormat:  "text",
+		GRPCAddr:   "127.0.0.1:0",
+		Encryption: encryption.Config{AtRest: encryption.ModeEnabled, KEKProvider: encryption.ProviderStaticEnv, StaticKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="},
+	}
+	if _, err := Initialize(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "existing plaintext artifact path") {
+		t.Fatalf("expected plaintext artifact rejection, got %v", err)
 	}
 }

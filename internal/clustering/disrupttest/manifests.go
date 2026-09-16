@@ -171,11 +171,6 @@ spec:
                 secretKeyRef:
                   name: myceld-secret
                   key: bootstrap-admin-password
-            - name: MYCELD_USER_STORE_ENCRYPTION_KEY_B64
-              valueFrom:
-                secretKeyRef:
-                  name: myceld-secret
-                  key: user-store-encryption-key-b64
             - name: MYCELD_CLUSTER_BACKEND_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:

@@ -122,7 +122,7 @@ printf '%s' "$OPENAI_API_KEY" | ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admi
   --privacy-class third_party
 ```
 
-API key material is encrypted by the daemon. Standalone daemons generate and persist a local encryption key under the data directory when `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` is not configured; mesh/cluster deployments should configure a shared `MYCELD_USER_STORE_ENCRYPTION_KEY_B64`. Prefer `--secret-stdin`; `--secret-value` is available for controlled automation but may be captured in shell history.
+API key material is encrypted by the daemon using the encryption-at-rest envelope service. Deployments that create inline inference credentials must enable encryption at rest with `MYCELD_ENCRYPTION_*` settings; the old `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` path is no longer accepted. Prefer `--secret-stdin`; `--secret-value` is available for controlled automation but may be captured in shell history.
 
 Daemon-backed soft cleanup/lifecycle commands:
 

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
@@ -29,6 +30,7 @@ type Module struct {
 	global               inferencestorage.GlobalManager
 	usageBase            inferencestorage.UsageLedger
 	usage                inferencestorage.UsageLedger
+	encryption           *encryption.Service
 	spaces               map[string]inferencestorage.SpaceManager
 	wal                  *wal.Manager
 	walProgress          wal.AppliedLSNStore
@@ -45,7 +47,7 @@ type Module struct {
 }
 
 func NewModule() *Module {
-	return &Module{spaces: map[string]inferencestorage.SpaceManager{}, connectors: defaultConnectors(), secretResolver: EncryptedSecretResolver{}, gate: quiesce.NewGate(ModuleName)}
+	return &Module{spaces: map[string]inferencestorage.SpaceManager{}, connectors: defaultConnectors(), secretResolver: EnvelopeSecretResolver{}, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -64,11 +66,15 @@ func (m *Module) principalStatusChecker() PrincipalStatusChecker {
 }
 
 func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.InitResult {
-	global := inferencestorage.NewGlobalManager()
+	var enc *encryption.Service
+	if provider, ok := host.(mycelruntime.EncryptionProvider); ok {
+		enc = provider.EncryptionService()
+	}
+	global := inferencestorage.NewEncryptedGlobalManager(enc)
 	if err := global.Init(ctx, filepath.Join(host.DataDir(), "meta", "inference_runtime")); err != nil {
 		return mycelruntime.Abort(ModuleName, "store", "failed to open inference global store", err)
 	}
-	usage := inferencestorage.NewUsageLedger()
+	usage := inferencestorage.NewEncryptedUsageLedger(enc)
 	if err := usage.Init(ctx, filepath.Join(host.DataDir(), "meta", "inference_runtime", "accounting")); err != nil {
 		return mycelruntime.Abort(ModuleName, "store", "failed to open inference usage ledger", err)
 	}
@@ -78,6 +84,7 @@ func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.
 	m.usageBase = usage
 	m.global = global
 	m.usage = usage
+	m.encryption = enc
 	m.spaces = map[string]inferencestorage.SpaceManager{}
 	if provider, ok := host.(mycelruntime.WALProvider); ok {
 		m.wal = provider.WALManager()
@@ -99,7 +106,7 @@ func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.
 		m.connectors = defaultConnectors()
 	}
 	if m.secretResolver == nil {
-		m.secretResolver = EncryptedSecretResolver{}
+		m.secretResolver = EnvelopeSecretResolver{}
 	}
 	m.logger = host.Log()
 	m.startedAt = time.Now().UTC()
@@ -135,7 +142,7 @@ func (m *Module) ReloadDerivedProjection(ctx context.Context) error {
 	if m == nil || m.dataDir == "" {
 		return nil
 	}
-	global := inferencestorage.NewGlobalManager()
+	global := inferencestorage.NewEncryptedGlobalManager(m.encryption)
 	if err := global.Init(ctx, filepath.Join(m.dataDir, "meta", "inference_runtime")); err != nil {
 		return err
 	}
@@ -402,7 +409,7 @@ func (m *Module) baseSpaceManager(ctx context.Context, spaceID string) (inferenc
 	if strings.TrimSpace(m.dataDir) == "" {
 		return nil, fmt.Errorf("inference module is not initialized")
 	}
-	mgr := inferencestorage.NewSpaceManager()
+	mgr := inferencestorage.NewEncryptedSpaceManager(m.encryption)
 	if err := mgr.Init(ctx, m.spaceInferenceDir(spaceID), spaceID); err != nil {
 		return nil, err
 	}
@@ -430,7 +437,7 @@ func (m *Module) SpaceManager(ctx context.Context, spaceID string) (inferencesto
 	if strings.TrimSpace(m.dataDir) == "" {
 		return nil, fmt.Errorf("inference module is not initialized")
 	}
-	mgr := inferencestorage.NewSpaceManager()
+	mgr := inferencestorage.NewEncryptedSpaceManager(m.encryption)
 	location := m.spaceInferenceDir(spaceID)
 	if err := mgr.Init(ctx, location, spaceID); err != nil {
 		return nil, err
@@ -448,11 +455,11 @@ func (m *Module) spaceInferenceDir(spaceID string) string {
 }
 
 func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
-	global := inferencestorage.NewGlobalManager()
+	global := inferencestorage.NewEncryptedGlobalManager(m.encryption)
 	if err := global.Init(ctx, filepath.Join(m.dataDir, "meta", "inference_runtime")); err != nil {
 		return err
 	}
-	usage := inferencestorage.NewUsageLedger()
+	usage := inferencestorage.NewEncryptedUsageLedger(m.encryption)
 	if err := usage.Init(ctx, filepath.Join(m.dataDir, "meta", "inference_runtime", "accounting")); err != nil {
 		return err
 	}
