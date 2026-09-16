@@ -113,7 +113,7 @@ func (m *Module) existingStoreForConsistencyStats(ctx context.Context, spaceID s
 	if err := validateExistingGraphStoreForReadOnlyOpen(spacePath); err != nil {
 		return nil, err
 	}
-	store, err := graphstorage.Open(ctx, spacePath)
+	store, err := graphstorage.OpenWithOptions(ctx, spacePath, graphstorage.Options{Encryption: m.encryption})
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package backup
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
@@ -178,6 +180,40 @@ func TestManagerCreatesArchiveManifestAndChecksum(t *testing.T) {
 	if entries["log/myceld.log"] {
 		t.Fatalf("archive included log despite IncludeLogs=false: %#v", entries)
 	}
+}
+
+func TestManagerEncryptsArchiveWhenEnabled(t *testing.T) {
+	dataDir := fixtureDataDir(t)
+	backupDir := t.TempDir()
+	enc := testEncryptionService(t)
+	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir, IncludeLogs: false}, Encryption: enc, Now: fixedClock()})
+	res, err := mgr.Trigger(context.Background(), TriggerInput{Source: "test"})
+	if err != nil {
+		t.Fatalf("Trigger() error = %v", err)
+	}
+	raw, err := os.ReadFile(res.ArchivePath)
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+	if bytes.Contains(raw, []byte("node")) || bytes.Contains(raw, []byte("spaces.json")) {
+		t.Fatalf("encrypted archive exposes plaintext")
+	}
+	plain, err := enc.DecryptRecord(context.Background(), raw, []byte("backup-archive:v1:id="+res.BackupID+":name="+filepath.Base(res.ArchivePath)))
+	if err != nil {
+		t.Fatalf("DecryptRecord() error = %v", err)
+	}
+	if !bytes.Contains(plain, []byte("spaces.json")) {
+		t.Fatalf("decrypted archive missing expected filename")
+	}
+}
+
+func testEncryptionService(t *testing.T) *encryption.Service {
+	t.Helper()
+	enc, err := encryption.NewService(context.Background(), encryption.Config{AtRest: encryption.ModeEnabled, KEKProvider: encryption.ProviderStaticEnv, StaticKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	return enc
 }
 
 func TestManagerCreatesConfiguredArchiveFormats(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/search/lexical/analyzer"
 	"github.com/myceldb/mycel/internal/search/lexical/index"
 	"github.com/myceldb/mycel/internal/search/lexical/parser"
@@ -53,7 +54,11 @@ type Status struct {
 }
 
 func New(root, spaceID, domainID string) *Service {
-	return &Service{store: storage.NewStore(root, spaceID, domainID), spaceID: spaceID, domainID: domainID, analyzer: analyzer.New()}
+	return NewWithEncryption(root, spaceID, domainID, nil)
+}
+
+func NewWithEncryption(root, spaceID, domainID string, enc *encryption.Service) *Service {
+	return &Service{store: storage.NewEncryptedStore(root, spaceID, domainID, enc), spaceID: spaceID, domainID: domainID, analyzer: analyzer.New()}
 }
 
 func (s *Service) PauseIndexing() {

@@ -1,12 +1,15 @@
 package storage
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/search/lexical/analyzer"
 )
 
@@ -36,6 +39,41 @@ func TestWriteReadSegmentRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got.Terms, input.Terms) {
 		t.Fatalf("terms = %#v, want %#v", got.Terms, input.Terms)
 	}
+}
+
+func TestEncryptedStoreSegmentFilesDoNotExposePlaintext(t *testing.T) {
+	enc := testEncryptionService(t)
+	root := t.TempDir()
+	store := NewEncryptedStore(root, "space-1", "domain-1", enc)
+	input := testSegmentData("seg_000001")
+	input.Docs[0].NodeID = "plain-lexical-secret-marker"
+	if err := store.PublishSegment(input); err != nil {
+		t.Fatalf("PublishSegment returned error: %v", err)
+	}
+	path := filepath.Join(root, "search", "lexical", "space-1", "domain-1", "segments", "seg_000001", "docs.bin")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read docs.bin: %v", err)
+	}
+	if bytes.Contains(raw, []byte("plain-lexical-secret-marker")) {
+		t.Fatalf("encrypted docs.bin exposes plaintext")
+	}
+	got, err := store.ReadSegment("seg_000001")
+	if err != nil {
+		t.Fatalf("ReadSegment returned error: %v", err)
+	}
+	if got.Docs[0].NodeID != "plain-lexical-secret-marker" {
+		t.Fatalf("decrypted node ID = %q", got.Docs[0].NodeID)
+	}
+}
+
+func testEncryptionService(t *testing.T) *encryption.Service {
+	t.Helper()
+	enc, err := encryption.NewService(context.Background(), encryption.Config{AtRest: encryption.ModeEnabled, KEKProvider: encryption.ProviderStaticEnv, StaticKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	return enc
 }
 
 func TestStorePublishSegmentUpdatesManifest(t *testing.T) {

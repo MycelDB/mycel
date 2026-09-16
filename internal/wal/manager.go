@@ -12,12 +12,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 )
 
 type Options struct {
 	Dir          string
 	SegmentBytes int64
+	Encryption   *encryption.Service
 }
 
 type Manager struct {
@@ -29,6 +31,7 @@ type Manager struct {
 	segmentStart LSN
 	segmentSize  int64
 	last         LSN
+	encryption   *encryption.Service
 }
 
 func Open(ctx context.Context, opts Options) (*Manager, error) {
@@ -44,7 +47,7 @@ func Open(ctx context.Context, opts Options) (*Manager, error) {
 	if err := os.MkdirAll(opts.Dir, fsperm.PrivateDir); err != nil {
 		return nil, err
 	}
-	m := &Manager{dir: opts.Dir, segmentBytes: opts.SegmentBytes}
+	m := &Manager{dir: opts.Dir, segmentBytes: opts.SegmentBytes, encryption: opts.Encryption}
 	m.cond = sync.NewCond(&m.mu)
 	if err := m.scanAndOpen(); err != nil {
 		return nil, err
@@ -62,6 +65,16 @@ func (m *Manager) Append(ctx context.Context, pending PendingRecord) (LSN, error
 	rec := Record{LSN: lsn, Type: pending.Type, SchemaVersion: pending.SchemaVersion, Timestamp: pending.Timestamp, Encoding: pending.Encoding, Payload: pending.Payload}
 	if rec.Timestamp.IsZero() {
 		rec.Timestamp = time.Now().UTC()
+	}
+	if rec.Encoding == 0 {
+		rec.Encoding = PayloadEncodingJSON
+	}
+	if m.encryption != nil && m.encryption.Enabled() {
+		payload, err := m.encryption.EncryptRecord(ctx, rec.Payload, walRecordAAD(rec))
+		if err != nil {
+			return 0, err
+		}
+		rec.Payload = payload
 	}
 	frame, err := encodeFrame(rec)
 	if err != nil {
@@ -171,7 +184,7 @@ func (m *Manager) ReadFrom(ctx context.Context, lsn LSN) (*Iterator, error) {
 		return nil, err
 	}
 	if len(segments) == 0 {
-		return newIterator(ctx, nil, lsn), nil
+		return newIterator(ctx, nil, lsn, m.encryption), nil
 	}
 	idx := 0
 	for i, s := range segments {
@@ -179,7 +192,7 @@ func (m *Manager) ReadFrom(ctx context.Context, lsn LSN) (*Iterator, error) {
 			idx = i
 		}
 	}
-	return newIterator(ctx, segments[idx:], lsn), nil
+	return newIterator(ctx, segments[idx:], lsn, m.encryption), nil
 }
 
 func (m *Manager) scanAndOpen() error {
@@ -202,6 +215,12 @@ func (m *Manager) scanAndOpen() error {
 			if err != nil {
 				f.Close()
 				return err
+			}
+			if st == frameOK {
+				if _, err := m.decryptRecord(context.Background(), rec); err != nil {
+					f.Close()
+					return err
+				}
 			}
 			if st == frameEOF {
 				break
@@ -269,6 +288,22 @@ type segmentInfo struct {
 }
 
 func segmentName(start LSN) string { return fmt.Sprintf("%016d.wal", uint64(start)) }
+
+func (m *Manager) decryptRecord(ctx context.Context, rec Record) (Record, error) {
+	if m.encryption == nil {
+		return rec, nil
+	}
+	payload, err := m.encryption.DecryptRecord(ctx, rec.Payload, walRecordAAD(rec))
+	if err != nil {
+		return Record{}, err
+	}
+	rec.Payload = payload
+	return rec, nil
+}
+
+func walRecordAAD(rec Record) []byte {
+	return []byte(fmt.Sprintf("wal:v1:lsn=%d:type=%s:schema=%d:encoding=%d", rec.LSN, rec.Type, rec.SchemaVersion, rec.Encoding))
+}
 
 func listSegments(dir string) ([]segmentInfo, error) {
 	entries, err := os.ReadDir(dir)

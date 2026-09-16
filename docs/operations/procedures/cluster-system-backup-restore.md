@@ -50,7 +50,7 @@ Required restore inputs:
 
 - `backup-set.json`;
 - all pod archive files and per-pod manifests;
-- `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` if used by the deployment;
+- the same encryption-at-rest KEK provider material/configuration (`MYCELD_ENCRYPTION_*`) if encryption is enabled;
 - `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN` or replacement backend token for the
   restored cluster;
 - TLS/mTLS certificates and keys if the deployment uses them;
@@ -192,8 +192,8 @@ Prepare a target cluster with the same intended StatefulSet shape:
 - compatible mycel image/version;
 - compatible storage class/PVC size;
 - required Kubernetes Secrets recreated from the operator vault;
-- same `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` if encrypted user-store data needs
-  it;
+- same encryption-at-rest KEK provider material/configuration if encrypted data
+  needs it;
 - compatible backend auth/TLS configuration.
 
 The current same-cluster restore mechanism restores raw raft metadata/storage

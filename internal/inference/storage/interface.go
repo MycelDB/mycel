@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
 
@@ -56,3 +57,13 @@ type UsageLedger interface {
 func NewGlobalManager() GlobalManager { return &globalManager{} }
 func NewSpaceManager() SpaceManager   { return &spaceManager{} }
 func NewUsageLedger() UsageLedger     { return &usageLedger{} }
+
+func NewEncryptedGlobalManager(enc *encryption.Service) GlobalManager {
+	return &globalManager{encryption: enc}
+}
+func NewEncryptedSpaceManager(enc *encryption.Service) SpaceManager {
+	return &spaceManager{encryption: enc}
+}
+func NewEncryptedUsageLedger(enc *encryption.Service) UsageLedger {
+	return &usageLedger{encryption: enc}
+}

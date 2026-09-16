@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 
 	"go.etcd.io/raft/v3"
@@ -16,11 +18,20 @@ import (
 )
 
 type PersistentStorage struct {
-	mu        sync.Mutex
-	dir       string
-	memory    raftStorage
-	entries   []raftpb.Entry
-	confState raftpb.ConfState
+	mu         sync.Mutex
+	dir        string
+	groupID    GroupID
+	encryption *encryption.Service
+	memory     raftStorage
+	entries    []raftpb.Entry
+	confState  raftpb.ConfState
+}
+
+// PersistentStorageOptions configures file-backed Raft storage.
+type PersistentStorageOptions struct {
+	Dir        string
+	GroupID    GroupID
+	Encryption *encryption.Service
 }
 
 type raftStorage interface {
@@ -38,14 +49,21 @@ type raftStorage interface {
 }
 
 func NewPersistentStorage(dir string) (*PersistentStorage, error) {
-	if dir == "" {
+	return NewPersistentStorageWithOptions(PersistentStorageOptions{Dir: dir, GroupID: GroupID(filepath.Base(dir))})
+}
+
+func NewPersistentStorageWithOptions(opts PersistentStorageOptions) (*PersistentStorage, error) {
+	if opts.Dir == "" {
 		return nil, fmt.Errorf("raft storage dir is required")
 	}
-	if err := os.MkdirAll(dir, fsperm.SharedDir); err != nil {
+	if opts.GroupID == "" {
+		opts.GroupID = GroupID(filepath.Base(opts.Dir))
+	}
+	if err := os.MkdirAll(opts.Dir, fsperm.SharedDir); err != nil {
 		return nil, err
 	}
 	mem := raft.NewMemoryStorage()
-	s := &PersistentStorage{dir: dir, memory: mem}
+	s := &PersistentStorage{dir: opts.Dir, groupID: opts.GroupID, encryption: opts.Encryption, memory: mem}
 	if err := s.load(); err != nil {
 		return nil, err
 	}
@@ -96,7 +114,7 @@ func (s *PersistentStorage) SetHardState(st raftpb.HardState) error {
 	if err := s.memory.SetHardState(st); err != nil {
 		return err
 	}
-	return writeProtoAtomic(filepath.Join(s.dir, "hard_state.pb"), &st)
+	return s.writeProtoAtomic("hard_state.pb", &st)
 }
 
 func (s *PersistentStorage) Append(entries []raftpb.Entry) error {
@@ -111,7 +129,7 @@ func (s *PersistentStorage) Append(entries []raftpb.Entry) error {
 	if err := s.reloadEntriesFromMemory(); err != nil {
 		return err
 	}
-	return writeEntriesAtomic(filepath.Join(s.dir, "entries.pb"), s.entries)
+	return s.writeEntriesAtomic("entries.pb", s.entries)
 }
 
 func (s *PersistentStorage) ApplySnapshot(snap raftpb.Snapshot) error {
@@ -122,13 +140,13 @@ func (s *PersistentStorage) ApplySnapshot(snap raftpb.Snapshot) error {
 	}
 	s.entries = nil
 	s.confState = snap.Metadata.ConfState
-	if err := writeProtoAtomic(filepath.Join(s.dir, "snapshot.pb"), &snap); err != nil {
+	if err := s.writeProtoAtomic("snapshot.pb", &snap); err != nil {
 		return err
 	}
-	if err := writeProtoAtomic(filepath.Join(s.dir, "conf_state.pb"), &s.confState); err != nil {
+	if err := s.writeProtoAtomic("conf_state.pb", &s.confState); err != nil {
 		return err
 	}
-	return writeEntriesAtomic(filepath.Join(s.dir, "entries.pb"), s.entries)
+	return s.writeEntriesAtomic("entries.pb", s.entries)
 }
 
 func (s *PersistentStorage) CreateSnapshot(i uint64, cs *raftpb.ConfState, data []byte) (raftpb.Snapshot, error) {
@@ -141,10 +159,10 @@ func (s *PersistentStorage) CreateSnapshot(i uint64, cs *raftpb.ConfState, data 
 	if cs != nil {
 		s.confState = *cs
 	}
-	if err := writeProtoAtomic(filepath.Join(s.dir, "snapshot.pb"), &snap); err != nil {
+	if err := s.writeProtoAtomic("snapshot.pb", &snap); err != nil {
 		return raftpb.Snapshot{}, err
 	}
-	if err := writeProtoAtomic(filepath.Join(s.dir, "conf_state.pb"), &s.confState); err != nil {
+	if err := s.writeProtoAtomic("conf_state.pb", &s.confState); err != nil {
 		return raftpb.Snapshot{}, err
 	}
 	return snap, nil
@@ -159,14 +177,14 @@ func (s *PersistentStorage) Compact(compactIndex uint64) error {
 	if err := s.reloadEntriesFromMemory(); err != nil {
 		return err
 	}
-	return writeEntriesAtomic(filepath.Join(s.dir, "entries.pb"), s.entries)
+	return s.writeEntriesAtomic("entries.pb", s.entries)
 }
 
 func (s *PersistentStorage) SetConfState(cs raftpb.ConfState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.confState = cs
-	return writeProtoAtomic(filepath.Join(s.dir, "conf_state.pb"), &s.confState)
+	return s.writeProtoAtomic("conf_state.pb", &s.confState)
 }
 
 func (s *PersistentStorage) Flush() error {
@@ -198,14 +216,14 @@ func (s *PersistentStorage) Flush() error {
 }
 
 func (s *PersistentStorage) load() error {
-	if data, err := os.ReadFile(filepath.Join(s.dir, "conf_state.pb")); err == nil && len(data) > 0 {
+	if data, err := s.readFile("conf_state.pb"); err == nil && len(data) > 0 {
 		if err := s.confState.Unmarshal(data); err != nil {
 			return err
 		}
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if data, err := os.ReadFile(filepath.Join(s.dir, "snapshot.pb")); err == nil && len(data) > 0 {
+	if data, err := s.readFile("snapshot.pb"); err == nil && len(data) > 0 {
 		var snap raftpb.Snapshot
 		if err := snap.Unmarshal(data); err != nil {
 			return err
@@ -216,7 +234,7 @@ func (s *PersistentStorage) load() error {
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if data, err := os.ReadFile(filepath.Join(s.dir, "hard_state.pb")); err == nil && len(data) > 0 {
+	if data, err := s.readFile("hard_state.pb"); err == nil && len(data) > 0 {
 		var st raftpb.HardState
 		if err := st.Unmarshal(data); err != nil {
 			return err
@@ -227,7 +245,7 @@ func (s *PersistentStorage) load() error {
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	entries, err := readEntries(filepath.Join(s.dir, "entries.pb"))
+	entries, err := s.readEntries("entries.pb")
 	if err != nil {
 		return err
 	}
@@ -261,14 +279,15 @@ func (s *PersistentStorage) reloadEntriesFromMemory() error {
 	return nil
 }
 
-func writeProtoAtomic(path string, msg interface{ Marshal() ([]byte, error) }) error {
+func (s *PersistentStorage) writeProtoAtomic(name string, msg interface{ Marshal() ([]byte, error) }) error {
 	data, err := msg.Marshal()
 	if err != nil {
 		return err
 	}
-	return writeAtomic(path, data)
+	return s.writeFileAtomic(name, data)
 }
-func writeEntriesAtomic(path string, entries []raftpb.Entry) error {
+
+func (s *PersistentStorage) writeEntriesAtomic(name string, entries []raftpb.Entry) error {
 	var buf bytes.Buffer
 	if err := binary.Write(&buf, binary.BigEndian, uint64(len(entries))); err != nil {
 		return err
@@ -283,10 +302,11 @@ func writeEntriesAtomic(path string, entries []raftpb.Entry) error {
 		}
 		buf.Write(data)
 	}
-	return writeAtomic(path, buf.Bytes())
+	return s.writeFileAtomic(name, buf.Bytes())
 }
-func readEntries(path string) ([]raftpb.Entry, error) {
-	data, err := os.ReadFile(path)
+
+func (s *PersistentStorage) readEntries(name string) ([]raftpb.Entry, error) {
+	data, err := s.readFile(name)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -319,6 +339,34 @@ func readEntries(path string) ([]raftpb.Entry, error) {
 	}
 	return entries, nil
 }
+func (s *PersistentStorage) readFile(name string) ([]byte, error) {
+	path := filepath.Join(s.dir, name)
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return data, err
+	}
+	if s.encryption == nil {
+		return data, nil
+	}
+	return s.encryption.DecryptRecord(context.Background(), data, s.fileAAD(name))
+}
+
+func (s *PersistentStorage) writeFileAtomic(name string, data []byte) error {
+	path := filepath.Join(s.dir, name)
+	if s.encryption != nil && s.encryption.Enabled() {
+		var err error
+		data, err = s.encryption.EncryptRecord(context.Background(), data, s.fileAAD(name))
+		if err != nil {
+			return err
+		}
+	}
+	return writeAtomic(path, data)
+}
+
+func (s *PersistentStorage) fileAAD(name string) []byte {
+	return []byte(fmt.Sprintf("raft-storage:v1:group=%s:file=%s", s.groupID, name))
+}
+
 func writeAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
 		return err

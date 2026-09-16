@@ -122,20 +122,22 @@ for developer testing, but Mycel does not define separate access-key settings.
 
 ## S3 object layout
 
-Objects are deterministic and content-addressed:
+Objects are deterministic, content-addressed, and domain-scoped:
 
 ```text
-<prefix>/spaces/<space-id>/objects/<aa>/<sha256-hex>
+<prefix>/spaces/<space-id>/domains/<domain-id>/objects/<aa>/<sha256-hex>
 ```
 
 `<aa>` is the first two characters of the SHA-256 hex digest. The prefix is
-trimmed of leading/trailing slashes. Because keys are derived from a validated
-space ID and the content digest, user-provided filenames never affect S3 object
-paths.
+trimmed of leading/trailing slashes. Because keys are derived from validated
+space/domain IDs and the content digest, user-provided filenames never affect S3
+object paths. The domain segment aligns object-store layout with Mycel's domain
+ownership model for operational clarity and defense-in-depth; Mycel API
+authorization remains the source of truth.
 
 ## Upload flow
 
-1. The blob service validates `space_id` and reader presence.
+1. The blob service validates `space_id`, `domain_id`, and reader presence for object-store uploads.
 2. The service reads a small prefix for MIME sniffing, then passes the full
    stream to the configured payload backend.
 3. The S3 backend stages the stream to a local temporary file while computing
@@ -150,10 +152,12 @@ paths.
 8. If metadata commit fails after S3 upload, the object is an orphan and must be
    handled by later safe garbage collection or operator cleanup.
 
-Duplicate payloads remain safe because storage is content-addressed. If metadata
-for the blob already exists, Mycel preserves original digest, size, and creation
-time while refreshing client-declared metadata such as declared MIME type and
-original filename.
+Duplicate payloads remain safe because storage is content-addressed within the
+space/domain object-store prefix. If metadata for the blob already exists in the
+same domain, Mycel preserves original digest, size, and creation time while
+refreshing client-declared metadata such as declared MIME type and original
+filename. The same bytes uploaded to different domains may produce the same blob
+ID but separate domain-scoped object keys.
 
 ## Download and metadata flow
 

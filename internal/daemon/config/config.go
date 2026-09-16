@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/myceldb/mycel/internal/encryption"
 )
 
 const (
@@ -38,6 +40,7 @@ const (
 	DefaultAccessTokenTTL                   = 15 * time.Minute
 	DefaultWALSegmentBytes                  = int64(64 * 1024 * 1024)
 	DefaultWALSyncPolicy                    = "always"
+	DefaultEncryptionAtRest                 = encryption.ModeDisabled
 	DefaultBlobBackend                      = "local"
 	DefaultClusterDiscoveryInterval         = 5 * time.Second
 	DefaultClusterRaftNodeCount             = 3
@@ -133,29 +136,32 @@ type ClusterConfig struct {
 }
 
 type Config struct {
-	DataDir                   string
-	Mode                      string
-	LogLevel                  string
-	LogFormat                 string
-	GRPCAddr                  string
-	NodeName                  string
-	UserStoreEncryptionKeyB64 string
-	BootstrapAdminUsername    string
-	BootstrapAdminPassword    string
-	TLSCertFile               string
-	TLSKeyFile                string
-	TLSClientCAFile           string
-	TLSRequireClientCert      bool
-	AccessTokenTTL            time.Duration
-	SemanticMaintenance       SemanticMaintenanceConfig
-	Automation                AutomationConfig
-	Backup                    BackupConfig
-	WAL                       WALConfig
-	Blob                      BlobConfig
-	Cluster                   ClusterConfig
+	DataDir                string
+	Mode                   string
+	LogLevel               string
+	LogFormat              string
+	GRPCAddr               string
+	NodeName               string
+	Encryption             encryption.Config
+	BootstrapAdminUsername string
+	BootstrapAdminPassword string
+	TLSCertFile            string
+	TLSKeyFile             string
+	TLSClientCAFile        string
+	TLSRequireClientCert   bool
+	AccessTokenTTL         time.Duration
+	SemanticMaintenance    SemanticMaintenanceConfig
+	Automation             AutomationConfig
+	Backup                 BackupConfig
+	WAL                    WALConfig
+	Blob                   BlobConfig
+	Cluster                ClusterConfig
 }
 
 func LoadFromEnv() (Config, error) {
+	if strings.TrimSpace(os.Getenv("MYCELD_USER_STORE_ENCRYPTION_KEY_B64")) != "" {
+		return Config{}, fmt.Errorf("MYCELD_USER_STORE_ENCRYPTION_KEY_B64 is superseded; use MYCELD_ENCRYPTION_* settings for encryption at rest")
+	}
 	dataDir := strings.TrimSpace(os.Getenv("MYCELD_DATA_DIR"))
 	if dataDir == "" {
 		var err error
@@ -165,20 +171,26 @@ func LoadFromEnv() (Config, error) {
 		}
 	}
 	cfg := Config{
-		DataDir:                   dataDir,
-		Mode:                      valueOrDefault(os.Getenv("MYCELD_MODE"), DefaultMode),
-		LogLevel:                  valueOrDefault(os.Getenv("MYCELD_LOG_LEVEL"), DefaultLogLevel),
-		LogFormat:                 valueOrDefault(os.Getenv("MYCELD_LOG_FORMAT"), DefaultLogFormat),
-		GRPCAddr:                  valueOrDefault(os.Getenv("MYCELD_GRPC_ADDR"), DefaultGRPCAddr),
-		NodeName:                  strings.TrimSpace(os.Getenv("MYCELD_NODE_NAME")),
-		UserStoreEncryptionKeyB64: strings.TrimSpace(os.Getenv("MYCELD_USER_STORE_ENCRYPTION_KEY_B64")),
-		BootstrapAdminUsername:    strings.TrimSpace(os.Getenv("MYCELD_BOOTSTRAP_ADMIN_USERNAME")),
-		BootstrapAdminPassword:    os.Getenv("MYCELD_BOOTSTRAP_ADMIN_PASSWORD"),
-		TLSCertFile:               strings.TrimSpace(os.Getenv("MYCELD_TLS_CERT_FILE")),
-		TLSKeyFile:                strings.TrimSpace(os.Getenv("MYCELD_TLS_KEY_FILE")),
-		TLSClientCAFile:           strings.TrimSpace(os.Getenv("MYCELD_TLS_CLIENT_CA_FILE")),
-		TLSRequireClientCert:      parseBoolEnv(os.Getenv("MYCELD_TLS_REQUIRE_CLIENT_CERT")),
-		AccessTokenTTL:            parseDurationEnv(os.Getenv("MYCELD_ACCESS_TOKEN_TTL"), DefaultAccessTokenTTL),
+		DataDir:   dataDir,
+		Mode:      valueOrDefault(os.Getenv("MYCELD_MODE"), DefaultMode),
+		LogLevel:  valueOrDefault(os.Getenv("MYCELD_LOG_LEVEL"), DefaultLogLevel),
+		LogFormat: valueOrDefault(os.Getenv("MYCELD_LOG_FORMAT"), DefaultLogFormat),
+		GRPCAddr:  valueOrDefault(os.Getenv("MYCELD_GRPC_ADDR"), DefaultGRPCAddr),
+		NodeName:  strings.TrimSpace(os.Getenv("MYCELD_NODE_NAME")),
+		Encryption: encryption.Config{
+			AtRest:        valueOrDefault(os.Getenv("MYCELD_ENCRYPTION_AT_REST"), DefaultEncryptionAtRest),
+			KEKProvider:   strings.TrimSpace(os.Getenv("MYCELD_ENCRYPTION_KEK_PROVIDER")),
+			StaticKeyB64:  strings.TrimSpace(os.Getenv("MYCELD_ENCRYPTION_STATIC_KEY_B64")),
+			StaticKeyFile: strings.TrimSpace(os.Getenv("MYCELD_ENCRYPTION_STATIC_KEY_FILE")),
+			DEKCacheTTL:   parseDurationEnv(os.Getenv("MYCELD_ENCRYPTION_DEK_CACHE_TTL"), 5*time.Minute),
+		},
+		BootstrapAdminUsername: strings.TrimSpace(os.Getenv("MYCELD_BOOTSTRAP_ADMIN_USERNAME")),
+		BootstrapAdminPassword: os.Getenv("MYCELD_BOOTSTRAP_ADMIN_PASSWORD"),
+		TLSCertFile:            strings.TrimSpace(os.Getenv("MYCELD_TLS_CERT_FILE")),
+		TLSKeyFile:             strings.TrimSpace(os.Getenv("MYCELD_TLS_KEY_FILE")),
+		TLSClientCAFile:        strings.TrimSpace(os.Getenv("MYCELD_TLS_CLIENT_CA_FILE")),
+		TLSRequireClientCert:   parseBoolEnv(os.Getenv("MYCELD_TLS_REQUIRE_CLIENT_CERT")),
+		AccessTokenTTL:         parseDurationEnv(os.Getenv("MYCELD_ACCESS_TOKEN_TTL"), DefaultAccessTokenTTL),
 		WAL: WALConfig{
 			Enabled:      parseBoolEnvDefault(os.Getenv("MYCELD_WAL_ENABLED"), true),
 			Dir:          strings.TrimSpace(os.Getenv("MYCELD_WAL_DIR")),
@@ -315,6 +327,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.WAL.Validate(); err != nil {
+		return err
+	}
+	if err := c.Encryption.Validate(); err != nil {
 		return err
 	}
 	if err := c.Blob.Validate(); err != nil {

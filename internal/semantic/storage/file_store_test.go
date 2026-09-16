@@ -125,7 +125,7 @@ func TestGlobalManagerUpsertsDefinitions(t *testing.T) {
 		OwnerType:    domainsemantic.CredentialOwnerUser,
 		OwnerID:      uuid.NewString(),
 		Kind:         domainsemantic.SecretKindInlineEncrypted,
-		Ciphertext:   &domainsemantic.EncryptedSecretPayload{Algorithm: "AES-256-GCM", NonceB64: "nonce", CipherB64: "cipher"},
+		Ciphertext:   &domainsemantic.EncryptedSecretPayload{Algorithm: "MYCEL-ENVELOPE-V1", CipherB64: "cipher"},
 		SecretSuffix: "enai",
 	})
 	if err != nil {

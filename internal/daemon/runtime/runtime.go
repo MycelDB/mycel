@@ -12,6 +12,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/daemon/config"
+	"github.com/myceldb/mycel/internal/encryption"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
@@ -27,6 +28,7 @@ var _ coreruntime.LocalRouteIdentityProvider = (*Runtime)(nil)
 var _ coreruntime.QuiesceRegistrar = (*Runtime)(nil)
 var _ coreruntime.QuiesceCoordinatorProvider = (*Runtime)(nil)
 var _ coreruntime.WALProvider = (*Runtime)(nil)
+var _ coreruntime.EncryptionProvider = (*Runtime)(nil)
 
 type Runtime struct {
 	Config config.Config
@@ -53,6 +55,8 @@ type Runtime struct {
 	WALProgress   wal.AppliedLSNStore
 	WALCheckpoint *wal.CheckpointStore
 	WALWaiter     *wal.ApplyWaiter
+
+	Encryption *encryption.Service
 
 	RaftGroups               *consensus.MultiGroup
 	RaftRouter               consensus.MessageSender
@@ -229,6 +233,13 @@ func (r *Runtime) WALManager() *wal.Manager {
 		return nil
 	}
 	return r.WAL
+}
+
+func (r *Runtime) EncryptionService() *encryption.Service {
+	if r == nil {
+		return nil
+	}
+	return r.Encryption
 }
 
 func (r *Runtime) WALRegistryStore() *wal.Registry {

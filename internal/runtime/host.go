@@ -3,6 +3,7 @@ package runtime
 import (
 	"log/slog"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
 )
@@ -66,4 +67,10 @@ type WALProvider interface {
 	WALProgressStore() wal.AppliedLSNStore
 	WALWaiterStore() *wal.ApplyWaiter
 	WALCheckpointStore() *wal.CheckpointStore
+}
+
+// EncryptionProvider is implemented by hosts that expose the daemon-wide
+// encryption-at-rest service to storage-owning subsystems.
+type EncryptionProvider interface {
+	EncryptionService() *encryption.Service
 }

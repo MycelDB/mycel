@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/encryption"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/runtime"
@@ -23,12 +24,13 @@ type Manager interface {
 }
 
 type Module struct {
-	mu        sync.Mutex
-	root      string
-	services  map[string]*Service
-	started   bool
-	startedAt time.Time
-	lastErr   error
+	mu         sync.Mutex
+	root       string
+	services   map[string]*Service
+	started    bool
+	startedAt  time.Time
+	lastErr    error
+	encryption *encryption.Service
 }
 
 func NewModule() *Module {
@@ -41,6 +43,9 @@ func (m *Module) Init(_ context.Context, host runtime.Host) runtime.InitResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.root = host.DataDir()
+	if provider, ok := host.(runtime.EncryptionProvider); ok {
+		m.encryption = provider.EncryptionService()
+	}
 	if m.services == nil {
 		m.services = map[string]*Service{}
 	}
@@ -137,7 +142,7 @@ func (m *Module) serviceFor(spaceID string, domainID string) *Service {
 	if svc := m.services[key]; svc != nil {
 		return svc
 	}
-	svc := New(m.root, spaceID, domainID)
+	svc := NewWithEncryption(m.root, spaceID, domainID, m.encryption)
 	m.services[key] = svc
 	return svc
 }

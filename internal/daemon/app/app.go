@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,8 +11,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/myceldb/mycel/internal/fsperm"
 
 	activitymodel "github.com/myceldb/mycel/internal/activity/model"
 	activityservice "github.com/myceldb/mycel/internal/activity/service"
@@ -28,6 +24,8 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/logging"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/daemon/server"
+	"github.com/myceldb/mycel/internal/encryption"
+	"github.com/myceldb/mycel/internal/fsperm"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
@@ -43,39 +41,52 @@ import (
 
 const LogFilename = "myceld.log"
 
-func ensureSecretEncryptionKey(cfg config.Config) (string, bool, error) {
-	configured := strings.TrimSpace(cfg.UserStoreEncryptionKeyB64)
-	if configured != "" {
-		return configured, false, nil
+func ensureFreshEncryptedDeploymentMarker(cfg config.Config) error {
+	dataDir := cfg.DataDir
+	marker := encryptionMarkerPath(dataDir)
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("check encryption marker: %w", err)
 	}
-	if strings.ToLower(strings.TrimSpace(cfg.Mode)) != config.DefaultMode {
-		return "", false, nil
-	}
-	path := localSecretEncryptionKeyPath(cfg.DataDir)
-	if raw, err := os.ReadFile(path); err == nil {
-		key := strings.TrimSpace(string(raw))
-		if key != "" {
-			return key, false, nil
+	for _, path := range encryptionPlaintextConflictPaths(cfg) {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("encryption at rest is enabled but existing plaintext artifact path %q has no encryption marker; create a fresh encrypted deployment", path)
+		} else if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("check plaintext artifact path %q: %w", path, err)
 		}
-	} else if !os.IsNotExist(err) {
-		return "", false, fmt.Errorf("read local secret encryption key: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
-		return "", false, fmt.Errorf("create local secret key directory: %w", err)
+	if err := os.MkdirAll(filepath.Dir(marker), fsperm.PrivateDir); err != nil {
+		return fmt.Errorf("create encryption metadata directory: %w", err)
 	}
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return "", false, fmt.Errorf("generate local secret encryption key: %w", err)
+	if err := os.WriteFile(marker, []byte("{\"version\":1,\"mode\":\"enabled\"}\n"), fsperm.PrivateFile); err != nil {
+		return fmt.Errorf("write encryption marker: %w", err)
 	}
-	encoded := base64.StdEncoding.EncodeToString(key)
-	if err := os.WriteFile(path, []byte(encoded+"\n"), fsperm.PrivateFile); err != nil {
-		return "", false, fmt.Errorf("write local secret encryption key: %w", err)
-	}
-	return encoded, true, nil
+	return nil
 }
 
-func localSecretEncryptionKeyPath(dataDir string) string {
-	return filepath.Join(dataDir, "meta", "secrets", "local_encryption_key_b64")
+func encryptionMarkerPath(dataDir string) string {
+	return filepath.Join(dataDir, "meta", "encryption", "at_rest.json")
+}
+
+func encryptionPlaintextConflictPaths(cfg config.Config) []string {
+	dataDir := cfg.DataDir
+	paths := []string{
+		filepath.Join(dataDir, "wal"),
+		filepath.Join(dataDir, "graph"),
+		filepath.Join(dataDir, "blob"),
+		filepath.Join(dataDir, "blobs"),
+		filepath.Join(dataDir, "backup"),
+		filepath.Join(dataDir, "backups"),
+		filepath.Join(dataDir, "search"),
+		filepath.Join(dataDir, "semantic"),
+		filepath.Join(dataDir, "automation"),
+		filepath.Join(dataDir, "meta", "raft"),
+	}
+	if walDir := strings.TrimSpace(cfg.WAL.Dir); walDir != "" {
+		paths = append(paths, walDir)
+	}
+	return paths
 }
 
 func Run(ctx context.Context) int {
@@ -213,16 +224,22 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	logger.Info("daemon startup begins", "data_dir", cfg.DataDir, "mode", cfg.Mode)
 	logger.Info("data directory ready", "path", cfg.DataDir, "created", dataDirCreated)
 	logger.Info("log directory ready", "path", logDir, "created", logDirCreated)
-	secretKeyB64, generatedSecretKey, err := ensureSecretEncryptionKey(cfg)
+	enc, err := encryption.NewService(ctx, cfg.Encryption)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("initialize encryption at rest: %w", err)
 	}
-	cfg.UserStoreEncryptionKeyB64 = secretKeyB64
-	if generatedSecretKey {
-		logger.Info("generated local secret encryption key", "path", localSecretEncryptionKeyPath(cfg.DataDir))
+	if enc.Enabled() {
+		if err := ensureFreshEncryptedDeploymentMarker(cfg); err != nil {
+			return nil, err
+		}
+		keyID, _ := enc.ActiveKeyID(ctx)
+		logger.Info("encryption at rest enabled", "provider", enc.ProviderID(), "active_key_id", keyID)
+	} else {
+		logger.Warn("encryption at rest disabled", "mode", cfg.Encryption.NormalizedMode())
 	}
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
+	rt.Encryption = enc
 	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken, RaftMode: raftRuntimeConfigured(cfg), RaftLocalNodeID: uint64(cfg.Cluster.RaftLocalNodeID), RaftNodeCount: cfg.Cluster.RaftNodeCount}, logger)
 	if err != nil {
 		_ = rt.Close()
@@ -244,7 +261,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		if walDir == "" {
 			walDir = filepath.Join(cfg.DataDir, "wal")
 		}
-		walManager, err := wal.Open(ctx, wal.Options{Dir: walDir, SegmentBytes: cfg.WAL.SegmentBytes})
+		walManager, err := wal.Open(ctx, wal.Options{Dir: walDir, SegmentBytes: cfg.WAL.SegmentBytes, Encryption: enc})
 		if err != nil {
 			_ = rt.Close()
 			return nil, fmt.Errorf("open wal: %w", err)
@@ -276,10 +293,9 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		S3EndpointURL:       cfg.Blob.S3EndpointURL,
 		S3ForcePathStyle:    cfg.Blob.S3ForcePathStyle,
 	})
-	inferenceService.SetSecretResolver(inferenceservice.NewEncryptedSecretResolver(cfg.UserStoreEncryptionKeyB64))
+	inferenceService.SetSecretResolver(inferenceservice.NewEnvelopeSecretResolver(enc))
 	lexicalService := lexicalservice.NewModule()
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
-		SecretKeyB64:     cfg.UserStoreEncryptionKeyB64,
 		SchemaManager:    schemaService,
 		GraphReadManager: graphService,
 		InferenceManager: inferenceService,

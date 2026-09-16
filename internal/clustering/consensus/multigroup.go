@@ -3,6 +3,7 @@ package consensus
 import (
 	"context"
 	"fmt"
+	"github.com/myceldb/mycel/internal/encryption"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -52,6 +53,9 @@ type MultiGroupOptions struct {
 	// consensus metadata under StorageDir/<partition-group-id>.
 	StorageDir string
 
+	// Encryption encrypts persistent raft storage files when enabled.
+	Encryption *encryption.Service
+
 	// DeferPartitionGroups starts only the system group. Partition groups must be
 	// started later from committed system metadata.
 	DeferPartitionGroups bool
@@ -90,6 +94,7 @@ type MultiGroup struct {
 	groups                    map[GroupID]*Group
 	preferred                 map[GroupID]NodeID
 	storageDir                string
+	encryption                *encryption.Service
 	recoverEmptyStorageRejoin bool
 }
 
@@ -97,8 +102,8 @@ func StartMultiGroup(ctx context.Context, opts MultiGroupOptions) (*MultiGroup, 
 	if opts.NodeID == 0 || len(opts.PeerNodeIDs) == 0 || opts.PartitionCount == 0 || opts.Transport == nil || opts.StateMachines == nil {
 		return nil, fmt.Errorf("node id, peers, partition count, transport, and state machines are required")
 	}
-	mg := &MultiGroup{nodeID: opts.NodeID, peerNodeIDs: append([]NodeID(nil), opts.PeerNodeIDs...), partitionCount: opts.PartitionCount, transport: opts.Transport, stateMachines: opts.StateMachines, electionTick: opts.ElectionTick, heartbeatTick: opts.HeartbeatTick, groups: map[GroupID]*Group{}, preferred: map[GroupID]NodeID{}, storageDir: opts.StorageDir, recoverEmptyStorageRejoin: opts.RecoverEmptyStorageRejoin}
-	systemStorage, err := systemGroupStorage(opts.StorageDir)
+	mg := &MultiGroup{nodeID: opts.NodeID, peerNodeIDs: append([]NodeID(nil), opts.PeerNodeIDs...), partitionCount: opts.PartitionCount, transport: opts.Transport, stateMachines: opts.StateMachines, electionTick: opts.ElectionTick, heartbeatTick: opts.HeartbeatTick, groups: map[GroupID]*Group{}, preferred: map[GroupID]NodeID{}, storageDir: opts.StorageDir, encryption: opts.Encryption, recoverEmptyStorageRejoin: opts.RecoverEmptyStorageRejoin}
+	systemStorage, err := systemGroupStorage(opts.StorageDir, opts.Encryption)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +171,7 @@ func (m *MultiGroup) StartPartitionGroups(ctx context.Context, meta SystemMetada
 				return err
 			}
 		}
-		storage, err := partitionGroupStorage(m.storageDir, gid)
+		storage, err := partitionGroupStorage(m.storageDir, gid, m.encryption)
 		if err != nil {
 			return err
 		}
@@ -237,19 +242,19 @@ func preferredLeaderFromSystemMetadata(meta SystemMetadata, partitionID uint32) 
 	return 0
 }
 
-func systemGroupStorage(root string) (raftStorage, error) {
-	return groupStorage(root, SystemGroupID)
+func systemGroupStorage(root string, enc *encryption.Service) (raftStorage, error) {
+	return groupStorage(root, SystemGroupID, enc)
 }
 
-func partitionGroupStorage(root string, groupID GroupID) (raftStorage, error) {
-	return groupStorage(root, groupID)
+func partitionGroupStorage(root string, groupID GroupID, enc *encryption.Service) (raftStorage, error) {
+	return groupStorage(root, groupID, enc)
 }
 
-func groupStorage(root string, groupID GroupID) (raftStorage, error) {
+func groupStorage(root string, groupID GroupID, enc *encryption.Service) (raftStorage, error) {
 	if root == "" {
 		return nil, nil
 	}
-	return NewPersistentStorage(filepath.Join(root, string(groupID)))
+	return NewPersistentStorageWithOptions(PersistentStorageOptions{Dir: filepath.Join(root, string(groupID)), GroupID: groupID, Encryption: enc})
 }
 
 func (m *MultiGroup) Stop() {

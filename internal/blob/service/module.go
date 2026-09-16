@@ -17,6 +17,7 @@ import (
 
 	blobstorage "github.com/myceldb/mycel/internal/blob/storage"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	runtime "github.com/myceldb/mycel/internal/runtime"
@@ -39,6 +40,7 @@ type Module struct {
 	wal                  *wal.Manager
 	walProgress          wal.AppliedLSNStore
 	walWaiter            *wal.ApplyWaiter
+	encryption           *encryption.Service
 	writeAllowed         func() error
 	raftGroups           *consensus.MultiGroup
 	raftPartitionCount   uint32
@@ -78,8 +80,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
+	if provider, ok := host.(runtime.EncryptionProvider); ok {
+		m.encryption = provider.EncryptionService()
+	}
 	if isObjectStoreBackend(m.config.Backend) && m.s3Store == nil {
-		store, err := newS3PayloadStore(ctx, m.config, filepath.Join(m.dataDir, "_object_store_staging"))
+		store, err := newS3PayloadStore(ctx, m.config, filepath.Join(m.dataDir, "_object_store_staging"), m.encryption)
 		if err != nil {
 			return runtime.Abort(ModuleName, "storage", "initialize object store blob backend", err)
 		}
@@ -122,6 +127,7 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 		return BlobMeta{}, err
 	}
 	spaceID := strings.TrimSpace(input.SpaceID)
+	domainID := strings.TrimSpace(input.DomainID)
 	if spaceID == "" || input.Reader == nil {
 		return BlobMeta{}, fmt.Errorf("%w: space_id and reader are required", ErrInvalidInput)
 	}
@@ -132,7 +138,7 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 	}
 	head = head[:n]
 	mimeType := normalizeMimeType(http.DetectContentType(head))
-	id, size, payload, err := m.putPayload(ctx, spaceID, mimeType, io.MultiReader(bytes.NewReader(head), input.Reader))
+	id, size, payload, err := m.putPayload(ctx, spaceID, domainID, mimeType, io.MultiReader(bytes.NewReader(head), input.Reader))
 	if err != nil {
 		return BlobMeta{}, mapStorageError(err)
 	}
@@ -141,7 +147,8 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 	if err != nil {
 		return BlobMeta{}, err
 	}
-	if existing, ok := metas[blobID]; ok {
+	metaKey := blobMetaStorageKey(BlobMeta{SpaceID: spaceID, DomainID: domainID, BlobID: blobID})
+	if existing, ok := metas[metaKey]; ok {
 		if !samePayloadLocation(descriptorFromMeta(existing), payload) {
 			if err := m.deletePayload(ctx, payload); err != nil && isObjectStoreBackend(payloadBackend(payload)) {
 				m.logBestEffortPayloadDeleteFailure(payload, err)
@@ -149,6 +156,7 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 		}
 		// Keep original create time and size/digest, but refresh client-declared metadata.
 		existing.MimeType = firstNonEmpty(existing.MimeType, mimeType)
+		existing.DomainID = firstNonEmpty(existing.DomainID, domainID)
 		if strings.TrimSpace(input.DeclaredMimeType) != "" {
 			existing.DeclaredMimeType = strings.TrimSpace(input.DeclaredMimeType)
 		}
@@ -166,7 +174,7 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 		}
 		return existing, nil
 	}
-	meta := BlobMeta{BlobID: blobID, SpaceID: spaceID, Digest: "sha256:" + blobID, SizeBytes: size, MimeType: mimeType, DeclaredMimeType: strings.TrimSpace(input.DeclaredMimeType), OriginalFilename: filepath.Base(strings.TrimSpace(input.OriginalFilename)), CreateTime: time.Now().UTC(), Payload: &payload}
+	meta := BlobMeta{BlobID: blobID, SpaceID: spaceID, DomainID: domainID, Digest: "sha256:" + blobID, SizeBytes: size, MimeType: mimeType, DeclaredMimeType: strings.TrimSpace(input.DeclaredMimeType), OriginalFilename: filepath.Base(strings.TrimSpace(input.OriginalFilename)), CreateTime: time.Now().UTC(), Payload: &payload}
 	if m.raftGroups != nil {
 		return m.commitMetaPutRaft(ctx, meta)
 	}
@@ -180,10 +188,24 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 }
 
 func (m *Module) GetBlob(ctx context.Context, spaceID string, blobID string) (BlobMeta, error) {
+	return m.getBlob(ctx, strings.TrimSpace(spaceID), "", strings.TrimSpace(blobID))
+}
+
+func (m *Module) GetBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, error) {
+	return m.getBlob(ctx, strings.TrimSpace(spaceID), strings.TrimSpace(domainID), strings.TrimSpace(blobID))
+}
+
+func (m *Module) getBlob(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, error) {
 	if err := ctx.Err(); err != nil {
 		return BlobMeta{}, err
 	}
-	meta, err := m.meta(strings.TrimSpace(spaceID), strings.TrimSpace(blobID))
+	var meta BlobMeta
+	var err error
+	if domainID != "" {
+		meta, err = m.metaInDomain(spaceID, domainID, blobID)
+	} else {
+		meta, err = m.meta(spaceID, blobID)
+	}
 	if err != nil {
 		return BlobMeta{}, err
 	}
@@ -198,7 +220,15 @@ func (m *Module) GetBlob(ctx context.Context, spaceID string, blobID string) (Bl
 }
 
 func (m *Module) OpenBlob(ctx context.Context, spaceID string, blobID string) (BlobMeta, io.ReadCloser, error) {
-	meta, err := m.GetBlob(ctx, spaceID, blobID)
+	return m.openBlob(ctx, spaceID, "", blobID)
+}
+
+func (m *Module) OpenBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, io.ReadCloser, error) {
+	return m.openBlob(ctx, spaceID, domainID, blobID)
+}
+
+func (m *Module) openBlob(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, io.ReadCloser, error) {
+	meta, err := m.getBlob(ctx, strings.TrimSpace(spaceID), strings.TrimSpace(domainID), strings.TrimSpace(blobID))
 	if err != nil {
 		return BlobMeta{}, nil, err
 	}
@@ -210,12 +240,20 @@ func (m *Module) OpenBlob(ctx context.Context, spaceID string, blobID string) (B
 }
 
 func (m *Module) DeleteBlob(ctx context.Context, spaceID string, blobID string) (string, error) {
+	return m.deleteBlob(ctx, spaceID, "", blobID)
+}
+
+func (m *Module) DeleteBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (string, error) {
+	return m.deleteBlob(ctx, spaceID, domainID, blobID)
+}
+
+func (m *Module) deleteBlob(ctx context.Context, spaceID string, domainID string, blobID string) (string, error) {
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return "", err
 	}
 	defer release()
-	meta, err := m.GetBlob(ctx, spaceID, blobID)
+	meta, err := m.getBlob(ctx, strings.TrimSpace(spaceID), strings.TrimSpace(domainID), strings.TrimSpace(blobID))
 	if err != nil {
 		return "", err
 	}
@@ -229,18 +267,18 @@ func (m *Module) DeleteBlob(ctx context.Context, spaceID string, blobID string) 
 		}
 	}
 	if m.raftGroups != nil {
-		if err := m.commitMetaDeleteRaft(ctx, meta.SpaceID, meta.BlobID); err != nil {
+		if err := m.commitMetaDeleteRaft(ctx, meta.SpaceID, meta.DomainID, meta.BlobID); err != nil {
 			return "", err
 		}
 		return meta.BlobID, nil
 	}
 	if m.wal != nil {
-		if err := m.commitMetaDelete(ctx, meta.SpaceID, meta.BlobID); err != nil {
+		if err := m.commitMetaDelete(ctx, meta.SpaceID, meta.DomainID, meta.BlobID); err != nil {
 			return "", err
 		}
 		return meta.BlobID, nil
 	}
-	if err := m.applyMetaDelete(ctx, meta.SpaceID, meta.BlobID); err != nil {
+	if err := m.applyMetaDelete(ctx, meta.SpaceID, meta.DomainID, meta.BlobID); err != nil {
 		return "", err
 	}
 	return meta.BlobID, nil
@@ -278,7 +316,7 @@ func (m *Module) store(spaceID string) (*blobstorage.Store, error) {
 	if store := m.stores[spaceID]; store != nil {
 		return store, nil
 	}
-	store, err := blobstorage.Open(filepath.Join(m.dataDir, spaceID))
+	store, err := blobstorage.OpenWithConfig(filepath.Join(m.dataDir, spaceID), blobstorage.Config{Encryption: m.encryption})
 	if err != nil {
 		return nil, err
 	}
@@ -299,11 +337,35 @@ func (m *Module) meta(spaceID string, blobID string) (BlobMeta, error) {
 	if err != nil {
 		return BlobMeta{}, err
 	}
-	meta, ok := metas[blobID]
-	if !ok {
-		return BlobMeta{}, ErrNotFound
+	if meta, ok := metas[blobID]; ok {
+		return meta, nil
 	}
-	return meta, nil
+	for _, meta := range metas {
+		if meta.BlobID == blobID {
+			return meta, nil
+		}
+	}
+	return BlobMeta{}, ErrNotFound
+}
+
+func (m *Module) metaInDomain(spaceID string, domainID string, blobID string) (BlobMeta, error) {
+	if spaceID == "" || domainID == "" || blobID == "" {
+		return BlobMeta{}, fmt.Errorf("%w: space_id, domain_id, and blob_id are required", ErrInvalidInput)
+	}
+	if _, err := domaingraph.BlobID(blobID).Bytes(); err != nil {
+		return BlobMeta{}, fmt.Errorf("%w: invalid blob_id", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	metas, err := m.loadSpaceMetaLocked(spaceID)
+	if err != nil {
+		return BlobMeta{}, err
+	}
+	key := blobMetaStorageKey(BlobMeta{DomainID: domainID, BlobID: blobID})
+	if meta, ok := metas[key]; ok {
+		return meta, nil
+	}
+	return BlobMeta{}, ErrNotFound
 }
 
 func (m *Module) loadSpaceMeta(spaceID string) (map[string]BlobMeta, error) {
@@ -329,6 +391,15 @@ func (m *Module) loadSpaceMetaLocked(spaceID string) (map[string]BlobMeta, error
 		metas = map[string]BlobMeta{}
 	}
 	return metas, nil
+}
+
+func blobMetaStorageKey(meta BlobMeta) string {
+	blobID := strings.TrimSpace(meta.BlobID)
+	domainID := strings.TrimSpace(meta.DomainID)
+	if domainID == "" {
+		return blobID
+	}
+	return domainID + "/" + blobID
 }
 
 func (m *Module) saveSpaceMetaLocked(spaceID string, metas map[string]BlobMeta) error {

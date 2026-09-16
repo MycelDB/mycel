@@ -52,7 +52,6 @@ type GraphReadManager interface {
 }
 
 type Config struct {
-	SecretKeyB64      string
 	MaintenanceConfig MaintenanceConfig
 	SchemaManager     SchemaManager
 	GraphReadManager  GraphReadManager

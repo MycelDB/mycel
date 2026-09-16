@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
 
 	"github.com/google/uuid"
@@ -28,9 +29,14 @@ type manifest struct {
 	ActiveTxnSegment  string   `json:"active_txn_segment"`
 }
 
+type Options struct {
+	Encryption *encryption.Service
+}
+
 type LocalStore struct {
 	mu                sync.RWMutex
 	path              string
+	encryption        *encryption.Service
 	state             StoreState
 	manifest          manifest
 	nodes             *segment
@@ -63,7 +69,11 @@ type LocalStore struct {
 }
 
 func Open(ctx context.Context, spacePath string) (*LocalStore, error) {
-	s := &LocalStore{path: spacePath, state: StoreStateOpening}
+	return OpenWithOptions(ctx, spacePath, Options{})
+}
+
+func OpenWithOptions(ctx context.Context, spacePath string, opts Options) (*LocalStore, error) {
+	s := &LocalStore{path: spacePath, encryption: opts.Encryption, state: StoreStateOpening}
 	if err := s.open(ctx); err != nil {
 		s.state = StoreStateError
 		return nil, err
@@ -86,15 +96,15 @@ func (s *LocalStore) open(ctx context.Context) error {
 		return err
 	}
 	s.manifest = m
-	s.txns, err = openSegment(filepath.Join(s.path, m.ActiveTxnSegment), SegmentKindTxn)
+	s.txns, err = openSegment(filepath.Join(s.path, m.ActiveTxnSegment), SegmentKindTxn, s.encryption)
 	if err != nil {
 		return err
 	}
-	s.nodes, err = openSegment(filepath.Join(s.path, m.ActiveNodeSegment), SegmentKindNode)
+	s.nodes, err = openSegment(filepath.Join(s.path, m.ActiveNodeSegment), SegmentKindNode, s.encryption)
 	if err != nil {
 		return err
 	}
-	s.edges, err = openSegment(filepath.Join(s.path, m.ActiveEdgeSegment), SegmentKindEdge)
+	s.edges, err = openSegment(filepath.Join(s.path, m.ActiveEdgeSegment), SegmentKindEdge, s.encryption)
 	if err != nil {
 		return err
 	}
@@ -137,7 +147,7 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindTxn, func(r scannedRecord) error {
+		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindTxn, s.encryption, func(r scannedRecord) error {
 			if r.header.kind == RecordKindTxnCommit {
 				if _, exists := committed[r.header.txnID]; !exists {
 					s.revision++
@@ -151,7 +161,7 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 		}
 	}
 	for _, seg := range s.manifest.NodeSegments {
-		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindNode, func(r scannedRecord) error {
+		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindNode, s.encryption, func(r scannedRecord) error {
 			rev, ok := commitRevision[r.header.txnID]
 			if !ok {
 				return nil
@@ -175,7 +185,7 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 		}
 	}
 	for _, seg := range s.manifest.EdgeSegments {
-		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindEdge, func(r scannedRecord) error {
+		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindEdge, s.encryption, func(r scannedRecord) error {
 			rev, ok := commitRevision[r.header.txnID]
 			if !ok {
 				return nil
