@@ -19,8 +19,8 @@ import (
 )
 
 func NewAutomationCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "automation", Aliases: []string{"automations"}, Short: "Manage graph automations"}
-	cmd.AddCommand(newAutomationValidateCommand(), newAutomationCreateCommand(a), newAutomationUpdateCommand(a), newAutomationPutCommand(a), newAutomationListCommand(a), newAutomationGetCommand(a), newAutomationEnableCommand(a), newAutomationDisableCommand(a), newAutomationDeleteCommand(a), newAutomationMigrateCombinedCommand(a), newAutomationRunsCommand(a), newAutomationRunGetCommand(a), newAutomationInvocationCommand(a))
+	cmd := &cobra.Command{Use: "automation", Aliases: []string{"automations"}, Short: "Manage graph automations", Long: "Manage graph automations.\n\nCanonical split-model authoring commands are available under:\n  mycel automation procedure\n  mycel automation binding\n\nThe legacy combined automation definition commands remain available for compatibility."}
+	cmd.AddCommand(newAutomationProcedureCommand(a), newAutomationBindingCommand(a), newAutomationValidateCommand(), newAutomationCreateCommand(a), newAutomationUpdateCommand(a), newAutomationPutCommand(a), newAutomationListCommand(a), newAutomationGetCommand(a), newAutomationEnableCommand(a), newAutomationDisableCommand(a), newAutomationDeleteCommand(a), newAutomationMigrateCombinedCommand(a), newAutomationRunsCommand(a), newAutomationRunGetCommand(a), newAutomationInvocationCommand(a))
 	return cmd
 }
 

@@ -4,12 +4,51 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	automationmodel "github.com/myceldb/mycel/internal/automation/model"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 )
+
+func TestAutomationNamespaceProcedureAndBindingHelp(t *testing.T) {
+	out, err := runCLI(t, "automation", "procedure", "--help")
+	if err != nil {
+		t.Fatalf("automation procedure help failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"Manage reusable graph automation procedures", "mycel automation binding", "put"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("automation procedure help missing %q:\n%s", want, out)
+		}
+	}
+
+	out, err = runCLI(t, "automation", "binding", "--help")
+	if err != nil {
+		t.Fatalf("automation binding help failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"Manage graph automation bindings", "mycel automation procedure", "put"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("automation binding help missing %q:\n%s", want, out)
+		}
+	}
+
+	out, err = runCLI(t, "procedure", "--help")
+	if err != nil {
+		t.Fatalf("top-level procedure help failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Canonical path: mycel automation procedure") {
+		t.Fatalf("top-level procedure help did not identify canonical path:\n%s", out)
+	}
+
+	out, err = runCLI(t, "automation-binding", "--help")
+	if err != nil {
+		t.Fatalf("top-level automation-binding help failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Canonical path: mycel automation binding") || !strings.Contains(out, "compatibility aliases, not preferred") {
+		t.Fatalf("top-level automation-binding help did not identify compatibility status:\n%s", out)
+	}
+}
 
 func TestPrepareAutomationPutJSONOverridesID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "entity.json")
@@ -77,6 +116,43 @@ func TestProcedurePutCreatesAndUpdatesThroughDaemonGRPC(t *testing.T) {
 	}
 	if got.Name != "updated procedure" {
 		t.Fatalf("procedure get name = %q, want updated procedure", got.Name)
+	}
+}
+
+func TestAutomationNamespaceProcedureAndBindingCommandsThroughDaemonGRPC(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	createTestUser(t, addr, adminPassword, "automation-ns-user", "automation-ns-pass")
+	spaceID, domainID := createProcedureBindingTestSpace(t, addr, adminPassword, "automation-ns-user", "Automation Namespace Space")
+
+	dir := t.TempDir()
+	procedurePath := filepath.Join(dir, "procedure.json")
+	writeJSONFile(t, procedurePath, testGraphProcedure("cli.automation-ns-procedure", "canonical namespace procedure"))
+	base := []string{"--daemon-addr", addr, "-u", "automation-ns-user", "-p", "automation-ns-pass", "--output", "json"}
+	out, err := runCLI(t, append(base, "automation", "procedure", "put", procedurePath, "--space-id", spaceID, "--domain", "default")...)
+	if err != nil {
+		t.Fatalf("automation procedure put failed: %v\n%s", err, out)
+	}
+	var procedure automationmodel.Procedure
+	if err := json.Unmarshal([]byte(out), &procedure); err != nil {
+		t.Fatalf("decode automation procedure put: %v\n%s", err, out)
+	}
+	if procedure.ID != "cli.automation-ns-procedure" || procedure.Name != "canonical namespace procedure" {
+		t.Fatalf("unexpected procedure from canonical namespace: %#v", procedure)
+	}
+
+	bindingPath := filepath.Join(dir, "binding.json")
+	writeJSONFile(t, bindingPath, testGraphBinding("cli.automation-ns-binding", "canonical namespace binding", "cli.automation-ns-procedure", spaceID, domainID, automationmodel.StatusEnabled))
+	out, err = runCLI(t, append(base, "automation", "binding", "put", bindingPath, "--space-id", spaceID, "--domain", "default")...)
+	if err != nil {
+		t.Fatalf("automation binding put failed: %v\n%s", err, out)
+	}
+	var binding automationmodel.Binding
+	if err := json.Unmarshal([]byte(out), &binding); err != nil {
+		t.Fatalf("decode automation binding put: %v\n%s", err, out)
+	}
+	if binding.ID != "cli.automation-ns-binding" || binding.ProcedureID != "cli.automation-ns-procedure" {
+		t.Fatalf("unexpected binding from canonical namespace: %#v", binding)
 	}
 }
 
