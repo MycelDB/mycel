@@ -286,7 +286,7 @@ func (m *Manager) ApplySystemMetadata(ctx context.Context, meta consensus.System
 	if err := WritePeers(m.dataDir, id, nil, now); err != nil {
 		return err
 	}
-	readiness := ClusterReadiness{ClientReady: false, MetadataApplied: true, MetadataValidated: true, PartitionGroupsStarted: false, AuthoritativeClusterID: meta.ClusterID, LocalClusterID: id.ClusterID, ExpectedMemberCount: meta.NodeCount, ReadinessBlockers: []string{"partition groups are not started"}}
+	readiness := ClusterReadiness{ClientReady: false, MetadataApplied: true, MetadataValidated: true, PartitionGroupsStarted: false, AuthoritativeClusterID: meta.ClusterID, LocalClusterID: id.ClusterID, ExpectedMemberCount: meta.NodeCount, ReadinessBlockers: []string{"partition groups are not started"}, ProcessReady: true, MetadataReady: true}
 	m.mu.Lock()
 	m.identity = id
 	m.state = NodeStateInitializing
@@ -341,7 +341,11 @@ func (m *Manager) MarkPartitionGroupsStarted(actual int, expected int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.readiness.PartitionGroupsStarted = actual >= expected
-	m.readiness.ClientReady = m.readiness.MetadataApplied && m.readiness.MetadataValidated && m.readiness.PartitionGroupsStarted
+	m.readiness.MetadataReady = m.readiness.MetadataApplied && m.readiness.MetadataValidated
+	m.readiness.RaftReady = m.readiness.PartitionGroupsStarted
+	m.readiness.ReadReady = m.readiness.MetadataReady && m.readiness.RaftReady
+	m.readiness.WriteReady = m.readiness.ReadReady
+	m.readiness.ClientReady = m.readiness.WriteReady
 	m.readiness.ReadinessBlockers = removeReadinessBlocker(m.readiness.ReadinessBlockers, "partition groups are not started")
 	if !m.readiness.PartitionGroupsStarted {
 		m.readiness = m.readiness.withBlocker(fmt.Sprintf("partition groups not started: got %d expected %d", actual, expected))
@@ -370,13 +374,17 @@ func removeReadinessBlocker(blockers []string, blocker string) []string {
 }
 
 func initialReadiness(id model.NodeIdentity, state model.NodeState, opts Options) ClusterReadiness {
-	out := ClusterReadiness{LocalClusterID: id.ClusterID}
+	out := ClusterReadiness{LocalClusterID: id.ClusterID, ProcessReady: true}
 	if !opts.RaftMode {
 		out.ExpectedMemberCount = 1
 		out.ClientReady = state == NodeStateStandalone || state == NodeStateClustered
 		out.MetadataApplied = true
 		out.MetadataValidated = true
 		out.PartitionGroupsStarted = true
+		out.MetadataReady = true
+		out.RaftReady = true
+		out.ReadReady = out.ClientReady
+		out.WriteReady = out.ClientReady
 		out.AuthoritativeClusterID = id.ClusterID
 		return out
 	}
@@ -384,6 +392,7 @@ func initialReadiness(id model.NodeIdentity, state model.NodeState, opts Options
 	out.MetadataApplied = strings.TrimSpace(id.ClusterID) != "" && id.ClusterAdmitted
 	out.MetadataValidated = false
 	out.PartitionGroupsStarted = false
+	out.MetadataReady = false
 	out.ClientReady = false
 	if !out.MetadataApplied {
 		out = out.withBlocker("system metadata not applied")

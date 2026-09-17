@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"sort"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -25,8 +26,35 @@ func (r *Runtime) RequireLocalWriteAllowed() error {
 		return status.Error(codes.Unavailable, "clustered local write rejected: clustering manager is not available")
 	}
 	readiness := r.ClusterManager.Readiness()
-	if !readiness.ClientReady {
-		return status.Error(codes.Unavailable, "clustered local write rejected: node is not client-ready")
+	if !readiness.ClientReady || !readiness.WriteReady {
+		return status.Error(codes.Unavailable, "clustered local write rejected: node is not write-ready")
+	}
+	if blocker := r.raftWriteReadinessBlocker(raftConfigured); blocker != "" {
+		return status.Error(codes.Unavailable, "clustered local write rejected: node is not write-ready: "+blocker)
 	}
 	return status.Error(codes.Unavailable, "clustered local write rejected: raft executor is not configured for this subsystem")
+}
+
+func (r *Runtime) raftWriteReadinessBlocker(raftConfigured bool) string {
+	if r == nil || !raftConfigured {
+		return ""
+	}
+	if r.RaftGroups == nil {
+		return "raft groups are not configured"
+	}
+	statuses := r.RaftGroups.Status()
+	if len(statuses) == 0 {
+		return "raft groups are not started"
+	}
+	missing := make([]string, 0)
+	for _, st := range statuses {
+		if st.Leader == 0 {
+			missing = append(missing, string(st.GroupID))
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	sort.Strings(missing)
+	return "raft groups without leaders: " + strings.Join(missing, ", ")
 }

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -199,7 +200,7 @@ func (s *AdminClusterService) GetClusterHealth(ctx context.Context, req *adminv1
 	if pending > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d pending member(s)", pending))
 	}
-	readiness := s.cluster.Readiness()
+	readiness := s.evaluatedReadiness()
 	if readiness.ExpectedMemberCount > 0 && active > 0 && int(active) < readiness.ExpectedMemberCount {
 		warnings = append(warnings, fmt.Sprintf("active member count %d is below expected %d", active, readiness.ExpectedMemberCount))
 	}
@@ -250,8 +251,86 @@ func (s *AdminClusterService) clusterAdmissionRequired() bool {
 	return s.cluster.State() != model.NodeStateStandalone
 }
 
+func (s *AdminClusterService) evaluatedReadiness() clustering.ClusterReadiness {
+	if s == nil || s.cluster == nil {
+		return clustering.ClusterReadiness{ProcessReady: true, ReadinessBlockers: []string{"clustering manager is not available"}}
+	}
+	readiness := s.cluster.Readiness()
+	readiness.ProcessReady = true
+	readiness.MetadataReady = readiness.MetadataApplied && readiness.MetadataValidated
+	admissionRequired := s.clusterAdmissionRequired()
+	if admissionRequired && !s.cluster.IsAdmitted() {
+		readiness.MetadataReady = false
+		appendReadinessBlocker(&readiness, "local node is not admitted")
+	}
+	if readiness.MetadataApplied && readiness.AuthoritativeClusterID != "" && readiness.LocalClusterID != "" && readiness.AuthoritativeClusterID != readiness.LocalClusterID {
+		readiness.MetadataReady = false
+		appendReadinessBlocker(&readiness, "local cluster_id does not match authoritative system metadata")
+	}
+	if s.raftRuntimeConfigured() {
+		raftLeadersReady, blocker := s.localRaftGroupsHaveLeaders()
+		readiness.RaftReady = readiness.PartitionGroupsStarted && raftLeadersReady
+		if readiness.PartitionGroupsStarted && !raftLeadersReady {
+			appendReadinessBlocker(&readiness, blocker)
+		}
+	} else {
+		readiness.RaftReady = readiness.PartitionGroupsStarted
+	}
+	readiness.ReadReady = readiness.MetadataReady && readiness.RaftReady
+	readiness.WriteReady = readiness.ReadReady
+	readiness.ClientReady = readiness.ClientReady && readiness.ReadReady && readiness.WriteReady
+	return readiness
+}
+
+func (s *AdminClusterService) raftRuntimeConfigured() bool {
+	if s == nil {
+		return false
+	}
+	return s.raftGroups != nil || s.clusterConfig.RaftNodeCount > 0 || s.clusterConfig.RaftPartitionCount > 0 || s.clusterConfig.RaftLocalNodeID > 0 || len(s.clusterConfig.RaftNodeAddrs) > 0
+}
+
+func (s *AdminClusterService) localRaftGroupsHaveLeaders() (bool, string) {
+	if s == nil || s.raftGroups == nil {
+		return false, "raft groups are not configured"
+	}
+	statuses := s.raftGroups.Status()
+	if len(statuses) == 0 {
+		return false, "raft groups are not started"
+	}
+	missing := make([]string, 0)
+	for _, st := range statuses {
+		if st.Leader == 0 {
+			missing = append(missing, string(st.GroupID))
+		}
+	}
+	if len(missing) == 0 {
+		return true, ""
+	}
+	sort.Strings(missing)
+	return false, "raft groups without leaders: " + strings.Join(missing, ", ")
+}
+
+func appendReadinessBlocker(readiness *clustering.ClusterReadiness, blocker string) {
+	if readiness == nil {
+		return
+	}
+	blocker = strings.TrimSpace(blocker)
+	if blocker == "" {
+		return
+	}
+	for _, existing := range readiness.ReadinessBlockers {
+		if existing == blocker {
+			return
+		}
+	}
+	readiness.ReadinessBlockers = append(readiness.ReadinessBlockers, blocker)
+	readiness.ClientReady = false
+	readiness.ReadReady = false
+	readiness.WriteReady = false
+}
+
 func clusterReadinessToProto(readiness clustering.ClusterReadiness) *adminv1.ClusterReadiness {
-	return &adminv1.ClusterReadiness{ClientReady: readiness.ClientReady, MetadataApplied: readiness.MetadataApplied, MetadataValidated: readiness.MetadataValidated, PartitionGroupsStarted: readiness.PartitionGroupsStarted, AuthoritativeClusterId: readiness.AuthoritativeClusterID, LocalClusterId: readiness.LocalClusterID, ExpectedMemberCount: int32(readiness.ExpectedMemberCount), ReadinessBlockers: append([]string(nil), readiness.ReadinessBlockers...)}
+	return &adminv1.ClusterReadiness{ClientReady: readiness.ClientReady, MetadataApplied: readiness.MetadataApplied, MetadataValidated: readiness.MetadataValidated, PartitionGroupsStarted: readiness.PartitionGroupsStarted, AuthoritativeClusterId: readiness.AuthoritativeClusterID, LocalClusterId: readiness.LocalClusterID, ExpectedMemberCount: int32(readiness.ExpectedMemberCount), ReadinessBlockers: append([]string(nil), readiness.ReadinessBlockers...), ProcessReady: readiness.ProcessReady, MetadataReady: readiness.MetadataReady, RaftReady: readiness.RaftReady, ReadReady: readiness.ReadReady, WriteReady: readiness.WriteReady}
 }
 
 func firstNonEmptyCluster(values ...string) string {
@@ -277,7 +356,7 @@ func (s *AdminClusterService) GetClusterStatus(ctx context.Context, req *adminv1
 			peers = append(peers, clusterPeerToProto(peer))
 		}
 	}
-	readiness := s.cluster.Readiness()
+	readiness := s.evaluatedReadiness()
 	return &adminv1.GetClusterStatusResponse{
 		Node: &adminv1.ClusterLocalNode{
 			NodeId:                   identity.NodeID,
