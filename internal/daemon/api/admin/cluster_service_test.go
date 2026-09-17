@@ -163,9 +163,53 @@ func TestAdminClusterServiceHealthUsesMetadataReadiness(t *testing.T) {
 	}
 }
 
+func TestAdminClusterServiceReadinessRequiresRaftLeaders(t *testing.T) {
+	mgr, err := clustering.NewManager(context.Background(), clustering.Options{DataDir: t.TempDir(), NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", RaftMode: true, RaftLocalNodeID: 1, RaftNodeCount: 1}, nil)
+	if err != nil {
+		t.Fatalf("new raft manager: %v", err)
+	}
+	meta := consensus.SystemMetadata{ClusterID: "cluster_authoritative", ClusterName: "dev", NodeCount: 1, PartitionCount: 1, ReplicaFactor: 1, Nodes: map[string]consensus.SystemNode{"node_1": {NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"}}, Placement: map[uint32]consensus.PartitionPlacement{}}
+	if err := mgr.ApplySystemMetadata(context.Background(), meta, 1); err != nil {
+		t.Fatalf("ApplySystemMetadata() error = %v", err)
+	}
+	if err := mgr.MarkPartitionGroupsStarted(1, 1); err != nil {
+		t.Fatalf("MarkPartitionGroupsStarted() error = %v", err)
+	}
+	groups, err := consensus.StartMultiGroup(context.Background(), consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 1, Transport: consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return nil, false })}, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine { return &consensus.MemoryStateMachine{} }}, ElectionTick: 1000, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("StartMultiGroup() error = %v", err)
+	}
+	defer groups.Stop()
+
+	svc := NewAdminClusterService(mgr, clusterAuthz{allow: true}).WithClusterRuntime(daemonconfig.ClusterConfig{Name: "dev", RaftNodeCount: 1, RaftPartitionCount: 1, RaftReplicaFactor: 1, RaftLocalNodeID: 1, RaftNodeAddrs: []string{"127.0.0.1:9093"}}, groups)
+	res, err := svc.GetClusterStatus(authenticatedClusterContext(), &adminv1.GetClusterStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetClusterStatus() error = %v", err)
+	}
+	readiness := res.GetReadiness()
+	if !readiness.GetProcessReady() || !readiness.GetMetadataReady() || !readiness.GetMetadataApplied() || !readiness.GetMetadataValidated() || !readiness.GetPartitionGroupsStarted() {
+		t.Fatalf("expected metadata/process/partition readiness, got %#v", readiness)
+	}
+	if readiness.GetClientReady() || readiness.GetRaftReady() || readiness.GetReadReady() || readiness.GetWriteReady() {
+		t.Fatalf("expected client/read/write readiness to wait for raft leaders, got %#v", readiness)
+	}
+	if !containsSubstring(readiness.GetReadinessBlockers(), "raft groups without leaders") || !containsSubstring(readiness.GetReadinessBlockers(), "space-partition-0") || !containsSubstring(readiness.GetReadinessBlockers(), "system") {
+		t.Fatalf("expected raft leader blocker, got %#v", readiness.GetReadinessBlockers())
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSubstring(values []string, want string) bool {
+	for _, value := range values {
+		if strings.Contains(value, want) {
 			return true
 		}
 	}
