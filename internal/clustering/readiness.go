@@ -12,6 +12,11 @@ type ClusterReadiness struct {
 	ExpectedMemberCount    int
 	ActiveMemberCount      int
 	ReadinessBlockers      []string
+	ProcessReady           bool
+	MetadataReady          bool
+	RaftReady              bool
+	ReadReady              bool
+	WriteReady             bool
 }
 
 func (r ClusterReadiness) withBlocker(blocker string) ClusterReadiness {
@@ -26,5 +31,7 @@ func (r ClusterReadiness) withBlocker(blocker string) ClusterReadiness {
 	}
 	r.ReadinessBlockers = append(r.ReadinessBlockers, blocker)
 	r.ClientReady = false
+	r.ReadReady = false
+	r.WriteReady = false
 	return r
 }
