@@ -5,22 +5,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	automationmodel "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/cli/app"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func NewProcedureCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "procedure", Aliases: []string{"procedures", "graph-procedure", "graph-procedures"}, Short: "Manage graph automation procedures"}
-	cmd.AddCommand(newProcedureValidateCommand(), newProcedureCreateCommand(a), newProcedureUpdateCommand(a), newProcedureListCommand(a), newProcedureGetCommand(a), newProcedureDeleteCommand(a))
+	cmd.AddCommand(newProcedureValidateCommand(), newProcedureCreateCommand(a), newProcedureUpdateCommand(a), newProcedurePutCommand(a), newProcedureListCommand(a), newProcedureGetCommand(a), newProcedureDeleteCommand(a))
 	return cmd
 }
 
 func NewAutomationBindingCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "automation-binding", Aliases: []string{"automation-bindings", "binding", "bindings"}, Short: "Manage graph automation bindings"}
-	cmd.AddCommand(newBindingValidateCommand(), newBindingCreateCommand(a), newBindingUpdateCommand(a), newBindingListCommand(a), newBindingGetCommand(a), newBindingEnableCommand(a), newBindingDisableCommand(a), newBindingDeleteCommand(a))
+	cmd.AddCommand(newBindingValidateCommand(), newBindingCreateCommand(a), newBindingUpdateCommand(a), newBindingPutCommand(a), newBindingListCommand(a), newBindingGetCommand(a), newBindingEnableCommand(a), newBindingDisableCommand(a), newBindingDeleteCommand(a))
 	return cmd
 }
 
@@ -111,6 +114,35 @@ func newProcedureUpdateCommand(a *app.App) *cobra.Command {
 		return nil
 	}}
 	bindAutomationDomainFlags(cmd, &flags)
+	return cmd
+}
+
+func newProcedurePutCommand(a *app.App) *cobra.Command {
+	var flags automationDomainFlags
+	var procedureID string
+	cmd := &cobra.Command{Use: "put procedure.json", Aliases: []string{"upsert"}, Short: "Create or update a graph procedure", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		data, id, err := prepareAutomationPutJSON(args[0], procedureID, "graph procedure")
+		if err != nil {
+			return err
+		}
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		domainID, err := resolveAutomationDomainID(cmd, a, conn, authCtx, flags)
+		if err != nil {
+			return err
+		}
+		text, err := putGraphProcedure(authCtx, clientv1.NewAutomationServiceClient(conn), domainID, id, data)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), text)
+		return nil
+	}}
+	bindAutomationDomainFlags(cmd, &flags)
+	cmd.Flags().StringVar(&procedureID, "id", "", "existing procedure ID to update; also overrides the JSON id for create")
 	return cmd
 }
 
@@ -238,6 +270,35 @@ func newBindingUpdateCommand(a *app.App) *cobra.Command {
 	return cmd
 }
 
+func newBindingPutCommand(a *app.App) *cobra.Command {
+	var flags automationDomainFlags
+	var bindingID string
+	cmd := &cobra.Command{Use: "put binding.json", Aliases: []string{"upsert"}, Short: "Create or update a graph automation binding", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		data, id, err := prepareAutomationPutJSON(args[0], bindingID, "graph automation binding")
+		if err != nil {
+			return err
+		}
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		domainID, err := resolveAutomationDomainID(cmd, a, conn, authCtx, flags)
+		if err != nil {
+			return err
+		}
+		text, err := putGraphAutomationBinding(authCtx, clientv1.NewAutomationServiceClient(conn), domainID, id, data)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), text)
+		return nil
+	}}
+	bindAutomationDomainFlags(cmd, &flags)
+	cmd.Flags().StringVar(&bindingID, "id", "", "existing binding ID to update; also overrides the JSON id for create")
+	return cmd
+}
+
 func newBindingListCommand(a *app.App) *cobra.Command {
 	var flags automationDomainFlags
 	var status string
@@ -300,6 +361,77 @@ func newBindingDeleteCommand(a *app.App) *cobra.Command {
 		_, err := client.DeleteGraphAutomationBinding(ctx, &clientv1.DeleteGraphAutomationBindingRequest{DomainId: domainID, BindingId: id})
 		return "deleted", err
 	})
+}
+
+func prepareAutomationPutJSON(path, overrideID, entityName string) (string, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", err
+	}
+	var idOnly struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(data, &idOnly); err != nil {
+		return "", "", err
+	}
+	id := strings.TrimSpace(idOnly.ID)
+	overrideID = strings.TrimSpace(overrideID)
+	if overrideID != "" {
+		var object map[string]any
+		if err := json.Unmarshal(data, &object); err != nil {
+			return "", "", err
+		}
+		if object == nil {
+			return "", "", fmt.Errorf("%s JSON must be an object", entityName)
+		}
+		object["id"] = overrideID
+		updated, err := json.Marshal(object)
+		if err != nil {
+			return "", "", err
+		}
+		data = updated
+		id = overrideID
+	}
+	if id == "" {
+		return "", "", fmt.Errorf("%s id is required (set JSON id or --id)", entityName)
+	}
+	return string(data), id, nil
+}
+
+func putGraphProcedure(ctx context.Context, client clientv1.AutomationServiceClient, domainID, procedureID, procedureJSON string) (string, error) {
+	if _, err := client.GetGraphProcedure(ctx, &clientv1.GetGraphProcedureRequest{DomainId: domainID, ProcedureId: procedureID}); err != nil {
+		if status.Code(err) == codes.NotFound {
+			res, err := client.CreateGraphProcedure(ctx, &clientv1.CreateGraphProcedureRequest{DomainId: domainID, ProcedureJson: procedureJSON})
+			if err != nil {
+				return "", err
+			}
+			return res.GetProcedureJson(), nil
+		}
+		return "", err
+	}
+	res, err := client.UpdateGraphProcedure(ctx, &clientv1.UpdateGraphProcedureRequest{DomainId: domainID, ProcedureId: procedureID, ProcedureJson: procedureJSON})
+	if err != nil {
+		return "", err
+	}
+	return res.GetProcedureJson(), nil
+}
+
+func putGraphAutomationBinding(ctx context.Context, client clientv1.AutomationServiceClient, domainID, bindingID, bindingJSON string) (string, error) {
+	if _, err := client.GetGraphAutomationBinding(ctx, &clientv1.GetGraphAutomationBindingRequest{DomainId: domainID, BindingId: bindingID}); err != nil {
+		if status.Code(err) == codes.NotFound {
+			res, err := client.CreateGraphAutomationBinding(ctx, &clientv1.CreateGraphAutomationBindingRequest{DomainId: domainID, BindingJson: bindingJSON})
+			if err != nil {
+				return "", err
+			}
+			return res.GetBindingJson(), nil
+		}
+		return "", err
+	}
+	res, err := client.UpdateGraphAutomationBinding(ctx, &clientv1.UpdateGraphAutomationBindingRequest{DomainId: domainID, BindingId: bindingID, BindingJson: bindingJSON})
+	if err != nil {
+		return "", err
+	}
+	return res.GetBindingJson(), nil
 }
 
 func bindingIDCommand(a *app.App, use, short string, run func(clientv1.AutomationServiceClient, context.Context, string, string) (string, error)) *cobra.Command {
