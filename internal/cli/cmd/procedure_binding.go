@@ -16,13 +16,29 @@ import (
 )
 
 func NewProcedureCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "procedure", Aliases: []string{"procedures", "graph-procedure", "graph-procedures"}, Short: "Manage graph automation procedures"}
+	return newProcedureCommand(a, "procedure", []string{"procedures", "graph-procedure", "graph-procedures"}, "Compatibility alias for 'mycel automation procedure'", "Manage graph automation procedures.\n\nCanonical path: mycel automation procedure\nThis top-level command remains for compatibility with existing scripts.")
+}
+
+func newAutomationProcedureCommand(a *app.App) *cobra.Command {
+	return newProcedureCommand(a, "procedure", nil, "Manage reusable graph automation procedures", "Manage reusable graph automation procedures.\n\nProcedures define reusable graph work. Pair them with 'mycel automation binding' to attach triggers, scope, and runtime principal context.")
+}
+
+func newProcedureCommand(a *app.App, use string, aliases []string, short, long string) *cobra.Command {
+	cmd := &cobra.Command{Use: use, Aliases: aliases, Short: short, Long: long}
 	cmd.AddCommand(newProcedureValidateCommand(), newProcedureCreateCommand(a), newProcedureUpdateCommand(a), newProcedurePutCommand(a), newProcedureListCommand(a), newProcedureGetCommand(a), newProcedureDeleteCommand(a))
 	return cmd
 }
 
 func NewAutomationBindingCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "automation-binding", Aliases: []string{"automation-bindings", "binding", "bindings"}, Short: "Manage graph automation bindings"}
+	return newBindingCommand(a, "automation-binding", []string{"automation-bindings", "binding", "bindings"}, "Compatibility alias for 'mycel automation binding'", "Manage graph automation bindings.\n\nCanonical path: mycel automation binding\nThis top-level command remains for compatibility with existing scripts. Broad aliases such as 'binding' and 'bindings' are compatibility aliases, not preferred command paths.")
+}
+
+func newAutomationBindingCommand(a *app.App) *cobra.Command {
+	return newBindingCommand(a, "binding", nil, "Manage graph automation bindings", "Manage graph automation bindings.\n\nBindings attach reusable procedures to triggers, scope, and runtime principal context. Pair them with 'mycel automation procedure'.")
+}
+
+func newBindingCommand(a *app.App, use string, aliases []string, short, long string) *cobra.Command {
+	cmd := &cobra.Command{Use: use, Aliases: aliases, Short: short, Long: long}
 	cmd.AddCommand(newBindingValidateCommand(), newBindingCreateCommand(a), newBindingUpdateCommand(a), newBindingPutCommand(a), newBindingListCommand(a), newBindingGetCommand(a), newBindingEnableCommand(a), newBindingDisableCommand(a), newBindingDeleteCommand(a))
 	return cmd
 }
