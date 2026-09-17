@@ -119,9 +119,14 @@ type clusterPeerOutput struct {
 
 type clusterReadinessOutput struct {
 	ClientReady            bool     `json:"client_ready"`
+	ProcessReady           bool     `json:"process_ready"`
 	MetadataApplied        bool     `json:"metadata_applied"`
 	MetadataValidated      bool     `json:"metadata_validated"`
+	MetadataReady          bool     `json:"metadata_ready"`
 	PartitionGroupsStarted bool     `json:"partition_groups_started"`
+	RaftReady              bool     `json:"raft_ready"`
+	ReadReady              bool     `json:"read_ready"`
+	WriteReady             bool     `json:"write_ready"`
 	AuthoritativeClusterID string   `json:"authoritative_cluster_id,omitempty"`
 	LocalClusterID         string   `json:"local_cluster_id,omitempty"`
 	ExpectedMemberCount    int32    `json:"expected_member_count,omitempty"`
@@ -329,7 +334,7 @@ func runClusterStatus(ctx context.Context, a *app.App) error {
 	for _, p := range res.GetPeers() {
 		out.Peers = append(out.Peers, clusterPeerOutput{NodeID: p.GetNodeId(), NodeName: p.GetNodeName(), ClusterID: p.GetClusterId(), ClusterName: p.GetClusterName(), BackendAdvertiseAddr: p.GetBackendAdvertiseAddr(), State: peerStateText(p.GetState()), Source: peerSourceText(p.GetSource()), LastSeenAt: p.GetLastSeenAt()})
 	}
-	lines := []string{fmt.Sprintf("node=%s name=%s state=%s cluster=%s mode=%s client_ready=%t metadata_applied=%t metadata_validated=%t partitions_started=%t\n", out.Node.NodeID, out.Node.Name, out.Node.State, out.Cluster.ClusterName, out.Cluster.Mode, out.Readiness.ClientReady, out.Readiness.MetadataApplied, out.Readiness.MetadataValidated, out.Readiness.PartitionGroupsStarted)}
+	lines := []string{fmt.Sprintf("node=%s name=%s state=%s cluster=%s mode=%s client_ready=%t process_ready=%t metadata_ready=%t raft_ready=%t read_ready=%t write_ready=%t metadata_applied=%t metadata_validated=%t partitions_started=%t\n", out.Node.NodeID, out.Node.Name, out.Node.State, out.Cluster.ClusterName, out.Cluster.Mode, out.Readiness.ClientReady, out.Readiness.ProcessReady, out.Readiness.MetadataReady, out.Readiness.RaftReady, out.Readiness.ReadReady, out.Readiness.WriteReady, out.Readiness.MetadataApplied, out.Readiness.MetadataValidated, out.Readiness.PartitionGroupsStarted)}
 	for _, blocker := range out.Readiness.ReadinessBlockers {
 		lines = append(lines, "readiness_blocker: "+blocker+"\n")
 	}
@@ -343,7 +348,18 @@ func clusterReadinessFromProto(readiness *adminv1.ClusterReadiness) clusterReadi
 	if readiness == nil {
 		return clusterReadinessOutput{}
 	}
-	return clusterReadinessOutput{ClientReady: readiness.GetClientReady(), MetadataApplied: readiness.GetMetadataApplied(), MetadataValidated: readiness.GetMetadataValidated(), PartitionGroupsStarted: readiness.GetPartitionGroupsStarted(), AuthoritativeClusterID: readiness.GetAuthoritativeClusterId(), LocalClusterID: readiness.GetLocalClusterId(), ExpectedMemberCount: readiness.GetExpectedMemberCount(), ReadinessBlockers: append([]string(nil), readiness.GetReadinessBlockers()...)}
+	out := clusterReadinessOutput{ClientReady: readiness.GetClientReady(), ProcessReady: readiness.GetProcessReady(), MetadataApplied: readiness.GetMetadataApplied(), MetadataValidated: readiness.GetMetadataValidated(), MetadataReady: readiness.GetMetadataReady(), PartitionGroupsStarted: readiness.GetPartitionGroupsStarted(), RaftReady: readiness.GetRaftReady(), ReadReady: readiness.GetReadReady(), WriteReady: readiness.GetWriteReady(), AuthoritativeClusterID: readiness.GetAuthoritativeClusterId(), LocalClusterID: readiness.GetLocalClusterId(), ExpectedMemberCount: readiness.GetExpectedMemberCount(), ReadinessBlockers: append([]string(nil), readiness.GetReadinessBlockers()...)}
+	if out.ClientReady && !out.ProcessReady && !out.MetadataReady && !out.RaftReady && !out.ReadReady && !out.WriteReady {
+		// Older daemons did not expose dimensioned readiness fields. Preserve
+		// cross-version CLI behavior by treating the legacy client_ready signal as
+		// all dimensions ready.
+		out.ProcessReady = true
+		out.MetadataReady = out.MetadataApplied && out.MetadataValidated
+		out.RaftReady = out.PartitionGroupsStarted
+		out.ReadReady = true
+		out.WriteReady = true
+	}
+	return out
 }
 
 func runClusterReadinessCheck(ctx context.Context, a *app.App) error {
@@ -368,14 +384,29 @@ func validateClusterReadiness(readiness clusterReadinessOutput) error {
 	if !readiness.ClientReady {
 		blockers = append(blockers, "client_ready=false")
 	}
+	if !readiness.ProcessReady {
+		blockers = append(blockers, "process_ready=false")
+	}
 	if !readiness.MetadataApplied {
 		blockers = append(blockers, "metadata_applied=false")
 	}
 	if !readiness.MetadataValidated {
 		blockers = append(blockers, "metadata_validated=false")
 	}
+	if !readiness.MetadataReady {
+		blockers = append(blockers, "metadata_ready=false")
+	}
 	if !readiness.PartitionGroupsStarted {
 		blockers = append(blockers, "partition_groups_started=false")
+	}
+	if !readiness.RaftReady {
+		blockers = append(blockers, "raft_ready=false")
+	}
+	if !readiness.ReadReady {
+		blockers = append(blockers, "read_ready=false")
+	}
+	if !readiness.WriteReady {
+		blockers = append(blockers, "write_ready=false")
 	}
 	if readiness.AuthoritativeClusterID != "" && readiness.LocalClusterID != "" && readiness.AuthoritativeClusterID != readiness.LocalClusterID {
 		blockers = append(blockers, fmt.Sprintf("cluster_id_mismatch authoritative=%s local=%s", readiness.AuthoritativeClusterID, readiness.LocalClusterID))
@@ -397,7 +428,7 @@ func runClusterHealth(ctx context.Context, a *app.App) error {
 		return fmt.Errorf("get cluster health: %w", err)
 	}
 	readiness := res.GetReadiness()
-	text := fmt.Sprintf("status=%s active=%d pending=%d unreachable=%d client_ready=%t metadata_applied=%t metadata_validated=%t partitions_started=%t\n", res.GetStatus(), res.GetActiveMembers(), res.GetPendingMembers(), res.GetUnreachablePeers(), readiness.GetClientReady(), readiness.GetMetadataApplied(), readiness.GetMetadataValidated(), readiness.GetPartitionGroupsStarted())
+	text := fmt.Sprintf("status=%s active=%d pending=%d unreachable=%d client_ready=%t process_ready=%t metadata_ready=%t raft_ready=%t read_ready=%t write_ready=%t metadata_applied=%t metadata_validated=%t partitions_started=%t\n", res.GetStatus(), res.GetActiveMembers(), res.GetPendingMembers(), res.GetUnreachablePeers(), readiness.GetClientReady(), readiness.GetProcessReady(), readiness.GetMetadataReady(), readiness.GetRaftReady(), readiness.GetReadReady(), readiness.GetWriteReady(), readiness.GetMetadataApplied(), readiness.GetMetadataValidated(), readiness.GetPartitionGroupsStarted())
 	for _, blocker := range readiness.GetReadinessBlockers() {
 		text += "readiness_blocker: " + blocker + "\n"
 	}

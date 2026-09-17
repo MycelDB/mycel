@@ -27,7 +27,7 @@ func TestClusterStatusCommandUsesAdminAPI(t *testing.T) {
 	if len(status.Peers) == 0 || status.Peers[0].State != "self" {
 		t.Fatalf("expected self peer in status: %#v", status.Peers)
 	}
-	if !status.Readiness.ClientReady || !status.Readiness.MetadataApplied || !status.Readiness.MetadataValidated || !status.Readiness.PartitionGroupsStarted {
+	if !status.Readiness.ClientReady || !status.Readiness.ProcessReady || !status.Readiness.MetadataReady || !status.Readiness.RaftReady || !status.Readiness.ReadReady || !status.Readiness.WriteReady || !status.Readiness.MetadataApplied || !status.Readiness.MetadataValidated || !status.Readiness.PartitionGroupsStarted {
 		t.Fatalf("expected readiness fields in cluster status: %#v", status.Readiness)
 	}
 }
