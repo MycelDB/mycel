@@ -33,6 +33,22 @@ func TestAutomationNamespaceProcedureAndBindingHelp(t *testing.T) {
 		}
 	}
 
+	out, err = runCLI(t, "automation", "procedure", "validate", "--help")
+	if err != nil {
+		t.Fatalf("automation procedure validate help failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "--server") || !strings.Contains(out, "daemon state") {
+		t.Fatalf("automation procedure validate help missing server validation:\n%s", out)
+	}
+
+	out, err = runCLI(t, "automation", "binding", "validate", "--help")
+	if err != nil {
+		t.Fatalf("automation binding validate help failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "--server") || !strings.Contains(out, "referenced procedures") {
+		t.Fatalf("automation binding validate help missing server validation:\n%s", out)
+	}
+
 	out, err = runCLI(t, "procedure", "--help")
 	if err != nil {
 		t.Fatalf("top-level procedure help failed: %v\n%s", err, out)
@@ -116,6 +132,53 @@ func TestProcedurePutCreatesAndUpdatesThroughDaemonGRPC(t *testing.T) {
 	}
 	if got.Name != "updated procedure" {
 		t.Fatalf("procedure get name = %q, want updated procedure", got.Name)
+	}
+}
+
+func TestAutomationNamespaceServerValidateThroughDaemonGRPC(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	createTestUser(t, addr, adminPassword, "server-validate-user", "server-validate-pass")
+	spaceID, domainID := createProcedureBindingTestSpace(t, addr, adminPassword, "server-validate-user", "Server Validate Space")
+
+	dir := t.TempDir()
+	procedurePath := filepath.Join(dir, "procedure.json")
+	writeJSONFile(t, procedurePath, testGraphProcedure("cli.server-validate-procedure", "server validated procedure"))
+	base := []string{"--daemon-addr", addr, "-u", "server-validate-user", "-p", "server-validate-pass", "--output", "json"}
+
+	out, err := runCLI(t, append(base, "automation", "procedure", "validate", procedurePath, "--server", "--space-id", spaceID, "--domain", "default")...)
+	if err != nil {
+		t.Fatalf("automation procedure server validate failed: %v\n%s", err, out)
+	}
+	var normalizedProcedure automationmodel.Procedure
+	if err := json.Unmarshal([]byte(out), &normalizedProcedure); err != nil {
+		t.Fatalf("decode normalized procedure: %v\n%s", err, out)
+	}
+	if normalizedProcedure.ID != "cli.server-validate-procedure" || normalizedProcedure.DomainID.String() != domainID {
+		t.Fatalf("unexpected normalized procedure: %#v", normalizedProcedure)
+	}
+
+	bindingPath := filepath.Join(dir, "binding.json")
+	writeJSONFile(t, bindingPath, testGraphBinding("cli.server-validate-binding", "server validated binding", "cli.server-validate-procedure", spaceID, domainID, automationmodel.StatusEnabled))
+	out, err = runCLI(t, append(base, "automation", "binding", "validate", bindingPath, "--server", "--space-id", spaceID, "--domain", "default")...)
+	if err == nil || !strings.Contains(err.Error(), "graph automation binding invalid") {
+		t.Fatalf("expected missing-procedure server validation error, got err=%v out=%s", err, out)
+	}
+
+	out, err = runCLI(t, append(base, "automation", "procedure", "put", procedurePath, "--space-id", spaceID, "--domain", "default")...)
+	if err != nil {
+		t.Fatalf("automation procedure put before binding validate failed: %v\n%s", err, out)
+	}
+	out, err = runCLI(t, append(base, "automation", "binding", "validate", bindingPath, "--server", "--space-id", spaceID, "--domain", "default")...)
+	if err != nil {
+		t.Fatalf("automation binding server validate failed: %v\n%s", err, out)
+	}
+	var normalizedBinding automationmodel.Binding
+	if err := json.Unmarshal([]byte(out), &normalizedBinding); err != nil {
+		t.Fatalf("decode normalized binding: %v\n%s", err, out)
+	}
+	if normalizedBinding.ID != "cli.server-validate-binding" || normalizedBinding.ProcedureID != "cli.server-validate-procedure" || normalizedBinding.Scope.DomainID.String() != domainID {
+		t.Fatalf("unexpected normalized binding: %#v", normalizedBinding)
 	}
 }
 

@@ -25,7 +25,7 @@ func newAutomationProcedureCommand(a *app.App) *cobra.Command {
 
 func newProcedureCommand(a *app.App, use string, aliases []string, short, long string) *cobra.Command {
 	cmd := &cobra.Command{Use: use, Aliases: aliases, Short: short, Long: long}
-	cmd.AddCommand(newProcedureValidateCommand(), newProcedureCreateCommand(a), newProcedureUpdateCommand(a), newProcedurePutCommand(a), newProcedureListCommand(a), newProcedureGetCommand(a), newProcedureDeleteCommand(a))
+	cmd.AddCommand(newProcedureValidateCommand(a), newProcedureCreateCommand(a), newProcedureUpdateCommand(a), newProcedurePutCommand(a), newProcedureListCommand(a), newProcedureGetCommand(a), newProcedureDeleteCommand(a))
 	return cmd
 }
 
@@ -39,15 +39,20 @@ func newAutomationBindingCommand(a *app.App) *cobra.Command {
 
 func newBindingCommand(a *app.App, use string, aliases []string, short, long string) *cobra.Command {
 	cmd := &cobra.Command{Use: use, Aliases: aliases, Short: short, Long: long}
-	cmd.AddCommand(newBindingValidateCommand(), newBindingCreateCommand(a), newBindingUpdateCommand(a), newBindingPutCommand(a), newBindingListCommand(a), newBindingGetCommand(a), newBindingEnableCommand(a), newBindingDisableCommand(a), newBindingDeleteCommand(a))
+	cmd.AddCommand(newBindingValidateCommand(a), newBindingCreateCommand(a), newBindingUpdateCommand(a), newBindingPutCommand(a), newBindingListCommand(a), newBindingGetCommand(a), newBindingEnableCommand(a), newBindingDisableCommand(a), newBindingDeleteCommand(a))
 	return cmd
 }
 
-func newProcedureValidateCommand() *cobra.Command {
-	return &cobra.Command{Use: "validate procedure.json", Short: "Validate a graph procedure locally", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+func newProcedureValidateCommand(a *app.App) *cobra.Command {
+	var flags automationDomainFlags
+	var server bool
+	cmd := &cobra.Command{Use: "validate procedure.json", Short: "Validate a graph procedure", Long: "Validate a graph procedure.\n\nBy default this runs local JSON/model validation only. Use --server to validate against daemon state and print normalized JSON when --output json is set.", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		data, err := os.ReadFile(args[0])
 		if err != nil {
 			return err
+		}
+		if server {
+			return runServerProcedureValidate(cmd, a, flags, string(data))
 		}
 		var procedure automationmodel.Procedure
 		if err := json.Unmarshal(data, &procedure); err != nil {
@@ -59,13 +64,21 @@ func newProcedureValidateCommand() *cobra.Command {
 		fmt.Fprintln(cmd.OutOrStdout(), "valid")
 		return nil
 	}}
+	cmd.Flags().BoolVar(&server, "server", false, "validate against daemon state instead of local-only checks")
+	bindAutomationDomainFlags(cmd, &flags)
+	return cmd
 }
 
-func newBindingValidateCommand() *cobra.Command {
-	return &cobra.Command{Use: "validate binding.json", Short: "Validate a graph automation binding locally", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+func newBindingValidateCommand(a *app.App) *cobra.Command {
+	var flags automationDomainFlags
+	var server bool
+	cmd := &cobra.Command{Use: "validate binding.json", Short: "Validate a graph automation binding", Long: "Validate a graph automation binding.\n\nBy default this runs local JSON/model validation only. Use --server to validate against daemon state, including referenced procedures, and print normalized JSON when --output json is set.", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		data, err := os.ReadFile(args[0])
 		if err != nil {
 			return err
+		}
+		if server {
+			return runServerBindingValidate(cmd, a, flags, string(data))
 		}
 		var binding automationmodel.Binding
 		if err := json.Unmarshal(data, &binding); err != nil {
@@ -77,6 +90,59 @@ func newBindingValidateCommand() *cobra.Command {
 		fmt.Fprintln(cmd.OutOrStdout(), "valid")
 		return nil
 	}}
+	cmd.Flags().BoolVar(&server, "server", false, "validate against daemon state instead of local-only checks")
+	bindAutomationDomainFlags(cmd, &flags)
+	return cmd
+}
+
+func runServerProcedureValidate(cmd *cobra.Command, a *app.App, flags automationDomainFlags, procedureJSON string) error {
+	conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	domainID, err := resolveAutomationDomainID(cmd, a, conn, authCtx, flags)
+	if err != nil {
+		return err
+	}
+	res, err := clientv1.NewAutomationServiceClient(conn).ValidateGraphProcedure(authCtx, &clientv1.ValidateGraphProcedureRequest{DomainId: domainID, ProcedureJson: procedureJSON})
+	if err != nil {
+		return err
+	}
+	if !res.GetValid() {
+		return fmt.Errorf("graph procedure invalid: %s", strings.TrimSpace(res.GetError()))
+	}
+	if a.Output == "json" {
+		fmt.Fprintln(cmd.OutOrStdout(), res.GetNormalizedProcedureJson())
+		return nil
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "valid")
+	return nil
+}
+
+func runServerBindingValidate(cmd *cobra.Command, a *app.App, flags automationDomainFlags, bindingJSON string) error {
+	conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	domainID, err := resolveAutomationDomainID(cmd, a, conn, authCtx, flags)
+	if err != nil {
+		return err
+	}
+	res, err := clientv1.NewAutomationServiceClient(conn).ValidateGraphAutomationBinding(authCtx, &clientv1.ValidateGraphAutomationBindingRequest{DomainId: domainID, BindingJson: bindingJSON})
+	if err != nil {
+		return err
+	}
+	if !res.GetValid() {
+		return fmt.Errorf("graph automation binding invalid: %s", strings.TrimSpace(res.GetError()))
+	}
+	if a.Output == "json" {
+		fmt.Fprintln(cmd.OutOrStdout(), res.GetNormalizedBindingJson())
+		return nil
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "valid")
+	return nil
 }
 
 func newProcedureCreateCommand(a *app.App) *cobra.Command {
