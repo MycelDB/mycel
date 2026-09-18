@@ -349,8 +349,8 @@ func validateProcedureInferenceRef(path string, ref InferenceRef) error {
 	if operation == "" {
 		return fmt.Errorf("%s.operation is required", path)
 	}
-	if operation != "chat" && operation != "summarize" && operation != "classify" {
-		return fmt.Errorf("%s.operation must be chat, summarize, or classify", path)
+	if operation != "chat" && operation != "summarize" && operation != "classify" && operation != "image_analysis" {
+		return fmt.Errorf("%s.operation must be chat, summarize, classify, or image_analysis", path)
 	}
 	if err := validateReferenceToken(path+".profile", ref.Profile); err != nil {
 		return err
