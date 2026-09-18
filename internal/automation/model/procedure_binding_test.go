@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -54,6 +55,20 @@ func TestValidateProcedureAllowsBindingProvidedProfile(t *testing.T) {
 	procedure := Procedure{ID: "knot-pkm.page-summary", Version: 1, Status: StatusEnabled, Input: Input{Target: "changed", Fields: []string{"payload.text"}}, Inference: InferenceRef{Operation: "summarize", Parameters: InferenceParameters{ResponseFormat: "json"}}, Prompt: "Summarize", Output: Output{Mode: OutputModeText, Actions: []Action{{UpdateNode: &UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.summary": "$result.text"}}}}}}
 	if err := ValidateProcedure(procedure); err != nil {
 		t.Fatalf("ValidateProcedure() error = %v", err)
+	}
+}
+
+func TestValidateProcedureAllowsImageAnalysisOperation(t *testing.T) {
+	procedure := Procedure{ID: "image.summary", Version: 1, Status: StatusEnabled, Input: Input{Target: "changed", Fields: []string{"payload.blob_id", "properties.caption"}}, Inference: InferenceRef{Operation: "image_analysis", Profile: "image-summary"}, Prompt: "Describe this image", Output: Output{Mode: OutputModeText, Actions: []Action{{UpdateNode: &UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.image_summary": "$result.text"}}}}}}
+	if err := ValidateProcedure(procedure); err != nil {
+		t.Fatalf("ValidateProcedure(image_analysis) error = %v", err)
+	}
+}
+
+func TestValidateProcedureRejectsUnknownInferenceOperation(t *testing.T) {
+	procedure := Procedure{ID: "bad.operation", Version: 1, Status: StatusEnabled, Input: Input{Target: "changed", Fields: []string{"payload.text"}}, Inference: InferenceRef{Operation: "vision_magic", Profile: "vision"}, Prompt: "Do something", Output: Output{Mode: OutputModeText, Actions: []Action{{UpdateNode: &UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.result": "$result.text"}}}}}}
+	if err := ValidateProcedure(procedure); err == nil || !strings.Contains(err.Error(), "image_analysis") {
+		t.Fatalf("ValidateProcedure(unknown operation) error = %v, want allowed-operation error", err)
 	}
 }
 
