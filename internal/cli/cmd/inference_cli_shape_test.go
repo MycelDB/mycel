@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/myceldb/mycel/internal/cli/app"
@@ -58,6 +59,11 @@ func TestAutomationCommandTreeSupportsSpaceDomainRefs(t *testing.T) {
 		{"automation", "put"},
 		{"automation", "list"},
 		{"automation", "get"},
+		{"automation", "legacy", "create"},
+		{"automation", "legacy", "update"},
+		{"automation", "legacy", "put"},
+		{"automation", "legacy", "list"},
+		{"automation", "legacy", "get"},
 		{"automation", "runs"},
 		{"automation", "invocation", "retry"},
 	} {
@@ -67,6 +73,24 @@ func TestAutomationCommandTreeSupportsSpaceDomainRefs(t *testing.T) {
 		}
 		if cmd.Flags().Lookup("space-id") == nil || cmd.Flags().Lookup("domain") == nil || cmd.Flags().Lookup("domain-id") == nil {
 			t.Fatalf("command path %v missing space/domain flags", path)
+		}
+	}
+}
+
+func TestAutomationCommandTreeMarksLegacyCombinedCommands(t *testing.T) {
+	root := NewRootCommand(&app.App{}, false)
+	for _, path := range [][]string{
+		{"automation", "create"},
+		{"automation", "put"},
+		{"automation", "legacy", "create"},
+		{"automation", "legacy", "put"},
+	} {
+		cmd, _, err := root.Find(path)
+		if err != nil {
+			t.Fatalf("command path %v not found: %v", path, err)
+		}
+		if !strings.Contains(cmd.Short, "Legacy") {
+			t.Fatalf("command path %v short help does not mark legacy: %q", path, cmd.Short)
 		}
 	}
 }
