@@ -73,7 +73,7 @@ func (c OpenAICompatible) Chat(ctx context.Context, req ChatRequest) (ChatRespon
 		body["temperature"] = *req.Parameters.Temperature
 	}
 	if req.Parameters.MaxOutputTokens > 0 {
-		body["max_tokens"] = req.Parameters.MaxOutputTokens
+		body[openAICompatibleOutputTokenParameter(req.Model, req.Capability)] = req.Parameters.MaxOutputTokens
 	}
 	if responseFormat := strings.ToLower(strings.TrimSpace(req.Parameters.ResponseFormat)); responseFormat == "json" || responseFormat == "json_object" {
 		body["response_format"] = map[string]string{"type": "json_object"}
@@ -267,6 +267,41 @@ func providerModelName(model domaininference.Model, capability domaininference.C
 		return capability.ProviderModelOverride
 	}
 	return model.ProviderModelName
+}
+
+func openAICompatibleOutputTokenParameter(model domaininference.Model, capability domaininference.Capability) string {
+	for _, metadata := range []map[string]any{capability.Metadata, model.Metadata} {
+		value, ok := metadataString(metadata, "output_token_parameter")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "max_completion_tokens":
+			return "max_completion_tokens"
+		case "max_tokens":
+			return "max_tokens"
+		}
+	}
+	return "max_tokens"
+}
+
+func metadataString(metadata map[string]any, key string) (string, bool) {
+	if metadata == nil {
+		return "", false
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return "", false
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", false
+	}
+	return text, true
 }
 
 func endpointURL(baseURL, suffix string) string {

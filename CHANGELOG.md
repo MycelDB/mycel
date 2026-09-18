@@ -6,6 +6,14 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+### Added
+
+- Added runnable image attachment summary graph automation examples and operator documentation (#77).
+
+### Fixed
+
+- Made the OpenAI-compatible chat connector honor `output_token_parameter=max_completion_tokens` metadata while preserving the default `max_tokens` request shape (#76).
+
 ## [v0.13.0] - 2026-09-12
 
 ### Added
