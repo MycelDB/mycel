@@ -293,6 +293,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		S3EndpointURL:       cfg.Blob.S3EndpointURL,
 		S3ForcePathStyle:    cfg.Blob.S3ForcePathStyle,
 	})
+	automationService.WithBlobManager(blobService)
 	inferenceService.SetSecretResolver(inferenceservice.NewEnvelopeSecretResolver(enc))
 	lexicalService := lexicalservice.NewModule()
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{

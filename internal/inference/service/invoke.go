@@ -18,6 +18,7 @@ type InvokeRequest struct {
 	Input               string
 	Prompt              string
 	Messages            []connectors.Message
+	ImageInputs         []connectors.ImageInput
 	RequestID           string
 	AutomationID        string
 	AutomationRunID     string
@@ -138,15 +139,18 @@ func (m *Module) invokeConnector(ctx context.Context, connector connectors.Conne
 
 func normalizedMessages(req InvokeRequest) []connectors.Message {
 	if len(req.Messages) > 0 {
-		out := make([]connectors.Message, 0, len(req.Messages))
+		out := make([]connectors.Message, 0, len(req.Messages)+1)
 		for _, msg := range req.Messages {
-			if strings.TrimSpace(msg.Content) != "" {
+			if strings.TrimSpace(msg.Content) != "" || len(msg.Parts) > 0 {
 				role := strings.TrimSpace(msg.Role)
 				if role == "" {
 					role = "user"
 				}
-				out = append(out, connectors.Message{Role: role, Content: msg.Content})
+				out = append(out, connectors.Message{Role: role, Content: msg.Content, Parts: cloneMessageParts(msg.Parts)})
 			}
+		}
+		if len(req.ImageInputs) > 0 {
+			out = appendImagesToUserMessage(out, req.ImageInputs)
 		}
 		return out
 	}
@@ -154,8 +158,58 @@ func normalizedMessages(req InvokeRequest) []connectors.Message {
 	if strings.TrimSpace(req.Prompt) != "" {
 		out = append(out, connectors.Message{Role: "system", Content: req.Prompt})
 	}
-	if strings.TrimSpace(req.Input) != "" {
-		out = append(out, connectors.Message{Role: "user", Content: req.Input})
+	if strings.TrimSpace(req.Input) != "" || len(req.ImageInputs) > 0 {
+		msg := connectors.Message{Role: "user"}
+		if len(req.ImageInputs) == 0 {
+			msg.Content = req.Input
+		} else {
+			if strings.TrimSpace(req.Input) != "" {
+				msg.Parts = append(msg.Parts, connectors.MessagePart{Type: "text", Text: req.Input})
+			}
+			msg.Parts = append(msg.Parts, imageMessageParts(req.ImageInputs)...)
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func appendImagesToUserMessage(messages []connectors.Message, images []connectors.ImageInput) []connectors.Message {
+	parts := imageMessageParts(images)
+	if len(parts) == 0 {
+		return messages
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if strings.EqualFold(strings.TrimSpace(messages[i].Role), "user") {
+			messages[i].Parts = append(messages[i].Parts, parts...)
+			return messages
+		}
+	}
+	return append(messages, connectors.Message{Role: "user", Parts: parts})
+}
+
+func imageMessageParts(images []connectors.ImageInput) []connectors.MessagePart {
+	parts := make([]connectors.MessagePart, 0, len(images))
+	for _, image := range images {
+		if len(image.Data) == 0 {
+			continue
+		}
+		cloned := image
+		cloned.Data = append([]byte(nil), image.Data...)
+		parts = append(parts, connectors.MessagePart{Type: "image", Image: &cloned})
+	}
+	return parts
+}
+
+func cloneMessageParts(parts []connectors.MessagePart) []connectors.MessagePart {
+	out := make([]connectors.MessagePart, 0, len(parts))
+	for _, part := range parts {
+		cloned := connectors.MessagePart{Type: part.Type, Text: part.Text}
+		if part.Image != nil {
+			image := *part.Image
+			image.Data = append([]byte(nil), part.Image.Data...)
+			cloned.Image = &image
+		}
+		out = append(out, cloned)
 	}
 	return out
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/myceldb/mycel/internal/automation/render"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
@@ -137,7 +138,12 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
 	}
-	output, err := m.generateWithInference(ctx, def, inv, rendered.Text, &run)
+	imageInputs, err := m.imageInputsForProcedure(ctx, inv, def, run, node, condition.Aliases, inputContext.Collections)
+	if err != nil {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+		return run, err
+	}
+	output, err := m.generateWithInference(ctx, def, inv, rendered.Text, &run, imageInputs...)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
@@ -331,7 +337,7 @@ func idempotencyElementID(def automation.Definition, run automation.Run, inv aut
 	return inv.ChangedElementID
 }
 
-func (m *AutomationManager) generateWithInference(ctx context.Context, def automation.Definition, inv automation.Invocation, rendered string, run *automation.Run) (string, error) {
+func (m *AutomationManager) generateWithInference(ctx context.Context, def automation.Definition, inv automation.Invocation, rendered string, run *automation.Run, imageInputs ...connectors.ImageInput) (string, error) {
 	if m.inference == nil {
 		run.Usage = automation.TokenUsage{Status: string(domaininference.UsageStatusFailed)}
 		return "", ErrInferenceUnavailable
@@ -378,7 +384,15 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 		metadata["procedure_id"] = run.ProcedureID
 		metadata["procedure_version"] = run.ProcedureVersion
 	}
-	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: metadata}, Prompt: def.Prompt, Input: rendered, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: metadata})
+	if len(imageInputs) > 0 {
+		metadata["image_input_count"] = len(imageInputs)
+		var totalBytes int64
+		for _, image := range imageInputs {
+			totalBytes += image.SizeBytes
+		}
+		metadata["image_input_total_bytes"] = totalBytes
+	}
+	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: metadata}, Prompt: def.Prompt, Input: rendered, ImageInputs: imageInputs, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: metadata})
 	populateRunFromInference(run, ref, resp)
 	if err != nil {
 		if errors.Is(err, inferenceservice.ErrDenied) && strings.TrimSpace(resp.Decision.Reason) != "" {
