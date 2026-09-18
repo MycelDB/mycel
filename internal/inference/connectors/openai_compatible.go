@@ -3,6 +3,7 @@ package connectors
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -67,7 +68,7 @@ func (c OpenAICompatible) Chat(ctx context.Context, req ChatRequest) (ChatRespon
 	if err := validateChatRequest(req); err != nil {
 		return ChatResponse{}, err
 	}
-	body := map[string]any{"model": providerModelName(req.Model, req.Capability), "messages": req.Messages}
+	body := map[string]any{"model": providerModelName(req.Model, req.Capability), "messages": openAICompatibleMessages(req.Messages)}
 	if req.Parameters.Temperature != nil {
 		body["temperature"] = *req.Parameters.Temperature
 	}
@@ -184,7 +185,7 @@ func validateChatRequest(req ChatRequest) error {
 	if req.Credential.AuthType != domaininference.CredentialAuthNone && strings.TrimSpace(req.Secret) == "" {
 		return ConnectorError{Code: "missing_secret", Err: fmt.Errorf("credential secret is required")}
 	}
-	if len(req.Messages) == 0 {
+	if !hasAnyMessageContent(req.Messages) {
 		return ConnectorError{Code: "empty_messages", Err: fmt.Errorf("chat messages are required")}
 	}
 	if strings.TrimSpace(req.Endpoint.BaseURL) == "" {
@@ -209,6 +210,56 @@ func connectorModalityListContains(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func hasAnyMessageContent(messages []Message) bool {
+	for _, msg := range messages {
+		if strings.TrimSpace(msg.Content) != "" || len(msg.Parts) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func openAICompatibleMessages(messages []Message) []map[string]any {
+	out := make([]map[string]any, 0, len(messages))
+	for _, msg := range messages {
+		role := strings.TrimSpace(msg.Role)
+		if role == "" {
+			role = "user"
+		}
+		mapped := map[string]any{"role": role}
+		if len(msg.Parts) == 0 {
+			mapped["content"] = msg.Content
+			out = append(out, mapped)
+			continue
+		}
+		parts := make([]map[string]any, 0, len(msg.Parts)+1)
+		if strings.TrimSpace(msg.Content) != "" {
+			parts = append(parts, map[string]any{"type": "text", "text": msg.Content})
+		}
+		for _, part := range msg.Parts {
+			switch strings.ToLower(strings.TrimSpace(part.Type)) {
+			case "text":
+				if strings.TrimSpace(part.Text) != "" {
+					parts = append(parts, map[string]any{"type": "text", "text": part.Text})
+				}
+			case "image", "image_url":
+				if part.Image == nil || len(part.Image.Data) == 0 {
+					continue
+				}
+				mimeType := strings.TrimSpace(part.Image.MimeType)
+				if mimeType == "" {
+					mimeType = "application/octet-stream"
+				}
+				dataURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(part.Image.Data)
+				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL}})
+			}
+		}
+		mapped["content"] = parts
+		out = append(out, mapped)
+	}
+	return out
 }
 
 func providerModelName(model domaininference.Model, capability domaininference.Capability) string {
