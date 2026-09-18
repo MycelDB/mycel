@@ -65,6 +65,30 @@ func TestOpenAICompatibleChatRequestShape(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleChatUsesMaxCompletionTokensWhenConfigured(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	cap := capability(domaininference.OperationImageAnalysis)
+	cap.Metadata = map[string]any{"output_token_parameter": "max_completion_tokens"}
+	_, err := OpenAICompatible{}.Chat(context.Background(), ChatRequest{Endpoint: endpoint(srv.URL, domaininference.OperationImageAnalysis), Model: model(domaininference.OperationImageAnalysis), Capability: cap, Credential: credential(domaininference.CredentialAuthNone), Messages: []Message{{Role: "user", Content: "describe"}}, Parameters: domaininference.Parameters{MaxOutputTokens: 64}})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if gotBody["max_completion_tokens"].(float64) != 64 {
+		t.Fatalf("expected max_completion_tokens=64, body=%#v", gotBody)
+	}
+	if _, ok := gotBody["max_tokens"]; ok {
+		t.Fatalf("did not expect max_tokens with max_completion_tokens metadata, body=%#v", gotBody)
+	}
+}
+
 func TestOpenAICompatibleChatSendsImagePartsAsDataURLs(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

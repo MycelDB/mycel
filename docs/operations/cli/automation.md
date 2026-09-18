@@ -130,6 +130,94 @@ Bindings can be created by an operator/user while their runtime context executes
 later as the built-in `automation` actor on behalf of a configured principal,
 subject to inference credential grants and access policies.
 
+## Example: summarize Console image attachments
+
+Console image uploads create graph blob nodes labeled `attachment` and `blob`.
+Bind image-analysis automations to those labels, not to the parent business node
+label, when you want the uploaded image node itself to trigger the workflow.
+
+The runnable example files are:
+
+- `examples/procedures/image-attachment-summary.json`
+- `examples/automation-bindings/image-attachment-summary.json`
+
+Provision the OpenAI catalog and an encrypted credential first. Inline inference
+secrets require encryption at rest; daemons without encryption reject them. Use
+`--secret-stdin` so API keys are not stored in shell history:
+
+```sh
+mycel inference package apply examples/inference/standard-openai-chat.json
+
+printf '%s' "$OPENAI_API_KEY" | mycel inference credential create openai-key \
+  --model-endpoint openai \
+  --owner-type system \
+  --owner-id system \
+  --secret-stdin
+```
+
+Create an image-analysis profile and allow the automation actor to use the
+credential on behalf of the user/principal that owns the binding:
+
+```sh
+mycel inference profile create image-attachment-summary \
+  --space-id <space-id> \
+  --domain default \
+  --operation image_analysis \
+  --purpose automation \
+  --model openai/gpt-5.6 \
+  --privacy-class third_party \
+  --max-output-tokens 512
+
+mycel inference grant openai-key \
+  --space-id <space-id> \
+  --domain default \
+  --operation image_analysis \
+  --model-endpoint openai \
+  --model openai/gpt-5.6 \
+  --grantee-principal-id automation \
+  --allow-on-behalf-of-principal-id <owner-principal-id>
+
+mycel inference policy allow \
+  --space-id <space-id> \
+  --domain default \
+  --operation image_analysis \
+  --privacy-class third_party \
+  --reason "image attachment summaries are allowed"
+```
+
+Edit the binding example so `scope.space_id`, `scope.domain_id`,
+`runtime.owner_principal_id`, and `runtime.on_behalf_of_principal_id` match your
+deployment. Then validate and apply the procedure and binding with the canonical
+commands:
+
+```sh
+mycel automation procedure validate examples/procedures/image-attachment-summary.json
+mycel automation procedure put examples/procedures/image-attachment-summary.json \
+  --space-id <space-id> \
+  --domain default
+
+mycel automation binding validate examples/automation-bindings/image-attachment-summary.json \
+  --server \
+  --space-id <space-id> \
+  --domain default
+mycel automation binding put examples/automation-bindings/image-attachment-summary.json \
+  --space-id <space-id> \
+  --domain default
+```
+
+After uploading an image in Console's **Attachments** tab, inspect generated
+summary nodes:
+
+```sql
+MATCH (i:attachment)-[:contains]->(s:image_summary)
+RETURN i.properties.name, s.payload.text
+FETCH FIRST 20 ROWS ONLY
+```
+
+The bundled OpenAI package marks GPT-5.6 capabilities with
+`output_token_parameter=max_completion_tokens`, so profiles can use
+`--max-output-tokens` with models that reject legacy `max_tokens`.
+
 ## Legacy combined automation definitions
 
 Legacy combined definition commands are compatibility surfaces. They keep older

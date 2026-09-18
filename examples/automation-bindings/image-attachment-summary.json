@@ -1,0 +1,31 @@
+{
+  "id": "mycel.examples.image-attachment-summary.on-console-image-attachment",
+  "name": "Summarize Console image attachments",
+  "procedure_id": "mycel.examples.image-attachment-summary",
+  "procedure_version": 1,
+  "status": "enabled",
+  "scope": {
+    "space_id": "00000000-0000-4000-8000-000000000001",
+    "domain_id": "00000000-0000-4000-8000-000000000002"
+  },
+  "trigger": {
+    "type": "graph_event",
+    "events": ["node.created", "node.updated"],
+    "labels": ["attachment", "blob"]
+  },
+  "runtime": {
+    "actor_principal_id": "automation",
+    "owner_principal_id": "00000000-0000-4000-8000-000000000003",
+    "on_behalf_of_principal_id": "00000000-0000-4000-8000-000000000003",
+    "inference_profile": "image-attachment-summary"
+  },
+  "debounce": {
+    "duration": "10s",
+    "coalesceBy": "changed"
+  },
+  "idempotency": {
+    "scope": "target",
+    "target": "changed",
+    "skipIfOutputUnchanged": true
+  }
+}
