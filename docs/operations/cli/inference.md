@@ -78,6 +78,19 @@ mycel inference grant delete <grant-id> --space-id <space-id>
 `mycel inference credential grant ...` remains as a compatibility alias for
 older scripts; prefer top-level `mycel inference grant ...`.
 
+## OpenAI-compatible output token parameter
+
+OpenAI-compatible chat connectors serialize profile/procedure `maxOutputTokens`
+as `max_tokens` by default. For models that require the newer OpenAI chat
+completion field, set model or capability metadata:
+
+```json
+{"output_token_parameter": "max_completion_tokens"}
+```
+
+Capability metadata takes precedence over model metadata. The bundled
+`standard-openai-chat` package sets this for GPT-5.6 capabilities.
+
 ## Profiles and policies
 
 ```sh

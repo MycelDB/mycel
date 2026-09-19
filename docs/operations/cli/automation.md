@@ -1,20 +1,30 @@
 # `mycel automation`
 
-Manage graph automation definitions, invocations, and run records.
+Manage graph automations.
 
 Authentication mode: **user**.
 
-Automations reference inference profiles and model/capability refs. They do not
-embed provider API keys, raw endpoint URLs, or credential secret refs.
+The canonical authoring model is split into two resources:
 
-The daemon supports splitting reusable graph procedures from runtime automation
-bindings. The `mycel automation` CLI remains a compatibility surface for combined
-automation definitions; use `mycel procedure` and `mycel automation-binding` for
-first-class split-model management.
+- **procedure**: reusable graph work, input rendering, inference operation, prompt,
+  and output actions;
+- **binding**: trigger, scope, runtime actor/on-behalf-of principal context,
+  debounce, and idempotency settings.
+
+Canonical commands:
+
+```sh
+mycel automation procedure ...
+mycel automation binding ...
+```
+
+Legacy combined automation definitions remain available for compatibility, but new
+authoring should use procedures plus bindings.
 
 ## Domain scope
 
-Prefer space plus domain refs:
+Prefer space plus domain refs on all procedure, binding, legacy, run, and
+invocation commands:
 
 ```sh
 --space-id <space-id> --domain default
@@ -22,55 +32,219 @@ Prefer space plus domain refs:
 
 `--domain` accepts a domain key or UUID when `--space-id` is provided. A bare
 UUID still works for compatibility. `--domain-id` is also accepted for scripts
-that already store the resolved domain UUID.
+that already store the resolved domain UUID, but it is deprecated.
 
-## Procedure and binding commands
+## Canonical procedure and binding commands
+
+Procedures and bindings live under the `automation` namespace:
 
 ```sh
-mycel procedure validate examples/procedures/page-summary.json
-mycel procedure create examples/procedures/page-summary.json --space-id <space-id> --domain default
-mycel procedure update page-summary examples/procedures/page-summary.json --space-id <space-id> --domain default
-mycel procedure list --space-id <space-id> --domain default
-mycel procedure get page-summary --space-id <space-id> --domain default
-mycel procedure delete page-summary --space-id <space-id> --domain default
+mycel automation procedure validate examples/procedures/page-summary.json
+mycel automation procedure validate examples/procedures/page-summary.json \
+  --server \
+  --space-id <space-id> \
+  --domain default
+mycel automation procedure put examples/procedures/page-summary.json \
+  --space-id <space-id> \
+  --domain default
+mycel automation procedure list --space-id <space-id> --domain default
+mycel automation procedure get knot-pkm.page-summary --space-id <space-id> --domain default
 
-mycel automation-binding validate examples/automation-bindings/page-summary-user.json
-mycel automation-binding create examples/automation-bindings/page-summary-user.json --space-id <space-id> --domain default
-mycel automation-binding update page-summary-user examples/automation-bindings/page-summary-user.json --space-id <space-id> --domain default
-mycel automation-binding list --space-id <space-id> --domain default
-mycel automation-binding get page-summary-user --space-id <space-id> --domain default
-mycel automation-binding enable page-summary-user --space-id <space-id> --domain default
-mycel automation-binding disable page-summary-user --space-id <space-id> --domain default
-mycel automation-binding delete page-summary-user --space-id <space-id> --domain default
+mycel automation binding validate examples/automation-bindings/page-summary-user.json
+mycel automation binding validate examples/automation-bindings/page-summary-user.json \
+  --server \
+  --space-id <space-id> \
+  --domain default
+mycel automation binding put examples/automation-bindings/page-summary-user.json \
+  --space-id <space-id> \
+  --domain default
+mycel automation binding list --space-id <space-id> --domain default
+mycel automation binding enable knot-pkm.user.example.page-summary.entry-trigger \
+  --space-id <space-id> \
+  --domain default
 ```
 
-Binding summaries show procedure refs, trigger type, and runtime
-actor/on-behalf/owner fields. A binding can be created by an operator/user while
-its runtime context executes later as the `automation` actor on behalf of a
-configured principal, subject to inference grants and policies.
+See the focused references:
 
-## Legacy definition commands
+- [`mycel automation procedure`](procedure.md)
+- [`mycel automation binding`](automation-binding.md)
+
+Compatibility aliases remain available for existing scripts:
 
 ```sh
-mycel automation validate examples/automations/summarize_page.json
+mycel procedure ...
+mycel automation-binding ...
+```
 
-mycel automation create examples/automations/summarize_page.json \
+Broad top-level aliases such as `mycel binding` and `mycel bindings` are
+compatibility aliases only and should not be used in new docs or scripts.
+
+## Recommended provisioning workflow
+
+1. Create or select an inference profile and model capability for the operation.
+   See [Inference CLI](inference.md).
+2. Create an inference credential and grant it to the automation actor with the
+   intended on-behalf-of principal and `automation` usage mode.
+3. Write the graph procedure JSON and run local validation:
+
+   ```sh
+   mycel automation procedure validate procedure.json
+   ```
+
+4. Run daemon-backed validation for normalized JSON and daemon-state checks:
+
+   ```sh
+   mycel --output json automation procedure validate procedure.json \
+     --server \
+     --space-id <space-id> \
+     --domain default
+   ```
+
+5. Upsert the procedure:
+
+   ```sh
+   mycel automation procedure put procedure.json \
+     --space-id <space-id> \
+     --domain default
+   ```
+
+6. Write the binding JSON, including `scope`, `trigger`, and `runtime`, then
+   validate it against daemon state. Server validation catches missing referenced
+   procedures:
+
+   ```sh
+   mycel --output json automation binding validate binding.json \
+     --server \
+     --space-id <space-id> \
+     --domain default
+   ```
+
+7. Upsert and enable the binding:
+
+   ```sh
+   mycel automation binding put binding.json --space-id <space-id> --domain default
+   mycel automation binding enable <binding-id> --space-id <space-id> --domain default
+   ```
+
+Bindings can be created by an operator/user while their runtime context executes
+later as the built-in `automation` actor on behalf of a configured principal,
+subject to inference credential grants and access policies.
+
+## Example: summarize Console image attachments
+
+Console image uploads create graph blob nodes labeled `attachment` and `blob`.
+Bind image-analysis automations to those labels, not to the parent business node
+label, when you want the uploaded image node itself to trigger the workflow.
+
+The runnable example files are:
+
+- `examples/procedures/image-attachment-summary.json`
+- `examples/automation-bindings/image-attachment-summary.json`
+
+Provision the OpenAI catalog and an encrypted credential first. Inline inference
+secrets require encryption at rest; daemons without encryption reject them. Use
+`--secret-stdin` so API keys are not stored in shell history:
+
+```sh
+mycel inference package apply examples/inference/standard-openai-chat.json
+
+printf '%s' "$OPENAI_API_KEY" | mycel inference credential create openai-key \
+  --model-endpoint openai \
+  --owner-type system \
+  --owner-id system \
+  --secret-stdin
+```
+
+Create an image-analysis profile and allow the automation actor to use the
+credential on behalf of the user/principal that owns the binding:
+
+```sh
+mycel inference profile create image-attachment-summary \
+  --space-id <space-id> \
+  --domain default \
+  --operation image_analysis \
+  --purpose automation \
+  --model openai/gpt-5.6 \
+  --privacy-class third_party \
+  --max-output-tokens 512
+
+mycel inference grant openai-key \
+  --space-id <space-id> \
+  --domain default \
+  --operation image_analysis \
+  --model-endpoint openai \
+  --model openai/gpt-5.6 \
+  --grantee-principal-id automation \
+  --allow-on-behalf-of-principal-id <owner-principal-id>
+
+mycel inference policy allow \
+  --space-id <space-id> \
+  --domain default \
+  --operation image_analysis \
+  --privacy-class third_party \
+  --reason "image attachment summaries are allowed"
+```
+
+Edit the binding example so `scope.space_id`, `scope.domain_id`,
+`runtime.owner_principal_id`, and `runtime.on_behalf_of_principal_id` match your
+deployment. Then validate and apply the procedure and binding with the canonical
+commands:
+
+```sh
+mycel automation procedure validate examples/procedures/image-attachment-summary.json
+mycel automation procedure put examples/procedures/image-attachment-summary.json \
   --space-id <space-id> \
   --domain default
 
-mycel automation update summarize_page examples/automations/summarize_page.json \
+mycel automation binding validate examples/automation-bindings/image-attachment-summary.json \
+  --server \
   --space-id <space-id> \
   --domain default
+mycel automation binding put examples/automation-bindings/image-attachment-summary.json \
+  --space-id <space-id> \
+  --domain default
+```
 
+After uploading an image in Console's **Attachments** tab, inspect generated
+summary nodes:
+
+```sql
+MATCH (i:attachment)-[:contains]->(s:image_summary)
+RETURN i.properties.name, s.payload.text
+FETCH FIRST 20 ROWS ONLY
+```
+
+The bundled OpenAI package marks GPT-5.6 capabilities with
+`output_token_parameter=max_completion_tokens`, so profiles can use
+`--max-output-tokens` with models that reject legacy `max_tokens`.
+
+## Legacy combined automation definitions
+
+Legacy combined definition commands are compatibility surfaces. They keep older
+scripts working, but new automation authoring should use procedures and bindings.
+
+The compatibility commands remain at the root:
+
+```sh
+mycel automation validate legacy-automation.json
+mycel automation create legacy-automation.json --space-id <space-id> --domain default
+mycel automation update <automation-id> legacy-automation.json --space-id <space-id> --domain default
+mycel automation put legacy-automation.json --space-id <space-id> --domain default
 mycel automation list --space-id <space-id> --domain default
-mycel automation get summarize_page --space-id <space-id> --domain default
-mycel automation enable summarize_page --space-id <space-id> --domain default
-mycel automation disable summarize_page --space-id <space-id> --domain default
-mycel automation delete summarize_page --space-id <space-id> --domain default
+mycel automation get <automation-id> --space-id <space-id> --domain default
+mycel automation enable <automation-id> --space-id <space-id> --domain default
+mycel automation disable <automation-id> --space-id <space-id> --domain default
+mycel automation delete <automation-id> --space-id <space-id> --domain default
 ```
 
-`mycel automation put` remains available as a create-or-update compatibility
-command; prefer `create` and `update` in new scripts.
+They are also available under the explicit legacy namespace:
+
+```sh
+mycel automation legacy validate legacy-automation.json
+mycel automation legacy create legacy-automation.json --space-id <space-id> --domain default
+mycel automation legacy put legacy-automation.json --space-id <space-id> --domain default
+mycel automation legacy list --space-id <space-id> --domain default
+```
 
 To migrate old combined definitions into explicit procedure+binding records while
 keeping the legacy file readable:
@@ -86,54 +260,13 @@ an operator/admin principal. The generated binding uses the same ID as the legac
 automation, so runtime selection prefers the explicit binding and avoids duplicate
 execution while the legacy definition remains available for compatibility.
 
-Use `--output json` with list and run-inspection commands when machine-readable
-responses are needed.
-
-If `condition.gql` is omitted, the automation treats the trigger as matched and
-uses the triggering node as `changed`. Keep `condition.gql` when the automation
-needs an additional GQL guard beyond the `on` event/label filter.
-
-## Graph-context automations
-
-Conditions can return node aliases in addition to `changed`. Those aliases can be
-used as input targets and `update_node.target` values. For example, a
-`JournalEntry` trigger can select its parent `journal`:
-
-```json
-"condition": {
-  "gql": "MATCH (journal:Journal)-[r:HAS_ENTRY]->(changed:JournalEntry) RETURN changed, journal"
-},
-"input": {
-  "target": "journal",
-  "mode": "gql_template",
-  "context": {
-    "entries": {
-      "gql": "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry ORDER BY r.properties.position FETCH FIRST 200 ROWS ONLY",
-      "limit": 200
-    }
-  },
-  "template": "Date: {{journal.properties.date}}\n{{#each entries}}- {{entry.payload.text}}\n{{/each}}"
-}
-```
-
-Context queries are read-only and must be bounded in GQL with `FETCH FIRST`;
-the optional `limit` field further caps accepted rows. `gql_template`
-supports scalar interpolation plus `{{#each name}}...{{/each}}` loops over named
-context result sets. Target-scoped
-idempotency and debounce/coalescing are available under `safety.idempotency` and
-`safety.debounce`; see `examples/automations/summarize_daily_journal.json`.
-
-Run records expose graph-context diagnostics including `target_alias`,
-`target_node_id`, per-context row counts, and coalesced invocation IDs when a
-pending invocation is skipped in favor of a newer one.
-
 ## Runs and invocations
 
 ```sh
 mycel automation runs \
   --space-id <space-id> \
   --domain default \
-  --automation summarize_page \
+  --automation <automation-or-binding-id> \
   --status failed \
   --limit 20
 
@@ -145,18 +278,25 @@ mycel automation invocation cancel <invocation-id> --space-id <space-id> --domai
 
 Run records include neutral inference provenance such as profile, capability,
 credential grant, policy decision, provider request ID, token usage, actor,
-on-behalf-of, and automation owner references. Newer run records may also include
-`binding_id`, `procedure_id`, `owner_principal_id`, and
-`event_origin_principal_id`.
+on-behalf-of, and automation owner references. Procedure/binding-backed run
+records also include `binding_id`, `procedure_id`, `owner_principal_id`, and
+`event_origin_principal_id` when available.
 
-Legacy combined automations still infer ownership from the creating principal for
-compatibility. Procedure/binding-backed automations store runtime context on the
-binding so an operator-created binding can execute as the built-in `automation`
-actor on behalf of a user principal under explicit grants/policies.
+## Graph-context automation notes
+
+Conditions can return node aliases in addition to `changed`. Those aliases can be
+used as input targets and `update_node.target` values. Context queries are
+read-only and must be bounded in GQL with `FETCH FIRST`; the optional `limit`
+field further caps accepted rows. `gql_template` supports scalar interpolation
+plus `{{#each name}}...{{/each}}` loops over named context result sets.
+
+Target-scoped idempotency and debounce/coalescing are available under
+`safety.idempotency` and `debounce`/`safety.debounce`, depending on whether the
+configuration is split or legacy combined.
 
 ## Related docs
 
-- [CLI index](README.md)
+- [`mycel automation procedure`](procedure.md)
+- [`mycel automation binding`](automation-binding.md)
 - [Inference CLI](inference.md)
-- [Operations](../README.md)
-- [Design](../../design/README.md)
+- [CLI index](README.md)

@@ -65,6 +65,56 @@ func TestOpenAICompatibleChatRequestShape(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleChatUsesMaxCompletionTokensWhenConfigured(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	cap := capability(domaininference.OperationImageAnalysis)
+	cap.Metadata = map[string]any{"output_token_parameter": "max_completion_tokens"}
+	_, err := OpenAICompatible{}.Chat(context.Background(), ChatRequest{Endpoint: endpoint(srv.URL, domaininference.OperationImageAnalysis), Model: model(domaininference.OperationImageAnalysis), Capability: cap, Credential: credential(domaininference.CredentialAuthNone), Messages: []Message{{Role: "user", Content: "describe"}}, Parameters: domaininference.Parameters{MaxOutputTokens: 64}})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if gotBody["max_completion_tokens"].(float64) != 64 {
+		t.Fatalf("expected max_completion_tokens=64, body=%#v", gotBody)
+	}
+	if _, ok := gotBody["max_tokens"]; ok {
+		t.Fatalf("did not expect max_tokens with max_completion_tokens metadata, body=%#v", gotBody)
+	}
+}
+
+func TestOpenAICompatibleChatSendsImagePartsAsDataURLs(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-image","choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	resp, err := OpenAICompatible{}.Chat(context.Background(), ChatRequest{Endpoint: endpoint(srv.URL, domaininference.OperationImageAnalysis), Model: model(domaininference.OperationImageAnalysis), Capability: capability(domaininference.OperationImageAnalysis), Credential: credential(domaininference.CredentialAuthNone), Messages: []Message{{Role: "user", Parts: []MessagePart{{Type: "text", Text: "describe"}, {Type: "image", Image: &ImageInput{MimeType: "image/png", Data: []byte{0x89, 0x50, 0x4e, 0x47}, SizeBytes: 4, BlobID: "blob-1"}}}}}})
+	if err != nil {
+		t.Fatalf("Chat() image error = %v", err)
+	}
+	messages := gotBody["messages"].([]any)
+	content := messages[0].(map[string]any)["content"].([]any)
+	imagePart := content[1].(map[string]any)
+	imageURL := imagePart["image_url"].(map[string]any)["url"].(string)
+	if imagePart["type"] != "image_url" || imageURL != "data:image/png;base64,iVBORw==" {
+		t.Fatalf("unexpected image content: %#v", content)
+	}
+	if resp.ProviderRequestID != "chatcmpl-image" || resp.Text != "ok" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
 func TestFakeConnectorCountsCalls(t *testing.T) {
 	fake := &FakeConnector{Text: "done", Vector: []float64{0.5}}
 	if _, err := fake.Embed(context.Background(), EmbeddingRequest{Input: "hello"}); err != nil {
@@ -84,7 +134,12 @@ func endpoint(baseURL string, op domaininference.Operation) domaininference.Endp
 }
 
 func model(op domaininference.Operation) domaininference.Model {
-	return domaininference.Model{ID: fixedModelID, Key: "model", Kind: modelKindForOperation(op), ProviderModelName: "provider-model", Enabled: true}
+	m := domaininference.Model{ID: fixedModelID, Key: "model", Kind: modelKindForOperation(op), ProviderModelName: "provider-model", Enabled: true}
+	if op == domaininference.OperationImageAnalysis {
+		m.InputModalities = []string{"text", "image"}
+		m.OutputModalities = []string{"text"}
+	}
+	return m
 }
 
 func capability(op domaininference.Operation) domaininference.Capability {

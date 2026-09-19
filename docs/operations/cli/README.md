@@ -20,6 +20,7 @@ Use `--output json` for scripting.
 | [admin activity](activity.md) | Durable operator activity event history. |
 | [auth](auth.md) | Principal authentication and auth sessions. |
 | [automation](automation.md) | Graph automation management. |
+| [automation binding](automation-binding.md) | Graph automation binding lifecycle under `mycel automation binding`. |
 | [blob](blob.md) | Raw blob upload/download/metadata/delete. |
 | [change-stream](change-stream.md) | Watch domain graph changes. |
 | [cluster](cluster.md) | Cluster status, health, raft, consistency, and forensics. |
@@ -31,6 +32,7 @@ Use `--output json` for scripting.
 | [metadata](metadata.md) | Metadata catalog queries. |
 | [node](node.md) | Alias for graph node operations. |
 | [principal](principal.md) | Principal identity, role, capability, and session management. |
+| [procedure](procedure.md) | Graph automation procedure lifecycle under `mycel automation procedure`. |
 | [query](query.md) | Query nodes or execute GQL. |
 | [schema](schema.md) | Domain schema get/put/delete/validate. |
 | [search](search.md) | General Search API commands, including lexical search. |

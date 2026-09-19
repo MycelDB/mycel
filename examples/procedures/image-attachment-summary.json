@@ -1,0 +1,53 @@
+{
+  "id": "mycel.examples.image-attachment-summary",
+  "name": "Summarize image attachments",
+  "version": 1,
+  "status": "enabled",
+  "input": {
+    "target": "changed",
+    "fields": ["properties.name", "properties.mime_type", "payload.blob_id"]
+  },
+  "inference": {
+    "operation": "image_analysis",
+    "profile": "image-attachment-summary",
+    "parameters": {
+      "maxOutputTokens": 512
+    }
+  },
+  "prompt": "Describe the attached image for later retrieval. Mention visible text, objects, scene, and any safety-relevant details. Return a concise plain-text summary.",
+  "output": {
+    "mode": "text",
+    "actions": [
+      {
+        "create_node": {
+          "as": "summary",
+          "labels": ["image_summary"],
+          "properties": {
+            "kind": "image_summary"
+          },
+          "payload": {
+            "text": "$result.text"
+          }
+        }
+      },
+      {
+        "upsert_edge": {
+          "from": "changed",
+          "to": "summary",
+          "label": "contains",
+          "properties": {
+            "kind": "image_summary"
+          }
+        }
+      }
+    ]
+  },
+  "safety": {
+    "ignoreSelfWrites": true,
+    "idempotency": {
+      "scope": "target",
+      "target": "changed",
+      "skipIfOutputUnchanged": true
+    }
+  }
+}
