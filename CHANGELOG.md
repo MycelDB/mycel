@@ -6,12 +6,24 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.15.0] - 2026-09-18
+
 ### Added
 
+- Added graph procedure and automation-binding `put` commands for file-based authoring (#60).
+- Consolidated procedure and binding management under the canonical `mycel automation` namespace (#61).
+- Added server-backed validation for graph procedures and automation bindings (#62).
+- Added `image_analysis` support for graph automation procedure inference operations (#63).
 - Added runnable image attachment summary graph automation examples and operator documentation (#77).
+
+### Changed
+
+- Cleaned up legacy and ambiguous automation CLI command surfaces while preserving compatibility where needed (#65).
+- Improved clustered readiness gating so client readiness waits for Raft write readiness in clustered deployments.
 
 ### Fixed
 
+- Passed image blob payloads through to image-analysis graph automations (#74).
 - Made the OpenAI-compatible chat connector honor `output_token_parameter=max_completion_tokens` metadata while preserving the default `max_tokens` request shape (#76).
 
 ## [v0.13.0] - 2026-09-12
