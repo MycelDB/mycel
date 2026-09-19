@@ -34,7 +34,8 @@
       "metadata": {
         "provider": "openai",
         "display_name": "OpenAI GPT-5.6 mini",
-        "recommended_for": ["graph automation", "summarization", "classification", "cost-sensitive workflows"]
+        "recommended_for": ["graph automation", "summarization", "classification", "cost-sensitive workflows"],
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -50,7 +51,8 @@
       "metadata": {
         "provider": "openai",
         "display_name": "OpenAI GPT-5.6",
-        "recommended_for": ["graph automation", "high-quality summarization", "structured extraction", "image analysis"]
+        "recommended_for": ["graph automation", "high-quality summarization", "structured extraction", "image analysis"],
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -66,7 +68,8 @@
       "metadata": {
         "provider": "openai",
         "display_name": "OpenAI GPT-5.6 pro",
-        "recommended_for": ["complex graph automation", "long-context synthesis", "high-accuracy classification"]
+        "recommended_for": ["complex graph automation", "long-context synthesis", "high-accuracy classification"],
+        "output_token_parameter": "max_completion_tokens"
       }
     }
   ],
@@ -80,7 +83,8 @@
         "supports_json_mode": true,
         "supports_tool_calls": true,
         "max_input_tokens": 1047576,
-        "max_output_tokens": 32768
+        "max_output_tokens": 32768,
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -91,7 +95,8 @@
       "metadata": {
         "supports_json_mode": true,
         "max_input_tokens": 1047576,
-        "max_output_tokens": 32768
+        "max_output_tokens": 32768,
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -102,7 +107,8 @@
       "metadata": {
         "supports_json_mode": true,
         "max_input_tokens": 1047576,
-        "max_output_tokens": 32768
+        "max_output_tokens": 32768,
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -114,7 +120,8 @@
         "supports_json_mode": true,
         "supports_tool_calls": true,
         "max_input_tokens": 1047576,
-        "max_output_tokens": 32768
+        "max_output_tokens": 32768,
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -125,7 +132,8 @@
       "metadata": {
         "supports_json_mode": true,
         "max_input_tokens": 1047576,
-        "max_output_tokens": 32768
+        "max_output_tokens": 32768,
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -136,7 +144,8 @@
       "metadata": {
         "supports_json_mode": true,
         "max_input_tokens": 1047576,
-        "max_output_tokens": 32768
+        "max_output_tokens": 32768,
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -147,7 +156,8 @@
       "metadata": {
         "supports_json_mode": true,
         "max_input_tokens": 1047576,
-        "max_output_tokens": 32768
+        "max_output_tokens": 32768,
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -159,7 +169,8 @@
         "supports_json_mode": true,
         "supports_tool_calls": true,
         "max_input_tokens": 1047576,
-        "max_output_tokens": 65536
+        "max_output_tokens": 65536,
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -170,7 +181,8 @@
       "metadata": {
         "supports_json_mode": true,
         "max_input_tokens": 1047576,
-        "max_output_tokens": 65536
+        "max_output_tokens": 65536,
+        "output_token_parameter": "max_completion_tokens"
       }
     },
     {
@@ -181,7 +193,8 @@
       "metadata": {
         "supports_json_mode": true,
         "max_input_tokens": 1047576,
-        "max_output_tokens": 65536
+        "max_output_tokens": 65536,
+        "output_token_parameter": "max_completion_tokens"
       }
     }
   ]

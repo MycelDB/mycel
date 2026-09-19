@@ -170,6 +170,80 @@ func TestSharedProcedureRunsWithDistinctBindingProfilesAndPrincipals(t *testing.
 	}
 }
 
+func TestImageAnalysisProcedureUsesImageAnalysisGrantPolicyAndUsage(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	imageProfileID, imageGrantID := addAutomationImageAnalysisProfileGrant(t, ctx, inference, ids, "image-summary", "principal-a")
+	store := storage.NewFileStore(t.TempDir())
+	nodeID := uuid.New()
+	node := graph.Node{ID: graph.NodeID(nodeID), DomainID: ids.domainID, Labels: []string{"Image"}, Payload: map[string]any{"blob_id": "blob-1"}, Properties: map[string]any{"caption": "diagram"}}
+	graphs := &automationE2EGraph{node: node}
+	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference)
+	procedure := automation.Procedure{ID: "image-analysis", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"payload.blob_id", "properties.caption"}}, Inference: automation.InferenceRef{Operation: string(domaininference.OperationImageAnalysis), ProfileID: imageProfileID.String()}, Prompt: "Describe the image", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.image_summary": "$result.text"}}}}}}
+	binding := automation.Binding{ID: "image-analysis-binding", Version: 1, DomainID: ids.domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: ids.spaceID, DomainID: ids.domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeCreated}, Labels: []string{"Image"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "principal-a", OnBehalfOfPrincipalID: "principal-a", InferenceProfileID: imageProfileID.String()}}
+	putProcedureAndBinding(t, ctx, store, procedure, binding)
+
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "operator-admin"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeCreated, NodeID: nodeID.String(), Node: &node}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatalf("HandleGraphChange() error = %v", err)
+	}
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if got := graphs.node.Properties["image_summary"]; got != "result text" {
+		t.Fatalf("image summary property = %#v", got)
+	}
+	_, chatCalls := fake.Calls()
+	if chatCalls != 1 {
+		t.Fatalf("image_analysis should use generative connector once, got %d", chatCalls)
+	}
+	events, err := inference.UsageLedger().ListUsageEvents(ctx)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("usage events = %+v err=%v", events, err)
+	}
+	if events[0].Operation != domaininference.OperationImageAnalysis || events[0].CredentialGrantID != domaininference.CredentialGrantID(imageGrantID) || events[0].Status != domaininference.UsageStatusSucceeded || events[0].Metadata["procedure_id"] != procedure.ID || events[0].Metadata["binding_id"] != binding.ID {
+		t.Fatalf("unexpected image_analysis usage event: %+v", events[0])
+	}
+}
+
+func TestImageAnalysisProcedureFailsClosedWithoutGrant(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	imageProfileID, imageGrantID := addAutomationImageAnalysisProfileGrant(t, ctx, inference, ids, "image-summary-denied", "principal-a")
+	spaceMgr, err := inference.SpaceManager(ctx, ids.spaceID)
+	if err != nil {
+		t.Fatalf("space manager: %v", err)
+	}
+	if err := spaceMgr.DeleteCredentialGrant(ctx, domaininference.CredentialGrantID(imageGrantID)); err != nil {
+		t.Fatalf("delete image grant: %v", err)
+	}
+	store := storage.NewFileStore(t.TempDir())
+	nodeID := uuid.New()
+	node := graph.Node{ID: graph.NodeID(nodeID), DomainID: ids.domainID, Labels: []string{"Image"}, Payload: map[string]any{"blob_id": "blob-1"}}
+	graphs := &automationE2EGraph{node: node}
+	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference)
+	procedure := automation.Procedure{ID: "image-analysis-denied", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"payload.blob_id"}}, Inference: automation.InferenceRef{Operation: string(domaininference.OperationImageAnalysis), ProfileID: imageProfileID.String()}, Prompt: "Describe the image", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.image_summary": "$result.text"}}}}}}
+	binding := automation.Binding{ID: "image-analysis-denied-binding", Version: 1, DomainID: ids.domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: ids.spaceID, DomainID: ids.domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeCreated}, Labels: []string{"Image"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "principal-a", OnBehalfOfPrincipalID: "principal-a", InferenceProfileID: imageProfileID.String()}}
+	putProcedureAndBinding(t, ctx, store, procedure, binding)
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "operator-admin"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeCreated, NodeID: nodeID.String(), Node: &node}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatalf("HandleGraphChange() error = %v", err)
+	}
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	}
+	_, chatCalls := fake.Calls()
+	if chatCalls != 0 {
+		t.Fatalf("denied image_analysis should not call connector, got %d", chatCalls)
+	}
+	events, err := inference.UsageLedger().ListUsageEvents(ctx)
+	if err != nil || len(events) != 1 || events[0].Operation != domaininference.OperationImageAnalysis || events[0].Status != domaininference.UsageStatusDenied || events[0].Metadata["procedure_id"] != procedure.ID || events[0].Metadata["binding_id"] != binding.ID {
+		t.Fatalf("unexpected denied image_analysis usage event: %+v err=%v", events, err)
+	}
+}
+
 func TestBindingDelegatedInferenceFailsClosed(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -271,6 +345,38 @@ func emitNodeUpdated(t *testing.T, ctx context.Context, mgr *AutomationManager, 
 	if err := mgr.HandleGraphChange(ctx, event); err != nil {
 		t.Fatalf("HandleGraphChange() error = %v", err)
 	}
+}
+
+func addAutomationImageAnalysisProfileGrant(t *testing.T, ctx context.Context, module *inferenceservice.Module, ids automationInferenceIDs, key string, onBehalf string) (uuid.UUID, uuid.UUID) {
+	t.Helper()
+	profileID := uuid.New()
+	grantID := uuid.New()
+	policyID := uuid.New()
+	imageModelID := uuid.New()
+	imageCapabilityID := uuid.New()
+	if _, err := module.GlobalManager().UpsertEndpoint(ctx, domaininference.Endpoint{ID: domaininference.EndpointID(ids.endpointID), Key: "fake", ConnectorType: domaininference.ConnectorFake, NetworkClass: domaininference.NetworkClassLocal, PrivacyClass: domaininference.PrivacyClassLocalOnly, Operations: []domaininference.Operation{domaininference.OperationChat, domaininference.OperationImageAnalysis}, Enabled: true}); err != nil {
+		t.Fatalf("upsert image endpoint: %v", err)
+	}
+	if _, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{ID: domaininference.ModelID(imageModelID), Key: "fake-image", Kind: domaininference.ModelKindGenerative, ProviderModelName: "fake-image", InputModalities: []string{"image", "text"}, OutputModalities: []string{"text"}, Enabled: true}); err != nil {
+		t.Fatalf("upsert image model: %v", err)
+	}
+	if _, err := module.GlobalManager().UpsertCapability(ctx, domaininference.Capability{ID: domaininference.CapabilityID(imageCapabilityID), EndpointID: domaininference.EndpointID(ids.endpointID), ModelID: domaininference.ModelID(imageModelID), Operation: domaininference.OperationImageAnalysis, Enabled: true}); err != nil {
+		t.Fatalf("upsert image capability: %v", err)
+	}
+	spaceMgr, err := module.SpaceManager(ctx, ids.spaceID)
+	if err != nil {
+		t.Fatalf("space manager: %v", err)
+	}
+	if _, err := spaceMgr.UpsertProfile(ctx, domaininference.Profile{ID: domaininference.ProfileID(profileID), SpaceID: ids.spaceID, Key: key, Operation: domaininference.OperationImageAnalysis, DomainIDs: []string{ids.domainID.String()}, CapabilityRefs: []string{imageCapabilityID.String()}, Enabled: true}); err != nil {
+		t.Fatalf("upsert image profile: %v", err)
+	}
+	if _, err := spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{ID: domaininference.CredentialGrantID(grantID), SpaceID: ids.spaceID, CredentialID: domaininference.CredentialID(ids.credentialID), Scope: domaininference.Scope{SpaceID: ids.spaceID, DomainID: ids.domainID.String()}, Operations: []domaininference.Operation{domaininference.OperationImageAnalysis}, ProfileRefs: []string{profileID.String()}, CapabilityRefs: []string{imageCapabilityID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeAutomation}, GranteePrincipals: []string{automationActor}, AllowOnBehalfOfPrincipals: []string{onBehalf}, State: domaininference.GrantStateActive}); err != nil {
+		t.Fatalf("upsert image grant: %v", err)
+	}
+	if _, err := spaceMgr.UpsertPolicy(ctx, domaininference.Policy{ID: domaininference.PolicyID(policyID), SpaceID: ids.spaceID, Scope: domaininference.Scope{SpaceID: ids.spaceID, DomainID: ids.domainID.String()}, Operations: []domaininference.Operation{domaininference.OperationImageAnalysis}, ProfileRefs: []string{profileID.String()}, Action: domaininference.PolicyActionAllow, State: domaininference.PolicyStateActive}); err != nil {
+		t.Fatalf("upsert image policy: %v", err)
+	}
+	return profileID, grantID
 }
 
 func addAutomationProfileGrant(t *testing.T, ctx context.Context, module *inferenceservice.Module, ids automationInferenceIDs, key string, onBehalf string, operation domaininference.Operation) (uuid.UUID, uuid.UUID) {

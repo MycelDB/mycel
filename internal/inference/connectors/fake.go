@@ -8,12 +8,13 @@ import (
 )
 
 type FakeConnector struct {
-	mu        sync.Mutex
-	Text      string
-	Vector    []float64
-	Err       error
-	EmbedHits int
-	ChatHits  int
+	mu              sync.Mutex
+	Text            string
+	Vector          []float64
+	Err             error
+	EmbedHits       int
+	ChatHits        int
+	LastChatRequest ChatRequest
 }
 
 func (f *FakeConnector) Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error) {
@@ -41,6 +42,7 @@ func (f *FakeConnector) Chat(ctx context.Context, req ChatRequest) (ChatResponse
 	}
 	f.mu.Lock()
 	f.ChatHits++
+	f.LastChatRequest = cloneChatRequest(req)
 	text := strings.TrimSpace(f.Text)
 	err := f.Err
 	f.mu.Unlock()
@@ -51,6 +53,11 @@ func (f *FakeConnector) Chat(ctx context.Context, req ChatRequest) (ChatResponse
 		parts := make([]string, 0, len(req.Messages))
 		for _, msg := range req.Messages {
 			parts = append(parts, strings.TrimSpace(msg.Content))
+			for _, part := range msg.Parts {
+				if strings.EqualFold(part.Type, "text") {
+					parts = append(parts, strings.TrimSpace(part.Text))
+				}
+			}
 		}
 		text = strings.TrimSpace(strings.Join(parts, "\n\n"))
 	}
@@ -60,6 +67,11 @@ func (f *FakeConnector) Chat(ctx context.Context, req ChatRequest) (ChatResponse
 	in := int64(0)
 	for _, msg := range req.Messages {
 		in += EstimateTokens(msg.Content)
+		for _, part := range msg.Parts {
+			if strings.EqualFold(part.Type, "text") {
+				in += EstimateTokens(part.Text)
+			}
+		}
 	}
 	out := EstimateTokens(text)
 	resp := ChatResponse{Text: text, ProviderRequestID: "fake", Usage: Usage{InputTokens: in, OutputTokens: out, TotalTokens: in + out, TokenCountSource: "estimated"}}
@@ -73,6 +85,31 @@ func (f *FakeConnector) Calls() (embed int, chat int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.EmbedHits, f.ChatHits
+}
+
+func (f *FakeConnector) LastChat() ChatRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return cloneChatRequest(f.LastChatRequest)
+}
+
+func cloneChatRequest(req ChatRequest) ChatRequest {
+	out := req
+	out.Messages = make([]Message, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		clonedMsg := Message{Role: msg.Role, Content: msg.Content, Parts: make([]MessagePart, 0, len(msg.Parts))}
+		for _, part := range msg.Parts {
+			clonedPart := MessagePart{Type: part.Type, Text: part.Text}
+			if part.Image != nil {
+				image := *part.Image
+				image.Data = append([]byte(nil), part.Image.Data...)
+				clonedPart.Image = &image
+			}
+			clonedMsg.Parts = append(clonedMsg.Parts, clonedPart)
+		}
+		out.Messages = append(out.Messages, clonedMsg)
+	}
+	return out
 }
 
 func NewFakeError(code string, retryable bool, message string) error {

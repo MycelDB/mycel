@@ -19,13 +19,19 @@ import (
 )
 
 func NewAutomationCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "automation", Aliases: []string{"automations"}, Short: "Manage graph automations"}
-	cmd.AddCommand(newAutomationValidateCommand(), newAutomationCreateCommand(a), newAutomationUpdateCommand(a), newAutomationPutCommand(a), newAutomationListCommand(a), newAutomationGetCommand(a), newAutomationEnableCommand(a), newAutomationDisableCommand(a), newAutomationDeleteCommand(a), newAutomationMigrateCombinedCommand(a), newAutomationRunsCommand(a), newAutomationRunGetCommand(a), newAutomationInvocationCommand(a))
+	cmd := &cobra.Command{Use: "automation", Aliases: []string{"automations"}, Short: "Manage graph automations", Long: "Manage graph automations.\n\nCanonical split-model authoring commands are available under:\n  mycel automation procedure\n  mycel automation binding\n\nLegacy combined automation definition commands remain available for compatibility at the root and under:\n  mycel automation legacy"}
+	cmd.AddCommand(newAutomationProcedureCommand(a), newAutomationBindingCommand(a), newAutomationLegacyCommand(a), newAutomationValidateCommand(), newAutomationCreateCommand(a), newAutomationUpdateCommand(a), newAutomationPutCommand(a), newAutomationListCommand(a), newAutomationGetCommand(a), newAutomationEnableCommand(a), newAutomationDisableCommand(a), newAutomationDeleteCommand(a), newAutomationMigrateCombinedCommand(a), newAutomationRunsCommand(a), newAutomationRunGetCommand(a), newAutomationInvocationCommand(a))
+	return cmd
+}
+
+func newAutomationLegacyCommand(a *app.App) *cobra.Command {
+	cmd := &cobra.Command{Use: "legacy", Short: "Manage legacy combined automation definitions", Long: "Manage legacy combined automation definitions.\n\nPrefer the split model for new automation authoring:\n  mycel automation procedure\n  mycel automation binding\n\nUse 'mycel automation migrate-combined' to migrate existing combined definitions."}
+	cmd.AddCommand(newAutomationValidateCommand(), newAutomationCreateCommand(a), newAutomationUpdateCommand(a), newAutomationPutCommand(a), newAutomationListCommand(a), newAutomationGetCommand(a), newAutomationEnableCommand(a), newAutomationDisableCommand(a), newAutomationDeleteCommand(a))
 	return cmd
 }
 
 func newAutomationValidateCommand() *cobra.Command {
-	return &cobra.Command{Use: "validate automation.json", Short: "Validate an automation definition locally", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "validate automation.json", Short: "Legacy: validate a combined automation definition locally", Long: "Validate a legacy combined automation definition locally.\n\nPrefer 'mycel automation procedure validate' and 'mycel automation binding validate' for new split-model automation authoring.", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		data, err := os.ReadFile(args[0])
 		if err != nil {
 			return err
@@ -44,7 +50,7 @@ func newAutomationValidateCommand() *cobra.Command {
 
 func newAutomationCreateCommand(a *app.App) *cobra.Command {
 	var flags automationDomainFlags
-	cmd := &cobra.Command{Use: "create automation.json", Aliases: []string{"add"}, Short: "Create an automation definition", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "create automation.json", Aliases: []string{"add"}, Short: "Legacy: create a combined automation definition", Long: "Create a legacy combined automation definition.\n\nPrefer 'mycel automation procedure put' plus 'mycel automation binding put' for new split-model automation authoring.", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		data, err := os.ReadFile(args[0])
 		if err != nil {
 			return err
@@ -71,7 +77,7 @@ func newAutomationCreateCommand(a *app.App) *cobra.Command {
 
 func newAutomationUpdateCommand(a *app.App) *cobra.Command {
 	var flags automationDomainFlags
-	cmd := &cobra.Command{Use: "update <automation-id> automation.json", Short: "Update an automation definition", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "update <automation-id> automation.json", Short: "Legacy: update a combined automation definition", Long: "Update a legacy combined automation definition.\n\nPrefer 'mycel automation procedure put' plus 'mycel automation binding put' for new split-model automation authoring.", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
 		data, err := os.ReadFile(args[1])
 		if err != nil {
 			return err
@@ -99,7 +105,7 @@ func newAutomationUpdateCommand(a *app.App) *cobra.Command {
 func newAutomationPutCommand(a *app.App) *cobra.Command {
 	var flags automationDomainFlags
 	var automationID string
-	cmd := &cobra.Command{Use: "put automation.json", Short: "Create or update an automation definition", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "put automation.json", Short: "Legacy: create or update a combined automation definition", Long: "Create or update a legacy combined automation definition.\n\nPrefer 'mycel automation procedure put' plus 'mycel automation binding put' for new split-model automation authoring.", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		data, err := os.ReadFile(args[0])
 		if err != nil {
 			return err
@@ -137,7 +143,7 @@ func newAutomationPutCommand(a *app.App) *cobra.Command {
 func newAutomationListCommand(a *app.App) *cobra.Command {
 	var flags automationDomainFlags
 	var status string
-	cmd := &cobra.Command{Use: "list", Short: "List automation definitions", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "list", Short: "Legacy: list combined automation definitions", RunE: func(cmd *cobra.Command, args []string) error {
 		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 		if err != nil {
 			return err
@@ -165,7 +171,7 @@ func newAutomationListCommand(a *app.App) *cobra.Command {
 }
 
 func newAutomationGetCommand(a *app.App) *cobra.Command {
-	return automationIDCommand(a, "get", "Get an automation definition", func(client clientv1.AutomationServiceClient, ctx context.Context, domainID, id string) (string, error) {
+	return automationIDCommand(a, "get", "Legacy: get a combined automation definition", func(client clientv1.AutomationServiceClient, ctx context.Context, domainID, id string) (string, error) {
 		res, err := client.GetAutomation(ctx, &clientv1.GetAutomationRequest{DomainId: domainID, AutomationId: id})
 		if err != nil {
 			return "", err
@@ -174,7 +180,7 @@ func newAutomationGetCommand(a *app.App) *cobra.Command {
 	})
 }
 func newAutomationEnableCommand(a *app.App) *cobra.Command {
-	return automationIDCommand(a, "enable", "Enable an automation", func(client clientv1.AutomationServiceClient, ctx context.Context, domainID, id string) (string, error) {
+	return automationIDCommand(a, "enable", "Legacy: enable a combined automation definition", func(client clientv1.AutomationServiceClient, ctx context.Context, domainID, id string) (string, error) {
 		res, err := client.EnableAutomation(ctx, &clientv1.EnableAutomationRequest{DomainId: domainID, AutomationId: id})
 		if err != nil {
 			return "", err
@@ -183,7 +189,7 @@ func newAutomationEnableCommand(a *app.App) *cobra.Command {
 	})
 }
 func newAutomationDisableCommand(a *app.App) *cobra.Command {
-	return automationIDCommand(a, "disable", "Disable an automation", func(client clientv1.AutomationServiceClient, ctx context.Context, domainID, id string) (string, error) {
+	return automationIDCommand(a, "disable", "Legacy: disable a combined automation definition", func(client clientv1.AutomationServiceClient, ctx context.Context, domainID, id string) (string, error) {
 		res, err := client.DisableAutomation(ctx, &clientv1.DisableAutomationRequest{DomainId: domainID, AutomationId: id})
 		if err != nil {
 			return "", err
@@ -192,7 +198,7 @@ func newAutomationDisableCommand(a *app.App) *cobra.Command {
 	})
 }
 func newAutomationDeleteCommand(a *app.App) *cobra.Command {
-	return automationIDCommand(a, "delete", "Delete an automation", func(client clientv1.AutomationServiceClient, ctx context.Context, domainID, id string) (string, error) {
+	return automationIDCommand(a, "delete", "Legacy: delete a combined automation definition", func(client clientv1.AutomationServiceClient, ctx context.Context, domainID, id string) (string, error) {
 		_, err := client.DeleteAutomation(ctx, &clientv1.DeleteAutomationRequest{DomainId: domainID, AutomationId: id})
 		return "deleted", err
 	})

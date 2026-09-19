@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
@@ -63,6 +64,7 @@ type AutomationManager struct {
 	graphs                                graphservice.Manager
 	schemas                               schemaservice.Manager
 	inference                             inferenceservice.Manager
+	blobs                                 blobservice.Manager
 	raftGroups                            *consensus.MultiGroup
 	raftPartitionCount                    uint32
 	raftLocalNode                         consensus.NodeID
@@ -100,6 +102,11 @@ func (m *AutomationManager) WithGraphRuntime(sessions sessionservice.Manager, gr
 
 func (m *AutomationManager) WithInferenceManager(inference inferenceservice.Manager) *AutomationManager {
 	m.inference = inference
+	return m
+}
+
+func (m *AutomationManager) WithBlobManager(blobs blobservice.Manager) *AutomationManager {
+	m.blobs = blobs
 	return m
 }
 
