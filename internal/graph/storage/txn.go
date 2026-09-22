@@ -1,6 +1,8 @@
 package graphstorage
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
 )
@@ -95,11 +97,18 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	if t.closed {
 		return CommitInfo{}, ErrTxnClosed
 	}
+	totalStart := time.Now()
+	timing := CommitTiming{NodePuts: len(t.nodePuts), NodeDeletes: len(t.nodeDeletes), EdgePuts: len(t.edgePuts), EdgeDeletes: len(t.edgeDeletes)}
+	lockStart := time.Now()
 	t.store.mu.Lock()
+	timing.WaitLock = time.Since(lockStart)
 	defer t.store.mu.Unlock()
+	stepStart := time.Now()
 	if err := t.store.ensureReady(); err != nil {
 		return CommitInfo{}, err
 	}
+	timing.EnsureReady = time.Since(stepStart)
+	stepStart = time.Now()
 	if t.expectedRevision != nil && *t.expectedRevision > t.store.revision {
 		return CommitInfo{}, ErrConflict
 	}
@@ -109,6 +118,8 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	if _, ok := t.invariantConflict(); ok {
 		return CommitInfo{}, ErrConflict
 	}
+	timing.ConflictCheck = time.Since(stepStart)
+	stepStart = time.Now()
 	for _, node := range t.nodePuts {
 		if err := t.store.validateNodeIndexes(node); err != nil {
 			return CommitInfo{}, err
@@ -119,14 +130,18 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 			return CommitInfo{}, err
 		}
 	}
+	timing.IndexValidation = time.Since(stepStart)
 	zero := uuid.Nil
+	stepStart = time.Now()
 	if _, err := t.store.txns.appendRecord(RecordKindTxnBegin, t.id, zero, nil); err != nil {
 		return CommitInfo{}, err
 	}
+	timing.TxnBeginAppend = time.Since(stepStart)
 	nodeLocs := make([]RecordLocation, len(t.nodePuts))
 	edgeLocs := make([]RecordLocation, len(t.edgePuts))
 	nodeDelLocs := make([]RecordLocation, len(t.nodeDeletes))
 	edgeDelLocs := make([]RecordLocation, len(t.edgeDeletes))
+	stepStart = time.Now()
 	for i, n := range t.nodePuts {
 		payload, err := encodeNode(n)
 		if err != nil {
@@ -145,6 +160,8 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 		}
 		nodeDelLocs[i] = loc
 	}
+	timing.NodeAppend = time.Since(stepStart)
+	stepStart = time.Now()
 	for i, e := range t.edgePuts {
 		payload, err := encodeEdge(e)
 		if err != nil {
@@ -163,24 +180,34 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 		}
 		edgeDelLocs[i] = loc
 	}
+	timing.EdgeAppend = time.Since(stepStart)
+	stepStart = time.Now()
 	if err := t.store.nodes.sync(); err != nil {
 		return CommitInfo{}, err
 	}
+	timing.NodeSync = time.Since(stepStart)
+	stepStart = time.Now()
 	if err := t.store.edges.sync(); err != nil {
 		return CommitInfo{}, err
 	}
-	info := CommitInfo{TxnID: t.id, NextRevision: t.store.revision + 1}
+	timing.EdgeSync = time.Since(stepStart)
+	info := CommitInfo{TxnID: t.id, NextRevision: t.store.revision + 1, Timing: timing}
 	if t.commitHook != nil {
 		if err := t.commitHook(info); err != nil {
 			return CommitInfo{}, err
 		}
 	}
+	stepStart = time.Now()
 	if _, err := t.store.txns.appendRecord(RecordKindTxnCommit, t.id, zero, nil); err != nil {
 		return CommitInfo{}, err
 	}
+	timing.TxnCommitAppend = time.Since(stepStart)
+	stepStart = time.Now()
 	if err := t.store.txns.sync(); err != nil {
 		return CommitInfo{}, err
 	}
+	timing.TxnSync = time.Since(stepStart)
+	stepStart = time.Now()
 	for i, n := range t.nodePuts {
 		t.store.applyNodePut(n, nodeLocs[i])
 	}
@@ -207,8 +234,13 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	for _, id := range t.edgeDeletes {
 		t.store.edgeModRev[id] = newRev
 	}
-	t.store.markReadyIndexesIndexedThrough(newRev, t.touchedDomains())
+	domains := t.touchedDomains()
+	t.store.markReadyIndexesIndexedThrough(newRev, domains)
+	timing.TouchedDomains = len(domains)
+	timing.InMemoryApply = time.Since(stepStart)
+	timing.Total = time.Since(totalStart)
 	t.closed = true
+	info.Timing = timing
 	return info, nil
 }
 
