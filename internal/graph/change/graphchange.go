@@ -3,6 +3,7 @@ package graphchange
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -356,20 +357,70 @@ func (f SinkFunc) OnGraphCommitted(ctx context.Context, event CommittedEvent) er
 	return f(ctx, event)
 }
 
+// NamedSink wraps a sink with an operator-readable name for diagnostics.
+type NamedSink struct {
+	Name string
+	Sink Sink
+}
+
+func Named(name string, sink Sink) NamedSink {
+	return NamedSink{Name: strings.TrimSpace(name), Sink: sink}
+}
+
+func (s NamedSink) OnGraphCommitted(ctx context.Context, event CommittedEvent) error {
+	if s.Sink == nil {
+		return nil
+	}
+	return s.Sink.OnGraphCommitted(ctx, event)
+}
+
+// SinkTimingRecorder receives per-sink graph-change fanout timings.
+type SinkTimingRecorder interface {
+	RecordGraphChangeSinkTiming(name string, duration time.Duration, err error)
+}
+
+type sinkTimingRecorderKey struct{}
+
+func WithSinkTimingRecorder(ctx context.Context, recorder SinkTimingRecorder) context.Context {
+	if recorder == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sinkTimingRecorderKey{}, recorder)
+}
+
+func recordSinkTiming(ctx context.Context, name string, duration time.Duration, err error) {
+	recorder, _ := ctx.Value(sinkTimingRecorderKey{}).(SinkTimingRecorder)
+	if recorder == nil {
+		return
+	}
+	recorder.RecordGraphChangeSinkTiming(name, duration, err)
+}
+
 // MultiSink fans out graph events to multiple sinks in order.
 type MultiSink []Sink
 
 func (m MultiSink) OnGraphCommitted(ctx context.Context, event CommittedEvent) error {
 	var out error
-	for _, sink := range m {
+	for idx, sink := range m {
 		if sink == nil {
 			continue
 		}
-		if err := sink.OnGraphCommitted(ctx, event); err != nil {
+		name := sinkName(sink, idx)
+		start := time.Now()
+		err := sink.OnGraphCommitted(ctx, event)
+		recordSinkTiming(ctx, name, time.Since(start), err)
+		if err != nil {
 			out = errors.Join(out, err)
 		}
 	}
 	return out
+}
+
+func sinkName(sink Sink, idx int) string {
+	if named, ok := sink.(NamedSink); ok && strings.TrimSpace(named.Name) != "" {
+		return named.Name
+	}
+	return fmt.Sprintf("sink_%d", idx)
 }
 
 func addEdgeAffected(change *Change, edge graph.Edge, nodes map[graph.NodeID]bool, edges map[graph.EdgeID]bool) {

@@ -186,7 +186,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		sessionAPI.WithGraphWriteRouteProvider(provider)
 	}
 	transactionAPI := clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
-	graphAPI := clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager).WithClientRequestRouter(clientRouter)
+	graphAPI := clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager).WithLogger(cfg.Logger).WithClientRequestRouter(clientRouter)
 	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSemanticManager(cfg.SemanticManager).WithClientRequestRouter(clientRouter)
 	searchAPI := clientapi.NewSearchService(cfg.LexicalManager, cfg.SpaceManager, cfg.GraphManager).WithSemanticManager(cfg.SemanticManager).WithClientRequestRouter(clientRouter)
 	if provider, ok := cfg.GraphManager.(clientapi.GraphWriteRouteProvider); ok {

@@ -3,6 +3,7 @@ package graphstorage
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
@@ -103,6 +104,30 @@ type Store interface {
 type CommitInfo struct {
 	TxnID        uuid.UUID
 	NextRevision uint64
+	Timing       CommitTiming
+}
+
+// CommitTiming captures internal local graph storage transaction timings. All
+// durations are optional and zero when a code path did not run.
+type CommitTiming struct {
+	Total           time.Duration
+	WaitLock        time.Duration
+	EnsureReady     time.Duration
+	ConflictCheck   time.Duration
+	IndexValidation time.Duration
+	TxnBeginAppend  time.Duration
+	NodeAppend      time.Duration
+	EdgeAppend      time.Duration
+	TxnCommitAppend time.Duration
+	NodeSync        time.Duration
+	EdgeSync        time.Duration
+	TxnSync         time.Duration
+	InMemoryApply   time.Duration
+	NodePuts        int
+	NodeDeletes     int
+	EdgePuts        int
+	EdgeDeletes     int
+	TouchedDomains  int
 }
 
 type CommitHook func(CommitInfo) error

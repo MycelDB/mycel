@@ -189,7 +189,7 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 	if err != nil {
 		return err
 	}
-	revision, _, err := m.applyGraphCommitRecord(ctx, record)
+	revision, _, _, err := m.applyGraphCommitRecord(ctx, record)
 	if err != nil {
 		return err
 	}

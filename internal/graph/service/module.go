@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +25,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
+	"github.com/myceldb/mycel/internal/graph/writetrace"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -58,6 +60,8 @@ type Module struct {
 	raftNodeAddrs                  []string
 	raftBackendAuthToken           string
 	raftAppliedCommands            map[string]struct{}
+	logger                         *slog.Logger
+	writeTrace                     writetrace.Config
 }
 
 type overlay struct {
@@ -245,6 +249,8 @@ func formatSchemaIssues(issues []schemaservice.ValidationIssue) string {
 }
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
+	m.logger = host.Log()
+	m.writeTrace = writetrace.FromEnv()
 	m.dataDir = filepath.Join(host.DataDir(), "graphs")
 	if err := os.MkdirAll(m.dataDir, fsperm.PrivateDir); err != nil {
 		return runtime.Abort(ModuleName, "storage", "create graph data directory", err)
@@ -294,7 +300,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		}
 	}
 	if logger := host.Log(); logger != nil {
-		logger.Info("graph module initialized", "storage", "file", "path", m.dataDir)
+		logger.Info("graph module initialized", "storage", "file", "path", m.dataDir, "write_trace", m.writeTrace.Enabled, "write_trace_threshold", m.writeTrace.Threshold.String())
 	}
 	return runtime.OK(ModuleName)
 }
@@ -347,12 +353,16 @@ func (m *Module) ListNodes(ctx context.Context, tx daemonsession.GraphTransactio
 }
 
 func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransaction, input NodeInput) (domaingraph.Node, error) {
+	traceStart := time.Now()
+	var timing graphStageTiming
+	stepStart := time.Now()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Node{}, err
 	}
+	timing.RouteCheck = time.Since(stepStart)
 	id, err := optionalUUID[domaingraph.NodeID](input.NodeID, "node_id")
 	if err != nil {
 		return domaingraph.Node{}, err
@@ -363,11 +373,13 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 			return domaingraph.Node{}, err
 		}
 	}
+	stepStart = time.Now()
 	if _, err := m.node(ctx, tx, id); err == nil {
 		return domaingraph.Node{}, fmt.Errorf("%w: node already exists", ErrInvalidInput)
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Node{}, err
 	}
+	timing.NodeLookup = time.Since(stepStart)
 	now := time.Now().UTC()
 	var blobRef *domaingraph.BlobID
 	if strings.TrimSpace(input.BlobID) != "" {
@@ -395,30 +407,42 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 		payload["blob_id"] = string(*blobRef)
 	}
 	n := domaingraph.Node{ID: id, DomainID: mustDomainID(tx.DomainID), Labels: append([]string(nil), input.Labels...), Properties: properties, Payload: payload, Meta: cloneProps(input.Meta), BlobRef: blobRef, Content: input.Content, Props: cloneProps(input.Props), CreatedAt: now, UpdatedAt: now}
+	stepStart = time.Now()
 	if err := m.validateSchemaNode(ctx, n); err != nil {
 		return domaingraph.Node{}, err
 	}
+	timing.SchemaValidate = time.Since(stepStart)
+	stepStart = time.Now()
 	if err := m.stageNode(ctx, tx, n); err != nil {
 		return domaingraph.Node{}, err
 	}
+	timing.Stage = time.Since(stepStart)
+	timing.Total = time.Since(traceStart)
+	m.logGraphStageTiming("create_node", tx, map[string]int{"put_nodes": 1, "labels": len(n.Labels), "properties": len(n.Properties), "payload_fields": len(n.Payload)}, timing)
 	return cloneNode(n), nil
 }
 
 func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransaction, input UpdateNodeInput) (domaingraph.Node, error) {
+	traceStart := time.Now()
+	var timing graphStageTiming
+	stepStart := time.Now()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return domaingraph.Node{}, err
 	}
+	timing.RouteCheck = time.Since(stepStart)
 	id, err := parseUUID[domaingraph.NodeID](input.NodeID, "node_id")
 	if err != nil {
 		return domaingraph.Node{}, err
 	}
+	stepStart = time.Now()
 	n, err := m.node(ctx, tx, id)
 	if err != nil {
 		return domaingraph.Node{}, err
 	}
+	timing.NodeLookup = time.Since(stepStart)
 	paths := maskSet(input.UpdateMask)
 	if input.Labels != nil && (len(paths) == 0 || paths["labels"]) {
 		n.Labels = append([]string(nil), input.Labels...)
@@ -449,12 +473,19 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 		}
 	}
 	n.UpdatedAt = time.Now().UTC()
+	stepStart = time.Now()
 	if err := m.validateSchemaNode(ctx, n); err != nil {
 		return domaingraph.Node{}, err
 	}
+	timing.SchemaValidate = time.Since(stepStart)
+	stepStart = time.Now()
 	if err := m.stageNode(ctx, tx, n); err != nil {
 		return domaingraph.Node{}, err
 	}
+	timing.Stage = time.Since(stepStart)
+	timing.UpdateMask = append([]string(nil), input.UpdateMask...)
+	timing.Total = time.Since(traceStart)
+	m.logGraphStageTiming("update_node", tx, map[string]int{"put_nodes": 1, "labels": len(n.Labels), "properties": len(n.Properties), "payload_fields": len(n.Payload)}, timing)
 	return cloneNode(n), nil
 }
 
@@ -902,11 +933,16 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return CommitResult{}, err
 	}
+	traceStart := time.Now()
+	var timing graphCommitTiming
+	stepStart := time.Now()
 	release, err := m.enterWrite(ctx)
 	if err != nil {
 		return CommitResult{}, err
 	}
+	timing.EnterWrite = time.Since(stepStart)
 	defer release()
+	stepStart = time.Now()
 	m.mu.Lock()
 	o := m.overlays[tx.ID]
 	if o == nil || o.opCount == 0 {
@@ -917,6 +953,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	snapshot := o.clone()
 	delete(m.overlays, tx.ID)
 	m.mu.Unlock()
+	timing.OverlaySnapshot = time.Since(stepStart)
 	restoreOverlay := true
 	defer func() {
 		if !restoreOverlay {
@@ -928,32 +965,47 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 			m.overlays[tx.ID] = snapshot.clone()
 		}
 	}()
+	stepStart = time.Now()
 	store, err := m.store(ctx, tx.SpaceID)
 	if err != nil {
 		return CommitResult{}, err
 	}
+	timing.StoreOpen = time.Since(stepStart)
+	stepStart = time.Now()
 	changes, err := m.overlayChanges(ctx, store, snapshot)
 	if err != nil {
 		return CommitResult{}, err
 	}
+	timing.OverlayChanges = time.Since(stepStart)
+	stepStart = time.Now()
 	graphEvent, err := m.graphChangeEvent(ctx, tx, store, snapshot)
 	if err != nil {
 		return CommitResult{}, err
 	}
+	timing.GraphEvent = time.Since(stepStart)
+	stepStart = time.Now()
 	record := graphCommitRecordFromSnapshot(tx, snapshot)
+	timing.RecordBuild = time.Since(stepStart)
+	stepStart = time.Now()
 	if err := m.validateBlobReferences(ctx, tx.SpaceID, record.PutNodes); err != nil {
 		return CommitResult{}, err
 	}
+	timing.BlobReferenceValidate = time.Since(stepStart)
 	var committedRevision int64
 	var info graphstorage.CommitInfo
 	if m.raftGroups != nil {
+		timing.StorageMode = "raft"
+		stepStart = time.Now()
 		cmd, err := m.buildGraphCommitRaftCommand(record, m.raftPartitionCount, graphRaftCommandID(ctx, tx.ID))
 		if err != nil {
 			return CommitResult{}, err
 		}
+		timing.RaftBuild = time.Since(stepStart)
+		stepStart = time.Now()
 		if err := m.proposeGraphRaftCommand(ctx, cmd); err != nil {
 			return CommitResult{}, err
 		}
+		timing.RaftPropose = time.Since(stepStart)
 		// proposeGraphRaftCommand returns only after the local partition leader has
 		// applied the committed graph command. Reading the local store revision here
 		// avoids a second leader/read-index check that can fail during an immediate
@@ -962,6 +1014,8 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		committedRevision = int64(store.Revision())
 		info = graphstorage.CommitInfo{TxnID: uuid.New(), NextRevision: uint64(committedRevision)}
 	} else if m.wal == nil {
+		timing.StorageMode = "direct"
+		stepStart = time.Now()
 		storageTx, err := store.Begin(ctx)
 		if err != nil {
 			return CommitResult{}, mapStorageError(err)
@@ -996,30 +1050,51 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 			return CommitResult{}, mapStorageError(err)
 		}
 		committedRevision = int64(store.Revision())
+		timing.DirectStorage = time.Since(stepStart)
+		timing.StorageCommit = info.Timing
 	} else {
+		timing.StorageMode = "wal"
+		stepStart = time.Now()
 		payload, err := json.Marshal(record)
 		if err != nil {
 			return CommitResult{}, err
 		}
+		timing.WALMarshal = time.Since(stepStart)
+		stepStart = time.Now()
 		lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeGraphCommit, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
 		if err != nil {
 			return CommitResult{}, err
 		}
+		timing.WALAppend = time.Since(stepStart)
+		stepStart = time.Now()
 		if err := m.wal.Sync(ctx, lsn); err != nil {
 			return CommitResult{}, err
 		}
-		committedRevision, _, err = m.applyGraphCommitRecord(ctx, record)
+		timing.WALSync = time.Since(stepStart)
+		stepStart = time.Now()
+		committedRevision, _, info, err = m.applyGraphCommitRecord(ctx, record)
 		if err != nil {
 			return CommitResult{}, err
 		}
+		timing.WALApply = time.Since(stepStart)
+		timing.StorageCommit = info.Timing
+		stepStart = time.Now()
 		if err := m.markWALApplied(ctx, lsn); err != nil {
 			return CommitResult{}, err
 		}
-		info = graphstorage.CommitInfo{TxnID: uuid.New(), NextRevision: uint64(committedRevision)}
+		timing.WALMarkApplied = time.Since(stepStart)
+		info.TxnID = uuid.New()
+		info.NextRevision = uint64(committedRevision)
 	}
 	restoreOverlay = false
 	graphEvent.Changes = changes
-	m.notifyGraphChangeSink(ctx, info, graphEvent)
+	stepStart = time.Now()
+	recorder := &graphSinkTimingRecorder{}
+	m.notifyGraphChangeSink(withGraphSinkTimingRecorder(ctx, recorder), info, graphEvent)
+	timing.ChangeSink = time.Since(stepStart)
+	timing.SinkTimings = recorder.timings
+	timing.Total = time.Since(traceStart)
+	m.logGraphCommitTiming(tx, map[string]int{"operation_count": int(snapshot.opCount), "put_nodes": len(record.PutNodes), "put_edges": len(record.PutEdges), "delete_nodes": len(record.DeleteNodeIDs), "delete_edges": len(record.DeleteEdgeIDs), "changes": len(changes)}, committedRevision, timing)
 	return CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}, nil
 }
 

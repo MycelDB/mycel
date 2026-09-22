@@ -417,10 +417,10 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		return lexicalService.OnGraphCommitted(ctx, event)
 	})
 	if raftRuntimeConfigured(cfg) {
-		graphService.SetChangeSink(graphchange.MultiSink{semanticSink, lexicalSink})
-		graphService.SetRaftApplyChangeSink(graphNotificationService)
+		graphService.SetChangeSink(graphchange.MultiSink{graphchange.Named("semantic", semanticSink), graphchange.Named("lexical", lexicalSink)})
+		graphService.SetRaftApplyChangeSink(graphchange.Named("graph_change_notification", graphNotificationService))
 	} else {
-		graphService.SetChangeSink(graphchange.MultiSink{graphNotificationService, semanticSink, lexicalSink})
+		graphService.SetChangeSink(graphchange.MultiSink{graphchange.Named("graph_change_notification", graphNotificationService), graphchange.Named("semantic", semanticSink), graphchange.Named("lexical", lexicalSink)})
 	}
 	if err := rt.StartServices(ctx); err != nil {
 		_ = rt.Close()

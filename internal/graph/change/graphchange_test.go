@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
@@ -52,6 +53,42 @@ func TestMultiSinkJoinsErrorsAndContinues(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("calls = %d, want 2", calls)
 	}
+}
+
+func TestMultiSinkRecordsNamedSinkTimings(t *testing.T) {
+	recorder := &captureSinkTimingRecorder{}
+	errExpected := errors.New("sink failed")
+	sink := MultiSink{
+		Named("first", SinkFunc(func(context.Context, CommittedEvent) error { return nil })),
+		Named("second", SinkFunc(func(context.Context, CommittedEvent) error { return errExpected })),
+	}
+	err := sink.OnGraphCommitted(WithSinkTimingRecorder(context.Background(), recorder), CommittedEvent{})
+	if !errors.Is(err, errExpected) {
+		t.Fatalf("error = %v, want %v", err, errExpected)
+	}
+	if len(recorder.entries) != 2 {
+		t.Fatalf("entries = %#v, want 2", recorder.entries)
+	}
+	if recorder.entries[0].name != "first" || recorder.entries[1].name != "second" {
+		t.Fatalf("recorded names = %#v", recorder.entries)
+	}
+	if recorder.entries[1].err == nil || !errors.Is(recorder.entries[1].err, errExpected) {
+		t.Fatalf("second error = %v, want %v", recorder.entries[1].err, errExpected)
+	}
+}
+
+type captureSinkTimingRecorder struct {
+	entries []captureSinkTiming
+}
+
+type captureSinkTiming struct {
+	name     string
+	duration time.Duration
+	err      error
+}
+
+func (r *captureSinkTimingRecorder) RecordGraphChangeSinkTiming(name string, duration time.Duration, err error) {
+	r.entries = append(r.entries, captureSinkTiming{name: name, duration: duration, err: err})
 }
 
 func TestNormalizeChangeTypeAcceptsLegacyUnderscoreAliases(t *testing.T) {

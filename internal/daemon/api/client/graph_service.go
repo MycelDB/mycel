@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"path/filepath"
+	"time"
 
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/graph/writetrace"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -20,10 +23,12 @@ import (
 
 type GraphService struct {
 	clientv1.UnimplementedGraphServiceServer
-	sessions daemonsession.Manager
-	graphs   daegraph.Manager
-	blobs    daemonblob.Manager
-	router   ClientRequestRouter
+	sessions   daemonsession.Manager
+	graphs     daegraph.Manager
+	blobs      daemonblob.Manager
+	router     ClientRequestRouter
+	logger     *slog.Logger
+	writeTrace writetrace.Config
 }
 
 func NewGraphService(sessions daemonsession.Manager, graphs daegraph.Manager, blobs ...daemonblob.Manager) *GraphService {
@@ -31,7 +36,12 @@ func NewGraphService(sessions daemonsession.Manager, graphs daegraph.Manager, bl
 	if len(blobs) > 0 {
 		blobManager = blobs[0]
 	}
-	return &GraphService{sessions: sessions, graphs: graphs, blobs: blobManager}
+	return &GraphService{sessions: sessions, graphs: graphs, blobs: blobManager, writeTrace: writetrace.FromEnv()}
+}
+
+func (s *GraphService) WithLogger(logger *slog.Logger) *GraphService {
+	s.logger = logger
+	return s
 }
 
 func (s *GraphService) WithClientRequestRouter(router ClientRequestRouter) *GraphService {
@@ -90,22 +100,41 @@ func (s *GraphService) ListNodes(ctx context.Context, req *clientv1.ListNodesReq
 }
 
 func (s *GraphService) CreateNode(ctx context.Context, req *clientv1.CreateNodeRequest) (*clientv1.CreateNodeResponse, error) {
+	traceStart := time.Now()
+	var timing graphRPCWriteTiming
+	stepStart := time.Now()
 	if s.router != nil {
 		res := &clientv1.CreateNodeResponse{}
 		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_CreateNode_FullMethodName, "", req.GetTransactionId(), req, res)
+		timing.Route = time.Since(stepStart)
+		timing.Forwarded = forwarded
 		if forwarded || err != nil {
+			timing.Total = time.Since(traceStart)
+			s.logGraphRPCWriteTiming("create_node", req.GetTransactionId(), map[string]int{}, timing)
 			return res, err
 		}
 	}
+	stepStart = time.Now()
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	node, err := s.graphs.CreateNode(ctx, tx, nodeInputFromProto(req.GetNode()))
+	timing.TxLookup = time.Since(stepStart)
+	stepStart = time.Now()
+	input := nodeInputFromProto(req.GetNode())
+	timing.RequestMap = time.Since(stepStart)
+	stepStart = time.Now()
+	node, err := s.graphs.CreateNode(ctx, tx, input)
 	if err != nil {
 		return nil, mapGraphError(err, "create node")
 	}
-	return &clientv1.CreateNodeResponse{Node: mapProtoNode(node)}, nil
+	timing.GraphCall = time.Since(stepStart)
+	stepStart = time.Now()
+	res := &clientv1.CreateNodeResponse{Node: mapProtoNode(node)}
+	timing.ResponseMap = time.Since(stepStart)
+	timing.Total = time.Since(traceStart)
+	s.logGraphRPCWriteTiming("create_node", req.GetTransactionId(), map[string]int{"labels": len(node.Labels), "properties": len(node.Properties), "payload_fields": len(node.Payload)}, timing)
+	return res, nil
 }
 
 func (s *GraphService) CreateBlobNode(stream clientv1.GraphService_CreateBlobNodeServer) error {
@@ -181,45 +210,82 @@ func (s *GraphService) CreateBlobNode(stream clientv1.GraphService_CreateBlobNod
 }
 
 func (s *GraphService) UpdateNode(ctx context.Context, req *clientv1.UpdateNodeRequest) (*clientv1.UpdateNodeResponse, error) {
+	traceStart := time.Now()
+	var timing graphRPCWriteTiming
+	stepStart := time.Now()
 	if s.router != nil {
 		res := &clientv1.UpdateNodeResponse{}
 		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_UpdateNode_FullMethodName, "", req.GetTransactionId(), req, res)
+		timing.Route = time.Since(stepStart)
+		timing.Forwarded = forwarded
 		if forwarded || err != nil {
+			timing.Total = time.Since(traceStart)
+			s.logGraphRPCWriteTiming("update_node", req.GetTransactionId(), map[string]int{}, timing)
 			return res, err
 		}
 	}
+	stepStart = time.Now()
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
+	timing.TxLookup = time.Since(stepStart)
+	stepStart = time.Now()
 	input := updateNodeInputFromProto(req.GetNode())
 	if req.GetUpdateMask() != nil {
 		input.UpdateMask = req.GetUpdateMask().GetPaths()
 	}
+	timing.RequestMap = time.Since(stepStart)
+	stepStart = time.Now()
 	node, err := s.graphs.UpdateNode(ctx, tx, input)
 	if err != nil {
 		return nil, mapGraphError(err, "update node")
 	}
-	return &clientv1.UpdateNodeResponse{Node: mapProtoNode(node)}, nil
+	timing.GraphCall = time.Since(stepStart)
+	stepStart = time.Now()
+	res := &clientv1.UpdateNodeResponse{Node: mapProtoNode(node)}
+	timing.ResponseMap = time.Since(stepStart)
+	timing.Total = time.Since(traceStart)
+	s.logGraphRPCWriteTiming("update_node", req.GetTransactionId(), map[string]int{"labels": len(node.Labels), "properties": len(node.Properties), "payload_fields": len(node.Payload), "update_mask_paths": len(input.UpdateMask)}, timing)
+	return res, nil
 }
 
 func (s *GraphService) UpsertNode(ctx context.Context, req *clientv1.UpsertNodeRequest) (*clientv1.UpsertNodeResponse, error) {
+	traceStart := time.Now()
+	var timing graphRPCWriteTiming
+	stepStart := time.Now()
 	if s.router != nil {
 		res := &clientv1.UpsertNodeResponse{}
 		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_UpsertNode_FullMethodName, "", req.GetTransactionId(), req, res)
+		timing.Route = time.Since(stepStart)
+		timing.Forwarded = forwarded
 		if forwarded || err != nil {
+			timing.Total = time.Since(traceStart)
+			s.logGraphRPCWriteTiming("upsert_node", req.GetTransactionId(), map[string]int{}, timing)
 			return res, err
 		}
 	}
+	stepStart = time.Now()
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	node, err := s.graphs.UpsertNode(ctx, tx, nodeInputFromProto(req.GetNode()))
+	timing.TxLookup = time.Since(stepStart)
+	stepStart = time.Now()
+	input := nodeInputFromProto(req.GetNode())
+	timing.RequestMap = time.Since(stepStart)
+	stepStart = time.Now()
+	node, err := s.graphs.UpsertNode(ctx, tx, input)
 	if err != nil {
 		return nil, mapGraphError(err, "upsert node")
 	}
-	return &clientv1.UpsertNodeResponse{Node: mapProtoNode(node)}, nil
+	timing.GraphCall = time.Since(stepStart)
+	stepStart = time.Now()
+	res := &clientv1.UpsertNodeResponse{Node: mapProtoNode(node)}
+	timing.ResponseMap = time.Since(stepStart)
+	timing.Total = time.Since(traceStart)
+	s.logGraphRPCWriteTiming("upsert_node", req.GetTransactionId(), map[string]int{"labels": len(node.Labels), "properties": len(node.Properties), "payload_fields": len(node.Payload)}, timing)
+	return res, nil
 }
 
 func (s *GraphService) DeleteNode(ctx context.Context, req *clientv1.DeleteNodeRequest) (*clientv1.DeleteNodeResponse, error) {
@@ -453,26 +519,45 @@ func (s *GraphService) ReorderChildren(ctx context.Context, req *clientv1.Reorde
 }
 
 func (s *GraphService) ApplyGraphOperations(ctx context.Context, req *clientv1.ApplyGraphOperationsRequest) (*clientv1.ApplyGraphOperationsResponse, error) {
+	traceStart := time.Now()
+	var timing graphRPCWriteTiming
+	stepStart := time.Now()
 	if s.router != nil {
 		res := &clientv1.ApplyGraphOperationsResponse{}
 		forwarded, err := s.router.ForwardUnary(ctx, clientv1.GraphService_ApplyGraphOperations_FullMethodName, "", req.GetTransactionId(), req, res)
+		timing.Route = time.Since(stepStart)
+		timing.Forwarded = forwarded
 		if forwarded || err != nil {
+			timing.Total = time.Since(traceStart)
+			s.logGraphRPCWriteTiming("apply_graph_operations", req.GetTransactionId(), map[string]int{"operations": len(req.GetOperations())}, timing)
 			return res, err
 		}
 	}
+	stepStart = time.Now()
 	tx, err := s.transaction(ctx, req.GetTransactionId())
 	if err != nil {
 		return nil, err
 	}
-	results := make([]*clientv1.GraphOperationResult, 0, len(req.GetOperations()))
-	for _, op := range req.GetOperations() {
+	timing.TxLookup = time.Since(stepStart)
+	stepStart = time.Now()
+	ops := req.GetOperations()
+	results := make([]*clientv1.GraphOperationResult, 0, len(ops))
+	timing.RequestMap = time.Since(stepStart)
+	stepStart = time.Now()
+	for _, op := range ops {
 		result, err := s.applyOperation(ctx, tx, op)
 		if err != nil {
 			return nil, err
 		}
 		results = append(results, result)
 	}
-	return &clientv1.ApplyGraphOperationsResponse{Results: results}, nil
+	timing.GraphCall = time.Since(stepStart)
+	stepStart = time.Now()
+	res := &clientv1.ApplyGraphOperationsResponse{Results: results}
+	timing.ResponseMap = time.Since(stepStart)
+	timing.Total = time.Since(traceStart)
+	s.logGraphRPCWriteTiming("apply_graph_operations", req.GetTransactionId(), map[string]int{"operations": len(ops), "results": len(results)}, timing)
+	return res, nil
 }
 
 func (s *GraphService) applyOperation(ctx context.Context, tx daemonsession.GraphTransaction, op *clientv1.GraphOperation) (*clientv1.GraphOperationResult, error) {

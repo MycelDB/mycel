@@ -6,6 +6,7 @@ import (
 
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	"github.com/myceldb/mycel/internal/wal"
 )
@@ -33,48 +34,49 @@ func (m *Module) applyGraphCommit(ctx context.Context, rec wal.Record) error {
 	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
 		return err
 	}
-	_, _, err := m.applyGraphCommitRecord(ctx, payload)
+	_, _, _, err := m.applyGraphCommitRecord(ctx, payload)
 	return err
 }
 
-func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommitRecord) (int64, graphCommitRecord, error) {
+func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommitRecord) (int64, graphCommitRecord, graphstorage.CommitInfo, error) {
 	store, err := m.store(ctx, payload.SpaceID)
 	if err != nil {
-		return 0, payload, err
+		return 0, payload, graphstorage.CommitInfo{}, err
 	}
 	storageTx, err := store.Begin(ctx)
 	if err != nil {
-		return 0, payload, mapStorageError(err)
+		return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 	}
 	storageTx.ExpectRevision(uint64(payload.BaseRevision))
 	for _, node := range payload.PutNodes {
 		if err := storageTx.PutNode(node); err != nil {
 			_ = storageTx.Rollback()
-			return 0, payload, mapStorageError(err)
+			return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 		}
 	}
 	for _, edge := range payload.PutEdges {
 		if err := storageTx.PutEdge(edge); err != nil {
 			_ = storageTx.Rollback()
-			return 0, payload, mapStorageError(err)
+			return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 		}
 	}
 	for _, id := range payload.DeleteNodeIDs {
 		if err := storageTx.DeleteNode(id); err != nil {
 			_ = storageTx.Rollback()
-			return 0, payload, mapStorageError(err)
+			return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 		}
 	}
 	for _, id := range payload.DeleteEdgeIDs {
 		if err := storageTx.DeleteEdge(id); err != nil {
 			_ = storageTx.Rollback()
-			return 0, payload, mapStorageError(err)
+			return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 		}
 	}
-	if _, err := storageTx.CommitWithInfo(); err != nil {
-		return 0, payload, mapStorageError(err)
+	info, err := storageTx.CommitWithInfo()
+	if err != nil {
+		return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 	}
-	return int64(store.Revision()), payload, nil
+	return int64(store.Revision()), payload, info, nil
 }
 
 func (m *Module) markWALApplied(ctx context.Context, lsn wal.LSN) error {

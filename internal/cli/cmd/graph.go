@@ -17,7 +17,7 @@ import (
 
 func NewGraphCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "graph", Short: "Manage graph nodes and edges through daemon transactions"}
-	cmd.AddCommand(newGraphNodeCommand(a), newGraphBlobNodeCommand(a), newGraphEdgeCommand(a), newGraphChildrenCommand(a), newGraphParentCommand(a))
+	cmd.AddCommand(newGraphNodeCommand(a), newGraphBlobNodeCommand(a), newGraphEdgeCommand(a), newGraphChildrenCommand(a), newGraphParentCommand(a), newGraphBenchmarkCommand(a))
 	return cmd
 }
 
