@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
@@ -123,13 +124,21 @@ func (s *PersistentStorage) Append(entries []raftpb.Entry) error {
 	if len(entries) == 0 {
 		return nil
 	}
+	appendOnly := s.canAppendEntriesLog(entries)
 	if err := s.memory.Append(entries); err != nil {
 		return err
+	}
+	if appendOnly {
+		if err := s.appendEntriesLog("entries.log", entries); err != nil {
+			return err
+		}
+		s.entries = append(s.entries, entries...)
+		return nil
 	}
 	if err := s.reloadEntriesFromMemory(); err != nil {
 		return err
 	}
-	return s.writeEntriesAtomic("entries.pb", s.entries)
+	return s.writeEntries("entries.pb", "entries.log", s.entries)
 }
 
 func (s *PersistentStorage) ApplySnapshot(snap raftpb.Snapshot) error {
@@ -146,7 +155,7 @@ func (s *PersistentStorage) ApplySnapshot(snap raftpb.Snapshot) error {
 	if err := s.writeProtoAtomic("conf_state.pb", &s.confState); err != nil {
 		return err
 	}
-	return s.writeEntriesAtomic("entries.pb", s.entries)
+	return s.writeEntries("entries.pb", "entries.log", s.entries)
 }
 
 func (s *PersistentStorage) CreateSnapshot(i uint64, cs *raftpb.ConfState, data []byte) (raftpb.Snapshot, error) {
@@ -177,7 +186,7 @@ func (s *PersistentStorage) Compact(compactIndex uint64) error {
 	if err := s.reloadEntriesFromMemory(); err != nil {
 		return err
 	}
-	return s.writeEntriesAtomic("entries.pb", s.entries)
+	return s.writeEntries("entries.pb", "entries.log", s.entries)
 }
 
 func (s *PersistentStorage) SetConfState(cs raftpb.ConfState) error {
@@ -190,7 +199,7 @@ func (s *PersistentStorage) SetConfState(cs raftpb.ConfState) error {
 func (s *PersistentStorage) Flush() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, name := range []string{"hard_state.pb", "entries.pb", "conf_state.pb", "snapshot.pb"} {
+	for _, name := range []string{"hard_state.pb", "entries.pb", "entries.log", "conf_state.pb", "snapshot.pb"} {
 		path := filepath.Join(s.dir, name)
 		f, err := os.Open(path)
 		if os.IsNotExist(err) {
@@ -245,7 +254,10 @@ func (s *PersistentStorage) load() error {
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	entries, err := s.readEntries("entries.pb")
+	entries, err := s.readEntriesLog("entries.log")
+	if os.IsNotExist(err) {
+		entries, err = s.readEntries("entries.pb")
+	}
 	if err != nil {
 		return err
 	}
@@ -303,6 +315,151 @@ func (s *PersistentStorage) writeEntriesAtomic(name string, entries []raftpb.Ent
 		buf.Write(data)
 	}
 	return s.writeFileAtomic(name, buf.Bytes())
+}
+
+func (s *PersistentStorage) canAppendEntriesLog(entries []raftpb.Entry) bool {
+	if len(entries) == 0 {
+		return false
+	}
+	if len(s.entries) == 0 {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, "entries.log")); err != nil {
+		return false
+	}
+	return entries[0].Index == s.entries[len(s.entries)-1].Index+1
+}
+
+func (s *PersistentStorage) writeEntries(legacyName, logName string, entries []raftpb.Entry) error {
+	return s.writeEntriesLogAtomic(logName, entries)
+}
+
+func (s *PersistentStorage) encryptionEnabled() bool {
+	return s.encryption != nil && s.encryption.Enabled()
+}
+
+var entriesLogMagic = []byte("mycel-raft-entries-v2\n")
+
+func (s *PersistentStorage) writeEntriesLogAtomic(name string, entries []raftpb.Entry) error {
+	var buf bytes.Buffer
+	buf.Write(entriesLogMagic)
+	if err := s.encodeEntriesLogFrames(&buf, name, entries, 0); err != nil {
+		return err
+	}
+	path := filepath.Join(s.dir, name)
+	return writeAtomic(path, buf.Bytes())
+}
+
+func (s *PersistentStorage) appendEntriesLog(name string, entries []raftpb.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	path := filepath.Join(s.dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, fsperm.SharedFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() == 0 {
+		if _, err := f.Write(entriesLogMagic); err != nil {
+			return err
+		}
+	}
+	return s.encodeEntriesLogFrames(f, name, entries, len(s.entries))
+}
+
+func (s *PersistentStorage) encodeEntriesLogFrames(w io.Writer, name string, entries []raftpb.Entry, ordinalOffset int) error {
+	var header [12]byte
+	for i := range entries {
+		data, err := entries[i].Marshal()
+		if err != nil {
+			return err
+		}
+		if s.encryptionEnabled() {
+			data, err = s.encryption.EncryptRecord(context.Background(), data, s.entriesLogFrameAAD(name, ordinalOffset+i))
+			if err != nil {
+				return err
+			}
+		}
+		binary.BigEndian.PutUint64(header[:8], uint64(len(data)))
+		binary.BigEndian.PutUint32(header[8:], crc32.ChecksumIEEE(data))
+		if _, err := w.Write(header[:]); err != nil {
+			return err
+		}
+		if _, err := w.Write(data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *PersistentStorage) entriesLogFrameAAD(name string, ordinal int) []byte {
+	return []byte(fmt.Sprintf("raft-storage:v2:group=%s:file=%s:ordinal=%d", s.groupID, name, ordinal))
+}
+
+func (s *PersistentStorage) readEntriesLog(name string) ([]raftpb.Entry, error) {
+	path := filepath.Join(s.dir, name)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	magic := make([]byte, len(entriesLogMagic))
+	if _, err := io.ReadFull(f, magic); err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !bytes.Equal(magic, entriesLogMagic) {
+		return nil, fmt.Errorf("invalid raft entries log header")
+	}
+	entries := []raftpb.Entry{}
+	lastGood := int64(len(entriesLogMagic))
+	ordinal := 0
+	var header [12]byte
+	for {
+		n, err := io.ReadFull(f, header[:])
+		if err == io.EOF || (err == io.ErrUnexpectedEOF && n == 0) {
+			break
+		}
+		if err != nil {
+			_ = os.Truncate(path, lastGood)
+			break
+		}
+		nbytes := binary.BigEndian.Uint64(header[:8])
+		wantCRC := binary.BigEndian.Uint32(header[8:])
+		payload := make([]byte, nbytes)
+		if _, err := io.ReadFull(f, payload); err != nil {
+			_ = os.Truncate(path, lastGood)
+			break
+		}
+		if got := crc32.ChecksumIEEE(payload); got != wantCRC {
+			return nil, fmt.Errorf("raft entries log checksum mismatch at offset %d", lastGood)
+		}
+		if s.encryptionEnabled() {
+			var err error
+			payload, err = s.encryption.DecryptRecord(context.Background(), payload, s.entriesLogFrameAAD(name, ordinal))
+			if err != nil {
+				return nil, err
+			}
+		}
+		var ent raftpb.Entry
+		if err := ent.Unmarshal(payload); err != nil {
+			return nil, err
+		}
+		entries = append(entries, ent)
+		lastGood += int64(len(header)) + int64(nbytes)
+		ordinal++
+	}
+	return entries, nil
 }
 
 func (s *PersistentStorage) readEntries(name string) ([]raftpb.Entry, error) {
