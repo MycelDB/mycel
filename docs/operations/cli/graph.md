@@ -21,14 +21,17 @@ Useful flags:
 - `--domain-id` / `--domain`: target domain by ID or key.
 - `--graph-size`: `small`, `medium`, `large`, or `custom`.
 - `--seed-nodes`: explicit target seed count; overrides `--graph-size` when positive.
-- `--operation`: `create`, `update`, `create-edge`, or `mixed`.
-- `--template`: `minimal`, `properties`, `content`, `commonfolio-session`, or `audit`.
+- `--operation`: `create`, `update`, `create-edge`, `create-references`, `update-references`, or `mixed`.
+- `--template`: `minimal`, `properties`, `content`, `commonfolio-session`, `commonfolio-journal`, `commonfolio-journal-entry`, `commonfolio-project`, `commonfolio-task`, or `audit`.
+- `--seed-template`: node shape used for the seed/reference pool; defaults to `--template`.
+- `--references-per-node`: number of edges per measured node for relationship workloads.
+- `--reference-labels`: comma-separated edge labels cycled by relationship workloads.
 - `--operations`: measured operation count.
 - `--batch-size`: operations per transaction.
 - `--apply-operations`: use the `ApplyGraphOperations` RPC for create/update batches.
 - `--cleanup`: delete nodes created by the measured create/create-edge workload after measurement.
 
-The command reports latency summaries for transaction begin, graph operation RPCs, transaction commit, and total transaction duration. Use `--output json` to capture machine-readable benchmark artifacts.
+The command reports latency summaries for transaction begin, graph operation RPCs, transaction commit, and total transaction duration. Relationship workloads also report prepared referenced-node counts and measured reference-edge counts. Use `--output json` to capture machine-readable benchmark artifacts.
 
 ## Examples
 
@@ -61,6 +64,21 @@ mycel graph benchmark writes \
   --operations 200 \
   --batch-size 20 \
   --apply-operations \
+  --output json
+```
+
+```sh
+mycel graph benchmark writes \
+  --space-id <space-id> \
+  --domain registration \
+  --seed-template commonfolio-journal \
+  --template commonfolio-journal-entry \
+  --seed-nodes 1000 \
+  --operation create-references \
+  --references-per-node 2 \
+  --reference-labels belongs_to,references \
+  --operations 100 \
+  --batch-size 1 \
   --output json
 ```
 
