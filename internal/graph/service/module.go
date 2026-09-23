@@ -1002,10 +1002,12 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		}
 		timing.RaftBuild = time.Since(stepStart)
 		stepStart = time.Now()
-		if err := m.proposeGraphRaftCommand(ctx, cmd); err != nil {
+		proposal, err := m.proposeGraphRaftCommand(ctx, cmd)
+		if err != nil {
 			return CommitResult{}, err
 		}
 		timing.RaftPropose = time.Since(stepStart)
+		timing.RaftProposal = proposal.Timing
 		// proposeGraphRaftCommand returns only after the local partition leader has
 		// applied the committed graph command. Reading the local store revision here
 		// avoids a second leader/read-index check that can fail during an immediate

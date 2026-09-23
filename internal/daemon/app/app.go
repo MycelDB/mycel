@@ -29,6 +29,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/graph/writetrace"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
@@ -40,6 +41,13 @@ import (
 )
 
 const LogFilename = "myceld.log"
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
 
 func ensureFreshEncryptedDeploymentMarker(cfg config.Config) error {
 	dataDir := cfg.DataDir
@@ -406,12 +414,40 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		return nil, fmt.Errorf("ensure bootstrap principals: %w", err)
 	}
 	// Local WAL durability and recovery remain active above; clustered operation is Raft-only.
+	writeTrace := writetrace.FromEnv()
 	semanticSink := graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
+		traceStart := time.Now()
+		stepStart := time.Now()
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)
-		if err != nil {
-			return err
+		resolveDuration := time.Since(stepStart)
+		appendDuration := time.Duration(0)
+		if err == nil {
+			stepStart = time.Now()
+			err = appender.OnGraphCommitted(ctx, event)
+			appendDuration = time.Since(stepStart)
 		}
-		return appender.OnGraphCommitted(ctx, event)
+		total := time.Since(traceStart)
+		if writeTrace.ShouldLog(total) {
+			logger.Info("graph write semantic sink timing",
+				"event", "graph_write_semantic_sink_timing",
+				"space_id", event.SpaceID.String(),
+				"domain_id", event.DomainID.String(),
+				"transaction_id", event.TxnID.String(),
+				"graph_revision", event.GraphRevision,
+				"total_ms", writetrace.MS(total),
+				"appender_resolve_ms", writetrace.MS(resolveDuration),
+				"dirty_event_append_ms", writetrace.MS(appendDuration),
+				"changes", len(event.Changes),
+				"created_nodes", len(event.CreatedNodeIDs),
+				"updated_nodes", len(event.UpdatedNodeIDs),
+				"deleted_nodes", len(event.DeletedNodeIDs),
+				"changed_edges", len(event.ChangedEdges),
+				"affected_nodes", len(event.AffectedNodeIDs),
+				"affected_edges", len(event.AffectedEdgeIDs),
+				"error", errorString(err),
+			)
+		}
+		return err
 	})
 	lexicalSink := graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		return lexicalService.OnGraphCommitted(ctx, event)
