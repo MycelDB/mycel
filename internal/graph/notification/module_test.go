@@ -431,3 +431,24 @@ func committedEvent(spaceID, domainID string, revision uint64, changes ...graphc
 	domainUUID := uuid.MustParse(domainID)
 	return graphchange.CommittedEvent{ID: uuid.New(), TxnID: uuid.New(), GraphRevision: revision, Revision: revision, SpaceID: spaceUUID, DomainID: domainUUID, DomainIDs: []graph.DomainID{domainUUID}, Changes: changes, CommittedAt: time.Now().UTC()}
 }
+
+func TestStoredScopesListsPersistedEventLogs(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	m.SetDataDirForTest(t.TempDir())
+	spaceID := uuid.New()
+	domainID := uuid.New()
+	if err := m.OnGraphCommitted(ctx, graphchange.CommittedEvent{ID: uuid.New(), SpaceID: spaceID, DomainID: graph.DomainID(domainID), DomainIDs: []graph.DomainID{graph.DomainID(domainID)}, Revision: 1, UpdatedNodeIDs: []graph.NodeID{graph.NodeID(uuid.New())}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("OnGraphCommitted() error = %v", err)
+	}
+	scopes, err := m.StoredScopes(ctx)
+	if err != nil {
+		t.Fatalf("StoredScopes() error = %v", err)
+	}
+	if len(scopes) != 1 {
+		t.Fatalf("StoredScopes() len = %d, want 1: %+v", len(scopes), scopes)
+	}
+	if scopes[0].SpaceID != spaceID.String() || scopes[0].DomainID != domainID.String() {
+		t.Fatalf("unexpected scope: %+v", scopes[0])
+	}
+}

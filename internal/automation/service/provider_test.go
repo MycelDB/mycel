@@ -482,6 +482,9 @@ func (g *automationE2EGraph) MoveSubtree(context.Context, sessionservice.GraphTr
 func (g *automationE2EGraph) ReorderChildren(context.Context, sessionservice.GraphTransaction, string, []string) ([]graph.Edge, error) {
 	return nil, fmt.Errorf("unused")
 }
+func (g *automationE2EGraph) ReplaceReferences(context.Context, sessionservice.GraphTransaction, graphservice.ReplaceReferencesInput) (graphservice.ReplaceReferencesResult, error) {
+	return graphservice.ReplaceReferencesResult{}, fmt.Errorf("unused")
+}
 func (g *automationE2EGraph) CurrentRevision(context.Context, string) (int64, error) { return 1, nil }
 func (g *automationE2EGraph) CommitTransactionGraph(context.Context, sessionservice.GraphTransaction) (graphservice.CommitResult, error) {
 	return graphservice.CommitResult{OperationCount: 1, CommittedRevision: 1}, nil

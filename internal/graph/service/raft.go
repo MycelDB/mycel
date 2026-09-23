@@ -66,6 +66,14 @@ func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record grap
 	if strings.TrimSpace(commandID) != "" {
 		event.ID = uuid.NewSHA1(uuid.NameSpaceURL, []byte("mycel:graph-change:"+commandID))
 	}
+	if event.TxnID == uuid.Nil {
+		if strings.TrimSpace(commandID) != "" {
+			event.TxnID = uuid.NewSHA1(uuid.NameSpaceURL, []byte("mycel:graph-txn:"+commandID))
+		} else if event.ID != uuid.Nil {
+			event.TxnID = event.ID
+		}
+		event.TransactionID = event.TxnID
+	}
 	changes, err := m.overlayChanges(ctx, store, snapshot)
 	if err != nil {
 		return graphchange.CommittedEvent{}, nil, err
@@ -118,30 +126,30 @@ func (m *Module) EnableExperimentalRaft(groups *consensus.MultiGroup, partitionC
 	m.mu.Unlock()
 }
 
-func (m *Module) proposeGraphRaftCommand(ctx context.Context, cmd consensus.RaftCommand) error {
+func (m *Module) proposeGraphRaftCommand(ctx context.Context, cmd consensus.RaftCommand) (consensus.ProposalResult, error) {
 	if m.raftGroups == nil {
-		return fmt.Errorf("raft groups are not configured")
+		return consensus.ProposalResult{}, fmt.Errorf("raft groups are not configured")
 	}
 	group, ok := m.raftGroups.Group(consensus.PartitionGroupID(cmd.PartitionID))
 	if !ok || group == nil {
-		return raftGraphUnavailable("raft partition group %d is not available", cmd.PartitionID)
+		return consensus.ProposalResult{}, raftGraphUnavailable("raft partition group %d is not available", cmd.PartitionID)
 	}
 	leader := group.Leader()
 	if leader == 0 {
-		return raftGraphUnavailable("raft partition group %d has no leader", cmd.PartitionID)
+		return consensus.ProposalResult{}, raftGraphUnavailable("raft partition group %d has no leader", cmd.PartitionID)
 	}
 	local := m.raftLocalNode
 	if local == 0 && m.raftGroups != nil {
 		local = m.raftGroups.NodeID()
 	}
 	if local == 0 {
-		return raftGraphUnavailable("raft graph local node id is not configured")
+		return consensus.ProposalResult{}, raftGraphUnavailable("raft graph local node id is not configured")
 	}
-	_, err := group.Propose(ctx, cmd)
+	result, err := group.Propose(ctx, cmd)
 	if err != nil {
-		return raftGraphUnavailable("raft graph proposal for partition %d failed: %v", cmd.PartitionID, err)
+		return consensus.ProposalResult{}, raftGraphUnavailable("raft graph proposal for partition %d failed: %v", cmd.PartitionID, err)
 	}
-	return nil
+	return result, nil
 }
 
 func (m *Module) buildGraphCommitRaftCommand(record graphCommitRecord, partitionCount uint32, commandID string) (consensus.RaftCommand, error) {

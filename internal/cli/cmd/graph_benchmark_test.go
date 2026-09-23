@@ -16,7 +16,7 @@ func TestGraphBenchmarkWritesCommandShape(t *testing.T) {
 	if cmd == nil || cmd.Use != "writes" {
 		t.Fatalf("command = %#v, want writes", cmd)
 	}
-	for _, flag := range []string{"space-id", "domain-id", "domain", "graph-size", "seed-nodes", "operations", "batch-size", "operation", "template", "apply-operations", "cleanup"} {
+	for _, flag := range []string{"space-id", "domain-id", "domain", "graph-size", "seed-nodes", "operations", "batch-size", "operation", "template", "seed-template", "references-per-node", "reference-labels", "apply-operations", "cleanup"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Fatalf("missing --%s flag", flag)
 		}
@@ -60,7 +60,7 @@ func TestSummarizeDurations(t *testing.T) {
 }
 
 func TestBenchmarkNodeShapeTemplates(t *testing.T) {
-	for _, template := range []string{"minimal", "properties", "content", "commonfolio-session", "audit"} {
+	for _, template := range []string{"minimal", "properties", "content", "commonfolio-session", "commonfolio-journal", "commonfolio-journal-entry", "commonfolio-project", "commonfolio-task", "audit"} {
 		node, err := benchmarkNodeShape(template, "run", 1, "test")
 		if err != nil {
 			t.Fatalf("benchmarkNodeShape(%s) error = %v", template, err)
@@ -74,5 +74,18 @@ func TestBenchmarkNodeShapeTemplates(t *testing.T) {
 	}
 	if _, err := benchmarkNodeShape("unknown", "run", 1, "test"); err == nil {
 		t.Fatal("expected unsupported template error")
+	}
+}
+
+func TestBenchmarkReferenceLabels(t *testing.T) {
+	got := benchmarkReferenceLabels("belongs_to, references,belongs_to,,parent")
+	want := []string{"belongs_to", "references", "parent"}
+	if len(got) != len(want) {
+		t.Fatalf("labels = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("labels = %#v, want %#v", got, want)
+		}
 	}
 }

@@ -16,15 +16,42 @@ type DirtyEventAppender struct {
 	MaintenanceManager storesemantic.MaintenanceManager
 }
 
+type DirtyEventAppenderTiming struct {
+	Total   time.Duration
+	Convert time.Duration
+	Append  storesemantic.GraphDirtyEventAppendTiming
+}
+
 func (a DirtyEventAppender) OnGraphCommitted(ctx context.Context, event graphchange.CommittedEvent) error {
+	_, err := a.OnGraphCommittedWithTiming(ctx, event)
+	return err
+}
+
+func (a DirtyEventAppender) OnGraphCommittedWithTiming(ctx context.Context, event graphchange.CommittedEvent) (DirtyEventAppenderTiming, error) {
+	timing := DirtyEventAppenderTiming{}
+	traceStart := time.Now()
 	if event.Empty() {
-		return nil
+		timing.Total = time.Since(traceStart)
+		return timing, nil
 	}
 	if a.MaintenanceManager == nil {
-		return ErrMaintenanceManagerRequired
+		timing.Total = time.Since(traceStart)
+		return timing, ErrMaintenanceManagerRequired
 	}
-	_, err := a.MaintenanceManager.AppendGraphDirtyEvent(ctx, DirtyEventFromGraphCommit(event))
-	return err
+	stepStart := time.Now()
+	dirtyEvent := DirtyEventFromGraphCommit(event)
+	timing.Convert = time.Since(stepStart)
+	if timed, ok := a.MaintenanceManager.(storesemantic.TimedGraphDirtyEventAppender); ok {
+		_, appendTiming, err := timed.AppendGraphDirtyEventWithTiming(ctx, dirtyEvent)
+		timing.Append = appendTiming
+		timing.Total = time.Since(traceStart)
+		return timing, err
+	}
+	stepStart = time.Now()
+	_, err := a.MaintenanceManager.AppendGraphDirtyEvent(ctx, dirtyEvent)
+	timing.Append.Total = time.Since(stepStart)
+	timing.Total = time.Since(traceStart)
+	return timing, err
 }
 
 // DirtyEventFromGraphCommit converts a semantic-neutral graphchange event into
@@ -47,6 +74,9 @@ func DirtyEventFromGraphCommit(event graphchange.CommittedEvent) domainsemantic.
 	}
 	if out.ID == uuid.Nil {
 		out.ID = uuid.New()
+	}
+	if out.TxnID == uuid.Nil {
+		out.TxnID = out.ID
 	}
 	if out.CommittedAt.IsZero() {
 		out.CommittedAt = time.Now().UTC()

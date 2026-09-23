@@ -29,10 +29,12 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/graph/writetrace"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
+	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
@@ -40,6 +42,13 @@ import (
 )
 
 const LogFilename = "myceld.log"
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
 
 func ensureFreshEncryptedDeploymentMarker(cfg config.Config) error {
 	dataDir := cfg.DataDir
@@ -406,18 +415,68 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		return nil, fmt.Errorf("ensure bootstrap principals: %w", err)
 	}
 	// Local WAL durability and recovery remain active above; clustered operation is Raft-only.
+	writeTrace := writetrace.FromEnv()
 	semanticSink := graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
+		traceStart := time.Now()
+		stepStart := time.Now()
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)
-		if err != nil {
-			return err
+		resolveDuration := time.Since(stepStart)
+		appendDuration := time.Duration(0)
+		semanticTiming := semanticmaintenance.DirtyEventAppenderTiming{}
+		if err == nil {
+			stepStart = time.Now()
+			semanticTiming, err = appender.OnGraphCommittedWithTiming(ctx, event)
+			appendDuration = time.Since(stepStart)
 		}
-		return appender.OnGraphCommitted(ctx, event)
+		total := time.Since(traceStart)
+		if writeTrace.ShouldLog(total) {
+			logger.Info("graph write semantic sink timing",
+				"event", "graph_write_semantic_sink_timing",
+				"space_id", event.SpaceID.String(),
+				"domain_id", event.DomainID.String(),
+				"transaction_id", event.TxnID.String(),
+				"graph_revision", event.GraphRevision,
+				"total_ms", writetrace.MS(total),
+				"appender_resolve_ms", writetrace.MS(resolveDuration),
+				"dirty_event_append_ms", writetrace.MS(appendDuration),
+				"dirty_event_convert_ms", writetrace.MS(semanticTiming.Convert),
+				"dirty_event_append_total_ms", writetrace.MS(semanticTiming.Append.Total),
+				"dirty_event_context_ms", writetrace.MS(semanticTiming.Append.Context),
+				"dirty_event_wait_lock_ms", writetrace.MS(semanticTiming.Append.WaitLock),
+				"dirty_event_deduplicate_ms", writetrace.MS(semanticTiming.Append.Deduplicate),
+				"dirty_event_mkdir_ms", writetrace.MS(semanticTiming.Append.Mkdir),
+				"dirty_event_marshal_ms", writetrace.MS(semanticTiming.Append.Marshal),
+				"dirty_event_open_ms", writetrace.MS(semanticTiming.Append.Open),
+				"dirty_event_write_ms", writetrace.MS(semanticTiming.Append.Write),
+				"dirty_event_sync_ms", writetrace.MS(semanticTiming.Append.Sync),
+				"dirty_event_memory_index_ms", writetrace.MS(semanticTiming.Append.MemoryIndex),
+				"dirty_event_raft_build_ms", writetrace.MS(semanticTiming.Append.RaftBuild),
+				"dirty_event_raft_propose_ms", writetrace.MS(semanticTiming.Append.RaftPropose),
+				"dirty_event_wal_append_ms", writetrace.MS(semanticTiming.Append.WALAppend),
+				"dirty_event_wal_sync_ms", writetrace.MS(semanticTiming.Append.WALSync),
+				"dirty_event_wal_apply_ms", writetrace.MS(semanticTiming.Append.WALApply),
+				"dirty_event_wal_mark_applied_ms", writetrace.MS(semanticTiming.Append.WALMark),
+				"changes", len(event.Changes),
+				"created_nodes", len(event.CreatedNodeIDs),
+				"updated_nodes", len(event.UpdatedNodeIDs),
+				"deleted_nodes", len(event.DeletedNodeIDs),
+				"changed_edges", len(event.ChangedEdges),
+				"affected_nodes", len(event.AffectedNodeIDs),
+				"affected_edges", len(event.AffectedEdgeIDs),
+				"error", errorString(err),
+			)
+		}
+		return err
 	})
 	lexicalSink := graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		return lexicalService.OnGraphCommitted(ctx, event)
 	})
 	if raftRuntimeConfigured(cfg) {
-		graphService.SetChangeSink(graphchange.MultiSink{graphchange.Named("semantic", semanticSink), graphchange.Named("lexical", lexicalSink)})
+		if err := startAsyncSemanticDirtyConsumer(ctx, logger, graphNotificationService, semanticService); err != nil {
+			_ = rt.Close()
+			return nil, err
+		}
+		graphService.SetChangeSink(graphchange.Named("lexical", lexicalSink))
 		graphService.SetRaftApplyChangeSink(graphchange.Named("graph_change_notification", graphNotificationService))
 	} else {
 		graphService.SetChangeSink(graphchange.MultiSink{graphchange.Named("graph_change_notification", graphNotificationService), graphchange.Named("semantic", semanticSink), graphchange.Named("lexical", lexicalSink)})

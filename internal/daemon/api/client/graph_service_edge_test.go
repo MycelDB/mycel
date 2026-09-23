@@ -59,6 +59,63 @@ func TestGraphServiceEdgeUsesLabelsPropertiesPayloadAndMeta(t *testing.T) {
 	}
 }
 
+func TestGraphServiceApplyOperationsReplacesReferencesWithNodeUpdate(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+
+	sourceID := uuid.NewString()
+	targetAID := uuid.NewString()
+	targetBID := uuid.NewString()
+	for _, id := range []string{sourceID, targetAID, targetBID} {
+		if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: tx, Node: &clientv1.NodeCreate{NodeId: &id, Labels: []string{"Note"}}}); err != nil {
+			t.Fatalf("CreateNode(%s) error = %v", id, err)
+		}
+	}
+	if _, err := graphSvc.CreateEdge(fixture.ctx, &clientv1.CreateEdgeRequest{TransactionId: tx, Edge: &clientv1.EdgeCreate{FromNodeId: sourceID, ToNodeId: targetBID, Labels: []string{"REFERENCES"}}}); err != nil {
+		t.Fatalf("CreateEdge(old reference) error = %v", err)
+	}
+
+	res, err := graphSvc.ApplyGraphOperations(fixture.ctx, &clientv1.ApplyGraphOperationsRequest{TransactionId: tx, Operations: []*clientv1.GraphOperation{
+		{Operation: &clientv1.GraphOperation_UpdateNode{UpdateNode: &clientv1.NodeUpdate{Node: &clientv1.Node{NodeId: sourceID, Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "updated"})}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"properties"}}}}},
+		{Operation: &clientv1.GraphOperation_ReplaceReferences{ReplaceReferences: &clientv1.ReferencesReplace{SourceNodeId: sourceID, Labels: []string{"REFERENCES"}, Mode: clientv1.ReferenceReplacementMode_REFERENCE_REPLACEMENT_MODE_REPLACE, Targets: []*clientv1.ReferenceTarget{{TargetNodeId: targetAID, Properties: mustStruct(t, map[string]any{"count": 1})}}}}},
+	}})
+	if err != nil {
+		t.Fatalf("ApplyGraphOperations() error = %v", err)
+	}
+	if len(res.GetResults()) != 2 || res.GetResults()[0].GetUpdatedNode() == nil || res.GetResults()[1].GetReplacedReferences() == nil {
+		t.Fatalf("unexpected operation results: %+v", res.GetResults())
+	}
+	replaceResult := res.GetResults()[1].GetReplacedReferences()
+	if len(replaceResult.GetAddedEdges()) != 1 || replaceResult.GetAddedEdges()[0].GetToNodeId() != targetAID || len(replaceResult.GetDeletedEdgeIds()) != 1 {
+		t.Fatalf("replace result = %+v, want one added targetA and one deleted", replaceResult)
+	}
+
+	got, err := graphSvc.GetNode(fixture.ctx, &clientv1.GetNodeRequest{TransactionId: tx, NodeId: sourceID})
+	if err != nil {
+		t.Fatalf("GetNode(source) error = %v", err)
+	}
+	if got.GetNode().GetProperties().AsMap()["title"] != "updated" {
+		t.Fatalf("source properties = %+v, want updated title", got.GetNode().GetProperties().AsMap())
+	}
+	edges, err := graphSvc.ListEdges(fixture.ctx, &clientv1.ListEdgesRequest{TransactionId: tx})
+	if err != nil {
+		t.Fatalf("ListEdges() error = %v", err)
+	}
+	matching := 0
+	for _, edge := range edges.GetEdges() {
+		if edge.GetFromNodeId() == sourceID && reflect.DeepEqual(edge.GetLabels(), []string{"REFERENCES"}) {
+			matching++
+			if edge.GetToNodeId() != targetAID {
+				t.Fatalf("remaining reference target = %s, want targetA", edge.GetToNodeId())
+			}
+		}
+	}
+	if matching != 1 {
+		t.Fatalf("matching reference edges = %d, want 1", matching)
+	}
+}
+
 func TestQueryServiceExecuteGQLComparisonPredicates(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)

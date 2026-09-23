@@ -151,3 +151,14 @@ func (m *recordingMaintenanceManager) CompleteWork(context.Context, uuid.UUID, s
 func (m *recordingMaintenanceManager) FailWork(context.Context, uuid.UUID, storesemantic.WorkFailure) error {
 	return nil
 }
+
+func TestDirtyEventFromGraphCommitSynthesizesTxnID(t *testing.T) {
+	eventID := uuid.New()
+	dirty := DirtyEventFromGraphCommit(graphchange.CommittedEvent{ID: eventID, GraphRevision: 7, SpaceID: domainspace.SpaceID(uuid.New()), DomainIDs: []graph.DomainID{graph.DomainID(uuid.New())}, UpdatedNodeIDs: []graph.NodeID{graph.NodeID(uuid.New())}})
+	if dirty.ID != eventID {
+		t.Fatalf("dirty ID = %s, want event ID %s", dirty.ID, eventID)
+	}
+	if dirty.TxnID != eventID {
+		t.Fatalf("dirty TxnID = %s, want event ID fallback %s", dirty.TxnID, eventID)
+	}
+}

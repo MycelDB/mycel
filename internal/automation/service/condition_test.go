@@ -171,6 +171,9 @@ func (f fakeConditionGraph) MoveSubtree(context.Context, sessionservice.GraphTra
 func (f fakeConditionGraph) ReorderChildren(context.Context, sessionservice.GraphTransaction, string, []string) ([]graph.Edge, error) {
 	panic("unused")
 }
+func (f fakeConditionGraph) ReplaceReferences(context.Context, sessionservice.GraphTransaction, graphservice.ReplaceReferencesInput) (graphservice.ReplaceReferencesResult, error) {
+	panic("unused")
+}
 func (f fakeConditionGraph) CurrentRevision(context.Context, string) (int64, error) { panic("unused") }
 func (f fakeConditionGraph) CommitTransactionGraph(context.Context, sessionservice.GraphTransaction) (graphservice.CommitResult, error) {
 	panic("unused")

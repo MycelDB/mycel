@@ -174,16 +174,93 @@ func (w *walMaintenanceManager) ClaimReadyWork(ctx context.Context, in storesema
 	return w.inner.ClaimReadyWork(ctx, in)
 }
 func (w *walMaintenanceManager) AppendGraphDirtyEvent(ctx context.Context, e domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error) {
+	out, _, err := w.AppendGraphDirtyEventWithTiming(ctx, e)
+	return out, err
+}
+
+func (w *walMaintenanceManager) AppendGraphDirtyEventWithTiming(ctx context.Context, e domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, storesemantic.GraphDirtyEventAppendTiming, error) {
+	timing := storesemantic.GraphDirtyEventAppendTiming{}
+	traceStart := time.Now()
+	stepStart := time.Now()
+	if err := ctx.Err(); err != nil {
+		timing.Context = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
+	}
+	timing.Context = time.Since(stepStart)
 	if e.ID == uuid.Nil {
 		e.ID = uuid.New()
 	}
 	if e.CommittedAt.IsZero() {
 		e.CommittedAt = time.Now().UTC()
 	}
-	if err := w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "dirty_event.append", SpaceID: w.spaceID, Payload: raw(e)}); err != nil {
-		return domainsemantic.GraphDirtyEvent{}, err
+	stepStart = time.Now()
+	payload, err := json.Marshal(e)
+	if err != nil {
+		timing.Marshal = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
 	}
-	return e, nil
+	timing.Marshal = time.Since(stepStart)
+	rec := maintenanceMutationRecord{Kind: "dirty_event.append", SpaceID: w.spaceID, Payload: payload}
+	stepStart = time.Now()
+	mutationPayload, err := json.Marshal(rec)
+	if err != nil {
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
+	}
+	// Include the mutation envelope marshal in Marshal so operators can compare it
+	// against local file-store dirty-event marshaling.
+	timing.Marshal += time.Since(stepStart)
+	if w.module.raftGroups != nil {
+		stepStart = time.Now()
+		cmd, err := w.module.buildSemanticMaintenanceRaftCommand(rec, mutationPayload, "semantic-maintenance-"+rec.SpaceID.String()+"-"+rec.Kind+"-"+uuid.NewString())
+		if err != nil {
+			timing.RaftBuild = time.Since(stepStart)
+			timing.Total = time.Since(traceStart)
+			return domainsemantic.GraphDirtyEvent{}, timing, err
+		}
+		timing.RaftBuild = time.Since(stepStart)
+		stepStart = time.Now()
+		_, err = w.module.proposeSemanticRaftCommandWithResult(ctx, cmd)
+		timing.RaftPropose = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		if err != nil {
+			return domainsemantic.GraphDirtyEvent{}, timing, err
+		}
+		return e, timing, nil
+	}
+	stepStart = time.Now()
+	lsn, err := w.module.wal.Append(ctx, wal.PendingRecord{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: mutationPayload})
+	if err != nil {
+		timing.WALAppend = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
+	}
+	timing.WALAppend = time.Since(stepStart)
+	stepStart = time.Now()
+	if err := w.module.wal.Sync(ctx, lsn); err != nil {
+		timing.WALSync = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
+	}
+	timing.WALSync = time.Since(stepStart)
+	stepStart = time.Now()
+	if err := w.module.applySemanticMaintenance(ctx, wal.Record{Payload: mutationPayload}); err != nil {
+		timing.WALApply = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
+	}
+	timing.WALApply = time.Since(stepStart)
+	stepStart = time.Now()
+	if err := w.module.markSemanticWALApplied(ctx, lsn); err != nil {
+		timing.WALMark = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
+	}
+	timing.WALMark = time.Since(stepStart)
+	timing.Total = time.Since(traceStart)
+	return e, timing, nil
 }
 func (w *walMaintenanceManager) SaveCheckpoint(ctx context.Context, c storesemantic.MaintenanceCheckpoint) error {
 	if c.UpdatedAt.IsZero() {
