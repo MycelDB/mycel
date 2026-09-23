@@ -1206,47 +1206,88 @@ func cloneMaintenanceCheckpointState(in maintenanceCheckpointState) maintenanceC
 func (m *maintenanceManager) Close() error { return nil }
 
 func (m *maintenanceManager) AppendGraphDirtyEvent(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error) {
+	out, _, err := m.AppendGraphDirtyEventWithTiming(ctx, event)
+	return out, err
+}
+
+func (m *maintenanceManager) AppendGraphDirtyEventWithTiming(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, GraphDirtyEventAppendTiming, error) {
+	timing := GraphDirtyEventAppendTiming{}
+	traceStart := time.Now()
+	stepStart := time.Now()
 	if err := ctx.Err(); err != nil {
-		return domainsemantic.GraphDirtyEvent{}, err
+		timing.Context = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
 	}
+	timing.Context = time.Since(stepStart)
 	if event.TxnID == uuid.Nil || event.SpaceID != m.spaceID {
-		return domainsemantic.GraphDirtyEvent{}, fmt.Errorf("%w: txn_id and matching space_id are required", ErrInvalidInput)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, fmt.Errorf("%w: txn_id and matching space_id are required", ErrInvalidInput)
 	}
+	stepStart = time.Now()
 	m.mu.Lock()
+	timing.WaitLock = time.Since(stepStart)
 	defer m.mu.Unlock()
+	stepStart = time.Now()
 	if idx, ok := m.dirtyEventByTxnID[event.TxnID]; ok && idx >= 0 && idx < len(m.dirtyEvents) {
-		return m.dirtyEvents[idx], nil
+		timing.Deduplicate = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return m.dirtyEvents[idx], timing, nil
 	}
+	timing.Deduplicate = time.Since(stepStart)
 	if event.ID == uuid.Nil {
 		event.ID = newID()
 	}
 	if event.CommittedAt.IsZero() {
 		event.CommittedAt = time.Now().UTC()
 	}
+	stepStart = time.Now()
 	if err := os.MkdirAll(filepath.Dir(m.graphDirtyEventsPath()), fsperm.SharedDir); err != nil {
-		return domainsemantic.GraphDirtyEvent{}, err
+		timing.Mkdir = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
 	}
+	timing.Mkdir = time.Since(stepStart)
+	stepStart = time.Now()
 	raw, err := json.Marshal(event)
 	if err != nil {
-		return domainsemantic.GraphDirtyEvent{}, err
+		timing.Marshal = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
 	}
+	timing.Marshal = time.Since(stepStart)
+	stepStart = time.Now()
 	f, err := os.OpenFile(m.graphDirtyEventsPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
-		return domainsemantic.GraphDirtyEvent{}, err
+		timing.Open = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
 	}
+	timing.Open = time.Since(stepStart)
 	defer f.Close()
+	stepStart = time.Now()
 	if _, err := f.Write(append(raw, '\n')); err != nil {
-		return domainsemantic.GraphDirtyEvent{}, err
+		timing.Write = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
 	}
+	timing.Write = time.Since(stepStart)
+	stepStart = time.Now()
 	if err := f.Sync(); err != nil {
-		return domainsemantic.GraphDirtyEvent{}, err
+		timing.Sync = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
 	}
+	timing.Sync = time.Since(stepStart)
+	stepStart = time.Now()
 	m.dirtyEvents = append(m.dirtyEvents, event)
 	if m.dirtyEventByTxnID == nil {
 		m.dirtyEventByTxnID = map[uuid.UUID]int{}
 	}
 	m.dirtyEventByTxnID[event.TxnID] = len(m.dirtyEvents) - 1
-	return event, nil
+	timing.MemoryIndex = time.Since(stepStart)
+	timing.Total = time.Since(traceStart)
+	return event, timing, nil
 }
 
 func (m *maintenanceManager) ListGraphDirtyEvents(ctx context.Context) ([]domainsemantic.GraphDirtyEvent, error) {

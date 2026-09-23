@@ -34,6 +34,7 @@ import (
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
+	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
@@ -421,9 +422,10 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		appender, err := semanticService.DirtyEventAppender(ctx, event.SpaceID)
 		resolveDuration := time.Since(stepStart)
 		appendDuration := time.Duration(0)
+		semanticTiming := semanticmaintenance.DirtyEventAppenderTiming{}
 		if err == nil {
 			stepStart = time.Now()
-			err = appender.OnGraphCommitted(ctx, event)
+			semanticTiming, err = appender.OnGraphCommittedWithTiming(ctx, event)
 			appendDuration = time.Since(stepStart)
 		}
 		total := time.Since(traceStart)
@@ -437,6 +439,17 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 				"total_ms", writetrace.MS(total),
 				"appender_resolve_ms", writetrace.MS(resolveDuration),
 				"dirty_event_append_ms", writetrace.MS(appendDuration),
+				"dirty_event_convert_ms", writetrace.MS(semanticTiming.Convert),
+				"dirty_event_append_total_ms", writetrace.MS(semanticTiming.Append.Total),
+				"dirty_event_context_ms", writetrace.MS(semanticTiming.Append.Context),
+				"dirty_event_wait_lock_ms", writetrace.MS(semanticTiming.Append.WaitLock),
+				"dirty_event_deduplicate_ms", writetrace.MS(semanticTiming.Append.Deduplicate),
+				"dirty_event_mkdir_ms", writetrace.MS(semanticTiming.Append.Mkdir),
+				"dirty_event_marshal_ms", writetrace.MS(semanticTiming.Append.Marshal),
+				"dirty_event_open_ms", writetrace.MS(semanticTiming.Append.Open),
+				"dirty_event_write_ms", writetrace.MS(semanticTiming.Append.Write),
+				"dirty_event_sync_ms", writetrace.MS(semanticTiming.Append.Sync),
+				"dirty_event_memory_index_ms", writetrace.MS(semanticTiming.Append.MemoryIndex),
 				"changes", len(event.Changes),
 				"created_nodes", len(event.CreatedNodeIDs),
 				"updated_nodes", len(event.UpdatedNodeIDs),

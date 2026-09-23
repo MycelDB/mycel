@@ -63,6 +63,27 @@ type SpaceManager interface {
 	ListPolicyDecisions(ctx context.Context) ([]domainsemantic.PolicyDecision, error)
 }
 
+// GraphDirtyEventAppendTiming breaks down the durable append of a graph dirty
+// event into the semantic maintenance log.
+type GraphDirtyEventAppendTiming struct {
+	Total       time.Duration
+	Context     time.Duration
+	WaitLock    time.Duration
+	Deduplicate time.Duration
+	Mkdir       time.Duration
+	Marshal     time.Duration
+	Open        time.Duration
+	Write       time.Duration
+	Sync        time.Duration
+	MemoryIndex time.Duration
+}
+
+// TimedGraphDirtyEventAppender is implemented by maintenance managers that can
+// return diagnostic timing for graph dirty-event appends.
+type TimedGraphDirtyEventAppender interface {
+	AppendGraphDirtyEventWithTiming(ctx context.Context, event domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, GraphDirtyEventAppendTiming, error)
+}
+
 // MaintenanceCheckpoint tracks a named semantic maintenance consumer's durable progress.
 type MaintenanceCheckpoint struct {
 	Consumer              string                           `json:"consumer"`
