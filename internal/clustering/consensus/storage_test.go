@@ -151,12 +151,12 @@ func TestPersistentStorageEncryptedFilesReopen(t *testing.T) {
 	if err := store.Append([]raftpb.Entry{{Term: 1, Index: 1, Type: raftpb.EntryNormal, Data: secret}}); err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "entries.pb"))
+	data, err := os.ReadFile(filepath.Join(dir, "entries.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(data, secret) {
-		t.Fatal("raft entries file contains plaintext entry data")
+		t.Fatal("raft entries log contains plaintext entry data")
 	}
 	snapshotSecret := []byte("raft-snapshot-secret-plaintext")
 	if _, err := store.CreateSnapshot(1, &raftpb.ConfState{Voters: []uint64{1}}, snapshotSecret); err != nil {
@@ -179,5 +179,75 @@ func TestPersistentStorageEncryptedFilesReopen(t *testing.T) {
 	}
 	if !bytes.Equal(snap.Data, snapshotSecret) {
 		t.Fatalf("snapshot data=%q", snap.Data)
+	}
+}
+
+func TestPersistentStorageUsesAppendOnlyEntryLog(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("NewPersistentStorage() error = %v", err)
+	}
+	first := make([]raftpb.Entry, 0, 50)
+	for i := 1; i <= 50; i++ {
+		first = append(first, raftpb.Entry{Term: 1, Index: uint64(i), Type: raftpb.EntryNormal, Data: bytes.Repeat([]byte("x"), 128)})
+	}
+	if err := store.Append(first); err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+	infoBefore, err := os.Stat(filepath.Join(dir, "entries.log"))
+	if err != nil {
+		t.Fatalf("stat entries.log: %v", err)
+	}
+	if err := store.Append([]raftpb.Entry{{Term: 1, Index: 51, Type: raftpb.EntryNormal, Data: []byte("tail")}}); err != nil {
+		t.Fatalf("Append(tail) error = %v", err)
+	}
+	infoAfter, err := os.Stat(filepath.Join(dir, "entries.log"))
+	if err != nil {
+		t.Fatalf("stat entries.log after append: %v", err)
+	}
+	if grew := infoAfter.Size() - infoBefore.Size(); grew <= 0 || grew >= infoBefore.Size()/2 {
+		t.Fatalf("entries.log growth = %d, want small append-only growth below half prior size %d", grew, infoBefore.Size()/2)
+	}
+	reopened, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("reopen storage: %v", err)
+	}
+	last, err := reopened.LastIndex()
+	if err != nil {
+		t.Fatalf("LastIndex() error = %v", err)
+	}
+	if last != 51 {
+		t.Fatalf("LastIndex()=%d want 51", last)
+	}
+}
+
+func TestPersistentStorageMigratesLegacyEntriesFileToAppendLog(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("NewPersistentStorage() error = %v", err)
+	}
+	legacyEntries := []raftpb.Entry{{Term: 1, Index: 1, Type: raftpb.EntryNormal, Data: []byte("legacy")}}
+	if err := store.writeEntriesAtomic("entries.pb", legacyEntries); err != nil {
+		t.Fatalf("write legacy entries: %v", err)
+	}
+	reopened, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("reopen legacy storage: %v", err)
+	}
+	if err := reopened.Append([]raftpb.Entry{{Term: 1, Index: 2, Type: raftpb.EntryNormal, Data: []byte("new")}}); err != nil {
+		t.Fatalf("Append(new) error = %v", err)
+	}
+	migrated, err := NewPersistentStorage(dir)
+	if err != nil {
+		t.Fatalf("reopen migrated storage: %v", err)
+	}
+	got, err := migrated.Entries(1, 3, ^uint64(0))
+	if err != nil {
+		t.Fatalf("Entries() error = %v", err)
+	}
+	if len(got) != 2 || !bytes.Equal(got[0].Data, []byte("legacy")) || !bytes.Equal(got[1].Data, []byte("new")) {
+		t.Fatalf("unexpected migrated entries: %+v", got)
 	}
 }
