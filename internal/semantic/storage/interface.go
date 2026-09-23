@@ -76,6 +76,12 @@ type GraphDirtyEventAppendTiming struct {
 	Write       time.Duration
 	Sync        time.Duration
 	MemoryIndex time.Duration
+	RaftBuild   time.Duration
+	RaftPropose time.Duration
+	WALAppend   time.Duration
+	WALSync     time.Duration
+	WALApply    time.Duration
+	WALMark     time.Duration
 }
 
 // TimedGraphDirtyEventAppender is implemented by maintenance managers that can
