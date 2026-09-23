@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/graph/change"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -520,5 +521,138 @@ func TestModuleGraphChangeSinkIncludesMoveReorderAndDeleteContext(t *testing.T) 
 	}
 	if deleteEvent.OldParentByNodeID[child.ID] != newParent.ID {
 		t.Fatalf("delete old parent = %s, want %s", deleteEvent.OldParentByNodeID[child.ID], newParent.ID)
+	}
+}
+
+func TestModuleReplaceReferencesReconcilesOutgoingReferenceSet(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	source, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"title": "source"}})
+	if err != nil {
+		t.Fatalf("CreateNode(source) error = %v", err)
+	}
+	targetA, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Page"}, Properties: map[string]any{"title": "a"}})
+	if err != nil {
+		t.Fatalf("CreateNode(targetA) error = %v", err)
+	}
+	targetB, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Page"}, Properties: map[string]any{"title": "b"}})
+	if err != nil {
+		t.Fatalf("CreateNode(targetB) error = %v", err)
+	}
+	targetC, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Page"}, Properties: map[string]any{"title": "c"}})
+	if err != nil {
+		t.Fatalf("CreateNode(targetC) error = %v", err)
+	}
+	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: source.ID.String(), ToNodeID: targetA.ID.String(), Labels: []string{"REFERENCES"}, Properties: map[string]any{"count": 1}}); err != nil {
+		t.Fatalf("CreateEdge(source->a) error = %v", err)
+	}
+	edgeB, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: source.ID.String(), ToNodeID: targetB.ID.String(), Labels: []string{"REFERENCES"}, Properties: map[string]any{"count": 1}})
+	if err != nil {
+		t.Fatalf("CreateEdge(source->b) error = %v", err)
+	}
+	other, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: source.ID.String(), ToNodeID: targetC.ID.String(), Labels: []string{"MENTIONS"}, Properties: map[string]any{"kind": "other"}})
+	if err != nil {
+		t.Fatalf("CreateEdge(source->c other) error = %v", err)
+	}
+
+	result, err := m.ReplaceReferences(ctx, tx, ReplaceReferencesInput{
+		SourceNodeID: source.ID.String(),
+		Labels:       []string{"REFERENCES"},
+		Mode:         ReferenceReplacementModeReplace,
+		Targets: []ReferenceTargetInput{
+			{TargetNodeID: targetA.ID.String(), Properties: map[string]any{"count": 2}, HasProps: true},
+			{TargetNodeID: targetC.ID.String(), Properties: map[string]any{"count": 1}, HasProps: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceReferences() error = %v", err)
+	}
+	if len(result.AddedEdges) != 1 || result.AddedEdges[0].ToID != targetC.ID {
+		t.Fatalf("added edges = %+v, want one edge to targetC", result.AddedEdges)
+	}
+	if len(result.UpdatedEdges) != 1 || result.UpdatedEdges[0].ToID != targetA.ID || !reflect.DeepEqual(result.UpdatedEdges[0].Properties, map[string]any{"count": 2}) {
+		t.Fatalf("updated edges = %+v, want targetA count=2", result.UpdatedEdges)
+	}
+	if !reflect.DeepEqual(result.DeletedEdgeIDs, []string{edgeB.ID.String()}) {
+		t.Fatalf("deleted edge ids = %+v, want %s", result.DeletedEdgeIDs, edgeB.ID)
+	}
+	if _, err := m.GetEdge(ctx, tx, edgeB.ID.String()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted reference edge lookup err=%v, want ErrNotFound", err)
+	}
+	if _, err := m.GetEdge(ctx, tx, other.ID.String()); err != nil {
+		t.Fatalf("non-matching edge should remain: %v", err)
+	}
+
+	noop, err := m.ReplaceReferences(ctx, tx, ReplaceReferencesInput{
+		SourceNodeID: source.ID.String(),
+		Labels:       []string{"REFERENCES"},
+		Mode:         ReferenceReplacementModeReplace,
+		Targets: []ReferenceTargetInput{
+			{TargetNodeID: targetA.ID.String(), Properties: map[string]any{"count": 2}, HasProps: true},
+			{TargetNodeID: targetC.ID.String(), Properties: map[string]any{"count": 1}, HasProps: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceReferences(noop) error = %v", err)
+	}
+	if len(noop.AddedEdges) != 0 || len(noop.UpdatedEdges) != 0 || len(noop.DeletedEdgeIDs) != 0 {
+		t.Fatalf("noop result = %+v, want no changes", noop)
+	}
+}
+
+func TestModuleReplaceReferencesModesAndAtomicNodeUpdate(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	source, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"title": "old"}})
+	if err != nil {
+		t.Fatalf("CreateNode(source) error = %v", err)
+	}
+	targetA, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Page"}})
+	if err != nil {
+		t.Fatalf("CreateNode(targetA) error = %v", err)
+	}
+	targetB, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Page"}})
+	if err != nil {
+		t.Fatalf("CreateNode(targetB) error = %v", err)
+	}
+	updated, err := m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: source.ID.String(), Labels: []string{"Note"}, Properties: map[string]any{"title": "new"}, UpdateMask: []string{"properties"}})
+	if err != nil {
+		t.Fatalf("UpdateNode() error = %v", err)
+	}
+	if got := updated.Properties["title"]; got != "new" {
+		t.Fatalf("updated title = %v, want new", got)
+	}
+
+	add, err := m.ReplaceReferences(ctx, tx, ReplaceReferencesInput{SourceNodeID: source.ID.String(), Labels: []string{"REFERENCES"}, Mode: ReferenceReplacementModeAdd, Targets: []ReferenceTargetInput{{TargetNodeID: targetA.ID.String()}, {TargetNodeID: targetB.ID.String()}}})
+	if err != nil {
+		t.Fatalf("ReplaceReferences(add) error = %v", err)
+	}
+	if len(add.AddedEdges) != 2 {
+		t.Fatalf("add result = %+v, want two added edges", add)
+	}
+	remove, err := m.ReplaceReferences(ctx, tx, ReplaceReferencesInput{SourceNodeID: source.ID.String(), Labels: []string{"REFERENCES"}, Mode: ReferenceReplacementModeRemove, Targets: []ReferenceTargetInput{{TargetNodeID: targetA.ID.String()}}})
+	if err != nil {
+		t.Fatalf("ReplaceReferences(remove) error = %v", err)
+	}
+	if len(remove.DeletedEdgeIDs) != 1 {
+		t.Fatalf("remove result = %+v, want one deleted edge", remove)
+	}
+	edges, _, err := m.ListEdges(ctx, tx, 0, "")
+	if err != nil {
+		t.Fatalf("ListEdges() error = %v", err)
+	}
+	matching := 0
+	for _, edge := range edges {
+		if edge.FromID == source.ID && domaingraph.EdgeHasLabels(edge, []string{"REFERENCES"}) {
+			matching++
+			if edge.ToID != targetB.ID {
+				t.Fatalf("remaining reference target = %s, want targetB", edge.ToID)
+			}
+		}
+	}
+	if matching != 1 {
+		t.Fatalf("matching references = %d, want 1", matching)
 	}
 }

@@ -102,7 +102,10 @@ The command can seed a domain to a target size, then measure CreateNode,
 UpdateNode, create+edge, relationship-aware create/update, or mixed workloads.
 Use --batch-size 1 for one transaction per operation, --batch-size >1 for
 multiple graph RPCs in one transaction, or --apply-operations with --batch-size
->1 to use the ApplyGraphOperations RPC for create/update workloads.`),
+>1 to use the ApplyGraphOperations RPC for create/update workloads. The
+update-references workload uses ApplyGraphOperations with server-side
+replace_references operations to update node content/properties and reconcile
+reference edges in one transaction-scoped RPC per measured batch.`),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runGraphWriteBenchmark(cmd.Context(), a, opts)
 		},
@@ -142,8 +145,8 @@ func runGraphWriteBenchmark(ctx context.Context, a *app.App, opts graphWriteBenc
 	if opts.ReferencesPerNode <= 0 {
 		return fmt.Errorf("--references-per-node must be positive")
 	}
-	if opts.ApplyOperations && (operation == "create-references" || operation == "update-references" || operation == "create-edge") {
-		return fmt.Errorf("--apply-operations is only supported for create/update workloads")
+	if opts.ApplyOperations && (operation == "create-references" || operation == "create-edge") {
+		return fmt.Errorf("--apply-operations is only supported for create/update/update-references workloads")
 	}
 	if _, err := benchmarkNodeShape(opts.Template, "validate", 0, ""); err != nil {
 		return err
@@ -527,6 +530,10 @@ func (r graphWriteBenchmarkRunner) runMeasured(operation, template string, opera
 }
 
 func (r graphWriteBenchmarkRunner) runMeasuredBatch(txID, operation, template string, offset, count int, apply bool, runID string, updatePool []string, referencesPerNode int, referenceLabels []string, samples *benchmarkSamples) ([]string, int, error) {
+	if operation == "update-references" {
+		edges, err := r.runReplaceReferencesBatch(txID, template, offset, count, runID, updatePool, referencesPerNode, referenceLabels, samples)
+		return nil, edges, err
+	}
 	if apply && (operation == "create" || operation == "update") {
 		created, err := r.runApplyOperationsBatch(txID, operation, template, offset, count, runID, updatePool, samples)
 		return created, 0, err
@@ -555,7 +562,7 @@ func (r graphWriteBenchmarkRunner) runMeasuredBatch(txID, operation, template st
 				return nil, 0, err
 			}
 			created = append(created, res.GetNode().GetNodeId())
-		case "update", "update-references":
+		case "update":
 			if len(updatePool) == 0 {
 				return nil, 0, fmt.Errorf("update workload requires at least one existing node")
 			}
@@ -598,6 +605,85 @@ func (r graphWriteBenchmarkRunner) runMeasuredBatch(txID, operation, template st
 		samples.graph = append(samples.graph, time.Since(start))
 	}
 	return created, referenceEdges, nil
+}
+
+func (r graphWriteBenchmarkRunner) runReplaceReferencesBatch(txID, template string, offset, count int, runID string, updatePool []string, referencesPerNode int, referenceLabels []string, samples *benchmarkSamples) (int, error) {
+	if len(updatePool) == 0 {
+		return 0, fmt.Errorf("update-references workload requires at least one existing node")
+	}
+	ops := []*clientv1.GraphOperation{}
+	referenceEdges := 0
+	for i := 0; i < count; i++ {
+		idx := offset + i
+		nodeID := updatePool[idx%len(updatePool)]
+		update := benchmarkUpdateRequest(txID, nodeID, template, runID, idx)
+		ops = append(ops, &clientv1.GraphOperation{Operation: &clientv1.GraphOperation_UpdateNode{UpdateNode: &clientv1.NodeUpdate{Node: update.Node, UpdateMask: update.UpdateMask}}})
+		replaceOps, edges := benchmarkReplaceReferenceOperations(nodeID, runID, idx, updatePool, referencesPerNode, referenceLabels)
+		ops = append(ops, replaceOps...)
+		referenceEdges += edges
+	}
+	start := time.Now()
+	_, err := r.graphClient().ApplyGraphOperations(r.ctx, &clientv1.ApplyGraphOperationsRequest{TransactionId: txID, Operations: ops})
+	samples.graph = append(samples.graph, time.Since(start))
+	if err != nil {
+		return referenceEdges, err
+	}
+	return referenceEdges, nil
+}
+
+func benchmarkReplaceReferenceOperations(sourceNodeID, runID string, index int, referencePool []string, referencesPerNode int, referenceLabels []string) ([]*clientv1.GraphOperation, int) {
+	targetsByLabel := map[string][]*clientv1.ReferenceTarget{}
+	seenByLabel := map[string]map[string]struct{}{}
+	for ref := 0; ref < referencesPerNode; ref++ {
+		label := referenceLabels[ref%len(referenceLabels)]
+		if seenByLabel[label] == nil {
+			seenByLabel[label] = map[string]struct{}{}
+		}
+		targetID := ""
+		for attempt := 0; attempt < len(referencePool); attempt++ {
+			candidate := referencePool[(index+ref+attempt+1)%len(referencePool)]
+			if candidate == sourceNodeID && len(referencePool) > 1 {
+				continue
+			}
+			if _, seen := seenByLabel[label][candidate]; seen {
+				continue
+			}
+			targetID = candidate
+			break
+		}
+		if targetID == "" {
+			continue
+		}
+		seenByLabel[label][targetID] = struct{}{}
+		targetsByLabel[label] = append(targetsByLabel[label], &clientv1.ReferenceTarget{
+			TargetNodeId: targetID,
+			Properties: protoStruct(map[string]any{
+				"benchmark_run_id":          runID,
+				"benchmark_index":           index,
+				"benchmark_phase":           "update-references",
+				"benchmark_reference_index": ref,
+				"benchmark_reference_label": label,
+			}),
+		})
+	}
+	ops := make([]*clientv1.GraphOperation, 0, len(targetsByLabel))
+	labels := make([]string, 0, len(targetsByLabel))
+	for label := range targetsByLabel {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	edges := 0
+	for _, label := range labels {
+		targets := targetsByLabel[label]
+		edges += len(targets)
+		ops = append(ops, &clientv1.GraphOperation{Operation: &clientv1.GraphOperation_ReplaceReferences{ReplaceReferences: &clientv1.ReferencesReplace{
+			SourceNodeId: sourceNodeID,
+			Labels:       []string{label},
+			Targets:      targets,
+			Mode:         clientv1.ReferenceReplacementMode_REFERENCE_REPLACEMENT_MODE_REPLACE,
+		}}})
+	}
+	return ops, edges
 }
 
 func (r graphWriteBenchmarkRunner) runApplyOperationsBatch(txID, operation, template string, offset, count int, runID string, updatePool []string, samples *benchmarkSamples) ([]string, error) {

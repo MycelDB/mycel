@@ -13,7 +13,7 @@ Authentication mode: **user**.
 
 ## Graph write benchmark
 
-Use `mycel graph benchmark writes` to measure graph create/update write latency through the normal daemon APIs. The command can seed a domain to a target graph size, then run one-operation-per-transaction, multi-operation transactions, or `ApplyGraphOperations` batches.
+Use `mycel graph benchmark writes` to measure graph create/update write latency through the normal daemon APIs. The command can seed a domain to a target graph size, then run one-operation-per-transaction, multi-operation transactions, or `ApplyGraphOperations` batches. The `update-references` workload uses server-side `replace_references` operations so node updates and reference-edge reconciliation can be measured without client-side edge diffing.
 
 Useful flags:
 
@@ -28,10 +28,10 @@ Useful flags:
 - `--reference-labels`: comma-separated edge labels cycled by relationship workloads.
 - `--operations`: measured operation count.
 - `--batch-size`: operations per transaction.
-- `--apply-operations`: use the `ApplyGraphOperations` RPC for create/update batches.
+- `--apply-operations`: use the `ApplyGraphOperations` RPC for create/update batches. `update-references` always uses `ApplyGraphOperations` with `replace_references` operations.
 - `--cleanup`: delete nodes created by the measured create/create-edge workload after measurement.
 
-The command reports latency summaries for transaction begin, graph operation RPCs, transaction commit, and total transaction duration. Relationship workloads also report prepared referenced-node counts and measured reference-edge counts. Use `--output json` to capture machine-readable benchmark artifacts.
+The command reports latency summaries for transaction begin, graph operation RPCs, transaction commit, and total transaction duration. Relationship workloads also report prepared referenced-node counts and measured reference-edge counts. For `update-references`, measured reference edges are reconciled by daemon-side diffing grouped by reference label. Use `--output json` to capture machine-readable benchmark artifacts.
 
 ## Examples
 
@@ -75,6 +75,21 @@ mycel graph benchmark writes \
   --template commonfolio-journal-entry \
   --seed-nodes 1000 \
   --operation create-references \
+  --references-per-node 2 \
+  --reference-labels belongs_to,references \
+  --operations 100 \
+  --batch-size 1 \
+  --output json
+```
+
+```sh
+mycel graph benchmark writes \
+  --space-id <space-id> \
+  --domain registration \
+  --seed-template commonfolio-journal \
+  --template commonfolio-journal-entry \
+  --seed-nodes 1000 \
+  --operation update-references \
   --references-per-node 2 \
   --reference-labels belongs_to,references \
   --operations 100 \

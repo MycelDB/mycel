@@ -38,6 +38,7 @@ type Manager interface {
 	GetParent(ctx context.Context, tx daemonsession.GraphTransaction, childNodeID string) (*domaingraph.Edge, error)
 	MoveSubtree(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string, newParentNodeID string, order *int32) (domaingraph.Edge, error)
 	ReorderChildren(ctx context.Context, tx daemonsession.GraphTransaction, parentNodeID string, childNodeIDs []string) ([]domaingraph.Edge, error)
+	ReplaceReferences(ctx context.Context, tx daemonsession.GraphTransaction, input ReplaceReferencesInput) (ReplaceReferencesResult, error)
 
 	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
 	CommitTransactionGraph(ctx context.Context, tx daemonsession.GraphTransaction) (CommitResult, error)
@@ -187,4 +188,36 @@ type UpdateEdgeInput struct {
 	Payload    map[string]any
 	Meta       map[string]any
 	UpdateMask []string
+}
+
+type ReferenceReplacementMode string
+
+const (
+	ReferenceReplacementModeReplace ReferenceReplacementMode = "replace"
+	ReferenceReplacementModeAdd     ReferenceReplacementMode = "add"
+	ReferenceReplacementModeRemove  ReferenceReplacementMode = "remove"
+)
+
+type ReferenceTargetInput struct {
+	TargetNodeID string
+	EdgeID       string
+	Properties   map[string]any
+	Payload      map[string]any
+	Meta         map[string]any
+	HasProps     bool
+	HasPayload   bool
+	HasMeta      bool
+}
+
+type ReplaceReferencesInput struct {
+	SourceNodeID string
+	Labels       []string
+	Targets      []ReferenceTargetInput
+	Mode         ReferenceReplacementMode
+}
+
+type ReplaceReferencesResult struct {
+	AddedEdges     []domaingraph.Edge
+	UpdatedEdges   []domaingraph.Edge
+	DeletedEdgeIDs []string
 }
