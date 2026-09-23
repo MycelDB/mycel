@@ -48,6 +48,12 @@ type Manager interface {
 	Replay(ctx context.Context, spec ConsumerSpec, consumer Consumer) error
 }
 
+// StoredScopesLister is implemented by managers that can enumerate persisted
+// graph-change scopes for recovery/replay consumers.
+type StoredScopesLister interface {
+	StoredScopes(ctx context.Context) ([]graphchange.Scope, error)
+}
+
 type Registration interface {
 	Close() error
 }
@@ -338,6 +344,57 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 		reg.offer(event.ApplyProjection(reg.spec.Projection))
 	}
 	return nil
+}
+
+func (m *Module) StoredScopes(ctx context.Context) ([]graphchange.Scope, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	dataDir := m.dataDir
+	m.mu.Unlock()
+	if dataDir == "" {
+		dataDir = filepath.Join(os.TempDir(), "mycel-graph-change-notification")
+	}
+	entries, err := os.ReadDir(dataDir)
+	if os.IsNotExist(err) {
+		return []graphchange.Scope{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	scopes := []graphchange.Scope{}
+	seen := map[string]struct{}{}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		spaceID := entry.Name()
+		domainEntries, err := os.ReadDir(filepath.Join(dataDir, spaceID))
+		if err != nil {
+			return nil, err
+		}
+		for _, domainEntry := range domainEntries {
+			name := domainEntry.Name()
+			if domainEntry.IsDir() || !strings.HasSuffix(name, ".jsonl") {
+				continue
+			}
+			domainID := strings.TrimSuffix(name, ".jsonl")
+			key := scopeKey(spaceID, domainID)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			scopes = append(scopes, graphchange.Scope{SpaceID: spaceID, DomainID: domainID})
+		}
+	}
+	return scopes, nil
 }
 
 func (m *Module) Replay(ctx context.Context, spec ConsumerSpec, consumer Consumer) error {
