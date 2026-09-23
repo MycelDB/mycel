@@ -66,6 +66,14 @@ func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record grap
 	if strings.TrimSpace(commandID) != "" {
 		event.ID = uuid.NewSHA1(uuid.NameSpaceURL, []byte("mycel:graph-change:"+commandID))
 	}
+	if event.TxnID == uuid.Nil {
+		if strings.TrimSpace(commandID) != "" {
+			event.TxnID = uuid.NewSHA1(uuid.NameSpaceURL, []byte("mycel:graph-txn:"+commandID))
+		} else if event.ID != uuid.Nil {
+			event.TxnID = event.ID
+		}
+		event.TransactionID = event.TxnID
+	}
 	changes, err := m.overlayChanges(ctx, store, snapshot)
 	if err != nil {
 		return graphchange.CommittedEvent{}, nil, err

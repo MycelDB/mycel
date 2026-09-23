@@ -75,6 +75,9 @@ func DirtyEventFromGraphCommit(event graphchange.CommittedEvent) domainsemantic.
 	if out.ID == uuid.Nil {
 		out.ID = uuid.New()
 	}
+	if out.TxnID == uuid.Nil {
+		out.TxnID = out.ID
+	}
 	if out.CommittedAt.IsZero() {
 		out.CommittedAt = time.Now().UTC()
 	}
