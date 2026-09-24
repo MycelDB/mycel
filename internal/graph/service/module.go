@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -763,6 +764,156 @@ func (m *Module) DeleteEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	return id.String(), nil
 }
 
+func (m *Module) ReplaceReferences(ctx context.Context, tx daemonsession.GraphTransaction, input ReplaceReferencesInput) (ReplaceReferencesResult, error) {
+	if err := ensureWritable(tx); err != nil {
+		return ReplaceReferencesResult{}, err
+	}
+	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
+		return ReplaceReferencesResult{}, err
+	}
+	sourceID, err := parseUUID[domaingraph.NodeID](input.SourceNodeID, "source_node_id")
+	if err != nil {
+		return ReplaceReferencesResult{}, err
+	}
+	source, err := m.node(ctx, tx, sourceID)
+	if err != nil {
+		return ReplaceReferencesResult{}, fmt.Errorf("%w: source node: %v", ErrInvalidInput, err)
+	}
+	if source.DomainID != mustDomainID(tx.DomainID) {
+		return ReplaceReferencesResult{}, fmt.Errorf("%w: source node must be in transaction domain", ErrInvalidInput)
+	}
+	labels := normalizeLabels(input.Labels)
+	if len(labels) == 0 {
+		return ReplaceReferencesResult{}, fmt.Errorf("%w: reference labels are required", ErrInvalidInput)
+	}
+	mode := input.Mode
+	if mode == "" {
+		mode = ReferenceReplacementModeReplace
+	}
+	if mode != ReferenceReplacementModeReplace && mode != ReferenceReplacementModeAdd && mode != ReferenceReplacementModeRemove {
+		return ReplaceReferencesResult{}, fmt.Errorf("%w: unsupported reference replacement mode %q", ErrInvalidInput, input.Mode)
+	}
+
+	targets := make(map[domaingraph.NodeID]ReferenceTargetInput, len(input.Targets))
+	targetOrder := make([]domaingraph.NodeID, 0, len(input.Targets))
+	for i, target := range input.Targets {
+		targetID, err := parseUUID[domaingraph.NodeID](target.TargetNodeID, fmt.Sprintf("targets[%d].target_node_id", i))
+		if err != nil {
+			return ReplaceReferencesResult{}, err
+		}
+		if _, duplicate := targets[targetID]; duplicate {
+			return ReplaceReferencesResult{}, fmt.Errorf("%w: duplicate reference target %s", ErrInvalidInput, targetID)
+		}
+		targets[targetID] = target
+		targetOrder = append(targetOrder, targetID)
+	}
+
+	view, err := m.transactionEdgeView(ctx, tx)
+	if err != nil {
+		return ReplaceReferencesResult{}, err
+	}
+	existingOutgoing, err := view.outgoing(ctx, sourceID)
+	if err != nil {
+		return ReplaceReferencesResult{}, err
+	}
+	existingByTarget := map[domaingraph.NodeID][]domaingraph.Edge{}
+	for _, edge := range existingOutgoing {
+		if edge.DomainID != mustDomainID(tx.DomainID) || !domaingraph.EdgeHasLabels(edge, labels) {
+			continue
+		}
+		existingByTarget[edge.ToID] = append(existingByTarget[edge.ToID], edge)
+	}
+	for targetID := range existingByTarget {
+		sort.Slice(existingByTarget[targetID], func(i, j int) bool {
+			return existingByTarget[targetID][i].ID.String() < existingByTarget[targetID][j].ID.String()
+		})
+	}
+
+	var result ReplaceReferencesResult
+	deleteEdge := func(edge domaingraph.Edge) error {
+		deleted, err := m.DeleteEdge(ctx, tx, edge.ID.String())
+		if err != nil {
+			return err
+		}
+		result.DeletedEdgeIDs = append(result.DeletedEdgeIDs, deleted)
+		return nil
+	}
+
+	if mode == ReferenceReplacementModeReplace {
+		for targetID, edges := range existingByTarget {
+			if _, desired := targets[targetID]; desired {
+				continue
+			}
+			for _, edge := range edges {
+				if err := deleteEdge(edge); err != nil {
+					return ReplaceReferencesResult{}, err
+				}
+			}
+		}
+	}
+	if mode == ReferenceReplacementModeRemove {
+		if len(targets) == 0 {
+			for _, edges := range existingByTarget {
+				for _, edge := range edges {
+					if err := deleteEdge(edge); err != nil {
+						return ReplaceReferencesResult{}, err
+					}
+				}
+			}
+			return result, nil
+		}
+		for targetID := range targets {
+			for _, edge := range existingByTarget[targetID] {
+				if err := deleteEdge(edge); err != nil {
+					return ReplaceReferencesResult{}, err
+				}
+			}
+		}
+		return result, nil
+	}
+
+	for _, targetID := range targetOrder {
+		target := targets[targetID]
+		existing := existingByTarget[targetID]
+		if len(existing) == 0 {
+			created, err := m.CreateEdge(ctx, tx, EdgeInput{EdgeID: target.EdgeID, FromNodeID: sourceID.String(), ToNodeID: targetID.String(), Labels: labels, Properties: target.Properties, Payload: target.Payload, Meta: target.Meta})
+			if err != nil {
+				return ReplaceReferencesResult{}, err
+			}
+			result.AddedEdges = append(result.AddedEdges, created)
+			continue
+		}
+		kept := existing[0]
+		for _, duplicate := range existing[1:] {
+			if err := deleteEdge(duplicate); err != nil {
+				return ReplaceReferencesResult{}, err
+			}
+		}
+		update := UpdateEdgeInput{EdgeID: kept.ID.String()}
+		if target.HasProps && !reflect.DeepEqual(kept.Properties, target.Properties) {
+			update.Properties = target.Properties
+			update.UpdateMask = append(update.UpdateMask, "properties")
+		}
+		if target.HasPayload && !reflect.DeepEqual(kept.Payload, target.Payload) {
+			update.Payload = target.Payload
+			update.UpdateMask = append(update.UpdateMask, "payload")
+		}
+		if target.HasMeta && !reflect.DeepEqual(kept.Meta, target.Meta) {
+			update.Meta = target.Meta
+			update.UpdateMask = append(update.UpdateMask, "meta")
+		}
+		if len(update.UpdateMask) == 0 {
+			continue
+		}
+		updated, err := m.UpdateEdge(ctx, tx, update)
+		if err != nil {
+			return ReplaceReferencesResult{}, err
+		}
+		result.UpdatedEdges = append(result.UpdatedEdges, updated)
+	}
+	return result, nil
+}
+
 func (m *Module) ListChildren(ctx context.Context, tx daemonsession.GraphTransaction, parentNodeID string) ([]domaingraph.Edge, error) {
 	if err := ensureReadable(tx); err != nil {
 		return nil, err
@@ -1002,10 +1153,12 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		}
 		timing.RaftBuild = time.Since(stepStart)
 		stepStart = time.Now()
-		if err := m.proposeGraphRaftCommand(ctx, cmd); err != nil {
+		proposal, err := m.proposeGraphRaftCommand(ctx, cmd)
+		if err != nil {
 			return CommitResult{}, err
 		}
 		timing.RaftPropose = time.Since(stepStart)
+		timing.RaftProposal = proposal.Timing
 		// proposeGraphRaftCommand returns only after the local partition leader has
 		// applied the committed graph command. Reading the local store revision here
 		// avoids a second leader/read-index check that can fail during an immediate

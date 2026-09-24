@@ -628,6 +628,12 @@ func (s *GraphService) applyOperation(ctx context.Context, tx daemonsession.Grap
 			out = append(out, mapProtoEdge(edge))
 		}
 		return &clientv1.GraphOperationResult{Result: &clientv1.GraphOperationResult_ReorderedChildren{ReorderedChildren: &clientv1.ChildrenReorderResult{ContainsEdges: out}}}, nil
+	case *clientv1.GraphOperation_ReplaceReferences:
+		result, err := s.graphs.ReplaceReferences(ctx, tx, replaceReferencesInputFromProto(value.ReplaceReferences))
+		if err != nil {
+			return nil, mapGraphError(err, "apply replace references")
+		}
+		return &clientv1.GraphOperationResult{Result: &clientv1.GraphOperationResult_ReplacedReferences{ReplacedReferences: mapProtoReplaceReferencesResult(result)}}, nil
 	default:
 		return nil, status.Error(codes.InvalidArgument, "graph operation is required")
 	}
@@ -671,6 +677,53 @@ func updateEdgeInputFromProto(edge *clientv1.Edge) daegraph.UpdateEdgeInput {
 		return daegraph.UpdateEdgeInput{}
 	}
 	return daegraph.UpdateEdgeInput{EdgeID: edge.GetEdgeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload()), Meta: structMap(edge.GetMeta())}
+}
+
+func replaceReferencesInputFromProto(in *clientv1.ReferencesReplace) daegraph.ReplaceReferencesInput {
+	if in == nil {
+		return daegraph.ReplaceReferencesInput{}
+	}
+	out := daegraph.ReplaceReferencesInput{SourceNodeID: in.GetSourceNodeId(), Labels: in.GetLabels(), Mode: replaceReferenceModeFromProto(in.GetMode())}
+	for _, target := range in.GetTargets() {
+		if target == nil {
+			continue
+		}
+		out.Targets = append(out.Targets, daegraph.ReferenceTargetInput{
+			TargetNodeID: target.GetTargetNodeId(),
+			EdgeID:       target.GetEdgeId(),
+			Properties:   structMap(target.GetProperties()),
+			Payload:      structMap(target.GetPayload()),
+			Meta:         structMap(target.GetMeta()),
+			HasProps:     target.Properties != nil,
+			HasPayload:   target.Payload != nil,
+			HasMeta:      target.Meta != nil,
+		})
+	}
+	return out
+}
+
+func replaceReferenceModeFromProto(mode clientv1.ReferenceReplacementMode) daegraph.ReferenceReplacementMode {
+	switch mode {
+	case clientv1.ReferenceReplacementMode_REFERENCE_REPLACEMENT_MODE_ADD:
+		return daegraph.ReferenceReplacementModeAdd
+	case clientv1.ReferenceReplacementMode_REFERENCE_REPLACEMENT_MODE_REMOVE:
+		return daegraph.ReferenceReplacementModeRemove
+	case clientv1.ReferenceReplacementMode_REFERENCE_REPLACEMENT_MODE_REPLACE, clientv1.ReferenceReplacementMode_REFERENCE_REPLACEMENT_MODE_UNSPECIFIED:
+		return daegraph.ReferenceReplacementModeReplace
+	default:
+		return daegraph.ReferenceReplacementMode(mode.String())
+	}
+}
+
+func mapProtoReplaceReferencesResult(result daegraph.ReplaceReferencesResult) *clientv1.ReferencesReplaceResult {
+	out := &clientv1.ReferencesReplaceResult{DeletedEdgeIds: append([]string(nil), result.DeletedEdgeIDs...)}
+	for _, edge := range result.AddedEdges {
+		out.AddedEdges = append(out.AddedEdges, mapProtoEdge(edge))
+	}
+	for _, edge := range result.UpdatedEdges {
+		out.UpdatedEdges = append(out.UpdatedEdges, mapProtoEdge(edge))
+	}
+	return out
 }
 
 func mapProtoNode(node domaingraph.Node) *clientv1.Node {

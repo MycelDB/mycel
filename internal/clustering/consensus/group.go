@@ -21,8 +21,25 @@ var ErrNotLeader = errors.New("raft group local node is not leader")
 const slowRaftReadApplyWait = 100 * time.Millisecond
 
 type ProposalResult struct {
-	Index uint64
-	Term  uint64
+	Index  uint64
+	Term   uint64
+	Timing ProposalTiming
+}
+
+// ProposalTiming breaks down the local leader-side lifecycle of one Raft
+// proposal. Durations are best-effort diagnostics: append/send timings may be
+// shared across all commands in one raft.Ready batch.
+type ProposalTiming struct {
+	Validate          time.Duration
+	Encode            time.Duration
+	WaiterRegister    time.Duration
+	NodePropose       time.Duration
+	WaitApply         time.Duration
+	StorageAppend     time.Duration
+	MessageSend       time.Duration
+	StateMachineApply time.Duration
+	ReadyEntries      int
+	ReadyMessages     int
 }
 
 type ReadBarrierResult struct {
@@ -70,6 +87,7 @@ type Group struct {
 	readSeq             uint64
 	readWaiters         map[string]chan readIndexOutcome
 	readDiagnostics     ReadDiagnostics
+	proposalTimings     map[string]*ProposalTiming
 	joinExisting        bool
 	catchupRecoveryOnce sync.Once
 }
@@ -159,7 +177,7 @@ func StartGroup(ctx context.Context, opts GroupOptions) (*Group, error) {
 	} else {
 		node = raft.StartNode(cfg, peers)
 	}
-	g := &Group{id: opts.ID, nodeID: opts.NodeID, partitionCount: opts.PartitionCount, peers: append([]NodeID(nil), opts.Peers...), node: node, storage: storage, transport: opts.Transport, sm: opts.StateMachine, ctx: ctx, cancel: cancel, done: make(chan struct{}), term: hs.Term, commitIndex: hs.Commit, appliedIndex: initialAppliedIndex, waiters: map[string]chan proposalOutcome{}, readWaiters: map[string]chan readIndexOutcome{}, joinExisting: opts.JoinExisting}
+	g := &Group{id: opts.ID, nodeID: opts.NodeID, partitionCount: opts.PartitionCount, peers: append([]NodeID(nil), opts.Peers...), node: node, storage: storage, transport: opts.Transport, sm: opts.StateMachine, ctx: ctx, cancel: cancel, done: make(chan struct{}), term: hs.Term, commitIndex: hs.Commit, appliedIndex: initialAppliedIndex, waiters: map[string]chan proposalOutcome{}, readWaiters: map[string]chan readIndexOutcome{}, proposalTimings: map[string]*ProposalTiming{}, joinExisting: opts.JoinExisting}
 	go g.run()
 	return g, nil
 }
@@ -550,27 +568,42 @@ func (g *Group) beginReadIndex(ctx context.Context) (string, chan readIndexOutco
 func (g *Group) Campaign(ctx context.Context) error { return g.node.Campaign(ctx) }
 
 func (g *Group) Propose(ctx context.Context, cmd RaftCommand) (ProposalResult, error) {
+	timing := &ProposalTiming{}
+	stepStart := time.Now()
 	if err := cmd.Validate(g.partitionCount); err != nil {
 		return ProposalResult{}, err
 	}
+	timing.Validate = time.Since(stepStart)
+	stepStart = time.Now()
 	data, err := EncodeCommand(cmd)
 	if err != nil {
 		return ProposalResult{}, err
 	}
+	timing.Encode = time.Since(stepStart)
 	ch := make(chan proposalOutcome, 1)
+	stepStart = time.Now()
 	g.mu.Lock()
 	if _, exists := g.waiters[cmd.CommandID]; exists {
 		g.mu.Unlock()
 		return ProposalResult{}, fmt.Errorf("duplicate in-flight command_id %q", cmd.CommandID)
 	}
 	g.waiters[cmd.CommandID] = ch
+	if g.proposalTimings == nil {
+		g.proposalTimings = map[string]*ProposalTiming{}
+	}
+	g.proposalTimings[cmd.CommandID] = timing
 	g.mu.Unlock()
+	timing.WaiterRegister = time.Since(stepStart)
+	stepStart = time.Now()
 	if err := g.node.Propose(ctx, data); err != nil {
 		g.forgetWaiter(cmd.CommandID, proposalOutcome{err: err})
 		return ProposalResult{}, err
 	}
+	timing.NodePropose = time.Since(stepStart)
+	waitStart := time.Now()
 	select {
 	case out := <-ch:
+		out.result.Timing.WaitApply = time.Since(waitStart)
 		return out.result, out.err
 	case <-ctx.Done():
 		g.forgetWaiter(cmd.CommandID, proposalOutcome{err: ctx.Err()})
@@ -631,13 +664,26 @@ func (g *Group) processReady(rd raft.Ready) bool {
 		}
 		g.mu.Unlock()
 	}
+	entryCommandIDs := commandIDsFromEntries(rd.Entries)
 	if len(rd.Entries) > 0 {
+		stepStart := time.Now()
 		if err := g.storage.Append(rd.Entries); err != nil {
 			g.failWaiters(fmt.Errorf("persist raft entries: %w", err))
 			return false
 		}
+		g.recordReadyBatchTiming(entryCommandIDs, func(t *ProposalTiming) {
+			t.StorageAppend = time.Since(stepStart)
+			t.ReadyEntries = len(rd.Entries)
+		})
 	}
+	stepStart := time.Now()
 	g.transport.Send(g.ctx, g.id, g.nodeID, rd.Messages)
+	if len(rd.Messages) > 0 {
+		g.recordReadyBatchTiming(entryCommandIDs, func(t *ProposalTiming) {
+			t.MessageSend = time.Since(stepStart)
+			t.ReadyMessages = len(rd.Messages)
+		})
+	}
 	for _, entry := range rd.CommittedEntries {
 		g.applyEntry(entry)
 	}
@@ -646,6 +692,45 @@ func (g *Group) processReady(rd raft.Ready) bool {
 	}
 	g.node.Advance()
 	return true
+}
+
+func commandIDsFromEntries(entries []raftpb.Entry) []string {
+	ids := []string{}
+	for _, entry := range entries {
+		if entry.Type != raftpb.EntryNormal || len(entry.Data) == 0 {
+			continue
+		}
+		cmd, err := DecodeCommand(entry.Data)
+		if err != nil || cmd.CommandID == "" {
+			continue
+		}
+		ids = append(ids, cmd.CommandID)
+	}
+	return ids
+}
+
+func (g *Group) recordReadyBatchTiming(commandIDs []string, fn func(*ProposalTiming)) {
+	if len(commandIDs) == 0 || fn == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, id := range commandIDs {
+		if timing := g.proposalTimings[id]; timing != nil {
+			fn(timing)
+		}
+	}
+}
+
+func (g *Group) recordProposalTiming(commandID string, fn func(*ProposalTiming)) {
+	if commandID == "" || fn == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if timing := g.proposalTimings[commandID]; timing != nil {
+		fn(timing)
+	}
 }
 
 func (g *Group) applyEntry(entry raftpb.Entry) {
@@ -684,8 +769,12 @@ func (g *Group) applyEntry(entry raftpb.Entry) {
 		return
 	}
 	cmd, err := DecodeCommand(entry.Data)
+	var applyDuration time.Duration
 	if err == nil {
+		stepStart := time.Now()
 		err = g.sm.ApplyCommand(g.ctx, ApplyContext{RaftIndex: entry.Index, RaftTerm: entry.Term}, cmd)
+		applyDuration = time.Since(stepStart)
+		g.recordProposalTiming(cmd.CommandID, func(t *ProposalTiming) { t.StateMachineApply = applyDuration })
 	}
 	g.markApplied(entry.Index)
 	if err != nil {
@@ -717,6 +806,10 @@ func (g *Group) completeWaiter(commandID string, out proposalOutcome) {
 	g.mu.Lock()
 	ch := g.waiters[commandID]
 	delete(g.waiters, commandID)
+	if timing := g.proposalTimings[commandID]; timing != nil {
+		out.result.Timing = *timing
+		delete(g.proposalTimings, commandID)
+	}
 	g.mu.Unlock()
 	if ch != nil {
 		ch <- out
@@ -729,6 +822,7 @@ func (g *Group) failWaiters(err error) {
 	g.mu.Lock()
 	waiters := g.waiters
 	g.waiters = map[string]chan proposalOutcome{}
+	g.proposalTimings = map[string]*ProposalTiming{}
 	readWaiters := g.readWaiters
 	g.readWaiters = map[string]chan readIndexOutcome{}
 	g.mu.Unlock()

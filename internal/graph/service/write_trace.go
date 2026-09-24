@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	"github.com/myceldb/mycel/internal/graph/writetrace"
@@ -37,6 +38,7 @@ type graphCommitTiming struct {
 	WALMarkApplied        time.Duration
 	RaftBuild             time.Duration
 	RaftPropose           time.Duration
+	RaftProposal          consensus.ProposalTiming
 	DirectStorage         time.Duration
 	ChangeSink            time.Duration
 	StorageCommit         graphstorage.CommitTiming
@@ -115,6 +117,16 @@ func (m *Module) logGraphCommitTiming(tx daemonsession.GraphTransaction, counts 
 		"wal_mark_applied_ms", writetrace.MS(timing.WALMarkApplied),
 		"raft_build_ms", writetrace.MS(timing.RaftBuild),
 		"raft_propose_ms", writetrace.MS(timing.RaftPropose),
+		"raft_validate_ms", writetrace.MS(timing.RaftProposal.Validate),
+		"raft_encode_ms", writetrace.MS(timing.RaftProposal.Encode),
+		"raft_waiter_register_ms", writetrace.MS(timing.RaftProposal.WaiterRegister),
+		"raft_node_propose_ms", writetrace.MS(timing.RaftProposal.NodePropose),
+		"raft_wait_apply_ms", writetrace.MS(timing.RaftProposal.WaitApply),
+		"raft_storage_append_ms", writetrace.MS(timing.RaftProposal.StorageAppend),
+		"raft_message_send_ms", writetrace.MS(timing.RaftProposal.MessageSend),
+		"raft_state_machine_apply_ms", writetrace.MS(timing.RaftProposal.StateMachineApply),
+		"raft_ready_entries", timing.RaftProposal.ReadyEntries,
+		"raft_ready_messages", timing.RaftProposal.ReadyMessages,
 		"direct_storage_ms", writetrace.MS(timing.DirectStorage),
 		"change_sink_total_ms", writetrace.MS(timing.ChangeSink),
 	}
