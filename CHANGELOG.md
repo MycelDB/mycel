@@ -6,6 +6,28 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.16.0] - 2026-09-24
+
+### Added
+
+- Added the server-side graph `replace_references` operation for transaction-scoped reference edge reconciliation, matching `mycel-api`/SDK v0.16.0 (#93).
+- Added graph write tracing and benchmarking support used to diagnose Commonfolio update latency (#91).
+
+### Changed
+
+- Reduced graph write latency by moving semantic dirty marker processing off the user-facing graph Raft commit path (#89).
+- Reduced Raft write amplification by appending entries to the new `entries.log` raft storage format instead of rewriting the full legacy `entries.pb` file on each append (#95).
+
+### Fixed
+
+- Fixed multi-second AddNode/UpdateNode latency observed in production-like Commonfolio graph writes by combining async semantic maintenance, batched caller writes, server-side reference replacement, and faster raft entry appends (#84, #92).
+- Populated stable transaction IDs for raft-applied graph dirty events so async semantic maintenance can process replicated graph changes safely.
+
+### Compatibility
+
+- New v0.16.0 daemons read legacy `entries.pb` raft logs and write the append-only `entries.log` format after startup. Older daemon versions are not expected to read `entries.log`; downgrade only from a pre-upgrade PVC snapshot or after following the raft storage downgrade guidance in the operator docs.
+- Clients using server-side reference replacement should use matching `mycel-api` and SDK v0.16.0 bindings.
+
 ## [v0.15.0] - 2026-09-18
 
 ### Added
