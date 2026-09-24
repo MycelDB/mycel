@@ -108,6 +108,17 @@ make test-cluster-release-gate
 
 The bundled release gate runs `make test`, `make test-phase-d`, `make test-phase-e`, `make test-phase-f`, `make test-phase-g`, then the destructive compose and K3s validations. `make test-compose-cluster` resets the Mycel-owned Docker Compose fixture under `tests/compose/cluster/`. `make test-k3s-cluster` resets/reuses the local K3s/k3d environment. Treat both as manual/pre-release checks, not default per-PR CI.
 
+## Raft entry log storage format
+
+Starting in v0.16.0, raft groups persist log entries in append-only `entries.log` files instead of rewriting the full legacy `entries.pb` file for every append. New daemons can read existing `entries.pb` files and will continue by writing `entries.log` for the same group. Encrypted deployments encrypt each append-log frame independently.
+
+Downgrade guidance:
+
+- Treat the v0.16.0 `entries.log` format as a storage-format upgrade for each PVC that starts with a v0.16.0 daemon.
+- Older daemon versions are not expected to read `entries.log`. Do not roll back binaries against PVCs that have already been started by v0.16.0 unless the rollback has been explicitly validated.
+- For a safe downgrade, restore PVCs from a pre-upgrade snapshot/backup taken before any v0.16.0 daemon started on those PVCs.
+- If an emergency downgrade is required without a pre-upgrade snapshot, preserve the PVCs first and validate the raft logs offline before attempting service restoration; do not delete `entries.log` or copy raft files between nodes as a repair strategy.
+
 ## Snapshot and compaction policy
 
 B2 snapshot recovery is implemented for current composite children at an initial contract level, but automatic production compaction remains disabled by default.
