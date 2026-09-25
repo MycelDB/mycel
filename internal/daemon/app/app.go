@@ -468,18 +468,18 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		}
 		return err
 	})
-	lexicalSink := graphchange.SinkFunc(func(ctx context.Context, event graphchange.CommittedEvent) error {
-		return lexicalService.OnGraphCommitted(ctx, event)
-	})
+	if err := startAsyncLexicalConsumer(ctx, logger, graphNotificationService, lexicalService); err != nil {
+		_ = rt.Close()
+		return nil, err
+	}
 	if raftRuntimeConfigured(cfg) {
 		if err := startAsyncSemanticDirtyConsumer(ctx, logger, graphNotificationService, semanticService); err != nil {
 			_ = rt.Close()
 			return nil, err
 		}
-		graphService.SetChangeSink(graphchange.Named("lexical", lexicalSink))
 		graphService.SetRaftApplyChangeSink(graphchange.Named("graph_change_notification", graphNotificationService))
 	} else {
-		graphService.SetChangeSink(graphchange.MultiSink{graphchange.Named("graph_change_notification", graphNotificationService), graphchange.Named("semantic", semanticSink), graphchange.Named("lexical", lexicalSink)})
+		graphService.SetChangeSink(graphchange.MultiSink{graphchange.Named("graph_change_notification", graphNotificationService), graphchange.Named("semantic", semanticSink)})
 	}
 	if err := rt.StartServices(ctx); err != nil {
 		_ = rt.Close()

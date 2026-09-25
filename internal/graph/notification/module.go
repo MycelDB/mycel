@@ -110,6 +110,8 @@ type registration struct {
 	ch       chan graphchange.CommittedEvent
 	done     chan struct{}
 	once     sync.Once
+	wgMu     sync.Mutex
+	wg       sync.WaitGroup
 }
 
 type currentState struct {
@@ -187,6 +189,19 @@ func (m *Module) Diagnostics() Diagnostics {
 	out := m.diagnostics
 	out.Registrations = len(m.registrations)
 	return out
+}
+
+func (m *Module) Close() error {
+	m.mu.Lock()
+	registrations := make([]*registration, 0, len(m.registrations))
+	for _, reg := range m.registrations {
+		registrations = append(registrations, reg)
+	}
+	m.mu.Unlock()
+	for _, reg := range registrations {
+		_ = reg.Close()
+	}
+	return nil
 }
 
 func (m *Module) CurrentRevision(ctx context.Context, spaceID string, domainID string) (uint64, error) {
@@ -271,10 +286,18 @@ func (m *Module) RegisterConsumer(ctx context.Context, spec ConsumerSpec, consum
 	m.mu.Unlock()
 
 	if gap != nil {
-		go reg.deliverGap(*gap)
+		reg.wg.Add(1)
+		go func() {
+			defer reg.wg.Done()
+			reg.deliverGap(*gap)
+		}()
 		return reg, nil
 	}
-	go reg.run()
+	reg.wg.Add(1)
+	go func() {
+		defer reg.wg.Done()
+		reg.run()
+	}()
 	return reg, nil
 }
 
@@ -463,6 +486,9 @@ func (r *registration) Close() error {
 		delete(r.module.registrations, r.id)
 		r.module.mu.Unlock()
 		close(r.done)
+		r.wgMu.Lock()
+		r.wgMu.Unlock()
+		r.wg.Wait()
 	})
 	return nil
 }
@@ -475,14 +501,46 @@ func (r *registration) offer(event graphchange.CommittedEvent) {
 		return
 	default:
 		if r.spec.Lossless {
-			go r.deliver(event)
+			r.goDeliver(event)
 			return
 		}
 		r.module.mu.Lock()
 		r.module.diagnostics.EventsDropped++
 		r.module.mu.Unlock()
-		go r.deliverGap(graphchange.Gap{SpaceID: event.SpaceID.String(), DomainID: event.DomainID.String(), CurrentRevision: eventRevision(event)})
+		r.goDeliverGap(graphchange.Gap{SpaceID: event.SpaceID.String(), DomainID: event.DomainID.String(), CurrentRevision: eventRevision(event)})
 	}
+}
+
+func (r *registration) goDeliver(event graphchange.CommittedEvent) {
+	r.wgMu.Lock()
+	select {
+	case <-r.done:
+		r.wgMu.Unlock()
+		return
+	default:
+	}
+	r.wg.Add(1)
+	r.wgMu.Unlock()
+	go func() {
+		defer r.wg.Done()
+		r.deliver(event)
+	}()
+}
+
+func (r *registration) goDeliverGap(gap graphchange.Gap) {
+	r.wgMu.Lock()
+	select {
+	case <-r.done:
+		r.wgMu.Unlock()
+		return
+	default:
+	}
+	r.wg.Add(1)
+	r.wgMu.Unlock()
+	go func() {
+		defer r.wg.Done()
+		r.deliverGap(gap)
+	}()
 }
 
 func (r *registration) run() {

@@ -182,6 +182,13 @@ func (s *Service) apply(docs []index.IndexedDocument, revision uint64) error {
 	if err := s.ensureManifest(); err != nil {
 		return err
 	}
+	cursor, err := s.store.ReadCursor()
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return err
+	}
+	if revision > 0 && cursor.IndexedGraphRevision >= revision {
+		return nil
+	}
 	segmentID, err := s.nextSegmentID()
 	if err != nil {
 		return err
@@ -191,10 +198,6 @@ func (s *Service) apply(docs []index.IndexedDocument, revision uint64) error {
 		return err
 	}
 	if err := s.store.PublishSegment(segment); err != nil {
-		return err
-	}
-	cursor, err := s.store.ReadCursor()
-	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return err
 	}
 	if revision > cursor.IndexedGraphRevision {

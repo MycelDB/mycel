@@ -126,7 +126,9 @@ Unsupported v1 syntax returns an invalid-argument error instead of silently chan
 
 ## Freshness and consistency
 
-Lexical indexes are derived state from committed graph changes and are eventually consistent. Responses include freshness metadata so callers can decide whether an index is acceptable for their workflow.
+Lexical indexes are derived state from committed graph changes and are eventually consistent. Graph commits do not wait for lexical segment writes by default; the daemon persists graph-change notifications durably and replays them to the lexical indexer after commit. After a crash or restart, the indexer resumes from its indexed graph revision and replays retained graph-change history.
+
+Responses include freshness metadata so callers can decide whether an index is acceptable for their workflow. By default stale lexical results fail closed; pass `--allow-stale` and optionally `--max-revision-lag` when a workflow can tolerate lag.
 
 In clustered mode, the authoritative owner for a space/domain builds and serves the lexical index. Followers forward search/status requests to the current owner when routing is known. If ownership is unknown or unsafe, the daemon fails closed instead of serving potentially misleading results.
 
