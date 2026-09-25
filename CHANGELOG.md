@@ -6,6 +6,21 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.16.1] - 2026-09-24
+
+### Changed
+
+- Moved lexical graph-change indexing off the synchronous graph commit path. Lexical indexing now consumes durable graph-change notifications asynchronously and replays retained history from the indexed graph revision after restart (#94).
+
+### Fixed
+
+- Made lexical graph-change replay idempotent for duplicate/replayed revisions.
+- Closed graph-change notification registrations cleanly during daemon shutdown so background delivery cannot continue after runtime teardown.
+
+### Compatibility
+
+- No protobuf/API or SDK changes. This daemon patch release uses the same API contract as v0.16.0.
+
 ## [v0.16.0] - 2026-09-24
 
 ### Added
