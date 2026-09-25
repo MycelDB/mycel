@@ -27,7 +27,8 @@ summary or script output shows that all documented assertions passed. For raft
 and cluster tests, also verify that:
 
 - final per-node counts converge;
-- committed/read-index checks do not fail;
+- committed/read-index checks do not have permanent failures;
+- exhausted transient read retries during intentional disruption are explained by final convergence evidence;
 - no cluster ID mismatch is reported;
 - permanent write failures are zero;
 - any transient failures are explained by intentional disruption and do not hide
