@@ -162,7 +162,8 @@ Artifacts: artifacts/raft-disruption/<timestamp>-<cluster-name>
 
 - final counts met the workload's expected minimum;
 - client and per-pod local consistency counts converged;
-- committed read checks did not fail;
+- committed read checks did not have permanent failures;
+- exhausted transient committed-read retries during intentional disruption are reported in counters/warnings but do not fail the run if final convergence succeeds;
 - no write attempts had permanent failures;
 - cluster identity diagnostics did not show a mismatch.
 
@@ -190,9 +191,11 @@ artifacts/raft-disruption/<timestamp>-<cluster-name>/
 ```
 
 Start with `result-summary.json`, then inspect `scenario/scenario-summary.json`
-for restart events and final diagnostics, `scenario/read-events.jsonl` for read
-failures, and `scenario/write-events.jsonl` for write failure timing. Use
-`failure/` for Kubernetes state captured on failure.
+for restart events, warnings, and final diagnostics, `scenario/read-events.jsonl`
+for read failures, and `scenario/write-events.jsonl` for write failure timing.
+Transient read failures during restart windows are expected to appear in the event
+log; permanent read failures or final convergence failure remain release-blocking.
+Use `failure/` for Kubernetes state captured on failure.
 
 ## Safety
 

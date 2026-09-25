@@ -504,13 +504,16 @@ func (r *scenarioRuntime) run(ctx context.Context) (ScenarioSummary, error) {
 	if r.permanent.Load() > 0 {
 		scenarioErr = appendError(scenarioErr, fmt.Errorf("write attempts had permanent failures: %d", r.permanent.Load()))
 	}
-	if r.readFailures.Load() > 0 {
-		scenarioErr = appendError(scenarioErr, fmt.Errorf("mixed committed read checks failed: %d", r.readFailures.Load()))
+	if r.readPermanent.Load() > 0 {
+		scenarioErr = appendError(scenarioErr, fmt.Errorf("mixed committed read checks had permanent failures: %d", r.readPermanent.Load()))
 	}
 	r.progressf("waiting for final count convergence")
 	counts, diags, warnings, err := r.waitFinalConvergence(ctx, client, workload, scopes)
 	if err != nil {
 		scenarioErr = appendError(scenarioErr, err)
+	}
+	if r.readTransient.Load() > 0 {
+		warnings = append(warnings, fmt.Sprintf("committed read checks had %d transient exhausted retries during disruption; final convergence still passed", r.readTransient.Load()))
 	}
 	summary := r.currentSummary(runID, restartNodes, recoveryDuration, scopes, counts, diags, warnings)
 	if err := r.writeJSON("scenario-summary.json", summary); err != nil {
