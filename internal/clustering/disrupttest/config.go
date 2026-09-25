@@ -44,6 +44,11 @@ const (
 	soakProfileDuration = time.Hour
 	soakProfileWriters  = 8
 	soakProfileRate     = 100
+
+	restartSoakProfileDuration        = time.Hour
+	restartSoakProfileWriters         = 4
+	restartSoakProfileRate            = 2
+	restartSoakProfileRestartInterval = 3 * time.Minute
 )
 
 type Config struct {
@@ -68,6 +73,7 @@ type Config struct {
 	SetupOnly             bool
 	NoDisruption          bool
 	PreflightCreateDelete bool
+	RestartInterval       time.Duration
 	PartitionCount        int
 	NodeCount             int
 	Now                   time.Time
@@ -86,10 +92,12 @@ type ClusterConfig struct {
 }
 
 type Profile struct {
-	Name     string
-	Duration time.Duration
-	Writers  int
-	Rate     int
+	Name            string
+	Duration        time.Duration
+	Writers         int
+	Rate            int
+	RestartInterval time.Duration
+	RotatingRestart bool
 }
 
 func DefaultConfig(now time.Time) Config {
@@ -132,6 +140,7 @@ func ConfigFromEnv(now time.Time) Config {
 	setString(&cfg.ArtifactsDir, "MYCEL_DISRUPT_ARTIFACTS_DIR")
 	setString(&cfg.ScenarioFile, "MYCEL_DISRUPT_SCENARIO_FILE")
 	setString(&cfg.Workload, "MYCEL_DISRUPT_WORKLOAD")
+	setDuration(&cfg.RestartInterval, "MYCEL_DISRUPT_RESTART_INTERVAL")
 	setInt(&cfg.PartitionCount, "MYCEL_DISRUPT_PARTITION_COUNT")
 	setInt(&cfg.NodeCount, "MYCEL_DISRUPT_NODE_COUNT")
 	cfg.KeepClusterOnFailure = envBool("MYCEL_KEEP_CLUSTER_ON_FAILURE", cfg.KeepClusterOnFailure)
@@ -186,6 +195,8 @@ func ResolveProfile(name string) (Profile, error) {
 		return Profile{Name: "medium", Duration: mediumProfileDuration, Writers: mediumProfileWriters, Rate: mediumProfileRate}, nil
 	case "soak":
 		return Profile{Name: "soak", Duration: soakProfileDuration, Writers: soakProfileWriters, Rate: soakProfileRate}, nil
+	case "restart-soak-1h", "restart-soak":
+		return Profile{Name: "restart-soak-1h", Duration: restartSoakProfileDuration, Writers: restartSoakProfileWriters, Rate: restartSoakProfileRate, RestartInterval: restartSoakProfileRestartInterval, RotatingRestart: true}, nil
 	default:
 		return Profile{}, fmt.Errorf("unsupported pressure profile %q", name)
 	}
@@ -212,6 +223,17 @@ func setInt(target *int, env string) {
 		return
 	}
 	parsed, err := strconv.Atoi(value)
+	if err == nil {
+		*target = parsed
+	}
+}
+
+func setDuration(target *time.Duration, env string) {
+	value := strings.TrimSpace(os.Getenv(env))
+	if value == "" {
+		return
+	}
+	parsed, err := time.ParseDuration(value)
 	if err == nil {
 		*target = parsed
 	}

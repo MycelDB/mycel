@@ -48,6 +48,18 @@ func TestResolveRestartNodes(t *testing.T) {
 	}
 }
 
+func TestResolvedRestartInterval(t *testing.T) {
+	profile := Profile{Name: "restart-soak-1h", Duration: time.Hour, RestartInterval: 3 * time.Minute, RotatingRestart: true}
+	r := &scenarioRuntime{profile: profile}
+	if got := r.resolvedRestartInterval(); got != 3*time.Minute {
+		t.Fatalf("profile restart interval = %s", got)
+	}
+	r.cfg.RestartInterval = 45 * time.Second
+	if got := r.resolvedRestartInterval(); got != 45*time.Second {
+		t.Fatalf("override restart interval = %s", got)
+	}
+}
+
 func TestAssertCountsConvergedReportsMismatches(t *testing.T) {
 	err := AssertCountsConverged(map[string]WorkloadCounts{"service": {Nodes: 5}, "myceld-0": {Nodes: 4}, "myceld-1": {Nodes: 5}}, WorkloadCounts{Nodes: 5}, nil)
 	if err == nil || !strings.Contains(err.Error(), "myceld-0 count") || !strings.Contains(err.Error(), "differs") {

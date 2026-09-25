@@ -40,8 +40,9 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.Image, "image", cfg.Image, "myceld image to deploy")
 	fs.StringVar(&cfg.AdminUsername, "admin-username", cfg.AdminUsername, "bootstrap admin username")
 	fs.StringVar(&cfg.AdminPasswordFile, "admin-password-file", cfg.AdminPasswordFile, "reserved for future explicit password file")
-	fs.StringVar(&cfg.Profile, "profile", cfg.Profile, "pressure profile: smoke, small, medium, soak")
+	fs.StringVar(&cfg.Profile, "profile", cfg.Profile, "pressure profile: smoke, small, medium, soak, restart-soak-1h")
 	fs.StringVar(&cfg.RestartNode, "restart-node", cfg.RestartNode, "pod name/ordinal to restart in later phases")
+	fs.DurationVar(&cfg.RestartInterval, "restart-interval", cfg.RestartInterval, "restart interval for rotating restart profiles, e.g. 3m")
 	fs.StringVar(&cfg.ArtifactsDir, "artifacts-dir", cfg.ArtifactsDir, "artifact output root")
 	fs.StringVar(&cfg.ScenarioFile, "scenario", cfg.ScenarioFile, "optional JSON scenario config")
 	fs.StringVar(&cfg.Workload, "workload", cfg.Workload, "workload name: nodes, edges, multi-space")
@@ -100,6 +101,7 @@ type resultSummary struct {
 	Profile               string                                `json:"profile"`
 	Workload              string                                `json:"workload,omitempty"`
 	RestartNodes          []string                              `json:"restartNodes,omitempty"`
+	RestartEventCount     int                                   `json:"restartEventCount,omitempty"`
 	AttemptedWrites       int64                                 `json:"attemptedWrites,omitempty"`
 	SuccessfulWrites      int64                                 `json:"successfulWrites,omitempty"`
 	AmbiguousWrites       int64                                 `json:"ambiguousWrites,omitempty"`
@@ -149,6 +151,7 @@ func buildResultSummary(summary disrupttest.Summary, runErr error) resultSummary
 		s := summary.Scenario
 		result.Workload = s.Workload
 		result.RestartNodes = append([]string(nil), s.RestartNodes...)
+		result.RestartEventCount = len(s.RestartEvents)
 		result.AttemptedWrites = s.AttemptedWrites
 		result.SuccessfulWrites = s.SuccessfulWrites
 		result.AmbiguousWrites = s.AmbiguousWrites
@@ -196,6 +199,9 @@ func printResultSummary(result resultSummary) {
 	}
 	if len(result.RestartNodes) > 0 {
 		fmt.Printf("Restarted pods: %s\n", strings.Join(result.RestartNodes, ", "))
+	}
+	if result.RestartEventCount > 0 {
+		fmt.Printf("Restart events: %d\n", result.RestartEventCount)
 	}
 	if result.AttemptedWrites > 0 || result.SuccessfulWrites > 0 || result.AmbiguousWrites > 0 || result.TransientFailures > 0 || result.PermanentFailures > 0 {
 		fmt.Printf("Writes: attempted=%d successful=%d ambiguous=%d transientFailures=%d permanentFailures=%d\n", result.AttemptedWrites, result.SuccessfulWrites, result.AmbiguousWrites, result.TransientFailures, result.PermanentFailures)

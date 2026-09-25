@@ -69,11 +69,21 @@ type ReadEvent struct {
 	Error     string    `json:"error,omitempty"`
 }
 
+type RestartEvent struct {
+	Node       string    `json:"node"`
+	StartedAt  time.Time `json:"startedAt"`
+	FinishedAt time.Time `json:"finishedAt,omitempty"`
+	DurationMS int64     `json:"durationMs,omitempty"`
+	Success    bool      `json:"success"`
+	Error      string    `json:"error,omitempty"`
+}
+
 type ScenarioSummary struct {
 	RunID                 string                    `json:"runId"`
 	Profile               string                    `json:"profile"`
 	Workload              string                    `json:"workload"`
 	RestartNodes          []string                  `json:"restartNodes,omitempty"`
+	RestartEvents         []RestartEvent            `json:"restartEvents,omitempty"`
 	AttemptedWrites       int64                     `json:"attemptedWrites"`
 	SuccessfulWrites      int64                     `json:"successfulWrites"`
 	AmbiguousWrites       int64                     `json:"ambiguousWrites,omitempty"`
@@ -314,6 +324,8 @@ type scenarioRuntime struct {
 	readFailures  atomic.Int64
 	readTransient atomic.Int64
 	readPermanent atomic.Int64
+	restartMu     sync.Mutex
+	restartEvents []RestartEvent
 	expectedMu    sync.Mutex
 	expectedScope map[string]WorkloadCounts
 }
@@ -422,14 +434,19 @@ func (r *scenarioRuntime) run(ctx context.Context) (ScenarioSummary, error) {
 	if err := r.waitWorkloadReady(ctx, client, workload, scopes); err != nil {
 		return ScenarioSummary{}, err
 	}
-	restartNodes, err := ResolveRestartNodes(ctx, r.driver, r.cfg.RestartNode)
+	restartRef := r.cfg.RestartNode
+	if r.profile.RotatingRestart && strings.TrimSpace(restartRef) == "" {
+		restartRef = "all"
+	}
+	restartNodes, err := ResolveRestartNodes(ctx, r.driver, restartRef)
 	if err != nil {
 		return ScenarioSummary{}, err
 	}
 	if r.cfg.NoDisruption {
 		restartNodes = nil
 	}
-	r.progressf("starting workload profile=%s duration=%s writers=%d rate=%d/s", r.profile.Name, r.profile.Duration, r.profile.Writers, r.profile.Rate)
+	restartInterval := r.resolvedRestartInterval()
+	r.progressf("starting workload profile=%s duration=%s writers=%d rate=%d/s rotating_restarts=%t restart_interval=%s", r.profile.Name, r.profile.Duration, r.profile.Writers, r.profile.Rate, r.profile.RotatingRestart, restartInterval)
 	stopAt := time.Now().Add(r.profile.Duration)
 	workCtx, cancel := context.WithDeadline(ctx, stopAt)
 	defer cancel()
@@ -448,37 +465,39 @@ func (r *scenarioRuntime) run(ctx context.Context) (ScenarioSummary, error) {
 			r.writer(workCtx, stopAt, client, workload, scopes, worker)
 		}()
 	}
-	var recoveryDuration time.Duration
+	var disruptionWG sync.WaitGroup
+	disruptionErr := make(chan error, 1)
 	if len(restartNodes) > 0 {
-		warmup := minDuration(activeDisruptionWarmupCap, r.profile.Duration/activeDisruptionWarmupDivisor)
-		select {
-		case <-ctx.Done():
-			cancel()
-			wg.Wait()
-			return ScenarioSummary{}, ctx.Err()
-		case <-time.After(warmup):
-		}
-		start := time.Now()
-		for _, node := range restartNodes {
-			r.progressf("restarting pod %s", node)
-			if err := r.driver.RestartNode(ctx, NodeRef{Name: node}); err != nil {
+		disruptionWG.Add(1)
+		go func() {
+			defer disruptionWG.Done()
+			if err := r.runDisruptions(workCtx, stopAt, client, workload, scopes, restartNodes, restartInterval); err != nil {
+				select {
+				case disruptionErr <- err:
+				default:
+				}
 				cancel()
-				wg.Wait()
-				return ScenarioSummary{}, err
 			}
-			if err := r.waitWorkloadReady(ctx, client, workload, scopes); err != nil {
-				cancel()
-				wg.Wait()
-				return ScenarioSummary{}, err
-			}
-		}
-		recoveryDuration = time.Since(start)
+		}()
 	}
 	<-workCtx.Done()
 	progressWG.Wait()
+	disruptionWG.Wait()
 	r.progressf("workload duration complete; waiting for writers")
 	wg.Wait()
+	var recoveryDuration time.Duration
+	if events := r.restartEventsSnapshot(); len(events) > 0 {
+		recoveryDuration = time.Duration(0)
+		for _, event := range events {
+			recoveryDuration += time.Duration(event.DurationMS) * time.Millisecond
+		}
+	}
 	var scenarioErr error
+	select {
+	case err := <-disruptionErr:
+		scenarioErr = appendError(scenarioErr, err)
+	default:
+	}
 	if err := r.driver.WaitAllReady(ctx); err != nil {
 		scenarioErr = appendError(scenarioErr, err)
 	}
@@ -506,6 +525,7 @@ func (r *scenarioRuntime) currentSummary(runID string, restartNodes []string, re
 		Profile:               r.profile.Name,
 		Workload:              r.cfg.Workload,
 		RestartNodes:          restartNodes,
+		RestartEvents:         r.restartEventsSnapshot(),
 		AttemptedWrites:       r.attempted.Load(),
 		SuccessfulWrites:      r.succeeded.Load(),
 		AmbiguousWrites:       EstimateAmbiguousWrites(r.cfg.Workload, counts, r.succeeded.Load()),
@@ -531,6 +551,85 @@ func appendError(existing error, next error) error {
 		return next
 	}
 	return fmt.Errorf("%w; %v", existing, next)
+}
+
+func (r *scenarioRuntime) resolvedRestartInterval() time.Duration {
+	if r.cfg.RestartInterval > 0 {
+		return r.cfg.RestartInterval
+	}
+	if r.profile.RestartInterval > 0 {
+		return r.profile.RestartInterval
+	}
+	return minDuration(activeDisruptionWarmupCap, r.profile.Duration/activeDisruptionWarmupDivisor)
+}
+
+func (r *scenarioRuntime) runDisruptions(ctx context.Context, stopAt time.Time, client *serviceClient, workload Workload, scopes []TestScope, restartNodes []string, restartInterval time.Duration) error {
+	if len(restartNodes) == 0 {
+		return nil
+	}
+	warmup := minDuration(activeDisruptionWarmupCap, r.profile.Duration/activeDisruptionWarmupDivisor)
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-time.After(warmup):
+	}
+	if !r.profile.RotatingRestart {
+		for _, node := range restartNodes {
+			if err := r.restartAndValidate(ctx, client, workload, scopes, node); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if restartInterval <= 0 {
+		restartInterval = restartSoakProfileRestartInterval
+	}
+	idx := 0
+	for time.Now().Before(stopAt) {
+		if time.Until(stopAt) < workloadReadyTimeout {
+			r.progressf("stopping rotating restarts with %s remaining to preserve final recovery window", time.Until(stopAt).Round(time.Second))
+			return nil
+		}
+		node := restartNodes[idx%len(restartNodes)]
+		idx++
+		if err := r.restartAndValidate(ctx, client, workload, scopes, node); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(restartInterval):
+		}
+	}
+	return nil
+}
+
+func (r *scenarioRuntime) restartAndValidate(ctx context.Context, client *serviceClient, workload Workload, scopes []TestScope, node string) error {
+	started := time.Now().UTC()
+	r.progressf("restarting pod %s", node)
+	err := r.driver.RestartNode(ctx, NodeRef{Name: node})
+	if err == nil {
+		err = r.waitWorkloadReady(ctx, client, workload, scopes)
+	}
+	event := RestartEvent{Node: node, StartedAt: started, FinishedAt: time.Now().UTC(), Success: err == nil}
+	event.DurationMS = event.FinishedAt.Sub(started).Milliseconds()
+	if err != nil {
+		event.Error = err.Error()
+	}
+	r.recordRestartEvent(event)
+	return err
+}
+
+func (r *scenarioRuntime) recordRestartEvent(event RestartEvent) {
+	r.restartMu.Lock()
+	defer r.restartMu.Unlock()
+	r.restartEvents = append(r.restartEvents, event)
+}
+
+func (r *scenarioRuntime) restartEventsSnapshot() []RestartEvent {
+	r.restartMu.Lock()
+	defer r.restartMu.Unlock()
+	return append([]RestartEvent(nil), r.restartEvents...)
 }
 
 func (r *scenarioRuntime) selectWorkloadSessionNode(ctx context.Context, workload Workload, scopes []TestScope) (NodeRef, error) {

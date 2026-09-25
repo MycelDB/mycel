@@ -67,6 +67,13 @@ func TestResolveProfile(t *testing.T) {
 	if profile.Writers != 2 || profile.Rate != 20 || profile.Duration != 2*time.Minute {
 		t.Fatalf("small profile = %+v", profile)
 	}
+	restartSoak, err := ResolveProfile("restart-soak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restartSoak.Name != "restart-soak-1h" || !restartSoak.RotatingRestart || restartSoak.Duration != time.Hour || restartSoak.Writers != 4 || restartSoak.Rate != 2 || restartSoak.RestartInterval != 3*time.Minute {
+		t.Fatalf("restart soak profile = %+v", restartSoak)
+	}
 	if _, err := ResolveProfile("huge"); err == nil {
 		t.Fatal("expected unsupported profile error")
 	}
