@@ -104,6 +104,12 @@ func TestIsTransientError(t *testing.T) {
 	if IsTransientError(status.Error(codes.InvalidArgument, "bad gql")) {
 		t.Fatal("InvalidArgument should be permanent")
 	}
+	if !IsTransientError(status.Error(codes.Unauthenticated, "authorization token is expired")) {
+		t.Fatal("expired auth token should be transient so long-running harness clients re-login")
+	}
+	if IsTransientError(status.Error(codes.Unauthenticated, "bad credentials")) {
+		t.Fatal("non-expiry unauthenticated errors should remain permanent")
+	}
 	if !IsTransientError(errors.New("connection refused")) {
 		t.Fatal("connection refused should be transient")
 	}
