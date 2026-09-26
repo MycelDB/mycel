@@ -49,6 +49,11 @@ const (
 	restartSoakProfileWriters         = 4
 	restartSoakProfileRate            = 2
 	restartSoakProfileRestartInterval = 3 * time.Minute
+
+	restartHardSoakProfileDuration        = time.Hour
+	restartHardSoakProfileWriters         = 6
+	restartHardSoakProfileRate            = 3
+	restartHardSoakProfileRestartInterval = time.Minute
 )
 
 type Config struct {
@@ -197,6 +202,8 @@ func ResolveProfile(name string) (Profile, error) {
 		return Profile{Name: "soak", Duration: soakProfileDuration, Writers: soakProfileWriters, Rate: soakProfileRate}, nil
 	case "restart-soak-1h", "restart-soak":
 		return Profile{Name: "restart-soak-1h", Duration: restartSoakProfileDuration, Writers: restartSoakProfileWriters, Rate: restartSoakProfileRate, RestartInterval: restartSoakProfileRestartInterval, RotatingRestart: true}, nil
+	case "restart-soak-hard-1h", "restart-hard-soak", "restart-soak-hard":
+		return Profile{Name: "restart-soak-hard-1h", Duration: restartHardSoakProfileDuration, Writers: restartHardSoakProfileWriters, Rate: restartHardSoakProfileRate, RestartInterval: restartHardSoakProfileRestartInterval, RotatingRestart: true}, nil
 	default:
 		return Profile{}, fmt.Errorf("unsupported pressure profile %q", name)
 	}

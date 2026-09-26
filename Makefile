@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-cluster-raft-sensitive-gate test-compose-cluster test-k3s-cluster test-k3s-raft-disruption-smoke test-k3s-raft-disruption test-k3s-raft-disruption-edges test-k3s-raft-restart-soak test-k3s-system-backup-restore test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
+.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-cluster-raft-sensitive-gate test-compose-cluster test-k3s-cluster test-k3s-raft-disruption-smoke test-k3s-raft-disruption test-k3s-raft-disruption-edges test-k3s-raft-restart-soak test-k3s-raft-restart-hard-soak test-k3s-system-backup-restore test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -148,6 +148,10 @@ test-k3s-raft-disruption-edges:
 test-k3s-raft-restart-soak:
 	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
 	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile restart-soak-1h --workload edges --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+
+test-k3s-raft-restart-hard-soak:
+	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
+	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile restart-soak-hard-1h --workload multi-space --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
 
 test-k3s-system-backup-restore:
 	docker build -f Dockerfile -t $(MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE) ..
