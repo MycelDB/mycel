@@ -40,7 +40,7 @@ func run(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.Image, "image", cfg.Image, "myceld image to deploy")
 	fs.StringVar(&cfg.AdminUsername, "admin-username", cfg.AdminUsername, "bootstrap admin username")
 	fs.StringVar(&cfg.AdminPasswordFile, "admin-password-file", cfg.AdminPasswordFile, "reserved for future explicit password file")
-	fs.StringVar(&cfg.Profile, "profile", cfg.Profile, "pressure profile: smoke, small, medium, soak, restart-soak-1h")
+	fs.StringVar(&cfg.Profile, "profile", cfg.Profile, "pressure profile: smoke, small, medium, soak, restart-soak-1h, restart-soak-hard-1h")
 	fs.StringVar(&cfg.RestartNode, "restart-node", cfg.RestartNode, "pod name/ordinal to restart in later phases")
 	fs.DurationVar(&cfg.RestartInterval, "restart-interval", cfg.RestartInterval, "restart interval for rotating restart profiles, e.g. 3m")
 	fs.StringVar(&cfg.ArtifactsDir, "artifacts-dir", cfg.ArtifactsDir, "artifact output root")
