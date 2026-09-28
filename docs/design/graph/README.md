@@ -7,6 +7,7 @@ schema validation.
 - [Client query API](../api/query.md)
 - [Graph-change notification subsystem](graph-change-notification.md)
 - [Domain graph checkpoints](domain-graph-checkpoints.md)
+- [Domain graph persistent indexes](domain-graph-persistent-indexes.md)
 - [Graph adjacency index](graph-adjacency-index.md)
 - [Node content/meta/labels](node-content-meta-labels.md)
 - [GQL schema behavior](../schema/gql-schema-behavior.md)
