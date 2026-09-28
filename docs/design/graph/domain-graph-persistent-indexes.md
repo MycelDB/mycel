@@ -309,7 +309,7 @@ Example:
   "graph_checkpoint_id": "chk-...",
   "graph_revision": 123,
   "graph_checksum": "...",
-  "index_format": "domain-graph-index-v1",
+  "index_format": "domain-graph-index-v1-json",
   "checksum_algorithm": "domain-graph-index-v1-sha256",
   "indexes": {
     "labels": {
@@ -348,14 +348,18 @@ The manifest should include enough information to reject indexes when:
 
 ## Index payload principles
 
-Index files should be compact, deterministic, and easy to validate.
+Index files should be deterministic and easy to validate.
+
+The first implementation uses deterministic JSON payloads in `.kidx` files with
+format `domain-graph-index-v1-json`. This keeps the format inspectable while the
+index set contract is still stabilizing. A later compact binary format can be
+introduced with a new `index_format` value and strict version checks.
 
 Recommended initial properties:
 
-- binary payload with magic/version/kind header
+- JSON object with `format_version`, `kind`, and sorted entries
 - deterministic sorted keys and sorted ID lists
 - per-file checksum recorded in manifest
-- optional per-record checksums if needed for partial corruption diagnostics
 - no embedded graph record bodies; store only keys and entity IDs
 
 Suggested logical payloads:

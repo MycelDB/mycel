@@ -251,6 +251,10 @@ func (s *LocalStore) writeCheckpointLocked(ctx context.Context, manifest Checkpo
 	}
 	_ = syncDir(root)
 	s.cleanupOldCheckpoints(root, id)
+	// Persistent indexes are local derived artifacts. A failure to write them must
+	// not invalidate the graph checkpoint, because the store can rebuild indexes
+	// from checkpoint payloads and tail segment replay.
+	_ = s.writeIndexSetLocked(ctx, manifest, id)
 	return nil
 }
 
@@ -341,6 +345,11 @@ func (s *LocalStore) tryLoadCheckpoint(ctx context.Context) (bool, error) {
 		s.applyEdgePut(edge, checkpointLoc)
 		s.edgeModRev[edge.ID] = manifest.GraphRevision
 	}
+	// Persistent index loading is an optimization only. Checkpoint payload apply
+	// above already rebuilt indexes from authoritative live records; a matching
+	// persistent index set can replace those maps before tail replay, and any
+	// missing/stale/corrupt index simply falls back to the rebuilt maps.
+	_ = s.tryLoadPersistentIndexSet(ctx, manifest)
 	s.revision = manifest.GraphRevision
 	if err := s.replayCheckpointTail(ctx, manifest.AppliedSegmentOffsets); err != nil {
 		return false, err

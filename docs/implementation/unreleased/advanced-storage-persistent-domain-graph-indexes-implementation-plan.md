@@ -2,8 +2,10 @@
 
 ## Status
 
-Proposed for review on the `advanced_storage` branch. Do not implement until the
-design and plan are reviewed.
+Reviewed and partially implemented on the `advanced_storage` branch. The first
+implemented tranche writes checkpoint-aligned persistent label/tag/adjacency
+index sets and loads matching sets on checkpoint open with fallback to in-memory
+rebuild.
 
 This phase builds on:
 
@@ -68,7 +70,7 @@ The index set manifest references the loaded graph checkpoint baseline:
   "graph_checkpoint_id": "chk-...",
   "graph_revision": 123,
   "graph_checksum": "...",
-  "index_format": "domain-graph-index-v1",
+  "index_format": "domain-graph-index-v1-json",
   "checksum_algorithm": "domain-graph-index-v1-sha256",
   "indexes": {
     "labels": {"path": "labels.kidx", "entry_count": 1200, "checksum": "..."},
