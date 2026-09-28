@@ -247,17 +247,46 @@ Add benchmarks or integration tests for large domains:
 2. checkpoint only
 3. checkpoint + persistent indexes
 
-Suggested initial benchmark dimensions:
+Implemented storage benchmark:
 
-- 10k nodes / 25k edges
+```bash
+go test ./internal/graph/storage -run '^$' -bench BenchmarkLocalStoreOpen -benchmem -count=1
+```
+
+The benchmark fixture currently uses:
+
+- 10k live nodes / 20k live edges
+- label-heavy and tag-heavy nodes
+- adjacency-heavy reference edges
+- 3 historical update rounds, for 40k node-put records in segment replay
+
+Initial baseline from an Apple M4 Max with `-benchtime=1x`:
+
+```text
+BenchmarkLocalStoreOpen/full-replay                  ~150 ms/op
+BenchmarkLocalStoreOpen/checkpoint-only               ~78 ms/op
+BenchmarkLocalStoreOpen/checkpoint-persistent-indexes ~134 ms/op
+```
+
+Interpretation: checkpoints materially improve open time for churned graph
+history. The first JSON persistent-index tranche validates layout/fallback but is
+not yet faster than checkpoint-only because checkpoint load still rebuilds
+label/tag/adjacency maps from checkpoint records before replacing them with the
+loaded index payloads. A later optimization should avoid duplicate index work or
+move persistent indexes to a compact binary format before treating persistent
+indexes as a performance win.
+
+Suggested future benchmark dimensions:
+
 - 100k nodes / 250k edges, if feasible outside normal `make test`
-- label/tag-heavy graph
-- hierarchy/reference-heavy graph
+- deeper hierarchy/reference-heavy graph
+- checkpoint tail replay with post-checkpoint mutations
+- compact binary payload prototype versus JSON payload
 
 ### Acceptance
 
-- Benchmarks demonstrate materially faster open/index hydration for checkpoint +
-  persistent indexes.
+- Benchmarks cover full replay, checkpoint-only, and checkpoint + persistent
+  indexes.
 - Results are documented in the implementation note or follow-up report.
 
 ## Rollout strategy
