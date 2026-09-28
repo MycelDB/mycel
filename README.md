@@ -133,6 +133,28 @@ Object-store credentials are loaded with the AWS SDK default credential chain be
 
 See [`docs/operations/procedures/s3-blob-storage.md`](docs/operations/procedures/s3-blob-storage.md).
 
+## Graph checkpoints
+
+Domain graph checkpoints are local derived storage artifacts used to speed graph store open/recovery. They are not Raft snapshots or backups. Operators can create or inspect them with:
+
+```sh
+bin/mycel cluster graph-checkpoint create --space-id <space-id> --domain-id <domain-id>
+bin/mycel cluster graph-checkpoint status --space-id <space-id> --domain-id <domain-id>
+```
+
+Automatic local checkpointing is disabled by default. Configure it with:
+
+```text
+MYCELD_GRAPH_CHECKPOINT_AUTO_ENABLED=false
+MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL=1m
+MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS=10000
+MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT=30s
+```
+
+When enabled, `myceld` checks opened local domain stores on `MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL` and writes a checkpoint after `MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS` tail revisions since the latest checkpoint. Each write attempt is bounded by `MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT`.
+
+See [`docs/operations/cli/cluster.md`](docs/operations/cli/cluster.md).
+
 ## Authentication and sessions
 
 Daemon Client and Admin APIs use short-lived bearer access tokens plus durable refresh sessions. SDK callers should use `mycel-go-sdk` or another SDK generated from `mycel-api` so access-token expiry, refresh-token rotation, and one retry on expired-token `Unauthenticated` are handled automatically.
