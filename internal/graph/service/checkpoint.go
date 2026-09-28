@@ -46,6 +46,7 @@ type GraphPersistentIndexStatus struct {
 	LoadResult        string
 	FallbackReason    string
 	Entries           []GraphPersistentIndexEntryStatus
+	QueryIndexes      []GraphPersistentQueryIndexStatus
 }
 
 type GraphPersistentIndexEntryStatus struct {
@@ -53,6 +54,26 @@ type GraphPersistentIndexEntryStatus struct {
 	Path       string
 	EntryCount int
 	Checksum   string
+}
+
+type GraphPersistentQueryIndexStatus struct {
+	Identity                 string
+	Name                     string
+	DomainID                 string
+	SchemaHash               string
+	DefinitionFingerprint    string
+	TargetKind               string
+	TargetType               string
+	Labels                   []string
+	FieldNamespace           string
+	FieldName                string
+	IndexKind                string
+	Direction                string
+	BuildState               string
+	LastIndexedGraphRevision uint64
+	KeyEncodingVersion       int
+	EntryCount               uint64
+	LoadResult               string
 }
 
 // CreateGraphCheckpoint writes a local derived checkpoint for one domain graph
@@ -143,6 +164,12 @@ func graphPersistentIndexStatusFromStorage(status graphstorage.PersistentIndexSt
 		out.Entries = make([]GraphPersistentIndexEntryStatus, 0, len(status.Entries))
 		for _, entry := range status.Entries {
 			out.Entries = append(out.Entries, GraphPersistentIndexEntryStatus{Kind: entry.Kind, Path: entry.Path, EntryCount: entry.EntryCount, Checksum: entry.Checksum})
+		}
+	}
+	if len(status.QueryIndexes) > 0 {
+		out.QueryIndexes = make([]GraphPersistentQueryIndexStatus, 0, len(status.QueryIndexes))
+		for _, idx := range status.QueryIndexes {
+			out.QueryIndexes = append(out.QueryIndexes, GraphPersistentQueryIndexStatus{Identity: idx.Identity, Name: idx.Name, DomainID: idx.DomainID, SchemaHash: idx.SchemaHash, DefinitionFingerprint: idx.DefinitionFingerprint, TargetKind: idx.TargetKind, TargetType: idx.TargetType, Labels: append([]string(nil), idx.Labels...), FieldNamespace: idx.FieldNamespace, FieldName: idx.FieldName, IndexKind: idx.IndexKind, Direction: idx.Direction, BuildState: idx.BuildState, LastIndexedGraphRevision: idx.LastIndexedGraphRevision, KeyEncodingVersion: idx.KeyEncodingVersion, EntryCount: idx.EntryCount, LoadResult: idx.LoadResult})
 		}
 	}
 	return out

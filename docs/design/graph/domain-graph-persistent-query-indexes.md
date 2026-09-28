@@ -276,20 +276,25 @@ Queries must continue to fail closed when the required index is not `ready`.
 
 ## Status and observability
 
-The existing `graph-checkpoint status` nested `persistent_index` object should be
-extended or complemented with query-index details:
+The existing `graph-checkpoint status` nested `persistent_index` object includes
+`query_indexes[]` details when checkpoint-aligned persistent query payloads are
+present. Each entry exposes:
 
-- query index payload present;
-- loaded/rebuilt/fallback result;
-- fallback reason;
-- number of query indexes included;
-- per-index entry counts;
+- index identity and name;
+- domain ID;
 - schema hash;
+- deterministic definition fingerprint;
+- target kind/type, labels, field, index kind, and direction;
+- build state and last indexed graph revision recorded in the payload;
 - key encoding version;
-- unavailable index names and reasons.
+- entry count;
+- load result inherited from the persistent index set (`used`, `not_loaded`, or
+  fallback-related result).
 
-A later explicit `graph-index status` command can provide detailed per-index
-lifecycle output if checkpoint status becomes too crowded.
+The parent `persistent_index` object continues to expose payload presence,
+entries, set-level load/fallback result, and fallback reason. A later explicit
+`graph-index status` command can provide detailed per-index lifecycle output if
+checkpoint status becomes too crowded.
 
 ## Interaction with schema lifecycle
 

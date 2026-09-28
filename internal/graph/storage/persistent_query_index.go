@@ -230,6 +230,50 @@ func (s *LocalStore) loadPersistentQueryIndexes(dir string, manifest persistentI
 	return nil
 }
 
+func (s *LocalStore) persistentQueryIndexStatusesFromManifest(dir string, manifest persistentIndexManifest, checkpoint CheckpointManifest, loadResult string) ([]PersistentQueryIndexStatus, error) {
+	metadataEntry, ok := manifest.Indexes[persistentIndexKindQueryMetadata]
+	if !ok {
+		return nil, nil
+	}
+	metadataRaw, err := readPersistentIndexPayloadFile(dir, metadataEntry)
+	if err != nil {
+		return nil, err
+	}
+	metadata, err := s.readPersistentQueryMetadata(metadataRaw, metadataEntry.EntryCount, checkpoint.GraphRevision)
+	if err != nil {
+		return nil, err
+	}
+	identities := make([]string, 0, len(metadata))
+	for identity := range metadata {
+		identities = append(identities, identity)
+	}
+	sort.Strings(identities)
+	out := make([]PersistentQueryIndexStatus, 0, len(identities))
+	for _, identity := range identities {
+		record := metadata[identity]
+		out = append(out, PersistentQueryIndexStatus{
+			Identity:                 record.Identity,
+			Name:                     record.Name,
+			DomainID:                 record.DomainID.String(),
+			SchemaHash:               record.SchemaHash,
+			DefinitionFingerprint:    record.DefinitionFingerprint,
+			TargetKind:               string(record.TargetKind),
+			TargetType:               record.TargetType,
+			Labels:                   append([]string(nil), record.Labels...),
+			FieldNamespace:           record.Field.Namespace,
+			FieldName:                record.Field.Name,
+			IndexKind:                string(record.Kind),
+			Direction:                string(record.Direction),
+			BuildState:               string(record.BuildState),
+			LastIndexedGraphRevision: record.LastIndexedGraphRevision,
+			KeyEncodingVersion:       record.KeyEncodingVersion,
+			EntryCount:               record.EntryCount,
+			LoadResult:               loadResult,
+		})
+	}
+	return out, nil
+}
+
 func readPersistentIndexPayloadFile(dir string, entry persistentIndexManifestEntry) ([]byte, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, entry.Path))
 	if err != nil {

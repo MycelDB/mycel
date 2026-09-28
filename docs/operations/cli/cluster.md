@@ -41,6 +41,10 @@ derived domain graph checkpoint for fast-open/recovery; they are not Raft
 snapshots or backups. Checkpoint status also reports local persistent graph index
 status under `persistent_index`, including whether the latest index set is
 present, whether the last open used it or fell back, and any fallback reason.
+When persistent schema/query index payloads are present, JSON output includes
+`persistent_index.query_indexes[]` entries with each index name, target kind,
+schema hash, definition fingerprint, key encoding version, entry count, and load
+result.
 
 Automatic local checkpointing is disabled by default. Enable it with:
 

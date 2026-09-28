@@ -54,6 +54,7 @@ type PersistentIndexStatus struct {
 	LoadResult        string
 	FallbackReason    string
 	Entries           []PersistentIndexEntryStatus
+	QueryIndexes      []PersistentQueryIndexStatus
 }
 
 type PersistentIndexEntryStatus struct {
@@ -61,6 +62,26 @@ type PersistentIndexEntryStatus struct {
 	Path       string
 	EntryCount int
 	Checksum   string
+}
+
+type PersistentQueryIndexStatus struct {
+	Identity                 string
+	Name                     string
+	DomainID                 string
+	SchemaHash               string
+	DefinitionFingerprint    string
+	TargetKind               string
+	TargetType               string
+	Labels                   []string
+	FieldNamespace           string
+	FieldName                string
+	IndexKind                string
+	Direction                string
+	BuildState               string
+	LastIndexedGraphRevision uint64
+	KeyEncodingVersion       int
+	EntryCount               uint64
+	LoadResult               string
 }
 
 type persistentIndexManifest struct {
@@ -324,12 +345,17 @@ func (s *LocalStore) tryLoadPersistentIndexSet(ctx context.Context, checkpoint C
 	if err := s.loadPersistentQueryIndexes(dir, manifest, checkpoint); err != nil {
 		return persistentIndexStatusFallback(status, err), false
 	}
+	queryIndexes, err := s.persistentQueryIndexStatusesFromManifest(dir, manifest, checkpoint, PersistentIndexLoadUsed)
+	if err != nil {
+		return persistentIndexStatusFallback(status, err), false
+	}
 	s.labelIndex = labels
 	s.tagIndex = tags
 	s.edgeAdjacencyOut = adjOut
 	s.edgeAdjacencyIn = adjIn
 	status.LoadResult = PersistentIndexLoadUsed
 	status.FallbackReason = ""
+	status.QueryIndexes = queryIndexes
 	return status, true
 }
 
@@ -411,6 +437,11 @@ func (s *LocalStore) persistentIndexStatusForCheckpoint(checkpoint CheckpointMan
 	} else {
 		status.LoadResult = PersistentIndexLoadNotLoaded
 	}
+	queryIndexes, err := s.persistentQueryIndexStatusesFromManifest(dir, manifest, checkpoint, status.LoadResult)
+	if err != nil {
+		return persistentIndexStatusFallback(status, err)
+	}
+	status.QueryIndexes = queryIndexes
 	return status
 }
 

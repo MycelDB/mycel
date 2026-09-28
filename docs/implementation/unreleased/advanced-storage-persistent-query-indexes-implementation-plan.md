@@ -5,8 +5,9 @@
 Partially implemented on the `advanced_storage` branch. The first implementation
 persists and loads checkpoint-aligned binary payloads for the current ordered
 node and edge property index maps, with fallback to checkpoint rebuild when query
-index payloads are missing, stale, or corrupt. Detailed per-query-index admin
-status and larger query-index benchmarks remain follow-ups.
+index payloads are missing, stale, or corrupt. `graph-checkpoint status` JSON now
+includes per-query-index details under `persistent_index.query_indexes[]`. Larger
+query-index benchmarks and restart validation remain follow-ups.
 
 Design reference:
 
@@ -208,31 +209,35 @@ query index path before or during this phase.
 
 ### Tasks
 
-1. Extend persistent-index status with query-index fields:
-   - query payload present;
-   - load result;
-   - fallback reason;
-   - query index count;
-   - per-index entry count;
-   - schema hash;
-   - key encoding version;
-   - unavailable indexes and reasons.
-2. Decide whether to keep this nested under `graph-checkpoint status` or add a
-   dedicated `graph-index status` command.
-3. If adding a new admin method, update `mycel-api`, generated bindings, CLI,
-   SDK follow-ups, and docs.
+Implemented by extending the existing `graph-checkpoint status` nested
+`persistent_index` object rather than adding a new admin method. JSON output now
+includes `persistent_index.query_indexes[]` entries with:
+
+- index identity and name;
+- domain ID;
+- schema hash;
+- definition fingerprint;
+- target kind/type, labels, field, index kind, and direction;
+- build state;
+- last indexed graph revision;
+- key encoding version;
+- entry count;
+- load result inherited from the persistent index set.
+
+The parent persistent-index status still reports query payload presence via
+manifest entries, set-level load result, and fallback reason.
 
 ### Tests
 
-- status reports no query indexes;
-- status reports loaded query indexes;
-- status reports fallback reason for corrupt query payload;
-- CLI JSON shape is stable.
+- storage status reports query index details before and after reopen;
+- admin service maps query index details to protobuf responses;
+- corrupt query payload fallback continues to report set-level fallback reason.
 
 ### Acceptance
 
-- Operators can tell whether configured query indexes were loaded from persistent
-  payloads, rebuilt, missing, stale, or unavailable.
+- Operators can tell whether configured query indexes were included in a
+  checkpoint-aligned persistent index set and whether that set was used on open
+  or is present-but-not-loaded.
 
 ## Phase 6.6 — benchmarks and validation
 
@@ -293,8 +298,8 @@ Suggested future benchmark dimensions:
 2. Land export/import helpers behind tests. — implemented.
 3. Extend index writer to produce optional query payloads. — implemented.
 4. Extend open loader with strict fallback. — implemented.
-5. Add detailed query-index status visibility. — follow-up; current generic
-   persistent-index status exposes query payload files and fallback reason.
+5. Add detailed query-index status visibility. — implemented under
+   `persistent_index.query_indexes[]`.
 6. Run larger query-index benchmarks and restart validation. — follow-up.
 7. Only then consider enabling any automatic policy beyond checkpoint-coupled
    best-effort writes.

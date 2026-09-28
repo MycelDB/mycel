@@ -1524,6 +1524,9 @@ func TestLocalStorePersistentQueryIndexesLoadAfterCheckpointOpen(t *testing.T) {
 	if !status.PersistentIndex.Present || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryMetadata) || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryNode) || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryEdge) {
 		t.Fatalf("persistent query index payloads missing from status: %+v", status.PersistentIndex)
 	}
+	if len(status.PersistentIndex.QueryIndexes) != 2 || !persistentQueryIndexStatusHasName(status.PersistentIndex, nodeIdx.Name, PersistentIndexLoadNotLoaded) || !persistentQueryIndexStatusHasName(status.PersistentIndex, edgeIdx.Name, PersistentIndexLoadNotLoaded) {
+		t.Fatalf("persistent query index details missing from status: %+v", status.PersistentIndex.QueryIndexes)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1538,6 +1541,9 @@ func TestLocalStorePersistentQueryIndexesLoadAfterCheckpointOpen(t *testing.T) {
 	}
 	if status.PersistentIndex.LoadResult != PersistentIndexLoadUsed || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryMetadata) {
 		t.Fatalf("persistent query index was not loaded: %+v", status.PersistentIndex)
+	}
+	if len(status.PersistentIndex.QueryIndexes) != 2 || !persistentQueryIndexStatusHasName(status.PersistentIndex, nodeIdx.Name, PersistentIndexLoadUsed) || !persistentQueryIndexStatusHasName(status.PersistentIndex, edgeIdx.Name, PersistentIndexLoadUsed) {
+		t.Fatalf("loaded persistent query index details missing from status: %+v", status.PersistentIndex.QueryIndexes)
 	}
 	nodeEntries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: nodeIdx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10})
 	if err != nil {
@@ -1619,6 +1625,15 @@ func TestLocalStoreCorruptPersistentQueryIndexFallsBack(t *testing.T) {
 func persistentIndexStatusHasEntry(status PersistentIndexStatus, kind string) bool {
 	for _, entry := range status.Entries {
 		if entry.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func persistentQueryIndexStatusHasName(status PersistentIndexStatus, name string, loadResult string) bool {
+	for _, entry := range status.QueryIndexes {
+		if entry.Name == name && entry.LoadResult == loadResult && entry.EntryCount > 0 && entry.SchemaHash != "" && entry.DefinitionFingerprint != "" && entry.KeyEncodingVersion == indexKeyEncodingVersion {
 			return true
 		}
 	}

@@ -96,5 +96,11 @@ func graphPersistentIndexStatusToProto(status graphservice.GraphPersistentIndexS
 			out.Entries = append(out.Entries, &adminv1.GraphPersistentIndexEntryStatus{Kind: entry.Kind, Path: entry.Path, EntryCount: uint64(entry.EntryCount), Checksum: entry.Checksum})
 		}
 	}
+	if len(status.QueryIndexes) > 0 {
+		out.QueryIndexes = make([]*adminv1.GraphPersistentQueryIndexStatus, 0, len(status.QueryIndexes))
+		for _, idx := range status.QueryIndexes {
+			out.QueryIndexes = append(out.QueryIndexes, &adminv1.GraphPersistentQueryIndexStatus{Identity: idx.Identity, Name: idx.Name, DomainId: idx.DomainID, SchemaHash: idx.SchemaHash, DefinitionFingerprint: idx.DefinitionFingerprint, TargetKind: idx.TargetKind, TargetType: idx.TargetType, Labels: append([]string(nil), idx.Labels...), FieldNamespace: idx.FieldNamespace, FieldName: idx.FieldName, IndexKind: idx.IndexKind, Direction: idx.Direction, BuildState: idx.BuildState, LastIndexedGraphRevision: idx.LastIndexedGraphRevision, KeyEncodingVersion: int32(idx.KeyEncodingVersion), EntryCount: idx.EntryCount, LoadResult: idx.LoadResult})
+		}
+	}
 	return out
 }

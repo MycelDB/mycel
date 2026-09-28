@@ -360,6 +360,7 @@ type graphPersistentIndexStatusOutput struct {
 	LoadResult        string                                  `json:"load_result,omitempty"`
 	FallbackReason    string                                  `json:"fallback_reason,omitempty"`
 	Entries           []graphPersistentIndexEntryStatusOutput `json:"entries,omitempty"`
+	QueryIndexes      []graphPersistentQueryIndexStatusOutput `json:"query_indexes,omitempty"`
 }
 
 type graphPersistentIndexEntryStatusOutput struct {
@@ -367,6 +368,26 @@ type graphPersistentIndexEntryStatusOutput struct {
 	Path       string `json:"path"`
 	EntryCount uint64 `json:"entry_count"`
 	Checksum   string `json:"checksum"`
+}
+
+type graphPersistentQueryIndexStatusOutput struct {
+	Identity                 string   `json:"identity"`
+	Name                     string   `json:"name"`
+	DomainID                 string   `json:"domain_id"`
+	SchemaHash               string   `json:"schema_hash"`
+	DefinitionFingerprint    string   `json:"definition_fingerprint"`
+	TargetKind               string   `json:"target_kind"`
+	TargetType               string   `json:"target_type,omitempty"`
+	Labels                   []string `json:"labels,omitempty"`
+	FieldNamespace           string   `json:"field_namespace"`
+	FieldName                string   `json:"field_name"`
+	IndexKind                string   `json:"index_kind"`
+	Direction                string   `json:"direction"`
+	BuildState               string   `json:"build_state"`
+	LastIndexedGraphRevision uint64   `json:"last_indexed_graph_revision"`
+	KeyEncodingVersion       int32    `json:"key_encoding_version"`
+	EntryCount               uint64   `json:"entry_count"`
+	LoadResult               string   `json:"load_result"`
 }
 
 type graphForensicDiffSummary struct {
@@ -634,6 +655,12 @@ func graphPersistentIndexStatusFromProto(status *adminv1.GraphPersistentIndexSta
 			out.Entries = append(out.Entries, graphPersistentIndexEntryStatusOutput{Kind: entry.GetKind(), Path: entry.GetPath(), EntryCount: entry.GetEntryCount(), Checksum: entry.GetChecksum()})
 		}
 	}
+	if len(status.GetQueryIndexes()) > 0 {
+		out.QueryIndexes = make([]graphPersistentQueryIndexStatusOutput, 0, len(status.GetQueryIndexes()))
+		for _, idx := range status.GetQueryIndexes() {
+			out.QueryIndexes = append(out.QueryIndexes, graphPersistentQueryIndexStatusOutput{Identity: idx.GetIdentity(), Name: idx.GetName(), DomainID: idx.GetDomainId(), SchemaHash: idx.GetSchemaHash(), DefinitionFingerprint: idx.GetDefinitionFingerprint(), TargetKind: idx.GetTargetKind(), TargetType: idx.GetTargetType(), Labels: append([]string(nil), idx.GetLabels()...), FieldNamespace: idx.GetFieldNamespace(), FieldName: idx.GetFieldName(), IndexKind: idx.GetIndexKind(), Direction: idx.GetDirection(), BuildState: idx.GetBuildState(), LastIndexedGraphRevision: idx.GetLastIndexedGraphRevision(), KeyEncodingVersion: idx.GetKeyEncodingVersion(), EntryCount: idx.GetEntryCount(), LoadResult: idx.GetLoadResult()})
+		}
+	}
 	return out
 }
 
@@ -653,6 +680,9 @@ func graphCheckpointStatusText(out graphCheckpointStatusOutput) string {
 		}
 		if out.PersistentIndex.FallbackReason != "" {
 			text += " persistent_index_fallback=" + out.PersistentIndex.FallbackReason
+		}
+		if len(out.PersistentIndex.QueryIndexes) > 0 {
+			text += fmt.Sprintf(" persistent_query_indexes=%d", len(out.PersistentIndex.QueryIndexes))
 		}
 	}
 	if out.Source != "" {
