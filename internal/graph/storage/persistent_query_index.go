@@ -390,7 +390,7 @@ func (s *LocalStore) readPersistentQueryNodeEntries(raw []byte, entryCount int, 
 		return err
 	}
 	for i := 0; i < entryCount; i++ {
-		identity, key, entityID, value, err := readPersistentQueryEntry(r, identityInterner)
+		identity, key, entityID, err := readPersistentQueryEntryKey(r, identityInterner)
 		if err != nil {
 			return err
 		}
@@ -408,7 +408,7 @@ func (s *LocalStore) readPersistentQueryNodeEntries(raw []byte, entryCount int, 
 			entries = make(map[string]nodePropertyIndexEntry, persistentQueryEntryMapCapacity(record.EntryCount))
 			out[identity] = entries
 		}
-		entries[key] = nodePropertyIndexEntry{NodeID: nodeID, Value: value, Key: key}
+		entries[key] = nodePropertyIndexEntry{NodeID: nodeID, Key: key}
 	}
 	if r.Len() != 0 {
 		return fmt.Errorf("%w: trailing persistent query node bytes", ErrInvalidRecord)
@@ -422,7 +422,7 @@ func (s *LocalStore) readPersistentQueryEdgeEntries(raw []byte, entryCount int, 
 		return err
 	}
 	for i := 0; i < entryCount; i++ {
-		identity, key, entityID, value, err := readPersistentQueryEntry(r, identityInterner)
+		identity, key, entityID, err := readPersistentQueryEntryKey(r, identityInterner)
 		if err != nil {
 			return err
 		}
@@ -440,7 +440,7 @@ func (s *LocalStore) readPersistentQueryEdgeEntries(raw []byte, entryCount int, 
 			entries = make(map[string]edgePropertyIndexEntry, persistentQueryEntryMapCapacity(record.EntryCount))
 			out[identity] = entries
 		}
-		entries[key] = edgePropertyIndexEntry{EdgeID: edgeID, Value: value, Key: key}
+		entries[key] = edgePropertyIndexEntry{EdgeID: edgeID, Key: key}
 	}
 	if r.Len() != 0 {
 		return fmt.Errorf("%w: trailing persistent query edge bytes", ErrInvalidRecord)
@@ -448,21 +448,23 @@ func (s *LocalStore) readPersistentQueryEdgeEntries(raw []byte, entryCount int, 
 	return nil
 }
 
-func readPersistentQueryEntry(r *bytes.Reader, identityInterner *persistentQueryIdentityInterner) (string, string, uuid.UUID, any, error) {
+func readPersistentQueryEntryKey(r *bytes.Reader, identityInterner *persistentQueryIdentityInterner) (string, string, uuid.UUID, error) {
 	identity, err := readPersistentBinaryInternedString(r, identityInterner)
 	if err != nil {
-		return "", "", uuid.Nil, nil, err
+		return "", "", uuid.Nil, err
 	}
 	key, err := readPersistentBinaryString(r)
 	if err != nil {
-		return "", "", uuid.Nil, nil, err
+		return "", "", uuid.Nil, err
 	}
 	entityID, err := readPersistentBinaryUUID(r)
 	if err != nil {
-		return "", "", uuid.Nil, nil, err
+		return "", "", uuid.Nil, err
 	}
-	value, err := readPersistentScalarValue(r)
-	return identity, key, entityID, value, err
+	if err := skipPersistentScalarValue(r); err != nil {
+		return "", "", uuid.Nil, err
+	}
+	return identity, key, entityID, nil
 }
 
 type persistentQueryIdentityInterner struct {
@@ -594,6 +596,29 @@ func writePersistentScalarValue(buf *bytes.Buffer, value any) error {
 		return writePersistentBinaryString(buf, v.UTC().Format(time.RFC3339Nano))
 	default:
 		return fmt.Errorf("%w: unsupported persistent query index scalar", ErrUnsupported)
+	}
+}
+
+func skipPersistentScalarValue(r *bytes.Reader) error {
+	tag, err := r.ReadByte()
+	if err != nil {
+		return err
+	}
+	switch tag {
+	case 1, 6:
+		_, err := readPersistentBinaryString(r)
+		return err
+	case 2:
+		_, err := r.ReadByte()
+		return err
+	case 3, 4, 5:
+		if r.Len() < 8 {
+			return fmt.Errorf("%w: truncated persistent query index scalar", ErrInvalidRecord)
+		}
+		_, err := r.Seek(8, io.SeekCurrent)
+		return err
+	default:
+		return fmt.Errorf("%w: unsupported persistent query index scalar tag", ErrInvalidRecord)
 	}
 }
 

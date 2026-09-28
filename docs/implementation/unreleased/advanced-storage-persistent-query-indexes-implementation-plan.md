@@ -332,13 +332,27 @@ Interning repeated per-entry query-index identity strings during payload decode
 further reduced persistent-path allocation pressure in the large benchmark
 (roughly `1.94–1.95 GB/op` and `28.3M allocs/op` down to roughly
 `1.83 GB/op` and `26.9M allocs/op` for persistent-query-index cases), though
-single-run wall-clock remains noisy and not clearly faster.
+single-run wall-clock remained noisy.
 
-Interpretation: the current persistent query-index map loader is still not a
-clear performance win at the 100k/250k multi-index scale, but load-path
-optimizations have narrowed the gap and reduced allocations. Further wins likely
-require reducing query payload read/decode overhead or changing the payload
-layout rather than only map pre-sizing/string interning.
+Skipping persisted scalar-value decoding during open and deriving result values
+lazily from live checkpointed graph records during scans reduced persistent-path
+allocations further, to roughly `1.82 GB/op` and `25.4M allocs/op`, and brought
+open-only time close to checkpoint rebuild in the single-run large benchmark:
+
+```text
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-only                    ~1.38 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-only               ~1.42 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-first-node-scans        ~1.43 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-node-scans   ~1.41 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-first-edge-scans        ~1.46 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-edge-scans   ~1.49 s/op
+```
+
+Interpretation: the persistent query-index map loader is now near parity with
+checkpoint rebuild at the 100k/250k multi-index scale in the single-run benchmark,
+but not yet a consistent clear win. Further wins likely require changing the
+payload layout to remove repeated identity strings, scalar values, or duplicated
+entity IDs rather than only optimizing the current decoder.
 
 Suggested future benchmark dimensions:
 

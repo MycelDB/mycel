@@ -1552,12 +1552,18 @@ func TestLocalStorePersistentQueryIndexesLoadAfterCheckpointOpen(t *testing.T) {
 	if got := nodeIDs(nodeEntries); !reflect.DeepEqual(got, []graph.NodeID{first.ID, second.ID}) {
 		t.Fatalf("unexpected node order from persistent query index: %+v", got)
 	}
+	if len(nodeEntries) != 2 || nodeEntries[0].Value != "2026-07-18" || nodeEntries[1].Value != "2026-07-19" {
+		t.Fatalf("unexpected node values from persistent query index: %+v", nodeEntries)
+	}
 	edgeEntries, _, err := store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: domainID, IndexName: edgeIdx.Name, Direction: schema.IndexSortDirectionDesc, Limit: 10})
 	if err != nil {
 		t.Fatalf("ScanEdgePropertyOrdered() error = %v", err)
 	}
 	if got := edgeIDs(edgeEntries); !reflect.DeepEqual(got, []graph.EdgeID{high.ID, low.ID}) {
 		t.Fatalf("unexpected edge order from persistent query index: %+v", got)
+	}
+	if len(edgeEntries) != 2 || edgeEntries[0].Value != 0.9 || edgeEntries[1].Value != 0.2 {
+		t.Fatalf("unexpected edge values from persistent query index: %+v", edgeEntries)
 	}
 }
 
