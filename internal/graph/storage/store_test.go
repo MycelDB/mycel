@@ -254,7 +254,7 @@ func TestLocalStoreWriteCheckpointWritesPersistentIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckpointStatus() error = %v", err)
 	}
-	if !status.PersistentIndex.Present || status.PersistentIndex.LoadResult != PersistentIndexLoadNotLoaded || len(status.PersistentIndex.Entries) != 4 {
+	if !status.PersistentIndex.Present || status.PersistentIndex.LoadResult != PersistentIndexLoadNotLoaded || status.PersistentIndex.IndexFormat != persistentIndexFormat || len(status.PersistentIndex.Entries) != 4 {
 		t.Fatalf("unexpected persistent index status after write: %+v", status.PersistentIndex)
 	}
 	indexDir, err := store.latestIndexSetDir()
@@ -278,7 +278,7 @@ func TestLocalStoreWriteCheckpointWritesPersistentIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckpointStatus() after reopen error = %v", err)
 	}
-	if !status.PersistentIndex.Present || status.PersistentIndex.LoadResult != PersistentIndexLoadUsed || status.PersistentIndex.IndexSetID == "" || status.PersistentIndex.GraphRevision != status.CheckpointRevision {
+	if !status.PersistentIndex.Present || status.PersistentIndex.LoadResult != PersistentIndexLoadUsed || status.PersistentIndex.IndexFormat != persistentIndexFormat || status.PersistentIndex.IndexSetID == "" || status.PersistentIndex.GraphRevision != status.CheckpointRevision {
 		t.Fatalf("unexpected persistent index status after reopen: %+v checkpoint=%+v", status.PersistentIndex, status)
 	}
 	labels, _, err := store.ScanLabel(ctx, LabelScan{DomainID: domainID, Label: "Task", Limit: 10})

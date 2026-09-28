@@ -70,7 +70,7 @@ The index set manifest references the loaded graph checkpoint baseline:
   "graph_checkpoint_id": "chk-...",
   "graph_revision": 123,
   "graph_checksum": "...",
-  "index_format": "domain-graph-index-v1-json",
+  "index_format": "domain-graph-index-v1-binary",
   "checksum_algorithm": "domain-graph-index-v1-sha256",
   "indexes": {
     "labels": {"path": "labels.kidx", "entry_count": 1200, "checksum": "..."},
@@ -272,28 +272,33 @@ BenchmarkLocalStoreOpen/checkpoint-persistent-indexes ~133 ms/op
 ```
 
 After avoiding duplicate checkpoint-side label/tag/adjacency rebuild when a
-persistent index candidate is present, the same benchmark improved persistent
-index open to roughly:
+persistent index candidate is present, JSON persistent-index open improved to
+roughly:
 
 ```text
 BenchmarkLocalStoreOpen/checkpoint-persistent-indexes ~121 ms/op
 ```
 
+After switching `.kidx` payloads to compact binary while keeping JSON reader
+compatibility, the same fixture measured roughly:
+
+```text
+BenchmarkLocalStoreOpen/checkpoint-persistent-indexes ~80 ms/op
+```
+
 Interpretation: checkpoints materially improve open time for churned graph
-history. The first JSON persistent-index tranche validates layout/fallback and
-now avoids duplicate covered-index rebuild work, but it is still not faster than
-checkpoint-only. JSON payload parsing, UUID string parsing, and map hydration for
-adjacency remain more expensive than rebuilding those maps directly from
-checkpoint records at this fixture size. A compact binary `.kidx` format or a
-more selective/adaptive persistent-index strategy is needed before treating
-persistent indexes as a performance win.
+history. Binary persistent-index payloads remove most of the JSON parsing and
+UUID string parsing overhead and bring checkpoint+persistent-index open to
+rough parity with checkpoint-only for the 10k/20k fixture. Larger or more
+index-heavy domains are expected to benefit more; future benchmarks should cover
+100k+ nodes and deeper adjacency fanout.
 
 Suggested future benchmark dimensions:
 
 - 100k nodes / 250k edges, if feasible outside normal `make test`
 - deeper hierarchy/reference-heavy graph
 - checkpoint tail replay with post-checkpoint mutations
-- compact binary payload prototype versus JSON payload
+- compact binary payload versus legacy JSON payload
 
 ### Acceptance
 

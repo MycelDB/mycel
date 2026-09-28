@@ -1,11 +1,14 @@
 package graphstorage
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,8 +22,10 @@ import (
 
 const (
 	persistentIndexManifestVersion = 1
-	persistentIndexFormat          = "domain-graph-index-v1-json"
+	persistentIndexFormat          = "domain-graph-index-v1-binary"
+	persistentIndexJSONFormat      = "domain-graph-index-v1-json"
 	persistentIndexChecksumAlgo    = "domain-graph-index-v1-sha256"
+	persistentIndexBinaryMagic     = "KIDX"
 	persistentIndexLatestPointer   = "LATEST"
 	persistentIndexManifestName    = "manifest.json"
 	persistentIndexLabelsPayload   = "labels.kidx"
@@ -417,7 +422,7 @@ func (s *LocalStore) validatePersistentIndexManifest(manifest persistentIndexMan
 	if manifest.FormatVersion != persistentIndexManifestVersion {
 		return fmt.Errorf("%w: unsupported persistent index manifest version", ErrUnsupported)
 	}
-	if manifest.IndexFormat != persistentIndexFormat || manifest.ChecksumAlgorithm != persistentIndexChecksumAlgo {
+	if (manifest.IndexFormat != persistentIndexFormat && manifest.IndexFormat != persistentIndexJSONFormat) || manifest.ChecksumAlgorithm != persistentIndexChecksumAlgo {
 		return fmt.Errorf("%w: unsupported persistent index format", ErrUnsupported)
 	}
 	if !validPersistentIndexSetName(manifest.IndexSetID) {
@@ -461,6 +466,9 @@ func (s *LocalStore) readPersistentNodeIndex(dir string, manifest persistentInde
 	if persistentIndexChecksum(raw) != entry.Checksum {
 		return nil, fmt.Errorf("%w: persistent index checksum mismatch", ErrInvalidRecord)
 	}
+	if manifest.IndexFormat == persistentIndexFormat {
+		return s.readPersistentBinaryNodeIndex(raw, entry.EntryCount, kind)
+	}
 	var payload persistentNodeIndexPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, err
@@ -498,6 +506,9 @@ func (s *LocalStore) readPersistentAdjacencyIndex(dir string, manifest persisten
 	}
 	if persistentIndexChecksum(raw) != entry.Checksum {
 		return nil, fmt.Errorf("%w: persistent adjacency index checksum mismatch", ErrInvalidRecord)
+	}
+	if manifest.IndexFormat == persistentIndexFormat {
+		return s.readPersistentBinaryAdjacencyIndex(raw, entry.EntryCount, kind)
 	}
 	var payload persistentAdjacencyPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
@@ -582,19 +593,250 @@ func (s *LocalStore) exportAdjacencyPayload(index map[graph.DomainID]map[graph.N
 }
 
 func marshalPersistentNodeIndexPayload(kind string, entries []persistentNodeIndexEntry) ([]byte, int, error) {
-	raw, err := json.Marshal(persistentNodeIndexPayload{FormatVersion: persistentIndexManifestVersion, Kind: kind, Entries: entries})
+	raw, err := marshalPersistentBinaryNodeIndexPayload(kind, entries)
 	if err != nil {
 		return nil, 0, err
 	}
-	return append(raw, '\n'), len(entries), nil
+	return raw, len(entries), nil
 }
 
 func marshalPersistentAdjacencyPayload(kind string, entries []persistentAdjacencyEntry) ([]byte, int, error) {
-	raw, err := json.Marshal(persistentAdjacencyPayload{FormatVersion: persistentIndexManifestVersion, Kind: kind, Entries: entries})
+	raw, err := marshalPersistentBinaryAdjacencyPayload(kind, entries)
 	if err != nil {
 		return nil, 0, err
 	}
-	return append(raw, '\n'), len(entries), nil
+	return raw, len(entries), nil
+}
+
+func marshalPersistentBinaryNodeIndexPayload(kind string, entries []persistentNodeIndexEntry) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writePersistentBinaryHeader(&buf, kind, len(entries)); err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		domainID, err := uuid.Parse(entry.DomainID)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(domainID[:])
+		if err := writePersistentBinaryString(&buf, entry.Key); err != nil {
+			return nil, err
+		}
+		if err := binary.Write(&buf, binary.BigEndian, uint32(len(entry.NodeIDs))); err != nil {
+			return nil, err
+		}
+		for _, rawID := range entry.NodeIDs {
+			id, err := uuid.Parse(rawID)
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(id[:])
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func marshalPersistentBinaryAdjacencyPayload(kind string, entries []persistentAdjacencyEntry) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writePersistentBinaryHeader(&buf, kind, len(entries)); err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		domainID, err := uuid.Parse(entry.DomainID)
+		if err != nil {
+			return nil, err
+		}
+		nodeID, err := uuid.Parse(entry.NodeID)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(domainID[:])
+		buf.Write(nodeID[:])
+		if err := writePersistentBinaryString(&buf, entry.Label); err != nil {
+			return nil, err
+		}
+		if err := binary.Write(&buf, binary.BigEndian, uint32(len(entry.Edges))); err != nil {
+			return nil, err
+		}
+		for _, edge := range entry.Edges {
+			if err := writePersistentBinaryString(&buf, edge.Key); err != nil {
+				return nil, err
+			}
+			edgeID, err := uuid.Parse(edge.EdgeID)
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(edgeID[:])
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func writePersistentBinaryHeader(buf *bytes.Buffer, kind string, entryCount int) error {
+	buf.WriteString(persistentIndexBinaryMagic)
+	if err := binary.Write(buf, binary.BigEndian, uint16(persistentIndexManifestVersion)); err != nil {
+		return err
+	}
+	if err := writePersistentBinaryString(buf, kind); err != nil {
+		return err
+	}
+	return binary.Write(buf, binary.BigEndian, uint64(entryCount))
+}
+
+func writePersistentBinaryString(buf *bytes.Buffer, value string) error {
+	if len(value) > int(^uint32(0)) {
+		return fmt.Errorf("%w: persistent index string too large", ErrInvalidRecord)
+	}
+	if err := binary.Write(buf, binary.BigEndian, uint32(len(value))); err != nil {
+		return err
+	}
+	_, err := buf.WriteString(value)
+	return err
+}
+
+func (s *LocalStore) readPersistentBinaryNodeIndex(raw []byte, entryCount int, kind string) (map[graph.DomainID]map[string]map[graph.NodeID]struct{}, error) {
+	r := bytes.NewReader(raw)
+	if err := readPersistentBinaryHeader(r, kind, entryCount); err != nil {
+		return nil, err
+	}
+	out := map[graph.DomainID]map[string]map[graph.NodeID]struct{}{}
+	for i := 0; i < entryCount; i++ {
+		domainUUID, err := readPersistentBinaryUUID(r)
+		if err != nil {
+			return nil, err
+		}
+		key, err := readPersistentBinaryString(r)
+		if err != nil {
+			return nil, err
+		}
+		var nodeCount uint32
+		if err := binary.Read(r, binary.BigEndian, &nodeCount); err != nil {
+			return nil, err
+		}
+		if domainUUID == uuid.Nil || key == "" || int(nodeCount) > r.Len()/16 {
+			return nil, fmt.Errorf("%w: invalid persistent node index entry", ErrInvalidRecord)
+		}
+		set := ensureNodeSetByString(out, graph.DomainID(domainUUID), key)
+		var last uuid.UUID
+		hasLast := false
+		for j := uint32(0); j < nodeCount; j++ {
+			id, err := readPersistentBinaryUUID(r)
+			if err != nil {
+				return nil, err
+			}
+			nodeID := graph.NodeID(id)
+			node, exists := s.nodeRecords[nodeID]
+			if id == uuid.Nil || (hasLast && bytes.Compare(id[:], last[:]) <= 0) || !exists || node.DomainID != graph.DomainID(domainUUID) {
+				return nil, fmt.Errorf("%w: invalid persistent node index ID", ErrInvalidRecord)
+			}
+			set[nodeID] = struct{}{}
+			last = id
+			hasLast = true
+		}
+	}
+	if r.Len() != 0 {
+		return nil, fmt.Errorf("%w: trailing persistent node index bytes", ErrInvalidRecord)
+	}
+	return out, nil
+}
+
+func (s *LocalStore) readPersistentBinaryAdjacencyIndex(raw []byte, entryCount int, kind string) (map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID, error) {
+	r := bytes.NewReader(raw)
+	if err := readPersistentBinaryHeader(r, kind, entryCount); err != nil {
+		return nil, err
+	}
+	out := map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID{}
+	for i := 0; i < entryCount; i++ {
+		domainUUID, err := readPersistentBinaryUUID(r)
+		if err != nil {
+			return nil, err
+		}
+		nodeUUID, err := readPersistentBinaryUUID(r)
+		if err != nil {
+			return nil, err
+		}
+		label, err := readPersistentBinaryString(r)
+		if err != nil {
+			return nil, err
+		}
+		var edgeCount uint32
+		if err := binary.Read(r, binary.BigEndian, &edgeCount); err != nil {
+			return nil, err
+		}
+		if domainUUID == uuid.Nil || nodeUUID == uuid.Nil || label == "" || int(edgeCount) > r.Len()/20 {
+			return nil, fmt.Errorf("%w: invalid persistent adjacency entry", ErrInvalidRecord)
+		}
+		set := ensureAdjacencySet(out, graph.DomainID(domainUUID), graph.NodeID(nodeUUID), label)
+		last := ""
+		for j := uint32(0); j < edgeCount; j++ {
+			key, err := readPersistentBinaryString(r)
+			if err != nil {
+				return nil, err
+			}
+			edgeUUID, err := readPersistentBinaryUUID(r)
+			if err != nil {
+				return nil, err
+			}
+			edgeID := graph.EdgeID(edgeUUID)
+			stored, exists := s.edgeRecords[edgeID]
+			if edgeUUID == uuid.Nil || key == "" || (last != "" && key <= last) || !exists || stored.DomainID != graph.DomainID(domainUUID) {
+				return nil, fmt.Errorf("%w: invalid persistent adjacency edge", ErrInvalidRecord)
+			}
+			set[key] = edgeID
+			last = key
+		}
+	}
+	if r.Len() != 0 {
+		return nil, fmt.Errorf("%w: trailing persistent adjacency index bytes", ErrInvalidRecord)
+	}
+	return out, nil
+}
+
+func readPersistentBinaryHeader(r *bytes.Reader, wantKind string, wantEntryCount int) error {
+	magic := make([]byte, len(persistentIndexBinaryMagic))
+	if _, err := io.ReadFull(r, magic); err != nil {
+		return err
+	}
+	if string(magic) != persistentIndexBinaryMagic {
+		return fmt.Errorf("%w: invalid persistent index magic", ErrInvalidRecord)
+	}
+	var version uint16
+	if err := binary.Read(r, binary.BigEndian, &version); err != nil {
+		return err
+	}
+	kind, err := readPersistentBinaryString(r)
+	if err != nil {
+		return err
+	}
+	var entryCount uint64
+	if err := binary.Read(r, binary.BigEndian, &entryCount); err != nil {
+		return err
+	}
+	if version != persistentIndexManifestVersion || kind != wantKind || entryCount != uint64(wantEntryCount) {
+		return fmt.Errorf("%w: persistent index binary header mismatch", ErrInvalidRecord)
+	}
+	return nil
+}
+
+func readPersistentBinaryString(r *bytes.Reader) (string, error) {
+	var length uint32
+	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
+		return "", err
+	}
+	if int(length) < 0 || int(length) > r.Len() || length > 1<<20 {
+		return "", fmt.Errorf("%w: invalid persistent index string length", ErrInvalidRecord)
+	}
+	buf := make([]byte, int(length))
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return "", err
+	}
+	return string(buf), nil
+}
+
+func readPersistentBinaryUUID(r *bytes.Reader) (uuid.UUID, error) {
+	var id uuid.UUID
+	_, err := io.ReadFull(r, id[:])
+	return id, err
 }
 
 func nodeIDStrings(set map[graph.NodeID]struct{}) []string {
