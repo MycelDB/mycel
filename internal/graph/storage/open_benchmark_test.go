@@ -19,17 +19,65 @@ const (
 	benchmarkOpenUpdateRounds = 3
 )
 
+func BenchmarkLocalStoreQueryIndexOpenPhases(b *testing.B) {
+	ctx := context.Background()
+	fixture := prepareQueryIndexOpenBenchmarkFixture(b, ctx, benchmarkOpenNodes, benchmarkOpenEdges)
+	cases := queryIndexOpenBenchmarkCases(fixture)
+	for _, tc := range cases {
+		b.Run(tc.name+"/open-only", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ReportMetric(float64(fixture.nodeCount), "live_nodes/op")
+			b.ReportMetric(float64(fixture.edgeCount), "live_edges/op")
+			for i := 0; i < b.N; i++ {
+				store, err := Open(ctx, tc.path)
+				if err != nil {
+					b.Fatalf("Open() error = %v", err)
+				}
+				validateOpenBenchmarkStore(b, store, fixture)
+				if err := store.Close(); err != nil {
+					b.Fatalf("Close() error = %v", err)
+				}
+			}
+		})
+		b.Run(tc.name+"/open-first-node-scan", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ReportMetric(float64(fixture.nodeCount), "live_nodes/op")
+			b.ReportMetric(float64(fixture.edgeCount), "live_edges/op")
+			for i := 0; i < b.N; i++ {
+				store, err := Open(ctx, tc.path)
+				if err != nil {
+					b.Fatalf("Open() error = %v", err)
+				}
+				validateOpenBenchmarkStore(b, store, fixture)
+				validateBenchmarkNodeScan(b, ctx, store, fixture)
+				if err := store.Close(); err != nil {
+					b.Fatalf("Close() error = %v", err)
+				}
+			}
+		})
+		b.Run(tc.name+"/open-first-edge-scan", func(b *testing.B) {
+			b.ReportAllocs()
+			b.ReportMetric(float64(fixture.nodeCount), "live_nodes/op")
+			b.ReportMetric(float64(fixture.edgeCount), "live_edges/op")
+			for i := 0; i < b.N; i++ {
+				store, err := Open(ctx, tc.path)
+				if err != nil {
+					b.Fatalf("Open() error = %v", err)
+				}
+				validateOpenBenchmarkStore(b, store, fixture)
+				validateBenchmarkEdgeScan(b, ctx, store, fixture)
+				if err := store.Close(); err != nil {
+					b.Fatalf("Close() error = %v", err)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkLocalStoreQueryIndexOpenAndScan(b *testing.B) {
 	ctx := context.Background()
 	fixture := prepareQueryIndexOpenBenchmarkFixture(b, ctx, benchmarkOpenNodes, benchmarkOpenEdges)
-	cases := []struct {
-		name string
-		path string
-	}{
-		{name: "full-replay-query-index-rebuild", path: fixture.fullReplayDir},
-		{name: "checkpoint-query-index-rebuild", path: fixture.checkpointOnlyDir},
-		{name: "checkpoint-persistent-query-indexes", path: fixture.checkpointWithIndexesDir},
-	}
+	cases := queryIndexOpenBenchmarkCases(fixture)
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
@@ -40,17 +88,9 @@ func BenchmarkLocalStoreQueryIndexOpenAndScan(b *testing.B) {
 				if err != nil {
 					b.Fatalf("Open() error = %v", err)
 				}
-				if store.Revision() != fixture.revision {
-					b.Fatalf("Revision() = %d, want %d", store.Revision(), fixture.revision)
-				}
-				nodeEntries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: fixture.domainID, IndexName: fixture.nodeIndexName, Direction: schema.IndexSortDirectionAsc, Limit: 100})
-				if err != nil || len(nodeEntries) == 0 {
-					b.Fatalf("ScanNodePropertyOrdered() len=%d err=%v", len(nodeEntries), err)
-				}
-				edgeEntries, _, err := store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: fixture.domainID, IndexName: fixture.edgeIndexName, Direction: schema.IndexSortDirectionAsc, Limit: 100})
-				if err != nil || len(edgeEntries) == 0 {
-					b.Fatalf("ScanEdgePropertyOrdered() len=%d err=%v", len(edgeEntries), err)
-				}
+				validateOpenBenchmarkStore(b, store, fixture)
+				validateBenchmarkNodeScan(b, ctx, store, fixture)
+				validateBenchmarkEdgeScan(b, ctx, store, fixture)
 				if err := store.Close(); err != nil {
 					b.Fatalf("Close() error = %v", err)
 				}
@@ -92,6 +132,11 @@ func BenchmarkLocalStoreOpen(b *testing.B) {
 	}
 }
 
+type openBenchmarkCase struct {
+	name string
+	path string
+}
+
 type openBenchmarkFixture struct {
 	fullReplayDir            string
 	checkpointOnlyDir        string
@@ -103,6 +148,37 @@ type openBenchmarkFixture struct {
 	edgeCount                int
 	historicalNodePuts       int
 	revision                 uint64
+}
+
+func queryIndexOpenBenchmarkCases(fixture openBenchmarkFixture) []openBenchmarkCase {
+	return []openBenchmarkCase{
+		{name: "full-replay-query-index-rebuild", path: fixture.fullReplayDir},
+		{name: "checkpoint-query-index-rebuild", path: fixture.checkpointOnlyDir},
+		{name: "checkpoint-persistent-query-indexes", path: fixture.checkpointWithIndexesDir},
+	}
+}
+
+func validateOpenBenchmarkStore(b *testing.B, store *LocalStore, fixture openBenchmarkFixture) {
+	b.Helper()
+	if store.Revision() != fixture.revision {
+		b.Fatalf("Revision() = %d, want %d", store.Revision(), fixture.revision)
+	}
+}
+
+func validateBenchmarkNodeScan(b *testing.B, ctx context.Context, store *LocalStore, fixture openBenchmarkFixture) {
+	b.Helper()
+	nodeEntries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: fixture.domainID, IndexName: fixture.nodeIndexName, Direction: schema.IndexSortDirectionAsc, Limit: 100})
+	if err != nil || len(nodeEntries) == 0 {
+		b.Fatalf("ScanNodePropertyOrdered() len=%d err=%v", len(nodeEntries), err)
+	}
+}
+
+func validateBenchmarkEdgeScan(b *testing.B, ctx context.Context, store *LocalStore, fixture openBenchmarkFixture) {
+	b.Helper()
+	edgeEntries, _, err := store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: fixture.domainID, IndexName: fixture.edgeIndexName, Direction: schema.IndexSortDirectionAsc, Limit: 100})
+	if err != nil || len(edgeEntries) == 0 {
+		b.Fatalf("ScanEdgePropertyOrdered() len=%d err=%v", len(edgeEntries), err)
+	}
 }
 
 func prepareOpenBenchmarkFixture(b *testing.B, ctx context.Context, nodeCount, edgeCount int) openBenchmarkFixture {

@@ -249,10 +249,11 @@ Add benchmarks that compare:
 2. checkpoint + persistent label/tag/adjacency only;
 3. checkpoint + persistent label/tag/adjacency + query indexes.
 
-Implemented storage benchmark:
+Implemented storage benchmarks:
 
 ```bash
 go test ./internal/graph/storage -run '^$' -bench BenchmarkLocalStoreQueryIndexOpenAndScan -benchmem -count=1
+go test ./internal/graph/storage -run '^$' -bench BenchmarkLocalStoreQueryIndexOpenPhases -benchmem -count=1
 ```
 
 The benchmark fixture currently uses:
@@ -263,7 +264,8 @@ The benchmark fixture currently uses:
 - 1 ordered edge property index on `REFERENCES.properties.ordinal`;
 - immediate ordered node-property and edge-property scans after open.
 
-Initial Apple M4 Max baseline with `-benchtime=1x`:
+Initial Apple M4 Max combined open + node scan + edge scan baseline with
+`-benchtime=1x`:
 
 ```text
 BenchmarkLocalStoreQueryIndexOpenAndScan/full-replay-query-index-rebuild          ~197 ms/op
@@ -271,12 +273,27 @@ BenchmarkLocalStoreQueryIndexOpenAndScan/checkpoint-query-index-rebuild         
 BenchmarkLocalStoreQueryIndexOpenAndScan/checkpoint-persistent-query-indexes       ~97 ms/op
 ```
 
+Separated phase baseline with `-benchtime=1x`:
+
+```text
+BenchmarkLocalStoreQueryIndexOpenPhases/full-replay-query-index-rebuild/open-only                 ~183 ms/op
+BenchmarkLocalStoreQueryIndexOpenPhases/full-replay-query-index-rebuild/open-first-node-scan      ~191 ms/op
+BenchmarkLocalStoreQueryIndexOpenPhases/full-replay-query-index-rebuild/open-first-edge-scan      ~188 ms/op
+BenchmarkLocalStoreQueryIndexOpenPhases/checkpoint-query-index-rebuild/open-only                   ~88 ms/op
+BenchmarkLocalStoreQueryIndexOpenPhases/checkpoint-query-index-rebuild/open-first-node-scan        ~94 ms/op
+BenchmarkLocalStoreQueryIndexOpenPhases/checkpoint-query-index-rebuild/open-first-edge-scan        ~97 ms/op
+BenchmarkLocalStoreQueryIndexOpenPhases/checkpoint-persistent-query-indexes/open-only              ~94 ms/op
+BenchmarkLocalStoreQueryIndexOpenPhases/checkpoint-persistent-query-indexes/open-first-node-scan   ~93 ms/op
+BenchmarkLocalStoreQueryIndexOpenPhases/checkpoint-persistent-query-indexes/open-first-edge-scan   ~92 ms/op
+```
+
 Interpretation: checkpoints materially reduce query-index rebuild cost versus
 full replay. Persistent query indexes are roughly at parity with checkpoint-side
-rebuild for this 10k/20k fixture, with higher allocations due to payload map
-hydration. Larger configured-index domains or multiple property indexes are the
-next benchmark target before treating persistent query indexes as a clear
-performance win.
+rebuild for this 10k/20k fixture. The separated phase benchmark suggests
+persistent query payload loading currently shifts cost into open allocations but
+has comparable immediate first-scan latency. Larger configured-index domains or
+multiple property indexes are the next benchmark target before treating
+persistent query indexes as a clear performance win.
 
 Suggested future benchmark dimensions:
 
