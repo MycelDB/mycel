@@ -348,11 +348,28 @@ BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open
 BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-edge-scans   ~1.49 s/op
 ```
 
-Interpretation: the persistent query-index map loader is now near parity with
-checkpoint rebuild at the 100k/250k multi-index scale in the single-run benchmark,
-but not yet a consistent clear win. Further wins likely require changing the
-payload layout to remove repeated identity strings, scalar values, or duplicated
-entity IDs rather than only optimizing the current decoder.
+The query node/edge payload layout was then simplified in place for the
+fresh-data `advanced_storage` branch: entries are grouped by index identity, each
+row stores only the ordered key, entity IDs are parsed from key suffixes, and
+values are still derived lazily from live checkpointed graph records. This
+removes repeated per-row identity strings, entity UUIDs, and scalar values from
+query payloads.
+
+Grouped-key-only large Apple M4 Max baseline with `-benchtime=1x`:
+
+```text
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-only                    ~1.40 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-only               ~1.29 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-first-node-scans        ~1.44 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-node-scans   ~1.33 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-first-edge-scans        ~1.48 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-edge-scans   ~1.37 s/op
+```
+
+Interpretation: after the grouped-key-only payload change, persistent query-index
+loading is a clear win over checkpoint-side query-index rebuild in the single-run
+100k/250k multi-index benchmark, while still keeping query payloads local derived
+artifacts and values sourced from authoritative checkpointed graph records.
 
 Suggested future benchmark dimensions:
 

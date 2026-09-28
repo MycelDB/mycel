@@ -160,8 +160,8 @@ Recommended approach:
   "graph_checksum": "...",
   "indexes": {
     "labels": {"path": "labels.kidx", "entry_count": 1200, "checksum": "..."},
-    "query_node_property": {"path": "query-node-property.kidx", "entry_count": 90000, "checksum": "..."},
-    "query_edge_property": {"path": "query-edge-property.kidx", "entry_count": 25000, "checksum": "..."},
+    "query_node_property": {"path": "query-node-property.kidx", "entry_count": 8, "checksum": "..."},
+    "query_edge_property": {"path": "query-edge-property.kidx", "entry_count": 4, "checksum": "..."},
     "query_metadata": {"path": "query-index-metadata.kidx", "entry_count": 12, "checksum": "..."}
   }
 }
@@ -210,36 +210,28 @@ The fingerprint should be deterministic over:
 
 ## Payload principles
 
-Persistent query-index payloads should store encoded index keys and entity IDs,
-not full node/edge records.
+Persistent query-index payloads store deterministic grouped ordered keys, not
+full node/edge records. The manifest `entry_count` for `query_node_property` and
+`query_edge_property` is the number of index-identity groups in the payload; the
+per-index row count lives in `query_metadata`.
 
-For ordered property indexes, the payload can store:
+For ordered property indexes, each query node/edge payload stores:
 
 ```text
 identity
+entry_count
 encoded key
-entity id
-encoded scalar value, optional
+encoded key
+...
 ```
 
-The current in-memory entry stores `Value any` for returning query/index scan
-results. The persistent payload therefore needs either:
+The entity ID is parsed from the ordered-key suffix. The current in-memory entry
+stores `Value any` for returning query/index scan results, but persistent
+payloads do not duplicate scalar values; scans derive result values lazily from
+the authoritative checkpointed node/edge records for the page they return.
 
-1. enough type-tagged scalar value data to reconstruct `Value`, or
-2. a rule that scans fetch the entity record to recover the value.
-
-Phase 1 should store type-tagged scalar values to preserve current scan behavior
-without extra entity fetches. Supported value tags should initially cover the
-scalar types already accepted by ordered key encoding:
-
-- string
-- bool
-- integer
-- float
-- time/date encoded string if currently represented as string
-- null only when explicitly allowed by index semantics
-
-Unsupported values must not be persisted as ready entries.
+Unsupported values must not be persisted as ready entries because they cannot
+produce ordered keys during in-memory index maintenance.
 
 ## Open path
 
