@@ -377,6 +377,163 @@ adjacency-in.kidx:
 The graph store remains the owner of node and edge records. Persistent indexes
 refer to node/edge IDs only.
 
+## In-memory index structures
+
+The initial persistent-index phase should keep the current in-memory index model:
+hash maps and ID sets optimized for fast mutation and lookup while a domain store
+is loaded. The persistent files are a deterministic serialization of those
+logical indexes, not a replacement in-memory data structure.
+
+In other words, phase 5 should not replace loaded indexes with B-trees or a
+page-cache-backed index engine. B-tree-like or LSM-like structures may become
+useful in a later bounded-memory phase, but they add more write-path,
+cache-management, and recovery complexity than is needed for the first
+checkpoint-aligned persistent indexes.
+
+### Authoritative live maps
+
+The loaded domain store keeps authoritative live records in memory:
+
+```text
+node_records:
+  node_id -> Node
+
+edge_records:
+  edge_id -> Edge
+```
+
+Persistent indexes must not duplicate full records. They refer back to these maps
+by node ID or edge ID.
+
+### Label index
+
+Logical shape:
+
+```text
+labels:
+  domain_id -> label -> set(node_id)
+```
+
+Purpose:
+
+- accelerate label scans
+- support query planning/execution paths that filter nodes by label
+
+Persistent payload shape:
+
+```text
+label -> sorted node IDs
+```
+
+On load, sorted node ID lists from `labels.kidx` are hydrated back into the
+in-memory set/map representation. Tail replay then applies node puts/deletes to
+that map as normal.
+
+### Tag index
+
+Logical shape:
+
+```text
+tags:
+  domain_id -> tag -> set(node_id)
+```
+
+Purpose:
+
+- accelerate tag scans
+- avoid scanning all live nodes for tag predicates
+
+Persistent payload shape:
+
+```text
+tag -> sorted node IDs
+```
+
+As with labels, the on-disk sorted representation is for deterministic storage
+and validation. The loaded form remains map/set based.
+
+### Adjacency indexes
+
+Logical shape:
+
+```text
+adjacency_out:
+  domain_id -> from_node_id -> edge_bucket -> set(edge_id)
+
+adjacency_in:
+  domain_id -> to_node_id -> edge_bucket -> set(edge_id)
+```
+
+The exact edge bucket key should match the current in-memory adjacency semantics.
+For the initial design, it is enough to support the buckets needed by traversal,
+hierarchy validation, and label/type-scoped edge lookups.
+
+Purpose:
+
+- accelerate outgoing traversal from a node
+- accelerate incoming traversal to a node
+- avoid full edge scans in hierarchy and reference-heavy workloads
+
+Persistent payload shape:
+
+```text
+from_node_id -> edge_bucket -> sorted edge IDs
+to_node_id   -> edge_bucket -> sorted edge IDs
+```
+
+The persisted sorted lists hydrate the in-memory adjacency sets. Tail replay then
+updates adjacency maps for edge puts/deletes as normal.
+
+### Hierarchy helper indexes
+
+The graph store also maintains hierarchy-oriented helper structures, for example:
+
+```text
+contains_parent:
+  child_node_id -> edge_id
+
+contains_children:
+  parent_node_id -> ordered/sorted edge IDs
+```
+
+These are derived from live hierarchy edges. They may be rebuilt from the loaded
+adjacency indexes or from live edges during open. They are not part of the first
+persistent payload set unless implementation proves that persisting them provides
+a clear additional open-time win.
+
+### Property and other indexes
+
+The store has or may gain additional in-memory indexes, such as:
+
+```text
+node_property_index
+edge_property_index
+journal_day
+blob_refs
+configured schema index metadata
+```
+
+These are out of scope for the first persistent-index phase. Property indexes in
+particular need separate design for type normalization, collation, null/missing
+semantics, and schema evolution.
+
+### Map/set vs B-tree decision
+
+Phase 5 should keep map/set in-memory indexes for these reasons:
+
+- current lookup/update paths are already expressed around map/set operations
+- graph commits update in-memory indexes synchronously and cheaply
+- the first persistent-index goal is faster open, not lower steady-state memory
+- sorted persistent payloads already provide deterministic validation without
+  imposing sorted-tree mutation costs on the loaded store
+- 10k–100k+ nodes per user/domain are still practical with map/set indexes if
+  domain caches are bounded at a higher layer
+
+A future bounded-memory storage phase can introduce B-tree-like structures if we
+need indexes that are partially resident, memory-mapped, or updated directly on
+disk. That future design should be explicit about page/cache ownership,
+transactional updates, crash recovery, and interaction with `.kseg` segments.
+
 ## Open behavior
 
 Domain store open should follow this order:
