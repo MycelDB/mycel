@@ -40,20 +40,36 @@ func (s *AdminClusterService) GetGraphCheckpointStatus(ctx context.Context, req 
 
 func graphCheckpointStatusToProto(status graphservice.GraphCheckpointStatus) *adminv1.GraphCheckpointStatus {
 	out := &adminv1.GraphCheckpointStatus{
-		SpaceId:            status.SpaceID,
-		DomainId:           status.DomainID,
-		CurrentRevision:    status.CurrentRevision,
-		CheckpointPresent:  status.CheckpointPresent,
-		CheckpointRevision: status.CheckpointRevision,
-		NodeCount:          uint64(status.NodeCount),
-		EdgeCount:          uint64(status.EdgeCount),
-		GraphChecksum:      status.GraphChecksum,
-		ChecksumAlgorithm:  status.ChecksumAlgorithm,
-		TailRevisions:      status.TailRevisions,
-		Source:             status.Source,
+		SpaceId:                         status.SpaceID,
+		DomainId:                        status.DomainID,
+		CurrentRevision:                 status.CurrentRevision,
+		CheckpointPresent:               status.CheckpointPresent,
+		CheckpointRevision:              status.CheckpointRevision,
+		NodeCount:                       uint64(status.NodeCount),
+		EdgeCount:                       uint64(status.EdgeCount),
+		GraphChecksum:                   status.GraphChecksum,
+		ChecksumAlgorithm:               status.ChecksumAlgorithm,
+		TailRevisions:                   status.TailRevisions,
+		Source:                          status.Source,
+		AutoCheckpointEnabled:           status.AutoCheckpointEnabled,
+		AutoCheckpointRevisionThreshold: status.AutoCheckpointRevisionThreshold,
+		AutoCheckpointInterval:          status.AutoCheckpointInterval.String(),
+		LastCheckpointError:             status.LastCheckpointError,
+	}
+	if status.LastCheckpointDuration > 0 {
+		out.LastCheckpointDurationMs = uint64(status.LastCheckpointDuration.Milliseconds())
+	}
+	if status.CheckpointAge > 0 {
+		out.CheckpointAgeSeconds = uint64(status.CheckpointAge.Seconds())
 	}
 	if !status.CheckpointCreatedAt.IsZero() {
 		out.CheckpointCreatedAt = status.CheckpointCreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !status.LastCheckpointAttemptAt.IsZero() {
+		out.LastCheckpointAttemptAt = status.LastCheckpointAttemptAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !status.LastCheckpointSuccessAt.IsZero() {
+		out.LastCheckpointSuccessAt = status.LastCheckpointSuccessAt.UTC().Format(time.RFC3339Nano)
 	}
 	return out
 }

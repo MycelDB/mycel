@@ -288,7 +288,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	spaceService := spaceservice.NewModule()
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
-	graphService := graphservice.NewModule()
+	graphService := graphservice.NewModule().WithCheckpointPolicy(graphservice.CheckpointPolicyConfig{Enabled: cfg.GraphCheckpoint.AutoEnabled, Interval: cfg.GraphCheckpoint.AutoInterval, RevisionThreshold: uint64(cfg.GraphCheckpoint.AutoRevisions), Timeout: cfg.GraphCheckpoint.AutoTimeout})
 	graphNotificationService := graphnotification.NewModule()
 	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)
 	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithInferenceManager(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})

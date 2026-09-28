@@ -104,7 +104,7 @@ func TestModuleGraphCheckpointCreateAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateGraphCheckpoint() error = %v", err)
 	}
-	if !created.CheckpointPresent || created.CurrentRevision != uint64(commit.CommittedRevision) || created.CheckpointRevision != uint64(commit.CommittedRevision) || created.NodeCount != 1 || created.Source != "local_checkpoint" {
+	if !created.CheckpointPresent || created.CurrentRevision != uint64(commit.CommittedRevision) || created.CheckpointRevision != uint64(commit.CommittedRevision) || created.NodeCount != 1 || created.Source != "local_checkpoint" || created.LastCheckpointAttemptAt.IsZero() || created.LastCheckpointSuccessAt.IsZero() {
 		t.Fatalf("unexpected created checkpoint status: %+v", created)
 	}
 	status, err := m.GraphCheckpointStatus(ctx, tx.SpaceID, tx.DomainID)
@@ -113,6 +113,47 @@ func TestModuleGraphCheckpointCreateAndStatus(t *testing.T) {
 	}
 	if status.CheckpointRevision != created.CheckpointRevision || status.GraphChecksum == "" || status.ChecksumAlgorithm == "" {
 		t.Fatalf("unexpected checkpoint status: %+v", status)
+	}
+}
+
+func TestModuleAutomaticGraphCheckpointPolicy(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule().WithCheckpointPolicy(CheckpointPolicyConfig{Enabled: true, Interval: time.Hour, RevisionThreshold: 2, Timeout: time.Second})
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	first := graphTx(spaceID, domainID, 0)
+	if _, err := m.CreateNode(ctx, first, NodeInput{Content: "one", Props: map[string]any{}}); err != nil {
+		t.Fatalf("CreateNode(first) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, first); err != nil {
+		t.Fatalf("CommitTransactionGraph(first) error = %v", err)
+	}
+	m.runCheckpointPolicyOnce(ctx, normalizeCheckpointPolicyConfig(m.checkpointPolicy))
+	pre, err := m.GraphCheckpointStatus(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatalf("GraphCheckpointStatus(pre) error = %v", err)
+	}
+	if pre.CheckpointPresent {
+		t.Fatalf("checkpoint created before threshold: %+v", pre)
+	}
+	second := graphTx(spaceID, domainID, 1)
+	if _, err := m.CreateNode(ctx, second, NodeInput{Content: "two", Props: map[string]any{}}); err != nil {
+		t.Fatalf("CreateNode(second) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, second); err != nil {
+		t.Fatalf("CommitTransactionGraph(second) error = %v", err)
+	}
+	m.runCheckpointPolicyOnce(ctx, normalizeCheckpointPolicyConfig(m.checkpointPolicy))
+	status, err := m.GraphCheckpointStatus(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatalf("GraphCheckpointStatus() error = %v", err)
+	}
+	if !status.CheckpointPresent || status.CheckpointRevision != 2 || status.AutoCheckpointRevisionThreshold != 2 || !status.AutoCheckpointEnabled || status.LastCheckpointAttemptAt.IsZero() || status.LastCheckpointSuccessAt.IsZero() || status.LastCheckpointError != "" {
+		t.Fatalf("unexpected automatic checkpoint status: %+v", status)
 	}
 }
 

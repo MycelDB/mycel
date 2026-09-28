@@ -55,6 +55,10 @@ type Module struct {
 	walWaiter                      *wal.ApplyWaiter
 	encryption                     *encryption.Service
 	writeAllowed                   func() error
+	checkpointPolicy               CheckpointPolicyConfig
+	checkpointStates               map[domainStoreKey]checkpointRuntimeState
+	checkpointWorkerCancel         context.CancelFunc
+	checkpointWorkerDone           chan struct{}
 	raftGroups                     *consensus.MultiGroup
 	raftPartitionCount             uint32
 	raftLocalNode                  consensus.NodeID
@@ -79,7 +83,12 @@ type overlay struct {
 }
 
 func NewModule() *Module {
-	return &Module{stores: map[domainStoreKey]*graphstorage.LocalStore{}, overlays: map[string]*overlay{}, gate: quiesce.NewGate(ModuleName)}
+	return &Module{stores: map[domainStoreKey]*graphstorage.LocalStore{}, overlays: map[string]*overlay{}, checkpointStates: map[domainStoreKey]checkpointRuntimeState{}, gate: quiesce.NewGate(ModuleName)}
+}
+
+func (m *Module) WithCheckpointPolicy(cfg CheckpointPolicyConfig) *Module {
+	m.checkpointPolicy = normalizeCheckpointPolicyConfig(cfg)
+	return m
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -270,6 +279,10 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
+	if m.checkpointStates == nil {
+		m.checkpointStates = map[domainStoreKey]checkpointRuntimeState{}
+	}
+	m.checkpointPolicy = normalizeCheckpointPolicyConfig(m.checkpointPolicy)
 	m.loadRaftAppliedCommands()
 	if lookup, ok := host.(runtime.ServiceLookup); ok {
 		if schemaSvc, ok := lookup.Service(schemaservice.ModuleName); ok {

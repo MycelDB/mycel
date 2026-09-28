@@ -56,6 +56,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.Cluster.RaftCompactionMode != DefaultClusterRaftCompactionMode || cfg.Cluster.RaftSnapshotEntries != 0 || cfg.Cluster.RaftSnapshotInterval != 0 || cfg.Cluster.RaftSnapshotMaxLogBytes != 0 || cfg.Cluster.RaftSnapshotMinRetainEntries != 0 {
 		t.Fatalf("unexpected cluster raft compaction defaults: %+v", cfg.Cluster)
 	}
+	if cfg.GraphCheckpoint.AutoEnabled || cfg.GraphCheckpoint.AutoInterval != DefaultGraphCheckpointAutoInterval || cfg.GraphCheckpoint.AutoRevisions != DefaultGraphCheckpointAutoRevisions || cfg.GraphCheckpoint.AutoTimeout != DefaultGraphCheckpointAutoTimeout {
+		t.Fatalf("unexpected graph checkpoint defaults: %+v", cfg.GraphCheckpoint)
+	}
 }
 
 func TestLoadFromEnvRejectsLegacyUserStoreEncryptionKey(t *testing.T) {
@@ -94,6 +97,31 @@ func TestLoadFromEnvRaftClusterOverrides(t *testing.T) {
 	}
 	if !cfg.Cluster.RaftEmptyStorageRejoinRecovery {
 		t.Fatalf("expected empty-storage rejoin recovery override: %+v", cfg.Cluster)
+	}
+}
+
+func TestLoadFromEnvGraphCheckpointOverrides(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_GRAPH_CHECKPOINT_AUTO_ENABLED", "true")
+	t.Setenv("MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL", "2s")
+	t.Setenv("MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS", "42")
+	t.Setenv("MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT", "750ms")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.GraphCheckpoint.AutoEnabled || cfg.GraphCheckpoint.AutoInterval != 2*time.Second || cfg.GraphCheckpoint.AutoRevisions != 42 || cfg.GraphCheckpoint.AutoTimeout != 750*time.Millisecond {
+		t.Fatalf("unexpected graph checkpoint overrides: %+v", cfg.GraphCheckpoint)
+	}
+}
+
+func TestLoadFromEnvGraphCheckpointValidation(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_GRAPH_CHECKPOINT_AUTO_ENABLED", "true")
+	t.Setenv("MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS", "0")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected zero automatic graph checkpoint revision threshold to fail when enabled")
 	}
 }
 

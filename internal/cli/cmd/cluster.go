@@ -325,18 +325,26 @@ type graphForensicDiffSource struct {
 }
 
 type graphCheckpointStatusOutput struct {
-	SpaceID             string `json:"space_id"`
-	DomainID            string `json:"domain_id"`
-	CurrentRevision     uint64 `json:"current_revision"`
-	CheckpointPresent   bool   `json:"checkpoint_present"`
-	CheckpointRevision  uint64 `json:"checkpoint_revision,omitempty"`
-	CheckpointCreatedAt string `json:"checkpoint_created_at,omitempty"`
-	NodeCount           uint64 `json:"node_count,omitempty"`
-	EdgeCount           uint64 `json:"edge_count,omitempty"`
-	GraphChecksum       string `json:"graph_checksum,omitempty"`
-	ChecksumAlgorithm   string `json:"checksum_algorithm,omitempty"`
-	TailRevisions       uint64 `json:"tail_revisions"`
-	Source              string `json:"source,omitempty"`
+	SpaceID                         string `json:"space_id"`
+	DomainID                        string `json:"domain_id"`
+	CurrentRevision                 uint64 `json:"current_revision"`
+	CheckpointPresent               bool   `json:"checkpoint_present"`
+	CheckpointRevision              uint64 `json:"checkpoint_revision,omitempty"`
+	CheckpointCreatedAt             string `json:"checkpoint_created_at,omitempty"`
+	NodeCount                       uint64 `json:"node_count,omitempty"`
+	EdgeCount                       uint64 `json:"edge_count,omitempty"`
+	GraphChecksum                   string `json:"graph_checksum,omitempty"`
+	ChecksumAlgorithm               string `json:"checksum_algorithm,omitempty"`
+	TailRevisions                   uint64 `json:"tail_revisions"`
+	Source                          string `json:"source,omitempty"`
+	AutoCheckpointEnabled           bool   `json:"auto_checkpoint_enabled"`
+	AutoCheckpointRevisionThreshold uint64 `json:"auto_checkpoint_revision_threshold,omitempty"`
+	AutoCheckpointInterval          string `json:"auto_checkpoint_interval,omitempty"`
+	LastCheckpointAttemptAt         string `json:"last_checkpoint_attempt_at,omitempty"`
+	LastCheckpointSuccessAt         string `json:"last_checkpoint_success_at,omitempty"`
+	LastCheckpointDurationMS        uint64 `json:"last_checkpoint_duration_ms,omitempty"`
+	LastCheckpointError             string `json:"last_checkpoint_error,omitempty"`
+	CheckpointAgeSeconds            uint64 `json:"checkpoint_age_seconds,omitempty"`
 }
 
 type graphForensicDiffSummary struct {
@@ -590,7 +598,7 @@ func graphCheckpointStatusFromProto(status *adminv1.GraphCheckpointStatus) graph
 	if status == nil {
 		return graphCheckpointStatusOutput{}
 	}
-	return graphCheckpointStatusOutput{SpaceID: status.GetSpaceId(), DomainID: status.GetDomainId(), CurrentRevision: status.GetCurrentRevision(), CheckpointPresent: status.GetCheckpointPresent(), CheckpointRevision: status.GetCheckpointRevision(), CheckpointCreatedAt: status.GetCheckpointCreatedAt(), NodeCount: status.GetNodeCount(), EdgeCount: status.GetEdgeCount(), GraphChecksum: status.GetGraphChecksum(), ChecksumAlgorithm: status.GetChecksumAlgorithm(), TailRevisions: status.GetTailRevisions(), Source: status.GetSource()}
+	return graphCheckpointStatusOutput{SpaceID: status.GetSpaceId(), DomainID: status.GetDomainId(), CurrentRevision: status.GetCurrentRevision(), CheckpointPresent: status.GetCheckpointPresent(), CheckpointRevision: status.GetCheckpointRevision(), CheckpointCreatedAt: status.GetCheckpointCreatedAt(), NodeCount: status.GetNodeCount(), EdgeCount: status.GetEdgeCount(), GraphChecksum: status.GetGraphChecksum(), ChecksumAlgorithm: status.GetChecksumAlgorithm(), TailRevisions: status.GetTailRevisions(), Source: status.GetSource(), AutoCheckpointEnabled: status.GetAutoCheckpointEnabled(), AutoCheckpointRevisionThreshold: status.GetAutoCheckpointRevisionThreshold(), AutoCheckpointInterval: status.GetAutoCheckpointInterval(), LastCheckpointAttemptAt: status.GetLastCheckpointAttemptAt(), LastCheckpointSuccessAt: status.GetLastCheckpointSuccessAt(), LastCheckpointDurationMS: status.GetLastCheckpointDurationMs(), LastCheckpointError: status.GetLastCheckpointError(), CheckpointAgeSeconds: status.GetCheckpointAgeSeconds()}
 }
 
 func graphCheckpointStatusText(out graphCheckpointStatusOutput) string {
@@ -603,6 +611,25 @@ func graphCheckpointStatusText(out graphCheckpointStatusOutput) string {
 	}
 	if out.Source != "" {
 		text += " source=" + out.Source
+	}
+	text += fmt.Sprintf(" auto_enabled=%t", out.AutoCheckpointEnabled)
+	if out.AutoCheckpointRevisionThreshold > 0 {
+		text += fmt.Sprintf(" auto_revisions=%d", out.AutoCheckpointRevisionThreshold)
+	}
+	if out.AutoCheckpointInterval != "" {
+		text += " auto_interval=" + out.AutoCheckpointInterval
+	}
+	if out.LastCheckpointAttemptAt != "" {
+		text += " last_attempt_at=" + out.LastCheckpointAttemptAt
+	}
+	if out.LastCheckpointSuccessAt != "" {
+		text += " last_success_at=" + out.LastCheckpointSuccessAt
+	}
+	if out.LastCheckpointDurationMS > 0 {
+		text += fmt.Sprintf(" last_duration_ms=%d", out.LastCheckpointDurationMS)
+	}
+	if out.LastCheckpointError != "" {
+		text += " last_error=" + out.LastCheckpointError
 	}
 	return text + "\n"
 }

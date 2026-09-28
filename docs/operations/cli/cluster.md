@@ -40,6 +40,18 @@ Graph checkpoint commands operate on the local daemon only. They create or read 
 derived domain graph checkpoint for fast-open/recovery; they are not Raft
 snapshots or backups.
 
+Automatic local checkpointing is disabled by default. Enable it with:
+
+```sh
+MYCELD_GRAPH_CHECKPOINT_AUTO_ENABLED=true
+MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL=1m
+MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS=10000
+MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT=30s
+```
+
+The automatic policy checks opened local domain stores and writes a checkpoint
+when tail revisions since the latest checkpoint reach the configured threshold.
+
 ## Related docs
 
 - [CLI index](README.md)

@@ -11,18 +11,26 @@ import (
 // GraphCheckpointStatus is a local operational status summary for one
 // domain-scoped graph store checkpoint.
 type GraphCheckpointStatus struct {
-	SpaceID             string
-	DomainID            string
-	CurrentRevision     uint64
-	CheckpointPresent   bool
-	CheckpointRevision  uint64
-	CheckpointCreatedAt time.Time
-	NodeCount           int
-	EdgeCount           int
-	GraphChecksum       string
-	ChecksumAlgorithm   string
-	TailRevisions       uint64
-	Source              string
+	SpaceID                         string
+	DomainID                        string
+	CurrentRevision                 uint64
+	CheckpointPresent               bool
+	CheckpointRevision              uint64
+	CheckpointCreatedAt             time.Time
+	NodeCount                       int
+	EdgeCount                       int
+	GraphChecksum                   string
+	ChecksumAlgorithm               string
+	TailRevisions                   uint64
+	Source                          string
+	AutoCheckpointEnabled           bool
+	AutoCheckpointRevisionThreshold uint64
+	AutoCheckpointInterval          time.Duration
+	LastCheckpointAttemptAt         time.Time
+	LastCheckpointSuccessAt         time.Time
+	LastCheckpointDuration          time.Duration
+	LastCheckpointError             string
+	CheckpointAge                   time.Duration
 }
 
 // CreateGraphCheckpoint writes a local derived checkpoint for one domain graph
@@ -37,9 +45,13 @@ func (m *Module) CreateGraphCheckpoint(ctx context.Context, spaceID string, doma
 	if err != nil {
 		return GraphCheckpointStatus{}, err
 	}
+	m.markCheckpointRunning(key)
+	started := time.Now()
 	if err := store.WriteCheckpoint(ctx); err != nil {
+		m.recordCheckpointFailure(key, time.Since(started), err)
 		return GraphCheckpointStatus{}, mapStorageError(err)
 	}
+	m.recordCheckpointSuccess(key, time.Since(started))
 	return m.GraphCheckpointStatus(ctx, key.SpaceID, key.DomainID)
 }
 
@@ -58,22 +70,35 @@ func (m *Module) GraphCheckpointStatus(ctx context.Context, spaceID string, doma
 	if err != nil {
 		return GraphCheckpointStatus{}, mapStorageError(err)
 	}
-	return graphCheckpointStatusFromStorage(key.SpaceID, key.DomainID, status), nil
+	return m.graphCheckpointStatusFromStorage(key, status), nil
 }
 
-func graphCheckpointStatusFromStorage(spaceID string, domainID string, status graphstorage.CheckpointStatus) GraphCheckpointStatus {
-	return GraphCheckpointStatus{
-		SpaceID:             strings.TrimSpace(spaceID),
-		DomainID:            strings.TrimSpace(domainID),
-		CurrentRevision:     status.CurrentRevision,
-		CheckpointPresent:   status.CheckpointPresent,
-		CheckpointRevision:  status.CheckpointRevision,
-		CheckpointCreatedAt: status.CreatedAt,
-		NodeCount:           status.NodeCount,
-		EdgeCount:           status.EdgeCount,
-		GraphChecksum:       status.GraphChecksum,
-		ChecksumAlgorithm:   status.ChecksumAlgorithm,
-		TailRevisions:       status.TailRevisions,
-		Source:              "local_checkpoint",
+func (m *Module) graphCheckpointStatusFromStorage(key domainStoreKey, status graphstorage.CheckpointStatus) GraphCheckpointStatus {
+	policy := normalizeCheckpointPolicyConfig(m.checkpointPolicy)
+	runtimeState := m.checkpointRuntimeState(key)
+	out := GraphCheckpointStatus{
+		SpaceID:                         strings.TrimSpace(key.SpaceID),
+		DomainID:                        strings.TrimSpace(key.DomainID),
+		CurrentRevision:                 status.CurrentRevision,
+		CheckpointPresent:               status.CheckpointPresent,
+		CheckpointRevision:              status.CheckpointRevision,
+		CheckpointCreatedAt:             status.CreatedAt,
+		NodeCount:                       status.NodeCount,
+		EdgeCount:                       status.EdgeCount,
+		GraphChecksum:                   status.GraphChecksum,
+		ChecksumAlgorithm:               status.ChecksumAlgorithm,
+		TailRevisions:                   status.TailRevisions,
+		Source:                          "local_checkpoint",
+		AutoCheckpointEnabled:           policy.Enabled,
+		AutoCheckpointRevisionThreshold: policy.RevisionThreshold,
+		AutoCheckpointInterval:          policy.Interval,
+		LastCheckpointAttemptAt:         runtimeState.LastAttemptAt,
+		LastCheckpointSuccessAt:         runtimeState.LastSuccessAt,
+		LastCheckpointDuration:          runtimeState.LastDuration,
+		LastCheckpointError:             runtimeState.LastError,
 	}
+	if status.CheckpointPresent && !status.CreatedAt.IsZero() {
+		out.CheckpointAge = time.Since(status.CreatedAt)
+	}
+	return out
 }

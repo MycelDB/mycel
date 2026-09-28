@@ -40,6 +40,9 @@ const (
 	DefaultAccessTokenTTL                   = 15 * time.Minute
 	DefaultWALSegmentBytes                  = int64(64 * 1024 * 1024)
 	DefaultWALSyncPolicy                    = "always"
+	DefaultGraphCheckpointAutoInterval      = time.Minute
+	DefaultGraphCheckpointAutoRevisions     = 10000
+	DefaultGraphCheckpointAutoTimeout       = 30 * time.Second
 	DefaultEncryptionAtRest                 = encryption.ModeDisabled
 	DefaultBlobBackend                      = "local"
 	DefaultClusterDiscoveryInterval         = 5 * time.Second
@@ -103,6 +106,13 @@ type WALConfig struct {
 	SyncPolicy   string
 }
 
+type GraphCheckpointConfig struct {
+	AutoEnabled   bool
+	AutoInterval  time.Duration
+	AutoRevisions int
+	AutoTimeout   time.Duration
+}
+
 type BlobConfig struct {
 	Backend             string
 	ObjectStoreProvider string
@@ -154,6 +164,7 @@ type Config struct {
 	Automation             AutomationConfig
 	Backup                 BackupConfig
 	WAL                    WALConfig
+	GraphCheckpoint        GraphCheckpointConfig
 	Blob                   BlobConfig
 	Cluster                ClusterConfig
 }
@@ -196,6 +207,12 @@ func LoadFromEnv() (Config, error) {
 			Dir:          strings.TrimSpace(os.Getenv("MYCELD_WAL_DIR")),
 			SegmentBytes: int64(parseIntEnv(os.Getenv("MYCELD_WAL_SEGMENT_BYTES"), int(DefaultWALSegmentBytes))),
 			SyncPolicy:   valueOrDefault(os.Getenv("MYCELD_WAL_SYNC_POLICY"), DefaultWALSyncPolicy),
+		},
+		GraphCheckpoint: GraphCheckpointConfig{
+			AutoEnabled:   parseBoolEnvDefault(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_ENABLED"), false),
+			AutoInterval:  parseDurationEnv(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL"), DefaultGraphCheckpointAutoInterval),
+			AutoRevisions: parseIntEnv(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS"), DefaultGraphCheckpointAutoRevisions),
+			AutoTimeout:   parseDurationEnv(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT"), DefaultGraphCheckpointAutoTimeout),
 		},
 		Blob: BlobConfig{
 			Backend:             valueOrDefault(os.Getenv("MYCELD_BLOB_BACKEND"), DefaultBlobBackend),
@@ -327,6 +344,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.WAL.Validate(); err != nil {
+		return err
+	}
+	if err := c.GraphCheckpoint.Validate(); err != nil {
 		return err
 	}
 	if err := c.Encryption.Validate(); err != nil {
@@ -494,6 +514,30 @@ func (c WALConfig) Validate() error {
 	default:
 		return fmt.Errorf("MYCELD_WAL_SYNC_POLICY must be always")
 	}
+}
+
+func (c GraphCheckpointConfig) Validate() error {
+	if c.AutoInterval < 0 {
+		return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL must be positive")
+	}
+	if c.AutoRevisions < 0 {
+		return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS must be positive")
+	}
+	if c.AutoTimeout < 0 {
+		return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT must be positive")
+	}
+	if c.AutoEnabled {
+		if c.AutoInterval == 0 {
+			return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL must be greater than zero when automatic graph checkpoints are enabled")
+		}
+		if c.AutoRevisions == 0 {
+			return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS must be greater than zero when automatic graph checkpoints are enabled")
+		}
+		if c.AutoTimeout == 0 {
+			return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT must be greater than zero when automatic graph checkpoints are enabled")
+		}
+	}
+	return nil
 }
 
 func (c BackupConfig) Validate() error {
