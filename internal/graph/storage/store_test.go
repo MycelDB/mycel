@@ -73,6 +73,215 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	}
 }
 
+func TestLocalStoreWriteCheckpointAndOpenWithoutHistoricalReplay(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	domainID := graph.DomainID(uuid.New())
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "checkpointed", Labels: []string{"Note"}, Properties: map[string]any{"title": "checkpointed"}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	corruptHistoricalSegment(t, filepath.Join(dir, "segments", "nodes-000001.kseg"))
+
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen with checkpoint failed: %v", err)
+	}
+	defer store.Close()
+	got, err := store.GetNode(ctx, node.ID)
+	if err != nil || got.Content != node.Content {
+		t.Fatalf("GetNode() = %+v, %v", got, err)
+	}
+	if store.Revision() != 1 {
+		t.Fatalf("Revision() = %d, want 1", store.Revision())
+	}
+}
+
+func TestLocalStoreCheckpointReplaysTail(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	domainID := graph.DomainID(uuid.New())
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "checkpointed"}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutNode(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "tail"}
+	tail, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail.ExpectRevision(store.Revision())
+	if err := tail.PutNode(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := tail.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	if store.Revision() != 2 {
+		t.Fatalf("Revision() = %d, want 2", store.Revision())
+	}
+	for _, want := range []graph.Node{first, second} {
+		got, err := store.GetNode(ctx, want.ID)
+		if err != nil || got.Content != want.Content {
+			t.Fatalf("GetNode(%s) = %+v, %v", want.ID, got, err)
+		}
+	}
+}
+
+func TestLocalStoreCorruptCheckpointFallsBackToFullReplay(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: graph.DomainID(uuid.New()), Content: "from segments"}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	checkpointDir := latestCheckpointDirForTest(t, dir)
+	corruptHistoricalSegment(t, filepath.Join(checkpointDir, checkpointNodePayload))
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen should fall back to full replay: %v", err)
+	}
+	defer store.Close()
+	got, err := store.GetNode(ctx, node.ID)
+	if err != nil || got.Content != node.Content {
+		t.Fatalf("GetNode() = %+v, %v", got, err)
+	}
+}
+
+func TestLocalStoreCheckpointExcludesDeletedEntities(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: graph.DomainID(uuid.New()), Content: "deleted"}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutNode(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	deleteTx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteTx.ExpectRevision(store.Revision())
+	if err := deleteTx.DeleteNode(node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	checkpointDir := latestCheckpointDirForTest(t, dir)
+	nodes, err := readCheckpointNodes(filepath.Join(checkpointDir, checkpointNodePayload))
+	if err != nil {
+		t.Fatalf("readCheckpointNodes() error = %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("checkpoint includes deleted nodes: %+v", nodes)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.GetNode(ctx, node.ID); err != ErrNotFound {
+		t.Fatalf("GetNode(deleted) error = %v, want ErrNotFound", err)
+	}
+}
+
+func corruptHistoricalSegment(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open corrupt target %s: %v", path, err)
+	}
+	defer f.Close()
+	if _, err := f.WriteAt([]byte("XXXX"), int64(segmentHeaderLen)); err != nil {
+		t.Fatalf("corrupt %s: %v", path, err)
+	}
+}
+
+func latestCheckpointDirForTest(t *testing.T, dir string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "checkpoints", checkpointLatestPointer))
+	if err != nil {
+		t.Fatalf("read checkpoint pointer: %v", err)
+	}
+	name := string(raw)
+	name = name[:len(name)-1]
+	return filepath.Join(dir, "checkpoints", name)
+}
+
 func TestLocalStoreScanTagUsesCanonicalPropertiesAndRebuilds(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

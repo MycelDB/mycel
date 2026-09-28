@@ -109,8 +109,14 @@ func (s *LocalStore) open(ctx context.Context) error {
 		return err
 	}
 	s.state = StoreStateRebuildingIndex
-	if err := s.rebuildIndexes(ctx); err != nil {
+	loaded, err := s.loadCheckpoint(ctx)
+	if err != nil {
 		return err
+	}
+	if !loaded {
+		if err := s.rebuildIndexes(ctx); err != nil {
+			return err
+		}
 	}
 	s.state = StoreStateReady
 	return nil
