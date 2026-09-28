@@ -31,6 +31,28 @@ type GraphCheckpointStatus struct {
 	LastCheckpointDuration          time.Duration
 	LastCheckpointError             string
 	CheckpointAge                   time.Duration
+	PersistentIndex                 GraphPersistentIndexStatus
+}
+
+type GraphPersistentIndexStatus struct {
+	Present           bool
+	IndexSetID        string
+	IndexFormat       string
+	GraphRevision     uint64
+	GraphChecksum     string
+	ChecksumAlgorithm string
+	GraphCheckpointID string
+	CreatedAt         time.Time
+	LoadResult        string
+	FallbackReason    string
+	Entries           []GraphPersistentIndexEntryStatus
+}
+
+type GraphPersistentIndexEntryStatus struct {
+	Kind       string
+	Path       string
+	EntryCount int
+	Checksum   string
 }
 
 // CreateGraphCheckpoint writes a local derived checkpoint for one domain graph
@@ -96,9 +118,32 @@ func (m *Module) graphCheckpointStatusFromStorage(key domainStoreKey, status gra
 		LastCheckpointSuccessAt:         runtimeState.LastSuccessAt,
 		LastCheckpointDuration:          runtimeState.LastDuration,
 		LastCheckpointError:             runtimeState.LastError,
+		PersistentIndex:                 graphPersistentIndexStatusFromStorage(status.PersistentIndex),
 	}
 	if status.CheckpointPresent && !status.CreatedAt.IsZero() {
 		out.CheckpointAge = time.Since(status.CreatedAt)
+	}
+	return out
+}
+
+func graphPersistentIndexStatusFromStorage(status graphstorage.PersistentIndexStatus) GraphPersistentIndexStatus {
+	out := GraphPersistentIndexStatus{
+		Present:           status.Present,
+		IndexSetID:        status.IndexSetID,
+		IndexFormat:       status.IndexFormat,
+		GraphRevision:     status.GraphRevision,
+		GraphChecksum:     status.GraphChecksum,
+		ChecksumAlgorithm: status.ChecksumAlgorithm,
+		GraphCheckpointID: status.GraphCheckpointID,
+		CreatedAt:         status.CreatedAt,
+		LoadResult:        status.LoadResult,
+		FallbackReason:    status.FallbackReason,
+	}
+	if len(status.Entries) > 0 {
+		out.Entries = make([]GraphPersistentIndexEntryStatus, 0, len(status.Entries))
+		for _, entry := range status.Entries {
+			out.Entries = append(out.Entries, GraphPersistentIndexEntryStatus{Kind: entry.Kind, Path: entry.Path, EntryCount: entry.EntryCount, Checksum: entry.Checksum})
+		}
 	}
 	return out
 }

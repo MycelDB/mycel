@@ -55,6 +55,7 @@ func graphCheckpointStatusToProto(status graphservice.GraphCheckpointStatus) *ad
 		AutoCheckpointRevisionThreshold: status.AutoCheckpointRevisionThreshold,
 		AutoCheckpointInterval:          status.AutoCheckpointInterval.String(),
 		LastCheckpointError:             status.LastCheckpointError,
+		PersistentIndex:                 graphPersistentIndexStatusToProto(status.PersistentIndex),
 	}
 	if status.LastCheckpointDuration > 0 {
 		out.LastCheckpointDurationMs = uint64(status.LastCheckpointDuration.Milliseconds())
@@ -70,6 +71,30 @@ func graphCheckpointStatusToProto(status graphservice.GraphCheckpointStatus) *ad
 	}
 	if !status.LastCheckpointSuccessAt.IsZero() {
 		out.LastCheckpointSuccessAt = status.LastCheckpointSuccessAt.UTC().Format(time.RFC3339Nano)
+	}
+	return out
+}
+
+func graphPersistentIndexStatusToProto(status graphservice.GraphPersistentIndexStatus) *adminv1.GraphPersistentIndexStatus {
+	out := &adminv1.GraphPersistentIndexStatus{
+		Present:           status.Present,
+		IndexSetId:        status.IndexSetID,
+		IndexFormat:       status.IndexFormat,
+		GraphRevision:     status.GraphRevision,
+		GraphChecksum:     status.GraphChecksum,
+		ChecksumAlgorithm: status.ChecksumAlgorithm,
+		GraphCheckpointId: status.GraphCheckpointID,
+		LoadResult:        status.LoadResult,
+		FallbackReason:    status.FallbackReason,
+	}
+	if !status.CreatedAt.IsZero() {
+		out.CreatedAt = status.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if len(status.Entries) > 0 {
+		out.Entries = make([]*adminv1.GraphPersistentIndexEntryStatus, 0, len(status.Entries))
+		for _, entry := range status.Entries {
+			out.Entries = append(out.Entries, &adminv1.GraphPersistentIndexEntryStatus{Kind: entry.Kind, Path: entry.Path, EntryCount: uint64(entry.EntryCount), Checksum: entry.Checksum})
+		}
 	}
 	return out
 }

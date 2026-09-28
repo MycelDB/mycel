@@ -403,7 +403,8 @@ func TestAdminClusterServiceGraphCheckpointRequiresAuth(t *testing.T) {
 
 func TestAdminClusterServiceGraphCheckpointMapsStatus(t *testing.T) {
 	createdAt := time.Date(2026, 9, 28, 10, 11, 12, 13, time.UTC)
-	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithGraphCheckpoint(fakeGraphCheckpointProvider{status: graphservice.GraphCheckpointStatus{CurrentRevision: 12, CheckpointPresent: true, CheckpointRevision: 10, CheckpointCreatedAt: createdAt, NodeCount: 3, EdgeCount: 2, GraphChecksum: "graph", ChecksumAlgorithm: "graph-checkpoint-v1-sha256", TailRevisions: 2, Source: "local_checkpoint", AutoCheckpointEnabled: true, AutoCheckpointRevisionThreshold: 100, AutoCheckpointInterval: time.Minute, LastCheckpointAttemptAt: createdAt, LastCheckpointSuccessAt: createdAt, LastCheckpointDuration: 25 * time.Millisecond, CheckpointAge: 2 * time.Second}})
+	checkpointStatus := graphservice.GraphCheckpointStatus{CurrentRevision: 12, CheckpointPresent: true, CheckpointRevision: 10, CheckpointCreatedAt: createdAt, NodeCount: 3, EdgeCount: 2, GraphChecksum: "graph", ChecksumAlgorithm: "graph-checkpoint-v1-sha256", TailRevisions: 2, Source: "local_checkpoint", AutoCheckpointEnabled: true, AutoCheckpointRevisionThreshold: 100, AutoCheckpointInterval: time.Minute, LastCheckpointAttemptAt: createdAt, LastCheckpointSuccessAt: createdAt, LastCheckpointDuration: 25 * time.Millisecond, CheckpointAge: 2 * time.Second, PersistentIndex: graphservice.GraphPersistentIndexStatus{Present: true, IndexSetID: "idx-1", IndexFormat: "domain-graph-index-v1-json", GraphRevision: 10, GraphChecksum: "graph", ChecksumAlgorithm: "domain-graph-index-v1-sha256", GraphCheckpointID: "chk-1", CreatedAt: createdAt, LoadResult: "used", Entries: []graphservice.GraphPersistentIndexEntryStatus{{Kind: "labels", Path: "labels.kidx", EntryCount: 7, Checksum: "labels-sum"}}}}
+	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithGraphCheckpoint(fakeGraphCheckpointProvider{status: checkpointStatus})
 	res, err := svc.CreateGraphCheckpoint(authenticatedClusterContext(), &adminv1.CreateGraphCheckpointRequest{SpaceId: "space-1", DomainId: "domain-1"})
 	if err != nil {
 		t.Fatalf("CreateGraphCheckpoint() error = %v", err)
@@ -411,6 +412,10 @@ func TestAdminClusterServiceGraphCheckpointMapsStatus(t *testing.T) {
 	got := res.GetStatus()
 	if got.GetSpaceId() != "space-1" || got.GetDomainId() != "domain-1" || got.GetCurrentRevision() != 12 || !got.GetCheckpointPresent() || got.GetCheckpointRevision() != 10 || got.GetNodeCount() != 3 || got.GetEdgeCount() != 2 || got.GetTailRevisions() != 2 || got.GetGraphChecksum() != "graph" || got.GetCheckpointCreatedAt() == "" || !got.GetAutoCheckpointEnabled() || got.GetAutoCheckpointRevisionThreshold() != 100 || got.GetAutoCheckpointInterval() != time.Minute.String() || got.GetLastCheckpointDurationMs() != 25 || got.GetCheckpointAgeSeconds() != 2 {
 		t.Fatalf("unexpected checkpoint status: %#v", got)
+	}
+	index := got.GetPersistentIndex()
+	if index == nil || !index.GetPresent() || index.GetIndexSetId() != "idx-1" || index.GetLoadResult() != "used" || len(index.GetEntries()) != 1 || index.GetEntries()[0].GetKind() != "labels" || index.GetEntries()[0].GetEntryCount() != 7 {
+		t.Fatalf("unexpected persistent index status: %#v", index)
 	}
 	statusRes, err := svc.GetGraphCheckpointStatus(authenticatedClusterContext(), &adminv1.GetGraphCheckpointStatusRequest{SpaceId: "space-1", DomainId: "domain-1"})
 	if err != nil {

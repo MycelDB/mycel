@@ -76,6 +76,7 @@ type CheckpointStatus struct {
 	GraphChecksum      string
 	ChecksumAlgorithm  string
 	TailRevisions      uint64
+	PersistentIndex    PersistentIndexStatus
 }
 
 // CheckpointStatus returns current store revision and latest checkpoint metadata,
@@ -86,6 +87,7 @@ func (s *LocalStore) CheckpointStatus(ctx context.Context) (CheckpointStatus, er
 	}
 	s.mu.RLock()
 	currentRevision := s.revision
+	lastIndexLoad := s.persistentIndexLoadStatus
 	err := s.ensureReady()
 	s.mu.RUnlock()
 	if err != nil {
@@ -126,6 +128,7 @@ func (s *LocalStore) CheckpointStatus(ctx context.Context) (CheckpointStatus, er
 	if currentRevision >= manifest.GraphRevision {
 		status.TailRevisions = currentRevision - manifest.GraphRevision
 	}
+	status.PersistentIndex = s.persistentIndexStatusForCheckpoint(manifest, lastIndexLoad)
 	return status, nil
 }
 
@@ -349,7 +352,7 @@ func (s *LocalStore) tryLoadCheckpoint(ctx context.Context) (bool, error) {
 	// above already rebuilt indexes from authoritative live records; a matching
 	// persistent index set can replace those maps before tail replay, and any
 	// missing/stale/corrupt index simply falls back to the rebuilt maps.
-	_ = s.tryLoadPersistentIndexSet(ctx, manifest)
+	s.persistentIndexLoadStatus, _ = s.tryLoadPersistentIndexSet(ctx, manifest)
 	s.revision = manifest.GraphRevision
 	if err := s.replayCheckpointTail(ctx, manifest.AppliedSegmentOffsets); err != nil {
 		return false, err

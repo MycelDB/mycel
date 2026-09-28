@@ -203,28 +203,31 @@ The index set manifest references the loaded graph checkpoint baseline:
 
 ### Tasks
 
-Expose local index status, either by extending graph checkpoint status or adding a
-new admin method. Suggested status fields:
+Expose local index status by extending graph checkpoint status with a nested
+`persistent_index` object. Implemented status fields:
 
 - index present
 - index set ID
-- index format version
+- index format
 - indexed graph revision
 - indexed graph checksum
-- load result: `used`, `rebuilt`, `fallback`, `missing`
+- checksum algorithm
+- graph checkpoint ID
+- created-at timestamp
+- load result: `missing`, `not_loaded`, `used`, or `fallback`
 - fallback reason
-- last index write duration/error
-- entry counts by kind
+- entry counts/checksums by kind
 
-Possible CLI shape:
+Implemented CLI shape:
 
 ```bash
-mycel cluster graph-index status --space-id <space> --domain-id <domain>
-mycel cluster graph-index write --space-id <space> --domain-id <domain>
+mycel cluster graph-checkpoint status --space-id <space> --domain-id <domain>
 ```
 
-The write command should remain local-only and derived-artifact-only, mirroring
-graph checkpoint behavior.
+A separate `graph-index write/status` command remains a possible follow-up if
+operators need explicit index lifecycle control separate from checkpoints. Any
+future write command should remain local-only and derived-artifact-only,
+mirroring graph checkpoint behavior.
 
 ### Tests
 
@@ -319,8 +322,8 @@ corruption detection over availability, but that is out of scope for phase 5.
 - Should phase 5 include only label/tag indexes first, with adjacency in a second
   tranche, or include adjacency immediately because it is already central to graph
   traversal performance?
-- Should index status live under `graph-checkpoint status` or a new
-  `graph-index status` command?
+- Should explicit index lifecycle controls be added under a new `graph-index`
+  command, now that read-only status lives under `graph-checkpoint status`?
 - What open-time benchmark threshold should define success for large domains?
 
 ## Validation commands

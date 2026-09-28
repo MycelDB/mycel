@@ -38,7 +38,9 @@ mycel cluster graph-checkpoint status --space-id <space-id> --domain-id <domain-
 
 Graph checkpoint commands operate on the local daemon only. They create or read a
 derived domain graph checkpoint for fast-open/recovery; they are not Raft
-snapshots or backups.
+snapshots or backups. Checkpoint status also reports local persistent graph index
+status under `persistent_index`, including whether the latest index set is
+present, whether the last open used it or fell back, and any fallback reason.
 
 Automatic local checkpointing is disabled by default. Enable it with:
 

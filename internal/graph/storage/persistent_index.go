@@ -29,6 +29,35 @@ const (
 	persistentIndexAdjInPayload    = "adjacency-in.kidx"
 )
 
+const (
+	PersistentIndexLoadMissing   = "missing"
+	PersistentIndexLoadAvailable = "available"
+	PersistentIndexLoadNotLoaded = "not_loaded"
+	PersistentIndexLoadUsed      = "used"
+	PersistentIndexLoadFallback  = "fallback"
+)
+
+type PersistentIndexStatus struct {
+	Present           bool
+	IndexSetID        string
+	IndexFormat       string
+	GraphRevision     uint64
+	GraphChecksum     string
+	ChecksumAlgorithm string
+	GraphCheckpointID string
+	CreatedAt         time.Time
+	LoadResult        string
+	FallbackReason    string
+	Entries           []PersistentIndexEntryStatus
+}
+
+type PersistentIndexEntryStatus struct {
+	Kind       string
+	Path       string
+	EntryCount int
+	Checksum   string
+}
+
 type persistentIndexManifest struct {
 	FormatVersion     int                                     `json:"format_version"`
 	SpaceID           string                                  `json:"space_id,omitempty"`
@@ -214,46 +243,49 @@ func (s *LocalStore) latestCheckpointManifestLocked() (CheckpointManifest, strin
 	return manifest, filepath.Base(dir), nil
 }
 
-func (s *LocalStore) tryLoadPersistentIndexSet(ctx context.Context, checkpoint CheckpointManifest) bool {
+func (s *LocalStore) tryLoadPersistentIndexSet(ctx context.Context, checkpoint CheckpointManifest) (PersistentIndexStatus, bool) {
+	status := s.persistentIndexStatusForCheckpoint(checkpoint, PersistentIndexStatus{})
 	if err := ctx.Err(); err != nil {
-		return false
+		return persistentIndexStatusFallback(status, err), false
+	}
+	if !status.Present || status.LoadResult == PersistentIndexLoadFallback {
+		return status, false
 	}
 	dir, err := s.latestIndexSetDir()
 	if err != nil || dir == "" {
-		return false
+		return persistentIndexStatusFallback(status, err), false
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, persistentIndexManifestName))
 	if err != nil {
-		return false
+		return persistentIndexStatusFallback(status, err), false
 	}
 	var manifest persistentIndexManifest
 	if err := json.Unmarshal(raw, &manifest); err != nil {
-		return false
-	}
-	if err := s.validatePersistentIndexManifest(manifest, checkpoint); err != nil {
-		return false
+		return persistentIndexStatusFallback(status, err), false
 	}
 	labels, err := s.readPersistentNodeIndex(dir, manifest, "labels")
 	if err != nil {
-		return false
+		return persistentIndexStatusFallback(status, err), false
 	}
 	tags, err := s.readPersistentNodeIndex(dir, manifest, "tags")
 	if err != nil {
-		return false
+		return persistentIndexStatusFallback(status, err), false
 	}
 	adjOut, err := s.readPersistentAdjacencyIndex(dir, manifest, "adjacency_out")
 	if err != nil {
-		return false
+		return persistentIndexStatusFallback(status, err), false
 	}
 	adjIn, err := s.readPersistentAdjacencyIndex(dir, manifest, "adjacency_in")
 	if err != nil {
-		return false
+		return persistentIndexStatusFallback(status, err), false
 	}
 	s.labelIndex = labels
 	s.tagIndex = tags
 	s.edgeAdjacencyOut = adjOut
 	s.edgeAdjacencyIn = adjIn
-	return true
+	status.LoadResult = PersistentIndexLoadUsed
+	status.FallbackReason = ""
+	return status, true
 }
 
 func (s *LocalStore) latestIndexSetDir() (string, error) {
@@ -270,6 +302,82 @@ func (s *LocalStore) latestIndexSetDir() (string, error) {
 		return "", fmt.Errorf("%w: invalid persistent index pointer", ErrInvalidRecord)
 	}
 	return filepath.Join(root, name), nil
+}
+
+func (s *LocalStore) persistentIndexStatusForCheckpoint(checkpoint CheckpointManifest, lastLoad PersistentIndexStatus) PersistentIndexStatus {
+	status := PersistentIndexStatus{LoadResult: PersistentIndexLoadMissing}
+	dir, err := s.latestIndexSetDir()
+	if err != nil {
+		return persistentIndexStatusFallback(status, err)
+	}
+	if dir == "" {
+		return status
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, persistentIndexManifestName))
+	if err != nil {
+		return persistentIndexStatusFallback(status, err)
+	}
+	var manifest persistentIndexManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return persistentIndexStatusFallback(status, err)
+	}
+	status = persistentIndexStatusFromManifest(manifest)
+	if err := s.validatePersistentIndexManifest(manifest, checkpoint); err != nil {
+		return persistentIndexStatusFallback(status, err)
+	}
+	for _, entry := range manifest.Indexes {
+		raw, err := os.ReadFile(filepath.Join(dir, entry.Path))
+		if err != nil {
+			return persistentIndexStatusFallback(status, err)
+		}
+		if persistentIndexChecksum(raw) != entry.Checksum {
+			return persistentIndexStatusFallback(status, fmt.Errorf("%w: persistent index checksum mismatch", ErrInvalidRecord))
+		}
+	}
+	status.LoadResult = PersistentIndexLoadAvailable
+	if lastLoad.IndexSetID == status.IndexSetID && lastLoad.LoadResult != "" {
+		status.LoadResult = lastLoad.LoadResult
+		status.FallbackReason = lastLoad.FallbackReason
+	} else {
+		status.LoadResult = PersistentIndexLoadNotLoaded
+	}
+	return status
+}
+
+func persistentIndexStatusFromManifest(manifest persistentIndexManifest) PersistentIndexStatus {
+	status := PersistentIndexStatus{
+		Present:           true,
+		IndexSetID:        manifest.IndexSetID,
+		IndexFormat:       manifest.IndexFormat,
+		GraphRevision:     manifest.GraphRevision,
+		GraphChecksum:     manifest.GraphChecksum,
+		ChecksumAlgorithm: manifest.ChecksumAlgorithm,
+		GraphCheckpointID: manifest.GraphCheckpointID,
+		CreatedAt:         manifest.CreatedAt.UTC(),
+		LoadResult:        PersistentIndexLoadAvailable,
+	}
+	kinds := make([]string, 0, len(manifest.Indexes))
+	for kind := range manifest.Indexes {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	for _, kind := range kinds {
+		entry := manifest.Indexes[kind]
+		status.Entries = append(status.Entries, PersistentIndexEntryStatus{Kind: kind, Path: entry.Path, EntryCount: entry.EntryCount, Checksum: entry.Checksum})
+	}
+	return status
+}
+
+func persistentIndexStatusFallback(status PersistentIndexStatus, err error) PersistentIndexStatus {
+	if err == nil && !status.Present {
+		status.LoadResult = PersistentIndexLoadMissing
+		return status
+	}
+	status.LoadResult = PersistentIndexLoadFallback
+	if err != nil {
+		status.FallbackReason = err.Error()
+	}
+	return status
 }
 
 func validPersistentIndexSetName(name string) bool {

@@ -325,26 +325,48 @@ type graphForensicDiffSource struct {
 }
 
 type graphCheckpointStatusOutput struct {
-	SpaceID                         string `json:"space_id"`
-	DomainID                        string `json:"domain_id"`
-	CurrentRevision                 uint64 `json:"current_revision"`
-	CheckpointPresent               bool   `json:"checkpoint_present"`
-	CheckpointRevision              uint64 `json:"checkpoint_revision,omitempty"`
-	CheckpointCreatedAt             string `json:"checkpoint_created_at,omitempty"`
-	NodeCount                       uint64 `json:"node_count,omitempty"`
-	EdgeCount                       uint64 `json:"edge_count,omitempty"`
-	GraphChecksum                   string `json:"graph_checksum,omitempty"`
-	ChecksumAlgorithm               string `json:"checksum_algorithm,omitempty"`
-	TailRevisions                   uint64 `json:"tail_revisions"`
-	Source                          string `json:"source,omitempty"`
-	AutoCheckpointEnabled           bool   `json:"auto_checkpoint_enabled"`
-	AutoCheckpointRevisionThreshold uint64 `json:"auto_checkpoint_revision_threshold,omitempty"`
-	AutoCheckpointInterval          string `json:"auto_checkpoint_interval,omitempty"`
-	LastCheckpointAttemptAt         string `json:"last_checkpoint_attempt_at,omitempty"`
-	LastCheckpointSuccessAt         string `json:"last_checkpoint_success_at,omitempty"`
-	LastCheckpointDurationMS        uint64 `json:"last_checkpoint_duration_ms,omitempty"`
-	LastCheckpointError             string `json:"last_checkpoint_error,omitempty"`
-	CheckpointAgeSeconds            uint64 `json:"checkpoint_age_seconds,omitempty"`
+	SpaceID                         string                           `json:"space_id"`
+	DomainID                        string                           `json:"domain_id"`
+	CurrentRevision                 uint64                           `json:"current_revision"`
+	CheckpointPresent               bool                             `json:"checkpoint_present"`
+	CheckpointRevision              uint64                           `json:"checkpoint_revision,omitempty"`
+	CheckpointCreatedAt             string                           `json:"checkpoint_created_at,omitempty"`
+	NodeCount                       uint64                           `json:"node_count,omitempty"`
+	EdgeCount                       uint64                           `json:"edge_count,omitempty"`
+	GraphChecksum                   string                           `json:"graph_checksum,omitempty"`
+	ChecksumAlgorithm               string                           `json:"checksum_algorithm,omitempty"`
+	TailRevisions                   uint64                           `json:"tail_revisions"`
+	Source                          string                           `json:"source,omitempty"`
+	AutoCheckpointEnabled           bool                             `json:"auto_checkpoint_enabled"`
+	AutoCheckpointRevisionThreshold uint64                           `json:"auto_checkpoint_revision_threshold,omitempty"`
+	AutoCheckpointInterval          string                           `json:"auto_checkpoint_interval,omitempty"`
+	LastCheckpointAttemptAt         string                           `json:"last_checkpoint_attempt_at,omitempty"`
+	LastCheckpointSuccessAt         string                           `json:"last_checkpoint_success_at,omitempty"`
+	LastCheckpointDurationMS        uint64                           `json:"last_checkpoint_duration_ms,omitempty"`
+	LastCheckpointError             string                           `json:"last_checkpoint_error,omitempty"`
+	CheckpointAgeSeconds            uint64                           `json:"checkpoint_age_seconds,omitempty"`
+	PersistentIndex                 graphPersistentIndexStatusOutput `json:"persistent_index,omitempty"`
+}
+
+type graphPersistentIndexStatusOutput struct {
+	Present           bool                                    `json:"present"`
+	IndexSetID        string                                  `json:"index_set_id,omitempty"`
+	IndexFormat       string                                  `json:"index_format,omitempty"`
+	GraphRevision     uint64                                  `json:"graph_revision,omitempty"`
+	GraphChecksum     string                                  `json:"graph_checksum,omitempty"`
+	ChecksumAlgorithm string                                  `json:"checksum_algorithm,omitempty"`
+	GraphCheckpointID string                                  `json:"graph_checkpoint_id,omitempty"`
+	CreatedAt         string                                  `json:"created_at,omitempty"`
+	LoadResult        string                                  `json:"load_result,omitempty"`
+	FallbackReason    string                                  `json:"fallback_reason,omitempty"`
+	Entries           []graphPersistentIndexEntryStatusOutput `json:"entries,omitempty"`
+}
+
+type graphPersistentIndexEntryStatusOutput struct {
+	Kind       string `json:"kind"`
+	Path       string `json:"path"`
+	EntryCount uint64 `json:"entry_count"`
+	Checksum   string `json:"checksum"`
 }
 
 type graphForensicDiffSummary struct {
@@ -598,7 +620,21 @@ func graphCheckpointStatusFromProto(status *adminv1.GraphCheckpointStatus) graph
 	if status == nil {
 		return graphCheckpointStatusOutput{}
 	}
-	return graphCheckpointStatusOutput{SpaceID: status.GetSpaceId(), DomainID: status.GetDomainId(), CurrentRevision: status.GetCurrentRevision(), CheckpointPresent: status.GetCheckpointPresent(), CheckpointRevision: status.GetCheckpointRevision(), CheckpointCreatedAt: status.GetCheckpointCreatedAt(), NodeCount: status.GetNodeCount(), EdgeCount: status.GetEdgeCount(), GraphChecksum: status.GetGraphChecksum(), ChecksumAlgorithm: status.GetChecksumAlgorithm(), TailRevisions: status.GetTailRevisions(), Source: status.GetSource(), AutoCheckpointEnabled: status.GetAutoCheckpointEnabled(), AutoCheckpointRevisionThreshold: status.GetAutoCheckpointRevisionThreshold(), AutoCheckpointInterval: status.GetAutoCheckpointInterval(), LastCheckpointAttemptAt: status.GetLastCheckpointAttemptAt(), LastCheckpointSuccessAt: status.GetLastCheckpointSuccessAt(), LastCheckpointDurationMS: status.GetLastCheckpointDurationMs(), LastCheckpointError: status.GetLastCheckpointError(), CheckpointAgeSeconds: status.GetCheckpointAgeSeconds()}
+	return graphCheckpointStatusOutput{SpaceID: status.GetSpaceId(), DomainID: status.GetDomainId(), CurrentRevision: status.GetCurrentRevision(), CheckpointPresent: status.GetCheckpointPresent(), CheckpointRevision: status.GetCheckpointRevision(), CheckpointCreatedAt: status.GetCheckpointCreatedAt(), NodeCount: status.GetNodeCount(), EdgeCount: status.GetEdgeCount(), GraphChecksum: status.GetGraphChecksum(), ChecksumAlgorithm: status.GetChecksumAlgorithm(), TailRevisions: status.GetTailRevisions(), Source: status.GetSource(), AutoCheckpointEnabled: status.GetAutoCheckpointEnabled(), AutoCheckpointRevisionThreshold: status.GetAutoCheckpointRevisionThreshold(), AutoCheckpointInterval: status.GetAutoCheckpointInterval(), LastCheckpointAttemptAt: status.GetLastCheckpointAttemptAt(), LastCheckpointSuccessAt: status.GetLastCheckpointSuccessAt(), LastCheckpointDurationMS: status.GetLastCheckpointDurationMs(), LastCheckpointError: status.GetLastCheckpointError(), CheckpointAgeSeconds: status.GetCheckpointAgeSeconds(), PersistentIndex: graphPersistentIndexStatusFromProto(status.GetPersistentIndex())}
+}
+
+func graphPersistentIndexStatusFromProto(status *adminv1.GraphPersistentIndexStatus) graphPersistentIndexStatusOutput {
+	if status == nil {
+		return graphPersistentIndexStatusOutput{}
+	}
+	out := graphPersistentIndexStatusOutput{Present: status.GetPresent(), IndexSetID: status.GetIndexSetId(), IndexFormat: status.GetIndexFormat(), GraphRevision: status.GetGraphRevision(), GraphChecksum: status.GetGraphChecksum(), ChecksumAlgorithm: status.GetChecksumAlgorithm(), GraphCheckpointID: status.GetGraphCheckpointId(), CreatedAt: status.GetCreatedAt(), LoadResult: status.GetLoadResult(), FallbackReason: status.GetFallbackReason()}
+	if len(status.GetEntries()) > 0 {
+		out.Entries = make([]graphPersistentIndexEntryStatusOutput, 0, len(status.GetEntries()))
+		for _, entry := range status.GetEntries() {
+			out.Entries = append(out.Entries, graphPersistentIndexEntryStatusOutput{Kind: entry.GetKind(), Path: entry.GetPath(), EntryCount: entry.GetEntryCount(), Checksum: entry.GetChecksum()})
+		}
+	}
+	return out
 }
 
 func graphCheckpointStatusText(out graphCheckpointStatusOutput) string {
@@ -607,6 +643,16 @@ func graphCheckpointStatusText(out graphCheckpointStatusOutput) string {
 		text += fmt.Sprintf(" checkpoint_revision=%d tail_revisions=%d nodes=%d edges=%d checksum=%s algorithm=%s", out.CheckpointRevision, out.TailRevisions, out.NodeCount, out.EdgeCount, out.GraphChecksum, out.ChecksumAlgorithm)
 		if out.CheckpointCreatedAt != "" {
 			text += " created_at=" + out.CheckpointCreatedAt
+		}
+		text += fmt.Sprintf(" persistent_index_present=%t", out.PersistentIndex.Present)
+		if out.PersistentIndex.LoadResult != "" {
+			text += " persistent_index_load=" + out.PersistentIndex.LoadResult
+		}
+		if out.PersistentIndex.IndexSetID != "" {
+			text += " persistent_index_set=" + out.PersistentIndex.IndexSetID
+		}
+		if out.PersistentIndex.FallbackReason != "" {
+			text += " persistent_index_fallback=" + out.PersistentIndex.FallbackReason
 		}
 	}
 	if out.Source != "" {

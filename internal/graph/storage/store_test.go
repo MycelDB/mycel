@@ -250,6 +250,13 @@ func TestLocalStoreWriteCheckpointWritesPersistentIndexes(t *testing.T) {
 	if err := store.WriteCheckpoint(ctx); err != nil {
 		t.Fatalf("WriteCheckpoint() error = %v", err)
 	}
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() error = %v", err)
+	}
+	if !status.PersistentIndex.Present || status.PersistentIndex.LoadResult != PersistentIndexLoadNotLoaded || len(status.PersistentIndex.Entries) != 4 {
+		t.Fatalf("unexpected persistent index status after write: %+v", status.PersistentIndex)
+	}
 	indexDir, err := store.latestIndexSetDir()
 	if err != nil || indexDir == "" {
 		t.Fatalf("latestIndexSetDir() = %q, %v", indexDir, err)
@@ -267,6 +274,13 @@ func TestLocalStoreWriteCheckpointWritesPersistentIndexes(t *testing.T) {
 		t.Fatalf("reopen failed: %v", err)
 	}
 	defer store.Close()
+	status, err = store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() after reopen error = %v", err)
+	}
+	if !status.PersistentIndex.Present || status.PersistentIndex.LoadResult != PersistentIndexLoadUsed || status.PersistentIndex.IndexSetID == "" || status.PersistentIndex.GraphRevision != status.CheckpointRevision {
+		t.Fatalf("unexpected persistent index status after reopen: %+v checkpoint=%+v", status.PersistentIndex, status)
+	}
 	labels, _, err := store.ScanLabel(ctx, LabelScan{DomainID: domainID, Label: "Task", Limit: 10})
 	if err != nil || len(labels) != 2 {
 		t.Fatalf("ScanLabel() = %+v, %v; want 2 nodes", labels, err)
@@ -322,6 +336,13 @@ func TestLocalStoreCorruptPersistentIndexesFallBackToCheckpointRebuild(t *testin
 		t.Fatalf("reopen with corrupt persistent index should fall back: %v", err)
 	}
 	defer store.Close()
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() after corrupt index reopen error = %v", err)
+	}
+	if !status.PersistentIndex.Present || status.PersistentIndex.LoadResult != PersistentIndexLoadFallback || status.PersistentIndex.FallbackReason == "" {
+		t.Fatalf("unexpected corrupt persistent index status: %+v", status.PersistentIndex)
+	}
 	labels, _, err := store.ScanLabel(ctx, LabelScan{DomainID: domainID, Label: "Note", Limit: 10})
 	if err != nil || len(labels) != 1 || labels[0] != node.ID {
 		t.Fatalf("ScanLabel() after corrupt persistent index = %+v, %v; want node", labels, err)
