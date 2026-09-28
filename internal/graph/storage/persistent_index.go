@@ -342,10 +342,7 @@ func (s *LocalStore) tryLoadPersistentIndexSet(ctx context.Context, checkpoint C
 	if err != nil {
 		return persistentIndexStatusFallback(status, err), false
 	}
-	if err := s.loadPersistentQueryIndexes(dir, manifest, checkpoint); err != nil {
-		return persistentIndexStatusFallback(status, err), false
-	}
-	queryIndexes, err := s.persistentQueryIndexStatusesFromManifest(dir, manifest, checkpoint, PersistentIndexLoadUsed)
+	queryIndexes, err := s.loadPersistentQueryIndexes(dir, manifest, checkpoint)
 	if err != nil {
 		return persistentIndexStatusFallback(status, err), false
 	}
@@ -431,11 +428,16 @@ func (s *LocalStore) persistentIndexStatusForCheckpoint(checkpoint CheckpointMan
 		}
 	}
 	status.LoadResult = PersistentIndexLoadAvailable
-	if lastLoad.IndexSetID == status.IndexSetID && lastLoad.LoadResult != "" {
+	loadedSameSet := lastLoad.IndexSetID == status.IndexSetID && lastLoad.LoadResult != ""
+	if loadedSameSet {
 		status.LoadResult = lastLoad.LoadResult
 		status.FallbackReason = lastLoad.FallbackReason
 	} else {
 		status.LoadResult = PersistentIndexLoadNotLoaded
+	}
+	if loadedSameSet && len(lastLoad.QueryIndexes) > 0 {
+		status.QueryIndexes = append([]PersistentQueryIndexStatus(nil), lastLoad.QueryIndexes...)
+		return status
 	}
 	queryIndexes, err := s.persistentQueryIndexStatusesFromManifest(dir, manifest, checkpoint, status.LoadResult)
 	if err != nil {

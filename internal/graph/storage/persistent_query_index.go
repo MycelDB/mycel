@@ -166,45 +166,53 @@ func marshalPersistentQueryEntriesPayload(kind string, entries []persistentQuery
 	return buf.Bytes(), len(entries), nil
 }
 
-func (s *LocalStore) loadPersistentQueryIndexes(dir string, manifest persistentIndexManifest, checkpoint CheckpointManifest) error {
+func (s *LocalStore) loadPersistentQueryIndexes(dir string, manifest persistentIndexManifest, checkpoint CheckpointManifest) ([]PersistentQueryIndexStatus, error) {
 	metadataEntry, ok := manifest.Indexes[persistentIndexKindQueryMetadata]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	metadataRaw, err := readPersistentIndexPayloadFile(dir, metadataEntry)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	metadata, err := s.readPersistentQueryMetadata(metadataRaw, metadataEntry.EntryCount, checkpoint.GraphRevision)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	nodeIndex := map[string]map[string]nodePropertyIndexEntry{}
-	edgeIndex := map[string]map[string]edgePropertyIndexEntry{}
+	nodeIndex := make(map[string]map[string]nodePropertyIndexEntry, len(metadata))
+	edgeIndex := make(map[string]map[string]edgePropertyIndexEntry, len(metadata))
+	for identity, record := range metadata {
+		switch record.TargetKind {
+		case schema.IndexTargetNode:
+			nodeIndex[identity] = make(map[string]nodePropertyIndexEntry, persistentQueryEntryMapCapacity(record.EntryCount))
+		case schema.IndexTargetEdge:
+			edgeIndex[identity] = make(map[string]edgePropertyIndexEntry, persistentQueryEntryMapCapacity(record.EntryCount))
+		}
+	}
 	if entry, ok := manifest.Indexes[persistentIndexKindQueryNode]; ok {
 		raw, err := readPersistentIndexPayloadFile(dir, entry)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := s.readPersistentQueryNodeEntries(raw, entry.EntryCount, metadata, nodeIndex); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if entry, ok := manifest.Indexes[persistentIndexKindQueryEdge]; ok {
 		raw, err := readPersistentIndexPayloadFile(dir, entry)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := s.readPersistentQueryEdgeEntries(raw, entry.EntryCount, metadata, edgeIndex); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	for identity, record := range metadata {
 		if record.TargetKind == schema.IndexTargetNode && uint64(len(nodeIndex[identity])) != record.EntryCount {
-			return fmt.Errorf("%w: persistent query node entry count mismatch", ErrInvalidRecord)
+			return nil, fmt.Errorf("%w: persistent query node entry count mismatch", ErrInvalidRecord)
 		}
 		if record.TargetKind == schema.IndexTargetEdge && uint64(len(edgeIndex[identity])) != record.EntryCount {
-			return fmt.Errorf("%w: persistent query edge entry count mismatch", ErrInvalidRecord)
+			return nil, fmt.Errorf("%w: persistent query edge entry count mismatch", ErrInvalidRecord)
 		}
 	}
 	for identity, record := range metadata {
@@ -227,7 +235,7 @@ func (s *LocalStore) loadPersistentQueryIndexes(dir string, manifest persistentI
 			s.edgePropertyIndex[identity] = edgeIndex[identity]
 		}
 	}
-	return nil
+	return persistentQueryIndexStatusesFromMetadata(metadata, PersistentIndexLoadUsed), nil
 }
 
 func (s *LocalStore) persistentQueryIndexStatusesFromManifest(dir string, manifest persistentIndexManifest, checkpoint CheckpointManifest, loadResult string) ([]PersistentQueryIndexStatus, error) {
@@ -243,6 +251,10 @@ func (s *LocalStore) persistentQueryIndexStatusesFromManifest(dir string, manife
 	if err != nil {
 		return nil, err
 	}
+	return persistentQueryIndexStatusesFromMetadata(metadata, loadResult), nil
+}
+
+func persistentQueryIndexStatusesFromMetadata(metadata map[string]persistentQueryIndexMetadataRecord, loadResult string) []PersistentQueryIndexStatus {
 	identities := make([]string, 0, len(metadata))
 	for identity := range metadata {
 		identities = append(identities, identity)
@@ -251,27 +263,17 @@ func (s *LocalStore) persistentQueryIndexStatusesFromManifest(dir string, manife
 	out := make([]PersistentQueryIndexStatus, 0, len(identities))
 	for _, identity := range identities {
 		record := metadata[identity]
-		out = append(out, PersistentQueryIndexStatus{
-			Identity:                 record.Identity,
-			Name:                     record.Name,
-			DomainID:                 record.DomainID.String(),
-			SchemaHash:               record.SchemaHash,
-			DefinitionFingerprint:    record.DefinitionFingerprint,
-			TargetKind:               string(record.TargetKind),
-			TargetType:               record.TargetType,
-			Labels:                   append([]string(nil), record.Labels...),
-			FieldNamespace:           record.Field.Namespace,
-			FieldName:                record.Field.Name,
-			IndexKind:                string(record.Kind),
-			Direction:                string(record.Direction),
-			BuildState:               string(record.BuildState),
-			LastIndexedGraphRevision: record.LastIndexedGraphRevision,
-			KeyEncodingVersion:       record.KeyEncodingVersion,
-			EntryCount:               record.EntryCount,
-			LoadResult:               loadResult,
-		})
+		out = append(out, PersistentQueryIndexStatus{Identity: record.Identity, Name: record.Name, DomainID: record.DomainID.String(), SchemaHash: record.SchemaHash, DefinitionFingerprint: record.DefinitionFingerprint, TargetKind: string(record.TargetKind), TargetType: record.TargetType, Labels: append([]string(nil), record.Labels...), FieldNamespace: record.Field.Namespace, FieldName: record.Field.Name, IndexKind: string(record.Kind), Direction: string(record.Direction), BuildState: string(record.BuildState), LastIndexedGraphRevision: record.LastIndexedGraphRevision, KeyEncodingVersion: record.KeyEncodingVersion, EntryCount: record.EntryCount, LoadResult: loadResult})
 	}
-	return out, nil
+	return out
+}
+
+func persistentQueryEntryMapCapacity(count uint64) int {
+	maxInt := int(^uint(0) >> 1)
+	if count > uint64(maxInt) {
+		return maxInt
+	}
+	return int(count)
 }
 
 func readPersistentIndexPayloadFile(dir string, entry persistentIndexManifestEntry) ([]byte, error) {
@@ -290,7 +292,7 @@ func (s *LocalStore) readPersistentQueryMetadata(raw []byte, entryCount int, che
 	if err := readPersistentBinaryHeader(r, persistentIndexKindQueryMetadata, entryCount); err != nil {
 		return nil, err
 	}
-	out := map[string]persistentQueryIndexMetadataRecord{}
+	out := make(map[string]persistentQueryIndexMetadataRecord, entryCount)
 	for i := 0; i < entryCount; i++ {
 		identity, err := readPersistentBinaryString(r)
 		if err != nil {
@@ -401,7 +403,7 @@ func (s *LocalStore) readPersistentQueryNodeEntries(raw []byte, entryCount int, 
 		}
 		entries := out[identity]
 		if entries == nil {
-			entries = map[string]nodePropertyIndexEntry{}
+			entries = make(map[string]nodePropertyIndexEntry, persistentQueryEntryMapCapacity(record.EntryCount))
 			out[identity] = entries
 		}
 		entries[key] = nodePropertyIndexEntry{NodeID: nodeID, Value: value, Key: key}
@@ -433,7 +435,7 @@ func (s *LocalStore) readPersistentQueryEdgeEntries(raw []byte, entryCount int, 
 		}
 		entries := out[identity]
 		if entries == nil {
-			entries = map[string]edgePropertyIndexEntry{}
+			entries = make(map[string]edgePropertyIndexEntry, persistentQueryEntryMapCapacity(record.EntryCount))
 			out[identity] = entries
 		}
 		entries[key] = edgePropertyIndexEntry{EdgeID: edgeID, Value: value, Key: key}

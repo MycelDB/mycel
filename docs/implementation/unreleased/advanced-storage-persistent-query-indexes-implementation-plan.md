@@ -316,11 +316,23 @@ BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes
 BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-edge-scans   ~1.64 s/op
 ```
 
-Interpretation: the current persistent query-index map loader is not yet a
-performance win at the 100k/250k multi-index scale. It is slower and allocates
-more than rebuilding query indexes from checkpoint records. The next optimization
-target should be reducing persistent query payload load overhead before relying
-on this path for open-latency improvement.
+After pre-sizing hydrated query maps and reusing decoded metadata from the open
+load path:
+
+```text
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-only                    ~1.42 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-first-node-scans        ~1.48 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-first-edge-scans        ~1.54 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-only               ~1.50 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-node-scans   ~1.54 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-edge-scans   ~1.57 s/op
+```
+
+Interpretation: the current persistent query-index map loader is still not a
+clear performance win at the 100k/250k multi-index scale, but the first load-path
+optimization narrowed the gap materially and reduced allocations. Further wins
+likely require reducing query payload read/decode overhead rather than only map
+pre-sizing.
 
 Suggested future benchmark dimensions:
 
