@@ -244,24 +244,46 @@ Add benchmarks that compare:
 2. checkpoint + persistent label/tag/adjacency only;
 3. checkpoint + persistent label/tag/adjacency + query indexes.
 
-Suggested benchmark dimensions:
+Implemented storage benchmark:
 
-- 10k nodes / 20k edges / 1 node property index;
+```bash
+go test ./internal/graph/storage -run '^$' -bench BenchmarkLocalStoreQueryIndexOpenAndScan -benchmem -count=1
+```
+
+The benchmark fixture currently uses:
+
+- 10k live nodes / 20k live edges;
+- 3 historical node update rounds;
+- 1 ordered node property index on `BenchmarkNode.properties.ordinal`;
+- 1 ordered edge property index on `REFERENCES.properties.ordinal`;
+- immediate ordered node-property and edge-property scans after open.
+
+Initial Apple M4 Max baseline with `-benchtime=1x`:
+
+```text
+BenchmarkLocalStoreQueryIndexOpenAndScan/full-replay-query-index-rebuild          ~197 ms/op
+BenchmarkLocalStoreQueryIndexOpenAndScan/checkpoint-query-index-rebuild            ~95 ms/op
+BenchmarkLocalStoreQueryIndexOpenAndScan/checkpoint-persistent-query-indexes       ~97 ms/op
+```
+
+Interpretation: checkpoints materially reduce query-index rebuild cost versus
+full replay. Persistent query indexes are roughly at parity with checkpoint-side
+rebuild for this 10k/20k fixture, with higher allocations due to payload map
+hydration. Larger configured-index domains or multiple property indexes are the
+next benchmark target before treating persistent query indexes as a clear
+performance win.
+
+Suggested future benchmark dimensions:
+
 - 100k nodes / 250k edges / 3 node property indexes;
-- edge-heavy domain with 1 edge property index;
-- tail replay after checkpoint with updates/deletes affecting indexed values.
-
-Benchmark operations:
-
-- open latency;
-- immediate ordered node-property scan latency;
-- immediate ordered edge-property scan latency;
-- memory allocations during open.
+- edge-heavy domain with multiple edge property indexes;
+- tail replay after checkpoint with updates/deletes affecting indexed values;
+- immediate first-query latency separated from open latency.
 
 ### Acceptance
 
-- Benchmarks show whether persistent query indexes materially reduce open and
-  first-query latency for configured-index domains.
+- Benchmarks cover checkpoint rebuild versus checkpoint + persistent query
+  indexes.
 - Results are documented in this plan or a follow-up validation report.
 
 ## Rollout strategy
