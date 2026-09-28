@@ -39,7 +39,10 @@ func (m *Module) applyGraphCommit(ctx context.Context, rec wal.Record) error {
 }
 
 func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommitRecord) (int64, graphCommitRecord, graphstorage.CommitInfo, error) {
-	store, err := m.store(ctx, payload.SpaceID)
+	if err := normalizeGraphCommitRecordDomain(&payload); err != nil {
+		return 0, payload, graphstorage.CommitInfo{}, err
+	}
+	store, err := m.store(ctx, payload.SpaceID, payload.DomainID)
 	if err != nil {
 		return 0, payload, graphstorage.CommitInfo{}, err
 	}

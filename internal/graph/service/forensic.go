@@ -54,7 +54,7 @@ func (m *Module) LocalGraphForensicExport(ctx context.Context, spaceID string, d
 	if err != nil || parsedDomain == uuid.Nil {
 		return LocalGraphForensicExport{}, fmt.Errorf("%w: domain_id must be a UUID", ErrInvalidInput)
 	}
-	store, err := m.existingStoreForConsistencyStats(ctx, spaceID)
+	store, err := m.existingStoreForConsistencyStats(ctx, spaceID, parsedDomain.String())
 	if err != nil {
 		return LocalGraphForensicExport{}, err
 	}

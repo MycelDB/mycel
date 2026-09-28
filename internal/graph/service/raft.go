@@ -37,7 +37,10 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 }
 
 func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record graphCommitRecord, commandID string) (graphchange.CommittedEvent, []GraphChange, error) {
-	store, err := m.store(ctx, record.SpaceID)
+	if err := normalizeGraphCommitRecordDomain(&record); err != nil {
+		return graphchange.CommittedEvent{}, nil, err
+	}
+	store, err := m.store(ctx, record.SpaceID, record.DomainID)
 	if err != nil {
 		return graphchange.CommittedEvent{}, nil, err
 	}
@@ -79,6 +82,29 @@ func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record grap
 		return graphchange.CommittedEvent{}, nil, err
 	}
 	return event, changes, nil
+}
+
+func normalizeGraphCommitRecordDomain(record *graphCommitRecord) error {
+	if record == nil {
+		return fmt.Errorf("graph commit record is required")
+	}
+	if strings.TrimSpace(record.DomainID) == "" {
+		record.DomainID = firstRecordDomainID(*record)
+	}
+	if _, err := newDomainStoreKey(record.SpaceID, record.DomainID); err != nil {
+		return err
+	}
+	for _, node := range record.PutNodes {
+		if node.DomainID.String() != record.DomainID {
+			return fmt.Errorf("%w: node domain_id %s does not match transaction domain_id %s", ErrInvalidInput, node.DomainID, record.DomainID)
+		}
+	}
+	for _, edge := range record.PutEdges {
+		if edge.DomainID.String() != record.DomainID {
+			return fmt.Errorf("%w: edge domain_id %s does not match transaction domain_id %s", ErrInvalidInput, edge.DomainID, record.DomainID)
+		}
+	}
+	return nil
 }
 
 func firstRecordDomainID(record graphCommitRecord) string {

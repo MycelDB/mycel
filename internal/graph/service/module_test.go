@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -372,12 +373,89 @@ func TestModuleGraphChangeEdgeChangesAffectEndpoints(t *testing.T) {
 
 func newTestGraphModule(t *testing.T, ctx context.Context) *Module {
 	t.Helper()
+	m, _ := newTestGraphModuleWithDataDir(t, ctx)
+	return m
+}
+
+func newTestGraphModuleWithDataDir(t *testing.T, ctx context.Context) (*Module, string) {
+	t.Helper()
+	dataDir := t.TempDir()
 	m := NewModule()
-	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init graph module: %v", result.Error)
 	}
-	return m
+	return m, dataDir
+}
+
+func TestModuleUsesDomainScopedGraphStoreDirectories(t *testing.T) {
+	ctx := context.Background()
+	m, dataDir := newTestGraphModuleWithDataDir(t, ctx)
+	spaceID := uuid.NewString()
+	domainA := uuid.NewString()
+	domainB := uuid.NewString()
+
+	txA := graphTx(spaceID, domainA, 0)
+	if _, err := m.CreateNode(ctx, txA, NodeInput{Content: "domain A"}); err != nil {
+		t.Fatalf("CreateNode(domain A) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, txA); err != nil {
+		t.Fatalf("CommitTransactionGraph(domain A) error = %v", err)
+	}
+
+	txB := graphTx(spaceID, domainB, 0)
+	if _, err := m.CreateNode(ctx, txB, NodeInput{Content: "domain B"}); err != nil {
+		t.Fatalf("CreateNode(domain B) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, txB); err != nil {
+		t.Fatalf("CommitTransactionGraph(domain B) error = %v", err)
+	}
+
+	for _, domainID := range []string{domainA, domainB} {
+		manifest := filepath.Join(dataDir, "graphs", spaceID, "domains", domainID, "manifest.mycel")
+		if _, err := os.Stat(manifest); err != nil {
+			t.Fatalf("domain manifest %s missing: %v", manifest, err)
+		}
+	}
+	legacyManifest := filepath.Join(dataDir, "graphs", spaceID, "manifest.mycel")
+	if _, err := os.Stat(legacyManifest); !os.IsNotExist(err) {
+		t.Fatalf("legacy space-level graph manifest exists/error = %v", err)
+	}
+
+	readA := graphTx(spaceID, domainA, 1)
+	readA.Mode = daemonsession.TransactionModeReadOnly
+	nodesA, _, err := m.ListNodes(ctx, readA, 0, "")
+	if err != nil {
+		t.Fatalf("ListNodes(domain A) error = %v", err)
+	}
+	if len(nodesA) != 1 || nodesA[0].Content != "domain A" {
+		t.Fatalf("domain A nodes = %+v", nodesA)
+	}
+	readB := graphTx(spaceID, domainB, 1)
+	readB.Mode = daemonsession.TransactionModeReadOnly
+	nodesB, _, err := m.ListNodes(ctx, readB, 0, "")
+	if err != nil {
+		t.Fatalf("ListNodes(domain B) error = %v", err)
+	}
+	if len(nodesB) != 1 || nodesB[0].Content != "domain B" {
+		t.Fatalf("domain B nodes = %+v", nodesB)
+	}
+}
+
+func TestModuleRejectsCrossDomainStagedWrites(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID := uuid.NewString()
+	domainA := uuid.NewString()
+	domainB := uuid.NewString()
+	tx := graphTx(spaceID, domainA, 0)
+	otherDomain := uuid.MustParse(domainB)
+	if err := m.stageNode(ctx, tx, domaingraph.Node{ID: uuid.New(), DomainID: domaingraph.DomainID(otherDomain), Props: map[string]any{}}); err == nil {
+		t.Fatal("stageNode accepted mismatched domain")
+	}
+	if err := m.stageEdge(ctx, tx, domaingraph.Edge{ID: uuid.New(), DomainID: domaingraph.DomainID(otherDomain), FromID: uuid.New(), ToID: uuid.New()}); err == nil {
+		t.Fatal("stageEdge accepted mismatched domain")
+	}
 }
 
 func TestModuleGraphChangeSinkNotInvokedForDiscardReadOnlyOrNoop(t *testing.T) {

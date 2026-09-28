@@ -142,6 +142,10 @@ type TransactionGraphCommitter interface {
 	DiscardTransactionGraph(ctx context.Context, transactionID string)
 }
 
+type TransactionGraphDomainRevisioner interface {
+	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
+}
+
 type TransactionGraphWriteLeaderChecker interface {
 	RequireLocalGraphWriteLeader(ctx context.Context, spaceID string) error
 }
@@ -214,7 +218,13 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 		}
 	}
 	if s.graphs != nil {
-		baseRevision, err := s.graphs.CurrentRevision(ctx, session.SpaceID)
+		var baseRevision int64
+		var err error
+		if revisions, ok := s.graphs.(TransactionGraphDomainRevisioner); ok {
+			baseRevision, err = revisions.CurrentDomainRevision(ctx, session.SpaceID, session.DomainID)
+		} else {
+			baseRevision, err = s.graphs.CurrentRevision(ctx, session.SpaceID)
+		}
 		if err != nil {
 			return nil, mapGraphError(err, "begin transaction revision")
 		}

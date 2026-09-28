@@ -16,6 +16,7 @@ assigned to a tagged release bucket.
 ## Graph/change notification and activity
 
 - [Activity events implementation plan](activity-events-implementation-plan.md) — phased plan for a durable operator-facing event stream, Admin APIs, daemon/external emitters, Console Activity page, retention, and export.
+- [Advanced storage domain-scoped graph stores](advanced-storage-domain-scoped-graph-stores.md) — phase 1 note for making domain, not space, the physical graph store/cache unit on the `advanced_storage` branch.
 - [Graph adjacency index implementation plan](graph-adjacency-index-implementation-plan.md) — derived per-space in-memory adjacency index for faster hierarchy validation and Logseq-shaped imports.
 - [Graph-change notification implementation plan](graph-change-notification-implementation-plan.md) — internal committed graph-change model, process-local consumer registrations, projection, replay, and raft-safe notification delivery.
 - [Graph write latency reduction implementation plan](graph-write-latency-reduction-plan.md) — coordinated plan to remove avoidable synchronous Raft waits from graph commits, batch Commonfolio writes, async secondary sinks, and profile remaining Raft/storage costs.
