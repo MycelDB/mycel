@@ -6,6 +6,7 @@ ORCH_DIR="${MYCEL_K3S_ORCHESTRATION_DIR:-${ROOT_DIR}/../../orchestration/knot_pk
 CLUSTER="${MYCEL_K3S_CLUSTER:-knotbase-dev}"
 NAMESPACE="${MYCEL_K3S_NAMESPACE:-knotbase-dev}"
 EXPECTED_NODES="${MYCELD_CLUSTER_RAFT_NODE_COUNT:-3}"
+CLUSTER_VALIDATE_TIMEOUT_SECONDS="${MYCEL_K3S_CLUSTER_VALIDATE_TIMEOUT:-600}"
 IMAGE="${MYCEL_K3S_IMAGE:-myceldb/mycel:k3s-local-$(git -C "$ROOT_DIR" rev-parse --short HEAD)}"
 IMAGE_PULL_POLICY="${MYCEL_K3S_IMAGE_PULL_POLICY:-IfNotPresent}"
 RESET="${MYCEL_K3S_RESET:-true}"
@@ -73,7 +74,6 @@ apply_myceld_manifests() {
   kubectl -n "$NAMESPACE" create secret generic myceld-secret \
     --from-literal=bootstrap-admin-username="$ADMIN_USERNAME" \
     --from-literal=bootstrap-admin-password="$ADMIN_PASSWORD" \
-    --from-literal=user-store-encryption-key-b64="$(openssl rand -base64 32)" \
     --from-literal=cluster-backend-auth-token="$(openssl rand -base64 32)" \
     --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n "$NAMESPACE" apply \
@@ -90,20 +90,36 @@ image = os.environ["IMAGE"]
 image_pull_policy = os.environ["IMAGE_PULL_POLICY"]
 path = Path(os.environ["STATEFULSET_PATH"])
 text = path.read_text()
+source_lines = text.splitlines()
 lines = []
 replaced_image = False
 replaced_pull_policy = False
-for line in text.splitlines():
-    if line.strip().startswith("image: ") and "mycel" in line:
+idx = 0
+while idx < len(source_lines):
+    line = source_lines[idx]
+    stripped = line.strip()
+    if stripped == "- name: MYCELD_USER_STORE_ENCRYPTION_KEY_B64":
+        skip_indent = len(line) - len(line.lstrip())
+        idx += 1
+        while idx < len(source_lines):
+            next_line = source_lines[idx]
+            next_stripped = next_line.strip()
+            next_indent = len(next_line) - len(next_line.lstrip())
+            if next_stripped and next_indent <= skip_indent:
+                break
+            idx += 1
+        continue
+    if stripped.startswith("image: ") and "mycel" in line:
         indent = line[: len(line) - len(line.lstrip())]
         lines.append(f"{indent}image: {image}")
         replaced_image = True
-    elif line.strip().startswith("imagePullPolicy: "):
+    elif stripped.startswith("imagePullPolicy: "):
         indent = line[: len(line) - len(line.lstrip())]
         lines.append(f"{indent}imagePullPolicy: {image_pull_policy}")
         replaced_pull_policy = True
     else:
         lines.append(line)
+    idx += 1
 if not replaced_image:
     raise SystemExit("did not find myceld image line to replace")
 if not replaced_pull_policy:
@@ -114,11 +130,22 @@ PY
 }
 
 validate_cluster() {
-  MYCEL_K3S_NAMESPACE="$NAMESPACE" \
-  MYCELD_CLUSTER_RAFT_NODE_COUNT="$EXPECTED_NODES" \
-  MYCELD_BOOTSTRAP_ADMIN_USERNAME="$ADMIN_USERNAME" \
-  MYCELD_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
-    "$ROOT_DIR/scripts/validateK3sClusterIdentity.sh"
+  local deadline output
+  deadline=$((SECONDS + CLUSTER_VALIDATE_TIMEOUT_SECONDS))
+  while (( SECONDS <= deadline )); do
+    if output="$(MYCEL_K3S_NAMESPACE="$NAMESPACE" \
+      MYCELD_CLUSTER_RAFT_NODE_COUNT="$EXPECTED_NODES" \
+      MYCELD_BOOTSTRAP_ADMIN_USERNAME="$ADMIN_USERNAME" \
+      MYCELD_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+        "$ROOT_DIR/scripts/validateK3sClusterIdentity.sh" 2>&1)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    printf 'Waiting for K3s cluster identity/health validation: %s\n' "$output" >&2
+    sleep 5
+  done
+  printf '%s\n' "$output" >&2
+  return 1
 }
 
 validate_data_plane() {
