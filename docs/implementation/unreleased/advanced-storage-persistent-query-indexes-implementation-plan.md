@@ -2,8 +2,11 @@
 
 ## Status
 
-Proposed on the `advanced_storage` branch. Implement after review of the design
-and this plan.
+Partially implemented on the `advanced_storage` branch. The first implementation
+persists and loads checkpoint-aligned binary payloads for the current ordered
+node and edge property index maps, with fallback to checkpoint rebuild when query
+index payloads are missing, stale, or corrupt. Detailed per-query-index admin
+status and larger query-index benchmarks remain follow-ups.
 
 Design reference:
 
@@ -263,12 +266,14 @@ Benchmark operations:
 
 ## Rollout strategy
 
-1. Land metadata/fingerprint/scalar encoding helpers.
-2. Land export/import helpers behind tests.
-3. Extend index writer to produce optional query payloads.
-4. Extend open loader with strict fallback.
-5. Add status visibility.
-6. Run benchmarks and restart validation.
+1. Land metadata/fingerprint/scalar encoding helpers. — implemented for ordered
+   node/edge property indexes.
+2. Land export/import helpers behind tests. — implemented.
+3. Extend index writer to produce optional query payloads. — implemented.
+4. Extend open loader with strict fallback. — implemented.
+5. Add detailed query-index status visibility. — follow-up; current generic
+   persistent-index status exposes query payload files and fallback reason.
+6. Run larger query-index benchmarks and restart validation. — follow-up.
 7. Only then consider enabling any automatic policy beyond checkpoint-coupled
    best-effort writes.
 

@@ -337,6 +337,7 @@ func (s *LocalStore) tryLoadCheckpoint(ctx context.Context) (bool, error) {
 	}
 	indexCandidate := s.persistentIndexManifestCandidateForCheckpoint(manifest)
 	usePersistentCandidate := indexCandidate.Present && indexCandidate.LoadResult != PersistentIndexLoadFallback
+	usePersistentQueryCandidate := usePersistentCandidate && persistentIndexStatusHasQueryPayload(indexCandidate)
 	s.resetIndexes()
 	if err := s.loadIndexManifestLocked(); err != nil {
 		return false, err
@@ -344,11 +345,11 @@ func (s *LocalStore) tryLoadCheckpoint(ctx context.Context) (bool, error) {
 	checkpointLoc := RecordLocation{Segment: "checkpoint", Offset: 0, Length: 0}
 	if usePersistentCandidate {
 		for _, node := range nodes {
-			s.applyCheckpointNodePut(node, checkpointLoc, true)
+			s.applyCheckpointNodePut(node, checkpointLoc, true, usePersistentQueryCandidate)
 			s.nodeModRev[node.ID] = manifest.GraphRevision
 		}
 		for _, edge := range edges {
-			s.applyCheckpointEdgePut(edge, checkpointLoc, true)
+			s.applyCheckpointEdgePut(edge, checkpointLoc, true, usePersistentQueryCandidate)
 			s.edgeModRev[edge.ID] = manifest.GraphRevision
 		}
 		s.persistentIndexLoadStatus, _ = s.tryLoadPersistentIndexSet(ctx, manifest)
@@ -387,7 +388,7 @@ func (s *LocalStore) hydrateCheckpointFull(nodes []graph.Node, edges []graph.Edg
 	}
 }
 
-func (s *LocalStore) applyCheckpointNodePut(n graph.Node, loc RecordLocation, persistentLabelTagIndexes bool) {
+func (s *LocalStore) applyCheckpointNodePut(n graph.Node, loc RecordLocation, persistentLabelTagIndexes bool, persistentQueryIndexes bool) {
 	s.nodeRecords[n.ID] = cloneNode(n)
 	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, DomainID: n.DomainID, Location: loc}
 	if n.DomainID != uuid.Nil {
@@ -396,8 +397,10 @@ func (s *LocalStore) applyCheckpointNodePut(n graph.Node, loc RecordLocation, pe
 			s.addNodeLabelIndexes(n)
 			s.addNodeTagIndexes(n)
 		}
-		for _, idx := range s.configuredIndexes[n.DomainID] {
-			_ = s.addNodePropertyIndexEntry(n, idx)
+		if !persistentQueryIndexes {
+			for _, idx := range s.configuredIndexes[n.DomainID] {
+				_ = s.addNodePropertyIndexEntry(n, idx)
+			}
 		}
 	}
 	propsForIndex := n.Properties
@@ -412,7 +415,7 @@ func (s *LocalStore) applyCheckpointNodePut(n graph.Node, loc RecordLocation, pe
 	}
 }
 
-func (s *LocalStore) applyCheckpointEdgePut(e graph.Edge, loc RecordLocation, persistentAdjacencyIndexes bool) {
+func (s *LocalStore) applyCheckpointEdgePut(e graph.Edge, loc RecordLocation, persistentAdjacencyIndexes bool, persistentQueryIndexes bool) {
 	stored := cloneEdge(e)
 	s.edgeRecords[e.ID] = stored
 	s.edgeMeta[e.ID] = EdgeMeta{ID: e.ID, DomainID: e.DomainID, FromID: e.FromID, ToID: e.ToID, Labels: append([]string(nil), e.Labels...), Location: loc}
@@ -420,8 +423,10 @@ func (s *LocalStore) applyCheckpointEdgePut(e graph.Edge, loc RecordLocation, pe
 	if !persistentAdjacencyIndexes {
 		s.addEdgeAdjacencyIndexes(stored)
 	}
-	for _, idx := range s.configuredIndexes[e.DomainID] {
-		_ = s.addEdgePropertyIndexEntry(stored, idx)
+	if !persistentQueryIndexes {
+		for _, idx := range s.configuredIndexes[e.DomainID] {
+			_ = s.addEdgePropertyIndexEntry(stored, idx)
+		}
 	}
 	if graph.EdgeHasLabels(e, []string{"contains"}) {
 		s.containsChildren[e.FromID] = append(s.containsChildren[e.FromID], e.ID)

@@ -177,6 +177,39 @@ func (s *LocalStore) writeIndexSetLocked(ctx context.Context, checkpoint Checkpo
 		"adjacency_out": {path: persistentIndexAdjOutPayload, raw: adjOutRaw, count: adjOutCount},
 		"adjacency_in":  {path: persistentIndexAdjInPayload, raw: adjInRaw, count: adjInCount},
 	}
+	queryMetadata, queryNodeEntries, queryEdgeEntries, err := s.exportPersistentQueryIndexes(checkpoint.GraphRevision)
+	if err != nil {
+		return err
+	}
+	if len(queryMetadata) > 0 {
+		queryMetadataRaw, queryMetadataCount, err := marshalPersistentQueryMetadataPayload(queryMetadata)
+		if err != nil {
+			return err
+		}
+		payloads[persistentIndexKindQueryMetadata] = struct {
+			path  string
+			raw   []byte
+			count int
+		}{path: persistentIndexQueryMetadataPayload, raw: queryMetadataRaw, count: queryMetadataCount}
+		queryNodeRaw, queryNodeCount, err := marshalPersistentQueryEntriesPayload(persistentIndexKindQueryNode, queryNodeEntries)
+		if err != nil {
+			return err
+		}
+		payloads[persistentIndexKindQueryNode] = struct {
+			path  string
+			raw   []byte
+			count int
+		}{path: persistentIndexQueryNodePayload, raw: queryNodeRaw, count: queryNodeCount}
+		queryEdgeRaw, queryEdgeCount, err := marshalPersistentQueryEntriesPayload(persistentIndexKindQueryEdge, queryEdgeEntries)
+		if err != nil {
+			return err
+		}
+		payloads[persistentIndexKindQueryEdge] = struct {
+			path  string
+			raw   []byte
+			count int
+		}{path: persistentIndexQueryEdgePayload, raw: queryEdgeRaw, count: queryEdgeCount}
+	}
 	entries := map[string]persistentIndexManifestEntry{}
 	for kind, payload := range payloads {
 		if err := writeFileSync(filepath.Join(tmpDir, payload.path), payload.raw, fsperm.PrivateFile); err != nil {
@@ -288,6 +321,9 @@ func (s *LocalStore) tryLoadPersistentIndexSet(ctx context.Context, checkpoint C
 	if err != nil {
 		return persistentIndexStatusFallback(status, err), false
 	}
+	if err := s.loadPersistentQueryIndexes(dir, manifest, checkpoint); err != nil {
+		return persistentIndexStatusFallback(status, err), false
+	}
 	s.labelIndex = labels
 	s.tagIndex = tags
 	s.edgeAdjacencyOut = adjOut
@@ -376,6 +412,15 @@ func (s *LocalStore) persistentIndexStatusForCheckpoint(checkpoint CheckpointMan
 		status.LoadResult = PersistentIndexLoadNotLoaded
 	}
 	return status
+}
+
+func persistentIndexStatusHasQueryPayload(status PersistentIndexStatus) bool {
+	for _, entry := range status.Entries {
+		if entry.Kind == persistentIndexKindQueryMetadata {
+			return true
+		}
+	}
+	return false
 }
 
 func persistentIndexStatusFromManifest(manifest persistentIndexManifest) PersistentIndexStatus {

@@ -1480,6 +1480,151 @@ func edgeIDs(entries []EdgeIndexEntry) []graph.EdgeID {
 	return out
 }
 
+func TestLocalStorePersistentQueryIndexesLoadAfterCheckpointOpen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	domainID := graph.DomainID(uuid.New())
+	nodeIdx := journalDateIndex()
+	edgeIdx := referencesConfidenceIndex()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-18"}}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-19"}}
+	low := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: first.ID, ToID: second.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.2}}
+	high := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: second.ID, ToID: first.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.9}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []graph.Node{second, first} {
+		if err := tx.PutNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, edge := range []graph.Edge{low, high} {
+		if err := tx.PutEdge(edge); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-query", []schema.IndexDefinition{nodeIdx, edgeIdx}); err != nil {
+		t.Fatalf("ConfigureIndexes() error = %v", err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() error = %v", err)
+	}
+	if !status.PersistentIndex.Present || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryMetadata) || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryNode) || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryEdge) {
+		t.Fatalf("persistent query index payloads missing from status: %+v", status.PersistentIndex)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	status, err = store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() after reopen error = %v", err)
+	}
+	if status.PersistentIndex.LoadResult != PersistentIndexLoadUsed || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryMetadata) {
+		t.Fatalf("persistent query index was not loaded: %+v", status.PersistentIndex)
+	}
+	nodeEntries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: nodeIdx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10})
+	if err != nil {
+		t.Fatalf("ScanNodePropertyOrdered() error = %v", err)
+	}
+	if got := nodeIDs(nodeEntries); !reflect.DeepEqual(got, []graph.NodeID{first.ID, second.ID}) {
+		t.Fatalf("unexpected node order from persistent query index: %+v", got)
+	}
+	edgeEntries, _, err := store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: domainID, IndexName: edgeIdx.Name, Direction: schema.IndexSortDirectionDesc, Limit: 10})
+	if err != nil {
+		t.Fatalf("ScanEdgePropertyOrdered() error = %v", err)
+	}
+	if got := edgeIDs(edgeEntries); !reflect.DeepEqual(got, []graph.EdgeID{high.ID, low.ID}) {
+		t.Fatalf("unexpected edge order from persistent query index: %+v", got)
+	}
+}
+
+func TestLocalStoreCorruptPersistentQueryIndexFallsBack(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	domainID := graph.DomainID(uuid.New())
+	idx := journalDateIndex()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-18"}}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-19"}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-query", []schema.IndexDefinition{idx}); err != nil {
+		t.Fatalf("ConfigureIndexes() error = %v", err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	indexDir, err := store.latestIndexSetDir()
+	if err != nil || indexDir == "" {
+		t.Fatalf("latestIndexSetDir() = %q, %v", indexDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(indexDir, persistentIndexQueryNodePayload), []byte("corrupt\n"), 0o600); err != nil {
+		t.Fatalf("corrupt persistent query payload: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen with corrupt persistent query index should fall back: %v", err)
+	}
+	defer store.Close()
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() after corrupt query payload error = %v", err)
+	}
+	if status.PersistentIndex.LoadResult != PersistentIndexLoadFallback || status.PersistentIndex.FallbackReason == "" {
+		t.Fatalf("unexpected persistent index status after corrupt query fallback: %+v", status.PersistentIndex)
+	}
+	entries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10})
+	if err != nil {
+		t.Fatalf("ScanNodePropertyOrdered() after fallback error = %v", err)
+	}
+	if got := nodeIDs(entries); !reflect.DeepEqual(got, []graph.NodeID{first.ID, second.ID}) {
+		t.Fatalf("unexpected node order after corrupt query fallback: %+v", got)
+	}
+}
+
+func persistentIndexStatusHasEntry(status PersistentIndexStatus, kind string) bool {
+	for _, entry := range status.Entries {
+		if entry.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
 func TestLocalStoreConfigureIndexesRemoveAndChangeLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, t.TempDir())
