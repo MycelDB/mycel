@@ -158,6 +158,92 @@ validate_data_plane() {
     "$ROOT_DIR/scripts/validateK3sClusterDataPlane.sh"
 }
 
+force_raft_snapshots_on_active_quorum() {
+  local reduced=$((EXPECTED_NODES - 1))
+  local ordinal pod tmp err
+  for ((ordinal = 0; ordinal < reduced; ordinal++)); do
+    pod="myceld-${ordinal}"
+    tmp="$(mktemp)"
+    err="$(mktemp)"
+    echo "Forcing raft snapshots on ${pod}"
+    if ! kubectl --request-timeout=2m -n "$NAMESPACE" exec "$pod" -- /bin/sh -c 'timeout 120 "$@"' -- \
+      mycel --daemon-addr 127.0.0.1:9091 \
+      --username "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD" --output json \
+      cluster raft-snapshot create >"$tmp" 2>"$err"; then
+      cat "$err" >&2 || true
+      cat "$tmp" >&2 || true
+      rm -f "$tmp" "$err"
+      return 1
+    fi
+    python3 - "$pod" "$tmp" <<'PY'
+import json, sys
+pod = sys.argv[1]
+path = sys.argv[2]
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception as exc:
+    raw = ""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except Exception:
+        pass
+    raise SystemExit(f"{pod}: raft snapshot command did not return JSON: {exc}; output={raw!r}")
+results = data.get("results") or []
+if not results:
+    raise SystemExit(f"{pod}: raft snapshot command returned no results")
+errors = [f"{r.get('group_id')}: {r.get('error')}" for r in results if r.get("error")]
+if errors:
+    raise SystemExit(f"{pod}: raft snapshot errors: {'; '.join(errors)}")
+missing = [r.get("group_id") for r in results if int(r.get("snapshot_index") or 0) <= 0]
+if missing:
+    raise SystemExit(f"{pod}: raft snapshot returned zero index for groups: {missing}")
+print(f"{pod}: forced raft snapshots for {len(results)} groups")
+PY
+    rm -f "$tmp" "$err"
+  done
+}
+
+wait_for_rejoined_snapshots() {
+  local pod="$1" deadline tmp output
+  deadline=$((SECONDS + 300))
+  while (( SECONDS <= deadline )); do
+    tmp="$(mktemp)"
+    if kubectl --request-timeout=2m -n "$NAMESPACE" exec "$pod" -- /bin/sh -c 'timeout 120 "$@"' -- \
+      mycel --daemon-addr 127.0.0.1:9091 \
+      --username "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD" --output json \
+      cluster raft-groups >"$tmp"; then
+      if output="$(python3 - "$pod" "$tmp" <<'PY'
+import json, sys
+pod = sys.argv[1]
+path = sys.argv[2]
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+groups = data.get("groups") or []
+if not groups:
+    raise SystemExit(f"{pod}: no raft groups reported")
+missing = [g.get("group_id") for g in groups if int(g.get("snapshot_index") or 0) <= 0]
+if missing:
+    raise SystemExit(f"{pod}: waiting for nonzero snapshot_index on groups: {missing}")
+print(f"{pod}: nonzero snapshot_index on {len(groups)} raft groups")
+PY
+)"; then
+        rm -f "$tmp"
+        printf '%s\n' "$output"
+        return 0
+      fi
+    else
+      output="raft group query failed"
+    fi
+    rm -f "$tmp"
+    printf 'Waiting for rejoined raft snapshots: %s\n' "$output" >&2
+    sleep 5
+  done
+  printf '%s\n' "$output" >&2
+  return 1
+}
+
 rolling_restart() {
   kubectl -n "$NAMESPACE" rollout restart statefulset/myceld
   kubectl -n "$NAMESPACE" rollout status statefulset/myceld --timeout=10m
@@ -168,6 +254,7 @@ replace_last_pvc() {
   local reduced=$((EXPECTED_NODES - 1))
   local pod="myceld-${last_ordinal}"
   local pvc="myceld-data-${pod}"
+  force_raft_snapshots_on_active_quorum
   kubectl -n "$NAMESPACE" scale statefulset/myceld --replicas="$reduced"
   kubectl -n "$NAMESPACE" wait --for=delete "pod/${pod}" --timeout=3m
   kubectl -n "$NAMESPACE" delete pvc "$pvc" --wait=true --timeout=3m
@@ -193,5 +280,6 @@ echo "== single PVC replacement/rejoin validation =="
 replace_last_pvc
 validate_cluster
 validate_data_plane false
+wait_for_rejoined_snapshots "myceld-$((EXPECTED_NODES - 1))"
 
 echo "K3s cluster validation passed"

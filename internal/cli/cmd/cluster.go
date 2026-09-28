@@ -33,6 +33,16 @@ func NewClusterCommand(a *app.App) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{Use: "raft-groups", Short: "List local Raft group diagnostics", RunE: func(cmd *cobra.Command, args []string) error {
 		return runClusterRaftGroups(cmd.Context(), a)
 	}})
+	raftSnapshotCmd := &cobra.Command{Use: "raft-snapshot", Short: "Manage local Raft snapshots"}
+	var snapshotGroupIDs []string
+	var snapshotCompact bool
+	raftSnapshotCreateCmd := &cobra.Command{Use: "create", Short: "Create local Raft snapshots on this daemon", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterRaftSnapshotCreate(cmd.Context(), a, snapshotGroupIDs, snapshotCompact)
+	}}
+	raftSnapshotCreateCmd.Flags().StringArrayVar(&snapshotGroupIDs, "group-id", nil, "raft group ID to snapshot; may be repeated; defaults to all local groups")
+	raftSnapshotCreateCmd.Flags().BoolVar(&snapshotCompact, "compact", true, "compact raft logs through the snapshot index")
+	raftSnapshotCmd.AddCommand(raftSnapshotCreateCmd)
+	cmd.AddCommand(raftSnapshotCmd)
 	var consistencySpaceID string
 	var consistencyDomainID string
 	consistencyCmd := &cobra.Command{Use: "consistency", Short: "Show local graph consistency diagnostics", RunE: func(cmd *cobra.Command, args []string) error {
@@ -214,6 +224,19 @@ type raftReadDiagnosticsOutput struct {
 
 type raftGroupsOutput struct {
 	Groups []raftGroupOutput `json:"groups"`
+}
+
+type raftSnapshotResultOutput struct {
+	GroupID       string           `json:"group_id"`
+	SnapshotIndex uint64           `json:"snapshot_index,omitempty"`
+	Compacted     bool             `json:"compacted"`
+	Error         string           `json:"error,omitempty"`
+	Before        *raftGroupOutput `json:"before,omitempty"`
+	After         *raftGroupOutput `json:"after,omitempty"`
+}
+
+type raftSnapshotOutput struct {
+	Results []raftSnapshotResultOutput `json:"results"`
 }
 
 type graphConsistencyStatsOutput struct {
@@ -540,12 +563,26 @@ func runClusterRaftGroups(ctx context.Context, a *app.App) error {
 	return a.Print(out, text)
 }
 
+func runClusterRaftSnapshotCreate(ctx context.Context, a *app.App, groupIDs []string, compact bool) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).CreateRaftSnapshot(authCtx, &adminv1.CreateRaftSnapshotRequest{GroupIds: groupIDs, Compact: compact})
+	if err != nil {
+		return fmt.Errorf("create raft snapshot: %w", err)
+	}
+	out, text := buildRaftSnapshotOutput(res.GetResults())
+	return a.Print(out, text)
+}
+
 func buildRaftGroupsOutput(groups []*adminv1.RaftGroupStatus) (raftGroupsOutput, string) {
 	out := raftGroupsOutput{Groups: []raftGroupOutput{}}
 	lines := []string{}
 	for _, group := range groups {
-		read := raftReadDiagnosticsFromProto(group.GetReadDiagnostics())
-		item := raftGroupOutput{GroupID: group.GetGroupId(), Kind: raftGroupKindText(group.GetKind()), PartitionID: group.GetPartitionId(), LocalNodeID: group.GetLocalNodeId(), LeaderNodeID: group.GetLeaderNodeId(), PreferredLeaderNodeID: group.GetPreferredLeaderNodeId(), ReplicaNodeIDs: append([]uint64(nil), group.GetReplicaNodeIds()...), Health: raftGroupHealthText(group.GetHealth()), HealthReason: group.GetHealthReason(), Term: group.GetTerm(), CommitIndex: group.GetCommitIndex(), AppliedIndex: group.GetAppliedIndex(), ApplyLag: group.GetApplyLag(), LastIndex: group.GetLastIndex(), SnapshotIndex: group.GetSnapshotIndex(), ReadDiagnostics: read}
+		item := raftGroupOutputFromProto(group)
+		read := item.ReadDiagnostics
 		out.Groups = append(out.Groups, item)
 		line := fmt.Sprintf("%s\t%s\thealth=%s leader=%d term=%d commit=%d applied=%d lag=%d last=%d snapshot=%d read_attempts=%d read_ok=%d read_fail=%d", item.Kind, item.GroupID, item.Health, item.LeaderNodeID, item.Term, item.CommitIndex, item.AppliedIndex, item.ApplyLag, item.LastIndex, item.SnapshotIndex, read.ReadIndexAttempts, read.ReadIndexSuccesses, read.ReadIndexFailures)
 		if item.HealthReason != "" {
@@ -557,6 +594,36 @@ func buildRaftGroupsOutput(groups []*adminv1.RaftGroupStatus) (raftGroupsOutput,
 		lines = append(lines, line+"\n")
 	}
 	return out, strings.Join(lines, "")
+}
+
+func buildRaftSnapshotOutput(results []*adminv1.RaftSnapshotResult) (raftSnapshotOutput, string) {
+	out := raftSnapshotOutput{Results: []raftSnapshotResultOutput{}}
+	lines := []string{}
+	for _, result := range results {
+		item := raftSnapshotResultOutput{GroupID: result.GetGroupId(), SnapshotIndex: result.GetSnapshotIndex(), Compacted: result.GetCompacted(), Error: result.GetError()}
+		if before := result.GetBefore(); before != nil {
+			converted := raftGroupOutputFromProto(before)
+			item.Before = &converted
+		}
+		if after := result.GetAfter(); after != nil {
+			converted := raftGroupOutputFromProto(after)
+			item.After = &converted
+		}
+		out.Results = append(out.Results, item)
+		line := fmt.Sprintf("%s\tsnapshot=%d compacted=%t", item.GroupID, item.SnapshotIndex, item.Compacted)
+		if item.Error != "" {
+			line += " error=" + item.Error
+		}
+		lines = append(lines, line+"\n")
+	}
+	return out, strings.Join(lines, "")
+}
+
+func raftGroupOutputFromProto(group *adminv1.RaftGroupStatus) raftGroupOutput {
+	if group == nil {
+		return raftGroupOutput{}
+	}
+	return raftGroupOutput{GroupID: group.GetGroupId(), Kind: raftGroupKindText(group.GetKind()), PartitionID: group.GetPartitionId(), LocalNodeID: group.GetLocalNodeId(), LeaderNodeID: group.GetLeaderNodeId(), PreferredLeaderNodeID: group.GetPreferredLeaderNodeId(), ReplicaNodeIDs: append([]uint64(nil), group.GetReplicaNodeIds()...), Health: raftGroupHealthText(group.GetHealth()), HealthReason: group.GetHealthReason(), Term: group.GetTerm(), CommitIndex: group.GetCommitIndex(), AppliedIndex: group.GetAppliedIndex(), ApplyLag: group.GetApplyLag(), LastIndex: group.GetLastIndex(), SnapshotIndex: group.GetSnapshotIndex(), ReadDiagnostics: raftReadDiagnosticsFromProto(group.GetReadDiagnostics())}
 }
 
 func raftReadDiagnosticsFromProto(in *adminv1.RaftReadDiagnostics) raftReadDiagnosticsOutput {
