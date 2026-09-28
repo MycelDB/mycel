@@ -84,36 +84,213 @@ Later phases may support applying checkpoint-to-index deltas or retaining
 multiple index generations, but phase 1 of persistent indexes should keep the
 validity rule strict.
 
-## Proposed layout
+## On-disk file structure
 
-Within each domain graph store:
+Persistent graph indexes live inside the domain graph store. The complete
+advanced-storage domain directory is intended to look like this:
 
 ```text
-graphs/<space_id>/domains/<domain_id>/
+<data_dir>/graphs/<space_id>/domains/<domain_id>/
   manifest.mycel
   segments/
     txns-000001.kseg
     nodes-000001.kseg
     edges-000001.kseg
   checkpoints/
-    <checkpoint_id>/
+    LATEST
+    chk-<uuid>/
       manifest.json
       nodes.kchk
       edges.kchk
-    LATEST
   indexes/
-    <index_set_id>/
+    LATEST
+    idx-<uuid>/
       manifest.json
       labels.kidx
       tags.kidx
       adjacency-out.kidx
       adjacency-in.kidx
-    LATEST
 ```
 
-`indexes/LATEST` points to the latest published complete index set. As with graph
-checkpoints, readers only use an index set after its manifest and payload files
-are complete and valid.
+### Existing graph store files
+
+```text
+manifest.mycel
+segments/*.kseg
+```
+
+These remain the authoritative graph store manifest and append-only segment logs.
+Persistent indexes must not require a `.kseg` format change.
+
+### Checkpoint directory
+
+```text
+checkpoints/
+  LATEST
+  chk-<uuid>/
+    manifest.json
+    nodes.kchk
+    edges.kchk
+```
+
+This is the phase 2 domain graph checkpoint layout. Persistent indexes are valid
+only relative to a checkpoint baseline. The index manifest references the
+checkpoint ID, graph revision, and graph checksum it was built from.
+
+### Index root
+
+```text
+indexes/
+```
+
+The `indexes/` directory contains local derived persistent index sets for this
+one domain store. It is safe to delete the whole directory: the domain store must
+fall back to rebuilding in-memory indexes from graph state.
+
+The index root contains:
+
+```text
+indexes/LATEST
+indexes/idx-<uuid>/...
+```
+
+`indexes/LATEST` is a small text pointer file containing the latest published
+index set directory name, for example:
+
+```text
+idx-4c5171a3-9d76-4f7c-a43f-24e3b105eae1
+```
+
+The pointer must name a child directory of `indexes/`; absolute paths, `..`, path
+separators, whitespace-only names, and non-`idx-` names are invalid.
+
+### Index set directory
+
+Each complete index set is stored in one immutable directory:
+
+```text
+indexes/idx-<uuid>/
+  manifest.json
+  labels.kidx
+  tags.kidx
+  adjacency-out.kidx
+  adjacency-in.kidx
+```
+
+The directory name is an implementation-generated ID and should be treated as
+opaque. Initial implementations should use `idx-<uuid>` to make partial/manual
+inspection simple and avoid collisions.
+
+An index set directory is immutable after publication. To refresh indexes, write
+a new `idx-<uuid>` directory and atomically update `indexes/LATEST`.
+
+### Index manifest
+
+```text
+indexes/idx-<uuid>/manifest.json
+```
+
+The manifest is the authoritative description of the index set. It records:
+
+- index format version
+- space and domain IDs
+- index set ID
+- creation time
+- checkpoint ID used as the graph baseline
+- graph revision and graph checksum covered by the index set
+- expected payload files
+- per-payload entry counts and checksums
+
+Readers should validate the manifest before opening payload files. A missing,
+invalid, or unsupported manifest makes the whole index set unusable and triggers
+fallback to in-memory rebuild.
+
+### Index payload files
+
+Initial payload files are:
+
+```text
+labels.kidx
+```
+
+Maps graph labels to sorted live node IDs.
+
+```text
+tags.kidx
+```
+
+Maps graph tags to sorted live node IDs.
+
+```text
+adjacency-out.kidx
+```
+
+Maps outgoing edge buckets to sorted live edge IDs. The logical key is expected
+to include at least the source node ID and edge label/bucket used by the current
+in-memory adjacency index.
+
+```text
+adjacency-in.kidx
+```
+
+Maps incoming edge buckets to sorted live edge IDs. The logical key is expected
+to include at least the target node ID and edge label/bucket used by the current
+in-memory adjacency index.
+
+Payload files store index keys and entity IDs only. They must not duplicate full
+node or edge records; authoritative record bodies remain in checkpoint payloads
+and `.kseg` segment replay.
+
+### Temporary write layout
+
+Index creation should not publish partial files. A safe write uses temporary
+paths under the index root, for example:
+
+```text
+indexes/.tmp-idx-<uuid>/
+  manifest.json.tmp
+  labels.kidx
+  tags.kidx
+  adjacency-out.kidx
+  adjacency-in.kidx
+indexes/LATEST.tmp
+```
+
+Recommended publish sequence:
+
+1. create `indexes/.tmp-idx-<uuid>/`
+2. write all payload files
+3. fsync payload files and the temporary directory where supported
+4. write and fsync `manifest.json.tmp`
+5. rename `manifest.json.tmp` to `manifest.json` inside the temporary directory
+6. rename `.tmp-idx-<uuid>` to `idx-<uuid>`
+7. write `indexes/LATEST.tmp` containing `idx-<uuid>\n`
+8. rename `LATEST.tmp` to `LATEST`
+9. fsync `indexes/` where supported
+
+Readers must ignore `.tmp-*` directories and `LATEST.tmp`.
+
+### Retention and cleanup
+
+The initial retention policy should keep only the latest complete index set:
+
+```text
+keep:    indexes/LATEST target
+remove:  older indexes/idx-* directories
+ignore:  transient indexes/.tmp-* until cleanup
+```
+
+Cleanup is opportunistic. Failure to delete an old index set must not make the
+new index set invalid.
+
+### File ownership and locality
+
+All files under `indexes/` are local to one daemon replica. They are not copied
+through Raft, are not authoritative cluster state, and can be regenerated by any
+replica that has applied the corresponding graph state.
+
+Backups may include them as derived artifacts, but restore correctness must not
+depend on their presence.
 
 The index set directory may include only files for index kinds implemented in
 that format version. The manifest is authoritative for which files are expected.
