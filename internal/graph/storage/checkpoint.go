@@ -65,6 +65,70 @@ type CheckpointSegmentOffset struct {
 	Offset  int64  `json:"offset"`
 }
 
+// CheckpointStatus describes the latest local checkpoint for a store.
+type CheckpointStatus struct {
+	CurrentRevision    uint64
+	CheckpointPresent  bool
+	CheckpointRevision uint64
+	CreatedAt          time.Time
+	NodeCount          int
+	EdgeCount          int
+	GraphChecksum      string
+	ChecksumAlgorithm  string
+	TailRevisions      uint64
+}
+
+// CheckpointStatus returns current store revision and latest checkpoint metadata,
+// if a checkpoint is present.
+func (s *LocalStore) CheckpointStatus(ctx context.Context) (CheckpointStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return CheckpointStatus{}, err
+	}
+	s.mu.RLock()
+	currentRevision := s.revision
+	err := s.ensureReady()
+	s.mu.RUnlock()
+	if err != nil {
+		return CheckpointStatus{}, err
+	}
+	status := CheckpointStatus{CurrentRevision: currentRevision}
+	dir, err := s.latestCheckpointDir()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return status, nil
+		}
+		return CheckpointStatus{}, err
+	}
+	if dir == "" {
+		return status, nil
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, checkpointManifestName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return status, nil
+		}
+		return CheckpointStatus{}, err
+	}
+	var manifest CheckpointManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return CheckpointStatus{}, err
+	}
+	if err := s.validateCheckpointManifest(manifest); err != nil {
+		return CheckpointStatus{}, err
+	}
+	status.CheckpointPresent = true
+	status.CheckpointRevision = manifest.GraphRevision
+	status.CreatedAt = manifest.CreatedAt.UTC()
+	status.NodeCount = manifest.NodeCount
+	status.EdgeCount = manifest.EdgeCount
+	status.GraphChecksum = manifest.GraphChecksum
+	status.ChecksumAlgorithm = manifest.ChecksumAlgorithm
+	if currentRevision >= manifest.GraphRevision {
+		status.TailRevisions = currentRevision - manifest.GraphRevision
+	}
+	return status, nil
+}
+
 // WriteCheckpoint writes a compact latest-state checkpoint for this local store.
 // The checkpoint is a local derived artifact; the append-only segments remain the
 // authoritative mutation log until a future compaction phase removes old records.

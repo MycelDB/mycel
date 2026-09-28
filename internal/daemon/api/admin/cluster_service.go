@@ -36,6 +36,11 @@ type LocalGraphForensicExportProvider interface {
 	LocalGraphForensicExport(ctx context.Context, spaceID string, domainID string, opts graphservice.LocalGraphForensicExportOptions) (graphservice.LocalGraphForensicExport, error)
 }
 
+type GraphCheckpointProvider interface {
+	CreateGraphCheckpoint(ctx context.Context, spaceID string, domainID string) (graphservice.GraphCheckpointStatus, error)
+	GraphCheckpointStatus(ctx context.Context, spaceID string, domainID string) (graphservice.GraphCheckpointStatus, error)
+}
+
 type AdminClusterService struct {
 	adminv1.UnimplementedAdminClusterServiceServer
 	cluster                  *clustering.Manager
@@ -47,6 +52,7 @@ type AdminClusterService struct {
 	raftTransportDiagnostics *consensus.TransportDiagnostics
 	graphConsistency         LocalGraphConsistencyProvider
 	graphForensicExport      LocalGraphForensicExportProvider
+	graphCheckpoint          GraphCheckpointProvider
 	graphPeerCollector       GraphConsistencyPeerCollector
 }
 
@@ -76,6 +82,11 @@ func (s *AdminClusterService) WithGraphConsistency(provider LocalGraphConsistenc
 
 func (s *AdminClusterService) WithGraphForensicExport(provider LocalGraphForensicExportProvider) *AdminClusterService {
 	s.graphForensicExport = provider
+	return s
+}
+
+func (s *AdminClusterService) WithGraphCheckpoint(provider GraphCheckpointProvider) *AdminClusterService {
+	s.graphCheckpoint = provider
 	return s
 }
 

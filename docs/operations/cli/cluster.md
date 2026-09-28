@@ -1,6 +1,6 @@
 # `mycel cluster`
 
-Inspect raft cluster status, health, consistency, and forensics.
+Inspect raft cluster status, health, consistency, forensics, and local graph checkpoints.
 
 Authentication mode: **operator**.
 
@@ -10,6 +10,7 @@ Authentication mode: **operator**.
 - List raft groups.
 - Check local application-level readiness for Kubernetes probes, including clustered write readiness.
 - Run graph consistency reports and local forensic exports.
+- Create and inspect local domain graph checkpoints.
 
 ## Examples
 
@@ -29,6 +30,15 @@ can route to Raft leaders yet.
 ```sh
 mycel cluster consistency-report --space-id <space-id> --domain-id <domain-id>
 ```
+
+```sh
+mycel cluster graph-checkpoint create --space-id <space-id> --domain-id <domain-id>
+mycel cluster graph-checkpoint status --space-id <space-id> --domain-id <domain-id>
+```
+
+Graph checkpoint commands operate on the local daemon only. They create or read a
+derived domain graph checkpoint for fast-open/recovery; they are not Raft
+snapshots or backups.
 
 ## Related docs
 

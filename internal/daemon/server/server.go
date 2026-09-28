@@ -170,6 +170,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		if provider, ok := cfg.GraphManager.(adminapi.LocalGraphForensicExportProvider); ok {
 			clusterAdmin.WithGraphForensicExport(provider)
 		}
+		if provider, ok := cfg.GraphManager.(adminapi.GraphCheckpointProvider); ok {
+			clusterAdmin.WithGraphCheckpoint(provider)
+		}
 		adminv1.RegisterAdminClusterServiceServer(grpcServer, clusterAdmin)
 	}
 	if cfg.BackupManager != nil {

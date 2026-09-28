@@ -92,8 +92,22 @@ func TestLocalStoreWriteCheckpointAndOpenWithoutHistoricalReplay(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	preStatus, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() before checkpoint error = %v", err)
+	}
+	if preStatus.CurrentRevision != 1 || preStatus.CheckpointPresent {
+		t.Fatalf("unexpected pre-checkpoint status: %+v", preStatus)
+	}
 	if err := store.WriteCheckpoint(ctx); err != nil {
 		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() error = %v", err)
+	}
+	if !status.CheckpointPresent || status.CurrentRevision != 1 || status.CheckpointRevision != 1 || status.NodeCount != 1 || status.EdgeCount != 0 || status.GraphChecksum == "" || status.ChecksumAlgorithm == "" {
+		t.Fatalf("unexpected checkpoint status: %+v", status)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)

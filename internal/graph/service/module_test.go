@@ -78,6 +78,44 @@ func TestModuleWALGraphCommitAppendsAndApplies(t *testing.T) {
 	}
 }
 
+func TestModuleGraphCheckpointCreateAndStatus(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "checkpoint me", Props: map[string]any{}}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	commit, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+	pre, err := m.GraphCheckpointStatus(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		t.Fatalf("GraphCheckpointStatus() before create error = %v", err)
+	}
+	if pre.CurrentRevision != uint64(commit.CommittedRevision) || pre.CheckpointPresent {
+		t.Fatalf("unexpected pre-checkpoint status: %+v", pre)
+	}
+	created, err := m.CreateGraphCheckpoint(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		t.Fatalf("CreateGraphCheckpoint() error = %v", err)
+	}
+	if !created.CheckpointPresent || created.CurrentRevision != uint64(commit.CommittedRevision) || created.CheckpointRevision != uint64(commit.CommittedRevision) || created.NodeCount != 1 || created.Source != "local_checkpoint" {
+		t.Fatalf("unexpected created checkpoint status: %+v", created)
+	}
+	status, err := m.GraphCheckpointStatus(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		t.Fatalf("GraphCheckpointStatus() error = %v", err)
+	}
+	if status.CheckpointRevision != created.CheckpointRevision || status.GraphChecksum == "" || status.ChecksumAlgorithm == "" {
+		t.Fatalf("unexpected checkpoint status: %+v", status)
+	}
+}
+
 func TestModuleQuiesceRejectsGraphCommit(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()

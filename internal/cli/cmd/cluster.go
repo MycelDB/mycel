@@ -69,6 +69,28 @@ func NewClusterCommand(a *app.App) *cobra.Command {
 	_ = exportCmd.MarkFlagRequired("space-id")
 	_ = exportCmd.MarkFlagRequired("domain-id")
 	cmd.AddCommand(exportCmd)
+	checkpointCmd := &cobra.Command{Use: "graph-checkpoint", Short: "Manage local domain graph checkpoints"}
+	var checkpointCreateSpaceID string
+	var checkpointCreateDomainID string
+	checkpointCreateCmd := &cobra.Command{Use: "create", Short: "Create a local domain graph checkpoint", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterGraphCheckpointCreate(cmd.Context(), a, checkpointCreateSpaceID, checkpointCreateDomainID)
+	}}
+	checkpointCreateCmd.Flags().StringVar(&checkpointCreateSpaceID, "space-id", "", "space ID")
+	checkpointCreateCmd.Flags().StringVar(&checkpointCreateDomainID, "domain-id", "", "domain ID")
+	_ = checkpointCreateCmd.MarkFlagRequired("space-id")
+	_ = checkpointCreateCmd.MarkFlagRequired("domain-id")
+	checkpointCmd.AddCommand(checkpointCreateCmd)
+	var checkpointStatusSpaceID string
+	var checkpointStatusDomainID string
+	checkpointStatusCmd := &cobra.Command{Use: "status", Short: "Show local domain graph checkpoint status", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterGraphCheckpointStatus(cmd.Context(), a, checkpointStatusSpaceID, checkpointStatusDomainID)
+	}}
+	checkpointStatusCmd.Flags().StringVar(&checkpointStatusSpaceID, "space-id", "", "space ID")
+	checkpointStatusCmd.Flags().StringVar(&checkpointStatusDomainID, "domain-id", "", "domain ID")
+	_ = checkpointStatusCmd.MarkFlagRequired("space-id")
+	_ = checkpointStatusCmd.MarkFlagRequired("domain-id")
+	checkpointCmd.AddCommand(checkpointStatusCmd)
+	cmd.AddCommand(checkpointCmd)
 	var diffLimit int
 	diffCmd := &cobra.Command{Use: "forensic-diff --left FILE --right FILE", Short: "Diff two graph forensic export JSON files", RunE: func(cmd *cobra.Command, args []string) error {
 		left, _ := cmd.Flags().GetString("left")
@@ -302,6 +324,21 @@ type graphForensicDiffSource struct {
 	GraphChecksum   string `json:"graph_checksum"`
 }
 
+type graphCheckpointStatusOutput struct {
+	SpaceID             string `json:"space_id"`
+	DomainID            string `json:"domain_id"`
+	CurrentRevision     uint64 `json:"current_revision"`
+	CheckpointPresent   bool   `json:"checkpoint_present"`
+	CheckpointRevision  uint64 `json:"checkpoint_revision,omitempty"`
+	CheckpointCreatedAt string `json:"checkpoint_created_at,omitempty"`
+	NodeCount           uint64 `json:"node_count,omitempty"`
+	EdgeCount           uint64 `json:"edge_count,omitempty"`
+	GraphChecksum       string `json:"graph_checksum,omitempty"`
+	ChecksumAlgorithm   string `json:"checksum_algorithm,omitempty"`
+	TailRevisions       uint64 `json:"tail_revisions"`
+	Source              string `json:"source,omitempty"`
+}
+
 type graphForensicDiffSummary struct {
 	OnlyInLeft     int `json:"only_in_left"`
 	OnlyInRight    int `json:"only_in_right"`
@@ -519,6 +556,55 @@ func runClusterForensicExport(ctx context.Context, a *app.App, spaceID string, d
 	}
 	out := buildGraphForensicExportOutput(res)
 	return a.Print(out, graphForensicExportText(out))
+}
+
+func runClusterGraphCheckpointCreate(ctx context.Context, a *app.App, spaceID string, domainID string) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).CreateGraphCheckpoint(authCtx, &adminv1.CreateGraphCheckpointRequest{SpaceId: spaceID, DomainId: domainID})
+	if err != nil {
+		return fmt.Errorf("create graph checkpoint: %w", err)
+	}
+	out := graphCheckpointStatusFromProto(res.GetStatus())
+	return a.Print(out, graphCheckpointStatusText(out))
+}
+
+func runClusterGraphCheckpointStatus(ctx context.Context, a *app.App, spaceID string, domainID string) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).GetGraphCheckpointStatus(authCtx, &adminv1.GetGraphCheckpointStatusRequest{SpaceId: spaceID, DomainId: domainID})
+	if err != nil {
+		return fmt.Errorf("get graph checkpoint status: %w", err)
+	}
+	out := graphCheckpointStatusFromProto(res.GetStatus())
+	return a.Print(out, graphCheckpointStatusText(out))
+}
+
+func graphCheckpointStatusFromProto(status *adminv1.GraphCheckpointStatus) graphCheckpointStatusOutput {
+	if status == nil {
+		return graphCheckpointStatusOutput{}
+	}
+	return graphCheckpointStatusOutput{SpaceID: status.GetSpaceId(), DomainID: status.GetDomainId(), CurrentRevision: status.GetCurrentRevision(), CheckpointPresent: status.GetCheckpointPresent(), CheckpointRevision: status.GetCheckpointRevision(), CheckpointCreatedAt: status.GetCheckpointCreatedAt(), NodeCount: status.GetNodeCount(), EdgeCount: status.GetEdgeCount(), GraphChecksum: status.GetGraphChecksum(), ChecksumAlgorithm: status.GetChecksumAlgorithm(), TailRevisions: status.GetTailRevisions(), Source: status.GetSource()}
+}
+
+func graphCheckpointStatusText(out graphCheckpointStatusOutput) string {
+	text := fmt.Sprintf("space=%s domain=%s current_revision=%d checkpoint_present=%t", out.SpaceID, out.DomainID, out.CurrentRevision, out.CheckpointPresent)
+	if out.CheckpointPresent {
+		text += fmt.Sprintf(" checkpoint_revision=%d tail_revisions=%d nodes=%d edges=%d checksum=%s algorithm=%s", out.CheckpointRevision, out.TailRevisions, out.NodeCount, out.EdgeCount, out.GraphChecksum, out.ChecksumAlgorithm)
+		if out.CheckpointCreatedAt != "" {
+			text += " created_at=" + out.CheckpointCreatedAt
+		}
+	}
+	if out.Source != "" {
+		text += " source=" + out.Source
+	}
+	return text + "\n"
 }
 
 func runClusterForensicDiff(a *app.App, leftPath string, rightPath string, limit int) error {

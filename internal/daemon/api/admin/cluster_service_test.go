@@ -35,6 +35,31 @@ type fakeLocalGraphForensicExportProvider struct {
 	err    error
 }
 
+type fakeGraphCheckpointProvider struct {
+	status graphservice.GraphCheckpointStatus
+	err    error
+}
+
+func (p fakeGraphCheckpointProvider) CreateGraphCheckpoint(ctx context.Context, spaceID string, domainID string) (graphservice.GraphCheckpointStatus, error) {
+	if p.err != nil {
+		return graphservice.GraphCheckpointStatus{}, p.err
+	}
+	status := p.status
+	status.SpaceID = spaceID
+	status.DomainID = domainID
+	return status, nil
+}
+
+func (p fakeGraphCheckpointProvider) GraphCheckpointStatus(ctx context.Context, spaceID string, domainID string) (graphservice.GraphCheckpointStatus, error) {
+	if p.err != nil {
+		return graphservice.GraphCheckpointStatus{}, p.err
+	}
+	status := p.status
+	status.SpaceID = spaceID
+	status.DomainID = domainID
+	return status, nil
+}
+
 func (p fakeLocalGraphForensicExportProvider) LocalGraphForensicExport(ctx context.Context, spaceID string, domainID string, opts graphservice.LocalGraphForensicExportOptions) (graphservice.LocalGraphForensicExport, error) {
 	if p.err != nil {
 		return graphservice.LocalGraphForensicExport{}, p.err
@@ -365,6 +390,34 @@ func TestAdminClusterServiceLocalGraphForensicExportRequiresAuth(t *testing.T) {
 	_, err := svc.GetLocalGraphForensicExport(context.Background(), &adminv1.GetLocalGraphForensicExportRequest{SpaceId: "space", DomainId: "domain"})
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected unauthenticated, got %v", err)
+	}
+}
+
+func TestAdminClusterServiceGraphCheckpointRequiresAuth(t *testing.T) {
+	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithGraphCheckpoint(fakeGraphCheckpointProvider{})
+	_, err := svc.CreateGraphCheckpoint(context.Background(), &adminv1.CreateGraphCheckpointRequest{SpaceId: "space-1", DomainId: "domain-1"})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected unauthenticated, got %v", err)
+	}
+}
+
+func TestAdminClusterServiceGraphCheckpointMapsStatus(t *testing.T) {
+	createdAt := time.Date(2026, 9, 28, 10, 11, 12, 13, time.UTC)
+	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithGraphCheckpoint(fakeGraphCheckpointProvider{status: graphservice.GraphCheckpointStatus{CurrentRevision: 12, CheckpointPresent: true, CheckpointRevision: 10, CheckpointCreatedAt: createdAt, NodeCount: 3, EdgeCount: 2, GraphChecksum: "graph", ChecksumAlgorithm: "graph-checkpoint-v1-sha256", TailRevisions: 2, Source: "local_checkpoint"}})
+	res, err := svc.CreateGraphCheckpoint(authenticatedClusterContext(), &adminv1.CreateGraphCheckpointRequest{SpaceId: "space-1", DomainId: "domain-1"})
+	if err != nil {
+		t.Fatalf("CreateGraphCheckpoint() error = %v", err)
+	}
+	got := res.GetStatus()
+	if got.GetSpaceId() != "space-1" || got.GetDomainId() != "domain-1" || got.GetCurrentRevision() != 12 || !got.GetCheckpointPresent() || got.GetCheckpointRevision() != 10 || got.GetNodeCount() != 3 || got.GetEdgeCount() != 2 || got.GetTailRevisions() != 2 || got.GetGraphChecksum() != "graph" || got.GetCheckpointCreatedAt() == "" {
+		t.Fatalf("unexpected checkpoint status: %#v", got)
+	}
+	statusRes, err := svc.GetGraphCheckpointStatus(authenticatedClusterContext(), &adminv1.GetGraphCheckpointStatusRequest{SpaceId: "space-1", DomainId: "domain-1"})
+	if err != nil {
+		t.Fatalf("GetGraphCheckpointStatus() error = %v", err)
+	}
+	if statusRes.GetStatus().GetCheckpointRevision() != 10 {
+		t.Fatalf("unexpected status response: %#v", statusRes.GetStatus())
 	}
 }
 
