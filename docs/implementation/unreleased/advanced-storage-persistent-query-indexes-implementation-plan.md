@@ -328,11 +328,17 @@ BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes
 BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-edge-scans   ~1.57 s/op
 ```
 
+Interning repeated per-entry query-index identity strings during payload decode
+further reduced persistent-path allocation pressure in the large benchmark
+(roughly `1.94–1.95 GB/op` and `28.3M allocs/op` down to roughly
+`1.83 GB/op` and `26.9M allocs/op` for persistent-query-index cases), though
+single-run wall-clock remains noisy and not clearly faster.
+
 Interpretation: the current persistent query-index map loader is still not a
-clear performance win at the 100k/250k multi-index scale, but the first load-path
-optimization narrowed the gap materially and reduced allocations. Further wins
-likely require reducing query payload read/decode overhead rather than only map
-pre-sizing.
+clear performance win at the 100k/250k multi-index scale, but load-path
+optimizations have narrowed the gap and reduced allocations. Further wins likely
+require reducing query payload read/decode overhead or changing the payload
+layout rather than only map pre-sizing/string interning.
 
 Suggested future benchmark dimensions:
 

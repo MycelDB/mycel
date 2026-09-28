@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -179,6 +180,7 @@ func (s *LocalStore) loadPersistentQueryIndexes(dir string, manifest persistentI
 	if err != nil {
 		return nil, err
 	}
+	identityInterner := newPersistentQueryIdentityInterner(metadata)
 	nodeIndex := make(map[string]map[string]nodePropertyIndexEntry, len(metadata))
 	edgeIndex := make(map[string]map[string]edgePropertyIndexEntry, len(metadata))
 	for identity, record := range metadata {
@@ -194,7 +196,7 @@ func (s *LocalStore) loadPersistentQueryIndexes(dir string, manifest persistentI
 		if err != nil {
 			return nil, err
 		}
-		if err := s.readPersistentQueryNodeEntries(raw, entry.EntryCount, metadata, nodeIndex); err != nil {
+		if err := s.readPersistentQueryNodeEntries(raw, entry.EntryCount, metadata, identityInterner, nodeIndex); err != nil {
 			return nil, err
 		}
 	}
@@ -203,7 +205,7 @@ func (s *LocalStore) loadPersistentQueryIndexes(dir string, manifest persistentI
 		if err != nil {
 			return nil, err
 		}
-		if err := s.readPersistentQueryEdgeEntries(raw, entry.EntryCount, metadata, edgeIndex); err != nil {
+		if err := s.readPersistentQueryEdgeEntries(raw, entry.EntryCount, metadata, identityInterner, edgeIndex); err != nil {
 			return nil, err
 		}
 	}
@@ -382,13 +384,13 @@ func (s *LocalStore) validatePersistentQueryMetadataRecord(record persistentQuer
 	return nil
 }
 
-func (s *LocalStore) readPersistentQueryNodeEntries(raw []byte, entryCount int, metadata map[string]persistentQueryIndexMetadataRecord, out map[string]map[string]nodePropertyIndexEntry) error {
+func (s *LocalStore) readPersistentQueryNodeEntries(raw []byte, entryCount int, metadata map[string]persistentQueryIndexMetadataRecord, identityInterner *persistentQueryIdentityInterner, out map[string]map[string]nodePropertyIndexEntry) error {
 	r := bytes.NewReader(raw)
 	if err := readPersistentBinaryHeader(r, persistentIndexKindQueryNode, entryCount); err != nil {
 		return err
 	}
 	for i := 0; i < entryCount; i++ {
-		identity, key, entityID, value, err := readPersistentQueryEntry(r)
+		identity, key, entityID, value, err := readPersistentQueryEntry(r, identityInterner)
 		if err != nil {
 			return err
 		}
@@ -414,13 +416,13 @@ func (s *LocalStore) readPersistentQueryNodeEntries(raw []byte, entryCount int, 
 	return nil
 }
 
-func (s *LocalStore) readPersistentQueryEdgeEntries(raw []byte, entryCount int, metadata map[string]persistentQueryIndexMetadataRecord, out map[string]map[string]edgePropertyIndexEntry) error {
+func (s *LocalStore) readPersistentQueryEdgeEntries(raw []byte, entryCount int, metadata map[string]persistentQueryIndexMetadataRecord, identityInterner *persistentQueryIdentityInterner, out map[string]map[string]edgePropertyIndexEntry) error {
 	r := bytes.NewReader(raw)
 	if err := readPersistentBinaryHeader(r, persistentIndexKindQueryEdge, entryCount); err != nil {
 		return err
 	}
 	for i := 0; i < entryCount; i++ {
-		identity, key, entityID, value, err := readPersistentQueryEntry(r)
+		identity, key, entityID, value, err := readPersistentQueryEntry(r, identityInterner)
 		if err != nil {
 			return err
 		}
@@ -446,8 +448,8 @@ func (s *LocalStore) readPersistentQueryEdgeEntries(raw []byte, entryCount int, 
 	return nil
 }
 
-func readPersistentQueryEntry(r *bytes.Reader) (string, string, uuid.UUID, any, error) {
-	identity, err := readPersistentBinaryString(r)
+func readPersistentQueryEntry(r *bytes.Reader, identityInterner *persistentQueryIdentityInterner) (string, string, uuid.UUID, any, error) {
+	identity, err := readPersistentBinaryInternedString(r, identityInterner)
 	if err != nil {
 		return "", "", uuid.Nil, nil, err
 	}
@@ -461,6 +463,61 @@ func readPersistentQueryEntry(r *bytes.Reader) (string, string, uuid.UUID, any, 
 	}
 	value, err := readPersistentScalarValue(r)
 	return identity, key, entityID, value, err
+}
+
+type persistentQueryIdentityInterner struct {
+	byLength map[uint32][]persistentQueryIdentityIntern
+	scratch  []byte
+}
+
+type persistentQueryIdentityIntern struct {
+	value string
+	raw   []byte
+}
+
+func newPersistentQueryIdentityInterner(metadata map[string]persistentQueryIndexMetadataRecord) *persistentQueryIdentityInterner {
+	out := &persistentQueryIdentityInterner{byLength: make(map[uint32][]persistentQueryIdentityIntern, len(metadata))}
+	for identity := range metadata {
+		if len(identity) > int(^uint32(0)) {
+			continue
+		}
+		length := uint32(len(identity))
+		out.byLength[length] = append(out.byLength[length], persistentQueryIdentityIntern{value: identity, raw: []byte(identity)})
+		if len(identity) > cap(out.scratch) {
+			out.scratch = make([]byte, len(identity))
+		}
+	}
+	return out
+}
+
+func readPersistentBinaryInternedString(r *bytes.Reader, interner *persistentQueryIdentityInterner) (string, error) {
+	var length uint32
+	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
+		return "", err
+	}
+	if int(length) < 0 || int(length) > r.Len() || length > 1<<20 {
+		return "", fmt.Errorf("%w: invalid persistent index string length", ErrInvalidRecord)
+	}
+	if interner == nil {
+		buf := make([]byte, int(length))
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return "", err
+		}
+		return string(buf), nil
+	}
+	if int(length) > cap(interner.scratch) {
+		interner.scratch = make([]byte, int(length))
+	}
+	buf := interner.scratch[:int(length)]
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return "", err
+	}
+	for _, candidate := range interner.byLength[length] {
+		if bytes.Equal(buf, candidate.raw) {
+			return candidate.value, nil
+		}
+	}
+	return "", fmt.Errorf("%w: unknown persistent query index identity", ErrInvalidRecord)
 }
 
 func persistentQueryIndexDefinitionFingerprint(meta IndexMetadata) (string, error) {
