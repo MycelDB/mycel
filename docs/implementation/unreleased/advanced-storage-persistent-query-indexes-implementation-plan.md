@@ -254,9 +254,10 @@ Implemented storage benchmarks:
 ```bash
 go test ./internal/graph/storage -run '^$' -bench BenchmarkLocalStoreQueryIndexOpenAndScan -benchmem -count=1
 go test ./internal/graph/storage -run '^$' -bench BenchmarkLocalStoreQueryIndexOpenPhases -benchmem -count=1
+MYCEL_GRAPH_BENCH_LARGE=1 go test ./internal/graph/storage -run '^$' -bench BenchmarkLocalStoreQueryIndexOpenPhasesLarge -benchmem -benchtime=1x -count=1 -timeout=30m
 ```
 
-The benchmark fixture currently uses:
+The default benchmark fixture currently uses:
 
 - 10k live nodes / 20k live edges;
 - 3 historical node update rounds;
@@ -295,12 +296,37 @@ has comparable immediate first-scan latency. Larger configured-index domains or
 multiple property indexes are the next benchmark target before treating
 persistent query indexes as a clear performance win.
 
+Large opt-in benchmark fixture currently uses:
+
+- 100k live nodes / 250k live edges;
+- 3 historical node update rounds;
+- 3 ordered node property indexes;
+- 2 ordered edge property indexes;
+- checkpoint-only rebuild versus checkpoint + persistent query indexes only
+  (full replay is intentionally omitted from this large manual benchmark).
+
+Large Apple M4 Max baseline with `-benchtime=1x`:
+
+```text
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-only                    ~1.44 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-first-node-scans        ~1.52 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-query-index-rebuild/open-first-edge-scans        ~1.57 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-only               ~1.67 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-node-scans   ~1.64 s/op
+BenchmarkLocalStoreQueryIndexOpenPhasesLarge/checkpoint-persistent-query-indexes/open-first-edge-scans   ~1.64 s/op
+```
+
+Interpretation: the current persistent query-index map loader is not yet a
+performance win at the 100k/250k multi-index scale. It is slower and allocates
+more than rebuilding query indexes from checkpoint records. The next optimization
+target should be reducing persistent query payload load overhead before relying
+on this path for open-latency improvement.
+
 Suggested future benchmark dimensions:
 
-- 100k nodes / 250k edges / 3 node property indexes;
-- edge-heavy domain with multiple edge property indexes;
-- tail replay after checkpoint with updates/deletes affecting indexed values;
-- immediate first-query latency separated from open latency.
+- edge-heavy domain with multiple edge property indexes beyond the current large
+  fixture;
+- tail replay after checkpoint with updates/deletes affecting indexed values.
 
 ### Acceptance
 

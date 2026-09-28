@@ -17,12 +17,27 @@ const (
 	benchmarkOpenNodes        = 10_000
 	benchmarkOpenEdges        = 20_000
 	benchmarkOpenUpdateRounds = 3
+	benchmarkLargeOpenNodes   = 100_000
+	benchmarkLargeOpenEdges   = 250_000
 )
+
+func BenchmarkLocalStoreQueryIndexOpenPhasesLarge(b *testing.B) {
+	if os.Getenv("MYCEL_GRAPH_BENCH_LARGE") != "1" {
+		b.Skip("set MYCEL_GRAPH_BENCH_LARGE=1 to run the large persistent query-index benchmark")
+	}
+	ctx := context.Background()
+	fixture := prepareMultiQueryIndexOpenBenchmarkFixture(b, ctx, benchmarkLargeOpenNodes, benchmarkLargeOpenEdges)
+	runQueryIndexOpenPhaseBenchmarks(b, ctx, fixture, checkpointQueryIndexOpenBenchmarkCases(fixture), true)
+}
 
 func BenchmarkLocalStoreQueryIndexOpenPhases(b *testing.B) {
 	ctx := context.Background()
 	fixture := prepareQueryIndexOpenBenchmarkFixture(b, ctx, benchmarkOpenNodes, benchmarkOpenEdges)
-	cases := queryIndexOpenBenchmarkCases(fixture)
+	runQueryIndexOpenPhaseBenchmarks(b, ctx, fixture, queryIndexOpenBenchmarkCases(fixture), false)
+}
+
+func runQueryIndexOpenPhaseBenchmarks(b *testing.B, ctx context.Context, fixture openBenchmarkFixture, cases []openBenchmarkCase, scanAll bool) {
+	b.Helper()
 	for _, tc := range cases {
 		b.Run(tc.name+"/open-only", func(b *testing.B) {
 			b.ReportAllocs()
@@ -39,7 +54,7 @@ func BenchmarkLocalStoreQueryIndexOpenPhases(b *testing.B) {
 				}
 			}
 		})
-		b.Run(tc.name+"/open-first-node-scan", func(b *testing.B) {
+		b.Run(tc.name+"/open-first-node-scans", func(b *testing.B) {
 			b.ReportAllocs()
 			b.ReportMetric(float64(fixture.nodeCount), "live_nodes/op")
 			b.ReportMetric(float64(fixture.edgeCount), "live_edges/op")
@@ -49,13 +64,17 @@ func BenchmarkLocalStoreQueryIndexOpenPhases(b *testing.B) {
 					b.Fatalf("Open() error = %v", err)
 				}
 				validateOpenBenchmarkStore(b, store, fixture)
-				validateBenchmarkNodeScan(b, ctx, store, fixture)
+				if scanAll {
+					validateBenchmarkNodeScans(b, ctx, store, fixture)
+				} else {
+					validateBenchmarkNodeScan(b, ctx, store, fixture)
+				}
 				if err := store.Close(); err != nil {
 					b.Fatalf("Close() error = %v", err)
 				}
 			}
 		})
-		b.Run(tc.name+"/open-first-edge-scan", func(b *testing.B) {
+		b.Run(tc.name+"/open-first-edge-scans", func(b *testing.B) {
 			b.ReportAllocs()
 			b.ReportMetric(float64(fixture.nodeCount), "live_nodes/op")
 			b.ReportMetric(float64(fixture.edgeCount), "live_edges/op")
@@ -65,7 +84,11 @@ func BenchmarkLocalStoreQueryIndexOpenPhases(b *testing.B) {
 					b.Fatalf("Open() error = %v", err)
 				}
 				validateOpenBenchmarkStore(b, store, fixture)
-				validateBenchmarkEdgeScan(b, ctx, store, fixture)
+				if scanAll {
+					validateBenchmarkEdgeScans(b, ctx, store, fixture)
+				} else {
+					validateBenchmarkEdgeScan(b, ctx, store, fixture)
+				}
 				if err := store.Close(); err != nil {
 					b.Fatalf("Close() error = %v", err)
 				}
@@ -144,6 +167,8 @@ type openBenchmarkFixture struct {
 	domainID                 graph.DomainID
 	nodeIndexName            string
 	edgeIndexName            string
+	nodeIndexNames           []string
+	edgeIndexNames           []string
 	nodeCount                int
 	edgeCount                int
 	historicalNodePuts       int
@@ -158,6 +183,13 @@ func queryIndexOpenBenchmarkCases(fixture openBenchmarkFixture) []openBenchmarkC
 	}
 }
 
+func checkpointQueryIndexOpenBenchmarkCases(fixture openBenchmarkFixture) []openBenchmarkCase {
+	return []openBenchmarkCase{
+		{name: "checkpoint-query-index-rebuild", path: fixture.checkpointOnlyDir},
+		{name: "checkpoint-persistent-query-indexes", path: fixture.checkpointWithIndexesDir},
+	}
+}
+
 func validateOpenBenchmarkStore(b *testing.B, store *LocalStore, fixture openBenchmarkFixture) {
 	b.Helper()
 	if store.Revision() != fixture.revision {
@@ -167,17 +199,41 @@ func validateOpenBenchmarkStore(b *testing.B, store *LocalStore, fixture openBen
 
 func validateBenchmarkNodeScan(b *testing.B, ctx context.Context, store *LocalStore, fixture openBenchmarkFixture) {
 	b.Helper()
-	nodeEntries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: fixture.domainID, IndexName: fixture.nodeIndexName, Direction: schema.IndexSortDirectionAsc, Limit: 100})
+	validateBenchmarkNodeScanByName(b, ctx, store, fixture, fixture.nodeIndexName)
+}
+
+func validateBenchmarkNodeScans(b *testing.B, ctx context.Context, store *LocalStore, fixture openBenchmarkFixture) {
+	b.Helper()
+	for _, name := range fixture.nodeIndexNames {
+		validateBenchmarkNodeScanByName(b, ctx, store, fixture, name)
+	}
+}
+
+func validateBenchmarkNodeScanByName(b *testing.B, ctx context.Context, store *LocalStore, fixture openBenchmarkFixture, name string) {
+	b.Helper()
+	nodeEntries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: fixture.domainID, IndexName: name, Direction: schema.IndexSortDirectionAsc, Limit: 100})
 	if err != nil || len(nodeEntries) == 0 {
-		b.Fatalf("ScanNodePropertyOrdered() len=%d err=%v", len(nodeEntries), err)
+		b.Fatalf("ScanNodePropertyOrdered(%s) len=%d err=%v", name, len(nodeEntries), err)
 	}
 }
 
 func validateBenchmarkEdgeScan(b *testing.B, ctx context.Context, store *LocalStore, fixture openBenchmarkFixture) {
 	b.Helper()
-	edgeEntries, _, err := store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: fixture.domainID, IndexName: fixture.edgeIndexName, Direction: schema.IndexSortDirectionAsc, Limit: 100})
+	validateBenchmarkEdgeScanByName(b, ctx, store, fixture, fixture.edgeIndexName)
+}
+
+func validateBenchmarkEdgeScans(b *testing.B, ctx context.Context, store *LocalStore, fixture openBenchmarkFixture) {
+	b.Helper()
+	for _, name := range fixture.edgeIndexNames {
+		validateBenchmarkEdgeScanByName(b, ctx, store, fixture, name)
+	}
+}
+
+func validateBenchmarkEdgeScanByName(b *testing.B, ctx context.Context, store *LocalStore, fixture openBenchmarkFixture, name string) {
+	b.Helper()
+	edgeEntries, _, err := store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: fixture.domainID, IndexName: name, Direction: schema.IndexSortDirectionAsc, Limit: 100})
 	if err != nil || len(edgeEntries) == 0 {
-		b.Fatalf("ScanEdgePropertyOrdered() len=%d err=%v", len(edgeEntries), err)
+		b.Fatalf("ScanEdgePropertyOrdered(%s) len=%d err=%v", name, len(edgeEntries), err)
 	}
 }
 
@@ -329,7 +385,67 @@ func prepareQueryIndexOpenBenchmarkFixture(b *testing.B, ctx context.Context, no
 	if err := removePersistentIndexSets(checkpointOnlyDir); err != nil {
 		b.Fatalf("remove persistent query index sets: %v", err)
 	}
-	return openBenchmarkFixture{fullReplayDir: fullReplayDir, checkpointOnlyDir: checkpointOnlyDir, checkpointWithIndexesDir: checkpointWithIndexesDir, domainID: domainID, nodeIndexName: nodeIdx.Name, edgeIndexName: edgeIdx.Name, nodeCount: nodeCount, edgeCount: edgeCount, historicalNodePuts: nodeCount * (benchmarkOpenUpdateRounds + 1), revision: revision}
+	return openBenchmarkFixture{fullReplayDir: fullReplayDir, checkpointOnlyDir: checkpointOnlyDir, checkpointWithIndexesDir: checkpointWithIndexesDir, domainID: domainID, nodeIndexName: nodeIdx.Name, edgeIndexName: edgeIdx.Name, nodeIndexNames: []string{nodeIdx.Name}, edgeIndexNames: []string{edgeIdx.Name}, nodeCount: nodeCount, edgeCount: edgeCount, historicalNodePuts: nodeCount * (benchmarkOpenUpdateRounds + 1), revision: revision}
+}
+
+func prepareMultiQueryIndexOpenBenchmarkFixture(b *testing.B, ctx context.Context, nodeCount, edgeCount int) openBenchmarkFixture {
+	b.Helper()
+	root := b.TempDir()
+	fullReplayDir := filepath.Join(root, "full-replay-query-large")
+	if err := os.MkdirAll(fullReplayDir, 0o700); err != nil {
+		b.Fatalf("mkdir large fixture: %v", err)
+	}
+	domainID, revision := seedOpenBenchmarkStore(b, ctx, fullReplayDir, nodeCount, edgeCount, benchmarkOpenUpdateRounds)
+	store, err := Open(ctx, fullReplayDir)
+	if err != nil {
+		b.Fatalf("open large query fixture: %v", err)
+	}
+	nodeIndexes := []schema.IndexDefinition{
+		{Name: "benchmark_nodes_by_ordinal_a", TargetKind: schema.IndexTargetNode, TargetType: "BenchmarkNode", Labels: []string{"BenchmarkNode"}, Field: schema.FieldPath{Namespace: "properties", Name: "ordinal"}, Kind: schema.IndexKindOrdered, Direction: schema.IndexSortDirectionAsc},
+		{Name: "benchmark_nodes_by_ordinal_b", TargetKind: schema.IndexTargetNode, TargetType: "BenchmarkNode", Labels: []string{"BenchmarkNode"}, Field: schema.FieldPath{Namespace: "properties", Name: "ordinal"}, Kind: schema.IndexKindOrdered, Direction: schema.IndexSortDirectionDesc},
+		{Name: "benchmark_tasks_by_ordinal", TargetKind: schema.IndexTargetNode, TargetType: "BenchmarkTask", Labels: []string{"BenchmarkTask"}, Field: schema.FieldPath{Namespace: "properties", Name: "ordinal"}, Kind: schema.IndexKindOrdered, Direction: schema.IndexSortDirectionAsc},
+	}
+	edgeIndexes := []schema.IndexDefinition{
+		{Name: "benchmark_edges_by_ordinal_a", TargetKind: schema.IndexTargetEdge, TargetType: "REFERENCES", Labels: []string{"REFERENCES"}, Field: schema.FieldPath{Namespace: "properties", Name: "ordinal"}, Kind: schema.IndexKindOrdered, Direction: schema.IndexSortDirectionAsc},
+		{Name: "benchmark_edges_by_ordinal_b", TargetKind: schema.IndexTargetEdge, TargetType: "REFERENCES", Labels: []string{"REFERENCES"}, Field: schema.FieldPath{Namespace: "properties", Name: "ordinal"}, Kind: schema.IndexKindOrdered, Direction: schema.IndexSortDirectionDesc},
+	}
+	indexes := append(append([]schema.IndexDefinition{}, nodeIndexes...), edgeIndexes...)
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-query-benchmark-large", indexes); err != nil {
+		b.Fatalf("ConfigureIndexes(large) error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		b.Fatalf("Close(large query fixture) error = %v", err)
+	}
+	checkpointWithIndexesDir := filepath.Join(root, "checkpoint-persistent-query-large")
+	if err := copyDir(fullReplayDir, checkpointWithIndexesDir); err != nil {
+		b.Fatalf("copy large query checkpoint fixture: %v", err)
+	}
+	store, err = Open(ctx, checkpointWithIndexesDir)
+	if err != nil {
+		b.Fatalf("open large query checkpoint fixture: %v", err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		b.Fatalf("WriteCheckpoint(large) error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		b.Fatalf("Close(large query checkpoint fixture) error = %v", err)
+	}
+	checkpointOnlyDir := filepath.Join(root, "checkpoint-query-rebuild-large")
+	if err := copyDir(checkpointWithIndexesDir, checkpointOnlyDir); err != nil {
+		b.Fatalf("copy large query checkpoint-only fixture: %v", err)
+	}
+	if err := removePersistentIndexSets(checkpointOnlyDir); err != nil {
+		b.Fatalf("remove large persistent query index sets: %v", err)
+	}
+	nodeNames := make([]string, 0, len(nodeIndexes))
+	for _, idx := range nodeIndexes {
+		nodeNames = append(nodeNames, idx.Name)
+	}
+	edgeNames := make([]string, 0, len(edgeIndexes))
+	for _, idx := range edgeIndexes {
+		edgeNames = append(edgeNames, idx.Name)
+	}
+	return openBenchmarkFixture{fullReplayDir: fullReplayDir, checkpointOnlyDir: checkpointOnlyDir, checkpointWithIndexesDir: checkpointWithIndexesDir, domainID: domainID, nodeIndexName: nodeNames[0], edgeIndexName: edgeNames[0], nodeIndexNames: nodeNames, edgeIndexNames: edgeNames, nodeCount: nodeCount, edgeCount: edgeCount, historicalNodePuts: nodeCount * (benchmarkOpenUpdateRounds + 1), revision: revision}
 }
 
 func removePersistentIndexSets(dir string) error {
