@@ -266,18 +266,27 @@ The benchmark fixture currently uses:
 Initial baseline from an Apple M4 Max with `-benchtime=1x`:
 
 ```text
-BenchmarkLocalStoreOpen/full-replay                  ~150 ms/op
-BenchmarkLocalStoreOpen/checkpoint-only               ~78 ms/op
-BenchmarkLocalStoreOpen/checkpoint-persistent-indexes ~134 ms/op
+BenchmarkLocalStoreOpen/full-replay                  ~150-175 ms/op
+BenchmarkLocalStoreOpen/checkpoint-only               ~78-85 ms/op
+BenchmarkLocalStoreOpen/checkpoint-persistent-indexes ~133 ms/op
+```
+
+After avoiding duplicate checkpoint-side label/tag/adjacency rebuild when a
+persistent index candidate is present, the same benchmark improved persistent
+index open to roughly:
+
+```text
+BenchmarkLocalStoreOpen/checkpoint-persistent-indexes ~121 ms/op
 ```
 
 Interpretation: checkpoints materially improve open time for churned graph
-history. The first JSON persistent-index tranche validates layout/fallback but is
-not yet faster than checkpoint-only because checkpoint load still rebuilds
-label/tag/adjacency maps from checkpoint records before replacing them with the
-loaded index payloads. A later optimization should avoid duplicate index work or
-move persistent indexes to a compact binary format before treating persistent
-indexes as a performance win.
+history. The first JSON persistent-index tranche validates layout/fallback and
+now avoids duplicate covered-index rebuild work, but it is still not faster than
+checkpoint-only. JSON payload parsing, UUID string parsing, and map hydration for
+adjacency remain more expensive than rebuilding those maps directly from
+checkpoint records at this fixture size. A compact binary `.kidx` format or a
+more selective/adaptive persistent-index strategy is needed before treating
+persistent indexes as a performance win.
 
 Suggested future benchmark dimensions:
 

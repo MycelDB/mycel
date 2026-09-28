@@ -244,16 +244,16 @@ func (s *LocalStore) latestCheckpointManifestLocked() (CheckpointManifest, strin
 }
 
 func (s *LocalStore) tryLoadPersistentIndexSet(ctx context.Context, checkpoint CheckpointManifest) (PersistentIndexStatus, bool) {
-	status := s.persistentIndexStatusForCheckpoint(checkpoint, PersistentIndexStatus{})
+	status := PersistentIndexStatus{LoadResult: PersistentIndexLoadMissing}
 	if err := ctx.Err(); err != nil {
 		return persistentIndexStatusFallback(status, err), false
 	}
-	if !status.Present || status.LoadResult == PersistentIndexLoadFallback {
-		return status, false
-	}
 	dir, err := s.latestIndexSetDir()
-	if err != nil || dir == "" {
+	if err != nil {
 		return persistentIndexStatusFallback(status, err), false
+	}
+	if dir == "" {
+		return status, false
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, persistentIndexManifestName))
 	if err != nil {
@@ -261,6 +261,10 @@ func (s *LocalStore) tryLoadPersistentIndexSet(ctx context.Context, checkpoint C
 	}
 	var manifest persistentIndexManifest
 	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return persistentIndexStatusFallback(status, err), false
+	}
+	status = persistentIndexStatusFromManifest(manifest)
+	if err := s.validatePersistentIndexManifest(manifest, checkpoint); err != nil {
 		return persistentIndexStatusFallback(status, err), false
 	}
 	labels, err := s.readPersistentNodeIndex(dir, manifest, "labels")
@@ -302,6 +306,31 @@ func (s *LocalStore) latestIndexSetDir() (string, error) {
 		return "", fmt.Errorf("%w: invalid persistent index pointer", ErrInvalidRecord)
 	}
 	return filepath.Join(root, name), nil
+}
+
+func (s *LocalStore) persistentIndexManifestCandidateForCheckpoint(checkpoint CheckpointManifest) PersistentIndexStatus {
+	status := PersistentIndexStatus{LoadResult: PersistentIndexLoadMissing}
+	dir, err := s.latestIndexSetDir()
+	if err != nil {
+		return persistentIndexStatusFallback(status, err)
+	}
+	if dir == "" {
+		return status
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, persistentIndexManifestName))
+	if err != nil {
+		return persistentIndexStatusFallback(status, err)
+	}
+	var manifest persistentIndexManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return persistentIndexStatusFallback(status, err)
+	}
+	status = persistentIndexStatusFromManifest(manifest)
+	if err := s.validatePersistentIndexManifest(manifest, checkpoint); err != nil {
+		return persistentIndexStatusFallback(status, err)
+	}
+	status.LoadResult = PersistentIndexLoadAvailable
+	return status
 }
 
 func (s *LocalStore) persistentIndexStatusForCheckpoint(checkpoint CheckpointManifest, lastLoad PersistentIndexStatus) PersistentIndexStatus {

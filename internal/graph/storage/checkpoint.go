@@ -335,24 +335,34 @@ func (s *LocalStore) tryLoadCheckpoint(ctx context.Context) (bool, error) {
 	if nodeChecksum != manifest.NodeChecksum || edgeChecksum != manifest.EdgeChecksum || checkpointGraphChecksum(nodeChecksum, edgeChecksum) != manifest.GraphChecksum {
 		return false, fmt.Errorf("%w: checkpoint checksum mismatch", ErrInvalidRecord)
 	}
+	indexCandidate := s.persistentIndexManifestCandidateForCheckpoint(manifest)
+	usePersistentCandidate := indexCandidate.Present && indexCandidate.LoadResult != PersistentIndexLoadFallback
 	s.resetIndexes()
 	if err := s.loadIndexManifestLocked(); err != nil {
 		return false, err
 	}
 	checkpointLoc := RecordLocation{Segment: "checkpoint", Offset: 0, Length: 0}
-	for _, node := range nodes {
-		s.applyNodePut(node, checkpointLoc)
-		s.nodeModRev[node.ID] = manifest.GraphRevision
+	if usePersistentCandidate {
+		for _, node := range nodes {
+			s.applyCheckpointNodePut(node, checkpointLoc, true)
+			s.nodeModRev[node.ID] = manifest.GraphRevision
+		}
+		for _, edge := range edges {
+			s.applyCheckpointEdgePut(edge, checkpointLoc, true)
+			s.edgeModRev[edge.ID] = manifest.GraphRevision
+		}
+		s.persistentIndexLoadStatus, _ = s.tryLoadPersistentIndexSet(ctx, manifest)
+		if s.persistentIndexLoadStatus.LoadResult == PersistentIndexLoadFallback {
+			s.resetIndexes()
+			if err := s.loadIndexManifestLocked(); err != nil {
+				return false, err
+			}
+			s.hydrateCheckpointFull(nodes, edges, checkpointLoc, manifest.GraphRevision)
+		}
+	} else {
+		s.persistentIndexLoadStatus = indexCandidate
+		s.hydrateCheckpointFull(nodes, edges, checkpointLoc, manifest.GraphRevision)
 	}
-	for _, edge := range edges {
-		s.applyEdgePut(edge, checkpointLoc)
-		s.edgeModRev[edge.ID] = manifest.GraphRevision
-	}
-	// Persistent index loading is an optimization only. Checkpoint payload apply
-	// above already rebuilt indexes from authoritative live records; a matching
-	// persistent index set can replace those maps before tail replay, and any
-	// missing/stale/corrupt index simply falls back to the rebuilt maps.
-	s.persistentIndexLoadStatus, _ = s.tryLoadPersistentIndexSet(ctx, manifest)
 	s.revision = manifest.GraphRevision
 	if err := s.replayCheckpointTail(ctx, manifest.AppliedSegmentOffsets); err != nil {
 		return false, err
@@ -364,6 +374,60 @@ func (s *LocalStore) tryLoadCheckpoint(ctx context.Context) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+func (s *LocalStore) hydrateCheckpointFull(nodes []graph.Node, edges []graph.Edge, loc RecordLocation, revision uint64) {
+	for _, node := range nodes {
+		s.applyNodePut(node, loc)
+		s.nodeModRev[node.ID] = revision
+	}
+	for _, edge := range edges {
+		s.applyEdgePut(edge, loc)
+		s.edgeModRev[edge.ID] = revision
+	}
+}
+
+func (s *LocalStore) applyCheckpointNodePut(n graph.Node, loc RecordLocation, persistentLabelTagIndexes bool) {
+	s.nodeRecords[n.ID] = cloneNode(n)
+	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, DomainID: n.DomainID, Location: loc}
+	if n.DomainID != uuid.Nil {
+		ensureNodeSet(s.nodesByDomain, n.DomainID)[n.ID] = struct{}{}
+		if !persistentLabelTagIndexes {
+			s.addNodeLabelIndexes(n)
+			s.addNodeTagIndexes(n)
+		}
+		for _, idx := range s.configuredIndexes[n.DomainID] {
+			_ = s.addNodePropertyIndexEntry(n, idx)
+		}
+	}
+	propsForIndex := n.Properties
+	if len(propsForIndex) == 0 {
+		propsForIndex = n.Props
+	}
+	if day, ok := numberPropInt(propsForIndex["journal_day"]); ok {
+		ensureNodeSet(s.journalDay, day)[n.ID] = struct{}{}
+	}
+	if n.BlobRef != nil {
+		ensureNodeSet(s.blobRefs, *n.BlobRef)[n.ID] = struct{}{}
+	}
+}
+
+func (s *LocalStore) applyCheckpointEdgePut(e graph.Edge, loc RecordLocation, persistentAdjacencyIndexes bool) {
+	stored := cloneEdge(e)
+	s.edgeRecords[e.ID] = stored
+	s.edgeMeta[e.ID] = EdgeMeta{ID: e.ID, DomainID: e.DomainID, FromID: e.FromID, ToID: e.ToID, Labels: append([]string(nil), e.Labels...), Location: loc}
+	_ = s.edgeIndex.Put(context.Background(), stored)
+	if !persistentAdjacencyIndexes {
+		s.addEdgeAdjacencyIndexes(stored)
+	}
+	for _, idx := range s.configuredIndexes[e.DomainID] {
+		_ = s.addEdgePropertyIndexEntry(stored, idx)
+	}
+	if graph.EdgeHasLabels(e, []string{"contains"}) {
+		s.containsChildren[e.FromID] = append(s.containsChildren[e.FromID], e.ID)
+		s.containsParent[e.ToID] = e.ID
+		s.sortChildren(e.FromID)
+	}
 }
 
 func (s *LocalStore) latestCheckpointDir() (string, error) {

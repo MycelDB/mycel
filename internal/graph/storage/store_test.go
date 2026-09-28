@@ -349,6 +349,73 @@ func TestLocalStoreCorruptPersistentIndexesFallBackToCheckpointRebuild(t *testin
 	}
 }
 
+func TestLocalStorePersistentIndexOpenReplaysTail(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	domainID := graph.DomainID(uuid.New())
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "first", Labels: []string{"Note"}, Properties: map[string]any{graph.NodePropTags: []string{"tail"}}}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "second", Labels: []string{"Note"}, Properties: map[string]any{graph.NodePropTags: []string{"tail"}}}
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: first.ID, ToID: second.ID, Labels: []string{"REFERENCES"}}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutNode(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	tail, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail.ExpectRevision(store.Revision())
+	if err := tail.PutNode(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := tail.PutEdge(edge); err != nil {
+		t.Fatal(err)
+	}
+	if err := tail.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() error = %v", err)
+	}
+	if status.PersistentIndex.LoadResult != PersistentIndexLoadUsed || status.TailRevisions != 1 {
+		t.Fatalf("unexpected checkpoint/index status after tail replay: %+v index=%+v", status, status.PersistentIndex)
+	}
+	labels, _, err := store.ScanLabel(ctx, LabelScan{DomainID: domainID, Label: "Note", Limit: 10})
+	if err != nil || len(labels) != 2 {
+		t.Fatalf("ScanLabel() = %+v, %v; want 2 nodes", labels, err)
+	}
+	tags, _, err := store.ScanTag(ctx, TagScan{DomainID: domainID, Tag: "tail", Limit: 10})
+	if err != nil || len(tags) != 2 {
+		t.Fatalf("ScanTag() = %+v, %v; want 2 nodes", tags, err)
+	}
+	out, _, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: first.ID, Label: "REFERENCES", Direction: AdjacencyDirectionOut, Limit: 10})
+	if err != nil || len(out) != 1 || out[0] != edge.ID {
+		t.Fatalf("ScanAdjacency(out) = %+v, %v; want tail edge", out, err)
+	}
+}
+
 func TestLocalStoreCheckpointExcludesDeletedEntities(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
