@@ -32,6 +32,18 @@ mycel cluster consistency-report --space-id <space-id> --domain-id <domain-id>
 ```
 
 ```sh
+mycel cluster raft-snapshot create
+mycel cluster raft-snapshot create --group-id system --compact=false
+```
+
+`cluster raft-snapshot create` is an explicit local operator/debug command for
+forcing Raft snapshots on the daemon you are connected to. It is intended for
+snapshot catch-up drills and diagnostics. It does not create graph checkpoints,
+backups, or cross-node snapshots. Use repeated `--group-id` flags to target
+specific local groups; otherwise all local groups are snapshotted. `--compact`
+defaults to `true` and compacts local Raft logs through the snapshot index.
+
+```sh
 mycel cluster graph-checkpoint create --space-id <space-id> --domain-id <domain-id>
 mycel cluster graph-checkpoint status --space-id <space-id> --domain-id <domain-id>
 ```
