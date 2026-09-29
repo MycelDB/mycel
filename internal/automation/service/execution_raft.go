@@ -84,6 +84,11 @@ func (m *AutomationManager) executionRoute(spaceID string) (leader consensus.Nod
 
 func (m *AutomationManager) putInvocationRuntime(ctx context.Context, inv automation.Invocation) error {
 	if m.raftGroups == nil {
+		release, err := m.enterMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
 		if err := m.requireWriteAllowed(); err != nil {
 			return err
 		}
@@ -97,6 +102,11 @@ func (m *AutomationManager) putInvocationRuntime(ctx context.Context, inv automa
 
 func (m *AutomationManager) putRunRuntime(ctx context.Context, spaceID string, run automation.Run) error {
 	if m.raftGroups == nil {
+		release, err := m.enterMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
 		if err := m.requireWriteAllowed(); err != nil {
 			return err
 		}
@@ -110,6 +120,11 @@ func (m *AutomationManager) putRunRuntime(ctx context.Context, spaceID string, r
 
 func (m *AutomationManager) putWorkflowInstanceRuntime(ctx context.Context, spaceID string, instance automation.WorkflowInstance) error {
 	if m.raftGroups == nil {
+		release, err := m.enterMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
 		if err := m.requireWriteAllowed(); err != nil {
 			return err
 		}
@@ -123,6 +138,11 @@ func (m *AutomationManager) putWorkflowInstanceRuntime(ctx context.Context, spac
 
 func (m *AutomationManager) putWorkflowStepRunRuntime(ctx context.Context, spaceID string, run automation.WorkflowStepRun) error {
 	if m.raftGroups == nil {
+		release, err := m.enterMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
 		if err := m.requireWriteAllowed(); err != nil {
 			return err
 		}
@@ -136,6 +156,11 @@ func (m *AutomationManager) putWorkflowStepRunRuntime(ctx context.Context, space
 
 func (m *AutomationManager) putSuccessfulInputRuntime(ctx context.Context, spaceID string, record storage.SuccessfulInputIndex) error {
 	if m.raftGroups == nil {
+		release, err := m.enterMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
 		if err := m.requireWriteAllowed(); err != nil {
 			return err
 		}
@@ -150,6 +175,11 @@ func (m *AutomationManager) putSuccessfulInputRuntime(ctx context.Context, space
 
 func (m *AutomationManager) putScheduleCheckpointRuntime(ctx context.Context, spaceID string, checkpoint storage.ScheduleCheckpoint) error {
 	if m.raftGroups == nil {
+		release, err := m.enterMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
 		if err := m.requireWriteAllowed(); err != nil {
 			return err
 		}

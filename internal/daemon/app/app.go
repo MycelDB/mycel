@@ -288,7 +288,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	spaceService := spaceservice.NewModule()
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
-	graphService := graphservice.NewModule()
+	graphService := graphservice.NewModule().WithCheckpointPolicy(graphservice.CheckpointPolicyConfig{Enabled: cfg.GraphCheckpoint.AutoEnabled, Interval: cfg.GraphCheckpoint.AutoInterval, RevisionThreshold: uint64(cfg.GraphCheckpoint.AutoRevisions), Timeout: cfg.GraphCheckpoint.AutoTimeout})
 	graphNotificationService := graphnotification.NewModule()
 	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)
 	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithInferenceManager(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
@@ -472,7 +472,8 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		_ = rt.Close()
 		return nil, err
 	}
-	if raftRuntimeConfigured(cfg) {
+	sinkPolicy := graphCommitSinkPolicyForConfig(cfg)
+	if sinkPolicy.Clustered {
 		if err := startAsyncSemanticDirtyConsumer(ctx, logger, graphNotificationService, semanticService); err != nil {
 			_ = rt.Close()
 			return nil, err
@@ -487,6 +488,25 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	}
 	logger.Info("daemon initialization complete")
 	return rt, nil
+}
+
+type graphCommitSinkPolicy struct {
+	Clustered           bool
+	SynchronousSinks    []string
+	RaftApplySinks      []string
+	AsyncGraphConsumers []string
+}
+
+func graphCommitSinkPolicyForConfig(cfg config.Config) graphCommitSinkPolicy {
+	policy := graphCommitSinkPolicy{AsyncGraphConsumers: []string{"lexical"}}
+	if raftRuntimeConfigured(cfg) {
+		policy.Clustered = true
+		policy.RaftApplySinks = []string{"graph_change_notification"}
+		policy.AsyncGraphConsumers = append(policy.AsyncGraphConsumers, "semantic")
+		return policy
+	}
+	policy.SynchronousSinks = []string{"graph_change_notification", "semantic"}
+	return policy
 }
 
 func raftRuntimeConfigured(cfg config.Config) bool {

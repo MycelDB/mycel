@@ -81,7 +81,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if provider, ok := host.(runtime.EncryptionProvider); ok {
 		m.encryption = provider.EncryptionService()
 	}
-	m.manager = backupcore.NewManager(backupcore.ManagerConfig{DataDir: host.DataDir(), Policy: policy, Logger: host.Log(), Quiesce: quiesceCoordinator, Encryption: m.encryption})
+	m.manager = backupcore.NewManager(backupcore.ManagerConfig{DataDir: host.DataDir(), Policy: policy, Logger: host.Log(), Quiesce: quiesceCoordinator, Encryption: m.encryption, PreArchive: m.prepareBackupSnapshot})
 	policy = m.manager.Policy()
 	m.policy = policy
 	m.logger = host.Log()
@@ -286,7 +286,7 @@ func (m *Module) Trigger(ctx context.Context, input backupcore.TriggerInput) (ba
 			return backupcore.TriggerResult{}, err
 		}
 	}
-	result, err := m.triggerWithWALCheckpoint(ctx, input)
+	result, err := m.triggerBackup(ctx, input)
 	if err == nil {
 		m.setNextRun(time.Now().UTC())
 	}
@@ -443,7 +443,7 @@ func (m *Module) schedulerLoop(ctx context.Context) {
 				m.setNextRun(time.Now().UTC())
 				continue
 			}
-			_, err = m.triggerWithWALCheckpoint(ctx, backupcore.TriggerInput{Source: "scheduler", Reason: "scheduled backup"})
+			_, err = m.triggerBackup(ctx, backupcore.TriggerInput{Source: "scheduler", Reason: "scheduled backup"})
 		}
 		if err != nil && ctx.Err() == nil {
 			retryAfter := m.Policy().RetryAfter

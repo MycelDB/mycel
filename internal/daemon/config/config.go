@@ -40,6 +40,9 @@ const (
 	DefaultAccessTokenTTL                   = 15 * time.Minute
 	DefaultWALSegmentBytes                  = int64(64 * 1024 * 1024)
 	DefaultWALSyncPolicy                    = "always"
+	DefaultGraphCheckpointAutoInterval      = time.Minute
+	DefaultGraphCheckpointAutoRevisions     = 10000
+	DefaultGraphCheckpointAutoTimeout       = 30 * time.Second
 	DefaultEncryptionAtRest                 = encryption.ModeDisabled
 	DefaultBlobBackend                      = "local"
 	DefaultClusterDiscoveryInterval         = 5 * time.Second
@@ -103,6 +106,13 @@ type WALConfig struct {
 	SyncPolicy   string
 }
 
+type GraphCheckpointConfig struct {
+	AutoEnabled   bool
+	AutoInterval  time.Duration
+	AutoRevisions int
+	AutoTimeout   time.Duration
+}
+
 type BlobConfig struct {
 	Backend             string
 	ObjectStoreProvider string
@@ -154,6 +164,7 @@ type Config struct {
 	Automation             AutomationConfig
 	Backup                 BackupConfig
 	WAL                    WALConfig
+	GraphCheckpoint        GraphCheckpointConfig
 	Blob                   BlobConfig
 	Cluster                ClusterConfig
 }
@@ -197,15 +208,21 @@ func LoadFromEnv() (Config, error) {
 			SegmentBytes: int64(parseIntEnv(os.Getenv("MYCELD_WAL_SEGMENT_BYTES"), int(DefaultWALSegmentBytes))),
 			SyncPolicy:   valueOrDefault(os.Getenv("MYCELD_WAL_SYNC_POLICY"), DefaultWALSyncPolicy),
 		},
+		GraphCheckpoint: GraphCheckpointConfig{
+			AutoEnabled:   parseBoolEnvDefault(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_ENABLED"), false),
+			AutoInterval:  parseDurationEnv(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL"), DefaultGraphCheckpointAutoInterval),
+			AutoRevisions: parseIntEnv(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS"), DefaultGraphCheckpointAutoRevisions),
+			AutoTimeout:   parseDurationEnv(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT"), DefaultGraphCheckpointAutoTimeout),
+		},
 		Blob: BlobConfig{
 			Backend:             valueOrDefault(os.Getenv("MYCELD_BLOB_BACKEND"), DefaultBlobBackend),
 			ObjectStoreProvider: strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PROVIDER")),
-			S3Bucket:            objectStoreValue(os.Getenv("MYCELD_BLOB_OBJECT_STORE_BUCKET"), os.Getenv("MYCELD_BLOB_S3_BUCKET")),
-			S3Prefix:            objectStoreValue(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PREFIX"), os.Getenv("MYCELD_BLOB_S3_PREFIX")),
-			S3Region:            objectStoreValue(os.Getenv("MYCELD_BLOB_OBJECT_STORE_REGION"), os.Getenv("MYCELD_BLOB_S3_REGION")),
-			S3KMSKeyID:          objectStoreValue(os.Getenv("MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID"), os.Getenv("MYCELD_BLOB_S3_KMS_KEY_ID")),
-			S3EndpointURL:       objectStoreValue(os.Getenv("MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL"), os.Getenv("MYCELD_BLOB_S3_ENDPOINT_URL")),
-			S3ForcePathStyle:    objectStoreBool(os.Getenv("MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE"), os.Getenv("MYCELD_BLOB_S3_FORCE_PATH_STYLE")),
+			S3Bucket:            strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_BUCKET")),
+			S3Prefix:            strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PREFIX")),
+			S3Region:            strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_REGION")),
+			S3KMSKeyID:          strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID")),
+			S3EndpointURL:       strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL")),
+			S3ForcePathStyle:    parseBoolEnv(os.Getenv("MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE")),
 		},
 		Cluster: ClusterConfig{
 			Name:                           strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
@@ -329,6 +346,9 @@ func (c Config) Validate() error {
 	if err := c.WAL.Validate(); err != nil {
 		return err
 	}
+	if err := c.GraphCheckpoint.Validate(); err != nil {
+		return err
+	}
 	if err := c.Encryption.Validate(); err != nil {
 		return err
 	}
@@ -349,7 +369,7 @@ func (c BlobConfig) Validate() error {
 	switch backend {
 	case "local":
 		return nil
-	case "s3", "object_store":
+	case "object_store":
 		provider := strings.ToLower(strings.TrimSpace(c.ObjectStoreProvider))
 		if provider == "" {
 			provider = "s3-compatible"
@@ -358,11 +378,13 @@ func (c BlobConfig) Validate() error {
 			return fmt.Errorf("MYCELD_BLOB_OBJECT_STORE_PROVIDER must be s3-compatible")
 		}
 		if strings.TrimSpace(c.S3Bucket) == "" {
-			return fmt.Errorf("MYCELD_BLOB_OBJECT_STORE_BUCKET is required when MYCELD_BLOB_BACKEND=object_store or s3")
+			return fmt.Errorf("MYCELD_BLOB_OBJECT_STORE_BUCKET is required when MYCELD_BLOB_BACKEND=object_store")
 		}
 		return nil
+	case "s3":
+		return fmt.Errorf("MYCELD_BLOB_BACKEND=s3 is no longer supported; use MYCELD_BLOB_BACKEND=object_store with MYCELD_BLOB_OBJECT_STORE_PROVIDER=s3-compatible and MYCELD_BLOB_OBJECT_STORE_* settings")
 	default:
-		return fmt.Errorf("MYCELD_BLOB_BACKEND must be local, object_store, or s3")
+		return fmt.Errorf("MYCELD_BLOB_BACKEND must be local or object_store")
 	}
 }
 
@@ -496,6 +518,30 @@ func (c WALConfig) Validate() error {
 	}
 }
 
+func (c GraphCheckpointConfig) Validate() error {
+	if c.AutoInterval < 0 {
+		return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL must be positive")
+	}
+	if c.AutoRevisions < 0 {
+		return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS must be positive")
+	}
+	if c.AutoTimeout < 0 {
+		return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT must be positive")
+	}
+	if c.AutoEnabled {
+		if c.AutoInterval == 0 {
+			return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL must be greater than zero when automatic graph checkpoints are enabled")
+		}
+		if c.AutoRevisions == 0 {
+			return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS must be greater than zero when automatic graph checkpoints are enabled")
+		}
+		if c.AutoTimeout == 0 {
+			return fmt.Errorf("MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT must be greater than zero when automatic graph checkpoints are enabled")
+		}
+	}
+	return nil
+}
+
 func (c BackupConfig) Validate() error {
 	if c.Interval < 0 {
 		return fmt.Errorf("MYCELD_BACKUP_INTERVAL must be positive")
@@ -612,20 +658,6 @@ func parseCSVEnv(value string) []string {
 		}
 	}
 	return out
-}
-
-func objectStoreValue(preferred, legacy string) string {
-	if strings.TrimSpace(preferred) != "" {
-		return strings.TrimSpace(preferred)
-	}
-	return strings.TrimSpace(legacy)
-}
-
-func objectStoreBool(preferred, legacy string) bool {
-	if strings.TrimSpace(preferred) != "" {
-		return parseBoolEnv(preferred)
-	}
-	return parseBoolEnv(legacy)
 }
 
 func valueOrDefault(value, fallback string) string {

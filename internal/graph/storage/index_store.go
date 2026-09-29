@@ -111,13 +111,25 @@ func (s *LocalStore) ScanNodePropertyOrdered(ctx context.Context, scan OrderedNo
 	out := make([]NodeIndexEntry, 0, limit)
 	for _, key := range keys[:limit] {
 		entry := entries[key]
-		out = append(out, NodeIndexEntry{NodeID: entry.NodeID, Value: entry.Value, Cursor: encodeIndexCursor(key)})
+		out = append(out, NodeIndexEntry{NodeID: entry.NodeID, Value: s.nodePropertyIndexEntryValue(entry, meta), Cursor: encodeIndexCursor(key)})
 	}
 	next := ""
 	if limit < len(keys) && limit > 0 {
 		next = encodeIndexCursor(keys[limit-1])
 	}
 	return out, next, nil
+}
+
+func (s *LocalStore) nodePropertyIndexEntryValue(entry nodePropertyIndexEntry, meta IndexMetadata) any {
+	if entry.Value != nil {
+		return entry.Value
+	}
+	node, ok := s.nodeRecords[entry.NodeID]
+	if !ok {
+		return nil
+	}
+	value, _ := graph.Property(node, meta.Field.Name)
+	return value
 }
 
 func (s *LocalStore) ScanEdgePropertyOrdered(ctx context.Context, scan OrderedEdgePropertyScan) ([]EdgeIndexEntry, string, error) {
@@ -165,13 +177,25 @@ func (s *LocalStore) ScanEdgePropertyOrdered(ctx context.Context, scan OrderedEd
 	out := make([]EdgeIndexEntry, 0, limit)
 	for _, key := range keys[:limit] {
 		entry := entries[key]
-		out = append(out, EdgeIndexEntry{EdgeID: entry.EdgeID, Value: entry.Value, Cursor: encodeIndexCursor(key)})
+		out = append(out, EdgeIndexEntry{EdgeID: entry.EdgeID, Value: s.edgePropertyIndexEntryValue(entry, meta), Cursor: encodeIndexCursor(key)})
 	}
 	next := ""
 	if limit < len(keys) && limit > 0 {
 		next = encodeIndexCursor(keys[limit-1])
 	}
 	return out, next, nil
+}
+
+func (s *LocalStore) edgePropertyIndexEntryValue(entry edgePropertyIndexEntry, meta IndexMetadata) any {
+	if entry.Value != nil {
+		return entry.Value
+	}
+	edge, ok := s.edgeRecords[entry.EdgeID]
+	if !ok {
+		return nil
+	}
+	value, _ := graph.EdgeProperty(edge, meta.Field.Name)
+	return value
 }
 
 func (s *LocalStore) ScanAdjacency(ctx context.Context, scan AdjacencyScan) ([]graph.EdgeID, string, error) {

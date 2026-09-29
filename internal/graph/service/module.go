@@ -41,7 +41,7 @@ const childOrderStep = 1000
 type Module struct {
 	mu                             sync.Mutex
 	dataDir                        string
-	stores                         map[string]*graphstorage.LocalStore
+	stores                         map[domainStoreKey]*graphstorage.LocalStore
 	overlays                       map[string]*overlay
 	changeSink                     graphchange.Sink
 	raftApplyChangeSink            graphchange.Sink
@@ -55,6 +55,10 @@ type Module struct {
 	walWaiter                      *wal.ApplyWaiter
 	encryption                     *encryption.Service
 	writeAllowed                   func() error
+	checkpointPolicy               CheckpointPolicyConfig
+	checkpointStates               map[domainStoreKey]checkpointRuntimeState
+	checkpointWorkerCancel         context.CancelFunc
+	checkpointWorkerDone           chan struct{}
 	raftGroups                     *consensus.MultiGroup
 	raftPartitionCount             uint32
 	raftLocalNode                  consensus.NodeID
@@ -63,6 +67,11 @@ type Module struct {
 	raftAppliedCommands            map[string]struct{}
 	logger                         *slog.Logger
 	writeTrace                     writetrace.Config
+}
+
+type domainStoreKey struct {
+	SpaceID  string
+	DomainID string
 }
 
 type overlay struct {
@@ -74,7 +83,12 @@ type overlay struct {
 }
 
 func NewModule() *Module {
-	return &Module{stores: map[string]*graphstorage.LocalStore{}, overlays: map[string]*overlay{}, gate: quiesce.NewGate(ModuleName)}
+	return &Module{stores: map[domainStoreKey]*graphstorage.LocalStore{}, overlays: map[string]*overlay{}, checkpointStates: map[domainStoreKey]checkpointRuntimeState{}, gate: quiesce.NewGate(ModuleName)}
+}
+
+func (m *Module) WithCheckpointPolicy(cfg CheckpointPolicyConfig) *Module {
+	m.checkpointPolicy = normalizeCheckpointPolicyConfig(cfg)
+	return m
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -257,7 +271,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		return runtime.Abort(ModuleName, "storage", "create graph data directory", err)
 	}
 	if m.stores == nil {
-		m.stores = map[string]*graphstorage.LocalStore{}
+		m.stores = map[domainStoreKey]*graphstorage.LocalStore{}
 	}
 	if m.overlays == nil {
 		m.overlays = map[string]*overlay{}
@@ -265,6 +279,10 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
+	if m.checkpointStates == nil {
+		m.checkpointStates = map[domainStoreKey]checkpointRuntimeState{}
+	}
+	m.checkpointPolicy = normalizeCheckpointPolicyConfig(m.checkpointPolicy)
 	m.loadRaftAppliedCommands()
 	if lookup, ok := host.(runtime.ServiceLookup); ok {
 		if schemaSvc, ok := lookup.Service(schemaservice.ModuleName); ok {
@@ -1065,7 +1083,39 @@ func (m *Module) CurrentRevision(ctx context.Context, spaceID string) (int64, er
 	if err != nil {
 		return 0, err
 	}
-	store, err := m.store(ctx, spaceID)
+	stores, err := m.domainStoresForSpace(ctx, spaceID)
+	if err != nil {
+		return 0, err
+	}
+	var revision int64
+	for _, store := range stores {
+		if rev := int64(store.Revision()); rev > revision {
+			revision = rev
+		}
+	}
+	if read != nil {
+		read.ObservedRevision = revision
+		RecordStrongReadContext(ctx, read)
+	}
+	return revision, nil
+}
+
+func (m *Module) CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error) {
+	if leader, forward, err := m.shouldForwardRaftGraphRead(spaceID); err != nil {
+		return 0, err
+	} else if forward {
+		req := raftGraphReadRequest{Op: "current_revision", SpaceID: spaceID, DomainID: domainID}
+		var res raftGraphRevisionResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return 0, err
+		}
+		return res.Revision, nil
+	}
+	read, err := m.strongGraphRead(ctx, spaceID)
+	if err != nil {
+		return 0, err
+	}
+	store, err := m.store(ctx, spaceID, domainID)
 	if err != nil {
 		return 0, err
 	}
@@ -1117,7 +1167,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		}
 	}()
 	stepStart = time.Now()
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -1484,36 +1534,136 @@ func (m *Module) BlobRefCount(ctx context.Context, spaceID string, blobID string
 	if err != nil {
 		return 0, err
 	}
-	store, err := m.store(ctx, spaceID)
+	stores, err := m.domainStoresForSpace(ctx, spaceID)
 	if err != nil {
 		return 0, err
 	}
-	if read != nil {
-		read.ObservedRevision = int64(store.Revision())
-		RecordStrongReadContext(ctx, read)
+	var observedRevision int64
+	count := 0
+	for _, store := range stores {
+		if rev := int64(store.Revision()); rev > observedRevision {
+			observedRevision = rev
+		}
+		storeCount, err := store.BlobRefCount(ctx, id)
+		if err != nil {
+			return 0, mapStorageError(err)
+		}
+		count += storeCount
 	}
-	count, err := store.BlobRefCount(ctx, id)
-	if err != nil {
-		return 0, mapStorageError(err)
+	if read != nil {
+		read.ObservedRevision = observedRevision
+		RecordStrongReadContext(ctx, read)
 	}
 	return count, nil
 }
 
-func (m *Module) store(ctx context.Context, spaceID string) (*graphstorage.LocalStore, error) {
-	if strings.TrimSpace(spaceID) == "" {
-		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if store := m.stores[spaceID]; store != nil {
-		return store, nil
-	}
-	store, err := graphstorage.OpenWithOptions(ctx, filepath.Join(m.dataDir, spaceID), graphstorage.Options{Encryption: m.encryption})
+func (m *Module) store(ctx context.Context, spaceID string, domainID string) (*graphstorage.LocalStore, error) {
+	key, err := newDomainStoreKey(spaceID, domainID)
 	if err != nil {
 		return nil, err
 	}
-	m.stores[spaceID] = store
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if store := m.stores[key]; store != nil {
+		return store, nil
+	}
+	store, err := graphstorage.OpenWithOptions(ctx, m.domainStorePath(key), graphstorage.Options{Encryption: m.encryption})
+	if err != nil {
+		return nil, err
+	}
+	m.stores[key] = store
 	return store, nil
+}
+
+func (m *Module) existingDomainStore(ctx context.Context, key domainStoreKey) (*graphstorage.LocalStore, error) {
+	m.mu.Lock()
+	if store := m.stores[key]; store != nil {
+		m.mu.Unlock()
+		return store, nil
+	}
+	m.mu.Unlock()
+	storePath := m.domainStorePath(key)
+	if err := validateExistingGraphStoreForReadOnlyOpen(storePath); err != nil {
+		return nil, err
+	}
+	store, err := graphstorage.OpenWithOptions(ctx, storePath, graphstorage.Options{Encryption: m.encryption})
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	if existing := m.stores[key]; existing != nil {
+		m.mu.Unlock()
+		_ = store.Close()
+		return existing, nil
+	}
+	m.stores[key] = store
+	m.mu.Unlock()
+	return store, nil
+}
+
+func (m *Module) domainStoresForSpace(ctx context.Context, spaceID string) ([]*graphstorage.LocalStore, error) {
+	spaceID = strings.TrimSpace(spaceID)
+	if spaceID == "" {
+		return nil, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	keys := map[domainStoreKey]struct{}{}
+	m.mu.Lock()
+	for key := range m.stores {
+		if key.SpaceID == spaceID {
+			keys[key] = struct{}{}
+		}
+	}
+	m.mu.Unlock()
+	domainsDir := filepath.Join(m.dataDir, spaceID, "domains")
+	entries, err := os.ReadDir(domainsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			key, keyErr := newDomainStoreKey(spaceID, entry.Name())
+			if keyErr != nil {
+				continue
+			}
+			if _, statErr := os.Stat(filepath.Join(m.domainStorePath(key), "manifest.mycel")); statErr == nil {
+				keys[key] = struct{}{}
+			} else if !os.IsNotExist(statErr) {
+				return nil, statErr
+			}
+		}
+	}
+	stores := make([]*graphstorage.LocalStore, 0, len(keys))
+	for key := range keys {
+		store, err := m.existingDomainStore(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		stores = append(stores, store)
+	}
+	return stores, nil
+}
+
+func (m *Module) domainStorePath(key domainStoreKey) string {
+	return filepath.Join(m.dataDir, key.SpaceID, "domains", key.DomainID)
+}
+
+func newDomainStoreKey(spaceID string, domainID string) (domainStoreKey, error) {
+	spaceID = strings.TrimSpace(spaceID)
+	domainID = strings.TrimSpace(domainID)
+	if spaceID == "" {
+		return domainStoreKey{}, fmt.Errorf("%w: space_id is required", ErrInvalidInput)
+	}
+	if domainID == "" {
+		return domainStoreKey{}, fmt.Errorf("%w: domain_id is required", ErrInvalidInput)
+	}
+	parsedDomain, err := uuid.Parse(domainID)
+	if err != nil || parsedDomain == uuid.Nil {
+		return domainStoreKey{}, fmt.Errorf("%w: domain_id must be a UUID", ErrInvalidInput)
+	}
+	return domainStoreKey{SpaceID: spaceID, DomainID: parsedDomain.String()}, nil
 }
 
 func (m *Module) node(ctx context.Context, tx daemonsession.GraphTransaction, id domaingraph.NodeID) (domaingraph.Node, error) {
@@ -1530,7 +1680,7 @@ func (m *Module) node(ctx context.Context, tx daemonsession.GraphTransaction, id
 		}
 	}
 	m.mu.Unlock()
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return domaingraph.Node{}, err
 	}
@@ -1558,7 +1708,7 @@ func (m *Module) edge(ctx context.Context, tx daemonsession.GraphTransaction, id
 		}
 	}
 	m.mu.Unlock()
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -1575,7 +1725,7 @@ type transactionEdgeView struct {
 }
 
 func (m *Module) transactionEdgeView(ctx context.Context, tx daemonsession.GraphTransaction) (transactionEdgeView, error) {
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return transactionEdgeView{}, err
 	}
@@ -1693,7 +1843,7 @@ func (m *Module) hierarchyPathExists(ctx context.Context, tx daemonsession.Graph
 }
 
 func (m *Module) listNodesLocal(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Node, string, error) {
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1709,7 +1859,7 @@ func (m *Module) listNodesLocal(ctx context.Context, tx daemonsession.GraphTrans
 }
 
 func (m *Module) listEdgesLocal(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error) {
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1784,6 +1934,9 @@ func (m *Module) parentEdgeLocal(ctx context.Context, tx daemonsession.GraphTran
 }
 
 func (m *Module) stageNode(ctx context.Context, tx daemonsession.GraphTransaction, node domaingraph.Node) error {
+	if node.DomainID.String() != strings.TrimSpace(tx.DomainID) {
+		return fmt.Errorf("%w: node domain_id %s does not match transaction domain_id %s", ErrInvalidInput, node.DomainID, tx.DomainID)
+	}
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
@@ -1810,6 +1963,9 @@ func (m *Module) stageNodeDelete(ctx context.Context, tx daemonsession.GraphTran
 }
 
 func (m *Module) stageEdge(ctx context.Context, tx daemonsession.GraphTransaction, edge domaingraph.Edge) error {
+	if edge.DomainID.String() != strings.TrimSpace(tx.DomainID) {
+		return fmt.Errorf("%w: edge domain_id %s does not match transaction domain_id %s", ErrInvalidInput, edge.DomainID, tx.DomainID)
+	}
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
@@ -2170,7 +2326,7 @@ func (m *Module) ConfigureIndexes(ctx context.Context, tx daemonsession.GraphTra
 		}
 		return nil
 	}
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return err
 	}
@@ -2200,7 +2356,7 @@ func (m *Module) ScanLabel(ctx context.Context, tx daemonsession.GraphTransactio
 	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
 		return nil, "", stats, err
 	}
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return nil, "", stats, err
 	}
@@ -2291,7 +2447,7 @@ func (m *Module) ScanTag(ctx context.Context, tx daemonsession.GraphTransaction,
 	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
 		return nil, "", stats, err
 	}
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return nil, "", stats, err
 	}
@@ -2398,7 +2554,7 @@ func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.G
 	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
 		return nil, "", stats, err
 	}
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return nil, "", stats, err
 	}
@@ -2520,7 +2676,7 @@ func (m *Module) ScanAdjacency(ctx context.Context, tx daemonsession.GraphTransa
 	if label == "" {
 		return nil, "", stats, fmt.Errorf("%w: adjacency label is required", ErrInvalidInput)
 	}
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return nil, "", stats, err
 	}
@@ -2624,7 +2780,7 @@ func (m *Module) ScanSubtree(ctx context.Context, tx daemonsession.GraphTransact
 	if scan.MinDepth < 0 || (scan.MaxDepth != -1 && scan.MaxDepth < scan.MinDepth) {
 		return SubtreeResult{}, stats, fmt.Errorf("%w: invalid subtree depth", ErrInvalidInput)
 	}
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return SubtreeResult{}, stats, err
 	}

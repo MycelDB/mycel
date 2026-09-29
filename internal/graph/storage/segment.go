@@ -157,10 +157,21 @@ func (s *segment) appendRecord(kind RecordKind, txnID, entityID uuid.UUID, paylo
 	}
 	return RecordLocation{Segment: s.id, Offset: off, Length: uint32(recordHeaderLen + len(payload))}, nil
 }
-func (s *segment) sync() error  { return s.file.Sync() }
+func (s *segment) sync() error { return s.file.Sync() }
+func (s *segment) size() (int64, error) {
+	st, err := s.file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return st.Size(), nil
+}
 func (s *segment) close() error { return s.file.Close() }
 
 func scanSegment(path string, kind SegmentKind, enc *encryption.Service, visit func(scannedRecord) error) error {
+	return scanSegmentFrom(path, kind, enc, segmentHeaderLen, visit)
+}
+
+func scanSegmentFrom(path string, kind SegmentKind, enc *encryption.Service, startOffset int64, visit func(scannedRecord) error) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -172,6 +183,12 @@ func scanSegment(path string, kind SegmentKind, enc *encryption.Service, visit f
 	}
 	if string(h[segmentMagicOffset:segmentVersionOffset]) != string(segmentMagic[:]) || binary.BigEndian.Uint16(h[segmentVersionOffset:segmentKindOffset]) != segmentVersion || h[segmentKindOffset] != byte(kind) {
 		return fmt.Errorf("%w: bad segment header %s", ErrInvalidRecord, path)
+	}
+	if startOffset < segmentHeaderLen {
+		startOffset = segmentHeaderLen
+	}
+	if _, err := f.Seek(startOffset, io.SeekStart); err != nil {
+		return err
 	}
 	for {
 		off, _ := f.Seek(0, io.SeekCurrent)

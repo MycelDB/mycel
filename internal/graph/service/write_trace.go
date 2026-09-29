@@ -22,6 +22,20 @@ type graphStageTiming struct {
 	UpdateMask     []string
 }
 
+type graphApplyTiming struct {
+	Total          time.Duration
+	Normalize      time.Duration
+	StoreOpen      time.Duration
+	StorageBegin   time.Duration
+	ExpectRevision time.Duration
+	PutNodes       time.Duration
+	PutEdges       time.Duration
+	DeleteNodes    time.Duration
+	DeleteEdges    time.Duration
+	StorageCommit  time.Duration
+	CommitTiming   graphstorage.CommitTiming
+}
+
 type graphCommitTiming struct {
 	Total                 time.Duration
 	EnterWrite            time.Duration
@@ -141,6 +155,36 @@ func (m *Module) logGraphCommitTiming(tx daemonsession.GraphTransaction, counts 
 		}
 	}
 	m.logger.Info("graph write commit timing", attrs...)
+}
+
+func (m *Module) logGraphApplyTiming(record graphCommitRecord, committedRevision uint64, timing graphApplyTiming) {
+	if m == nil || m.logger == nil || !m.writeTrace.ShouldLog(timing.Total) {
+		return
+	}
+	attrs := []any{
+		"event", "graph_write_apply_timing",
+		"operation", "apply_graph_commit_record",
+		"space_id", record.SpaceID,
+		"domain_id", record.DomainID,
+		"committed_revision", committedRevision,
+		"total_ms", writetrace.MS(timing.Total),
+		"normalize_ms", writetrace.MS(timing.Normalize),
+		"store_open_ms", writetrace.MS(timing.StoreOpen),
+		"storage_begin_ms", writetrace.MS(timing.StorageBegin),
+		"expect_revision_ms", writetrace.MS(timing.ExpectRevision),
+		"put_nodes_ms", writetrace.MS(timing.PutNodes),
+		"put_edges_ms", writetrace.MS(timing.PutEdges),
+		"delete_nodes_ms", writetrace.MS(timing.DeleteNodes),
+		"delete_edges_ms", writetrace.MS(timing.DeleteEdges),
+		"storage_commit_ms", writetrace.MS(timing.StorageCommit),
+		"operation_count", int(record.OperationCount),
+		"put_nodes", len(record.PutNodes),
+		"put_edges", len(record.PutEdges),
+		"delete_nodes", len(record.DeleteNodeIDs),
+		"delete_edges", len(record.DeleteEdgeIDs),
+	}
+	attrs = appendStorageTimingAttrs(attrs, timing.CommitTiming)
+	m.logger.Info("graph write apply timing", attrs...)
 }
 
 func appendStorageTimingAttrs(attrs []any, timing graphstorage.CommitTiming) []any {

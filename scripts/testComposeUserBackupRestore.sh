@@ -283,18 +283,29 @@ map_lookup() {
   awk -F '\t' -v kind="$kind" -v user="$username" -v src="$source_id" '$1==kind && $2==user && $3==src { print $4; found=1; exit } END { if (!found) exit 1 }' "$MAP_FILE"
 }
 
-verify_node_query_count() {
-  local service="$1" raw="$2" want_count="$3" marker="$4"
-  RAW_JSON="$raw" python3 - "$service" "$want_count" "$marker" <<'PY'
+verify_node_list_count() {
+  local service="$1" raw="$2" want_count="$3" marker="$4" label="$5"
+  RAW_JSON="$raw" python3 - "$service" "$want_count" "$marker" "$label" <<'PY'
 import json, os, sys
-service, want, marker = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+service, want, marker, label = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
 data = json.loads(os.environ["RAW_JSON"])
-rows = data.get("rows") or []
-if len(rows) != want:
-    raise SystemExit(f"{service}: marker {marker} expected {want} query rows, got {len(rows)}")
-meta = data.get("read_metadata") or {}
-if meta.get("stale"):
-    raise SystemExit(f"{service}: marker {marker} query returned stale metadata: {meta}")
+nodes = data.get("nodes") or []
+
+def scalar(value):
+    if isinstance(value, dict):
+        for key in ("stringValue", "string_value", "numberValue", "number_value", "boolValue", "bool_value"):
+            if key in value:
+                return value[key]
+    return value
+
+matched = []
+for node in nodes:
+    labels = node.get("labels") or []
+    props = node.get("properties") or {}
+    if label in labels and scalar(props.get("domain_marker")) == marker:
+        matched.append(node)
+if len(matched) != want:
+    raise SystemExit(f"{service}: marker {marker} label {label} expected {want} nodes, got {len(matched)} from {len(nodes)} listed nodes")
 PY
 }
 
@@ -305,10 +316,9 @@ verify_domain_once() {
   session_id="${tx_pair%%$'\t'*}"
   tx_id="${tx_pair##*$'\t'}"
 
-  raw="$(user_cli_with_creds "$service" "$username" "$password" query nodes --transaction-id "$tx_id" --label UserBackupNode --property-equals "domain_marker=$marker" --limit 100)"
-  verify_node_query_count "$service" "$raw" "$want_nodes" "$marker"
-  raw="$(user_cli_with_creds "$service" "$username" "$password" query nodes --transaction-id "$tx_id" --label UserBackupBlob --property-equals "domain_marker=$marker" --limit 100)"
-  verify_node_query_count "$service" "$raw" "$want_blobs" "$marker"
+  raw="$(user_cli_with_creds "$service" "$username" "$password" graph node list --transaction-id "$tx_id" --page-size 200)"
+  verify_node_list_count "$service" "$raw" "$want_nodes" "$marker" UserBackupNode
+  verify_node_list_count "$service" "$raw" "$want_blobs" "$marker" UserBackupBlob
 
   IFS=',' read -r -a node_ids <<< "$node_ids_csv"
   for node_id in "${node_ids[@]}"; do
@@ -348,7 +358,7 @@ PY
     blob_id="${blob_part%%::*}"
     payload="${blob_part#*::}"
     remote_download="/tmp/${marker}-${blob_id}.download"
-    user_cli_with_creds "$service" "$username" "$password" blob download "$blob_id" --space-id "$target_space_id" --output-file "$remote_download" >/dev/null
+    user_cli_with_creds "$service" "$username" "$password" blob download "$blob_id" --space-id "$target_space_id" --domain-id "$target_domain_id" --output-file "$remote_download" >/dev/null
     downloaded="$(docker compose -f "$COMPOSE_FILE" exec -T "$service" cat "$remote_download")"
     if [[ "$downloaded" != "$payload" ]]; then
       echo "$service: blob payload mismatch for $blob_id marker $marker" >&2

@@ -23,7 +23,7 @@ Use `--output json` for scripting.
 | [automation binding](automation-binding.md) | Graph automation binding lifecycle under `mycel automation binding`. |
 | [blob](blob.md) | Raw blob upload/download/metadata/delete. |
 | [change-stream](change-stream.md) | Watch domain graph changes. |
-| [cluster](cluster.md) | Cluster status, health, raft, consistency, and forensics. |
+| [cluster](cluster.md) | Cluster status, health, raft, consistency, forensics, and local graph checkpoints. |
 | [domain](domain.md) | Client domain management inside a space. |
 | [export](export.md) | Domain export through readable transactions. |
 | [graph](graph.md) | Graph node, edge, children, parent, and blob-node operations. |

@@ -41,7 +41,7 @@ func validateBlobConfig(cfg Config) error {
 	switch cfg.Backend {
 	case blobBackendLocal:
 		return nil
-	case blobBackendS3, blobBackendObjectStore:
+	case blobBackendObjectStore:
 		if provider := strings.TrimSpace(cfg.ObjectStoreProvider); provider != "" && provider != objectStoreProviderS3 {
 			return fmt.Errorf("object store blob backend provider must be %s", objectStoreProviderS3)
 		}
@@ -49,6 +49,8 @@ func validateBlobConfig(cfg Config) error {
 			return fmt.Errorf("object store blob backend requires MYCELD_BLOB_OBJECT_STORE_BUCKET")
 		}
 		return nil
+	case blobBackendS3:
+		return fmt.Errorf("blob backend %q is no longer supported for configuration; use %q with provider %q", blobBackendS3, blobBackendObjectStore, objectStoreProviderS3)
 	default:
 		return fmt.Errorf("unsupported blob backend %q", cfg.Backend)
 	}

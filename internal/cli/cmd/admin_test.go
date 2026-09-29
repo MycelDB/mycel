@@ -24,6 +24,7 @@ import (
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -465,7 +466,13 @@ func TestAdminListCommandFailsWhenDaemonUnavailable(t *testing.T) {
 func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "myceld")
-	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", NodeName: "node-a", Encryption: mycelencryption.Config{AtRest: "enabled", KEKProvider: "static-env", StaticKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}, Cluster: daemonconfig.ClusterConfig{Name: "dev", BackendAdvertiseAddr: "127.0.0.1:9093"}})
+	addr, password, cleanup := startDaemonAdminGRPCInDir(t, dataDir, "", "")
+	return dataDir, addr, password, cleanup
+}
+
+func startDaemonAdminGRPCInDir(t *testing.T, dataDir string, bootstrapUsername string, bootstrapPassword string) (string, string, func()) {
+	t.Helper()
+	rt, err := daemonapp.Initialize(context.Background(), daemonconfig.Config{DataDir: dataDir, Mode: "standalone", LogLevel: "debug", LogFormat: "text", GRPCAddr: "127.0.0.1:0", NodeName: "node-a", Encryption: mycelencryption.Config{AtRest: "enabled", KEKProvider: "static-env", StaticKeyB64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}, BootstrapAdminUsername: bootstrapUsername, BootstrapAdminPassword: bootstrapPassword, Cluster: daemonconfig.ClusterConfig{Name: "dev", BackendAdvertiseAddr: "127.0.0.1:9093"}})
 	if err != nil {
 		t.Fatalf("initialize daemon admin store failed: %v", err)
 	}
@@ -480,6 +487,10 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	sessionModule, ok := daemonruntime.ServiceAs[*daemonsession.Module](rt, daemonsession.ModuleName)
 	if !ok {
 		t.Fatal("session service was not registered")
+	}
+	schemaModule, ok := daemonruntime.ServiceAs[*schemaservice.Module](rt, schemaservice.ModuleName)
+	if !ok {
+		t.Fatal("schema service was not registered")
 	}
 	graphModule, ok := daemonruntime.ServiceAs[*daegraph.Module](rt, daegraph.ModuleName)
 	if !ok {
@@ -509,9 +520,12 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	if !ok {
 		t.Fatal("automation service was not registered")
 	}
-	password := bootstrapPasswordFromLog(t, rt.LogPath)
+	password := bootstrapPassword
+	if password == "" {
+		password = bootstrapPasswordFromLog(t, rt.LogPath)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", DataDir: dataDir, PrincipalManager: principalModule, BackupManager: backupModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, InferenceManager: inferenceModule, SemanticManager: semanticModule, AutomationManager: automationModule, Logger: rt.Logger, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService()})
+	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", DataDir: dataDir, PrincipalManager: principalModule, BackupManager: backupModule, SpaceManager: spaceModule, SessionManager: sessionModule, SchemaManager: schemaModule, GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, InferenceManager: inferenceModule, SemanticManager: semanticModule, AutomationManager: automationModule, Logger: rt.Logger, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService()})
 	if err != nil {
 		_ = rt.Close()
 		t.Fatalf("start grpc server failed: %v", err)
@@ -530,7 +544,7 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 			t.Fatalf("close daemon init failed: %v", err)
 		}
 	}
-	return dataDir, srv.Addr(), password, cleanup
+	return srv.Addr(), password, cleanup
 }
 
 func bootstrapPasswordFromLog(t *testing.T, path string) string {

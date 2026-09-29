@@ -37,7 +37,10 @@ mycel --daemon-addr <healthy-node>:9091 \
 ```
 
 The end-to-end operator flow is described in
-[Cluster system backup and restore](cluster-system-backup-restore.md).
+[Cluster system backup and restore](cluster-system-backup-restore.md). For the
+subsystems that write under `MYCELD_DATA_DIR`, their quiesce coverage, and the
+restore expectations for authoritative versus derived state, see
+[Backup-critical durable writer inventory](backup-durable-writer-inventory.md).
 
 The destructive K3s validation gate is:
 

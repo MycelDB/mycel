@@ -63,7 +63,7 @@ func (m *Module) LocalGraphConsistencyStats(ctx context.Context, spaceID string,
 	if err != nil || parsedDomain == uuid.Nil {
 		return LocalGraphStats{}, fmt.Errorf("%w: domain_id must be a UUID", ErrInvalidInput)
 	}
-	store, err := m.existingStoreForConsistencyStats(ctx, spaceID)
+	store, err := m.existingStoreForConsistencyStats(ctx, spaceID, parsedDomain.String())
 	if err != nil {
 		return LocalGraphStats{}, err
 	}
@@ -102,30 +102,12 @@ type graphConsistencyManifest struct {
 	ActiveTxnSegment  string   `json:"active_txn_segment"`
 }
 
-func (m *Module) existingStoreForConsistencyStats(ctx context.Context, spaceID string) (*graphstorage.LocalStore, error) {
-	m.mu.Lock()
-	if store := m.stores[spaceID]; store != nil {
-		m.mu.Unlock()
-		return store, nil
-	}
-	m.mu.Unlock()
-	spacePath := filepath.Join(m.dataDir, spaceID)
-	if err := validateExistingGraphStoreForReadOnlyOpen(spacePath); err != nil {
-		return nil, err
-	}
-	store, err := graphstorage.OpenWithOptions(ctx, spacePath, graphstorage.Options{Encryption: m.encryption})
+func (m *Module) existingStoreForConsistencyStats(ctx context.Context, spaceID string, domainID string) (*graphstorage.LocalStore, error) {
+	key, err := newDomainStoreKey(spaceID, domainID)
 	if err != nil {
 		return nil, err
 	}
-	m.mu.Lock()
-	if existing := m.stores[spaceID]; existing != nil {
-		m.mu.Unlock()
-		_ = store.Close()
-		return existing, nil
-	}
-	m.stores[spaceID] = store
-	m.mu.Unlock()
-	return store, nil
+	return m.existingDomainStore(ctx, key)
 }
 
 func validateExistingGraphStoreForReadOnlyOpen(spacePath string) error {

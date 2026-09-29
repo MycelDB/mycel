@@ -10,6 +10,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/runtime"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/search/lexical/analyzer"
 	"github.com/myceldb/mycel/internal/search/lexical/index"
 )
@@ -31,10 +32,11 @@ type Module struct {
 	startedAt  time.Time
 	lastErr    error
 	encryption *encryption.Service
+	gate       *quiesce.Gate
 }
 
 func NewModule() *Module {
-	return &Module{services: map[string]*Service{}}
+	return &Module{services: map[string]*Service{}, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -43,6 +45,14 @@ func (m *Module) Init(_ context.Context, host runtime.Host) runtime.InitResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.root = host.DataDir()
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if registrar, ok := host.(runtime.QuiesceRegistrar); ok {
+		if err := registrar.RegisterQuiesceParticipant(m.gate); err != nil {
+			return runtime.Abort(ModuleName, "quiesce", "register lexical search quiesce participant", err)
+		}
+	}
 	if provider, ok := host.(runtime.EncryptionProvider); ok {
 		m.encryption = provider.EncryptionService()
 	}
@@ -89,11 +99,20 @@ func (m *Module) Search(ctx context.Context, spaceID string, domainID string, qu
 }
 
 func (m *Module) Rebuild(ctx context.Context, spaceID string, domainID string, docs []index.IndexedDocument, latestRevision uint64) error {
-	_ = ctx
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return m.serviceFor(spaceID, domainID).Rebuild(docs, latestRevision)
 }
 
 func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.CommittedEvent) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	event.Normalize()
 	if event.SpaceID.String() == "" || event.DomainID.String() == "" {
 		return nil
@@ -130,6 +149,17 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 		}
 	}
 	return nil
+}
+
+func (m *Module) enterMutation(ctx context.Context) (func(), error) {
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
 }
 
 func (m *Module) serviceFor(spaceID string, domainID string) *Service {

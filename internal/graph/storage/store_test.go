@@ -73,6 +73,425 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	}
 }
 
+func TestLocalStoreWriteCheckpointAndOpenWithoutHistoricalReplay(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	domainID := graph.DomainID(uuid.New())
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "checkpointed", Labels: []string{"Note"}, Properties: map[string]any{"title": "checkpointed"}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	preStatus, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() before checkpoint error = %v", err)
+	}
+	if preStatus.CurrentRevision != 1 || preStatus.CheckpointPresent {
+		t.Fatalf("unexpected pre-checkpoint status: %+v", preStatus)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() error = %v", err)
+	}
+	if !status.CheckpointPresent || status.CurrentRevision != 1 || status.CheckpointRevision != 1 || status.NodeCount != 1 || status.EdgeCount != 0 || status.GraphChecksum == "" || status.ChecksumAlgorithm == "" {
+		t.Fatalf("unexpected checkpoint status: %+v", status)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	corruptHistoricalSegment(t, filepath.Join(dir, "segments", "nodes-000001.kseg"))
+
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen with checkpoint failed: %v", err)
+	}
+	defer store.Close()
+	got, err := store.GetNode(ctx, node.ID)
+	if err != nil || got.Content != node.Content {
+		t.Fatalf("GetNode() = %+v, %v", got, err)
+	}
+	if store.Revision() != 1 {
+		t.Fatalf("Revision() = %d, want 1", store.Revision())
+	}
+}
+
+func TestLocalStoreCheckpointReplaysTail(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	domainID := graph.DomainID(uuid.New())
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "checkpointed"}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutNode(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "tail"}
+	tail, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail.ExpectRevision(store.Revision())
+	if err := tail.PutNode(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := tail.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	if store.Revision() != 2 {
+		t.Fatalf("Revision() = %d, want 2", store.Revision())
+	}
+	for _, want := range []graph.Node{first, second} {
+		got, err := store.GetNode(ctx, want.ID)
+		if err != nil || got.Content != want.Content {
+			t.Fatalf("GetNode(%s) = %+v, %v", want.ID, got, err)
+		}
+	}
+}
+
+func TestLocalStoreCorruptCheckpointFallsBackToFullReplay(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: graph.DomainID(uuid.New()), Content: "from segments"}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	checkpointDir := latestCheckpointDirForTest(t, dir)
+	corruptHistoricalSegment(t, filepath.Join(checkpointDir, checkpointNodePayload))
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen should fall back to full replay: %v", err)
+	}
+	defer store.Close()
+	got, err := store.GetNode(ctx, node.ID)
+	if err != nil || got.Content != node.Content {
+		t.Fatalf("GetNode() = %+v, %v", got, err)
+	}
+}
+
+func TestLocalStoreWriteCheckpointWritesPersistentIndexes(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	domainID := graph.DomainID(uuid.New())
+	from := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "from", Labels: []string{"Task"}, Properties: map[string]any{graph.NodePropTags: []string{"project"}}}
+	to := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "to", Labels: []string{"Task"}}
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to.ID, Labels: []string{"REFERENCES"}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(from); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(to); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutEdge(edge); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() error = %v", err)
+	}
+	if !status.PersistentIndex.Present || status.PersistentIndex.LoadResult != PersistentIndexLoadNotLoaded || status.PersistentIndex.IndexFormat != persistentIndexFormat || len(status.PersistentIndex.Entries) != 4 {
+		t.Fatalf("unexpected persistent index status after write: %+v", status.PersistentIndex)
+	}
+	indexDir, err := store.latestIndexSetDir()
+	if err != nil || indexDir == "" {
+		t.Fatalf("latestIndexSetDir() = %q, %v", indexDir, err)
+	}
+	for _, name := range []string{persistentIndexManifestName, persistentIndexLabelsPayload, persistentIndexTagsPayload, persistentIndexAdjOutPayload, persistentIndexAdjInPayload} {
+		if _, err := os.Stat(filepath.Join(indexDir, name)); err != nil {
+			t.Fatalf("expected persistent index file %s: %v", name, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	status, err = store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() after reopen error = %v", err)
+	}
+	if !status.PersistentIndex.Present || status.PersistentIndex.LoadResult != PersistentIndexLoadUsed || status.PersistentIndex.IndexFormat != persistentIndexFormat || status.PersistentIndex.IndexSetID == "" || status.PersistentIndex.GraphRevision != status.CheckpointRevision {
+		t.Fatalf("unexpected persistent index status after reopen: %+v checkpoint=%+v", status.PersistentIndex, status)
+	}
+	labels, _, err := store.ScanLabel(ctx, LabelScan{DomainID: domainID, Label: "Task", Limit: 10})
+	if err != nil || len(labels) != 2 {
+		t.Fatalf("ScanLabel() = %+v, %v; want 2 nodes", labels, err)
+	}
+	tags, _, err := store.ScanTag(ctx, TagScan{DomainID: domainID, Tag: "project", Limit: 10})
+	if err != nil || len(tags) != 1 || tags[0] != from.ID {
+		t.Fatalf("ScanTag() = %+v, %v; want from node", tags, err)
+	}
+	out, _, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: from.ID, Label: "REFERENCES", Direction: AdjacencyDirectionOut, Limit: 10})
+	if err != nil || len(out) != 1 || out[0] != edge.ID {
+		t.Fatalf("ScanAdjacency(out) = %+v, %v; want edge", out, err)
+	}
+	in, _, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: to.ID, Label: "REFERENCES", Direction: AdjacencyDirectionIn, Limit: 10})
+	if err != nil || len(in) != 1 || in[0] != edge.ID {
+		t.Fatalf("ScanAdjacency(in) = %+v, %v; want edge", in, err)
+	}
+}
+
+func TestLocalStoreCorruptPersistentIndexesFallBackToCheckpointRebuild(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	domainID := graph.DomainID(uuid.New())
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "indexed", Labels: []string{"Note"}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	indexDir, err := store.latestIndexSetDir()
+	if err != nil || indexDir == "" {
+		t.Fatalf("latestIndexSetDir() = %q, %v", indexDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(indexDir, persistentIndexLabelsPayload), []byte("corrupt\n"), 0o600); err != nil {
+		t.Fatalf("corrupt persistent index: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen with corrupt persistent index should fall back: %v", err)
+	}
+	defer store.Close()
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() after corrupt index reopen error = %v", err)
+	}
+	if !status.PersistentIndex.Present || status.PersistentIndex.LoadResult != PersistentIndexLoadFallback || status.PersistentIndex.FallbackReason == "" {
+		t.Fatalf("unexpected corrupt persistent index status: %+v", status.PersistentIndex)
+	}
+	labels, _, err := store.ScanLabel(ctx, LabelScan{DomainID: domainID, Label: "Note", Limit: 10})
+	if err != nil || len(labels) != 1 || labels[0] != node.ID {
+		t.Fatalf("ScanLabel() after corrupt persistent index = %+v, %v; want node", labels, err)
+	}
+}
+
+func TestLocalStorePersistentIndexOpenReplaysTail(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	domainID := graph.DomainID(uuid.New())
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "first", Labels: []string{"Note"}, Properties: map[string]any{graph.NodePropTags: []string{"tail"}}}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Content: "second", Labels: []string{"Note"}, Properties: map[string]any{graph.NodePropTags: []string{"tail"}}}
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: first.ID, ToID: second.ID, Labels: []string{"REFERENCES"}}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutNode(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	tail, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail.ExpectRevision(store.Revision())
+	if err := tail.PutNode(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := tail.PutEdge(edge); err != nil {
+		t.Fatal(err)
+	}
+	if err := tail.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() error = %v", err)
+	}
+	if status.PersistentIndex.LoadResult != PersistentIndexLoadUsed || status.TailRevisions != 1 {
+		t.Fatalf("unexpected checkpoint/index status after tail replay: %+v index=%+v", status, status.PersistentIndex)
+	}
+	labels, _, err := store.ScanLabel(ctx, LabelScan{DomainID: domainID, Label: "Note", Limit: 10})
+	if err != nil || len(labels) != 2 {
+		t.Fatalf("ScanLabel() = %+v, %v; want 2 nodes", labels, err)
+	}
+	tags, _, err := store.ScanTag(ctx, TagScan{DomainID: domainID, Tag: "tail", Limit: 10})
+	if err != nil || len(tags) != 2 {
+		t.Fatalf("ScanTag() = %+v, %v; want 2 nodes", tags, err)
+	}
+	out, _, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: first.ID, Label: "REFERENCES", Direction: AdjacencyDirectionOut, Limit: 10})
+	if err != nil || len(out) != 1 || out[0] != edge.ID {
+		t.Fatalf("ScanAdjacency(out) = %+v, %v; want tail edge", out, err)
+	}
+}
+
+func TestLocalStoreCheckpointExcludesDeletedEntities(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: graph.DomainID(uuid.New()), Content: "deleted"}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutNode(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	deleteTx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteTx.ExpectRevision(store.Revision())
+	if err := deleteTx.DeleteNode(node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	checkpointDir := latestCheckpointDirForTest(t, dir)
+	nodes, err := readCheckpointNodes(filepath.Join(checkpointDir, checkpointNodePayload))
+	if err != nil {
+		t.Fatalf("readCheckpointNodes() error = %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("checkpoint includes deleted nodes: %+v", nodes)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.GetNode(ctx, node.ID); err != ErrNotFound {
+		t.Fatalf("GetNode(deleted) error = %v, want ErrNotFound", err)
+	}
+}
+
+func corruptHistoricalSegment(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open corrupt target %s: %v", path, err)
+	}
+	defer f.Close()
+	if _, err := f.WriteAt([]byte("XXXX"), int64(segmentHeaderLen)); err != nil {
+		t.Fatalf("corrupt %s: %v", path, err)
+	}
+}
+
+func latestCheckpointDirForTest(t *testing.T, dir string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "checkpoints", checkpointLatestPointer))
+	if err != nil {
+		t.Fatalf("read checkpoint pointer: %v", err)
+	}
+	name := string(raw)
+	name = name[:len(name)-1]
+	return filepath.Join(dir, "checkpoints", name)
+}
+
 func TestLocalStoreScanTagUsesCanonicalPropertiesAndRebuilds(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -282,6 +701,48 @@ func TestLocalStoreIgnoresUncommittedRecords(t *testing.T) {
 	defer store.Close()
 	if _, err := store.GetNode(ctx, node.ID); err != ErrNotFound {
 		t.Fatalf("expected uncommitted record ignored, got %v", err)
+	}
+}
+
+func TestLocalStoreCommitSyncsOnlyTouchedDataSegmentsAndSurvivesReopen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: graph.DomainID(uuid.New()), Content: "node-only", Props: map[string]any{}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := tx.PutNode(node); err != nil {
+		t.Fatalf("PutNode: %v", err)
+	}
+	info, err := tx.CommitWithInfo()
+	if err != nil {
+		t.Fatalf("CommitWithInfo: %v", err)
+	}
+	if info.Timing.NodeSync == 0 {
+		t.Fatalf("node-only commit did not record a node segment sync: %+v", info.Timing)
+	}
+	if info.Timing.EdgeSync != 0 {
+		t.Fatalf("node-only commit synced untouched edge segment: %+v", info.Timing)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	got, err := store.GetNode(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("GetNode after reopen: %v", err)
+	}
+	if got.ID != node.ID || got.Content != node.Content {
+		t.Fatalf("reopened node = %+v, want %+v", got, node)
 	}
 }
 
@@ -1059,6 +1520,172 @@ func edgeIDs(entries []EdgeIndexEntry) []graph.EdgeID {
 		out = append(out, entry.EdgeID)
 	}
 	return out
+}
+
+func TestLocalStorePersistentQueryIndexesLoadAfterCheckpointOpen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	domainID := graph.DomainID(uuid.New())
+	nodeIdx := journalDateIndex()
+	edgeIdx := referencesConfidenceIndex()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-18"}}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-19"}}
+	low := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: first.ID, ToID: second.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.2}}
+	high := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: second.ID, ToID: first.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.9}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []graph.Node{second, first} {
+		if err := tx.PutNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, edge := range []graph.Edge{low, high} {
+		if err := tx.PutEdge(edge); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-query", []schema.IndexDefinition{nodeIdx, edgeIdx}); err != nil {
+		t.Fatalf("ConfigureIndexes() error = %v", err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() error = %v", err)
+	}
+	if !status.PersistentIndex.Present || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryMetadata) || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryNode) || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryEdge) {
+		t.Fatalf("persistent query index payloads missing from status: %+v", status.PersistentIndex)
+	}
+	if len(status.PersistentIndex.QueryIndexes) != 2 || !persistentQueryIndexStatusHasName(status.PersistentIndex, nodeIdx.Name, PersistentIndexLoadNotLoaded) || !persistentQueryIndexStatusHasName(status.PersistentIndex, edgeIdx.Name, PersistentIndexLoadNotLoaded) {
+		t.Fatalf("persistent query index details missing from status: %+v", status.PersistentIndex.QueryIndexes)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	status, err = store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() after reopen error = %v", err)
+	}
+	if status.PersistentIndex.LoadResult != PersistentIndexLoadUsed || !persistentIndexStatusHasEntry(status.PersistentIndex, persistentIndexKindQueryMetadata) {
+		t.Fatalf("persistent query index was not loaded: %+v", status.PersistentIndex)
+	}
+	if len(status.PersistentIndex.QueryIndexes) != 2 || !persistentQueryIndexStatusHasName(status.PersistentIndex, nodeIdx.Name, PersistentIndexLoadUsed) || !persistentQueryIndexStatusHasName(status.PersistentIndex, edgeIdx.Name, PersistentIndexLoadUsed) {
+		t.Fatalf("loaded persistent query index details missing from status: %+v", status.PersistentIndex.QueryIndexes)
+	}
+	nodeEntries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: nodeIdx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10})
+	if err != nil {
+		t.Fatalf("ScanNodePropertyOrdered() error = %v", err)
+	}
+	if got := nodeIDs(nodeEntries); !reflect.DeepEqual(got, []graph.NodeID{first.ID, second.ID}) {
+		t.Fatalf("unexpected node order from persistent query index: %+v", got)
+	}
+	if len(nodeEntries) != 2 || nodeEntries[0].Value != "2026-07-18" || nodeEntries[1].Value != "2026-07-19" {
+		t.Fatalf("unexpected node values from persistent query index: %+v", nodeEntries)
+	}
+	edgeEntries, _, err := store.ScanEdgePropertyOrdered(ctx, OrderedEdgePropertyScan{DomainID: domainID, IndexName: edgeIdx.Name, Direction: schema.IndexSortDirectionDesc, Limit: 10})
+	if err != nil {
+		t.Fatalf("ScanEdgePropertyOrdered() error = %v", err)
+	}
+	if got := edgeIDs(edgeEntries); !reflect.DeepEqual(got, []graph.EdgeID{high.ID, low.ID}) {
+		t.Fatalf("unexpected edge order from persistent query index: %+v", got)
+	}
+	if len(edgeEntries) != 2 || edgeEntries[0].Value != 0.9 || edgeEntries[1].Value != 0.2 {
+		t.Fatalf("unexpected edge values from persistent query index: %+v", edgeEntries)
+	}
+}
+
+func TestLocalStoreCorruptPersistentQueryIndexFallsBack(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	domainID := graph.DomainID(uuid.New())
+	idx := journalDateIndex()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-18"}}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-19"}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutNode(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-query", []schema.IndexDefinition{idx}); err != nil {
+		t.Fatalf("ConfigureIndexes() error = %v", err)
+	}
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		t.Fatalf("WriteCheckpoint() error = %v", err)
+	}
+	indexDir, err := store.latestIndexSetDir()
+	if err != nil || indexDir == "" {
+		t.Fatalf("latestIndexSetDir() = %q, %v", indexDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(indexDir, persistentIndexQueryNodePayload), []byte("corrupt\n"), 0o600); err != nil {
+		t.Fatalf("corrupt persistent query payload: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen with corrupt persistent query index should fall back: %v", err)
+	}
+	defer store.Close()
+	status, err := store.CheckpointStatus(ctx)
+	if err != nil {
+		t.Fatalf("CheckpointStatus() after corrupt query payload error = %v", err)
+	}
+	if status.PersistentIndex.LoadResult != PersistentIndexLoadFallback || status.PersistentIndex.FallbackReason == "" {
+		t.Fatalf("unexpected persistent index status after corrupt query fallback: %+v", status.PersistentIndex)
+	}
+	entries, _, err := store.ScanNodePropertyOrdered(ctx, OrderedNodePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 10})
+	if err != nil {
+		t.Fatalf("ScanNodePropertyOrdered() after fallback error = %v", err)
+	}
+	if got := nodeIDs(entries); !reflect.DeepEqual(got, []graph.NodeID{first.ID, second.ID}) {
+		t.Fatalf("unexpected node order after corrupt query fallback: %+v", got)
+	}
+}
+
+func persistentIndexStatusHasEntry(status PersistentIndexStatus, kind string) bool {
+	for _, entry := range status.Entries {
+		if entry.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func persistentQueryIndexStatusHasName(status PersistentIndexStatus, name string, loadResult string) bool {
+	for _, entry := range status.QueryIndexes {
+		if entry.Name == name && entry.LoadResult == loadResult && entry.EntryCount > 0 && entry.SchemaHash != "" && entry.DefinitionFingerprint != "" && entry.KeyEncodingVersion == indexKeyEncodingVersion {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLocalStoreConfigureIndexesRemoveAndChangeLifecycle(t *testing.T) {

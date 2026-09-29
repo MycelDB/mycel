@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -36,6 +37,7 @@ type phaseDIntegrationCluster struct {
 	routers        map[consensus.NodeID]*consensus.LocalMessageRouter
 	transport      consensus.RoutedTransport
 	stopTick       chan struct{}
+	stopTickDone   chan struct{}
 }
 
 type phaseDIntegrationNode struct {
@@ -110,6 +112,81 @@ func TestPhaseDMultiSubsystemRaftConvergesAndRestarts(t *testing.T) {
 	cluster.waitForNoVectorStore(ctx, t, "phase-d-store")
 }
 
+func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cluster := newPhaseDIntegrationCluster(t, 4)
+	cluster.start(ctx, t)
+	defer cluster.close()
+	cluster.waitForLeaders(ctx, t)
+
+	ownerID := uuid.New()
+	created, err := cluster.nodes[1].space.CreateSpaceWithResult(ctx, spaceservice.CreateSpaceInput{Name: "phase-d-rejoin", OwnerPrincipalID: identity.PrincipalID(ownerID.String()), DefaultDomainKey: "notes", DefaultDomainName: "Notes", CommandID: "phase-d-rejoin-space"})
+	if err != nil {
+		t.Fatalf("CreateSpaceWithResult() error = %v", err)
+	}
+	spaceID := created.Space.SpaceID.String()
+	domainID := created.Domain.ID
+	cluster.waitForSpace(ctx, t, spaceID)
+	if err := cluster.nodes[1].schema.PutDomainSchema(ctx, phaseDTestSchema(domainID)); err != nil {
+		t.Fatalf("PutDomainSchema() error = %v", err)
+	}
+	cluster.waitForSchema(ctx, t, domainID)
+
+	graphLeader := cluster.leaderForSpace(ctx, t, spaceID)
+	graphNode := cluster.nodes[graphLeader]
+	tx := phaseDGraphTx(spaceID, domainID.String(), 0)
+	node, err := graphNode.graph.CreateNode(ctx, tx, graphservice.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := graphNode.graph.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+	cluster.waitForGraphNode(ctx, t, spaceID, domainID.String(), node.ID.String(), 1, "Ada")
+
+	wipedID := consensus.NodeID(3)
+	cluster.stopAndWipeNode(ctx, t, wipedID)
+	activeIDs := []consensus.NodeID{1, 2}
+	cluster.waitForLeadersOn(ctx, t, activeIDs)
+
+	graphLeader = cluster.leaderForSpace(ctx, t, spaceID)
+	graphNode = cluster.nodes[graphLeader]
+	updateTx := phaseDGraphTx(spaceID, domainID.String(), 1)
+	if _, err := graphNode.graph.UpdateNode(ctx, updateTx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Lovelace"}}); err != nil {
+		t.Fatalf("UpdateNode(snapshot) error = %v", err)
+	}
+	if _, err := graphNode.graph.CommitTransactionGraph(ctx, updateTx); err != nil {
+		t.Fatalf("CommitTransactionGraph(snapshot update) error = %v", err)
+	}
+	cluster.waitForGraphNodeOn(ctx, t, activeIDs, spaceID, domainID.String(), node.ID.String(), 2, "Ada Lovelace")
+
+	spacePartition := phaseDSpacePartition(t, spaceID, cluster.partitionCount)
+	snapshotIndex := cluster.createSnapshotsOn(ctx, t, activeIDs, consensus.PartitionGroupID(spacePartition))
+	if snapshotIndex == 0 {
+		t.Fatal("expected non-zero partition snapshot index")
+	}
+
+	graphLeader = cluster.leaderForSpace(ctx, t, spaceID)
+	graphNode = cluster.nodes[graphLeader]
+	tailTx := phaseDGraphTx(spaceID, domainID.String(), 2)
+	if _, err := graphNode.graph.UpdateNode(ctx, tailTx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Byron"}}); err != nil {
+		t.Fatalf("UpdateNode(tail) error = %v", err)
+	}
+	if _, err := graphNode.graph.CommitTransactionGraph(ctx, tailTx); err != nil {
+		t.Fatalf("CommitTransactionGraph(tail update) error = %v", err)
+	}
+	cluster.waitForGraphNodeOn(ctx, t, activeIDs, spaceID, domainID.String(), node.ID.String(), 3, "Ada Byron")
+
+	cluster.rejoinWipedNode(ctx, t, wipedID)
+	cluster.waitForSpaceOn(ctx, t, []consensus.NodeID{wipedID}, spaceID)
+	cluster.waitForSchemaOn(ctx, t, []consensus.NodeID{wipedID}, domainID)
+	cluster.waitForGraphNodeOn(ctx, t, []consensus.NodeID{wipedID}, spaceID, domainID.String(), node.ID.String(), 3, "Ada Byron")
+	if got := cluster.snapshotIndexForNodeGroup(t, wipedID, consensus.PartitionGroupID(spacePartition)); got < snapshotIndex {
+		t.Fatalf("rejoined node partition snapshot index=%d want at least %d", got, snapshotIndex)
+	}
+}
+
 func newPhaseDIntegrationCluster(t *testing.T, partitionCount uint32) *phaseDIntegrationCluster {
 	t.Helper()
 	peers := []consensus.NodeID{1, 2, 3}
@@ -133,21 +210,8 @@ func (c *phaseDIntegrationCluster) start(ctx context.Context, t *testing.T) {
 	})}
 	for _, id := range c.peers {
 		node := c.newNode(ctx, t, id, c.dataDirs[id])
-		mg, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: id, PeerNodeIDs: c.peers, PartitionCount: c.partitionCount, Transport: c.transport, StorageDir: filepath.Join(node.dataDir, "meta", "raft"), StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine {
-			return compositeSystemStateMachine{consensus.NewSystemStateMachine(), semanticservice.RaftStateMachine{Module: node.semantic, PartitionCount: c.partitionCount}}
-		}, Partition: func(uint32) consensus.StateMachine {
-			return compositePartitionStateMachine{spaceservice.RaftStateMachine{Module: node.space, PartitionCount: c.partitionCount}, schemaservice.RaftStateMachine{Manager: node.schema.SchemaManager, PartitionCount: c.partitionCount}, graphservice.RaftStateMachine{Module: node.graph, PartitionCount: c.partitionCount}, blobservice.RaftStateMachine{Module: node.blob, PartitionCount: c.partitionCount}, semanticservice.RaftStateMachine{Module: node.semantic, PartitionCount: c.partitionCount}}
-		}}, ElectionTick: 20, HeartbeatTick: 1})
-		if err != nil {
-			t.Fatalf("StartMultiGroup(%d) error = %v", id, err)
-		}
-		node.groups = mg
-		node.space.EnableExperimentalRaft(mg, id, nil, "")
-		node.schema.EnableExperimentalRaft(mg, c.partitionCount)
-		node.graph.EnableExperimentalRaft(mg, c.partitionCount)
-		node.graph.EnableExperimentalRaftNetworking(id, nil, "")
-		node.blob.EnableExperimentalRaft(mg, c.partitionCount)
-		node.semantic.EnableExperimentalRaft(mg, c.partitionCount)
+		c.startGroupsForNode(ctx, t, node, false)
+		c.enableRaftForNode(id, node)
 		c.nodes[id] = node
 	}
 	for _, node := range c.nodes {
@@ -157,8 +221,36 @@ func (c *phaseDIntegrationCluster) start(ctx context.Context, t *testing.T) {
 			}
 		}
 	}
+	c.startTicker()
+}
+
+func (c *phaseDIntegrationCluster) enableRaftForNode(id consensus.NodeID, node *phaseDIntegrationNode) {
+	node.space.EnableExperimentalRaft(node.groups, id, nil, "")
+	node.schema.EnableExperimentalRaft(node.groups, c.partitionCount)
+	node.graph.EnableExperimentalRaft(node.groups, c.partitionCount)
+	node.graph.EnableExperimentalRaftNetworking(id, nil, "")
+	node.blob.EnableExperimentalRaft(node.groups, c.partitionCount)
+	node.semantic.EnableExperimentalRaft(node.groups, c.partitionCount)
+}
+
+func (c *phaseDIntegrationCluster) startGroupsForNode(ctx context.Context, t *testing.T, node *phaseDIntegrationNode, recoverEmptyStorageRejoin bool) {
+	t.Helper()
+	mg, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: node.id, PeerNodeIDs: c.peers, PartitionCount: c.partitionCount, Transport: c.transport, StorageDir: filepath.Join(node.dataDir, "meta", "raft"), StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine {
+		return compositeSystemStateMachine{consensus.NewSystemStateMachine(), semanticservice.RaftStateMachine{Module: node.semantic, PartitionCount: c.partitionCount}}
+	}, Partition: func(partitionID uint32) consensus.StateMachine {
+		return compositePartitionStateMachine{spaceservice.RaftStateMachine{Module: node.space, PartitionID: partitionID, PartitionCount: c.partitionCount}, schemaservice.RaftStateMachine{Manager: node.schema.SchemaManager, PartitionID: partitionID, PartitionCount: c.partitionCount}, graphservice.RaftStateMachine{Module: node.graph, PartitionID: partitionID, PartitionCount: c.partitionCount}, blobservice.RaftStateMachine{Module: node.blob, PartitionID: partitionID, PartitionCount: c.partitionCount}, semanticservice.RaftStateMachine{Module: node.semantic, PartitionID: partitionID, PartitionCount: c.partitionCount}}
+	}}, ElectionTick: 20, HeartbeatTick: 1, RecoverEmptyStorageRejoin: recoverEmptyStorageRejoin})
+	if err != nil {
+		t.Fatalf("StartMultiGroup(%d) error = %v", node.id, err)
+	}
+	node.groups = mg
+}
+
+func (c *phaseDIntegrationCluster) startTicker() {
 	c.stopTick = make(chan struct{})
+	c.stopTickDone = make(chan struct{})
 	go func() {
+		defer close(c.stopTickDone)
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -167,11 +259,25 @@ func (c *phaseDIntegrationCluster) start(ctx context.Context, t *testing.T) {
 				return
 			case <-ticker.C:
 				for _, node := range c.nodes {
-					node.groups.Tick()
+					if node.groups != nil {
+						node.groups.Tick()
+					}
 				}
 			}
 		}
 	}()
+}
+
+func (c *phaseDIntegrationCluster) stopTicker() {
+	if c.stopTick == nil {
+		return
+	}
+	close(c.stopTick)
+	if c.stopTickDone != nil {
+		<-c.stopTickDone
+	}
+	c.stopTick = nil
+	c.stopTickDone = nil
 }
 
 func (c *phaseDIntegrationCluster) newNode(ctx context.Context, t *testing.T, id consensus.NodeID, dataDir string) *phaseDIntegrationNode {
@@ -210,15 +316,86 @@ func (c *phaseDIntegrationCluster) restart(ctx context.Context, t *testing.T) {
 }
 
 func (c *phaseDIntegrationCluster) close() {
-	if c.stopTick != nil {
-		close(c.stopTick)
-		c.stopTick = nil
-	}
+	c.stopTicker()
 	for _, node := range c.nodes {
 		if node.groups != nil {
 			node.groups.Stop()
 		}
 	}
+}
+
+func (c *phaseDIntegrationCluster) stopAndWipeNode(ctx context.Context, t *testing.T, id consensus.NodeID) {
+	t.Helper()
+	c.stopTicker()
+	for _, router := range c.routers {
+		router.UnregisterNode(id)
+	}
+	if node := c.nodes[id]; node != nil && node.groups != nil {
+		node.groups.Stop()
+	}
+	delete(c.nodes, id)
+	if err := os.RemoveAll(c.dataDirs[id]); err != nil {
+		t.Fatalf("remove node %d data dir: %v", id, err)
+	}
+	if err := os.MkdirAll(c.dataDirs[id], 0o755); err != nil {
+		t.Fatalf("recreate node %d data dir: %v", id, err)
+	}
+	c.startTicker()
+}
+
+func (c *phaseDIntegrationCluster) rejoinWipedNode(ctx context.Context, t *testing.T, id consensus.NodeID) {
+	t.Helper()
+	c.stopTicker()
+	node := c.newNode(ctx, t, id, c.dataDirs[id])
+	c.startGroupsForNode(ctx, t, node, true)
+	c.enableRaftForNode(id, node)
+	c.nodes[id] = node
+	for _, g := range node.groups.Groups() {
+		for _, router := range c.routers {
+			router.Register(g)
+		}
+	}
+	c.startTicker()
+}
+
+func (c *phaseDIntegrationCluster) createSnapshotsOn(ctx context.Context, t *testing.T, ids []consensus.NodeID, target consensus.GroupID) uint64 {
+	t.Helper()
+	var snapshotIndex uint64
+	for _, id := range ids {
+		node := c.nodes[id]
+		if node == nil || node.groups == nil {
+			t.Fatalf("node %d is not running", id)
+		}
+		for _, status := range node.groups.Status() {
+			g, ok := node.groups.Group(status.GroupID)
+			if !ok {
+				t.Fatalf("node %d group %s not found", id, status.GroupID)
+			}
+			idx, err := g.CreateSnapshot(0, true)
+			if err != nil {
+				t.Fatalf("CreateSnapshot(node=%d group=%s): %v", id, status.GroupID, err)
+			}
+			if status.GroupID == target && idx > snapshotIndex {
+				snapshotIndex = idx
+			}
+		}
+	}
+	return snapshotIndex
+}
+
+func (c *phaseDIntegrationCluster) snapshotIndexForNodeGroup(t *testing.T, id consensus.NodeID, groupID consensus.GroupID) uint64 {
+	t.Helper()
+	node := c.nodes[id]
+	if node == nil || node.groups == nil {
+		t.Fatalf("node %d is not running", id)
+	}
+	for _, status := range node.groups.Status() {
+		if status.GroupID == groupID {
+			return status.SnapshotIndex
+		}
+	}
+	t.Fatalf("node %d group %s not found", id, groupID)
+	return 0
 }
 
 func (c *phaseDIntegrationCluster) waitForLeaders(ctx context.Context, t *testing.T) {
@@ -237,6 +414,29 @@ func (c *phaseDIntegrationCluster) waitForLeaders(ctx context.Context, t *testin
 		return true
 	}); err != nil {
 		t.Fatalf("leaders not elected: %v", err)
+	}
+}
+
+func (c *phaseDIntegrationCluster) waitForLeadersOn(ctx context.Context, t *testing.T, ids []consensus.NodeID) {
+	t.Helper()
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		for _, id := range ids {
+			node := c.nodes[id]
+			if node == nil || node.groups == nil {
+				return false
+			}
+			if g, ok := node.groups.Group(consensus.SystemGroupID); !ok || !phaseDContainsNodeID(ids, g.Leader()) {
+				return false
+			}
+			for p := uint32(0); p < c.partitionCount; p++ {
+				if g, ok := node.groups.Group(consensus.PartitionGroupID(p)); !ok || !phaseDContainsNodeID(ids, g.Leader()) {
+					return false
+				}
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("leaders not elected on %v: %v", ids, err)
 	}
 }
 
@@ -275,33 +475,76 @@ func (c *phaseDIntegrationCluster) leaderForSpace(ctx context.Context, t *testin
 
 func (c *phaseDIntegrationCluster) waitForSpace(ctx context.Context, t *testing.T, spaceID string) {
 	t.Helper()
+	ids := make([]consensus.NodeID, 0, len(c.nodes))
+	for id := range c.nodes {
+		ids = append(ids, id)
+	}
+	c.waitForSpaceOn(ctx, t, ids, spaceID)
+}
+
+func (c *phaseDIntegrationCluster) waitForSpaceOn(ctx context.Context, t *testing.T, ids []consensus.NodeID, spaceID string) {
+	t.Helper()
+	last := ""
 	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
-		for _, node := range c.nodes {
+		last = ""
+		for _, id := range ids {
+			node := c.nodes[id]
+			if node == nil {
+				last += fmt.Sprintf(" node%d(missing)", id)
+				return false
+			}
 			if _, err := node.space.GetLocalRaftSpace(ctx, spaceID); err != nil {
+				last += fmt.Sprintf(" node%d(err=%v)", id, err)
 				return false
 			}
 		}
 		return true
 	}); err != nil {
-		t.Fatalf("space %s did not converge: %v", spaceID, err)
+		t.Fatalf("space %s did not converge on %v: %v;%s", spaceID, ids, err, last)
 	}
 }
 
 func (c *phaseDIntegrationCluster) waitForSchema(ctx context.Context, t *testing.T, domainID graphmodel.DomainID) {
 	t.Helper()
+	ids := make([]consensus.NodeID, 0, len(c.nodes))
+	for id := range c.nodes {
+		ids = append(ids, id)
+	}
+	c.waitForSchemaOn(ctx, t, ids, domainID)
+}
+
+func (c *phaseDIntegrationCluster) waitForSchemaOn(ctx context.Context, t *testing.T, ids []consensus.NodeID, domainID graphmodel.DomainID) {
+	t.Helper()
+	last := ""
 	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
-		for _, node := range c.nodes {
+		last = ""
+		for _, id := range ids {
+			node := c.nodes[id]
+			if node == nil {
+				last += fmt.Sprintf(" node%d(missing)", id)
+				return false
+			}
 			if _, err := node.schema.GetDomainSchema(ctx, domainID); err != nil {
+				last += fmt.Sprintf(" node%d(err=%v)", id, err)
 				return false
 			}
 		}
 		return true
 	}); err != nil {
-		t.Fatalf("schema %s did not converge: %v", domainID, err)
+		t.Fatalf("schema %s did not converge on %v: %v;%s", domainID, ids, err, last)
 	}
 }
 
 func (c *phaseDIntegrationCluster) waitForGraphNode(ctx context.Context, t *testing.T, spaceID, domainID, nodeID string, revision int64, firstName string) {
+	t.Helper()
+	ids := make([]consensus.NodeID, 0, len(c.nodes))
+	for id := range c.nodes {
+		ids = append(ids, id)
+	}
+	c.waitForGraphNodeOn(ctx, t, ids, spaceID, domainID, nodeID, revision, firstName)
+}
+
+func (c *phaseDIntegrationCluster) waitForGraphNodeOn(ctx context.Context, t *testing.T, ids []consensus.NodeID, spaceID, domainID, nodeID string, revision int64, firstName string) {
 	t.Helper()
 	leader := c.leaderForSpace(ctx, t, spaceID)
 	for _, node := range c.nodes {
@@ -311,7 +554,12 @@ func (c *phaseDIntegrationCluster) waitForGraphNode(ctx context.Context, t *test
 	last := ""
 	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
 		last = ""
-		for id, node := range c.nodes {
+		for _, id := range ids {
+			node := c.nodes[id]
+			if node == nil {
+				last += fmt.Sprintf(" node%d(missing)", id)
+				return false
+			}
 			got, err := phaseDLocalGraphNode(ctx, node.graph, spaceID, domainID, nodeID, revision)
 			value, ok := graphmodel.Property(got, "firstName")
 			if err != nil || !ok || value != firstName {
@@ -321,7 +569,7 @@ func (c *phaseDIntegrationCluster) waitForGraphNode(ctx context.Context, t *test
 		}
 		return true
 	}); err != nil {
-		t.Fatalf("graph node %s did not converge to firstName=%q: %v;%s", nodeID, firstName, err, last)
+		t.Fatalf("graph node %s did not converge to firstName=%q on %v: %v;%s", nodeID, firstName, ids, err, last)
 	}
 }
 
@@ -380,6 +628,24 @@ func phaseDHasVectorStore(ctx context.Context, m *semanticservice.Module, key st
 	}
 	for _, store := range stores {
 		if store.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func phaseDSpacePartition(t *testing.T, spaceID string, partitionCount uint32) uint32 {
+	t.Helper()
+	cmd, err := consensus.NewSpaceCommand(spacemodel.SpaceID(uuid.MustParse(spaceID)), partitionCount, wal.RecordType("graph.commit.v1"), nil, "partition-probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cmd.PartitionID
+}
+
+func phaseDContainsNodeID(ids []consensus.NodeID, want consensus.NodeID) bool {
+	for _, id := range ids {
+		if id == want {
 			return true
 		}
 	}
