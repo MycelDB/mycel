@@ -232,22 +232,13 @@ func TestLoadFromEnvSemanticMaintenanceOverrides(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvBlobS3Overrides(t *testing.T) {
+func TestLoadFromEnvBlobS3BackendRejected(t *testing.T) {
 	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
 	t.Setenv("MYCELD_BLOB_BACKEND", "s3")
-	t.Setenv("MYCELD_BLOB_S3_BUCKET", "mycel-blobs")
-	t.Setenv("MYCELD_BLOB_S3_PREFIX", "prod/a")
-	t.Setenv("MYCELD_BLOB_S3_REGION", "us-east-1")
-	t.Setenv("MYCELD_BLOB_S3_KMS_KEY_ID", "alias/mycel")
-	t.Setenv("MYCELD_BLOB_S3_ENDPOINT_URL", "http://127.0.0.1:4566")
-	t.Setenv("MYCELD_BLOB_S3_FORCE_PATH_STYLE", "true")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if cfg.Blob.Backend != "s3" || cfg.Blob.S3Bucket != "mycel-blobs" || cfg.Blob.S3Prefix != "prod/a" || cfg.Blob.S3Region != "us-east-1" || cfg.Blob.S3KMSKeyID != "alias/mycel" || cfg.Blob.S3EndpointURL != "http://127.0.0.1:4566" || !cfg.Blob.S3ForcePathStyle {
-		t.Fatalf("unexpected blob config: %+v", cfg.Blob)
+	t.Setenv("MYCELD_BLOB_OBJECT_STORE_BUCKET", "mycel-blobs")
+	_, err := LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "MYCELD_BLOB_BACKEND=s3 is no longer supported") {
+		t.Fatalf("LoadFromEnv() error = %v, want s3 backend rejection", err)
 	}
 }
 
@@ -271,32 +262,19 @@ func TestLoadFromEnvBlobObjectStoreOverrides(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvBlobObjectStorePrefersNewVariables(t *testing.T) {
+func TestLoadFromEnvBlobLegacyS3VariablesIgnored(t *testing.T) {
 	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
-	t.Setenv("MYCELD_BLOB_BACKEND", "object_store")
-	t.Setenv("MYCELD_BLOB_OBJECT_STORE_BUCKET", "new-bucket")
-	t.Setenv("MYCELD_BLOB_OBJECT_STORE_PREFIX", "new-prefix")
-	t.Setenv("MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL", "http://minio:9000")
-	t.Setenv("MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE", "true")
 	t.Setenv("MYCELD_BLOB_S3_BUCKET", "legacy-bucket")
 	t.Setenv("MYCELD_BLOB_S3_PREFIX", "legacy-prefix")
 	t.Setenv("MYCELD_BLOB_S3_ENDPOINT_URL", "http://legacy:9000")
-	t.Setenv("MYCELD_BLOB_S3_FORCE_PATH_STYLE", "false")
+	t.Setenv("MYCELD_BLOB_S3_FORCE_PATH_STYLE", "true")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
-	if cfg.Blob.S3Bucket != "new-bucket" || cfg.Blob.S3Prefix != "new-prefix" || cfg.Blob.S3EndpointURL != "http://minio:9000" || !cfg.Blob.S3ForcePathStyle {
-		t.Fatalf("expected object store variables to override legacy S3 variables: %+v", cfg.Blob)
-	}
-}
-
-func TestLoadFromEnvBlobS3RequiresBucket(t *testing.T) {
-	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
-	t.Setenv("MYCELD_BLOB_BACKEND", "s3")
-	if _, err := LoadFromEnv(); err == nil {
-		t.Fatal("expected S3 backend without bucket to fail")
+	if cfg.Blob.S3Bucket != "" || cfg.Blob.S3Prefix != "" || cfg.Blob.S3EndpointURL != "" || cfg.Blob.S3ForcePathStyle {
+		t.Fatalf("legacy MYCELD_BLOB_S3_* variables should be ignored: %+v", cfg.Blob)
 	}
 }
 

@@ -24,7 +24,7 @@ export MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL=http://127.0.0.1:4566
 export MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true
 ```
 
-`MYCELD_BLOB_OBJECT_STORE_PROVIDER` currently supports `s3-compatible`. When it is omitted, `s3-compatible` is assumed for `object_store` and legacy `s3` backends.
+`MYCELD_BLOB_OBJECT_STORE_PROVIDER` currently supports `s3-compatible`. When it is omitted, `s3-compatible` is assumed for `object_store`.
 
 Use `MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL` and `MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true` for MinIO, LocalStack, or S3-compatible endpoints that require path-style requests.
 
@@ -62,21 +62,11 @@ MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true
 
 Override `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MYCELD_BLOB_OBJECT_STORE_BUCKET`, or the `MYCELD_BLOB_OBJECT_STORE_*` variables when invoking compose targets if a different local object-store setup is needed.
 
-## Backward-compatible aliases
+## Removed legacy aliases
 
-Existing S3-specific settings remain supported:
+Legacy S3-specific daemon configuration is no longer accepted. Use `MYCELD_BLOB_BACKEND=object_store`, `MYCELD_BLOB_OBJECT_STORE_PROVIDER=s3-compatible`, and `MYCELD_BLOB_OBJECT_STORE_*` settings for new deployments.
 
-```sh
-export MYCELD_BLOB_BACKEND=s3
-export MYCELD_BLOB_S3_BUCKET=mycel-prod-blobs
-export MYCELD_BLOB_S3_REGION=us-east-1
-export MYCELD_BLOB_S3_PREFIX=clusters/prod-a
-export MYCELD_BLOB_S3_KMS_KEY_ID=alias/mycel-blobs
-export MYCELD_BLOB_S3_ENDPOINT_URL=http://127.0.0.1:4566
-export MYCELD_BLOB_S3_FORCE_PATH_STYLE=true
-```
-
-When both generic object-store variables and legacy `MYCELD_BLOB_S3_*` variables are set, the generic `MYCELD_BLOB_OBJECT_STORE_*` values take precedence.
+Existing blob metadata descriptors that were written with payload backend `s3` remain readable as object-store payload descriptors, but daemon startup/configuration no longer reads `MYCELD_BLOB_S3_*` aliases or accepts `MYCELD_BLOB_BACKEND=s3`.
 
 ## Credentials
 
@@ -131,7 +121,7 @@ For AWS S3, grant the daemon principal access only to the configured bucket/pref
 }
 ```
 
-If `MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID` or legacy `MYCELD_BLOB_S3_KMS_KEY_ID` is set, also allow the required KMS operations for that key.
+If `MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID` is set, also allow the required KMS operations for that key.
 
 ## Integration tests
 
