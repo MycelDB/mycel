@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -22,11 +24,15 @@ import (
 
 type ImportExportService struct {
 	clientv1.UnimplementedImportExportServiceServer
-	sessions daemonsession.Manager
-	graphs   daegraph.Manager
-	blobs    daemonblob.Manager
-	spaces   daemonspace.Manager
-	router   ClientRequestRouter
+	sessions       daemonsession.Manager
+	graphs         daegraph.Manager
+	blobs          daemonblob.Manager
+	spaces         daemonspace.Manager
+	schemas        schemaservice.Manager
+	router         ClientRequestRouter
+	spaceExportDir string
+	spaceMu        sync.Mutex
+	spaceJobs      map[string]*spaceExportJobRecord
 }
 
 func NewImportExportService(sessions daemonsession.Manager, graphs daegraph.Manager, blobs daemonblob.Manager, spaces daemonspace.Manager) *ImportExportService {

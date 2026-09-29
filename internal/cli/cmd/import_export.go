@@ -26,7 +26,7 @@ type domainJSONDocument struct {
 
 func NewExportCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "export", Short: "Export Mycel data through daemon gRPC"}
-	cmd.AddCommand(NewExportDomainCommand(a))
+	cmd.AddCommand(NewExportDomainCommand(a), NewExportSpaceCommand(a))
 	return cmd
 }
 

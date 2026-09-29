@@ -511,7 +511,7 @@ func startDaemonAdminGRPC(t *testing.T) (string, string, string, func()) {
 	}
 	password := bootstrapPasswordFromLog(t, rt.LogPath)
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", PrincipalManager: principalModule, BackupManager: backupModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, InferenceManager: inferenceModule, SemanticManager: semanticModule, AutomationManager: automationModule, Logger: rt.Logger, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService()})
+	srv, errCh, err := server.Start(ctx, server.Config{Addr: "127.0.0.1:0", DataDir: dataDir, PrincipalManager: principalModule, BackupManager: backupModule, SpaceManager: spaceModule, SessionManager: sessionModule, GraphManager: graphModule, GraphChangeManager: graphNotificationModule, BlobManager: blobModule, InferenceManager: inferenceModule, SemanticManager: semanticModule, AutomationManager: automationModule, Logger: rt.Logger, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService()})
 	if err != nil {
 		_ = rt.Close()
 		t.Fatalf("start grpc server failed: %v", err)
