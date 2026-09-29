@@ -12,6 +12,11 @@ import (
 )
 
 func (m *AutomationManager) ProcessScheduled(ctx context.Context, domainID graph.DomainID, limit int) (int, error) {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	if !m.raftEnabled() {
 		if err := m.requireWriteAllowed(); err != nil {
 			return 0, err

@@ -9,9 +9,26 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestAutomationMutationsFailClosedDuringQuiesce(t *testing.T) {
+	gate := quiesce.NewGate(ModuleName)
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithQuiesceGate(gate)
+	lease, err := gate.Quiesce(context.Background(), quiesce.Request{Reason: "backup", Mode: quiesce.ModeBackup, Source: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(context.Background())
+	if _, err := mgr.ProcessScheduled(context.Background(), graph.DomainID(uuid.New()), 10); status.Code(err) != codes.Unavailable {
+		t.Fatalf("ProcessScheduled() error = %v, want Unavailable", err)
+	}
+	if _, err := mgr.CreateAutomation(context.Background(), graph.DomainID(uuid.New()), `{"id":"a","version":1,"status":"enabled","trigger":{"events":["node.created"]},"steps":[{"id":"s","type":"builtin"}]}`); status.Code(err) != codes.Unavailable {
+		t.Fatalf("CreateAutomation() error = %v, want Unavailable", err)
+	}
+}
 
 func TestProcessScheduledFailsClosedWhenWritesDisallowed(t *testing.T) {
 	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithWriteAllowed(func() error {

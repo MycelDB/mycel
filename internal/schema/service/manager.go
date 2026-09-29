@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemacompile "github.com/myceldb/mycel/internal/schema/compile"
 	"github.com/myceldb/mycel/internal/schema/dsl"
 	schema "github.com/myceldb/mycel/internal/schema/model"
@@ -69,10 +70,16 @@ type SchemaManager struct {
 	walWaiter          *wal.ApplyWaiter
 	raftGroups         *consensus.MultiGroup
 	raftPartitionCount uint32
+	gate               *quiesce.Gate
 }
 
 func NewManager(store storage.Store) *SchemaManager {
 	m := &SchemaManager{store: store, now: func() time.Time { return time.Now().UTC() }, cache: newValidationCache()}
+	return m
+}
+
+func (m *SchemaManager) WithQuiesceGate(gate *quiesce.Gate) *SchemaManager {
+	m.gate = gate
 	return m
 }
 
@@ -107,6 +114,11 @@ func (m *SchemaManager) PutDomainSchemaGWL(ctx context.Context, domainID graph.D
 }
 
 func (m *SchemaManager) PutDomainSchema(ctx context.Context, value schema.DomainSchema) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	value = value.Normalize()
 	if value.ID == uuid.Nil {
 		value.ID = uuid.New()
@@ -127,7 +139,23 @@ func (m *SchemaManager) PutDomainSchema(ctx context.Context, value schema.Domain
 }
 
 func (m *SchemaManager) DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return m.commitDeleteDomainSchema(ctx, domainID)
+}
+
+func (m *SchemaManager) enterMutation(ctx context.Context) (func(), error) {
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
 }
 
 func (m *SchemaManager) applyDomainSchema(ctx context.Context, value schema.DomainSchema) error {

@@ -20,13 +20,14 @@ func TestS3BlobBackendIntegration(t *testing.T) {
 		t.Skip("set MYCELD_TEST_S3_BUCKET to run the S3 blob backend integration test")
 	}
 	cfg := Config{
-		Backend:          "s3",
-		S3Bucket:         bucket,
-		S3Prefix:         strings.Trim(strings.TrimSpace(os.Getenv("MYCELD_TEST_S3_PREFIX")), "/"),
-		S3Region:         strings.TrimSpace(os.Getenv("MYCELD_TEST_S3_REGION")),
-		S3KMSKeyID:       strings.TrimSpace(os.Getenv("MYCELD_TEST_S3_KMS_KEY_ID")),
-		S3EndpointURL:    strings.TrimSpace(os.Getenv("MYCELD_TEST_S3_ENDPOINT_URL")),
-		S3ForcePathStyle: parseBoolTestEnv(os.Getenv("MYCELD_TEST_S3_FORCE_PATH_STYLE")),
+		Backend:             "object_store",
+		ObjectStoreProvider: "s3-compatible",
+		S3Bucket:            bucket,
+		S3Prefix:            strings.Trim(strings.TrimSpace(os.Getenv("MYCELD_TEST_S3_PREFIX")), "/"),
+		S3Region:            strings.TrimSpace(os.Getenv("MYCELD_TEST_S3_REGION")),
+		S3KMSKeyID:          strings.TrimSpace(os.Getenv("MYCELD_TEST_S3_KMS_KEY_ID")),
+		S3EndpointURL:       strings.TrimSpace(os.Getenv("MYCELD_TEST_S3_ENDPOINT_URL")),
+		S3ForcePathStyle:    parseBoolTestEnv(os.Getenv("MYCELD_TEST_S3_FORCE_PATH_STYLE")),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -39,7 +40,7 @@ func TestS3BlobBackendIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UploadBlob() error = %v", err)
 	}
-	if meta.Payload == nil || meta.Payload.Backend != "s3" || meta.Payload.S3Bucket != bucket || meta.Payload.S3Key == "" {
+	if meta.Payload == nil || meta.Payload.Backend != "object_store" || meta.Payload.S3Bucket != bucket || meta.Payload.S3Key == "" {
 		t.Fatalf("unexpected S3 payload metadata: %+v", meta.Payload)
 	}
 	_, r, err := m.OpenBlob(ctx, "integration-space", meta.BlobID)

@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,6 +76,108 @@ func TestModuleWALGraphCommitAppendsAndApplies(t *testing.T) {
 	}
 	if gotEdge.DomainID.String() != tx.DomainID || !reflect.DeepEqual(gotEdge.Labels, edge.Labels) || !reflect.DeepEqual(gotEdge.Properties, edge.Properties) || !reflect.DeepEqual(gotEdge.Payload, edge.Payload) || !reflect.DeepEqual(gotEdge.Meta, edge.Meta) || gotEdge.CreatedAt.IsZero() || gotEdge.UpdatedAt.IsZero() {
 		t.Fatalf("edge fields did not round trip through WAL commit: got %+v want %+v", gotEdge, edge)
+	}
+}
+
+func TestModuleWriteTraceLogsGraphApplyTiming(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("MYCELD_GRAPH_WRITE_TRACE", "1")
+	var logs bytes.Buffer
+	m := NewModule()
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.New(slog.NewTextHandler(&logs, nil))}
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	nodeID := domaingraph.NodeID(uuid.New())
+	if _, _, _, err := m.applyGraphCommitRecord(ctx, graphCommitRecord{SpaceID: spaceID, DomainID: domainID, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domaingraph.DomainID(uuid.MustParse(domainID)), Labels: []string{"Trace"}, Properties: map[string]any{"title": "trace"}}}, OperationCount: 1}); err != nil {
+		t.Fatalf("applyGraphCommitRecord() error = %v", err)
+	}
+	out := logs.String()
+	for _, want := range []string{"graph_write_apply_timing", "storage_commit_ms", "put_nodes_ms", "storage_in_memory_apply_ms"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("trace log missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestModuleGraphCheckpointCreateAndStatus(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "checkpoint me", Props: map[string]any{}}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	commit, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+	pre, err := m.GraphCheckpointStatus(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		t.Fatalf("GraphCheckpointStatus() before create error = %v", err)
+	}
+	if pre.CurrentRevision != uint64(commit.CommittedRevision) || pre.CheckpointPresent {
+		t.Fatalf("unexpected pre-checkpoint status: %+v", pre)
+	}
+	created, err := m.CreateGraphCheckpoint(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		t.Fatalf("CreateGraphCheckpoint() error = %v", err)
+	}
+	if !created.CheckpointPresent || created.CurrentRevision != uint64(commit.CommittedRevision) || created.CheckpointRevision != uint64(commit.CommittedRevision) || created.NodeCount != 1 || created.Source != "local_checkpoint" || created.LastCheckpointAttemptAt.IsZero() || created.LastCheckpointSuccessAt.IsZero() {
+		t.Fatalf("unexpected created checkpoint status: %+v", created)
+	}
+	status, err := m.GraphCheckpointStatus(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		t.Fatalf("GraphCheckpointStatus() error = %v", err)
+	}
+	if status.CheckpointRevision != created.CheckpointRevision || status.GraphChecksum == "" || status.ChecksumAlgorithm == "" {
+		t.Fatalf("unexpected checkpoint status: %+v", status)
+	}
+}
+
+func TestModuleAutomaticGraphCheckpointPolicy(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule().WithCheckpointPolicy(CheckpointPolicyConfig{Enabled: true, Interval: time.Hour, RevisionThreshold: 2, Timeout: time.Second})
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	first := graphTx(spaceID, domainID, 0)
+	if _, err := m.CreateNode(ctx, first, NodeInput{Content: "one", Props: map[string]any{}}); err != nil {
+		t.Fatalf("CreateNode(first) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, first); err != nil {
+		t.Fatalf("CommitTransactionGraph(first) error = %v", err)
+	}
+	m.runCheckpointPolicyOnce(ctx, normalizeCheckpointPolicyConfig(m.checkpointPolicy))
+	pre, err := m.GraphCheckpointStatus(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatalf("GraphCheckpointStatus(pre) error = %v", err)
+	}
+	if pre.CheckpointPresent {
+		t.Fatalf("checkpoint created before threshold: %+v", pre)
+	}
+	second := graphTx(spaceID, domainID, 1)
+	if _, err := m.CreateNode(ctx, second, NodeInput{Content: "two", Props: map[string]any{}}); err != nil {
+		t.Fatalf("CreateNode(second) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, second); err != nil {
+		t.Fatalf("CommitTransactionGraph(second) error = %v", err)
+	}
+	m.runCheckpointPolicyOnce(ctx, normalizeCheckpointPolicyConfig(m.checkpointPolicy))
+	status, err := m.GraphCheckpointStatus(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatalf("GraphCheckpointStatus() error = %v", err)
+	}
+	if !status.CheckpointPresent || status.CheckpointRevision != 2 || status.AutoCheckpointRevisionThreshold != 2 || !status.AutoCheckpointEnabled || status.LastCheckpointAttemptAt.IsZero() || status.LastCheckpointSuccessAt.IsZero() || status.LastCheckpointError != "" {
+		t.Fatalf("unexpected automatic checkpoint status: %+v", status)
 	}
 }
 
@@ -372,12 +476,89 @@ func TestModuleGraphChangeEdgeChangesAffectEndpoints(t *testing.T) {
 
 func newTestGraphModule(t *testing.T, ctx context.Context) *Module {
 	t.Helper()
+	m, _ := newTestGraphModuleWithDataDir(t, ctx)
+	return m
+}
+
+func newTestGraphModuleWithDataDir(t *testing.T, ctx context.Context) (*Module, string) {
+	t.Helper()
+	dataDir := t.TempDir()
 	m := NewModule()
-	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
 	if result := m.Init(ctx, rt); !result.OK {
 		t.Fatalf("init graph module: %v", result.Error)
 	}
-	return m
+	return m, dataDir
+}
+
+func TestModuleUsesDomainScopedGraphStoreDirectories(t *testing.T) {
+	ctx := context.Background()
+	m, dataDir := newTestGraphModuleWithDataDir(t, ctx)
+	spaceID := uuid.NewString()
+	domainA := uuid.NewString()
+	domainB := uuid.NewString()
+
+	txA := graphTx(spaceID, domainA, 0)
+	if _, err := m.CreateNode(ctx, txA, NodeInput{Content: "domain A"}); err != nil {
+		t.Fatalf("CreateNode(domain A) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, txA); err != nil {
+		t.Fatalf("CommitTransactionGraph(domain A) error = %v", err)
+	}
+
+	txB := graphTx(spaceID, domainB, 0)
+	if _, err := m.CreateNode(ctx, txB, NodeInput{Content: "domain B"}); err != nil {
+		t.Fatalf("CreateNode(domain B) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, txB); err != nil {
+		t.Fatalf("CommitTransactionGraph(domain B) error = %v", err)
+	}
+
+	for _, domainID := range []string{domainA, domainB} {
+		manifest := filepath.Join(dataDir, "graphs", spaceID, "domains", domainID, "manifest.mycel")
+		if _, err := os.Stat(manifest); err != nil {
+			t.Fatalf("domain manifest %s missing: %v", manifest, err)
+		}
+	}
+	legacyManifest := filepath.Join(dataDir, "graphs", spaceID, "manifest.mycel")
+	if _, err := os.Stat(legacyManifest); !os.IsNotExist(err) {
+		t.Fatalf("legacy space-level graph manifest exists/error = %v", err)
+	}
+
+	readA := graphTx(spaceID, domainA, 1)
+	readA.Mode = daemonsession.TransactionModeReadOnly
+	nodesA, _, err := m.ListNodes(ctx, readA, 0, "")
+	if err != nil {
+		t.Fatalf("ListNodes(domain A) error = %v", err)
+	}
+	if len(nodesA) != 1 || nodesA[0].Content != "domain A" {
+		t.Fatalf("domain A nodes = %+v", nodesA)
+	}
+	readB := graphTx(spaceID, domainB, 1)
+	readB.Mode = daemonsession.TransactionModeReadOnly
+	nodesB, _, err := m.ListNodes(ctx, readB, 0, "")
+	if err != nil {
+		t.Fatalf("ListNodes(domain B) error = %v", err)
+	}
+	if len(nodesB) != 1 || nodesB[0].Content != "domain B" {
+		t.Fatalf("domain B nodes = %+v", nodesB)
+	}
+}
+
+func TestModuleRejectsCrossDomainStagedWrites(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID := uuid.NewString()
+	domainA := uuid.NewString()
+	domainB := uuid.NewString()
+	tx := graphTx(spaceID, domainA, 0)
+	otherDomain := uuid.MustParse(domainB)
+	if err := m.stageNode(ctx, tx, domaingraph.Node{ID: uuid.New(), DomainID: domaingraph.DomainID(otherDomain), Props: map[string]any{}}); err == nil {
+		t.Fatal("stageNode accepted mismatched domain")
+	}
+	if err := m.stageEdge(ctx, tx, domaingraph.Edge{ID: uuid.New(), DomainID: domaingraph.DomainID(otherDomain), FromID: uuid.New(), ToID: uuid.New()}); err == nil {
+		t.Fatal("stageEdge accepted mismatched domain")
+	}
 }
 
 func TestModuleGraphChangeSinkNotInvokedForDiscardReadOnlyOrNoop(t *testing.T) {

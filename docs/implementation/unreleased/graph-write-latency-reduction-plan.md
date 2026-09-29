@@ -235,6 +235,77 @@ Issue: [#96](https://github.com/MycelDB/mycel/issues/96)
 
 Current graph state-machine apply p50 is roughly 115ms for the representative update. Add sub-timing around graph storage apply to identify the dominant costs.
 
+Instrumentation added:
+
+- write tracing now emits `graph_write_apply_timing` from `applyGraphCommitRecord` when `MYCELD_GRAPH_WRITE_TRACE` is enabled;
+- the event breaks down record normalization, graph store open, storage transaction begin, expected revision setup, put/delete loops, storage commit, and the lower-level `graphstorage.CommitTiming` fields;
+- payload/content is not logged; only IDs, counts, revision, and timing values are emitted.
+
+Use this event with the relationship-heavy raft benchmark below to identify the dominant apply/storage sub-step before selecting storage optimizations.
+
+#### Profiling result
+
+Local single-node Raft profiling artifact:
+
+```text
+/tmp/mycel-issue96-apply-profile-20260929T111848Z
+```
+
+Configuration:
+
+- `MYCELD_CLUSTER_RAFT_NODE_COUNT=1`
+- `MYCELD_CLUSTER_RAFT_REPLICA_FACTOR=1`
+- `MYCELD_GRAPH_WRITE_TRACE=1`
+- workload: `commonfolio-journal-entry update-references`, 10k seed nodes, refs=2, 50 operations
+
+Batch size 1 client summary:
+
+- `transaction_commit` p50 70.408ms, p95 82.252ms
+- `transaction_total` p50 98.074ms, p95 113.217ms
+
+Batch size 1 measured `graph_write_apply_timing` records:
+
+- apply total p50 21.283ms, p95 27.498ms
+- storage commit p50 21.278ms, p95 27.494ms
+- node segment sync p50 7.899ms
+- edge segment sync p50 8.034ms
+- txn segment sync p50 4.131ms
+- in-memory apply p50 0.028ms
+- append, validation, conflict check, and index maintenance work were sub-ms at p50
+
+Batch size 10 kept per-transaction commit latency similar while amortizing the fixed durable sync bundle over 10 logical updates:
+
+- `transaction_commit` p50 64.019ms, p95 74.997ms for 5 measured transactions
+- apply total p50 19.082ms, p95 23.700ms
+
+Conclusion: for this workload, graph state-machine apply is dominated by the graph storage durable commit protocol's sequential node, edge, and txn segment fsyncs, not CPU, in-memory apply, conflict checks, or index maintenance. The low-risk near-term mitigation is batching logical updates into fewer graph transactions. Larger storage improvements are tracked in [#116](https://github.com/MycelDB/mycel/issues/116).
+
+#### #116 low-risk storage sync optimization
+
+Selected low-risk design:
+
+- keep the existing `.kseg` segment format;
+- keep the crash-recovery invariant that node/edge data segment syncs complete before the transaction commit marker is appended and synced;
+- skip node/edge segment syncs for untouched data segments;
+- run touched node and edge segment syncs concurrently, then append and sync the txn commit marker only after both data syncs have succeeded.
+
+This does not weaken successful graph commit durability: a committed transaction is still advertised by a durable txn commit record written after the corresponding data segment records were durably synced. A crash before the txn commit marker remains an uncommitted transaction and is ignored by replay.
+
+Post-change local single-node Raft benchmark artifact:
+
+```text
+/tmp/mycel-issue116-fsync-profile-20260929T120904Z
+```
+
+Same relationship-heavy workload, batch size 1:
+
+- `transaction_commit` p50 65.140ms, p95 80.740ms
+- `transaction_total` p50 90.703ms, p95 108.409ms
+- apply total p50 20.306ms, p95 23.222ms
+- storage commit p50 20.301ms, p95 23.217ms
+
+Compared with the pre-change #96 profile, apply/storage p50 moved from 21.283ms to 20.306ms and p95 moved from 27.498ms to 23.222ms. The remaining cost is still durable filesystem sync time, especially the txn segment sync plus the slower of node/edge data syncs.
+
 Investigate:
 
 - graph storage transaction begin/commit
@@ -255,6 +326,24 @@ Acceptance:
 Issue: [#97](https://github.com/MycelDB/mycel/issues/97)
 
 Inventory graph commit sinks and maintenance hooks. Define a policy that prevents secondary sinks from adding hidden synchronous Raft proposals to user-facing graph commits.
+
+#### Sink inventory and policy
+
+| Sink or hook | Standalone behavior | Clustered/Raft behavior | Durability model | User-facing commit policy |
+| --- | --- | --- | --- | --- |
+| Authoritative graph storage commit | Synchronous local store/WAL apply | Synchronous graph Raft proposal and state-machine apply | authoritative graph data | Required synchronous work. |
+| Graph-change notification history | Synchronous commit sink | Synchronous raft-apply sink only, after graph command applies | durable graph-change history/outbox | Allowed synchronous sink because async semantic/lexical consumers replay from it. It must not call secondary Raft groups. |
+| Semantic dirty marker creation | Legacy synchronous standalone sink | Async graph-change consumer reading notification history | durable/replayable dirty work from graph-change history | Must not perform nested synchronous semantic Raft proposal on clustered user-facing commits. |
+| Lexical indexing | Async graph-change consumer | Async graph-change consumer | derived index from durable graph-change history and graph state | Must not block user-facing graph commits. |
+| Automation graph triggers | Async/replay path from graph-change history in raft mode; local durable runtime writes enter automation gates | async/replay by execution leader | durable invocation/runtime state | Must not be added to synchronous graph commit fanout. |
+| Future maintenance/index sinks | Not allowed by default | Not allowed by default | must use durable outbox, graph-change history, or checkpointed replay | Require explicit justification and tests before adding synchronous behavior. |
+
+Clustered sink policy is encoded by `graphCommitSinkPolicyForConfig` and guarded by tests:
+
+- standalone keeps the legacy synchronous `graph_change_notification` + `semantic` fanout;
+- clustered graph commits have no generic synchronous `SetChangeSink` fanout;
+- clustered raft apply synchronously records only `graph_change_notification`;
+- clustered lexical and semantic processing are async graph-change consumers.
 
 Acceptance:
 

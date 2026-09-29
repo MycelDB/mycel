@@ -45,9 +45,10 @@ import (
 // See docs/implementation/phase-f-read-consistency-inventory.md.
 // See docs/implementation/phase-f-read-consistency-model-implementation-plan.md.
 type raftGraphReadRequest struct {
-	Op      string `json:"op"`
-	SpaceID string `json:"space_id"`
-	Tx      struct {
+	Op       string `json:"op"`
+	SpaceID  string `json:"space_id"`
+	DomainID string `json:"domain_id,omitempty"`
+	Tx       struct {
 		ID, SessionID, PrincipalID, SpaceID, DomainID, Mode, State string
 		HomeNodeID                                                 uint64
 		BaseRevision                                               int64
@@ -259,7 +260,7 @@ func (m *Module) strongGraphReadForTransaction(ctx context.Context, tx daemonses
 	if err != nil {
 		return nil, err
 	}
-	store, err := m.store(ctx, tx.SpaceID)
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return read, err
 	}
@@ -355,10 +356,17 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 	if strings.TrimSpace(tx.SpaceID) == "" {
 		tx.SpaceID = req.SpaceID
 	}
+	if strings.TrimSpace(tx.DomainID) == "" {
+		tx.DomainID = req.DomainID
+	}
 	var read *StrongReadContext
 	if tx.Mode != daemonsession.TransactionModeReadWrite {
 		var err error
-		read, err = m.strongGraphReadForTransaction(ctx, tx)
+		if strings.TrimSpace(tx.DomainID) == "" {
+			read, err = m.strongGraphRead(ctx, req.SpaceID)
+		} else {
+			read, err = m.strongGraphReadForTransaction(ctx, tx)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -381,7 +389,7 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		}
 		return json.Marshal(raftGraphNodesResponse{Nodes: n, NextPageToken: next, Read: read})
 	case "configure_indexes":
-		store, err := m.store(ctx, tx.SpaceID)
+		store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 		if err != nil {
 			return nil, err
 		}
@@ -448,11 +456,24 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		}
 		return json.Marshal(raftGraphOptionalEdgeResponse{Edge: e, Read: read})
 	case "current_revision":
-		store, err := m.store(ctx, req.SpaceID)
-		if err != nil {
-			return nil, err
+		var revision int64
+		if strings.TrimSpace(req.DomainID) != "" {
+			store, err := m.store(ctx, req.SpaceID, req.DomainID)
+			if err != nil {
+				return nil, err
+			}
+			revision = int64(store.Revision())
+		} else {
+			stores, err := m.domainStoresForSpace(ctx, req.SpaceID)
+			if err != nil {
+				return nil, err
+			}
+			for _, store := range stores {
+				if rev := int64(store.Revision()); rev > revision {
+					revision = rev
+				}
+			}
 		}
-		revision := int64(store.Revision())
 		if read != nil {
 			read.ObservedRevision = revision
 		}
@@ -462,13 +483,17 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		if _, err := id.Bytes(); err != nil {
 			return nil, fmt.Errorf("%w: invalid blob_id", ErrInvalidInput)
 		}
-		store, err := m.store(ctx, req.SpaceID)
+		stores, err := m.domainStoresForSpace(ctx, req.SpaceID)
 		if err != nil {
 			return nil, err
 		}
-		count, err := store.BlobRefCount(ctx, id)
-		if err != nil {
-			return nil, mapStorageError(err)
+		count := 0
+		for _, store := range stores {
+			storeCount, err := store.BlobRefCount(ctx, id)
+			if err != nil {
+				return nil, mapStorageError(err)
+			}
+			count += storeCount
 		}
 		return json.Marshal(raftGraphCountResponse{Count: count, Read: read})
 	default:

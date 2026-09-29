@@ -130,7 +130,8 @@ func TestModuleLocalGraphConsistencyStatsRejectsUnsafeManifestWithoutCreatingSeg
 		t.Fatalf("init failed: %v", result.Error)
 	}
 	spaceID := uuid.NewString()
-	spacePath := filepath.Join(dataDir, "graphs", spaceID)
+	domainID := uuid.NewString()
+	spacePath := filepath.Join(dataDir, "graphs", spaceID, "domains", domainID)
 	if err := os.MkdirAll(filepath.Join(spacePath, "segments"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +144,7 @@ func TestModuleLocalGraphConsistencyStatsRejectsUnsafeManifestWithoutCreatingSeg
 	if err := os.WriteFile(filepath.Join(spacePath, "manifest.mycel"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := m.LocalGraphConsistencyStats(ctx, spaceID, uuid.NewString())
+	_, err := m.LocalGraphConsistencyStats(ctx, spaceID, domainID)
 	if err == nil {
 		t.Fatal("LocalGraphConsistencyStats() expected unsafe-manifest error")
 	}
@@ -176,7 +177,7 @@ func TestModuleLocalGraphConsistencyStatsScansCommittedDomain(t *testing.T) {
 	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
 		t.Fatalf("CommitTransactionGraph(domain) error = %v", err)
 	}
-	otherTx := graphTx(spaceID, otherDomainID, 1)
+	otherTx := graphTx(spaceID, otherDomainID, 0)
 	if _, err := m.CreateNode(ctx, otherTx, NodeInput{NodeID: "dddddddd-dddd-dddd-dddd-dddddddddddd", Content: "other domain"}); err != nil {
 		t.Fatalf("CreateNode(other domain) error = %v", err)
 	}
@@ -188,7 +189,7 @@ func TestModuleLocalGraphConsistencyStatsScansCommittedDomain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LocalGraphConsistencyStats() error = %v", err)
 	}
-	if stats.SpaceID != spaceID || stats.DomainID != domainID || stats.Revision != 2 || stats.NodeCount != 2 || stats.EdgeCount != 1 || stats.NodeChecksum == "" || stats.EdgeChecksum == "" || stats.GraphChecksum == "" {
+	if stats.SpaceID != spaceID || stats.DomainID != domainID || stats.Revision != 1 || stats.NodeCount != 2 || stats.EdgeCount != 1 || stats.NodeChecksum == "" || stats.EdgeChecksum == "" || stats.GraphChecksum == "" {
 		t.Fatalf("unexpected stats: %#v", stats)
 	}
 	otherStats, err := m.LocalGraphConsistencyStats(ctx, spaceID, otherDomainID)

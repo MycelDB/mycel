@@ -21,6 +21,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/runtime"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
 const (
@@ -100,6 +101,7 @@ type Module struct {
 	current        map[string]uint64
 	registrations  map[string]*registration
 	diagnostics    Diagnostics
+	gate           *quiesce.Gate
 }
 
 type registration struct {
@@ -126,6 +128,7 @@ func NewModule() *Module {
 		loaded:         map[string]bool{},
 		current:        map[string]uint64{},
 		registrations:  map[string]*registration{},
+		gate:           quiesce.NewGate(ModuleName),
 	}
 }
 
@@ -159,6 +162,14 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	if m.registrations == nil {
 		m.registrations = map[string]*registration{}
+	}
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if registrar, ok := host.(runtime.QuiesceRegistrar); ok {
+		if err := registrar.RegisterQuiesceParticipant(m.gate); err != nil {
+			return runtime.Abort(ModuleName, "quiesce", "register graph-change notification quiesce participant", err)
+		}
 	}
 	m.dataDir = filepath.Join(host.DataDir(), "graph-change-notification")
 	if err := os.MkdirAll(m.dataDir, fsperm.PrivateDir); err != nil {
@@ -304,6 +315,13 @@ func (m *Module) RegisterConsumer(ctx context.Context, spec ConsumerSpec, consum
 func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.CommittedEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if m.gate != nil {
+		release, err := m.gate.Enter(ctx)
+		if err != nil {
+			return quiesce.GRPCError(err)
+		}
+		defer release()
 	}
 	if event.ID == uuid.Nil {
 		event.ID = uuid.New()

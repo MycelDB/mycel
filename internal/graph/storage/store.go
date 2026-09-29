@@ -34,33 +34,34 @@ type Options struct {
 }
 
 type LocalStore struct {
-	mu                sync.RWMutex
-	path              string
-	encryption        *encryption.Service
-	state             StoreState
-	manifest          manifest
-	nodes             *segment
-	edges             *segment
-	txns              *segment
-	nodeRecords       map[graph.NodeID]graph.Node
-	edgeRecords       map[graph.EdgeID]graph.Edge
-	nodeMeta          map[graph.NodeID]NodeMeta
-	edgeMeta          map[graph.EdgeID]EdgeMeta
-	nodesByDomain     map[graph.DomainID]map[graph.NodeID]struct{}
-	labelIndex        map[graph.DomainID]map[string]map[graph.NodeID]struct{}
-	tagIndex          map[graph.DomainID]map[string]map[graph.NodeID]struct{}
-	configuredIndexes map[graph.DomainID][]schema.IndexDefinition
-	indexMetadata     map[string]IndexMetadata
-	nodePropertyIndex map[string]map[string]nodePropertyIndexEntry
-	edgePropertyIndex map[string]map[string]edgePropertyIndexEntry
-	edgeAdjacencyOut  map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
-	edgeAdjacencyIn   map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
-	containsChildren  map[graph.NodeID][]graph.EdgeID
-	containsParent    map[graph.NodeID]graph.EdgeID
-	edgeIndex         adjacency.EdgeIndex
-	journalDay        map[int]map[graph.NodeID]struct{}
-	blobRefs          map[graph.BlobID]map[graph.NodeID]struct{}
-	revision          uint64
+	mu                        sync.RWMutex
+	path                      string
+	encryption                *encryption.Service
+	state                     StoreState
+	manifest                  manifest
+	nodes                     *segment
+	edges                     *segment
+	txns                      *segment
+	nodeRecords               map[graph.NodeID]graph.Node
+	edgeRecords               map[graph.EdgeID]graph.Edge
+	nodeMeta                  map[graph.NodeID]NodeMeta
+	edgeMeta                  map[graph.EdgeID]EdgeMeta
+	nodesByDomain             map[graph.DomainID]map[graph.NodeID]struct{}
+	labelIndex                map[graph.DomainID]map[string]map[graph.NodeID]struct{}
+	tagIndex                  map[graph.DomainID]map[string]map[graph.NodeID]struct{}
+	configuredIndexes         map[graph.DomainID][]schema.IndexDefinition
+	indexMetadata             map[string]IndexMetadata
+	nodePropertyIndex         map[string]map[string]nodePropertyIndexEntry
+	edgePropertyIndex         map[string]map[string]edgePropertyIndexEntry
+	edgeAdjacencyOut          map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
+	edgeAdjacencyIn           map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
+	containsChildren          map[graph.NodeID][]graph.EdgeID
+	containsParent            map[graph.NodeID]graph.EdgeID
+	edgeIndex                 adjacency.EdgeIndex
+	persistentIndexLoadStatus PersistentIndexStatus
+	journalDay                map[int]map[graph.NodeID]struct{}
+	blobRefs                  map[graph.BlobID]map[graph.NodeID]struct{}
+	revision                  uint64
 	// nodeModRev/edgeModRev record the store revision at which each entity was
 	// last written, enabling write-set (fine-grained) conflict detection so that
 	// concurrent transactions touching disjoint entities do not conflict.
@@ -109,8 +110,14 @@ func (s *LocalStore) open(ctx context.Context) error {
 		return err
 	}
 	s.state = StoreStateRebuildingIndex
-	if err := s.rebuildIndexes(ctx); err != nil {
+	loaded, err := s.loadCheckpoint(ctx)
+	if err != nil {
 		return err
+	}
+	if !loaded {
+		if err := s.rebuildIndexes(ctx); err != nil {
+			return err
+		}
 	}
 	s.state = StoreStateReady
 	return nil

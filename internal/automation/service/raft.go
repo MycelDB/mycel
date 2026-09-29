@@ -95,6 +95,11 @@ func (m *AutomationManager) commitAutomationMutation(ctx context.Context, rec au
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if m.raftGroups != nil {
 		cmd, err := m.buildAutomationRaftCommand(rec)
 		if err != nil {

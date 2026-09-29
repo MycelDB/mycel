@@ -93,6 +93,51 @@ func (t *localTxn) touchedDomains() map[graph.DomainID]struct{} {
 	return out
 }
 
+func (t *localTxn) syncDataSegments(timing *CommitTiming) error {
+	type syncResult struct {
+		kind SegmentKind
+		dur  time.Duration
+		err  error
+	}
+	needsNodeSync := len(t.nodePuts) > 0 || len(t.nodeDeletes) > 0
+	needsEdgeSync := len(t.edgePuts) > 0 || len(t.edgeDeletes) > 0
+	if !needsNodeSync && !needsEdgeSync {
+		return nil
+	}
+	resultCount := 0
+	results := make(chan syncResult, 2)
+	if needsNodeSync {
+		resultCount++
+		go func() {
+			start := time.Now()
+			err := t.store.nodes.sync()
+			results <- syncResult{kind: SegmentKindNode, dur: time.Since(start), err: err}
+		}()
+	}
+	if needsEdgeSync {
+		resultCount++
+		go func() {
+			start := time.Now()
+			err := t.store.edges.sync()
+			results <- syncResult{kind: SegmentKindEdge, dur: time.Since(start), err: err}
+		}()
+	}
+	var firstErr error
+	for i := 0; i < resultCount; i++ {
+		result := <-results
+		switch result.kind {
+		case SegmentKindNode:
+			timing.NodeSync = result.dur
+		case SegmentKindEdge:
+			timing.EdgeSync = result.dur
+		}
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+		}
+	}
+	return firstErr
+}
+
 func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	if t.closed {
 		return CommitInfo{}, ErrTxnClosed
@@ -181,16 +226,9 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 		edgeDelLocs[i] = loc
 	}
 	timing.EdgeAppend = time.Since(stepStart)
-	stepStart = time.Now()
-	if err := t.store.nodes.sync(); err != nil {
+	if err := t.syncDataSegments(&timing); err != nil {
 		return CommitInfo{}, err
 	}
-	timing.NodeSync = time.Since(stepStart)
-	stepStart = time.Now()
-	if err := t.store.edges.sync(); err != nil {
-		return CommitInfo{}, err
-	}
-	timing.EdgeSync = time.Since(stepStart)
 	info := CommitInfo{TxnID: t.id, NextRevision: t.store.revision + 1, Timing: timing}
 	if t.commitHook != nil {
 		if err := t.commitHook(info); err != nil {

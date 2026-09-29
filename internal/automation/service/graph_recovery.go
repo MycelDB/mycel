@@ -18,6 +18,11 @@ type GraphChangeReplayer interface {
 }
 
 func (m *AutomationManager) RecoverGraphChanges(ctx context.Context, replayer GraphChangeReplayer) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if replayer == nil || !m.raftEnabled() {
 		return nil
 	}
@@ -105,6 +110,11 @@ func (m *AutomationManager) advanceGraphReplayCursor(ctx context.Context, event 
 
 func (m *AutomationManager) putGraphReplayCursorRuntime(ctx context.Context, cursor storage.GraphReplayCursor) error {
 	if m.raftGroups == nil {
+		release, err := m.enterMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
 		if err := m.requireWriteAllowed(); err != nil {
 			return err
 		}
