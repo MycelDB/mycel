@@ -22,9 +22,9 @@ docs/design/api/template.md
 
 ## Purpose
 
-`ImportExportService` provides client/application data portability for graph/domain data.
+`ImportExportService` provides client/application data portability for graph/domain data and authenticated space exports.
 
-The current daemon implementation supports transaction-scoped structured Mycel stream export/import of graph nodes, edges, optional templates, optional blob payloads, and `REPLACE_DOMAIN` mode. Raw JSON/NDJSON gRPC chunk formats and semantic rule/vector export remain future hardening slices.
+The current daemon implementation supports transaction-scoped structured Mycel stream export/import of graph nodes, edges, optional templates, optional blob payloads, and `REPLACE_DOMAIN` mode. It also supports daemon-managed space export jobs that create a versioned ZIP artifact for one requested space and one or more authorized domains. Raw JSON/NDJSON gRPC chunk formats and semantic rule/vector export remain future hardening slices.
 
 It is distinct from Admin API backup/restore. Admin backup/restore may include users, access grants, daemon configuration, mesh metadata, semantic credentials, and other operational state. Client import/export is for application data inside authorized spaces/domains.
 
@@ -65,6 +65,7 @@ If import fails, the importer rolls back the transaction.
 - optional templates
 - optional blobs
 - stable external identities for importer upsert/re-import workflows
+- authorized space/domain export job creation, status/listing, ZIP download, and deletion/expiry
 
 `ImportExportService` does not include:
 
@@ -84,12 +85,17 @@ If import fails, the importer rolls back the transaction.
 service ImportExportService {
   rpc ExportDomain(ExportDomainRequest) returns (stream ExportDomainResponse);
   rpc ImportDomain(stream ImportDomainRequest) returns (ImportDomainResponse);
+  rpc CreateSpaceExport(CreateSpaceExportRequest) returns (CreateSpaceExportResponse);
+  rpc GetSpaceExport(GetSpaceExportRequest) returns (GetSpaceExportResponse);
+  rpc ListSpaceExports(ListSpaceExportsRequest) returns (ListSpaceExportsResponse);
+  rpc DownloadSpaceExport(DownloadSpaceExportRequest) returns (stream DownloadSpaceExportResponse);
+  rpc DeleteSpaceExport(DeleteSpaceExportRequest) returns (DeleteSpaceExportResponse);
 }
 ```
 
 ## CLI
 
-The daemon-backed CLI provides JSON document wrappers around the structured gRPC stream:
+The daemon-backed CLI provides JSON document wrappers around the structured gRPC stream and space export jobs:
 
 ```sh
 ./bin/mycel -u alice -p '<password>' export domain \
@@ -104,6 +110,16 @@ The daemon-backed CLI provides JSON document wrappers around the structured gRPC
   --mode append \
   --include-templates \
   --include-blobs
+
+./bin/mycel -u alice -p '<password>' export space \
+  --space-id '<space-id>' \
+  --file mycel-space-export.zip \
+  --include-blobs
+
+./bin/mycel -u alice -p '<password>' export space create --space-id '<space-id>' --domain-id '<domain-id>'
+./bin/mycel -u alice -p '<password>' export space status '<export-id>'
+./bin/mycel -u alice -p '<password>' export space download '<export-id>' --file mycel-space-export.zip
+./bin/mycel -u alice -p '<password>' export space delete '<export-id>'
 ```
 
 The JSON document shape is intentionally simple for the MVP:
@@ -131,6 +147,29 @@ The JSON document shape is intentionally simple for the MVP:
 ```
 
 `import domain` defaults to preserving supplied node/edge ids so exported documents can be imported into another domain while preserving containment edge endpoints.
+
+## Space exports
+
+`CreateSpaceExport` starts a daemon-managed job for one requested `space_id`. Optional repeated `domain_ids` select specific domains; when omitted, the daemon exports all visible non-system domains in the space, plus system domains when `include_system_domains=true`. The daemon stores the completed ZIP artifact under its configured data directory for a bounded retention window and exposes status/progress through `GetSpaceExport` and `ListSpaceExports`. `DownloadSpaceExport` streams completed artifacts in chunks. `DeleteSpaceExport` removes the artifact before expiry.
+
+The ZIP format is versioned as `mycel-space-export-v1` and contains:
+
+```text
+manifest.json
+README.md
+export.json
+spaces/<space-id>/space.json
+spaces/<space-id>/domains/<domain-id>/domain.json
+spaces/<space-id>/domains/<domain-id>/nodes.jsonl
+spaces/<space-id>/domains/<domain-id>/edges.jsonl
+spaces/<space-id>/domains/<domain-id>/schema.gwl        # when configured
+spaces/<space-id>/domains/<domain-id>/blobs/manifest.jsonl
+spaces/<space-id>/blobs/files/<blob-id>                 # when include_blobs=true
+```
+
+`manifest.json` records the requester principal, requested space/domain options, included space/domains, counts, file list, and SHA-256 checksums. JSONL payloads are newline-delimited so consumers can parse large exports incrementally. The job intentionally omits daemon secrets, credentials, auth/session tokens, WAL/Raft logs, backups/checkpoints, local indexes, runtime caches, and derived semantic/vector index payloads.
+
+Authorization is explicit: the authenticated principal must be allowed to read the requested space and domains. Jobs and artifacts are owned by the authenticated principal, so status/download/delete reject other users.
 
 ## Current implementation notes
 
