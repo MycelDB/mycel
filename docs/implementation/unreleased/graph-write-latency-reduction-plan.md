@@ -243,6 +243,43 @@ Instrumentation added:
 
 Use this event with the relationship-heavy raft benchmark below to identify the dominant apply/storage sub-step before selecting storage optimizations.
 
+#### Profiling result
+
+Local single-node Raft profiling artifact:
+
+```text
+/tmp/mycel-issue96-apply-profile-20260929T111848Z
+```
+
+Configuration:
+
+- `MYCELD_CLUSTER_RAFT_NODE_COUNT=1`
+- `MYCELD_CLUSTER_RAFT_REPLICA_FACTOR=1`
+- `MYCELD_GRAPH_WRITE_TRACE=1`
+- workload: `commonfolio-journal-entry update-references`, 10k seed nodes, refs=2, 50 operations
+
+Batch size 1 client summary:
+
+- `transaction_commit` p50 70.408ms, p95 82.252ms
+- `transaction_total` p50 98.074ms, p95 113.217ms
+
+Batch size 1 measured `graph_write_apply_timing` records:
+
+- apply total p50 21.283ms, p95 27.498ms
+- storage commit p50 21.278ms, p95 27.494ms
+- node segment sync p50 7.899ms
+- edge segment sync p50 8.034ms
+- txn segment sync p50 4.131ms
+- in-memory apply p50 0.028ms
+- append, validation, conflict check, and index maintenance work were sub-ms at p50
+
+Batch size 10 kept per-transaction commit latency similar while amortizing the fixed durable sync bundle over 10 logical updates:
+
+- `transaction_commit` p50 64.019ms, p95 74.997ms for 5 measured transactions
+- apply total p50 19.082ms, p95 23.700ms
+
+Conclusion: for this workload, graph state-machine apply is dominated by the graph storage durable commit protocol's sequential node, edge, and txn segment fsyncs, not CPU, in-memory apply, conflict checks, or index maintenance. The low-risk near-term mitigation is batching logical updates into fewer graph transactions. Larger storage improvements are tracked in [#116](https://github.com/MycelDB/mycel/issues/116).
+
 Investigate:
 
 - graph storage transaction begin/commit
