@@ -12,8 +12,11 @@ import (
 
 	"github.com/google/uuid"
 	model "github.com/myceldb/mycel/internal/inference/model"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestInferenceWALWrapsGlobalSpaceAndUsageStores(t *testing.T) {
@@ -109,6 +112,33 @@ func TestInferenceMutationRespectsLocalWriteGate(t *testing.T) {
 	}
 	if _, err := module.GlobalManager().UpsertEndpoint(ctx, model.Endpoint{Key: "openai"}); err == nil || !strings.Contains(err.Error(), "rejected") {
 		t.Fatalf("expected local write gate rejection, got %v", err)
+	}
+}
+
+func TestInferenceQuiesceRejectsDurableMutations(t *testing.T) {
+	ctx := context.Background()
+	host := runtimetest.New(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	module := NewModule()
+	if result := module.Init(ctx, host); !result.OK {
+		t.Fatalf("init: %#v", result)
+	}
+	lease, err := host.QuiesceCoordinator().QuiesceAll(ctx, quiesce.Request{Reason: "test backup", Mode: quiesce.ModeBackup, Source: "test"})
+	if err != nil {
+		t.Fatalf("QuiesceAll() error=%v", err)
+	}
+	defer lease.Release(context.Background())
+	if _, err := module.GlobalManager().UpsertEndpoint(ctx, model.Endpoint{Key: "openai"}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("UpsertEndpoint() error=%v, want Unavailable", err)
+	}
+	spaceMgr, err := module.SpaceManager(ctx, "space-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceMgr.UpsertProfile(ctx, model.Profile{Key: "summarize", Operation: model.OperationChat}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("UpsertProfile() error=%v, want Unavailable", err)
+	}
+	if _, err := module.UsageLedger().AppendUsageEvent(ctx, model.UsageEvent{SpaceID: "space-1", Operation: model.OperationChat, Status: model.UsageStatusSucceeded}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("AppendUsageEvent() error=%v, want Unavailable", err)
 	}
 }
 

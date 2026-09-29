@@ -91,11 +91,10 @@ func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.
 		m.walProgress = provider.WALProgressStore()
 		m.walWaiter = provider.WALWaiterStore()
 	}
-	useMutationWrappers := m.wal != nil
+	useMutationWrappers := true
 	m.writeAllowed = func() error { return nil }
 	if gate, ok := host.(mycelruntime.LocalWriteGate); ok {
 		m.writeAllowed = gate.RequireLocalWriteAllowed
-		useMutationWrappers = true
 	}
 	m.useMutationWrappers = useMutationWrappers
 	if useMutationWrappers {

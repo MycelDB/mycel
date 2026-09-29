@@ -12,6 +12,7 @@ import (
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
@@ -39,10 +40,11 @@ type Module struct {
 	blobs     blobservice.Manager
 	replayer  GraphChangeReplayer
 	worker    WorkerConfig
+	gate      *quiesce.Gate
 }
 
 func NewModule(dataDir string) *Module {
-	return &Module{dataDir: dataDir, worker: WorkerConfig{Enabled: true, Interval: time.Second, BatchSize: 25, Concurrency: 1}}
+	return &Module{dataDir: dataDir, worker: WorkerConfig{Enabled: true, Interval: time.Second, BatchSize: 25, Concurrency: 1}, gate: quiesce.NewGate(ModuleName)}
 }
 
 func (m *Module) WithGraphRuntime(sessions sessionservice.Manager, graphs graphservice.Manager) *Module {
@@ -99,7 +101,15 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 			}
 		}
 	}
-	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaManager(m.schemas).WithInferenceManager(m.inference).WithBlobManager(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens)
+	if m.gate == nil {
+		m.gate = quiesce.NewGate(ModuleName)
+	}
+	if registrar, ok := host.(coreruntime.QuiesceRegistrar); ok {
+		if err := registrar.RegisterQuiesceParticipant(m.gate); err != nil {
+			return coreruntime.Abort(ModuleName, "quiesce", "register automation quiesce participant", err)
+		}
+	}
+	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaManager(m.schemas).WithInferenceManager(m.inference).WithBlobManager(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
 	if gate, ok := host.(coreruntime.LocalWriteGate); ok {
 		m.AutomationManager.WithWriteAllowed(gate.RequireLocalWriteAllowed)
 	}
