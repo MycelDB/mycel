@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
@@ -39,46 +40,69 @@ func (m *Module) applyGraphCommit(ctx context.Context, rec wal.Record) error {
 }
 
 func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommitRecord) (int64, graphCommitRecord, graphstorage.CommitInfo, error) {
+	totalStart := time.Now()
+	timing := graphApplyTiming{}
+	stepStart := time.Now()
 	if err := normalizeGraphCommitRecordDomain(&payload); err != nil {
 		return 0, payload, graphstorage.CommitInfo{}, err
 	}
+	timing.Normalize = time.Since(stepStart)
+	stepStart = time.Now()
 	store, err := m.store(ctx, payload.SpaceID, payload.DomainID)
 	if err != nil {
 		return 0, payload, graphstorage.CommitInfo{}, err
 	}
+	timing.StoreOpen = time.Since(stepStart)
+	stepStart = time.Now()
 	storageTx, err := store.Begin(ctx)
 	if err != nil {
 		return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 	}
+	timing.StorageBegin = time.Since(stepStart)
+	stepStart = time.Now()
 	storageTx.ExpectRevision(uint64(payload.BaseRevision))
+	timing.ExpectRevision = time.Since(stepStart)
+	stepStart = time.Now()
 	for _, node := range payload.PutNodes {
 		if err := storageTx.PutNode(node); err != nil {
 			_ = storageTx.Rollback()
 			return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 		}
 	}
+	timing.PutNodes = time.Since(stepStart)
+	stepStart = time.Now()
 	for _, edge := range payload.PutEdges {
 		if err := storageTx.PutEdge(edge); err != nil {
 			_ = storageTx.Rollback()
 			return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 		}
 	}
+	timing.PutEdges = time.Since(stepStart)
+	stepStart = time.Now()
 	for _, id := range payload.DeleteNodeIDs {
 		if err := storageTx.DeleteNode(id); err != nil {
 			_ = storageTx.Rollback()
 			return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 		}
 	}
+	timing.DeleteNodes = time.Since(stepStart)
+	stepStart = time.Now()
 	for _, id := range payload.DeleteEdgeIDs {
 		if err := storageTx.DeleteEdge(id); err != nil {
 			_ = storageTx.Rollback()
 			return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 		}
 	}
+	timing.DeleteEdges = time.Since(stepStart)
+	stepStart = time.Now()
 	info, err := storageTx.CommitWithInfo()
+	timing.StorageCommit = time.Since(stepStart)
 	if err != nil {
 		return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
 	}
+	timing.CommitTiming = info.Timing
+	timing.Total = time.Since(totalStart)
+	m.logGraphApplyTiming(payload, info.NextRevision, timing)
 	return int64(store.Revision()), payload, info, nil
 }
 

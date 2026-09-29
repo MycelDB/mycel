@@ -235,6 +235,14 @@ Issue: [#96](https://github.com/MycelDB/mycel/issues/96)
 
 Current graph state-machine apply p50 is roughly 115ms for the representative update. Add sub-timing around graph storage apply to identify the dominant costs.
 
+Instrumentation added:
+
+- write tracing now emits `graph_write_apply_timing` from `applyGraphCommitRecord` when `MYCELD_GRAPH_WRITE_TRACE` is enabled;
+- the event breaks down record normalization, graph store open, storage transaction begin, expected revision setup, put/delete loops, storage commit, and the lower-level `graphstorage.CommitTiming` fields;
+- payload/content is not logged; only IDs, counts, revision, and timing values are emitted.
+
+Use this event with the relationship-heavy raft benchmark below to identify the dominant apply/storage sub-step before selecting storage optimizations.
+
 Investigate:
 
 - graph storage transaction begin/commit
@@ -255,6 +263,24 @@ Acceptance:
 Issue: [#97](https://github.com/MycelDB/mycel/issues/97)
 
 Inventory graph commit sinks and maintenance hooks. Define a policy that prevents secondary sinks from adding hidden synchronous Raft proposals to user-facing graph commits.
+
+#### Sink inventory and policy
+
+| Sink or hook | Standalone behavior | Clustered/Raft behavior | Durability model | User-facing commit policy |
+| --- | --- | --- | --- | --- |
+| Authoritative graph storage commit | Synchronous local store/WAL apply | Synchronous graph Raft proposal and state-machine apply | authoritative graph data | Required synchronous work. |
+| Graph-change notification history | Synchronous commit sink | Synchronous raft-apply sink only, after graph command applies | durable graph-change history/outbox | Allowed synchronous sink because async semantic/lexical consumers replay from it. It must not call secondary Raft groups. |
+| Semantic dirty marker creation | Legacy synchronous standalone sink | Async graph-change consumer reading notification history | durable/replayable dirty work from graph-change history | Must not perform nested synchronous semantic Raft proposal on clustered user-facing commits. |
+| Lexical indexing | Async graph-change consumer | Async graph-change consumer | derived index from durable graph-change history and graph state | Must not block user-facing graph commits. |
+| Automation graph triggers | Async/replay path from graph-change history in raft mode; local durable runtime writes enter automation gates | async/replay by execution leader | durable invocation/runtime state | Must not be added to synchronous graph commit fanout. |
+| Future maintenance/index sinks | Not allowed by default | Not allowed by default | must use durable outbox, graph-change history, or checkpointed replay | Require explicit justification and tests before adding synchronous behavior. |
+
+Clustered sink policy is encoded by `graphCommitSinkPolicyForConfig` and guarded by tests:
+
+- standalone keeps the legacy synchronous `graph_change_notification` + `semantic` fanout;
+- clustered graph commits have no generic synchronous `SetChangeSink` fanout;
+- clustered raft apply synchronously records only `graph_change_notification`;
+- clustered lexical and semantic processing are async graph-change consumers.
 
 Acceptance:
 

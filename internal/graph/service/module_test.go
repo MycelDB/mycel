@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,29 @@ func TestModuleWALGraphCommitAppendsAndApplies(t *testing.T) {
 	}
 	if gotEdge.DomainID.String() != tx.DomainID || !reflect.DeepEqual(gotEdge.Labels, edge.Labels) || !reflect.DeepEqual(gotEdge.Properties, edge.Properties) || !reflect.DeepEqual(gotEdge.Payload, edge.Payload) || !reflect.DeepEqual(gotEdge.Meta, edge.Meta) || gotEdge.CreatedAt.IsZero() || gotEdge.UpdatedAt.IsZero() {
 		t.Fatalf("edge fields did not round trip through WAL commit: got %+v want %+v", gotEdge, edge)
+	}
+}
+
+func TestModuleWriteTraceLogsGraphApplyTiming(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("MYCELD_GRAPH_WRITE_TRACE", "1")
+	var logs bytes.Buffer
+	m := NewModule()
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.New(slog.NewTextHandler(&logs, nil))}
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	nodeID := domaingraph.NodeID(uuid.New())
+	if _, _, _, err := m.applyGraphCommitRecord(ctx, graphCommitRecord{SpaceID: spaceID, DomainID: domainID, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domaingraph.DomainID(uuid.MustParse(domainID)), Labels: []string{"Trace"}, Properties: map[string]any{"title": "trace"}}}, OperationCount: 1}); err != nil {
+		t.Fatalf("applyGraphCommitRecord() error = %v", err)
+	}
+	out := logs.String()
+	for _, want := range []string{"graph_write_apply_timing", "storage_commit_ms", "put_nodes_ms", "storage_in_memory_apply_ms"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("trace log missing %q in:\n%s", want, out)
+		}
 	}
 }
 
