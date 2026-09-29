@@ -704,6 +704,48 @@ func TestLocalStoreIgnoresUncommittedRecords(t *testing.T) {
 	}
 }
 
+func TestLocalStoreCommitSyncsOnlyTouchedDataSegmentsAndSurvivesReopen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: graph.DomainID(uuid.New()), Content: "node-only", Props: map[string]any{}}
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := tx.PutNode(node); err != nil {
+		t.Fatalf("PutNode: %v", err)
+	}
+	info, err := tx.CommitWithInfo()
+	if err != nil {
+		t.Fatalf("CommitWithInfo: %v", err)
+	}
+	if info.Timing.NodeSync == 0 {
+		t.Fatalf("node-only commit did not record a node segment sync: %+v", info.Timing)
+	}
+	if info.Timing.EdgeSync != 0 {
+		t.Fatalf("node-only commit synced untouched edge segment: %+v", info.Timing)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer store.Close()
+	got, err := store.GetNode(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("GetNode after reopen: %v", err)
+	}
+	if got.ID != node.ID || got.Content != node.Content {
+		t.Fatalf("reopened node = %+v, want %+v", got, node)
+	}
+}
+
 func TestScanSegmentRejectsCorruptCRC(t *testing.T) {
 	dir := t.TempDir()
 	seg, err := openSegment(filepath.Join(dir, "nodes.kseg"), SegmentKindNode)

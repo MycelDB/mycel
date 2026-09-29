@@ -280,6 +280,32 @@ Batch size 10 kept per-transaction commit latency similar while amortizing the f
 
 Conclusion: for this workload, graph state-machine apply is dominated by the graph storage durable commit protocol's sequential node, edge, and txn segment fsyncs, not CPU, in-memory apply, conflict checks, or index maintenance. The low-risk near-term mitigation is batching logical updates into fewer graph transactions. Larger storage improvements are tracked in [#116](https://github.com/MycelDB/mycel/issues/116).
 
+#### #116 low-risk storage sync optimization
+
+Selected low-risk design:
+
+- keep the existing `.kseg` segment format;
+- keep the crash-recovery invariant that node/edge data segment syncs complete before the transaction commit marker is appended and synced;
+- skip node/edge segment syncs for untouched data segments;
+- run touched node and edge segment syncs concurrently, then append and sync the txn commit marker only after both data syncs have succeeded.
+
+This does not weaken successful graph commit durability: a committed transaction is still advertised by a durable txn commit record written after the corresponding data segment records were durably synced. A crash before the txn commit marker remains an uncommitted transaction and is ignored by replay.
+
+Post-change local single-node Raft benchmark artifact:
+
+```text
+/tmp/mycel-issue116-fsync-profile-20260929T120904Z
+```
+
+Same relationship-heavy workload, batch size 1:
+
+- `transaction_commit` p50 65.140ms, p95 80.740ms
+- `transaction_total` p50 90.703ms, p95 108.409ms
+- apply total p50 20.306ms, p95 23.222ms
+- storage commit p50 20.301ms, p95 23.217ms
+
+Compared with the pre-change #96 profile, apply/storage p50 moved from 21.283ms to 20.306ms and p95 moved from 27.498ms to 23.222ms. The remaining cost is still durable filesystem sync time, especially the txn segment sync plus the slower of node/edge data syncs.
+
 Investigate:
 
 - graph storage transaction begin/commit
