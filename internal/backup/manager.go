@@ -41,6 +41,7 @@ type Manager struct {
 	last        RunStatus
 	history     []RunStatus
 	encryption  *encryption.Service
+	preArchive  func(context.Context) error
 }
 
 type ManagerConfig struct {
@@ -51,6 +52,7 @@ type ManagerConfig struct {
 	Version    string
 	Now        func() time.Time
 	Encryption *encryption.Service
+	PreArchive func(context.Context) error
 }
 
 type TriggerInput struct {
@@ -105,7 +107,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if persisted, err := loadPersistedPolicy(cfg.DataDir); err == nil {
 		policy = EffectivePolicy(cfg.DataDir, persisted)
 	}
-	return &Manager{dataDir: cfg.DataDir, policy: policy, logger: cfg.Logger, quiesce: cfg.Quiesce, version: cfg.Version, now: now, encryption: cfg.Encryption, last: RunStatus{State: RunStateIdle}}
+	return &Manager{dataDir: cfg.DataDir, policy: policy, logger: cfg.Logger, quiesce: cfg.Quiesce, version: cfg.Version, now: now, encryption: cfg.Encryption, preArchive: cfg.PreArchive, last: RunStatus{State: RunStateIdle}}
 }
 
 func (m *Manager) Policy() Policy {
@@ -379,6 +381,12 @@ func (m *Manager) createArchiveWithPolicy(ctx context.Context, backupID string, 
 				m.logger.Warn("failed to release backup quiesce lease", "error", releaseErr)
 			}
 		}()
+	}
+
+	if m.preArchive != nil {
+		if err := m.preArchive(runCtx); err != nil {
+			return TriggerResult{}, fmt.Errorf("prepare backup snapshot: %w", err)
+		}
 	}
 
 	stagingRoot := filepath.Join(backupDir, ".staging")
