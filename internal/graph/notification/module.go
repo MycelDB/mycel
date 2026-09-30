@@ -35,8 +35,9 @@ const (
 )
 
 var (
-	ErrInvalidInput = errors.New("invalid graph-change notification input")
-	ErrOutOfRange   = errors.New("graph-change notification resume revision is no longer available")
+	ErrInvalidInput   = errors.New("invalid graph-change notification input")
+	ErrOutOfRange     = errors.New("graph-change notification resume revision is no longer available")
+	ErrNotInitialized = errors.New("graph-change notification module is not initialized")
 )
 
 type Registrar interface {
@@ -215,6 +216,13 @@ func (m *Module) Close() error {
 	return nil
 }
 
+func (m *Module) requireDataDirLocked() (string, error) {
+	if m.dataDir == "" {
+		return "", fmt.Errorf("%w: data directory is not configured; initialize the module before use", ErrNotInitialized)
+	}
+	return m.dataDir, nil
+}
+
 func (m *Module) CurrentRevision(ctx context.Context, spaceID string, domainID string) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -227,8 +235,8 @@ func (m *Module) CurrentRevision(ctx context.Context, spaceID string, domainID s
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.dataDir == "" {
-		m.dataDir = filepath.Join(os.TempDir(), "mycel-graph-change-notification")
+	if _, err := m.requireDataDirLocked(); err != nil {
+		return 0, err
 	}
 	if err := m.loadHistoryLocked(key, spaceID, domainID); err != nil {
 		return 0, err
@@ -256,6 +264,10 @@ func (m *Module) RegisterConsumer(ctx context.Context, spec ConsumerSpec, consum
 
 	m.mu.Lock()
 	if key != "" {
+		if _, err := m.requireDataDirLocked(); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
 		if err := m.loadHistoryLocked(key, spec.Scope.SpaceID, spec.Scope.DomainID); err != nil {
 			m.mu.Unlock()
 			return nil, err
@@ -346,8 +358,10 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 	}
 
 	m.mu.Lock()
-	if m.dataDir == "" {
-		m.dataDir = filepath.Join(os.TempDir(), "mycel-graph-change-notification")
+	if _, err := m.requireDataDirLocked(); err != nil {
+		m.recordFailureLocked(err)
+		m.mu.Unlock()
+		return err
 	}
 	registrations := make([]*registration, 0, len(m.registrations))
 	for _, domainID := range domainIDs {
@@ -392,10 +406,13 @@ func (m *Module) StoredScopes(ctx context.Context) ([]graphchange.Scope, error) 
 		return nil, err
 	}
 	m.mu.Lock()
-	dataDir := m.dataDir
+	dataDir, dataDirErr := m.requireDataDirLocked()
+	if dataDirErr != nil {
+		m.recordFailureLocked(dataDirErr)
+	}
 	m.mu.Unlock()
-	if dataDir == "" {
-		dataDir = filepath.Join(os.TempDir(), "mycel-graph-change-notification")
+	if dataDirErr != nil {
+		return nil, dataDirErr
 	}
 	entries, err := os.ReadDir(dataDir)
 	if os.IsNotExist(err) {
@@ -450,8 +467,10 @@ func (m *Module) Replay(ctx context.Context, spec ConsumerSpec, consumer Consume
 		return fmt.Errorf("%w: scoped space_id and domain_id are required for replay", ErrInvalidInput)
 	}
 	m.mu.Lock()
-	if m.dataDir == "" {
-		m.dataDir = filepath.Join(os.TempDir(), "mycel-graph-change-notification")
+	if _, err := m.requireDataDirLocked(); err != nil {
+		m.recordFailureLocked(err)
+		m.mu.Unlock()
+		return err
 	}
 	if err := m.loadHistoryLocked(key, spec.Scope.SpaceID, spec.Scope.DomainID); err != nil {
 		m.recordFailureLocked(err)

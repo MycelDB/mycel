@@ -235,6 +235,34 @@ func TestRegisterConsumerReportsGapWhenHistoryCompactedToEmpty(t *testing.T) {
 	}
 }
 
+func TestModuleRequiresDataDirForPersistentOperations(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	requireNotInitialized := func(name string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrNotInitialized) {
+			t.Fatalf("%s error = %v, want ErrNotInitialized", name, err)
+		}
+	}
+
+	_, err := m.CurrentRevision(ctx, spaceID, domainID)
+	requireNotInitialized("CurrentRevision", err)
+
+	err = m.OnGraphCommitted(ctx, committedEvent(spaceID, domainID, 1, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()}))
+	requireNotInitialized("OnGraphCommitted", err)
+
+	_, err = m.StoredScopes(ctx)
+	requireNotInitialized("StoredScopes", err)
+
+	err = m.Replay(ctx, ConsumerSpec{ConsumerName: "replay", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}}, newRecordingConsumer())
+	requireNotInitialized("Replay", err)
+
+	_, err = m.RegisterConsumer(ctx, ConsumerSpec{ConsumerName: "scoped", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}}, newRecordingConsumer())
+	requireNotInitialized("RegisterConsumer", err)
+}
+
 func TestQuiesceRejectsGraphChangePublish(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
