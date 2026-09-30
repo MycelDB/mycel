@@ -97,6 +97,7 @@ type CapabilityGrant struct {
 }
 
 type CreatePrincipalInput struct {
+	PrincipalID  string
 	Username     string
 	Email        string
 	DisplayName  string

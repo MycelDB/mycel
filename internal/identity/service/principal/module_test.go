@@ -72,12 +72,42 @@ func TestMeshBootstrapCreatesConfiguredSystemAdminPrincipal(t *testing.T) {
 	if admin.Username != "admin" || admin.Kind != PrincipalKindHuman || admin.State != PrincipalStateActive || !admin.LoginEnabled {
 		t.Fatalf("unexpected bootstrap principal: %#v", admin)
 	}
+	if admin.ID != deterministicBootstrapAdminPrincipalID("admin") {
+		t.Fatalf("bootstrap admin ID=%q, want deterministic ID %q", admin.ID, deterministicBootstrapAdminPrincipalID("admin"))
+	}
 	ok, err := m.HasCapability(ctx, admin.ID, "identity.principal.update")
 	if err != nil || !ok {
 		t.Fatalf("bootstrap principal should have system-admin capabilities, ok=%v err=%v", ok, err)
 	}
 	if _, err := m.AuthenticatePrincipal(ctx, "admin", "admin-pass"); err != nil {
 		t.Fatalf("AuthenticatePrincipal(bootstrap) error = %v", err)
+	}
+}
+
+func TestBootstrapAdminPrincipalIDIsStableAcrossNodes(t *testing.T) {
+	ctx := context.Background()
+	var firstID string
+	for i := 0; i < 3; i++ {
+		m := NewModule()
+		host := runtimetest.New(runtimetest.Config{DataDir: filepath.Join(t.TempDir(), "data"), Mode: "standalone", BootstrapAdminUsername: "admin", BootstrapAdminPassword: "admin-pass"}, nil)
+		if res := m.Init(ctx, host); !res.OK {
+			t.Fatalf("Init(%d) failed: %v", i, res.Error)
+		}
+		admin, err := m.FindPrincipal(ctx, "admin", "")
+		if err != nil {
+			t.Fatalf("FindPrincipal(admin) on node %d error = %v", i, err)
+		}
+		if i == 0 {
+			firstID = admin.ID
+		} else if admin.ID != firstID {
+			t.Fatalf("bootstrap admin ID diverged: node 0=%s node %d=%s", firstID, i, admin.ID)
+		}
+		if _, err := m.AuthenticatePrincipal(ctx, "admin", "admin-pass"); err != nil {
+			t.Fatalf("AuthenticatePrincipal(node %d bootstrap) error = %v", i, err)
+		}
+	}
+	if firstID != deterministicBootstrapAdminPrincipalID("admin") {
+		t.Fatalf("stable bootstrap admin ID=%q, want %q", firstID, deterministicBootstrapAdminPrincipalID("admin"))
 	}
 }
 

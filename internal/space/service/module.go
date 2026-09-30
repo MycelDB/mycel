@@ -158,15 +158,12 @@ func (m *Module) ListVisibleSpaces(ctx context.Context, principalID string, incl
 	if err != nil {
 		return nil, err
 	}
-	spaces, err := m.spaces.List(ctx)
+	spaces, err := m.ListSpaces(ctx, includeArchived)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]domainspace.Space, 0, len(spaces))
 	for _, sp := range spaces {
-		if !includeArchived && isArchived(sp) {
-			continue
-		}
 		canRead, err := m.canRead(ctx, uid, sp)
 		if err != nil {
 			return nil, err
