@@ -65,6 +65,36 @@ func TestForwardClientRequestRequiresRouteMetadata(t *testing.T) {
 	}
 }
 
+func TestForwardClientRequestReturnsUnavailableWhenLocalNodeNotAdmitted(t *testing.T) {
+	tests := []struct {
+		name     string
+		identity model.NodeIdentity
+	}{
+		{
+			name:     "not admitted",
+			identity: model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: "node_2", ClusterID: "cluster_a", ClusterAdmitted: false},
+		},
+		{
+			name:     "missing local cluster id",
+			identity: model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: "node_2", ClusterAdmitted: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewService(tt.identity, model.NodeStateClustered, nil).WithClientRequestForwarder(&captureForwardedClientHandler{})
+			ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(routing.RouteDepthMetadataKey, "1"))
+			_, err := svc.ForwardClientRequest(ctx, &clusterpb.ForwardClientRequestRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, ClusterId: "cluster_a", Operation: "session.get", SessionId: "s.2.00000000-0000-0000-0000-000000000001", RequesterNodeId: 1, TargetNodeId: 2})
+			if status.Code(err) != codes.Unavailable {
+				t.Fatalf("ForwardClientRequest() code=%v want Unavailable (err=%v)", status.Code(err), err)
+			}
+			diag := svc.ForwardClientDiagnostics()
+			if diag.ClusterRejections != 1 || diag.RequestFailures != 1 || diag.LastFailureReason != codes.Unavailable.String() || diag.LastFailureOperation != "session.get" {
+				t.Fatalf("ForwardClientDiagnostics()=%#v", diag)
+			}
+		})
+	}
+}
+
 func TestForwardClientRequestRejectsClusterMismatch(t *testing.T) {
 	svc := NewService(model.NodeIdentity{Version: model.NodeIdentityVersion, NodeID: "node_2", ClusterID: "cluster_a", ClusterAdmitted: true}, model.NodeStateClustered, nil).WithClientRequestForwarder(&captureForwardedClientHandler{})
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(routing.RouteDepthMetadataKey, "1"))

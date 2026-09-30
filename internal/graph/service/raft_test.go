@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -313,33 +315,91 @@ func TestExecuteLocalRaftGraphReadChildrenAndParent(t *testing.T) {
 }
 
 func TestGraphRaftDedupeSurvivesRestart(t *testing.T) {
-	ctx := context.Background()
-	dataDir := t.TempDir()
-	spaceID := uuid.NewString()
-	domainID := uuid.New()
-	nodeID := uuid.New()
-	record := graphCommitRecord{SpaceID: spaceID, BaseRevision: 0, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domainID, Content: "durable"}}, OperationCount: 1}
-	m1 := NewModule()
-	if result := m1.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
-		t.Fatalf("init first module failed: %v", result.Error)
+	fixture := newGraphRaftDedupeFixture(t, "durable", "durable-command")
+	fixture.applyDuplicate(t, "after restart")
+	fixture.requireRevision(t, 1)
+}
+
+func TestGraphRaftDedupeToleratesMissingMarkerWhenEffectsAlreadyApplied(t *testing.T) {
+	fixture := newGraphRaftDedupeFixture(t, "durable-missing-marker", "missing-marker-command")
+	if err := os.Remove(fixture.firstModule.raftAppliedCommandsPath()); err != nil {
+		t.Fatalf("remove raft applied marker: %v", err)
 	}
-	cmd, err := m1.buildGraphCommitRaftCommand(record, 64, "durable-command")
+	fixture.applyDuplicate(t, "with missing marker")
+	fixture.requireRevision(t, 1)
+	fixture.requireAppliedMarkerContains(t)
+}
+
+type graphRaftDedupeFixture struct {
+	ctx         context.Context
+	dataDir     string
+	spaceID     string
+	commandID   string
+	command     consensus.RaftCommand
+	firstModule *Module
+	lastModule  *Module
+}
+
+func newGraphRaftDedupeFixture(t *testing.T, content, commandID string) *graphRaftDedupeFixture {
+	t.Helper()
+	ctx := context.Background()
+	spaceID := uuid.NewString()
+	record := graphCommitRecord{
+		SpaceID:        spaceID,
+		BaseRevision:   0,
+		PutNodes:       []domaingraph.Node{{ID: uuid.New(), DomainID: uuid.New(), Content: content}},
+		OperationCount: 1,
+	}
+	dataDir := t.TempDir()
+	m := newTestGraphRaftModule(t, ctx, dataDir)
+	cmd, err := m.buildGraphCommitRaftCommand(record, 64, commandID)
 	if err != nil {
 		t.Fatalf("buildGraphCommitRaftCommand() error = %v", err)
 	}
-	if err := (RaftStateMachine{Module: m1, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err != nil {
+	if err := applyGraphRaftCommand(ctx, m, 1, cmd); err != nil {
 		t.Fatalf("first ApplyCommand() error = %v", err)
 	}
-	m2 := NewModule()
-	if result := m2.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
-		t.Fatalf("init second module failed: %v", result.Error)
+	return &graphRaftDedupeFixture{ctx: ctx, dataDir: dataDir, spaceID: spaceID, commandID: commandID, command: cmd, firstModule: m, lastModule: m}
+}
+
+func (f *graphRaftDedupeFixture) applyDuplicate(t *testing.T, label string) {
+	t.Helper()
+	m := newTestGraphRaftModule(t, f.ctx, f.dataDir)
+	if err := applyGraphRaftCommand(f.ctx, m, 2, f.command); err != nil {
+		t.Fatalf("duplicate ApplyCommand() %s error = %v", label, err)
 	}
-	if err := (RaftStateMachine{Module: m2, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, cmd); err != nil {
-		t.Fatalf("duplicate ApplyCommand() after restart error = %v", err)
+	f.lastModule = m
+}
+
+func (f *graphRaftDedupeFixture) requireRevision(t *testing.T, want int64) {
+	t.Helper()
+	if rev, err := f.lastModule.CurrentRevision(f.ctx, f.spaceID); err != nil || rev != want {
+		t.Fatalf("CurrentRevision() = %d, %v; want %d", rev, err, want)
 	}
-	if rev, err := m2.CurrentRevision(ctx, spaceID); err != nil || rev != 1 {
-		t.Fatalf("CurrentRevision() = %d, %v; want 1", rev, err)
+}
+
+func (f *graphRaftDedupeFixture) requireAppliedMarkerContains(t *testing.T) {
+	t.Helper()
+	data, err := os.ReadFile(f.lastModule.raftAppliedCommandsPath())
+	if err != nil {
+		t.Fatalf("read repaired marker: %v", err)
 	}
+	if !strings.Contains(string(data), f.commandID) {
+		t.Fatalf("repaired marker does not include command: %s", string(data))
+	}
+}
+
+func newTestGraphRaftModule(t *testing.T, ctx context.Context, dataDir string) *Module {
+	t.Helper()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init graph module failed: %v", result.Error)
+	}
+	return m
+}
+
+func applyGraphRaftCommand(ctx context.Context, m *Module, index uint64, cmd consensus.RaftCommand) error {
+	return (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: index, RaftTerm: 1}, cmd)
 }
 
 func TestGraphRaftStateMachineRejectsSpaceMismatch(t *testing.T) {

@@ -104,7 +104,7 @@ type serviceClient struct {
 	driver   ClusterDriver
 	username string
 	password string
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	endpoint Endpoint
 	cleanup  func()
 	client   *MycelClient
@@ -199,13 +199,12 @@ func closeConnection(client *MycelClient, cleanup func()) {
 }
 
 func (s *serviceClient) withClient(fn func(*MycelClient) error) error {
-	s.mu.Lock()
-	client := s.client
-	s.mu.Unlock()
-	if client == nil {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.client == nil {
 		return fmt.Errorf("service client is not connected")
 	}
-	return fn(client)
+	return fn(s.client)
 }
 
 func (s *serviceClient) CreateScope(ctx context.Context, runID string) (scope TestScope, err error) {
@@ -297,14 +296,12 @@ func (s *serviceClient) LocalConsistencyCounts(ctx context.Context, scopes []Tes
 }
 
 func (s *serviceClient) Diagnostics(ctx context.Context) Diagnostics {
-	s.mu.Lock()
-	client := s.client
-	endpoint := s.endpoint
-	s.mu.Unlock()
-	if client == nil {
-		return Diagnostics{Endpoint: endpoint.Addr, Warning: "service client is not connected"}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.client == nil {
+		return Diagnostics{Endpoint: s.endpoint.Addr, Warning: "service client is not connected"}
 	}
-	return client.Diagnostics(ctx, endpoint.Addr)
+	return s.client.Diagnostics(ctx, s.endpoint.Addr)
 }
 
 type scenarioRuntime struct {
