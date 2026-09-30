@@ -322,19 +322,63 @@ func (d *K3SDriver) CollectArtifacts(ctx context.Context, dir string) error {
 		return err
 	}
 	commands := map[string][]string{
+		"events.txt":      d.kubectlArgs("-n", d.Namespace, "get", "events", "--sort-by=.lastTimestamp"),
 		"pods.txt":        d.kubectlArgs("-n", d.Namespace, "get", "pods", "-o", "wide"),
+		"pods.yaml":       d.kubectlArgs("-n", d.Namespace, "get", "pods", "-o", "yaml"),
 		"services.txt":    d.kubectlArgs("-n", d.Namespace, "get", "svc", "-o", "wide"),
 		"statefulset.txt": d.kubectlArgs("-n", d.Namespace, "get", "statefulset", d.StatefulSet, "-o", "yaml"),
 	}
 	for name, args := range commands {
-		res, err := d.Runner.Run(ctx, "kubectl", args...)
-		content := res.Stdout
-		if err != nil {
-			content += "\nERROR: " + err.Error() + "\n" + res.Stderr
+		if err := d.collectCommand(ctx, dir, name, args...); err != nil {
+			return err
 		}
-		if writeErr := os.WriteFile(filepath.Join(dir, name), []byte(content), fsperm.SharedFile); writeErr != nil {
-			return writeErr
+	}
+	nodes, err := d.Nodes(ctx)
+	if err != nil {
+		_ = os.WriteFile(filepath.Join(dir, "node-list-error.txt"), []byte(err.Error()), fsperm.SharedFile)
+		return nil
+	}
+	for _, node := range nodes {
+		if strings.TrimSpace(node.Name) == "" {
+			continue
+		}
+		prefix := node.Name + "-"
+		if err := d.collectCommand(ctx, dir, prefix+"describe.txt", d.kubectlArgs("-n", d.Namespace, "describe", "pod", node.Name)...); err != nil {
+			return err
+		}
+		if err := d.collectCommand(ctx, dir, prefix+"logs.txt", d.kubectlArgs("-n", d.Namespace, "logs", node.Name, "--tail=500")...); err != nil {
+			return err
+		}
+		if err := d.collectCommand(ctx, dir, prefix+"previous-logs.txt", d.kubectlArgs("-n", d.Namespace, "logs", node.Name, "--previous", "--tail=500")...); err != nil {
+			return err
+		}
+		if err := d.collectCommand(ctx, dir, prefix+"readiness-log.txt", d.kubectlArgs("-n", d.Namespace, "exec", node.Name, "--", "sh", "-c", "cat /tmp/mycel-readiness.log 2>/dev/null || true")...); err != nil {
+			return err
+		}
+	}
+	if filepath.Base(dir) == "failure" {
+		for _, node := range nodes {
+			if strings.TrimSpace(node.Name) == "" {
+				continue
+			}
+			prefix := node.Name + "-"
+			if err := d.collectCommand(ctx, dir, prefix+"sigquit.txt", d.kubectlArgs("-n", d.Namespace, "exec", node.Name, "--", "sh", "-c", "kill -QUIT 1")...); err != nil {
+				return err
+			}
+			time.Sleep(2 * time.Second)
+			if err := d.collectCommand(ctx, dir, prefix+"sigquit-previous-logs.txt", d.kubectlArgs("-n", d.Namespace, "logs", node.Name, "--previous", "--tail=2000")...); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func (d *K3SDriver) collectCommand(ctx context.Context, dir, name string, args ...string) error {
+	res, err := d.Runner.Run(ctx, "kubectl", args...)
+	content := res.Stdout
+	if err != nil {
+		content += "\nERROR: " + err.Error() + "\n" + res.Stderr
+	}
+	return os.WriteFile(filepath.Join(dir, name), []byte(content), fsperm.SharedFile)
 }
