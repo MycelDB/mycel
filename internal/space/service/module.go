@@ -88,7 +88,7 @@ func (m *Module) Name() string { return ModuleName }
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	metaDir := filepath.Join(host.DataDir(), "meta")
-	created, err := ensureDir(metaDir, fsperm.PrivateDir)
+	created, err := fsperm.EnsureDir(metaDir, fsperm.PrivateDir)
 	if err != nil {
 		return runtime.Abort(ModuleName, "filesystem", "failed to create meta directory", err)
 	}
@@ -1091,19 +1091,4 @@ func writerCapabilities() []string {
 }
 func readerCapabilities() []string {
 	return []string{"CAPABILITY_SPACE_READ", "CAPABILITY_DOMAIN_READ", "CAPABILITY_GRAPH_READ", "CAPABILITY_BLOB_READ", "CAPABILITY_METADATA_READ", "CAPABILITY_QUERY_RUN", "CAPABILITY_SEMANTIC_SEARCH"}
-}
-
-func ensureDir(path string, perm os.FileMode) (bool, error) {
-	if info, err := os.Stat(path); err == nil {
-		if !info.IsDir() {
-			return false, fmt.Errorf("%s exists and is not a directory", path)
-		}
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, err
-	}
-	if err := os.MkdirAll(path, perm); err != nil {
-		return false, err
-	}
-	return true, nil
 }

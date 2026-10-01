@@ -168,50 +168,12 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 		}
 	}
 	for _, seg := range s.manifest.NodeSegments {
-		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindNode, s.encryption, func(r scannedRecord) error {
-			rev, ok := commitRevision[r.header.txnID]
-			if !ok {
-				return nil
-			}
-			switch r.header.kind {
-			case RecordKindNodePut:
-				n, err := decodeNode(r.payload)
-				if err != nil {
-					return err
-				}
-				s.applyNodePut(n, r.location)
-				s.nodeModRev[n.ID] = rev
-			case RecordKindNodeTombstone:
-				id := graph.NodeID(r.header.entityID)
-				s.applyNodeDelete(id, r.location)
-				s.nodeModRev[id] = rev
-			}
-			return nil
-		}); err != nil {
+		if err := s.replayNodeSegmentFrom(filepath.Join(s.path, seg), segmentHeaderLen, commitRevision); err != nil {
 			return err
 		}
 	}
 	for _, seg := range s.manifest.EdgeSegments {
-		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindEdge, s.encryption, func(r scannedRecord) error {
-			rev, ok := commitRevision[r.header.txnID]
-			if !ok {
-				return nil
-			}
-			switch r.header.kind {
-			case RecordKindEdgePut:
-				e, err := decodeEdge(r.payload)
-				if err != nil {
-					return err
-				}
-				s.applyEdgePut(e, r.location)
-				s.edgeModRev[e.ID] = rev
-			case RecordKindEdgeTombstone:
-				id := graph.EdgeID(r.header.entityID)
-				s.applyEdgeDelete(id, r.location)
-				s.edgeModRev[id] = rev
-			}
-			return nil
-		}); err != nil {
+		if err := s.replayEdgeSegmentFrom(filepath.Join(s.path, seg), segmentHeaderLen, commitRevision); err != nil {
 			return err
 		}
 	}
@@ -433,7 +395,57 @@ func (s *LocalStore) JournalNodesByDayRange(ctx context.Context, from, to int) (
 	return out, ctx.Err()
 }
 
+func (s *LocalStore) replayNodeSegmentFrom(path string, offset int64, commitRevision map[uuid.UUID]uint64) error {
+	return scanSegmentFrom(path, SegmentKindNode, s.encryption, offset, func(r scannedRecord) error {
+		rev, ok := commitRevision[r.header.txnID]
+		if !ok {
+			return nil
+		}
+		switch r.header.kind {
+		case RecordKindNodePut:
+			n, err := decodeNode(r.payload)
+			if err != nil {
+				return err
+			}
+			s.applyNodePut(n, r.location)
+			s.nodeModRev[n.ID] = rev
+		case RecordKindNodeTombstone:
+			id := graph.NodeID(r.header.entityID)
+			s.applyNodeDelete(id, r.location)
+			s.nodeModRev[id] = rev
+		}
+		return nil
+	})
+}
+
+func (s *LocalStore) replayEdgeSegmentFrom(path string, offset int64, commitRevision map[uuid.UUID]uint64) error {
+	return scanSegmentFrom(path, SegmentKindEdge, s.encryption, offset, func(r scannedRecord) error {
+		rev, ok := commitRevision[r.header.txnID]
+		if !ok {
+			return nil
+		}
+		switch r.header.kind {
+		case RecordKindEdgePut:
+			e, err := decodeEdge(r.payload)
+			if err != nil {
+				return err
+			}
+			s.applyEdgePut(e, r.location)
+			s.edgeModRev[e.ID] = rev
+		case RecordKindEdgeTombstone:
+			id := graph.EdgeID(r.header.entityID)
+			s.applyEdgeDelete(id, r.location)
+			s.edgeModRev[id] = rev
+		}
+		return nil
+	})
+}
+
 func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
+	s.applyNodePutWithIndexes(n, loc, true, true)
+}
+
+func (s *LocalStore) applyNodePutWithIndexes(n graph.Node, loc RecordLocation, labelTagIndexes bool, queryIndexes bool) {
 	if old, ok := s.nodeRecords[n.ID]; ok {
 		s.removeNodeIndexes(old)
 	}
@@ -441,10 +453,14 @@ func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
 	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, DomainID: n.DomainID, Location: loc}
 	if n.DomainID != uuid.Nil {
 		ensureNodeSet(s.nodesByDomain, n.DomainID)[n.ID] = struct{}{}
-		s.addNodeLabelIndexes(n)
-		s.addNodeTagIndexes(n)
-		for _, idx := range s.configuredIndexes[n.DomainID] {
-			_ = s.addNodePropertyIndexEntry(n, idx)
+		if labelTagIndexes {
+			s.addNodeLabelIndexes(n)
+			s.addNodeTagIndexes(n)
+		}
+		if queryIndexes {
+			for _, idx := range s.configuredIndexes[n.DomainID] {
+				_ = s.addNodePropertyIndexEntry(n, idx)
+			}
 		}
 	}
 	propsForIndex := n.Properties

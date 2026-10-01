@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -215,12 +214,12 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	dataDirCreated, err := ensureDir(cfg.DataDir, fsperm.PrivateDir)
+	dataDirCreated, err := fsperm.EnsureDir(cfg.DataDir, fsperm.PrivateDir)
 	if err != nil {
 		return nil, fmt.Errorf("ensure data directory: %w", err)
 	}
 	logDir := filepath.Join(cfg.DataDir, "log")
-	logDirCreated, err := ensureDir(logDir, fsperm.PrivateDir)
+	logDirCreated, err := fsperm.EnsureDir(logDir, fsperm.PrivateDir)
 	if err != nil {
 		return nil, fmt.Errorf("ensure log directory: %w", err)
 	}
@@ -535,19 +534,4 @@ func waitForShutdown(ctx context.Context, logger *slog.Logger) {
 	defer stop()
 	<-signalCtx.Done()
 	logger.Info("daemon shutdown begins")
-}
-
-func ensureDir(path string, perm os.FileMode) (bool, error) {
-	if info, err := os.Stat(path); err == nil {
-		if !info.IsDir() {
-			return false, fmt.Errorf("%s exists and is not a directory", path)
-		}
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, err
-	}
-	if err := os.MkdirAll(path, perm); err != nil {
-		return false, err
-	}
-	return true, nil
 }

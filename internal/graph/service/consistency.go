@@ -68,28 +68,11 @@ func (m *Module) LocalGraphConsistencyStats(ctx context.Context, spaceID string,
 		return LocalGraphStats{}, err
 	}
 	domain := domaingraph.DomainID(parsedDomain)
-	nodes, err := store.ListNodesByDomain(ctx, domain)
+	nodes, edges, err := listDomainGraphRecords(ctx, store, domain)
 	if err != nil {
-		return LocalGraphStats{}, mapStorageError(err)
+		return LocalGraphStats{}, err
 	}
-	allEdges, err := store.ListEdges(ctx)
-	if err != nil {
-		return LocalGraphStats{}, mapStorageError(err)
-	}
-	edges := make([]domaingraph.Edge, 0, len(allEdges))
-	for _, edge := range allEdges {
-		if edge.DomainID == domain {
-			edges = append(edges, edge)
-		}
-	}
-	partitionID := uint32(0)
-	if m.raftPartitionCount > 0 {
-		if parsedSpace, err := uuid.Parse(spaceID); err == nil && parsedSpace != uuid.Nil {
-			if cmd, err := consensus.NewSpaceCommand(domainspace.SpaceID(parsedSpace), m.raftPartitionCount, recordTypeGraphCommit, nil, "graph-consistency-stats"); err == nil {
-				partitionID = cmd.PartitionID
-			}
-		}
-	}
+	partitionID := graphPartitionID(spaceID, m.raftPartitionCount, "graph-consistency-stats")
 	return buildLocalGraphStats(spaceID, domainID, partitionID, store.Revision(), nodes, edges, time.Now().UTC())
 }
 
@@ -158,6 +141,39 @@ func validateGraphStoreManifestSegment(segment string) error {
 		return fmt.Errorf("%w: graph store manifest contains unsafe segment path", ErrInvalidState)
 	}
 	return nil
+}
+
+func listDomainGraphRecords(ctx context.Context, store *graphstorage.LocalStore, domain domaingraph.DomainID) ([]domaingraph.Node, []domaingraph.Edge, error) {
+	nodes, err := store.ListNodesByDomain(ctx, domain)
+	if err != nil {
+		return nil, nil, mapStorageError(err)
+	}
+	allEdges, err := store.ListEdges(ctx)
+	if err != nil {
+		return nil, nil, mapStorageError(err)
+	}
+	edges := make([]domaingraph.Edge, 0, len(allEdges))
+	for _, edge := range allEdges {
+		if edge.DomainID == domain {
+			edges = append(edges, edge)
+		}
+	}
+	return nodes, edges, nil
+}
+
+func graphPartitionID(spaceID string, partitionCount uint32, operation string) uint32 {
+	if partitionCount == 0 {
+		return 0
+	}
+	parsedSpace, err := uuid.Parse(spaceID)
+	if err != nil || parsedSpace == uuid.Nil {
+		return 0
+	}
+	cmd, err := consensus.NewSpaceCommand(domainspace.SpaceID(parsedSpace), partitionCount, recordTypeGraphCommit, nil, operation)
+	if err != nil {
+		return 0
+	}
+	return cmd.PartitionID
 }
 
 func buildLocalGraphStats(spaceID string, domainID string, partitionID uint32, revision uint64, nodes []domaingraph.Node, edges []domaingraph.Edge, collectedAt time.Time) (LocalGraphStats, error) {
