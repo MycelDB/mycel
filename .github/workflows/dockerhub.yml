@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_ref:
+        description: 'Release tag/ref to publish, for example v0.17.0'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,10 +17,13 @@ permissions:
 jobs:
   dockerhub:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref_name }}
     steps:
       - name: Checkout daemon
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ env.RELEASE_REF }}
           path: mycel
           fetch-depth: 0
 
@@ -22,14 +31,14 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: MycelDB/mycel-api
-          ref: ${{ github.ref_name }}
+          ref: ${{ env.RELEASE_REF }}
           path: mycel-api
 
-      - name: Verify tag is on main
+      - name: Verify release ref is on main
         working-directory: mycel
         run: |
-          git fetch origin main --depth=1
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -67,5 +76,5 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
-            myceldb/mycel:${{ github.ref_name }}
+            myceldb/mycel:${{ env.RELEASE_REF }}
             myceldb/mycel:latest
