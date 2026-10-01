@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -229,8 +230,8 @@ func extractTarArchive(t *testing.T, archivePath string, targetDir string) {
 		if header.Typeflag != tar.TypeReg {
 			continue
 		}
-		dest := filepath.Join(targetDir, filepath.Clean(header.Name))
-		if !pathWithinDirForTest(targetDir, dest) {
+		dest, err := safeTarEntryPathForTest(targetDir, header.Name)
+		if err != nil {
 			t.Fatalf("archive path escapes target dir: %s", header.Name)
 		}
 		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
@@ -249,6 +250,18 @@ func extractTarArchive(t *testing.T, archivePath string, targetDir string) {
 			t.Fatalf("close restored file: %v", closeErr)
 		}
 	}
+}
+
+func safeTarEntryPathForTest(root string, entryName string) (string, error) {
+	cleanName := filepath.Clean(entryName)
+	if cleanName == "." || !filepath.IsLocal(cleanName) {
+		return "", fmt.Errorf("unsafe archive path: %s", entryName)
+	}
+	dest := filepath.Join(root, cleanName)
+	if !pathWithinDirForTest(root, dest) {
+		return "", fmt.Errorf("archive path escapes target dir: %s", entryName)
+	}
+	return dest, nil
 }
 
 func pathWithinDirForTest(root string, path string) bool {
