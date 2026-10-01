@@ -389,30 +389,7 @@ func (s *LocalStore) hydrateCheckpointFull(nodes []graph.Node, edges []graph.Edg
 }
 
 func (s *LocalStore) applyCheckpointNodePut(n graph.Node, loc RecordLocation, persistentLabelTagIndexes bool, persistentQueryIndexes bool) {
-	s.nodeRecords[n.ID] = cloneNode(n)
-	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, DomainID: n.DomainID, Location: loc}
-	if n.DomainID != uuid.Nil {
-		ensureNodeSet(s.nodesByDomain, n.DomainID)[n.ID] = struct{}{}
-		if !persistentLabelTagIndexes {
-			s.addNodeLabelIndexes(n)
-			s.addNodeTagIndexes(n)
-		}
-		if !persistentQueryIndexes {
-			for _, idx := range s.configuredIndexes[n.DomainID] {
-				_ = s.addNodePropertyIndexEntry(n, idx)
-			}
-		}
-	}
-	propsForIndex := n.Properties
-	if len(propsForIndex) == 0 {
-		propsForIndex = n.Props
-	}
-	if day, ok := numberPropInt(propsForIndex["journal_day"]); ok {
-		ensureNodeSet(s.journalDay, day)[n.ID] = struct{}{}
-	}
-	if n.BlobRef != nil {
-		ensureNodeSet(s.blobRefs, *n.BlobRef)[n.ID] = struct{}{}
-	}
+	s.applyNodePutWithIndexes(n, loc, !persistentLabelTagIndexes, !persistentQueryIndexes)
 }
 
 func (s *LocalStore) applyCheckpointEdgePut(e graph.Edge, loc RecordLocation, persistentAdjacencyIndexes bool, persistentQueryIndexes bool) {
@@ -536,26 +513,7 @@ func (s *LocalStore) replayCheckpointTail(ctx context.Context, state CheckpointS
 		if !ok {
 			return fmt.Errorf("%w: missing node checkpoint offset %s", ErrInvalidRecord, seg)
 		}
-		if err := scanSegmentFrom(filepath.Join(s.path, seg), SegmentKindNode, s.encryption, offset, func(r scannedRecord) error {
-			rev, ok := commitRevision[r.header.txnID]
-			if !ok {
-				return nil
-			}
-			switch r.header.kind {
-			case RecordKindNodePut:
-				n, err := decodeNode(r.payload)
-				if err != nil {
-					return err
-				}
-				s.applyNodePut(n, r.location)
-				s.nodeModRev[n.ID] = rev
-			case RecordKindNodeTombstone:
-				id := graph.NodeID(r.header.entityID)
-				s.applyNodeDelete(id, r.location)
-				s.nodeModRev[id] = rev
-			}
-			return nil
-		}); err != nil {
+		if err := s.replayNodeSegmentFrom(filepath.Join(s.path, seg), offset, commitRevision); err != nil {
 			return err
 		}
 	}
@@ -567,26 +525,7 @@ func (s *LocalStore) replayCheckpointTail(ctx context.Context, state CheckpointS
 		if !ok {
 			return fmt.Errorf("%w: missing edge checkpoint offset %s", ErrInvalidRecord, seg)
 		}
-		if err := scanSegmentFrom(filepath.Join(s.path, seg), SegmentKindEdge, s.encryption, offset, func(r scannedRecord) error {
-			rev, ok := commitRevision[r.header.txnID]
-			if !ok {
-				return nil
-			}
-			switch r.header.kind {
-			case RecordKindEdgePut:
-				e, err := decodeEdge(r.payload)
-				if err != nil {
-					return err
-				}
-				s.applyEdgePut(e, r.location)
-				s.edgeModRev[e.ID] = rev
-			case RecordKindEdgeTombstone:
-				id := graph.EdgeID(r.header.entityID)
-				s.applyEdgeDelete(id, r.location)
-				s.edgeModRev[id] = rev
-			}
-			return nil
-		}); err != nil {
+		if err := s.replayEdgeSegmentFrom(filepath.Join(s.path, seg), offset, commitRevision); err != nil {
 			return err
 		}
 	}

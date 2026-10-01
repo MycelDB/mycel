@@ -3,9 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"strings"
@@ -280,33 +278,9 @@ func exportDomainDocument(ctx context.Context, conn grpc.ClientConnInterface, sp
 	if err != nil {
 		return nil, domainCounts{}, err
 	}
-	doc := domainJSONDocument{Format: "mycel-domain-json-v1"}
-	for {
-		res, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, domainCounts{}, err
-		}
-		if manifest := res.GetManifest(); manifest != nil {
-			doc.Manifest = manifest
-			continue
-		}
-		if record := res.GetRecord(); record != nil {
-			if blobMetadata := record.GetBlobMetadata(); blobMetadata != nil {
-				doc.BlobMetadata = append(doc.BlobMetadata, blobMetadata)
-			}
-			if blobChunk := record.GetBlobChunk(); blobChunk != nil {
-				doc.BlobChunks = append(doc.BlobChunks, blobChunk)
-			}
-			if node := record.GetNode(); node != nil {
-				doc.Nodes = append(doc.Nodes, node)
-			}
-			if edge := record.GetEdge(); edge != nil {
-				doc.Edges = append(doc.Edges, edge)
-			}
-		}
+	doc, err := receiveDomainJSONDocument(stream)
+	if err != nil {
+		return nil, domainCounts{}, err
 	}
 	raw, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

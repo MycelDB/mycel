@@ -24,6 +24,42 @@ type domainJSONDocument struct {
 	Edges        []*clientv1.Edge               `json:"edges,omitempty"`
 }
 
+type exportDomainStream interface {
+	Recv() (*clientv1.ExportDomainResponse, error)
+}
+
+func receiveDomainJSONDocument(stream exportDomainStream) (domainJSONDocument, error) {
+	doc := domainJSONDocument{Format: "mycel-domain-json-v1"}
+	for {
+		res, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return domainJSONDocument{}, err
+		}
+		if manifest := res.GetManifest(); manifest != nil {
+			doc.Manifest = manifest
+			continue
+		}
+		if record := res.GetRecord(); record != nil {
+			if blobMetadata := record.GetBlobMetadata(); blobMetadata != nil {
+				doc.BlobMetadata = append(doc.BlobMetadata, blobMetadata)
+			}
+			if blobChunk := record.GetBlobChunk(); blobChunk != nil {
+				doc.BlobChunks = append(doc.BlobChunks, blobChunk)
+			}
+			if node := record.GetNode(); node != nil {
+				doc.Nodes = append(doc.Nodes, node)
+			}
+			if edge := record.GetEdge(); edge != nil {
+				doc.Edges = append(doc.Edges, edge)
+			}
+		}
+	}
+	return doc, nil
+}
+
 func NewExportCommand(a *app.App) *cobra.Command {
 	cmd := &cobra.Command{Use: "export", Short: "Export Mycel data through daemon gRPC"}
 	cmd.AddCommand(NewExportDomainCommand(a), NewExportSpaceCommand(a))
@@ -43,33 +79,9 @@ func NewExportDomainCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		doc := domainJSONDocument{Format: "mycel-domain-json-v1"}
-		for {
-			res, err := stream.Recv()
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				return err
-			}
-			if manifest := res.GetManifest(); manifest != nil {
-				doc.Manifest = manifest
-				continue
-			}
-			if record := res.GetRecord(); record != nil {
-				if blobMetadata := record.GetBlobMetadata(); blobMetadata != nil {
-					doc.BlobMetadata = append(doc.BlobMetadata, blobMetadata)
-				}
-				if blobChunk := record.GetBlobChunk(); blobChunk != nil {
-					doc.BlobChunks = append(doc.BlobChunks, blobChunk)
-				}
-				if node := record.GetNode(); node != nil {
-					doc.Nodes = append(doc.Nodes, node)
-				}
-				if edge := record.GetEdge(); edge != nil {
-					doc.Edges = append(doc.Edges, edge)
-				}
-			}
+		doc, err := receiveDomainJSONDocument(stream)
+		if err != nil {
+			return err
 		}
 		raw, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {

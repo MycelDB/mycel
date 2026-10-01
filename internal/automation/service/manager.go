@@ -624,6 +624,34 @@ func (m *AutomationManager) CancelInvocation(ctx context.Context, domainID graph
 	return inv, nil
 }
 
+func forEachGraphTriggeredRunnable(event graphchange.CommittedEvent, items []runnableAutomation, visit func(runnableAutomation, graphchange.Change, string) error) error {
+	for _, change := range event.Changes {
+		eventType := automationEventType(change.Type)
+		if eventType == "" || change.Node == nil {
+			continue
+		}
+		for _, item := range items {
+			def := item.Definition
+			if !item.Binding.CreatedAt.IsZero() && !event.CommittedAt.IsZero() && event.CommittedAt.Before(item.Binding.CreatedAt) {
+				continue
+			}
+			if item.Binding.Scope.SpaceID != "" && item.Binding.Scope.SpaceID != event.SpaceID.String() {
+				continue
+			}
+			if !matchesEvent(def, eventType) || !matchesLabels(def, change.Node.Labels) {
+				continue
+			}
+			if generatedByAutomation(change.Node, def.ID) {
+				continue
+			}
+			if err := visit(item, change, eventType); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphchange.CommittedEvent) error {
 	release, err := m.enterMutation(ctx)
 	if err != nil {
@@ -646,36 +674,17 @@ func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphch
 	if err != nil {
 		return err
 	}
-	for _, change := range event.Changes {
-		eventType := automationEventType(change.Type)
-		if eventType == "" || change.Node == nil {
-			continue
+	if err := forEachGraphTriggeredRunnable(event, items, func(item runnableAutomation, change graphchange.Change, eventType string) error {
+		var oldNode *graph.Node
+		if change.OldNode != nil {
+			copy := *change.OldNode
+			oldNode = &copy
 		}
-		for _, item := range items {
-			def := item.Definition
-			if !item.Binding.CreatedAt.IsZero() && !event.CommittedAt.IsZero() && event.CommittedAt.Before(item.Binding.CreatedAt) {
-				continue
-			}
-			if item.Binding.Scope.SpaceID != "" && item.Binding.Scope.SpaceID != event.SpaceID.String() {
-				continue
-			}
-			if !matchesEvent(def, eventType) || !matchesLabels(def, change.Node.Labels) {
-				continue
-			}
-			if generatedByAutomation(change.Node, def.ID) {
-				continue
-			}
-			var oldNode *graph.Node
-			if change.OldNode != nil {
-				copy := *change.OldNode
-				oldNode = &copy
-			}
-			invID := graphTriggeredInvocationID(event.SpaceID.String(), domainID, event.ID.String(), item.Binding.ID, change.NodeID)
-			inv := invocationForRunnable(m.now, domainID, item, automation.Invocation{ID: invID, SpaceID: event.SpaceID.String(), EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType}, event.Origin.PrincipalID)
-			if err := m.putInvocationIdempotent(ctx, inv); err != nil {
-				return err
-			}
-		}
+		invID := graphTriggeredInvocationID(event.SpaceID.String(), domainID, event.ID.String(), item.Binding.ID, change.NodeID)
+		inv := invocationForRunnable(m.now, domainID, item, automation.Invocation{ID: invID, SpaceID: event.SpaceID.String(), EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType}, event.Origin.PrincipalID)
+		return m.putInvocationIdempotent(ctx, inv)
+	}); err != nil {
+		return err
 	}
 	return m.advanceGraphReplayCursor(ctx, event)
 }
