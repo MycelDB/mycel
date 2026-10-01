@@ -6,6 +6,30 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.17.0] - 2026-09-30
+
+### Added
+
+- Added advanced-storage graph durability and observability surfaces, including domain graph checkpoint/index status reporting compatible with `mycel-api` v0.17.0.
+- Added personal data export support and raft restart/write soak coverage used to validate clustered durability.
+
+### Changed
+
+- Hardened raft restart and disruption behavior so unadmitted local-node forwarding states return retryable `Unavailable` while true cluster-ID mismatches remain `PermissionDenied`.
+- Pinned Docker publish workflow actions to full commit SHAs.
+
+### Fixed
+
+- Fixed clustered bootstrap admin identity divergence by deriving a deterministic bootstrap admin principal ID across fresh nodes (#126).
+- Fixed graph Raft replay idempotency when graph effects exist but applied-command markers are missing.
+- Fixed graph notification initialization to fail closed when its data directory is unset (#122).
+- Updated Bash scripts to use Bash `[[ ... ]]` conditionals where Bash shebangs are used (#124).
+
+### Compatibility
+
+- Operators should use matching `mycel-api`/SDK v0.17.0 bindings for the new graph checkpoint/index status fields.
+- Fresh clustered deployments now bootstrap the configured admin username to the same principal ID on every node. Existing clusters with already-diverged bootstrap admin principal IDs require reset or explicit repair; the change prevents recurrence for new data directories.
+
 ## [v0.16.1] - 2026-09-24
 
 ### Changed
