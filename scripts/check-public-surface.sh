@@ -25,10 +25,10 @@ same failing behavior.
 USAGE
 }
 
-while [ "$#" -gt 0 ]; do
+while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --workspace)
-      if [ "$#" -lt 2 ]; then
+      if [[ "$#" -lt 2 ]]; then
         echo "error: --workspace requires a path" >&2
         exit 2
       fi
@@ -54,10 +54,10 @@ done
 
 cd "$repo_root"
 
-if [ -z "$workspace_root" ]; then
+if [[ -z "$workspace_root" ]]; then
   candidate_workspace="$(cd "$repo_root/../.." && pwd)"
   candidate_repo="$candidate_workspace/myceldb/mycel"
-  if [ -d "$candidate_repo" ] && [ "$(cd "$candidate_repo" && pwd)" = "$repo_root" ]; then
+  if [[ -d "$candidate_repo" && "$(cd "$candidate_repo" && pwd)" == "$repo_root" ]]; then
     workspace_root="$candidate_workspace"
   fi
 fi
@@ -86,44 +86,44 @@ print_block() {
 packages="$(go list ./...)"
 
 removed_public="$(printf '%s\n' "$packages" | grep -E '^github\.com/myceldb/mycel/(engine|session)($|/)' || true)"
-if [ -n "$removed_public" ]; then
+if [[ -n "$removed_public" ]]; then
   print_block "public-surface check failed: removed public engine/session packages are present" "$removed_public"
   fail=1
 fi
 
 unexpected_public="$(printf '%s\n' "$packages" | grep -E '^github\.com/myceldb/mycel/[^/]+' | grep -Ev '^github\.com/myceldb/mycel($|/(cmd|internal)($|/))' || true)"
-if [ -n "$unexpected_public" ]; then
+if [[ -n "$unexpected_public" ]]; then
   print_block "public-surface check failed: unexpected top-level Go packages outside cmd/internal" "$unexpected_public"
   fail=1
 fi
 
 legacy_public="$(printf '%s\n' "$packages" | grep -E '^github\.com/myceldb/mycel/(domain|store|query)($|/)' || true)"
-if [ -n "$legacy_public" ]; then
+if [[ -n "$legacy_public" ]]; then
   print_block "public-surface check failed: implementation packages remain public" "$legacy_public"
   fail=1
 fi
 
-if [ -n "$workspace_root" ]; then
-  if [ ! -d "$workspace_root" ]; then
+if [[ -n "$workspace_root" ]]; then
+  if [[ ! -d "$workspace_root" ]]; then
     echo "public-surface check failed: workspace does not exist: $workspace_root" >&2
     fail=1
   else
     external_hits="$(cd "$workspace_root" && search_external_go 'github\.com/myceldb/mycel(/(domain|store|query|engine|session|$)|")' || true)"
-    if [ -n "$external_hits" ]; then
+    if [[ -n "$external_hits" ]]; then
       print_block "public-surface check failed: external consumers import Mycel implementation packages" "$external_hits"
       fail=1
     fi
   fi
-elif [ "$workspace_explicit" -eq 1 ]; then
+elif [[ "$workspace_explicit" -eq 1 ]]; then
   echo "public-surface check failed: workspace does not exist: $workspace_root" >&2
   fail=1
 fi
 
-if [ "$fail" -ne 0 ]; then
+if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
 
-if [ "$strict" -eq 1 ]; then
+if [[ "$strict" -eq 1 ]]; then
   echo "public-surface checks passed in strict mode"
 else
   echo "public-surface checks passed"

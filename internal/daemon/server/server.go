@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 
 	activityservice "github.com/myceldb/mycel/internal/activity/service"
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
@@ -40,6 +42,7 @@ import (
 
 type Config struct {
 	Addr                     string
+	DataDir                  string
 	PrincipalManager         adminapi.PrincipalManager
 	ActivityManager          activityservice.Manager
 	BackupManager            daemonbackup.Manager
@@ -170,6 +173,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		if provider, ok := cfg.GraphManager.(adminapi.LocalGraphForensicExportProvider); ok {
 			clusterAdmin.WithGraphForensicExport(provider)
 		}
+		if provider, ok := cfg.GraphManager.(adminapi.GraphCheckpointProvider); ok {
+			clusterAdmin.WithGraphCheckpoint(provider)
+		}
 		adminv1.RegisterAdminClusterServiceServer(grpcServer, clusterAdmin)
 	}
 	if cfg.BackupManager != nil {
@@ -192,7 +198,11 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if provider, ok := cfg.GraphManager.(clientapi.GraphWriteRouteProvider); ok {
 		searchAPI.WithGraphWriteRouteProvider(provider)
 	}
-	importExportAPI := clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
+	spaceExportDir := ""
+	if strings.TrimSpace(cfg.DataDir) != "" {
+		spaceExportDir = filepath.Join(cfg.DataDir, "exports", "spaces")
+	}
+	importExportAPI := clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSpaceExportDir(spaceExportDir).WithClientRequestRouter(clientRouter)
 	metadataCatalogAPI := clientapi.NewMetadataCatalogService(cfg.SessionManager, cfg.GraphManager).WithClientRequestRouter(clientRouter)
 	if cfg.ClusteringManager != nil {
 		cfg.ClusteringManager.SetBackendClientRequestForwarder(clientapi.ForwardedClientHandler{LocalNode: localNode, Sessions: sessionAPI, Transactions: transactionAPI, Graphs: graphAPI, Queries: queryAPI, Search: searchAPI, Metadata: metadataCatalogAPI})

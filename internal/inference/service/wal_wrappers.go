@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	model "github.com/myceldb/mycel/internal/inference/model"
 	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
@@ -40,6 +41,13 @@ type walUsageLedger struct {
 }
 
 func (m *Module) commitInferenceMutation(ctx context.Context, typ wal.RecordType, rec inferenceMutationRecord) error {
+	if m.gate != nil {
+		release, err := m.gate.Enter(ctx)
+		if err != nil {
+			return quiesce.GRPCError(err)
+		}
+		defer release()
+	}
 	if m.writeAllowed != nil && !inferenceRuntimeEvidenceMutation(typ, rec) {
 		if err := m.writeAllowed(); err != nil {
 			return err

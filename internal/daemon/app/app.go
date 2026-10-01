@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -187,7 +186,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: inference service is not registered\n")
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, PrincipalManager: principalService, ActivityManager: activityService, BackupManager: backupService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, InferenceManager: inferenceService, SemanticManager: semanticService, LexicalManager: lexicalService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, DataDir: cfg.DataDir, PrincipalManager: principalService, ActivityManager: activityService, BackupManager: backupService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, InferenceManager: inferenceService, SemanticManager: semanticService, LexicalManager: lexicalService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -215,12 +214,12 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	dataDirCreated, err := ensureDir(cfg.DataDir, fsperm.PrivateDir)
+	dataDirCreated, err := fsperm.EnsureDir(cfg.DataDir, fsperm.PrivateDir)
 	if err != nil {
 		return nil, fmt.Errorf("ensure data directory: %w", err)
 	}
 	logDir := filepath.Join(cfg.DataDir, "log")
-	logDirCreated, err := ensureDir(logDir, fsperm.PrivateDir)
+	logDirCreated, err := fsperm.EnsureDir(logDir, fsperm.PrivateDir)
 	if err != nil {
 		return nil, fmt.Errorf("ensure log directory: %w", err)
 	}
@@ -288,7 +287,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	spaceService := spaceservice.NewModule()
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
-	graphService := graphservice.NewModule()
+	graphService := graphservice.NewModule().WithCheckpointPolicy(graphservice.CheckpointPolicyConfig{Enabled: cfg.GraphCheckpoint.AutoEnabled, Interval: cfg.GraphCheckpoint.AutoInterval, RevisionThreshold: uint64(cfg.GraphCheckpoint.AutoRevisions), Timeout: cfg.GraphCheckpoint.AutoTimeout})
 	graphNotificationService := graphnotification.NewModule()
 	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)
 	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithInferenceManager(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
@@ -472,7 +471,8 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		_ = rt.Close()
 		return nil, err
 	}
-	if raftRuntimeConfigured(cfg) {
+	sinkPolicy := graphCommitSinkPolicyForConfig(cfg)
+	if sinkPolicy.Clustered {
 		if err := startAsyncSemanticDirtyConsumer(ctx, logger, graphNotificationService, semanticService); err != nil {
 			_ = rt.Close()
 			return nil, err
@@ -487,6 +487,25 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	}
 	logger.Info("daemon initialization complete")
 	return rt, nil
+}
+
+type graphCommitSinkPolicy struct {
+	Clustered           bool
+	SynchronousSinks    []string
+	RaftApplySinks      []string
+	AsyncGraphConsumers []string
+}
+
+func graphCommitSinkPolicyForConfig(cfg config.Config) graphCommitSinkPolicy {
+	policy := graphCommitSinkPolicy{AsyncGraphConsumers: []string{"lexical"}}
+	if raftRuntimeConfigured(cfg) {
+		policy.Clustered = true
+		policy.RaftApplySinks = []string{"graph_change_notification"}
+		policy.AsyncGraphConsumers = append(policy.AsyncGraphConsumers, "semantic")
+		return policy
+	}
+	policy.SynchronousSinks = []string{"graph_change_notification", "semantic"}
+	return policy
 }
 
 func raftRuntimeConfigured(cfg config.Config) bool {
@@ -515,19 +534,4 @@ func waitForShutdown(ctx context.Context, logger *slog.Logger) {
 	defer stop()
 	<-signalCtx.Done()
 	logger.Info("daemon shutdown begins")
-}
-
-func ensureDir(path string, perm os.FileMode) (bool, error) {
-	if info, err := os.Stat(path); err == nil {
-		if !info.IsDir() {
-			return false, fmt.Errorf("%s exists and is not a directory", path)
-		}
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, err
-	}
-	if err := os.MkdirAll(path, perm); err != nil {
-		return false, err
-	}
-	return true, nil
 }

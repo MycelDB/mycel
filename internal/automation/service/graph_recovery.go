@@ -18,6 +18,11 @@ type GraphChangeReplayer interface {
 }
 
 func (m *AutomationManager) RecoverGraphChanges(ctx context.Context, replayer GraphChangeReplayer) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if replayer == nil || !m.raftEnabled() {
 		return nil
 	}
@@ -105,6 +110,11 @@ func (m *AutomationManager) advanceGraphReplayCursor(ctx context.Context, event 
 
 func (m *AutomationManager) putGraphReplayCursorRuntime(ctx context.Context, cursor storage.GraphReplayCursor) error {
 	if m.raftGroups == nil {
+		release, err := m.enterMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
 		if err := m.requireWriteAllowed(); err != nil {
 			return err
 		}
@@ -181,32 +191,16 @@ func (m *AutomationManager) countGraphReplayInvocations(ctx context.Context, eve
 		return 0, err
 	}
 	count := 0
-	for _, change := range event.Changes {
-		eventType := automationEventType(change.Type)
-		if eventType == "" || change.Node == nil {
-			continue
+	if err := forEachGraphTriggeredRunnable(event, items, func(item runnableAutomation, change graphchange.Change, _ string) error {
+		invID := graphTriggeredInvocationID(event.SpaceID.String(), graph.DomainID(event.DomainID), event.ID.String(), item.Binding.ID, change.NodeID)
+		if _, err := m.store.GetInvocation(ctx, graph.DomainID(event.DomainID), invID); err == nil {
+			count++
+		} else if err != storage.ErrNotFound {
+			return mapStoreError(err)
 		}
-		for _, item := range items {
-			def := item.Definition
-			if !item.Binding.CreatedAt.IsZero() && !event.CommittedAt.IsZero() && event.CommittedAt.Before(item.Binding.CreatedAt) {
-				continue
-			}
-			if item.Binding.Scope.SpaceID != "" && item.Binding.Scope.SpaceID != event.SpaceID.String() {
-				continue
-			}
-			if !matchesEvent(def, eventType) || !matchesLabels(def, change.Node.Labels) {
-				continue
-			}
-			if generatedByAutomation(change.Node, def.ID) {
-				continue
-			}
-			invID := graphTriggeredInvocationID(event.SpaceID.String(), graph.DomainID(event.DomainID), event.ID.String(), item.Binding.ID, change.NodeID)
-			if _, err := m.store.GetInvocation(ctx, graph.DomainID(event.DomainID), invID); err == nil {
-				count++
-			} else if err != storage.ErrNotFound {
-				return 0, mapStoreError(err)
-			}
-		}
+		return nil
+	}); err != nil {
+		return 0, err
 	}
 	return count, nil
 }

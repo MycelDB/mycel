@@ -15,7 +15,7 @@ func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.stores = map[string]*graphstorage.LocalStore{}
+	m.stores = map[domainStoreKey]*graphstorage.LocalStore{}
 	m.overlays = map[string]*overlay{}
 	return nil
 }

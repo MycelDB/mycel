@@ -12,6 +12,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/runtime"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -231,6 +232,53 @@ func TestRegisterConsumerReportsGapWhenHistoryCompactedToEmpty(t *testing.T) {
 	_, gaps := consumer.snapshot()
 	if len(gaps) != 1 || gaps[0].CurrentRevision != 1 || gaps[0].OldestAvailableRevision != 2 {
 		t.Fatalf("gap = %+v", gaps)
+	}
+}
+
+func TestModuleRequiresDataDirForPersistentOperations(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	requireNotInitialized := func(name string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrNotInitialized) {
+			t.Fatalf("%s error = %v, want ErrNotInitialized", name, err)
+		}
+	}
+
+	_, err := m.CurrentRevision(ctx, spaceID, domainID)
+	requireNotInitialized("CurrentRevision", err)
+
+	err = m.OnGraphCommitted(ctx, committedEvent(spaceID, domainID, 1, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()}))
+	requireNotInitialized("OnGraphCommitted", err)
+
+	_, err = m.StoredScopes(ctx)
+	requireNotInitialized("StoredScopes", err)
+
+	err = m.Replay(ctx, ConsumerSpec{ConsumerName: "replay", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}}, newRecordingConsumer())
+	requireNotInitialized("Replay", err)
+
+	_, err = m.RegisterConsumer(ctx, ConsumerSpec{ConsumerName: "scoped", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}}, newRecordingConsumer())
+	requireNotInitialized("RegisterConsumer", err)
+}
+
+func TestQuiesceRejectsGraphChangePublish(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, testHost{dataDir: t.TempDir()}); !result.OK {
+		t.Fatalf("Init() error=%v", result.Error)
+	}
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Mode: quiesce.ModeBackup, Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error=%v", err)
+	}
+	defer lease.Release(context.Background())
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	err = m.OnGraphCommitted(ctx, committedEvent(spaceID, domainID, 1, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()}))
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("OnGraphCommitted() error=%v, want Unavailable", err)
 	}
 }
 

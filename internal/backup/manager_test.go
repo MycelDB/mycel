@@ -279,6 +279,34 @@ func TestManagerDoesNotFollowSymlinks(t *testing.T) {
 	}
 }
 
+func TestManagerRunsPreArchiveAfterQuiesceBeforeSnapshot(t *testing.T) {
+	dataDir := fixtureDataDir(t)
+	backupDir := t.TempDir()
+	participant := &trackingParticipant{name: "test-participant"}
+	coord := quiesce.NewCoordinator()
+	if err := coord.Register(participant); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir}, Quiesce: coord, PreArchive: func(ctx context.Context) error {
+		if !participant.quiesced {
+			return errors.New("pre-archive hook ran before participant was quiesced")
+		}
+		writeFile(t, filepath.Join(dataDir, "meta", "prearchive-marker.txt"), "prepared")
+		return nil
+	}})
+	res, err := mgr.Trigger(context.Background(), TriggerInput{Source: "test"})
+	if err != nil {
+		t.Fatalf("Trigger() error = %v", err)
+	}
+	if !participant.released {
+		t.Fatal("quiesce participant was not released after backup")
+	}
+	entries := zipEntries(t, res.ArchivePath)
+	if !entries["meta/prearchive-marker.txt"] {
+		t.Fatalf("archive missing pre-archive marker: %#v", entries)
+	}
+}
+
 func TestManagerReleasesQuiesceLeaseWhenSnapshotFails(t *testing.T) {
 	dataDir := fixtureDataDir(t)
 	backupDir := t.TempDir()
@@ -450,6 +478,21 @@ func fixedClock() func() time.Time {
 
 func contains(value string, substr string) bool {
 	return len(substr) == 0 || (len(value) >= len(substr) && (value == substr || contains(value[1:], substr) || value[:len(substr)] == substr))
+}
+
+type trackingParticipant struct {
+	name     string
+	quiesced bool
+	released bool
+}
+
+func (p *trackingParticipant) Name() string { return p.name }
+func (p *trackingParticipant) Status() quiesce.ParticipantStatus {
+	return quiesce.ParticipantStatus{Name: p.name, Quiesced: p.quiesced}
+}
+func (p *trackingParticipant) Quiesce(context.Context, quiesce.Request) (quiesce.Lease, error) {
+	p.quiesced = true
+	return quiesce.LeaseFunc(func(context.Context) error { p.released = true; p.quiesced = false; return nil }), nil
 }
 
 type removeDataParticipant struct {

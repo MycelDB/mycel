@@ -200,7 +200,11 @@ func (m *Module) CreatePrincipal(ctx context.Context, input CreatePrincipalInput
 	if input.Disabled {
 		state = PrincipalStateDisabled
 	}
-	p := Principal{ID: uuid.NewString(), Username: username, Email: strings.TrimSpace(input.Email), DisplayName: strings.TrimSpace(input.DisplayName), Kind: kind, State: state, LoginEnabled: input.LoginEnabled, PasswordHash: hash, CreatedAt: now, UpdatedAt: now, CreatedBy: strings.TrimSpace(input.CreatedBy)}
+	principalID := strings.TrimSpace(input.PrincipalID)
+	if principalID == "" {
+		principalID = uuid.NewString()
+	}
+	p := Principal{ID: principalID, Username: username, Email: strings.TrimSpace(input.Email), DisplayName: strings.TrimSpace(input.DisplayName), Kind: kind, State: state, LoginEnabled: input.LoginEnabled, PasswordHash: hash, CreatedAt: now, UpdatedAt: now, CreatedBy: strings.TrimSpace(input.CreatedBy)}
 	applied, err := m.commitPrincipalPut(ctx, p, "identity-principal-put")
 	if err != nil {
 		return PrincipalSummary{}, err
@@ -631,7 +635,7 @@ func (m *Module) ensureBootstrapSystemAdmin(ctx context.Context, logger *slog.Lo
 		}
 		generated = true
 	}
-	summary, err := m.CreatePrincipal(ctx, CreatePrincipalInput{Username: username, Password: password, Kind: PrincipalKindHuman, LoginEnabled: true})
+	summary, err := m.CreatePrincipal(ctx, CreatePrincipalInput{PrincipalID: deterministicBootstrapAdminPrincipalID(username), Username: username, Password: password, Kind: PrincipalKindHuman, LoginEnabled: true})
 	if err != nil {
 		if !errors.Is(err, ErrDuplicatePrincipal) {
 			return err
@@ -641,7 +645,7 @@ func (m *Module) ensureBootstrapSystemAdmin(ctx context.Context, logger *slog.Lo
 			return err
 		}
 	}
-	if _, _, err := m.GrantRole(ctx, summary.ID, RoleSystemAdmin, AccessScope{Type: "system"}, "bootstrap system admin", summary.ID); err != nil {
+	if err := m.ensureSystemAdminRoleBinding(ctx, summary.ID); err != nil {
 		return err
 	}
 	if logger != nil {
@@ -652,6 +656,34 @@ func (m *Module) ensureBootstrapSystemAdmin(ctx context.Context, logger *slog.Lo
 		}
 	}
 	return nil
+}
+
+func deterministicBootstrapAdminPrincipalID(username string) string {
+	name := strings.ToLower(strings.TrimSpace(username))
+	if name == "" {
+		name = "admin"
+	}
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("myceldb/bootstrap/system-admin/"+name)).String()
+}
+
+func bootstrapSystemAdminRoleBindingID(principalID string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("myceldb/bootstrap/system-admin-role/"+strings.TrimSpace(principalID))).String()
+}
+
+func (m *Module) ensureSystemAdminRoleBinding(ctx context.Context, principalID string) error {
+	bindings, err := m.store.ListRoleBindings(ctx, principalID)
+	if err != nil {
+		return err
+	}
+	for _, binding := range bindings {
+		if binding.State == GrantStateActive && canonicalRole(binding.Role) == RoleSystemAdmin && normalizeScope(binding.Scope).Type == "system" {
+			return nil
+		}
+	}
+	now := time.Now().UTC()
+	binding := RoleBinding{ID: bootstrapSystemAdminRoleBindingID(principalID), PrincipalID: principalID, Role: RoleSystemAdmin, Scope: AccessScope{Type: "system"}, State: GrantStateActive, Reason: "bootstrap system admin", CreatedBy: principalID, CreatedAt: now}
+	_, err = m.commitRoleBindingPut(ctx, binding, "identity-bootstrap-role-binding-put")
+	return err
 }
 
 func (m *Module) hasActiveSystemAdmin(ctx context.Context) bool {

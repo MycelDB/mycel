@@ -33,6 +33,16 @@ func NewClusterCommand(a *app.App) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{Use: "raft-groups", Short: "List local Raft group diagnostics", RunE: func(cmd *cobra.Command, args []string) error {
 		return runClusterRaftGroups(cmd.Context(), a)
 	}})
+	raftSnapshotCmd := &cobra.Command{Use: "raft-snapshot", Short: "Manage local Raft snapshots"}
+	var snapshotGroupIDs []string
+	var snapshotCompact bool
+	raftSnapshotCreateCmd := &cobra.Command{Use: "create", Short: "Create local Raft snapshots on this daemon", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterRaftSnapshotCreate(cmd.Context(), a, snapshotGroupIDs, snapshotCompact)
+	}}
+	raftSnapshotCreateCmd.Flags().StringArrayVar(&snapshotGroupIDs, "group-id", nil, "raft group ID to snapshot; may be repeated; defaults to all local groups")
+	raftSnapshotCreateCmd.Flags().BoolVar(&snapshotCompact, "compact", true, "compact raft logs through the snapshot index")
+	raftSnapshotCmd.AddCommand(raftSnapshotCreateCmd)
+	cmd.AddCommand(raftSnapshotCmd)
 	var consistencySpaceID string
 	var consistencyDomainID string
 	consistencyCmd := &cobra.Command{Use: "consistency", Short: "Show local graph consistency diagnostics", RunE: func(cmd *cobra.Command, args []string) error {
@@ -69,6 +79,28 @@ func NewClusterCommand(a *app.App) *cobra.Command {
 	_ = exportCmd.MarkFlagRequired("space-id")
 	_ = exportCmd.MarkFlagRequired("domain-id")
 	cmd.AddCommand(exportCmd)
+	checkpointCmd := &cobra.Command{Use: "graph-checkpoint", Short: "Manage local domain graph checkpoints"}
+	var checkpointCreateSpaceID string
+	var checkpointCreateDomainID string
+	checkpointCreateCmd := &cobra.Command{Use: "create", Short: "Create a local domain graph checkpoint", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterGraphCheckpointCreate(cmd.Context(), a, checkpointCreateSpaceID, checkpointCreateDomainID)
+	}}
+	checkpointCreateCmd.Flags().StringVar(&checkpointCreateSpaceID, "space-id", "", "space ID")
+	checkpointCreateCmd.Flags().StringVar(&checkpointCreateDomainID, "domain-id", "", "domain ID")
+	_ = checkpointCreateCmd.MarkFlagRequired("space-id")
+	_ = checkpointCreateCmd.MarkFlagRequired("domain-id")
+	checkpointCmd.AddCommand(checkpointCreateCmd)
+	var checkpointStatusSpaceID string
+	var checkpointStatusDomainID string
+	checkpointStatusCmd := &cobra.Command{Use: "status", Short: "Show local domain graph checkpoint status", RunE: func(cmd *cobra.Command, args []string) error {
+		return runClusterGraphCheckpointStatus(cmd.Context(), a, checkpointStatusSpaceID, checkpointStatusDomainID)
+	}}
+	checkpointStatusCmd.Flags().StringVar(&checkpointStatusSpaceID, "space-id", "", "space ID")
+	checkpointStatusCmd.Flags().StringVar(&checkpointStatusDomainID, "domain-id", "", "domain ID")
+	_ = checkpointStatusCmd.MarkFlagRequired("space-id")
+	_ = checkpointStatusCmd.MarkFlagRequired("domain-id")
+	checkpointCmd.AddCommand(checkpointStatusCmd)
+	cmd.AddCommand(checkpointCmd)
 	var diffLimit int
 	diffCmd := &cobra.Command{Use: "forensic-diff --left FILE --right FILE", Short: "Diff two graph forensic export JSON files", RunE: func(cmd *cobra.Command, args []string) error {
 		left, _ := cmd.Flags().GetString("left")
@@ -194,6 +226,19 @@ type raftGroupsOutput struct {
 	Groups []raftGroupOutput `json:"groups"`
 }
 
+type raftSnapshotResultOutput struct {
+	GroupID       string           `json:"group_id"`
+	SnapshotIndex uint64           `json:"snapshot_index,omitempty"`
+	Compacted     bool             `json:"compacted"`
+	Error         string           `json:"error,omitempty"`
+	Before        *raftGroupOutput `json:"before,omitempty"`
+	After         *raftGroupOutput `json:"after,omitempty"`
+}
+
+type raftSnapshotOutput struct {
+	Results []raftSnapshotResultOutput `json:"results"`
+}
+
 type graphConsistencyStatsOutput struct {
 	SpaceID           string `json:"space_id"`
 	DomainID          string `json:"domain_id"`
@@ -300,6 +345,72 @@ type graphForensicDiffSource struct {
 	NodeCount       uint64 `json:"node_count"`
 	EdgeCount       uint64 `json:"edge_count"`
 	GraphChecksum   string `json:"graph_checksum"`
+}
+
+type graphCheckpointStatusOutput struct {
+	SpaceID                         string                           `json:"space_id"`
+	DomainID                        string                           `json:"domain_id"`
+	CurrentRevision                 uint64                           `json:"current_revision"`
+	CheckpointPresent               bool                             `json:"checkpoint_present"`
+	CheckpointRevision              uint64                           `json:"checkpoint_revision,omitempty"`
+	CheckpointCreatedAt             string                           `json:"checkpoint_created_at,omitempty"`
+	NodeCount                       uint64                           `json:"node_count,omitempty"`
+	EdgeCount                       uint64                           `json:"edge_count,omitempty"`
+	GraphChecksum                   string                           `json:"graph_checksum,omitempty"`
+	ChecksumAlgorithm               string                           `json:"checksum_algorithm,omitempty"`
+	TailRevisions                   uint64                           `json:"tail_revisions"`
+	Source                          string                           `json:"source,omitempty"`
+	AutoCheckpointEnabled           bool                             `json:"auto_checkpoint_enabled"`
+	AutoCheckpointRevisionThreshold uint64                           `json:"auto_checkpoint_revision_threshold,omitempty"`
+	AutoCheckpointInterval          string                           `json:"auto_checkpoint_interval,omitempty"`
+	LastCheckpointAttemptAt         string                           `json:"last_checkpoint_attempt_at,omitempty"`
+	LastCheckpointSuccessAt         string                           `json:"last_checkpoint_success_at,omitempty"`
+	LastCheckpointDurationMS        uint64                           `json:"last_checkpoint_duration_ms,omitempty"`
+	LastCheckpointError             string                           `json:"last_checkpoint_error,omitempty"`
+	CheckpointAgeSeconds            uint64                           `json:"checkpoint_age_seconds,omitempty"`
+	PersistentIndex                 graphPersistentIndexStatusOutput `json:"persistent_index,omitempty"`
+}
+
+type graphPersistentIndexStatusOutput struct {
+	Present           bool                                    `json:"present"`
+	IndexSetID        string                                  `json:"index_set_id,omitempty"`
+	IndexFormat       string                                  `json:"index_format,omitempty"`
+	GraphRevision     uint64                                  `json:"graph_revision,omitempty"`
+	GraphChecksum     string                                  `json:"graph_checksum,omitempty"`
+	ChecksumAlgorithm string                                  `json:"checksum_algorithm,omitempty"`
+	GraphCheckpointID string                                  `json:"graph_checkpoint_id,omitempty"`
+	CreatedAt         string                                  `json:"created_at,omitempty"`
+	LoadResult        string                                  `json:"load_result,omitempty"`
+	FallbackReason    string                                  `json:"fallback_reason,omitempty"`
+	Entries           []graphPersistentIndexEntryStatusOutput `json:"entries,omitempty"`
+	QueryIndexes      []graphPersistentQueryIndexStatusOutput `json:"query_indexes,omitempty"`
+}
+
+type graphPersistentIndexEntryStatusOutput struct {
+	Kind       string `json:"kind"`
+	Path       string `json:"path"`
+	EntryCount uint64 `json:"entry_count"`
+	Checksum   string `json:"checksum"`
+}
+
+type graphPersistentQueryIndexStatusOutput struct {
+	Identity                 string   `json:"identity"`
+	Name                     string   `json:"name"`
+	DomainID                 string   `json:"domain_id"`
+	SchemaHash               string   `json:"schema_hash"`
+	DefinitionFingerprint    string   `json:"definition_fingerprint"`
+	TargetKind               string   `json:"target_kind"`
+	TargetType               string   `json:"target_type,omitempty"`
+	Labels                   []string `json:"labels,omitempty"`
+	FieldNamespace           string   `json:"field_namespace"`
+	FieldName                string   `json:"field_name"`
+	IndexKind                string   `json:"index_kind"`
+	Direction                string   `json:"direction"`
+	BuildState               string   `json:"build_state"`
+	LastIndexedGraphRevision uint64   `json:"last_indexed_graph_revision"`
+	KeyEncodingVersion       int32    `json:"key_encoding_version"`
+	EntryCount               uint64   `json:"entry_count"`
+	LoadResult               string   `json:"load_result"`
 }
 
 type graphForensicDiffSummary struct {
@@ -452,12 +563,26 @@ func runClusterRaftGroups(ctx context.Context, a *app.App) error {
 	return a.Print(out, text)
 }
 
+func runClusterRaftSnapshotCreate(ctx context.Context, a *app.App, groupIDs []string, compact bool) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).CreateRaftSnapshot(authCtx, &adminv1.CreateRaftSnapshotRequest{GroupIds: groupIDs, Compact: compact})
+	if err != nil {
+		return fmt.Errorf("create raft snapshot: %w", err)
+	}
+	out, text := buildRaftSnapshotOutput(res.GetResults())
+	return a.Print(out, text)
+}
+
 func buildRaftGroupsOutput(groups []*adminv1.RaftGroupStatus) (raftGroupsOutput, string) {
 	out := raftGroupsOutput{Groups: []raftGroupOutput{}}
 	lines := []string{}
 	for _, group := range groups {
-		read := raftReadDiagnosticsFromProto(group.GetReadDiagnostics())
-		item := raftGroupOutput{GroupID: group.GetGroupId(), Kind: raftGroupKindText(group.GetKind()), PartitionID: group.GetPartitionId(), LocalNodeID: group.GetLocalNodeId(), LeaderNodeID: group.GetLeaderNodeId(), PreferredLeaderNodeID: group.GetPreferredLeaderNodeId(), ReplicaNodeIDs: append([]uint64(nil), group.GetReplicaNodeIds()...), Health: raftGroupHealthText(group.GetHealth()), HealthReason: group.GetHealthReason(), Term: group.GetTerm(), CommitIndex: group.GetCommitIndex(), AppliedIndex: group.GetAppliedIndex(), ApplyLag: group.GetApplyLag(), LastIndex: group.GetLastIndex(), SnapshotIndex: group.GetSnapshotIndex(), ReadDiagnostics: read}
+		item := raftGroupOutputFromProto(group)
+		read := item.ReadDiagnostics
 		out.Groups = append(out.Groups, item)
 		line := fmt.Sprintf("%s\t%s\thealth=%s leader=%d term=%d commit=%d applied=%d lag=%d last=%d snapshot=%d read_attempts=%d read_ok=%d read_fail=%d", item.Kind, item.GroupID, item.Health, item.LeaderNodeID, item.Term, item.CommitIndex, item.AppliedIndex, item.ApplyLag, item.LastIndex, item.SnapshotIndex, read.ReadIndexAttempts, read.ReadIndexSuccesses, read.ReadIndexFailures)
 		if item.HealthReason != "" {
@@ -469,6 +594,36 @@ func buildRaftGroupsOutput(groups []*adminv1.RaftGroupStatus) (raftGroupsOutput,
 		lines = append(lines, line+"\n")
 	}
 	return out, strings.Join(lines, "")
+}
+
+func buildRaftSnapshotOutput(results []*adminv1.RaftSnapshotResult) (raftSnapshotOutput, string) {
+	out := raftSnapshotOutput{Results: []raftSnapshotResultOutput{}}
+	lines := []string{}
+	for _, result := range results {
+		item := raftSnapshotResultOutput{GroupID: result.GetGroupId(), SnapshotIndex: result.GetSnapshotIndex(), Compacted: result.GetCompacted(), Error: result.GetError()}
+		if before := result.GetBefore(); before != nil {
+			converted := raftGroupOutputFromProto(before)
+			item.Before = &converted
+		}
+		if after := result.GetAfter(); after != nil {
+			converted := raftGroupOutputFromProto(after)
+			item.After = &converted
+		}
+		out.Results = append(out.Results, item)
+		line := fmt.Sprintf("%s\tsnapshot=%d compacted=%t", item.GroupID, item.SnapshotIndex, item.Compacted)
+		if item.Error != "" {
+			line += " error=" + item.Error
+		}
+		lines = append(lines, line+"\n")
+	}
+	return out, strings.Join(lines, "")
+}
+
+func raftGroupOutputFromProto(group *adminv1.RaftGroupStatus) raftGroupOutput {
+	if group == nil {
+		return raftGroupOutput{}
+	}
+	return raftGroupOutput{GroupID: group.GetGroupId(), Kind: raftGroupKindText(group.GetKind()), PartitionID: group.GetPartitionId(), LocalNodeID: group.GetLocalNodeId(), LeaderNodeID: group.GetLeaderNodeId(), PreferredLeaderNodeID: group.GetPreferredLeaderNodeId(), ReplicaNodeIDs: append([]uint64(nil), group.GetReplicaNodeIds()...), Health: raftGroupHealthText(group.GetHealth()), HealthReason: group.GetHealthReason(), Term: group.GetTerm(), CommitIndex: group.GetCommitIndex(), AppliedIndex: group.GetAppliedIndex(), ApplyLag: group.GetApplyLag(), LastIndex: group.GetLastIndex(), SnapshotIndex: group.GetSnapshotIndex(), ReadDiagnostics: raftReadDiagnosticsFromProto(group.GetReadDiagnostics())}
 }
 
 func raftReadDiagnosticsFromProto(in *adminv1.RaftReadDiagnostics) raftReadDiagnosticsOutput {
@@ -519,6 +674,107 @@ func runClusterForensicExport(ctx context.Context, a *app.App, spaceID string, d
 	}
 	out := buildGraphForensicExportOutput(res)
 	return a.Print(out, graphForensicExportText(out))
+}
+
+func runClusterGraphCheckpointCreate(ctx context.Context, a *app.App, spaceID string, domainID string) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).CreateGraphCheckpoint(authCtx, &adminv1.CreateGraphCheckpointRequest{SpaceId: spaceID, DomainId: domainID})
+	if err != nil {
+		return fmt.Errorf("create graph checkpoint: %w", err)
+	}
+	out := graphCheckpointStatusFromProto(res.GetStatus())
+	return a.Print(out, graphCheckpointStatusText(out))
+}
+
+func runClusterGraphCheckpointStatus(ctx context.Context, a *app.App, spaceID string, domainID string) error {
+	conn, authCtx, _, err := loginDaemonOperator(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	res, err := adminv1.NewAdminClusterServiceClient(conn).GetGraphCheckpointStatus(authCtx, &adminv1.GetGraphCheckpointStatusRequest{SpaceId: spaceID, DomainId: domainID})
+	if err != nil {
+		return fmt.Errorf("get graph checkpoint status: %w", err)
+	}
+	out := graphCheckpointStatusFromProto(res.GetStatus())
+	return a.Print(out, graphCheckpointStatusText(out))
+}
+
+func graphCheckpointStatusFromProto(status *adminv1.GraphCheckpointStatus) graphCheckpointStatusOutput {
+	if status == nil {
+		return graphCheckpointStatusOutput{}
+	}
+	return graphCheckpointStatusOutput{SpaceID: status.GetSpaceId(), DomainID: status.GetDomainId(), CurrentRevision: status.GetCurrentRevision(), CheckpointPresent: status.GetCheckpointPresent(), CheckpointRevision: status.GetCheckpointRevision(), CheckpointCreatedAt: status.GetCheckpointCreatedAt(), NodeCount: status.GetNodeCount(), EdgeCount: status.GetEdgeCount(), GraphChecksum: status.GetGraphChecksum(), ChecksumAlgorithm: status.GetChecksumAlgorithm(), TailRevisions: status.GetTailRevisions(), Source: status.GetSource(), AutoCheckpointEnabled: status.GetAutoCheckpointEnabled(), AutoCheckpointRevisionThreshold: status.GetAutoCheckpointRevisionThreshold(), AutoCheckpointInterval: status.GetAutoCheckpointInterval(), LastCheckpointAttemptAt: status.GetLastCheckpointAttemptAt(), LastCheckpointSuccessAt: status.GetLastCheckpointSuccessAt(), LastCheckpointDurationMS: status.GetLastCheckpointDurationMs(), LastCheckpointError: status.GetLastCheckpointError(), CheckpointAgeSeconds: status.GetCheckpointAgeSeconds(), PersistentIndex: graphPersistentIndexStatusFromProto(status.GetPersistentIndex())}
+}
+
+func graphPersistentIndexStatusFromProto(status *adminv1.GraphPersistentIndexStatus) graphPersistentIndexStatusOutput {
+	if status == nil {
+		return graphPersistentIndexStatusOutput{}
+	}
+	out := graphPersistentIndexStatusOutput{Present: status.GetPresent(), IndexSetID: status.GetIndexSetId(), IndexFormat: status.GetIndexFormat(), GraphRevision: status.GetGraphRevision(), GraphChecksum: status.GetGraphChecksum(), ChecksumAlgorithm: status.GetChecksumAlgorithm(), GraphCheckpointID: status.GetGraphCheckpointId(), CreatedAt: status.GetCreatedAt(), LoadResult: status.GetLoadResult(), FallbackReason: status.GetFallbackReason()}
+	if len(status.GetEntries()) > 0 {
+		out.Entries = make([]graphPersistentIndexEntryStatusOutput, 0, len(status.GetEntries()))
+		for _, entry := range status.GetEntries() {
+			out.Entries = append(out.Entries, graphPersistentIndexEntryStatusOutput{Kind: entry.GetKind(), Path: entry.GetPath(), EntryCount: entry.GetEntryCount(), Checksum: entry.GetChecksum()})
+		}
+	}
+	if len(status.GetQueryIndexes()) > 0 {
+		out.QueryIndexes = make([]graphPersistentQueryIndexStatusOutput, 0, len(status.GetQueryIndexes()))
+		for _, idx := range status.GetQueryIndexes() {
+			out.QueryIndexes = append(out.QueryIndexes, graphPersistentQueryIndexStatusOutput{Identity: idx.GetIdentity(), Name: idx.GetName(), DomainID: idx.GetDomainId(), SchemaHash: idx.GetSchemaHash(), DefinitionFingerprint: idx.GetDefinitionFingerprint(), TargetKind: idx.GetTargetKind(), TargetType: idx.GetTargetType(), Labels: append([]string(nil), idx.GetLabels()...), FieldNamespace: idx.GetFieldNamespace(), FieldName: idx.GetFieldName(), IndexKind: idx.GetIndexKind(), Direction: idx.GetDirection(), BuildState: idx.GetBuildState(), LastIndexedGraphRevision: idx.GetLastIndexedGraphRevision(), KeyEncodingVersion: idx.GetKeyEncodingVersion(), EntryCount: idx.GetEntryCount(), LoadResult: idx.GetLoadResult()})
+		}
+	}
+	return out
+}
+
+func graphCheckpointStatusText(out graphCheckpointStatusOutput) string {
+	text := fmt.Sprintf("space=%s domain=%s current_revision=%d checkpoint_present=%t", out.SpaceID, out.DomainID, out.CurrentRevision, out.CheckpointPresent)
+	if out.CheckpointPresent {
+		text += fmt.Sprintf(" checkpoint_revision=%d tail_revisions=%d nodes=%d edges=%d checksum=%s algorithm=%s", out.CheckpointRevision, out.TailRevisions, out.NodeCount, out.EdgeCount, out.GraphChecksum, out.ChecksumAlgorithm)
+		if out.CheckpointCreatedAt != "" {
+			text += " created_at=" + out.CheckpointCreatedAt
+		}
+		text += fmt.Sprintf(" persistent_index_present=%t", out.PersistentIndex.Present)
+		if out.PersistentIndex.LoadResult != "" {
+			text += " persistent_index_load=" + out.PersistentIndex.LoadResult
+		}
+		if out.PersistentIndex.IndexSetID != "" {
+			text += " persistent_index_set=" + out.PersistentIndex.IndexSetID
+		}
+		if out.PersistentIndex.FallbackReason != "" {
+			text += " persistent_index_fallback=" + out.PersistentIndex.FallbackReason
+		}
+		if len(out.PersistentIndex.QueryIndexes) > 0 {
+			text += fmt.Sprintf(" persistent_query_indexes=%d", len(out.PersistentIndex.QueryIndexes))
+		}
+	}
+	if out.Source != "" {
+		text += " source=" + out.Source
+	}
+	text += fmt.Sprintf(" auto_enabled=%t", out.AutoCheckpointEnabled)
+	if out.AutoCheckpointRevisionThreshold > 0 {
+		text += fmt.Sprintf(" auto_revisions=%d", out.AutoCheckpointRevisionThreshold)
+	}
+	if out.AutoCheckpointInterval != "" {
+		text += " auto_interval=" + out.AutoCheckpointInterval
+	}
+	if out.LastCheckpointAttemptAt != "" {
+		text += " last_attempt_at=" + out.LastCheckpointAttemptAt
+	}
+	if out.LastCheckpointSuccessAt != "" {
+		text += " last_success_at=" + out.LastCheckpointSuccessAt
+	}
+	if out.LastCheckpointDurationMS > 0 {
+		text += fmt.Sprintf(" last_duration_ms=%d", out.LastCheckpointDurationMS)
+	}
+	if out.LastCheckpointError != "" {
+		text += " last_error=" + out.LastCheckpointError
+	}
+	return text + "\n"
 }
 
 func runClusterForensicDiff(a *app.App, leftPath string, rightPath string, limit int) error {

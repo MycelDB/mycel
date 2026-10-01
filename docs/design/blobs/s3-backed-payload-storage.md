@@ -19,13 +19,15 @@ payload storage moves only the large immutable blob bytes to S3. Public blob and
 blob-node APIs continue to expose Mycel blob IDs, digest, size, MIME metadata,
 and graph references; they do not expose bucket/key details.
 
-The design supports two payload backends:
+The design supports two configured payload backends:
 
 - `local` — the existing per-space content-addressed filesystem store;
-- `s3` — a shared S3 object store for new blob payload bytes.
+- `object_store` — a shared S3-compatible object store for new blob payload bytes.
 
 Existing metadata without an explicit payload descriptor is interpreted as
-`local` so old data remains readable.
+`local` so old data remains readable. Existing payload descriptors written with
+legacy backend `s3` are still interpreted as object-store descriptors, but the
+legacy `s3` daemon configuration is no longer accepted for new deployments.
 
 ## Goals
 
@@ -74,14 +76,14 @@ replicated with blob metadata and is used by the service to open, verify, and
 clean up payload bytes.
 
 ```text
-backend: local | s3
+backend: local | object_store | s3 (legacy descriptor only)
 space_id: <space-id>
 blob_id: <sha256-hex>
 size_bytes: <size>
 checksum_algorithm: sha256
 checksum_hex: <sha256-hex>
-s3_bucket: <bucket, for s3>
-s3_key: <object-key, for s3>
+s3_bucket: <bucket, for object_store/s3>
+s3_key: <object-key, for object_store/s3>
 s3_region: <region, optional>
 s3_etag: <etag observed at write, optional>
 ```
@@ -113,7 +115,7 @@ MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL=<endpoint-url>
 MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true|false
 ```
 
-Legacy `MYCELD_BLOB_BACKEND=s3` and `MYCELD_BLOB_S3_*` variables remain supported as backward-compatible aliases. Generic `MYCELD_BLOB_OBJECT_STORE_*` values take precedence when both forms are set.
+Legacy `MYCELD_BLOB_BACKEND=s3` and `MYCELD_BLOB_S3_*` daemon configuration aliases are no longer accepted. Use the provider-neutral `object_store` backend and `MYCELD_BLOB_OBJECT_STORE_*` settings.
 
 Authentication uses the AWS SDK default credential chain. In production that
 should normally be an EC2 instance profile, ECS task role, or EKS IRSA/web

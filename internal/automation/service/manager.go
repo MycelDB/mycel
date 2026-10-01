@@ -17,6 +17,7 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
@@ -88,6 +89,7 @@ type AutomationManager struct {
 	metricsClaimReclaims                  int64
 	metricsClaimAbandoned                 int64
 	writeAllowed                          func() error
+	gate                                  *quiesce.Gate
 }
 
 func NewManager(store storage.Store) *AutomationManager {
@@ -126,6 +128,22 @@ func (m *AutomationManager) WithWriteAllowed(fn func() error) *AutomationManager
 	return m
 }
 
+func (m *AutomationManager) WithQuiesceGate(gate *quiesce.Gate) *AutomationManager {
+	m.gate = gate
+	return m
+}
+
+func (m *AutomationManager) enterMutation(ctx context.Context) (func(), error) {
+	if m.gate == nil {
+		return func() {}, nil
+	}
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
+}
+
 func (m *AutomationManager) requireWriteAllowed() error {
 	if m.writeAllowed == nil {
 		return nil
@@ -158,6 +176,11 @@ func (m *AutomationManager) CreateAutomation(ctx context.Context, domainID graph
 }
 
 func (m *AutomationManager) CreateAutomationAs(ctx context.Context, domainID graph.DomainID, rawJSON string, principalID string) (automation.Definition, error) {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return automation.Definition{}, err
+	}
+	defer release()
 	if err := m.requireWriteAllowed(); err != nil {
 		return automation.Definition{}, err
 	}
@@ -188,6 +211,11 @@ func (m *AutomationManager) UpdateAutomation(ctx context.Context, domainID graph
 }
 
 func (m *AutomationManager) UpdateAutomationAs(ctx context.Context, domainID graph.DomainID, id string, rawJSON string, principalID string) (automation.Definition, error) {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return automation.Definition{}, err
+	}
+	defer release()
 	if err := m.requireWriteAllowed(); err != nil {
 		return automation.Definition{}, err
 	}
@@ -224,6 +252,11 @@ func (m *AutomationManager) UpdateAutomationAs(ctx context.Context, domainID gra
 }
 
 func (m *AutomationManager) DeleteAutomation(ctx context.Context, domainID graph.DomainID, id string) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := m.requireWriteAllowed(); err != nil {
 		return err
 	}
@@ -495,6 +528,11 @@ func (m *AutomationManager) SetAutomationStatus(ctx context.Context, domainID gr
 }
 
 func (m *AutomationManager) SetAutomationStatusAs(ctx context.Context, domainID graph.DomainID, id string, status string, principalID string) (automation.Definition, error) {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return automation.Definition{}, err
+	}
+	defer release()
 	if err := m.requireWriteAllowed(); err != nil {
 		return automation.Definition{}, err
 	}
@@ -586,23 +624,7 @@ func (m *AutomationManager) CancelInvocation(ctx context.Context, domainID graph
 	return inv, nil
 }
 
-func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphchange.CommittedEvent) error {
-	event.Normalize()
-	if m.raftEnabled() {
-		if err := m.requireLocalExecutionLeader(ctx, event.SpaceID.String()); err != nil {
-			return err
-		}
-	} else if err := m.requireWriteAllowed(); err != nil {
-		return err
-	}
-	if event.DomainID == uuid.Nil {
-		return nil
-	}
-	domainID := graph.DomainID(event.DomainID)
-	items, err := m.listRunnableAutomations(ctx, domainID, automation.StatusEnabled)
-	if err != nil {
-		return err
-	}
+func forEachGraphTriggeredRunnable(event graphchange.CommittedEvent, items []runnableAutomation, visit func(runnableAutomation, graphchange.Change, string) error) error {
 	for _, change := range event.Changes {
 		eventType := automationEventType(change.Type)
 		if eventType == "" || change.Node == nil {
@@ -622,17 +644,47 @@ func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphch
 			if generatedByAutomation(change.Node, def.ID) {
 				continue
 			}
-			var oldNode *graph.Node
-			if change.OldNode != nil {
-				copy := *change.OldNode
-				oldNode = &copy
-			}
-			invID := graphTriggeredInvocationID(event.SpaceID.String(), domainID, event.ID.String(), item.Binding.ID, change.NodeID)
-			inv := invocationForRunnable(m.now, domainID, item, automation.Invocation{ID: invID, SpaceID: event.SpaceID.String(), EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType}, event.Origin.PrincipalID)
-			if err := m.putInvocationIdempotent(ctx, inv); err != nil {
+			if err := visit(item, change, eventType); err != nil {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func (m *AutomationManager) HandleGraphChange(ctx context.Context, event graphchange.CommittedEvent) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	event.Normalize()
+	if m.raftEnabled() {
+		if err := m.requireLocalExecutionLeader(ctx, event.SpaceID.String()); err != nil {
+			return err
+		}
+	} else if err := m.requireWriteAllowed(); err != nil {
+		return err
+	}
+	if event.DomainID == uuid.Nil {
+		return nil
+	}
+	domainID := graph.DomainID(event.DomainID)
+	items, err := m.listRunnableAutomations(ctx, domainID, automation.StatusEnabled)
+	if err != nil {
+		return err
+	}
+	if err := forEachGraphTriggeredRunnable(event, items, func(item runnableAutomation, change graphchange.Change, eventType string) error {
+		var oldNode *graph.Node
+		if change.OldNode != nil {
+			copy := *change.OldNode
+			oldNode = &copy
+		}
+		invID := graphTriggeredInvocationID(event.SpaceID.String(), domainID, event.ID.String(), item.Binding.ID, change.NodeID)
+		inv := invocationForRunnable(m.now, domainID, item, automation.Invocation{ID: invID, SpaceID: event.SpaceID.String(), EventID: event.ID.String(), ChangedElementID: change.NodeID, ChangedElementKind: "node", OldNode: oldNode, EventType: eventType}, event.Origin.PrincipalID)
+		return m.putInvocationIdempotent(ctx, inv)
+	}); err != nil {
+		return err
 	}
 	return m.advanceGraphReplayCursor(ctx, event)
 }
@@ -688,6 +740,11 @@ func graphTriggeredInvocationID(spaceID string, domainID graph.DomainID, eventID
 }
 
 func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.DomainID, limit int) (int, error) {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	if !m.raftEnabled() {
 		if err := m.requireWriteAllowed(); err != nil {
 			return 0, err

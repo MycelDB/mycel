@@ -34,33 +34,34 @@ type Options struct {
 }
 
 type LocalStore struct {
-	mu                sync.RWMutex
-	path              string
-	encryption        *encryption.Service
-	state             StoreState
-	manifest          manifest
-	nodes             *segment
-	edges             *segment
-	txns              *segment
-	nodeRecords       map[graph.NodeID]graph.Node
-	edgeRecords       map[graph.EdgeID]graph.Edge
-	nodeMeta          map[graph.NodeID]NodeMeta
-	edgeMeta          map[graph.EdgeID]EdgeMeta
-	nodesByDomain     map[graph.DomainID]map[graph.NodeID]struct{}
-	labelIndex        map[graph.DomainID]map[string]map[graph.NodeID]struct{}
-	tagIndex          map[graph.DomainID]map[string]map[graph.NodeID]struct{}
-	configuredIndexes map[graph.DomainID][]schema.IndexDefinition
-	indexMetadata     map[string]IndexMetadata
-	nodePropertyIndex map[string]map[string]nodePropertyIndexEntry
-	edgePropertyIndex map[string]map[string]edgePropertyIndexEntry
-	edgeAdjacencyOut  map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
-	edgeAdjacencyIn   map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
-	containsChildren  map[graph.NodeID][]graph.EdgeID
-	containsParent    map[graph.NodeID]graph.EdgeID
-	edgeIndex         adjacency.EdgeIndex
-	journalDay        map[int]map[graph.NodeID]struct{}
-	blobRefs          map[graph.BlobID]map[graph.NodeID]struct{}
-	revision          uint64
+	mu                        sync.RWMutex
+	path                      string
+	encryption                *encryption.Service
+	state                     StoreState
+	manifest                  manifest
+	nodes                     *segment
+	edges                     *segment
+	txns                      *segment
+	nodeRecords               map[graph.NodeID]graph.Node
+	edgeRecords               map[graph.EdgeID]graph.Edge
+	nodeMeta                  map[graph.NodeID]NodeMeta
+	edgeMeta                  map[graph.EdgeID]EdgeMeta
+	nodesByDomain             map[graph.DomainID]map[graph.NodeID]struct{}
+	labelIndex                map[graph.DomainID]map[string]map[graph.NodeID]struct{}
+	tagIndex                  map[graph.DomainID]map[string]map[graph.NodeID]struct{}
+	configuredIndexes         map[graph.DomainID][]schema.IndexDefinition
+	indexMetadata             map[string]IndexMetadata
+	nodePropertyIndex         map[string]map[string]nodePropertyIndexEntry
+	edgePropertyIndex         map[string]map[string]edgePropertyIndexEntry
+	edgeAdjacencyOut          map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
+	edgeAdjacencyIn           map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
+	containsChildren          map[graph.NodeID][]graph.EdgeID
+	containsParent            map[graph.NodeID]graph.EdgeID
+	edgeIndex                 adjacency.EdgeIndex
+	persistentIndexLoadStatus PersistentIndexStatus
+	journalDay                map[int]map[graph.NodeID]struct{}
+	blobRefs                  map[graph.BlobID]map[graph.NodeID]struct{}
+	revision                  uint64
 	// nodeModRev/edgeModRev record the store revision at which each entity was
 	// last written, enabling write-set (fine-grained) conflict detection so that
 	// concurrent transactions touching disjoint entities do not conflict.
@@ -109,8 +110,14 @@ func (s *LocalStore) open(ctx context.Context) error {
 		return err
 	}
 	s.state = StoreStateRebuildingIndex
-	if err := s.rebuildIndexes(ctx); err != nil {
+	loaded, err := s.loadCheckpoint(ctx)
+	if err != nil {
 		return err
+	}
+	if !loaded {
+		if err := s.rebuildIndexes(ctx); err != nil {
+			return err
+		}
 	}
 	s.state = StoreStateReady
 	return nil
@@ -161,50 +168,12 @@ func (s *LocalStore) rebuildIndexes(ctx context.Context) error {
 		}
 	}
 	for _, seg := range s.manifest.NodeSegments {
-		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindNode, s.encryption, func(r scannedRecord) error {
-			rev, ok := commitRevision[r.header.txnID]
-			if !ok {
-				return nil
-			}
-			switch r.header.kind {
-			case RecordKindNodePut:
-				n, err := decodeNode(r.payload)
-				if err != nil {
-					return err
-				}
-				s.applyNodePut(n, r.location)
-				s.nodeModRev[n.ID] = rev
-			case RecordKindNodeTombstone:
-				id := graph.NodeID(r.header.entityID)
-				s.applyNodeDelete(id, r.location)
-				s.nodeModRev[id] = rev
-			}
-			return nil
-		}); err != nil {
+		if err := s.replayNodeSegmentFrom(filepath.Join(s.path, seg), segmentHeaderLen, commitRevision); err != nil {
 			return err
 		}
 	}
 	for _, seg := range s.manifest.EdgeSegments {
-		if err := scanSegment(filepath.Join(s.path, seg), SegmentKindEdge, s.encryption, func(r scannedRecord) error {
-			rev, ok := commitRevision[r.header.txnID]
-			if !ok {
-				return nil
-			}
-			switch r.header.kind {
-			case RecordKindEdgePut:
-				e, err := decodeEdge(r.payload)
-				if err != nil {
-					return err
-				}
-				s.applyEdgePut(e, r.location)
-				s.edgeModRev[e.ID] = rev
-			case RecordKindEdgeTombstone:
-				id := graph.EdgeID(r.header.entityID)
-				s.applyEdgeDelete(id, r.location)
-				s.edgeModRev[id] = rev
-			}
-			return nil
-		}); err != nil {
+		if err := s.replayEdgeSegmentFrom(filepath.Join(s.path, seg), segmentHeaderLen, commitRevision); err != nil {
 			return err
 		}
 	}
@@ -426,7 +395,57 @@ func (s *LocalStore) JournalNodesByDayRange(ctx context.Context, from, to int) (
 	return out, ctx.Err()
 }
 
+func (s *LocalStore) replayNodeSegmentFrom(path string, offset int64, commitRevision map[uuid.UUID]uint64) error {
+	return scanSegmentFrom(path, SegmentKindNode, s.encryption, offset, func(r scannedRecord) error {
+		rev, ok := commitRevision[r.header.txnID]
+		if !ok {
+			return nil
+		}
+		switch r.header.kind {
+		case RecordKindNodePut:
+			n, err := decodeNode(r.payload)
+			if err != nil {
+				return err
+			}
+			s.applyNodePut(n, r.location)
+			s.nodeModRev[n.ID] = rev
+		case RecordKindNodeTombstone:
+			id := graph.NodeID(r.header.entityID)
+			s.applyNodeDelete(id, r.location)
+			s.nodeModRev[id] = rev
+		}
+		return nil
+	})
+}
+
+func (s *LocalStore) replayEdgeSegmentFrom(path string, offset int64, commitRevision map[uuid.UUID]uint64) error {
+	return scanSegmentFrom(path, SegmentKindEdge, s.encryption, offset, func(r scannedRecord) error {
+		rev, ok := commitRevision[r.header.txnID]
+		if !ok {
+			return nil
+		}
+		switch r.header.kind {
+		case RecordKindEdgePut:
+			e, err := decodeEdge(r.payload)
+			if err != nil {
+				return err
+			}
+			s.applyEdgePut(e, r.location)
+			s.edgeModRev[e.ID] = rev
+		case RecordKindEdgeTombstone:
+			id := graph.EdgeID(r.header.entityID)
+			s.applyEdgeDelete(id, r.location)
+			s.edgeModRev[id] = rev
+		}
+		return nil
+	})
+}
+
 func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
+	s.applyNodePutWithIndexes(n, loc, true, true)
+}
+
+func (s *LocalStore) applyNodePutWithIndexes(n graph.Node, loc RecordLocation, labelTagIndexes bool, queryIndexes bool) {
 	if old, ok := s.nodeRecords[n.ID]; ok {
 		s.removeNodeIndexes(old)
 	}
@@ -434,10 +453,14 @@ func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
 	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, DomainID: n.DomainID, Location: loc}
 	if n.DomainID != uuid.Nil {
 		ensureNodeSet(s.nodesByDomain, n.DomainID)[n.ID] = struct{}{}
-		s.addNodeLabelIndexes(n)
-		s.addNodeTagIndexes(n)
-		for _, idx := range s.configuredIndexes[n.DomainID] {
-			_ = s.addNodePropertyIndexEntry(n, idx)
+		if labelTagIndexes {
+			s.addNodeLabelIndexes(n)
+			s.addNodeTagIndexes(n)
+		}
+		if queryIndexes {
+			for _, idx := range s.configuredIndexes[n.DomainID] {
+				_ = s.addNodePropertyIndexEntry(n, idx)
+			}
 		}
 	}
 	propsForIndex := n.Properties

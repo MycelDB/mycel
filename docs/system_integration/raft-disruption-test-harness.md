@@ -14,6 +14,8 @@ Common make targets:
 | Smoke | `make test-k3s-raft-disruption-smoke` | Fast default `nodes` workload with one pod restart. |
 | Small/all-pod restart | `make test-k3s-raft-disruption` | `small` profile with all pods restarted one at a time. |
 | Edge workload | `make test-k3s-raft-disruption-edges` | Relationship workload under pod restart pressure. |
+| Restart/write soak | `make test-k3s-raft-restart-soak` | One-hour moderate edge workload with rotating single-pod restarts. |
+| Hard restart/write soak | `make test-k3s-raft-restart-hard-soak` | One-hour tougher multi-space workload with more frequent rotating single-pod restarts. |
 
 The reusable harness can also be invoked directly:
 
@@ -61,6 +63,25 @@ go run ./cmd/mycel-raft-disrupttest \
   --restart-node all \
   --image myceldb/mycel:raft-disrupt-local \
   --confirm-destructive
+
+# One-hour moderate restart/write soak. Restarts one pod at a time in rotation.
+go run ./cmd/mycel-raft-disrupttest \
+  --driver k3s \
+  --provisioner k3d \
+  --profile restart-soak-1h \
+  --workload edges \
+  --restart-interval 3m \
+  --image myceldb/mycel:raft-disrupt-local \
+  --confirm-destructive
+
+# One-hour hard restart/write soak. Uses multi-space writes and 60s restarts.
+go run ./cmd/mycel-raft-disrupttest \
+  --driver k3s \
+  --provisioner k3d \
+  --profile restart-soak-hard-1h \
+  --workload multi-space \
+  --image myceldb/mycel:raft-disrupt-local \
+  --confirm-destructive
 ```
 
 ## What it does
@@ -83,9 +104,10 @@ The generated StatefulSet uses:
 | --- | --- | --- |
 | `--driver` | `k3s` | Cluster driver. Only K3s is currently supported. |
 | `--provisioner` | `k3d` | Cluster provisioner. Only k3d is currently supported. |
-| `--profile` | `smoke`, `small`, `medium`, `soak` | Workload duration, writer count, and write rate. |
+| `--profile` | `smoke`, `small`, `medium`, `soak`, `restart-soak-1h`, `restart-soak-hard-1h` | Workload duration, writer count, write rate, and restart mode. |
 | `--workload` | `nodes`, `edges`, `multi-space` | Graph workload to run. |
-| `--restart-node` | pod name, ordinal, `all` | Pod restart sequence. Empty defaults to one pod. |
+| `--restart-node` | pod name, ordinal, `all` | Pod restart sequence. Empty defaults to one pod, except rotating restart profiles default to all pods. |
+| `--restart-interval` | duration, e.g. `3m` | Interval between rotating restart attempts for rotating restart profiles. |
 | `--image` | image tag | myceld image to load into the disposable cluster. |
 | `--partition-count` | positive integer | Number of raft graph partitions. |
 | `--artifacts-dir` | `artifacts/raft-disruption` | Root directory for run artifacts. |
@@ -102,6 +124,8 @@ Profiles:
 | `small` | 2m | 2 | 20/s |
 | `medium` | 10m | 4 | 50/s |
 | `soak` | 1h | 8 | 100/s |
+| `restart-soak-1h` | 1h | 4 | 2/s |
+| `restart-soak-hard-1h` | 1h | 6 | 3/s |
 
 Workloads:
 
@@ -116,7 +140,12 @@ Workloads:
 Start with `smoke` before longer runs. Use `small` for routine raft-sensitive
 local validation, `medium` for stronger confidence after the small variation
 passes, and `soak` only when you intentionally want a long-running destructive
-run.
+run. Use `restart-soak-1h` when the goal is restart/recovery correctness under
+moderate sustained writes rather than throughput pressure. Use
+`restart-soak-hard-1h` after the moderate soak passes; it increases write
+concurrency, restarts pods every 60 seconds by default, and should usually be run
+with the `multi-space` workload. Both restart soak profiles use rotating
+single-pod restarts and never intentionally kill quorum all at once.
 
 Recommended sequence:
 
@@ -125,6 +154,8 @@ Recommended sequence:
 3. direct `--profile small --workload edges --restart-node all`
 4. direct `--profile medium --workload edges --restart-node all`
 5. direct `--profile medium --workload multi-space --restart-node all`
+6. `make test-k3s-raft-restart-soak`
+7. `make test-k3s-raft-restart-hard-soak`
 
 ## How to interpret results
 
@@ -146,7 +177,8 @@ Artifacts: artifacts/raft-disruption/<timestamp>-<cluster-name>
 
 - final counts met the workload's expected minimum;
 - client and per-pod local consistency counts converged;
-- committed read checks did not fail;
+- committed read checks did not have permanent failures;
+- exhausted transient committed-read retries during intentional disruption are reported in counters/warnings but do not fail the run if final convergence succeeds;
 - no write attempts had permanent failures;
 - cluster identity diagnostics did not show a mismatch.
 
@@ -173,9 +205,12 @@ artifacts/raft-disruption/<timestamp>-<cluster-name>/
   failure/*
 ```
 
-Start with `result-summary.json`, then inspect `scenario/read-events.jsonl` for
-read failures and `scenario/write-events.jsonl` for write failure timing. Use
-`failure/` for Kubernetes state captured on failure.
+Start with `result-summary.json`, then inspect `scenario/scenario-summary.json`
+for restart events, warnings, and final diagnostics, `scenario/read-events.jsonl`
+for read failures, and `scenario/write-events.jsonl` for write failure timing.
+Transient read failures during restart windows are expected to appear in the event
+log; permanent read failures or final convergence failure remain release-blocking.
+Use `failure/` for Kubernetes state captured on failure.
 
 ## Safety
 

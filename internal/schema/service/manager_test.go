@@ -6,8 +6,11 @@ import (
 
 	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schema "github.com/myceldb/mycel/internal/schema/model"
 	"github.com/myceldb/mycel/internal/schema/storage"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestManagerPutGetDomainSchema(t *testing.T) {
@@ -27,6 +30,24 @@ func TestManagerPutGetDomainSchema(t *testing.T) {
 	}
 	if got.Mode != schema.SchemaModeStrict || got.NodeTypes[0].Name != "Person" {
 		t.Fatalf("unexpected schema: %+v", got)
+	}
+}
+
+func TestManagerQuiesceRejectsSchemaMutations(t *testing.T) {
+	ctx := context.Background()
+	domainID := graph.DomainID(uuid.New())
+	gate := quiesce.NewGate(ModuleName)
+	mgr := NewManager(storage.NewMemoryStore()).WithQuiesceGate(gate)
+	lease, err := gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Mode: quiesce.ModeBackup, Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(context.Background())
+	if err := mgr.PutDomainSchema(ctx, sampleSchema(domainID, schema.SchemaModeStrict)); status.Code(err) != codes.Unavailable {
+		t.Fatalf("PutDomainSchema() error = %v, want Unavailable", err)
+	}
+	if err := mgr.DeleteDomainSchema(ctx, domainID); status.Code(err) != codes.Unavailable {
+		t.Fatalf("DeleteDomainSchema() error = %v, want Unavailable", err)
 	}
 }
 

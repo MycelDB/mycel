@@ -3,15 +3,17 @@
 ## Summary
 
 The graph adjacency index is a derived, in-memory index maintained by each loaded
-space graph store. It accelerates endpoint-scoped edge lookups used by hierarchy
+graph store. On `develop` this historically meant a loaded space graph store; on
+the `advanced_storage` branch the physical graph store unit is moving to a
+space/domain store. It accelerates endpoint-scoped edge lookups used by hierarchy
 validation and graph traversal paths, especially for Logseq-like imports that
 create many block hierarchy and reference edges.
 
 The index is not authoritative storage. Authoritative graph state remains the
 committed graph records applied through local commits, WAL replay, Raft apply, and
 snapshot recovery. The adjacency index is rebuilt from those committed records
-when a space graph store is opened or reloaded, and it is updated synchronously by
-the same store mutation paths that apply edge puts and deletes.
+when a graph store is opened or reloaded, and it is updated synchronously by the
+same store mutation paths that apply edge puts and deletes.
 
 ## Motivation
 

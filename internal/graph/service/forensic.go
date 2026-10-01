@@ -10,9 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/internal/clustering/consensus"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
-	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 const defaultForensicExportPageSize = 100
@@ -54,33 +52,16 @@ func (m *Module) LocalGraphForensicExport(ctx context.Context, spaceID string, d
 	if err != nil || parsedDomain == uuid.Nil {
 		return LocalGraphForensicExport{}, fmt.Errorf("%w: domain_id must be a UUID", ErrInvalidInput)
 	}
-	store, err := m.existingStoreForConsistencyStats(ctx, spaceID)
+	store, err := m.existingStoreForConsistencyStats(ctx, spaceID, parsedDomain.String())
 	if err != nil {
 		return LocalGraphForensicExport{}, err
 	}
 	domain := domaingraph.DomainID(parsedDomain)
-	nodes, err := store.ListNodesByDomain(ctx, domain)
+	nodes, edges, err := listDomainGraphRecords(ctx, store, domain)
 	if err != nil {
-		return LocalGraphForensicExport{}, mapStorageError(err)
+		return LocalGraphForensicExport{}, err
 	}
-	allEdges, err := store.ListEdges(ctx)
-	if err != nil {
-		return LocalGraphForensicExport{}, mapStorageError(err)
-	}
-	edges := make([]domaingraph.Edge, 0, len(allEdges))
-	for _, edge := range allEdges {
-		if edge.DomainID == domain {
-			edges = append(edges, edge)
-		}
-	}
-	partitionID := uint32(0)
-	if m.raftPartitionCount > 0 {
-		if parsedSpace, err := uuid.Parse(spaceID); err == nil && parsedSpace != uuid.Nil {
-			if cmd, err := consensus.NewSpaceCommand(domainspace.SpaceID(parsedSpace), m.raftPartitionCount, recordTypeGraphCommit, nil, "graph-forensic-export"); err == nil {
-				partitionID = cmd.PartitionID
-			}
-		}
-	}
+	partitionID := graphPartitionID(spaceID, m.raftPartitionCount, "graph-forensic-export")
 	collectedAt := time.Now().UTC()
 	stats, err := buildLocalGraphStats(spaceID, domainID, partitionID, store.Revision(), nodes, edges, collectedAt)
 	if err != nil {

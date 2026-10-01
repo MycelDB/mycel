@@ -3,8 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
@@ -37,7 +40,10 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 }
 
 func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record graphCommitRecord, commandID string) (graphchange.CommittedEvent, []GraphChange, error) {
-	store, err := m.store(ctx, record.SpaceID)
+	if err := normalizeGraphCommitRecordDomain(&record); err != nil {
+		return graphchange.CommittedEvent{}, nil, err
+	}
+	store, err := m.store(ctx, record.SpaceID, record.DomainID)
 	if err != nil {
 		return graphchange.CommittedEvent{}, nil, err
 	}
@@ -79,6 +85,29 @@ func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record grap
 		return graphchange.CommittedEvent{}, nil, err
 	}
 	return event, changes, nil
+}
+
+func normalizeGraphCommitRecordDomain(record *graphCommitRecord) error {
+	if record == nil {
+		return fmt.Errorf("graph commit record is required")
+	}
+	if strings.TrimSpace(record.DomainID) == "" {
+		record.DomainID = firstRecordDomainID(*record)
+	}
+	if _, err := newDomainStoreKey(record.SpaceID, record.DomainID); err != nil {
+		return err
+	}
+	for _, node := range record.PutNodes {
+		if node.DomainID.String() != record.DomainID {
+			return fmt.Errorf("%w: node domain_id %s does not match transaction domain_id %s", ErrInvalidInput, node.DomainID, record.DomainID)
+		}
+	}
+	for _, edge := range record.PutEdges {
+		if edge.DomainID.String() != record.DomainID {
+			return fmt.Errorf("%w: edge domain_id %s does not match transaction domain_id %s", ErrInvalidInput, edge.DomainID, record.DomainID)
+		}
+	}
+	return nil
 }
 
 func firstRecordDomainID(record graphCommitRecord) string {
@@ -199,12 +228,135 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 	}
 	revision, _, _, err := m.applyGraphCommitRecord(ctx, record)
 	if err != nil {
+		if errors.Is(err, ErrConflict) {
+			alreadyApplied, verifyErr := m.graphCommitRecordEffectsPresent(ctx, record)
+			if verifyErr != nil {
+				return verifyErr
+			}
+			if alreadyApplied {
+				return m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID)
+			}
+		}
 		return err
 	}
-	if err := m.rememberRaftAppliedCommand(ctx, cmd.CommandID); err != nil {
+	if err := m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID); err != nil {
 		return err
 	}
 	event.Changes = changes
 	m.notifyRaftApplyChangeSink(ctx, graphstorage.CommitInfo{TxnID: event.TxnID, NextRevision: uint64(revision)}, event)
 	return nil
+}
+
+func (m *Module) graphCommitRecordEffectsPresent(ctx context.Context, record graphCommitRecord) (bool, error) {
+	if err := normalizeGraphCommitRecordDomain(&record); err != nil {
+		return false, err
+	}
+	store, err := m.store(ctx, record.SpaceID, record.DomainID)
+	if err != nil {
+		return false, err
+	}
+	for _, node := range record.PutNodes {
+		got, err := store.GetNode(ctx, node.ID)
+		if err != nil {
+			if errors.Is(err, graphstorage.ErrNotFound) {
+				return false, nil
+			}
+			return false, mapStorageError(err)
+		}
+		if !graphNodeEffectEqual(got, node) {
+			return false, nil
+		}
+	}
+	for _, edge := range record.PutEdges {
+		got, err := store.GetEdge(ctx, edge.ID)
+		if err != nil {
+			if errors.Is(err, graphstorage.ErrNotFound) {
+				return false, nil
+			}
+			return false, mapStorageError(err)
+		}
+		if !graphEdgeEffectEqual(got, edge) {
+			return false, nil
+		}
+	}
+	for _, id := range record.DeleteNodeIDs {
+		if _, err := store.GetNode(ctx, id); err != nil {
+			if errors.Is(err, graphstorage.ErrNotFound) {
+				continue
+			}
+			return false, mapStorageError(err)
+		}
+		return false, nil
+	}
+	for _, id := range record.DeleteEdgeIDs {
+		if _, err := store.GetEdge(ctx, id); err != nil {
+			if errors.Is(err, graphstorage.ErrNotFound) {
+				continue
+			}
+			return false, mapStorageError(err)
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+type graphEntityEffect struct {
+	labels     []string
+	properties map[string]any
+	payload    map[string]any
+	meta       map[string]any
+	createdAt  time.Time
+	updatedAt  time.Time
+}
+
+func graphNodeEffectEqual(got, want domaingraph.Node) bool {
+	return got.ID == want.ID && got.DomainID == want.DomainID && blobRefsEqual(got.BlobRef, want.BlobRef) && got.Content == want.Content && mapsEqual(got.Props, want.Props) && graphEntityEffectEqual(nodeEffect(got), nodeEffect(want))
+}
+
+func graphEdgeEffectEqual(got, want domaingraph.Edge) bool {
+	return got.ID == want.ID && got.DomainID == want.DomainID && got.FromID == want.FromID && got.ToID == want.ToID && graphEntityEffectEqual(edgeEffect(got), edgeEffect(want))
+}
+
+func nodeEffect(n domaingraph.Node) graphEntityEffect {
+	return graphEntityEffect{labels: n.Labels, properties: n.Properties, payload: n.Payload, meta: n.Meta, createdAt: n.CreatedAt, updatedAt: n.UpdatedAt}
+}
+
+func edgeEffect(e domaingraph.Edge) graphEntityEffect {
+	return graphEntityEffect{labels: e.Labels, properties: e.Properties, payload: e.Payload, meta: e.Meta, createdAt: e.CreatedAt, updatedAt: e.UpdatedAt}
+}
+
+func graphEntityEffectEqual(got, want graphEntityEffect) bool {
+	if !want.createdAt.IsZero() && !got.createdAt.Equal(want.createdAt) {
+		return false
+	}
+	if !want.updatedAt.IsZero() && !got.updatedAt.Equal(want.updatedAt) {
+		return false
+	}
+	return stringSlicesEqual(got.labels, want.labels) && mapsEqual(got.properties, want.properties) && mapsEqual(got.payload, want.payload) && mapsEqual(got.meta, want.meta)
+}
+
+func blobRefsEqual(a, b *domaingraph.BlobID) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func mapsEqual(a, b map[string]any) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a, b)
 }

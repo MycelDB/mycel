@@ -54,7 +54,7 @@ func TestImageAnalysisProcedureLoadsImageBlobPayload(t *testing.T) {
 	if err != nil || len(events) != 1 {
 		t.Fatalf("usage events = %+v err=%v", events, err)
 	}
-	if events[0].Metadata["image_input_count"] != 1 || events[0].Metadata["image_input_total_bytes"] != float64(len(imageBytes)) && events[0].Metadata["image_input_total_bytes"] != int64(len(imageBytes)) {
+	if fmt.Sprint(events[0].Metadata["image_input_count"]) != "1" || fmt.Sprint(events[0].Metadata["image_input_total_bytes"]) != fmt.Sprint(len(imageBytes)) {
 		t.Fatalf("usage metadata should contain payload-neutral image diagnostics: %+v", events[0].Metadata)
 	}
 	rawEvents, _ := json.Marshal(events)

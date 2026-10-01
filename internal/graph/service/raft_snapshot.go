@@ -28,6 +28,7 @@ type graphRaftSnapshot struct {
 
 type graphRaftSpaceState struct {
 	SpaceID  string            `json:"space_id"`
+	DomainID string            `json:"domain_id"`
 	Revision uint64            `json:"revision"`
 	Nodes    []graphmodel.Node `json:"nodes"`
 	Edges    []graphmodel.Edge `json:"edges"`
@@ -52,12 +53,12 @@ func (m *Module) snapshotRaftPartition(ctx context.Context, partitionID, partiti
 		return nil, fmt.Errorf("graph raft snapshot partition_count is required")
 	}
 	snap := graphRaftSnapshot{Version: graphRaftSnapshotVersion, PartitionID: partitionID, PartitionCount: partitionCount}
-	spaceIDs, err := m.partitionSpaceIDs(ctx, partitionID, partitionCount)
+	keys, err := m.partitionDomainStoreKeys(ctx, partitionID, partitionCount)
 	if err != nil {
 		return nil, err
 	}
-	for _, spaceID := range spaceIDs {
-		store, err := m.existingStoreForConsistencyStats(ctx, spaceID)
+	for _, key := range keys {
+		store, err := m.existingStoreForConsistencyStats(ctx, key.SpaceID, key.DomainID)
 		if err != nil {
 			return nil, err
 		}
@@ -69,14 +70,19 @@ func (m *Module) snapshotRaftPartition(ctx context.Context, partitionID, partiti
 		if err != nil {
 			return nil, err
 		}
-		snap.Spaces = append(snap.Spaces, graphRaftSpaceState{SpaceID: spaceID, Revision: store.Revision(), Nodes: nodes, Edges: edges})
+		snap.Spaces = append(snap.Spaces, graphRaftSpaceState{SpaceID: key.SpaceID, DomainID: key.DomainID, Revision: store.Revision(), Nodes: nodes, Edges: edges})
 	}
 	m.mu.Lock()
 	for id := range m.raftAppliedCommands {
 		snap.AppliedCommands = append(snap.AppliedCommands, id)
 	}
 	m.mu.Unlock()
-	sort.Slice(snap.Spaces, func(i, j int) bool { return snap.Spaces[i].SpaceID < snap.Spaces[j].SpaceID })
+	sort.Slice(snap.Spaces, func(i, j int) bool {
+		if snap.Spaces[i].SpaceID == snap.Spaces[j].SpaceID {
+			return snap.Spaces[i].DomainID < snap.Spaces[j].DomainID
+		}
+		return snap.Spaces[i].SpaceID < snap.Spaces[j].SpaceID
+	})
 	for i := range snap.Spaces {
 		sort.Slice(snap.Spaces[i].Nodes, func(a, b int) bool { return snap.Spaces[i].Nodes[a].ID.String() < snap.Spaces[i].Nodes[b].ID.String() })
 		sort.Slice(snap.Spaces[i].Edges, func(a, b int) bool { return snap.Spaces[i].Edges[a].ID.String() < snap.Spaces[i].Edges[b].ID.String() })
@@ -100,6 +106,9 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 		return fmt.Errorf("graph raft snapshot partition mismatch: snapshot=%d/%d local=%d/%d", snap.PartitionID, snap.PartitionCount, partitionID, partitionCount)
 	}
 	for _, space := range snap.Spaces {
+		if _, err := newDomainStoreKey(space.SpaceID, space.DomainID); err != nil {
+			return err
+		}
 		pid, err := graphSpacePartition(space.SpaceID, partitionCount)
 		if err != nil {
 			return err
@@ -108,22 +117,23 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 			return fmt.Errorf("graph space %s belongs to partition %d, not snapshot partition %d", space.SpaceID, pid, partitionID)
 		}
 	}
-	existing, err := m.partitionSpaceIDs(ctx, partitionID, partitionCount)
+	existing, err := m.partitionDomainStoreKeys(ctx, partitionID, partitionCount)
 	if err != nil {
 		return err
 	}
-	restoreIDs := map[string]struct{}{}
+	restoreIDs := map[domainStoreKey]struct{}{}
 	for _, space := range snap.Spaces {
-		restoreIDs[space.SpaceID] = struct{}{}
+		key, _ := newDomainStoreKey(space.SpaceID, space.DomainID)
+		restoreIDs[key] = struct{}{}
 	}
 	m.mu.Lock()
-	for _, spaceID := range existing {
-		if store := m.stores[spaceID]; store != nil {
+	for _, key := range existing {
+		if store := m.stores[key]; store != nil {
 			_ = store.Close()
-			delete(m.stores, spaceID)
+			delete(m.stores, key)
 		}
-		if _, keep := restoreIDs[spaceID]; !keep {
-			_ = os.RemoveAll(filepath.Join(m.dataDir, spaceID))
+		if _, keep := restoreIDs[key]; !keep {
+			_ = os.RemoveAll(m.domainStorePath(key))
 		}
 	}
 	m.mu.Unlock()
@@ -149,11 +159,15 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 }
 
 func (m *Module) restoreGraphSpace(ctx context.Context, state graphRaftSpaceState) error {
-	spacePath := filepath.Join(m.dataDir, state.SpaceID)
-	if err := os.RemoveAll(spacePath); err != nil {
+	key, err := newDomainStoreKey(state.SpaceID, state.DomainID)
+	if err != nil {
 		return err
 	}
-	store, err := graphstorage.OpenWithOptions(ctx, spacePath, graphstorage.Options{Encryption: m.encryption})
+	storePath := m.domainStorePath(key)
+	if err := os.RemoveAll(storePath); err != nil {
+		return err
+	}
+	store, err := graphstorage.OpenWithOptions(ctx, storePath, graphstorage.Options{Encryption: m.encryption})
 	if err != nil {
 		return err
 	}
@@ -202,43 +216,70 @@ func (m *Module) restoreGraphSpace(ctx context.Context, state graphRaftSpaceStat
 		}
 	}
 	m.mu.Lock()
-	m.stores[state.SpaceID] = store
+	m.stores[key] = store
 	m.mu.Unlock()
 	return nil
 }
 
-func (m *Module) partitionSpaceIDs(ctx context.Context, partitionID, partitionCount uint32) ([]string, error) {
-	seen := map[string]struct{}{}
+func (m *Module) partitionDomainStoreKeys(ctx context.Context, partitionID, partitionCount uint32) ([]domainStoreKey, error) {
+	seen := map[domainStoreKey]struct{}{}
 	m.mu.Lock()
-	for spaceID := range m.stores {
-		seen[spaceID] = struct{}{}
+	for key := range m.stores {
+		seen[key] = struct{}{}
 	}
 	m.mu.Unlock()
 	if m.dataDir != "" {
-		entries, err := os.ReadDir(m.dataDir)
+		spaceEntries, err := os.ReadDir(m.dataDir)
 		if err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				seen[entry.Name()] = struct{}{}
+		for _, spaceEntry := range spaceEntries {
+			if !spaceEntry.IsDir() {
+				continue
+			}
+			domainsDir := filepath.Join(m.dataDir, spaceEntry.Name(), "domains")
+			domainEntries, err := os.ReadDir(domainsDir)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return nil, err
+			}
+			for _, domainEntry := range domainEntries {
+				if !domainEntry.IsDir() {
+					continue
+				}
+				key, err := newDomainStoreKey(spaceEntry.Name(), domainEntry.Name())
+				if err != nil {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(m.domainStorePath(key), "manifest.mycel")); err == nil {
+					seen[key] = struct{}{}
+				} else if !os.IsNotExist(err) {
+					return nil, err
+				}
 			}
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for spaceID := range seen {
+	out := make([]domainStoreKey, 0, len(seen))
+	for key := range seen {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		pid, err := graphSpacePartition(spaceID, partitionCount)
+		pid, err := graphSpacePartition(key.SpaceID, partitionCount)
 		if err != nil {
 			continue
 		}
 		if pid == partitionID {
-			out = append(out, spaceID)
+			out = append(out, key)
 		}
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SpaceID == out[j].SpaceID {
+			return out[i].DomainID < out[j].DomainID
+		}
+		return out[i].SpaceID < out[j].SpaceID
+	})
 	return out, nil
 }
 

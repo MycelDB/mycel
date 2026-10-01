@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"archive/zip"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
@@ -122,6 +125,139 @@ func TestImportExportDomainCommandsUseDaemonGRPC(t *testing.T) {
 	}
 	_, _ = runCLI(t, append(base, "session", "close", sourceSessionID)...)
 	_, _ = runCLI(t, append(base, "session", "close", targetSessionID)...)
+}
+
+func TestSpaceExportCommandCreatesSelectedSpaceZip(t *testing.T) {
+	_, addr, adminPassword, cleanup := startDaemonAdminGRPC(t)
+	defer cleanup()
+	createTestUser(t, addr, adminPassword, "export-user", "export-pass")
+	createTestUser(t, addr, adminPassword, "other-user", "other-pass")
+	base := []string{"--daemon-addr", addr, "-u", "export-user", "-p", "export-pass", "--output", "json"}
+	exportSpaceID, exportDomainID := createImportExportTestSpace(t, addr, adminPassword, "export-user", "Space Export Source")
+	otherSpaceID, _ := createImportExportTestSpace(t, addr, adminPassword, "other-user", "Other User Space")
+	out, err := runCLI(t, append(base, "domain", "add", "archive", "--space-id", exportSpaceID, "--name", "Archive")...)
+	if err != nil {
+		t.Fatalf("domain add archive failed: %v\n%s", err, out)
+	}
+	var archiveDomain clientv1.Domain
+	if err := json.Unmarshal([]byte(out), &archiveDomain); err != nil {
+		t.Fatalf("decode archive domain: %v\n%s", err, out)
+	}
+
+	_, txID := openImportExportTx(t, base, exportSpaceID, exportDomainID, "read-write")
+	out, err = runCLI(t, append(base, "graph", "node", "create", "--transaction-id", txID, "--content", "space note", "--props-json", `{"tags":["space-export"]}`)...)
+	if err != nil {
+		t.Fatalf("create space node failed: %v\n%s", err, out)
+	}
+	blobPath := filepath.Join(t.TempDir(), "space.txt")
+	if err := os.WriteFile(blobPath, []byte("space blob"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCLI(t, append(base, "graph", "blob-node", "create", blobPath, "--transaction-id", txID, "--mime-type", "text/plain", "--props-json", `{"tags":["space-blob"]}`)...)
+	if err != nil {
+		t.Fatalf("create space blob node failed: %v\n%s", err, out)
+	}
+	if out, err = runCLI(t, append(base, "transaction", "commit", txID)...); err != nil {
+		t.Fatalf("commit space source failed: %v\n%s", err, out)
+	}
+
+	zipPath := filepath.Join(t.TempDir(), "space-export.zip")
+	out, err = runCLI(t, append(base, "export", "space", "--space-id", exportSpaceID, "--file", zipPath, "--include-blobs")...)
+	if err != nil {
+		t.Fatalf("space export failed: %v\n%s", err, out)
+	}
+	var job clientv1.SpaceExportJob
+	if err := json.Unmarshal([]byte(out), &job); err != nil {
+		t.Fatalf("decode export job: %v\n%s", err, out)
+	}
+	if job.GetStatus() != clientv1.SpaceExportStatus_SPACE_EXPORT_STATUS_SUCCEEDED || job.GetProgressPercent() != 100 || job.GetExportId() == "" {
+		t.Fatalf("unexpected export job: %#v", &job)
+	}
+	statusOut, err := runCLI(t, append(base, "export", "space", "status", job.GetExportId())...)
+	if err != nil {
+		t.Fatalf("space export status failed: %v\n%s", err, statusOut)
+	}
+	var statusJob clientv1.SpaceExportJob
+	if err := json.Unmarshal([]byte(statusOut), &statusJob); err != nil || statusJob.GetStatus() != clientv1.SpaceExportStatus_SPACE_EXPORT_STATUS_SUCCEEDED {
+		t.Fatalf("unexpected space export status: job=%#v err=%v out=%s", &statusJob, err, statusOut)
+	}
+	if listOut, err := runCLI(t, append(base, "export", "space", "list", "--space-id", exportSpaceID)...); err != nil || !strings.Contains(listOut, job.GetExportId()) {
+		t.Fatalf("space export list failed: %v\n%s", err, listOut)
+	}
+	otherBase := []string{"--daemon-addr", addr, "-u", "other-user", "-p", "other-pass", "--output", "json"}
+	if otherOut, err := runCLI(t, append(otherBase, "export", "space", "status", job.GetExportId())...); err == nil {
+		t.Fatalf("other user unexpectedly read export status: %s", otherOut)
+	}
+	entries := readZipEntries(t, zipPath)
+	manifestRaw := entries["manifest.json"]
+	if len(manifestRaw) == 0 {
+		t.Fatalf("manifest.json missing; entries=%v", zipEntryNames(entries))
+	}
+	var manifest spaceExportManifest
+	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v\n%s", err, manifestRaw)
+	}
+	if manifest.FormatVersion != spaceExportFormatVersion || manifest.RequestedBy.Username != "export-user" || manifest.Counts.Spaces != 1 || manifest.Counts.Domains != 2 || manifest.Counts.Nodes != 2 || manifest.Counts.Blobs != 1 {
+		t.Fatalf("unexpected manifest: %+v\n%s", manifest, manifestRaw)
+	}
+	if !strings.Contains(string(manifestRaw), "sha256_hex") || !strings.Contains(string(manifestRaw), "nodes.jsonl") {
+		t.Fatalf("manifest missing file checksums/list: %s", manifestRaw)
+	}
+	if strings.Contains(string(manifestRaw), otherSpaceID) {
+		t.Fatalf("space export leaked other user's space id %s in manifest", otherSpaceID)
+	}
+	if entries["README.md"] == nil || entries["export.json"] == nil || entries["spaces/"+exportSpaceID+"/space.json"] == nil || entries["spaces/"+exportSpaceID+"/domains/"+exportDomainID+"/nodes.jsonl"] == nil || entries["spaces/"+exportSpaceID+"/domains/"+exportDomainID+"/edges.jsonl"] == nil || entries["spaces/"+exportSpaceID+"/domains/"+archiveDomain.GetDomainId()+"/domain.json"] == nil {
+		t.Fatalf("expected core export entries missing; entries=%v", zipEntryNames(entries))
+	}
+	if got := string(entries["spaces/"+exportSpaceID+"/domains/"+exportDomainID+"/nodes.jsonl"]); !strings.Contains(got, "space note") || !strings.Contains(got, "space-blob") {
+		t.Fatalf("nodes.jsonl missing expected exported nodes: %s", got)
+	}
+	var foundBlob bool
+	for name, raw := range entries {
+		if strings.HasPrefix(name, "spaces/"+exportSpaceID+"/blobs/files/") {
+			foundBlob = true
+			if string(raw) != "space blob" {
+				t.Fatalf("unexpected blob file %s bytes=%q", name, raw)
+			}
+		}
+	}
+	if !foundBlob {
+		t.Fatalf("expected blob payload file in export; entries=%v", zipEntryNames(entries))
+	}
+	if delOut, err := runCLI(t, append(base, "export", "space", "delete", job.GetExportId())...); err != nil {
+		t.Fatalf("space export delete failed: %v\n%s", err, delOut)
+	}
+}
+
+func readZipEntries(t *testing.T, zipPath string) map[string][]byte {
+	t.Helper()
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("open zip: %v", err)
+	}
+	defer zr.Close()
+	entries := map[string][]byte{}
+	for _, f := range zr.File {
+		r, err := f.Open()
+		if err != nil {
+			t.Fatalf("open zip entry %s: %v", f.Name, err)
+		}
+		raw, err := io.ReadAll(r)
+		_ = r.Close()
+		if err != nil {
+			t.Fatalf("read zip entry %s: %v", f.Name, err)
+		}
+		entries[f.Name] = raw
+	}
+	return entries
+}
+
+func zipEntryNames(entries map[string][]byte) []string {
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	return names
 }
 
 func createImportExportTestSpace(t *testing.T, addr, adminPassword, ownerUsername, name string) (string, string) {

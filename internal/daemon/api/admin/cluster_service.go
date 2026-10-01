@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/wal"
+	etcdraft "go.etcd.io/raft/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -36,6 +38,11 @@ type LocalGraphForensicExportProvider interface {
 	LocalGraphForensicExport(ctx context.Context, spaceID string, domainID string, opts graphservice.LocalGraphForensicExportOptions) (graphservice.LocalGraphForensicExport, error)
 }
 
+type GraphCheckpointProvider interface {
+	CreateGraphCheckpoint(ctx context.Context, spaceID string, domainID string) (graphservice.GraphCheckpointStatus, error)
+	GraphCheckpointStatus(ctx context.Context, spaceID string, domainID string) (graphservice.GraphCheckpointStatus, error)
+}
+
 type AdminClusterService struct {
 	adminv1.UnimplementedAdminClusterServiceServer
 	cluster                  *clustering.Manager
@@ -47,6 +54,7 @@ type AdminClusterService struct {
 	raftTransportDiagnostics *consensus.TransportDiagnostics
 	graphConsistency         LocalGraphConsistencyProvider
 	graphForensicExport      LocalGraphForensicExportProvider
+	graphCheckpoint          GraphCheckpointProvider
 	graphPeerCollector       GraphConsistencyPeerCollector
 }
 
@@ -76,6 +84,11 @@ func (s *AdminClusterService) WithGraphConsistency(provider LocalGraphConsistenc
 
 func (s *AdminClusterService) WithGraphForensicExport(provider LocalGraphForensicExportProvider) *AdminClusterService {
 	s.graphForensicExport = provider
+	return s
+}
+
+func (s *AdminClusterService) WithGraphCheckpoint(provider GraphCheckpointProvider) *AdminClusterService {
+	s.graphCheckpoint = provider
 	return s
 }
 
@@ -120,6 +133,61 @@ func (s *AdminClusterService) ListRaftGroups(ctx context.Context, req *adminv1.L
 	for _, st := range s.raftGroups.Status() {
 		out.Groups = append(out.Groups, raftGroupStatusToProto(st, replicas))
 	}
+	return out, nil
+}
+
+func (s *AdminClusterService) CreateRaftSnapshot(ctx context.Context, req *adminv1.CreateRaftSnapshotRequest) (*adminv1.CreateRaftSnapshotResponse, error) {
+	if _, err := s.requireClusterManage(ctx); err != nil {
+		return nil, err
+	}
+	if s.raftGroups == nil {
+		return nil, status.Error(codes.FailedPrecondition, "raft groups are not configured")
+	}
+	replicas := raftReplicaNodeIDs(s.clusterConfig.RaftNodeCount)
+	statuses := s.raftGroups.Status()
+	selected := map[string]struct{}{}
+	for _, id := range req.GetGroupIds() {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			selected[id] = struct{}{}
+		}
+	}
+	out := &adminv1.CreateRaftSnapshotResponse{}
+	for _, st := range statuses {
+		if len(selected) > 0 {
+			if _, ok := selected[string(st.GroupID)]; !ok {
+				continue
+			}
+			delete(selected, string(st.GroupID))
+		}
+		result := &adminv1.RaftSnapshotResult{GroupId: string(st.GroupID), Before: raftGroupStatusToProto(st, replicas)}
+		g, ok := s.raftGroups.Group(st.GroupID)
+		if !ok || g == nil {
+			result.Error = "raft group is not available"
+			out.Results = append(out.Results, result)
+			continue
+		}
+		idx, err := g.CreateSnapshot(0, req.GetCompact())
+		if after, ok := raftGroupStatusByID(s.raftGroups, st.GroupID); ok {
+			result.After = raftGroupStatusToProto(after, replicas)
+			if idx == 0 {
+				idx = after.SnapshotIndex
+			}
+		}
+		if err != nil {
+			if !errors.Is(err, etcdraft.ErrSnapOutOfDate) || idx == 0 {
+				result.Error = err.Error()
+			}
+		} else {
+			result.Compacted = req.GetCompact()
+		}
+		result.SnapshotIndex = idx
+		out.Results = append(out.Results, result)
+	}
+	for id := range selected {
+		out.Results = append(out.Results, &adminv1.RaftSnapshotResult{GroupId: id, Error: "raft group not found"})
+	}
+	sort.Slice(out.Results, func(i, j int) bool { return out.Results[i].GroupId < out.Results[j].GroupId })
 	return out, nil
 }
 

@@ -292,6 +292,9 @@ func IsTransientError(err error) bool {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
+	if code == codes.Unauthenticated && strings.Contains(msg, "token is expired") {
+		return true
+	}
 	if strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "deadline exceeded") {
 		return true
 	}

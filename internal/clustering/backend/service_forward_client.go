@@ -72,8 +72,15 @@ func (s *Service) ForwardClientRequest(ctx context.Context, req *clusterpb.Forwa
 		s.recordForwardClientFailure(req, err)
 		return nil, err
 	}
-	if !s.Identity.ClusterAdmitted || strings.TrimSpace(s.Identity.ClusterID) == "" || strings.TrimSpace(req.GetClusterId()) != s.Identity.ClusterID {
-		err := status.Error(codes.PermissionDenied, "local node is not admitted to requested cluster")
+	localClusterID := strings.TrimSpace(s.Identity.ClusterID)
+	requestClusterID := strings.TrimSpace(req.GetClusterId())
+	if !s.Identity.ClusterAdmitted || localClusterID == "" {
+		err := status.Error(codes.Unavailable, "local node is not admitted to requested cluster")
+		s.recordForwardClientClusterRejection(req, err)
+		return nil, err
+	}
+	if requestClusterID != localClusterID {
+		err := status.Error(codes.PermissionDenied, "forwarded client request cluster_id mismatch")
 		s.recordForwardClientClusterRejection(req, err)
 		return nil, err
 	}

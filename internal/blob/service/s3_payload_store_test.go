@@ -92,7 +92,7 @@ func (f *fakeS3PayloadClient) objectKey(bucket *string, key *string) string {
 func TestS3PayloadStorePutOpenDelete(t *testing.T) {
 	ctx := context.Background()
 	fake := newFakeS3PayloadClient()
-	store, err := newS3PayloadStoreWithClient(Config{Backend: "s3", S3Bucket: "my-bucket", S3Prefix: "tenant-a", S3Region: "us-east-1", S3KMSKeyID: "alias/mycel"}, t.TempDir(), fake)
+	store, err := newS3PayloadStoreWithClient(Config{Backend: "object_store", ObjectStoreProvider: "s3-compatible", S3Bucket: "my-bucket", S3Prefix: "tenant-a", S3Region: "us-east-1", S3KMSKeyID: "alias/mycel"}, t.TempDir(), fake)
 	if err != nil {
 		t.Fatalf("newS3PayloadStoreWithClient() error = %v", err)
 	}
@@ -100,7 +100,7 @@ func TestS3PayloadStorePutOpenDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
-	if id == "" || size != int64(len("hello s3")) || desc.Backend != "s3" || desc.S3Bucket != "my-bucket" || desc.DomainID != "domain-1" || !strings.HasPrefix(desc.S3Key, "tenant-a/spaces/space-1/domains/domain-1/objects/") || desc.S3ETag != "fake-etag" {
+	if id == "" || size != int64(len("hello s3")) || desc.Backend != "object_store" || desc.S3Bucket != "my-bucket" || desc.DomainID != "domain-1" || !strings.HasPrefix(desc.S3Key, "tenant-a/spaces/space-1/domains/domain-1/objects/") || desc.S3ETag != "fake-etag" {
 		t.Fatalf("unexpected descriptor: id=%s size=%d desc=%+v", id, size, desc)
 	}
 	fake.mu.Lock()
@@ -128,6 +128,34 @@ func TestS3PayloadStorePutOpenDelete(t *testing.T) {
 	ok, err = store.Exists(ctx, desc)
 	if err != nil || ok {
 		t.Fatalf("Exists() after delete = %v, %v; want false, nil", ok, err)
+	}
+}
+
+func TestS3PayloadStoreReadsLegacyS3BackendDescriptor(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeS3PayloadClient()
+	store, err := newS3PayloadStoreWithClient(Config{Backend: "object_store", ObjectStoreProvider: "s3-compatible", S3Bucket: "my-bucket", S3Prefix: "tenant-a"}, t.TempDir(), fake)
+	if err != nil {
+		t.Fatalf("newS3PayloadStoreWithClient() error = %v", err)
+	}
+	_, _, desc, err := store.Put(ctx, "space-1", "domain-1", "text/plain", strings.NewReader("legacy descriptor"))
+	if err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	legacy := desc
+	legacy.Backend = "s3"
+	ok, err := store.Exists(ctx, legacy)
+	if err != nil || !ok {
+		t.Fatalf("Exists(legacy s3 descriptor) = %v, %v; want true, nil", ok, err)
+	}
+	r, err := store.Open(ctx, legacy)
+	if err != nil {
+		t.Fatalf("Open(legacy s3 descriptor) error = %v", err)
+	}
+	raw, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil || string(raw) != "legacy descriptor" {
+		t.Fatalf("Open(legacy s3 descriptor) bytes=%q err=%v", raw, err)
 	}
 }
 
@@ -194,6 +222,13 @@ func TestModuleObjectStoreSameBlobIDDifferentDomainsUsesSeparateKeys(t *testing.
 	}
 }
 
+func TestValidateBlobConfigRejectsS3BackendConfiguration(t *testing.T) {
+	err := validateBlobConfig(Config{Backend: "s3", S3Bucket: "my-bucket"})
+	if err == nil || !strings.Contains(err.Error(), "no longer supported") {
+		t.Fatalf("validateBlobConfig() error = %v, want s3 rejection", err)
+	}
+}
+
 func TestEffectiveBlobConfigDefaultsObjectStoreProvider(t *testing.T) {
 	cfg := effectiveBlobConfig(Config{Backend: "object_store", S3Bucket: "my-bucket"})
 	if cfg.ObjectStoreProvider != "s3-compatible" {
@@ -204,11 +239,11 @@ func TestEffectiveBlobConfigDefaultsObjectStoreProvider(t *testing.T) {
 func TestModuleS3DeleteIsBestEffortAfterMetadataDelete(t *testing.T) {
 	ctx := context.Background()
 	fake := newFakeS3PayloadClient()
-	store, err := newS3PayloadStoreWithClient(Config{Backend: "s3", S3Bucket: "my-bucket"}, t.TempDir(), fake)
+	store, err := newS3PayloadStoreWithClient(Config{Backend: "object_store", ObjectStoreProvider: "s3-compatible", S3Bucket: "my-bucket"}, t.TempDir(), fake)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := NewModule(fakeRefCounter{}, Config{Backend: "s3", S3Bucket: "my-bucket"})
+	m := NewModule(fakeRefCounter{}, Config{Backend: "object_store", ObjectStoreProvider: "s3-compatible", S3Bucket: "my-bucket"})
 	m.s3Store = store
 	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
