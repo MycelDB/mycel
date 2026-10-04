@@ -10,20 +10,28 @@ Run from the `mycel/` directory.
 
 ## What it does
 
-This destructive Docker Compose test validates the local Mycel-owned Compose raft cluster fixture under `tests/compose/cluster/`. It:
+This destructive Docker Compose test is now delegated to the Mycel Lab
+`compose-cluster-validation` suite. The compatibility target still builds the
+current checkout as a local Compose image, then runs the suite from the sibling
+`mycel-lab` checkout (`MYCEL_LAB_ROOT`, default `../mycel-lab`).
+
+The suite validates the local Mycel-owned Compose raft cluster fixture under
+`tests/compose/cluster/`. It:
 
 1. resets Compose resources and starts the cluster;
 2. validates fresh bootstrap and shared cluster identity;
 3. validates cluster health/readiness;
 4. creates graph data through one node and verifies graph reads/queries through
    the cluster;
-5. restarts `myceld-a`, `myceld-b`, and `myceld-c`;
-6. revalidates cluster identity and data-plane behavior after restart;
-7. verifies persisted file-source identity diagnostics.
+5. restarts `myceld-a`, `myceld-b`, and `myceld-c` through the Mycel Lab
+   `compose` driver;
+6. revalidates cluster identity and data-plane behavior after restart.
 
 ## Parameters
 
-The make target builds the current checkout as `local/mycel:dev` by default and uses `tests/compose/cluster/compose.yml`.
+The make target builds the current checkout as `local/mycel:dev` by default and
+uses the Mycel Lab scenario that references `tests/compose/cluster/compose.yml`
+plus the Mycel Lab Compose port overlay.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -31,6 +39,7 @@ The make target builds the current checkout as `local/mycel:dev` by default and 
 | `MYCEL_COMPOSE_FILE` | `tests/compose/cluster/compose.yml` | Compose file used by validators and lifecycle commands. |
 | `MYCEL_COMPOSE_SERVICES` | `myceld-a,myceld-b,myceld-c` | Comma-separated service list used by validators. |
 | `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN` | `mycel-compose-cluster-token` | Backend auth token used by the Compose cluster. |
+| `MYCEL_LAB_ROOT` | `../mycel-lab` | Sibling Mycel Lab checkout used by the compatibility target. |
 
 The target also creates a temporary `MYCEL_COMPOSE_DATA_PLANE_STATE` file to
 preserve fixture IDs between pre-restart and post-restart validation.
@@ -51,7 +60,8 @@ Important failure classes:
 
 ## Cleanup
 
-The target resets Compose resources at start. If interrupted, clean up with:
+The Mycel Lab suite resets Compose resources at start and writes artifacts under
+its configured artifact root. If interrupted, clean up with:
 
 ```sh
 docker compose -f tests/compose/cluster/compose.yml down -v --remove-orphans
