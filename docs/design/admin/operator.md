@@ -27,4 +27,4 @@ Canonical fields use `principal_id`; old `operator_id` terminology should not be
 This document used to describe a split admin/operator model. That model was removed during unified principal identity cleanup. See:
 
 - `../identity/unified-principal-access-control.md`
-- `../../implementation/unreleased/unified-principal-identity-implementation-plan.md`
+- `../../implementation/v0.8/unified-principal-identity-implementation-plan.md`

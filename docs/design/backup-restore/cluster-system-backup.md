@@ -7,9 +7,9 @@ cluster backup command creates one complete, auditable backup set for all
 StatefulSet ordinals/PVCs and captures raw raft metadata/storage under a
 TTL-bound raft freeze/checkpoint window.
 
-Implementation plan: [Cluster system backup implementation plan](../../implementation/unreleased/cluster-system-backup-implementation-plan.md).
+Implementation plan: [Cluster system backup implementation plan](../../implementation/v0.7/cluster-system-backup-implementation-plan.md).
 
-Raft freeze/checkpoint follow-up plan: [Cluster system backup raft freeze implementation plan](../../implementation/unreleased/cluster-system-backup-raft-freeze-implementation-plan.md).
+Raft freeze/checkpoint follow-up plan: [Cluster system backup raft freeze implementation plan](../../implementation/v0.7/cluster-system-backup-raft-freeze-implementation-plan.md).
 
 ## Goals
 

@@ -69,7 +69,7 @@ Tasks:
 Deliverables:
 
 - `docs/design/security/encryption-at-rest.md`.
-- `docs/implementation/unreleased/encryption-at-rest-implementation-plan.md`.
+- `docs/implementation/v0.14/encryption-at-rest-implementation-plan.md`.
 - [Encryption at rest storage inventory](encryption-at-rest-storage-inventory.md).
 
 Validation:

@@ -483,4 +483,4 @@ or test logs.
 
 ## Related implementation plan
 
-See [Encryption at rest implementation plan](../../implementation/unreleased/encryption-at-rest-implementation-plan.md).
+See [Encryption at rest implementation plan](../../implementation/v0.14/encryption-at-rest-implementation-plan.md).
