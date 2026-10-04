@@ -2,8 +2,9 @@
 
 This file covers the raft disruption system integration test and its supported
 variations. The make targets now delegate migrated coverage to Mycel Lab suites/scenarios.
-Direct legacy harness invocations remain documented for transition and for
-profiles that are still wrapped by Mycel Lab rather than implemented natively.
+Direct legacy harness invocations remain documented for transition and manual
+fallback. The restart-soak make targets now use native Mycel Lab scenarios rather
+than wrapping the legacy harness profiles.
 Both paths create disposable k3d/K3s resources, apply write pressure, restart
 pods, and verify raft/data convergence.
 
@@ -16,8 +17,8 @@ Common make targets:
 | Smoke | `make test-k3s-raft-disruption-smoke` | Delegates to `mycel-lab run scenario k3d-raft-disruption-smoke`. |
 | Small/all-pod restart | `make test-k3s-raft-disruption` | Delegates to `mycel-lab run scenario k3d-raft-disruption-all-nodes`. |
 | Edge workload | `make test-k3s-raft-disruption-edges` | Delegates to `mycel-lab run scenario k3d-raft-disruption-edges`. |
-| Restart/write soak | `make test-k3s-raft-restart-soak` | Delegates to `mycel-lab run suite k3d-raft-restart-soak`, which wraps the legacy one-hour harness profile. |
-| Hard restart/write soak | `make test-k3s-raft-restart-hard-soak` | Delegates to `mycel-lab run suite k3d-raft-restart-hard-soak`, which wraps the legacy hard soak profile. |
+| Restart/write soak | `make test-k3s-raft-restart-soak` | Delegates to native `mycel-lab run suite k3d-raft-restart-soak`. |
+| Hard restart/write soak | `make test-k3s-raft-restart-hard-soak` | Delegates to native `mycel-lab run suite k3d-raft-restart-hard-soak`. |
 
 The reusable harness can also be invoked directly:
 
