@@ -13,13 +13,16 @@ Run from the `mycel/` directory.
 This is the full pre-release cluster validation gate. It expands to:
 
 1. `make test`
-2. `make test-phase-d`
-3. `make test-phase-e`
-4. `make test-phase-f`
-5. `make test-phase-g`
+2. `make test-integration-raft-subsystems`
+3. `make test-integration-routing`
+4. `make test-integration-client-admin`
+5. `make test-integration-graph-consistency`
 6. `make test-compose-cluster`
 7. `make test-k3s-cluster`
 8. `make test-k3s-system-backup-restore`
+
+The focused integration targets are normal package/in-process test bundles. The
+historical `test-phase-*` names remain as compatibility aliases.
 
 The destructive K3s system backup/restore test is included because the
 coordinated backup path records raft freeze/checkpoint evidence and validates
@@ -41,7 +44,7 @@ noise and inspect its artifacts/logs.
 
 Common interpretation:
 
-- failure before destructive targets: normal Go/unit/phase regression;
+- failure before destructive targets: normal Go/unit/in-process integration regression;
 - Compose failure: local Compose raft/data-plane/backup issue;
 - K3s failure: Kubernetes raft deployment/restart/PVC issue;
 - system backup/restore failure: release-blocking backup safety or restore
