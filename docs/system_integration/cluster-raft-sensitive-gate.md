@@ -34,7 +34,7 @@ The most common override is:
 
 | Variable | Meaning |
 | --- | --- |
-| `MYCEL_RAFT_DISRUPT_IMAGE` | Image tag built and loaded into the disposable k3d cluster. |
+| `MYCEL_RAFT_DISRUPT_IMAGE` | Legacy raft-disrupt harness image tag; native Mycel Lab disruption/restart-soak targets build `myceldb/mycel:latest`. |
 
 See [Raft disruption test harness](raft-disruption-test-harness.md) for direct
 harness parameters.

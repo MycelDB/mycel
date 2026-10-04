@@ -155,12 +155,12 @@ test-k3s-raft-disruption-edges:
 
 test-k3s-raft-restart-soak:
 	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
-	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
 	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite k3d-raft-restart-soak --confirm-destructive
 
 test-k3s-raft-restart-hard-soak:
 	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
-	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
 	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite k3d-raft-restart-hard-soak --confirm-destructive
 
 test-k3s-system-backup-restore:
