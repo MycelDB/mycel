@@ -10,8 +10,14 @@ Run from the `mycel/` directory.
 
 ## What it does
 
-This destructive k3d/K3s release-gate test validates coordinated full-cluster
-backup and offline restore using normal graph workloads. It:
+This destructive k3d/K3s release-gate test now delegates to the Mycel Lab
+`k3d-system-backup-restore` suite. The Mycel Lab suite is currently a
+transitional wrapper around the legacy `cmd/mycel-system-backuptest` harness so
+run tracking and artifacts are owned by Mycel Lab while native backup/restore
+operations are still being hardened.
+
+It validates coordinated full-cluster backup and offline restore using normal
+graph workloads. It:
 
 1. creates a fresh disposable k3d/K3s cluster;
 2. writes workload data through normal daemon/client graph APIs;
@@ -28,7 +34,10 @@ an authoritative node or repair split-brain state.
 
 ## Parameters
 
-The target builds the local image and executes `cmd/mycel-system-backuptest`.
+The target builds the local image and executes `mycel-lab run suite
+k3d-system-backup-restore --confirm-destructive` from `MYCEL_LAB_ROOT` (default
+`../mycel-lab`). The suite invokes `cmd/mycel-system-backuptest` as a constrained
+host-command event.
 Required local tools:
 
 ```sh

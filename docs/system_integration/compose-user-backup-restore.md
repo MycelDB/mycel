@@ -10,8 +10,13 @@ Run from the `mycel/` directory.
 
 ## What it does
 
-This destructive Docker Compose system integration test validates user-scoped
-backup and restore across a fresh cluster lifecycle. It:
+This destructive Docker Compose system integration test now delegates to the
+Mycel Lab `compose-user-backup-restore` suite. The suite is currently a
+transitional wrapper around `scripts/testComposeUserBackupRestore.sh` so run
+tracking and artifacts are owned by Mycel Lab while native backup/restore
+operations are still being hardened.
+
+It validates user-scoped backup and restore across a fresh cluster lifecycle. It:
 
 1. starts or resets a local Compose cluster;
 2. creates fixtures for multiple users/principals;
@@ -27,7 +32,13 @@ passwords or active sessions/tokens.
 
 ## Parameters
 
-The target executes `scripts/testComposeUserBackupRestore.sh`. By default it uses the Mycel-owned Compose fixture at `tests/compose/cluster/compose.yml`. Common local knobs include `MYCEL_COMPOSE_FILE`, `MYCEL_COMPOSE_SERVICES`, `MYCEL_IMAGE`, and `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN`.
+The target executes `mycel-lab run suite compose-user-backup-restore
+--confirm-destructive` from `MYCEL_LAB_ROOT` (default `../mycel-lab`). The suite
+runs `scripts/testComposeUserBackupRestore.sh` as a constrained host-command
+event. By default it uses the Mycel-owned Compose fixture at
+`tests/compose/cluster/compose.yml`. Common local knobs include
+`MYCEL_COMPOSE_FILE`, `MYCEL_COMPOSE_SERVICES`, `MYCEL_IMAGE`, and
+`MYCELD_CLUSTER_BACKEND_AUTH_TOKEN`.
 
 ## How to interpret results
 
