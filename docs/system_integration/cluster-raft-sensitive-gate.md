@@ -22,11 +22,14 @@ This optional destructive gate is intended for raft-sensitive changes. It runs:
 
 It keeps disruption validation explicit while bundling the fast focused
 integration bundles with disposable K3s pod-restart pressure tests. The
+destructive disruption targets now delegate to Mycel Lab scenarios/suites. The
 historical `test-phase-*` names remain as compatibility aliases.
 
 ## Parameters
 
-This target inherits configuration from the underlying raft disruption targets.
+This target inherits configuration from the underlying raft disruption targets
+and expects a sibling Mycel Lab checkout at `MYCEL_LAB_ROOT` (default
+`../mycel-lab`).
 The most common override is:
 
 | Variable | Meaning |

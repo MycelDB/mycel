@@ -24,13 +24,16 @@ This is the full pre-release cluster validation gate. It expands to:
 The focused integration targets are normal package/in-process test bundles. The
 historical `test-phase-*` names remain as compatibility aliases.
 
-The destructive K3s system backup/restore test is included because the
-coordinated backup path records raft freeze/checkpoint evidence and validates
-restore into fresh PVCs.
+The destructive Compose, k3d cluster, and k3d system backup/restore targets now
+delegate to Mycel Lab suites. The K3s system backup/restore suite is included
+because the coordinated backup path records raft freeze/checkpoint evidence and
+validates restore into fresh PVCs.
 
 ## Parameters
 
-This gate inherits parameters from the underlying make targets and scripts. See:
+This gate inherits parameters from the underlying make targets and scripts. It
+expects a sibling Mycel Lab checkout at `MYCEL_LAB_ROOT` (default
+`../mycel-lab`) for delegated destructive suites. See:
 
 - [Compose cluster validation](compose-cluster-validation.md)
 - [K3s cluster validation](k3s-cluster-validation.md)

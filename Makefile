@@ -139,34 +139,42 @@ test-k3s-cluster:
 	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite k3d-cluster-validation --confirm-destructive
 
 test-k3s-raft-disruption-smoke:
-	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
-	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile smoke --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run scenario k3d-raft-disruption-smoke --confirm-destructive
 
 test-k3s-raft-disruption:
-	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
-	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile small --restart-node all --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run scenario k3d-raft-disruption-all-nodes --confirm-destructive
 
 test-k3s-raft-disruption-edges:
-	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
-	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile small --workload edges --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run scenario k3d-raft-disruption-edges --confirm-destructive
 
 test-k3s-raft-restart-soak:
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
 	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
-	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile restart-soak-1h --workload edges --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite k3d-raft-restart-soak --confirm-destructive
 
 test-k3s-raft-restart-hard-soak:
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
 	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
-	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile restart-soak-hard-1h --workload multi-space --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite k3d-raft-restart-hard-soak --confirm-destructive
 
 test-k3s-system-backup-restore:
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
 	docker build -f Dockerfile -t $(MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE) ..
-	go run ./cmd/mycel-system-backuptest --driver k3s --provisioner k3d --profile backup-smoke --workload edges --image $(MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE) --confirm-destructive
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite k3d-system-backup-restore --confirm-destructive
 
 test-compose-user-backup-restore:
-	./scripts/testComposeUserBackupRestore.sh
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run ./scripts/testComposeUserBackupRestore.sh manually" >&2; exit 1; fi
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite compose-user-backup-restore --confirm-destructive
 
 test-cluster-soak:
-	./scripts/testClusterSoak.sh
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run ./scripts/testClusterSoak.sh manually" >&2; exit 1; fi
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite compose-cluster-soak --confirm-destructive
 
 coverage: generate-proto generate-gql-parser check-daemon-only check-public-surface
 	mkdir -p $(COVERAGE_DIR)
