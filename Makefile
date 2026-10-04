@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-cluster-raft-sensitive-gate test-compose-cluster test-k3s-cluster test-k3s-raft-disruption-smoke test-k3s-raft-disruption test-k3s-raft-disruption-edges test-k3s-raft-restart-soak test-k3s-raft-restart-hard-soak test-k3s-system-backup-restore test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
+.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch docs-check test-integration-cluster-identity test-integration-daemon-cluster test-integration-raft-subsystems test-integration-routing test-integration-client-admin test-integration-graph-consistency test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-cluster-raft-sensitive-gate test-compose-cluster test-k3s-cluster test-k3s-raft-disruption-smoke test-k3s-raft-disruption test-k3s-raft-disruption-edges test-k3s-raft-restart-soak test-k3s-raft-restart-hard-soak test-k3s-system-backup-restore test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -84,24 +84,24 @@ test-watch:
 docs-check:
 	python3 scripts/checkDocs.py
 
-test-cluster-identity: generate-proto generate-gql-parser
+test-integration-cluster-identity: generate-proto generate-gql-parser
 	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/cli/cmd -count=1
 
-test-phase-a: generate-proto generate-gql-parser
+test-integration-daemon-cluster: generate-proto generate-gql-parser
 	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/daemon/api/client ./internal/daemon/config ./internal/daemon/runtime ./internal/daemon/server ./internal/graph/service ./internal/cli/cmd -count=1
 
-test-phase-d: generate-proto generate-gql-parser
+test-integration-raft-subsystems: generate-proto generate-gql-parser
 	# Serialize raft-heavy packages by default to avoid host scheduler contention
 	# causing false no-leader/proposal-timeout flakes under release-gate load.
 	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/clustering/consensus ./internal/daemon/app ./internal/space/service ./internal/schema/service ./internal/graph/service ./internal/blob/service ./internal/semantic/service ./internal/backup/service ./internal/automation/service ./internal/graph/notification -count=1
 
-test-phase-e: generate-proto generate-gql-parser
+test-integration-routing: generate-proto generate-gql-parser
 	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/clustering/routing ./internal/session/service ./internal/clustering/backend ./internal/daemon/api/client ./internal/graph/service -count=1
 
-test-phase-f: generate-proto generate-gql-parser
+test-integration-client-admin: generate-proto generate-gql-parser
 	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/clustering/consensus ./internal/clustering/backend ./internal/graph/service ./internal/daemon/api/client ./internal/daemon/api/admin ./internal/cli/cmd -count=1
 
-test-phase-g: generate-proto generate-gql-parser
+test-integration-graph-consistency: generate-proto generate-gql-parser
 	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/graph/service ./internal/daemon/api/admin ./internal/clustering/backend ./internal/daemon/server ./internal/cli/cmd -count=1
 	bash -n scripts/validateComposeClusterDataPlane.sh scripts/validateK3sClusterDataPlane.sh scripts/testK3sCluster.sh scripts/testClusterSoak.sh scripts/testComposeUserBackupRestore.sh scripts/planGraphRepairWorkflow.sh
 	@set -e; tmp="$$(mktemp)"; \
@@ -113,9 +113,17 @@ test-phase-g: generate-proto generate-gql-parser
 	grep -q -- --i-have-snapshots /tmp/mycel-g7-no-snap.out; \
 	rm -f "$$tmp" /tmp/mycel-g7-no-snap.out
 
-test-cluster-release-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-compose-cluster test-k3s-cluster test-k3s-system-backup-restore
+# Backward-compatible aliases for historical phase-era target names.
+test-cluster-identity: test-integration-cluster-identity
+test-phase-a: test-integration-daemon-cluster
+test-phase-d: test-integration-raft-subsystems
+test-phase-e: test-integration-routing
+test-phase-f: test-integration-client-admin
+test-phase-g: test-integration-graph-consistency
 
-test-cluster-raft-sensitive-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-k3s-raft-disruption-smoke test-k3s-raft-disruption-edges
+test-cluster-release-gate: test test-integration-raft-subsystems test-integration-routing test-integration-client-admin test-integration-graph-consistency test-compose-cluster test-k3s-cluster test-k3s-system-backup-restore
+
+test-cluster-raft-sensitive-gate: test test-integration-raft-subsystems test-integration-routing test-integration-client-admin test-integration-graph-consistency test-k3s-raft-disruption-smoke test-k3s-raft-disruption-edges
 
 test-compose-cluster:
 	docker build -f Dockerfile -t $(MYCEL_COMPOSE_IMAGE) ..
