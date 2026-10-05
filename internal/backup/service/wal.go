@@ -20,6 +20,7 @@ const (
 	recordTypeClusterBackupComplete   wal.RecordType = "daemon.backup.cluster.complete.v1"
 	recordTypeClusterBackupFail       wal.RecordType = "daemon.backup.cluster.fail.v1"
 	recordTypeClusterBackupAbort      wal.RecordType = "daemon.backup.cluster.abort.v1"
+	recordTypeClusterBackupBlockers   wal.RecordType = "daemon.backup.cluster.blockers.v1"
 )
 
 type backupPolicyRecord struct {
@@ -66,8 +67,9 @@ func (m *Module) clusterBackupWALAppliers() map[wal.RecordType]wal.Applier {
 			return m.applyClusterBackupFailure(ctx, rec, clusterBackupPhaseFailed)
 		}),
 		recordTypeClusterBackupAbort: wal.ApplierFunc(func(ctx context.Context, rec wal.Record) error {
-			return m.applyClusterBackupFailure(ctx, rec, clusterBackupPhaseAborted)
+			return m.applyClusterBackupFailure(ctx, rec, clusterBackupPhaseCanceled)
 		}),
+		recordTypeClusterBackupBlockers: wal.ApplierFunc(m.applyClusterBackupBlockers),
 	}
 }
 

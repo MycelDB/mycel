@@ -25,12 +25,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type clusterBackupManager interface {
-	TriggerClusterBackup(context.Context, daemonbackup.TriggerClusterBackupInput) (daemonbackup.ClusterBackupRunStatus, error)
-	ClusterBackupStatus(string) (daemonbackup.ClusterBackupRunStatus, error)
-	ListClusterBackups() []daemonbackup.ClusterBackupRunStatus
-}
-
 type AdminBackupService struct {
 	adminv1.UnimplementedAdminBackupServiceServer
 	manager       daemonbackup.Manager
@@ -157,7 +151,7 @@ func (s *AdminBackupService) DeleteBackup(ctx context.Context, req *adminv1.Dele
 	return &adminv1.DeleteBackupResponse{BackupId: req.GetBackupId()}, nil
 }
 
-func (s *AdminBackupService) TriggerClusterBackup(ctx context.Context, req *adminv1.TriggerClusterBackupRequest) (*adminv1.TriggerClusterBackupResponse, error) {
+func (s *AdminBackupService) StartClusterBackup(ctx context.Context, req *adminv1.StartClusterBackupRequest) (*adminv1.StartClusterBackupResponse, error) {
 	principal, err := s.requireBackupManage(ctx)
 	if err != nil {
 		return nil, err
@@ -166,22 +160,26 @@ func (s *AdminBackupService) TriggerClusterBackup(ctx context.Context, req *admi
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
-	clusterManager, ok := s.manager.(clusterBackupManager)
+	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
 	if !ok {
 		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
 	}
-	st, err := clusterManager.TriggerClusterBackup(ctx, daemonbackup.TriggerClusterBackupInput{Reason: firstNonEmptyAdmin(req.GetReason(), "cluster system backup by "+principal.PrincipalID), OutputDir: req.GetOutputDir(), ArchiveFormat: archiveFormatFromProto(req.GetArchiveFormat()), ClusterID: clusterID, Nodes: nodes})
-	if err != nil {
-		return nil, mapBackupError(err, "trigger cluster backup")
+	input := daemonbackup.StartClusterBackupInput{Reason: firstNonEmptyAdmin(req.GetReason(), "cluster system backup by "+principal.PrincipalID), OutputDir: req.GetOutputDir(), ArchiveFormat: archiveFormatFromProto(req.GetArchiveFormat()), ClusterID: clusterID, Nodes: nodes, IdempotencyKey: req.GetIdempotencyKey()}
+	if req.GetConvergenceTimeoutSeconds() > 0 {
+		input.ConvergenceTimeout = time.Duration(req.GetConvergenceTimeoutSeconds()) * time.Second
 	}
-	return &adminv1.TriggerClusterBackupResponse{Status: mapClusterBackupStatus(st), BackupSet: mapClusterBackupSetSummary(st)}, nil
+	st, err := clusterManager.StartClusterBackup(ctx, input)
+	if err != nil {
+		return nil, mapBackupError(err, "start cluster backup")
+	}
+	return &adminv1.StartClusterBackupResponse{Status: mapClusterBackupStatus(st), BackupSet: mapClusterBackupSetSummary(st)}, nil
 }
 
 func (s *AdminBackupService) GetClusterBackupStatus(ctx context.Context, req *adminv1.GetClusterBackupStatusRequest) (*adminv1.GetClusterBackupStatusResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
-	clusterManager, ok := s.manager.(clusterBackupManager)
+	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
 	if !ok {
 		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
 	}
@@ -192,11 +190,26 @@ func (s *AdminBackupService) GetClusterBackupStatus(ctx context.Context, req *ad
 	return &adminv1.GetClusterBackupStatusResponse{Status: mapClusterBackupStatus(st)}, nil
 }
 
+func (s *AdminBackupService) CancelClusterBackup(ctx context.Context, req *adminv1.CancelClusterBackupRequest) (*adminv1.CancelClusterBackupResponse, error) {
+	if _, err := s.requireBackupManage(ctx); err != nil {
+		return nil, err
+	}
+	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
+	}
+	st, err := clusterManager.CancelClusterBackup(ctx, req.GetBackupSetId(), req.GetReason())
+	if err != nil {
+		return nil, mapBackupError(err, "cancel cluster backup")
+	}
+	return &adminv1.CancelClusterBackupResponse{Status: mapClusterBackupStatus(st)}, nil
+}
+
 func (s *AdminBackupService) ListClusterBackups(ctx context.Context, req *adminv1.ListClusterBackupsRequest) (*adminv1.ListClusterBackupsResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
-	clusterManager, ok := s.manager.(clusterBackupManager)
+	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
 	if !ok {
 		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
 	}
@@ -358,7 +371,41 @@ func ordinalFromPodName(name string) int {
 }
 
 func mapClusterBackupStatus(st daemonbackup.ClusterBackupRunStatus) *adminv1.ClusterBackupStatus {
-	return &adminv1.ClusterBackupStatus{BackupSetId: st.BackupSetID, State: st.Phase, ClusterId: st.ClusterID, Reason: st.Reason, CreatedAt: formatBackupTime(st.CreatedAt), UpdatedAt: formatBackupTime(st.UpdatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodes: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(st.Nodes), FailedPhase: st.FailurePhase, Error: st.Error, RaftBarriers: st.Barriers}
+	out := &adminv1.ClusterBackupStatus{BackupSetId: st.BackupSetID, State: st.Phase, StateCode: mapClusterBackupStateCode(st.Phase), ClusterId: st.ClusterID, Reason: st.Reason, CreatedAt: formatBackupTime(st.CreatedAt), UpdatedAt: formatBackupTime(st.UpdatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodes: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(st.Nodes), FailedPhase: st.FailurePhase, Error: st.Error, RaftBarriers: st.Barriers, CancelRequested: st.Cancel, CurrentPhase: st.Phase}
+	if st.Phase == "waiting_for_cluster_convergence" {
+		out.RetryAfterSeconds = 2
+	}
+	for _, blocker := range st.Blockers {
+		out.Blockers = append(out.Blockers, &adminv1.ClusterBackupBlocker{NodeName: blocker.NodeName, NodeId: blocker.NodeID, RaftNodeId: blocker.RaftNodeID, RaftGroup: blocker.RaftGroup, Reason: blocker.Reason, AppliedIndex: blocker.AppliedIndex, CommitIndex: blocker.CommitIndex, Detail: blocker.Detail})
+	}
+	return out
+}
+
+func mapClusterBackupStateCode(phase string) adminv1.ClusterBackupState {
+	switch phase {
+	case "pending", "requested":
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_PENDING
+	case "waiting_for_cluster_convergence", "prechecking":
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_WAITING_FOR_CLUSTER_CONVERGENCE
+	case "ready":
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_READY
+	case "quiescing":
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_QUIESCING
+	case "capturing", "archiving", "barrier_wait", "committing_manifest":
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CAPTURING
+	case "validating":
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_VALIDATING
+	case "succeeded":
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_SUCCEEDED
+	case "failed", "aborted":
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_FAILED
+	case "canceling":
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CANCELING
+	case "canceled":
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CANCELED
+	default:
+		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_UNSPECIFIED
+	}
 }
 
 func mapClusterBackupSetSummary(st daemonbackup.ClusterBackupRunStatus) *adminv1.ClusterBackupSetSummary {

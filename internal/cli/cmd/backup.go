@@ -19,7 +19,7 @@ func NewAdminBackupCommand(a *app.App) *cobra.Command {
 	policy := &cobra.Command{Use: "policy", Short: "Manage backup policy"}
 	policy.AddCommand(NewAdminBackupPolicyGetCommand(a), NewAdminBackupPolicySetCommand(a))
 	cluster := &cobra.Command{Use: "cluster", Short: "Manage coordinated cluster backup sets"}
-	cluster.AddCommand(NewAdminBackupClusterTriggerCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterValidateCommand(a))
+	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterValidateCommand(a))
 	cmd.AddCommand(policy, cluster, NewAdminBackupTriggerCommand(a), NewAdminBackupStatusCommand(a), NewAdminBackupListCommand(a), NewAdminBackupDeleteCommand(a))
 	return cmd
 }
@@ -257,9 +257,12 @@ func NewAdminBackupDeleteCommand(a *app.App) *cobra.Command {
 	return cmd
 }
 
-func NewAdminBackupClusterTriggerCommand(a *app.App) *cobra.Command {
-	var reason, outputDir, archiveFormat string
-	cmd := &cobra.Command{Use: "trigger", Short: "Trigger a coordinated cluster backup", RunE: func(cmd *cobra.Command, args []string) error {
+func NewAdminBackupClusterStartCommand(a *app.App) *cobra.Command {
+	var reason, outputDir, archiveFormat, idempotencyKey string
+	var convergenceTimeout time.Duration
+	var wait bool
+	var waitTimeout time.Duration
+	cmd := &cobra.Command{Use: "start", Short: "Start a coordinated cluster backup operation", RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(outputDir) == "" {
 			return fmt.Errorf("--output-dir is required")
 		}
@@ -272,20 +275,100 @@ func NewAdminBackupClusterTriggerCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer closeConn()
-		res, err := client.TriggerClusterBackup(authCtx, &adminv1.TriggerClusterBackupRequest{Reason: reason, OutputDir: outputDir, ArchiveFormat: format})
+		req := &adminv1.StartClusterBackupRequest{Reason: reason, OutputDir: outputDir, ArchiveFormat: format, IdempotencyKey: idempotencyKey}
+		if convergenceTimeout > 0 {
+			req.ConvergenceTimeoutSeconds = int64(convergenceTimeout.Round(time.Second) / time.Second)
+		}
+		res, err := client.StartClusterBackup(authCtx, req)
 		if err != nil {
-			return backupCLIError("trigger cluster backup", err)
+			return backupCLIError("start cluster backup", err)
+		}
+		if wait {
+			statusRes, err := waitForClusterBackup(cmd.Context(), client, authCtx, res.GetStatus().GetBackupSetId(), waitTimeout)
+			if err != nil {
+				return err
+			}
+			if a.Output == "json" {
+				return a.Print(statusRes, "")
+			}
+			st := statusRes.GetStatus()
+			return a.Print(statusRes, fmt.Sprintf("cluster backup completed: %s\nstate: %s\nmanifest: %s\nerror: %s\n", st.GetBackupSetId(), st.GetState(), st.GetManifestUri(), st.GetError()))
 		}
 		if a.Output == "json" {
 			return a.Print(res, "")
 		}
 		st := res.GetStatus()
-		return a.Print(res, fmt.Sprintf("cluster backup triggered: %s\nstate: %s\nmanifest: %s\n", st.GetBackupSetId(), st.GetState(), st.GetManifestUri()))
+		return a.Print(res, fmt.Sprintf("cluster backup started: %s\nstate: %s\n", st.GetBackupSetId(), st.GetState()))
 	}}
 	cmd.Flags().StringVar(&reason, "reason", "", "backup reason")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "cluster backup output directory mounted on each pod")
 	cmd.Flags().StringVar(&archiveFormat, "archive-format", "tar.zst", "backup archive format: zip, tar, tar.gz, or tar.zst")
+	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "optional idempotency key for start retries")
+	cmd.Flags().DurationVar(&convergenceTimeout, "convergence-timeout", 0, "maximum time to wait for cluster convergence before failing the operation")
+	cmd.Flags().BoolVar(&wait, "wait", false, "wait for the cluster backup operation to finish")
+	cmd.Flags().DurationVar(&waitTimeout, "timeout", 10*time.Minute, "maximum time to wait with --wait")
 	return cmd
+}
+
+func NewAdminBackupClusterCancelCommand(a *app.App) *cobra.Command {
+	var reason string
+	cmd := &cobra.Command{Use: "cancel [BACKUP_SET_ID]", Short: "Cancel a cluster backup operation", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer closeConn()
+		backupSetID := ""
+		if len(args) > 0 {
+			backupSetID = args[0]
+		}
+		res, err := client.CancelClusterBackup(authCtx, &adminv1.CancelClusterBackupRequest{BackupSetId: backupSetID, Reason: reason})
+		if err != nil {
+			return backupCLIError("cancel cluster backup", err)
+		}
+		if a.Output == "json" {
+			return a.Print(res, "")
+		}
+		st := res.GetStatus()
+		return a.Print(res, fmt.Sprintf("cluster backup cancel requested: %s\nstate: %s\n", st.GetBackupSetId(), st.GetState()))
+	}}
+	cmd.Flags().StringVar(&reason, "reason", "", "cancellation reason")
+	return cmd
+}
+
+func waitForClusterBackup(ctx context.Context, client adminv1.AdminBackupServiceClient, authCtx context.Context, backupSetID string, timeout time.Duration) (*adminv1.GetClusterBackupStatusResponse, error) {
+	if strings.TrimSpace(backupSetID) == "" {
+		return nil, fmt.Errorf("backup_set_id is required")
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-waitCtx.Done():
+			return nil, backupCLIError("wait for cluster backup", waitCtx.Err())
+		default:
+		}
+		res, err := client.GetClusterBackupStatus(authCtx, &adminv1.GetClusterBackupStatusRequest{BackupSetId: backupSetID})
+		if err != nil {
+			return nil, backupCLIError("get cluster backup status", err)
+		}
+		switch res.GetStatus().GetStateCode() {
+		case adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_SUCCEEDED:
+			return res, nil
+		case adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_FAILED, adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CANCELED:
+			return res, fmt.Errorf("cluster backup %s finished with state %s: %s", backupSetID, res.GetStatus().GetState(), res.GetStatus().GetError())
+		}
+		select {
+		case <-waitCtx.Done():
+			return nil, backupCLIError("wait for cluster backup", waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func NewAdminBackupClusterStatusCommand(a *app.App) *cobra.Command {

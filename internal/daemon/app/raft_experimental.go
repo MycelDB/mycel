@@ -343,25 +343,56 @@ func initializeExperimentalRaft(ctx context.Context, rt *daemonruntime.Runtime, 
 	return nil
 }
 
+const systemMetadataBootstrapRetryInterval = 2 * time.Second
+
 func startSystemMetadataBootstrap(ctx context.Context, rt *daemonruntime.Runtime, sm *consensus.SystemStateMachine) {
 	if rt == nil || sm == nil || rt.RaftGroups == nil {
 		return
 	}
-	run := func() {
-		if err := reconcileSystemMetadata(ctx, rt, sm); err != nil {
-			if rt.ClusterManager != nil {
-				rt.ClusterManager.SetReadinessBlocker(err.Error())
-			}
-			if rt.Logger != nil {
-				rt.Logger.Error("system raft metadata bootstrap failed", "error", err)
-			}
+	onError := func(err error) {
+		if rt.ClusterManager != nil {
+			rt.ClusterManager.SetReadinessBlocker(err.Error())
+		}
+		if rt.Logger != nil {
+			rt.Logger.Error("system raft metadata bootstrap failed", "error", err)
 		}
 	}
+	reconcile := func() error { return reconcileSystemMetadata(ctx, rt, sm) }
 	if rt.Config.Cluster.RaftNodeCount == 1 {
-		run()
+		if err := reconcile(); err != nil {
+			onError(err)
+		}
 		return
 	}
-	go run()
+	go retrySystemMetadataBootstrap(ctx, systemMetadataBootstrapRetryInterval, reconcile, onError)
+}
+
+func retrySystemMetadataBootstrap(ctx context.Context, retryInterval time.Duration, reconcile func() error, onError func(error)) {
+	if reconcile == nil {
+		return
+	}
+	for {
+		if err := reconcile(); err == nil {
+			return
+		} else if onError != nil {
+			onError(err)
+		}
+		if retryInterval <= 0 {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			continue
+		}
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 func reconcileSystemMetadata(ctx context.Context, rt *daemonruntime.Runtime, sm *consensus.SystemStateMachine) error {

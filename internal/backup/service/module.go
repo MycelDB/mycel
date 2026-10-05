@@ -45,6 +45,7 @@ type Module struct {
 	localIdentity         runtime.LocalRouteIdentity
 	activeClusterBackupID string
 	clusterBackups        map[string]clusterBackupRun
+	clusterBackupCancels  map[string]context.CancelFunc
 	clusterBackupLeases   map[string]*quiesce.CompositeLease
 	clusterBackupFreeze   map[string]*clusterBackupFreezeLease
 	clusterBackendClient  backendClient

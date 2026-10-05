@@ -64,8 +64,9 @@ Candidate Admin Backup API additions:
 
 ```proto
 service AdminBackupService {
-  rpc TriggerClusterBackup(TriggerClusterBackupRequest) returns (TriggerClusterBackupResponse);
+  rpc StartClusterBackup(StartClusterBackupRequest) returns (StartClusterBackupResponse);
   rpc GetClusterBackupStatus(GetClusterBackupStatusRequest) returns (GetClusterBackupStatusResponse);
+  rpc CancelClusterBackup(CancelClusterBackupRequest) returns (CancelClusterBackupResponse);
   rpc ListClusterBackups(ListClusterBackupsRequest) returns (ListClusterBackupsResponse);
   rpc ValidateClusterBackupSet(ValidateClusterBackupSetRequest) returns (ValidateClusterBackupSetResponse);
 }
@@ -96,12 +97,14 @@ Candidate response fields:
 CLI command shape:
 
 ```sh
-mycel admin backup cluster trigger \
+mycel admin backup cluster start \
   --reason "before upgrade" \
   --output-dir /mnt/mycel-backups \
-  --archive-format tar.zst
+  --archive-format tar.zst \
+  --wait
 
 mycel admin backup cluster status BACKUP_SET_ID
+mycel admin backup cluster cancel BACKUP_SET_ID --reason "operator requested"
 mycel admin backup cluster list
 mycel admin backup cluster validate --backup-set /mnt/mycel-backups/backup-set-...
 ```
@@ -534,15 +537,16 @@ Add operator-facing command support.
 CLI commands:
 
 ```sh
-mycel admin backup cluster trigger
+mycel admin backup cluster start
 mycel admin backup cluster status BACKUP_SET_ID
+mycel admin backup cluster cancel BACKUP_SET_ID --reason "operator requested"
 mycel admin backup cluster list
 mycel admin backup cluster validate --backup-set PATH_OR_URI
 ```
 
 Acceptance criteria:
 
-- Trigger works from any healthy node and routes/coordinators correctly.
+- Start works from any healthy node and routes/coordinators correctly.
 - JSON output includes backup set ID, state, cluster ID, and node artifact list.
 - Human output explains where artifacts were written.
 - Validate rejects incomplete or mismatched backup sets.
