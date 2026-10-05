@@ -164,7 +164,7 @@ func (c *MycelClient) CountChaos(ctx context.Context, scope TestScope) (int64, e
 	return c.CountGQL(ctx, scope, gql)
 }
 
-func (c *MycelClient) TriggerClusterBackup(ctx context.Context, reason, outputDir, archiveFormat string) (*adminv1.TriggerClusterBackupResponse, error) {
+func (c *MycelClient) StartClusterBackupAndWait(ctx context.Context, reason, outputDir, archiveFormat string) (*adminv1.GetClusterBackupStatusResponse, error) {
 	rpcCtx, cancel := rpcContext(ctx, 10*time.Minute)
 	defer cancel()
 	format := adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR
@@ -175,7 +175,32 @@ func (c *MycelClient) TriggerClusterBackup(ctx context.Context, reason, outputDi
 	} else if strings.EqualFold(strings.TrimSpace(archiveFormat), "zip") {
 		format = adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP
 	}
-	return adminv1.NewAdminBackupServiceClient(c.conn).TriggerClusterBackup(c.authContext(rpcCtx), &adminv1.TriggerClusterBackupRequest{Reason: reason, OutputDir: outputDir, ArchiveFormat: format})
+	client := adminv1.NewAdminBackupServiceClient(c.conn)
+	authCtx := c.authContext(rpcCtx)
+	started, err := client.StartClusterBackup(authCtx, &adminv1.StartClusterBackupRequest{Reason: reason, OutputDir: outputDir, ArchiveFormat: format})
+	if err != nil {
+		return nil, err
+	}
+	backupSetID := started.GetStatus().GetBackupSetId()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		statusRes, err := client.GetClusterBackupStatus(authCtx, &adminv1.GetClusterBackupStatusRequest{BackupSetId: backupSetID})
+		if err != nil {
+			return nil, err
+		}
+		switch statusRes.GetStatus().GetStateCode() {
+		case adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_SUCCEEDED:
+			return statusRes, nil
+		case adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_FAILED, adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CANCELED:
+			return statusRes, fmt.Errorf("cluster backup %s finished with state %s: %s", backupSetID, statusRes.GetStatus().GetState(), statusRes.GetStatus().GetError())
+		}
+		select {
+		case <-rpcCtx.Done():
+			return nil, rpcCtx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (c *MycelClient) ValidateClusterBackupSet(ctx context.Context, backupSetPath string) (*adminv1.ValidateClusterBackupSetResponse, error) {

@@ -116,6 +116,19 @@ func TestBackupRaftStateMachineRejectsSecondActiveClusterBackup(t *testing.T) {
 	}
 }
 
+func TestClusterBackupIdempotencyKeyFindsPersistedRun(t *testing.T) {
+	ctx := context.Background()
+	m := newInitializedBackupModule(t)
+	applyClusterRecord(t, ctx, m, recordTypeClusterBackupRequest, clusterBackupRequestRecord{BackupSetID: "backup-set-1", IdempotencyKey: "retry-key", CreatedAt: time.Now().UTC()}, "request")
+	status, ok := m.findClusterBackupByIdempotencyKey(" retry-key ")
+	if !ok {
+		t.Fatal("findClusterBackupByIdempotencyKey() ok=false, want true")
+	}
+	if status.BackupSetID != "backup-set-1" || status.Phase != string(clusterBackupPhaseRequested) {
+		t.Fatalf("status=%#v, want backup-set-1 requested", status)
+	}
+}
+
 func TestBackupRaftStateMachineFailReleasesActiveClusterBackup(t *testing.T) {
 	ctx := context.Background()
 	m := newInitializedBackupModule(t)

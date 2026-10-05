@@ -31,3 +31,10 @@ type Manager interface {
 	DeleteBackup(context.Context, string) error
 	Trigger(context.Context, backupcore.TriggerInput) (backupcore.TriggerResult, error)
 }
+
+type ClusterBackupManager interface {
+	StartClusterBackup(context.Context, StartClusterBackupInput) (ClusterBackupRunStatus, error)
+	CancelClusterBackup(context.Context, string, string) (ClusterBackupRunStatus, error)
+	ClusterBackupStatus(string) (ClusterBackupRunStatus, error)
+	ListClusterBackups() []ClusterBackupRunStatus
+}

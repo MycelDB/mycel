@@ -38,19 +38,21 @@ Raft freeze/checkpoint follow-up plan: [Cluster system backup raft freeze implem
 Command:
 
 ```sh
-mycel admin backup cluster trigger \
+mycel admin backup cluster start \
   --reason "before upgrade" \
   --output-dir /backups/mycel \
-  --archive-format tar.zst
+  --archive-format tar.zst \
+  --wait
 ```
 
 The command may be invoked against any healthy node. The request is routed to the
 system raft owner/coordinator as needed.
 
-Related read-only commands:
+Related operation commands:
 
 ```sh
 mycel admin backup cluster status BACKUP_SET_ID
+mycel admin backup cluster cancel BACKUP_SET_ID --reason "operator requested"
 mycel admin backup cluster list
 mycel admin backup cluster validate --backup-set /backups/mycel/<backup-set-id>
 ```

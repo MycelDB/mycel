@@ -346,7 +346,7 @@ func (r *runState) captureBackup(ctx context.Context) (*backupResult, error) {
 		return nil, err
 	}
 	defer cleanup()
-	res, err := client.TriggerClusterBackup(ctx, "workload-driven system backup/restore test", r.backupDir, r.cfg.ArchiveFormat)
+	res, err := client.StartClusterBackupAndWait(ctx, "workload-driven system backup/restore test", r.backupDir, r.cfg.ArchiveFormat)
 	if err != nil {
 		return nil, err
 	}

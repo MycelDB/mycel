@@ -14,21 +14,29 @@ import (
 type clusterBackupPhase string
 
 const (
-	clusterBackupPhaseRequested          clusterBackupPhase = "requested"
-	clusterBackupPhasePrechecking        clusterBackupPhase = "prechecking"
-	clusterBackupPhaseQuiescing          clusterBackupPhase = "quiescing"
-	clusterBackupPhaseBarrierWait        clusterBackupPhase = "barrier_wait"
-	clusterBackupPhaseArchiving          clusterBackupPhase = "archiving"
-	clusterBackupPhaseValidating         clusterBackupPhase = "validating"
-	clusterBackupPhaseCommittingManifest clusterBackupPhase = "committing_manifest"
-	clusterBackupPhaseSucceeded          clusterBackupPhase = "succeeded"
-	clusterBackupPhaseFailed             clusterBackupPhase = "failed"
-	clusterBackupPhaseAborted            clusterBackupPhase = "aborted"
+	clusterBackupPhaseRequested                clusterBackupPhase = "pending"
+	clusterBackupPhasePrechecking              clusterBackupPhase = "waiting_for_cluster_convergence"
+	clusterBackupPhaseReady                    clusterBackupPhase = "ready"
+	clusterBackupPhaseQuiescing                clusterBackupPhase = "quiescing"
+	clusterBackupPhaseBarrierWait              clusterBackupPhase = "barrier_wait"
+	clusterBackupPhaseArchiving                clusterBackupPhase = "capturing"
+	clusterBackupPhaseValidating               clusterBackupPhase = "validating"
+	clusterBackupPhaseCommittingManifest       clusterBackupPhase = "committing_manifest"
+	clusterBackupPhaseSucceeded                clusterBackupPhase = "succeeded"
+	clusterBackupPhaseFailed                   clusterBackupPhase = "failed"
+	clusterBackupPhaseAborted                  clusterBackupPhase = "aborted"
+	clusterBackupPhaseCanceled                 clusterBackupPhase = "canceled"
+	clusterBackupPhaseCanceling                clusterBackupPhase = "canceling"
+	clusterBackupPhaseLegacyRequested          clusterBackupPhase = "requested"
+	clusterBackupPhaseLegacyPrechecking        clusterBackupPhase = "prechecking"
+	clusterBackupPhaseLegacyArchiving          clusterBackupPhase = "archiving"
+	clusterBackupPhaseLegacyWaitingForBarriers clusterBackupPhase = "barrier_wait"
+	clusterBackupPhaseLegacyCommittingManifest clusterBackupPhase = "committing_manifest"
 )
 
 func (p clusterBackupPhase) terminal() bool {
 	switch p {
-	case clusterBackupPhaseSucceeded, clusterBackupPhaseFailed, clusterBackupPhaseAborted:
+	case clusterBackupPhaseSucceeded, clusterBackupPhaseFailed, clusterBackupPhaseAborted, clusterBackupPhaseCanceled:
 		return true
 	default:
 		return false
@@ -47,26 +55,41 @@ type clusterBackupFailure struct {
 	Message string             `json:"message"`
 }
 
+type ClusterBackupBlocker struct {
+	NodeName     string `json:"node_name,omitempty"`
+	NodeID       string `json:"node_id,omitempty"`
+	RaftNodeID   uint64 `json:"raft_node_id,omitempty"`
+	RaftGroup    string `json:"raft_group,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	AppliedIndex uint64 `json:"applied_index,omitempty"`
+	CommitIndex  uint64 `json:"commit_index,omitempty"`
+	Detail       string `json:"detail,omitempty"`
+}
+
 type clusterBackupRun struct {
-	BackupSetID string                                `json:"backup_set_id"`
-	ClusterID   string                                `json:"cluster_id,omitempty"`
-	Reason      string                                `json:"reason,omitempty"`
-	Phase       clusterBackupPhase                    `json:"phase"`
-	CreatedAt   time.Time                             `json:"created_at"`
-	UpdatedAt   time.Time                             `json:"updated_at"`
-	Expected    []clusterBackupExpectedNode           `json:"expected_nodes,omitempty"`
-	Barriers    map[string]uint64                     `json:"barriers,omitempty"`
-	NodeResults map[string]clusterbackup.NodeArtifact `json:"node_results,omitempty"`
-	Manifest    *clusterbackup.Manifest               `json:"manifest,omitempty"`
-	Failure     *clusterBackupFailure                 `json:"failure,omitempty"`
+	BackupSetID    string                                `json:"backup_set_id"`
+	ClusterID      string                                `json:"cluster_id,omitempty"`
+	Reason         string                                `json:"reason,omitempty"`
+	IdempotencyKey string                                `json:"idempotency_key,omitempty"`
+	Phase          clusterBackupPhase                    `json:"phase"`
+	CreatedAt      time.Time                             `json:"created_at"`
+	UpdatedAt      time.Time                             `json:"updated_at"`
+	Expected       []clusterBackupExpectedNode           `json:"expected_nodes,omitempty"`
+	Barriers       map[string]uint64                     `json:"barriers,omitempty"`
+	NodeResults    map[string]clusterbackup.NodeArtifact `json:"node_results,omitempty"`
+	Manifest       *clusterbackup.Manifest               `json:"manifest,omitempty"`
+	Failure        *clusterBackupFailure                 `json:"failure,omitempty"`
+	Blockers       []ClusterBackupBlocker                `json:"blockers,omitempty"`
+	Cancel         bool                                  `json:"cancel_requested,omitempty"`
 }
 
 type clusterBackupRequestRecord struct {
-	BackupSetID string                      `json:"backup_set_id"`
-	ClusterID   string                      `json:"cluster_id,omitempty"`
-	Reason      string                      `json:"reason,omitempty"`
-	CreatedAt   time.Time                   `json:"created_at"`
-	Expected    []clusterBackupExpectedNode `json:"expected_nodes,omitempty"`
+	BackupSetID    string                      `json:"backup_set_id"`
+	ClusterID      string                      `json:"cluster_id,omitempty"`
+	Reason         string                      `json:"reason,omitempty"`
+	IdempotencyKey string                      `json:"idempotency_key,omitempty"`
+	CreatedAt      time.Time                   `json:"created_at"`
+	Expected       []clusterBackupExpectedNode `json:"expected_nodes,omitempty"`
 }
 
 type clusterBackupPhaseRecord struct {
@@ -100,6 +123,12 @@ type clusterBackupFailureRecord struct {
 	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
+type clusterBackupBlockersRecord struct {
+	BackupSetID string                 `json:"backup_set_id"`
+	Blockers    []ClusterBackupBlocker `json:"blockers,omitempty"`
+	UpdatedAt   time.Time              `json:"updated_at"`
+}
+
 func (m *Module) applyClusterBackupRequest(ctx context.Context, rec wal.Record) error {
 	var payload clusterBackupRequestRecord
 	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
@@ -123,7 +152,7 @@ func (m *Module) applyClusterBackupRequest(ctx context.Context, rec wal.Record) 
 	if _, ok := m.clusterBackups[backupSetID]; ok {
 		return fmt.Errorf("cluster backup %s already exists", backupSetID)
 	}
-	run := clusterBackupRun{BackupSetID: backupSetID, ClusterID: strings.TrimSpace(payload.ClusterID), Reason: strings.TrimSpace(payload.Reason), Phase: clusterBackupPhaseRequested, CreatedAt: createdAt, UpdatedAt: createdAt, Expected: append([]clusterBackupExpectedNode(nil), payload.Expected...), NodeResults: map[string]clusterbackup.NodeArtifact{}}
+	run := clusterBackupRun{BackupSetID: backupSetID, ClusterID: strings.TrimSpace(payload.ClusterID), Reason: strings.TrimSpace(payload.Reason), IdempotencyKey: strings.TrimSpace(payload.IdempotencyKey), Phase: clusterBackupPhaseRequested, CreatedAt: createdAt, UpdatedAt: createdAt, Expected: append([]clusterBackupExpectedNode(nil), payload.Expected...), NodeResults: map[string]clusterbackup.NodeArtifact{}}
 	m.clusterBackups[backupSetID] = run
 	m.activeClusterBackupID = backupSetID
 	return nil
@@ -152,6 +181,9 @@ func (m *Module) applyClusterBackupPhase(ctx context.Context, rec wal.Record) er
 		return err
 	}
 	run.Phase = payload.Phase
+	if payload.Phase == clusterBackupPhaseCanceling {
+		run.Cancel = true
+	}
 	run.UpdatedAt = updatedAt
 	m.clusterBackups[payload.BackupSetID] = run
 	m.activeClusterBackupID = payload.BackupSetID
@@ -280,7 +312,7 @@ func (m *Module) applyClusterBackupFailure(ctx context.Context, rec wal.Record, 
 	if backupSetID == "" {
 		return fmt.Errorf("backup_set_id is required")
 	}
-	if terminal != clusterBackupPhaseFailed && terminal != clusterBackupPhaseAborted {
+	if terminal != clusterBackupPhaseFailed && terminal != clusterBackupPhaseAborted && terminal != clusterBackupPhaseCanceled {
 		return fmt.Errorf("invalid cluster backup terminal phase %q", terminal)
 	}
 	updatedAt := payload.UpdatedAt.UTC()
@@ -299,12 +331,40 @@ func (m *Module) applyClusterBackupFailure(ctx context.Context, rec wal.Record, 
 	}
 	run.Phase = terminal
 	run.Failure = &clusterBackupFailure{Phase: failurePhase, Message: strings.TrimSpace(payload.Message)}
+	run.Cancel = terminal == clusterBackupPhaseCanceled || run.Cancel
 	run.UpdatedAt = updatedAt
 	m.clusterBackups[backupSetID] = run
 	if m.activeClusterBackupID == backupSetID {
 		m.activeClusterBackupID = ""
 	}
 	m.releaseClusterBackupLeaseLocked(backupSetID)
+	return nil
+}
+
+func (m *Module) applyClusterBackupBlockers(ctx context.Context, rec wal.Record) error {
+	var payload clusterBackupBlockersRecord
+	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+		return err
+	}
+	_ = ctx
+	backupSetID := strings.TrimSpace(payload.BackupSetID)
+	if backupSetID == "" {
+		return fmt.Errorf("backup_set_id is required")
+	}
+	updatedAt := payload.UpdatedAt.UTC()
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run, err := m.clusterBackupRunLocked(backupSetID)
+	if err != nil {
+		return err
+	}
+	run.Blockers = append([]ClusterBackupBlocker(nil), payload.Blockers...)
+	run.UpdatedAt = updatedAt
+	m.clusterBackups[backupSetID] = run
+	m.activeClusterBackupID = backupSetID
 	return nil
 }
 
@@ -448,6 +508,7 @@ func cloneClusterBackupRuns(in map[string]clusterBackupRun) map[string]clusterBa
 			failure := *v.Failure
 			v.Failure = &failure
 		}
+		v.Blockers = append([]ClusterBackupBlocker(nil), v.Blockers...)
 		out[k] = v
 	}
 	return out
@@ -477,7 +538,7 @@ func cloneStringUint64Map(in map[string]uint64) map[string]uint64 {
 
 func validClusterBackupPhase(phase clusterBackupPhase) bool {
 	switch phase {
-	case clusterBackupPhaseRequested, clusterBackupPhasePrechecking, clusterBackupPhaseQuiescing, clusterBackupPhaseBarrierWait, clusterBackupPhaseArchiving, clusterBackupPhaseValidating, clusterBackupPhaseCommittingManifest, clusterBackupPhaseSucceeded, clusterBackupPhaseFailed, clusterBackupPhaseAborted:
+	case clusterBackupPhaseRequested, clusterBackupPhasePrechecking, clusterBackupPhaseReady, clusterBackupPhaseQuiescing, clusterBackupPhaseBarrierWait, clusterBackupPhaseArchiving, clusterBackupPhaseValidating, clusterBackupPhaseCommittingManifest, clusterBackupPhaseSucceeded, clusterBackupPhaseFailed, clusterBackupPhaseAborted, clusterBackupPhaseCanceled, clusterBackupPhaseCanceling, clusterBackupPhaseLegacyRequested, clusterBackupPhaseLegacyPrechecking, clusterBackupPhaseLegacyArchiving:
 		return true
 	default:
 		return false

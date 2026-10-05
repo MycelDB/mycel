@@ -84,7 +84,7 @@ func TestDefaultQuiesceExemptsClusterBackupArchiveRPC(t *testing.T) {
 
 func TestDefaultQuiesceExemptsAdminClusterBackupRPCs(t *testing.T) {
 	exempt := defaultQuiesceExemptMethods()
-	for _, method := range []string{adminv1.AdminBackupService_TriggerClusterBackup_FullMethodName, adminv1.AdminBackupService_GetClusterBackupStatus_FullMethodName, adminv1.AdminBackupService_ListClusterBackups_FullMethodName, adminv1.AdminBackupService_ValidateClusterBackupSet_FullMethodName} {
+	for _, method := range []string{adminv1.AdminBackupService_StartClusterBackup_FullMethodName, adminv1.AdminBackupService_GetClusterBackupStatus_FullMethodName, adminv1.AdminBackupService_CancelClusterBackup_FullMethodName, adminv1.AdminBackupService_ListClusterBackups_FullMethodName, adminv1.AdminBackupService_ValidateClusterBackupSet_FullMethodName} {
 		if !exempt[method] {
 			t.Fatalf("method %s is not quiesce-exempt", method)
 		}

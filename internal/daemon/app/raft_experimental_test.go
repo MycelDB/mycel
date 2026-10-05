@@ -69,6 +69,37 @@ func TestReconcileSystemMetadataBootstrapsSingleNodeRaft(t *testing.T) {
 	}
 }
 
+func TestRetrySystemMetadataBootstrapRetriesUntilSuccess(t *testing.T) {
+	attempts := 0
+	errorsSeen := 0
+	retrySystemMetadataBootstrap(context.Background(), 0, func() error {
+		attempts++
+		if attempts < 3 {
+			return errors.New("system metadata is not ready")
+		}
+		return nil
+	}, func(error) { errorsSeen++ })
+	if attempts != 3 {
+		t.Fatalf("attempts=%d, want 3", attempts)
+	}
+	if errorsSeen != 2 {
+		t.Fatalf("errorsSeen=%d, want 2", errorsSeen)
+	}
+}
+
+func TestRetrySystemMetadataBootstrapStopsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	retrySystemMetadataBootstrap(ctx, 0, func() error {
+		attempts++
+		cancel()
+		return errors.New("system metadata is not ready")
+	}, nil)
+	if attempts != 1 {
+		t.Fatalf("attempts=%d, want 1", attempts)
+	}
+}
+
 func hasActivityType(events []activitymodel.Event, eventType string) bool {
 	for _, event := range events {
 		if event.Type == eventType {

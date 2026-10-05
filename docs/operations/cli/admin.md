@@ -18,10 +18,11 @@ mycel --output json admin list
 ```
 
 ```sh
-mycel admin backup cluster trigger \
+mycel admin backup cluster start \
   --reason "before maintenance" \
   --output-dir /mnt/mycel-backups \
-  --archive-format tar.zst
+  --archive-format tar.zst \
+  --wait
 ```
 
 ```sh

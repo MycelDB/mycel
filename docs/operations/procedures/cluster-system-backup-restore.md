@@ -113,23 +113,24 @@ mycel --daemon-addr <pod-or-service>:9091 \
   cluster raft-groups
 ```
 
-### 3. Trigger the coordinated cluster backup
+### 3. Start the coordinated cluster backup operation
 
 Target command shape:
 
 ```sh
 mycel --daemon-addr <any-healthy-node>:9091 \
   --username <operator> --password <password> \
-  admin backup cluster trigger \
+  admin backup cluster start \
   --reason "before upgrade" \
   --output-dir /mnt/mycel-backups \
-  --archive-format tar.zst
+  --archive-format tar.zst \
+  --wait
 ```
 
 Expected coordinator behavior:
 
 1. commit backup intent through system raft;
-2. check preconditions;
+2. wait for cluster convergence and report structured blockers while waiting;
 3. enter cluster-wide backup quiesce;
 4. establish raft backup barriers;
 5. acquire TTL-bound raft freeze/checkpoint leases on every expected pod;
