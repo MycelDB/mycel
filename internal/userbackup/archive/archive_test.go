@@ -7,8 +7,7 @@ import (
 )
 
 func TestWriteReadRoundTrip(t *testing.T) {
-	manifest := Manifest{SubjectUser: User{UserID: "user-1", Username: "alice"}, Spaces: []Space{{SourceSpaceID: "space-1", Name: "notes", Domains: []Domain{{SourceDomainID: "domain-1", Key: "default", Name: "Default", Default: true, DataPath: "domains/space-1/domain-1.json"}}}}}
-	entries := []Entry{{Path: "domains/space-1/domain-1.json", Data: []byte(`{"format":"mycel-domain-json-v1"}`), ContentType: "application/json"}}
+	manifest, entries := sampleArchiveContents()
 	var buf bytes.Buffer
 	if err := Write(&buf, "zstd", manifest, entries); err != nil {
 		t.Fatalf("write archive: %v", err)
@@ -26,6 +25,27 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	if string(got.Entries["domains/space-1/domain-1.json"]) != string(entries[0].Data) {
 		t.Fatalf("entry data mismatch")
 	}
+}
+
+func TestAutoCompressionReadsUncompressedTar(t *testing.T) {
+	manifest, entries := sampleArchiveContents()
+	var buf bytes.Buffer
+	if err := Write(&buf, "none", manifest, entries); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+	got, err := Read(bytes.NewReader(buf.Bytes()), "auto")
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+	if got.Manifest.SubjectUser.Username != "alice" {
+		t.Fatalf("unexpected subject user: %q", got.Manifest.SubjectUser.Username)
+	}
+}
+
+func sampleArchiveContents() (Manifest, []Entry) {
+	manifest := Manifest{SubjectUser: User{UserID: "user-1", Username: "alice"}, Spaces: []Space{{SourceSpaceID: "space-1", Name: "notes", Domains: []Domain{{SourceDomainID: "domain-1", Key: "default", Name: "Default", Default: true, DataPath: "domains/space-1/domain-1.json"}}}}}
+	entries := []Entry{{Path: "domains/space-1/domain-1.json", Data: []byte(`{"format":"mycel-domain-json-v1"}`), ContentType: "application/json"}}
+	return manifest, entries
 }
 
 func TestValidateRejectsChecksumMismatch(t *testing.T) {
