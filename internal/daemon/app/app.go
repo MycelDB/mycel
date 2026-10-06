@@ -176,7 +176,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld TLS config error: %v\n", err)
 		return 1
 	}
-	tokenManager, err := auth.NewRandomTokenManager(cfg.AccessTokenTTL)
+	tokenManager, err := auth.NewPersistentTokenManager(cfg.AccessTokenSigningSecretB64, cfg.AccessTokenSigningSecretFile, cfg.AccessTokenTTL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld token manager error: %v\n", err)
 		return 1
@@ -211,6 +211,7 @@ func Run(ctx context.Context) int {
 }
 
 func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime, error) {
+	cfg = cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

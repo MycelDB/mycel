@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,6 +45,12 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.AccessTokenTTL != DefaultAccessTokenTTL {
 		t.Fatalf("unexpected access token TTL default: %s", cfg.AccessTokenTTL)
 	}
+	if cfg.AccessTokenSigningSecretB64 != "" {
+		t.Fatalf("unexpected inline access token signing secret default")
+	}
+	if filepath.Base(cfg.AccessTokenSigningSecretFile) != DefaultAccessTokenSigningSecretFileName || filepath.Base(filepath.Dir(cfg.AccessTokenSigningSecretFile)) != "secrets" {
+		t.Fatalf("unexpected access token signing secret file default: %q", cfg.AccessTokenSigningSecretFile)
+	}
 	if cfg.Cluster.RaftNodeCount != DefaultClusterRaftNodeCount || cfg.Cluster.RaftPartitionCount != DefaultClusterRaftPartitionCount || cfg.Cluster.RaftReplicaFactor != DefaultClusterRaftReplicaFactor || cfg.Cluster.RaftLocalNodeID != DefaultClusterRaftLocalNodeID {
 		t.Fatalf("unexpected cluster raft defaults: %+v", cfg.Cluster)
 	}
@@ -58,6 +65,34 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.GraphCheckpoint.AutoEnabled || cfg.GraphCheckpoint.AutoInterval != DefaultGraphCheckpointAutoInterval || cfg.GraphCheckpoint.AutoRevisions != DefaultGraphCheckpointAutoRevisions || cfg.GraphCheckpoint.AutoTimeout != DefaultGraphCheckpointAutoTimeout {
 		t.Fatalf("unexpected graph checkpoint defaults: %+v", cfg.GraphCheckpoint)
+	}
+}
+
+func TestLoadFromEnvAccessTokenSigningSecretOverrides(t *testing.T) {
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i + 1)
+	}
+	secretB64 := base64.RawStdEncoding.EncodeToString(secret)
+	secretFile := filepath.Join(t.TempDir(), "token-secret.b64")
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_ACCESS_TOKEN_SIGNING_SECRET_B64", secretB64)
+	t.Setenv("MYCELD_ACCESS_TOKEN_SIGNING_SECRET_FILE", secretFile)
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.AccessTokenSigningSecretB64 != secretB64 || cfg.AccessTokenSigningSecretFile != secretFile {
+		t.Fatalf("unexpected access token signing secret config: b64=%q file=%q", cfg.AccessTokenSigningSecretB64, cfg.AccessTokenSigningSecretFile)
+	}
+}
+
+func TestLoadFromEnvAccessTokenSigningSecretValidation(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_ACCESS_TOKEN_SIGNING_SECRET_B64", base64.RawStdEncoding.EncodeToString([]byte("short")))
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "MYCELD_ACCESS_TOKEN_SIGNING_SECRET_B64") {
+		t.Fatalf("LoadFromEnv() error = %v, want signing secret validation", err)
 	}
 }
 
