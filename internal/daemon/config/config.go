@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net"
 	"os"
@@ -38,6 +39,7 @@ const (
 	DefaultBackupRetryAfter                 = 5 * time.Second
 	DefaultBackupStatusHistoryLimit         = 20
 	DefaultAccessTokenTTL                   = 15 * time.Minute
+	DefaultAccessTokenSigningSecretFileName = "access-token-signing-secret.b64"
 	DefaultWALSegmentBytes                  = int64(64 * 1024 * 1024)
 	DefaultWALSyncPolicy                    = "always"
 	DefaultGraphCheckpointAutoInterval      = time.Minute
@@ -146,27 +148,29 @@ type ClusterConfig struct {
 }
 
 type Config struct {
-	DataDir                string
-	Mode                   string
-	LogLevel               string
-	LogFormat              string
-	GRPCAddr               string
-	NodeName               string
-	Encryption             encryption.Config
-	BootstrapAdminUsername string
-	BootstrapAdminPassword string
-	TLSCertFile            string
-	TLSKeyFile             string
-	TLSClientCAFile        string
-	TLSRequireClientCert   bool
-	AccessTokenTTL         time.Duration
-	SemanticMaintenance    SemanticMaintenanceConfig
-	Automation             AutomationConfig
-	Backup                 BackupConfig
-	WAL                    WALConfig
-	GraphCheckpoint        GraphCheckpointConfig
-	Blob                   BlobConfig
-	Cluster                ClusterConfig
+	DataDir                      string
+	Mode                         string
+	LogLevel                     string
+	LogFormat                    string
+	GRPCAddr                     string
+	NodeName                     string
+	Encryption                   encryption.Config
+	BootstrapAdminUsername       string
+	BootstrapAdminPassword       string
+	TLSCertFile                  string
+	TLSKeyFile                   string
+	TLSClientCAFile              string
+	TLSRequireClientCert         bool
+	AccessTokenTTL               time.Duration
+	AccessTokenSigningSecretB64  string
+	AccessTokenSigningSecretFile string
+	SemanticMaintenance          SemanticMaintenanceConfig
+	Automation                   AutomationConfig
+	Backup                       BackupConfig
+	WAL                          WALConfig
+	GraphCheckpoint              GraphCheckpointConfig
+	Blob                         BlobConfig
+	Cluster                      ClusterConfig
 }
 
 func LoadFromEnv() (Config, error) {
@@ -195,13 +199,15 @@ func LoadFromEnv() (Config, error) {
 			StaticKeyFile: strings.TrimSpace(os.Getenv("MYCELD_ENCRYPTION_STATIC_KEY_FILE")),
 			DEKCacheTTL:   parseDurationEnv(os.Getenv("MYCELD_ENCRYPTION_DEK_CACHE_TTL"), 5*time.Minute),
 		},
-		BootstrapAdminUsername: strings.TrimSpace(os.Getenv("MYCELD_BOOTSTRAP_ADMIN_USERNAME")),
-		BootstrapAdminPassword: os.Getenv("MYCELD_BOOTSTRAP_ADMIN_PASSWORD"),
-		TLSCertFile:            strings.TrimSpace(os.Getenv("MYCELD_TLS_CERT_FILE")),
-		TLSKeyFile:             strings.TrimSpace(os.Getenv("MYCELD_TLS_KEY_FILE")),
-		TLSClientCAFile:        strings.TrimSpace(os.Getenv("MYCELD_TLS_CLIENT_CA_FILE")),
-		TLSRequireClientCert:   parseBoolEnv(os.Getenv("MYCELD_TLS_REQUIRE_CLIENT_CERT")),
-		AccessTokenTTL:         parseDurationEnv(os.Getenv("MYCELD_ACCESS_TOKEN_TTL"), DefaultAccessTokenTTL),
+		BootstrapAdminUsername:       strings.TrimSpace(os.Getenv("MYCELD_BOOTSTRAP_ADMIN_USERNAME")),
+		BootstrapAdminPassword:       os.Getenv("MYCELD_BOOTSTRAP_ADMIN_PASSWORD"),
+		TLSCertFile:                  strings.TrimSpace(os.Getenv("MYCELD_TLS_CERT_FILE")),
+		TLSKeyFile:                   strings.TrimSpace(os.Getenv("MYCELD_TLS_KEY_FILE")),
+		TLSClientCAFile:              strings.TrimSpace(os.Getenv("MYCELD_TLS_CLIENT_CA_FILE")),
+		TLSRequireClientCert:         parseBoolEnv(os.Getenv("MYCELD_TLS_REQUIRE_CLIENT_CERT")),
+		AccessTokenTTL:               parseDurationEnv(os.Getenv("MYCELD_ACCESS_TOKEN_TTL"), DefaultAccessTokenTTL),
+		AccessTokenSigningSecretB64:  strings.TrimSpace(os.Getenv("MYCELD_ACCESS_TOKEN_SIGNING_SECRET_B64")),
+		AccessTokenSigningSecretFile: valueOrDefault(os.Getenv("MYCELD_ACCESS_TOKEN_SIGNING_SECRET_FILE"), DefaultAccessTokenSigningSecretFile(dataDir)),
 		WAL: WALConfig{
 			Enabled:      parseBoolEnvDefault(os.Getenv("MYCELD_WAL_ENABLED"), true),
 			Dir:          strings.TrimSpace(os.Getenv("MYCELD_WAL_DIR")),
@@ -290,6 +296,10 @@ func LoadFromEnv() (Config, error) {
 	return cfg, cfg.Validate()
 }
 
+func DefaultAccessTokenSigningSecretFile(dataDir string) string {
+	return filepath.Join(strings.TrimSpace(dataDir), "secrets", DefaultAccessTokenSigningSecretFileName)
+}
+
 func DefaultDataDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
@@ -298,7 +308,16 @@ func DefaultDataDir() (string, error) {
 	return filepath.Join(home, "mycel_data"), nil
 }
 
+func (c Config) Normalize() Config {
+	c.DataDir = strings.TrimSpace(c.DataDir)
+	if strings.TrimSpace(c.AccessTokenSigningSecretB64) == "" && strings.TrimSpace(c.AccessTokenSigningSecretFile) == "" && c.DataDir != "" {
+		c.AccessTokenSigningSecretFile = DefaultAccessTokenSigningSecretFile(c.DataDir)
+	}
+	return c
+}
+
 func (c Config) Validate() error {
+	c = c.Normalize()
 	if strings.TrimSpace(c.DataDir) == "" {
 		return fmt.Errorf("MYCELD_DATA_DIR must not be empty")
 	}
@@ -336,6 +355,20 @@ func (c Config) Validate() error {
 	}
 	if c.AccessTokenTTL < 0 {
 		return fmt.Errorf("MYCELD_ACCESS_TOKEN_TTL must be positive")
+	}
+	if strings.TrimSpace(c.AccessTokenSigningSecretB64) != "" {
+		decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimSpace(c.AccessTokenSigningSecretB64))
+		if err != nil {
+			decoded, err = base64.StdEncoding.DecodeString(strings.TrimSpace(c.AccessTokenSigningSecretB64))
+		}
+		if err != nil {
+			return fmt.Errorf("MYCELD_ACCESS_TOKEN_SIGNING_SECRET_B64 must be base64 encoded")
+		}
+		if len(decoded) < 32 {
+			return fmt.Errorf("MYCELD_ACCESS_TOKEN_SIGNING_SECRET_B64 must decode to at least 32 bytes")
+		}
+	} else if strings.TrimSpace(c.AccessTokenSigningSecretFile) == "" {
+		return fmt.Errorf("MYCELD_ACCESS_TOKEN_SIGNING_SECRET_FILE must not be empty when MYCELD_ACCESS_TOKEN_SIGNING_SECRET_B64 is not set")
 	}
 	if err := c.SemanticMaintenance.Validate(); err != nil {
 		return err

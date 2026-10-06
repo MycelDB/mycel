@@ -52,6 +52,9 @@ Initial environment variables:
 | `MYCELD_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `MYCELD_LOG_FORMAT` | Log format: `text` or `json`. |
 | `MYCELD_GRPC_ADDR` | gRPC listener address. Defaults to `127.0.0.1:9091`. |
+| `MYCELD_ACCESS_TOKEN_TTL` | Access-token lifetime. Defaults to 15 minutes. |
+| `MYCELD_ACCESS_TOKEN_SIGNING_SECRET_FILE` | Base64-encoded HMAC signing secret file for daemon access tokens. Defaults to `<MYCELD_DATA_DIR>/secrets/access-token-signing-secret.b64`; created with mode `0600` when missing. |
+| `MYCELD_ACCESS_TOKEN_SIGNING_SECRET_B64` | Inline base64-encoded access-token signing secret. Takes precedence over the file path and must decode to at least 32 bytes. Prefer the file setting or an external secret mount in production. |
 
 The environment variable list is expected to change as the daemon design evolves. This document only covers the variables needed by the current initialization design.
 
@@ -70,11 +73,19 @@ Within the data directory, the current initialization design creates the followi
 ```text
 <data>/
   log/
+  secrets/
+    access-token-signing-secret.b64
   identity/
     sessions/
 ```
 
-`log/` stores daemon log files.
+`log/` stores daemon log files. `secrets/access-token-signing-secret.b64`
+stores the daemon access-token HMAC signing secret when no explicit inline
+secret or alternate secret file is configured. Keeping this file stable across
+restarts allows unexpired access tokens to remain valid after the daemon restarts.
+Multi-node deployments that route client requests across nodes should configure
+or mount the same signing secret on every node so any node can verify tokens
+minted by another node.
 
 `identity/` stores unified principal records, role bindings, capability grants, and durable auth-session records.
 
