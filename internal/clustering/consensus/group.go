@@ -77,19 +77,20 @@ type Group struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	mu                  sync.Mutex
-	backupMu            sync.RWMutex
-	leader              NodeID
-	term                uint64
-	commitIndex         uint64
-	appliedIndex        uint64
-	waiters             map[string]chan proposalOutcome
-	readSeq             uint64
-	readWaiters         map[string]chan readIndexOutcome
-	readDiagnostics     ReadDiagnostics
-	proposalTimings     map[string]*ProposalTiming
-	joinExisting        bool
-	catchupRecoveryOnce sync.Once
+	mu                   sync.Mutex
+	backupMu             sync.RWMutex
+	leader               NodeID
+	term                 uint64
+	commitIndex          uint64
+	appliedIndex         uint64
+	waiters              map[string]chan proposalOutcome
+	readSeq              uint64
+	readWaiters          map[string]chan readIndexOutcome
+	readDiagnostics      ReadDiagnostics
+	proposalTimings      map[string]*ProposalTiming
+	joinExisting         bool
+	catchupRecoveryOnce  sync.Once
+	idleJoinSnapshotOnce sync.Once
 }
 
 type proposalOutcome struct {
@@ -282,15 +283,65 @@ func (g *Group) Step(ctx context.Context, msg raftpb.Message) error {
 	if g.storage != nil {
 		last, err := g.storage.LastIndex()
 		if err == nil {
-			if msg.Type == raftpb.MsgHeartbeat && msg.Commit > 0 && msg.Commit > last {
-				originalCommit := msg.Commit
-				msg.Commit = last
-				g.nudgeLeaderToProbeFollower(ctx, msg, originalCommit, last)
-				g.triggerCatchupRecovery(originalCommit)
+			if msg.Type == raftpb.MsgHeartbeat && msg.Commit > 0 {
+				if msg.Commit > last {
+					originalCommit := msg.Commit
+					msg.Commit = last
+					g.nudgeLeaderToProbeFollower(ctx, msg, originalCommit, last)
+					g.triggerIdleJoinSnapshot(originalCommit, last)
+					g.triggerCatchupRecovery(originalCommit)
+				} else {
+					g.triggerIdleJoinSnapshot(msg.Commit, last)
+				}
 			}
 		}
 	}
 	return g.node.Step(ctx, msg)
+}
+
+func (g *Group) triggerIdleJoinSnapshot(leaderCommit uint64, localLast uint64) {
+	if g == nil || !g.joinExisting || leaderCommit == 0 || localLast == 0 {
+		return
+	}
+	// A freshly wiped same-ID member bootstraps the static voter config locally.
+	// For idle groups, an operator-forced snapshot on the active quorum advances
+	// the leader commit by exactly the snapshot/no-op entry beyond that local
+	// bootstrap tail. There may be no later proposal to force snapshot transfer,
+	// so publish a compacted local snapshot once the bootstrap entries are applied.
+	// Do not do this for data-bearing gaps; those must install the leader snapshot.
+	if leaderCommit > localLast+1 {
+		return
+	}
+	target := localLast
+	if leaderCommit < target {
+		target = leaderCommit
+	}
+	g.idleJoinSnapshotOnce.Do(func() {
+		go func(target uint64) {
+			deadline := time.NewTimer(5 * time.Second)
+			defer deadline.Stop()
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				last, snapshotIndex := g.StorageProgress()
+				_, _, applied := g.Progress()
+				if snapshotIndex != 0 {
+					return
+				}
+				if last >= target && applied >= target {
+					_, _ = g.CreateSnapshot(target, true)
+					return
+				}
+				select {
+				case <-g.ctx.Done():
+					return
+				case <-deadline.C:
+					return
+				case <-ticker.C:
+				}
+			}
+		}(target)
+	})
 }
 
 func (g *Group) triggerCatchupRecovery(targetIndex uint64) {
