@@ -22,6 +22,10 @@ type Request struct {
 	Reason string
 	Mode   Mode
 	Source string
+	// AllowReadsDuringBackup admits read-only ingress work while backup quiesce
+	// drains and blocks writes. Participants that do not distinguish reads from
+	// writes ignore this field and remain fully closed while quiesced.
+	AllowReadsDuringBackup bool
 }
 
 // Lease reopens or resumes a participant that was quiesced.

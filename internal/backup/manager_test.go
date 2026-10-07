@@ -326,6 +326,23 @@ func TestManagerRunsPreArchiveAfterQuiesceBeforeSnapshot(t *testing.T) {
 	}
 }
 
+func TestManagerPropagatesAllowReadsDuringBackupToQuiesce(t *testing.T) {
+	dataDir := fixtureDataDir(t)
+	backupDir := t.TempDir()
+	participant := &trackingParticipant{name: "test-participant"}
+	coord := quiesce.NewCoordinator()
+	if err := coord.Register(participant); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir, AllowReadsDuringBackup: true}, Quiesce: coord})
+	if _, err := mgr.Trigger(context.Background(), TriggerInput{Source: "test"}); err != nil {
+		t.Fatalf("Trigger() error = %v", err)
+	}
+	if !participant.lastRequest.AllowReadsDuringBackup {
+		t.Fatalf("AllowReadsDuringBackup was not propagated to quiesce request: %+v", participant.lastRequest)
+	}
+}
+
 func TestManagerReleasesQuiesceLeaseWhenSnapshotFails(t *testing.T) {
 	dataDir := fixtureDataDir(t)
 	backupDir := t.TempDir()
@@ -500,17 +517,19 @@ func contains(value string, substr string) bool {
 }
 
 type trackingParticipant struct {
-	name     string
-	quiesced bool
-	released bool
+	name        string
+	quiesced    bool
+	released    bool
+	lastRequest quiesce.Request
 }
 
 func (p *trackingParticipant) Name() string { return p.name }
 func (p *trackingParticipant) Status() quiesce.ParticipantStatus {
 	return quiesce.ParticipantStatus{Name: p.name, Quiesced: p.quiesced}
 }
-func (p *trackingParticipant) Quiesce(context.Context, quiesce.Request) (quiesce.Lease, error) {
+func (p *trackingParticipant) Quiesce(_ context.Context, req quiesce.Request) (quiesce.Lease, error) {
 	p.quiesced = true
+	p.lastRequest = req
 	return quiesce.LeaseFunc(func(context.Context) error { p.released = true; p.quiesced = false; return nil }), nil
 }
 
