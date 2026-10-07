@@ -116,6 +116,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	}
 	publicMethods := defaultPublicMethods()
 	quiesceExempt := defaultQuiesceExemptMethods()
+	quiesceReadOnly := defaultQuiesceReadOnlyMethods()
 	for method, exempt := range cfg.QuiesceExempt {
 		quiesceExempt[method] = exempt
 	}
@@ -128,8 +129,8 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		}
 	}
 	baseOptions := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(clusterBackendUnaryAuthInterceptor(cfg.ClusterBackendAuthToken), cfg.TokenManager.UnaryInterceptor(publicMethods), quiesceUnaryInterceptor(cfg.IngressGate, quiesceExempt)),
-		grpc.ChainStreamInterceptor(clusterBackendStreamAuthInterceptor(cfg.ClusterBackendAuthToken), cfg.TokenManager.StreamInterceptor(publicMethods), quiesceStreamInterceptor(cfg.IngressGate, quiesceExempt)),
+		grpc.ChainUnaryInterceptor(clusterBackendUnaryAuthInterceptor(cfg.ClusterBackendAuthToken), cfg.TokenManager.UnaryInterceptor(publicMethods), quiesceUnaryInterceptor(cfg.IngressGate, quiesceExempt, quiesceReadOnly)),
+		grpc.ChainStreamInterceptor(clusterBackendStreamAuthInterceptor(cfg.ClusterBackendAuthToken), cfg.TokenManager.StreamInterceptor(publicMethods), quiesceStreamInterceptor(cfg.IngressGate, quiesceExempt, quiesceReadOnly)),
 	}
 	if cfg.TLSConfig != nil {
 		baseOptions = append(baseOptions, grpc.Creds(credentials.NewTLS(cfg.TLSConfig)))
@@ -261,6 +262,20 @@ func defaultPublicMethods() map[string]bool {
 		clusterpb.ClusterBackendService_AcquireLocalRaftBackupFreeze_FullMethodName:     true,
 		clusterpb.ClusterBackendService_ReleaseLocalRaftBackupFreeze_FullMethodName:     true,
 		clusterpb.ClusterBackendService_CreateLocalBackupArchive_FullMethodName:         true,
+	}
+}
+
+func defaultQuiesceReadOnlyMethods() map[string]bool {
+	return map[string]bool{
+		clientv1.QueryService_ExecuteQuery_FullMethodName:                true,
+		clientv1.QueryService_ExecuteGQL_FullMethodName:                  true,
+		clientv1.SearchService_Search_FullMethodName:                     true,
+		clientv1.SearchService_GetLexicalIndexStatus_FullMethodName:      true,
+		clientv1.SemanticService_SemanticSearch_FullMethodName:           true,
+		clientv1.SemanticService_ListSemanticRules_FullMethodName:        true,
+		clientv1.MetadataCatalogService_ListTags_FullMethodName:          true,
+		clientv1.MetadataCatalogService_ListPropertyNames_FullMethodName: true,
+		clientv1.TransactionService_GetTransaction_FullMethodName:        true,
 	}
 }
 

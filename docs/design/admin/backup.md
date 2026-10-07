@@ -52,7 +52,7 @@ The daemon still authenticates backup RPCs during quiesce. The minimal Admin aut
 | `backup_timeout_seconds` | `1800` / `30m` | Maximum time for the backup trigger operation. |
 | `retry_after_seconds` | `5` | Delay used by the scheduler after transient failures or backup conflicts. |
 | `status_history_limit` | `20` | Number of recent status entries retained in daemon memory/status. |
-| `allow_reads_during_backup` | `false` | Reserved for proven-safe reads; default behavior is conservative. |
+| `allow_reads_during_backup` | `false` | When true, backup quiesce keeps a conservative whitelist of read-only API methods available while writes drain and remain blocked. Unknown or mutating methods are still rejected. |
 | `schedule_kind` | `interval` | Schedule kind: `interval`, `daily`, or `weekly`. Empty means `interval` for compatibility. |
 | `time_of_day` | empty | Wall-clock time for daily/weekly schedules in `HH:MM` 24-hour format. |
 | `timezone` | `UTC` | IANA timezone for daily/weekly schedules, for example `UTC` or `America/Toronto`. |

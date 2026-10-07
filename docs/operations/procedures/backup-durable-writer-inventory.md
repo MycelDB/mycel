@@ -27,7 +27,7 @@ Cluster system backup adds cluster-wide coordination around the same local archi
 
 | Subsystem | Primary data paths under `dataDir` | State category | Quiesce coverage | Validation |
 | --- | --- | --- | --- | --- |
-| API ingress | none directly; routes mutations into services | admission control | `api-ingress` gate rejects mutating requests during backup while allowing permitted reads | server quiesce tests and backup API tests |
+| API ingress | none directly; routes mutations into services | admission control | `api-ingress` gate rejects writes during backup; when `allow_reads_during_backup=true`, classified read-only RPCs remain admitted while writes drain | server quiesce tests and backup API tests |
 | Principal / identity | `identity/`, principal stores | authoritative | module quiesce gate around principal mutations | identity/service tests; covered by full backup restore smoke through users |
 | Space / domain/session | `spaces/`, `sessions/`, transaction metadata | authoritative | module quiesce gates around mutating paths | session/space tests; compose user backup restore |
 | Graph service/storage | `graphs/<space_id>/domains/<domain_id>/...` plus graph checkpoints/index artifacts | authoritative graph data plus derived graph checkpoints/indexes | graph service quiesce gate around transactions, graph writes, manual checkpoints, and automatic checkpoint worker writes | graph service/storage tests; K3s system backup restore count convergence |

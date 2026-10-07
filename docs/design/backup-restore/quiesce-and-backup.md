@@ -48,9 +48,9 @@ When `myceld` is quiesced for backup:
 - New writes are rejected quickly with a transient error.
 - Clients should retry with bounded backoff.
 - Users are not logged out by default.
-- Reads may be rejected unless explicitly proven side-effect-free. The current policy field `allow_reads_during_backup` is reserved for safe-read behavior and defaults to false.
+- Reads are rejected by default. When `allow_reads_during_backup=true`, the API ingress gate admits a conservative whitelist of read-only RPCs while active and new writes remain drained/blocked.
 
-Implemented gRPC error for rejected non-exempt RPCs, including reads unless explicitly exempted/proven safe:
+Implemented gRPC error for rejected non-exempt RPCs, including writes and reads not admitted by policy:
 
 ```text
 code = Unavailable
@@ -358,7 +358,7 @@ Recommended quiesce behavior defaults:
 ```text
 reject_new_work: true
 queue_new_work: false
-allow_reads_during_backup: false initially
+allow_reads_during_backup: false by default; when true, admit only classified read-only ingress RPCs during backup quiesce
 release_order: reverse registration order
 on_participant_failure: rollback acquired leases
 status_history_limit: 20
