@@ -376,6 +376,109 @@ func TestModuleFineGrainedOCC(t *testing.T) {
 	}
 }
 
+func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+
+	seed := graphTx(spaceID, domainID, 0)
+	parent, err := m.CreateNode(ctx, seed, NodeInput{Labels: []string{"Container"}, Content: "parent", Props: map[string]any{}})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child, err := m.CreateNode(ctx, seed, NodeInput{Labels: []string{"Note"}, Content: "revision 1", Props: map[string]any{domaingraph.NodePropTags: []string{"stable"}}})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	edge, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 1}})
+	if err != nil {
+		t.Fatalf("create edge: %v", err)
+	}
+	commit1, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+	if commit1.CommittedRevision != 1 {
+		t.Fatalf("seed revision=%d want 1", commit1.CommittedRevision)
+	}
+
+	readOnly := graphTx(spaceID, domainID, commit1.CommittedRevision)
+	readOnly.Mode = daemonsession.TransactionModeReadOnly
+
+	mutate := graphTx(spaceID, domainID, commit1.CommittedRevision)
+	newContent := "revision 2"
+	if _, err := m.UpdateNode(ctx, mutate, UpdateNodeInput{NodeID: child.ID.String(), Labels: []string{"Archived"}, Content: &newContent, UpdateMask: []string{"labels", "content"}}); err != nil {
+		t.Fatalf("update child: %v", err)
+	}
+	newNode, err := m.CreateNode(ctx, mutate, NodeInput{Labels: []string{"Note"}, Content: "new after snapshot", Props: map[string]any{domaingraph.NodePropTags: []string{"stable"}}})
+	if err != nil {
+		t.Fatalf("create new node: %v", err)
+	}
+	if _, err := m.DeleteEdge(ctx, mutate, edge.ID.String()); err != nil {
+		t.Fatalf("delete edge: %v", err)
+	}
+	commit2, err := m.CommitTransactionGraph(ctx, mutate)
+	if err != nil {
+		t.Fatalf("commit mutate: %v", err)
+	}
+	if commit2.CommittedRevision != 2 {
+		t.Fatalf("mutate revision=%d want 2", commit2.CommittedRevision)
+	}
+
+	got, err := m.GetNode(ctx, readOnly, child.ID.String())
+	if err != nil {
+		t.Fatalf("snapshot GetNode(child): %v", err)
+	}
+	if got.Content != "revision 1" || !sameStringSet(got.Labels, []string{"Note"}) {
+		t.Fatalf("snapshot child = %+v, want revision 1 Note", got)
+	}
+	if _, err := m.GetNode(ctx, readOnly, newNode.ID.String()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("snapshot GetNode(new) error = %v, want ErrNotFound", err)
+	}
+	children, err := m.ListChildren(ctx, readOnly, parent.ID.String())
+	if err != nil {
+		t.Fatalf("snapshot ListChildren: %v", err)
+	}
+	if len(children) != 1 || children[0].ID != edge.ID {
+		t.Fatalf("snapshot children = %+v, want original edge", children)
+	}
+	parentEdge, err := m.GetParent(ctx, readOnly, child.ID.String())
+	if err != nil {
+		t.Fatalf("snapshot GetParent: %v", err)
+	}
+	if parentEdge == nil || parentEdge.ID != edge.ID {
+		t.Fatalf("snapshot parent edge = %+v, want original edge", parentEdge)
+	}
+	notes, _, _, err := m.ScanLabel(ctx, readOnly, LabelScan{Label: "Note"})
+	if err != nil {
+		t.Fatalf("snapshot ScanLabel: %v", err)
+	}
+	if len(notes) != 1 || notes[0].ID != child.ID {
+		t.Fatalf("snapshot Note scan = %+v, want original child only", notes)
+	}
+	stable, _, _, err := m.ScanTag(ctx, readOnly, TagScan{Tag: "stable"})
+	if err != nil {
+		t.Fatalf("snapshot ScanTag: %v", err)
+	}
+	if len(stable) != 1 || stable[0].ID != child.ID {
+		t.Fatalf("snapshot stable scan = %+v, want original child only", stable)
+	}
+	adjacent, _, _, err := m.ScanAdjacency(ctx, readOnly, AdjacencyScan{NodeID: parent.ID.String(), Label: "contains", Direction: AdjacencyDirectionOut})
+	if err != nil {
+		t.Fatalf("snapshot ScanAdjacency: %v", err)
+	}
+	if len(adjacent) != 1 || adjacent[0].ID != edge.ID {
+		t.Fatalf("snapshot adjacency = %+v, want original edge", adjacent)
+	}
+
+	current := graphTx(spaceID, domainID, commit2.CommittedRevision)
+	current.Mode = daemonsession.TransactionModeReadOnly
+	if _, err := m.GetNode(ctx, current, newNode.ID.String()); err != nil {
+		t.Fatalf("current read-only GetNode(new): %v", err)
+	}
+}
+
 func graphTx(spaceID string, domainID string, baseRevision int64) daemonsession.GraphTransaction {
 	now := time.Now().UTC()
 	return daemonsession.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: daemonsession.TransactionModeReadWrite, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}

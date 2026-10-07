@@ -2,7 +2,7 @@
 
 ## Status
 
-Complete for the current V1 scope. Phase E V1 routes session- and transaction-scoped unary requests to the correct home node or fails closed, and graph read paths can route committed/read-only reads to the current partition leader. Phase F defines and enforces the actual read guarantees behind those routes. F0 is complete: the read-consistency contract and read-path inventory are documented in `phase-f-read-consistency-inventory.md`, with matching code comments in the raft graph read path. F1 is complete: `consensus.Group` exposes a leader-only `LinearizableRead`/`WaitApplied` barrier backed by raft `ReadIndex`, plus local read-index diagnostics and focused tests. F2 is complete: graph committed/read-only reads and transaction base-revision lookup now use the consensus read barrier on the local partition leader, while read-write overlay reads remain home/leader local. F3 is complete: V1 read-only transactions are explicitly linearizable current-read contexts, not historical repeatable snapshots. F4 is complete: query and metadata catalog reads are verified to use routed graph manager reads, and read-write GQL reads preserve overlay read-your-writes. F5 is complete: read metadata is exposed on graph/query/metadata responses and threaded through internal graph read recording plus forwarded raft read envelopes. F6 is complete: `ReadOptions.allow_stale` is additive on graph/query/metadata read requests, but stale reads are rejected by default because no daemon stale-read config/implementation is enabled. F7 is complete: raft group read-index/apply-wait diagnostics are exposed through admin status/CLI output and structured logs record read barrier failures and slow apply waits without request payloads. F8 is complete: focused Phase F tests are bundled under `make test-phase-f` and included in the cluster release gate.
+Complete for the current V1 scope. Phase E V1 routes session- and transaction-scoped unary requests to the correct home node or fails closed, and graph read paths can route committed/read-only reads to the current partition leader. Phase F defines and enforces the actual read guarantees behind those routes. F0 is complete: the read-consistency contract and read-path inventory are documented in `phase-f-read-consistency-inventory.md`, with matching code comments in the raft graph read path. F1 is complete: `consensus.Group` exposes a leader-only `LinearizableRead`/`WaitApplied` barrier backed by raft `ReadIndex`, plus local read-index diagnostics and focused tests. F2 is complete: graph committed/read-only reads and transaction base-revision lookup now use the consensus read barrier on the local partition leader, while read-write overlay reads remain home/leader local. F3 originally documented V1 read-only transactions as linearizable current-read contexts; mycel#26 supersedes that by pinning read-only graph reads to their `base_revision` snapshot. F4 is complete: query and metadata catalog reads are verified to use routed graph manager reads, and read-write GQL reads preserve overlay read-your-writes. F5 is complete: read metadata is exposed on graph/query/metadata responses and threaded through internal graph read recording plus forwarded raft read envelopes. F6 is complete: `ReadOptions.allow_stale` is additive on graph/query/metadata read requests, but stale reads are rejected by default because no daemon stale-read config/implementation is enabled. F7 is complete: raft group read-index/apply-wait diagnostics are exposed through admin status/CLI output and structured logs record read barrier failures and slow apply waits without request payloads. F8 is complete: focused Phase F tests are bundled under `make test-phase-f` and included in the cluster release gate.
 
 ## Goal
 
@@ -34,7 +34,7 @@ Phase F should make the default client behavior safe for arbitrary ready-pod ing
 
 - `internal/clustering/consensus.Group` tracks leader, commit index, and applied index, and exposes a leader-only `LinearizableRead`/`WaitApplied` read-index barrier API.
 - `internal/graph/service/raft_read.go` forwards committed/read-only reads to the partition leader and the leader serves committed state only after the raft read-index/apply barrier succeeds.
-- Read-only transactions carry `base_revision`, but the graph store remains latest-state oriented rather than a full historical MVCC snapshot store; V1 therefore documents read-only transactions as linearizable current-read contexts.
+- Read-only transactions carry `base_revision`; graph reads through those transactions resolve nodes, edges, hierarchy, and graph-derived scans from append-log-derived historical entity versions at that revision.
 - Public graph/query/metadata responses expose additive read consistency metadata such as observed revision, read index, leader node, and strong/overlay mode where a proof/context exists.
 - Diagnostics expose read-index attempts/failures/timeouts and applied-index wait behavior through admin status, CLI output, and structured logs.
 
@@ -52,8 +52,8 @@ Phase F should make the default client behavior safe for arbitrary ready-pod ing
    - Phase F must keep enforcing that the home node is the partition leader before serving read-write overlay reads, so reads include staged overlay changes and do not forward away from the overlay.
 
 4. **Read-only transaction snapshot semantics must be explicit.**
-   - Minimum V1: `BeginTransaction(read-only)` records a strong observed revision after a read-index barrier, and all committed reads in that transaction must be at least that safe point.
-   - If exact historical snapshot reads are required by public semantics, add MVCC/snapshot support before claiming repeatable-read snapshot isolation. Otherwise update API docs to state read-only transactions are linearizable/current-read contexts, not historical repeatable-read snapshots.
+   - `BeginTransaction(read-only)` records a strong observed revision after a read-index barrier.
+   - Graph reads in that transaction must first ensure local state has applied at least the base revision, then resolve graph data at the pinned base revision rather than the latest committed revision.
 
 5. **Revision/read metadata is additive.**
    - Prefer internal metadata first.
@@ -188,21 +188,20 @@ Implemented. `internal/graph/service` now has `StrongReadContext` and calls the 
 
 ### Status
 
-Implemented. V1 chooses **Option A — Linearizable current-read transaction**. `BeginTransaction(read-only)` records the current graph revision returned by `CurrentRevision`, which in raft mode is a strong read-index/apply-barrier read after F2. Each read-only graph read performs a fresh strong read barrier and reads latest committed graph state, so it may observe revisions newer than `base_revision`. The graph module now fails closed if a read-only transaction's `base_revision` is ahead of the observed local graph revision. The current store is latest-state only; Mycel does not claim repeatable historical snapshot isolation until a future MVCC/snapshot store exists.
+Implemented; superseded by mycel#26. F3 originally chose **Option A — Linearizable current-read transaction**. mycel#26 now implements **Option B — Repeatable snapshot transaction** for graph reads: `BeginTransaction(read-only)` records the current graph revision returned by `CurrentRevision`, and each read-only graph read performs a fresh strong read barrier before resolving graph data at the pinned `base_revision`. The graph module fails closed if a read-only transaction's `base_revision` is ahead of the observed local graph revision.
 
 ### Tasks
 
 - Decide and implement one of the following explicit V1 models:
 
-  **Option A — Linearizable current-read transaction (smaller V1): implemented.**
+  **Option A — Linearizable current-read transaction (smaller V1): superseded.**
   - `BeginTransaction(read-only)` records the strong observed revision at creation.
-  - Each read-only transaction read performs/uses a strong read barrier and may observe newer committed revisions than `base_revision`.
-  - Public docs must stop calling this a repeatable historical snapshot.
+  - This was the original F3 implementation but no longer describes current behavior.
 
-  **Option B — Repeatable snapshot transaction (larger V1):**
-  - Add graph-store snapshot/MVCC support keyed by domain/space revision.
+  **Option B — Repeatable snapshot transaction (larger V1): implemented by mycel#26.**
+  - Maintain graph-store history keyed by domain/space revision.
   - `BeginTransaction(read-only)` pins `base_revision` after a strong read barrier.
-  - All reads in the transaction use the pinned revision and fail if that revision is compacted/unavailable.
+  - All graph reads in the transaction use the pinned revision.
 
 - Recommended sequence:
   1. implement Option A first if current product callers only require freshness/safety;
@@ -214,7 +213,7 @@ Implemented. V1 chooses **Option A — Linearizable current-read transaction**. 
 Implemented.
 
 - Read-only transaction behavior is explicit, tested, and documented.
-- Snapshot isolation is not implemented; docs and API comments now describe read-only transactions as linearizable current-read contexts rather than repeatable historical snapshots.
+- Snapshot isolation for graph reads is implemented; docs and API comments describe read-only transactions as pinned to `base_revision`.
 
 ## Phase F4 — Query and metadata read consistency
 
@@ -344,7 +343,7 @@ Implemented.
 
 ### Status
 
-Implemented. Added `make test-phase-f` to run the focused Phase F read-consistency packages with fresh test results: consensus, backend forwarding, graph service, client API, admin API, and CLI coverage. The target includes read-index barrier tests, graph strong-read tests, read-only current-read semantics, query/metadata consistency tests, read metadata assertions, stale-read rejection tests, and admin/CLI read diagnostics. `test-cluster-release-gate` now includes `test-phase-f` before destructive compose/K3s validations.
+Implemented. Added `make test-phase-f` to run the focused Phase F read-consistency packages with fresh test results: consensus, backend forwarding, graph service, client API, admin API, and CLI coverage. The target includes read-index barrier tests, graph strong-read tests, read-only snapshot semantics, query/metadata consistency tests, read metadata assertions, stale-read rejection tests, and admin/CLI read diagnostics. `test-cluster-release-gate` now includes `test-phase-f` before destructive compose/K3s validations.
 
 ### Unit/component tests
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase F0 inventory with F1/F2/F3/F4/F5/F6/F7 updates. This document classifies raft-mode graph/query read paths and records the enforced Phase F read-index behavior. Phase F1/F2 turned the `strong committed read` classifications below into raft `ReadIndex` + apply-barrier reads. Phase F3 chooses linearizable current-read semantics for read-only transactions. Phase F4 verifies query and metadata catalog paths inherit those graph-manager reads. Phase F5 exposes read metadata on graph/query/metadata responses. Phase F6 adds request-level stale-read opt-in fields but rejects them by default because no stale-read daemon config/implementation is enabled. Phase F7 exposes raft group read-index/apply-wait diagnostics through admin status and CLI output.
+Phase F0 inventory with F1/F2/F3/F4/F5/F6/F7 updates and the mycel#26 snapshot-read follow-up. This document classifies raft-mode graph/query read paths and records the enforced Phase F read-index behavior. Phase F1/F2 turned the `strong committed read` classifications below into raft `ReadIndex` + apply-barrier reads. Phase F3 originally documented linearizable current-read semantics for read-only transactions; mycel#26 now pins read-only transaction reads to their `base_revision`. Phase F4 verifies query and metadata catalog paths inherit those graph-manager reads. Phase F5 exposes read metadata on graph/query/metadata responses. Phase F6 adds request-level stale-read opt-in fields but rejects them by default because no stale-read daemon config/implementation is enabled. Phase F7 exposes raft group read-index/apply-wait diagnostics through admin status and CLI output.
 
 ## Read consistency terms
 
@@ -23,7 +23,7 @@ In raft mode:
 2. A node must not serve authoritative committed graph data from local state unless it is the current partition leader and has passed the read-index/apply barrier.
 3. Non-leader ingress must route to the partition leader or fail closed.
 4. Read-write transaction reads must provide read-your-writes by staying on the transaction home/leader and merging staged overlay state.
-5. Read-only transactions are linearizable current-read contexts in V1, not historical repeatable snapshots. `base_revision` records the strong observed revision at begin time, but subsequent read-only transaction reads perform fresh strong barriers and may observe newer committed revisions. MVCC/snapshot support is required before Mycel can claim repeatable historical snapshot isolation.
+5. Read-only transactions are repeatable-read graph snapshots pinned to `base_revision`. `base_revision` records the strong observed revision at begin time; subsequent read-only transaction reads still perform fresh strong barriers, then read historical graph entity versions at that pinned revision.
 6. If no leader, backend route, quorum read-index, or apply barrier is available, the operation returns a retryable/fail-closed error rather than using stale local state.
 7. Stale reads remain disabled. F6 added request-level `ReadOptions.allow_stale`, but the daemon rejects it unless a future daemon config and implementation explicitly enable and label stale reads.
 
@@ -31,7 +31,7 @@ In raft mode:
 
 - `internal/clustering/consensus.Group` tracks leader, term, commit index, and applied index, and exposes the F1 leader-only `LinearizableRead`/`WaitApplied` read-index barrier API used by committed graph reads.
 - `internal/graph/service/raft_read.go` routes committed/read-only graph reads to the current partition leader, rejects backend graph reads that arrive at a non-leader, and performs the F1 read-index/apply barrier before serving committed/read-only graph storage reads.
-- `internal/graph/service.Module` stores latest committed state, with optimistic conflict metadata, not historical MVCC snapshots. F3 therefore treats read-only transactions as linearizable current-read contexts and guards only that observed local state is not behind the transaction `base_revision`.
+- `internal/graph/service.Module` stores latest committed state plus append-log-derived in-memory entity histories. Read-only transactions use those histories to resolve graph reads at the transaction `base_revision` after ensuring observed local state is not behind that revision.
 - Phase E routes session/transaction-scoped unary API calls to the transaction home node. Phase F preserves that behavior while strengthening committed/read-only reads.
 
 ## Graph service read path inventory
@@ -56,7 +56,7 @@ In raft mode:
 | `GraphService.GetNode`, `ListNodes`, `GetEdge`, `ListEdges`, `ListChildren`, `GetParent` | Phase E router forwards by `transaction_id` to transaction home, then graph service applies graph read routing. | Inherits transaction mode: `strong committed read` or `read-write overlay read`; `ReadOptions.allow_stale` is rejected by default. | Implemented through F6: forwarded/home execution reaches graph read-index barrier for committed/read-only reads, returns `ReadMetadata` where a proof/context exists, and rejects stale opt-in. |
 | `GraphService.CreateNode`, `UpdateNode`, `UpsertNode`, `DeleteNode`, `CreateEdge`, `UpdateEdge`, `DeleteEdge`, `MoveSubtree`, `ReorderChildren`, `ApplyGraphOperations` | Mutating API paths route by transaction home and graph module requires local partition leadership before staging/validation. Some write paths perform reads for validation. | Write path with embedded `read-write overlay read` and validation reads. | Keep local-leader requirement. If validation uses committed state, ensure local leader has applied through a safe barrier before validation where needed. Never allow stale validation. |
 | `GraphService.CreateBlobNode` | Streaming path fails closed for remote-home transaction IDs and executes only locally. | Write path with embedded validation/read-write overlay behavior. | Preserve fail-closed remote streaming behavior; ensure any committed validation uses safe local-leader state. |
-| `QueryService.ExecuteQuery` | Routes by `transaction_id`; materializes nodes/edges through graph `ListNodes`/`ListEdges`. | `strong committed read` for read-only/committed tx; `read-write overlay read` for read-write tx; `ReadOptions.allow_stale` is rejected by default. | Implemented through F6: graph-manager enumeration inherits F2 barriers, F3 documents current-read semantics, responses expose `ReadMetadata`, and stale opt-in fails closed. |
+| `QueryService.ExecuteQuery` | Routes by `transaction_id`; materializes nodes/edges through graph `ListNodes`/`ListEdges`. | `strong committed read` for read-only/committed tx; `read-write overlay read` for read-write tx; `ReadOptions.allow_stale` is rejected by default. | Graph-manager enumeration inherits F2 barriers; read-only transactions resolve at their pinned base revision, responses expose `ReadMetadata`, and stale opt-in fails closed. |
 | `QueryService.ExecuteGQL` read-only statements | Routes by transaction; executor reads through graph list helpers. | Same as `ExecuteQuery`. | Implemented through F6: executor calls graph-manager list helpers, inherits F2 barriers, exposes `ReadMetadata`, and rejects stale opt-in. |
 | `QueryService.ExecuteGQL` read-write statements | Routes by transaction; executor may read and mutate through graph manager. | Read-write transaction overlay + write validation. | Implemented through F6: mutating plans require read-write transactions; reads stay on the transaction home/leader, include overlay state, return `overlay` metadata where a read occurs, and reject stale opt-in. |
 | `QueryService.ExecuteGQLScript` | Routes by transaction; each statement uses same transaction. | Same as GQL per statement. | Implemented through F6: per-statement execution uses the same graph-manager-backed transaction context, returns aggregate/statement read metadata, and rejects stale opt-in. |
@@ -95,6 +95,6 @@ In raft mode:
 
 ## F3 decision and residual follow-ups
 
-- F3 decision: read-only transactions are linearizable current-read contexts for V1. They are not repeatable historical snapshots until graph-store MVCC/snapshot support exists.
+- F3 was superseded by mycel#26: read-only transactions are repeatable-read graph snapshots pinned to `base_revision`.
 - F5 decision: read metadata is exposed additively in public graph/query/metadata responses and recorded only when a strong/overlay proof or context exists.
 - Space/schema subsystem reads may need their own read-index barriers in a later subsystem read-consistency phase if they become part of public cross-pod consistency claims beyond graph validation.

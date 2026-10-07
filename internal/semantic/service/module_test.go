@@ -20,6 +20,7 @@ import (
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
+	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 	"google.golang.org/grpc/codes"
@@ -387,6 +388,35 @@ func TestBackfillIndexRejectsSemanticDisabledDomain(t *testing.T) {
 	}
 }
 
+func TestSemanticGraphReaderPinsReadOnlyTransactionToCurrentRevision(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	mgr := &recordingRevisionGraphManager{revision: 42}
+	reader := semanticGraphReader{manager: mgr, spaceID: spaceID}
+
+	if _, err := reader.GetNode(ctx, domainID, graph.NodeID(uuid.New())); err != nil {
+		t.Fatalf("GetNode() error = %v", err)
+	}
+	if _, err := reader.ListNodes(ctx, domainID); err != nil {
+		t.Fatalf("ListNodes() error = %v", err)
+	}
+	if len(mgr.txs) != 2 {
+		t.Fatalf("recorded tx count = %d, want 2", len(mgr.txs))
+	}
+	for _, tx := range mgr.txs {
+		if tx.Mode != daemonsession.TransactionModeReadOnly {
+			t.Fatalf("tx mode = %s, want read-only", tx.Mode)
+		}
+		if tx.BaseRevision != 42 {
+			t.Fatalf("tx base revision = %d, want 42", tx.BaseRevision)
+		}
+		if tx.SpaceID != spaceID.String() || tx.DomainID != domainID.String() {
+			t.Fatalf("unexpected tx scope: %+v", tx)
+		}
+	}
+}
+
 func testRuntime(t *testing.T, sem daemonconfig.SemanticMaintenanceConfig) *daemonruntime.Runtime {
 	t.Helper()
 	cfg := daemonconfig.Config{DataDir: t.TempDir(), Mode: daemonconfig.DefaultMode, LogLevel: daemonconfig.DefaultLogLevel, LogFormat: daemonconfig.DefaultLogFormat, GRPCAddr: "127.0.0.1:0", SemanticMaintenance: sem}
@@ -404,6 +434,35 @@ func waitForStats(t *testing.T, m *Module, ok func(MaintenanceStats) bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("condition not met; stats=%+v", m.MaintenanceStats())
+}
+
+type recordingRevisionGraphManager struct {
+	revision int64
+	txs      []daemonsession.GraphTransaction
+}
+
+func (m *recordingRevisionGraphManager) CurrentDomainRevision(context.Context, string, string) (int64, error) {
+	return m.revision, nil
+}
+
+func (m *recordingRevisionGraphManager) GetNode(_ context.Context, tx daemonsession.GraphTransaction, _ string) (graph.Node, error) {
+	m.txs = append(m.txs, tx)
+	return graph.Node{}, nil
+}
+
+func (m *recordingRevisionGraphManager) ListNodes(_ context.Context, tx daemonsession.GraphTransaction, _ int, _ string) ([]graph.Node, string, error) {
+	m.txs = append(m.txs, tx)
+	return nil, "", nil
+}
+
+func (m *recordingRevisionGraphManager) ListEdges(_ context.Context, tx daemonsession.GraphTransaction, _ int, _ string) ([]graph.Edge, string, error) {
+	m.txs = append(m.txs, tx)
+	return nil, "", nil
+}
+
+func (m *recordingRevisionGraphManager) GetParent(_ context.Context, tx daemonsession.GraphTransaction, _ string) (*graph.Edge, error) {
+	m.txs = append(m.txs, tx)
+	return nil, nil
 }
 
 type fakeSchemaManager struct {

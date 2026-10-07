@@ -89,7 +89,7 @@ The transaction determines:
 - read context/base revision
 - authorization context
 
-The service should read through the transaction graph read path. This includes staged writes in a read-write transaction. For read-only transactions, V1 reads current committed graph state through the graph read consistency path and may observe commits newer than `base_revision`. Responses include optional `read_metadata` with `strong` read-index/apply proof details or `overlay` context where applicable. Requests include optional `read_options`; `allow_stale=true` is rejected by the current daemon because no stale-read daemon config/implementation is enabled.
+The service should read through the transaction graph read path. This includes staged writes in a read-write transaction. For read-only transactions, reads use the graph snapshot pinned to `base_revision` after the graph read consistency barrier. Responses include optional `read_metadata` with `strong` read-index/apply proof details or `overlay` context where applicable. Requests include optional `read_options`; `allow_stale=true` is rejected by the current daemon because no stale-read daemon config/implementation is enabled.
 
 ## ListTags
 

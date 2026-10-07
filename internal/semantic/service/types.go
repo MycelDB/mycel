@@ -51,6 +51,10 @@ type GraphReadManager interface {
 	GetParent(ctx context.Context, tx daemonsession.GraphTransaction, childNodeID string) (*graph.Edge, error)
 }
 
+type GraphRevisionReader interface {
+	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
+}
+
 type Config struct {
 	MaintenanceConfig MaintenanceConfig
 	SchemaManager     SchemaManager

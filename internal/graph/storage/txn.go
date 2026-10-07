@@ -261,15 +261,19 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	t.store.revision++
 	newRev := t.store.revision
 	for _, n := range t.nodePuts {
+		t.store.appendNodeVersion(n, false, newRev)
 		t.store.nodeModRev[n.ID] = newRev
 	}
 	for _, id := range t.nodeDeletes {
+		t.store.appendNodeTombstone(id, newRev)
 		t.store.nodeModRev[id] = newRev
 	}
 	for _, e := range t.edgePuts {
+		t.store.appendEdgeVersion(e, false, newRev)
 		t.store.edgeModRev[e.ID] = newRev
 	}
 	for _, id := range t.edgeDeletes {
+		t.store.appendEdgeTombstone(id, newRev)
 		t.store.edgeModRev[id] = newRev
 	}
 	domains := t.touchedDomains()

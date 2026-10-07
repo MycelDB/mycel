@@ -61,12 +61,26 @@ type LocalStore struct {
 	persistentIndexLoadStatus PersistentIndexStatus
 	journalDay                map[int]map[graph.NodeID]struct{}
 	blobRefs                  map[graph.BlobID]map[graph.NodeID]struct{}
+	nodeHistory               map[graph.NodeID][]nodeVersion
+	edgeHistory               map[graph.EdgeID][]edgeVersion
 	revision                  uint64
 	// nodeModRev/edgeModRev record the store revision at which each entity was
 	// last written, enabling write-set (fine-grained) conflict detection so that
 	// concurrent transactions touching disjoint entities do not conflict.
 	nodeModRev map[graph.NodeID]uint64
 	edgeModRev map[graph.EdgeID]uint64
+}
+
+type nodeVersion struct {
+	Revision uint64
+	Node     graph.Node
+	Deleted  bool
+}
+
+type edgeVersion struct {
+	Revision uint64
+	Edge     graph.Edge
+	Deleted  bool
 }
 
 func Open(ctx context.Context, spacePath string) (*LocalStore, error) {
@@ -205,6 +219,8 @@ func (s *LocalStore) resetIndexes() {
 	s.edgeIndex = adjacency.NewMemoryEdgeIndex()
 	s.journalDay = map[int]map[graph.NodeID]struct{}{}
 	s.blobRefs = map[graph.BlobID]map[graph.NodeID]struct{}{}
+	s.nodeHistory = map[graph.NodeID][]nodeVersion{}
+	s.edgeHistory = map[graph.EdgeID][]edgeVersion{}
 	s.nodeModRev = map[graph.NodeID]uint64{}
 	s.edgeModRev = map[graph.EdgeID]uint64{}
 }
@@ -262,6 +278,20 @@ func (s *LocalStore) GetNode(ctx context.Context, id graph.NodeID) (graph.Node, 
 	}
 	return cloneNode(n), ctx.Err()
 }
+
+func (s *LocalStore) GetNodeAt(ctx context.Context, id graph.NodeID, revision uint64) (graph.Node, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return graph.Node{}, err
+	}
+	n, ok := nodeAtRevision(s.nodeHistory[id], revision)
+	if !ok {
+		return graph.Node{}, ErrNotFound
+	}
+	return cloneNode(n), ctx.Err()
+}
+
 func (s *LocalStore) ListNodes(ctx context.Context) ([]graph.Node, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -286,6 +316,23 @@ func (s *LocalStore) ListNodesByDomain(ctx context.Context, domainID graph.Domai
 	return out, ctx.Err()
 }
 
+func (s *LocalStore) ListNodesByDomainAt(ctx context.Context, domainID graph.DomainID, revision uint64) ([]graph.Node, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return nil, err
+	}
+	out := make([]graph.Node, 0, len(s.nodeHistory))
+	for _, versions := range s.nodeHistory {
+		n, ok := nodeAtRevision(versions, revision)
+		if ok && n.DomainID == domainID {
+			out = append(out, cloneNode(n))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
+	return out, ctx.Err()
+}
+
 func (s *LocalStore) GetEdge(ctx context.Context, id graph.EdgeID) (graph.Edge, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -295,6 +342,20 @@ func (s *LocalStore) GetEdge(ctx context.Context, id graph.EdgeID) (graph.Edge, 
 	}
 	return cloneEdge(e), ctx.Err()
 }
+
+func (s *LocalStore) GetEdgeAt(ctx context.Context, id graph.EdgeID, revision uint64) (graph.Edge, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return graph.Edge{}, err
+	}
+	e, ok := edgeAtRevision(s.edgeHistory[id], revision)
+	if !ok {
+		return graph.Edge{}, ErrNotFound
+	}
+	return cloneEdge(e), ctx.Err()
+}
+
 func (s *LocalStore) ListEdges(ctx context.Context) ([]graph.Edge, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -305,6 +366,24 @@ func (s *LocalStore) ListEdges(ctx context.Context) ([]graph.Edge, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
 	return out, ctx.Err()
 }
+
+func (s *LocalStore) ListEdgesAt(ctx context.Context, revision uint64) ([]graph.Edge, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return nil, err
+	}
+	out := make([]graph.Edge, 0, len(s.edgeHistory))
+	for _, versions := range s.edgeHistory {
+		e, ok := edgeAtRevision(versions, revision)
+		if ok {
+			out = append(out, cloneEdge(e))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
+	return out, ctx.Err()
+}
+
 func (s *LocalStore) IncomingEdges(ctx context.Context, nodeID graph.NodeID) ([]graph.Edge, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -341,6 +420,32 @@ func (s *LocalStore) OutgoingEdges(ctx context.Context, nodeID graph.NodeID) ([]
 	}
 	return out, ctx.Err()
 }
+
+func (s *LocalStore) IncomingEdgesAt(ctx context.Context, nodeID graph.NodeID, revision uint64) ([]graph.Edge, error) {
+	return s.endpointEdgesAt(ctx, revision, func(edge graph.Edge) bool { return edge.ToID == nodeID })
+}
+
+func (s *LocalStore) OutgoingEdgesAt(ctx context.Context, nodeID graph.NodeID, revision uint64) ([]graph.Edge, error) {
+	return s.endpointEdgesAt(ctx, revision, func(edge graph.Edge) bool { return edge.FromID == nodeID })
+}
+
+func (s *LocalStore) endpointEdgesAt(ctx context.Context, revision uint64, include func(graph.Edge) bool) ([]graph.Edge, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return nil, err
+	}
+	out := make([]graph.Edge, 0, len(s.edgeHistory))
+	for _, versions := range s.edgeHistory {
+		edge, ok := edgeAtRevision(versions, revision)
+		if ok && include(edge) {
+			out = append(out, cloneEdge(edge))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
+	return out, ctx.Err()
+}
+
 func (s *LocalStore) Children(ctx context.Context, parentID graph.NodeID) ([]graph.Edge, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -408,10 +513,12 @@ func (s *LocalStore) replayNodeSegmentFrom(path string, offset int64, commitRevi
 				return err
 			}
 			s.applyNodePut(n, r.location)
+			s.appendNodeVersion(n, false, rev)
 			s.nodeModRev[n.ID] = rev
 		case RecordKindNodeTombstone:
 			id := graph.NodeID(r.header.entityID)
 			s.applyNodeDelete(id, r.location)
+			s.appendNodeTombstone(id, rev)
 			s.nodeModRev[id] = rev
 		}
 		return nil
@@ -431,14 +538,60 @@ func (s *LocalStore) replayEdgeSegmentFrom(path string, offset int64, commitRevi
 				return err
 			}
 			s.applyEdgePut(e, r.location)
+			s.appendEdgeVersion(e, false, rev)
 			s.edgeModRev[e.ID] = rev
 		case RecordKindEdgeTombstone:
 			id := graph.EdgeID(r.header.entityID)
 			s.applyEdgeDelete(id, r.location)
+			s.appendEdgeTombstone(id, rev)
 			s.edgeModRev[id] = rev
 		}
 		return nil
 	})
+}
+
+func (s *LocalStore) appendNodeVersion(n graph.Node, deleted bool, revision uint64) {
+	if revision == 0 {
+		return
+	}
+	s.nodeHistory[n.ID] = append(s.nodeHistory[n.ID], nodeVersion{Revision: revision, Node: cloneNode(n), Deleted: deleted})
+}
+
+func (s *LocalStore) appendNodeTombstone(id graph.NodeID, revision uint64) {
+	if revision == 0 {
+		return
+	}
+	s.nodeHistory[id] = append(s.nodeHistory[id], nodeVersion{Revision: revision, Deleted: true})
+}
+
+func nodeAtRevision(versions []nodeVersion, revision uint64) (graph.Node, bool) {
+	idx := sort.Search(len(versions), func(i int) bool { return versions[i].Revision > revision }) - 1
+	if idx < 0 || versions[idx].Deleted {
+		return graph.Node{}, false
+	}
+	return cloneNode(versions[idx].Node), true
+}
+
+func (s *LocalStore) appendEdgeVersion(e graph.Edge, deleted bool, revision uint64) {
+	if revision == 0 {
+		return
+	}
+	s.edgeHistory[e.ID] = append(s.edgeHistory[e.ID], edgeVersion{Revision: revision, Edge: cloneEdge(e), Deleted: deleted})
+}
+
+func (s *LocalStore) appendEdgeTombstone(id graph.EdgeID, revision uint64) {
+	if revision == 0 {
+		return
+	}
+	s.edgeHistory[id] = append(s.edgeHistory[id], edgeVersion{Revision: revision, Deleted: true})
+}
+
+func edgeAtRevision(versions []edgeVersion, revision uint64) (graph.Edge, bool) {
+	idx := sort.Search(len(versions), func(i int) bool { return versions[i].Revision > revision }) - 1
+	if idx < 0 || versions[idx].Deleted {
+		return graph.Edge{}, false
+	}
+	return cloneEdge(versions[idx].Edge), true
 }
 
 func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
