@@ -3115,47 +3115,34 @@ type indexedNodeResult struct {
 }
 
 func (m *Module) scanSnapshotLabel(ctx context.Context, store *graphstorage.LocalStore, tx daemonsession.GraphTransaction, label string, scan LabelScan, revision uint64) ([]domaingraph.Node, string, int, error) {
-	nodes, err := store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
-	}
-	cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
-	}
-	items := make([]domaingraph.Node, 0, len(nodes))
-	for _, node := range nodes {
-		if !nodeHasAnyLabelForIndexedRead(node, []string{label}) {
-			continue
-		}
-		if cursorKey != "" && node.ID.String() <= cursorKey {
-			continue
-		}
-		items = append(items, cloneNode(node))
-	}
-	return limitSnapshotNodes(items, scan.Limit), snapshotNodeNext(items, scan.Limit), len(nodes), nil
+	return scanSnapshotNodes(ctx, store, mustDomainID(tx.DomainID), scan.Cursor, scan.Limit, revision, func(node domaingraph.Node) bool {
+		return nodeHasAnyLabelForIndexedRead(node, []string{label})
+	})
 }
 
 func (m *Module) scanSnapshotTag(ctx context.Context, store *graphstorage.LocalStore, tx daemonsession.GraphTransaction, tag string, scan TagScan, revision uint64) ([]domaingraph.Node, string, int, error) {
-	nodes, err := store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
+	return scanSnapshotNodes(ctx, store, mustDomainID(tx.DomainID), scan.Cursor, scan.Limit, revision, func(node domaingraph.Node) bool {
+		return nodeHasTagForIndexedRead(node, tag)
+	})
+}
+
+func scanSnapshotNodes(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, cursor string, limit int, revision uint64, include func(domaingraph.Node) bool) ([]domaingraph.Node, string, int, error) {
+	nodes, err := store.ListNodesByDomainAt(ctx, domainID, revision)
 	if err != nil {
 		return nil, "", 0, mapStorageError(err)
 	}
-	cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
+	cursorKey, err := graphstorage.DecodeIndexCursor(cursor)
 	if err != nil {
 		return nil, "", 0, mapStorageError(err)
 	}
 	items := make([]domaingraph.Node, 0, len(nodes))
 	for _, node := range nodes {
-		if !nodeHasTagForIndexedRead(node, tag) {
-			continue
-		}
-		if cursorKey != "" && node.ID.String() <= cursorKey {
+		if !include(node) || cursorKey != "" && node.ID.String() <= cursorKey {
 			continue
 		}
 		items = append(items, cloneNode(node))
 	}
-	return limitSnapshotNodes(items, scan.Limit), snapshotNodeNext(items, scan.Limit), len(nodes), nil
+	return limitSnapshotNodes(items, limit), snapshotNodeNext(items, limit), len(nodes), nil
 }
 
 func (m *Module) scanSnapshotNodePropertyOrdered(ctx context.Context, store *graphstorage.LocalStore, tx daemonsession.GraphTransaction, scan OrderedNodePropertyScan, revision uint64) ([]domaingraph.Node, string, int, error) {

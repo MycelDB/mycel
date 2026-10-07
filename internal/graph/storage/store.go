@@ -71,17 +71,14 @@ type LocalStore struct {
 	edgeModRev map[graph.EdgeID]uint64
 }
 
-type nodeVersion struct {
+type entityVersion[T any] struct {
 	Revision uint64
-	Node     graph.Node
+	Entity   T
 	Deleted  bool
 }
 
-type edgeVersion struct {
-	Revision uint64
-	Edge     graph.Edge
-	Deleted  bool
-}
+type nodeVersion = entityVersion[graph.Node]
+type edgeVersion = entityVersion[graph.Edge]
 
 func Open(ctx context.Context, spacePath string) (*LocalStore, error) {
 	return OpenWithOptions(ctx, spacePath, Options{})
@@ -551,47 +548,50 @@ func (s *LocalStore) replayEdgeSegmentFrom(path string, offset int64, commitRevi
 }
 
 func (s *LocalStore) appendNodeVersion(n graph.Node, deleted bool, revision uint64) {
-	if revision == 0 {
-		return
-	}
-	s.nodeHistory[n.ID] = append(s.nodeHistory[n.ID], nodeVersion{Revision: revision, Node: cloneNode(n), Deleted: deleted})
+	appendEntityVersion(s.nodeHistory, n.ID, n, deleted, revision, cloneNode)
 }
 
 func (s *LocalStore) appendNodeTombstone(id graph.NodeID, revision uint64) {
-	if revision == 0 {
-		return
-	}
-	s.nodeHistory[id] = append(s.nodeHistory[id], nodeVersion{Revision: revision, Deleted: true})
+	appendEntityTombstone(s.nodeHistory, id, revision)
 }
 
 func nodeAtRevision(versions []nodeVersion, revision uint64) (graph.Node, bool) {
-	idx := sort.Search(len(versions), func(i int) bool { return versions[i].Revision > revision }) - 1
-	if idx < 0 || versions[idx].Deleted {
-		return graph.Node{}, false
-	}
-	return cloneNode(versions[idx].Node), true
+	return entityAtRevision(versions, revision, cloneNode)
 }
 
 func (s *LocalStore) appendEdgeVersion(e graph.Edge, deleted bool, revision uint64) {
-	if revision == 0 {
-		return
-	}
-	s.edgeHistory[e.ID] = append(s.edgeHistory[e.ID], edgeVersion{Revision: revision, Edge: cloneEdge(e), Deleted: deleted})
+	appendEntityVersion(s.edgeHistory, e.ID, e, deleted, revision, cloneEdge)
 }
 
 func (s *LocalStore) appendEdgeTombstone(id graph.EdgeID, revision uint64) {
-	if revision == 0 {
-		return
-	}
-	s.edgeHistory[id] = append(s.edgeHistory[id], edgeVersion{Revision: revision, Deleted: true})
+	appendEntityTombstone(s.edgeHistory, id, revision)
 }
 
 func edgeAtRevision(versions []edgeVersion, revision uint64) (graph.Edge, bool) {
+	return entityAtRevision(versions, revision, cloneEdge)
+}
+
+func appendEntityVersion[K comparable, T any](history map[K][]entityVersion[T], id K, entity T, deleted bool, revision uint64, clone func(T) T) {
+	if revision == 0 {
+		return
+	}
+	history[id] = append(history[id], entityVersion[T]{Revision: revision, Entity: clone(entity), Deleted: deleted})
+}
+
+func appendEntityTombstone[K comparable, T any](history map[K][]entityVersion[T], id K, revision uint64) {
+	if revision == 0 {
+		return
+	}
+	history[id] = append(history[id], entityVersion[T]{Revision: revision, Deleted: true})
+}
+
+func entityAtRevision[T any](versions []entityVersion[T], revision uint64, clone func(T) T) (T, bool) {
 	idx := sort.Search(len(versions), func(i int) bool { return versions[i].Revision > revision }) - 1
 	if idx < 0 || versions[idx].Deleted {
-		return graph.Edge{}, false
+		var zero T
+		return zero, false
 	}
-	return cloneEdge(versions[idx].Edge), true
+	return clone(versions[idx].Entity), true
 }
 
 func (s *LocalStore) applyNodePut(n graph.Node, loc RecordLocation) {
