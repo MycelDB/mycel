@@ -182,6 +182,25 @@ func TestManagerCreatesArchiveManifestAndChecksum(t *testing.T) {
 	}
 }
 
+func TestManagerExcludesSpaceExportsFromArchive(t *testing.T) {
+	dataDir := fixtureDataDir(t)
+	writeFile(t, filepath.Join(dataDir, "exports", "spaces", "principal", "export.zip"), "partial export artifact")
+	writeFile(t, filepath.Join(dataDir, "exports", "spaces", "principal", "export.zip.tmp"), "partial temp artifact")
+	backupDir := t.TempDir()
+	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir, IncludeLogs: true}, Version: "test-version", Now: fixedClock()})
+	res, err := mgr.Trigger(context.Background(), TriggerInput{Source: "test"})
+	if err != nil {
+		t.Fatalf("Trigger() error = %v", err)
+	}
+	entries := zipEntries(t, res.ArchivePath)
+	if entries["exports/spaces/principal/export.zip"] || entries["exports/spaces/principal/export.zip.tmp"] {
+		t.Fatalf("archive included space export artifacts: %#v", entries)
+	}
+	if !entries["meta/spaces.json"] || !entries["graphs/space/nodes.json"] {
+		t.Fatalf("archive missing expected data entries: %#v", entries)
+	}
+}
+
 func TestManagerEncryptsArchiveWhenEnabled(t *testing.T) {
 	dataDir := fixtureDataDir(t)
 	backupDir := t.TempDir()

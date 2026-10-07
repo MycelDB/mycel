@@ -13,8 +13,11 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	semanticservice "github.com/myceldb/mycel/internal/semantic/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestAsyncSemanticDirtyConsumerAppendsEventAndCheckpoint(t *testing.T) {
@@ -48,6 +51,38 @@ func TestAsyncSemanticDirtyConsumerAppendsEventAndCheckpoint(t *testing.T) {
 	}
 	if checkpoint.LastGraphRevision != 7 || checkpoint.SpaceID != spaceID {
 		t.Fatalf("unexpected checkpoint: %+v", checkpoint)
+	}
+}
+
+func TestAsyncSemanticDirtyConsumerRejectedDuringSemanticQuiesce(t *testing.T) {
+	ctx := context.Background()
+	semantic, coordinator := newTestSemanticModuleWithQuiesce(t)
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: spaceID, DomainID: domainID, DomainIDs: []graph.DomainID{domainID}, TxnID: uuid.New(), TransactionID: uuid.New(), GraphRevision: 11, Revision: 11, UpdatedNodeIDs: []graph.NodeID{nodeID}, AffectedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}
+	lease, err := coordinator.QuiesceAll(ctx, quiesce.Request{Reason: "test backup", Mode: quiesce.ModeBackup, Source: "test"})
+	if err != nil {
+		t.Fatalf("QuiesceAll() error = %v", err)
+	}
+	consumer := &asyncSemanticDirtyConsumer{semantic: semantic, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	err = consumer.HandleGraphChange(ctx, event)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("HandleGraphChange() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatalf("release quiesce: %v", err)
+	}
+	mgr, err := semantic.MaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatalf("MaintenanceManager() error = %v", err)
+	}
+	dirty, err := mgr.ListGraphDirtyEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListGraphDirtyEvents() error = %v", err)
+	}
+	if len(dirty) != 0 {
+		t.Fatalf("dirty events = %d, want 0 while semantic quiesced", len(dirty))
 	}
 }
 
@@ -104,6 +139,12 @@ func TestAsyncSemanticDirtyReplayUsesCheckpoint(t *testing.T) {
 
 func newTestSemanticModule(t *testing.T) *semanticservice.Module {
 	t.Helper()
+	semantic, _ := newTestSemanticModuleWithQuiesce(t)
+	return semantic
+}
+
+func newTestSemanticModuleWithQuiesce(t *testing.T) (*semanticservice.Module, *quiesce.Coordinator) {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := daemonconfig.Config{DataDir: t.TempDir(), Mode: daemonconfig.DefaultMode, LogLevel: daemonconfig.DefaultLogLevel, LogFormat: daemonconfig.DefaultLogFormat, GRPCAddr: "127.0.0.1:0"}
 	rt := daemonruntime.New(cfg, logger, "", nil)
@@ -111,5 +152,5 @@ func newTestSemanticModule(t *testing.T) *semanticservice.Module {
 	if result := semantic.Init(context.Background(), rt); !result.OK {
 		t.Fatalf("semantic Init() failed: %+v", result)
 	}
-	return semantic
+	return semantic, rt.Quiesce
 }
