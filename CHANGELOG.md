@@ -6,6 +6,34 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.18.0] - 2026-10-07
+
+### Added
+
+- Added asynchronous cluster backup operations matching `mycel-api` v0.18.0, including operation start/status/cancel flow, readiness blockers, waitable CLI support, and durable operation state (#146).
+- Added offline cluster system-backup restore CLI primitives, including restore planning and local restore execution with fail-closed archive, manifest, identity, and raft metadata validation (#156).
+- Added persistent daemon access-token signing secrets with file and inline environment configuration so access tokens survive daemon restarts and can be verified across clustered nodes (#150).
+- Added read-only transaction graph snapshot reads pinned to `GraphTransaction.BaseRevision`, including historical node/edge reads, structured scans, hierarchy, adjacency, subtree traversal, and raft read barriers (#157).
+
+### Changed
+
+- Delegated cluster/system reliability validation make targets to canonical Mycel Lab suites and documented the native Compose/k3d validation, backup/restore, restart soak, and release-gate flows.
+- Changed backup quiescence so daemon-owned cluster backup operations honor the configured read-admission policy while still blocking writes and unknown methods during backup (#155).
+- Changed semantic dirty-event and graph checkpoint background writers to enter runtime mutation gates, reducing the risk of untracked durable writes during cluster backup (#154).
+
+### Fixed
+
+- Fixed raw tar user backup auto-compression behavior (#147).
+- Fixed same-raft-ID PVC rejoin snapshot reporting when a node rejoins from empty storage (#149).
+- Excluded transient `exports/` data from system backup snapshots (#154).
+
+### Compatibility
+
+- Operators and clients should use matching `mycel-api`/SDK v0.18.0 bindings for the async cluster backup API contract.
+- Read-only transactions now provide repeatable graph reads at their begin-time base revision instead of current-read behavior. Long-running read-only transactions may retain additional in-memory historical graph versions until bounded snapshot-retention/compaction is introduced.
+- Cluster restore remains an explicit offline operator workflow; restore CLI commands do not contact daemon login paths and require safe, empty target data directories by default.
+- Multi-node access-token verification now requires shared daemon signing secret material via the configured signing-secret file or inline base64 secret.
+
 ## [v0.17.0] - 2026-09-30
 
 ### Added
