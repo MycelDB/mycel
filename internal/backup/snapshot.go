@@ -85,7 +85,7 @@ func stageSnapshot(ctx context.Context, dataDir string, stagingDir string, inclu
 		if rel == "." {
 			return nil
 		}
-		if !includeLogs && isLogPath(rel) {
+		if shouldSkipSnapshotPath(rel, includeLogs) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -112,12 +112,23 @@ func stageSnapshot(ctx context.Context, dataDir string, stagingDir string, inclu
 	})
 }
 
-func isLogPath(rel string) bool {
+func shouldSkipSnapshotPath(rel string, includeLogs bool) bool {
+	first := firstPathElement(rel)
+	if first == "exports" {
+		return true
+	}
+	if !includeLogs && (first == "log" || first == "logs") {
+		return true
+	}
+	return false
+}
+
+func firstPathElement(rel string) string {
 	first := rel
 	if idx := strings.IndexRune(rel, filepath.Separator); idx >= 0 {
 		first = rel[:idx]
 	}
-	return first == "log" || first == "logs"
+	return first
 }
 
 func copyFile(src string, dst string, mode fs.FileMode) error {

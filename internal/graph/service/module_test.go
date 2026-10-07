@@ -140,6 +140,30 @@ func TestModuleGraphCheckpointCreateAndStatus(t *testing.T) {
 	}
 }
 
+func TestModuleGraphCheckpointCreateRejectedDuringQuiesce(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := commitCheckpointTestNode(t, ctx, m, "checkpoint blocked")
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Mode: quiesce.ModeBackup, Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	_, err = m.CreateGraphCheckpoint(ctx, tx.SpaceID, tx.DomainID)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("CreateGraphCheckpoint() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatalf("release graph gate: %v", err)
+	}
+	created, err := m.CreateGraphCheckpoint(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		t.Fatalf("CreateGraphCheckpoint() after release error = %v", err)
+	}
+	if !created.CheckpointPresent {
+		t.Fatalf("checkpoint not created after release: %+v", created)
+	}
+}
+
 func TestModuleAutomaticGraphCheckpointPolicy(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule().WithCheckpointPolicy(CheckpointPolicyConfig{Enabled: true, Interval: time.Hour, RevisionThreshold: 2, Timeout: time.Second})
@@ -179,6 +203,43 @@ func TestModuleAutomaticGraphCheckpointPolicy(t *testing.T) {
 	if !status.CheckpointPresent || status.CheckpointRevision != 2 || status.AutoCheckpointRevisionThreshold != 2 || !status.AutoCheckpointEnabled || status.LastCheckpointAttemptAt.IsZero() || status.LastCheckpointSuccessAt.IsZero() || status.LastCheckpointError != "" {
 		t.Fatalf("unexpected automatic checkpoint status: %+v", status)
 	}
+}
+
+func TestModuleAutomaticGraphCheckpointSkippedDuringQuiesce(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	m.checkpointPolicy = CheckpointPolicyConfig{Enabled: true, Interval: time.Hour, RevisionThreshold: 1, Timeout: time.Second}
+	tx := commitCheckpointTestNode(t, ctx, m, "auto blocked")
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Mode: quiesce.ModeBackup, Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	m.runCheckpointPolicyOnce(ctx, normalizeCheckpointPolicyConfig(m.checkpointPolicy))
+	if err := lease.Release(ctx); err != nil {
+		t.Fatalf("release graph gate: %v", err)
+	}
+	status, err := m.GraphCheckpointStatus(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		t.Fatalf("GraphCheckpointStatus() error = %v", err)
+	}
+	if status.CheckpointPresent {
+		t.Fatalf("automatic checkpoint was written while quiesced: %+v", status)
+	}
+	if status.LastCheckpointError == "" {
+		t.Fatalf("expected checkpoint failure status while quiesced: %+v", status)
+	}
+}
+
+func commitCheckpointTestNode(t *testing.T, ctx context.Context, m *Module, content string) daemonsession.GraphTransaction {
+	t.Helper()
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: content, Props: map[string]any{}}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+	return tx
 }
 
 func TestModuleQuiesceRejectsGraphCommit(t *testing.T) {

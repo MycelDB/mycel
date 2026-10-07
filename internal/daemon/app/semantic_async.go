@@ -114,6 +114,11 @@ func (c *asyncSemanticDirtyConsumer) HandleGraphChange(ctx context.Context, even
 	if c == nil || c.semantic == nil || event.Empty() {
 		return nil
 	}
+	ctx, release, err := c.semantic.BeginMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	event.Normalize()
 	mgr, err := c.semantic.MaintenanceManager(ctx, event.SpaceID)
 	if err != nil {
