@@ -241,33 +241,52 @@ Make each pod archive available to a restore pod/job. Common approaches:
 The restore pod/job should mount exactly one target data PVC and the source
 backup artifact for the same ordinal.
 
-### 5. Extract each ordinal archive
+### 5. Generate and review the offline restore plan
 
-For each ordinal:
-
-1. mount the target PVC at `/data/mycel`;
-2. remove any accidental existing contents;
-3. extract the matching archive into `/data/mycel`;
-4. verify expected files exist;
-5. delete the restore pod/job.
-
-Example shape for `myceld-0`:
+Before touching target PVCs, run the local/offline restore planner against the
+retained backup-set directory or its `backup-set.json` file:
 
 ```sh
-# Pseudocode; exact image/mounts depend on your cluster.
-kubectl -n <namespace> run restore-myceld-0 --restart=Never --image=alpine:3.21 -- sleep 3600
-kubectl -n <namespace> cp mycel-system-...-myceld-0-....tar.zst restore-myceld-0:/restore/archive.tar.zst
-kubectl -n <namespace> exec restore-myceld-0 -- sh -ec '
-  rm -rf /data/mycel/*
-  tar --zstd -xf /restore/archive.tar.zst -C /data/mycel
-  test -s /data/mycel/meta/clustering/node.json
-'
+mycel admin backup cluster restore-plan \
+  --backup-set /backups/mycel/backup-set-20260803T183500Z-cluster_7d42d6ab
 ```
 
-Use the backup-set manifest to verify that the archive filename, pod name,
-ordinal, checksum, and target PVC all match before extracting.
+The command does not contact a daemon. It validates that the backup set is
+complete and restore-eligible, verifies local archive checksums and per-pod
+manifests when available, and prints the exact ordinal-to-archive mapping. Use
+`--output json` if automation needs structured fields.
 
-### 6. Start the restored StatefulSet
+Review the plan and confirm that each ordinal maps to the target PVC you intend
+to restore:
+
+```text
+ordinal 0 -> myceld-0 archive -> myceld-data-myceld-0 PVC
+ordinal 1 -> myceld-1 archive -> myceld-data-myceld-1 PVC
+ordinal 2 -> myceld-2 archive -> myceld-data-myceld-2 PVC
+```
+
+### 6. Restore each ordinal archive locally
+
+For each ordinal, mount exactly one target data PVC at the restore data path and
+run `restore-local` for the matching ordinal:
+
+```sh
+mycel admin backup cluster restore-local \
+  --backup-set /backups/mycel/backup-set-20260803T183500Z-cluster_7d42d6ab \
+  --ordinal 0 \
+  --data-dir /data/mycel
+```
+
+`restore-local` is also local/offline. It refuses to restore into a non-empty
+`--data-dir`, verifies the archive checksum and per-pod manifest, extracts only
+the selected ordinal archive, then verifies restored clustering metadata and raft
+metadata. Repeat for every ordinal/PVC using the mapping from `restore-plan`.
+
+The restore pod/job should mount exactly one target data PVC and the source
+backup artifact for the same ordinal. Delete the restore pod/job after each
+successful ordinal restore.
+
+### 7. Start the restored StatefulSet
 
 Apply the ConfigMap/Services/StatefulSet and scale to the expected replica
 count:
@@ -278,7 +297,7 @@ kubectl -n <namespace> apply -f <myceld-statefulset>
 kubectl -n <namespace> rollout status statefulset/myceld --timeout=10m
 ```
 
-### 7. Validate restore success
+### 8. Validate restore success
 
 Run identity/health checks:
 

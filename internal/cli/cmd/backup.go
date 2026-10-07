@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/cli/app"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"github.com/spf13/cobra"
@@ -19,7 +20,7 @@ func NewAdminBackupCommand(a *app.App) *cobra.Command {
 	policy := &cobra.Command{Use: "policy", Short: "Manage backup policy"}
 	policy.AddCommand(NewAdminBackupPolicyGetCommand(a), NewAdminBackupPolicySetCommand(a))
 	cluster := &cobra.Command{Use: "cluster", Short: "Manage coordinated cluster backup sets"}
-	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterValidateCommand(a))
+	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterValidateCommand(a), NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreLocalCommand(a))
 	cmd.AddCommand(policy, cluster, NewAdminBackupTriggerCommand(a), NewAdminBackupStatusCommand(a), NewAdminBackupListCommand(a), NewAdminBackupDeleteCommand(a))
 	return cmd
 }
@@ -446,6 +447,76 @@ func NewAdminBackupClusterValidateCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&backupSetPath, "backup-set", "", "backup-set directory or backup-set.json path")
 	return cmd
+}
+
+func NewAdminBackupClusterRestorePlanCommand(a *app.App) *cobra.Command {
+	var backupSetPath string
+	cmd := &cobra.Command{Use: "restore-plan", Short: "Plan an offline cluster backup restore", RunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(backupSetPath) == "" {
+			return fmt.Errorf("--backup-set is required")
+		}
+		plan, _, err := clusterbackup.BuildRestorePlan(cmd.Context(), backupSetPath)
+		if err != nil {
+			return err
+		}
+		plan = clusterbackup.SortRestorePlan(plan)
+		if a.Output == "json" {
+			return a.Print(plan, "")
+		}
+		return a.Print(plan, formatClusterRestorePlan(plan))
+	}}
+	cmd.Flags().StringVar(&backupSetPath, "backup-set", "", "backup-set directory or backup-set.json path")
+	return cmd
+}
+
+const restoreLocalDataDirFlag = "data" + "-dir"
+
+func NewAdminBackupClusterRestoreLocalCommand(a *app.App) *cobra.Command {
+	var backupSetPath, dataDir string
+	var ordinal int
+	cmd := &cobra.Command{Use: "restore-local", Short: "Restore one cluster backup ordinal into an offline local data dir", RunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(backupSetPath) == "" {
+			return fmt.Errorf("--backup-set is required")
+		}
+		if strings.TrimSpace(dataDir) == "" {
+			return fmt.Errorf("--data-dir is required")
+		}
+		result, err := clusterbackup.RestoreLocal(cmd.Context(), clusterbackup.RestoreLocalInput{BackupSet: backupSetPath, Ordinal: ordinal, DataDir: dataDir})
+		if err != nil {
+			return err
+		}
+		if a.Output == "json" {
+			return a.Print(result, "")
+		}
+		text := fmt.Sprintf("cluster backup ordinal restored: %s\nordinal: %d\npod: %s\ndata_dir: %s\narchive: %s\n", result.BackupSetID, result.Ordinal, result.PodName, result.DataDir, result.ArchivePath)
+		return a.Print(result, text)
+	}}
+	cmd.Flags().StringVar(&backupSetPath, "backup-set", "", "backup-set directory or backup-set.json path")
+	cmd.Flags().IntVar(&ordinal, "ordinal", -1, "cluster node ordinal to restore")
+	cmd.Flags().StringVar(&dataDir, restoreLocalDataDirFlag, "", "empty local data directory to restore into")
+	_ = cmd.MarkFlagRequired("ordinal")
+	return cmd
+}
+
+func formatClusterRestorePlan(plan clusterbackup.RestorePlan) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "cluster backup restore plan: %s\n", plan.BackupSetID)
+	fmt.Fprintf(&b, "cluster_id: %s\nstate: %s\nmanifest: %s\nexpected_nodes: %d\narchive_format: %s\n", plan.ClusterID, plan.State, plan.ManifestPath, plan.ExpectedNodes, plan.ArchiveFormat)
+	if len(plan.Warnings) > 0 {
+		b.WriteString("warnings:\n")
+		for _, warning := range plan.Warnings {
+			fmt.Fprintf(&b, "  - %s\n", warning)
+		}
+	}
+	b.WriteString("nodes:\n")
+	for _, node := range plan.Nodes {
+		fmt.Fprintf(&b, "  - ordinal: %d\n    pod: %s\n    node_id: %s\n", node.Ordinal, node.PodName, node.NodeID)
+		if node.RaftNodeID > 0 {
+			fmt.Fprintf(&b, "    raft_node_id: %d\n", node.RaftNodeID)
+		}
+		fmt.Fprintf(&b, "    archive: %s\n    manifest: %s\n    checksum_sha256: %s\n", firstNonEmptyBackup(node.ArchivePath, node.ArchiveURI, node.ArchiveName), firstNonEmptyBackup(node.ManifestPath, node.ManifestURI, node.ManifestName), node.ChecksumSHA256)
+	}
+	return b.String()
 }
 
 func adminBackupClient(ctx context.Context, a *app.App) (adminv1.AdminBackupServiceClient, context.Context, func(), error) {
