@@ -29,9 +29,23 @@ mycel admin backup cluster start \
 mycel admin backup cluster validate --backup-set /mnt/mycel-backups
 ```
 
+```sh
+mycel admin backup cluster restore-plan --backup-set /mnt/mycel-backups/backup-set-...
+```
+
+```sh
+mycel admin backup cluster restore-local \
+  --backup-set /mnt/mycel-backups/backup-set-... \
+  --ordinal 0 \
+  --data-dir /data/mycel
+```
+
 Coordinated cluster backup creates one backup set with one archive per pod/PVC,
 records raft barriers, requires raft freeze/checkpoint evidence in the final
 `backup-set.json`, and keeps full-system restore offline/operator-driven.
+`restore-plan` and `restore-local` are local/offline primitives and do not
+contact a running daemon; run them only while the target cluster is stopped and
+the target data directory is empty.
 
 ```sh
 mycel admin user-backup validate --file user.tar.zst
