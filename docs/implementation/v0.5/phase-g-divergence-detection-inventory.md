@@ -241,7 +241,7 @@ Implemented today:
 - Template records are supported when requested by the API.
 - Import supports `APPEND`, basic `UPSERT`, and `REPLACE_DOMAIN` modes.
 - Import mutates the transaction overlay; callers still commit/rollback through `TransactionService`.
-- Export reads through a transaction; read-only exports use current committed graph read paths, not historical repeatable snapshots.
+- Export reads through a transaction; read-only exports use graph snapshot reads pinned to `base_revision`.
 - Import defaults can preserve supplied node/edge IDs when requested, which is important for migration/export workflows.
 
 Current limitations for repair:

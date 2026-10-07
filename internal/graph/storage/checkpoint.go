@@ -346,10 +346,12 @@ func (s *LocalStore) tryLoadCheckpoint(ctx context.Context) (bool, error) {
 	if usePersistentCandidate {
 		for _, node := range nodes {
 			s.applyCheckpointNodePut(node, checkpointLoc, true, usePersistentQueryCandidate)
+			s.appendNodeVersion(node, false, manifest.GraphRevision)
 			s.nodeModRev[node.ID] = manifest.GraphRevision
 		}
 		for _, edge := range edges {
 			s.applyCheckpointEdgePut(edge, checkpointLoc, true, usePersistentQueryCandidate)
+			s.appendEdgeVersion(edge, false, manifest.GraphRevision)
 			s.edgeModRev[edge.ID] = manifest.GraphRevision
 		}
 		s.persistentIndexLoadStatus, _ = s.tryLoadPersistentIndexSet(ctx, manifest)
@@ -380,10 +382,12 @@ func (s *LocalStore) tryLoadCheckpoint(ctx context.Context) (bool, error) {
 func (s *LocalStore) hydrateCheckpointFull(nodes []graph.Node, edges []graph.Edge, loc RecordLocation, revision uint64) {
 	for _, node := range nodes {
 		s.applyNodePut(node, loc)
+		s.appendNodeVersion(node, false, revision)
 		s.nodeModRev[node.ID] = revision
 	}
 	for _, edge := range edges {
 		s.applyEdgePut(edge, loc)
+		s.appendEdgeVersion(edge, false, revision)
 		s.edgeModRev[edge.ID] = revision
 	}
 }

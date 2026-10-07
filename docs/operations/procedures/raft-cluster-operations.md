@@ -90,7 +90,7 @@ Historical `test-phase-a`, `test-phase-d`, `test-phase-e`, `test-phase-f`, and `
 
 `make test-integration-routing` covers session/transaction home-node routing, forwarded client request handling, cross-node transaction-overlay workflows, home-node loss/session-lost behavior, backend auth rejection, and leader-change read-write transaction safety.
 
-`make test-integration-client-admin` covers consensus read-index barriers, graph strong reads, read-only transaction current-read semantics, query/metadata read consistency, read metadata, default stale-read rejection, and admin/CLI read diagnostics.
+`make test-integration-client-admin` covers consensus read-index barriers, graph strong reads, read-only transaction snapshot semantics, query/metadata read consistency, read metadata, default stale-read rejection, and admin/CLI read diagnostics.
 
 `make test-integration-graph-consistency` covers deterministic local graph checksums, local/admin/backend consistency diagnostics, cluster consistency classification, forensic export/diff, CLI output, script syntax, and manual repair planning guardrails.
 

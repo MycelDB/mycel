@@ -22,7 +22,7 @@ docs/design/api/graph.md
 
 `QueryService` is the transaction-scoped Client API for structured graph queries.
 
-The current daemon MVP executes structured protobuf queries through daemon graph transactions. Read-write transactions include read-your-writes from their local overlay. Read-only transactions are linearizable current-read contexts and may observe commits newer than their `base_revision`; they are not historical repeatable snapshots in V1.
+The current daemon MVP executes structured protobuf queries through daemon graph transactions. Read-write transactions include read-your-writes from their local overlay. Read-only transactions execute as repeatable-read graph snapshots pinned to their `base_revision`, so structured and textual GQL reads do not observe later commits in the same domain.
 
 The v1 query API is a structured protobuf API, not a raw query-string language. It mirrors Mycel's current in-process query builder while leaving room for connector-generated helper APIs.
 
@@ -403,7 +403,7 @@ The wire API remains structured protobuf; connectors provide ergonomic builders.
 
 ## Mesh implications
 
-QueryService reads through the daemon graph manager for the target transaction. In raft mode, read-only query reads inherit graph strong-read behavior and may observe newer committed revisions than the transaction `base_revision`; read-write query reads include staged overlay mutations on the transaction home node. Query responses include optional `read_metadata` with `strong` read-index/apply proof details or `overlay` context where applicable. Query requests include optional `read_options`; `allow_stale=true` is rejected by the current daemon because no stale-read daemon config/implementation is enabled. Query requests are not themselves replicated.
+QueryService reads through the daemon graph manager for the target transaction. In raft mode, read-only query reads inherit graph strong-read barriers and resolve graph data at the transaction `base_revision`; read-write query reads include staged overlay mutations on the transaction home node. Query responses include optional `read_metadata` with `strong` read-index/apply proof details or `overlay` context where applicable. Query requests include optional `read_options`; `allow_stale=true` is rejected by the current daemon because no stale-read daemon config/implementation is enabled. Query requests are not themselves replicated.
 
 Committed graph mutations and domain revisions determine what query read contexts observe across a mesh. The detailed mesh consistency model is covered by the Phase F read-consistency plan.
 

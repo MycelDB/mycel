@@ -971,32 +971,56 @@ func (r semanticGraphReader) GetNode(ctx context.Context, domainID graph.DomainI
 	if r.manager == nil {
 		return graph.Node{}, fmt.Errorf("graph reader is not configured")
 	}
-	return r.manager.GetNode(ctx, r.tx(domainID), id.String())
+	tx, err := r.tx(ctx, domainID)
+	if err != nil {
+		return graph.Node{}, err
+	}
+	return r.manager.GetNode(ctx, tx, id.String())
 }
 
 func (r semanticGraphReader) Parent(ctx context.Context, domainID graph.DomainID, childID graph.NodeID) (*graph.Edge, error) {
 	if r.manager == nil {
 		return nil, fmt.Errorf("graph reader is not configured")
 	}
-	return r.manager.GetParent(ctx, r.tx(domainID), childID.String())
+	tx, err := r.tx(ctx, domainID)
+	if err != nil {
+		return nil, err
+	}
+	return r.manager.GetParent(ctx, tx, childID.String())
 }
 
 func (r semanticGraphReader) ListNodes(ctx context.Context, domainID graph.DomainID) ([]graph.Node, error) {
 	if r.manager == nil {
 		return nil, fmt.Errorf("graph reader is not configured")
 	}
-	return listAllGraphNodes(ctx, r.manager, r.tx(domainID))
+	tx, err := r.tx(ctx, domainID)
+	if err != nil {
+		return nil, err
+	}
+	return listAllGraphNodes(ctx, r.manager, tx)
 }
 
 func (r semanticGraphReader) ListEdges(ctx context.Context, domainID graph.DomainID) ([]graph.Edge, error) {
 	if r.manager == nil {
 		return nil, fmt.Errorf("graph reader is not configured")
 	}
-	return listAllGraphEdges(ctx, r.manager, r.tx(domainID))
+	tx, err := r.tx(ctx, domainID)
+	if err != nil {
+		return nil, err
+	}
+	return listAllGraphEdges(ctx, r.manager, tx)
 }
 
-func (r semanticGraphReader) tx(domainID graph.DomainID) daemonsession.GraphTransaction {
-	return daemonsession.GraphTransaction{ID: "semantic-read-" + r.spaceID.String() + "-" + domainID.String(), SessionID: "semantic-read", PrincipalID: "semantic", SpaceID: r.spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive}
+func (r semanticGraphReader) tx(ctx context.Context, domainID graph.DomainID) (daemonsession.GraphTransaction, error) {
+	baseRevision := int64(0)
+	if revisions, ok := r.manager.(GraphRevisionReader); ok {
+		rev, err := revisions.CurrentDomainRevision(ctx, r.spaceID.String(), domainID.String())
+		if err != nil {
+			return daemonsession.GraphTransaction{}, err
+		}
+		baseRevision = rev
+	}
+	return daemonsession.GraphTransaction{ID: "semantic-read-" + r.spaceID.String() + "-" + domainID.String(), SessionID: "semantic-read", PrincipalID: "semantic", SpaceID: r.spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision}, nil
 }
 
 func listAllGraphNodes(ctx context.Context, manager GraphReadManager, tx daemonsession.GraphTransaction) ([]graph.Node, error) {
