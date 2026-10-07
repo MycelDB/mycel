@@ -142,18 +142,8 @@ func TestModuleGraphCheckpointCreateAndStatus(t *testing.T) {
 
 func TestModuleGraphCheckpointCreateRejectedDuringQuiesce(t *testing.T) {
 	ctx := context.Background()
-	m := NewModule()
-	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
-	if result := m.Init(ctx, rt); !result.OK {
-		t.Fatalf("init graph module: %v", result.Error)
-	}
-	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "checkpoint blocked", Props: map[string]any{}}); err != nil {
-		t.Fatalf("CreateNode() error = %v", err)
-	}
-	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
-		t.Fatalf("CommitTransactionGraph() error = %v", err)
-	}
+	m := newTestGraphModule(t, ctx)
+	tx := commitCheckpointTestNode(t, ctx, m, "checkpoint blocked")
 	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Mode: quiesce.ModeBackup, Source: "test"})
 	if err != nil {
 		t.Fatalf("Quiesce() error = %v", err)
@@ -217,18 +207,9 @@ func TestModuleAutomaticGraphCheckpointPolicy(t *testing.T) {
 
 func TestModuleAutomaticGraphCheckpointSkippedDuringQuiesce(t *testing.T) {
 	ctx := context.Background()
-	m := NewModule().WithCheckpointPolicy(CheckpointPolicyConfig{Enabled: true, Interval: time.Hour, RevisionThreshold: 1, Timeout: time.Second})
-	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
-	if result := m.Init(ctx, rt); !result.OK {
-		t.Fatalf("init graph module: %v", result.Error)
-	}
-	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "auto blocked", Props: map[string]any{}}); err != nil {
-		t.Fatalf("CreateNode() error = %v", err)
-	}
-	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
-		t.Fatalf("CommitTransactionGraph() error = %v", err)
-	}
+	m := newTestGraphModule(t, ctx)
+	m.checkpointPolicy = CheckpointPolicyConfig{Enabled: true, Interval: time.Hour, RevisionThreshold: 1, Timeout: time.Second}
+	tx := commitCheckpointTestNode(t, ctx, m, "auto blocked")
 	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Mode: quiesce.ModeBackup, Source: "test"})
 	if err != nil {
 		t.Fatalf("Quiesce() error = %v", err)
@@ -247,6 +228,18 @@ func TestModuleAutomaticGraphCheckpointSkippedDuringQuiesce(t *testing.T) {
 	if status.LastCheckpointError == "" {
 		t.Fatalf("expected checkpoint failure status while quiesced: %+v", status)
 	}
+}
+
+func commitCheckpointTestNode(t *testing.T, ctx context.Context, m *Module, content string) daemonsession.GraphTransaction {
+	t.Helper()
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: content, Props: map[string]any{}}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+	return tx
 }
 
 func TestModuleQuiesceRejectsGraphCommit(t *testing.T) {

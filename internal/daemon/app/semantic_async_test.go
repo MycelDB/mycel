@@ -26,7 +26,7 @@ func TestAsyncSemanticDirtyConsumerAppendsEventAndCheckpoint(t *testing.T) {
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	nodeID := graph.NodeID(uuid.New())
-	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: spaceID, DomainID: domainID, DomainIDs: []graph.DomainID{domainID}, TxnID: uuid.New(), TransactionID: uuid.New(), GraphRevision: 7, Revision: 7, UpdatedNodeIDs: []graph.NodeID{nodeID}, AffectedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}
+	event := semanticDirtyTestEvent(spaceID, domainID, nodeID, 7)
 	consumer := &asyncSemanticDirtyConsumer{semantic: semantic, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	if err := consumer.HandleGraphChange(ctx, event); err != nil {
 		t.Fatalf("HandleGraphChange() error = %v", err)
@@ -59,8 +59,7 @@ func TestAsyncSemanticDirtyConsumerRejectedDuringSemanticQuiesce(t *testing.T) {
 	semantic, coordinator := newTestSemanticModuleWithQuiesce(t)
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
-	nodeID := graph.NodeID(uuid.New())
-	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: spaceID, DomainID: domainID, DomainIDs: []graph.DomainID{domainID}, TxnID: uuid.New(), TransactionID: uuid.New(), GraphRevision: 11, Revision: 11, UpdatedNodeIDs: []graph.NodeID{nodeID}, AffectedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}
+	event := semanticDirtyTestEvent(spaceID, domainID, graph.NodeID(uuid.New()), 11)
 	lease, err := coordinator.QuiesceAll(ctx, quiesce.Request{Reason: "test backup", Mode: quiesce.ModeBackup, Source: "test"})
 	if err != nil {
 		t.Fatalf("QuiesceAll() error = %v", err)
@@ -135,6 +134,10 @@ func TestAsyncSemanticDirtyReplayUsesCheckpoint(t *testing.T) {
 	if checkpoint.LastGraphRevision != 2 {
 		t.Fatalf("checkpoint revision = %d, want 2", checkpoint.LastGraphRevision)
 	}
+}
+
+func semanticDirtyTestEvent(spaceID domainspace.SpaceID, domainID graph.DomainID, nodeID graph.NodeID, revision uint64) graphchange.CommittedEvent {
+	return graphchange.CommittedEvent{ID: uuid.New(), SpaceID: spaceID, DomainID: domainID, DomainIDs: []graph.DomainID{domainID}, TxnID: uuid.New(), TransactionID: uuid.New(), GraphRevision: revision, Revision: revision, UpdatedNodeIDs: []graph.NodeID{nodeID}, AffectedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}
 }
 
 func newTestSemanticModule(t *testing.T) *semanticservice.Module {
