@@ -10,8 +10,11 @@ Run from the `mycel/` directory.
 
 ## What it does
 
-This destructive Docker Compose system integration test validates user-scoped
-backup and restore across a fresh cluster lifecycle. It:
+This destructive Docker Compose system integration test delegates to the native
+Mycel Lab `compose-user-backup-restore` suite. Mycel Lab owns the Compose
+environment lifecycle, backup operation events, run tracking, and artifacts.
+
+It validates user-scoped backup and restore across a fresh cluster lifecycle. It:
 
 1. starts or resets a local Compose cluster;
 2. creates fixtures for multiple users/principals;
@@ -27,7 +30,12 @@ passwords or active sessions/tokens.
 
 ## Parameters
 
-The target executes `scripts/testComposeUserBackupRestore.sh`. By default it uses the Mycel-owned Compose fixture at `tests/compose/cluster/compose.yml`. Common local knobs include `MYCEL_COMPOSE_FILE`, `MYCEL_COMPOSE_SERVICES`, `MYCEL_IMAGE`, and `MYCELD_CLUSTER_BACKEND_AUTH_TOKEN`.
+The target executes `mycel-lab run suite compose-user-backup-restore
+--confirm-destructive` from `MYCEL_LAB_ROOT` (default `../mycel-lab`). The suite
+uses Mycel Lab Compose driver options to run the Mycel-owned Compose fixture at
+`tests/compose/cluster/compose.yml` with fixed local gRPC ports from the Lab
+override file. Common local knobs include `MYCEL_LAB_ROOT`, `MYCEL_IMAGE`, and
+`MYCELD_CLUSTER_BACKEND_AUTH_TOKEN`.
 
 ## How to interpret results
 
@@ -38,14 +46,16 @@ Investigate failures as follows:
 
 - export failure: check user/principal permissions and backup safety filters;
 - import conflict: verify the target cluster was wiped as expected;
-- missing graph/blob data after restore: inspect per-node verification output and
-  retained script artifacts;
+- missing graph/blob data after restore: inspect Mycel Lab runtime events,
+  per-node verification output, and retained artifacts;
 - secret leakage assertion failure: treat as security-critical and block release.
 
 ## Cleanup
 
-The script manages its own destructive Compose lifecycle. If interrupted, clean up the local Compose cluster before rerunning:
+Mycel Lab manages the destructive Compose lifecycle. If interrupted, clean up the
+local Compose project before rerunning. The project name is emitted in Mycel Lab
+environment artifacts; use the Compose files from the suite and run:
 
 ```sh
-docker compose -f tests/compose/cluster/compose.yml down -v --remove-orphans
+docker compose -p <project-name> -f tests/compose/cluster/compose.yml down -v --remove-orphans
 ```

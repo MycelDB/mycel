@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-cluster-raft-sensitive-gate test-compose-cluster test-k3s-cluster test-k3s-raft-disruption-smoke test-k3s-raft-disruption test-k3s-raft-disruption-edges test-k3s-raft-restart-soak test-k3s-raft-restart-hard-soak test-k3s-system-backup-restore test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
+.PHONY: generate-proto generate-gql-parser generate-gql-parser-docker validate-gql-grammar antlr-jar check-daemon-only check-public-surface test test-verbose test-watch docs-check test-integration-cluster-identity test-integration-daemon-cluster test-integration-raft-subsystems test-integration-routing test-integration-client-admin test-integration-graph-consistency test-cluster-identity test-phase-a test-phase-d test-phase-e test-phase-f test-phase-g test-cluster-release-gate test-cluster-raft-sensitive-gate test-compose-cluster test-k3s-cluster test-k3s-raft-disruption-smoke test-k3s-raft-disruption test-k3s-raft-disruption-edges test-k3s-raft-restart-soak test-k3s-raft-restart-hard-soak test-k3s-system-backup-restore test-cluster-soak coverage coverage-html daemon-coverage daemon-coverage-html coverage-clean build build-cli build-daemon run-cli run-daemon start stop reset api-info
 
 CLI_BINARY ?= mycel
 DAEMON_BINARY ?= myceld
@@ -20,6 +20,7 @@ MYCEL_COMPOSE_SERVICES ?= myceld-a,myceld-b,myceld-c
 MYCEL_COMPOSE_SERVICE_ARGS ?= myceld-a myceld-b myceld-c
 MYCEL_RAFT_DISRUPT_IMAGE ?= myceldb/mycel:raft-disrupt-local
 MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE ?= myceldb/mycel:system-backup-restore-local
+MYCEL_LAB_ROOT ?= $(CURDIR)/../mycel-lab
 RAFT_TEST_PACKAGE_PARALLELISM ?= 1
 ANTLR_VERSION ?= 4.13.1
 ANTLR_JAR ?= bin/antlr-$(ANTLR_VERSION)-complete.jar
@@ -84,24 +85,24 @@ test-watch:
 docs-check:
 	python3 scripts/checkDocs.py
 
-test-cluster-identity: generate-proto generate-gql-parser
+test-integration-cluster-identity: generate-proto generate-gql-parser
 	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/cli/cmd -count=1
 
-test-phase-a: generate-proto generate-gql-parser
+test-integration-daemon-cluster: generate-proto generate-gql-parser
 	go test ./internal/clustering ./internal/clustering/consensus ./internal/daemon/app ./internal/daemon/api/admin ./internal/daemon/api/client ./internal/daemon/config ./internal/daemon/runtime ./internal/daemon/server ./internal/graph/service ./internal/cli/cmd -count=1
 
-test-phase-d: generate-proto generate-gql-parser
+test-integration-raft-subsystems: generate-proto generate-gql-parser
 	# Serialize raft-heavy packages by default to avoid host scheduler contention
 	# causing false no-leader/proposal-timeout flakes under release-gate load.
 	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/clustering/consensus ./internal/daemon/app ./internal/space/service ./internal/schema/service ./internal/graph/service ./internal/blob/service ./internal/semantic/service ./internal/backup/service ./internal/automation/service ./internal/graph/notification -count=1
 
-test-phase-e: generate-proto generate-gql-parser
+test-integration-routing: generate-proto generate-gql-parser
 	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/clustering/routing ./internal/session/service ./internal/clustering/backend ./internal/daemon/api/client ./internal/graph/service -count=1
 
-test-phase-f: generate-proto generate-gql-parser
+test-integration-client-admin: generate-proto generate-gql-parser
 	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/clustering/consensus ./internal/clustering/backend ./internal/graph/service ./internal/daemon/api/client ./internal/daemon/api/admin ./internal/cli/cmd -count=1
 
-test-phase-g: generate-proto generate-gql-parser
+test-integration-graph-consistency: generate-proto generate-gql-parser
 	go test -p $(RAFT_TEST_PACKAGE_PARALLELISM) ./internal/graph/service ./internal/daemon/api/admin ./internal/clustering/backend ./internal/daemon/server ./internal/cli/cmd -count=1
 	bash -n scripts/validateComposeClusterDataPlane.sh scripts/validateK3sClusterDataPlane.sh scripts/testK3sCluster.sh scripts/testClusterSoak.sh scripts/testComposeUserBackupRestore.sh scripts/planGraphRepairWorkflow.sh
 	@set -e; tmp="$$(mktemp)"; \
@@ -113,55 +114,67 @@ test-phase-g: generate-proto generate-gql-parser
 	grep -q -- --i-have-snapshots /tmp/mycel-g7-no-snap.out; \
 	rm -f "$$tmp" /tmp/mycel-g7-no-snap.out
 
-test-cluster-release-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-compose-cluster test-k3s-cluster test-k3s-system-backup-restore
+# Backward-compatible aliases for historical phase-era target names.
+test-cluster-identity: test-integration-cluster-identity
+test-phase-a: test-integration-daemon-cluster
+test-phase-d: test-integration-raft-subsystems
+test-phase-e: test-integration-routing
+test-phase-f: test-integration-client-admin
+test-phase-g: test-integration-graph-consistency
 
-test-cluster-raft-sensitive-gate: test test-phase-d test-phase-e test-phase-f test-phase-g test-k3s-raft-disruption-smoke test-k3s-raft-disruption-edges
+test-cluster-release-gate: test test-integration-raft-subsystems test-integration-routing test-integration-client-admin test-integration-graph-consistency test-compose-cluster test-k3s-cluster test-k3s-system-backup-restore
+
+test-cluster-raft-sensitive-gate: test test-integration-raft-subsystems test-integration-routing test-integration-client-admin test-integration-graph-consistency test-k3s-raft-disruption-smoke test-k3s-raft-disruption-edges
 
 test-compose-cluster:
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy scripts manually" >&2; exit 1; fi
 	docker build -f Dockerfile -t $(MYCEL_COMPOSE_IMAGE) ..
-	cd $(MYCEL_COMPOSE_ROOT) && MYCEL_IMAGE=$(MYCEL_COMPOSE_IMAGE) MYCEL_PULL_POLICY=never MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" $(MAKE) compose-reset compose-up
-	MYCEL_COMPOSE_FILE=$(MYCEL_COMPOSE_FILE) MYCEL_COMPOSE_SERVICES=$(MYCEL_COMPOSE_SERVICES) ./scripts/validateComposeClusterIdentity.sh
-	@set -e; state="$$(mktemp)"; \
-	MYCEL_COMPOSE_FILE=$(MYCEL_COMPOSE_FILE) MYCEL_COMPOSE_SERVICES=$(MYCEL_COMPOSE_SERVICES) MYCEL_COMPOSE_DATA_PLANE_STATE="$$state" ./scripts/validateComposeClusterDataPlane.sh; \
-	MYCEL_IMAGE=$(MYCEL_COMPOSE_IMAGE) MYCEL_PULL_POLICY=never MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f $(MYCEL_COMPOSE_FILE) restart $(MYCEL_COMPOSE_SERVICE_ARGS); \
-	MYCEL_IMAGE=$(MYCEL_COMPOSE_IMAGE) MYCEL_PULL_POLICY=never MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" docker compose -f $(MYCEL_COMPOSE_FILE) up -d --wait $(MYCEL_COMPOSE_SERVICE_ARGS); \
-	MYCEL_COMPOSE_FILE=$(MYCEL_COMPOSE_FILE) MYCEL_COMPOSE_SERVICES=$(MYCEL_COMPOSE_SERVICES) ./scripts/validateComposeClusterIdentity.sh; \
-	MYCEL_COMPOSE_FILE=$(MYCEL_COMPOSE_FILE) MYCEL_COMPOSE_SERVICES=$(MYCEL_COMPOSE_SERVICES) MYCEL_DATA_PLANE_CREATE_IF_MISSING=false MYCEL_COMPOSE_DATA_PLANE_STATE="$$state" ./scripts/validateComposeClusterDataPlane.sh; \
-	MYCEL_COMPOSE_FILE=$(MYCEL_COMPOSE_FILE) MYCEL_COMPOSE_SERVICES=$(MYCEL_COMPOSE_SERVICES) MYCEL_COMPOSE_VALIDATE_SOURCE=files ./scripts/validateComposeClusterIdentity.sh; \
-	rm -f "$$state"
+	cd $(MYCEL_LAB_ROOT) && MYCEL_IMAGE=$(MYCEL_COMPOSE_IMAGE) MYCEL_PULL_POLICY=never MYCELD_CLUSTER_BACKEND_AUTH_TOKEN="$${MYCELD_CLUSTER_BACKEND_AUTH_TOKEN:-mycel-compose-cluster-token}" go run ./cmd/mycel-lab run suite compose-cluster-validation --confirm-destructive
 
 test-k3s-cluster:
-	./scripts/testK3sCluster.sh
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run ./scripts/testK3sCluster.sh manually for the legacy path" >&2; exit 1; fi
+	@echo "Delegating migrated k3d identity/data-plane/rolling-restart validation to Mycel Lab."
+	@echo "Note: legacy one-PVC replacement/rejoin coverage remains in scripts/testK3sCluster.sh until Mycel Lab gains volume-replacement support."
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite k3d-cluster-validation --confirm-destructive
 
 test-k3s-raft-disruption-smoke:
-	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
-	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile smoke --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run scenario k3d-raft-disruption-smoke --confirm-destructive
 
 test-k3s-raft-disruption:
-	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
-	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile small --restart-node all --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run scenario k3d-raft-disruption-all-nodes --confirm-destructive
 
 test-k3s-raft-disruption-edges:
-	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
-	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile small --workload edges --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run scenario k3d-raft-disruption-edges --confirm-destructive
 
 test-k3s-raft-restart-soak:
-	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
-	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile restart-soak-1h --workload edges --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite k3d-raft-restart-soak --confirm-destructive
 
 test-k3s-raft-restart-hard-soak:
-	docker build -f Dockerfile -t $(MYCEL_RAFT_DISRUPT_IMAGE) ..
-	go run ./cmd/mycel-raft-disrupttest --driver k3s --provisioner k3d --profile restart-soak-hard-1h --workload multi-space --image $(MYCEL_RAFT_DISRUPT_IMAGE) --confirm-destructive
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
+	docker build -f Dockerfile -t myceldb/mycel:latest ..
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite k3d-raft-restart-hard-soak --confirm-destructive
 
 test-k3s-system-backup-restore:
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run the legacy harness manually" >&2; exit 1; fi
 	docker build -f Dockerfile -t $(MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE) ..
-	go run ./cmd/mycel-system-backuptest --driver k3s --provisioner k3d --profile backup-smoke --workload edges --image $(MYCEL_SYSTEM_BACKUP_RESTORE_IMAGE) --confirm-destructive
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite k3d-system-backup-restore --confirm-destructive
 
 test-compose-user-backup-restore:
-	./scripts/testComposeUserBackupRestore.sh
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run ./scripts/testComposeUserBackupRestore.sh manually" >&2; exit 1; fi
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite compose-user-backup-restore --confirm-destructive
 
 test-cluster-soak:
-	./scripts/testClusterSoak.sh
+	@if [ ! -d "$(MYCEL_LAB_ROOT)" ]; then echo "Mycel Lab checkout not found at $(MYCEL_LAB_ROOT); set MYCEL_LAB_ROOT or run ./scripts/testClusterSoak.sh manually" >&2; exit 1; fi
+	cd $(MYCEL_LAB_ROOT) && go run ./cmd/mycel-lab run suite compose-cluster-soak --confirm-destructive
 
 coverage: generate-proto generate-gql-parser check-daemon-only check-public-surface
 	mkdir -p $(COVERAGE_DIR)

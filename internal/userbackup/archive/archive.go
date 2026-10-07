@@ -322,15 +322,23 @@ func compressedWriter(w io.Writer, method string) (io.Writer, func() error, erro
 }
 
 func compressedReader(r io.Reader, method string) (io.Reader, func() error, error) {
-	if method == "auto" {
+	if strings.ToLower(method) == "auto" {
 		buf, err := io.ReadAll(r)
 		if err != nil {
 			return nil, nil, err
 		}
-		if zr, err := zstd.NewReader(bytes.NewReader(buf)); err == nil {
+		if bytes.HasPrefix(buf, []byte{0x28, 0xb5, 0x2f, 0xfd}) {
+			zr, err := zstd.NewReader(bytes.NewReader(buf))
+			if err != nil {
+				return nil, nil, err
+			}
 			return zr, func() error { zr.Close(); return nil }, nil
 		}
-		if gr, err := gzip.NewReader(bytes.NewReader(buf)); err == nil {
+		if bytes.HasPrefix(buf, []byte{0x1f, 0x8b}) {
+			gr, err := gzip.NewReader(bytes.NewReader(buf))
+			if err != nil {
+				return nil, nil, err
+			}
 			return gr, gr.Close, nil
 		}
 		return bytes.NewReader(buf), func() error { return nil }, nil

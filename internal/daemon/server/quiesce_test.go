@@ -9,6 +9,7 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
@@ -24,7 +25,7 @@ import (
 func TestQuiesceUnaryInterceptorAllowsNonQuiescedRequest(t *testing.T) {
 	gate := quiesce.NewGate("api-ingress")
 	called := false
-	interceptor := quiesceUnaryInterceptor(gate, nil)
+	interceptor := quiesceUnaryInterceptor(gate, nil, nil)
 	_, err := interceptor(context.Background(), "request", &grpc.UnaryServerInfo{FullMethod: "/svc/Method"}, func(ctx context.Context, req any) (any, error) {
 		called = true
 		if gate.Status().Active != 1 {
@@ -44,23 +45,74 @@ func TestQuiesceUnaryInterceptorAllowsNonQuiescedRequest(t *testing.T) {
 }
 
 func TestQuiesceUnaryInterceptorRejectsQuiescedRequest(t *testing.T) {
-	gate := quiesce.NewGate("api-ingress")
-	lease, err := gate.Quiesce(context.Background(), quiesce.Request{Reason: "backup", Mode: quiesce.ModeBackup})
-	if err != nil {
-		t.Fatalf("Quiesce() error = %v", err)
-	}
-	defer lease.Release(context.Background())
-	interceptor := quiesceUnaryInterceptor(gate, nil)
-	called := false
-	_, err = interceptor(context.Background(), "request", &grpc.UnaryServerInfo{FullMethod: "/svc/Method"}, func(ctx context.Context, req any) (any, error) {
-		called = true
-		return nil, nil
-	})
+	interceptor, release := quiescedUnaryInterceptor(t, false)
+	defer release()
+	called, _, err := callUnaryInterceptor(interceptor, "/svc/Method")
 	if called {
 		t.Fatal("handler should not be called while quiesced")
 	}
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("error code = %s, want %s", status.Code(err), codes.Unavailable)
+	}
+}
+
+func TestQuiesceUnaryInterceptorAllowsReadOnlyDuringBackupWhenPolicyAllows(t *testing.T) {
+	interceptor, release := quiescedUnaryInterceptor(t, true)
+	defer release()
+	called, _, err := callUnaryInterceptor(interceptor, "/svc/GetThing")
+	if err != nil {
+		t.Fatalf("read-only interceptor error = %v", err)
+	}
+	if !called {
+		t.Fatal("expected read-only handler to be called")
+	}
+}
+
+func TestQuiesceUnaryInterceptorRejectsWriteDuringReadAdmittingBackup(t *testing.T) {
+	interceptor, release := quiescedUnaryInterceptor(t, true)
+	defer release()
+	called, _, err := callUnaryInterceptor(interceptor, "/svc/UpdateThing")
+	if called {
+		t.Fatal("write handler should not be called while quiesced")
+	}
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("write error code = %s, want %s", status.Code(err), codes.Unavailable)
+	}
+}
+
+func quiescedUnaryInterceptor(t *testing.T, allowReads bool) (grpc.UnaryServerInterceptor, func()) {
+	t.Helper()
+	gate := quiesce.NewGate("api-ingress")
+	lease, err := gate.Quiesce(context.Background(), quiesce.Request{Reason: "backup", Mode: quiesce.ModeBackup, AllowReadsDuringBackup: allowReads})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	interceptor := quiesceUnaryInterceptor(gate, nil, map[string]bool{"/svc/GetThing": true})
+	return interceptor, func() { _ = lease.Release(context.Background()) }
+}
+
+func callUnaryInterceptor(interceptor grpc.UnaryServerInterceptor, method string) (bool, any, error) {
+	called := false
+	res, err := interceptor(context.Background(), "request", &grpc.UnaryServerInfo{FullMethod: method}, func(ctx context.Context, req any) (any, error) {
+		called = true
+		return "response", nil
+	})
+	return called, res, err
+}
+
+func TestDefaultQuiesceReadOnlyMethodsIncludesQueriesButNotMutations(t *testing.T) {
+	readOnly := defaultQuiesceReadOnlyMethods()
+	if !isQuiesceReadOnlyMethod(clientv1.QueryService_ExecuteQuery_FullMethodName, readOnly) {
+		t.Fatalf("ExecuteQuery should be read-only during backup")
+	}
+	if !isQuiesceReadOnlyMethod(clientv1.GraphService_GetNode_FullMethodName, readOnly) {
+		t.Fatalf("GetNode should be read-only by naming convention")
+	}
+	if isQuiesceReadOnlyMethod(clientv1.GraphService_UpdateNode_FullMethodName, readOnly) {
+		t.Fatalf("UpdateNode should not be read-only during backup")
+	}
+	if isQuiesceReadOnlyMethod(clientv1.TransactionService_CommitTransaction_FullMethodName, readOnly) {
+		t.Fatalf("CommitTransaction should not be read-only during backup")
 	}
 }
 
@@ -84,7 +136,7 @@ func TestDefaultQuiesceExemptsClusterBackupArchiveRPC(t *testing.T) {
 
 func TestDefaultQuiesceExemptsAdminClusterBackupRPCs(t *testing.T) {
 	exempt := defaultQuiesceExemptMethods()
-	for _, method := range []string{adminv1.AdminBackupService_TriggerClusterBackup_FullMethodName, adminv1.AdminBackupService_GetClusterBackupStatus_FullMethodName, adminv1.AdminBackupService_ListClusterBackups_FullMethodName, adminv1.AdminBackupService_ValidateClusterBackupSet_FullMethodName} {
+	for _, method := range []string{adminv1.AdminBackupService_StartClusterBackup_FullMethodName, adminv1.AdminBackupService_GetClusterBackupStatus_FullMethodName, adminv1.AdminBackupService_CancelClusterBackup_FullMethodName, adminv1.AdminBackupService_ListClusterBackups_FullMethodName, adminv1.AdminBackupService_ValidateClusterBackupSet_FullMethodName} {
 		if !exempt[method] {
 			t.Fatalf("method %s is not quiesce-exempt", method)
 		}
@@ -107,7 +159,7 @@ func TestQuiesceUnaryInterceptorExemptsMethods(t *testing.T) {
 		t.Fatalf("Quiesce() error = %v", err)
 	}
 	defer lease.Release(context.Background())
-	interceptor := quiesceUnaryInterceptor(gate, map[string]bool{"/svc/Exempt": true})
+	interceptor := quiesceUnaryInterceptor(gate, map[string]bool{"/svc/Exempt": true}, nil)
 	called := false
 	_, err = interceptor(context.Background(), "request", &grpc.UnaryServerInfo{FullMethod: "/svc/Exempt"}, func(ctx context.Context, req any) (any, error) {
 		called = true
@@ -167,7 +219,7 @@ func TestQuiesceStreamInterceptorRejectsQuiescedRequest(t *testing.T) {
 		t.Fatalf("Quiesce() error = %v", err)
 	}
 	defer lease.Release(context.Background())
-	interceptor := quiesceStreamInterceptor(gate, nil)
+	interceptor := quiesceStreamInterceptor(gate, nil, nil)
 	called := false
 	err = interceptor("srv", testServerStream{}, &grpc.StreamServerInfo{FullMethod: "/svc/Stream"}, func(srv any, stream grpc.ServerStream) error {
 		called = true

@@ -33,15 +33,17 @@ import (
 //     schema/edge endpoint validation paths.
 //   - If the leader, route, read-index quorum, or apply barrier is unavailable,
 //     raft-mode reads fail closed instead of falling back to local file state.
-//   - Read-only transactions are linearizable current-read contexts in V1, not
-//     historical repeatable-read snapshots. BeginTransaction records a strong
-//     base revision, and each read-only graph read performs a fresh strong
-//     barrier and may observe newer committed revisions; reads fail closed if
-//     local state is ever behind the transaction base revision.
+//   - Read-only transactions are repeatable-read snapshots pinned to their
+//     base revision. BeginTransaction records a strong base revision, and each
+//     read-only graph read still performs a fresh strong barrier to ensure the
+//     local store has applied at least that revision before serving historical
+//     entity versions. Reads fail closed if local state is behind the base
+//     revision.
 //
 // F0 documents this contract and inventories the current read paths. F1/F2
-// added consensus ReadIndex and graph strong-read barrier enforcement; F3 makes
-// the read-only transaction model explicit.
+// added consensus ReadIndex and graph strong-read barrier enforcement; F3 made
+// the previous read-only transaction model explicit. mycel#26 changes read-only
+// transactions to historical snapshot reads.
 // See docs/implementation/phase-f-read-consistency-inventory.md.
 // See docs/implementation/phase-f-read-consistency-model-implementation-plan.md.
 type raftGraphReadRequest struct {

@@ -10,8 +10,13 @@ Run from the `mycel/` directory.
 
 ## What it does
 
-This destructive k3d/K3s release-gate test validates coordinated full-cluster
-backup and offline restore using normal graph workloads. It:
+This destructive k3d/K3s release-gate test delegates to the native Mycel Lab
+`k3d-system-backup-restore` suite. Mycel Lab owns the disposable k3d lifecycle,
+cluster backup operation events, PVC replacement/restore operations, run
+tracking, and artifacts.
+
+It validates coordinated full-cluster backup and offline restore using normal
+graph workloads. It:
 
 1. creates a fresh disposable k3d/K3s cluster;
 2. writes workload data through normal daemon/client graph APIs;
@@ -21,14 +26,18 @@ backup and offline restore using normal graph workloads. It:
 6. wipes the namespace, including PVCs;
 7. restores each ordinal archive into fresh PVCs;
 8. restarts the StatefulSet;
-9. verifies restored cluster health, per-pod local consistency counts, and a restored workload GQL read through a session-capable pod.
+9. verifies restored cluster health, shared identity, PVC replacement evidence,
+   and restored workload GQL reads through every pod.
 
 The restore path is explicit operator tooling. It must not automatically choose
 an authoritative node or repair split-brain state.
 
 ## Parameters
 
-The target builds the local image and executes `cmd/mycel-system-backuptest`.
+The target builds the local image and executes `mycel-lab run suite
+k3d-system-backup-restore --confirm-destructive` from `MYCEL_LAB_ROOT` (default
+`../mycel-lab`).
+
 Required local tools:
 
 ```sh
@@ -40,33 +49,20 @@ docker version
 Useful direct invocation:
 
 ```sh
-go run ./cmd/mycel-system-backuptest \
-  --driver k3s \
-  --provisioner k3d \
-  --profile backup-smoke \
-  --workload edges \
-  --image myceldb/mycel:system-backup-restore-local \
-  --confirm-destructive
+cd "$MYCEL_LAB_ROOT"
+go run ./cmd/mycel-lab run suite k3d-system-backup-restore --confirm-destructive
 ```
 
-Key parameters:
-
-| Flag | Meaning |
-| --- | --- |
-| `--profile backup-smoke|backup-small|backup-multi-space` | Workload size. |
-| `--workload nodes|edges|multi-space` | Data shape written before backup. |
-| `--backup-dir` | Backup directory inside each pod. |
-| `--keep-cluster-on-failure` | Retain failed disposable cluster for debugging. |
-| `--confirm-destructive` | Required destructive-action acknowledgement. |
+The legacy `cmd/mycel-system-backuptest` binary remains available only as a
+manual fallback while native Mycel Lab destructive evidence is accumulated.
 
 ## How to interpret results
 
-The test passes when the make target exits `0` and prints `System
-backup/restore test: PASS`. PASS means workload data was written through normal
-APIs, pre-backup counts converged, backup metadata validated, old PVCs were
-deleted, fresh PVCs were restored from backup archives, restored local
-consistency counts matched the pre-backup durable counts on every pod, and at
-least one restored session-capable pod could read the workload through normal GQL.
+The test passes when the make target exits `0`. PASS means workload data was
+written through normal APIs, backup metadata validated, old PVC UIDs changed,
+fresh PVCs were restored from backup archives, the restored cluster became
+healthy with shared identity, and restored workload queries succeeded through the
+pods.
 
 Important failures:
 
@@ -80,21 +76,11 @@ Important failures:
 - PVC UID did not change: the test did not prove restore from backup and must be
   treated as failed.
 
-Artifacts are written under:
-
-```text
-artifacts/system-backup-restore/<timestamp>-<cluster-name>/
-  result-summary.json
-  error.txt
-  setup/*
-  workload/write-events.jsonl
-  workload/read-events.jsonl
-  backup/backup-set.json
-  restore/*
-  failure/*
-```
+Artifacts are written under the Mycel Lab artifact root for the run and include
+resolved scenario data, runtime events, environment captures, backup metadata,
+PVC evidence, and failure diagnostics.
 
 ## Cleanup
 
-The script manages disposable K3s resources. If interrupted, delete retained k3d
+Mycel Lab manages disposable K3s resources. If interrupted, delete retained k3d
 clusters and prune unused Docker volumes when needed.

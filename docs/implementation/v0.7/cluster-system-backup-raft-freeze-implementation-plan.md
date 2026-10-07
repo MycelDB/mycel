@@ -163,7 +163,7 @@ go test ./internal/clustering/backend ./internal/daemon/server ./internal/backup
 
 Status: complete for the initial coordinator integration.
 
-Goal: integrate freeze into `TriggerClusterBackup` without deadlocking system
+Goal: integrate freeze into the async cluster backup operation without deadlocking system
 raft.
 
 Sequence changes:

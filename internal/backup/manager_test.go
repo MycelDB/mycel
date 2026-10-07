@@ -182,6 +182,25 @@ func TestManagerCreatesArchiveManifestAndChecksum(t *testing.T) {
 	}
 }
 
+func TestManagerExcludesSpaceExportsFromArchive(t *testing.T) {
+	dataDir := fixtureDataDir(t)
+	writeFile(t, filepath.Join(dataDir, "exports", "spaces", "principal", "export.zip"), "partial export artifact")
+	writeFile(t, filepath.Join(dataDir, "exports", "spaces", "principal", "export.zip.tmp"), "partial temp artifact")
+	backupDir := t.TempDir()
+	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir, IncludeLogs: true}, Version: "test-version", Now: fixedClock()})
+	res, err := mgr.Trigger(context.Background(), TriggerInput{Source: "test"})
+	if err != nil {
+		t.Fatalf("Trigger() error = %v", err)
+	}
+	entries := zipEntries(t, res.ArchivePath)
+	if entries["exports/spaces/principal/export.zip"] || entries["exports/spaces/principal/export.zip.tmp"] {
+		t.Fatalf("archive included space export artifacts: %#v", entries)
+	}
+	if !entries["meta/spaces.json"] || !entries["graphs/space/nodes.json"] {
+		t.Fatalf("archive missing expected data entries: %#v", entries)
+	}
+}
+
 func TestManagerEncryptsArchiveWhenEnabled(t *testing.T) {
 	dataDir := fixtureDataDir(t)
 	backupDir := t.TempDir()
@@ -304,6 +323,23 @@ func TestManagerRunsPreArchiveAfterQuiesceBeforeSnapshot(t *testing.T) {
 	entries := zipEntries(t, res.ArchivePath)
 	if !entries["meta/prearchive-marker.txt"] {
 		t.Fatalf("archive missing pre-archive marker: %#v", entries)
+	}
+}
+
+func TestManagerPropagatesAllowReadsDuringBackupToQuiesce(t *testing.T) {
+	dataDir := fixtureDataDir(t)
+	backupDir := t.TempDir()
+	participant := &trackingParticipant{name: "test-participant"}
+	coord := quiesce.NewCoordinator()
+	if err := coord.Register(participant); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir, AllowReadsDuringBackup: true}, Quiesce: coord})
+	if _, err := mgr.Trigger(context.Background(), TriggerInput{Source: "test"}); err != nil {
+		t.Fatalf("Trigger() error = %v", err)
+	}
+	if !participant.lastRequest.AllowReadsDuringBackup {
+		t.Fatalf("AllowReadsDuringBackup was not propagated to quiesce request: %+v", participant.lastRequest)
 	}
 }
 
@@ -481,17 +517,19 @@ func contains(value string, substr string) bool {
 }
 
 type trackingParticipant struct {
-	name     string
-	quiesced bool
-	released bool
+	name        string
+	quiesced    bool
+	released    bool
+	lastRequest quiesce.Request
 }
 
 func (p *trackingParticipant) Name() string { return p.name }
 func (p *trackingParticipant) Status() quiesce.ParticipantStatus {
 	return quiesce.ParticipantStatus{Name: p.name, Quiesced: p.quiesced}
 }
-func (p *trackingParticipant) Quiesce(context.Context, quiesce.Request) (quiesce.Lease, error) {
+func (p *trackingParticipant) Quiesce(_ context.Context, req quiesce.Request) (quiesce.Lease, error) {
 	p.quiesced = true
+	p.lastRequest = req
 	return quiesce.LeaseFunc(func(context.Context) error { p.released = true; p.quiesced = false; return nil }), nil
 }
 

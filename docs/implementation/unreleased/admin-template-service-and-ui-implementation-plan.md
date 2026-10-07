@@ -1,5 +1,7 @@
 # AdminTemplateService and Mycel Console template UI implementation plan
 
+Status: future/unreleased. Retained in `docs/implementation/unreleased/` after the mycel#135 audit because no generated or daemon `AdminTemplateService` implementation exists yet.
+
 ## Goal
 
 Add an operator/admin-facing template API and wire it into `mycel-console` so operators can view templates for a given space without using user-scoped client sessions.

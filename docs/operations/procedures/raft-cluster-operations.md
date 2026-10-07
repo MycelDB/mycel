@@ -72,25 +72,27 @@ done
 
 For destructive Compose/K3s validation and raft disruption gates, see [System integration tests](../../system_integration/README.md).
 
-Run the fast Phase A, Phase D, Phase E, Phase F, and Phase G gates during normal development and before review:
+Run the fast focused integration bundles during normal development and before review:
 
 ```sh
 cd mycel
-make test-phase-a
-make test-phase-d
-make test-phase-e
-make test-phase-f
-make test-phase-g
+make test-integration-daemon-cluster
+make test-integration-raft-subsystems
+make test-integration-routing
+make test-integration-client-admin
+make test-integration-graph-consistency
 go test ./...
 ```
 
-`make test-phase-d` covers the Phase D raft command coverage guardrails, composite state-machine dispatch hardening, D5 fail-closed subsystem behavior, and multi-subsystem raft restart/convergence tests.
+Historical `test-phase-a`, `test-phase-d`, `test-phase-e`, `test-phase-f`, and `test-phase-g` targets remain as compatibility aliases.
 
-`make test-phase-e` covers session/transaction home-node routing, forwarded client request handling, cross-node transaction-overlay workflows, home-node loss/session-lost behavior, backend auth rejection, and leader-change read-write transaction safety.
+`make test-integration-raft-subsystems` covers the raft command coverage guardrails, composite state-machine dispatch hardening, fail-closed subsystem behavior, and multi-subsystem raft restart/convergence tests.
 
-`make test-phase-f` covers consensus read-index barriers, graph strong reads, read-only transaction current-read semantics, query/metadata read consistency, read metadata, default stale-read rejection, and admin/CLI read diagnostics.
+`make test-integration-routing` covers session/transaction home-node routing, forwarded client request handling, cross-node transaction-overlay workflows, home-node loss/session-lost behavior, backend auth rejection, and leader-change read-write transaction safety.
 
-`make test-phase-g` covers deterministic local graph checksums, local/admin/backend consistency diagnostics, cluster consistency classification, forensic export/diff, CLI output, script syntax, and manual repair planning guardrails.
+`make test-integration-client-admin` covers consensus read-index barriers, graph strong reads, read-only transaction snapshot semantics, query/metadata read consistency, read metadata, default stale-read rejection, and admin/CLI read diagnostics.
+
+`make test-integration-graph-consistency` covers deterministic local graph checksums, local/admin/backend consistency diagnostics, cluster consistency classification, forensic export/diff, CLI output, script syntax, and manual repair planning guardrails.
 
 Before publishing a clustering-capable image or release, also run the destructive local cluster gates:
 
@@ -106,7 +108,7 @@ Or use the bundled release gate:
 make test-cluster-release-gate
 ```
 
-The bundled release gate runs `make test`, `make test-phase-d`, `make test-phase-e`, `make test-phase-f`, `make test-phase-g`, then the destructive compose and K3s validations. `make test-compose-cluster` resets the Mycel-owned Docker Compose fixture under `tests/compose/cluster/`. `make test-k3s-cluster` resets/reuses the local K3s/k3d environment. Treat both as manual/pre-release checks, not default per-PR CI.
+The bundled release gate runs `make test`, the focused integration bundles (`test-integration-raft-subsystems`, `test-integration-routing`, `test-integration-client-admin`, and `test-integration-graph-consistency`), then the destructive compose and K3s validations. `make test-compose-cluster` resets the Mycel-owned Docker Compose fixture under `tests/compose/cluster/`. `make test-k3s-cluster` resets/reuses the local K3s/k3d environment. Treat both as manual/pre-release checks, not default per-PR CI.
 
 ## Raft entry log storage format
 

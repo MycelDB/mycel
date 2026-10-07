@@ -48,6 +48,7 @@ var phaseDRaftRecordCoverage = map[string]raftRecordCoverage{
 	"daemon.backup.cluster.complete.v1":    {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.fail.v1":        {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.abort.v1":       {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
+	"daemon.backup.cluster.blockers.v1":    {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup async operation"},
 }
 
 func TestPhaseDRaftRecordCoverageClassifiesAllRecordTypes(t *testing.T) {

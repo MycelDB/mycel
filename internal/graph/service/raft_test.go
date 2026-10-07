@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
@@ -154,7 +155,7 @@ func TestCommitTransactionGraphUsesRaftWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestReadOnlyTransactionUsesLinearizableCurrentReadsNotHistoricalSnapshot(t *testing.T) {
+func TestReadOnlyTransactionUsesLinearizableHistoricalSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	m := NewModule()
@@ -217,12 +218,15 @@ func TestReadOnlyTransactionUsesLinearizableCurrentReadsNotHistoricalSnapshot(t 
 		t.Fatalf("second committed revision=%d want 2", secondCommit.CommittedRevision)
 	}
 
-	got, err := m.GetNode(ctx, readOnly, second.ID.String())
-	if err != nil {
-		t.Fatalf("read-only transaction should be a current-read context and see newer commits; GetNode(second) error = %v", err)
+	if _, err := m.GetNode(ctx, readOnly, second.ID.String()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("read-only transaction GetNode(second) error = %v, want ErrNotFound for post-snapshot commit", err)
 	}
-	if got.Content != "revision 2" {
-		t.Fatalf("read-only current read content=%q want revision 2", got.Content)
+	got, err := m.GetNode(ctx, readOnly, first.ID.String())
+	if err != nil {
+		t.Fatalf("read-only transaction GetNode(first after newer commit) error = %v", err)
+	}
+	if got.Content != "revision 1" {
+		t.Fatalf("read-only snapshot content=%q want revision 1", got.Content)
 	}
 	futureBase := readOnly
 	futureBase.ID = uuid.NewString()

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
 // GraphCheckpointStatus is a local operational status summary for one
@@ -88,11 +89,9 @@ func (m *Module) CreateGraphCheckpoint(ctx context.Context, spaceID string, doma
 	if err != nil {
 		return GraphCheckpointStatus{}, err
 	}
-	m.markCheckpointRunning(key)
-	started := time.Now()
-	if err := store.WriteCheckpoint(ctx); err != nil {
-		m.recordCheckpointFailure(key, time.Since(started), err)
-		return GraphCheckpointStatus{}, mapStorageError(err)
+	started, err := m.writeGraphCheckpoint(ctx, key, store)
+	if err != nil {
+		return GraphCheckpointStatus{}, err
 	}
 	m.recordCheckpointSuccess(key, time.Since(started))
 	return m.GraphCheckpointStatus(ctx, key.SpaceID, key.DomainID)
@@ -100,6 +99,26 @@ func (m *Module) CreateGraphCheckpoint(ctx context.Context, spaceID string, doma
 
 // GraphCheckpointStatus returns local latest checkpoint status for one domain
 // graph store. It is local-only and does not collect peer status.
+func (m *Module) writeGraphCheckpoint(ctx context.Context, key domainStoreKey, store *graphstorage.LocalStore) (time.Time, error) {
+	if m.gate != nil {
+		release, err := m.gate.Enter(ctx)
+		if err != nil {
+			mapped := quiesce.GRPCError(err)
+			m.recordCheckpointFailure(key, 0, mapped)
+			return time.Time{}, mapped
+		}
+		defer release()
+	}
+	m.markCheckpointRunning(key)
+	started := time.Now()
+	if err := store.WriteCheckpoint(ctx); err != nil {
+		mapped := mapStorageError(err)
+		m.recordCheckpointFailure(key, time.Since(started), mapped)
+		return time.Time{}, mapped
+	}
+	return started, nil
+}
+
 func (m *Module) GraphCheckpointStatus(ctx context.Context, spaceID string, domainID string) (GraphCheckpointStatus, error) {
 	key, err := newDomainStoreKey(spaceID, domainID)
 	if err != nil {

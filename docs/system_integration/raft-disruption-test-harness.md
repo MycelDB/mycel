@@ -1,9 +1,12 @@
 # Raft Disruption Test
 
 This file covers the raft disruption system integration test and its supported
-variations. The make targets and direct harness invocations all exercise the same
-underlying test: create a disposable k3d/K3s cluster, apply write pressure,
-restart pods, and verify raft/data convergence.
+variations. The make targets now delegate migrated coverage to Mycel Lab suites/scenarios.
+Direct legacy harness invocations remain documented for transition and manual
+fallback. The restart-soak make targets now use native Mycel Lab scenarios rather
+than wrapping the legacy harness profiles.
+Both paths create disposable k3d/K3s resources, apply write pressure, restart
+pods, and verify raft/data convergence.
 
 ## Commands
 
@@ -11,11 +14,11 @@ Common make targets:
 
 | Variation | Command | Purpose |
 | --- | --- | --- |
-| Smoke | `make test-k3s-raft-disruption-smoke` | Fast default `nodes` workload with one pod restart. |
-| Small/all-pod restart | `make test-k3s-raft-disruption` | `small` profile with all pods restarted one at a time. |
-| Edge workload | `make test-k3s-raft-disruption-edges` | Relationship workload under pod restart pressure. |
-| Restart/write soak | `make test-k3s-raft-restart-soak` | One-hour moderate edge workload with rotating single-pod restarts. |
-| Hard restart/write soak | `make test-k3s-raft-restart-hard-soak` | One-hour tougher multi-space workload with more frequent rotating single-pod restarts. |
+| Smoke | `make test-k3s-raft-disruption-smoke` | Delegates to `mycel-lab run scenario k3d-raft-disruption-smoke`. |
+| Small/all-pod restart | `make test-k3s-raft-disruption` | Delegates to `mycel-lab run scenario k3d-raft-disruption-all-nodes`. |
+| Edge workload | `make test-k3s-raft-disruption-edges` | Delegates to `mycel-lab run scenario k3d-raft-disruption-edges`. |
+| Restart/write soak | `make test-k3s-raft-restart-soak` | Delegates to native `mycel-lab run suite k3d-raft-restart-soak`. |
+| Hard restart/write soak | `make test-k3s-raft-restart-hard-soak` | Delegates to native `mycel-lab run suite k3d-raft-restart-hard-soak`. |
 
 The reusable harness can also be invoked directly:
 
@@ -30,7 +33,8 @@ go run ./cmd/mycel-raft-disrupttest \
   --confirm-destructive
 ```
 
-Run from the `mycel/` directory.
+Run from the `mycel/` directory. Compatibility targets expect a sibling Mycel
+Lab checkout at `../mycel-lab`; override with `MYCEL_LAB_ROOT` if needed.
 
 Useful direct variations:
 

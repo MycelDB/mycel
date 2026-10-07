@@ -132,20 +132,17 @@ func (m *Module) maybeAutoCheckpointStore(ctx context.Context, key domainStoreKe
 	if !checkpointEligible(status, policy.RevisionThreshold) {
 		return nil
 	}
-	m.markCheckpointRunning(key)
-	started := time.Now()
 	attemptCtx := ctx
 	cancel := func() {}
 	if policy.Timeout > 0 {
 		attemptCtx, cancel = context.WithTimeout(ctx, policy.Timeout)
 	}
 	defer cancel()
-	err = store.WriteCheckpoint(attemptCtx)
-	duration := time.Since(started)
+	started, err := m.writeGraphCheckpoint(attemptCtx, key, store)
 	if err != nil {
-		m.recordCheckpointFailure(key, duration, err)
-		return mapStorageError(err)
+		return err
 	}
+	duration := time.Since(started)
 	m.recordCheckpointSuccess(key, duration)
 	if m.logger != nil {
 		m.logger.Info("automatic graph checkpoint written", "space_id", key.SpaceID, "domain_id", key.DomainID, "duration", duration.String(), "previous_tail_revisions", status.TailRevisions, "current_revision", status.CurrentRevision)

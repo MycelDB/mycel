@@ -181,7 +181,7 @@ Authorization is explicit: the authenticated principal must be allowed to read t
 - `APPEND`, basic `UPSERT`, and `REPLACE_DOMAIN` modes are supported for graph records.
 - Raw JSON chunks, NDJSON chunks, and semantic rule/vector export are not yet implemented.
 - Import mutates only the transaction overlay; callers still commit or roll back through `TransactionService`.
-- Export reads through the active transaction. Read-write transactions include read-your-writes from their overlay; read-only exports use the current committed graph read path and may observe commits newer than `base_revision`.
+- Export reads through the active transaction. Read-write transactions include read-your-writes from their overlay; read-only exports use the graph snapshot pinned to `base_revision`.
 
 ## Transaction scoping
 
@@ -211,7 +211,7 @@ Commit/rollback remains separate and is handled by `TransactionService`.
 
 ## ExportDomain
 
-Exports graph/domain data from a transaction read context. In V1 this is not a historical repeatable snapshot for read-only transactions; it reads current committed graph state through the graph read consistency path. Use a read-write transaction when the export must include staged writes.
+Exports graph/domain data from a transaction read context. Read-only transactions export the graph snapshot pinned to their `base_revision`; read-write transactions export their local staged overlay plus committed state.
 
 Request:
 

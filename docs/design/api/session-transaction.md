@@ -149,7 +149,7 @@ Supported v1 modes:
 - read-only
 - read-write
 
-A read-only transaction is a linearizable current-read context in the current daemon implementation. It records a `base_revision` when it begins, but reads may observe newer committed revisions because the graph store is latest-state oriented rather than historical MVCC.
+A read-only transaction is a repeatable-read graph snapshot pinned to the `base_revision` observed when it begins. Later graph reads through that transaction continue to resolve nodes, edges, hierarchy, and structured/GQL scans at that revision even if newer commits land in the same domain.
 
 A read-write transaction buffers mutations until commit.
 
@@ -197,7 +197,7 @@ assert commit.operation_id == operation_id
 base_revision
 ```
 
-The base revision identifies the domain revision observed when the transaction began. In raft mode this value is obtained through the graph manager's strong read path. For read-only transactions it is a freshness floor and diagnostic/cache-validation value, not a promise of repeatable historical snapshot isolation.
+The base revision identifies the domain revision observed when the transaction began. In raft mode this value is obtained through the graph manager's strong read path. For read-only transactions it is the pinned graph snapshot revision used by subsequent reads.
 
 `CommitTransaction` returns:
 
@@ -245,7 +245,7 @@ A session may have multiple active transactions.
 
 The daemon is responsible for locking and concurrency control. Recommended v1 semantics:
 
-- read-only transactions are linearizable current-read contexts and may observe commits newer than `base_revision`
+- read-only transactions are repeatable-read graph snapshots pinned to `base_revision`
 - read-write transactions buffer mutations
 - commits are serialized per domain
 - commit checks the transaction base revision and detects conflicts

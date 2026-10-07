@@ -30,10 +30,11 @@ raft freeze/checkpoint window:
 ```sh
 mycel --daemon-addr <healthy-node>:9091 \
   --username <operator> --password <password> \
-  admin backup cluster trigger \
+  admin backup cluster start \
   --reason "before maintenance" \
   --output-dir /mnt/mycel-backups \
-  --archive-format tar.zst
+  --archive-format tar.zst \
+  --wait
 ```
 
 The end-to-end operator flow is described in

@@ -73,6 +73,81 @@ func TestGateQuiesceWaitsForActiveWorkToDrain(t *testing.T) {
 	}
 }
 
+func TestGateAllowsReadsDuringBackupWhenRequested(t *testing.T) {
+	g := NewGate("api-ingress")
+	readRelease, err := g.EnterRead(context.Background())
+	if err != nil {
+		t.Fatalf("EnterRead() before quiesce error = %v", err)
+	}
+	lease, err := g.Quiesce(context.Background(), Request{Reason: "backup", Mode: ModeBackup, AllowReadsDuringBackup: true})
+	if err != nil {
+		t.Fatalf("Quiesce() with active read error = %v", err)
+	}
+	if status := g.Status(); !status.Quiesced || status.Active != 1 {
+		t.Fatalf("unexpected status with active read: %#v", status)
+	}
+	if _, err := g.Enter(context.Background()); !errors.Is(err, ErrQuiesced) {
+		t.Fatalf("write Enter() while quiesced error = %v, want ErrQuiesced", err)
+	}
+	secondReadRelease, err := g.EnterRead(context.Background())
+	if err != nil {
+		t.Fatalf("EnterRead() during read-admitting backup quiesce error = %v", err)
+	}
+	secondReadRelease()
+	readRelease()
+	if err := lease.Release(context.Background()); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+}
+
+func TestGateQuiesceWaitsForActiveReadsWhenBackupReadsDisabled(t *testing.T) {
+	g := NewGate("api-ingress")
+	readRelease, err := g.EnterRead(context.Background())
+	if err != nil {
+		t.Fatalf("EnterRead() error = %v", err)
+	}
+	leaseCh := make(chan Lease, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		lease, err := g.Quiesce(context.Background(), Request{Reason: "backup", Mode: ModeBackup})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		leaseCh <- lease
+	}()
+	select {
+	case lease := <-leaseCh:
+		t.Fatalf("Quiesce returned before active read drained: %#v", lease)
+	case err := <-errCh:
+		t.Fatalf("Quiesce error = %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	readRelease()
+	select {
+	case lease := <-leaseCh:
+		if err := lease.Release(context.Background()); err != nil {
+			t.Fatalf("Release() error = %v", err)
+		}
+	case err := <-errCh:
+		t.Fatalf("Quiesce error = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("Quiesce did not return after active read drained")
+	}
+}
+
+func TestGateRejectsReadsDuringBackupByDefault(t *testing.T) {
+	g := NewGate("api-ingress")
+	lease, err := g.Quiesce(context.Background(), Request{Reason: "backup", Mode: ModeBackup})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(context.Background())
+	if _, err := g.EnterRead(context.Background()); !errors.Is(err, ErrQuiesced) {
+		t.Fatalf("EnterRead() error = %v, want ErrQuiesced", err)
+	}
+}
+
 func TestGateEnterFailsWhileQuiescedAndReopensOnRelease(t *testing.T) {
 	g := NewGate("blob")
 	lease, err := g.Quiesce(context.Background(), Request{Reason: "backup", Mode: ModeBackup})

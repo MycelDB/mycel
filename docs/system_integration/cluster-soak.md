@@ -10,7 +10,12 @@ Run from the `mycel/` directory.
 
 ## What it does
 
-This optional long-running destructive Docker Compose system integration test uses the Mycel-owned fixture at `tests/compose/cluster/compose.yml`. It repeatedly validates cluster identity and data-plane behavior while applying periodic daemon restarts. It is intended for extended local confidence after raft-sensitive changes.
+This optional destructive Docker Compose system integration test now delegates to
+the Mycel Lab `compose-cluster-soak` suite. It uses the Mycel-owned fixture at
+`tests/compose/cluster/compose.yml` through Mycel Lab's `compose` driver. It
+repeatedly validates cluster identity and data-plane behavior while applying
+periodic daemon restarts. It is intended for extended local confidence after
+raft-sensitive changes.
 
 ## Parameters
 
@@ -20,11 +25,12 @@ This optional long-running destructive Docker Compose system integration test us
 | `MYCEL_CLUSTER_SOAK_WRITES` | `3` | Number of write/validation iterations used by the soak script. |
 | `MYCEL_CLUSTER_SOAK_FORCE_SNAPSHOTS` | `true` | Reserved future mode; currently fails closed. |
 | `MYCEL_CLUSTER_SOAK_REPLACE_PVC` | `true` | Reserved future mode; currently fails closed. |
+| `MYCEL_LAB_ROOT` | `../mycel-lab` | Sibling Mycel Lab checkout used by the compatibility target. |
 
 Example:
 
 ```sh
-MYCEL_CLUSTER_SOAK_WRITES=3 make test-cluster-soak
+make test-cluster-soak
 ```
 
 ## How to interpret results

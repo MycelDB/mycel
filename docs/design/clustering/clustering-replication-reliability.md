@@ -9,10 +9,10 @@ Phase status on `improved_clustering`:
 - Phase A fail-closed/observability work is complete and has focused gates.
 - Phase B durable raft runtime is partially complete for V1: daemon group startup uses file-backed raft storage under `<data-dir>/meta/raft`, hard state/entries/snapshots are persisted, groups restart from persisted state, committed entries replay into state machines, generic snapshot restore exists for snapshot-capable state machines, system metadata snapshot-only restart/catch-up is tested, and restart/rejoin gates exist. Phase B2 now has initial subsystem snapshot contracts for current composite children, including blob payload fail-closed validation and semantic derived-state boundaries. Automatic production compaction remains off until lagging-follower snapshot-install coverage, stronger atomic restore, and destructive soak gates are complete. See `../implementation/phase-b-durable-raft-runtime-audit.md` and the follow-up plan in `../implementation/phase-b2-subsystem-snapshot-recovery-implementation-plan.md`.
 - Phase C authoritative system raft metadata is implemented for the static V1 bootstrap model.
-- Phase D raft command ownership/coverage is complete for its initial scope: durable WAL record types are classified, covered subsystem writes route through system/partition raft or fail closed, backup/automation/change-stream raft-mode behavior is explicit, composite state-machine dispatch is hardened, multi-subsystem restart/convergence coverage exists, and `make test-phase-d` is available.
-- Phase E leader/session/transaction routing is complete for V1: session and transaction IDs encode home nodes in raft mode, unary session/transaction/graph/query/metadata-catalog requests route to the home node or fail closed, read-write transactions require local graph-partition leadership, home-node loss semantics are explicit, routing diagnostics exist, and `make test-phase-e` is available.
-- Phase F read consistency is complete for V1: committed/read-only graph and graph-derived query/metadata reads use leader read-index/apply barriers by default, read-only transactions are explicit current-read contexts, read metadata is exposed, stale reads are rejected by default, read-index diagnostics are visible, and `make test-phase-f` is available.
-- Phase G divergence detection/repair tooling is complete for V1: deterministic local graph checksums, local/admin/backend diagnostics, cluster consistency reports, destructive Compose/K3s data-plane validation, forensic export/diff tooling, manual repair workflows, `make test-phase-g`, release-gate inclusion, and optional soak validation are available.
+- Phase D raft command ownership/coverage is complete for its initial scope: durable WAL record types are classified, covered subsystem writes route through system/partition raft or fail closed, backup/automation/change-stream raft-mode behavior is explicit, composite state-machine dispatch is hardened, multi-subsystem restart/convergence coverage exists, and `make test-integration-raft-subsystems` is available.
+- Phase E leader/session/transaction routing is complete for V1: session and transaction IDs encode home nodes in raft mode, unary session/transaction/graph/query/metadata-catalog requests route to the home node or fail closed, read-write transactions require local graph-partition leadership, home-node loss semantics are explicit, routing diagnostics exist, and `make test-integration-routing` is available.
+- Phase F read consistency is complete for V1: committed/read-only graph and graph-derived query/metadata reads use leader read-index/apply barriers by default, read-only transactions are repeatable-read snapshots pinned to their base revision, read metadata is exposed, stale reads are rejected by default, read-index diagnostics are visible, and `make test-integration-client-admin` is available.
+- Phase G divergence detection/repair tooling is complete for V1: deterministic local graph checksums, local/admin/backend diagnostics, cluster consistency reports, destructive Compose/K3s data-plane validation, forensic export/diff tooling, manual repair workflows, `make test-integration-graph-consistency`, release-gate inclusion, and optional soak validation are available.
 
 ## Context
 
@@ -238,7 +238,7 @@ A transaction is created on the session home node in V1 and receives an encoded 
 
 Guarantees:
 
-- read-only transaction records the current committed base revision available through the graph manager; in Phase F V1 it is a linearizable current-read context, not a pinned historical snapshot;
+- read-only transaction records the current committed base revision available through the graph manager; graph reads through that transaction are pinned to the recorded historical snapshot revision;
 - read-write transaction stages its overlay on the home node only if that node is currently the graph partition leader for the target space;
 - transaction response records base revision;
 - future unary graph/query/metadata operations are routed to transaction home;
@@ -483,7 +483,7 @@ Implemented guarantees:
 - read-write transactions require the home node to be the local graph partition leader before staging, reading overlays, or committing;
 - leader changes during active read-write transactions fail safely and preserve the transaction state for explicit retry/rollback handling;
 - committed/read-only graph reads route to the partition leader and, after Phase F, use read-index/apply barriers by default;
-- local routing diagnostics and the focused `make test-phase-e` gate cover the V1 behavior.
+- local routing diagnostics and the focused `make test-integration-routing` bundle cover the V1 behavior.
 
 Remaining boundaries:
 
@@ -535,7 +535,7 @@ Implemented V1 coverage:
 - real Compose/K3s pod-to-pod graph write/read/query/consistency validation;
 - bounded local forensic export and entity-level diff tooling;
 - manual repair workflows and read-only planning helper;
-- `make test-phase-g` and release-gate inclusion;
+- `make test-integration-graph-consistency` and release-gate inclusion;
 - optional `make test-cluster-soak`.
 
 V1 boundaries:

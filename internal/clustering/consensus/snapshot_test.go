@@ -277,6 +277,142 @@ func TestPersistentRaftGroupEmptyStorageRejoinInstallsSnapshotAndTail(t *testing
 	}
 }
 
+func TestPersistentRaftGroupEmptyStorageRejoinReportsSnapshotForIdleGroup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport := newMemoryTransport()
+	peers := []NodeID{1, 2, 3}
+	dirs := map[NodeID]string{}
+	groups := map[NodeID]*Group{}
+	var groupsMu sync.RWMutex
+	for _, id := range peers {
+		dirs[id] = t.TempDir()
+		store, err := NewPersistentStorage(dirs[id])
+		if err != nil {
+			t.Fatalf("NewPersistentStorage(%d) error = %v", id, err)
+		}
+		g, err := StartGroup(ctx, GroupOptions{ID: "snapshot-rejoin-idle", NodeID: id, Peers: peers, PartitionCount: 64, StateMachine: &countingSnapshotStateMachine{}, Transport: transport, Storage: store, ReplayCommittedEntries: true, ElectionTick: 5, HeartbeatTick: 1})
+		if err != nil {
+			t.Fatalf("StartGroup(%d) error = %v", id, err)
+		}
+		groups[id] = g
+		transport.register(g)
+	}
+	defer func() {
+		groupsMu.RLock()
+		defer groupsMu.RUnlock()
+		for _, g := range groups {
+			g.Stop()
+		}
+	}()
+	stopTick := make(chan struct{})
+	defer close(stopTick)
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopTick:
+				return
+			case <-ticker.C:
+				groupsMu.RLock()
+				for _, g := range groups {
+					g.Tick()
+				}
+				groupsMu.RUnlock()
+			}
+		}
+	}()
+	waitCtx, cancelWait := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelWait()
+	if err := WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		leaders := map[NodeID]int{}
+		groupsMu.RLock()
+		defer groupsMu.RUnlock()
+		for _, g := range groups {
+			if l := g.Leader(); l != 0 {
+				leaders[l]++
+			}
+		}
+		for _, count := range leaders {
+			if count >= 2 {
+				return true
+			}
+		}
+		return false
+	}); err != nil {
+		t.Fatalf("leader election timed out: %v", err)
+	}
+	if err := WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		groupsMu.RLock()
+		defer groupsMu.RUnlock()
+		for _, id := range []NodeID{1, 2} {
+			last, _ := groups[id].StorageProgress()
+			if last < 3 {
+				return false
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("active idle groups did not apply bootstrap entries: %v", err)
+	}
+
+	wipedID := NodeID(3)
+	transport.unregister(wipedID)
+	groupsMu.Lock()
+	groups[wipedID].Stop()
+	delete(groups, wipedID)
+	groupsMu.Unlock()
+	if err := os.RemoveAll(dirs[wipedID]); err != nil {
+		t.Fatalf("RemoveAll(wiped dir) error = %v", err)
+	}
+	if err := os.MkdirAll(dirs[wipedID], 0o755); err != nil {
+		t.Fatalf("MkdirAll(wiped dir) error = %v", err)
+	}
+
+	var snapshotIndex uint64
+	groupsMu.RLock()
+	for _, id := range []NodeID{1, 2} {
+		idx, err := groups[id].CreateSnapshot(0, true)
+		if err != nil {
+			groupsMu.RUnlock()
+			t.Fatalf("CreateSnapshot(%d) error = %v", id, err)
+		}
+		if idx > snapshotIndex {
+			snapshotIndex = idx
+		}
+	}
+	groupsMu.RUnlock()
+	if snapshotIndex == 0 {
+		t.Fatal("expected non-zero active quorum snapshot index")
+	}
+
+	store, err := NewPersistentStorage(dirs[wipedID])
+	if err != nil {
+		t.Fatalf("rejoin NewPersistentStorage() error = %v", err)
+	}
+	rejoined, err := StartGroup(ctx, GroupOptions{ID: "snapshot-rejoin-idle", NodeID: wipedID, Peers: peers, PartitionCount: 64, StateMachine: &countingSnapshotStateMachine{}, Transport: transport, Storage: store, ReplayCommittedEntries: true, JoinExisting: true, ElectionTick: 5, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("rejoin StartGroup() error = %v", err)
+	}
+	groupsMu.Lock()
+	groups[wipedID] = rejoined
+	groupsMu.Unlock()
+	transport.mu.Lock()
+	delete(transport.drop, wipedID)
+	transport.mu.Unlock()
+	transport.register(rejoined)
+
+	if err := WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		_, installedSnapshot := rejoined.StorageProgress()
+		return installedSnapshot != 0
+	}); err != nil {
+		term, commit, applied := rejoined.Progress()
+		last, snap := rejoined.StorageProgress()
+		t.Fatalf("idle wiped same-ID rejoin did not report snapshot progress: term=%d commit=%d applied=%d last=%d snapshot=%d active_snapshot=%d err=%v", term, commit, applied, last, snap, snapshotIndex, err)
+	}
+}
+
 func TestStartGroupRejectsNonEmptySnapshotForApplyOnlyStateMachine(t *testing.T) {
 	store, err := NewPersistentStorage(t.TempDir())
 	if err != nil {
