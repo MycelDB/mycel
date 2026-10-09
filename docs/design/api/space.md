@@ -352,14 +352,14 @@ The daemon resolves the address from `--daemon-addr`, `MYCELD_GRPC_ADDR`, or the
 ## Current implementation notes
 
 - The daemon space module opens existing metadata stores under `<MYCELD_DATA_DIR>/meta`.
-- Space owners receive admin space access when an Admin API create call creates a space.
-- Client listing returns spaces owned by the authenticated user or readable through existing ACL grants.
-- Effective access is returned for client UI convenience and is still advisory.
+- Space ownership is recorded on the space owner field and grants owner-derived access.
+- Client listing returns spaces owned by the authenticated user or allowed by identity scoped roles/capabilities.
+- Effective access is returned for client UI convenience and is still advisory; daemon enforcement uses identity scoped authorization on every request.
 - Space create/delete are currently Admin API operations gated by operator space capabilities.
 
 ## Open questions
 
 - Should `SpaceSummary` and `Space` be separate protobuf messages from the start, or should v1 use one `Space` message for both list and get responses?
 - Should archived spaces be hidden by default from `ListSpaces`? Current recommendation: yes, unless `include_archived` is true.
-- Should Client API expose a read-only list of space access grants, or should all access inspection be Admin API? Current recommendation: defer until access-management APIs are designed.
+- Should Client API expose a read-only list of scoped identity grants for a space, or should all access inspection remain Admin API? Current recommendation: defer until access-management APIs are designed.
 - Should user-owned personal/default space discovery be a Mycel convention or a PKM-level convention? Current recommendation: PKM-level for now.

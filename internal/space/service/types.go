@@ -5,6 +5,7 @@ import (
 
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/identity/model"
+	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 )
@@ -18,7 +19,6 @@ type Manager interface {
 	GetSpace(ctx context.Context, spaceID string) (domainspace.Space, error)
 	CreateSpace(ctx context.Context, input CreateSpaceInput) (domainspace.Space, graph.Domain, error)
 	DeleteSpace(ctx context.Context, spaceID string) error
-	GrantSpacePrincipal(ctx context.Context, spaceID string, principalID string, role string) (SpaceGrant, error)
 	EffectiveAccess(ctx context.Context, principalID string, sp domainspace.Space) (EffectiveAccess, error)
 	DomainEffectiveAccess(ctx context.Context, principalID string, spaceID string) (EffectiveAccess, error)
 	ListDomains(ctx context.Context, spaceID string, includeSystem bool) ([]graph.Domain, error)
@@ -67,12 +67,9 @@ type UpdateDomainInput struct {
 	ReadOnly      *bool
 }
 
-type SpaceGrant struct {
-	ID           string
-	SpaceID      string
-	PrincipalID  string
-	Role         string
-	Capabilities []string
+type PrincipalAccessAuthorizer interface {
+	Authorize(ctx context.Context, principalID string, capability string, scope principalservice.AccessScope) error
+	EffectiveAccess(ctx context.Context, principalID string, scope principalservice.AccessScope) (principalservice.EffectiveAccess, error)
 }
 
 type EffectiveAccess struct {

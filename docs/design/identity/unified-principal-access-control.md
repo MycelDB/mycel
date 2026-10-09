@@ -260,8 +260,7 @@ Initial built-in roles should be small and explicit. Suggested roles:
 
 | Role | Scope | Effective capabilities |
 |---|---|---|
-| `space.owner` | space | Read/update/manage access, domain read/create/update/delete, graph/blob/query/metadata read/write/delete where allowed. |
-| `space.admin` | space | Manage access and mutable space/domain settings, but not necessarily transfer ownership. |
+| `space.admin` | space | Manage access and mutable space/domain settings, but not transfer ownership. Historical `space.owner` role requests are canonicalized to `space.admin`; actual ownership is the space owner field. |
 | `space.editor` | space | Read/write graph, query, metadata, blob write, semantic search where enabled. |
 | `space.viewer` | space | Read space/domain/graph/blob/metadata and run allowed read queries. |
 
@@ -484,18 +483,20 @@ GrantSpaceUser(ctx, spaceID, userID, role)
 EffectiveAccess(ctx, userID, space)
 ```
 
-should become:
+are replaced by:
 
 ```go
 OwnerPrincipalID string
-GrantSpacePrincipal(ctx, spaceID, principalID, role)
+GrantRole(ctx, principalID, "space.viewer", AccessScope{Type: "space", SpaceID: spaceID}, reason, actor)
+GrantCapability(ctx, principalID, "graph.read", AccessScope{Type: "space", SpaceID: spaceID}, reason, actor)
 EffectiveAccess(ctx, principalID, scope)
 ```
 
-A space owner is a principal with ownership accountability. Owner-derived
-capabilities can be implemented as an implicit `space.owner` role at that space
-scope. Ownership is still distinct from a normal revocable grant: transferring
-ownership should be an explicit operation, not merely revoking a role binding.
+A space owner is a principal with ownership accountability through the space's
+owner field. Ownership is distinct from normal revocable identity grants:
+transferring ownership should be an explicit operation, not merely adding or
+revoking a role binding. Grantable roles should use non-ownership names such as
+`space.viewer`, `space.editor`, and `space.admin` / `space.manager`.
 
 System-owned spaces should be owned by a reserved system principal, not by a
 special owner enum that bypasses the principal model.

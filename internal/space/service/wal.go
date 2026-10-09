@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
-	"github.com/myceldb/mycel/internal/space/access"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 )
@@ -21,14 +19,12 @@ const (
 	recordTypeCreateDomain                 wal.RecordType = "space.domain.create.v1"
 	recordTypeUpdateDomain                 wal.RecordType = "space.domain.update.v1"
 	recordTypeDeleteDomain                 wal.RecordType = "space.domain.delete.v1"
-	recordTypeGrantSpacePrincipal          wal.RecordType = "space.access.grant.v1"
 	recordTypeDeleteSpace                  wal.RecordType = "space.delete.v1"
 )
 
 type createSpaceWithDefaultDomainRecord struct {
-	Space         domainspace.Space      `json:"space"`
-	DefaultDomain graph.Domain           `json:"default_domain"`
-	OwnerGrant    access.SpaceAccessRule `json:"owner_grant"`
+	Space         domainspace.Space `json:"space"`
+	DefaultDomain graph.Domain      `json:"default_domain"`
 }
 
 type createDomainRecord struct {
@@ -42,10 +38,6 @@ type updateDomainRecord struct {
 type deleteDomainRecord struct {
 	DomainID graph.DomainID      `json:"domain_id"`
 	SpaceID  domainspace.SpaceID `json:"space_id"`
-}
-
-type grantSpacePrincipalRecord struct {
-	Rule access.SpaceAccessRule `json:"rule"`
 }
 
 type deleteSpaceRecord struct {
@@ -69,8 +61,7 @@ func (m *Module) buildCreateSpaceRecord(input CreateSpaceInput) createSpaceWithD
 	}
 	sp := domainspace.Space{SpaceID: spaceID, OwnerID: input.OwnerPrincipalID, Name: input.Name, Status: "active", CreatedAt: now, UpdatedAt: now}
 	domain := graph.Domain{ID: uuid.New(), SpaceID: spaceID, Key: key, Name: name, DiscoveryMode: graph.DomainDiscoveryModeNormal, SearchMode: graph.DomainSearchModeNormal, SemanticMode: graph.DomainSemanticModeNormal, Default: true, CreatedAt: now, UpdatedAt: now}
-	grant := access.SpaceAccessRule{ID: uuid.New(), SpaceID: spaceID, PrincipalID: input.OwnerPrincipalID, Permissions: []access.SpacePermission{access.SpacePermissionAdmin}}
-	return createSpaceWithDefaultDomainRecord{Space: sp, DefaultDomain: domain, OwnerGrant: grant}
+	return createSpaceWithDefaultDomainRecord{Space: sp, DefaultDomain: domain}
 }
 
 func (m *Module) applyCreateSpaceWithDefaultDomain(ctx context.Context, rec wal.Record) error {
@@ -121,24 +112,12 @@ func (m *Module) applyDeleteDomain(ctx context.Context, rec wal.Record) error {
 	return m.domains.ApplyDelete(ctx, payload.DomainID)
 }
 
-func (m *Module) applyGrantSpacePrincipal(ctx context.Context, rec wal.Record) error {
-	var payload grantSpacePrincipalRecord
-	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
-		return err
-	}
-	_, err := m.access.ApplyGrant(ctx, payload.Rule)
-	return err
-}
-
 func (m *Module) applyDeleteSpace(ctx context.Context, rec wal.Record) error {
 	var payload deleteSpaceRecord
 	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
 		return err
 	}
 	if err := m.domains.DeleteForSpace(ctx, payload.SpaceID); err != nil {
-		return err
-	}
-	if err := m.access.DeleteForSpace(ctx, payload.SpaceID); err != nil {
 		return err
 	}
 	if err := m.spaces.ApplyDelete(ctx, payload.SpaceID); err != nil {
@@ -157,12 +136,6 @@ func (m *Module) applyCreateSpaceRecord(ctx context.Context, payload createSpace
 	}
 	domain, err := m.domains.ApplyCreate(ctx, payload.DefaultDomain)
 	if err != nil {
-		return domainspace.Space{}, graph.Domain{}, err
-	}
-	if payload.OwnerGrant.SpaceID != sp.SpaceID || payload.OwnerGrant.PrincipalID != sp.OwnerID {
-		return domainspace.Space{}, graph.Domain{}, fmt.Errorf("%w: owner grant does not match space", ErrInvalidInput)
-	}
-	if _, err := m.access.ApplyGrant(ctx, payload.OwnerGrant); err != nil {
 		return domainspace.Space{}, graph.Domain{}, err
 	}
 	return sp, domain, nil
