@@ -9,7 +9,6 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	"github.com/myceldb/mycel/internal/graph/model"
-	"github.com/myceldb/mycel/internal/space/access"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -83,28 +82,6 @@ func RenderNodesTable(nodes []graph.Node) {
 	t.Render()
 }
 
-func RenderSystemAccessTable(rules []access.SystemAccessRule) {
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"Rule ID", "Principal ID", "Roles"})
-	for _, rule := range rules {
-		t.AppendRow(table.Row{rule.ID, rule.PrincipalID, joinSystemRoles(rule.Roles)})
-	}
-	t.Render()
-}
-
-func RenderSpaceAccessTable(rules []access.SpaceAccessRule) {
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	t.SetStyle(table.StyleDefault)
-	t.AppendHeader(table.Row{"Rule ID", "Space ID", "Principal ID", "Permissions"})
-	for _, rule := range rules {
-		t.AppendRow(table.Row{rule.ID, rule.SpaceID, rule.PrincipalID, joinSpacePermissions(rule.Permissions)})
-	}
-	t.Render()
-}
-
 func RenderAuthSessionsTable(sessions []*commonv1.AuthSessionSummary) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
@@ -130,20 +107,4 @@ func previewValue(value string, limit int) string {
 	}
 	runes := []rune(value)
 	return string(runes[:limit]) + "…"
-}
-
-func joinSystemRoles(roles []access.SystemRole) string {
-	items := make([]string, 0, len(roles))
-	for _, role := range roles {
-		items = append(items, string(role))
-	}
-	return strings.Join(items, ",")
-}
-
-func joinSpacePermissions(permissions []access.SpacePermission) string {
-	items := make([]string, 0, len(permissions))
-	for _, permission := range permissions {
-		items = append(items, string(permission))
-	}
-	return strings.Join(items, ",")
 }

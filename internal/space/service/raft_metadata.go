@@ -21,10 +21,6 @@ func buildSpaceMetadataRaftCommand(spaceID domainspace.SpaceID, partitionCount u
 	return consensus.NewSpaceCommand(spaceID, partitionCount, recordType, data, commandID)
 }
 
-func (m *Module) buildGrantSpacePrincipalRaftCommand(record grantSpacePrincipalRecord, partitionCount uint32, commandID string) (consensus.RaftCommand, error) {
-	return buildSpaceMetadataRaftCommand(record.Rule.SpaceID, partitionCount, recordTypeGrantSpacePrincipal, record, commandID)
-}
-
 func (m *Module) buildCreateDomainRaftCommand(record createDomainRecord, partitionCount uint32, commandID string) (consensus.RaftCommand, error) {
 	return buildSpaceMetadataRaftCommand(record.Domain.SpaceID, partitionCount, recordTypeCreateDomain, record, commandID)
 }

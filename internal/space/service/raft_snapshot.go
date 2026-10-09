@@ -8,20 +8,18 @@ import (
 
 	"github.com/myceldb/mycel/internal/clustering/partitioning"
 	"github.com/myceldb/mycel/internal/graph/model"
-	"github.com/myceldb/mycel/internal/space/access"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 const spaceRaftSnapshotVersion = 1
 
 type spaceRaftSnapshot struct {
-	Version        int                      `json:"version"`
-	PartitionID    uint32                   `json:"partition_id"`
-	PartitionCount uint32                   `json:"partition_count"`
-	Spaces         []domainspace.Space      `json:"spaces"`
-	Domains        []graph.Domain           `json:"domains"`
-	Rules          []access.SpaceAccessRule `json:"rules"`
-	CreateResults  []spaceRaftCreateResult  `json:"create_results,omitempty"`
+	Version        int                     `json:"version"`
+	PartitionID    uint32                  `json:"partition_id"`
+	PartitionCount uint32                  `json:"partition_count"`
+	Spaces         []domainspace.Space     `json:"spaces"`
+	Domains        []graph.Domain          `json:"domains"`
+	CreateResults  []spaceRaftCreateResult `json:"create_results,omitempty"`
 }
 
 type spaceRaftCreateResult struct {
@@ -69,11 +67,6 @@ func (m *Module) snapshotRaftPartition(ctx context.Context, partitionID, partiti
 			return nil, err
 		}
 		snap.Domains = append(snap.Domains, domains...)
-		rules, err := m.access.RulesForSpace(ctx, sp.SpaceID)
-		if err != nil {
-			return nil, err
-		}
-		snap.Rules = append(snap.Rules, rules...)
 	}
 	m.raftMu.Lock()
 	for id, result := range m.raftCreateByID {
@@ -85,7 +78,6 @@ func (m *Module) snapshotRaftPartition(ctx context.Context, partitionID, partiti
 	m.raftMu.Unlock()
 	sort.Slice(snap.Spaces, func(i, j int) bool { return snap.Spaces[i].SpaceID.String() < snap.Spaces[j].SpaceID.String() })
 	sort.Slice(snap.Domains, func(i, j int) bool { return snap.Domains[i].ID.String() < snap.Domains[j].ID.String() })
-	sort.Slice(snap.Rules, func(i, j int) bool { return snap.Rules[i].ID.String() < snap.Rules[j].ID.String() })
 	sort.Slice(snap.CreateResults, func(i, j int) bool { return snap.CreateResults[i].CommandID < snap.CreateResults[j].CommandID })
 	return json.Marshal(snap)
 }
@@ -120,11 +112,6 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 			return fmt.Errorf("space raft snapshot domain %s references space %s outside snapshot partition", domain.ID, domain.SpaceID)
 		}
 	}
-	for _, rule := range snap.Rules {
-		if _, ok := snapshotSpaces[rule.SpaceID]; !ok {
-			return fmt.Errorf("space raft snapshot rule %s references space %s outside snapshot partition", rule.ID, rule.SpaceID)
-		}
-	}
 	for _, result := range snap.CreateResults {
 		if _, ok := snapshotSpaces[result.Result.Space.SpaceID]; !ok {
 			return fmt.Errorf("space raft snapshot create result %q references space %s outside snapshot partition", result.CommandID, result.Result.Space.SpaceID)
@@ -148,9 +135,6 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 		if err := m.domains.DeleteForSpace(ctx, sp.SpaceID); err != nil {
 			return err
 		}
-		if err := m.access.DeleteForSpace(ctx, sp.SpaceID); err != nil {
-			return err
-		}
 		if err := m.spaces.ApplyDelete(ctx, sp.SpaceID); err != nil {
 			return err
 		}
@@ -162,11 +146,6 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 	}
 	for _, domain := range snap.Domains {
 		if _, err := m.domains.ApplyCreate(ctx, domain); err != nil {
-			return err
-		}
-	}
-	for _, rule := range snap.Rules {
-		if _, err := m.access.ApplyGrant(ctx, rule); err != nil {
 			return err
 		}
 	}

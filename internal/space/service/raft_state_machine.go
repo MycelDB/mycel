@@ -20,7 +20,7 @@ func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope
 		return false
 	}
 	switch recordType {
-	case recordTypeCreateSpaceWithDefaultDomain, recordTypeGrantSpacePrincipal, recordTypeCreateDomain, recordTypeUpdateDomain, recordTypeDeleteDomain, recordTypeDeleteSpace:
+	case recordTypeCreateSpaceWithDefaultDomain, recordTypeCreateDomain, recordTypeUpdateDomain, recordTypeDeleteDomain, recordTypeDeleteSpace:
 		return true
 	default:
 		return false

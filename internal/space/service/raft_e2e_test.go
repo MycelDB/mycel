@@ -82,13 +82,6 @@ func TestModuleCreateSpaceWithResultUsesRaftProposalWhenEnabled(t *testing.T) {
 	if len(listed) != 1 || listed[0].SpaceID != result.Space.SpaceID {
 		t.Fatalf("ListSpaces() = %+v, want created space only", listed)
 	}
-	grant, err := m.GrantSpacePrincipal(waitCtx, result.Space.SpaceID.String(), string(testPrincipalID(t)), "reader")
-	if err != nil {
-		t.Fatalf("GrantSpacePrincipal() via raft error = %v", err)
-	}
-	if grant.SpaceID != result.Space.SpaceID.String() || grant.Role != "reader" {
-		t.Fatalf("unexpected grant: %+v", grant)
-	}
 	domain, err := m.CreateDomain(waitCtx, string(ownerID), CreateDomainInput{SpaceID: result.Space.SpaceID.String(), Key: "docs", Name: "Docs"})
 	if err != nil {
 		t.Fatalf("CreateDomain() via raft error = %v", err)

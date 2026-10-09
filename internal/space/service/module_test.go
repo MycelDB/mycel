@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -181,41 +183,6 @@ func TestModuleWALDeleteDomainAppendsAndApplies(t *testing.T) {
 	}
 }
 
-func TestModuleWALGrantSpacePrincipalAppendsAndApplies(t *testing.T) {
-	ctx := context.Background()
-	dataDir := t.TempDir()
-	walManager, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal"), SegmentBytes: 1024 * 1024})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer walManager.Close()
-	progress := wal.NewFileProgressStore(filepath.Join(dataDir, "meta", "wal", "progress.json"))
-	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default(), WALValue: walManager, RegistryValue: wal.NewRegistry(), ProgressValue: progress, WaiterValue: wal.NewApplyWaiter()}
-	m := NewModule()
-	if result := m.Init(ctx, rt); !result.OK {
-		t.Fatalf("init failed: %v", result.Error)
-	}
-	owner := testPrincipalID(t)
-	sp, _, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "wal-space", OwnerPrincipalID: owner})
-	if err != nil {
-		t.Fatalf("CreateSpace() error = %v", err)
-	}
-	user := uuid.New()
-	grant, err := m.GrantSpacePrincipal(ctx, sp.SpaceID.String(), user.String(), "reader")
-	if err != nil {
-		t.Fatalf("GrantSpacePrincipal() error = %v", err)
-	}
-	if grant.ID == "" || grant.Role != "reader" {
-		t.Fatalf("grant=%#v", grant)
-	}
-	if got := walManager.LastCommittedLSN(); got != 2 {
-		t.Fatalf("LastCommittedLSN() = %v, want 2", got)
-	}
-	if applied, err := progress.AppliedLSN(ctx); err != nil || applied != 2 {
-		t.Fatalf("AppliedLSN() = %v, %v; want 2", applied, err)
-	}
-}
-
 func TestModuleWALDeleteSpaceAppendsAndApplies(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
@@ -317,5 +284,75 @@ func TestModuleQuiesceRejectsCreateSpace(t *testing.T) {
 	_, _, err = m.CreateSpace(ctx, CreateSpaceInput{Name: "blocked", OwnerPrincipalID: testPrincipalID(t)})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("CreateSpace() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
+}
+
+type fakeSpaceAuthorizer struct {
+	caps map[string]map[string]bool
+}
+
+func (f fakeSpaceAuthorizer) Authorize(ctx context.Context, principalID string, capability string, scope principalservice.AccessScope) error {
+	if f.caps[principalID][scope.SpaceID+":"+capability] {
+		return nil
+	}
+	return status.Error(codes.PermissionDenied, "capability denied")
+}
+
+func (f fakeSpaceAuthorizer) EffectiveAccess(ctx context.Context, principalID string, scope principalservice.AccessScope) (principalservice.EffectiveAccess, error) {
+	roles := []string{}
+	capabilities := []string{}
+	for key := range f.caps[principalID] {
+		prefix := scope.SpaceID + ":"
+		if strings.HasPrefix(key, prefix) {
+			capabilities = append(capabilities, strings.TrimPrefix(key, prefix))
+		}
+	}
+	if len(capabilities) > 0 {
+		roles = append(roles, principalservice.RoleSpaceViewer)
+	}
+	return principalservice.EffectiveAccess{Roles: roles, Capabilities: capabilities}, nil
+}
+
+func TestModuleIdentityScopedAccessControlsVisibility(t *testing.T) {
+	ctx := context.Background()
+	owner := testPrincipalID(t)
+	viewer := testPrincipalID(t)
+	stranger := testPrincipalID(t)
+	authz := fakeSpaceAuthorizer{caps: map[string]map[string]bool{}}
+	m := NewModule().WithPrincipalAuthorizer(authz)
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	sp, domain, err := m.CreateSpace(ctx, CreateSpaceInput{Name: "shared", OwnerPrincipalID: owner})
+	if err != nil {
+		t.Fatalf("CreateSpace() error = %v", err)
+	}
+	if spaces, err := m.ListVisibleSpaces(ctx, string(stranger), false); err != nil || len(spaces) != 0 {
+		t.Fatalf("ListVisibleSpaces(stranger) = %+v, %v; want none", spaces, err)
+	}
+	authz.caps[string(viewer)] = map[string]bool{
+		sp.SpaceID.String() + ":space.read":  true,
+		sp.SpaceID.String() + ":domain.read": true,
+	}
+	spaces, err := m.ListVisibleSpaces(ctx, string(viewer), false)
+	if err != nil {
+		t.Fatalf("ListVisibleSpaces(viewer) error = %v", err)
+	}
+	if len(spaces) != 1 || spaces[0].SpaceID != sp.SpaceID {
+		t.Fatalf("ListVisibleSpaces(viewer) = %+v, want shared space", spaces)
+	}
+	visibleDomain, err := m.GetVisibleDomain(ctx, string(viewer), sp.SpaceID.String(), domain.ID.String(), "")
+	if err != nil {
+		t.Fatalf("GetVisibleDomain(viewer) error = %v", err)
+	}
+	if visibleDomain.ID != domain.ID {
+		t.Fatalf("GetVisibleDomain(viewer) = %s, want %s", visibleDomain.ID, domain.ID)
+	}
+	access, err := m.EffectiveAccess(ctx, string(viewer), sp)
+	if err != nil {
+		t.Fatalf("EffectiveAccess(viewer) error = %v", err)
+	}
+	if len(access.Capabilities) != 2 || len(access.Roles) != 1 || access.Roles[0] != principalservice.RoleSpaceViewer {
+		t.Fatalf("EffectiveAccess(viewer) = %+v, want viewer role with capabilities", access)
 	}
 }

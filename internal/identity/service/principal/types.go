@@ -30,7 +30,6 @@ const (
 	RoleInferenceAdmin      = "inference.admin"
 	RoleAutomationAdmin     = "automation.admin"
 	RoleAuditReader         = "audit.reader"
-	RoleSpaceOwner          = "space.owner"
 	RoleSpaceEditor         = "space.editor"
 	RoleSpaceViewer         = "space.viewer"
 	RoleAutomationWorker    = "automation.worker"

@@ -25,7 +25,6 @@ var phaseDRaftRecordCoverage = map[string]raftRecordCoverage{
 	"space.domain.create.v1":               {Subsystem: "space/domain", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
 	"space.domain.update.v1":               {Subsystem: "space/domain", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
 	"space.domain.delete.v1":               {Subsystem: "space/domain", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
-	"space.access.grant.v1":                {Subsystem: "space access", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
 	"space.delete.v1":                      {Subsystem: "space", Scope: "partition raft", Status: "covered", Tranche: "D1 verify"},
 	"graph.commit.v1":                      {Subsystem: "graph", Scope: "partition raft", Status: "covered", Tranche: "D0 verify"},
 	"blob.meta.put.v1":                     {Subsystem: "blob", Scope: "partition raft", Status: "covered", Tranche: "D3 verify"},

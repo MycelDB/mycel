@@ -11,7 +11,6 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
-	"github.com/myceldb/mycel/internal/space/access"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -89,16 +88,6 @@ func TestRaftStateMachineAppliesSpaceMetadataCommands(t *testing.T) {
 		t.Fatalf("GetDomainByRef() after raft apply error = %v", err)
 	}
 
-	principalID := testPrincipalID(t)
-	grantRecord := grantSpacePrincipalRecord{Rule: access.SpaceAccessRule{ID: uuid.New(), SpaceID: spaceID, PrincipalID: principalID, Permissions: []access.SpacePermission{access.SpacePermissionRead}}}
-	grantCmd := mustSpaceRaftCommand(t, spaceID, recordTypeGrantSpacePrincipal, grantRecord, "grant-1")
-	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 3, RaftTerm: 1}, grantCmd); err != nil {
-		t.Fatalf("apply grant command: %v", err)
-	}
-	if access, err := m.DomainEffectiveAccess(ctx, string(principalID), spaceID.String()); err != nil || len(access.Capabilities) == 0 {
-		t.Fatalf("DomainEffectiveAccess() = %+v, %v; want capabilities", access, err)
-	}
-
 	deleteCmd := mustSpaceRaftCommand(t, spaceID, recordTypeDeleteSpace, deleteSpaceRecord{SpaceID: spaceID}, "space-delete-1")
 	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 4, RaftTerm: 1}, deleteCmd); err != nil {
 		t.Fatalf("apply delete space command: %v", err)
@@ -111,16 +100,12 @@ func TestRaftStateMachineAppliesSpaceMetadataCommands(t *testing.T) {
 func TestBuildPhase8SpaceMetadataRaftCommands(t *testing.T) {
 	m := NewModule()
 	spaceID := uuid.New()
-	principalID := testPrincipalID(t)
 	domainRecord := m.buildCreateDomainRecord(spaceID, CreateDomainInput{Key: "docs", Name: "Docs"})
 	commands := []struct {
 		name       string
 		recordType string
 		build      func() (consensus.RaftCommand, error)
 	}{
-		{"grant", string(recordTypeGrantSpacePrincipal), func() (consensus.RaftCommand, error) {
-			return m.buildGrantSpacePrincipalRaftCommand(grantSpacePrincipalRecord{Rule: access.SpaceAccessRule{ID: uuid.New(), SpaceID: spaceID, PrincipalID: principalID, Permissions: []access.SpacePermission{access.SpacePermissionRead}}}, 64, "grant-1")
-		}},
 		{"create-domain", string(recordTypeCreateDomain), func() (consensus.RaftCommand, error) {
 			return m.buildCreateDomainRaftCommand(domainRecord, 64, "domain-create-1")
 		}},
