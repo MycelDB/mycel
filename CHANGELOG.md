@@ -6,6 +6,22 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.19.0] - 2026-10-09
+
+### Changed
+
+- Unified space access enforcement around `Space.OwnerID` plus identity scoped roles/capabilities, so space/domain visibility and data-plane access now use the same identity grant model exposed by admin principal APIs (#160).
+- Canonicalized legacy `space.owner` role requests to `space.admin`; actual ownership remains represented only by the space owner field (#160).
+
+### Removed
+
+- Removed the legacy space-local ACL implementation, storage path, raft/WAL grant commands, snapshot ACL state, and daemon `GrantSpacePrincipal` adapter now that the API contract no longer exposes that RPC (#160).
+
+### Compatibility
+
+- Operators and clients should use matching `mycel-api`/SDK v0.19.0 bindings for the removed admin space grant RPC.
+- Existing `Space.OwnerID` ownership continues to grant owner-derived access. Existing legacy `meta/access.json` space ACL grants are no longer read or enforced; migrate delegated access to identity scoped role/capability grants.
+
 ## [v0.18.0] - 2026-10-07
 
 ### Added
