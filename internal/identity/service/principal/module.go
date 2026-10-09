@@ -449,7 +449,7 @@ func (m *Module) GrantRole(ctx context.Context, principalID string, role string,
 	if err != nil {
 		return RoleBinding{}, PrincipalSummary{}, err
 	}
-	binding := RoleBinding{ID: uuid.NewString(), PrincipalID: p.ID, Role: role, Scope: scope, State: GrantStateActive, Reason: reason, CreatedBy: grantedBy, CreatedAt: time.Now().UTC()}
+	binding := RoleBinding{ID: uuid.NewString(), PrincipalID: p.ID, Role: canonicalRole(role), Scope: scope, State: GrantStateActive, Reason: reason, CreatedBy: grantedBy, CreatedAt: time.Now().UTC()}
 	applied, err := m.commitRoleBindingPut(ctx, binding, "identity-role-binding-put")
 	if err != nil {
 		return RoleBinding{}, PrincipalSummary{}, err
@@ -551,8 +551,9 @@ func (m *Module) EffectiveAccess(ctx context.Context, principalID string, scope 
 		if binding.State != GrantStateActive || !scopeApplies(binding.Scope, scope) {
 			continue
 		}
-		roles[binding.Role] = struct{}{}
-		for _, cap := range roleCapabilities(binding.Role) {
+		role := canonicalRole(binding.Role)
+		roles[role] = struct{}{}
+		for _, cap := range roleCapabilities(role) {
 			caps[cap] = struct{}{}
 		}
 	}

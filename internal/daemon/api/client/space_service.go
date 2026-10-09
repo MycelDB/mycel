@@ -126,11 +126,11 @@ func roleFromString(role string) commonv1.SpaceRole {
 	switch strings.TrimSpace(role) {
 	case "owner":
 		return commonv1.SpaceRole_SPACE_ROLE_OWNER
-	case "admin":
+	case "admin", "space.admin", "space.owner":
 		return commonv1.SpaceRole_SPACE_ROLE_ADMIN
-	case "writer":
+	case "writer", "space.editor":
 		return commonv1.SpaceRole_SPACE_ROLE_WRITER
-	case "reader":
+	case "reader", "space.viewer":
 		return commonv1.SpaceRole_SPACE_ROLE_READER
 	default:
 		return commonv1.SpaceRole_SPACE_ROLE_UNSPECIFIED
@@ -138,10 +138,54 @@ func roleFromString(role string) commonv1.SpaceRole {
 }
 
 func capabilityFromString(capability string) commonv1.Capability {
-	if value, ok := commonv1.Capability_value[strings.TrimSpace(capability)]; ok {
+	capability = strings.TrimSpace(capability)
+	if value, ok := commonv1.Capability_value[capability]; ok {
 		return commonv1.Capability(value)
 	}
-	return commonv1.Capability_CAPABILITY_UNSPECIFIED
+	switch capability {
+	case "space.create":
+		return commonv1.Capability_CAPABILITY_SPACE_CREATE
+	case "space.read":
+		return commonv1.Capability_CAPABILITY_SPACE_READ
+	case "space.update":
+		return commonv1.Capability_CAPABILITY_SPACE_UPDATE
+	case "space.manage_access":
+		return commonv1.Capability_CAPABILITY_SPACE_MANAGE_ACCESS
+	case "space.archive":
+		return commonv1.Capability_CAPABILITY_SPACE_ARCHIVE
+	case "space.delete":
+		return commonv1.Capability_CAPABILITY_SPACE_DELETE
+	case "domain.read":
+		return commonv1.Capability_CAPABILITY_DOMAIN_READ
+	case "domain.create":
+		return commonv1.Capability_CAPABILITY_DOMAIN_CREATE
+	case "domain.update":
+		return commonv1.Capability_CAPABILITY_DOMAIN_UPDATE
+	case "domain.delete":
+		return commonv1.Capability_CAPABILITY_DOMAIN_DELETE
+	case "graph.read":
+		return commonv1.Capability_CAPABILITY_GRAPH_READ
+	case "graph.write":
+		return commonv1.Capability_CAPABILITY_GRAPH_WRITE
+	case "graph.delete":
+		return commonv1.Capability_CAPABILITY_GRAPH_DELETE
+	case "blob.read":
+		return commonv1.Capability_CAPABILITY_BLOB_READ
+	case "blob.write":
+		return commonv1.Capability_CAPABILITY_BLOB_WRITE
+	case "blob.delete":
+		return commonv1.Capability_CAPABILITY_BLOB_DELETE
+	case "metadata.read":
+		return commonv1.Capability_CAPABILITY_METADATA_READ
+	case "metadata.write":
+		return commonv1.Capability_CAPABILITY_METADATA_WRITE
+	case "query.run":
+		return commonv1.Capability_CAPABILITY_QUERY_RUN
+	case "semantic.search":
+		return commonv1.Capability_CAPABILITY_SEMANTIC_SEARCH
+	default:
+		return commonv1.Capability_CAPABILITY_UNSPECIFIED
+	}
 }
 
 func timestampOrNil(t time.Time) *timestamppb.Timestamp {

@@ -20,14 +20,15 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/routing"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	identity "github.com/myceldb/mycel/internal/identity/model"
+	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
-	"github.com/myceldb/mycel/internal/space/access"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
-	"github.com/myceldb/mycel/internal/space/storage/acl"
 	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 	storespaces "github.com/myceldb/mycel/internal/space/storage/spaces"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var ErrSpaceNotFound = errors.New("space not found")
@@ -64,7 +65,7 @@ func hostRaftPartitionCount(host runtime.Host) uint32 {
 type Module struct {
 	spaces               storespaces.Manager
 	domains              storedomains.Manager
-	access               acl.Manager
+	authorizer           PrincipalAccessAuthorizer
 	dataDir              string
 	gate                 *quiesce.Gate
 	wal                  *wal.Manager
@@ -83,6 +84,11 @@ type Module struct {
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
+
+func (m *Module) WithPrincipalAuthorizer(authorizer PrincipalAccessAuthorizer) *Module {
+	m.authorizer = authorizer
+	return m
+}
 
 func (m *Module) Name() string { return ModuleName }
 
@@ -104,13 +110,8 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if err := domains.Init(ctx, metaDir); err != nil {
 		return runtime.Abort(ModuleName, "store", "failed to open domain store", err)
 	}
-	accessMgr := acl.NewManager()
-	if err := accessMgr.Init(ctx, metaDir); err != nil {
-		return runtime.Abort(ModuleName, "store", "failed to open access store", err)
-	}
 	m.spaces = spaces
 	m.domains = domains
-	m.access = accessMgr
 	m.dataDir = host.DataDir()
 	if provider, ok := host.(runtime.WALProvider); ok {
 		m.wal = provider.WALManager()
@@ -133,9 +134,6 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			}
 			if err := registry.Register(recordTypeDeleteDomain, wal.ApplierFunc(m.applyDeleteDomain)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register domain delete WAL applier", err)
-			}
-			if err := registry.Register(recordTypeGrantSpacePrincipal, wal.ApplierFunc(m.applyGrantSpacePrincipal)); err != nil {
-				return runtime.Abort(ModuleName, "wal", "register space grant WAL applier", err)
 			}
 			if err := registry.Register(recordTypeDeleteSpace, wal.ApplierFunc(m.applyDeleteSpace)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register space delete WAL applier", err)
@@ -164,12 +162,10 @@ func (m *Module) ListVisibleSpaces(ctx context.Context, principalID string, incl
 	}
 	out := make([]domainspace.Space, 0, len(spaces))
 	for _, sp := range spaces {
-		canRead, err := m.canRead(ctx, uid, sp)
-		if err != nil {
-			return nil, err
-		}
-		if canRead {
+		if err := m.authorize(ctx, uid, sp, "space.read"); err == nil {
 			out = append(out, sp)
+		} else if !authorizationDenied(err) {
+			return nil, err
 		}
 	}
 	return out, nil
@@ -184,11 +180,7 @@ func (m *Module) GetVisibleSpace(ctx context.Context, principalID string, spaceI
 	if err != nil {
 		return domainspace.Space{}, err
 	}
-	canRead, err := m.canRead(ctx, uid, sp)
-	if err != nil {
-		return domainspace.Space{}, err
-	}
-	if !canRead {
+	if err := m.authorize(ctx, uid, sp, "space.read"); err != nil {
 		return domainspace.Space{}, ErrSpaceNotFound
 	}
 	return sp, nil
@@ -270,9 +262,6 @@ func (m *Module) CreateSpaceWithResult(ctx context.Context, input CreateSpaceInp
 		if err != nil {
 			return CreateSpaceResult{}, err
 		}
-		if _, err := m.access.Grant(ctx, acl.GrantInput{SpaceID: sp.SpaceID, PrincipalID: input.OwnerPrincipalID, Permissions: []access.SpacePermission{access.SpacePermissionAdmin}}); err != nil {
-			return CreateSpaceResult{}, err
-		}
 		return CreateSpaceResult{Space: sp, Domain: domain}, nil
 	}
 	record := m.buildCreateSpaceRecord(input)
@@ -316,9 +305,6 @@ func (m *Module) DeleteSpace(ctx context.Context, spaceID string) error {
 	}
 	if m.wal == nil && m.raftGroups == nil {
 		if err := m.domains.DeleteForSpace(ctx, id); err != nil {
-			return err
-		}
-		if err := m.access.DeleteForSpace(ctx, id); err != nil {
 			return err
 		}
 		if err := m.spaces.DeleteByID(ctx, id); err != nil {
@@ -373,146 +359,6 @@ func (m *Module) DeleteSpace(ctx context.Context, spaceID string) error {
 	return nil
 }
 
-func (m *Module) GrantSpacePrincipal(ctx context.Context, spaceID string, principalID string, role string) (SpaceGrant, error) {
-	release, err := m.enterWrite(ctx)
-	if err != nil {
-		return SpaceGrant{}, err
-	}
-	defer release()
-	sp, err := m.GetSpace(ctx, spaceID)
-	if err != nil {
-		return SpaceGrant{}, err
-	}
-	uid, err := parsePrincipalID(principalID)
-	if err != nil {
-		return SpaceGrant{}, err
-	}
-	permissions, normalizedRole, capabilities, err := permissionsForSpaceRole(role)
-	if err != nil {
-		return SpaceGrant{}, err
-	}
-	if existing, ok, err := m.existingSpaceGrant(ctx, sp.SpaceID, uid); err != nil {
-		return SpaceGrant{}, err
-	} else if ok {
-		existingRole, existingCaps := strongestRoleForPermissions(existing.Permissions)
-		if spaceRoleRank(existingRole) >= spaceRoleRank(normalizedRole) {
-			return SpaceGrant{ID: existing.ID.String(), SpaceID: existing.SpaceID.String(), PrincipalID: string(existing.PrincipalID), Role: existingRole, Capabilities: existingCaps}, nil
-		}
-	}
-	if m.wal == nil && m.raftGroups == nil {
-		rule, err := m.access.Grant(ctx, acl.GrantInput{SpaceID: sp.SpaceID, PrincipalID: uid, Permissions: permissions})
-		if err != nil {
-			return SpaceGrant{}, err
-		}
-		return SpaceGrant{ID: rule.ID.String(), SpaceID: rule.SpaceID.String(), PrincipalID: string(rule.PrincipalID), Role: normalizedRole, Capabilities: capabilities}, nil
-	}
-	ruleID := uuid.New()
-	if existing, ok, err := m.existingSpaceGrant(ctx, sp.SpaceID, uid); err != nil {
-		return SpaceGrant{}, err
-	} else if ok {
-		ruleID = existing.ID
-	}
-	rule := access.SpaceAccessRule{ID: ruleID, SpaceID: sp.SpaceID, PrincipalID: uid, Permissions: permissions}
-	record := grantSpacePrincipalRecord{Rule: rule}
-	if m.raftGroups != nil {
-		cmd, err := m.buildGrantSpacePrincipalRaftCommand(record, m.partitionCount, newInternalCommandID("space-acl-grant"))
-		if err != nil {
-			return SpaceGrant{}, err
-		}
-		if err := m.proposeSpaceMetadataCommand(ctx, cmd); err != nil {
-			return SpaceGrant{}, err
-		}
-		return SpaceGrant{ID: rule.ID.String(), SpaceID: rule.SpaceID.String(), PrincipalID: string(rule.PrincipalID), Role: normalizedRole, Capabilities: capabilities}, nil
-	}
-	payload, err := json.Marshal(record)
-	if err != nil {
-		return SpaceGrant{}, err
-	}
-	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeGrantSpacePrincipal, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
-	if err != nil {
-		return SpaceGrant{}, err
-	}
-	if err := m.wal.Sync(ctx, lsn); err != nil {
-		return SpaceGrant{}, err
-	}
-	applied, err := m.access.ApplyGrant(ctx, rule)
-	if err != nil {
-		return SpaceGrant{}, err
-	}
-	if m.walProgress != nil {
-		if err := m.walProgress.SetAppliedLSN(ctx, lsn); err != nil {
-			return SpaceGrant{}, err
-		}
-	}
-	if m.walWaiter != nil {
-		m.walWaiter.SetApplied(lsn)
-	}
-	return SpaceGrant{ID: applied.ID.String(), SpaceID: applied.SpaceID.String(), PrincipalID: string(applied.PrincipalID), Role: normalizedRole, Capabilities: capabilities}, nil
-}
-
-func (m *Module) existingSpaceGrant(ctx context.Context, spaceID uuid.UUID, principalID identity.PrincipalID) (access.SpaceAccessRule, bool, error) {
-	rules, err := m.access.RulesForSpace(ctx, spaceID)
-	if err != nil {
-		return access.SpaceAccessRule{}, false, err
-	}
-	for _, rule := range rules {
-		if rule.PrincipalID == principalID {
-			return rule, true, nil
-		}
-	}
-	return access.SpaceAccessRule{}, false, nil
-}
-
-func permissionsForSpaceRole(role string) ([]access.SpacePermission, string, []string, error) {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "admin", "owner":
-		return []access.SpacePermission{access.SpacePermissionAdmin}, "admin", ownerCapabilities(), nil
-	case "writer", "write":
-		return []access.SpacePermission{access.SpacePermissionWrite}, "writer", writerCapabilities(), nil
-	case "reader", "read":
-		return []access.SpacePermission{access.SpacePermissionRead}, "reader", readerCapabilities(), nil
-	default:
-		return nil, "", nil, fmt.Errorf("%w: space role must be admin, writer, or reader", ErrInvalidInput)
-	}
-}
-
-func strongestRoleForPermissions(permissions []access.SpacePermission) (string, []string) {
-	role := ""
-	for _, perm := range permissions {
-		switch perm {
-		case access.SpacePermissionAdmin:
-			return "admin", ownerCapabilities()
-		case access.SpacePermissionWrite:
-			role = "writer"
-		case access.SpacePermissionRead:
-			if role == "" {
-				role = "reader"
-			}
-		}
-	}
-	switch role {
-	case "writer":
-		return role, writerCapabilities()
-	case "reader":
-		return role, readerCapabilities()
-	default:
-		return "", nil
-	}
-}
-
-func spaceRoleRank(role string) int {
-	switch role {
-	case "admin":
-		return 3
-	case "writer":
-		return 2
-	case "reader":
-		return 1
-	default:
-		return 0
-	}
-}
-
 func (m *Module) EffectiveAccess(ctx context.Context, principalID string, sp domainspace.Space) (EffectiveAccess, error) {
 	uid, err := parsePrincipalID(principalID)
 	if err != nil {
@@ -521,41 +367,14 @@ func (m *Module) EffectiveAccess(ctx context.Context, principalID string, sp dom
 	if uid == sp.OwnerID {
 		return EffectiveAccess{Roles: []string{"owner"}, Capabilities: ownerCapabilities()}, nil
 	}
-	rules, err := m.access.RulesForSpace(ctx, sp.SpaceID)
+	if m.authorizer == nil {
+		return EffectiveAccess{}, nil
+	}
+	access, err := m.authorizer.EffectiveAccess(ctx, string(uid), principalservice.AccessScope{Type: "space", SpaceID: sp.SpaceID.String()})
 	if err != nil {
 		return EffectiveAccess{}, err
 	}
-	roles := []string{}
-	caps := map[string]bool{}
-	for _, rule := range rules {
-		if rule.PrincipalID != uid {
-			continue
-		}
-		for _, perm := range rule.Permissions {
-			switch perm {
-			case access.SpacePermissionAdmin:
-				roles = append(roles, "admin")
-				for _, cap := range ownerCapabilities() {
-					caps[cap] = true
-				}
-			case access.SpacePermissionWrite:
-				roles = append(roles, "writer")
-				for _, cap := range writerCapabilities() {
-					caps[cap] = true
-				}
-			case access.SpacePermissionRead:
-				roles = append(roles, "reader")
-				for _, cap := range readerCapabilities() {
-					caps[cap] = true
-				}
-			}
-		}
-	}
-	out := make([]string, 0, len(caps))
-	for cap := range caps {
-		out = append(out, cap)
-	}
-	return EffectiveAccess{Roles: roles, Capabilities: out}, nil
+	return EffectiveAccess{Roles: access.Roles, Capabilities: access.Capabilities}, nil
 }
 
 func (m *Module) DomainEffectiveAccess(ctx context.Context, principalID string, spaceID string) (EffectiveAccess, error) {
@@ -645,11 +464,7 @@ func (m *Module) ListVisibleDomains(ctx context.Context, principalID string, spa
 	if err != nil {
 		return nil, err
 	}
-	canRead, err := m.canRead(ctx, uid, sp)
-	if err != nil {
-		return nil, err
-	}
-	if !canRead {
+	if err := m.authorize(ctx, uid, sp, "domain.read"); err != nil {
 		return nil, ErrSpaceNotFound
 	}
 	domains, err := m.domains.ListBySpace(ctx, sp.SpaceID)
@@ -668,11 +483,7 @@ func (m *Module) GetVisibleDomain(ctx context.Context, principalID string, space
 	if err != nil {
 		return graph.Domain{}, err
 	}
-	canRead, err := m.canRead(ctx, uid, sp)
-	if err != nil {
-		return graph.Domain{}, err
-	}
-	if !canRead {
+	if err := m.authorize(ctx, uid, sp, "domain.read"); err != nil {
 		return graph.Domain{}, ErrSpaceNotFound
 	}
 	domain, err := m.resolveDomain(ctx, sp.SpaceID, domainID, key)
@@ -680,11 +491,7 @@ func (m *Module) GetVisibleDomain(ctx context.Context, principalID string, space
 		return graph.Domain{}, err
 	}
 	if graph.NormalizeDomainDiscoveryMode(domain.DiscoveryMode) == graph.DomainDiscoveryModeHidden {
-		canAdmin, err := m.canAdmin(ctx, uid, sp)
-		if err != nil {
-			return graph.Domain{}, err
-		}
-		if !canAdmin {
+		if err := m.authorize(ctx, uid, sp, "space.manage_access"); err != nil {
 			return graph.Domain{}, ErrSpaceNotFound
 		}
 	}
@@ -705,11 +512,7 @@ func (m *Module) CreateDomain(ctx context.Context, principalID string, input Cre
 	if err != nil {
 		return graph.Domain{}, err
 	}
-	canAdmin, err := m.canAdmin(ctx, uid, sp)
-	if err != nil {
-		return graph.Domain{}, err
-	}
-	if !canAdmin {
+	if err := m.authorize(ctx, uid, sp, "domain.create"); err != nil {
 		return graph.Domain{}, ErrUnauthorized
 	}
 	key := strings.TrimSpace(input.Key)
@@ -778,11 +581,7 @@ func (m *Module) UpdateDomain(ctx context.Context, principalID string, input Upd
 	if err != nil {
 		return graph.Domain{}, err
 	}
-	canAdmin, err := m.canAdmin(ctx, uid, sp)
-	if err != nil {
-		return graph.Domain{}, err
-	}
-	if !canAdmin {
+	if err := m.authorize(ctx, uid, sp, "domain.update"); err != nil {
 		return graph.Domain{}, ErrUnauthorized
 	}
 	domain, err := m.resolveDomain(ctx, sp.SpaceID, input.DomainID, "")
@@ -892,11 +691,7 @@ func (m *Module) DeleteDomain(ctx context.Context, principalID string, spaceID s
 	if err != nil {
 		return err
 	}
-	canAdmin, err := m.canAdmin(ctx, uid, sp)
-	if err != nil {
-		return err
-	}
-	if !canAdmin {
+	if err := m.authorize(ctx, uid, sp, "domain.delete"); err != nil {
 		return ErrUnauthorized
 	}
 	domain, err := m.resolveDomain(ctx, sp.SpaceID, domainID, "")
@@ -1022,11 +817,7 @@ func (m *Module) requireSpaceRead(ctx context.Context, principalID string, space
 	if err != nil {
 		return "", domainspace.Space{}, err
 	}
-	canRead, err := m.canRead(ctx, uid, sp)
-	if err != nil {
-		return "", domainspace.Space{}, err
-	}
-	if !canRead {
+	if err := m.authorize(ctx, uid, sp, "space.read"); err != nil {
 		return "", domainspace.Space{}, ErrSpaceNotFound
 	}
 	return uid, sp, nil
@@ -1041,28 +832,24 @@ func (m *Module) requireSpaceAdmin(ctx context.Context, principalID string, spac
 	if err != nil {
 		return "", domainspace.Space{}, err
 	}
-	canAdmin, err := m.canAdmin(ctx, uid, sp)
-	if err != nil {
-		return "", domainspace.Space{}, err
-	}
-	if !canAdmin {
+	if err := m.authorize(ctx, uid, sp, "space.manage_access"); err != nil {
 		return "", domainspace.Space{}, ErrUnauthorized
 	}
 	return uid, sp, nil
 }
 
-func (m *Module) canRead(ctx context.Context, principalID identity.PrincipalID, sp domainspace.Space) (bool, error) {
+func (m *Module) authorize(ctx context.Context, principalID identity.PrincipalID, sp domainspace.Space, capability string) error {
 	if sp.OwnerID == principalID {
-		return true, nil
+		return nil
 	}
-	return m.access.Can(ctx, principalID, sp.SpaceID, access.SpacePermissionRead)
+	if m.authorizer == nil {
+		return ErrUnauthorized
+	}
+	return m.authorizer.Authorize(ctx, string(principalID), capability, principalservice.AccessScope{Type: "space", SpaceID: sp.SpaceID.String()})
 }
 
-func (m *Module) canAdmin(ctx context.Context, principalID identity.PrincipalID, sp domainspace.Space) (bool, error) {
-	if sp.OwnerID == principalID {
-		return true, nil
-	}
-	return m.access.Can(ctx, principalID, sp.SpaceID, access.SpacePermissionAdmin)
+func authorizationDenied(err error) bool {
+	return errors.Is(err, ErrUnauthorized) || status.Code(err) == codes.PermissionDenied
 }
 
 func parsePrincipalID(principalID string) (identity.PrincipalID, error) {

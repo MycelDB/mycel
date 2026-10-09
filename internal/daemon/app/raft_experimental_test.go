@@ -342,7 +342,6 @@ func TestCompositeStateMachineRecordOwnershipIsUnique(t *testing.T) {
 		"space.domain.create.v1":              "space",
 		"space.domain.update.v1":              "space",
 		"space.domain.delete.v1":              "space",
-		"space.access.grant.v1":               "space",
 		"space.delete.v1":                     "space",
 		"schema.put.v1":                       "schema",
 		"schema.delete.v1":                    "schema",

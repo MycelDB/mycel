@@ -23,14 +23,12 @@ github.com/myceldb/mycel
 | Package | Direct mycel importers | External consumers found | Replaceability / recommendation |
 |---|---:|---:|---|
 | `github.com/myceldb/mycel` | 0 | 0 | Doc-only root package. Harmless, but not a meaningful public API. |
-| `internal/space/access` | 3 | 0 | Internal ACL model. Internalized in Phase 3. |
 | `internal/identity/auth` | 4 | 0 | Internal refresh-session/audit/token model. Internalized in Phase 3. |
 | `internal/graph/model` | 29 | former importer only | Core in-process graph model. External use replaced with `mycel-api` graph/template proto messages and SDK helpers; internalized in Phase 3. |
 | `internal/identity/model` | 21 | former importer only | Core ID/user model. External use replaced with proto string IDs and SDK user/admin helpers; internalized in Phase 3. |
 | `internal/semantic/model` | 14 | 0 | Internal semantic/inference/vector/maintenance records. Internalized in Phase 3. |
 | `internal/space/model` | 24 | former importer only | Core space model. External use replaced with SDK `SpaceInfo` / proto IDs; internalized in Phase 3. |
 | `internal/graph/query` | 2 | 0 | In-memory session query builder, used only by internal session implementation. Internalized in Phase 2. |
-| `internal/space/storage/acl` | 1 | 0 | File-backed implementation. Internalized in Phase 2. |
 | `internal/space/storage/domains` | 1 | 0 | File-backed implementation. Internalized in Phase 2. |
 | `internal/semantic/storage` | 7 | 0 | File-backed semantic resources and maintenance queues. Internalized in Phase 2. |
 | `internal/identity/storage/session` | 3 | 0 | File-backed refresh-session store. Internalized in Phase 2. |

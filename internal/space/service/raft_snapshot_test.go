@@ -9,7 +9,6 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
-	"github.com/myceldb/mycel/internal/space/access"
 )
 
 func TestSpaceRaftStateMachineSnapshotRestorePartition(t *testing.T) {
@@ -28,15 +27,6 @@ func TestSpaceRaftStateMachineSnapshotRestorePartition(t *testing.T) {
 		t.Fatalf("ApplyCommand(create) error = %v", err)
 	}
 	spaceID := uuid.MustParse(createCmd.SpaceID)
-	principalID := testPrincipalID(t)
-	grant := grantSpacePrincipalRecord{Rule: access.SpaceAccessRule{ID: uuid.New(), SpaceID: spaceID, PrincipalID: principalID, Permissions: []access.SpacePermission{access.SpacePermissionRead}}}
-	grantCmd, err := m.buildGrantSpacePrincipalRaftCommand(grant, 4, "grant-snapshot")
-	if err != nil {
-		t.Fatalf("buildGrantSpacePrincipalRaftCommand() error = %v", err)
-	}
-	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, grantCmd); err != nil {
-		t.Fatalf("ApplyCommand(grant) error = %v", err)
-	}
 	snapshot, err := sm.Snapshot()
 	if err != nil {
 		t.Fatalf("Snapshot() error = %v", err)
@@ -59,10 +49,6 @@ func TestSpaceRaftStateMachineSnapshotRestorePartition(t *testing.T) {
 	}
 	if _, err := restored.GetDomainByRef(ctx, spaceID.String(), "notes"); err != nil {
 		t.Fatalf("GetDomainByRef() error = %v", err)
-	}
-	access, err := restored.DomainEffectiveAccess(ctx, string(principalID), spaceID.String())
-	if err != nil || len(access.Capabilities) == 0 {
-		t.Fatalf("DomainEffectiveAccess() = %+v, %v; want capabilities", access, err)
 	}
 	if err := restoredSM.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 3, RaftTerm: 1}, createCmd); err != nil {
 		t.Fatalf("reapplying restored create command should be idempotent: %v", err)

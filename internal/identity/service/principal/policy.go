@@ -27,7 +27,7 @@ func canonicalRole(role string) string {
 		return RoleSystemAdmin
 	case "user_admin", "identity.admin", "operator_admin":
 		return RoleIdentityAdmin
-	case "space_admin", "space.admin":
+	case "space_admin", "space.admin", "space_owner", "space.owner":
 		return RoleSpaceAdmin
 	case "semantic_admin", "semantic.admin":
 		return RoleSemanticAdmin
@@ -179,8 +179,6 @@ func roleCapabilities(role string) []string {
 		return []string{"cluster.read", "cluster.manage"}
 	case RoleAuditReader:
 		return []string{"audit.read"}
-	case RoleSpaceOwner:
-		return []string{"space.read", "space.update", "space.manage_access", "domain.read", "domain.create", "domain.update", "domain.delete", "graph.read", "graph.write", "graph.delete", "query.run", "blob.read", "blob.write", "blob.delete", "metadata.read", "metadata.write", "semantic.search"}
 	case RoleSpaceEditor:
 		return []string{"space.read", "domain.read", "graph.read", "graph.write", "query.run", "blob.read", "blob.write", "metadata.read", "metadata.write", "semantic.search"}
 	case RoleSpaceViewer:
