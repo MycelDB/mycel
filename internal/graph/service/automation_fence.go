@@ -67,25 +67,43 @@ func (m *Module) validateAutomationOutputFences(ctx context.Context, record grap
 
 func automationOutputFenceValidations(record graphCommitRecord) ([]AutomationOutputFenceValidation, error) {
 	out := []AutomationOutputFenceValidation{}
+	nodeFenceIDs := idSet(record.AutomationFenceNodeIDs)
 	for _, node := range record.PutNodes {
+		if _, fenced := nodeFenceIDs[node.ID]; !fenced {
+			continue
+		}
 		validation, ok, err := automationOutputFenceValidation(record.SpaceID, node.DomainID, "node", node.ID.String(), node.Meta)
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			out = append(out, validation)
+		if !ok {
+			return nil, status.Errorf(codes.FailedPrecondition, "automation output fence on node %s is missing automation metadata", node.ID)
 		}
+		out = append(out, validation)
 	}
+	edgeFenceIDs := idSet(record.AutomationFenceEdgeIDs)
 	for _, edge := range record.PutEdges {
+		if _, fenced := edgeFenceIDs[edge.ID]; !fenced {
+			continue
+		}
 		validation, ok, err := automationOutputFenceValidation(record.SpaceID, edge.DomainID, "edge", edge.ID.String(), edge.Meta)
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			out = append(out, validation)
+		if !ok {
+			return nil, status.Errorf(codes.FailedPrecondition, "automation output fence on edge %s is missing automation metadata", edge.ID)
 		}
+		out = append(out, validation)
 	}
 	return out, nil
+}
+
+func idSet[T comparable](ids []T) map[T]struct{} {
+	out := make(map[T]struct{}, len(ids))
+	for _, id := range ids {
+		out[id] = struct{}{}
+	}
+	return out
 }
 
 func automationOutputFenceValidation(spaceID string, domainID domaingraph.DomainID, entityKind string, entityID string, meta map[string]any) (AutomationOutputFenceValidation, bool, error) {

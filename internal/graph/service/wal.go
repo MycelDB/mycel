@@ -15,19 +15,21 @@ import (
 const recordTypeGraphCommit wal.RecordType = "graph.commit.v1"
 
 type graphCommitRecord struct {
-	SpaceID        string                     `json:"space_id"`
-	DomainID       string                     `json:"domain_id,omitempty"`
-	Origin         graphchange.OriginMetadata `json:"origin,omitempty"`
-	BaseRevision   int64                      `json:"base_revision"`
-	PutNodes       []domaingraph.Node         `json:"put_nodes,omitempty"`
-	DeleteNodeIDs  []domaingraph.NodeID       `json:"delete_node_ids,omitempty"`
-	PutEdges       []domaingraph.Edge         `json:"put_edges,omitempty"`
-	DeleteEdgeIDs  []domaingraph.EdgeID       `json:"delete_edge_ids,omitempty"`
-	OperationCount int32                      `json:"operation_count"`
+	SpaceID                string                     `json:"space_id"`
+	DomainID               string                     `json:"domain_id,omitempty"`
+	Origin                 graphchange.OriginMetadata `json:"origin,omitempty"`
+	BaseRevision           int64                      `json:"base_revision"`
+	PutNodes               []domaingraph.Node         `json:"put_nodes,omitempty"`
+	DeleteNodeIDs          []domaingraph.NodeID       `json:"delete_node_ids,omitempty"`
+	PutEdges               []domaingraph.Edge         `json:"put_edges,omitempty"`
+	DeleteEdgeIDs          []domaingraph.EdgeID       `json:"delete_edge_ids,omitempty"`
+	AutomationFenceNodeIDs []domaingraph.NodeID       `json:"automation_fence_node_ids,omitempty"`
+	AutomationFenceEdgeIDs []domaingraph.EdgeID       `json:"automation_fence_edge_ids,omitempty"`
+	OperationCount         int32                      `json:"operation_count"`
 }
 
 func graphCommitRecordFromSnapshot(tx daemonsession.GraphTransaction, snapshot *overlay) graphCommitRecord {
-	return graphCommitRecord{SpaceID: tx.SpaceID, DomainID: tx.DomainID, Origin: tx.Origin, BaseRevision: tx.BaseRevision, PutNodes: sortedNodes(snapshot.putNodes), DeleteNodeIDs: sortedNodeIDs(snapshot.deleteNodes), PutEdges: sortedEdges(snapshot.putEdges), DeleteEdgeIDs: sortedEdgeIDs(snapshot.deleteEdges), OperationCount: snapshot.opCount}
+	return graphCommitRecord{SpaceID: tx.SpaceID, DomainID: tx.DomainID, Origin: tx.Origin, BaseRevision: tx.BaseRevision, PutNodes: sortedNodes(snapshot.putNodes), DeleteNodeIDs: sortedNodeIDs(snapshot.deleteNodes), PutEdges: sortedEdges(snapshot.putEdges), DeleteEdgeIDs: sortedEdgeIDs(snapshot.deleteEdges), AutomationFenceNodeIDs: sortedNodeIDs(snapshot.automationFenceNodes), AutomationFenceEdgeIDs: sortedEdgeIDs(snapshot.automationFenceEdges), OperationCount: snapshot.opCount}
 }
 
 func (m *Module) applyGraphCommit(ctx context.Context, rec wal.Record) error {
