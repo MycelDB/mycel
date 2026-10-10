@@ -249,7 +249,7 @@ func (s *ImportExportService) importRecord(ctx context.Context, tx daemonsession
 		input := edgeInputFromExportEdge(value.Edge, metadata.GetOptions().GetPreserveIds())
 		if metadata.GetMode() == clientv1.DomainImportMode_DOMAIN_IMPORT_MODE_UPSERT && input.EdgeID != "" {
 			if _, err := s.graphs.GetEdge(ctx, tx, input.EdgeID); err == nil {
-				if _, err := s.graphs.UpdateEdge(ctx, tx, daegraph.UpdateEdgeInput{EdgeID: input.EdgeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload, Meta: input.Meta}); err != nil {
+				if _, err := s.graphs.UpdateEdge(ctx, tx, daegraph.UpdateEdgeInput{EdgeID: input.EdgeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload}); err != nil {
 					return mapGraphError(err, "import edge")
 				}
 				summary.EdgesUpdated++
@@ -410,7 +410,7 @@ func nodeInputFromExportNode(node *clientv1.Node, preserveIDs bool) daegraph.Nod
 		// the payload verbatim and avoid replaying text as inline content.
 		content = ""
 	}
-	input := daegraph.NodeInput{Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: payload, Meta: structMap(node.GetMeta()), BlobID: blobID, Content: content}
+	input := daegraph.NodeInput{Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: payload, BlobID: blobID, Content: content}
 	if preserveIDs {
 		input.NodeID = node.GetNodeId()
 	}
@@ -418,7 +418,7 @@ func nodeInputFromExportNode(node *clientv1.Node, preserveIDs bool) daegraph.Nod
 }
 
 func edgeInputFromExportEdge(edge *clientv1.Edge, preserveIDs bool) daegraph.EdgeInput {
-	input := daegraph.EdgeInput{FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload()), Meta: structMap(edge.GetMeta())}
+	input := daegraph.EdgeInput{FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload())}
 	if preserveIDs {
 		input.EdgeID = edge.GetEdgeId()
 	}
