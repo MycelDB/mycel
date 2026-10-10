@@ -6,6 +6,17 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.19.1] - 2026-10-10
+
+### Fixed
+
+- Fixed stale persisted graph `meta.automation` from being treated as an active automation output fence during ordinary graph updates, preventing completed/expired automation metadata from blocking later user or client writes (#166, #167).
+- Restricted automation output fence validation to explicitly marked automation-output mutations while preserving fail-closed validation for active automation writes (#167).
+
+### Compatibility
+
+- Patch release for the daemon only. No public protobuf/API, CLI, SDK, Console, or Lab changes are required beyond updating the daemon binary/container image.
+
 ## [v0.19.0] - 2026-10-09
 
 ### Changed
