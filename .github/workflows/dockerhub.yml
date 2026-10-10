@@ -10,6 +10,10 @@ on:
         description: 'Release tag/ref to publish, for example v0.17.0'
         required: true
         type: string
+      api_ref:
+        description: 'Optional mycel-api ref override. Defaults to .release/mycel-api-ref from the daemon release ref.'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -19,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref_name }}
+      API_REF_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.api_ref || '' }}
     steps:
       - name: Checkout daemon
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -27,11 +32,29 @@ jobs:
           path: mycel
           fetch-depth: 0
 
-      - name: Checkout API protos at matching release tag
+      - name: Resolve compatible API ref
+        working-directory: mycel
+        run: |
+          api_ref="${API_REF_INPUT}"
+          if [ -z "$api_ref" ]; then
+            if [ ! -s .release/mycel-api-ref ]; then
+              echo ".release/mycel-api-ref is required when api_ref is not provided" >&2
+              exit 1
+            fi
+            api_ref="$(tr -d '[:space:]' < .release/mycel-api-ref)"
+          fi
+          if [ -z "$api_ref" ]; then
+            echo "resolved API ref is empty" >&2
+            exit 1
+          fi
+          echo "API_REF=$api_ref" >> "$GITHUB_ENV"
+          echo "Using MycelDB/mycel-api@$api_ref"
+
+      - name: Checkout API protos at compatible release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: MycelDB/mycel-api
-          ref: ${{ env.RELEASE_REF }}
+          ref: ${{ env.API_REF }}
           path: mycel-api
 
       - name: Verify release ref is on main

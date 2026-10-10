@@ -12,6 +12,7 @@ import (
 type ApplyContext struct {
 	RaftIndex uint64
 	RaftTerm  uint64
+	Replay    bool
 }
 
 type StateMachine interface {

@@ -38,7 +38,7 @@ type Module struct {
 	walWaiter           *wal.ApplyWaiter
 	writeAllowed        func() error
 	raftGroups          *consensus.MultiGroup
-	raftAppliedCommands map[string]struct{}
+	raftAppliedCommands map[string]RaftAppliedCommand
 }
 
 func NewModule() *Module { return &Module{gate: quiesce.NewGate(ModuleName)} }
@@ -83,7 +83,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	m.writeAllowed = func() error { return nil }
 	if m.raftAppliedCommands == nil {
-		m.raftAppliedCommands = map[string]struct{}{}
+		m.raftAppliedCommands = map[string]RaftAppliedCommand{}
 	}
 	m.loadRaftAppliedCommands()
 	if m.gate == nil {

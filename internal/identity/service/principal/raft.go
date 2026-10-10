@@ -39,7 +39,7 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 	if s.Module == nil {
 		return nil
 	}
-	return s.Module.applyPrincipalRaftCommand(ctx, cmd)
+	return s.Module.applyPrincipalRaftCommand(ctx, apply, cmd)
 }
 
 func (m *Module) EnableExperimentalRaft(groups *consensus.MultiGroup) { m.raftGroups = groups }
@@ -132,12 +132,12 @@ func (m *Module) proposePrincipalRaftCommand(ctx context.Context, cmd consensus.
 	return err
 }
 
-func (m *Module) applyPrincipalRaftCommand(ctx context.Context, cmd consensus.RaftCommand) error {
+func (m *Module) applyPrincipalRaftCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {
 	if err := cmd.Validate(1); err != nil {
 		return err
 	}
-	if m.raftCommandApplied(cmd.CommandID) {
-		return nil
+	if rec, ok := m.raftAppliedCommandRecord(cmd.CommandID); ok {
+		return verifyRaftCommandHash(rec, cmd)
 	}
 	var err error
 	switch cmd.RecordType {
@@ -153,9 +153,17 @@ func (m *Module) applyPrincipalRaftCommand(ctx context.Context, cmd consensus.Ra
 		return fmt.Errorf("unsupported principal raft record type %s", cmd.RecordType)
 	}
 	if err != nil {
+		if isRecordableRaftApplicationError(err) {
+			if rememberErr := m.rememberRaftCommandOutcome(ctx, apply, cmd, raftCommandStatusApplicationError, err); rememberErr != nil {
+				return rememberErr
+			}
+			if apply.Replay {
+				return nil
+			}
+		}
 		return err
 	}
-	return m.rememberRaftAppliedCommand(ctx, cmd.CommandID)
+	return m.rememberRaftCommandOutcome(ctx, apply, cmd, raftCommandStatusApplied, nil)
 }
 
 func (m *Module) applySessionPut(ctx context.Context, payload []byte) error {

@@ -6,6 +6,20 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.19.2] - 2026-10-10
+
+### Fixed
+
+- Fixed identity principal Raft startup replay after restoring a snapshot when the committed tail contains a duplicate-principal application outcome, preventing daemon CrashLoop/startup failure during snapshot replay recovery (#172, #173).
+
+### Changed
+
+- Docker publish now reads the compatible `mycel-api` ref from `.release/mycel-api-ref`, with an optional workflow-dispatch override, so daemon-only patch releases no longer require semantically empty matching API compatibility tags (#174, #175).
+
+### Compatibility
+
+- Patch release for the daemon only. Public protobuf/API bindings remain compatible with `mycel-api v0.19.0`; Docker publish uses `.release/mycel-api-ref` to consume that API ref without requiring a matching API tag.
+
 ## [v0.19.1] - 2026-10-10
 
 ### Fixed
