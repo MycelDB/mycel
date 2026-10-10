@@ -158,6 +158,11 @@ type NodeInput struct {
 	BlobID     string
 	Content    string
 	Props      map[string]any
+
+	// AutomationOutputFence marks this mutation as an active automation-output
+	// write whose meta.automation claim must be validated at graph commit apply.
+	// Ordinary graph writes may preserve durable Meta but must not set this flag.
+	AutomationOutputFence bool
 }
 
 type UpdateNodeInput struct {
@@ -169,6 +174,8 @@ type UpdateNodeInput struct {
 	Content    *string
 	Props      map[string]any
 	UpdateMask []string
+
+	AutomationOutputFence bool
 }
 
 type EdgeInput struct {
@@ -179,6 +186,8 @@ type EdgeInput struct {
 	Properties map[string]any
 	Payload    map[string]any
 	Meta       map[string]any
+
+	AutomationOutputFence bool
 }
 
 type UpdateEdgeInput struct {
@@ -188,6 +197,8 @@ type UpdateEdgeInput struct {
 	Payload    map[string]any
 	Meta       map[string]any
 	UpdateMask []string
+
+	AutomationOutputFence bool
 }
 
 type ReferenceReplacementMode string

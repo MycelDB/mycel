@@ -75,11 +75,13 @@ type domainStoreKey struct {
 }
 
 type overlay struct {
-	putNodes    map[domaingraph.NodeID]domaingraph.Node
-	deleteNodes map[domaingraph.NodeID]struct{}
-	putEdges    map[domaingraph.EdgeID]domaingraph.Edge
-	deleteEdges map[domaingraph.EdgeID]struct{}
-	opCount     int32
+	putNodes             map[domaingraph.NodeID]domaingraph.Node
+	deleteNodes          map[domaingraph.NodeID]struct{}
+	putEdges             map[domaingraph.EdgeID]domaingraph.Edge
+	deleteEdges          map[domaingraph.EdgeID]struct{}
+	automationFenceNodes map[domaingraph.NodeID]struct{}
+	automationFenceEdges map[domaingraph.EdgeID]struct{}
+	opCount              int32
 }
 
 func NewModule() *Module {
@@ -432,7 +434,7 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	}
 	timing.SchemaValidate = time.Since(stepStart)
 	stepStart = time.Now()
-	if err := m.stageNode(ctx, tx, n); err != nil {
+	if err := m.stageNodeWithFence(ctx, tx, n, input.AutomationOutputFence); err != nil {
 		return domaingraph.Node{}, err
 	}
 	timing.Stage = time.Since(stepStart)
@@ -498,7 +500,7 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	}
 	timing.SchemaValidate = time.Since(stepStart)
 	stepStart = time.Now()
-	if err := m.stageNode(ctx, tx, n); err != nil {
+	if err := m.stageNodeWithFence(ctx, tx, n, input.AutomationOutputFence); err != nil {
 		return domaingraph.Node{}, err
 	}
 	timing.Stage = time.Since(stepStart)
@@ -524,7 +526,7 @@ func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransacti
 	}
 	if _, err := m.node(ctx, tx, id); err == nil {
 		content := input.Content
-		return m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: input.NodeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload, Meta: input.Meta, Content: &content, Props: input.Props})
+		return m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: input.NodeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload, Meta: input.Meta, Content: &content, Props: input.Props, AutomationOutputFence: input.AutomationOutputFence})
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Node{}, err
 	}
@@ -710,7 +712,7 @@ func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := m.validateSchemaEdge(ctx, e, from, to); err != nil {
 		return domaingraph.Edge{}, err
 	}
-	if err := m.stageEdge(ctx, tx, e); err != nil {
+	if err := m.stageEdgeWithFence(ctx, tx, e, input.AutomationOutputFence); err != nil {
 		return domaingraph.Edge{}, err
 	}
 	return cloneEdge(e), nil
@@ -756,7 +758,7 @@ func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	if err := m.validateSchemaEdge(ctx, e, from, to); err != nil {
 		return domaingraph.Edge{}, err
 	}
-	if err := m.stageEdge(ctx, tx, e); err != nil {
+	if err := m.stageEdgeWithFence(ctx, tx, e, input.AutomationOutputFence); err != nil {
 		return domaingraph.Edge{}, err
 	}
 	return cloneEdge(e), nil
@@ -1969,6 +1971,10 @@ func (m *Module) parentEdgeLocal(ctx context.Context, tx daemonsession.GraphTran
 }
 
 func (m *Module) stageNode(ctx context.Context, tx daemonsession.GraphTransaction, node domaingraph.Node) error {
+	return m.stageNodeWithFence(ctx, tx, node, false)
+}
+
+func (m *Module) stageNodeWithFence(ctx context.Context, tx daemonsession.GraphTransaction, node domaingraph.Node, automationOutputFence bool) error {
 	if node.DomainID.String() != strings.TrimSpace(tx.DomainID) {
 		return fmt.Errorf("%w: node domain_id %s does not match transaction domain_id %s", ErrInvalidInput, node.DomainID, tx.DomainID)
 	}
@@ -1980,6 +1986,9 @@ func (m *Module) stageNode(ctx context.Context, tx daemonsession.GraphTransactio
 	o := m.overlay(tx.ID)
 	delete(o.deleteNodes, node.ID)
 	o.putNodes[node.ID] = cloneNode(node)
+	if automationOutputFence {
+		o.automationFenceNodes[node.ID] = struct{}{}
+	}
 	o.opCount++
 	return nil
 }
@@ -1992,12 +2001,17 @@ func (m *Module) stageNodeDelete(ctx context.Context, tx daemonsession.GraphTran
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
 	delete(o.putNodes, id)
+	delete(o.automationFenceNodes, id)
 	o.deleteNodes[id] = struct{}{}
 	o.opCount++
 	return nil
 }
 
 func (m *Module) stageEdge(ctx context.Context, tx daemonsession.GraphTransaction, edge domaingraph.Edge) error {
+	return m.stageEdgeWithFence(ctx, tx, edge, false)
+}
+
+func (m *Module) stageEdgeWithFence(ctx context.Context, tx daemonsession.GraphTransaction, edge domaingraph.Edge, automationOutputFence bool) error {
 	if edge.DomainID.String() != strings.TrimSpace(tx.DomainID) {
 		return fmt.Errorf("%w: edge domain_id %s does not match transaction domain_id %s", ErrInvalidInput, edge.DomainID, tx.DomainID)
 	}
@@ -2009,6 +2023,9 @@ func (m *Module) stageEdge(ctx context.Context, tx daemonsession.GraphTransactio
 	o := m.overlay(tx.ID)
 	delete(o.deleteEdges, edge.ID)
 	o.putEdges[edge.ID] = cloneEdge(edge)
+	if automationOutputFence {
+		o.automationFenceEdges[edge.ID] = struct{}{}
+	}
 	o.opCount++
 	return nil
 }
@@ -2021,6 +2038,7 @@ func (m *Module) stageEdgeDelete(ctx context.Context, tx daemonsession.GraphTran
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
 	delete(o.putEdges, id)
+	delete(o.automationFenceEdges, id)
 	o.deleteEdges[id] = struct{}{}
 	o.opCount++
 	return nil
@@ -2029,14 +2047,19 @@ func (m *Module) stageEdgeDelete(ctx context.Context, tx daemonsession.GraphTran
 func (m *Module) overlay(txID string) *overlay {
 	o := m.overlays[txID]
 	if o == nil {
-		o = &overlay{putNodes: map[domaingraph.NodeID]domaingraph.Node{}, deleteNodes: map[domaingraph.NodeID]struct{}{}, putEdges: map[domaingraph.EdgeID]domaingraph.Edge{}, deleteEdges: map[domaingraph.EdgeID]struct{}{}}
+		o = newOverlay()
 		m.overlays[txID] = o
 	}
 	return o
 }
 
+func newOverlay() *overlay {
+	return &overlay{putNodes: map[domaingraph.NodeID]domaingraph.Node{}, deleteNodes: map[domaingraph.NodeID]struct{}{}, putEdges: map[domaingraph.EdgeID]domaingraph.Edge{}, deleteEdges: map[domaingraph.EdgeID]struct{}{}, automationFenceNodes: map[domaingraph.NodeID]struct{}{}, automationFenceEdges: map[domaingraph.EdgeID]struct{}{}}
+}
+
 func (o *overlay) clone() *overlay {
-	out := &overlay{putNodes: map[domaingraph.NodeID]domaingraph.Node{}, deleteNodes: map[domaingraph.NodeID]struct{}{}, putEdges: map[domaingraph.EdgeID]domaingraph.Edge{}, deleteEdges: map[domaingraph.EdgeID]struct{}{}, opCount: o.opCount}
+	out := newOverlay()
+	out.opCount = o.opCount
 	for id, node := range o.putNodes {
 		out.putNodes[id] = cloneNode(node)
 	}
@@ -2048,6 +2071,12 @@ func (o *overlay) clone() *overlay {
 	}
 	for id := range o.deleteEdges {
 		out.deleteEdges[id] = struct{}{}
+	}
+	for id := range o.automationFenceNodes {
+		out.automationFenceNodes[id] = struct{}{}
+	}
+	for id := range o.automationFenceEdges {
+		out.automationFenceEdges[id] = struct{}{}
 	}
 	return out
 }
