@@ -198,6 +198,90 @@ func TestPhaseFQueryThroughNonHomeIngressRoutesToLeaderStrongRead(t *testing.T) 
 	}
 }
 
+func TestPhaseFExistingNodeTagUpdateThroughNonHomeIngressIsClusterVisible(t *testing.T) {
+	cluster := newPhaseFQueryCluster(t)
+	defer cluster.stop()
+
+	home, userID, spaceID, domainID := cluster.createSpaceOnPartitionLeader(t)
+	ingress := cluster.nodeOtherThan(home.id)
+	ctx := auth.ContextWithPrincipal(cluster.ctx, auth.Principal{Kind: auth.PrincipalKindHuman, PrincipalID: userID, Username: "phase-f-tag-update-user"})
+
+	opened, err := home.sessionsAPI.OpenSession(ctx, &clientv1.OpenSessionRequest{SpaceId: spaceID, DomainId: domainID})
+	if err != nil {
+		t.Fatalf("OpenSession(home leader) error = %v", err)
+	}
+	sessionID := opened.GetSession().GetSessionId()
+	createTx, err := home.transactionsAPI.BeginTransaction(ctx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE})
+	if err != nil {
+		t.Fatalf("BeginTransaction(create) error = %v", err)
+	}
+	created, err := home.graphsAPI.CreateNode(ctx, &clientv1.CreateNodeRequest{TransactionId: createTx.GetTransaction().GetTransactionId(), Node: &clientv1.NodeCreate{Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "untagged"})}})
+	if err != nil {
+		t.Fatalf("CreateNode(untagged) error = %v", err)
+	}
+	if _, err := home.transactionsAPI.CommitTransaction(ctx, &clientv1.CommitTransactionRequest{TransactionId: createTx.GetTransaction().GetTransactionId()}); err != nil {
+		t.Fatalf("CommitTransaction(create) error = %v", err)
+	}
+
+	const tag = "cluster-existing-node-update"
+	updateTx, err := ingress.transactionsAPI.BeginTransaction(ctx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE})
+	if err != nil {
+		t.Fatalf("BeginTransaction(update via non-home ingress) error = %v", err)
+	}
+	updated, err := ingress.graphsAPI.UpdateNode(ctx, &clientv1.UpdateNodeRequest{
+		TransactionId: updateTx.GetTransaction().GetTransactionId(),
+		Node:          &clientv1.Node{NodeId: created.GetNode().GetNodeId(), Properties: mustStruct(t, map[string]any{"title": "tagged", "tags": []any{tag}})},
+		UpdateMask:    &fieldmaskpb.FieldMask{Paths: []string{"properties"}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateNode(tags) via non-home ingress error = %v", err)
+	}
+	if tags := updated.GetNode().GetProperties().GetFields()["tags"].GetListValue().GetValues(); len(tags) != 1 || tags[0].GetStringValue() != tag {
+		t.Fatalf("UpdateNode tags=%#v, want %q", tags, tag)
+	}
+	if _, err := ingress.transactionsAPI.CommitTransaction(ctx, &clientv1.CommitTransactionRequest{TransactionId: updateTx.GetTransaction().GetTransactionId()}); err != nil {
+		t.Fatalf("CommitTransaction(update via non-home ingress) error = %v", err)
+	}
+
+	readTx, err := ingress.transactionsAPI.BeginTransaction(ctx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY})
+	if err != nil {
+		t.Fatalf("BeginTransaction(read via non-home ingress) error = %v", err)
+	}
+	gotNode, err := ingress.graphsAPI.GetNode(ctx, &clientv1.GetNodeRequest{TransactionId: readTx.GetTransaction().GetTransactionId(), NodeId: created.GetNode().GetNodeId()})
+	if err != nil {
+		t.Fatalf("GetNode(tagged) via non-home ingress error = %v", err)
+	}
+	assertStrongReadMetadata(t, gotNode.GetReadMetadata())
+	if tags := gotNode.GetNode().GetProperties().GetFields()["tags"].GetListValue().GetValues(); len(tags) != 1 || tags[0].GetStringValue() != tag {
+		t.Fatalf("GetNode tags=%#v, want %q", tags, tag)
+	}
+
+	metadata, err := ingress.metadataAPI.ListTags(ctx, &clientv1.ListTagsRequest{TransactionId: readTx.GetTransaction().GetTransactionId()})
+	if err != nil {
+		t.Fatalf("ListTags(non-home ingress after update) error = %v", err)
+	}
+	if len(metadata.GetTags()) != 1 || metadata.GetTags()[0].GetName() != tag || metadata.GetTags()[0].GetNodeCount() != 1 {
+		t.Fatalf("metadata tags=%#v, want one %q tag on one node", metadata.GetTags(), tag)
+	}
+	assertStrongReadMetadata(t, metadata.GetReadMetadata())
+
+	query := &clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
+		Where: &clientv1.Expr{Expr: &clientv1.Expr_HasTag{HasTag: &clientv1.HasTagExpr{Alias: "n", Tag: tag}}},
+	}
+	res, err := ingress.queryAPI.ExecuteQuery(ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx.GetTransaction().GetTransactionId(), Query: query, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ExecuteQuery(has_tag after update) via non-home ingress error = %v", err)
+	}
+	if len(res.GetRows()) != 1 || res.GetRows()[0].GetFields()["n"].GetNode().GetNodeId() != created.GetNode().GetNodeId() {
+		t.Fatalf("has_tag query rows=%#v, want updated node %s", res.GetRows(), created.GetNode().GetNodeId())
+	}
+	assertStrongReadMetadata(t, res.GetReadMetadata())
+	if diag := ingress.router.Diagnostics(); diag.ForwardSuccesses == 0 || diag.ForwardFailures != 0 {
+		t.Fatalf("ingress router diagnostics after tag update/read = %#v", diag)
+	}
+}
+
 func TestPhaseFGQLReadWriteTransactionReadsStagedOverlay(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
