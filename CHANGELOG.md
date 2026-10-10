@@ -6,6 +6,10 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+### Changed
+
+- Docker publish now reads the compatible `mycel-api` ref from `.release/mycel-api-ref`, with an optional workflow-dispatch override, so daemon-only patch releases no longer require semantically empty matching API compatibility tags (#174).
+
 ## [v0.19.1] - 2026-10-10
 
 ### Fixed
