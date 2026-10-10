@@ -240,7 +240,7 @@ func restoreSnapshotAndReplayCommittedEntries(ctx context.Context, storage raftS
 			if err := cmd.Validate(partitionCount); err != nil {
 				return applied, err
 			}
-			if err := sm.ApplyCommand(ctx, ApplyContext{RaftIndex: entry.Index, RaftTerm: entry.Term}, cmd); err != nil {
+			if err := sm.ApplyCommand(ctx, ApplyContext{RaftIndex: entry.Index, RaftTerm: entry.Term, Replay: true}, cmd); err != nil {
 				return applied, err
 			}
 		}
