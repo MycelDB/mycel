@@ -15,10 +15,11 @@ import (
 const principalRaftSnapshotVersion = 1
 
 type principalRaftSnapshot struct {
-	Version         int      `json:"version"`
-	StoreJSON       []byte   `json:"store_json"`
-	SessionsJSON    []byte   `json:"sessions_json,omitempty"`
-	AppliedCommands []string `json:"applied_commands,omitempty"`
+	Version               int                  `json:"version"`
+	StoreJSON             []byte               `json:"store_json"`
+	SessionsJSON          []byte               `json:"sessions_json,omitempty"`
+	AppliedCommands       []string             `json:"applied_commands,omitempty"`
+	AppliedCommandRecords []RaftAppliedCommand `json:"applied_command_records,omitempty"`
 }
 
 func (s RaftStateMachine) Snapshot() ([]byte, error) {
@@ -33,13 +34,12 @@ func (s RaftStateMachine) Snapshot() ([]byte, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	s.Module.mu.Lock()
-	applied := make([]string, 0, len(s.Module.raftAppliedCommands))
-	for id := range s.Module.raftAppliedCommands {
-		applied = append(applied, id)
+	records := s.Module.raftAppliedCommandRecords()
+	applied := make([]string, 0, len(records))
+	for _, rec := range records {
+		applied = append(applied, rec.CommandID)
 	}
-	s.Module.mu.Unlock()
-	return json.Marshal(principalRaftSnapshot{Version: principalRaftSnapshotVersion, StoreJSON: store, SessionsJSON: sessions, AppliedCommands: applied})
+	return json.Marshal(principalRaftSnapshot{Version: principalRaftSnapshotVersion, StoreJSON: store, SessionsJSON: sessions, AppliedCommands: applied, AppliedCommandRecords: records})
 }
 
 func (s RaftStateMachine) RestoreSnapshot(data []byte) error {
@@ -77,13 +77,25 @@ func (s RaftStateMachine) RestoreSnapshot(data []byte) error {
 	if err := sessions.Init(context.Background(), filepath.Join(identityDir, "sessions")); err != nil {
 		return err
 	}
+	records := snap.AppliedCommandRecords
+	if len(records) == 0 {
+		records = make([]RaftAppliedCommand, 0, len(snap.AppliedCommands))
+		for _, id := range snap.AppliedCommands {
+			if id != "" {
+				records = append(records, RaftAppliedCommand{CommandID: id, Status: raftCommandStatusApplied})
+			}
+		}
+	}
 	s.Module.mu.Lock()
 	s.Module.store = store
 	s.Module.sessions = sessions
-	s.Module.raftAppliedCommands = map[string]struct{}{}
-	for _, id := range snap.AppliedCommands {
-		if id != "" {
-			s.Module.raftAppliedCommands[id] = struct{}{}
+	s.Module.raftAppliedCommands = map[string]RaftAppliedCommand{}
+	for _, rec := range records {
+		if rec.CommandID != "" {
+			if rec.Status == "" {
+				rec.Status = raftCommandStatusApplied
+			}
+			s.Module.raftAppliedCommands[rec.CommandID] = rec
 		}
 	}
 	s.Module.mu.Unlock()
