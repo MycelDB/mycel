@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func TestGraphServiceEdgeUsesLabelsPropertiesPayloadAndMeta(t *testing.T) {
+func TestGraphServiceEdgeUsesLabelsPropertiesPayloadAndOmitsClientMeta(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
@@ -35,8 +35,11 @@ func TestGraphServiceEdgeUsesLabelsPropertiesPayloadAndMeta(t *testing.T) {
 	if edge.GetDomainId() != fixture.domainID || edge.GetFromNodeId() != fromID || edge.GetToNodeId() != toID {
 		t.Fatalf("unexpected edge identity/connectivity: %+v", edge)
 	}
-	if !reflect.DeepEqual(edge.GetLabels(), []string{"REFERENCES", "CITES"}) || !reflect.DeepEqual(edge.GetProperties().AsMap(), properties.AsMap()) || !reflect.DeepEqual(edge.GetPayload().AsMap(), payload.AsMap()) || !reflect.DeepEqual(edge.GetMeta().AsMap(), meta.AsMap()) {
+	if !reflect.DeepEqual(edge.GetLabels(), []string{"REFERENCES", "CITES"}) || !reflect.DeepEqual(edge.GetProperties().AsMap(), properties.AsMap()) || !reflect.DeepEqual(edge.GetPayload().AsMap(), payload.AsMap()) {
 		t.Fatalf("edge fields mismatch: %+v", edge)
+	}
+	if edge.GetMeta() != nil {
+		t.Fatalf("client edge response exposed system meta: %+v", edge.GetMeta())
 	}
 	if edge.GetCreateTime() == nil || edge.GetUpdateTime() == nil {
 		t.Fatalf("expected edge timestamps: %+v", edge)
@@ -54,8 +57,45 @@ func TestGraphServiceEdgeUsesLabelsPropertiesPayloadAndMeta(t *testing.T) {
 	if !reflect.DeepEqual(updatedEdge.GetProperties().AsMap(), updatedProperties.AsMap()) {
 		t.Fatalf("properties not updated: %+v", updatedEdge.GetProperties().AsMap())
 	}
-	if !reflect.DeepEqual(updatedEdge.GetPayload().AsMap(), payload.AsMap()) || !reflect.DeepEqual(updatedEdge.GetMeta().AsMap(), meta.AsMap()) {
-		t.Fatalf("payload/meta changed unexpectedly: %+v", updatedEdge)
+	if !reflect.DeepEqual(updatedEdge.GetPayload().AsMap(), payload.AsMap()) {
+		t.Fatalf("payload changed unexpectedly: %+v", updatedEdge)
+	}
+	if updatedEdge.GetMeta() != nil {
+		t.Fatalf("client update response exposed system meta: %+v", updatedEdge.GetMeta())
+	}
+}
+
+func TestGraphServiceNodeOmitsAndIgnoresClientMeta(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+
+	meta := mustStruct(t, map[string]any{"automation": map[string]any{"invocation_id": "client-supplied"}})
+	created, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: tx, Node: &clientv1.NodeCreate{Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "created"}), Meta: meta}})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if created.GetNode().GetMeta() != nil {
+		t.Fatalf("CreateNode response exposed client/system meta: %+v", created.GetNode().GetMeta())
+	}
+
+	updated, err := graphSvc.UpdateNode(fixture.ctx, &clientv1.UpdateNodeRequest{TransactionId: tx, Node: &clientv1.Node{NodeId: created.GetNode().GetNodeId(), Meta: meta}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"meta"}}})
+	if err != nil {
+		t.Fatalf("UpdateNode(meta-only) error = %v", err)
+	}
+	if updated.GetNode().GetMeta() != nil {
+		t.Fatalf("UpdateNode response exposed client/system meta: %+v", updated.GetNode().GetMeta())
+	}
+	txObj, err := graphSvc.transaction(fixture.ctx, tx)
+	if err != nil {
+		t.Fatalf("lookup tx: %v", err)
+	}
+	stored, err := fixture.graphs.GetNode(fixture.ctx, txObj, created.GetNode().GetNodeId())
+	if err != nil {
+		t.Fatalf("stored GetNode() error = %v", err)
+	}
+	if len(stored.Meta) != 0 {
+		t.Fatalf("client API wrote system meta to store: %+v", stored.Meta)
 	}
 }
 

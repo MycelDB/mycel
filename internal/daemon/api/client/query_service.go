@@ -2081,7 +2081,7 @@ func (g gqlDaemonGraph) InsertNode(ctx context.Context, node execution.InsertNod
 }
 
 func (g gqlDaemonGraph) CreateEdge(ctx context.Context, edge execution.CreateEdge) (execmodel.Edge, error) {
-	created, err := g.service.graphs.CreateEdge(ctx, g.tx, daegraph.EdgeInput{FromNodeID: edge.FromNodeID, ToNodeID: edge.ToNodeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload), Meta: copyMapAny(edge.Meta)})
+	created, err := g.service.graphs.CreateEdge(ctx, g.tx, daegraph.EdgeInput{FromNodeID: edge.FromNodeID, ToNodeID: edge.ToNodeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload)})
 	if err != nil {
 		return execmodel.Edge{}, err
 	}
@@ -2089,7 +2089,7 @@ func (g gqlDaemonGraph) CreateEdge(ctx context.Context, edge execution.CreateEdg
 }
 
 func (g gqlDaemonGraph) UpdateNode(ctx context.Context, node execution.UpdateNode) (execmodel.Node, error) {
-	updated, err := g.service.graphs.UpdateNode(ctx, g.tx, daegraph.UpdateNodeInput{NodeID: node.NodeID, Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties), Payload: copyMapAny(node.Payload), Meta: copyMapAny(node.Meta), UpdateMask: []string{"labels", "properties", "payload", "meta"}})
+	updated, err := g.service.graphs.UpdateNode(ctx, g.tx, daegraph.UpdateNodeInput{NodeID: node.NodeID, Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties), Payload: copyMapAny(node.Payload), UpdateMask: []string{"labels", "properties", "payload"}})
 	if err != nil {
 		return execmodel.Node{}, err
 	}
@@ -2097,7 +2097,7 @@ func (g gqlDaemonGraph) UpdateNode(ctx context.Context, node execution.UpdateNod
 }
 
 func (g gqlDaemonGraph) UpdateEdge(ctx context.Context, edge execution.UpdateEdge) (execmodel.Edge, error) {
-	updated, err := g.service.graphs.UpdateEdge(ctx, g.tx, daegraph.UpdateEdgeInput{EdgeID: edge.EdgeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload), Meta: copyMapAny(edge.Meta), UpdateMask: []string{"labels", "properties", "payload", "meta"}})
+	updated, err := g.service.graphs.UpdateEdge(ctx, g.tx, daegraph.UpdateEdgeInput{EdgeID: edge.EdgeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload), UpdateMask: []string{"labels", "properties", "payload"}})
 	if err != nil {
 		return execmodel.Edge{}, err
 	}
@@ -2226,11 +2226,11 @@ func gqlRowsToProto(result execmodel.Result) []*clientv1.QueryRow {
 }
 
 func gqlNodeToProto(node execmodel.Node) *clientv1.Node {
-	return &clientv1.Node{NodeId: node.ID, DomainId: node.DomainID, Labels: append([]string(nil), node.Labels...), Properties: protoStruct(node.Properties), Payload: protoStruct(node.Payload), Meta: protoStruct(node.Meta)}
+	return &clientv1.Node{NodeId: node.ID, DomainId: node.DomainID, Labels: append([]string(nil), node.Labels...), Properties: protoStruct(node.Properties), Payload: protoStruct(node.Payload)}
 }
 
 func gqlEdgeToProto(edge execmodel.Edge) *clientv1.Edge {
-	return &clientv1.Edge{EdgeId: edge.ID, DomainId: edge.DomainID, FromNodeId: edge.FromID, ToNodeId: edge.ToID, Labels: append([]string(nil), edge.Labels...), Properties: protoStruct(edge.Properties), Payload: protoStruct(edge.Payload), Meta: protoStruct(edge.Meta)}
+	return &clientv1.Edge{EdgeId: edge.ID, DomainId: edge.DomainID, FromNodeId: edge.FromID, ToNodeId: edge.ToID, Labels: append([]string(nil), edge.Labels...), Properties: protoStruct(edge.Properties), Payload: protoStruct(edge.Payload)}
 }
 
 func gqlPathToProto(path execmodel.Path) *clientv1.PathValue {
