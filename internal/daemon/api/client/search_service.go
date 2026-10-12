@@ -177,7 +177,7 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 		out.Results = append(out.Results, result)
 	}
 	if req.GetIncludeDiagnostics() {
-		out.Diagnostics = &clientv1.SearchDiagnostics{AnalyzerVersion: freshness.AnalyzerVersion, IndexFormatVersion: freshness.IndexFormatVersion, QueryPlan: fmt.Sprintf("HybridWRRF lexical_candidates=%d semantic_candidates=%d require_both=%t", lexicalCandidates, semanticCandidates, opts.RequireBoth), SegmentsSearched: int32(lexicalResult.Diagnostics.SegmentsSearched), PostingsListsScanned: int32(lexicalResult.Diagnostics.PostingsListsScanned), CandidateCount: int32(len(candidates)), Truncated: len(out.Results) == pageSize && len(fused) > pageSize}
+		out.Diagnostics = &clientv1.SearchDiagnostics{AnalyzerVersion: freshness.AnalyzerVersion, IndexFormatVersion: freshness.IndexFormatVersion, QueryPlan: fmt.Sprintf("HybridWRRF lexical_candidates=%d semantic_candidates=%d require_both=%t rrf_k=%.0f", lexicalCandidates, semanticCandidates, opts.RequireBoth, opts.RankConstant), SegmentsSearched: int32(lexicalResult.Diagnostics.SegmentsSearched), PostingsListsScanned: int32(lexicalResult.Diagnostics.PostingsListsScanned), CandidateCount: int32(len(candidates)), Truncated: len(out.Results) == pageSize && len(fused) > pageSize}
 	}
 	return out, nil
 }
@@ -283,7 +283,7 @@ func hybridOptionsFromProto(in *clientv1.HybridSearchOptions) (hybridsearch.Opti
 	if err != nil {
 		return hybridsearch.Options{}, err
 	}
-	return hybridsearch.Options{Weights: hybridsearch.WeightOptions{Lexical: normalized.Lexical, Semantic: normalized.Semantic}, Strategy: strategy, RequireBoth: requireBoth}, nil
+	return hybridsearch.Options{Weights: hybridsearch.WeightOptions{Lexical: normalized.Lexical, Semantic: normalized.Semantic}, Strategy: strategy, RequireBoth: requireBoth, RankConstant: hybridsearch.DefaultRankConstant}, nil
 }
 
 func searchFiltersFromProto(in *clientv1.SearchFilters) (hybridsearch.Filters, error) {
@@ -330,7 +330,7 @@ func resultSourcesFromHybrid(in hybridsearch.Result) []*clientv1.SearchResultSou
 }
 
 func scoreComponentsFromHybrid(in hybridsearch.Result, opts hybridsearch.Options) []*clientv1.SearchScoreComponent {
-	components := []*clientv1.SearchScoreComponent{{Name: "hybrid.fused_score", Value: in.Score, Description: "weighted reciprocal-rank fused score"}, {Name: "hybrid.lexical_weight", Value: opts.Weights.Lexical, Description: "normalized lexical weight"}, {Name: "hybrid.semantic_weight", Value: opts.Weights.Semantic, Description: "normalized semantic weight"}}
+	components := []*clientv1.SearchScoreComponent{{Name: "hybrid.fused_score", Value: in.Score, Description: "weighted reciprocal-rank fused score"}, {Name: "hybrid.lexical_weight", Value: opts.Weights.Lexical, Description: "normalized lexical weight"}, {Name: "hybrid.semantic_weight", Value: opts.Weights.Semantic, Description: "normalized semantic weight"}, {Name: "hybrid.rrf_rank_constant", Value: opts.RankConstant, Description: "weighted reciprocal-rank fusion rank constant k"}}
 	if in.Lexical != nil {
 		components = append(components, &clientv1.SearchScoreComponent{Name: "lexical.rank_score", Value: in.Lexical.NormalizedScore, Description: "lexical reciprocal-rank contribution before weighting"})
 	}
