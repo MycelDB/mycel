@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
@@ -17,7 +16,6 @@ import (
 	lexicalparser "github.com/myceldb/mycel/internal/search/lexical/parser"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -247,7 +245,10 @@ func (s *SearchService) loadHybridNodes(ctx context.Context, principalID string,
 		return out, nil
 	}
 	warnings := []string{}
-	tx := daemonsession.GraphTransaction{ID: "hybrid-search-" + uuid.NewString(), PrincipalID: principalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
+	tx, err := readOnlySearchGraphTransaction(ctx, s.graphs, "hybrid-search-", principalID, spaceID, domainID)
+	if err != nil {
+		return out, []string{fmt.Sprintf("graph revision snapshot unavailable: %v", err)}
+	}
 	for _, result := range results {
 		if _, ok := out[result.NodeID]; ok {
 			continue
