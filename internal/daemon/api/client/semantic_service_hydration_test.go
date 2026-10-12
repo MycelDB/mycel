@@ -17,13 +17,13 @@ import (
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 )
 
-func TestIssue178SemanticSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
+func TestSemanticSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
 	ctx := context.Background()
-	graphs := newIssue178GraphModule(t, ctx)
+	graphs := newSearchHydrationGraphModule(t, ctx)
 	spaceID := uuid.New()
 	domainID := uuid.New()
 
-	writeTx := issue178GraphTx(spaceID.String(), domainID.String(), 0)
+	writeTx := searchHydrationGraphTx(spaceID.String(), domainID.String(), 0)
 	node, err := graphs.CreateNode(ctx, writeTx, graphsvc.NodeInput{Content: "semantic hit", Props: map[string]any{"kind": "note"}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
@@ -50,13 +50,13 @@ func TestIssue178SemanticSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) 
 	}
 }
 
-func TestIssue178HybridSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
+func TestHybridSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
 	ctx := context.Background()
-	graphs := newIssue178GraphModule(t, ctx)
+	graphs := newSearchHydrationGraphModule(t, ctx)
 	spaceID := uuid.New()
 	domainID := uuid.New()
 
-	writeTx := issue178GraphTx(spaceID.String(), domainID.String(), 0)
+	writeTx := searchHydrationGraphTx(spaceID.String(), domainID.String(), 0)
 	node, err := graphs.CreateNode(ctx, writeTx, graphsvc.NodeInput{Content: "hybrid hit"})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
@@ -79,7 +79,7 @@ func TestIssue178HybridSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
 	}
 }
 
-func newIssue178GraphModule(t *testing.T, ctx context.Context) *graphsvc.Module {
+func newSearchHydrationGraphModule(t *testing.T, ctx context.Context) *graphsvc.Module {
 	t.Helper()
 	m := graphsvc.NewModule()
 	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, Logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
@@ -89,7 +89,7 @@ func newIssue178GraphModule(t *testing.T, ctx context.Context) *graphsvc.Module 
 	return m
 }
 
-func issue178GraphTx(spaceID string, domainID string, baseRevision int64) daemonsession.GraphTransaction {
+func searchHydrationGraphTx(spaceID string, domainID string, baseRevision int64) daemonsession.GraphTransaction {
 	now := time.Now().UTC()
 	return daemonsession.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: daemonsession.TransactionModeReadWrite, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
 }
