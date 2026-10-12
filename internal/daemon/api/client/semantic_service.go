@@ -221,7 +221,16 @@ func ruleHasSearchBinding(rule domainsemantic.SemanticGenerationRule) bool {
 func (s *SemanticService) loadSearchNodes(ctx context.Context, principalID string, spaceID domainspace.SpaceID, domainID graph.DomainID, results []semanticsearch.SearchResult) (map[graph.NodeID]*clientv1.Node, []string) {
 	out := map[graph.NodeID]*clientv1.Node{}
 	warnings := []string{}
-	tx := daemonsession.GraphTransaction{ID: "semantic-search-" + uuid.NewString(), PrincipalID: principalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
+	if len(results) == 0 {
+		return out, nil
+	}
+	if s.graphs == nil {
+		return out, []string{"graph service is not configured"}
+	}
+	tx, err := readOnlySearchGraphTransaction(ctx, s.graphs, "semantic-search-", principalID, spaceID, domainID)
+	if err != nil {
+		return out, []string{fmt.Sprintf("graph revision snapshot unavailable: %v", err)}
+	}
 	seen := map[graph.NodeID]bool{}
 	for _, result := range results {
 		if seen[result.NodeID] {
@@ -236,6 +245,21 @@ func (s *SemanticService) loadSearchNodes(ctx context.Context, principalID strin
 		out[result.NodeID] = mapProtoNode(node)
 	}
 	return out, warnings
+}
+
+func readOnlySearchGraphTransaction(ctx context.Context, graphs daegraph.Manager, prefix string, principalID string, spaceID domainspace.SpaceID, domainID graph.DomainID) (daemonsession.GraphTransaction, error) {
+	var baseRevision int64
+	var err error
+	if revisions, ok := graphs.(TransactionGraphDomainRevisioner); ok {
+		baseRevision, err = revisions.CurrentDomainRevision(ctx, spaceID.String(), domainID.String())
+	} else {
+		baseRevision, err = graphs.CurrentRevision(ctx, spaceID.String())
+	}
+	if err != nil {
+		return daemonsession.GraphTransaction{}, err
+	}
+	now := time.Now().UTC()
+	return daemonsession.GraphTransaction{ID: prefix + uuid.NewString(), PrincipalID: principalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Minute)}, nil
 }
 
 func MapSemanticRuleSummaryProto(rule domainsemantic.SemanticGenerationRule, state domainsemantic.SemanticRuleState, searchByBinding map[string]domainsemantic.SemanticSearchIndexState, stores map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend) *clientv1.SemanticGenerationRuleSummary {
