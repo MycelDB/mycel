@@ -30,16 +30,24 @@ const (
 
 type SearchService struct {
 	clientv1.UnimplementedSearchServiceServer
-	lexical          lexicalservice.Manager
-	semantic         daemonsemantic.Manager
-	spaces           daemonspace.Manager
-	graphs           daegraph.Manager
-	graphWriteRouter GraphWriteRouteProvider
-	router           ClientRequestRouter
+	lexical               lexicalservice.Manager
+	semantic              daemonsemantic.Manager
+	spaces                daemonspace.Manager
+	graphs                daegraph.Manager
+	hybridRRFRankConstant float64
+	graphWriteRouter      GraphWriteRouteProvider
+	router                ClientRequestRouter
 }
 
 func NewSearchService(lexical lexicalservice.Manager, spaces daemonspace.Manager, graphs daegraph.Manager) *SearchService {
-	return &SearchService{lexical: lexical, spaces: spaces, graphs: graphs}
+	return &SearchService{lexical: lexical, spaces: spaces, graphs: graphs, hybridRRFRankConstant: hybridsearch.DefaultRankConstant}
+}
+
+func (s *SearchService) WithHybridRRFRankConstant(k float64) *SearchService {
+	if k > 0 {
+		s.hybridRRFRankConstant = k
+	}
+	return s
 }
 
 func (s *SearchService) WithSemanticManager(semantic daemonsemantic.Manager) *SearchService {
@@ -107,7 +115,7 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 	if strings.TrimSpace(req.GetPageToken()) != "" {
 		return nil, status.Error(codes.InvalidArgument, "page_token is not supported for hybrid search")
 	}
-	opts, err := hybridOptionsFromProto(req.GetHybrid())
+	opts, err := hybridOptionsFromProto(req.GetHybrid(), s.hybridRRFRankConstant)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -263,7 +271,7 @@ func (s *SearchService) loadHybridNodes(ctx context.Context, principalID string,
 	return out, warnings
 }
 
-func hybridOptionsFromProto(in *clientv1.HybridSearchOptions) (hybridsearch.Options, error) {
+func hybridOptionsFromProto(in *clientv1.HybridSearchOptions, rankConstant float64) (hybridsearch.Options, error) {
 	strategy := hybridsearch.FusionWeightedReciprocalRank
 	if in != nil {
 		switch in.GetFusionStrategy() {
@@ -283,7 +291,10 @@ func hybridOptionsFromProto(in *clientv1.HybridSearchOptions) (hybridsearch.Opti
 	if err != nil {
 		return hybridsearch.Options{}, err
 	}
-	return hybridsearch.Options{Weights: hybridsearch.WeightOptions{Lexical: normalized.Lexical, Semantic: normalized.Semantic}, Strategy: strategy, RequireBoth: requireBoth, RankConstant: hybridsearch.DefaultRankConstant}, nil
+	if rankConstant <= 0 {
+		rankConstant = hybridsearch.DefaultRankConstant
+	}
+	return hybridsearch.Options{Weights: hybridsearch.WeightOptions{Lexical: normalized.Lexical, Semantic: normalized.Semantic}, Strategy: strategy, RequireBoth: requireBoth, RankConstant: rankConstant}, nil
 }
 
 func searchFiltersFromProto(in *clientv1.SearchFilters) (hybridsearch.Filters, error) {

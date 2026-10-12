@@ -155,6 +155,16 @@ When enabled, `myceld` checks opened local domain stores on `MYCELD_GRAPH_CHECKP
 
 See [`docs/operations/cli/cluster.md`](docs/operations/cli/cluster.md).
 
+## Search tuning
+
+Hybrid search uses daemon-side weighted reciprocal-rank fusion. The RRF rank constant defaults to `60` and can be tuned system-wide:
+
+```text
+MYCELD_SEARCH_HYBRID_RRF_K=60
+```
+
+See [`docs/operations/cli/search.md`](docs/operations/cli/search.md).
+
 ## Authentication and sessions
 
 Daemon Client and Admin APIs use short-lived bearer access tokens plus durable refresh sessions. SDK callers should use `mycel-go-sdk` or another SDK generated from `mycel-api` so access-token expiry, refresh-token rotation, and one retry on expired-token `Unauthenticated` are handled automatically.
