@@ -251,7 +251,7 @@ Where:
 
 - lower rank is better (`rank = 1` is the best result from that backend);
 - missing backend result contributes `0` for that backend;
-- `rank_constant` defaults to `60` to avoid over-amplifying tiny rank differences and is exposed in diagnostics as `hybrid.rrf_rank_constant`;
+- `rank_constant` defaults to `60`, is configured daemon-wide with `MYCELD_SEARCH_HYBRID_RRF_K`, and is exposed in diagnostics as `hybrid.rrf_rank_constant`;
 - semantic candidates below `SemanticSearchOptions.min_score` are dropped by semantic retrieval before they receive a semantic rank for fusion.
 
 Recommended app-facing defaults are lexical weight `1.0`, semantic weight `0.7` to `1.0`, explicit candidate counts sized above the requested top-K, and a product-specific semantic minimum score threshold. The daemon normalizes weights before scoring, so only the ratio matters.

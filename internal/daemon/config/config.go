@@ -31,6 +31,7 @@ const (
 	DefaultSemanticCredentialConcurrent     = 1
 	DefaultSemanticCredentialRequestsPerMin = 30
 	DefaultSemanticCredentialTokensPerMin   = 50000
+	DefaultSearchHybridRRFK                 = 60.0
 	DefaultBackupInterval                   = 24 * time.Hour
 	DefaultBackupRetentionCount             = 7
 	DefaultBackupCompression                = "zip"
@@ -85,6 +86,10 @@ type AutomationConfig struct {
 	MaxInputTokens    int64
 	MaxOutputTokens   int64
 	WorkerConcurrency int
+}
+
+type SearchConfig struct {
+	HybridRRFK float64
 }
 
 type BackupConfig struct {
@@ -166,6 +171,7 @@ type Config struct {
 	AccessTokenSigningSecretFile string
 	SemanticMaintenance          SemanticMaintenanceConfig
 	Automation                   AutomationConfig
+	Search                       SearchConfig
 	Backup                       BackupConfig
 	WAL                          WALConfig
 	GraphCheckpoint              GraphCheckpointConfig
@@ -258,6 +264,9 @@ func LoadFromEnv() (Config, error) {
 			MaxOutputTokens:   int64(parseIntEnv(os.Getenv("MYCELD_AUTOMATION_MAX_OUTPUT_TOKENS"), 0)),
 			WorkerConcurrency: parseIntEnv(os.Getenv("MYCELD_AUTOMATION_WORKER_CONCURRENCY"), 1),
 		},
+		Search: SearchConfig{
+			HybridRRFK: parseFloatEnv(os.Getenv("MYCELD_SEARCH_HYBRID_RRF_K"), DefaultSearchHybridRRFK),
+		},
 		Backup: BackupConfig{
 			Enabled:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
 			BackupDir:              strings.TrimSpace(os.Getenv("MYCELD_BACKUP_DIR")),
@@ -312,6 +321,9 @@ func (c Config) Normalize() Config {
 	c.DataDir = strings.TrimSpace(c.DataDir)
 	if strings.TrimSpace(c.AccessTokenSigningSecretB64) == "" && strings.TrimSpace(c.AccessTokenSigningSecretFile) == "" && c.DataDir != "" {
 		c.AccessTokenSigningSecretFile = DefaultAccessTokenSigningSecretFile(c.DataDir)
+	}
+	if c.Search.HybridRRFK == 0 {
+		c.Search.HybridRRFK = DefaultSearchHybridRRFK
 	}
 	return c
 }
@@ -373,6 +385,9 @@ func (c Config) Validate() error {
 	if err := c.SemanticMaintenance.Validate(); err != nil {
 		return err
 	}
+	if err := c.Search.Validate(); err != nil {
+		return err
+	}
 	if err := c.Backup.Validate(); err != nil {
 		return err
 	}
@@ -390,6 +405,13 @@ func (c Config) Validate() error {
 	}
 	if err := c.Cluster.Validate(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (c SearchConfig) Validate() error {
+	if c.HybridRRFK < 0 {
+		return fmt.Errorf("MYCELD_SEARCH_HYBRID_RRF_K must be greater than zero when set")
 	}
 	return nil
 }

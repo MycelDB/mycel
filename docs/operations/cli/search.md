@@ -88,7 +88,7 @@ score = lexical_weight  / (k + lexical_rank)
       + semantic_weight / (k + semantic_rank)
 ```
 
-The default rank constant is `k = 60`. The daemon normalizes non-negative weights, so `--lexical-weight 2 --semantic-weight 1` behaves like roughly `0.67 / 0.33`. If a node appears in only one source, only that source contributes to the fused score. Use `--require-both` when the product should return only nodes present in both candidate sets.
+The default rank constant is `k = 60`. Operators can tune it daemon-wide with `MYCELD_SEARCH_HYBRID_RRF_K`; larger values flatten rank differences and smaller values make top ranks more dominant. The daemon normalizes non-negative weights, so `--lexical-weight 2 --semantic-weight 1` behaves like roughly `0.67 / 0.33`. If a node appears in only one source, only that source contributes to the fused score. Use `--require-both` when the product should return only nodes present in both candidate sets.
 
 Use `--semantic-min-score` to drop weak vector matches before RRF. This is the preferred way to avoid unrelated semantic-only candidates being promoted just because they have a semantic rank. Raw BM25 and vector scores, source ranks, normalized source contributions, the `k` value, and the fused score are reported when `--diagnostics` is set; clients should treat the top-level score as a relative ranking score for one response, not a calibrated relevance percentage.
 

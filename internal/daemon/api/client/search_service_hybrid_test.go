@@ -17,7 +17,7 @@ import (
 )
 
 func TestHybridOptionsFromProtoDefaultsAndNormalizes(t *testing.T) {
-	opts, err := hybridOptionsFromProto(nil)
+	opts, err := hybridOptionsFromProto(nil, 60)
 	if err != nil {
 		t.Fatalf("hybridOptionsFromProto(nil) returned error: %v", err)
 	}
@@ -27,17 +27,17 @@ func TestHybridOptionsFromProtoDefaultsAndNormalizes(t *testing.T) {
 	if opts.RankConstant != 60 {
 		t.Fatalf("default rank constant = %v, want 60", opts.RankConstant)
 	}
-	opts, err = hybridOptionsFromProto(&clientv1.HybridSearchOptions{LexicalWeight: 2, SemanticWeight: 1, RequireBoth: true})
+	opts, err = hybridOptionsFromProto(&clientv1.HybridSearchOptions{LexicalWeight: 2, SemanticWeight: 1, RequireBoth: true}, 42)
 	if err != nil {
 		t.Fatalf("hybridOptionsFromProto weighted returned error: %v", err)
 	}
-	if opts.Weights.Lexical < 0.66 || opts.Weights.Lexical > 0.67 || opts.Weights.Semantic < 0.33 || opts.Weights.Semantic > 0.34 || !opts.RequireBoth {
+	if opts.Weights.Lexical < 0.66 || opts.Weights.Lexical > 0.67 || opts.Weights.Semantic < 0.33 || opts.Weights.Semantic > 0.34 || !opts.RequireBoth || opts.RankConstant != 42 {
 		t.Fatalf("weighted opts = %#v", opts)
 	}
 }
 
 func TestHybridOptionsFromProtoRejectsInvalidWeights(t *testing.T) {
-	if _, err := hybridOptionsFromProto(&clientv1.HybridSearchOptions{LexicalWeight: -1, SemanticWeight: 1}); err == nil {
+	if _, err := hybridOptionsFromProto(&clientv1.HybridSearchOptions{LexicalWeight: -1, SemanticWeight: 1}, 60); err == nil {
 		t.Fatalf("hybridOptionsFromProto negative weights returned nil error")
 	}
 }
