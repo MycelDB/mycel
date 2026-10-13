@@ -372,6 +372,13 @@ func TestRunnerBackfillsSemanticRuleBinding(t *testing.T) {
 	if len(result.Records) != 1 || result.Records[0].SemanticRuleID != rule.ID || result.Records[0].EmbeddingBindingKey != "search" || result.Records[0].TargetNodeID != root.ID || result.Records[0].NodeID != root.ID {
 		t.Fatalf("record missing rule/binding attribution: %+v child=%s", result.Records, child.ID)
 	}
+	searchStates, err := env.spaceMgr.ListSearchIndexStates(ctx)
+	if err != nil {
+		t.Fatalf("ListSearchIndexStates() error = %v", err)
+	}
+	if len(searchStates) != 1 || searchStates[0].SemanticRuleID != rule.ID || searchStates[0].EmbeddingBindingKey != "search" || searchStates[0].State != "ready" || searchStates[0].LiveRecordCount != 1 {
+		t.Fatalf("unexpected mirrored search index state: %+v", searchStates)
+	}
 	search, err := env.vector.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), Query: []float64{1, 0, 0}, Limit: 10, MinScore: 0.5})
 	if err != nil || len(search) != 1 || search[0].Record.SemanticRuleID != rule.ID || search[0].Record.EmbeddingBindingKey != "search" {
 		t.Fatalf("unexpected rule vector search: search=%+v err=%v", search, err)
