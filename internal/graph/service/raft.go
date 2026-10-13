@@ -236,6 +236,15 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 			if alreadyApplied {
 				return m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID)
 			}
+			if apply.Replay {
+				superseded, verifyErr := m.graphCommitRecordEffectsSuperseded(ctx, record)
+				if verifyErr != nil {
+					return verifyErr
+				}
+				if superseded {
+					return m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID)
+				}
+			}
 		}
 		return err
 	}
@@ -247,13 +256,24 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 	return nil
 }
 
+func (m *Module) graphCommitRecordEffectsSuperseded(ctx context.Context, record graphCommitRecord) (bool, error) {
+	return m.graphCommitRecordEffectsMatch(ctx, record, graphNodeEffectSupersedes, graphEdgeEffectSupersedes)
+}
+
 func (m *Module) graphCommitRecordEffectsPresent(ctx context.Context, record graphCommitRecord) (bool, error) {
+	return m.graphCommitRecordEffectsMatch(ctx, record, graphNodeEffectEqual, graphEdgeEffectEqual)
+}
+
+func (m *Module) graphCommitRecordEffectsMatch(ctx context.Context, record graphCommitRecord, nodeMatches func(domaingraph.Node, domaingraph.Node) bool, edgeMatches func(domaingraph.Edge, domaingraph.Edge) bool) (bool, error) {
 	if err := normalizeGraphCommitRecordDomain(&record); err != nil {
 		return false, err
 	}
 	store, err := m.store(ctx, record.SpaceID, record.DomainID)
 	if err != nil {
 		return false, err
+	}
+	if len(record.PutNodes) == 0 && len(record.PutEdges) == 0 && len(record.DeleteNodeIDs) == 0 && len(record.DeleteEdgeIDs) == 0 {
+		return false, nil
 	}
 	for _, node := range record.PutNodes {
 		got, err := store.GetNode(ctx, node.ID)
@@ -263,7 +283,7 @@ func (m *Module) graphCommitRecordEffectsPresent(ctx context.Context, record gra
 			}
 			return false, mapStorageError(err)
 		}
-		if !graphNodeEffectEqual(got, node) {
+		if !nodeMatches(got, node) {
 			return false, nil
 		}
 	}
@@ -275,10 +295,14 @@ func (m *Module) graphCommitRecordEffectsPresent(ctx context.Context, record gra
 			}
 			return false, mapStorageError(err)
 		}
-		if !graphEdgeEffectEqual(got, edge) {
+		if !edgeMatches(got, edge) {
 			return false, nil
 		}
 	}
+	return m.graphCommitRecordDeletesAbsent(ctx, store, record)
+}
+
+func (m *Module) graphCommitRecordDeletesAbsent(ctx context.Context, store *graphstorage.LocalStore, record graphCommitRecord) (bool, error) {
 	for _, id := range record.DeleteNodeIDs {
 		if _, err := store.GetNode(ctx, id); err != nil {
 			if errors.Is(err, graphstorage.ErrNotFound) {
@@ -317,6 +341,20 @@ func graphEdgeEffectEqual(got, want domaingraph.Edge) bool {
 	return got.ID == want.ID && got.DomainID == want.DomainID && got.FromID == want.FromID && got.ToID == want.ToID && graphEntityEffectEqual(edgeEffect(got), edgeEffect(want))
 }
 
+func graphNodeEffectSupersedes(got, stale domaingraph.Node) bool {
+	if got.ID != stale.ID || got.DomainID != stale.DomainID {
+		return false
+	}
+	return graphEntityEffectSupersedes(nodeEffect(got), nodeEffect(stale))
+}
+
+func graphEdgeEffectSupersedes(got, stale domaingraph.Edge) bool {
+	if got.ID != stale.ID || got.DomainID != stale.DomainID || got.FromID != stale.FromID || got.ToID != stale.ToID {
+		return false
+	}
+	return graphEntityEffectSupersedes(edgeEffect(got), edgeEffect(stale))
+}
+
 func nodeEffect(n domaingraph.Node) graphEntityEffect {
 	return graphEntityEffect{labels: n.Labels, properties: n.Properties, payload: n.Payload, meta: n.Meta, createdAt: n.CreatedAt, updatedAt: n.UpdatedAt}
 }
@@ -333,6 +371,16 @@ func graphEntityEffectEqual(got, want graphEntityEffect) bool {
 		return false
 	}
 	return stringSlicesEqual(got.labels, want.labels) && mapsEqual(got.properties, want.properties) && mapsEqual(got.payload, want.payload) && mapsEqual(got.meta, want.meta)
+}
+
+func graphEntityEffectSupersedes(got, stale graphEntityEffect) bool {
+	if stale.updatedAt.IsZero() || got.updatedAt.IsZero() || got.updatedAt.Before(stale.updatedAt) {
+		return false
+	}
+	if !stale.createdAt.IsZero() && !got.createdAt.IsZero() && got.createdAt.After(stale.createdAt) {
+		return true
+	}
+	return got.updatedAt.After(stale.updatedAt)
 }
 
 func blobRefsEqual(a, b *domaingraph.BlobID) bool {

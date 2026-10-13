@@ -393,6 +393,63 @@ func (f *graphRaftDedupeFixture) requireAppliedMarkerContains(t *testing.T) {
 	}
 }
 
+func TestGraphRaftReplaySkipsSupersededStaleCommit(t *testing.T) {
+	ctx, m, spaceID, domainID, nodeID, currentNode, cmd := supersededGraphCommitFixture(t, "graph-commit-stale-replay")
+	if err := applyGraphRaftCommandReplay(ctx, m, 2, cmd); err != nil {
+		t.Fatalf("stale replay ApplyCommand() error = %v", err)
+	}
+	store, err := m.store(ctx, spaceID, domainID.String())
+	if err != nil {
+		t.Fatalf("store() error = %v", err)
+	}
+	got, err := store.GetNode(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("GetNode() error = %v", err)
+	}
+	if got.Content != currentNode.Content || !got.UpdatedAt.Equal(currentNode.UpdatedAt) {
+		t.Fatalf("stale replay changed node: %+v want %+v", got, currentNode)
+	}
+	if rev, err := m.CurrentRevision(ctx, spaceID); err != nil || rev != 1 {
+		t.Fatalf("CurrentRevision() = %d, %v; want 1", rev, err)
+	}
+	data, err := os.ReadFile(m.raftAppliedCommandsPath())
+	if err != nil {
+		t.Fatalf("read applied commands: %v", err)
+	}
+	if !strings.Contains(string(data), cmd.CommandID) {
+		t.Fatalf("applied commands missing stale replay marker: %s", string(data))
+	}
+}
+
+func TestGraphRaftLiveSupersededStaleCommitStillConflicts(t *testing.T) {
+	ctx, m, _, _, _, _, cmd := supersededGraphCommitFixture(t, "graph-commit-stale-live")
+	if err := applyGraphRaftCommand(ctx, m, 2, cmd); !errors.Is(err, ErrConflict) {
+		t.Fatalf("live stale ApplyCommand() error = %v, want ErrConflict", err)
+	}
+}
+
+func supersededGraphCommitFixture(t *testing.T, commandID string) (context.Context, *Module, string, uuid.UUID, uuid.UUID, domaingraph.Node, consensus.RaftCommand) {
+	t.Helper()
+	ctx := context.Background()
+	m := newTestGraphRaftModule(t, ctx, t.TempDir())
+	spaceID := uuid.NewString()
+	domainID := uuid.New()
+	nodeID := uuid.New()
+	createdAt := time.Date(2026, 10, 10, 21, 19, 4, 0, time.UTC)
+	staleNode := domaingraph.Node{ID: nodeID, DomainID: domainID, Content: "old", CreatedAt: createdAt, UpdatedAt: createdAt}
+	currentNode := staleNode
+	currentNode.Content = "newer"
+	currentNode.UpdatedAt = createdAt.Add(time.Minute)
+	if _, _, _, err := m.applyGraphCommitRecord(ctx, graphCommitRecord{SpaceID: spaceID, DomainID: domainID.String(), BaseRevision: 0, PutNodes: []domaingraph.Node{currentNode}, OperationCount: 1}); err != nil {
+		t.Fatalf("seed current graph state: %v", err)
+	}
+	cmd, err := m.buildGraphCommitRaftCommand(graphCommitRecord{SpaceID: spaceID, DomainID: domainID.String(), BaseRevision: 0, PutNodes: []domaingraph.Node{staleNode}, OperationCount: 1}, 64, commandID)
+	if err != nil {
+		t.Fatalf("buildGraphCommitRaftCommand() error = %v", err)
+	}
+	return ctx, m, spaceID, domainID, nodeID, currentNode, cmd
+}
+
 func newTestGraphRaftModule(t *testing.T, ctx context.Context, dataDir string) *Module {
 	t.Helper()
 	m := NewModule()
@@ -404,6 +461,10 @@ func newTestGraphRaftModule(t *testing.T, ctx context.Context, dataDir string) *
 
 func applyGraphRaftCommand(ctx context.Context, m *Module, index uint64, cmd consensus.RaftCommand) error {
 	return (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: index, RaftTerm: 1}, cmd)
+}
+
+func applyGraphRaftCommandReplay(ctx context.Context, m *Module, index uint64, cmd consensus.RaftCommand) error {
+	return (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: index, RaftTerm: 1, Replay: true}, cmd)
 }
 
 func TestGraphRaftStateMachineRejectsSpaceMismatch(t *testing.T) {

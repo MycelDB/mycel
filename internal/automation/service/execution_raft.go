@@ -529,6 +529,22 @@ func isTerminalInvocationStatus(status string) bool {
 	}
 }
 
+func invocationDominatesReplay(existing, incoming automation.Invocation) bool {
+	if existing.ID == "" || incoming.ID == "" || existing.ID != incoming.ID {
+		return false
+	}
+	if isTerminalInvocationStatus(existing.Status) {
+		return true
+	}
+	if incoming.ClaimVersion < existing.ClaimVersion {
+		return true
+	}
+	if incoming.ClaimVersion == existing.ClaimVersion && !incoming.UpdatedAt.IsZero() && !existing.UpdatedAt.IsZero() && !incoming.UpdatedAt.After(existing.UpdatedAt) {
+		return true
+	}
+	return false
+}
+
 func staleScheduleCheckpoint(existing, incoming storage.ScheduleCheckpoint) bool {
 	if existing.LastRunAt == "" {
 		return false

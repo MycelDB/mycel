@@ -82,6 +82,50 @@ func TestAutomationRaftReplayCreateIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestAutomationRaftReplayStaleTerminalInvocationIsNoOp(t *testing.T) {
+	ctx, mgr, domainID, existing, cmd := staleInvocationRaftFixture(t)
+	if err := (RaftStateMachine{Manager: mgr, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{Replay: true, RaftIndex: 2, RaftTerm: 1}, cmd); err != nil {
+		t.Fatalf("stale terminal invocation replay apply error = %v", err)
+	}
+	got, err := mgr.store.GetInvocation(ctx, domainID, existing.ID)
+	if err != nil {
+		t.Fatalf("GetInvocation() error = %v", err)
+	}
+	if got.Status != existing.Status || got.SkipReason != existing.SkipReason || !got.UpdatedAt.Equal(existing.UpdatedAt) {
+		t.Fatalf("invocation changed after stale replay: %+v want %+v", got, existing)
+	}
+}
+
+func TestAutomationRaftLiveStaleInvocationStillFails(t *testing.T) {
+	ctx, mgr, _, _, cmd := staleInvocationRaftFixture(t)
+	if err := (RaftStateMachine{Manager: mgr, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, cmd); err == nil || !strings.Contains(err.Error(), "stale automation invocation update") {
+		t.Fatalf("live stale invocation apply error = %v, want stale error", err)
+	}
+}
+
+func staleInvocationRaftFixture(t *testing.T) (context.Context, *AutomationManager, graph.DomainID, automation.Invocation, consensus.RaftCommand) {
+	t.Helper()
+	ctx := context.Background()
+	domainID := graph.DomainID(uuid.New())
+	spaceID := uuid.New().String()
+	mgr := NewManager(storage.NewFileStore(t.TempDir()))
+	mgr.raftPartitionCount = 64
+	now := time.Date(2026, 10, 10, 21, 19, 52, 0, time.UTC)
+	existing := automation.Invocation{ID: uuid.NewString(), DomainID: domainID, SpaceID: spaceID, AutomationID: "page-summary", BindingID: "page-summary", EventID: uuid.NewString(), ChangedElementID: uuid.NewString(), ChangedElementKind: "node", EventType: "node.created", Status: "skipped", SkipReason: "coalesced", ClaimOwnerNodeID: 2, ClaimVersion: 1, ClaimToken: "token-a", CreatedAt: now.Add(-time.Minute), UpdatedAt: now}
+	if err := mgr.store.PutInvocation(ctx, existing); err != nil {
+		t.Fatalf("seed invocation: %v", err)
+	}
+	stale := existing
+	stale.Status = "running"
+	stale.SkipReason = ""
+	stale.UpdatedAt = now.Add(-30 * time.Second)
+	cmd, err := mgr.buildAutomationRaftCommand(automationMutationRecord{Kind: "invocation.upsert", DomainID: domainID, SpaceID: spaceID, ID: stale.ID, Payload: rawAutomation(stale)})
+	if err != nil {
+		t.Fatalf("buildAutomationRaftCommand() error = %v", err)
+	}
+	return ctx, mgr, domainID, existing, cmd
+}
+
 func TestAutomationRaftReplayStaleGraphReplayCursorIsNoOp(t *testing.T) {
 	ctx := context.Background()
 	domainID := graph.DomainID(uuid.New())
