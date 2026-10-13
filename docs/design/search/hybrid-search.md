@@ -234,7 +234,7 @@ semantic_weight = 0.5
 
 ## Fusion strategy
 
-V1 should use weighted reciprocal rank fusion rather than combining raw BM25 and vector scores directly. Raw lexical and semantic scores have different scales and may not be comparable across query types, analyzers, embedding models, or vector stores.
+V1 uses weighted reciprocal rank fusion rather than combining raw BM25 and vector scores directly. Raw lexical and semantic scores have different scales and may not be comparable across query types, analyzers, embedding models, or vector stores. Downstream apps should use the daemon's fused hybrid score instead of implementing ad hoc app-layer score mixing.
 
 For each candidate node:
 
@@ -251,7 +251,10 @@ Where:
 
 - lower rank is better (`rank = 1` is the best result from that backend);
 - missing backend result contributes `0` for that backend;
-- `rank_constant` is server-defined and should be stable, e.g. `60`, to avoid over-amplifying tiny rank differences.
+- `rank_constant` defaults to `60`, is configured daemon-wide with `MYCELD_SEARCH_HYBRID_RRF_K`, and is exposed in diagnostics as `hybrid.rrf_rank_constant`;
+- semantic candidates below `SemanticSearchOptions.min_score` are dropped by semantic retrieval before they receive a semantic rank for fusion.
+
+Recommended app-facing defaults are lexical weight `1.0`, semantic weight `0.7` to `1.0`, explicit candidate counts sized above the requested top-K, and a product-specific semantic minimum score threshold. The daemon normalizes weights before scoring, so only the ratio matters.
 
 The server should sort by:
 
@@ -291,7 +294,7 @@ For `SEARCH_MODE_HYBRID`:
 1. Validate request, authorization, weights, limits, and filters.
 2. Choose lexical and semantic candidate counts.
 3. Run lexical candidate retrieval for the query.
-4. Run semantic candidate retrieval for the query and selected semantic binding scope.
+4. Run semantic candidate retrieval for the query and selected semantic binding scope, applying `semantic.min_score` before returning semantic candidates.
 5. Merge candidates by `node_id`.
 6. Read enough graph/node metadata to enforce authorization and hard filters.
 7. If `require_both=true`, drop candidates not present in both lexical and semantic result sets.
@@ -356,28 +359,30 @@ candidate_count = max(page_size * 5, 50)
 
 with a server-defined upper cap.
 
-## CLI proposal
+## CLI integration
 
-Extend the existing search CLI with hybrid mode:
+Use `mycel search hybrid` for app-facing fused ranking:
 
 ```sh
-mycel search \
-  --space SPACE \
-  --domain DOMAIN \
-  --mode hybrid \
+mycel search hybrid \
+  --space-id <space-id> \
+  --domain default \
   --query "raft recovery" \
-  --lexical-weight 0.6 \
-  --semantic-weight 0.4 \
+  --page-size 20 \
+  --lexical-weight 1.0 \
+  --semantic-weight 0.7 \
+  --semantic-min-score 0.50 \
+  --lexical-candidates 100 \
+  --semantic-candidates 100 \
   --label Note \
-  --property tags contains k3s \
-  --limit 20 \
+  --property-filter tags:contains:k3s \
   --diagnostics
 ```
 
-CLI defaults should match API defaults:
+CLI defaults match API defaults:
 
-- mode remains lexical unless explicitly set to hybrid;
-- weights default to `0.5 / 0.5`;
+- lexical mode remains the default unless callers use the `hybrid` subcommand;
+- weights default to `0.5 / 0.5` and are normalized by the daemon;
 - metadata filters are hard filters;
 - diagnostics are opt-in.
 
@@ -398,15 +403,16 @@ CLI defaults should match API defaults:
     ]
   },
   "hybrid": {
-    "lexical_weight": 0.6,
-    "semantic_weight": 0.4,
+    "lexical_weight": 1.0,
+    "semantic_weight": 0.7,
     "fusion_strategy": "HYBRID_FUSION_STRATEGY_WEIGHTED_RECIPROCAL_RANK"
   },
   "lexical": {
     "candidate_count": 100
   },
   "semantic": {
-    "candidate_count": 100
+    "candidate_count": 100,
+    "min_score": 0.50
   }
 }
 ```

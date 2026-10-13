@@ -66,6 +66,29 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.GraphCheckpoint.AutoEnabled || cfg.GraphCheckpoint.AutoInterval != DefaultGraphCheckpointAutoInterval || cfg.GraphCheckpoint.AutoRevisions != DefaultGraphCheckpointAutoRevisions || cfg.GraphCheckpoint.AutoTimeout != DefaultGraphCheckpointAutoTimeout {
 		t.Fatalf("unexpected graph checkpoint defaults: %+v", cfg.GraphCheckpoint)
 	}
+	if cfg.Search.HybridRRFK != DefaultSearchHybridRRFK {
+		t.Fatalf("unexpected search defaults: %+v", cfg.Search)
+	}
+}
+
+func TestLoadFromEnvSearchOverrides(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_SEARCH_HYBRID_RRF_K", "42.5")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.Search.HybridRRFK != 42.5 {
+		t.Fatalf("HybridRRFK = %v, want 42.5", cfg.Search.HybridRRFK)
+	}
+}
+
+func TestLoadFromEnvSearchValidation(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_SEARCH_HYBRID_RRF_K", "-1")
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "MYCELD_SEARCH_HYBRID_RRF_K") {
+		t.Fatalf("LoadFromEnv() error = %v, want search k validation", err)
+	}
 }
 
 func TestLoadFromEnvAccessTokenSigningSecretOverrides(t *testing.T) {

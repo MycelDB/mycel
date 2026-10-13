@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
@@ -17,7 +16,6 @@ import (
 	lexicalparser "github.com/myceldb/mycel/internal/search/lexical/parser"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -32,16 +30,24 @@ const (
 
 type SearchService struct {
 	clientv1.UnimplementedSearchServiceServer
-	lexical          lexicalservice.Manager
-	semantic         daemonsemantic.Manager
-	spaces           daemonspace.Manager
-	graphs           daegraph.Manager
-	graphWriteRouter GraphWriteRouteProvider
-	router           ClientRequestRouter
+	lexical               lexicalservice.Manager
+	semantic              daemonsemantic.Manager
+	spaces                daemonspace.Manager
+	graphs                daegraph.Manager
+	hybridRRFRankConstant float64
+	graphWriteRouter      GraphWriteRouteProvider
+	router                ClientRequestRouter
 }
 
 func NewSearchService(lexical lexicalservice.Manager, spaces daemonspace.Manager, graphs daegraph.Manager) *SearchService {
-	return &SearchService{lexical: lexical, spaces: spaces, graphs: graphs}
+	return &SearchService{lexical: lexical, spaces: spaces, graphs: graphs, hybridRRFRankConstant: hybridsearch.DefaultRankConstant}
+}
+
+func (s *SearchService) WithHybridRRFRankConstant(k float64) *SearchService {
+	if k > 0 {
+		s.hybridRRFRankConstant = k
+	}
+	return s
 }
 
 func (s *SearchService) WithSemanticManager(semantic daemonsemantic.Manager) *SearchService {
@@ -109,7 +115,7 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 	if strings.TrimSpace(req.GetPageToken()) != "" {
 		return nil, status.Error(codes.InvalidArgument, "page_token is not supported for hybrid search")
 	}
-	opts, err := hybridOptionsFromProto(req.GetHybrid())
+	opts, err := hybridOptionsFromProto(req.GetHybrid(), s.hybridRRFRankConstant)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -179,7 +185,7 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 		out.Results = append(out.Results, result)
 	}
 	if req.GetIncludeDiagnostics() {
-		out.Diagnostics = &clientv1.SearchDiagnostics{AnalyzerVersion: freshness.AnalyzerVersion, IndexFormatVersion: freshness.IndexFormatVersion, QueryPlan: fmt.Sprintf("HybridWRRF lexical_candidates=%d semantic_candidates=%d require_both=%t", lexicalCandidates, semanticCandidates, opts.RequireBoth), SegmentsSearched: int32(lexicalResult.Diagnostics.SegmentsSearched), PostingsListsScanned: int32(lexicalResult.Diagnostics.PostingsListsScanned), CandidateCount: int32(len(candidates)), Truncated: len(out.Results) == pageSize && len(fused) > pageSize}
+		out.Diagnostics = &clientv1.SearchDiagnostics{AnalyzerVersion: freshness.AnalyzerVersion, IndexFormatVersion: freshness.IndexFormatVersion, QueryPlan: fmt.Sprintf("HybridWRRF lexical_candidates=%d semantic_candidates=%d require_both=%t rrf_k=%.0f", lexicalCandidates, semanticCandidates, opts.RequireBoth, opts.RankConstant), SegmentsSearched: int32(lexicalResult.Diagnostics.SegmentsSearched), PostingsListsScanned: int32(lexicalResult.Diagnostics.PostingsListsScanned), CandidateCount: int32(len(candidates)), Truncated: len(out.Results) == pageSize && len(fused) > pageSize}
 	}
 	return out, nil
 }
@@ -247,7 +253,10 @@ func (s *SearchService) loadHybridNodes(ctx context.Context, principalID string,
 		return out, nil
 	}
 	warnings := []string{}
-	tx := daemonsession.GraphTransaction{ID: "hybrid-search-" + uuid.NewString(), PrincipalID: principalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
+	tx, err := readOnlySearchGraphTransaction(ctx, s.graphs, "hybrid-search-", principalID, spaceID, domainID)
+	if err != nil {
+		return out, []string{fmt.Sprintf("graph revision snapshot unavailable: %v", err)}
+	}
 	for _, result := range results {
 		if _, ok := out[result.NodeID]; ok {
 			continue
@@ -262,7 +271,7 @@ func (s *SearchService) loadHybridNodes(ctx context.Context, principalID string,
 	return out, warnings
 }
 
-func hybridOptionsFromProto(in *clientv1.HybridSearchOptions) (hybridsearch.Options, error) {
+func hybridOptionsFromProto(in *clientv1.HybridSearchOptions, rankConstant float64) (hybridsearch.Options, error) {
 	strategy := hybridsearch.FusionWeightedReciprocalRank
 	if in != nil {
 		switch in.GetFusionStrategy() {
@@ -282,7 +291,10 @@ func hybridOptionsFromProto(in *clientv1.HybridSearchOptions) (hybridsearch.Opti
 	if err != nil {
 		return hybridsearch.Options{}, err
 	}
-	return hybridsearch.Options{Weights: hybridsearch.WeightOptions{Lexical: normalized.Lexical, Semantic: normalized.Semantic}, Strategy: strategy, RequireBoth: requireBoth}, nil
+	if rankConstant <= 0 {
+		rankConstant = hybridsearch.DefaultRankConstant
+	}
+	return hybridsearch.Options{Weights: hybridsearch.WeightOptions{Lexical: normalized.Lexical, Semantic: normalized.Semantic}, Strategy: strategy, RequireBoth: requireBoth, RankConstant: rankConstant}, nil
 }
 
 func searchFiltersFromProto(in *clientv1.SearchFilters) (hybridsearch.Filters, error) {
@@ -329,7 +341,7 @@ func resultSourcesFromHybrid(in hybridsearch.Result) []*clientv1.SearchResultSou
 }
 
 func scoreComponentsFromHybrid(in hybridsearch.Result, opts hybridsearch.Options) []*clientv1.SearchScoreComponent {
-	components := []*clientv1.SearchScoreComponent{{Name: "hybrid.fused_score", Value: in.Score, Description: "weighted reciprocal-rank fused score"}, {Name: "hybrid.lexical_weight", Value: opts.Weights.Lexical, Description: "normalized lexical weight"}, {Name: "hybrid.semantic_weight", Value: opts.Weights.Semantic, Description: "normalized semantic weight"}}
+	components := []*clientv1.SearchScoreComponent{{Name: "hybrid.fused_score", Value: in.Score, Description: "weighted reciprocal-rank fused score"}, {Name: "hybrid.lexical_weight", Value: opts.Weights.Lexical, Description: "normalized lexical weight"}, {Name: "hybrid.semantic_weight", Value: opts.Weights.Semantic, Description: "normalized semantic weight"}, {Name: "hybrid.rrf_rank_constant", Value: opts.RankConstant, Description: "weighted reciprocal-rank fusion rank constant k"}}
 	if in.Lexical != nil {
 		components = append(components, &clientv1.SearchScoreComponent{Name: "lexical.rank_score", Value: in.Lexical.NormalizedScore, Description: "lexical reciprocal-rank contribution before weighting"})
 	}

@@ -872,7 +872,67 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
-	return semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipSemanticDisabledWorkItem}.ProcessOnce(ctx, in.Limit)
+	res, err := semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipSemanticDisabledWorkItem}.ProcessOnce(ctx, in.Limit)
+	if err != nil {
+		return res, err
+	}
+	if err := syncSemanticDirtyCounts(ctx, mgr, maintenanceMgr); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+func syncSemanticDirtyCounts(ctx context.Context, mgr storesemantic.SpaceManager, maintenanceMgr storesemantic.MaintenanceManager) error {
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	pendingRule := map[domainsemantic.SemanticRuleID]int{}
+	pendingIndex := map[domainsemantic.SemanticIndexID]int{}
+	for _, item := range items {
+		if item.Status != domainsemantic.SemanticDirtyWorkStatusPending && item.Status != domainsemantic.SemanticDirtyWorkStatusRunning {
+			continue
+		}
+		ruleID := item.EffectiveSemanticRuleID()
+		if ruleID != uuid.Nil {
+			pendingRule[ruleID]++
+		}
+		indexID := item.SemanticIndexID
+		if indexID == uuid.Nil && ruleID != uuid.Nil {
+			indexID = domainsemantic.SemanticIndexID(ruleID)
+		}
+		if indexID != uuid.Nil {
+			pendingIndex[indexID]++
+		}
+	}
+	ruleStates, err := mgr.ListSemanticRuleStates(ctx)
+	if err != nil {
+		return err
+	}
+	for _, state := range ruleStates {
+		state.DirtyCount = pendingRule[state.SemanticRuleID]
+		state.UpdatedAt = now
+		if _, err := mgr.UpsertSemanticRuleState(ctx, state); err != nil {
+			return err
+		}
+	}
+	indexStates, err := mgr.ListIndexStates(ctx)
+	if err != nil {
+		return err
+	}
+	for _, state := range indexStates {
+		indexID := state.SemanticIndexID
+		if indexID == uuid.Nil && state.SemanticRuleID != uuid.Nil {
+			indexID = domainsemantic.SemanticIndexID(state.SemanticRuleID)
+		}
+		state.DirtyCount = pendingIndex[indexID]
+		state.UpdatedAt = now
+		if _, err := mgr.UpsertIndexState(ctx, state); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error) {

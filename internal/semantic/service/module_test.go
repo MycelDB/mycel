@@ -465,6 +465,48 @@ func (m *recordingRevisionGraphManager) GetParent(_ context.Context, tx daemonse
 	return nil, nil
 }
 
+func TestSyncSemanticDirtyCountsRefreshesRuleAndIndexState(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	spaceID := domainspace.SpaceID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(ruleID)
+	mgr := storesemantic.NewSpaceManager()
+	if err := mgr.Init(ctx, filepath.Join(root, "graphs", spaceID.String(), "semantic"), spaceID); err != nil {
+		t.Fatalf("init space manager: %v", err)
+	}
+	maintenanceMgr := storesemantic.NewMaintenanceManager()
+	if err := maintenanceMgr.Init(ctx, filepath.Join(root, "graphs", spaceID.String(), "semantic", "maintenance"), spaceID); err != nil {
+		t.Fatalf("init maintenance manager: %v", err)
+	}
+	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", DirtyCount: 22}); err != nil {
+		t.Fatalf("seed rule state: %v", err)
+	}
+	if _, err := mgr.UpsertIndexState(ctx, domainsemantic.SemanticIndexState{SemanticRuleID: ruleID, SemanticIndexID: indexID, State: "active", DirtyCount: 22}); err != nil {
+		t.Fatalf("seed index state: %v", err)
+	}
+	if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: indexID, SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), TargetNodeID: graph.NodeID(uuid.New()), Action: domainsemantic.SemanticDirtyWorkActionRefresh, Status: domainsemantic.SemanticDirtyWorkStatusComplete}); err != nil {
+		t.Fatalf("seed completed work: %v", err)
+	}
+	if err := syncSemanticDirtyCounts(ctx, mgr, maintenanceMgr); err != nil {
+		t.Fatalf("syncSemanticDirtyCounts() error = %v", err)
+	}
+	ruleStates, err := mgr.ListSemanticRuleStates(ctx)
+	if err != nil {
+		t.Fatalf("ListSemanticRuleStates() error = %v", err)
+	}
+	if len(ruleStates) != 1 || ruleStates[0].DirtyCount != 0 {
+		t.Fatalf("unexpected rule states: %+v", ruleStates)
+	}
+	indexStates, err := mgr.ListIndexStates(ctx)
+	if err != nil {
+		t.Fatalf("ListIndexStates() error = %v", err)
+	}
+	if len(indexStates) != 1 || indexStates[0].DirtyCount != 0 {
+		t.Fatalf("unexpected index states: %+v", indexStates)
+	}
+}
+
 type fakeSchemaManager struct {
 	schema schemamodel.DomainSchema
 	err    error
