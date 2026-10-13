@@ -65,6 +65,7 @@ type Module struct {
 	raftNodeAddrs                  []string
 	raftBackendAuthToken           string
 	raftAppliedCommands            map[string]struct{}
+	raftAppliedCommandsPersistMu   sync.Mutex
 	logger                         *slog.Logger
 	writeTrace                     writetrace.Config
 }

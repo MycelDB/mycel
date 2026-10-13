@@ -46,6 +46,8 @@ func (m *Module) rememberRaftAppliedCommand(ctx context.Context, commandID strin
 }
 
 func (m *Module) persistRaftAppliedCommands(ctx context.Context) error {
+	m.raftAppliedCommandsPersistMu.Lock()
+	defer m.raftAppliedCommandsPersistMu.Unlock()
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.raftAppliedCommands))
 	for id := range m.raftAppliedCommands {

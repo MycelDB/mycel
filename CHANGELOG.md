@@ -6,6 +6,18 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.19.4] - 2026-10-13
+
+### Fixed
+
+- Fixed automation Raft replay so stale/superseded invocation updates are treated as no-ops when durable invocation state already dominates the replayed command, preventing restart readiness failures from `stale automation invocation update` (#188, #189).
+- Fixed graph Raft replay so superseded stale graph commits repair applied-command markers instead of surfacing replay-time `graph conflict` errors, while preserving live conflict behavior (#188, #189).
+- Serialized graph applied-command marker persistence to avoid concurrent marker write temp-file races during replay/idempotency repair (#189).
+
+### Compatibility
+
+- Patch release for the daemon only. Public protobuf/API bindings remain compatible with `mycel-api v0.19.0`; no SDK, Console, or Lab release is required for API compatibility.
+
 ## [v0.19.3] - 2026-10-13
 
 ### Added
