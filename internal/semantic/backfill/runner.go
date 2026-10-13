@@ -175,8 +175,35 @@ func (r Runner) runRuleBackfill(ctx context.Context, in Input, rules []domainsem
 			result.GeneratedCount++
 			result.Records = append(result.Records, rec)
 		}
+		if err := r.syncRuleBindingSearchIndexState(ctx, *rule, binding, vectorStoreID); err != nil {
+			if !in.ContinueOnError {
+				return result, err
+			}
+			result.FailedCount++
+			result.Failures = append(result.Failures, Failure{Error: err.Error()})
+		}
 	}
 	return result, nil
+}
+
+func (r Runner) syncRuleBindingSearchIndexState(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID) error {
+	rebuilder, ok := r.VectorBackend.(vectorstore.SearchIndexRebuilder)
+	if !ok {
+		return nil
+	}
+	key := vectorstore.SearchIndexKey{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: vectorStoreID}
+	state, err := rebuilder.RebuildSearchIndex(ctx, key, vectorstore.RebuildLimit{})
+	if err != nil {
+		failed := domainsemantic.SemanticSearchIndexState{SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, State: "error", LastError: err.Error(), UpdatedAt: time.Now().UTC()}
+		if _, upsertErr := r.SpaceManager.UpsertSearchIndexState(ctx, failed); upsertErr != nil {
+			return upsertErr
+		}
+		return fmt.Errorf("sync semantic search index state for rule %s binding %q: %w", rule.ID, binding.Key, err)
+	}
+	if _, err := r.SpaceManager.UpsertSearchIndexState(ctx, state); err != nil {
+		return fmt.Errorf("sync semantic search index state for rule %s binding %q: %w", rule.ID, binding.Key, err)
+	}
+	return nil
 }
 
 func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID, root graph.Node, nodes []graph.Node, edges []graph.Edge, force bool) (domainsemantic.AdvancedEmbeddingRecord, *Skipped, *Failure) {
