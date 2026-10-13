@@ -6,6 +6,26 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.19.3] - 2026-10-13
+
+### Added
+
+- Added daemon configuration for the hybrid weighted-RRF rank constant via `MYCELD_SEARCH_HYBRID_RRF_K`, with the effective value reported in hybrid-search diagnostics and query plans (#183).
+
+### Changed
+
+- Productized weighted reciprocal-rank-fusion hybrid search as the documented app-facing hybrid retrieval path, including formula, candidate-count guidance, semantic min-score gating behavior, diagnostics, and downstream usage recommendations (#181, #182).
+
+### Fixed
+
+- Fixed semantic and hybrid search result hydration so vector hits are read from the current graph/domain revision rather than graph revision zero, preventing valid search hits from being dropped after indexing (#178, #179, #180).
+- Fixed semantic rule backfill and maintenance so per-binding physical search-index state is mirrored into central semantic search-index metadata, keeping rule summaries and search availability aligned with rebuilt `latest.json`/`state.json` files (#184, #185).
+- Refreshed semantic rule/index dirty queue counts after maintenance processing completes so rule summaries do not continue to report stale pending work (#184, #185).
+
+### Compatibility
+
+- Patch release for the daemon only. Public protobuf/API bindings remain compatible with `mycel-api v0.19.0`; no SDK, Console, or Lab release is required.
+
 ## [v0.19.2] - 2026-10-10
 
 ### Fixed
