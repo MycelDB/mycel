@@ -58,7 +58,7 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 	if s.Manager == nil {
 		return nil
 	}
-	return s.Manager.applyAutomationRaftCommand(ctx, cmd, s.PartitionCount)
+	return s.Manager.applyAutomationRaftCommandWithContext(ctx, apply, cmd, s.PartitionCount)
 }
 
 func (s RaftStateMachine) Snapshot() ([]byte, error) {
@@ -154,6 +154,10 @@ func (m *AutomationManager) proposeAutomationRaftCommand(ctx context.Context, cm
 }
 
 func (m *AutomationManager) applyAutomationRaftCommand(ctx context.Context, cmd consensus.RaftCommand, partitionCount uint32) error {
+	return m.applyAutomationRaftCommandWithContext(ctx, consensus.ApplyContext{}, cmd, partitionCount)
+}
+
+func (m *AutomationManager) applyAutomationRaftCommandWithContext(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand, partitionCount uint32) error {
 	if err := cmd.Validate(partitionCount); err != nil {
 		return err
 	}
@@ -174,10 +178,14 @@ func (m *AutomationManager) applyAutomationRaftCommand(ctx context.Context, cmd 
 	if strings.TrimSpace(cmd.SpaceID) != partitionKey.String() {
 		return fmt.Errorf("automation raft command partition key mismatch: command=%s payload=%s", cmd.SpaceID, partitionKey)
 	}
-	return m.applyAutomationMutation(ctx, rec)
+	return m.applyAutomationMutationWithContext(ctx, apply, rec)
 }
 
 func (m *AutomationManager) applyAutomationMutation(ctx context.Context, rec automationMutationRecord) error {
+	return m.applyAutomationMutationWithContext(ctx, consensus.ApplyContext{}, rec)
+}
+
+func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Context, apply consensus.ApplyContext, rec automationMutationRecord) error {
 	switch rec.Kind {
 	case "procedure.create", "procedure.update":
 		var procedure automation.Procedure
@@ -240,6 +248,9 @@ func (m *AutomationManager) applyAutomationMutation(ctx context.Context, rec aut
 		}
 		if existing, err := m.store.GetInvocation(ctx, rec.DomainID, inv.ID); err == nil {
 			if staleInvocationUpdate(existing, inv) {
+				if apply.Replay && invocationDominatesReplay(existing, inv) {
+					return nil
+				}
 				return fmt.Errorf("stale automation invocation update for %q", inv.ID)
 			}
 		} else if err != storage.ErrNotFound {
