@@ -76,7 +76,7 @@ func TestPhaseDMultiSubsystemRaftConvergesAndRestarts(t *testing.T) {
 	graphLeader := cluster.leaderForSpace(ctx, t, spaceID)
 	graphNode := cluster.nodes[graphLeader]
 	tx := phaseDGraphTx(spaceID, domainID.String(), 0)
-	node, err := graphNode.graph.CreateNode(ctx, tx, graphservice.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
+	node, err := graphNode.graph.CreateNode(ctx, tx, graphmodel.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
@@ -92,7 +92,7 @@ func TestPhaseDMultiSubsystemRaftConvergesAndRestarts(t *testing.T) {
 	cluster.waitForVectorStore(ctx, t, "phase-d-store")
 
 	updateTx := phaseDGraphTx(spaceID, domainID.String(), 1)
-	if _, err := graphNode.graph.UpdateNode(ctx, updateTx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Lovelace"}}); err != nil {
+	if _, err := graphNode.graph.UpdateNode(ctx, updateTx, graphmodel.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Lovelace"}}); err != nil {
 		t.Fatalf("UpdateNode() error = %v", err)
 	}
 	if _, err := graphNode.graph.CommitTransactionGraph(ctx, updateTx); err != nil {
@@ -136,7 +136,7 @@ func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 	graphLeader := cluster.leaderForSpace(ctx, t, spaceID)
 	graphNode := cluster.nodes[graphLeader]
 	tx := phaseDGraphTx(spaceID, domainID.String(), 0)
-	node, err := graphNode.graph.CreateNode(ctx, tx, graphservice.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
+	node, err := graphNode.graph.CreateNode(ctx, tx, graphmodel.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
@@ -153,7 +153,7 @@ func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 	graphLeader = cluster.leaderForSpace(ctx, t, spaceID)
 	graphNode = cluster.nodes[graphLeader]
 	updateTx := phaseDGraphTx(spaceID, domainID.String(), 1)
-	if _, err := graphNode.graph.UpdateNode(ctx, updateTx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Lovelace"}}); err != nil {
+	if _, err := graphNode.graph.UpdateNode(ctx, updateTx, graphmodel.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Lovelace"}}); err != nil {
 		t.Fatalf("UpdateNode(snapshot) error = %v", err)
 	}
 	if _, err := graphNode.graph.CommitTransactionGraph(ctx, updateTx); err != nil {
@@ -170,7 +170,7 @@ func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 	graphLeader = cluster.leaderForSpace(ctx, t, spaceID)
 	graphNode = cluster.nodes[graphLeader]
 	tailTx := phaseDGraphTx(spaceID, domainID.String(), 2)
-	if _, err := graphNode.graph.UpdateNode(ctx, tailTx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Byron"}}); err != nil {
+	if _, err := graphNode.graph.UpdateNode(ctx, tailTx, graphmodel.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Byron"}}); err != nil {
 		t.Fatalf("UpdateNode(tail) error = %v", err)
 	}
 	if _, err := graphNode.graph.CommitTransactionGraph(ctx, tailTx); err != nil {

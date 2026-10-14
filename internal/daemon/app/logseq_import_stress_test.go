@@ -258,12 +258,12 @@ func (c *phaseDIntegrationCluster) applySyntheticLogseqOps(ctx context.Context, 
 		for i, op := range ops[start:end] {
 			switch op.Kind {
 			case "node":
-				if _, err := graph.CreateNode(ctx, tx, graphservice.NodeInput{NodeID: op.ID, Labels: op.Labels, Properties: op.Properties, Content: op.Content}); err != nil {
+				if _, err := graph.CreateNode(ctx, tx, graphmodel.NodeInput{NodeID: op.ID, Labels: op.Labels, Properties: op.Properties, Content: op.Content}); err != nil {
 					t.Fatalf("CreateNode op %d (%s) error = %v", start+i, op.ID, err)
 				}
 				result.ExpectedNodes++
 			case "edge":
-				if _, err := graph.CreateEdge(ctx, tx, graphservice.EdgeInput{EdgeID: op.ID, FromNodeID: op.FromID, ToNodeID: op.ToID, Labels: op.Labels, Properties: op.Properties}); err != nil {
+				if _, err := graph.CreateEdge(ctx, tx, graphmodel.EdgeInput{EdgeID: op.ID, FromNodeID: op.FromID, ToNodeID: op.ToID, Labels: op.Labels, Properties: op.Properties}); err != nil {
 					t.Fatalf("CreateEdge op %d (%s %s->%s labels=%v) error = %v", start+i, op.ID, op.FromID, op.ToID, op.Labels, err)
 				}
 				result.ExpectedEdges++

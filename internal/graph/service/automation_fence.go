@@ -13,28 +13,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// AutomationOutputFenceValidation is the graph state machine's view of an
-// automation-generated graph mutation. The graph subsystem deliberately keeps
-// this as a small structural contract so it does not import the automation
-// subsystem or its storage model.
-type AutomationOutputFenceValidation struct {
-	SpaceID              string
-	DomainID             domaingraph.DomainID
-	EntityKind           string
-	EntityID             string
-	AutomationID         string
-	BindingID            string
-	RunID                string
-	InvocationID         string
-	TargetNodeID         string
-	ClaimOwnerNodeID     uint64
-	ClaimVersion         uint64
-	ClaimToken           string
-	OutputIdempotencyKey string
-}
-
 type AutomationOutputFenceValidator interface {
-	ValidateAutomationOutputFence(ctx context.Context, validation AutomationOutputFenceValidation) error
+	ValidateAutomationOutputFence(ctx context.Context, validation domaingraph.AutomationOutputFenceValidation) error
 }
 
 func (m *Module) SetAutomationOutputFenceValidator(validator AutomationOutputFenceValidator) {
@@ -65,8 +45,8 @@ func (m *Module) validateAutomationOutputFences(ctx context.Context, record grap
 	return nil
 }
 
-func automationOutputFenceValidations(record graphCommitRecord) ([]AutomationOutputFenceValidation, error) {
-	out := []AutomationOutputFenceValidation{}
+func automationOutputFenceValidations(record graphCommitRecord) ([]domaingraph.AutomationOutputFenceValidation, error) {
+	out := []domaingraph.AutomationOutputFenceValidation{}
 	nodeFenceIDs := idSet(record.AutomationFenceNodeIDs)
 	for _, node := range record.PutNodes {
 		if _, fenced := nodeFenceIDs[node.ID]; !fenced {
@@ -106,12 +86,12 @@ func idSet[T comparable](ids []T) map[T]struct{} {
 	return out
 }
 
-func automationOutputFenceValidation(spaceID string, domainID domaingraph.DomainID, entityKind string, entityID string, meta map[string]any) (AutomationOutputFenceValidation, bool, error) {
+func automationOutputFenceValidation(spaceID string, domainID domaingraph.DomainID, entityKind string, entityID string, meta map[string]any) (domaingraph.AutomationOutputFenceValidation, bool, error) {
 	automationMeta, ok := automationMetadataMap(meta)
 	if !ok {
-		return AutomationOutputFenceValidation{}, false, nil
+		return domaingraph.AutomationOutputFenceValidation{}, false, nil
 	}
-	validation := AutomationOutputFenceValidation{
+	validation := domaingraph.AutomationOutputFenceValidation{
 		SpaceID:              strings.TrimSpace(spaceID),
 		DomainID:             domainID,
 		EntityKind:           entityKind,
@@ -127,28 +107,24 @@ func automationOutputFenceValidation(spaceID string, domainID domaingraph.Domain
 	validation.ClaimOwnerNodeID = metadataUint64(automationMeta, "claim_owner_node_id")
 	validation.ClaimVersion = metadataUint64(automationMeta, "claim_version")
 	if !validation.HasFenceMetadata() {
-		return AutomationOutputFenceValidation{}, false, nil
+		return domaingraph.AutomationOutputFenceValidation{}, false, nil
 	}
 	if validation.InvocationID == "" {
-		return AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing invocation_id", entityKind, entityID)
+		return domaingraph.AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing invocation_id", entityKind, entityID)
 	}
 	if validation.ClaimToken == "" {
-		return AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing claim_token", entityKind, entityID)
+		return domaingraph.AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing claim_token", entityKind, entityID)
 	}
 	if validation.ClaimVersion == 0 {
-		return AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing claim_version", entityKind, entityID)
+		return domaingraph.AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing claim_version", entityKind, entityID)
 	}
 	if validation.ClaimOwnerNodeID == 0 {
-		return AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing claim_owner_node_id", entityKind, entityID)
+		return domaingraph.AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing claim_owner_node_id", entityKind, entityID)
 	}
 	if validation.OutputIdempotencyKey == "" {
-		return AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing output_idempotency_key", entityKind, entityID)
+		return domaingraph.AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing output_idempotency_key", entityKind, entityID)
 	}
 	return validation, true, nil
-}
-
-func (v AutomationOutputFenceValidation) HasFenceMetadata() bool {
-	return v.InvocationID != "" || v.ClaimToken != "" || v.ClaimVersion != 0 || v.ClaimOwnerNodeID != 0 || v.OutputIdempotencyKey != ""
 }
 
 func automationMetadataMap(meta map[string]any) (map[string]any, bool) {

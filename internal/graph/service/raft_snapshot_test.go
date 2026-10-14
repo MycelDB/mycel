@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/partitioning"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -24,13 +25,13 @@ func TestGraphRaftStateMachineSnapshotRestorePartition(t *testing.T) {
 	childID := uuid.NewString()
 	edgeID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{NodeID: parentID, Labels: []string{"SnapshotParent"}, Properties: map[string]any{"role": "parent"}}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{NodeID: parentID, Labels: []string{"SnapshotParent"}, Properties: map[string]any{"role": "parent"}}); err != nil {
 		t.Fatalf("CreateNode(parent) error = %v", err)
 	}
-	if _, err := m.CreateNode(ctx, tx, NodeInput{NodeID: childID, Labels: []string{"SnapshotChild"}, Properties: map[string]any{"role": "child"}}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{NodeID: childID, Labels: []string{"SnapshotChild"}, Properties: map[string]any{"role": "child"}}); err != nil {
 		t.Fatalf("CreateNode(child) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{EdgeID: edgeID, FromNodeID: parentID, ToNodeID: childID, Labels: []string{"contains"}, Properties: map[string]any{"kind": "snapshot"}}); err != nil {
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{EdgeID: edgeID, FromNodeID: parentID, ToNodeID: childID, Labels: []string{"contains"}, Properties: map[string]any{"kind": "snapshot"}}); err != nil {
 		t.Fatalf("CreateEdge() error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
