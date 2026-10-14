@@ -18,7 +18,7 @@ import (
 	"github.com/myceldb/mycel/internal/identity/model"
 	semanticmodel "github.com/myceldb/mycel/internal/semantic/model"
 	semanticservice "github.com/myceldb/mycel/internal/semantic/service"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	spacemodel "github.com/myceldb/mycel/internal/space/model"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
 )
@@ -411,9 +411,9 @@ func (c *phaseDIntegrationCluster) countGraph(ctx context.Context, t *testing.T,
 	return nodes, edges
 }
 
-func syntheticLogseqReadTx(spaceID, domainID string, revision int64) sessionservice.GraphTransaction {
+func syntheticLogseqReadTx(spaceID, domainID string, revision int64) sessionmodel.GraphTransaction {
 	tx := phaseDGraphTx(spaceID, domainID, revision)
-	tx.Mode = sessionservice.TransactionModeReadOnly
+	tx.Mode = sessionmodel.TransactionModeReadOnly
 	return tx
 }
 

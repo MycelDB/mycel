@@ -8,7 +8,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
@@ -28,7 +28,7 @@ type graphCommitRecord struct {
 	OperationCount         int32                      `json:"operation_count"`
 }
 
-func graphCommitRecordFromSnapshot(tx daemonsession.GraphTransaction, snapshot *overlay) graphCommitRecord {
+func graphCommitRecordFromSnapshot(tx sessionmodel.GraphTransaction, snapshot *overlay) graphCommitRecord {
 	return graphCommitRecord{SpaceID: tx.SpaceID, DomainID: tx.DomainID, Origin: tx.Origin, BaseRevision: tx.BaseRevision, PutNodes: sortedNodes(snapshot.putNodes), DeleteNodeIDs: sortedNodeIDs(snapshot.deleteNodes), PutEdges: sortedEdges(snapshot.putEdges), DeleteEdgeIDs: sortedEdgeIDs(snapshot.deleteEdges), AutomationFenceNodeIDs: sortedNodeIDs(snapshot.automationFenceNodes), AutomationFenceEdgeIDs: sortedEdgeIDs(snapshot.automationFenceEdges), OperationCount: snapshot.opCount}
 }
 

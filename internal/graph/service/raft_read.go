@@ -12,7 +12,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -149,8 +149,8 @@ func (m *Module) shouldForwardRaftGraphRead(spaceID string) (consensus.NodeID, b
 	return leader, leader != local, nil
 }
 
-func (m *Module) shouldForwardRaftGraphTransactionRead(tx daemonsession.GraphTransaction) (consensus.NodeID, bool, error) {
-	if tx.Mode == daemonsession.TransactionModeReadWrite {
+func (m *Module) shouldForwardRaftGraphTransactionRead(tx sessionmodel.GraphTransaction) (consensus.NodeID, bool, error) {
+	if tx.Mode == sessionmodel.TransactionModeReadWrite {
 		if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 			return 0, false, err
 		}
@@ -253,8 +253,8 @@ func (m *Module) strongGraphRead(ctx context.Context, spaceID string) (*StrongRe
 	return &StrongReadContext{GroupID: consensus.PartitionGroupID(partitionID), PartitionID: partitionID, LeaderNodeID: leader, ReadIndex: barrier.Index, AppliedIndex: applied, Strong: true}, nil
 }
 
-func (m *Module) strongGraphReadForTransaction(ctx context.Context, tx daemonsession.GraphTransaction) (*StrongReadContext, error) {
-	if tx.Mode == daemonsession.TransactionModeReadWrite {
+func (m *Module) strongGraphReadForTransaction(ctx context.Context, tx sessionmodel.GraphTransaction) (*StrongReadContext, error) {
+	if tx.Mode == sessionmodel.TransactionModeReadWrite {
 		RecordOverlayRead(ctx)
 		return nil, nil
 	}
@@ -362,7 +362,7 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		tx.DomainID = req.DomainID
 	}
 	var read *StrongReadContext
-	if tx.Mode != daemonsession.TransactionModeReadWrite {
+	if tx.Mode != sessionmodel.TransactionModeReadWrite {
 		var err error
 		if strings.TrimSpace(tx.DomainID) == "" {
 			read, err = m.strongGraphRead(ctx, req.SpaceID)
@@ -503,13 +503,13 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 	}
 }
 
-func raftReadRequest(op string, tx daemonsession.GraphTransaction) raftGraphReadRequest {
+func raftReadRequest(op string, tx sessionmodel.GraphTransaction) raftGraphReadRequest {
 	return raftGraphReadRequest{Op: op, SpaceID: tx.SpaceID, Tx: struct {
 		ID, SessionID, PrincipalID, SpaceID, DomainID, Mode, State string
 		HomeNodeID                                                 uint64
 		BaseRevision                                               int64
 	}{tx.ID, tx.SessionID, tx.PrincipalID, tx.SpaceID, tx.DomainID, string(tx.Mode), string(tx.State), uint64(tx.HomeNodeID), tx.BaseRevision}}
 }
-func (r raftGraphReadRequest) toTx() daemonsession.GraphTransaction {
-	return daemonsession.GraphTransaction{ID: r.Tx.ID, SessionID: r.Tx.SessionID, PrincipalID: r.Tx.PrincipalID, SpaceID: r.Tx.SpaceID, DomainID: r.Tx.DomainID, HomeNodeID: consensus.NodeID(r.Tx.HomeNodeID), Mode: daemonsession.TransactionMode(r.Tx.Mode), State: daemonsession.TransactionState(r.Tx.State), BaseRevision: r.Tx.BaseRevision}
+func (r raftGraphReadRequest) toTx() sessionmodel.GraphTransaction {
+	return sessionmodel.GraphTransaction{ID: r.Tx.ID, SessionID: r.Tx.SessionID, PrincipalID: r.Tx.PrincipalID, SpaceID: r.Tx.SpaceID, DomainID: r.Tx.DomainID, HomeNodeID: consensus.NodeID(r.Tx.HomeNodeID), Mode: sessionmodel.TransactionMode(r.Tx.Mode), State: sessionmodel.TransactionState(r.Tx.State), BaseRevision: r.Tx.BaseRevision}
 }

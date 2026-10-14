@@ -22,7 +22,7 @@ import (
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	semanticmodel "github.com/myceldb/mycel/internal/semantic/model"
 	semanticservice "github.com/myceldb/mycel/internal/semantic/service"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	spacemodel "github.com/myceldb/mycel/internal/space/model"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
 	"github.com/myceldb/mycel/internal/wal"
@@ -652,9 +652,9 @@ func phaseDContainsNodeID(ids []consensus.NodeID, want consensus.NodeID) bool {
 	return false
 }
 
-func phaseDGraphTx(spaceID string, domainID string, baseRevision int64) sessionservice.GraphTransaction {
+func phaseDGraphTx(spaceID string, domainID string, baseRevision int64) sessionmodel.GraphTransaction {
 	now := time.Now().UTC()
-	return sessionservice.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionservice.TransactionModeReadWrite, State: sessionservice.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
+	return sessionmodel.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
 }
 
 func phaseDTestSchema(domainID graphmodel.DomainID) schemamodel.DomainSchema {

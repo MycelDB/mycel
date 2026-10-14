@@ -19,7 +19,7 @@ import (
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -230,7 +230,7 @@ func TestModuleAutomaticGraphCheckpointSkippedDuringQuiesce(t *testing.T) {
 	}
 }
 
-func commitCheckpointTestNode(t *testing.T, ctx context.Context, m *Module, content string) daemonsession.GraphTransaction {
+func commitCheckpointTestNode(t *testing.T, ctx context.Context, m *Module, content string) sessionmodel.GraphTransaction {
 	t.Helper()
 	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
 	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: content, Props: map[string]any{}}); err != nil {
@@ -404,7 +404,7 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	}
 
 	readOnly := graphTx(spaceID, domainID, commit1.CommittedRevision)
-	readOnly.Mode = daemonsession.TransactionModeReadOnly
+	readOnly.Mode = sessionmodel.TransactionModeReadOnly
 
 	mutate := graphTx(spaceID, domainID, commit1.CommittedRevision)
 	newContent := "revision 2"
@@ -473,15 +473,15 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	}
 
 	current := graphTx(spaceID, domainID, commit2.CommittedRevision)
-	current.Mode = daemonsession.TransactionModeReadOnly
+	current.Mode = sessionmodel.TransactionModeReadOnly
 	if _, err := m.GetNode(ctx, current, newNode.ID.String()); err != nil {
 		t.Fatalf("current read-only GetNode(new): %v", err)
 	}
 }
 
-func graphTx(spaceID string, domainID string, baseRevision int64) daemonsession.GraphTransaction {
+func graphTx(spaceID string, domainID string, baseRevision int64) sessionmodel.GraphTransaction {
 	now := time.Now().UTC()
-	return daemonsession.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: daemonsession.TransactionModeReadWrite, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
+	return sessionmodel.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
 }
 
 func sameStringSet(got []string, want []string) bool {
@@ -690,7 +690,7 @@ func TestModuleUsesDomainScopedGraphStoreDirectories(t *testing.T) {
 	}
 
 	readA := graphTx(spaceID, domainA, 1)
-	readA.Mode = daemonsession.TransactionModeReadOnly
+	readA.Mode = sessionmodel.TransactionModeReadOnly
 	nodesA, _, err := m.ListNodes(ctx, readA, 0, "")
 	if err != nil {
 		t.Fatalf("ListNodes(domain A) error = %v", err)
@@ -699,7 +699,7 @@ func TestModuleUsesDomainScopedGraphStoreDirectories(t *testing.T) {
 		t.Fatalf("domain A nodes = %+v", nodesA)
 	}
 	readB := graphTx(spaceID, domainB, 1)
-	readB.Mode = daemonsession.TransactionModeReadOnly
+	readB.Mode = sessionmodel.TransactionModeReadOnly
 	nodesB, _, err := m.ListNodes(ctx, readB, 0, "")
 	if err != nil {
 		t.Fatalf("ListNodes(domain B) error = %v", err)
@@ -746,7 +746,7 @@ func TestModuleGraphChangeSinkNotInvokedForDiscardReadOnlyOrNoop(t *testing.T) {
 	}
 
 	readOnly := graphTx(spaceID, domainID, 0)
-	readOnly.Mode = daemonsession.TransactionModeReadOnly
+	readOnly.Mode = sessionmodel.TransactionModeReadOnly
 	if _, err := m.CommitTransactionGraph(ctx, readOnly); err != nil {
 		t.Fatalf("read-only commit: %v", err)
 	}

@@ -22,7 +22,7 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -523,12 +523,12 @@ func (s *ImportExportService) writeSpaceDomainArchive(ctx context.Context, zw *z
 			return spaceManifestDomain{}, nil, mapDomainError(err, "space export schema")
 		}
 	}
-	session, err := s.sessions.OpenSession(ctx, daemonsession.OpenSessionInput{PrincipalID: principalID, SpaceID: spaceID, DomainID: domain.ID.String()})
+	session, err := s.sessions.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: principalID, SpaceID: spaceID, DomainID: domain.ID.String()})
 	if err != nil {
 		return spaceManifestDomain{}, nil, mapSessionError(err, "space export session")
 	}
 	defer func() { _, _ = s.sessions.CloseSession(context.Background(), principalID, session.ID) }()
-	tx, err := s.sessions.BeginTransaction(ctx, daemonsession.BeginTransactionInput{PrincipalID: principalID, SessionID: session.ID, Mode: daemonsession.TransactionModeReadOnly})
+	tx, err := s.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: principalID, SessionID: session.ID, Mode: sessionmodel.TransactionModeReadOnly})
 	if err != nil {
 		return spaceManifestDomain{}, nil, mapSessionError(err, "space export transaction")
 	}

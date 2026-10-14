@@ -26,6 +26,7 @@ import (
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -100,7 +101,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, mapSessionError(err, "execute query")
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	if req.GetQuery() == nil || req.GetQuery().GetMatch() == nil || req.GetQuery().GetMatch().GetStart() == nil {
@@ -176,7 +177,7 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if err != nil {
 		return nil, mapSessionError(err, "execute gql")
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	domain, err := s.visibleTransactionDomain(ctx, principal.PrincipalID, tx)
@@ -191,7 +192,7 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if plan.AccessMode == analysis.ReadWrite && tx.Mode != daemonsession.TransactionModeReadWrite {
+	if plan.AccessMode == analysis.ReadWrite && tx.Mode != sessionmodel.TransactionModeReadWrite {
 		return nil, status.Error(codes.FailedPrecondition, "GQL query requires a read-write transaction")
 	}
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
@@ -234,7 +235,7 @@ func (s *QueryService) ExplainQuery(ctx context.Context, req *clientv1.ExplainQu
 	if err != nil {
 		return nil, err
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	if err := validateStructuredGraphQueryWithSchema(req.GetQuery(), schemaCtx); err != nil {
@@ -265,7 +266,7 @@ func (s *QueryService) ExplainGQL(ctx context.Context, req *clientv1.ExplainGQLR
 	if err != nil {
 		return nil, err
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	params := gqlParamsFromProto(req.GetParams())
@@ -302,7 +303,7 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	if err != nil {
 		return nil, mapSessionError(err, "execute gql script")
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	domain, err := s.visibleTransactionDomain(ctx, principal.PrincipalID, tx)
@@ -317,7 +318,7 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if scriptPlan.AccessMode == analysis.ReadWrite && tx.Mode != daemonsession.TransactionModeReadWrite {
+	if scriptPlan.AccessMode == analysis.ReadWrite && tx.Mode != sessionmodel.TransactionModeReadWrite {
 		return nil, status.Error(codes.FailedPrecondition, "GQL script requires a read-write transaction")
 	}
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
@@ -392,7 +393,7 @@ func mapGQLExecutionError(err error) error {
 	return status.Error(codes.InvalidArgument, err.Error())
 }
 
-func (s *QueryService) visibleTransactionDomain(ctx context.Context, principalID string, tx daemonsession.GraphTransaction) (domaingraph.Domain, error) {
+func (s *QueryService) visibleTransactionDomain(ctx context.Context, principalID string, tx sessionmodel.GraphTransaction) (domaingraph.Domain, error) {
 	domain, err := s.spaces.GetVisibleDomain(ctx, principalID, tx.SpaceID, tx.DomainID, "")
 	if err != nil {
 		return domaingraph.Domain{}, mapDomainError(err, "query domain")
@@ -434,14 +435,14 @@ func gqlPlanRequiresBroadFallback(plan planmodel.Plan) bool {
 	return false
 }
 
-func (s *QueryService) explainContext(ctx context.Context, transactionID string) (daemonsession.GraphTransaction, domaingraph.Domain, analysis.SchemaContext, error) {
+func (s *QueryService) explainContext(ctx context.Context, transactionID string) (sessionmodel.GraphTransaction, domaingraph.Domain, analysis.SchemaContext, error) {
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
-		return daemonsession.GraphTransaction{}, domaingraph.Domain{}, analysis.SchemaContext{}, err
+		return sessionmodel.GraphTransaction{}, domaingraph.Domain{}, analysis.SchemaContext{}, err
 	}
 	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, transactionID)
 	if err != nil {
-		return daemonsession.GraphTransaction{}, domaingraph.Domain{}, analysis.SchemaContext{}, mapSessionError(err, "explain query")
+		return sessionmodel.GraphTransaction{}, domaingraph.Domain{}, analysis.SchemaContext{}, mapSessionError(err, "explain query")
 	}
 	domain, err := s.visibleTransactionDomain(ctx, principal.PrincipalID, tx)
 	if err != nil {
@@ -799,7 +800,7 @@ func firstString(values []string) string {
 	return values[0]
 }
 
-func (s *QueryService) schemaContext(ctx context.Context, tx daemonsession.GraphTransaction) (analysis.SchemaContext, error) {
+func (s *QueryService) schemaContext(ctx context.Context, tx sessionmodel.GraphTransaction) (analysis.SchemaContext, error) {
 	if s.schemas == nil || strings.TrimSpace(tx.DomainID) == "" {
 		return analysis.SchemaContext{}, nil
 	}
@@ -817,7 +818,7 @@ func (s *QueryService) schemaContext(ctx context.Context, tx daemonsession.Graph
 	return analysis.SchemaContext{Schema: &schemaDoc}, nil
 }
 
-func (s *QueryService) allNodes(ctx context.Context, tx daemonsession.GraphTransaction) ([]domaingraph.Node, error) {
+func (s *QueryService) allNodes(ctx context.Context, tx sessionmodel.GraphTransaction) ([]domaingraph.Node, error) {
 	all := []domaingraph.Node{}
 	token := ""
 	for {
@@ -833,7 +834,7 @@ func (s *QueryService) allNodes(ctx context.Context, tx daemonsession.GraphTrans
 	}
 }
 
-func (s *QueryService) allEdges(ctx context.Context, tx daemonsession.GraphTransaction) ([]domaingraph.Edge, error) {
+func (s *QueryService) allEdges(ctx context.Context, tx sessionmodel.GraphTransaction) ([]domaingraph.Edge, error) {
 	all := []domaingraph.Edge{}
 	token := ""
 	for {
@@ -2069,7 +2070,7 @@ func clonePathValue(path *clientv1.PathValue) *clientv1.PathValue {
 
 type gqlDaemonGraph struct {
 	service *QueryService
-	tx      daemonsession.GraphTransaction
+	tx      sessionmodel.GraphTransaction
 }
 
 func (g gqlDaemonGraph) InsertNode(ctx context.Context, node execution.InsertNode) (execmodel.NodeRef, error) {
@@ -2562,7 +2563,7 @@ func protoValue(value any) *structpb.Value {
 	return out
 }
 
-func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil {
 		return false, nil, nil
@@ -2673,7 +2674,7 @@ func isSemanticPredicateNodeQuery(query *clientv1.GraphQuery) bool {
 	return err == nil && ok && len(terms) == 1
 }
 
-func (s *QueryService) tryExecuteSemanticPredicateQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteSemanticPredicateQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil || len(query.GetOrderBy()) != 0 || len(query.GetMatch().GetSteps()) != 0 || len(query.GetMatch().GetStart().GetLabels()) != 1 {
 		return false, nil, nil
@@ -2872,7 +2873,7 @@ func isIndexedPredicateNodeQuery(query *clientv1.GraphQuery) bool {
 	return err == nil && ok && len(branches) > 0
 }
 
-func (s *QueryService) tryExecuteIndexedPredicateNodeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteIndexedPredicateNodeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	match := query.GetMatch()
 	start := match.GetStart()
@@ -2953,7 +2954,7 @@ func (s *QueryService) tryExecuteIndexedPredicateNodeQuery(ctx context.Context, 
 	return true, &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: diagnostics}, nil
 }
 
-func (s *QueryService) executeIndexedPredicateBranch(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, label string, branch indexedPredicateBranch) ([]domaingraph.Node, []string, daegraph.IndexedReadStats, error) {
+func (s *QueryService) executeIndexedPredicateBranch(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, label string, branch indexedPredicateBranch) ([]domaingraph.Node, []string, daegraph.IndexedReadStats, error) {
 	var current map[string]domaingraph.Node
 	indexes := []string{}
 	combined := daegraph.IndexedReadStats{}
@@ -3110,7 +3111,7 @@ func isIndexedEqualityNodeQuery(query *clientv1.GraphQuery) bool {
 	return err == nil && ok && strings.TrimSpace(field) != ""
 }
 
-func (s *QueryService) tryExecuteIndexedEqualityNodeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteIndexedEqualityNodeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	match := query.GetMatch()
 	start := match.GetStart()
@@ -3196,7 +3197,7 @@ type indexedSubtreeExpansion struct {
 	reason    string
 }
 
-func (s *QueryService) executeIndexedRootSubtreeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, recorder *daegraph.ReadMetadataRecorder, idx schemamodel.IndexDefinition, bounds indexedBounds) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) executeIndexedRootSubtreeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, recorder *daegraph.ReadMetadataRecorder, idx schemamodel.IndexDefinition, bounds indexedBounds) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	if err := validateIndexedRootSubtreeShape(query); err != nil {
 		return true, nil, err
@@ -3302,7 +3303,7 @@ func subtreeCaps(query *clientv1.GraphQuery) (int, int) {
 	return maxNodes, maxEdges
 }
 
-func (s *QueryService) expandIndexedSubtrees(ctx context.Context, tx daemonsession.GraphTransaction, query *clientv1.GraphQuery, roots []domaingraph.Node, orderedIndexName string, rootStats daegraph.IndexedReadStats) (indexedSubtreeExpansion, error) {
+func (s *QueryService) expandIndexedSubtrees(ctx context.Context, tx sessionmodel.GraphTransaction, query *clientv1.GraphQuery, roots []domaingraph.Node, orderedIndexName string, rootStats daegraph.IndexedReadStats) (indexedSubtreeExpansion, error) {
 	match := query.GetMatch()
 	start := match.GetStart()
 	step := match.GetSteps()[0]
@@ -3373,7 +3374,7 @@ func isIndexedPathQuery(query *clientv1.GraphQuery) bool {
 	return true
 }
 
-func (s *QueryService) tryExecuteIndexedPathQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteIndexedPathQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	if !isIndexedPathQuery(query) {
 		return false, nil, nil
@@ -3478,7 +3479,7 @@ func validateIndexedPathResourceCaps(stats daegraph.IndexedReadStats) error {
 	return nil
 }
 
-func (s *QueryService) indexedPathStartNodes(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, query *clientv1.GraphQuery) ([]domaingraph.Node, []string, daegraph.IndexedReadStats, error) {
+func (s *QueryService) indexedPathStartNodes(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, query *clientv1.GraphQuery) ([]domaingraph.Node, []string, daegraph.IndexedReadStats, error) {
 	start := query.GetMatch().GetStart()
 	stats := daegraph.IndexedReadStats{}
 	if len(start.GetNodeIds()) > 0 {
@@ -3616,7 +3617,7 @@ func indexedTagBranchForAnd(expr *clientv1.Expr, alias string) (indexedTagBranch
 	return indexedTagBranch{tags: []string{normalized}}, true, nil
 }
 
-func (s *QueryService) indexedPathTagStartNodes(ctx context.Context, tx daemonsession.GraphTransaction, label string, branches []indexedTagBranch, stats daegraph.IndexedReadStats) ([]domaingraph.Node, []string, daegraph.IndexedReadStats, error) {
+func (s *QueryService) indexedPathTagStartNodes(ctx context.Context, tx sessionmodel.GraphTransaction, label string, branches []indexedTagBranch, stats daegraph.IndexedReadStats) ([]domaingraph.Node, []string, daegraph.IndexedReadStats, error) {
 	union := map[string]domaingraph.Node{}
 	indexNames := map[string]struct{}{}
 	for _, branch := range branches {
@@ -3673,7 +3674,7 @@ func (s *QueryService) indexedPathTagStartNodes(ctx context.Context, tx daemonse
 	return nodes, indexes, stats, nil
 }
 
-func (s *QueryService) expandIndexedPathStep(ctx context.Context, tx daemonsession.GraphTransaction, exec *queryExecution, row *queryRowState, pathAlias string, start domaingraph.Node, step *clientv1.TraversalStep, direction daegraph.AdjacencyDirection) ([]*queryRowState, daegraph.IndexedReadStats, error) {
+func (s *QueryService) expandIndexedPathStep(ctx context.Context, tx sessionmodel.GraphTransaction, exec *queryExecution, row *queryRowState, pathAlias string, start domaingraph.Node, step *clientv1.TraversalStep, direction daegraph.AdjacencyDirection) ([]*queryRowState, daegraph.IndexedReadStats, error) {
 	minDepth, maxDepth, err := traversalDepthBounds(step.GetDepth())
 	if err != nil {
 		return nil, daegraph.IndexedReadStats{}, err
@@ -3789,7 +3790,7 @@ func decodeIndexedAdjacencyCursor(token string) (indexedAdjacencyCursor, bool, e
 	return out, true, nil
 }
 
-func (s *QueryService) tryExecuteIndexedAdjacencyQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteIndexedAdjacencyQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	match := query.GetMatch()
 	if len(query.GetOrderBy()) != 0 || len(match.GetSteps()) != 1 {
@@ -4053,7 +4054,7 @@ func nextShapedIndexCursor(rawNext string, pageRows int, priorRowsReturned int, 
 	return encodeShapedIndexCursor(shapedIndexCursor{IndexCursor: rawNext, RowsReturned: rowsReturned})
 }
 
-func (s *QueryService) tryExecuteIndexedGQL(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, plan planmodel.Plan, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
+func (s *QueryService) tryExecuteIndexedGQL(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, plan planmodel.Plan, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
 	if len(plan.Operations) != 1 {
 		return false, nil, nil
 	}
@@ -4335,7 +4336,7 @@ func gqlReturnOutputName(ret planmodel.ReturnItem) string {
 	return ret.Variable
 }
 
-func (s *QueryService) tryExecuteIndexedGQLPath(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, op planmodel.QueryPathOperation, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
+func (s *QueryService) tryExecuteIndexedGQLPath(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, op planmodel.QueryPathOperation, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
 	if op.PathVariable != "" && len(op.OrderBy) == 0 {
 		return s.tryExecuteIndexedGQLPathValue(ctx, tx, schemaCtx, op, pageSize, pageToken, recorder)
 	}
@@ -4386,7 +4387,7 @@ func (s *QueryService) tryExecuteIndexedGQLPath(ctx context.Context, tx daemonse
 	return true, &clientv1.ExecuteGQLResponse{Result: res.GetResult(), ReadMetadata: res.GetReadMetadata(), Diagnostics: res.GetDiagnostics()}, nil
 }
 
-func (s *QueryService) tryExecuteIndexedGQLPathValue(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, op planmodel.QueryPathOperation, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
+func (s *QueryService) tryExecuteIndexedGQLPathValue(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, op planmodel.QueryPathOperation, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
 	if len(op.Start.Labels) != 1 || len(op.Segments) == 0 || len(op.OrderBy) != 0 {
 		return false, nil, nil
 	}

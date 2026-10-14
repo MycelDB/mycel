@@ -9,6 +9,7 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -68,7 +69,7 @@ func (s *SessionService) OpenSession(ctx context.Context, req *clientv1.OpenSess
 	if req.GetRequestedIdleTimeout() != nil {
 		idle = req.GetRequestedIdleTimeout().AsDuration()
 	}
-	session, err := s.sessions.OpenSession(ctx, daemonsession.OpenSessionInput{PrincipalID: principal.PrincipalID, SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), IdleTimeout: idle})
+	session, err := s.sessions.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: principal.PrincipalID, SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), IdleTimeout: idle})
 	if err != nil {
 		return nil, mapSessionError(err, "open session")
 	}
@@ -138,7 +139,7 @@ func (s *SessionService) CloseSession(ctx context.Context, req *clientv1.CloseSe
 
 type TransactionGraphCommitter interface {
 	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
-	CommitTransactionGraph(ctx context.Context, tx daemonsession.GraphTransaction) (daegraph.CommitResult, error)
+	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (daegraph.CommitResult, error)
 	DiscardTransactionGraph(ctx context.Context, transactionID string)
 }
 
@@ -188,8 +189,8 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 	if err != nil {
 		return nil, err
 	}
-	input := daemonsession.BeginTransactionInput{PrincipalID: principal.PrincipalID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode()), Origin: graphchange.OriginMetadata{OperationID: req.GetOperationId()}}
-	var session daemonsession.GraphSession
+	input := sessionmodel.BeginTransactionInput{PrincipalID: principal.PrincipalID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode()), Origin: graphchange.OriginMetadata{OperationID: req.GetOperationId()}}
+	var session sessionmodel.GraphSession
 	if s.graphs != nil || s.spaces != nil {
 		var err error
 		session, err = s.sessions.GetSession(ctx, principal.PrincipalID, req.GetSessionId())
@@ -202,11 +203,11 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 		if err != nil {
 			return nil, mapDomainError(err, "begin transaction domain")
 		}
-		if domain.ReadOnly && input.Mode != daemonsession.TransactionModeReadOnly {
+		if domain.ReadOnly && input.Mode != sessionmodel.TransactionModeReadOnly {
 			return nil, status.Error(codes.FailedPrecondition, "domain is read-only")
 		}
 	}
-	if input.Mode == daemonsession.TransactionModeReadWrite && s.graphs != nil {
+	if input.Mode == sessionmodel.TransactionModeReadWrite && s.graphs != nil {
 		if router, ok := s.graphs.(GraphWriteRouteProvider); ok {
 			if _, _, err := router.GraphWriteRoute(ctx, session.SpaceID); err != nil {
 				return nil, mapGraphError(err, "begin transaction write route")
@@ -280,7 +281,7 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 		}
 	}
 	commitCtx := context.WithoutCancel(ctx)
-	var commit daemonsession.TransactionCommit
+	var commit sessionmodel.TransactionCommit
 	if graphCommit.CommittedRevision > 0 {
 		commit, err = s.sessions.CommitTransactionAtRevision(commitCtx, principal.PrincipalID, req.GetTransactionId(), graphCommit.OperationCount, graphCommit.CommittedRevision)
 	} else {
@@ -336,60 +337,60 @@ func (s *TransactionService) CloseTransaction(ctx context.Context, req *clientv1
 	return &clientv1.CloseTransactionResponse{Transaction: mapGraphTransaction(tx)}, nil
 }
 
-func mapGraphSession(session daemonsession.GraphSession) *clientv1.GraphSession {
+func mapGraphSession(session sessionmodel.GraphSession) *clientv1.GraphSession {
 	return &clientv1.GraphSession{SessionId: session.ID, SpaceId: session.SpaceID, DomainId: session.DomainID, State: sessionStateToProto(session.State), CreateTime: timestamppb.New(session.CreatedAt), LastSeenTime: timestamppb.New(session.LastSeen), ExpireTime: timestamppb.New(session.ExpiresAt)}
 }
 
-func mapGraphTransaction(tx daemonsession.GraphTransaction) *clientv1.GraphTransaction {
+func mapGraphTransaction(tx sessionmodel.GraphTransaction) *clientv1.GraphTransaction {
 	return &clientv1.GraphTransaction{TransactionId: tx.ID, SessionId: tx.SessionID, SpaceId: tx.SpaceID, DomainId: tx.DomainID, Mode: transactionModeToProto(tx.Mode), State: transactionStateToProto(tx.State), BaseRevision: tx.BaseRevision, CreateTime: timestamppb.New(tx.CreatedAt), LastSeenTime: timestamppb.New(tx.LastSeen), ExpireTime: timestamppb.New(tx.ExpiresAt), OperationId: tx.Origin.OperationID}
 }
 
-func mapTransactionCommit(commit daemonsession.TransactionCommit) *clientv1.TransactionCommit {
+func mapTransactionCommit(commit sessionmodel.TransactionCommit) *clientv1.TransactionCommit {
 	return &clientv1.TransactionCommit{CommitId: commit.ID, TransactionId: commit.TransactionID, SessionId: commit.SessionID, SpaceId: commit.SpaceID, DomainId: commit.DomainID, BaseRevision: commit.BaseRevision, CommittedRevision: commit.CommittedRevision, OperationCount: commit.OperationCount, CommitTime: timestamppb.New(commit.CommittedAt), OperationId: commit.Origin.OperationID}
 }
 
-func sessionStateToProto(state daemonsession.SessionState) clientv1.SessionState {
+func sessionStateToProto(state sessionmodel.SessionState) clientv1.SessionState {
 	switch state {
-	case daemonsession.SessionStateClosed:
+	case sessionmodel.SessionStateClosed:
 		return clientv1.SessionState_SESSION_STATE_CLOSED
-	case daemonsession.SessionStateExpired:
+	case sessionmodel.SessionStateExpired:
 		return clientv1.SessionState_SESSION_STATE_EXPIRED
 	default:
 		return clientv1.SessionState_SESSION_STATE_ACTIVE
 	}
 }
 
-func transactionModeFromProto(mode clientv1.TransactionMode) daemonsession.TransactionMode {
+func transactionModeFromProto(mode clientv1.TransactionMode) sessionmodel.TransactionMode {
 	if mode == clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE {
-		return daemonsession.TransactionModeReadWrite
+		return sessionmodel.TransactionModeReadWrite
 	}
 	if mode == clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY {
-		return daemonsession.TransactionModeReadOnly
+		return sessionmodel.TransactionModeReadOnly
 	}
 	return ""
 }
 
-func transactionModeToProto(mode daemonsession.TransactionMode) clientv1.TransactionMode {
-	if mode == daemonsession.TransactionModeReadWrite {
+func transactionModeToProto(mode sessionmodel.TransactionMode) clientv1.TransactionMode {
+	if mode == sessionmodel.TransactionModeReadWrite {
 		return clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE
 	}
-	if mode == daemonsession.TransactionModeReadOnly {
+	if mode == sessionmodel.TransactionModeReadOnly {
 		return clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY
 	}
 	return clientv1.TransactionMode_TRANSACTION_MODE_UNSPECIFIED
 }
 
-func transactionStateToProto(state daemonsession.TransactionState) clientv1.TransactionState {
+func transactionStateToProto(state sessionmodel.TransactionState) clientv1.TransactionState {
 	switch state {
-	case daemonsession.TransactionStateCommitted:
+	case sessionmodel.TransactionStateCommitted:
 		return clientv1.TransactionState_TRANSACTION_STATE_COMMITTED
-	case daemonsession.TransactionStateRolledBack:
+	case sessionmodel.TransactionStateRolledBack:
 		return clientv1.TransactionState_TRANSACTION_STATE_ROLLED_BACK
-	case daemonsession.TransactionStateClosed:
+	case sessionmodel.TransactionStateClosed:
 		return clientv1.TransactionState_TRANSACTION_STATE_CLOSED
-	case daemonsession.TransactionStateExpired:
+	case sessionmodel.TransactionStateExpired:
 		return clientv1.TransactionState_TRANSACTION_STATE_EXPIRED
-	case daemonsession.TransactionStateAborted:
+	case sessionmodel.TransactionStateAborted:
 		return clientv1.TransactionState_TRANSACTION_STATE_ABORTED
 	default:
 		return clientv1.TransactionState_TRANSACTION_STATE_ACTIVE

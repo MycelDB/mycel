@@ -15,7 +15,7 @@ import (
 	"github.com/myceldb/mycel/internal/search/lexical/analyzer"
 	lexicalindex "github.com/myceldb/mycel/internal/search/lexical/index"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -104,7 +104,7 @@ func (s *AdminLexicalMaintenanceService) collectDocuments(ctx context.Context, s
 		return nil, 0, status.Error(codes.FailedPrecondition, "graph service is not configured")
 	}
 	principal, _ := principalFromContext(ctx)
-	tx := daemonsession.GraphTransaction{ID: "lexical-rebuild-" + uuid.NewString(), PrincipalID: principal.PrincipalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
+	tx := sessionmodel.GraphTransaction{ID: "lexical-rebuild-" + uuid.NewString(), PrincipalID: principal.PrincipalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
 	var out []lexicalindex.IndexedDocument
 	pageToken := ""
 	for {

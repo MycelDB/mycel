@@ -9,12 +9,10 @@ import (
 	"github.com/myceldb/mycel/internal/automation/storage"
 	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
 
 const ModuleName = "automation"
@@ -33,8 +31,8 @@ type Module struct {
 	dataDir   string
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
-	sessions  sessionservice.Manager
-	graphs    graphservice.Manager
+	sessions  SessionRuntime
+	graphs    GraphRuntime
 	schemas   schemaservice.Manager
 	inference inferenceservice.Manager
 	blobs     blobservice.Manager
@@ -47,7 +45,7 @@ func NewModule(dataDir string) *Module {
 	return &Module{dataDir: dataDir, worker: WorkerConfig{Enabled: true, Interval: time.Second, BatchSize: 25, Concurrency: 1}, gate: quiesce.NewGate(ModuleName)}
 }
 
-func (m *Module) WithGraphRuntime(sessions sessionservice.Manager, graphs graphservice.Manager) *Module {
+func (m *Module) WithGraphRuntime(sessions SessionRuntime, graphs GraphRuntime) *Module {
 	m.sessions = sessions
 	m.graphs = graphs
 	return m

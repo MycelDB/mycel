@@ -31,7 +31,7 @@ import (
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 	"github.com/myceldb/mycel/internal/wal"
@@ -1071,19 +1071,19 @@ func (r semanticGraphReader) ListEdges(ctx context.Context, domainID graph.Domai
 	return listAllGraphEdges(ctx, r.manager, tx)
 }
 
-func (r semanticGraphReader) tx(ctx context.Context, domainID graph.DomainID) (daemonsession.GraphTransaction, error) {
+func (r semanticGraphReader) tx(ctx context.Context, domainID graph.DomainID) (sessionmodel.GraphTransaction, error) {
 	baseRevision := int64(0)
 	if revisions, ok := r.manager.(GraphRevisionReader); ok {
 		rev, err := revisions.CurrentDomainRevision(ctx, r.spaceID.String(), domainID.String())
 		if err != nil {
-			return daemonsession.GraphTransaction{}, err
+			return sessionmodel.GraphTransaction{}, err
 		}
 		baseRevision = rev
 	}
-	return daemonsession.GraphTransaction{ID: "semantic-read-" + r.spaceID.String() + "-" + domainID.String(), SessionID: "semantic-read", PrincipalID: "semantic", SpaceID: r.spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision}, nil
+	return sessionmodel.GraphTransaction{ID: "semantic-read-" + r.spaceID.String() + "-" + domainID.String(), SessionID: "semantic-read", PrincipalID: "semantic", SpaceID: r.spaceID.String(), DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision}, nil
 }
 
-func listAllGraphNodes(ctx context.Context, manager GraphReadManager, tx daemonsession.GraphTransaction) ([]graph.Node, error) {
+func listAllGraphNodes(ctx context.Context, manager GraphReadManager, tx sessionmodel.GraphTransaction) ([]graph.Node, error) {
 	out := []graph.Node{}
 	pageToken := ""
 	for {
@@ -1099,7 +1099,7 @@ func listAllGraphNodes(ctx context.Context, manager GraphReadManager, tx daemons
 	}
 }
 
-func listAllGraphEdges(ctx context.Context, manager GraphReadManager, tx daemonsession.GraphTransaction) ([]graph.Edge, error) {
+func listAllGraphEdges(ctx context.Context, manager GraphReadManager, tx sessionmodel.GraphTransaction) ([]graph.Edge, error) {
 	out := []graph.Edge{}
 	pageToken := ""
 	for {

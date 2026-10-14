@@ -14,7 +14,7 @@ import (
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -45,10 +45,10 @@ type SchemaManager interface {
 }
 
 type GraphReadManager interface {
-	GetNode(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string) (graph.Node, error)
-	ListNodes(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
-	ListEdges(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
-	GetParent(ctx context.Context, tx daemonsession.GraphTransaction, childNodeID string) (*graph.Edge, error)
+	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error)
+	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
+	ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
+	GetParent(ctx context.Context, tx sessionmodel.GraphTransaction, childNodeID string) (*graph.Edge, error)
 }
 
 type GraphRevisionReader interface {

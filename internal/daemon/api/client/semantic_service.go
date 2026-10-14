@@ -17,7 +17,7 @@ import (
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -247,7 +247,7 @@ func (s *SemanticService) loadSearchNodes(ctx context.Context, principalID strin
 	return out, warnings
 }
 
-func readOnlySearchGraphTransaction(ctx context.Context, graphs daegraph.Manager, prefix string, principalID string, spaceID domainspace.SpaceID, domainID graph.DomainID) (daemonsession.GraphTransaction, error) {
+func readOnlySearchGraphTransaction(ctx context.Context, graphs daegraph.Manager, prefix string, principalID string, spaceID domainspace.SpaceID, domainID graph.DomainID) (sessionmodel.GraphTransaction, error) {
 	var baseRevision int64
 	var err error
 	if revisions, ok := graphs.(TransactionGraphDomainRevisioner); ok {
@@ -256,10 +256,10 @@ func readOnlySearchGraphTransaction(ctx context.Context, graphs daegraph.Manager
 		baseRevision, err = graphs.CurrentRevision(ctx, spaceID.String())
 	}
 	if err != nil {
-		return daemonsession.GraphTransaction{}, err
+		return sessionmodel.GraphTransaction{}, err
 	}
 	now := time.Now().UTC()
-	return daemonsession.GraphTransaction{ID: prefix + uuid.NewString(), PrincipalID: principalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Minute)}, nil
+	return sessionmodel.GraphTransaction{ID: prefix + uuid.NewString(), PrincipalID: principalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Minute)}, nil
 }
 
 func MapSemanticRuleSummaryProto(rule domainsemantic.SemanticGenerationRule, state domainsemantic.SemanticRuleState, searchByBinding map[string]domainsemantic.SemanticSearchIndexState, stores map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend) *clientv1.SemanticGenerationRuleSummary {
