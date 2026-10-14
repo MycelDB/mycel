@@ -37,6 +37,19 @@ type derivedInferenceProjectionHealth interface {
 	MarkDerivedProjectionHealthy()
 }
 
+type derivedInferenceProjectionReader interface {
+	ListDerivedPackages(context.Context) ([]domaininference.InferencePackage, error)
+	ListDerivedEndpoints(context.Context) ([]domaininference.Endpoint, error)
+	ListDerivedModels(context.Context) ([]domaininference.Model, error)
+	ListDerivedCapabilities(context.Context) ([]domaininference.Capability, error)
+	ListDerivedVectorStores(context.Context) ([]domaininference.VectorStore, error)
+	ListDerivedSecrets(context.Context) ([]domaininference.Secret, error)
+	ListDerivedCredentials(context.Context) ([]domaininference.Credential, error)
+	ListDerivedProfiles(context.Context, string) ([]domaininference.Profile, error)
+	ListDerivedCredentialGrants(context.Context, string) ([]domaininference.CredentialGrant, error)
+	ListDerivedPolicies(context.Context, string) ([]domaininference.Policy, error)
+}
+
 type derivedInferenceSpaceProjection interface {
 	UpsertDerivedProfile(context.Context, string, domaininference.Profile) (domaininference.Profile, error)
 	DeleteDerivedProfile(context.Context, string, domaininference.ProfileID) error
@@ -46,13 +59,23 @@ type derivedInferenceSpaceProjection interface {
 	DeleteDerivedPolicy(context.Context, string, domaininference.PolicyID) error
 }
 
+// InferenceProjection is the inference capability required to maintain and
+// rebuild the semantic-owned runtime projection. It deliberately excludes
+// inference invocation, usage accounting, and local write-gate operations.
+type InferenceProjection interface {
+	derivedInferenceGlobalProjection
+	derivedInferenceSpaceProjection
+	derivedInferenceProjectionReloader
+	derivedInferenceProjectionHealth
+	derivedInferenceProjectionReader
+}
+
 func (m *Module) projectSemanticGlobalMutation(ctx context.Context, r semanticMutationRecord) error {
 	m.mu.Lock()
-	inference := m.inferenceManager
+	projector := m.inferenceProjection
 	logger := m.logger
 	m.mu.Unlock()
-	projector, ok := inference.(derivedInferenceGlobalProjection)
-	if !ok || projector == nil {
+	if projector == nil {
 		return nil
 	}
 	var err error
@@ -116,11 +139,10 @@ func (m *Module) projectSemanticGlobalMutation(ctx context.Context, r semanticMu
 
 func (m *Module) projectSemanticSpaceMutation(ctx context.Context, r semanticMutationRecord) error {
 	m.mu.Lock()
-	inference := m.inferenceManager
+	projector := m.inferenceProjection
 	logger := m.logger
 	m.mu.Unlock()
-	projector, ok := inference.(derivedInferenceSpaceProjection)
-	if !ok || projector == nil {
+	if projector == nil {
 		return nil
 	}
 	spaceID := r.SpaceID.String()
@@ -160,13 +182,12 @@ func (m *Module) projectSemanticSpaceMutation(ctx context.Context, r semanticMut
 
 func (m *Module) reloadInferenceProjectionCache(ctx context.Context) error {
 	m.mu.Lock()
-	inference := m.inferenceManager
+	projection := m.inferenceProjection
 	m.mu.Unlock()
-	reloader, ok := inference.(derivedInferenceProjectionReloader)
-	if !ok || reloader == nil {
+	if projection == nil {
 		return nil
 	}
-	return reloader.ReloadDerivedProjection(ctx)
+	return projection.ReloadDerivedProjection(ctx)
 }
 
 func (m *Module) rebuildInferenceProjection(ctx context.Context) error {
@@ -188,23 +209,20 @@ func (m *Module) rebuildInferenceProjection(ctx context.Context) error {
 
 func (m *Module) markInferenceProjectionHealthy() {
 	m.mu.Lock()
-	inference := m.inferenceManager
+	projection := m.inferenceProjection
 	m.mu.Unlock()
-	marker, ok := inference.(derivedInferenceProjectionHealth)
-	if ok && marker != nil {
-		marker.MarkDerivedProjectionHealthy()
+	if projection != nil {
+		projection.MarkDerivedProjectionHealthy()
 	}
 }
 
 func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 	m.mu.Lock()
-	inference := m.inferenceManager
+	projector := m.inferenceProjection
 	m.mu.Unlock()
-	projector, ok := inference.(derivedInferenceGlobalProjection)
-	if !ok || projector == nil || m.globalBase == nil || inference == nil {
+	if projector == nil || m.globalBase == nil {
 		return nil
 	}
-	runtimeGlobal := inference.GlobalManager()
 	packages, err := m.globalBase.ListPackages(ctx)
 	if err != nil {
 		return err
@@ -216,7 +234,7 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 			return err
 		}
 	}
-	existingPackages, err := runtimeGlobal.ListPackages(ctx)
+	existingPackages, err := projector.ListDerivedPackages(ctx)
 	if err != nil {
 		return err
 	}
@@ -238,7 +256,7 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 			return err
 		}
 	}
-	existingEndpoints, err := runtimeGlobal.ListEndpoints(ctx)
+	existingEndpoints, err := projector.ListDerivedEndpoints(ctx)
 	if err != nil {
 		return err
 	}
@@ -260,7 +278,7 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 			return err
 		}
 	}
-	existingModels, err := runtimeGlobal.ListModels(ctx)
+	existingModels, err := projector.ListDerivedModels(ctx)
 	if err != nil {
 		return err
 	}
@@ -282,7 +300,7 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 			return err
 		}
 	}
-	existingCapabilities, err := runtimeGlobal.ListCapabilities(ctx)
+	existingCapabilities, err := projector.ListDerivedCapabilities(ctx)
 	if err != nil {
 		return err
 	}
@@ -304,7 +322,7 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 			return err
 		}
 	}
-	existingVectorStores, err := runtimeGlobal.ListVectorStores(ctx)
+	existingVectorStores, err := projector.ListDerivedVectorStores(ctx)
 	if err != nil {
 		return err
 	}
@@ -326,7 +344,7 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 			return err
 		}
 	}
-	existingSecrets, err := runtimeGlobal.ListSecrets(ctx)
+	existingSecrets, err := projector.ListDerivedSecrets(ctx)
 	if err != nil {
 		return err
 	}
@@ -348,7 +366,7 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 			return err
 		}
 	}
-	existingCredentials, err := runtimeGlobal.ListCredentials(ctx)
+	existingCredentials, err := projector.ListDerivedCredentials(ctx)
 	if err != nil {
 		return err
 	}
@@ -368,15 +386,10 @@ func (m *Module) rebuildInferenceSpaceProjection(ctx context.Context, spaceID st
 	ListInferencePolicies(context.Context) ([]domainsemantic.InferencePolicy, error)
 }) error {
 	m.mu.Lock()
-	inference := m.inferenceManager
+	projector := m.inferenceProjection
 	m.mu.Unlock()
-	projector, ok := inference.(derivedInferenceSpaceProjection)
-	if !ok || projector == nil || manager == nil || inference == nil {
+	if projector == nil || manager == nil {
 		return nil
-	}
-	runtimeMgr, err := inference.SpaceManager(ctx, spaceID)
-	if err != nil {
-		return err
 	}
 	profiles, err := manager.ListIntelligenceProfiles(ctx)
 	if err != nil {
@@ -389,7 +402,7 @@ func (m *Module) rebuildInferenceSpaceProjection(ctx context.Context, spaceID st
 			return err
 		}
 	}
-	existingProfiles, err := runtimeMgr.ListProfiles(ctx)
+	existingProfiles, err := projector.ListDerivedProfiles(ctx, spaceID)
 	if err != nil {
 		return err
 	}
@@ -411,7 +424,7 @@ func (m *Module) rebuildInferenceSpaceProjection(ctx context.Context, spaceID st
 			return err
 		}
 	}
-	existingGrants, err := runtimeMgr.ListCredentialGrants(ctx)
+	existingGrants, err := projector.ListDerivedCredentialGrants(ctx, spaceID)
 	if err != nil {
 		return err
 	}
@@ -433,7 +446,7 @@ func (m *Module) rebuildInferenceSpaceProjection(ctx context.Context, spaceID st
 			return err
 		}
 	}
-	existingPolicies, err := runtimeMgr.ListPolicies(ctx)
+	existingPolicies, err := projector.ListDerivedPolicies(ctx, spaceID)
 	if err != nil {
 		return err
 	}

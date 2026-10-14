@@ -9,6 +9,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	schema "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
@@ -33,6 +34,12 @@ type SchemaReader interface {
 // Concrete blob managers satisfy this interface implicitly.
 type BlobReader interface {
 	OpenBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (blobmodel.BlobMeta, io.ReadCloser, error)
+}
+
+// InferenceInvoker is the inference capability required by automation runs.
+// Concrete inference runtimes satisfy this interface implicitly.
+type InferenceInvoker interface {
+	Invoke(ctx context.Context, req inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error)
 }
 
 // GraphRuntime is the graph capability set required by automation execution and

@@ -25,10 +25,8 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
-	inferenceconnectors "github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
-	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
@@ -943,7 +941,7 @@ func (s automationGraphPartitionStateMachine) ApplyCommand(ctx context.Context, 
 	return fmt.Errorf("unsupported automation graph raft command record type %s", cmd.RecordType)
 }
 
-func newAutomationGraphExecutionRaftCluster(t *testing.T, ctx context.Context, partitionCount uint32, inference inferenceservice.Manager) automationGraphExecutionRaftCluster {
+func newAutomationGraphExecutionRaftCluster(t *testing.T, ctx context.Context, partitionCount uint32, inference InferenceInvoker) automationGraphExecutionRaftCluster {
 	t.Helper()
 	router := consensus.NewLocalMessageRouter()
 	peers := []consensus.NodeID{1, 2, 3}
@@ -963,7 +961,7 @@ func newAutomationGraphExecutionRaftCluster(t *testing.T, ctx context.Context, p
 		if result := graphs[id].Init(ctx, host); !result.OK {
 			t.Fatalf("graph Init(%d): %v", id, result.Error)
 		}
-		modules[id] = NewModule("").WithGraphRuntime(sessions[id], graphs[id]).WithInferenceManager(inference).WithWorkerConfig(WorkerConfig{Enabled: false})
+		modules[id] = NewModule("").WithGraphRuntime(sessions[id], graphs[id]).WithInferenceInvoker(inference).WithWorkerConfig(WorkerConfig{Enabled: false})
 		if result := modules[id].Init(ctx, host); !result.OK {
 			t.Fatalf("automation Init(%d): %v", id, result.Error)
 		}
@@ -1175,16 +1173,7 @@ type conflictInjectingInference struct {
 	invocations   int
 }
 
-func (f *conflictInjectingInference) GlobalManager() inferencestorage.GlobalManager { return nil }
-func (f *conflictInjectingInference) SpaceManager(context.Context, string) (inferencestorage.SpaceManager, error) {
-	return nil, nil
-}
-func (f *conflictInjectingInference) UsageLedger() inferencestorage.UsageLedger { return nil }
-func (f *conflictInjectingInference) RequireLocalWriteAllowed() error           { return nil }
-func (f *conflictInjectingInference) Resolve(context.Context, inferenceservice.ResolveRequest) (inferenceservice.ResolveResult, error) {
-	return inferenceservice.ResolveResult{Allowed: true}, nil
-}
-func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceservice.InvokeRequest) (inferenceservice.InvokeResponse, error) {
+func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
 	f.mu.Lock()
 	f.invocations++
 	callback := f.onFirstInvoke
@@ -1194,10 +1183,10 @@ func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferencese
 	f.mu.Unlock()
 	if callback != nil {
 		if err := callback(ctx); err != nil {
-			return inferenceservice.InvokeResponse{}, err
+			return inferenceruntime.InvokeResponse{}, err
 		}
 	}
-	return inferenceservice.InvokeResponse{Allowed: true, Text: f.text, Usage: inferenceconnectors.Usage{InputTokens: 4, OutputTokens: 2, TotalTokens: 6, TokenCountSource: "fake"}, Status: domaininference.UsageStatusSucceeded}, nil
+	return inferenceruntime.InvokeResponse{Allowed: true, Text: f.text, Usage: domaininference.Usage{InputTokens: 4, OutputTokens: 2, TotalTokens: 6, TokenCountSource: "fake"}, Status: domaininference.UsageStatusSucceeded}, nil
 }
 
 type automationExecutionRaftCluster struct {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"sync"
+
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
 
 type FakeConnector struct {
@@ -33,7 +35,7 @@ func (f *FakeConnector) Embed(ctx context.Context, req EmbeddingRequest) (Embedd
 		vector = []float64{1, 0, 0}
 	}
 	in := EstimateTokens(req.Input)
-	return EmbeddingResponse{Vector: vector, ProviderRequestID: "fake", Usage: Usage{InputTokens: in, TotalTokens: in, TokenCountSource: "estimated"}}, nil
+	return EmbeddingResponse{Vector: vector, ProviderRequestID: "fake", Usage: domaininference.Usage{InputTokens: in, TotalTokens: in, TokenCountSource: "estimated"}}, nil
 }
 
 func (f *FakeConnector) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
@@ -74,7 +76,7 @@ func (f *FakeConnector) Chat(ctx context.Context, req ChatRequest) (ChatResponse
 		}
 	}
 	out := EstimateTokens(text)
-	resp := ChatResponse{Text: text, ProviderRequestID: "fake", Usage: Usage{InputTokens: in, OutputTokens: out, TotalTokens: in + out, TokenCountSource: "estimated"}}
+	resp := ChatResponse{Text: text, ProviderRequestID: "fake", Usage: domaininference.Usage{InputTokens: in, OutputTokens: out, TotalTokens: in + out, TokenCountSource: "estimated"}}
 	if strings.EqualFold(req.Parameters.ResponseFormat, "json") || strings.EqualFold(req.Parameters.ResponseFormat, "json_object") {
 		resp.JSON = map[string]any{"text": text}
 	}
@@ -95,11 +97,11 @@ func (f *FakeConnector) LastChat() ChatRequest {
 
 func cloneChatRequest(req ChatRequest) ChatRequest {
 	out := req
-	out.Messages = make([]Message, 0, len(req.Messages))
+	out.Messages = make([]domaininference.Message, 0, len(req.Messages))
 	for _, msg := range req.Messages {
-		clonedMsg := Message{Role: msg.Role, Content: msg.Content, Parts: make([]MessagePart, 0, len(msg.Parts))}
+		clonedMsg := domaininference.Message{Role: msg.Role, Content: msg.Content, Parts: make([]domaininference.MessagePart, 0, len(msg.Parts))}
 		for _, part := range msg.Parts {
-			clonedPart := MessagePart{Type: part.Type, Text: part.Text}
+			clonedPart := domaininference.MessagePart{Type: part.Type, Text: part.Text}
 			if part.Image != nil {
 				image := *part.Image
 				image.Data = append([]byte(nil), part.Image.Data...)

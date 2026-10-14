@@ -14,7 +14,6 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
@@ -60,7 +59,7 @@ type AutomationManager struct {
 	sessions                              SessionRuntime
 	graphs                                GraphRuntime
 	schemas                               SchemaReader
-	inference                             inferenceservice.Manager
+	inference                             InferenceInvoker
 	blobs                                 BlobReader
 	raftGroups                            *consensus.MultiGroup
 	raftPartitionCount                    uint32
@@ -98,7 +97,7 @@ func (m *AutomationManager) WithGraphRuntime(sessions SessionRuntime, graphs Gra
 	return m
 }
 
-func (m *AutomationManager) WithInferenceManager(inference inferenceservice.Manager) *AutomationManager {
+func (m *AutomationManager) WithInferenceInvoker(inference InferenceInvoker) *AutomationManager {
 	m.inference = inference
 	return m
 }

@@ -135,7 +135,7 @@ func TestRunnerBackfillsThroughStandaloneInferenceProfile(t *testing.T) {
 	}
 	seedStandaloneInferenceForBackfill(t, ctx, inference, env, profileID)
 	runner := env.runner
-	runner.Connector = connectors.InferenceAdapter{Manager: inference}
+	runner.Connector = connectors.InferenceAdapter{Invoker: inference}
 
 	result, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID})
 	if err != nil {
@@ -151,7 +151,7 @@ func TestRunnerBackfillsThroughStandaloneInferenceProfile(t *testing.T) {
 	if embedCalls != 1 {
 		t.Fatalf("expected standalone inference fake connector call, got %d", embedCalls)
 	}
-	searchPlanner := semanticsearch.Planner{GlobalManager: env.globalMgr, SpaceManager: env.spaceMgr, Connector: connectors.InferenceAdapter{Manager: inference}, VectorBackend: env.vector}
+	searchPlanner := semanticsearch.Planner{GlobalManager: env.globalMgr, SpaceManager: env.spaceMgr, Connector: connectors.InferenceAdapter{Invoker: inference}, VectorBackend: env.vector}
 	search, err := searchPlanner.Search(ctx, semanticsearch.Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "standalone", Limit: 10, Purpose: domainsemantic.SemanticIndexPurposeSearch, ActorPrincipalID: env.userID})
 	if err != nil {
 		t.Fatalf("semantic search through inference failed: %v", err)

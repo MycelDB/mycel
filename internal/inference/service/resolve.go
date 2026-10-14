@@ -9,49 +9,13 @@ import (
 
 	"github.com/google/uuid"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
 )
 
-type ResolveRequest struct {
-	SpaceID               string
-	DomainID              string
-	SemanticRuleID        string
-	EmbeddingBindingKey   string
-	SemanticIndexID       string
-	NodeID                string
-	NodeAncestorIDs       []string
-	Operation             domaininference.Operation
-	UsageMode             domaininference.UsageMode
-	ProfileRef            string
-	ProfileID             domaininference.ProfileID
-	CapabilityRef         string
-	CapabilityID          domaininference.CapabilityID
-	EndpointRef           string
-	EndpointID            domaininference.EndpointID
-	ModelRef              string
-	ModelID               domaininference.ModelID
-	RequiredFeatures      []string
-	Parameters            domaininference.Parameters
-	ActorPrincipalID      string
-	OnBehalfOfPrincipalID string
-	Metadata              map[string]any
-}
-
-type ResolveResult struct {
-	Allowed         bool
-	Decision        domaininference.PolicyDecision
-	Profile         domaininference.Profile
-	Capability      domaininference.Capability
-	Endpoint        domaininference.Endpoint
-	Model           domaininference.Model
-	Credential      domaininference.Credential
-	Secret          domaininference.Secret
-	CredentialGrant domaininference.CredentialGrant
-}
-
-func (m *Module) Resolve(ctx context.Context, req ResolveRequest) (ResolveResult, error) {
+func (m *Module) Resolve(ctx context.Context, req inferenceruntime.ResolveRequest) (inferenceruntime.ResolveResult, error) {
 	if err := m.requireDerivedProjectionHealthy(); err != nil {
-		return ResolveResult{}, err
+		return inferenceruntime.ResolveResult{}, err
 	}
 	resolver := resolver{manager: m}
 	return resolver.resolve(ctx, req)
@@ -80,32 +44,32 @@ type policyEvaluation struct {
 	reason           string
 }
 
-func (r resolver) resolve(ctx context.Context, req ResolveRequest) (ResolveResult, error) {
+func (r resolver) resolve(ctx context.Context, req inferenceruntime.ResolveRequest) (inferenceruntime.ResolveResult, error) {
 	if r.manager == nil {
-		return ResolveResult{}, fmt.Errorf("inference resolver requires a manager")
+		return inferenceruntime.ResolveResult{}, fmt.Errorf("inference resolver requires a manager")
 	}
 	req.SpaceID = strings.TrimSpace(req.SpaceID)
 	if req.SpaceID == "" {
-		return ResolveResult{}, fmt.Errorf("space_id is required")
+		return inferenceruntime.ResolveResult{}, fmt.Errorf("space_id is required")
 	}
 	if req.Operation == "" {
-		return ResolveResult{}, fmt.Errorf("operation is required")
+		return inferenceruntime.ResolveResult{}, fmt.Errorf("operation is required")
 	}
 	if req.UsageMode == "" {
 		req.UsageMode = domaininference.UsageModeInteractive
 	}
 	spaceMgr, err := r.manager.SpaceManager(ctx, req.SpaceID)
 	if err != nil {
-		return ResolveResult{}, err
+		return inferenceruntime.ResolveResult{}, err
 	}
 	if err := r.validatePrincipalContext(ctx, req); err != nil {
-		return r.deny(ctx, spaceMgr, req, ResolveResult{}, nil, err.Error())
+		return r.deny(ctx, spaceMgr, req, inferenceruntime.ResolveResult{}, nil, err.Error())
 	}
 	profile, err := r.resolveProfile(ctx, spaceMgr, req)
 	if err != nil {
-		return r.deny(ctx, spaceMgr, req, ResolveResult{}, nil, err.Error())
+		return r.deny(ctx, spaceMgr, req, inferenceruntime.ResolveResult{}, nil, err.Error())
 	}
-	partial := ResolveResult{Profile: profile}
+	partial := inferenceruntime.ResolveResult{Profile: profile}
 	candidates, err := r.capabilityCandidates(ctx, req, profile)
 	if err != nil {
 		return r.deny(ctx, spaceMgr, req, partial, nil, err.Error())
@@ -115,9 +79,9 @@ func (r resolver) resolve(ctx context.Context, req ResolveRequest) (ResolveResul
 	}
 	policies, err := spaceMgr.ListPolicies(ctx)
 	if err != nil {
-		return ResolveResult{}, err
+		return inferenceruntime.ResolveResult{}, err
 	}
-	var firstDeny ResolveResult
+	var firstDeny inferenceruntime.ResolveResult
 	var firstDenyReason string
 	var firstPolicyIDs []string
 	for _, candidate := range candidates {
@@ -127,7 +91,7 @@ func (r resolver) resolve(ctx context.Context, req ResolveRequest) (ResolveResul
 		current.Model = candidate.model
 		grants, err := r.matchingGrants(ctx, spaceMgr, req, profile, candidate)
 		if err != nil {
-			return ResolveResult{}, err
+			return inferenceruntime.ResolveResult{}, err
 		}
 		if len(grants) == 0 {
 			if firstDenyReason == "" {
@@ -157,7 +121,7 @@ func (r resolver) resolve(ctx context.Context, req ResolveRequest) (ResolveResul
 	return r.deny(ctx, spaceMgr, req, firstDeny, firstPolicyIDs, firstDenyReason)
 }
 
-func (r resolver) resolveProfile(ctx context.Context, spaceMgr inferencestorage.SpaceManager, req ResolveRequest) (domaininference.Profile, error) {
+func (r resolver) resolveProfile(ctx context.Context, spaceMgr inferencestorage.SpaceManager, req inferenceruntime.ResolveRequest) (domaininference.Profile, error) {
 	profiles, err := spaceMgr.ListProfiles(ctx)
 	if err != nil {
 		return domaininference.Profile{}, err
@@ -186,7 +150,7 @@ func (r resolver) resolveProfile(ctx context.Context, spaceMgr inferencestorage.
 	return domaininference.Profile{}, fmt.Errorf("inference profile not found")
 }
 
-func (r resolver) capabilityCandidates(ctx context.Context, req ResolveRequest, profile domaininference.Profile) ([]capabilityCandidate, error) {
+func (r resolver) capabilityCandidates(ctx context.Context, req inferenceruntime.ResolveRequest, profile domaininference.Profile) ([]capabilityCandidate, error) {
 	global := r.manager.GlobalManager()
 	capabilities, err := global.ListCapabilities(ctx)
 	if err != nil {
@@ -233,7 +197,7 @@ func (r resolver) capabilityCandidates(ctx context.Context, req ResolveRequest, 
 	return out, nil
 }
 
-func (r resolver) matchingGrants(ctx context.Context, spaceMgr inferencestorage.SpaceManager, req ResolveRequest, profile domaininference.Profile, candidate capabilityCandidate) ([]grantCandidate, error) {
+func (r resolver) matchingGrants(ctx context.Context, spaceMgr inferencestorage.SpaceManager, req inferenceruntime.ResolveRequest, profile domaininference.Profile, candidate capabilityCandidate) ([]grantCandidate, error) {
 	grants, err := spaceMgr.ListCredentialGrants(ctx)
 	if err != nil {
 		return nil, err
@@ -286,7 +250,7 @@ func (r resolver) matchingGrants(ctx context.Context, spaceMgr inferencestorage.
 	return out, nil
 }
 
-func (r resolver) evaluatePolicies(req ResolveRequest, profile domaininference.Profile, candidate capabilityCandidate, policies []domaininference.Policy) policyEvaluation {
+func (r resolver) evaluatePolicies(req inferenceruntime.ResolveRequest, profile domaininference.Profile, candidate capabilityCandidate, policies []domaininference.Policy) policyEvaluation {
 	now := time.Now().UTC()
 	matched := []domaininference.Policy{}
 	for _, policy := range policies {
@@ -356,27 +320,27 @@ func (r resolver) evaluatePolicies(req ResolveRequest, profile domaininference.P
 	return policyEvaluation{allowed: true, matchedPolicyIDs: ids, reason: "inference allowed"}
 }
 
-func (r resolver) allow(ctx context.Context, spaceMgr inferencestorage.SpaceManager, req ResolveRequest, result ResolveResult, policyIDs []string, reason string) (ResolveResult, error) {
+func (r resolver) allow(ctx context.Context, spaceMgr inferencestorage.SpaceManager, req inferenceruntime.ResolveRequest, result inferenceruntime.ResolveResult, policyIDs []string, reason string) (inferenceruntime.ResolveResult, error) {
 	decision, err := spaceMgr.UpsertPolicyDecision(ctx, decisionFromResolve(req, result, domaininference.PolicyDecisionAllowed, policyIDs, reason))
 	if err != nil {
-		return ResolveResult{}, err
+		return inferenceruntime.ResolveResult{}, err
 	}
 	result.Allowed = true
 	result.Decision = decision
 	return result, nil
 }
 
-func (r resolver) deny(ctx context.Context, spaceMgr inferencestorage.SpaceManager, req ResolveRequest, result ResolveResult, policyIDs []string, reason string) (ResolveResult, error) {
+func (r resolver) deny(ctx context.Context, spaceMgr inferencestorage.SpaceManager, req inferenceruntime.ResolveRequest, result inferenceruntime.ResolveResult, policyIDs []string, reason string) (inferenceruntime.ResolveResult, error) {
 	decision, err := spaceMgr.UpsertPolicyDecision(ctx, decisionFromResolve(req, result, domaininference.PolicyDecisionDenied, policyIDs, reason))
 	if err != nil {
-		return ResolveResult{}, err
+		return inferenceruntime.ResolveResult{}, err
 	}
 	result.Allowed = false
 	result.Decision = decision
 	return result, nil
 }
 
-func decisionFromResolve(req ResolveRequest, result ResolveResult, action domaininference.PolicyDecisionAction, policyIDs []string, reason string) domaininference.PolicyDecision {
+func decisionFromResolve(req inferenceruntime.ResolveRequest, result inferenceruntime.ResolveResult, action domaininference.PolicyDecisionAction, policyIDs []string, reason string) domaininference.PolicyDecision {
 	return domaininference.PolicyDecision{SpaceID: req.SpaceID, DomainID: req.DomainID, NodeID: req.NodeID, SemanticRuleID: req.SemanticRuleID, EmbeddingBindingKey: req.EmbeddingBindingKey, Operation: req.Operation, UsageMode: req.UsageMode, ProfileID: result.Profile.ID, CapabilityID: result.Capability.ID, EndpointID: result.Endpoint.ID, ModelID: result.Model.ID, CredentialID: result.Credential.ID, CredentialGrantID: result.CredentialGrant.ID, ActorPrincipalID: req.ActorPrincipalID, OnBehalfOfPrincipalID: req.OnBehalfOfPrincipalID, Action: action, MatchedPolicyIDs: append([]string(nil), policyIDs...), Reason: reason, Metadata: copyMap(req.Metadata)}
 }
 
@@ -415,7 +379,7 @@ func modalityListContains(values []string, value string) bool {
 	return false
 }
 
-func candidateMatchesRefs(candidate capabilityCandidate, req ResolveRequest, profile domaininference.Profile) bool {
+func candidateMatchesRefs(candidate capabilityCandidate, req inferenceruntime.ResolveRequest, profile domaininference.Profile) bool {
 	return refsAllow(profile.CapabilityRefs, candidate.capability.ID, candidate.capability.Key) && refsAllow(profile.EndpointRefs, candidate.endpoint.ID, candidate.endpoint.Key) && refsAllow(profile.ModelRefs, candidate.model.ID, candidate.model.Key) && refRequestMatches(req.CapabilityID, req.CapabilityRef, candidate.capability.ID, candidate.capability.Key) && refRequestMatches(req.EndpointID, req.EndpointRef, candidate.endpoint.ID, candidate.endpoint.Key) && refRequestMatches(req.ModelID, req.ModelRef, candidate.model.ID, candidate.model.Key)
 }
 
@@ -467,7 +431,7 @@ func candidateMatchesParameters(candidate capabilityCandidate, requested domaini
 	return true
 }
 
-func grantMatches(grant domaininference.CredentialGrant, credential domaininference.Credential, req ResolveRequest, profile domaininference.Profile, candidate capabilityCandidate, now time.Time) bool {
+func grantMatches(grant domaininference.CredentialGrant, credential domaininference.Credential, req inferenceruntime.ResolveRequest, profile domaininference.Profile, candidate capabilityCandidate, now time.Time) bool {
 	if grant.SpaceID != "" && grant.SpaceID != req.SpaceID {
 		return false
 	}
@@ -492,7 +456,7 @@ func grantMatches(grant domaininference.CredentialGrant, credential domaininfere
 	return true
 }
 
-func credentialOwnerMatches(grant domaininference.CredentialGrant, credential domaininference.Credential, req ResolveRequest) bool {
+func credentialOwnerMatches(grant domaininference.CredentialGrant, credential domaininference.Credential, req inferenceruntime.ResolveRequest) bool {
 	switch credential.OwnerType {
 	case domaininference.CredentialOwnerSystem:
 		return true
@@ -538,7 +502,7 @@ func onBehalfPrincipalMatches(values []string, actorPrincipalID string, onBehalf
 	return principalListExplicitlyAllows(values, onBehalfPrincipalID)
 }
 
-func policyMatches(policy domaininference.Policy, req ResolveRequest, profile domaininference.Profile, now time.Time) bool {
+func policyMatches(policy domaininference.Policy, req inferenceruntime.ResolveRequest, profile domaininference.Profile, now time.Time) bool {
 	if policy.SpaceID != "" && policy.SpaceID != req.SpaceID {
 		return false
 	}
@@ -556,11 +520,11 @@ func policyMatches(policy domaininference.Policy, req ResolveRequest, profile do
 	return scopeMatchesWithDescendants(policy.Scope, req, unknownDescendantMatches) && operationRefsMatch(policy.Operations, req.Operation) && refsAllow(policy.ProfileRefs, profile.ID, profile.Key)
 }
 
-func scopeMatches(scope domaininference.Scope, req ResolveRequest) bool {
+func scopeMatches(scope domaininference.Scope, req inferenceruntime.ResolveRequest) bool {
 	return scopeMatchesWithDescendants(scope, req, false)
 }
 
-func scopeMatchesWithDescendants(scope domaininference.Scope, req ResolveRequest, unknownDescendantMatches bool) bool {
+func scopeMatchesWithDescendants(scope domaininference.Scope, req inferenceruntime.ResolveRequest, unknownDescendantMatches bool) bool {
 	if scope.SpaceID != "" && scope.SpaceID != req.SpaceID {
 		return false
 	}
@@ -594,7 +558,7 @@ func scopeMatchesWithDescendants(scope domaininference.Scope, req ResolveRequest
 	return true
 }
 
-func requestNodeAncestorIDs(req ResolveRequest) []string {
+func requestNodeAncestorIDs(req inferenceruntime.ResolveRequest) []string {
 	out := append([]string(nil), req.NodeAncestorIDs...)
 	if req.Metadata == nil {
 		return out
@@ -615,7 +579,7 @@ func requestNodeAncestorIDs(req ResolveRequest) []string {
 	return out
 }
 
-func scopeSpecificity(scope domaininference.Scope, req ResolveRequest) int {
+func scopeSpecificity(scope domaininference.Scope, req inferenceruntime.ResolveRequest) int {
 	score := 0
 	if scope.SpaceID != "" {
 		score++
@@ -638,7 +602,7 @@ func scopeSpecificity(scope domaininference.Scope, req ResolveRequest) int {
 	return score
 }
 
-func grantSpecificity(grant domaininference.CredentialGrant, req ResolveRequest) int {
+func grantSpecificity(grant domaininference.CredentialGrant, req inferenceruntime.ResolveRequest) int {
 	return scopeSpecificity(grant.Scope, req) + len(grant.ProfileRefs) + len(grant.CapabilityRefs) + len(grant.EndpointRefs) + len(grant.ModelRefs) + len(grant.UsageModes) + len(grant.GranteePrincipals) + len(grant.AllowOnBehalfOfPrincipals)
 }
 
@@ -765,7 +729,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (r resolver) validatePrincipalContext(ctx context.Context, req ResolveRequest) error {
+func (r resolver) validatePrincipalContext(ctx context.Context, req inferenceruntime.ResolveRequest) error {
 	checkerProvider, ok := r.manager.(interface{ principalStatusChecker() PrincipalStatusChecker })
 	if !ok {
 		return nil

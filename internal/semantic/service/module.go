@@ -19,7 +19,6 @@ import (
 	"github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	identity "github.com/myceldb/mycel/internal/identity/model"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -54,7 +53,8 @@ type Module struct {
 	maintenanceConfig    MaintenanceConfig
 	schemaManager        SchemaManager
 	graphReaderManager   GraphReadManager
-	inferenceManager     inferenceservice.Manager
+	inferenceInvoker     connectors.InferenceInvoker
+	inferenceProjection  InferenceProjection
 	logger               *slog.Logger
 	maintenanceCancel    context.CancelFunc
 	maintenanceWG        sync.WaitGroup
@@ -91,7 +91,7 @@ func NewModule(config ...Config) *Module {
 		cfg = config[0]
 	}
 
-	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, maintenanceManagers: map[domainspace.SpaceID]storesemantic.MaintenanceManager{}, gate: quiesce.NewGate(ModuleName), maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager, graphReaderManager: cfg.GraphReadManager, inferenceManager: cfg.InferenceManager}
+	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, maintenanceManagers: map[domainspace.SpaceID]storesemantic.MaintenanceManager{}, gate: quiesce.NewGate(ModuleName), maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager, graphReaderManager: cfg.GraphReadManager, inferenceInvoker: cfg.InferenceInvoker, inferenceProjection: cfg.InferenceProjection}
 }
 
 func (m *Module) Name() string { return ModuleName }
@@ -129,9 +129,12 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 				m.graphReaderManager = manager
 			}
 		}
-		if inferenceSvc, ok := lookup.Service(inferenceservice.ModuleName); ok {
-			if manager, ok := inferenceSvc.(inferenceservice.Manager); ok {
-				m.inferenceManager = manager
+		if inferenceSvc, ok := lookup.Service(inferenceModuleName); ok {
+			if invoker, ok := inferenceSvc.(connectors.InferenceInvoker); ok && m.inferenceInvoker == nil {
+				m.inferenceInvoker = invoker
+			}
+			if projection, ok := inferenceSvc.(InferenceProjection); ok && m.inferenceProjection == nil {
+				m.inferenceProjection = projection
 			}
 		}
 	}
@@ -991,9 +994,9 @@ func (m *Module) isSemanticDisabledDomain(ctx context.Context, domainID graph.Do
 
 func (m *Module) semanticEmbeddingConnector(global storesemantic.GlobalManager, actor identity.PrincipalID) semanticEmbedder {
 	m.mu.Lock()
-	inference := m.inferenceManager
+	invoker := m.inferenceInvoker
 	m.mu.Unlock()
-	return connectors.InferenceAdapter{Manager: inference}
+	return connectors.InferenceAdapter{Invoker: invoker}
 }
 
 type semanticEmbedder interface {

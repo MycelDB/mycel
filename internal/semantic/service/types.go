@@ -7,9 +7,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/identity/model"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
+	semanticconnectors "github.com/myceldb/mycel/internal/semantic/connectors"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
@@ -18,7 +18,10 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-const ModuleName = "semantic"
+const (
+	ModuleName          = "semantic"
+	inferenceModuleName = "inference"
+)
 
 type ThrottleConfig struct {
 	MaxConcurrentCalls   int
@@ -56,10 +59,11 @@ type GraphRevisionReader interface {
 }
 
 type Config struct {
-	MaintenanceConfig MaintenanceConfig
-	SchemaManager     SchemaManager
-	GraphReadManager  GraphReadManager
-	InferenceManager  inferenceservice.Manager
+	MaintenanceConfig   MaintenanceConfig
+	SchemaManager       SchemaManager
+	GraphReadManager    GraphReadManager
+	InferenceInvoker    semanticconnectors.InferenceInvoker
+	InferenceProjection InferenceProjection
 }
 
 type Manager interface {

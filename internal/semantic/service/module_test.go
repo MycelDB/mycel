@@ -51,7 +51,7 @@ func TestInitRebuildsInferenceProjectionFromSemanticProfiles(t *testing.T) {
 	if _, err := staleMgr.UpsertProfile(ctx, domaininference.Profile{SpaceID: spaceID.String(), Key: "stale", Operation: domaininference.OperationEmbeddings, Enabled: true}); err != nil {
 		t.Fatalf("seed stale projected profile: %v", err)
 	}
-	semantic := NewModule(Config{InferenceManager: inference})
+	semantic := NewModule(Config{InferenceInvoker: inference, InferenceProjection: inference})
 	if result := semantic.Init(ctx, rt); !result.OK {
 		t.Fatalf("init semantic module: %#v", result)
 	}
