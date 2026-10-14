@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	blobstorage "github.com/myceldb/mycel/internal/blob/storage"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 )
@@ -61,28 +62,28 @@ func isObjectStoreBackend(backend string) bool {
 	return backend == blobBackendS3 || backend == blobBackendObjectStore
 }
 
-func (m *Module) putPayload(ctx context.Context, spaceID string, domainID string, mimeType string, r io.Reader) (graphmodel.BlobID, int64, PayloadDescriptor, error) {
+func (m *Module) putPayload(ctx context.Context, spaceID string, domainID string, mimeType string, r io.Reader) (graphmodel.BlobID, int64, blobmodel.PayloadDescriptor, error) {
 	if isObjectStoreBackend(m.config.Backend) {
 		if strings.TrimSpace(domainID) == "" {
-			return "", 0, PayloadDescriptor{}, fmt.Errorf("%w: domain_id is required for object store blob payloads", ErrInvalidInput)
+			return "", 0, blobmodel.PayloadDescriptor{}, fmt.Errorf("%w: domain_id is required for object store blob payloads", ErrInvalidInput)
 		}
 		if m.s3Store == nil {
-			return "", 0, PayloadDescriptor{}, fmt.Errorf("object store blob backend is not initialized")
+			return "", 0, blobmodel.PayloadDescriptor{}, fmt.Errorf("object store blob backend is not initialized")
 		}
 		return m.s3Store.Put(ctx, spaceID, domainID, mimeType, r)
 	}
 	store, err := m.store(spaceID)
 	if err != nil {
-		return "", 0, PayloadDescriptor{}, err
+		return "", 0, blobmodel.PayloadDescriptor{}, err
 	}
 	id, size, err := store.Put(ctx, r)
 	if err != nil {
-		return "", 0, PayloadDescriptor{}, err
+		return "", 0, blobmodel.PayloadDescriptor{}, err
 	}
-	return id, size, PayloadDescriptor{Backend: blobBackendLocal, SpaceID: spaceID, DomainID: domainID, BlobID: string(id), SizeBytes: size, ChecksumAlgorithm: "sha256", ChecksumHex: string(id)}, nil
+	return id, size, blobmodel.PayloadDescriptor{Backend: blobBackendLocal, SpaceID: spaceID, DomainID: domainID, BlobID: string(id), SizeBytes: size, ChecksumAlgorithm: "sha256", ChecksumHex: string(id)}, nil
 }
 
-func (m *Module) payloadExists(ctx context.Context, desc PayloadDescriptor) (bool, error) {
+func (m *Module) payloadExists(ctx context.Context, desc blobmodel.PayloadDescriptor) (bool, error) {
 	switch payloadBackend(desc) {
 	case blobBackendS3, blobBackendObjectStore:
 		if m.s3Store == nil {
@@ -98,7 +99,7 @@ func (m *Module) payloadExists(ctx context.Context, desc PayloadDescriptor) (boo
 	}
 }
 
-func (m *Module) openPayload(ctx context.Context, desc PayloadDescriptor) (io.ReadCloser, error) {
+func (m *Module) openPayload(ctx context.Context, desc blobmodel.PayloadDescriptor) (io.ReadCloser, error) {
 	switch payloadBackend(desc) {
 	case blobBackendS3, blobBackendObjectStore:
 		if m.s3Store == nil {
@@ -114,7 +115,7 @@ func (m *Module) openPayload(ctx context.Context, desc PayloadDescriptor) (io.Re
 	}
 }
 
-func (m *Module) deletePayload(ctx context.Context, desc PayloadDescriptor) error {
+func (m *Module) deletePayload(ctx context.Context, desc blobmodel.PayloadDescriptor) error {
 	switch payloadBackend(desc) {
 	case blobBackendS3, blobBackendObjectStore:
 		if m.s3Store == nil {
@@ -130,7 +131,7 @@ func (m *Module) deletePayload(ctx context.Context, desc PayloadDescriptor) erro
 	}
 }
 
-func payloadBackend(desc PayloadDescriptor) string {
+func payloadBackend(desc blobmodel.PayloadDescriptor) string {
 	backend := strings.ToLower(strings.TrimSpace(desc.Backend))
 	if backend == "" {
 		return blobBackendLocal
@@ -138,7 +139,7 @@ func payloadBackend(desc PayloadDescriptor) string {
 	return backend
 }
 
-func samePayloadLocation(a PayloadDescriptor, b PayloadDescriptor) bool {
+func samePayloadLocation(a blobmodel.PayloadDescriptor, b blobmodel.PayloadDescriptor) bool {
 	if payloadBackend(a) != payloadBackend(b) {
 		return false
 	}
@@ -151,7 +152,7 @@ func samePayloadLocation(a PayloadDescriptor, b PayloadDescriptor) bool {
 	return true
 }
 
-func (m *Module) logBestEffortPayloadDeleteFailure(desc PayloadDescriptor, err error) {
+func (m *Module) logBestEffortPayloadDeleteFailure(desc blobmodel.PayloadDescriptor, err error) {
 	if err == nil || m.logger == nil {
 		return
 	}

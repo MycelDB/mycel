@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
-	"time"
+
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 )
 
 const ModuleName = "blob"
@@ -20,11 +21,11 @@ type RefCounter interface {
 }
 
 type Manager interface {
-	UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, error)
-	GetBlob(ctx context.Context, spaceID string, blobID string) (BlobMeta, error)
-	GetBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, error)
-	OpenBlob(ctx context.Context, spaceID string, blobID string) (BlobMeta, io.ReadCloser, error)
-	OpenBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, io.ReadCloser, error)
+	UploadBlob(ctx context.Context, input UploadInput) (blobmodel.BlobMeta, error)
+	GetBlob(ctx context.Context, spaceID string, blobID string) (blobmodel.BlobMeta, error)
+	GetBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (blobmodel.BlobMeta, error)
+	OpenBlob(ctx context.Context, spaceID string, blobID string) (blobmodel.BlobMeta, io.ReadCloser, error)
+	OpenBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (blobmodel.BlobMeta, io.ReadCloser, error)
 	DeleteBlob(ctx context.Context, spaceID string, blobID string) (string, error)
 	DeleteBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (string, error)
 }
@@ -46,17 +47,4 @@ type Config struct {
 	S3KMSKeyID          string
 	S3EndpointURL       string
 	S3ForcePathStyle    bool
-}
-
-type BlobMeta struct {
-	BlobID           string             `json:"blob_id"`
-	SpaceID          string             `json:"space_id"`
-	DomainID         string             `json:"domain_id,omitempty"`
-	Digest           string             `json:"digest"`
-	SizeBytes        int64              `json:"size_bytes"`
-	MimeType         string             `json:"mime_type"`
-	DeclaredMimeType string             `json:"declared_mime_type,omitempty"`
-	OriginalFilename string             `json:"original_filename,omitempty"`
-	CreateTime       time.Time          `json:"create_time"`
-	Payload          *PayloadDescriptor `json:"payload,omitempty"`
 }

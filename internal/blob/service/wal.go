@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	blobstorage "github.com/myceldb/mycel/internal/blob/storage"
 	"github.com/myceldb/mycel/internal/wal"
 )
@@ -18,8 +19,8 @@ const (
 )
 
 type blobMetaPutRecord struct {
-	Meta              BlobMeta          `json:"meta"`
-	PayloadDescriptor PayloadDescriptor `json:"payload_descriptor,omitempty"`
+	Meta              blobmodel.BlobMeta          `json:"meta"`
+	PayloadDescriptor blobmodel.PayloadDescriptor `json:"payload_descriptor,omitempty"`
 }
 type blobMetaDeleteRecord struct {
 	SpaceID  string `json:"space_id"`
@@ -47,42 +48,42 @@ func (m *Module) applyBlobMetaDelete(ctx context.Context, rec wal.Record) error 
 	return m.applyMetaDelete(ctx, payload.SpaceID, payload.DomainID, payload.BlobID)
 }
 
-func (m *Module) commitMetaPutRaft(ctx context.Context, meta BlobMeta) (BlobMeta, error) {
+func (m *Module) commitMetaPutRaft(ctx context.Context, meta blobmodel.BlobMeta) (blobmodel.BlobMeta, error) {
 	desc := descriptorFromMeta(meta)
 	if err := m.ensureRaftPayloadWritePolicy(ctx, desc); err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: desc})
 	if err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	cmd, err := m.buildBlobRaftCommand(meta.SpaceID, recordTypeBlobMetaPut, payload, "blob-meta-put-"+meta.SpaceID+"-"+meta.BlobID+"-"+uuid.NewString())
 	if err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	if err := m.proposeBlobRaftCommand(ctx, cmd); err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	return meta, nil
 }
 
-func (m *Module) commitMetaPut(ctx context.Context, meta BlobMeta) (BlobMeta, error) {
+func (m *Module) commitMetaPut(ctx context.Context, meta blobmodel.BlobMeta) (blobmodel.BlobMeta, error) {
 	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: descriptorFromMeta(meta)})
 	if err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeBlobMetaPut, SchemaVersion: 1, Timestamp: meta.CreateTime, Encoding: wal.PayloadEncodingJSON, Payload: payload})
 	if err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	if err := m.wal.Sync(ctx, lsn); err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	if err := m.applyMetaPut(ctx, meta); err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	if err := m.markWALApplied(ctx, lsn); err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	return meta, nil
 }
@@ -117,7 +118,7 @@ func (m *Module) commitMetaDelete(ctx context.Context, spaceID string, domainID 
 	return m.markWALApplied(ctx, lsn)
 }
 
-func (m *Module) applyMetaPut(ctx context.Context, meta BlobMeta) error {
+func (m *Module) applyMetaPut(ctx context.Context, meta blobmodel.BlobMeta) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -144,7 +145,7 @@ func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, domainID s
 			return fmt.Errorf("%w: %s has %d graph references", ErrReferenced, blobID, count)
 		}
 	}
-	var meta BlobMeta
+	var meta blobmodel.BlobMeta
 	var metaErr error
 	if strings.TrimSpace(domainID) != "" {
 		meta, metaErr = m.metaInDomain(spaceID, strings.TrimSpace(domainID), blobID)

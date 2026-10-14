@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
@@ -33,8 +33,8 @@ func TestImageAnalysisProcedureLoadsImageBlobPayload(t *testing.T) {
 	node := graph.Node{ID: graph.NodeID(nodeID), DomainID: ids.domainID, Labels: []string{"Image"}, Payload: map[string]any{"blob_id": blobID, "mime_type": "image/png"}, Properties: map[string]any{"caption": "diagram"}}
 	graphs := &automationE2EGraph{node: node}
 	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
-	blobs := fakeAutomationBlobManager{blobs: map[string]fakeAutomationBlob{blobID: {meta: blobservice.BlobMeta{BlobID: blobID, SpaceID: ids.spaceID, DomainID: ids.domainID.String(), MimeType: "image/png", SizeBytes: int64(len(imageBytes)), CreateTime: time.Now().UTC()}, data: imageBytes}}}
-	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference).WithBlobManager(blobs)
+	blobs := fakeAutomationBlobReader{blobs: map[string]fakeAutomationBlob{blobID: {meta: blobmodel.BlobMeta{BlobID: blobID, SpaceID: ids.spaceID, DomainID: ids.domainID.String(), MimeType: "image/png", SizeBytes: int64(len(imageBytes)), CreateTime: time.Now().UTC()}, data: imageBytes}}}
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference).WithBlobReader(blobs)
 	procedure := automation.Procedure{ID: "image-analysis-payload", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"properties.caption"}}, Inference: automation.InferenceRef{Operation: string(domaininference.OperationImageAnalysis), ProfileID: imageProfileID.String()}, Prompt: "Describe the image", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.image_summary": "$result.text"}}}}}}
 	binding := automation.Binding{ID: "image-analysis-payload-binding", Version: 1, DomainID: ids.domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: ids.spaceID, DomainID: ids.domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeCreated}, Labels: []string{"Image"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "principal-a", OnBehalfOfPrincipalID: "principal-a", InferenceProfileID: imageProfileID.String()}}
 	putProcedureAndBinding(t, ctx, store, procedure, binding)
@@ -70,8 +70,8 @@ func TestImageAnalysisProcedureFailsClosedForInvalidImageBlobs(t *testing.T) {
 		wantErr string
 	}{
 		{name: "missing", wantErr: "not found"},
-		{name: "unsupported_mime", blob: &fakeAutomationBlob{meta: blobservice.BlobMeta{MimeType: "application/pdf", SizeBytes: 3}, data: []byte("pdf")}, wantErr: "unsupported MIME type"},
-		{name: "oversized", blob: &fakeAutomationBlob{meta: blobservice.BlobMeta{MimeType: "image/png", SizeBytes: maxImageAnalysisImageBytes + 1}, data: []byte{0x89, 0x50}}, wantErr: "exceeds per-image size limit"},
+		{name: "unsupported_mime", blob: &fakeAutomationBlob{meta: blobmodel.BlobMeta{MimeType: "application/pdf", SizeBytes: 3}, data: []byte("pdf")}, wantErr: "unsupported MIME type"},
+		{name: "oversized", blob: &fakeAutomationBlob{meta: blobmodel.BlobMeta{MimeType: "image/png", SizeBytes: maxImageAnalysisImageBytes + 1}, data: []byte{0x89, 0x50}}, wantErr: "exceeds per-image size limit"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -92,7 +92,7 @@ func TestImageAnalysisProcedureFailsClosedForInvalidImageBlobs(t *testing.T) {
 				blob.meta.DomainID = ids.domainID.String()
 				blobMap[blobID] = blob
 			}
-			mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference).WithBlobManager(fakeAutomationBlobManager{blobs: blobMap})
+			mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference).WithBlobReader(fakeAutomationBlobReader{blobs: blobMap})
 			procedure := automation.Procedure{ID: "image-analysis-invalid-" + tc.name, Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"payload.blob_id"}}, Inference: automation.InferenceRef{Operation: string(domaininference.OperationImageAnalysis), ProfileID: imageProfileID.String()}, Prompt: "Describe the image", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.image_summary": "$result.text"}}}}}}
 			binding := automation.Binding{ID: "image-analysis-invalid-binding-" + tc.name, Version: 1, DomainID: ids.domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: ids.spaceID, DomainID: ids.domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeCreated}, Labels: []string{"Image"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "principal-a", OnBehalfOfPrincipalID: "principal-a", InferenceProfileID: imageProfileID.String()}}
 			putProcedureAndBinding(t, ctx, store, procedure, binding)
@@ -137,39 +137,21 @@ func imageParts(messages []connectors.Message) []connectors.ImageInput {
 }
 
 type fakeAutomationBlob struct {
-	meta blobservice.BlobMeta
+	meta blobmodel.BlobMeta
 	data []byte
 }
 
-type fakeAutomationBlobManager struct {
+type fakeAutomationBlobReader struct {
 	blobs map[string]fakeAutomationBlob
 }
 
-func (f fakeAutomationBlobManager) UploadBlob(context.Context, blobservice.UploadInput) (blobservice.BlobMeta, error) {
-	return blobservice.BlobMeta{}, fmt.Errorf("unused")
-}
-
-func (f fakeAutomationBlobManager) GetBlob(ctx context.Context, spaceID string, blobID string) (blobservice.BlobMeta, error) {
-	meta, _, err := f.OpenBlob(ctx, spaceID, blobID)
-	return meta, err
-}
-
-func (f fakeAutomationBlobManager) GetBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (blobservice.BlobMeta, error) {
-	meta, _, err := f.OpenBlobInDomain(ctx, spaceID, domainID, blobID)
-	return meta, err
-}
-
-func (f fakeAutomationBlobManager) OpenBlob(ctx context.Context, spaceID string, blobID string) (blobservice.BlobMeta, io.ReadCloser, error) {
-	return f.OpenBlobInDomain(ctx, spaceID, "", blobID)
-}
-
-func (f fakeAutomationBlobManager) OpenBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (blobservice.BlobMeta, io.ReadCloser, error) {
+func (f fakeAutomationBlobReader) OpenBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (blobmodel.BlobMeta, io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {
-		return blobservice.BlobMeta{}, nil, err
+		return blobmodel.BlobMeta{}, nil, err
 	}
 	blob, ok := f.blobs[blobID]
 	if !ok {
-		return blobservice.BlobMeta{}, nil, blobservice.ErrNotFound
+		return blobmodel.BlobMeta{}, nil, blobservice.ErrNotFound
 	}
 	meta := blob.meta
 	if meta.BlobID == "" {
@@ -185,12 +167,4 @@ func (f fakeAutomationBlobManager) OpenBlobInDomain(ctx context.Context, spaceID
 		meta.SizeBytes = int64(len(blob.data))
 	}
 	return meta, io.NopCloser(bytes.NewReader(blob.data)), nil
-}
-
-func (f fakeAutomationBlobManager) DeleteBlob(context.Context, string, string) (string, error) {
-	return "", errors.New("unused")
-}
-
-func (f fakeAutomationBlobManager) DeleteBlobInDomain(context.Context, string, string, string) (string, error) {
-	return "", errors.New("unused")
 }

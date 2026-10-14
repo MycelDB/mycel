@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -137,7 +138,7 @@ func (s *BlobService) DeleteBlob(ctx context.Context, req *clientv1.DeleteBlobRe
 	return &clientv1.DeleteBlobResponse{DeletedBlobId: id}, nil
 }
 
-func mapProtoBlob(blob daemonblob.BlobMeta) *clientv1.Blob {
+func mapProtoBlob(blob blobmodel.BlobMeta) *clientv1.Blob {
 	return &clientv1.Blob{BlobId: blob.BlobID, SpaceId: blob.SpaceID, DomainId: blob.DomainID, Digest: blob.Digest, SizeBytes: blob.SizeBytes, MimeType: blob.MimeType, DeclaredMimeType: blob.DeclaredMimeType, OriginalFilename: blob.OriginalFilename, CreateTime: timestamppb.New(blob.CreateTime)}
 }
 

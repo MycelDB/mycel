@@ -5,23 +5,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 )
 
-type PayloadDescriptor struct {
-	Backend           string `json:"backend,omitempty"`
-	SpaceID           string `json:"space_id"`
-	DomainID          string `json:"domain_id,omitempty"`
-	BlobID            string `json:"blob_id"`
-	SizeBytes         int64  `json:"size_bytes"`
-	ChecksumAlgorithm string `json:"checksum_algorithm"`
-	ChecksumHex       string `json:"checksum_hex"`
-	S3Bucket          string `json:"s3_bucket,omitempty"`
-	S3Key             string `json:"s3_key,omitempty"`
-	S3Region          string `json:"s3_region,omitempty"`
-	S3ETag            string `json:"s3_etag,omitempty"`
-}
-
-func descriptorFromMeta(meta BlobMeta) PayloadDescriptor {
+func descriptorFromMeta(meta blobmodel.BlobMeta) blobmodel.PayloadDescriptor {
 	if meta.Payload != nil {
 		desc := *meta.Payload
 		desc.SpaceID = firstNonEmpty(desc.SpaceID, meta.SpaceID)
@@ -34,10 +22,10 @@ func descriptorFromMeta(meta BlobMeta) PayloadDescriptor {
 		desc.ChecksumHex = firstNonEmpty(desc.ChecksumHex, strings.TrimPrefix(meta.Digest, "sha256:"))
 		return desc
 	}
-	return PayloadDescriptor{Backend: "local", SpaceID: meta.SpaceID, DomainID: meta.DomainID, BlobID: meta.BlobID, SizeBytes: meta.SizeBytes, ChecksumAlgorithm: "sha256", ChecksumHex: strings.TrimPrefix(meta.Digest, "sha256:")}
+	return blobmodel.PayloadDescriptor{Backend: "local", SpaceID: meta.SpaceID, DomainID: meta.DomainID, BlobID: meta.BlobID, SizeBytes: meta.SizeBytes, ChecksumAlgorithm: "sha256", ChecksumHex: strings.TrimPrefix(meta.Digest, "sha256:")}
 }
 
-func (m *Module) ensurePayloadFromReader(ctx context.Context, desc PayloadDescriptor, r io.Reader) error {
+func (m *Module) ensurePayloadFromReader(ctx context.Context, desc blobmodel.PayloadDescriptor, r io.Reader) error {
 	if ok, err := m.payloadExists(ctx, desc); err != nil || ok {
 		return err
 	}
