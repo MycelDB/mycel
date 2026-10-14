@@ -8,12 +8,14 @@ import (
 
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
-const ModuleName = "automation"
+const (
+	ModuleName          = "automation"
+	inferenceModuleName = "inference"
+)
 
 type WorkerConfig struct {
 	Enabled         bool
@@ -32,7 +34,7 @@ type Module struct {
 	sessions  SessionRuntime
 	graphs    GraphRuntime
 	schemas   SchemaReader
-	inference inferenceservice.Manager
+	inference InferenceInvoker
 	blobs     BlobReader
 	replayer  GraphChangeReplayer
 	worker    WorkerConfig
@@ -54,7 +56,7 @@ func (m *Module) WithSchemaReader(schemas SchemaReader) *Module {
 	return m
 }
 
-func (m *Module) WithInferenceManager(inference inferenceservice.Manager) *Module {
+func (m *Module) WithInferenceInvoker(inference InferenceInvoker) *Module {
 	m.inference = inference
 	return m
 }
@@ -91,9 +93,9 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 		dataDir = filepath.Join(host.DataDir(), "automations")
 	}
 	if lookup, ok := host.(coreruntime.ServiceLookup); ok && m.inference == nil {
-		if svc, ok := lookup.Service(inferenceservice.ModuleName); ok {
-			if manager, ok := svc.(inferenceservice.Manager); ok {
-				m.inference = manager
+		if svc, ok := lookup.Service(inferenceModuleName); ok {
+			if invoker, ok := svc.(InferenceInvoker); ok {
+				m.inference = invoker
 			}
 		}
 	}
@@ -105,7 +107,7 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 			return coreruntime.Abort(ModuleName, "quiesce", "register automation quiesce participant", err)
 		}
 	}
-	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaReader(m.schemas).WithInferenceManager(m.inference).WithBlobReader(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
+	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaReader(m.schemas).WithInferenceInvoker(m.inference).WithBlobReader(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
 	if gate, ok := host.(coreruntime.LocalWriteGate); ok {
 		m.AutomationManager.WithWriteAllowed(gate.RequireLocalWriteAllowed)
 	}

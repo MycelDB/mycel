@@ -17,7 +17,6 @@ import (
 	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	"github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
@@ -34,7 +33,7 @@ func TestImageAnalysisProcedureLoadsImageBlobPayload(t *testing.T) {
 	graphs := &automationE2EGraph{node: node}
 	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
 	blobs := fakeAutomationBlobReader{blobs: map[string]fakeAutomationBlob{blobID: {meta: blobmodel.BlobMeta{BlobID: blobID, SpaceID: ids.spaceID, DomainID: ids.domainID.String(), MimeType: "image/png", SizeBytes: int64(len(imageBytes)), CreateTime: time.Now().UTC()}, data: imageBytes}}}
-	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference).WithBlobReader(blobs)
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference).WithBlobReader(blobs)
 	procedure := automation.Procedure{ID: "image-analysis-payload", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"properties.caption"}}, Inference: automation.InferenceRef{Operation: string(domaininference.OperationImageAnalysis), ProfileID: imageProfileID.String()}, Prompt: "Describe the image", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.image_summary": "$result.text"}}}}}}
 	binding := automation.Binding{ID: "image-analysis-payload-binding", Version: 1, DomainID: ids.domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: ids.spaceID, DomainID: ids.domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeCreated}, Labels: []string{"Image"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "principal-a", OnBehalfOfPrincipalID: "principal-a", InferenceProfileID: imageProfileID.String()}}
 	putProcedureAndBinding(t, ctx, store, procedure, binding)
@@ -92,7 +91,7 @@ func TestImageAnalysisProcedureFailsClosedForInvalidImageBlobs(t *testing.T) {
 				blob.meta.DomainID = ids.domainID.String()
 				blobMap[blobID] = blob
 			}
-			mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference).WithBlobReader(fakeAutomationBlobReader{blobs: blobMap})
+			mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference).WithBlobReader(fakeAutomationBlobReader{blobs: blobMap})
 			procedure := automation.Procedure{ID: "image-analysis-invalid-" + tc.name, Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"payload.blob_id"}}, Inference: automation.InferenceRef{Operation: string(domaininference.OperationImageAnalysis), ProfileID: imageProfileID.String()}, Prompt: "Describe the image", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.image_summary": "$result.text"}}}}}}
 			binding := automation.Binding{ID: "image-analysis-invalid-binding-" + tc.name, Version: 1, DomainID: ids.domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: ids.spaceID, DomainID: ids.domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeCreated}, Labels: []string{"Image"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "principal-a", OnBehalfOfPrincipalID: "principal-a", InferenceProfileID: imageProfileID.String()}}
 			putProcedureAndBinding(t, ctx, store, procedure, binding)
@@ -124,8 +123,8 @@ func emitNodeCreated(t *testing.T, ctx context.Context, mgr *AutomationManager, 
 	}
 }
 
-func imageParts(messages []connectors.Message) []connectors.ImageInput {
-	var images []connectors.ImageInput
+func imageParts(messages []domaininference.Message) []domaininference.ImageInput {
+	var images []domaininference.ImageInput
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
 			if part.Image != nil {

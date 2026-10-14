@@ -8,6 +8,7 @@ import (
 
 	"github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 )
 
 func TestInvokeFakeChatRecordsSuccessUsage(t *testing.T) {
@@ -18,7 +19,7 @@ func TestInvokeFakeChatRecordsSuccessUsage(t *testing.T) {
 	module.SetConnector(domaininference.ConnectorOpenAICompatible, fake)
 	module.SetSecretResolver(resolver)
 
-	resp, err := module.Invoke(ctx, InvokeRequest{Resolve: ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}, Input: "hello", RequestID: "req-1"})
+	resp, err := module.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}, Input: "hello", RequestID: "req-1"})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -53,8 +54,8 @@ func TestInvokeDeniedDoesNotResolveSecretOrCallConnector(t *testing.T) {
 	module.SetConnector(domaininference.ConnectorOpenAICompatible, fake)
 	module.SetSecretResolver(resolver)
 
-	resp, err := module.Invoke(ctx, InvokeRequest{Resolve: ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}, Input: "hello", RequestID: "req-denied"})
-	if !errors.Is(err, ErrDenied) {
+	resp, err := module.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}, Input: "hello", RequestID: "req-denied"})
+	if !errors.Is(err, inferenceruntime.ErrDenied) {
 		t.Fatalf("expected ErrDenied, got %v", err)
 	}
 	if resp.Allowed || resp.Decision.Action != domaininference.PolicyDecisionDenied {
@@ -76,7 +77,7 @@ func TestInvokeConnectorFailureRecordsFailedUsage(t *testing.T) {
 	module.SetConnector(domaininference.ConnectorOpenAICompatible, &connectors.FakeConnector{Err: connectors.NewFakeError("fake_failure", false, "fake connector failed")})
 	module.SetSecretResolver(&countingSecretResolver{value: "super-secret"})
 
-	_, err := module.Invoke(ctx, InvokeRequest{Resolve: ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}, Input: "hello"})
+	_, err := module.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}, Input: "hello"})
 	if err == nil || !strings.Contains(err.Error(), "fake connector failed") {
 		t.Fatalf("expected connector failure, got %v", err)
 	}
@@ -118,7 +119,7 @@ func TestInvokeFakeEmbeddingsThroughFullPath(t *testing.T) {
 	module.SetConnector(domaininference.ConnectorOpenAICompatible, fake)
 	module.SetSecretResolver(&countingSecretResolver{value: "super-secret"})
 
-	resp, err := module.Invoke(ctx, InvokeRequest{Resolve: ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationEmbeddings, UsageMode: domaininference.UsageModeSemantic, ProfileRef: embeddingProfile.Key, ActorPrincipalID: "actor-a", ModelID: embeddingModel.ID, CapabilityID: embeddingCapability.ID}, Input: "embed this"})
+	resp, err := module.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationEmbeddings, UsageMode: domaininference.UsageModeSemantic, ProfileRef: embeddingProfile.Key, ActorPrincipalID: "actor-a", ModelID: embeddingModel.ID, CapabilityID: embeddingCapability.ID}, Input: "embed this"})
 	if err != nil {
 		t.Fatalf("Invoke() embeddings error = %v", err)
 	}

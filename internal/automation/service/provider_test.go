@@ -19,6 +19,7 @@ import (
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	inferenceconnectors "github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
@@ -40,7 +41,7 @@ func TestGenerateTextRequiresConfiguredInference(t *testing.T) {
 func TestGenerateTextRecordsInferenceUsage(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
-	mgr := NewManager(nil).WithInferenceManager(inference)
+	mgr := NewManager(nil).WithInferenceInvoker(inference)
 	run := automation.Run{ID: uuid.NewString()}
 	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, OwnerPrincipalID: "owner-a", Prompt: "prompt", Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}}
 	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, ChangedElementID: uuid.NewString(), ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a", AutomationOwnerPrincipalID: "owner-a"}
@@ -70,12 +71,12 @@ func TestGenerateTextRecordsInferenceUsage(t *testing.T) {
 func TestGenerateTextRecordsDenialWithoutConnectorCall(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, true)
-	mgr := NewManager(nil).WithInferenceManager(inference)
+	mgr := NewManager(nil).WithInferenceInvoker(inference)
 	run := automation.Run{ID: uuid.NewString()}
 	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, Prompt: "prompt", Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}}
 	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, ChangedElementID: uuid.NewString(), ActorPrincipalID: "automation"}
 	_, err := mgr.generateWithInference(ctx, def, inv, "input words", &run)
-	if !errors.Is(err, inferenceservice.ErrDenied) {
+	if !errors.Is(err, inferenceruntime.ErrDenied) {
 		t.Fatalf("generateWithInference() error = %v, want denied", err)
 	}
 	if !strings.Contains(err.Error(), "inference denied by policy") {
@@ -113,7 +114,7 @@ func TestAutomationDefinitionStableAcrossCredentialRotation(t *testing.T) {
 func TestGenerateTextEnforcesTokenCeilings(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
-	mgr := NewManager(nil).WithInferenceManager(inference).WithRunCeilings(1, 1)
+	mgr := NewManager(nil).WithInferenceInvoker(inference).WithRunCeilings(1, 1)
 	run := automation.Run{ID: uuid.NewString()}
 	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, Prompt: "prompt", Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}}
 	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID}
@@ -147,7 +148,7 @@ func TestGraphContextAutomationUpdatesConditionTarget(t *testing.T) {
 	edge2 := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry2.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 2}}
 	graphs := &automationE2EGraph{nodes: map[string]graph.Node{journal.ID.String(): journal, entry.ID.String(): entry, entry2.ID.String(): entry2}, edges: []graph.Edge{edge, edge2}}
 	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
-	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference)
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
 	def := automation.Definition{ID: "daily", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Trigger: automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"JournalEntry"}}, Condition: automation.Condition{GQL: "MATCH (journal:Journal)-[r:HAS_ENTRY]->(changed:JournalEntry) RETURN changed, journal"}, Input: automation.Input{Target: "journal", Mode: automation.InputModeGQLTemplate, Template: "# {{journal.properties.date}}\n{{#each entries}}- {{entry.payload.text}}\n{{/each}}", Context: map[string]automation.ContextQuery{"entries": {GQL: "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry ORDER BY r.properties.position FETCH FIRST 20 ROWS ONLY", Limit: 20}}}, Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize journal", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "journal", Set: map[string]string{"payload.summary": "$result.text"}}}}}, Safety: automation.Safety{Idempotency: automation.Idempotency{Scope: "target", Target: "journal", SkipIfOutputUnchanged: true}}}
 	if err := store.PutDefinition(ctx, def); err != nil {
 		t.Fatal(err)
@@ -216,7 +217,7 @@ func TestGraphContextAutomationDebouncesByTarget(t *testing.T) {
 		{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry2.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 2}},
 	}}
 	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
-	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference)
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
 	mgr.now = func() time.Time { return base }
 	def := automation.Definition{ID: "daily-debounce", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Trigger: automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"JournalEntry"}}, Condition: automation.Condition{GQL: "MATCH (journal:Journal)-[:HAS_ENTRY]->(changed:JournalEntry) RETURN changed, journal"}, Input: automation.Input{Target: "journal", Mode: automation.InputModeGQLTemplate, Template: "{{#each entries}}{{entry.payload.text}}\n{{/each}}", Context: map[string]automation.ContextQuery{"entries": {GQL: "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry ORDER BY r.properties.position FETCH FIRST 20 ROWS ONLY", Limit: 20}}}, Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize journal", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "journal", Set: map[string]string{"payload.summary": "$result.text"}}}}}, Safety: automation.Safety{Debounce: &automation.Debounce{Duration: "30s", CoalesceBy: "journal"}}}
 	if err := store.PutDefinition(ctx, def); err != nil {
@@ -266,7 +267,7 @@ func TestGraphAutomationExecutesThroughInferenceEndToEnd(t *testing.T) {
 	node := graph.Node{ID: graph.NodeID(nodeID), DomainID: ids.domainID, Labels: []string{"Page"}, Properties: map[string]any{"title": "Hello"}, Payload: map[string]any{"text": "World"}}
 	graphs := &automationE2EGraph{node: node}
 	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
-	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceManager(inference)
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
 	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Trigger: automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}}, Condition: automation.Condition{GQL: "MATCH (changed:Page) RETURN changed"}, Input: automation.Input{Target: "changed", Fields: []string{"properties.title", "payload.text"}}, Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}}}
 	if err := store.PutDefinition(ctx, def); err != nil {
 		t.Fatal(err)
