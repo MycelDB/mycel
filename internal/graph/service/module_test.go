@@ -902,7 +902,7 @@ func TestModuleReplaceReferencesReconcilesOutgoingReferenceSet(t *testing.T) {
 		t.Fatalf("CreateEdge(source->c other) error = %v", err)
 	}
 
-	result, err := m.ReplaceReferences(ctx, tx, domaingraph.ReplaceReferencesInput{
+	replacement := domaingraph.ReplaceReferencesInput{
 		SourceNodeID: source.ID.String(),
 		Labels:       []string{"REFERENCES"},
 		Mode:         domaingraph.ReferenceReplacementModeReplace,
@@ -910,7 +910,8 @@ func TestModuleReplaceReferencesReconcilesOutgoingReferenceSet(t *testing.T) {
 			{TargetNodeID: targetA.ID.String(), Properties: map[string]any{"count": 2}, HasProps: true},
 			{TargetNodeID: targetC.ID.String(), Properties: map[string]any{"count": 1}, HasProps: true},
 		},
-	})
+	}
+	result, err := m.ReplaceReferences(ctx, tx, replacement)
 	if err != nil {
 		t.Fatalf("ReplaceReferences() error = %v", err)
 	}
@@ -930,15 +931,7 @@ func TestModuleReplaceReferencesReconcilesOutgoingReferenceSet(t *testing.T) {
 		t.Fatalf("non-matching edge should remain: %v", err)
 	}
 
-	noop, err := m.ReplaceReferences(ctx, tx, domaingraph.ReplaceReferencesInput{
-		SourceNodeID: source.ID.String(),
-		Labels:       []string{"REFERENCES"},
-		Mode:         domaingraph.ReferenceReplacementModeReplace,
-		Targets: []domaingraph.ReferenceTargetInput{
-			{TargetNodeID: targetA.ID.String(), Properties: map[string]any{"count": 2}, HasProps: true},
-			{TargetNodeID: targetC.ID.String(), Properties: map[string]any{"count": 1}, HasProps: true},
-		},
-	})
+	noop, err := m.ReplaceReferences(ctx, tx, replacement)
 	if err != nil {
 		t.Fatalf("ReplaceReferences(noop) error = %v", err)
 	}
