@@ -16,7 +16,7 @@ import (
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
 	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
-	schemaservice "github.com/myceldb/mycel/internal/schema/service"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
@@ -42,7 +42,7 @@ func (m *AutomationManager) conditionSchemaContext(ctx context.Context, tx sessi
 	if err == nil {
 		return analysis.SchemaContext{Schema: &schemaDoc}, nil
 	}
-	if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+	if errors.Is(err, schemamodel.ErrNotFound) {
 		return analysis.SchemaContext{}, nil
 	}
 	return analysis.SchemaContext{}, err

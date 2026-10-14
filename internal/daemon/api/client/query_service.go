@@ -809,7 +809,7 @@ func (s *QueryService) schemaContext(ctx context.Context, tx sessionmodel.GraphT
 		return analysis.SchemaContext{}, status.Error(codes.InvalidArgument, "invalid transaction domain id")
 	}
 	schemaDoc, err := s.schemas.GetDomainSchema(ctx, domaingraph.DomainID(domainID))
-	if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+	if errors.Is(err, schemamodel.ErrNotFound) {
 		return analysis.SchemaContext{}, nil
 	}
 	if err != nil {

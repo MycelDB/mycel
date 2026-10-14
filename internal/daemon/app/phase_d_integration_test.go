@@ -304,7 +304,7 @@ func (c *phaseDIntegrationCluster) newNode(ctx context.Context, t *testing.T, id
 	if result := node.semantic.Init(ctx, host); !result.OK {
 		t.Fatalf("semantic Init(%d): %v", id, result.Error)
 	}
-	node.graph.SetSchemaManager(node.schema.SchemaManager)
+	node.graph.SetSchemaValidator(node.schema.SchemaManager)
 	node.graph.SetBlobReferenceChecker(node.blob)
 	return node
 }

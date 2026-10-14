@@ -2,14 +2,11 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"sync"
 
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	schema "github.com/myceldb/mycel/internal/schema/model"
 )
-
-var ErrNotFound = errors.New("schema not found")
 
 // Store persists active domain schemas.
 type Store interface {
@@ -38,7 +35,7 @@ func (s *MemoryStore) GetDomainSchema(ctx context.Context, domainID graph.Domain
 	defer s.mu.RUnlock()
 	value, ok := s.schemas[domainID]
 	if !ok {
-		return schema.DomainSchema{}, ErrNotFound
+		return schema.DomainSchema{}, schema.ErrNotFound
 	}
 	return cloneSchema(value), nil
 }
@@ -76,7 +73,7 @@ func (s *MemoryStore) DeleteDomainSchema(ctx context.Context, domainID graph.Dom
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.schemas[domainID]; !ok {
-		return ErrNotFound
+		return schema.ErrNotFound
 	}
 	delete(s.schemas, domainID)
 	return nil

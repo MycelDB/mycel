@@ -829,7 +829,7 @@ func (m *Module) schemaDirtyCooldownForTarget(reader semanticmaintenance.GraphRe
 			return fallback, nil
 		}
 		schema, err := m.schemaManager.GetDomainSchema(ctx, index.DomainID)
-		if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+		if errors.Is(err, schemamodel.ErrNotFound) {
 			return fallback, nil
 		}
 		if err != nil {

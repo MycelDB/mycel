@@ -11,8 +11,36 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
+
+func TestConditionSchemaContextLoadsDomainSchema(t *testing.T) {
+	domainID := graph.DomainID(uuid.New())
+	schema := schemamodel.DomainSchema{DomainID: domainID, Name: "condition-schema"}
+	mgr := NewManager(nil).WithSchemaReader(fakeConditionSchemaReader{schema: schema})
+
+	got, err := mgr.conditionSchemaContext(context.Background(), conditionTx(domainID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Schema == nil || got.Schema.Name != schema.Name {
+		t.Fatalf("unexpected schema context: %+v", got)
+	}
+}
+
+func TestConditionSchemaContextTreatsMissingSchemaAsAbsent(t *testing.T) {
+	domainID := graph.DomainID(uuid.New())
+	mgr := NewManager(nil).WithSchemaReader(fakeConditionSchemaReader{err: schemamodel.ErrNotFound})
+
+	got, err := mgr.conditionSchemaContext(context.Background(), conditionTx(domainID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Schema != nil {
+		t.Fatalf("expected empty schema context, got %+v", got)
+	}
+}
 
 func TestEvaluateConditionMatchesChangedRow(t *testing.T) {
 	domainID := graph.DomainID(uuid.New())
@@ -107,6 +135,15 @@ func TestEvaluateConditionFailsClosedOnMultipleChangedRows(t *testing.T) {
 
 func conditionTx(domainID graph.DomainID) sessionmodel.GraphTransaction {
 	return sessionmodel.GraphTransaction{ID: "tx", DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive}
+}
+
+type fakeConditionSchemaReader struct {
+	schema schemamodel.DomainSchema
+	err    error
+}
+
+func (f fakeConditionSchemaReader) GetDomainSchema(context.Context, graph.DomainID) (schemamodel.DomainSchema, error) {
+	return f.schema, f.err
 }
 
 type fakeConditionGraph struct {
