@@ -152,7 +152,7 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 	binding := automation.Binding{ID: "page-summary-binding", Version: 1, DomainID: domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: spaceID.String(), DomainID: domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "owner", OnBehalfOfPrincipalID: "owner", InferenceProfile: "summary"}}
 	pageID := graph.NodeID(uuid.New())
 	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
-		_, err := cluster.graphs[leaderID].CreateNode(ctx, tx, graphservice.NodeInput{NodeID: pageID.String(), Labels: []string{"Page"}, Payload: map[string]any{"text": "original"}, Properties: map[string]any{}})
+		_, err := cluster.graphs[leaderID].CreateNode(ctx, tx, graph.NodeInput{NodeID: pageID.String(), Labels: []string{"Page"}, Payload: map[string]any{"text": "original"}, Properties: map[string]any{}})
 		return err
 	})
 	cluster.enableGraphAutomationSinks()
@@ -171,7 +171,7 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 			return err
 		}
 		node.Payload["text"] = "updated before automation"
-		_, err = cluster.graphs[leaderID].UpdateNode(ctx, tx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
+		_, err = cluster.graphs[leaderID].UpdateNode(ctx, tx, graph.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
 		return err
 	})
 	cluster.waitForInvocationCount(t, domainID, 1)
@@ -190,7 +190,7 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 				node.Meta = map[string]any{}
 			}
 			node.Meta["automation"] = map[string]any{"automation_id": binding.ID, "generated": true}
-			_, err = cluster.graphs[leaderID].UpdateNode(ctx, tx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
+			_, err = cluster.graphs[leaderID].UpdateNode(ctx, tx, graph.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
 			return err
 		})
 		return nil
