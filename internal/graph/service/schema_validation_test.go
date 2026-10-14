@@ -11,7 +11,7 @@ import (
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	"github.com/myceldb/mycel/internal/schema/storage"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 func TestModuleSchemaValidationRejectsInvalidNode(t *testing.T) {
@@ -188,7 +188,7 @@ func TestModuleSchemaValidationWarnModeDoesNotReject(t *testing.T) {
 	}
 }
 
-func newSchemaValidatedModule(t *testing.T, mode schemamodel.SchemaMode) (*Module, daemonsession.GraphTransaction) {
+func newSchemaValidatedModule(t *testing.T, mode schemamodel.SchemaMode) (*Module, sessionmodel.GraphTransaction) {
 	t.Helper()
 	ctx := context.Background()
 	domainID := uuid.NewString()

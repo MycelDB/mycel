@@ -30,6 +30,7 @@ import (
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
@@ -150,7 +151,7 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 	procedure := automation.Procedure{ID: "page-summary", Version: 1, DomainID: domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"payload.text"}}, Inference: automation.InferenceRef{Operation: "chat", Profile: "summary"}, Prompt: "Summarize this page", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.summary": "$result.text"}}}}}, Safety: automation.Safety{Idempotency: automation.Idempotency{SkipIfOutputUnchanged: true}}}
 	binding := automation.Binding{ID: "page-summary-binding", Version: 1, DomainID: domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: spaceID.String(), DomainID: domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "owner", OnBehalfOfPrincipalID: "owner", InferenceProfile: "summary"}}
 	pageID := graph.NodeID(uuid.New())
-	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionservice.GraphTransaction) error {
+	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
 		_, err := cluster.graphs[leaderID].CreateNode(ctx, tx, graphservice.NodeInput{NodeID: pageID.String(), Labels: []string{"Page"}, Payload: map[string]any{"text": "original"}, Properties: map[string]any{}})
 		return err
 	})
@@ -164,7 +165,7 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 			t.Fatalf("seed binding: %v", err)
 		}
 	}
-	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionservice.GraphTransaction) error {
+	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
 		node, err := cluster.graphs[leaderID].GetNode(ctx, tx, pageID.String())
 		if err != nil {
 			return err
@@ -176,7 +177,7 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 	cluster.waitForInvocationCount(t, domainID, 1)
 	leaderID = cluster.leaderForSpace(t, spaceID)
 	inference.onFirstInvoke = func(ctx context.Context) error {
-		cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionservice.GraphTransaction) error {
+		cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
 			node, err := cluster.graphs[leaderID].GetNode(ctx, tx, pageID.String())
 			if err != nil {
 				return err
@@ -699,7 +700,7 @@ func TestAutomationOutputIdempotencyKeyDetectsExistingGraphOutput(t *testing.T) 
 		t.Fatalf("output idempotency key must be invocation-stable across runs: %q %q", keyFirst, keySecond)
 	}
 	graphs := &automationE2EGraph{node: graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Meta: map[string]any{"automation": map[string]any{"output_idempotency_key": keyFirst}}}}
-	applied, err := (actions.Engine{Graphs: graphs}).OutputAlreadyApplied(ctx, sessionservice.GraphTransaction{}, keySecond)
+	applied, err := (actions.Engine{Graphs: graphs}).OutputAlreadyApplied(ctx, sessionmodel.GraphTransaction{}, keySecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1020,29 +1021,29 @@ func (c automationGraphExecutionRaftCluster) enableGraphAutomationSinks() {
 	}
 }
 
-func (c automationGraphExecutionRaftCluster) beginReadOnlyTransaction(t *testing.T, ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID) sessionservice.GraphTransaction {
+func (c automationGraphExecutionRaftCluster) beginReadOnlyTransaction(t *testing.T, ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID) sessionmodel.GraphTransaction {
 	t.Helper()
-	sess, err := c.sessions[nodeID].OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: "reader", SpaceID: spaceID.String(), DomainID: domainID.String()})
+	sess, err := c.sessions[nodeID].OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "reader", SpaceID: spaceID.String(), DomainID: domainID.String()})
 	if err != nil {
 		t.Fatalf("OpenSession(read): %v", err)
 	}
-	tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: "reader", SessionID: sess.ID, Mode: sessionservice.TransactionModeReadOnly})
+	tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "reader", SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly})
 	if err != nil {
 		t.Fatalf("BeginTransaction(read): %v", err)
 	}
 	return tx
 }
 
-func (c automationGraphExecutionRaftCluster) commitGraphMutation(t *testing.T, ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID, mutate func(sessionservice.GraphTransaction) error) {
+func (c automationGraphExecutionRaftCluster) commitGraphMutation(t *testing.T, ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID, mutate func(sessionmodel.GraphTransaction) error) {
 	t.Helper()
 	const maxAttempts = 8
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		sess, err := c.sessions[nodeID].OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: "operator", SpaceID: spaceID.String(), DomainID: domainID.String()})
+		sess, err := c.sessions[nodeID].OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "operator", SpaceID: spaceID.String(), DomainID: domainID.String()})
 		if err != nil {
 			t.Fatalf("OpenSession(write): %v", err)
 		}
-		tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: "operator", SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite})
+		tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "operator", SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadWrite})
 		if err != nil {
 			t.Fatalf("BeginTransaction(write): %v", err)
 		}

@@ -7,7 +7,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 const ModuleName = "graph"
@@ -22,33 +22,33 @@ var (
 )
 
 type Manager interface {
-	GetNode(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string) (domaingraph.Node, error)
-	ListNodes(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Node, string, error)
-	CreateNode(ctx context.Context, tx daemonsession.GraphTransaction, input NodeInput) (domaingraph.Node, error)
-	UpdateNode(ctx context.Context, tx daemonsession.GraphTransaction, input UpdateNodeInput) (domaingraph.Node, error)
-	UpsertNode(ctx context.Context, tx daemonsession.GraphTransaction, input NodeInput) (domaingraph.Node, error)
-	DeleteNode(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string, recursive bool) ([]string, []string, error)
+	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (domaingraph.Node, error)
+	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Node, string, error)
+	CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input NodeInput) (domaingraph.Node, error)
+	UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input UpdateNodeInput) (domaingraph.Node, error)
+	UpsertNode(ctx context.Context, tx sessionmodel.GraphTransaction, input NodeInput) (domaingraph.Node, error)
+	DeleteNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string, recursive bool) ([]string, []string, error)
 
-	GetEdge(ctx context.Context, tx daemonsession.GraphTransaction, edgeID string) (domaingraph.Edge, error)
-	ListEdges(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error)
-	CreateEdge(ctx context.Context, tx daemonsession.GraphTransaction, input EdgeInput) (domaingraph.Edge, error)
-	UpdateEdge(ctx context.Context, tx daemonsession.GraphTransaction, input UpdateEdgeInput) (domaingraph.Edge, error)
-	DeleteEdge(ctx context.Context, tx daemonsession.GraphTransaction, edgeID string) (string, error)
-	ListChildren(ctx context.Context, tx daemonsession.GraphTransaction, parentNodeID string) ([]domaingraph.Edge, error)
-	GetParent(ctx context.Context, tx daemonsession.GraphTransaction, childNodeID string) (*domaingraph.Edge, error)
-	MoveSubtree(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string, newParentNodeID string, order *int32) (domaingraph.Edge, error)
-	ReorderChildren(ctx context.Context, tx daemonsession.GraphTransaction, parentNodeID string, childNodeIDs []string) ([]domaingraph.Edge, error)
-	ReplaceReferences(ctx context.Context, tx daemonsession.GraphTransaction, input ReplaceReferencesInput) (ReplaceReferencesResult, error)
+	GetEdge(ctx context.Context, tx sessionmodel.GraphTransaction, edgeID string) (domaingraph.Edge, error)
+	ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error)
+	CreateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input EdgeInput) (domaingraph.Edge, error)
+	UpdateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input UpdateEdgeInput) (domaingraph.Edge, error)
+	DeleteEdge(ctx context.Context, tx sessionmodel.GraphTransaction, edgeID string) (string, error)
+	ListChildren(ctx context.Context, tx sessionmodel.GraphTransaction, parentNodeID string) ([]domaingraph.Edge, error)
+	GetParent(ctx context.Context, tx sessionmodel.GraphTransaction, childNodeID string) (*domaingraph.Edge, error)
+	MoveSubtree(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string, newParentNodeID string, order *int32) (domaingraph.Edge, error)
+	ReorderChildren(ctx context.Context, tx sessionmodel.GraphTransaction, parentNodeID string, childNodeIDs []string) ([]domaingraph.Edge, error)
+	ReplaceReferences(ctx context.Context, tx sessionmodel.GraphTransaction, input ReplaceReferencesInput) (ReplaceReferencesResult, error)
 
 	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
-	CommitTransactionGraph(ctx context.Context, tx daemonsession.GraphTransaction) (CommitResult, error)
+	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (CommitResult, error)
 	DiscardTransactionGraph(ctx context.Context, transactionID string)
-	ConfigureIndexes(ctx context.Context, tx daemonsession.GraphTransaction, schemaHash string, indexes []schemamodel.IndexDefinition) error
-	ScanLabel(ctx context.Context, tx daemonsession.GraphTransaction, scan LabelScan) ([]domaingraph.Node, string, IndexedReadStats, error)
-	ScanTag(ctx context.Context, tx daemonsession.GraphTransaction, scan TagScan) ([]domaingraph.Node, string, IndexedReadStats, error)
-	ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.GraphTransaction, scan OrderedNodePropertyScan) ([]domaingraph.Node, string, IndexedReadStats, error)
-	ScanAdjacency(ctx context.Context, tx daemonsession.GraphTransaction, scan AdjacencyScan) ([]domaingraph.Edge, string, IndexedReadStats, error)
-	ScanSubtree(ctx context.Context, tx daemonsession.GraphTransaction, scan SubtreeScan) (SubtreeResult, IndexedReadStats, error)
+	ConfigureIndexes(ctx context.Context, tx sessionmodel.GraphTransaction, schemaHash string, indexes []schemamodel.IndexDefinition) error
+	ScanLabel(ctx context.Context, tx sessionmodel.GraphTransaction, scan LabelScan) ([]domaingraph.Node, string, IndexedReadStats, error)
+	ScanTag(ctx context.Context, tx sessionmodel.GraphTransaction, scan TagScan) ([]domaingraph.Node, string, IndexedReadStats, error)
+	ScanNodePropertyOrdered(ctx context.Context, tx sessionmodel.GraphTransaction, scan OrderedNodePropertyScan) ([]domaingraph.Node, string, IndexedReadStats, error)
+	ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransaction, scan AdjacencyScan) ([]domaingraph.Edge, string, IndexedReadStats, error)
+	ScanSubtree(ctx context.Context, tx sessionmodel.GraphTransaction, scan SubtreeScan) (SubtreeResult, IndexedReadStats, error)
 	BlobRefCount(ctx context.Context, spaceID string, blobID string) (int, error)
 }
 

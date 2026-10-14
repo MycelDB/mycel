@@ -12,7 +12,7 @@ import (
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
 	planmodel "github.com/myceldb/mycel/internal/query/gql/planning/model"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 const contextQueryMaxRows = 500
@@ -23,7 +23,7 @@ type inputContextResult struct {
 	Summaries   map[string]automation.RunContextSummary
 }
 
-func (m *AutomationManager) evaluateInputContext(ctx context.Context, tx sessionservice.GraphTransaction, def automation.Definition, changedAliases map[string]any) (inputContextResult, error) {
+func (m *AutomationManager) evaluateInputContext(ctx context.Context, tx sessionmodel.GraphTransaction, def automation.Definition, changedAliases map[string]any) (inputContextResult, error) {
 	if len(def.Input.Context) == 0 {
 		return inputContextResult{}, nil
 	}
@@ -53,7 +53,7 @@ func (m *AutomationManager) evaluateInputContext(ctx context.Context, tx session
 	return inputContextResult{Collections: collections, Summaries: summaries}, nil
 }
 
-func (m *AutomationManager) evaluateOneInputContext(ctx context.Context, tx sessionservice.GraphTransaction, schemaCtx analysis.SchemaContext, aliases map[string]any, query automation.ContextQuery) ([]map[string]any, automation.RunContextSummary, error) {
+func (m *AutomationManager) evaluateOneInputContext(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, aliases map[string]any, query automation.ContextQuery) ([]map[string]any, automation.RunContextSummary, error) {
 	limit := query.Limit
 	if limit <= 0 || limit > contextQueryMaxRows {
 		limit = contextQueryMaxRows

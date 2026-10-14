@@ -10,6 +10,7 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -141,17 +142,17 @@ func (s *MetadataCatalogService) ListPropertyNames(ctx context.Context, req *cli
 	return &clientv1.ListPropertyNamesResponse{Properties: page, NextPageToken: next, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
 }
 
-func (s *MetadataCatalogService) readableTransaction(ctx context.Context, transactionID string) (daemonsession.GraphTransaction, error) {
+func (s *MetadataCatalogService) readableTransaction(ctx context.Context, transactionID string) (sessionmodel.GraphTransaction, error) {
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
-		return daemonsession.GraphTransaction{}, err
+		return sessionmodel.GraphTransaction{}, err
 	}
 	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, transactionID)
 	if err != nil {
-		return daemonsession.GraphTransaction{}, mapSessionError(err, "metadata catalog")
+		return sessionmodel.GraphTransaction{}, mapSessionError(err, "metadata catalog")
 	}
-	if tx.State != daemonsession.TransactionStateActive {
-		return daemonsession.GraphTransaction{}, status.Error(codes.FailedPrecondition, "transaction is not active")
+	if tx.State != sessionmodel.TransactionStateActive {
+		return sessionmodel.GraphTransaction{}, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	return tx, nil
 }

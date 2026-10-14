@@ -15,6 +15,7 @@ import (
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -59,7 +60,7 @@ func (s *ImportExportService) ExportDomain(req *clientv1.ExportDomainRequest, st
 	if err != nil {
 		return mapSessionError(err, "export domain")
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	format := req.GetFormat()
@@ -109,7 +110,7 @@ func (s *ImportExportService) ImportDomain(stream clientv1.ImportExportService_I
 		return err
 	}
 	var metadata *clientv1.ImportDomainMetadata
-	var tx *daemonsession.GraphTransaction
+	var tx *sessionmodel.GraphTransaction
 	state := newImportState()
 	summary := &clientv1.ImportSummary{}
 	for {
@@ -178,13 +179,13 @@ type pendingImportBlob struct {
 
 func newImportState() *importState { return &importState{blobs: map[string]*pendingImportBlob{}} }
 
-func (s *ImportExportService) importTransaction(ctx context.Context, userID string, metadata *clientv1.ImportDomainMetadata) (daemonsession.GraphTransaction, error) {
+func (s *ImportExportService) importTransaction(ctx context.Context, userID string, metadata *clientv1.ImportDomainMetadata) (sessionmodel.GraphTransaction, error) {
 	format := metadata.GetFormat()
 	if format == clientv1.DomainImportFormat_DOMAIN_IMPORT_FORMAT_UNSPECIFIED {
 		format = clientv1.DomainImportFormat_DOMAIN_IMPORT_FORMAT_MYCEL_STREAM
 	}
 	if format != clientv1.DomainImportFormat_DOMAIN_IMPORT_FORMAT_MYCEL_STREAM {
-		return daemonsession.GraphTransaction{}, status.Error(codes.Unimplemented, "only MYCEL_STREAM import is currently implemented")
+		return sessionmodel.GraphTransaction{}, status.Error(codes.Unimplemented, "only MYCEL_STREAM import is currently implemented")
 	}
 	mode := metadata.GetMode()
 	if mode == clientv1.DomainImportMode_DOMAIN_IMPORT_MODE_UNSPECIFIED {
@@ -195,23 +196,23 @@ func (s *ImportExportService) importTransaction(ctx context.Context, userID stri
 	}
 	if s.router != nil {
 		if err := s.router.EnsureLocalTransaction(ctx, metadata.GetTransactionId()); err != nil {
-			return daemonsession.GraphTransaction{}, err
+			return sessionmodel.GraphTransaction{}, err
 		}
 	}
 	tx, err := s.sessions.GetTransaction(ctx, userID, metadata.GetTransactionId())
 	if err != nil {
-		return daemonsession.GraphTransaction{}, mapSessionError(err, "import domain")
+		return sessionmodel.GraphTransaction{}, mapSessionError(err, "import domain")
 	}
-	if tx.State != daemonsession.TransactionStateActive {
-		return daemonsession.GraphTransaction{}, status.Error(codes.FailedPrecondition, "transaction is not active")
+	if tx.State != sessionmodel.TransactionStateActive {
+		return sessionmodel.GraphTransaction{}, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
-	if tx.Mode != daemonsession.TransactionModeReadWrite {
-		return daemonsession.GraphTransaction{}, status.Error(codes.FailedPrecondition, "import requires a read-write transaction")
+	if tx.Mode != sessionmodel.TransactionModeReadWrite {
+		return sessionmodel.GraphTransaction{}, status.Error(codes.FailedPrecondition, "import requires a read-write transaction")
 	}
 	return tx, nil
 }
 
-func (s *ImportExportService) importRecord(ctx context.Context, tx daemonsession.GraphTransaction, metadata *clientv1.ImportDomainMetadata, record *clientv1.ImportExportRecord, state *importState, summary *clientv1.ImportSummary) error {
+func (s *ImportExportService) importRecord(ctx context.Context, tx sessionmodel.GraphTransaction, metadata *clientv1.ImportDomainMetadata, record *clientv1.ImportExportRecord, state *importState, summary *clientv1.ImportSummary) error {
 	if metadata.GetOptions().GetDryRun() {
 		switch record.GetRecord().(type) {
 		case *clientv1.ImportExportRecord_Node:
@@ -347,7 +348,7 @@ func (s *ImportExportService) exportBlobs(ctx context.Context, spaceID string, n
 	return nil
 }
 
-func (s *ImportExportService) createImportEdge(ctx context.Context, tx daemonsession.GraphTransaction, input daegraph.EdgeInput) (domaingraph.Edge, error) {
+func (s *ImportExportService) createImportEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input daegraph.EdgeInput) (domaingraph.Edge, error) {
 	var lastErr error
 	for attempt := 0; attempt < 40; attempt++ {
 		edge, err := s.graphs.CreateEdge(ctx, tx, input)
@@ -367,7 +368,7 @@ func (s *ImportExportService) createImportEdge(ctx context.Context, tx daemonses
 	return domaingraph.Edge{}, lastErr
 }
 
-func (s *ImportExportService) replaceDomain(ctx context.Context, tx daemonsession.GraphTransaction, summary *clientv1.ImportSummary) error {
+func (s *ImportExportService) replaceDomain(ctx context.Context, tx sessionmodel.GraphTransaction, summary *clientv1.ImportSummary) error {
 	edges, err := allExportEdges(ctx, s.graphs, tx)
 	if err != nil {
 		return mapGraphError(err, "replace domain list edges")
@@ -425,7 +426,7 @@ func edgeInputFromExportEdge(edge *clientv1.Edge, preserveIDs bool) daegraph.Edg
 	return input
 }
 
-func allExportNodes(ctx context.Context, graphs daegraph.Manager, tx daemonsession.GraphTransaction) ([]domaingraph.Node, error) {
+func allExportNodes(ctx context.Context, graphs daegraph.Manager, tx sessionmodel.GraphTransaction) ([]domaingraph.Node, error) {
 	all := []domaingraph.Node{}
 	token := ""
 	for {
@@ -445,7 +446,7 @@ func allExportNodes(ctx context.Context, graphs daegraph.Manager, tx daemonsessi
 	}
 }
 
-func allExportEdges(ctx context.Context, graphs daegraph.Manager, tx daemonsession.GraphTransaction) ([]domaingraph.Edge, error) {
+func allExportEdges(ctx context.Context, graphs daegraph.Manager, tx sessionmodel.GraphTransaction) ([]domaingraph.Edge, error) {
 	all := []domaingraph.Edge{}
 	token := ""
 	for {

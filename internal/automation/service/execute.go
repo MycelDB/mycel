@@ -18,7 +18,7 @@ import (
 	"github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 const automationActor = "automation"
@@ -46,7 +46,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		return run, nil
 	}
 	executionPrincipal := firstNonEmptyString(run.ActorPrincipalID, automationActor)
-	sess, err := m.sessions.OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: executionPrincipal, SpaceID: inv.SpaceID, DomainID: inv.DomainID.String()})
+	sess, err := m.sessions.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: executionPrincipal, SpaceID: inv.SpaceID, DomainID: inv.DomainID.String()})
 	if err != nil {
 		return run, err
 	}
@@ -54,7 +54,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	if err != nil {
 		return run, err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite, BaseRevision: &baseRevision})
+	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadWrite, BaseRevision: &baseRevision})
 	if err != nil {
 		return run, err
 	}
@@ -170,7 +170,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	return run, nil
 }
 
-func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.Context, executionPrincipal string, sess sessionservice.GraphSession, firstTx sessionservice.GraphTransaction, def automation.Definition, inv *automation.Invocation, run *automation.Run, firstNode graph.Node, firstAliases map[string]any, parsed autooutput.Result) (bool, error) {
+func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.Context, executionPrincipal string, sess sessionmodel.GraphSession, firstTx sessionmodel.GraphTransaction, def automation.Definition, inv *automation.Invocation, run *automation.Run, firstNode graph.Node, firstAliases map[string]any, parsed autooutput.Result) (bool, error) {
 	const maxAttempts = 3
 	engine := actions.Engine{Graphs: m.graphs}
 	tx := firstTx
@@ -240,34 +240,34 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 	return false, graphservice.ErrConflict
 }
 
-func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Context, executionPrincipal string, sess sessionservice.GraphSession, def automation.Definition, inv automation.Invocation, run *automation.Run) (sessionservice.GraphTransaction, graph.Node, map[string]any, error) {
+func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Context, executionPrincipal string, sess sessionmodel.GraphSession, def automation.Definition, inv automation.Invocation, run *automation.Run) (sessionmodel.GraphTransaction, graph.Node, map[string]any, error) {
 	baseRevision, err := m.graphs.CurrentRevision(ctx, inv.SpaceID)
 	if err != nil {
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite, BaseRevision: &baseRevision})
+	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadWrite, BaseRevision: &baseRevision})
 	if err != nil {
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	node, err := m.graphs.GetNode(ctx, tx, inv.ChangedElementID)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	condition, err := m.evaluateCondition(ctx, tx, def, node, inv.OldNode)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	if !condition.Matched {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, fmt.Errorf(conditionFalseReason)
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, fmt.Errorf(conditionFalseReason)
 	}
 	targetAlias := firstNonEmptyString(strings.TrimSpace(def.Input.Target), "changed")
 	targetNodeID, err := requireNodeAliasID(targetAlias, condition.Aliases, node)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	run.TargetAlias = targetAlias
 	run.TargetNodeID = targetNodeID
@@ -276,13 +276,13 @@ func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Contex
 		idempotencyTargetID, err := requireNodeAliasID(idempotencyAlias, condition.Aliases, node)
 		if err != nil {
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-			return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+			return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 		}
 		run.IdempotencyTargetNodeID = idempotencyTargetID
 	}
 	if err := preflightActionTargets(def, condition.Aliases, node); err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	return tx, node, condition.Aliases, nil
 }

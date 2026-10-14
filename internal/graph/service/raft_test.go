@@ -15,7 +15,7 @@ import (
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -127,7 +127,7 @@ func TestCommitTransactionGraphUsesRaftWhenEnabled(t *testing.T) {
 		t.Fatalf("commit=%#v", commit)
 	}
 	readTx := graphTx(spaceID, domainID, commit.CommittedRevision)
-	readTx.Mode = daemonsession.TransactionModeReadOnly
+	readTx.Mode = sessionmodel.TransactionModeReadOnly
 	got, err := m.GetNode(ctx, readTx, node.ID.String())
 	if err != nil {
 		t.Fatalf("GetNode() error = %v", err)
@@ -200,7 +200,7 @@ func TestReadOnlyTransactionUsesLinearizableHistoricalSnapshot(t *testing.T) {
 	}
 
 	readOnly := graphTx(spaceID, domainID, firstCommit.CommittedRevision)
-	readOnly.Mode = daemonsession.TransactionModeReadOnly
+	readOnly.Mode = sessionmodel.TransactionModeReadOnly
 	if _, err := m.GetNode(ctx, readOnly, first.ID.String()); err != nil {
 		t.Fatalf("GetNode(first through read-only tx) error = %v", err)
 	}
@@ -838,7 +838,7 @@ func TestGraphRaftStateMachineAppliesCommit(t *testing.T) {
 	if err := (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err != nil {
 		t.Fatalf("ApplyCommand() error = %v", err)
 	}
-	tx := daemonsession.GraphTransaction{ID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, BaseRevision: 1}
+	tx := sessionmodel.GraphTransaction{ID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, BaseRevision: 1}
 	got, err := m.GetNode(ctx, tx, nodeID.String())
 	if err != nil {
 		t.Fatalf("GetNode() error = %v", err)

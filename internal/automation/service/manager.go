@@ -15,11 +15,9 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
 
 var ErrAutomationNotFound = errors.New("automation not found")
@@ -61,8 +59,8 @@ type Manager interface {
 type AutomationManager struct {
 	store                                 storage.Store
 	now                                   func() time.Time
-	sessions                              sessionservice.Manager
-	graphs                                graphservice.Manager
+	sessions                              SessionRuntime
+	graphs                                GraphRuntime
 	schemas                               schemaservice.Manager
 	inference                             inferenceservice.Manager
 	blobs                                 blobservice.Manager
@@ -96,7 +94,7 @@ func NewManager(store storage.Store) *AutomationManager {
 	return &AutomationManager{store: store, now: func() time.Time { return time.Now().UTC() }}
 }
 
-func (m *AutomationManager) WithGraphRuntime(sessions sessionservice.Manager, graphs graphservice.Manager) *AutomationManager {
+func (m *AutomationManager) WithGraphRuntime(sessions SessionRuntime, graphs GraphRuntime) *AutomationManager {
 	m.sessions = sessions
 	m.graphs = graphs
 	return m

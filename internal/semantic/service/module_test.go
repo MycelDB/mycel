@@ -20,7 +20,7 @@ import (
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 	"google.golang.org/grpc/codes"
@@ -405,7 +405,7 @@ func TestSemanticGraphReaderPinsReadOnlyTransactionToCurrentRevision(t *testing.
 		t.Fatalf("recorded tx count = %d, want 2", len(mgr.txs))
 	}
 	for _, tx := range mgr.txs {
-		if tx.Mode != daemonsession.TransactionModeReadOnly {
+		if tx.Mode != sessionmodel.TransactionModeReadOnly {
 			t.Fatalf("tx mode = %s, want read-only", tx.Mode)
 		}
 		if tx.BaseRevision != 42 {
@@ -438,29 +438,29 @@ func waitForStats(t *testing.T, m *Module, ok func(MaintenanceStats) bool) {
 
 type recordingRevisionGraphManager struct {
 	revision int64
-	txs      []daemonsession.GraphTransaction
+	txs      []sessionmodel.GraphTransaction
 }
 
 func (m *recordingRevisionGraphManager) CurrentDomainRevision(context.Context, string, string) (int64, error) {
 	return m.revision, nil
 }
 
-func (m *recordingRevisionGraphManager) GetNode(_ context.Context, tx daemonsession.GraphTransaction, _ string) (graph.Node, error) {
+func (m *recordingRevisionGraphManager) GetNode(_ context.Context, tx sessionmodel.GraphTransaction, _ string) (graph.Node, error) {
 	m.txs = append(m.txs, tx)
 	return graph.Node{}, nil
 }
 
-func (m *recordingRevisionGraphManager) ListNodes(_ context.Context, tx daemonsession.GraphTransaction, _ int, _ string) ([]graph.Node, string, error) {
+func (m *recordingRevisionGraphManager) ListNodes(_ context.Context, tx sessionmodel.GraphTransaction, _ int, _ string) ([]graph.Node, string, error) {
 	m.txs = append(m.txs, tx)
 	return nil, "", nil
 }
 
-func (m *recordingRevisionGraphManager) ListEdges(_ context.Context, tx daemonsession.GraphTransaction, _ int, _ string) ([]graph.Edge, string, error) {
+func (m *recordingRevisionGraphManager) ListEdges(_ context.Context, tx sessionmodel.GraphTransaction, _ int, _ string) ([]graph.Edge, string, error) {
 	m.txs = append(m.txs, tx)
 	return nil, "", nil
 }
 
-func (m *recordingRevisionGraphManager) GetParent(_ context.Context, tx daemonsession.GraphTransaction, _ string) (*graph.Edge, error) {
+func (m *recordingRevisionGraphManager) GetParent(_ context.Context, tx sessionmodel.GraphTransaction, _ string) (*graph.Edge, error) {
 	m.txs = append(m.txs, tx)
 	return nil, nil
 }

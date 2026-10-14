@@ -14,6 +14,7 @@ import (
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/graph/writetrace"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -181,7 +182,7 @@ func (s *GraphService) CreateBlobNode(stream clientv1.GraphService_CreateBlobNod
 	if err != nil {
 		return err
 	}
-	if tx.Mode != daemonsession.TransactionModeReadWrite {
+	if tx.Mode != sessionmodel.TransactionModeReadWrite {
 		return mapGraphError(daegraph.ErrReadOnly, "create blob node")
 	}
 	blob, err := s.blobs.UploadBlob(ctx, daemonblob.UploadInput{SpaceID: tx.SpaceID, DomainID: tx.DomainID, DeclaredMimeType: meta.GetDeclaredMimeType(), OriginalFilename: meta.GetOriginalFilename(), Reader: bytes.NewReader(buf.Bytes())})
@@ -560,7 +561,7 @@ func (s *GraphService) ApplyGraphOperations(ctx context.Context, req *clientv1.A
 	return res, nil
 }
 
-func (s *GraphService) applyOperation(ctx context.Context, tx daemonsession.GraphTransaction, op *clientv1.GraphOperation) (*clientv1.GraphOperationResult, error) {
+func (s *GraphService) applyOperation(ctx context.Context, tx sessionmodel.GraphTransaction, op *clientv1.GraphOperation) (*clientv1.GraphOperationResult, error) {
 	switch value := op.GetOperation().(type) {
 	case *clientv1.GraphOperation_CreateNode:
 		node, err := s.graphs.CreateNode(ctx, tx, nodeInputFromProto(value.CreateNode))
@@ -639,14 +640,14 @@ func (s *GraphService) applyOperation(ctx context.Context, tx daemonsession.Grap
 	}
 }
 
-func (s *GraphService) transaction(ctx context.Context, transactionID string) (daemonsession.GraphTransaction, error) {
+func (s *GraphService) transaction(ctx context.Context, transactionID string) (sessionmodel.GraphTransaction, error) {
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
-		return daemonsession.GraphTransaction{}, err
+		return sessionmodel.GraphTransaction{}, err
 	}
 	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, transactionID)
 	if err != nil {
-		return daemonsession.GraphTransaction{}, mapSessionError(err, "get transaction")
+		return sessionmodel.GraphTransaction{}, mapSessionError(err, "get transaction")
 	}
 	return tx, nil
 }

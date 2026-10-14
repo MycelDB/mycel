@@ -21,8 +21,7 @@ import (
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
-	schemamodel "github.com/myceldb/mycel/internal/schema/model"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -357,35 +356,17 @@ type automationE2ESessions struct {
 	domainID string
 }
 
-func (s automationE2ESessions) OpenSession(context.Context, sessionservice.OpenSessionInput) (sessionservice.GraphSession, error) {
-	return sessionservice.GraphSession{ID: "session", PrincipalID: automationActor, SpaceID: s.spaceID, DomainID: s.domainID, State: sessionservice.SessionStateActive}, nil
+func (s automationE2ESessions) OpenSession(context.Context, sessionmodel.OpenSessionInput) (sessionmodel.GraphSession, error) {
+	return sessionmodel.GraphSession{ID: "session", PrincipalID: automationActor, SpaceID: s.spaceID, DomainID: s.domainID, State: sessionmodel.SessionStateActive}, nil
 }
-func (s automationE2ESessions) GetSession(context.Context, string, string) (sessionservice.GraphSession, error) {
-	return sessionservice.GraphSession{}, nil
+func (s automationE2ESessions) BeginTransaction(context.Context, sessionmodel.BeginTransactionInput) (sessionmodel.GraphTransaction, error) {
+	return sessionmodel.GraphTransaction{ID: "tx", SessionID: "session", PrincipalID: automationActor, SpaceID: s.spaceID, DomainID: s.domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive}, nil
 }
-func (s automationE2ESessions) HeartbeatSession(context.Context, string, string, time.Duration) (sessionservice.GraphSession, error) {
-	return sessionservice.GraphSession{}, nil
+func (s automationE2ESessions) CommitTransactionAtRevision(context.Context, string, string, int32, int64) (sessionmodel.TransactionCommit, error) {
+	return sessionmodel.TransactionCommit{ID: "commit"}, nil
 }
-func (s automationE2ESessions) CloseSession(context.Context, string, string) (sessionservice.GraphSession, error) {
-	return sessionservice.GraphSession{}, nil
-}
-func (s automationE2ESessions) BeginTransaction(context.Context, sessionservice.BeginTransactionInput) (sessionservice.GraphTransaction, error) {
-	return sessionservice.GraphTransaction{ID: "tx", SessionID: "session", PrincipalID: automationActor, SpaceID: s.spaceID, DomainID: s.domainID, Mode: sessionservice.TransactionModeReadWrite, State: sessionservice.TransactionStateActive}, nil
-}
-func (s automationE2ESessions) GetTransaction(context.Context, string, string) (sessionservice.GraphTransaction, error) {
-	return sessionservice.GraphTransaction{}, nil
-}
-func (s automationE2ESessions) CommitTransaction(context.Context, string, string, int32) (sessionservice.TransactionCommit, error) {
-	return sessionservice.TransactionCommit{ID: "commit"}, nil
-}
-func (s automationE2ESessions) CommitTransactionAtRevision(context.Context, string, string, int32, int64) (sessionservice.TransactionCommit, error) {
-	return sessionservice.TransactionCommit{ID: "commit"}, nil
-}
-func (s automationE2ESessions) RollbackTransaction(context.Context, string, string) (sessionservice.GraphTransaction, error) {
-	return sessionservice.GraphTransaction{ID: "tx", State: sessionservice.TransactionStateRolledBack}, nil
-}
-func (s automationE2ESessions) CloseTransaction(context.Context, string, string) (sessionservice.GraphTransaction, error) {
-	return sessionservice.GraphTransaction{}, nil
+func (s automationE2ESessions) RollbackTransaction(context.Context, string, string) (sessionmodel.GraphTransaction, error) {
+	return sessionmodel.GraphTransaction{ID: "tx", State: sessionmodel.TransactionStateRolledBack}, nil
 }
 
 type automationE2EGraph struct {
@@ -405,7 +386,7 @@ func (g *automationE2EGraph) allNodes() []graph.Node {
 	return out
 }
 
-func (g *automationE2EGraph) GetNode(_ context.Context, _ sessionservice.GraphTransaction, id string) (graph.Node, error) {
+func (g *automationE2EGraph) GetNode(_ context.Context, _ sessionmodel.GraphTransaction, id string) (graph.Node, error) {
 	if len(g.nodes) != 0 {
 		if node, ok := g.nodes[id]; ok {
 			return node, nil
@@ -417,17 +398,17 @@ func (g *automationE2EGraph) GetNode(_ context.Context, _ sessionservice.GraphTr
 	}
 	return g.node, nil
 }
-func (g *automationE2EGraph) ListNodes(_ context.Context, _ sessionservice.GraphTransaction, _ int, token string) ([]graph.Node, string, error) {
+func (g *automationE2EGraph) ListNodes(_ context.Context, _ sessionmodel.GraphTransaction, _ int, token string) ([]graph.Node, string, error) {
 	if token != "" {
 		return nil, "", nil
 	}
 	return g.allNodes(), "", nil
 }
-func (g *automationE2EGraph) CreateNode(context.Context, sessionservice.GraphTransaction, graphservice.NodeInput) (graph.Node, error) {
+func (g *automationE2EGraph) CreateNode(context.Context, sessionmodel.GraphTransaction, graphservice.NodeInput) (graph.Node, error) {
 	return graph.Node{}, fmt.Errorf("unused")
 }
-func (g *automationE2EGraph) UpdateNode(_ context.Context, _ sessionservice.GraphTransaction, in graphservice.UpdateNodeInput) (graph.Node, error) {
-	node, err := g.GetNode(context.Background(), sessionservice.GraphTransaction{}, in.NodeID)
+func (g *automationE2EGraph) UpdateNode(_ context.Context, _ sessionmodel.GraphTransaction, in graphservice.UpdateNodeInput) (graph.Node, error) {
+	node, err := g.GetNode(context.Background(), sessionmodel.GraphTransaction{}, in.NodeID)
 	if err != nil {
 		return graph.Node{}, err
 	}
@@ -446,63 +427,21 @@ func (g *automationE2EGraph) UpdateNode(_ context.Context, _ sessionservice.Grap
 	}
 	return node, nil
 }
-func (g *automationE2EGraph) UpsertNode(context.Context, sessionservice.GraphTransaction, graphservice.NodeInput) (graph.Node, error) {
-	return graph.Node{}, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) DeleteNode(context.Context, sessionservice.GraphTransaction, string, bool) ([]string, []string, error) {
-	return nil, nil, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) GetEdge(context.Context, sessionservice.GraphTransaction, string) (graph.Edge, error) {
-	return graph.Edge{}, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) ListEdges(_ context.Context, _ sessionservice.GraphTransaction, _ int, token string) ([]graph.Edge, string, error) {
+func (g *automationE2EGraph) ListEdges(_ context.Context, _ sessionmodel.GraphTransaction, _ int, token string) ([]graph.Edge, string, error) {
 	if token != "" {
 		return nil, "", nil
 	}
 	return g.edges, "", nil
 }
-func (g *automationE2EGraph) CreateEdge(context.Context, sessionservice.GraphTransaction, graphservice.EdgeInput) (graph.Edge, error) {
+func (g *automationE2EGraph) CreateEdge(context.Context, sessionmodel.GraphTransaction, graphservice.EdgeInput) (graph.Edge, error) {
 	return graph.Edge{}, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) UpdateEdge(context.Context, sessionservice.GraphTransaction, graphservice.UpdateEdgeInput) (graph.Edge, error) {
-	return graph.Edge{}, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) DeleteEdge(context.Context, sessionservice.GraphTransaction, string) (string, error) {
-	return "", fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) ListChildren(context.Context, sessionservice.GraphTransaction, string) ([]graph.Edge, error) {
-	return nil, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) GetParent(context.Context, sessionservice.GraphTransaction, string) (*graph.Edge, error) {
-	return nil, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) MoveSubtree(context.Context, sessionservice.GraphTransaction, string, string, *int32) (graph.Edge, error) {
-	return graph.Edge{}, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) ReorderChildren(context.Context, sessionservice.GraphTransaction, string, []string) ([]graph.Edge, error) {
-	return nil, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) ReplaceReferences(context.Context, sessionservice.GraphTransaction, graphservice.ReplaceReferencesInput) (graphservice.ReplaceReferencesResult, error) {
-	return graphservice.ReplaceReferencesResult{}, fmt.Errorf("unused")
 }
 func (g *automationE2EGraph) CurrentRevision(context.Context, string) (int64, error) { return 1, nil }
-func (g *automationE2EGraph) CommitTransactionGraph(context.Context, sessionservice.GraphTransaction) (graphservice.CommitResult, error) {
+func (g *automationE2EGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphservice.CommitResult, error) {
 	return graphservice.CommitResult{OperationCount: 1, CommittedRevision: 1}, nil
 }
 func (g *automationE2EGraph) DiscardTransactionGraph(context.Context, string) {}
-func (g *automationE2EGraph) ConfigureIndexes(context.Context, sessionservice.GraphTransaction, string, []schemamodel.IndexDefinition) error {
-	return nil
-}
-func (g *automationE2EGraph) ScanLabel(context.Context, sessionservice.GraphTransaction, graphservice.LabelScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
-	return nil, "", graphservice.IndexedReadStats{}, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) ScanTag(context.Context, sessionservice.GraphTransaction, graphservice.TagScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
-	return nil, "", graphservice.IndexedReadStats{}, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) ScanNodePropertyOrdered(context.Context, sessionservice.GraphTransaction, graphservice.OrderedNodePropertyScan) ([]graph.Node, string, graphservice.IndexedReadStats, error) {
-	return nil, "", graphservice.IndexedReadStats{}, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) ScanAdjacency(_ context.Context, _ sessionservice.GraphTransaction, scan graphservice.AdjacencyScan) ([]graph.Edge, string, graphservice.IndexedReadStats, error) {
+func (g *automationE2EGraph) ScanAdjacency(_ context.Context, _ sessionmodel.GraphTransaction, scan graphservice.AdjacencyScan) ([]graph.Edge, string, graphservice.IndexedReadStats, error) {
 	if scan.Cursor != "" {
 		return nil, "", graphservice.IndexedReadStats{}, nil
 	}
@@ -523,12 +462,6 @@ func (g *automationE2EGraph) ScanAdjacency(_ context.Context, _ sessionservice.G
 		}
 	}
 	return out, "", graphservice.IndexedReadStats{}, nil
-}
-func (g *automationE2EGraph) ScanSubtree(context.Context, sessionservice.GraphTransaction, graphservice.SubtreeScan) (graphservice.SubtreeResult, graphservice.IndexedReadStats, error) {
-	return graphservice.SubtreeResult{}, graphservice.IndexedReadStats{}, fmt.Errorf("unused")
-}
-func (g *automationE2EGraph) BlobRefCount(context.Context, string, string) (int, error) {
-	return 0, nil
 }
 
 func stringSliceContains(values []string, want string) bool {
