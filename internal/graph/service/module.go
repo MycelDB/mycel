@@ -30,7 +30,6 @@ import (
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
-	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
@@ -45,7 +44,7 @@ type Module struct {
 	overlays                       map[string]*overlay
 	changeSink                     graphchange.Sink
 	raftApplyChangeSink            graphchange.Sink
-	schemaManager                  schemaservice.Manager
+	schemaValidator                SchemaValidator
 	blobRefs                       BlobReferenceChecker
 	automationOutputFenceValidator AutomationOutputFenceValidator
 	lastGraphChangeSinkErr         error
@@ -118,10 +117,10 @@ type BlobReferenceChecker interface {
 	EnsureBlobReference(ctx context.Context, spaceID string, blobID string) error
 }
 
-func (m *Module) SetSchemaManager(manager schemaservice.Manager) {
+func (m *Module) SetSchemaValidator(validator SchemaValidator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.schemaManager = manager
+	m.schemaValidator = validator
 }
 
 func (m *Module) SetBlobReferenceChecker(checker BlobReferenceChecker) {
@@ -155,7 +154,7 @@ func (m *Module) validateBlobReferences(ctx context.Context, spaceID string, nod
 
 func (m *Module) validateSchemaNode(ctx context.Context, node domaingraph.Node) error {
 	m.mu.Lock()
-	manager := m.schemaManager
+	manager := m.schemaValidator
 	m.mu.Unlock()
 	if manager == nil {
 		return nil
@@ -172,11 +171,11 @@ func (m *Module) validateSchemaNode(ctx context.Context, node domaingraph.Node) 
 
 func (m *Module) hierarchyEdgeLabelsForMutation(ctx context.Context, domainID domaingraph.DomainID) ([]string, error) {
 	m.mu.Lock()
-	manager := m.schemaManager
+	manager := m.schemaValidator
 	m.mu.Unlock()
 	if manager != nil {
 		schema, err := manager.GetDomainSchema(ctx, domainID)
-		if err != nil && !errors.Is(err, schemaservice.ErrSchemaNotFound) {
+		if err != nil && !errors.Is(err, schemamodel.ErrNotFound) {
 			return nil, err
 		}
 		if err == nil {
@@ -195,7 +194,7 @@ func (m *Module) hierarchyEdgeLabelsForMutation(ctx context.Context, domainID do
 
 func (m *Module) hierarchyPolicyForLabels(ctx context.Context, domainID domaingraph.DomainID, labels []string) (*schemamodel.HierarchyPolicy, error) {
 	m.mu.Lock()
-	manager := m.schemaManager
+	manager := m.schemaValidator
 	m.mu.Unlock()
 	if manager == nil {
 		if hasEdgeLabel(labels, "contains") {
@@ -206,7 +205,7 @@ func (m *Module) hierarchyPolicyForLabels(ctx context.Context, domainID domaingr
 	matchedSchema := false
 	for _, label := range labels {
 		types, err := manager.ResolveEdgeLabel(ctx, domainID, label)
-		if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+		if errors.Is(err, schemamodel.ErrNotFound) {
 			if hasEdgeLabel(labels, "contains") {
 				return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
 			}
@@ -236,7 +235,7 @@ func (m *Module) hierarchyPolicyForLabels(ctx context.Context, domainID domaingr
 
 func (m *Module) validateSchemaEdge(ctx context.Context, edge domaingraph.Edge, from domaingraph.Node, to domaingraph.Node) error {
 	m.mu.Lock()
-	manager := m.schemaManager
+	manager := m.schemaValidator
 	m.mu.Unlock()
 	if manager == nil {
 		return nil
@@ -251,7 +250,7 @@ func (m *Module) validateSchemaEdge(ctx context.Context, edge domaingraph.Edge, 
 	return fmt.Errorf("%w: schema validation failed: %s", ErrInvalidInput, formatSchemaIssues(result.Issues))
 }
 
-func formatSchemaIssues(issues []schemaservice.ValidationIssue) string {
+func formatSchemaIssues(issues []schemamodel.ValidationIssue) string {
 	if len(issues) == 0 {
 		return "unknown schema validation error"
 	}
@@ -287,13 +286,6 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	m.checkpointPolicy = normalizeCheckpointPolicyConfig(m.checkpointPolicy)
 	m.loadRaftAppliedCommands()
-	if lookup, ok := host.(runtime.ServiceLookup); ok {
-		if schemaSvc, ok := lookup.Service(schemaservice.ModuleName); ok {
-			if manager, ok := schemaSvc.(schemaservice.Manager); ok {
-				m.schemaManager = manager
-			}
-		}
-	}
 	if provider, ok := host.(runtime.WALProvider); ok {
 		m.wal = provider.WALManager()
 		m.walProgress = provider.WALProgressStore()

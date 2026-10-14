@@ -17,7 +17,6 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
-	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 )
 
 var ErrAutomationNotFound = errors.New("automation not found")
@@ -61,7 +60,7 @@ type AutomationManager struct {
 	now                                   func() time.Time
 	sessions                              SessionRuntime
 	graphs                                GraphRuntime
-	schemas                               schemaservice.Manager
+	schemas                               SchemaReader
 	inference                             inferenceservice.Manager
 	blobs                                 blobservice.Manager
 	raftGroups                            *consensus.MultiGroup
@@ -110,7 +109,7 @@ func (m *AutomationManager) WithBlobManager(blobs blobservice.Manager) *Automati
 	return m
 }
 
-func (m *AutomationManager) WithSchemaManager(schemas schemaservice.Manager) *AutomationManager {
+func (m *AutomationManager) WithSchemaReader(schemas SchemaReader) *AutomationManager {
 	m.schemas = schemas
 	return m
 }

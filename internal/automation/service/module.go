@@ -12,7 +12,6 @@ import (
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
-	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 )
 
 const ModuleName = "automation"
@@ -33,7 +32,7 @@ type Module struct {
 	wg        sync.WaitGroup
 	sessions  SessionRuntime
 	graphs    GraphRuntime
-	schemas   schemaservice.Manager
+	schemas   SchemaReader
 	inference inferenceservice.Manager
 	blobs     blobservice.Manager
 	replayer  GraphChangeReplayer
@@ -51,7 +50,7 @@ func (m *Module) WithGraphRuntime(sessions SessionRuntime, graphs GraphRuntime) 
 	return m
 }
 
-func (m *Module) WithSchemaManager(schemas schemaservice.Manager) *Module {
+func (m *Module) WithSchemaReader(schemas SchemaReader) *Module {
 	m.schemas = schemas
 	return m
 }
@@ -107,7 +106,7 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 			return coreruntime.Abort(ModuleName, "quiesce", "register automation quiesce participant", err)
 		}
 	}
-	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaManager(m.schemas).WithInferenceManager(m.inference).WithBlobManager(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
+	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaReader(m.schemas).WithInferenceManager(m.inference).WithBlobManager(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
 	if gate, ok := host.(coreruntime.LocalWriteGate); ok {
 		m.AutomationManager.WithWriteAllowed(gate.RequireLocalWriteAllowed)
 	}

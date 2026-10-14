@@ -20,42 +20,13 @@ import (
 	"github.com/myceldb/mycel/internal/wal"
 )
 
-var ErrSchemaNotFound = storage.ErrNotFound
-
-type ValidationSeverity string
-
-const (
-	ValidationSeverityWarning ValidationSeverity = "warning"
-	ValidationSeverityError   ValidationSeverity = "error"
-)
-
-type ValidationIssue struct {
-	Severity ValidationSeverity
-	Path     string
-	Message  string
-}
-
-type ValidationResult struct {
-	Mode   schema.SchemaMode
-	Issues []ValidationIssue
-}
-
-func (r ValidationResult) Valid() bool {
-	for _, issue := range r.Issues {
-		if issue.Severity == ValidationSeverityError {
-			return false
-		}
-	}
-	return true
-}
-
 // Manager exposes schema lookup, resolution, and graph validation.
 type Manager interface {
 	GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schema.DomainSchema, error)
 	PutDomainSchema(ctx context.Context, schema schema.DomainSchema) error
 	DeleteDomainSchema(ctx context.Context, domainID graph.DomainID) error
-	ValidateNode(ctx context.Context, domainID graph.DomainID, node graph.Node) (ValidationResult, error)
-	ValidateEdge(ctx context.Context, domainID graph.DomainID, edge graph.Edge, from graph.Node, to graph.Node) (ValidationResult, error)
+	ValidateNode(ctx context.Context, domainID graph.DomainID, node graph.Node) (schema.ValidationResult, error)
+	ValidateEdge(ctx context.Context, domainID graph.DomainID, edge graph.Edge, from graph.Node, to graph.Node) (schema.ValidationResult, error)
 	PutDomainSchemaGWL(ctx context.Context, domainID graph.DomainID, source string) error
 	ResolveNodeLabel(ctx context.Context, domainID graph.DomainID, label string) ([]schema.NodeType, error)
 	ResolveEdgeLabel(ctx context.Context, domainID graph.DomainID, label string) ([]schema.EdgeType, error)
@@ -225,29 +196,29 @@ func (m *SchemaManager) compiledFor(ctx context.Context, domainID graph.DomainID
 	return compiled, nil
 }
 
-func (m *SchemaManager) ValidateNode(ctx context.Context, domainID graph.DomainID, node graph.Node) (ValidationResult, error) {
+func (m *SchemaManager) ValidateNode(ctx context.Context, domainID graph.DomainID, node graph.Node) (schema.ValidationResult, error) {
 	compiled, err := m.compiledFor(ctx, domainID)
-	if errors.Is(err, storage.ErrNotFound) {
-		return ValidationResult{Mode: schema.SchemaModePermissive}, nil
+	if errors.Is(err, schema.ErrNotFound) {
+		return schema.ValidationResult{Mode: schema.SchemaModePermissive}, nil
 	}
 	if err != nil {
-		return ValidationResult{}, err
+		return schema.ValidationResult{}, err
 	}
 	value := compiled.Schema
-	result := ValidationResult{Mode: value.Mode}
+	result := schema.ValidationResult{Mode: value.Mode}
 	matched := schemacompile.NodeTypesFor(compiled, node)
 	if len(node.Labels) == 0 && len(matched) == 0 {
 		return result, nil
 	}
 	for _, label := range node.Labels {
 		if _, ok := compiled.NodeTypesByLabel[label]; !ok {
-			result.add(value.Mode, "labels", fmt.Sprintf("unknown node label %q", label))
+			addValidationIssue(&result, value.Mode, "labels", fmt.Sprintf("unknown node label %q", label))
 		}
 	}
 	if rt, ok := graph.Property(node, "record_type"); ok {
 		if str, ok := rt.(string); ok {
 			if compiled.NodeTypesByRecordType[str] == nil {
-				result.add(value.Mode, "properties.record_type", fmt.Sprintf("unknown record_type %q", str))
+				addValidationIssue(&result, value.Mode, "properties.record_type", fmt.Sprintf("unknown record_type %q", str))
 			}
 		}
 	}
@@ -259,20 +230,20 @@ func (m *SchemaManager) ValidateNode(ctx context.Context, domainID graph.DomainI
 	return result, nil
 }
 
-func (m *SchemaManager) ValidateEdge(ctx context.Context, domainID graph.DomainID, edge graph.Edge, from graph.Node, to graph.Node) (ValidationResult, error) {
+func (m *SchemaManager) ValidateEdge(ctx context.Context, domainID graph.DomainID, edge graph.Edge, from graph.Node, to graph.Node) (schema.ValidationResult, error) {
 	compiled, err := m.compiledFor(ctx, domainID)
-	if errors.Is(err, storage.ErrNotFound) {
-		return ValidationResult{Mode: schema.SchemaModePermissive}, nil
+	if errors.Is(err, schema.ErrNotFound) {
+		return schema.ValidationResult{Mode: schema.SchemaModePermissive}, nil
 	}
 	if err != nil {
-		return ValidationResult{}, err
+		return schema.ValidationResult{}, err
 	}
 	value := compiled.Schema
-	result := ValidationResult{Mode: value.Mode}
+	result := schema.ValidationResult{Mode: value.Mode}
 	for _, label := range edge.Labels {
 		types, ok := compiled.EdgeTypesByLabel[label]
 		if !ok {
-			result.add(value.Mode, "labels", fmt.Sprintf("unknown edge label %q", label))
+			addValidationIssue(&result, value.Mode, "labels", fmt.Sprintf("unknown edge label %q", label))
 			continue
 		}
 		for _, et := range types {
@@ -280,28 +251,28 @@ func (m *SchemaManager) ValidateEdge(ctx context.Context, domainID graph.DomainI
 			validateFields(value.Mode, &result, "payload", et.Payload, edge.Payload)
 			validateFields(value.Mode, &result, "meta", et.Meta, edge.Meta)
 			if !endpointMatchesCompiled(compiled, et.From, from) {
-				result.add(value.Mode, "from", fmt.Sprintf("edge %q does not allow source node", label))
+				addValidationIssue(&result, value.Mode, "from", fmt.Sprintf("edge %q does not allow source node", label))
 			}
 			if !endpointMatchesCompiled(compiled, et.To, to) {
-				result.add(value.Mode, "to", fmt.Sprintf("edge %q does not allow target node", label))
+				addValidationIssue(&result, value.Mode, "to", fmt.Sprintf("edge %q does not allow target node", label))
 			}
 		}
 	}
 	return result, nil
 }
 
-func (r *ValidationResult) add(mode schema.SchemaMode, path, message string) {
-	severity := ValidationSeverityWarning
+func addValidationIssue(result *schema.ValidationResult, mode schema.SchemaMode, path, message string) {
+	severity := schema.ValidationSeverityWarning
 	if mode == schema.SchemaModeStrict {
-		severity = ValidationSeverityError
+		severity = schema.ValidationSeverityError
 	}
 	if mode == schema.SchemaModePermissive || mode == "" {
 		return
 	}
-	r.Issues = append(r.Issues, ValidationIssue{Severity: severity, Path: path, Message: message})
+	result.Issues = append(result.Issues, schema.ValidationIssue{Severity: severity, Path: path, Message: message})
 }
 
-func validateFields(mode schema.SchemaMode, result *ValidationResult, bucket string, specs []schema.FieldSpec, values map[string]any) {
+func validateFields(mode schema.SchemaMode, result *schema.ValidationResult, bucket string, specs []schema.FieldSpec, values map[string]any) {
 	if values == nil {
 		values = map[string]any{}
 	}
@@ -310,18 +281,18 @@ func validateFields(mode schema.SchemaMode, result *ValidationResult, bucket str
 		known[spec.Name] = spec
 		if spec.Required {
 			if _, ok := values[spec.Name]; !ok {
-				result.add(mode, bucket+"."+spec.Name, "required field is missing")
+				addValidationIssue(result, mode, bucket+"."+spec.Name, "required field is missing")
 			}
 		}
 	}
 	for name, value := range values {
 		spec, ok := known[name]
 		if !ok {
-			result.add(mode, bucket+"."+name, fmt.Sprintf("unknown field %q", name))
+			addValidationIssue(result, mode, bucket+"."+name, fmt.Sprintf("unknown field %q", name))
 			continue
 		}
 		if !valueMatches(spec, value) {
-			result.add(mode, bucket+"."+name, fmt.Sprintf("field %q does not match type %q", name, spec.Type))
+			addValidationIssue(result, mode, bucket+"."+name, fmt.Sprintf("field %q does not match type %q", name, spec.Type))
 		}
 	}
 }

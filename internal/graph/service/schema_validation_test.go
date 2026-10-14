@@ -75,7 +75,7 @@ func TestModuleSchemaHierarchyEnabledEnforcesContainsSingleParent(t *testing.T) 
 	if err := manager.PutDomainSchema(ctx, schemaForGraphServiceWithContains(uuid.MustParse(tx.DomainID), schemamodel.SchemaModeStrict, true)); err != nil {
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
-	m.SetSchemaManager(manager)
+	m.SetSchemaValidator(manager)
 	rootA, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
 	rootB, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
 	child, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
@@ -101,7 +101,7 @@ func TestModuleSchemaHierarchyValidationUsesStagedEdgesForCycleDetection(t *test
 	if err := manager.PutDomainSchema(ctx, schemaForGraphServiceWithContains(uuid.MustParse(tx.DomainID), schemamodel.SchemaModeStrict, true)); err != nil {
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
-	m.SetSchemaManager(manager)
+	m.SetSchemaValidator(manager)
 	a, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
 	b, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
 	c, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "C"}})
@@ -123,7 +123,7 @@ func TestModuleSchemaHierarchyValidationIgnoresOverlayDeletedParent(t *testing.T
 	if err := manager.PutDomainSchema(ctx, schemaForGraphServiceWithContains(uuid.MustParse(tx.DomainID), schemamodel.SchemaModeStrict, true)); err != nil {
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
-	m.SetSchemaManager(manager)
+	m.SetSchemaValidator(manager)
 	rootA, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
 	rootB, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
 	child, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
@@ -160,7 +160,7 @@ func TestModuleSchemaHierarchyMoveUsesSchemaLabel(t *testing.T) {
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
 	m := newSchemaValidationGraphModule(t, ctx)
-	m.SetSchemaManager(manager)
+	m.SetSchemaValidator(manager)
 	tx := graphTx(uuid.NewString(), domainID, 0)
 	root, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "root"}})
 	child, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
@@ -197,7 +197,7 @@ func newSchemaValidatedModule(t *testing.T, mode schemamodel.SchemaMode) (*Modul
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
 	m := newSchemaValidationGraphModule(t, ctx)
-	m.SetSchemaManager(manager)
+	m.SetSchemaValidator(manager)
 	return m, graphTx(uuid.NewString(), domainID, 0)
 }
 

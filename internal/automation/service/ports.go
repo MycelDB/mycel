@@ -6,6 +6,7 @@ import (
 	"github.com/myceldb/mycel/internal/automation/actions"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	schema "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
@@ -17,6 +18,12 @@ type SessionRuntime interface {
 	BeginTransaction(ctx context.Context, input sessionmodel.BeginTransactionInput) (sessionmodel.GraphTransaction, error)
 	CommitTransactionAtRevision(ctx context.Context, principalID string, transactionID string, operationCount int32, committedRevision int64) (sessionmodel.TransactionCommit, error)
 	RollbackTransaction(ctx context.Context, principalID string, transactionID string) (sessionmodel.GraphTransaction, error)
+}
+
+// SchemaReader is the schema capability required by automation conditions.
+// Concrete schema managers satisfy this interface implicitly.
+type SchemaReader interface {
+	GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schema.DomainSchema, error)
 }
 
 // GraphRuntime is the graph capability set required by automation execution and

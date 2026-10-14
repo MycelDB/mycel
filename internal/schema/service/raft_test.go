@@ -45,8 +45,8 @@ func TestRaftStateMachineAppliesSchemaPutAndDelete(t *testing.T) {
 	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, deleteCmd); err != nil {
 		t.Fatalf("apply schema delete: %v", err)
 	}
-	if _, err := mgr.GetDomainSchema(ctx, domainID); !errors.Is(err, ErrSchemaNotFound) {
-		t.Fatalf("GetDomainSchema() after delete error = %v, want ErrSchemaNotFound", err)
+	if _, err := mgr.GetDomainSchema(ctx, domainID); !errors.Is(err, schema.ErrNotFound) {
+		t.Fatalf("GetDomainSchema() after delete error = %v, want schema.ErrNotFound", err)
 	}
 }
 
@@ -88,8 +88,8 @@ func TestPutDomainSchemaUsesRaftWhenEnabled(t *testing.T) {
 	if err := mgr.DeleteDomainSchema(ctx, domainID); err != nil {
 		t.Fatalf("DeleteDomainSchema() error = %v", err)
 	}
-	if _, err := mgr.GetDomainSchema(ctx, domainID); !errors.Is(err, ErrSchemaNotFound) {
-		t.Fatalf("GetDomainSchema() after raft delete error = %v, want ErrSchemaNotFound", err)
+	if _, err := mgr.GetDomainSchema(ctx, domainID); !errors.Is(err, schema.ErrNotFound) {
+		t.Fatalf("GetDomainSchema() after raft delete error = %v, want schema.ErrNotFound", err)
 	}
 }
 
@@ -110,7 +110,7 @@ func TestSchemaRaftCommitFailsClosedWithoutLeader(t *testing.T) {
 	if err := mgr.PutDomainSchemaGWL(ctx, domainID, schemaRaftTestSource()); status.Code(err) != codes.Unavailable {
 		t.Fatalf("PutDomainSchemaGWL() error = %v, want Unavailable", err)
 	}
-	if _, err := mgr.GetDomainSchema(ctx, domainID); !errors.Is(err, ErrSchemaNotFound) {
+	if _, err := mgr.GetDomainSchema(ctx, domainID); !errors.Is(err, schema.ErrNotFound) {
 		t.Fatalf("schema was applied despite failed raft proposal: %v", err)
 	}
 }
