@@ -8,9 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
-	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphquery "github.com/myceldb/mycel/internal/graph/query"
+	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
@@ -166,10 +165,10 @@ func (f fakeConditionGraph) ListNodes(_ context.Context, _ sessionmodel.GraphTra
 	}
 	return f.nodes, "", nil
 }
-func (f fakeConditionGraph) CreateNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
+func (f fakeConditionGraph) CreateNode(context.Context, sessionmodel.GraphTransaction, graphservice.NodeInput) (graph.Node, error) {
 	panic("unused")
 }
-func (f fakeConditionGraph) UpdateNode(context.Context, sessionmodel.GraphTransaction, graph.UpdateNodeInput) (graph.Node, error) {
+func (f fakeConditionGraph) UpdateNode(context.Context, sessionmodel.GraphTransaction, graphservice.UpdateNodeInput) (graph.Node, error) {
 	panic("unused")
 }
 func (f fakeConditionGraph) ListEdges(_ context.Context, _ sessionmodel.GraphTransaction, _ int, token string) ([]graph.Edge, string, error) {
@@ -178,17 +177,17 @@ func (f fakeConditionGraph) ListEdges(_ context.Context, _ sessionmodel.GraphTra
 	}
 	return f.edges, "", nil
 }
-func (f fakeConditionGraph) CreateEdge(context.Context, sessionmodel.GraphTransaction, graph.EdgeInput) (graph.Edge, error) {
+func (f fakeConditionGraph) CreateEdge(context.Context, sessionmodel.GraphTransaction, graphservice.EdgeInput) (graph.Edge, error) {
 	panic("unused")
 }
 func (f fakeConditionGraph) CurrentRevision(context.Context, string) (int64, error) { panic("unused") }
-func (f fakeConditionGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+func (f fakeConditionGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphservice.CommitResult, error) {
 	panic("unused")
 }
 func (f fakeConditionGraph) DiscardTransactionGraph(context.Context, string) { panic("unused") }
-func (f fakeConditionGraph) ScanAdjacency(_ context.Context, _ sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error) {
+func (f fakeConditionGraph) ScanAdjacency(_ context.Context, _ sessionmodel.GraphTransaction, scan graphservice.AdjacencyScan) ([]graph.Edge, string, graphservice.IndexedReadStats, error) {
 	if scan.Cursor != "" {
-		return nil, "", graphquery.IndexedReadStats{}, nil
+		return nil, "", graphservice.IndexedReadStats{}, nil
 	}
 	out := []graph.Edge{}
 	for _, edge := range f.edges {
@@ -196,7 +195,7 @@ func (f fakeConditionGraph) ScanAdjacency(_ context.Context, _ sessionmodel.Grap
 			continue
 		}
 		switch scan.Direction {
-		case graphquery.AdjacencyDirectionIn:
+		case graphservice.AdjacencyDirectionIn:
 			if edge.ToID.String() == scan.NodeID {
 				out = append(out, edge)
 			}
@@ -206,7 +205,7 @@ func (f fakeConditionGraph) ScanAdjacency(_ context.Context, _ sessionmodel.Grap
 			}
 		}
 	}
-	return out, "", graphquery.IndexedReadStats{}, nil
+	return out, "", graphservice.IndexedReadStats{}, nil
 }
 
 func containsString(values []string, want string) bool {

@@ -11,7 +11,6 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
-	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -56,16 +55,16 @@ type raftGraphReadRequest struct {
 		HomeNodeID                                                 uint64
 		BaseRevision                                               int64
 	} `json:"tx"`
-	ID                      string                             `json:"id,omitempty"`
-	PageSize                int                                `json:"page_size,omitempty"`
-	PageToken               string                             `json:"page_token,omitempty"`
-	SchemaHash              string                             `json:"schema_hash,omitempty"`
-	Indexes                 []schemamodel.IndexDefinition      `json:"indexes,omitempty"`
-	LabelScan               graphquery.LabelScan               `json:"label_scan,omitempty"`
-	TagScan                 graphquery.TagScan                 `json:"tag_scan,omitempty"`
-	OrderedNodePropertyScan graphquery.OrderedNodePropertyScan `json:"ordered_node_property_scan,omitempty"`
-	AdjacencyScan           graphquery.AdjacencyScan           `json:"adjacency_scan,omitempty"`
-	SubtreeScan             graphquery.SubtreeScan             `json:"subtree_scan,omitempty"`
+	ID                      string                        `json:"id,omitempty"`
+	PageSize                int                           `json:"page_size,omitempty"`
+	PageToken               string                        `json:"page_token,omitempty"`
+	SchemaHash              string                        `json:"schema_hash,omitempty"`
+	Indexes                 []schemamodel.IndexDefinition `json:"indexes,omitempty"`
+	LabelScan               LabelScan                     `json:"label_scan,omitempty"`
+	TagScan                 TagScan                       `json:"tag_scan,omitempty"`
+	OrderedNodePropertyScan OrderedNodePropertyScan       `json:"ordered_node_property_scan,omitempty"`
+	AdjacencyScan           AdjacencyScan                 `json:"adjacency_scan,omitempty"`
+	SubtreeScan             SubtreeScan                   `json:"subtree_scan,omitempty"`
 }
 
 type StrongReadContext struct {
@@ -112,23 +111,23 @@ type raftGraphCountResponse struct {
 }
 
 type raftGraphIndexedNodesResponse struct {
-	Nodes         []domaingraph.Node          `json:"nodes"`
-	NextPageToken string                      `json:"next_page_token"`
-	Stats         graphquery.IndexedReadStats `json:"stats"`
-	Read          *StrongReadContext          `json:"read,omitempty"`
+	Nodes         []domaingraph.Node `json:"nodes"`
+	NextPageToken string             `json:"next_page_token"`
+	Stats         IndexedReadStats   `json:"stats"`
+	Read          *StrongReadContext `json:"read,omitempty"`
 }
 
 type raftGraphIndexedEdgesResponse struct {
-	Edges         []domaingraph.Edge          `json:"edges"`
-	NextPageToken string                      `json:"next_page_token"`
-	Stats         graphquery.IndexedReadStats `json:"stats"`
-	Read          *StrongReadContext          `json:"read,omitempty"`
+	Edges         []domaingraph.Edge `json:"edges"`
+	NextPageToken string             `json:"next_page_token"`
+	Stats         IndexedReadStats   `json:"stats"`
+	Read          *StrongReadContext `json:"read,omitempty"`
 }
 
 type raftGraphSubtreeResponse struct {
-	Result graphquery.SubtreeResult    `json:"result"`
-	Stats  graphquery.IndexedReadStats `json:"stats"`
-	Read   *StrongReadContext          `json:"read,omitempty"`
+	Result SubtreeResult      `json:"result"`
+	Stats  IndexedReadStats   `json:"stats"`
+	Read   *StrongReadContext `json:"read,omitempty"`
 }
 
 type raftGraphOKResponse struct {

@@ -15,11 +15,11 @@ import (
 )
 
 type recordingAutomationFenceValidator struct {
-	calls []domaingraph.AutomationOutputFenceValidation
+	calls []AutomationOutputFenceValidation
 	err   error
 }
 
-func (v *recordingAutomationFenceValidator) ValidateAutomationOutputFence(ctx context.Context, validation domaingraph.AutomationOutputFenceValidation) error {
+func (v *recordingAutomationFenceValidator) ValidateAutomationOutputFence(ctx context.Context, validation AutomationOutputFenceValidation) error {
 	v.calls = append(v.calls, validation)
 	return v.err
 }
