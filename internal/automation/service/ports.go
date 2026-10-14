@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"io"
 
 	"github.com/myceldb/mycel/internal/automation/actions"
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
@@ -25,6 +27,12 @@ type SessionRuntime interface {
 // Concrete schema managers satisfy this interface implicitly.
 type SchemaReader interface {
 	GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schema.DomainSchema, error)
+}
+
+// BlobReader is the blob capability required by automation image inputs.
+// Concrete blob managers satisfy this interface implicitly.
+type BlobReader interface {
+	OpenBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (blobmodel.BlobMeta, io.ReadCloser, error)
 }
 
 // GraphRuntime is the graph capability set required by automation execution and

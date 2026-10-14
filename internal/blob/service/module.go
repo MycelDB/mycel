@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	blobstorage "github.com/myceldb/mycel/internal/blob/storage"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/encryption"
@@ -117,37 +118,37 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	return runtime.OK(ModuleName)
 }
 
-func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, error) {
+func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (blobmodel.BlobMeta, error) {
 	release, err := m.enterWrite(ctx)
 	if err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	defer release()
 	if err := ctx.Err(); err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	spaceID := strings.TrimSpace(input.SpaceID)
 	domainID := strings.TrimSpace(input.DomainID)
 	if spaceID == "" || input.Reader == nil {
-		return BlobMeta{}, fmt.Errorf("%w: space_id and reader are required", ErrInvalidInput)
+		return blobmodel.BlobMeta{}, fmt.Errorf("%w: space_id and reader are required", ErrInvalidInput)
 	}
 	head := make([]byte, sniffLen)
 	n, err := io.ReadFull(input.Reader, head)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	head = head[:n]
 	mimeType := normalizeMimeType(http.DetectContentType(head))
 	id, size, payload, err := m.putPayload(ctx, spaceID, domainID, mimeType, io.MultiReader(bytes.NewReader(head), input.Reader))
 	if err != nil {
-		return BlobMeta{}, mapStorageError(err)
+		return blobmodel.BlobMeta{}, mapStorageError(err)
 	}
 	blobID := string(id)
 	metas, err := m.loadSpaceMeta(spaceID)
 	if err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
-	metaKey := blobMetaStorageKey(BlobMeta{SpaceID: spaceID, DomainID: domainID, BlobID: blobID})
+	metaKey := blobMetaStorageKey(blobmodel.BlobMeta{SpaceID: spaceID, DomainID: domainID, BlobID: blobID})
 	if existing, ok := metas[metaKey]; ok {
 		if !samePayloadLocation(descriptorFromMeta(existing), payload) {
 			if err := m.deletePayload(ctx, payload); err != nil && isObjectStoreBackend(payloadBackend(payload)) {
@@ -170,11 +171,11 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 			return m.commitMetaPut(ctx, existing)
 		}
 		if err := m.applyMetaPut(ctx, existing); err != nil {
-			return BlobMeta{}, err
+			return blobmodel.BlobMeta{}, err
 		}
 		return existing, nil
 	}
-	meta := BlobMeta{BlobID: blobID, SpaceID: spaceID, DomainID: domainID, Digest: "sha256:" + blobID, SizeBytes: size, MimeType: mimeType, DeclaredMimeType: strings.TrimSpace(input.DeclaredMimeType), OriginalFilename: filepath.Base(strings.TrimSpace(input.OriginalFilename)), CreateTime: time.Now().UTC(), Payload: &payload}
+	meta := blobmodel.BlobMeta{BlobID: blobID, SpaceID: spaceID, DomainID: domainID, Digest: "sha256:" + blobID, SizeBytes: size, MimeType: mimeType, DeclaredMimeType: strings.TrimSpace(input.DeclaredMimeType), OriginalFilename: filepath.Base(strings.TrimSpace(input.OriginalFilename)), CreateTime: time.Now().UTC(), Payload: &payload}
 	if m.raftGroups != nil {
 		return m.commitMetaPutRaft(ctx, meta)
 	}
@@ -182,24 +183,24 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (BlobMeta, e
 		return m.commitMetaPut(ctx, meta)
 	}
 	if err := m.applyMetaPut(ctx, meta); err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	return meta, nil
 }
 
-func (m *Module) GetBlob(ctx context.Context, spaceID string, blobID string) (BlobMeta, error) {
+func (m *Module) GetBlob(ctx context.Context, spaceID string, blobID string) (blobmodel.BlobMeta, error) {
 	return m.getBlob(ctx, strings.TrimSpace(spaceID), "", strings.TrimSpace(blobID))
 }
 
-func (m *Module) GetBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, error) {
+func (m *Module) GetBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (blobmodel.BlobMeta, error) {
 	return m.getBlob(ctx, strings.TrimSpace(spaceID), strings.TrimSpace(domainID), strings.TrimSpace(blobID))
 }
 
-func (m *Module) getBlob(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, error) {
+func (m *Module) getBlob(ctx context.Context, spaceID string, domainID string, blobID string) (blobmodel.BlobMeta, error) {
 	if err := ctx.Err(); err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
-	var meta BlobMeta
+	var meta blobmodel.BlobMeta
 	var err error
 	if domainID != "" {
 		meta, err = m.metaInDomain(spaceID, domainID, blobID)
@@ -207,34 +208,34 @@ func (m *Module) getBlob(ctx context.Context, spaceID string, domainID string, b
 		meta, err = m.meta(spaceID, blobID)
 	}
 	if err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	exists, err := m.payloadExists(ctx, descriptorFromMeta(meta))
 	if err != nil {
-		return BlobMeta{}, mapStorageError(err)
+		return blobmodel.BlobMeta{}, mapStorageError(err)
 	}
 	if !exists {
-		return BlobMeta{}, ErrNotFound
+		return blobmodel.BlobMeta{}, ErrNotFound
 	}
 	return meta, nil
 }
 
-func (m *Module) OpenBlob(ctx context.Context, spaceID string, blobID string) (BlobMeta, io.ReadCloser, error) {
+func (m *Module) OpenBlob(ctx context.Context, spaceID string, blobID string) (blobmodel.BlobMeta, io.ReadCloser, error) {
 	return m.openBlob(ctx, spaceID, "", blobID)
 }
 
-func (m *Module) OpenBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, io.ReadCloser, error) {
+func (m *Module) OpenBlobInDomain(ctx context.Context, spaceID string, domainID string, blobID string) (blobmodel.BlobMeta, io.ReadCloser, error) {
 	return m.openBlob(ctx, spaceID, domainID, blobID)
 }
 
-func (m *Module) openBlob(ctx context.Context, spaceID string, domainID string, blobID string) (BlobMeta, io.ReadCloser, error) {
+func (m *Module) openBlob(ctx context.Context, spaceID string, domainID string, blobID string) (blobmodel.BlobMeta, io.ReadCloser, error) {
 	meta, err := m.getBlob(ctx, strings.TrimSpace(spaceID), strings.TrimSpace(domainID), strings.TrimSpace(blobID))
 	if err != nil {
-		return BlobMeta{}, nil, err
+		return blobmodel.BlobMeta{}, nil, err
 	}
 	reader, err := m.openPayload(ctx, descriptorFromMeta(meta))
 	if err != nil {
-		return BlobMeta{}, nil, mapStorageError(err)
+		return blobmodel.BlobMeta{}, nil, mapStorageError(err)
 	}
 	return meta, reader, nil
 }
@@ -324,18 +325,18 @@ func (m *Module) store(spaceID string) (*blobstorage.Store, error) {
 	return store, nil
 }
 
-func (m *Module) meta(spaceID string, blobID string) (BlobMeta, error) {
+func (m *Module) meta(spaceID string, blobID string) (blobmodel.BlobMeta, error) {
 	if spaceID == "" || blobID == "" {
-		return BlobMeta{}, fmt.Errorf("%w: space_id and blob_id are required", ErrInvalidInput)
+		return blobmodel.BlobMeta{}, fmt.Errorf("%w: space_id and blob_id are required", ErrInvalidInput)
 	}
 	if _, err := domaingraph.BlobID(blobID).Bytes(); err != nil {
-		return BlobMeta{}, fmt.Errorf("%w: invalid blob_id", ErrInvalidInput)
+		return blobmodel.BlobMeta{}, fmt.Errorf("%w: invalid blob_id", ErrInvalidInput)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	metas, err := m.loadSpaceMetaLocked(spaceID)
 	if err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
 	if meta, ok := metas[blobID]; ok {
 		return meta, nil
@@ -345,55 +346,55 @@ func (m *Module) meta(spaceID string, blobID string) (BlobMeta, error) {
 			return meta, nil
 		}
 	}
-	return BlobMeta{}, ErrNotFound
+	return blobmodel.BlobMeta{}, ErrNotFound
 }
 
-func (m *Module) metaInDomain(spaceID string, domainID string, blobID string) (BlobMeta, error) {
+func (m *Module) metaInDomain(spaceID string, domainID string, blobID string) (blobmodel.BlobMeta, error) {
 	if spaceID == "" || domainID == "" || blobID == "" {
-		return BlobMeta{}, fmt.Errorf("%w: space_id, domain_id, and blob_id are required", ErrInvalidInput)
+		return blobmodel.BlobMeta{}, fmt.Errorf("%w: space_id, domain_id, and blob_id are required", ErrInvalidInput)
 	}
 	if _, err := domaingraph.BlobID(blobID).Bytes(); err != nil {
-		return BlobMeta{}, fmt.Errorf("%w: invalid blob_id", ErrInvalidInput)
+		return blobmodel.BlobMeta{}, fmt.Errorf("%w: invalid blob_id", ErrInvalidInput)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	metas, err := m.loadSpaceMetaLocked(spaceID)
 	if err != nil {
-		return BlobMeta{}, err
+		return blobmodel.BlobMeta{}, err
 	}
-	key := blobMetaStorageKey(BlobMeta{DomainID: domainID, BlobID: blobID})
+	key := blobMetaStorageKey(blobmodel.BlobMeta{DomainID: domainID, BlobID: blobID})
 	if meta, ok := metas[key]; ok {
 		return meta, nil
 	}
-	return BlobMeta{}, ErrNotFound
+	return blobmodel.BlobMeta{}, ErrNotFound
 }
 
-func (m *Module) loadSpaceMeta(spaceID string) (map[string]BlobMeta, error) {
+func (m *Module) loadSpaceMeta(spaceID string) (map[string]blobmodel.BlobMeta, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.loadSpaceMetaLocked(spaceID)
 }
 
-func (m *Module) loadSpaceMetaLocked(spaceID string) (map[string]BlobMeta, error) {
+func (m *Module) loadSpaceMetaLocked(spaceID string) (map[string]blobmodel.BlobMeta, error) {
 	path := filepath.Join(m.metaDir, spaceID+".json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]BlobMeta{}, nil
+			return map[string]blobmodel.BlobMeta{}, nil
 		}
 		return nil, err
 	}
-	var metas map[string]BlobMeta
+	var metas map[string]blobmodel.BlobMeta
 	if err := json.Unmarshal(raw, &metas); err != nil {
 		return nil, err
 	}
 	if metas == nil {
-		metas = map[string]BlobMeta{}
+		metas = map[string]blobmodel.BlobMeta{}
 	}
 	return metas, nil
 }
 
-func blobMetaStorageKey(meta BlobMeta) string {
+func blobMetaStorageKey(meta blobmodel.BlobMeta) string {
 	blobID := strings.TrimSpace(meta.BlobID)
 	domainID := strings.TrimSpace(meta.DomainID)
 	if domainID == "" {
@@ -402,7 +403,7 @@ func blobMetaStorageKey(meta BlobMeta) string {
 	return domainID + "/" + blobID
 }
 
-func (m *Module) saveSpaceMetaLocked(spaceID string, metas map[string]BlobMeta) error {
+func (m *Module) saveSpaceMetaLocked(spaceID string, metas map[string]blobmodel.BlobMeta) error {
 	path := filepath.Join(m.metaDir, spaceID+".json")
 	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return err

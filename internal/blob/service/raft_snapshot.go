@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	"github.com/myceldb/mycel/internal/clustering/partitioning"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -21,11 +22,11 @@ const blobRaftSnapshotVersion = 1
 var blobCommandUUIDPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
 type blobRaftSnapshot struct {
-	Version         int        `json:"version"`
-	PartitionID     uint32     `json:"partition_id"`
-	PartitionCount  uint32     `json:"partition_count"`
-	Metas           []BlobMeta `json:"metas"`
-	AppliedCommands []string   `json:"applied_commands,omitempty"`
+	Version         int                  `json:"version"`
+	PartitionID     uint32               `json:"partition_id"`
+	PartitionCount  uint32               `json:"partition_count"`
+	Metas           []blobmodel.BlobMeta `json:"metas"`
+	AppliedCommands []string             `json:"applied_commands,omitempty"`
 }
 
 func (s RaftStateMachine) Snapshot() ([]byte, error) {
@@ -91,10 +92,10 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 	if err := m.deletePartitionBlobMetadata(ctx, partitionID, partitionCount); err != nil {
 		return err
 	}
-	bySpace := map[string]map[string]BlobMeta{}
+	bySpace := map[string]map[string]blobmodel.BlobMeta{}
 	for _, meta := range snap.Metas {
 		if bySpace[meta.SpaceID] == nil {
-			bySpace[meta.SpaceID] = map[string]BlobMeta{}
+			bySpace[meta.SpaceID] = map[string]blobmodel.BlobMeta{}
 		}
 		bySpace[meta.SpaceID][meta.BlobID] = meta
 	}
@@ -122,7 +123,7 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 	return m.persistRaftAppliedCommands(ctx)
 }
 
-func validateBlobSnapshotMeta(meta BlobMeta, partitionID, partitionCount uint32) error {
+func validateBlobSnapshotMeta(meta blobmodel.BlobMeta, partitionID, partitionCount uint32) error {
 	spaceUUID, err := uuid.Parse(strings.TrimSpace(meta.SpaceID))
 	if err != nil || spaceUUID == uuid.Nil {
 		return fmt.Errorf("blob snapshot metadata has invalid space_id %q", meta.SpaceID)
@@ -146,7 +147,7 @@ func validateBlobSnapshotMeta(meta BlobMeta, partitionID, partitionCount uint32)
 	return nil
 }
 
-func (m *Module) partitionBlobMetas(ctx context.Context, partitionID, partitionCount uint32) ([]BlobMeta, []string, error) {
+func (m *Module) partitionBlobMetas(ctx context.Context, partitionID, partitionCount uint32) ([]blobmodel.BlobMeta, []string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -157,7 +158,7 @@ func (m *Module) partitionBlobMetas(ctx context.Context, partitionID, partitionC
 		}
 		return nil, nil, err
 	}
-	var out []BlobMeta
+	var out []blobmodel.BlobMeta
 	var spaces []string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
