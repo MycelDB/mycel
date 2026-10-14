@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -17,7 +18,7 @@ import (
 func TestModuleSchemaValidationRejectsInvalidNode(t *testing.T) {
 	ctx := context.Background()
 	m, tx := newSchemaValidatedModule(t, schemamodel.SchemaModeStrict)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": 42}}); err == nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": 42}}); err == nil {
 		t.Fatalf("expected schema validation error")
 	}
 }
@@ -25,15 +26,15 @@ func TestModuleSchemaValidationRejectsInvalidNode(t *testing.T) {
 func TestModuleSchemaValidationRejectsInvalidEdgeEndpoint(t *testing.T) {
 	ctx := context.Background()
 	m, tx := newSchemaValidatedModule(t, schemamodel.SchemaModeStrict)
-	person, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
+	person, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
 	if err != nil {
 		t.Fatalf("CreateNode(person) error = %v", err)
 	}
-	place, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Place"}})
+	place, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Place"}})
 	if err != nil {
 		t.Fatalf("CreateNode(place) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: person.ID.String(), ToNodeID: place.ID.String(), Labels: []string{"KNOWS"}}); err == nil {
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: person.ID.String(), ToNodeID: place.ID.String(), Labels: []string{"KNOWS"}}); err == nil {
 		t.Fatalf("expected schema endpoint validation error")
 	}
 }
@@ -41,22 +42,22 @@ func TestModuleSchemaValidationRejectsInvalidEdgeEndpoint(t *testing.T) {
 func TestModuleSchemaHierarchyDisabledDoesNotEnforceContainsSingleParent(t *testing.T) {
 	ctx := context.Background()
 	m, tx := newSchemaValidatedModule(t, schemamodel.SchemaModeStrict)
-	rootA, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
+	rootA, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
 	if err != nil {
 		t.Fatalf("CreateNode(rootA) error = %v", err)
 	}
-	rootB, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
+	rootB, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
 	if err != nil {
 		t.Fatalf("CreateNode(rootB) error = %v", err)
 	}
-	child, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
+	child, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
 	if err != nil {
 		t.Fatalf("CreateNode(child) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: rootA.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err != nil {
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: rootA.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err != nil {
 		t.Fatalf("CreateEdge(first contains) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: rootB.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err != nil {
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: rootB.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err != nil {
 		t.Fatalf("schema-disabled contains should not enforce single-parent, got %v", err)
 	}
 	children, err := m.ListChildren(ctx, tx, rootA.ID.String())
@@ -76,13 +77,13 @@ func TestModuleSchemaHierarchyEnabledEnforcesContainsSingleParent(t *testing.T) 
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
 	m.SetSchemaValidator(manager)
-	rootA, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
-	rootB, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
-	child, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: rootA.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err != nil {
+	rootA, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
+	rootB, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
+	child, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: rootA.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err != nil {
 		t.Fatalf("CreateEdge(first contains) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: rootB.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err == nil {
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: rootB.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err == nil {
 		t.Fatalf("expected hierarchy single-parent validation error")
 	}
 	children, err := m.ListChildren(ctx, tx, rootA.ID.String())
@@ -102,16 +103,16 @@ func TestModuleSchemaHierarchyValidationUsesStagedEdgesForCycleDetection(t *test
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
 	m.SetSchemaValidator(manager)
-	a, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
-	b, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
-	c, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "C"}})
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: a.ID.String(), ToNodeID: b.ID.String(), Labels: []string{"contains"}}); err != nil {
+	a, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
+	b, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
+	c, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "C"}})
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: a.ID.String(), ToNodeID: b.ID.String(), Labels: []string{"contains"}}); err != nil {
 		t.Fatalf("CreateEdge(a->b) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: b.ID.String(), ToNodeID: c.ID.String(), Labels: []string{"contains"}}); err != nil {
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: b.ID.String(), ToNodeID: c.ID.String(), Labels: []string{"contains"}}); err != nil {
 		t.Fatalf("CreateEdge(b->c) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: c.ID.String(), ToNodeID: a.ID.String(), Labels: []string{"contains"}}); err == nil {
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: c.ID.String(), ToNodeID: a.ID.String(), Labels: []string{"contains"}}); err == nil {
 		t.Fatalf("expected cycle validation error from staged hierarchy edges")
 	}
 }
@@ -124,10 +125,10 @@ func TestModuleSchemaHierarchyValidationIgnoresOverlayDeletedParent(t *testing.T
 		t.Fatalf("PutDomainSchema() error = %v", err)
 	}
 	m.SetSchemaValidator(manager)
-	rootA, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
-	rootB, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
-	child, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
-	edge, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: rootA.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}})
+	rootA, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "A"}})
+	rootB, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "B"}})
+	child, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
+	edge, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: rootA.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}})
 	if err != nil {
 		t.Fatalf("CreateEdge(rootA->child) error = %v", err)
 	}
@@ -140,7 +141,7 @@ func TestModuleSchemaHierarchyValidationIgnoresOverlayDeletedParent(t *testing.T
 	if _, err := m.DeleteEdge(ctx, move, edge.ID.String()); err != nil {
 		t.Fatalf("DeleteEdge(old parent) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, move, EdgeInput{FromNodeID: rootB.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err != nil {
+	if _, err := m.CreateEdge(ctx, move, domaingraph.EdgeInput{FromNodeID: rootB.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}}); err != nil {
 		t.Fatalf("CreateEdge(new parent) should ignore overlay-deleted parent, got %v", err)
 	}
 	children, err := m.ListChildren(ctx, move, rootB.ID.String())
@@ -162,8 +163,8 @@ func TestModuleSchemaHierarchyMoveUsesSchemaLabel(t *testing.T) {
 	m := newSchemaValidationGraphModule(t, ctx)
 	m.SetSchemaValidator(manager)
 	tx := graphTx(uuid.NewString(), domainID, 0)
-	root, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "root"}})
-	child, _ := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
+	root, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "root"}})
+	child, _ := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "child"}})
 	edge, err := m.MoveSubtree(ctx, tx, child.ID.String(), root.ID.String(), nil)
 	if err != nil {
 		t.Fatalf("MoveSubtree() error = %v", err)
@@ -183,7 +184,7 @@ func TestModuleSchemaHierarchyMoveUsesSchemaLabel(t *testing.T) {
 func TestModuleSchemaValidationWarnModeDoesNotReject(t *testing.T) {
 	ctx := context.Background()
 	m, tx := newSchemaValidatedModule(t, schemamodel.SchemaModeWarn)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Unknown"}}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Unknown"}}); err != nil {
 		t.Fatalf("warn mode CreateNode() error = %v", err)
 	}
 }

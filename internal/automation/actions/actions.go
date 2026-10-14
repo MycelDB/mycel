@@ -9,7 +9,6 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/output"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
@@ -18,9 +17,9 @@ type Graphs interface {
 	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error)
 	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
 	ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
-	CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graphservice.NodeInput) (graph.Node, error)
-	UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graphservice.UpdateNodeInput) (graph.Node, error)
-	CreateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input graphservice.EdgeInput) (graph.Edge, error)
+	CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.NodeInput) (graph.Node, error)
+	UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.UpdateNodeInput) (graph.Node, error)
+	CreateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.EdgeInput) (graph.Edge, error)
 }
 
 type Engine struct{ Graphs Graphs }
@@ -161,7 +160,7 @@ func (e Engine) updateNode(ctx context.Context, tx sessionmodel.GraphTransaction
 		return Summary{Changed: false}, nil
 	}
 	tagAutomation(&node, in)
-	_, err = e.Graphs.UpdateNode(ctx, tx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props, AutomationOutputFence: true})
+	_, err = e.Graphs.UpdateNode(ctx, tx, graph.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props, AutomationOutputFence: true})
 	if err != nil {
 		return Summary{}, err
 	}
@@ -232,7 +231,7 @@ func (e Engine) createNode(ctx context.Context, tx sessionmodel.GraphTransaction
 			return summary, err
 		}
 		meta := automationMeta(in)
-		created, err := e.Graphs.CreateNode(ctx, tx, graphservice.NodeInput{Labels: append([]string(nil), action.Labels...), Properties: props, Payload: payload, Meta: meta, AutomationOutputFence: true})
+		created, err := e.Graphs.CreateNode(ctx, tx, graph.NodeInput{Labels: append([]string(nil), action.Labels...), Properties: props, Payload: payload, Meta: meta, AutomationOutputFence: true})
 		if err != nil {
 			return summary, err
 		}
@@ -267,7 +266,7 @@ func (e Engine) createEdge(ctx context.Context, tx sessionmodel.GraphTransaction
 		if upsert && e.edgeExists(ctx, tx, from, to, action.Label) {
 			continue
 		}
-		_, err = e.Graphs.CreateEdge(ctx, tx, graphservice.EdgeInput{FromNodeID: from, ToNodeID: to, Labels: []string{action.Label}, Properties: props, Meta: automationMeta(in), AutomationOutputFence: true})
+		_, err = e.Graphs.CreateEdge(ctx, tx, graph.EdgeInput{FromNodeID: from, ToNodeID: to, Labels: []string{action.Label}, Properties: props, Meta: automationMeta(in), AutomationOutputFence: true})
 		if err != nil {
 			return summary, err
 		}

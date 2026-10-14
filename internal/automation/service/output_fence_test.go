@@ -9,7 +9,6 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -24,7 +23,7 @@ func TestValidateAutomationOutputFenceAcceptsCurrentClaim(t *testing.T) {
 	if err := store.PutInvocation(ctx, inv); err != nil {
 		t.Fatalf("PutInvocation() error = %v", err)
 	}
-	validation := graphservice.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, EntityKind: "node", EntityID: uuid.NewString(), InvocationID: inv.ID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: "output-key"}
+	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, EntityKind: "node", EntityID: uuid.NewString(), InvocationID: inv.ID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: "output-key"}
 	if err := mgr.ValidateAutomationOutputFence(ctx, validation); err != nil {
 		t.Fatalf("ValidateAutomationOutputFence() error = %v", err)
 	}
@@ -40,7 +39,7 @@ func TestValidateAutomationOutputFenceRejectsStaleClaim(t *testing.T) {
 	if err := store.PutInvocation(ctx, inv); err != nil {
 		t.Fatalf("PutInvocation() error = %v", err)
 	}
-	validation := graphservice.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, EntityKind: "node", EntityID: uuid.NewString(), InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "old-token", OutputIdempotencyKey: "output-key"}
+	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, EntityKind: "node", EntityID: uuid.NewString(), InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "old-token", OutputIdempotencyKey: "output-key"}
 	if err := mgr.ValidateAutomationOutputFence(ctx, validation); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("ValidateAutomationOutputFence() error = %v, code=%v; want FailedPrecondition", err, status.Code(err))
 	}
@@ -56,7 +55,7 @@ func TestValidateAutomationOutputFenceRejectsTerminalInvocation(t *testing.T) {
 	if err := store.PutInvocation(ctx, inv); err != nil {
 		t.Fatalf("PutInvocation() error = %v", err)
 	}
-	validation := graphservice.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, EntityKind: "node", EntityID: uuid.NewString(), InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", OutputIdempotencyKey: "output-key"}
+	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, EntityKind: "node", EntityID: uuid.NewString(), InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", OutputIdempotencyKey: "output-key"}
 	if err := mgr.ValidateAutomationOutputFence(ctx, validation); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("ValidateAutomationOutputFence() error = %v, code=%v; want FailedPrecondition", err, status.Code(err))
 	}

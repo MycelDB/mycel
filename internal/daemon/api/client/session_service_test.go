@@ -13,7 +13,7 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
-	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	"github.com/myceldb/mycel/internal/identity/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
@@ -154,11 +154,11 @@ func (g *fakeWriteLeaderGraph) CurrentRevision(ctx context.Context, spaceID stri
 	}
 	return 7, nil
 }
-func (g *fakeWriteLeaderGraph) CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (daegraph.CommitResult, error) {
+func (g *fakeWriteLeaderGraph) CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
 	if g.commitErr != nil {
-		return daegraph.CommitResult{}, g.commitErr
+		return graphchange.CommitResult{}, g.commitErr
 	}
-	return daegraph.CommitResult{}, nil
+	return graphchange.CommitResult{}, nil
 }
 func (g *fakeWriteLeaderGraph) DiscardTransactionGraph(ctx context.Context, transactionID string) {}
 
