@@ -16,7 +16,7 @@ import (
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphquery "github.com/myceldb/mycel/internal/graph/query"
+	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	inferenceconnectors "github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
@@ -404,10 +404,10 @@ func (g *automationE2EGraph) ListNodes(_ context.Context, _ sessionmodel.GraphTr
 	}
 	return g.allNodes(), "", nil
 }
-func (g *automationE2EGraph) CreateNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
+func (g *automationE2EGraph) CreateNode(context.Context, sessionmodel.GraphTransaction, graphservice.NodeInput) (graph.Node, error) {
 	return graph.Node{}, fmt.Errorf("unused")
 }
-func (g *automationE2EGraph) UpdateNode(_ context.Context, _ sessionmodel.GraphTransaction, in graph.UpdateNodeInput) (graph.Node, error) {
+func (g *automationE2EGraph) UpdateNode(_ context.Context, _ sessionmodel.GraphTransaction, in graphservice.UpdateNodeInput) (graph.Node, error) {
 	node, err := g.GetNode(context.Background(), sessionmodel.GraphTransaction{}, in.NodeID)
 	if err != nil {
 		return graph.Node{}, err
@@ -433,17 +433,17 @@ func (g *automationE2EGraph) ListEdges(_ context.Context, _ sessionmodel.GraphTr
 	}
 	return g.edges, "", nil
 }
-func (g *automationE2EGraph) CreateEdge(context.Context, sessionmodel.GraphTransaction, graph.EdgeInput) (graph.Edge, error) {
+func (g *automationE2EGraph) CreateEdge(context.Context, sessionmodel.GraphTransaction, graphservice.EdgeInput) (graph.Edge, error) {
 	return graph.Edge{}, fmt.Errorf("unused")
 }
 func (g *automationE2EGraph) CurrentRevision(context.Context, string) (int64, error) { return 1, nil }
-func (g *automationE2EGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
-	return graphchange.CommitResult{OperationCount: 1, CommittedRevision: 1}, nil
+func (g *automationE2EGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphservice.CommitResult, error) {
+	return graphservice.CommitResult{OperationCount: 1, CommittedRevision: 1}, nil
 }
 func (g *automationE2EGraph) DiscardTransactionGraph(context.Context, string) {}
-func (g *automationE2EGraph) ScanAdjacency(_ context.Context, _ sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error) {
+func (g *automationE2EGraph) ScanAdjacency(_ context.Context, _ sessionmodel.GraphTransaction, scan graphservice.AdjacencyScan) ([]graph.Edge, string, graphservice.IndexedReadStats, error) {
 	if scan.Cursor != "" {
-		return nil, "", graphquery.IndexedReadStats{}, nil
+		return nil, "", graphservice.IndexedReadStats{}, nil
 	}
 	out := []graph.Edge{}
 	for _, edge := range g.edges {
@@ -451,7 +451,7 @@ func (g *automationE2EGraph) ScanAdjacency(_ context.Context, _ sessionmodel.Gra
 			continue
 		}
 		switch scan.Direction {
-		case graphquery.AdjacencyDirectionIn:
+		case graphservice.AdjacencyDirectionIn:
 			if edge.ToID.String() == scan.NodeID {
 				out = append(out, edge)
 			}
@@ -461,7 +461,7 @@ func (g *automationE2EGraph) ScanAdjacency(_ context.Context, _ sessionmodel.Gra
 			}
 		}
 	}
-	return out, "", graphquery.IndexedReadStats{}, nil
+	return out, "", graphservice.IndexedReadStats{}, nil
 }
 
 func stringSliceContains(values []string, want string) bool {

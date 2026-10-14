@@ -250,7 +250,7 @@ func (s *ImportExportService) importRecord(ctx context.Context, tx sessionmodel.
 		input := edgeInputFromExportEdge(value.Edge, metadata.GetOptions().GetPreserveIds())
 		if metadata.GetMode() == clientv1.DomainImportMode_DOMAIN_IMPORT_MODE_UPSERT && input.EdgeID != "" {
 			if _, err := s.graphs.GetEdge(ctx, tx, input.EdgeID); err == nil {
-				if _, err := s.graphs.UpdateEdge(ctx, tx, domaingraph.UpdateEdgeInput{EdgeID: input.EdgeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload}); err != nil {
+				if _, err := s.graphs.UpdateEdge(ctx, tx, daegraph.UpdateEdgeInput{EdgeID: input.EdgeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload}); err != nil {
 					return mapGraphError(err, "import edge")
 				}
 				summary.EdgesUpdated++
@@ -348,7 +348,7 @@ func (s *ImportExportService) exportBlobs(ctx context.Context, spaceID string, n
 	return nil
 }
 
-func (s *ImportExportService) createImportEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.EdgeInput) (domaingraph.Edge, error) {
+func (s *ImportExportService) createImportEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input daegraph.EdgeInput) (domaingraph.Edge, error) {
 	var lastErr error
 	for attempt := 0; attempt < 40; attempt++ {
 		edge, err := s.graphs.CreateEdge(ctx, tx, input)
@@ -401,7 +401,7 @@ func (s *importState) uploadedBlobID(importBlobID string) string {
 	return pending.uploaded
 }
 
-func nodeInputFromExportNode(node *clientv1.Node, preserveIDs bool) domaingraph.NodeInput {
+func nodeInputFromExportNode(node *clientv1.Node, preserveIDs bool) daegraph.NodeInput {
 	payload := structMap(node.GetPayload())
 	blobID, _ := payload["blob_id"].(string)
 	content, _ := payload["text"].(string)
@@ -411,15 +411,15 @@ func nodeInputFromExportNode(node *clientv1.Node, preserveIDs bool) domaingraph.
 		// the payload verbatim and avoid replaying text as inline content.
 		content = ""
 	}
-	input := domaingraph.NodeInput{Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: payload, BlobID: blobID, Content: content}
+	input := daegraph.NodeInput{Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: payload, BlobID: blobID, Content: content}
 	if preserveIDs {
 		input.NodeID = node.GetNodeId()
 	}
 	return input
 }
 
-func edgeInputFromExportEdge(edge *clientv1.Edge, preserveIDs bool) domaingraph.EdgeInput {
-	input := domaingraph.EdgeInput{FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload())}
+func edgeInputFromExportEdge(edge *clientv1.Edge, preserveIDs bool) daegraph.EdgeInput {
+	input := daegraph.EdgeInput{FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload())}
 	if preserveIDs {
 		input.EdgeID = edge.GetEdgeId()
 	}

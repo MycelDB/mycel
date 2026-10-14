@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
-	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	graphsvc "github.com/myceldb/mycel/internal/graph/service"
 	hybridsearch "github.com/myceldb/mycel/internal/search/hybrid"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
@@ -25,7 +24,7 @@ func TestSemanticSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
 	domainID := uuid.New()
 
 	writeTx := searchHydrationGraphTx(spaceID.String(), domainID.String(), 0)
-	node, err := graphs.CreateNode(ctx, writeTx, graphmodel.NodeInput{Content: "semantic hit", Props: map[string]any{"kind": "note"}})
+	node, err := graphs.CreateNode(ctx, writeTx, graphsvc.NodeInput{Content: "semantic hit", Props: map[string]any{"kind": "note"}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
@@ -58,7 +57,7 @@ func TestHybridSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
 	domainID := uuid.New()
 
 	writeTx := searchHydrationGraphTx(spaceID.String(), domainID.String(), 0)
-	node, err := graphs.CreateNode(ctx, writeTx, graphmodel.NodeInput{Content: "hybrid hit"})
+	node, err := graphs.CreateNode(ctx, writeTx, graphsvc.NodeInput{Content: "hybrid hit"})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}

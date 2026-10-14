@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphquery "github.com/myceldb/mycel/internal/graph/query"
+	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/query/gql"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
@@ -270,41 +270,41 @@ func (g automationGQLGraph) boundPatternCandidateEdges(ctx context.Context, quer
 	if startBound {
 		switch query.Relationship.Direction {
 		case execution.RelationshipIncoming:
-			return g.scanAdjacencyEdges(ctx, startID, label, graphquery.AdjacencyDirectionIn)
+			return g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionIn)
 		case execution.RelationshipUndirected:
-			out, err := g.scanAdjacencyEdges(ctx, startID, label, graphquery.AdjacencyDirectionOut)
+			out, err := g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionOut)
 			if err != nil {
 				return nil, err
 			}
-			in, err := g.scanAdjacencyEdges(ctx, startID, label, graphquery.AdjacencyDirectionIn)
+			in, err := g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionIn)
 			return append(out, in...), err
 		default:
-			return g.scanAdjacencyEdges(ctx, startID, label, graphquery.AdjacencyDirectionOut)
+			return g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionOut)
 		}
 	}
 	if endBound {
 		switch query.Relationship.Direction {
 		case execution.RelationshipIncoming:
-			return g.scanAdjacencyEdges(ctx, endID, label, graphquery.AdjacencyDirectionOut)
+			return g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionOut)
 		case execution.RelationshipUndirected:
-			out, err := g.scanAdjacencyEdges(ctx, endID, label, graphquery.AdjacencyDirectionIn)
+			out, err := g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionIn)
 			if err != nil {
 				return nil, err
 			}
-			outgoing, err := g.scanAdjacencyEdges(ctx, endID, label, graphquery.AdjacencyDirectionOut)
+			outgoing, err := g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionOut)
 			return append(out, outgoing...), err
 		default:
-			return g.scanAdjacencyEdges(ctx, endID, label, graphquery.AdjacencyDirectionIn)
+			return g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionIn)
 		}
 	}
 	return listAllEdges(ctx, g.graphs, g.tx)
 }
 
-func (g automationGQLGraph) scanAdjacencyEdges(ctx context.Context, nodeID string, label string, direction graphquery.AdjacencyDirection) ([]graph.Edge, error) {
+func (g automationGQLGraph) scanAdjacencyEdges(ctx context.Context, nodeID string, label string, direction graphservice.AdjacencyDirection) ([]graph.Edge, error) {
 	out := []graph.Edge{}
 	cursor := ""
 	for {
-		edges, next, _, err := g.graphs.ScanAdjacency(ctx, g.tx, graphquery.AdjacencyScan{NodeID: nodeID, Label: label, Direction: direction, Limit: 500, Cursor: cursor})
+		edges, next, _, err := g.graphs.ScanAdjacency(ctx, g.tx, graphservice.AdjacencyScan{NodeID: nodeID, Label: label, Direction: direction, Limit: 500, Cursor: cursor})
 		if err != nil {
 			return nil, err
 		}

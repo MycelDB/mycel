@@ -39,7 +39,7 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 	return s.Module.applyGraphRaftCommand(ctx, apply, cmd, s.PartitionCount)
 }
 
-func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record graphCommitRecord, commandID string) (graphchange.CommittedEvent, []graphchange.Change, error) {
+func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record graphCommitRecord, commandID string) (graphchange.CommittedEvent, []GraphChange, error) {
 	if err := normalizeGraphCommitRecordDomain(&record); err != nil {
 		return graphchange.CommittedEvent{}, nil, err
 	}

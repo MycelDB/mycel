@@ -8,6 +8,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
+	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -138,7 +139,7 @@ func (s *SessionService) CloseSession(ctx context.Context, req *clientv1.CloseSe
 
 type TransactionGraphCommitter interface {
 	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
-	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error)
+	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (daegraph.CommitResult, error)
 	DiscardTransactionGraph(ctx context.Context, transactionID string)
 }
 
@@ -272,7 +273,7 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 	if err != nil {
 		return nil, mapSessionError(err, "commit transaction")
 	}
-	var graphCommit graphchange.CommitResult
+	var graphCommit daegraph.CommitResult
 	if s.graphs != nil {
 		graphCommit, err = s.graphs.CommitTransactionGraph(ctx, tx)
 		if err != nil {
