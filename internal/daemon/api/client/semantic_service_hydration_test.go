@@ -67,7 +67,10 @@ func TestHybridSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
 	}
 
 	service := &SearchService{graphs: graphs}
-	nodes, warnings := service.loadHybridNodes(ctx, uuid.NewString(), spaceID, domainID, []hybridsearch.Result{{NodeID: node.ID.String(), Score: 1}})
+	nodes, warnings, err := service.loadHybridNodes(ctx, uuid.NewString(), spaceID, domainID, []hybridsearch.Result{{NodeID: node.ID.String(), Score: 1}})
+	if err != nil {
+		t.Fatalf("loadHybridNodes() error = %v", err)
+	}
 	if len(warnings) != 0 {
 		t.Fatalf("loadHybridNodes() warnings = %v, want none", warnings)
 	}

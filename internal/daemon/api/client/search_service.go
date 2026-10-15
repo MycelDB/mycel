@@ -27,6 +27,7 @@ import (
 const (
 	lexicalMaxPageSize      = 500
 	hybridMaxCandidateCount = 1000
+	hybridMaxHydrationCount = 2 * hybridMaxCandidateCount
 )
 
 type SearchService struct {
@@ -103,37 +104,41 @@ func (s *SearchService) Search(ctx context.Context, req *clientv1.SearchRequest)
 	if err := validateFreshnessPolicy(freshness, req.GetAllowStale(), req.GetMaxRevisionLag()); err != nil {
 		return nil, err
 	}
+	filters, err := searchFiltersFromProto(req.GetFilters())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	if mode == clientv1.SearchMode_SEARCH_MODE_HYBRID {
-		return s.hybridSearch(ctx, principal, spaceID, domainID, query, pageSize, freshness, req)
+		return s.hybridSearch(ctx, principal, spaceID, domainID, query, pageSize, freshness, filters, req)
 	}
-	result, err := s.lexical.Search(ctx, spaceID.String(), domainID.String(), query, lexicalindex.SearchOptions{PageSize: pageSize, PageToken: req.GetPageToken()})
-	if err != nil {
-		return nil, mapLexicalError(err, "lexical search")
-	}
-	freshness, err = s.lexicalStatus(ctx, spaceID, domainID)
-	if err != nil {
-		return nil, mapGraphError(err, "read graph revision after lexical search")
-	}
-	return mapSearchResponse(result, freshness, req.GetIncludeDiagnostics()), nil
+	return s.lexicalSearch(ctx, principal, spaceID, domainID, query, pageSize, freshness, filters, req)
 }
 
-func (s *SearchService) hybridSearch(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, query string, pageSize int, freshness lexicalservice.Status, req *clientv1.SearchRequest) (*clientv1.SearchResponse, error) {
-	if strings.TrimSpace(req.GetPageToken()) != "" {
-		return nil, status.Error(codes.InvalidArgument, "page_token is not supported for hybrid search")
+func (s *SearchService) hybridSearch(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, query string, pageSize int, freshness lexicalservice.Status, filters hybridsearch.Filters, req *clientv1.SearchRequest) (*clientv1.SearchResponse, error) {
+	offset, err := searchPageOffset(req, searchCursorModeHybrid, freshness)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	opts, err := hybridOptionsFromProto(req.GetHybrid(), s.hybridRRFRankConstant)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	filters, err := searchFiltersFromProto(req.GetFilters())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
 	lexicalCandidates := hybridsearch.CandidateCount(pageSize, int(req.GetLexical().GetCandidateCount()), hybridMaxCandidateCount)
 	semanticCandidates := hybridsearch.CandidateCount(pageSize, int(req.GetSemantic().GetCandidateCount()), hybridMaxCandidateCount)
-	lexicalResult, err := s.lexical.Search(ctx, spaceID.String(), domainID.String(), query, lexicalindex.SearchOptions{PageSize: lexicalCandidates})
-	if err != nil {
-		return nil, mapLexicalError(err, "hybrid lexical search")
+	if hybridsearch.HasFilters(filters) {
+		lexicalCandidates = hybridMaxCandidateCount
+		semanticCandidates = hybridMaxCandidateCount
+	}
+	lexicalResult := lexicalindex.SearchResponse{}
+	if opts.Weights.Lexical > 0 || opts.RequireBoth {
+		lexicalResult, err = s.lexical.Search(ctx, spaceID.String(), domainID.String(), query, lexicalindex.SearchOptions{PageSize: lexicalCandidates})
+		if err != nil {
+			return nil, mapLexicalError(err, "hybrid lexical search")
+		}
+	}
+	if len(lexicalResult.Results) > lexicalCandidates {
+		lexicalResult.Results = lexicalResult.Results[:lexicalCandidates]
+		lexicalResult.Diagnostics.Truncated = true
 	}
 	candidates := make([]hybridsearch.Candidate, 0, len(lexicalResult.Results))
 	lexicalByNode := map[string]lexicalindex.Result{}
@@ -142,29 +147,35 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 		candidates = append(candidates, hybridsearch.Candidate{NodeID: item.NodeID, Lexical: &hybridsearch.Source{RawScore: item.Score, Rank: i + 1}})
 	}
 	warnings := []string{}
+	if hybridsearch.HasFilters(filters) && lexicalResult.Diagnostics.Truncated {
+		warnings = append(warnings, fmt.Sprintf("hybrid lexical candidate scan reached the bounded maximum of %d; additional filtered matches may exist", hybridMaxCandidateCount))
+	}
 	if freshness.State == lexicalservice.StateStale {
 		warnings = append(warnings, "lexical index is stale")
 	}
-	if opts.Weights.Semantic > 0 {
+	if opts.Weights.Semantic > 0 || opts.RequireBoth {
 		semanticRequired := opts.RequireBoth || opts.Weights.Lexical == 0
 		semanticCandidatesOut, semanticWarnings, err := s.semanticHybridCandidates(ctx, principal, spaceID, domainID, query, semanticCandidates, req.GetSemantic(), semanticRequired)
 		if err != nil {
 			return nil, err
 		}
 		warnings = append(warnings, semanticWarnings...)
+		if hybridsearch.HasFilters(filters) && len(semanticCandidatesOut) == hybridMaxCandidateCount {
+			warnings = append(warnings, fmt.Sprintf("hybrid semantic candidate scan reached the bounded maximum of %d; additional filtered matches may exist", hybridMaxCandidateCount))
+		}
 		candidates = append(candidates, semanticCandidatesOut...)
 	}
 	fused, err := hybridsearch.Fuse(candidates, opts)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	nodesByID, loadWarnings := s.loadHybridNodes(ctx, principal.PrincipalID, spaceID, domainID, fused)
+	nodesByID, loadWarnings, err := s.loadHybridNodes(ctx, principal.PrincipalID, spaceID, domainID, fused)
+	if err != nil {
+		return nil, mapGraphError(err, "hydrate hybrid search candidates")
+	}
 	warnings = append(warnings, loadWarnings...)
-	out := &clientv1.SearchResponse{Freshness: mapSearchFreshness(freshness), Warnings: warnings}
+	eligible := make([]hybridsearch.Result, 0, len(fused))
 	for _, item := range fused {
-		if len(out.Results) >= pageSize {
-			break
-		}
 		node, ok := nodesByID[item.NodeID]
 		if !ok {
 			continue
@@ -173,9 +184,28 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
-		if !matched {
-			continue
+		if matched {
+			eligible = append(eligible, item)
 		}
+	}
+	eligibleNodeIDs := make([]string, 0, len(eligible))
+	for _, item := range eligible {
+		eligibleNodeIDs = append(eligibleNodeIDs, item.NodeID)
+	}
+	candidateFingerprint := orderedSearchNodeFingerprint(eligibleNodeIDs)
+	if err := validateSearchCandidateFingerprint(req, candidateFingerprint); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if offset > len(eligible) {
+		return nil, status.Error(codes.InvalidArgument, "search page token offset exceeds the stable candidate set")
+	}
+	end := min(offset+pageSize, len(eligible))
+	freshness, err = s.verifySearchSnapshot(ctx, spaceID, domainID, freshness)
+	if err != nil {
+		return nil, err
+	}
+	out := &clientv1.SearchResponse{Freshness: mapSearchFreshness(freshness), Warnings: warnings}
+	for _, item := range eligible[offset:end] {
 		result := &clientv1.SearchResult{SpaceId: spaceID.String(), DomainId: domainID.String(), NodeId: item.NodeID, Score: item.Score, ScoreKind: clientv1.SearchScoreKind_SEARCH_SCORE_KIND_HYBRID_FUSED}
 		if lexicalItem, ok := lexicalByNode[item.NodeID]; ok {
 			result.IndexedGraphRevision = int64(lexicalItem.IndexedGraphRevision)
@@ -190,8 +220,15 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 		}
 		out.Results = append(out.Results, result)
 	}
+	if end < len(eligible) {
+		next, err := encodeNextSearchPageToken(req, searchCursorModeHybrid, freshness, end, candidateFingerprint)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "encode hybrid search page token")
+		}
+		out.NextPageToken = next
+	}
 	if req.GetIncludeDiagnostics() {
-		out.Diagnostics = &clientv1.SearchDiagnostics{AnalyzerVersion: freshness.AnalyzerVersion, IndexFormatVersion: freshness.IndexFormatVersion, QueryPlan: fmt.Sprintf("HybridWRRF lexical_candidates=%d semantic_candidates=%d require_both=%t rrf_k=%.0f", lexicalCandidates, semanticCandidates, opts.RequireBoth, opts.RankConstant), SegmentsSearched: int32(lexicalResult.Diagnostics.SegmentsSearched), PostingsListsScanned: int32(lexicalResult.Diagnostics.PostingsListsScanned), CandidateCount: int32(len(candidates)), Truncated: len(out.Results) == pageSize && len(fused) > pageSize}
+		out.Diagnostics = &clientv1.SearchDiagnostics{AnalyzerVersion: freshness.AnalyzerVersion, IndexFormatVersion: freshness.IndexFormatVersion, QueryPlan: fmt.Sprintf("HybridWRRF lexical_candidates=%d semantic_candidates=%d require_both=%t rrf_k=%.0f", lexicalCandidates, semanticCandidates, opts.RequireBoth, opts.RankConstant), SegmentsSearched: int32(lexicalResult.Diagnostics.SegmentsSearched), PostingsListsScanned: int32(lexicalResult.Diagnostics.PostingsListsScanned), CandidateCount: int32(len(candidates)), Truncated: end < len(eligible) || lexicalResult.Diagnostics.Truncated}
 	}
 	return out, nil
 }
@@ -235,8 +272,12 @@ func (s *SearchService) semanticHybridCandidates(ctx context.Context, principal 
 	if err != nil {
 		return nil, nil, mapSemanticError(err, "hybrid semantic search")
 	}
-	candidates := make([]hybridsearch.Candidate, 0, len(result.Results))
-	for i, item := range result.Results {
+	results := result.Results
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	candidates := make([]hybridsearch.Candidate, 0, len(results))
+	for i, item := range results {
 		if item.NodeID == uuid.Nil {
 			continue
 		}
@@ -253,28 +294,42 @@ func (s *SearchService) semanticSearchEnabled(ctx context.Context, principal pri
 	return graph.DomainExplicitSemanticSearchable(domain), nil
 }
 
-func (s *SearchService) loadHybridNodes(ctx context.Context, principalID string, spaceID domainspace.SpaceID, domainID graph.DomainID, results []hybridsearch.Result) (map[string]graph.Node, []string) {
+func (s *SearchService) loadHybridNodes(ctx context.Context, principalID string, spaceID domainspace.SpaceID, domainID graph.DomainID, results []hybridsearch.Result) (map[string]graph.Node, []string, error) {
 	out := map[string]graph.Node{}
-	if s.graphs == nil || len(results) == 0 {
-		return out, nil
+	if len(results) == 0 {
+		return out, nil, nil
+	}
+	if s.graphs == nil {
+		return nil, nil, fmt.Errorf("graph service is not configured")
 	}
 	warnings := []string{}
 	tx, err := readOnlySearchGraphTransaction(ctx, s.graphs, "hybrid-search-", principalID, spaceID, domainID)
 	if err != nil {
-		return out, []string{fmt.Sprintf("graph revision snapshot unavailable: %v", err)}
+		return nil, nil, fmt.Errorf("open graph read snapshot: %w", err)
 	}
+	attempted := 0
+	seen := map[string]struct{}{}
 	for _, result := range results {
-		if _, ok := out[result.NodeID]; ok {
+		if _, ok := seen[result.NodeID]; ok {
 			continue
 		}
+		if attempted == hybridMaxHydrationCount {
+			warnings = append(warnings, fmt.Sprintf("hybrid hydration capped at %d candidates", hybridMaxHydrationCount))
+			break
+		}
+		seen[result.NodeID] = struct{}{}
+		attempted++
 		node, err := s.graphs.GetNode(ctx, tx, result.NodeID)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("node %s skipped: %v", result.NodeID, err))
-			continue
+			if errors.Is(err, daegraph.ErrNotFound) || status.Code(err) == codes.NotFound {
+				warnings = append(warnings, fmt.Sprintf("node %s skipped because it is no longer present", result.NodeID))
+				continue
+			}
+			return nil, warnings, fmt.Errorf("read candidate node %s: %w", result.NodeID, err)
 		}
 		out[result.NodeID] = node
 	}
-	return out, warnings
+	return out, warnings, nil
 }
 
 func hybridOptionsFromProto(in *clientv1.HybridSearchOptions, rankConstant float64) (hybridsearch.Options, error) {
@@ -314,6 +369,9 @@ func searchFiltersFromProto(in *clientv1.SearchFilters) (hybridsearch.Filters, e
 			return hybridsearch.Filters{}, err
 		}
 		out.Properties = append(out.Properties, hybridsearch.PropertyFilter{Path: item.GetPath(), Operator: operator, Values: append([]string(nil), item.GetValues()...)})
+	}
+	if err := hybridsearch.ValidateFilters(out); err != nil {
+		return hybridsearch.Filters{}, err
 	}
 	return out, nil
 }

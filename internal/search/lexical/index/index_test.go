@@ -1,6 +1,8 @@
 package index
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"testing"
 
 	"github.com/myceldb/mycel/internal/search/lexical/analyzer"
@@ -91,6 +93,27 @@ func TestSearchPaginationStableTieOrdering(t *testing.T) {
 	}
 	if second.NextPageToken != "" || second.Diagnostics.Truncated {
 		t.Fatalf("second page token/truncated = %q/%v", second.NextPageToken, second.Diagnostics.Truncated)
+	}
+	offsetPage, err := searcher.Search(expr, SearchOptions{PageSize: 2, Offset: 1})
+	if err != nil {
+		t.Fatalf("Search offset page returned error: %v", err)
+	}
+	if got := resultIDs(offsetPage.Results); len(got) != 2 || got[0] != "node-b" || got[1] != "node-c" {
+		t.Fatalf("offset page = %#v", got)
+	}
+	if _, err := searcher.Search(expr, SearchOptions{PageSize: 1, Offset: 1, PageToken: first.NextPageToken}); err == nil {
+		t.Fatal("Search with offset and page token returned nil error")
+	}
+	compatibleRaw, err := json.Marshal(map[string]any{"cursor": map[string]any{"offset": 99}, "offset": 1, "checksum": "new-token-fields-are-ignored"})
+	if err != nil {
+		t.Fatalf("marshal compatible token: %v", err)
+	}
+	compatiblePage, err := searcher.Search(expr, SearchOptions{PageSize: 1, PageToken: base64.RawURLEncoding.EncodeToString(compatibleRaw)})
+	if err != nil {
+		t.Fatalf("Search with new envelope token returned error: %v", err)
+	}
+	if got := resultIDs(compatiblePage.Results); len(got) != 1 || got[0] != "node-b" {
+		t.Fatalf("compatible envelope page = %#v, want [node-b]", got)
 	}
 }
 

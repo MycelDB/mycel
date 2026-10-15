@@ -86,6 +86,7 @@ func analyzeIndexedDocument(a analyzer.Analyzer, docID uint64, doc IndexedDocume
 type SearchOptions struct {
 	PageSize    int
 	PageToken   string
+	Offset      int
 	K1          float64
 	B           float64
 	PhraseBoost float64
@@ -209,9 +210,19 @@ func (s *Searcher) Search(expr *query.Node, opts SearchOptions) (SearchResponse,
 	if opts.PhraseBoost <= 0 {
 		opts.PhraseBoost = DefaultPhraseBoost
 	}
-	offset, err := decodePageToken(opts.PageToken)
-	if err != nil {
-		return SearchResponse{}, err
+	if opts.Offset < 0 {
+		return SearchResponse{}, fmt.Errorf("search offset must be non-negative")
+	}
+	offset := opts.Offset
+	if opts.PageToken != "" {
+		if offset != 0 {
+			return SearchResponse{}, fmt.Errorf("search offset and page token cannot both be set")
+		}
+		var err error
+		offset, err = decodePageToken(opts.PageToken)
+		if err != nil {
+			return SearchResponse{}, err
+		}
 	}
 	eval := evaluator{s: s}
 	matches := eval.eval(expr)
