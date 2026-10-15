@@ -19,7 +19,7 @@ var (
 	ErrUnauthorized = errors.New("graph unauthorized")
 	ErrReadOnly     = errors.New("graph transaction is read-only")
 	ErrInvalidState = errors.New("invalid graph transaction state")
-	ErrConflict     = errors.New("graph conflict")
+	ErrConflict     = graphchange.ErrConflict
 )
 
 type Manager interface {
