@@ -119,15 +119,6 @@ func (m *Module) RebuildFromSnapshot(ctx context.Context, spaceID string, domain
 	return m.serviceFor(spaceID, domainID).RebuildFromSnapshot(snapshot)
 }
 
-func (m *Module) Reset(ctx context.Context, spaceID string, domainID string) error {
-	release, err := m.enterMutation(ctx)
-	if err != nil {
-		return err
-	}
-	defer release()
-	return m.serviceFor(spaceID, domainID).Reset()
-}
-
 func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.CommittedEvent) error {
 	release, err := m.enterMutation(ctx)
 	if err != nil {
@@ -139,6 +130,14 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 		return nil
 	}
 	byDomain := map[string][]index.IndexedDocument{}
+	for _, domainID := range event.DomainIDs {
+		if domainID != uuid.Nil {
+			byDomain[domainID.String()] = nil
+		}
+	}
+	if event.DomainID != uuid.Nil {
+		byDomain[event.DomainID.String()] = nil
+	}
 	for _, change := range event.Changes {
 		change.Type = graphchange.NormalizeChangeType(string(change.Type))
 		switch change.Type {
@@ -161,9 +160,6 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 		}
 	}
 	for domainID, docs := range byDomain {
-		if len(docs) == 0 {
-			continue
-		}
 		if err := m.serviceFor(event.SpaceID.String(), domainID).ApplyDocuments(docs, event.GraphRevision); err != nil {
 			m.recordError(err)
 			return err

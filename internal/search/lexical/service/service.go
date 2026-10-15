@@ -115,15 +115,6 @@ func (s *Service) RebuildFromSnapshot(snapshot RebuildSnapshot) error {
 	return s.rebuildLocked(docs, latestRevision)
 }
 
-func (s *Service) Reset() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.paused {
-		return ErrIndexingPaused
-	}
-	return os.RemoveAll(s.store.ScopeDir())
-}
-
 func (s *Service) rebuildLocked(docs []index.IndexedDocument, latestRevision uint64) error {
 	if err := os.RemoveAll(s.store.ScopeDir()); err != nil {
 		return err
@@ -214,9 +205,6 @@ func (s *Service) apply(docs []index.IndexedDocument, revision uint64) error {
 	if s.paused {
 		return ErrIndexingPaused
 	}
-	if len(docs) == 0 {
-		return nil
-	}
 	if err := s.ensureManifest(); err != nil {
 		return err
 	}
@@ -226,6 +214,12 @@ func (s *Service) apply(docs []index.IndexedDocument, revision uint64) error {
 	}
 	if revision > 0 && cursor.IndexedGraphRevision >= revision {
 		return nil
+	}
+	if len(docs) == 0 {
+		if revision > cursor.IndexedGraphRevision {
+			cursor.IndexedGraphRevision = revision
+		}
+		return s.store.WriteCursor(cursor)
 	}
 	segmentID, err := s.nextSegmentID()
 	if err != nil {
