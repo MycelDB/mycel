@@ -53,6 +53,11 @@ type Status struct {
 	LastError                string
 }
 
+// RebuildSnapshot captures a complete domain snapshot and its domain-scoped
+// graph revision. It is invoked while graph-change application is serialized
+// for the lexical scope being rebuilt.
+type RebuildSnapshot func() ([]index.IndexedDocument, uint64, error)
+
 func New(root, spaceID, domainID string) *Service {
 	return NewWithEncryption(root, spaceID, domainID, nil)
 }
@@ -91,6 +96,26 @@ func (s *Service) Rebuild(docs []index.IndexedDocument, latestRevision uint64) e
 	if s.paused {
 		return ErrIndexingPaused
 	}
+	return s.rebuildLocked(docs, latestRevision)
+}
+
+func (s *Service) RebuildFromSnapshot(snapshot RebuildSnapshot) error {
+	if snapshot == nil {
+		return errors.New("lexical rebuild snapshot is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.paused {
+		return ErrIndexingPaused
+	}
+	docs, latestRevision, err := snapshot()
+	if err != nil {
+		return err
+	}
+	return s.rebuildLocked(docs, latestRevision)
+}
+
+func (s *Service) rebuildLocked(docs []index.IndexedDocument, latestRevision uint64) error {
 	if err := os.RemoveAll(s.store.ScopeDir()); err != nil {
 		return err
 	}

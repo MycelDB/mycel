@@ -107,6 +107,18 @@ func (m *Module) Rebuild(ctx context.Context, spaceID string, domainID string, d
 	return m.serviceFor(spaceID, domainID).Rebuild(docs, latestRevision)
 }
 
+// RebuildFromSnapshot serializes snapshot capture and publication with graph
+// change application for the same lexical scope. Events that arrive while the
+// snapshot is being collected apply after the snapshot is published.
+func (m *Module) RebuildFromSnapshot(ctx context.Context, spaceID string, domainID string, snapshot RebuildSnapshot) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return m.serviceFor(spaceID, domainID).RebuildFromSnapshot(snapshot)
+}
+
 func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.CommittedEvent) error {
 	release, err := m.enterMutation(ctx)
 	if err != nil {

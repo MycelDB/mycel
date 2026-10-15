@@ -19,19 +19,27 @@ type asyncLexicalConsumer struct {
 }
 
 func startAsyncLexicalConsumer(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, lexical *lexicalservice.Module) error {
+	_, consumer, err := registerAsyncLexicalConsumer(ctx, logger, notifications, lexical)
+	if err != nil || consumer == nil {
+		return err
+	}
+	go replayAsyncLexicalStoredScopes(ctx, logger, notifications, lexical, consumer)
+	return nil
+}
+
+func registerAsyncLexicalConsumer(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, lexical *lexicalservice.Module) (graphnotification.Registration, *asyncLexicalConsumer, error) {
 	if notifications == nil || lexical == nil {
-		return nil
+		return nil, nil, nil
 	}
 	consumer := &asyncLexicalConsumer{lexical: lexical, logger: logger}
-	_, err := notifications.RegisterConsumer(ctx, graphnotification.ConsumerSpec{ConsumerName: asyncLexicalConsumerName, Projection: asyncLexicalProjection(), Lossless: true}, consumer)
+	registration, err := notifications.RegisterConsumer(ctx, graphnotification.ConsumerSpec{ConsumerName: asyncLexicalConsumerName, Projection: asyncLexicalProjection(), Lossless: true}, consumer)
 	if err != nil {
-		return fmt.Errorf("register async lexical graph-change consumer: %w", err)
+		return nil, nil, fmt.Errorf("register async lexical graph-change consumer: %w", err)
 	}
 	if logger != nil {
 		logger.Info("async lexical graph-change consumer registered")
 	}
-	go replayAsyncLexicalStoredScopes(ctx, logger, notifications, lexical, consumer)
-	return nil
+	return registration, consumer, nil
 }
 
 func replayAsyncLexicalStoredScopes(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, lexical *lexicalservice.Module, consumer graphnotification.Consumer) {

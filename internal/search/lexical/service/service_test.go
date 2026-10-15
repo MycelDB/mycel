@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/myceldb/mycel/internal/search/lexical/analyzer"
 	"github.com/myceldb/mycel/internal/search/lexical/index"
@@ -67,6 +68,83 @@ func TestServiceRebuildProducesSearchableIndex(t *testing.T) {
 	}
 	if got := resultIDs(res.Results); len(got) != 1 || got[0] != "node-b" {
 		t.Fatalf("results = %#v", got)
+	}
+}
+
+func TestServiceRebuildFromSnapshotSerializesNewerRevision(t *testing.T) {
+	svc := New(t.TempDir(), "space-1", "domain-1")
+	first := testDoc("node-a", "alpha raft")
+	second := testDoc("node-b", "beta raft")
+	if err := svc.Rebuild([]index.IndexedDocument{{Document: first, GraphRevision: 1}}, 1); err != nil {
+		t.Fatalf("initial rebuild: %v", err)
+	}
+
+	snapshotStarted := make(chan struct{})
+	releaseSnapshot := make(chan struct{})
+	rebuildDone := make(chan error, 1)
+	go func() {
+		rebuildDone <- svc.RebuildFromSnapshot(func() ([]index.IndexedDocument, uint64, error) {
+			close(snapshotStarted)
+			<-releaseSnapshot
+			return []index.IndexedDocument{{Document: first, GraphRevision: 1}}, 1, nil
+		})
+	}()
+	<-snapshotStarted
+
+	updateStarted := make(chan struct{})
+	updateDone := make(chan error, 1)
+	go func() {
+		close(updateStarted)
+		updateDone <- svc.UpsertDocument(second, 2)
+	}()
+	<-updateStarted
+	select {
+	case err := <-updateDone:
+		t.Fatalf("newer update completed during snapshot capture: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseSnapshot)
+	if err := <-rebuildDone; err != nil {
+		t.Fatalf("snapshot rebuild: %v", err)
+	}
+	if err := <-updateDone; err != nil {
+		t.Fatalf("newer update: %v", err)
+	}
+	status := svc.Status(2)
+	if status.State != StateFresh || status.IndexedGraphRevision != 2 || status.LiveDocumentCount != 2 {
+		t.Fatalf("status after concurrent rebuild and update = %#v", status)
+	}
+	result, err := svc.Search("raft", index.SearchOptions{PageSize: 10})
+	if err != nil {
+		t.Fatalf("search after concurrent rebuild and update: %v", err)
+	}
+	if got := resultIDs(result.Results); len(got) != 2 || got[0] != "node-a" || got[1] != "node-b" {
+		t.Fatalf("results after concurrent rebuild and update = %#v", got)
+	}
+}
+
+func TestServiceRebuildFromSnapshotFailurePreservesIndex(t *testing.T) {
+	svc := New(t.TempDir(), "space-1", "domain-1")
+	if err := svc.UpsertDocument(testDoc("node-a", "raft database"), 1); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	wantErr := errors.New("graph revision unavailable")
+	if err := svc.RebuildFromSnapshot(func() ([]index.IndexedDocument, uint64, error) {
+		return nil, 0, wantErr
+	}); !errors.Is(err, wantErr) {
+		t.Fatalf("RebuildFromSnapshot() error = %v, want %v", err, wantErr)
+	}
+	status := svc.Status(1)
+	if status.State != StateFresh || status.IndexedGraphRevision != 1 || status.LiveDocumentCount != 1 {
+		t.Fatalf("status after failed snapshot = %#v", status)
+	}
+	result, err := svc.Search("raft", index.SearchOptions{PageSize: 10})
+	if err != nil {
+		t.Fatalf("search after failed snapshot: %v", err)
+	}
+	if got := resultIDs(result.Results); len(got) != 1 || got[0] != "node-a" {
+		t.Fatalf("results after failed snapshot = %#v", got)
 	}
 }
 

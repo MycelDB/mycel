@@ -182,10 +182,21 @@ func TestUserOwnedDomainGraphWritesAreIndexedRebuiltAndPreserved(t *testing.T) {
 		t.Fatalf("unexpected rebuilt lexical status: %+v", got)
 	}
 
-	runCtx, cancel := context.WithCancel(ctx)
-	t.Cleanup(cancel)
-	if err := startAsyncLexicalConsumer(runCtx, logger, notifications, lexical); err != nil {
-		t.Fatalf("startAsyncLexicalConsumer() error = %v", err)
+	registration, consumer, err := registerAsyncLexicalConsumer(ctx, logger, notifications, lexical)
+	if err != nil {
+		t.Fatalf("registerAsyncLexicalConsumer() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := registration.Close(); err != nil {
+			t.Errorf("close async lexical consumer registration: %v", err)
+		}
+	})
+	scopes, err := notifications.StoredScopes(ctx)
+	if err != nil {
+		t.Fatalf("StoredScopes() error = %v", err)
+	}
+	if err := replayAsyncLexicalScopes(ctx, logger, notifications, lexical, consumer, scopes); err != nil {
+		t.Fatalf("replayAsyncLexicalScopes() error = %v", err)
 	}
 	secondNodeID := writeLexicalTestNode(t, userCtx, transactionAPI, graphAPI, contentSessionID, "Marmalade async indexing")
 	eventuallyLexicalSearchResult(t, userCtx, searchAPI, space.SpaceID.String(), contentDomain.ID.String(), "marmalade", secondNodeID)

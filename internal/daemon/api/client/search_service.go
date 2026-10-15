@@ -95,7 +95,10 @@ func (s *SearchService) Search(ctx context.Context, req *clientv1.SearchRequest)
 	if pageSize > lexicalMaxPageSize {
 		return nil, status.Errorf(codes.ResourceExhausted, "page_size must be <= %d", lexicalMaxPageSize)
 	}
-	latest := s.latestGraphRevision(ctx, spaceID, domainID)
+	latest, err := s.latestGraphRevision(ctx, spaceID, domainID)
+	if err != nil {
+		return nil, mapGraphError(err, "read graph revision for lexical search")
+	}
 	freshness := s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest)
 	if err := validateFreshnessPolicy(freshness, req.GetAllowStale(), req.GetMaxRevisionLag()); err != nil {
 		return nil, err
@@ -369,7 +372,10 @@ func (s *SearchService) GetLexicalIndexStatus(ctx context.Context, req *clientv1
 	if s.lexical == nil {
 		return nil, status.Error(codes.FailedPrecondition, "lexical search service is not configured")
 	}
-	latest := s.latestGraphRevision(ctx, spaceID, domainID)
+	latest, err := s.latestGraphRevision(ctx, spaceID, domainID)
+	if err != nil {
+		return nil, mapGraphError(err, "read graph revision for lexical status")
+	}
 	return &clientv1.GetLexicalIndexStatusResponse{Status: mapLexicalIndexStatus(s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest))}, nil
 }
 
@@ -438,9 +444,9 @@ type lexicalGraphDomainRevisionReader interface {
 	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
 }
 
-func (s *SearchService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) uint64 {
+func (s *SearchService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (uint64, error) {
 	if s.graphs == nil {
-		return 0
+		return 0, nil
 	}
 	var (
 		rev int64
@@ -451,10 +457,13 @@ func (s *SearchService) latestGraphRevision(ctx context.Context, spaceID domains
 	} else {
 		rev, err = s.graphs.CurrentRevision(ctx, spaceID.String())
 	}
-	if err != nil || rev < 0 {
-		return 0
+	if err != nil {
+		return 0, err
 	}
-	return uint64(rev)
+	if rev < 0 {
+		return 0, fmt.Errorf("graph revision is negative: %d", rev)
+	}
+	return uint64(rev), nil
 }
 
 func validateFreshnessPolicy(freshness lexicalservice.Status, allowStale bool, maxLag int64) error {
