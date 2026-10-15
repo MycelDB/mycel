@@ -339,7 +339,7 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 	if event.ID == uuid.Nil {
 		event.ID = uuid.New()
 	}
-	event.Normalize()
+	event = event.NormalizedCopy()
 	if event.Empty() {
 		return nil
 	}
@@ -854,7 +854,7 @@ func (m *Module) currentStatePath(spaceID, domainID string) string {
 }
 
 func matchesSpec(event graphchange.CommittedEvent, spec ConsumerSpec) bool {
-	event.Normalize()
+	event = event.NormalizedCopy()
 	if spec.Scope.SpaceID != "" && event.SpaceID.String() != strings.TrimSpace(spec.Scope.SpaceID) {
 		return false
 	}

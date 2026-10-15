@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -261,6 +262,70 @@ func TestAsyncLexicalCatchupPrecedesRegisteredLiveDelivery(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("lexical scope workers retained after catch-up: %d", workerCount)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestAsyncLexicalRevisionMismatchWakeupIsNotLost(t *testing.T) {
+	ctx := context.Background()
+	lexical := newTestLexicalModule(t)
+	notifications := graphnotification.NewModule()
+	notifications.SetDataDirForTest(t.TempDir())
+	t.Cleanup(func() {
+		if err := notifications.Close(); err != nil {
+			t.Errorf("close graph notification module: %v", err)
+		}
+	})
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
+	second := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2, "beta raft")
+	if err := notifications.OnGraphCommitted(ctx, first); err != nil {
+		t.Fatalf("OnGraphCommitted(first) error = %v", err)
+	}
+	consumer := &asyncLexicalConsumer{lexical: lexical, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if err := consumer.HandleGraphChange(ctx, first); err != nil {
+		t.Fatalf("HandleGraphChange(first) error = %v", err)
+	}
+	revisions := &blockingAsyncLexicalRevisionReader{revision: 2, started: make(chan struct{}), release: make(chan struct{})}
+	registration, coordinator, err := registerAsyncLexicalConsumer(ctx, consumer.logger, notifications, lexical, revisions)
+	if err != nil {
+		t.Fatalf("registerAsyncLexicalConsumer() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := registration.Close(); err != nil {
+			t.Errorf("close lexical registration: %v", err)
+		}
+	})
+	t.Cleanup(coordinator.Close)
+	revisionReadReleased := false
+	t.Cleanup(func() {
+		if !revisionReadReleased {
+			close(revisions.release)
+		}
+	})
+	scope := graphchange.Scope{SpaceID: spaceID.String(), DomainID: domainID.String()}
+	coordinator.schedule(scope)
+	select {
+	case <-revisions.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("scope worker did not reach graph revision read")
+	}
+	if err := notifications.OnGraphCommitted(ctx, second); err != nil {
+		t.Fatalf("OnGraphCommitted(second) error = %v", err)
+	}
+	coordinator.schedule(scope)
+	close(revisions.release)
+	revisionReadReleased = true
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		status := lexical.Status(ctx, spaceID.String(), domainID.String(), 2)
+		if status.State == lexicalservice.StateFresh && status.IndexedGraphRevision == 2 && status.LiveDocumentCount == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lexical worker lost completing revision wake-up: %+v", status)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -541,6 +606,26 @@ func TestUserOwnedDomainGraphWritesAreIndexedRebuiltAndPreserved(t *testing.T) {
 	}
 	restartedSearchAPI := clientapi.NewSearchService(restartedLexical, spaces, graphs)
 	assertLexicalSearchResult(t, userCtx, restartedSearchAPI, space.SpaceID.String(), contentDomain.ID.String(), "marmalade", secondNodeID)
+}
+
+type blockingAsyncLexicalRevisionReader struct {
+	mu       sync.Mutex
+	revision int64
+	started  chan struct{}
+	release  chan struct{}
+	calls    int
+}
+
+func (r *blockingAsyncLexicalRevisionReader) CurrentDomainRevision(context.Context, string, string) (int64, error) {
+	r.mu.Lock()
+	r.calls++
+	first := r.calls == 1
+	r.mu.Unlock()
+	if first {
+		close(r.started)
+		<-r.release
+	}
+	return r.revision, nil
 }
 
 type failingAsyncLexicalConsumer struct {

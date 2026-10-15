@@ -169,4 +169,7 @@ func TestApplyProjectionDropsUnrequestedSnapshotsAndMetadata(t *testing.T) {
 	if got := projected.Changes[0]; got.Node == nil || got.OldNode != nil || len(got.ChangedFields) != 0 || len(got.AffectedNodeIDs) != 1 {
 		t.Fatalf("projected change = %#v", got)
 	}
+	if event.Revision != 0 || event.Changes[0].OldNode == nil || len(event.Changes[0].ChangedFields) != 1 {
+		t.Fatalf("ApplyProjection() mutated source event: %#v", event)
+	}
 }

@@ -292,11 +292,25 @@ func (e *CommittedEvent) Normalize() {
 	e.AffectedEdgeIDs = sortedGraphEdgeIDs(affectedEdges)
 }
 
+// NormalizedCopy returns a normalized event without mutating slice-backed
+// fields shared with the source value.
+func (e CommittedEvent) NormalizedCopy() CommittedEvent {
+	e.DomainIDs = append([]graph.DomainID(nil), e.DomainIDs...)
+	e.Changes = append([]Change(nil), e.Changes...)
+	for i := range e.Changes {
+		e.Changes[i].ChangedFields = append([]string(nil), e.Changes[i].ChangedFields...)
+		e.Changes[i].AffectedNodeIDs = append([]string(nil), e.Changes[i].AffectedNodeIDs...)
+		e.Changes[i].AffectedEdgeIDs = append([]string(nil), e.Changes[i].AffectedEdgeIDs...)
+	}
+	e.Normalize()
+	return e
+}
+
 // ApplyProjection returns a copy of the event containing only fields selected by
 // projection. Scope/filter matching belongs to the notification subsystem; this
 // helper is intentionally limited to payload shaping.
 func (e CommittedEvent) ApplyProjection(projection Projection) CommittedEvent {
-	e.Normalize()
+	e = e.NormalizedCopy()
 	out := e
 	if !projection.IncludeRevision {
 		out.GraphRevision = 0

@@ -230,14 +230,19 @@ func (c *asyncLexicalCoordinator) runScope(key string, worker *asyncLexicalScope
 			return
 		}
 		if errors.Is(err, graphnotification.ErrOutOfRange) {
-			if c.logger != nil {
-				c.logger.Error("async lexical durable replay requires operator rebuild", "space_id", worker.scope.SpaceID, "domain_id", worker.scope.DomainID, "error", err)
-			}
 			c.mu.Lock()
+			if worker.pending {
+				c.mu.Unlock()
+				backoff = 50 * time.Millisecond
+				continue
+			}
 			if c.workers[key] == worker {
 				delete(c.workers, key)
 			}
 			c.mu.Unlock()
+			if c.logger != nil {
+				c.logger.Error("async lexical durable replay requires operator rebuild", "space_id", worker.scope.SpaceID, "domain_id", worker.scope.DomainID, "error", err)
+			}
 			return
 		}
 		if c.logger != nil {
@@ -316,6 +321,13 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 		return nil
 	}
 	if notificationRevision != latestRevision {
+		notificationRevisionAfter, latestRevisionAfter, err := asyncLexicalRevisions(ctx, notifications, revisions, scope)
+		if err != nil {
+			return err
+		}
+		if notificationRevisionAfter != notificationRevision || latestRevisionAfter != latestRevision {
+			return fmt.Errorf("graph and notification revisions moved during lexical replay: notification %d to %d, graph %d to %d", notificationRevision, notificationRevisionAfter, latestRevision, latestRevisionAfter)
+		}
 		return fmt.Errorf("%w: notification revision %d does not match graph domain revision %d", graphnotification.ErrOutOfRange, notificationRevision, latestRevision)
 	}
 
