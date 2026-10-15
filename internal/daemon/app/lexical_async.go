@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -34,8 +35,9 @@ type asyncLexicalReplayCollector struct {
 }
 
 type asyncLexicalScopeWorker struct {
-	scope  graphchange.Scope
-	signal chan struct{}
+	scope   graphchange.Scope
+	signal  chan struct{}
+	pending bool
 }
 
 // asyncLexicalCoordinator turns best-effort live notifications into durable,
@@ -68,7 +70,11 @@ func startAsyncLexicalConsumer(ctx context.Context, logger *slog.Logger, notific
 	if err != nil || coordinator == nil {
 		return nil, err
 	}
-	go replayAsyncLexicalStoredScopes(ctx, logger, notifications, coordinator)
+	coordinator.wg.Add(1)
+	go func() {
+		defer coordinator.wg.Done()
+		replayAsyncLexicalStoredScopes(coordinator.ctx, logger, notifications, coordinator)
+	}()
 	return &asyncLexicalRuntimeService{registration: registration, coordinator: coordinator}, nil
 }
 
@@ -186,8 +192,9 @@ func (c *asyncLexicalCoordinator) schedule(scope graphchange.Scope) {
 		worker = &asyncLexicalScopeWorker{scope: scope, signal: make(chan struct{}, 1)}
 		c.workers[key] = worker
 		c.wg.Add(1)
-		go c.runScope(worker)
+		go c.runScope(key, worker)
 	}
+	worker.pending = true
 	select {
 	case worker.signal <- struct{}{}:
 	default:
@@ -195,37 +202,60 @@ func (c *asyncLexicalCoordinator) schedule(scope graphchange.Scope) {
 	c.mu.Unlock()
 }
 
-func (c *asyncLexicalCoordinator) runScope(worker *asyncLexicalScopeWorker) {
+func (c *asyncLexicalCoordinator) runScope(key string, worker *asyncLexicalScopeWorker) {
 	defer c.wg.Done()
+	select {
+	case <-c.ctx.Done():
+		return
+	case <-worker.signal:
+	}
+	backoff := 50 * time.Millisecond
 	for {
+		c.mu.Lock()
+		worker.pending = false
+		c.mu.Unlock()
+
+		err := replayAsyncLexicalScope(c.ctx, c.logger, c.notifications, c.lexical, c.revisions, c.consumer, worker.scope)
+		if err == nil {
+			c.mu.Lock()
+			if worker.pending {
+				c.mu.Unlock()
+				backoff = 50 * time.Millisecond
+				continue
+			}
+			if c.workers[key] == worker {
+				delete(c.workers, key)
+			}
+			c.mu.Unlock()
+			return
+		}
+		if errors.Is(err, graphnotification.ErrOutOfRange) {
+			if c.logger != nil {
+				c.logger.Error("async lexical durable replay requires operator rebuild", "space_id", worker.scope.SpaceID, "domain_id", worker.scope.DomainID, "error", err)
+			}
+			c.mu.Lock()
+			if c.workers[key] == worker {
+				delete(c.workers, key)
+			}
+			c.mu.Unlock()
+			return
+		}
+		if c.logger != nil {
+			c.logger.Warn("async lexical durable replay failed; will retry", "space_id", worker.scope.SpaceID, "domain_id", worker.scope.DomainID, "error", err)
+		}
+		timer := time.NewTimer(backoff)
 		select {
 		case <-c.ctx.Done():
+			timer.Stop()
 			return
 		case <-worker.signal:
+			timer.Stop()
+		case <-timer.C:
 		}
-		backoff := 50 * time.Millisecond
-		for {
-			err := replayAsyncLexicalScope(c.ctx, c.logger, c.notifications, c.lexical, c.revisions, c.consumer, worker.scope)
-			if err == nil {
-				break
-			}
-			if c.logger != nil {
-				c.logger.Warn("async lexical durable replay failed; will retry", "space_id", worker.scope.SpaceID, "domain_id", worker.scope.DomainID, "error", err)
-			}
-			timer := time.NewTimer(backoff)
-			select {
-			case <-c.ctx.Done():
-				timer.Stop()
-				return
-			case <-worker.signal:
-				timer.Stop()
-			case <-timer.C:
-			}
-			if backoff < 5*time.Second {
-				backoff *= 2
-				if backoff > 5*time.Second {
-					backoff = 5 * time.Second
-				}
+		if backoff < 5*time.Second {
+			backoff *= 2
+			if backoff > 5*time.Second {
+				backoff = 5 * time.Second
 			}
 		}
 	}
@@ -236,7 +266,7 @@ func replayAsyncLexicalStoredScopes(ctx context.Context, logger *slog.Logger, no
 		return
 	}
 	backoff := 250 * time.Millisecond
-	for attempt := 1; attempt <= 8; attempt++ {
+	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return
 		}
@@ -257,6 +287,9 @@ func replayAsyncLexicalStoredScopes(ctx context.Context, logger *slog.Logger, no
 		}
 		if backoff < 5*time.Second {
 			backoff *= 2
+			if backoff > 5*time.Second {
+				backoff = 5 * time.Second
+			}
 		}
 	}
 }
@@ -274,27 +307,16 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 	if scope.SpaceID == "" || scope.DomainID == "" {
 		return nil
 	}
-	notificationRevision, err := notifications.CurrentRevision(ctx, scope.SpaceID, scope.DomainID)
+	notificationRevision, latestRevision, err := asyncLexicalRevisions(ctx, notifications, revisions, scope)
 	if err != nil {
-		return fmt.Errorf("read graph-change revision for async lexical replay: %w", err)
-	}
-	latestRevision := notificationRevision
-	if revisions != nil {
-		graphRevision, err := revisions.CurrentDomainRevision(ctx, scope.SpaceID, scope.DomainID)
-		if err != nil {
-			return fmt.Errorf("read graph domain revision for async lexical replay: %w", err)
-		}
-		if graphRevision < 0 {
-			return fmt.Errorf("graph domain revision is negative: %d", graphRevision)
-		}
-		latestRevision = uint64(graphRevision)
+		return err
 	}
 	status := lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
 	if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
 		return nil
 	}
 	if notificationRevision != latestRevision {
-		return fmt.Errorf("cannot reconcile lexical index: notification revision %d does not match graph domain revision %d", notificationRevision, latestRevision)
+		return fmt.Errorf("%w: notification revision %d does not match graph domain revision %d", graphnotification.ErrOutOfRange, notificationRevision, latestRevision)
 	}
 
 	afterRevision := status.IndexedGraphRevision
@@ -305,6 +327,13 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 	collector := &asyncLexicalReplayCollector{}
 	if err := notifications.Replay(ctx, graphnotification.ConsumerSpec{ConsumerName: asyncLexicalConsumerName, Scope: scope, Start: graphnotification.StartPosition{AfterRevision: &afterRevision}, Projection: asyncLexicalProjection()}, collector); err != nil {
 		return fmt.Errorf("collect graph changes for async lexical replay: %w", err)
+	}
+	notificationRevisionAfter, latestRevisionAfter, err := asyncLexicalRevisions(ctx, notifications, revisions, scope)
+	if err != nil {
+		return err
+	}
+	if notificationRevisionAfter != notificationRevision || latestRevisionAfter != latestRevision {
+		return fmt.Errorf("lexical replay revisions advanced while collecting history: notification %d to %d, graph %d to %d", notificationRevision, notificationRevisionAfter, latestRevision, latestRevisionAfter)
 	}
 	if err := validateAsyncLexicalReplay(collector.events, afterRevision, latestRevision); err != nil {
 		return err
@@ -328,6 +357,25 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 		return fmt.Errorf("lexical replay ended at revision %d with state %s; want fresh revision %d", finalStatus.IndexedGraphRevision, finalStatus.State, latestRevision)
 	}
 	return nil
+}
+
+func asyncLexicalRevisions(ctx context.Context, notifications *graphnotification.Module, revisions asyncLexicalDomainRevisionReader, scope graphchange.Scope) (uint64, uint64, error) {
+	notificationRevision, err := notifications.CurrentRevision(ctx, scope.SpaceID, scope.DomainID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read graph-change revision for async lexical replay: %w", err)
+	}
+	latestRevision := notificationRevision
+	if revisions != nil {
+		graphRevision, err := revisions.CurrentDomainRevision(ctx, scope.SpaceID, scope.DomainID)
+		if err != nil {
+			return 0, 0, fmt.Errorf("read graph domain revision for async lexical replay: %w", err)
+		}
+		if graphRevision < 0 {
+			return 0, 0, fmt.Errorf("graph domain revision is negative: %d", graphRevision)
+		}
+		latestRevision = uint64(graphRevision)
+	}
+	return notificationRevision, latestRevision, nil
 }
 
 func validateAsyncLexicalReplay(events []graphchange.CommittedEvent, afterRevision uint64, latestRevision uint64) error {

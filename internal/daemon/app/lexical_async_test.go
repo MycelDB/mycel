@@ -252,6 +252,18 @@ func TestAsyncLexicalCatchupPrecedesRegisteredLiveDelivery(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+	for {
+		coordinator.mu.Lock()
+		workerCount := len(coordinator.workers)
+		coordinator.mu.Unlock()
+		if workerCount == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lexical scope workers retained after catch-up: %d", workerCount)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func TestAsyncLexicalReplayRepairsCursorAheadOfDomainRevision(t *testing.T) {
