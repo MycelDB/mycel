@@ -471,7 +471,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		}
 		return err
 	})
-	if err := startAsyncLexicalConsumer(ctx, logger, graphNotificationService, lexicalService); err != nil {
+	if err := startAsyncLexicalConsumer(ctx, logger, graphNotificationService, lexicalService, graphService); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}

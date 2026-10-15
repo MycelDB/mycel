@@ -115,6 +115,15 @@ func (s *Service) RebuildFromSnapshot(snapshot RebuildSnapshot) error {
 	return s.rebuildLocked(docs, latestRevision)
 }
 
+func (s *Service) Reset() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.paused {
+		return ErrIndexingPaused
+	}
+	return os.RemoveAll(s.store.ScopeDir())
+}
+
 func (s *Service) rebuildLocked(docs []index.IndexedDocument, latestRevision uint64) error {
 	if err := os.RemoveAll(s.store.ScopeDir()); err != nil {
 		return err
@@ -171,10 +180,14 @@ func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 	}
 	status.IndexedGraphRevision = cursor.IndexedGraphRevision
 	status.RevisionLag = 0
-	if latestKnownGraphRevision > cursor.IndexedGraphRevision {
+	switch {
+	case cursor.IndexedGraphRevision > latestKnownGraphRevision:
+		status.State = StateError
+		status.LastError = fmt.Sprintf("indexed graph revision %d is ahead of latest domain revision %d; rebuild required", cursor.IndexedGraphRevision, latestKnownGraphRevision)
+	case latestKnownGraphRevision > cursor.IndexedGraphRevision:
 		status.RevisionLag = latestKnownGraphRevision - cursor.IndexedGraphRevision
 		status.State = StateStale
-	} else {
+	default:
 		status.State = StateFresh
 	}
 	for _, segmentID := range manifest.Segments {

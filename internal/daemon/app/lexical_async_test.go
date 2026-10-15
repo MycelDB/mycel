@@ -22,6 +22,7 @@ import (
 	identity "github.com/myceldb/mycel/internal/identity/model"
 	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
+	"github.com/myceldb/mycel/internal/search/lexical/analyzer"
 	lexicalindex "github.com/myceldb/mycel/internal/search/lexical/index"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
@@ -81,19 +82,236 @@ func TestAsyncLexicalReplayUsesIndexedRevisionCursor(t *testing.T) {
 	consumer := &asyncLexicalConsumer{lexical: lexical, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	scope := graphchange.Scope{SpaceID: spaceID.String(), DomainID: domainID.String()}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := replayAsyncLexicalScope(ctx, logger, notifications, lexical, consumer, scope); err != nil {
+	if err := replayAsyncLexicalScope(ctx, logger, notifications, lexical, nil, consumer, scope); err != nil {
 		t.Fatalf("replayAsyncLexicalScope() error = %v", err)
 	}
 	status := lexical.Status(ctx, spaceID.String(), domainID.String(), 2)
 	if status.State != lexicalservice.StateFresh || status.IndexedGraphRevision != 2 || status.LiveDocumentCount != 2 || status.SegmentCount != 2 {
 		t.Fatalf("unexpected lexical status after first replay: %+v", status)
 	}
-	if err := replayAsyncLexicalScope(ctx, logger, notifications, lexical, consumer, scope); err != nil {
+	if err := replayAsyncLexicalScope(ctx, logger, notifications, lexical, nil, consumer, scope); err != nil {
 		t.Fatalf("second replayAsyncLexicalScope() error = %v", err)
 	}
 	status = lexical.Status(ctx, spaceID.String(), domainID.String(), 2)
 	if status.IndexedGraphRevision != 2 || status.LiveDocumentCount != 2 || status.SegmentCount != 2 {
 		t.Fatalf("unexpected lexical status after second replay: %+v", status)
+	}
+}
+
+func TestAsyncLexicalCatchupPrecedesRegisteredLiveDelivery(t *testing.T) {
+	ctx := context.Background()
+	lexical := newTestLexicalModule(t)
+	notifications := graphnotification.NewModule()
+	notifications.SetDataDirForTest(t.TempDir())
+	t.Cleanup(func() {
+		if err := notifications.Close(); err != nil {
+			t.Errorf("close graph notification module: %v", err)
+		}
+	})
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
+	second := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2, "beta raft")
+	if err := notifications.OnGraphCommitted(ctx, first); err != nil {
+		t.Fatalf("OnGraphCommitted(first) error = %v", err)
+	}
+	catchupDone := make(chan struct{})
+	consumer := &asyncLexicalConsumer{lexical: lexical, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), catchupDone: catchupDone}
+	registration, err := registerAsyncLexicalConsumerInstance(ctx, consumer.logger, notifications, consumer)
+	if err != nil {
+		t.Fatalf("registerAsyncLexicalConsumerInstance() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := registration.Close(); err != nil {
+			t.Errorf("close lexical registration: %v", err)
+		}
+	})
+	catchupClosed := false
+	t.Cleanup(func() {
+		if !catchupClosed {
+			close(catchupDone)
+		}
+	})
+	if err := notifications.OnGraphCommitted(ctx, second); err != nil {
+		t.Fatalf("OnGraphCommitted(second) error = %v", err)
+	}
+	replayConsumer := &asyncLexicalReplayConsumer{consumer: consumer}
+	if err := replayAsyncLexicalScope(ctx, consumer.logger, notifications, lexical, nil, replayConsumer, graphchange.Scope{SpaceID: spaceID.String(), DomainID: domainID.String()}); err != nil {
+		t.Fatalf("replayAsyncLexicalScope() error = %v", err)
+	}
+	close(catchupDone)
+	catchupClosed = true
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		status := lexical.Status(ctx, spaceID.String(), domainID.String(), 2)
+		if status.State == lexicalservice.StateFresh && status.IndexedGraphRevision == 2 && status.LiveDocumentCount == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lexical catch-up did not finish before live delivery: %+v", status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestAsyncLexicalReplayRepairsCursorAheadOfDomainRevision(t *testing.T) {
+	ctx := context.Background()
+	lexical := newTestLexicalModule(t)
+	notifications := graphnotification.NewModule()
+	notifications.SetDataDirForTest(t.TempDir())
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
+	second := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2, "beta raft")
+	if err := notifications.OnGraphCommitted(ctx, first); err != nil {
+		t.Fatalf("OnGraphCommitted(first) error = %v", err)
+	}
+	if err := notifications.OnGraphCommitted(ctx, second); err != nil {
+		t.Fatalf("OnGraphCommitted(second) error = %v", err)
+	}
+	if err := lexical.Rebuild(ctx, spaceID.String(), domainID.String(), nil, 9); err != nil {
+		t.Fatalf("seed poisoned lexical cursor: %v", err)
+	}
+	if status := lexical.Status(ctx, spaceID.String(), domainID.String(), 2); status.State != lexicalservice.StateError {
+		t.Fatalf("poisoned cursor status = %+v, want error", status)
+	}
+
+	consumer := &asyncLexicalConsumer{lexical: lexical, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if err := replayAsyncLexicalScope(ctx, consumer.logger, notifications, lexical, nil, consumer, graphchange.Scope{SpaceID: spaceID.String(), DomainID: domainID.String()}); err != nil {
+		t.Fatalf("replayAsyncLexicalScope() error = %v", err)
+	}
+	status := lexical.Status(ctx, spaceID.String(), domainID.String(), 2)
+	if status.State != lexicalservice.StateFresh || status.IndexedGraphRevision != 2 || status.LiveDocumentCount != 2 {
+		t.Fatalf("repaired lexical status = %+v", status)
+	}
+	result, err := lexical.Search(ctx, spaceID.String(), domainID.String(), "raft", lexicalindex.SearchOptions{PageSize: 10})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Results) != 2 {
+		t.Fatalf("Search() results = %+v, want both replayed nodes", result.Results)
+	}
+}
+
+func TestAsyncLexicalReplayPreservesInvalidCursorWhenFullHistoryIsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	lexical := newTestLexicalModule(t)
+	notifications := graphnotification.NewModule()
+	notifications.SetDataDirForTest(t.TempDir())
+	notifications.SetRetentionForTest(1, time.Hour)
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	if err := notifications.OnGraphCommitted(ctx, lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")); err != nil {
+		t.Fatalf("OnGraphCommitted(first) error = %v", err)
+	}
+	if err := notifications.OnGraphCommitted(ctx, lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2, "beta raft")); err != nil {
+		t.Fatalf("OnGraphCommitted(second) error = %v", err)
+	}
+	if err := lexical.Rebuild(ctx, spaceID.String(), domainID.String(), nil, 9); err != nil {
+		t.Fatalf("seed poisoned lexical cursor: %v", err)
+	}
+	consumer := &asyncLexicalConsumer{lexical: lexical, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	err := replayAsyncLexicalScope(ctx, consumer.logger, notifications, lexical, nil, consumer, graphchange.Scope{SpaceID: spaceID.String(), DomainID: domainID.String()})
+	if err == nil {
+		t.Fatal("replayAsyncLexicalScope() error = nil, want replay gap")
+	}
+	status := lexical.Status(ctx, spaceID.String(), domainID.String(), 2)
+	if status.State != lexicalservice.StateError || status.IndexedGraphRevision != 9 {
+		t.Fatalf("invalid cursor was reset without complete history: %+v", status)
+	}
+}
+
+func TestAsyncLexicalLosslessDeliveryStaysOrderedDuringRebuild(t *testing.T) {
+	ctx := context.Background()
+	lexical := newTestLexicalModule(t)
+	notifications := graphnotification.NewModule()
+	notifications.SetDataDirForTest(t.TempDir())
+	t.Cleanup(func() {
+		if err := notifications.Close(); err != nil {
+			t.Errorf("close graph notification module: %v", err)
+		}
+	})
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "revision 1 raft")
+	if err := notifications.OnGraphCommitted(ctx, first); err != nil {
+		t.Fatalf("OnGraphCommitted(first) error = %v", err)
+	}
+	consumer := &asyncLexicalConsumer{lexical: lexical, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if err := consumer.HandleGraphChange(ctx, first); err != nil {
+		t.Fatalf("HandleGraphChange(first) error = %v", err)
+	}
+	registration, err := notifications.RegisterConsumer(ctx, graphnotification.ConsumerSpec{ConsumerName: asyncLexicalConsumerName, Projection: asyncLexicalProjection(), Lossless: true}, consumer)
+	if err != nil {
+		t.Fatalf("RegisterConsumer() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := registration.Close(); err != nil {
+			t.Errorf("close lexical registration: %v", err)
+		}
+	})
+
+	snapshotStarted := make(chan struct{})
+	releaseSnapshot := make(chan struct{})
+	rebuildDone := make(chan error, 1)
+	go func() {
+		rebuildDone <- lexical.RebuildFromSnapshot(ctx, spaceID.String(), domainID.String(), func() ([]lexicalindex.IndexedDocument, uint64, error) {
+			close(snapshotStarted)
+			<-releaseSnapshot
+			doc := analyzer.ExtractNodeDocument(*first.Changes[0].Node)
+			return []lexicalindex.IndexedDocument{{Document: doc, GraphRevision: 1}}, 1, nil
+		})
+	}()
+	<-snapshotStarted
+
+	const lastRevision = uint64(68)
+	publishDone := make(chan error, 1)
+	go func() {
+		for revision := uint64(2); revision <= lastRevision; revision++ {
+			event := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), revision, "queued raft")
+			if err := notifications.OnGraphCommitted(ctx, event); err != nil {
+				publishDone <- err
+				return
+			}
+		}
+		publishDone <- nil
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		current, err := notifications.CurrentRevision(ctx, spaceID.String(), domainID.String())
+		if err != nil {
+			t.Fatalf("CurrentRevision() error = %v", err)
+		}
+		if current >= 66 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("notification revision = %d, want at least 66 while rebuild is blocked", current)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseSnapshot)
+	if err := <-rebuildDone; err != nil {
+		t.Fatalf("RebuildFromSnapshot() error = %v", err)
+	}
+	select {
+	case err := <-publishDone:
+		if err != nil {
+			t.Fatalf("publish queued graph changes: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued graph-change publisher did not finish")
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		status := lexical.Status(ctx, spaceID.String(), domainID.String(), lastRevision)
+		if status.State == lexicalservice.StateFresh && status.IndexedGraphRevision == lastRevision && status.LiveDocumentCount == int(lastRevision) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lexical delivery did not reach revision %d: %+v", lastRevision, status)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -195,7 +413,7 @@ func TestUserOwnedDomainGraphWritesAreIndexedRebuiltAndPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StoredScopes() error = %v", err)
 	}
-	if err := replayAsyncLexicalScopes(ctx, logger, notifications, lexical, consumer, scopes); err != nil {
+	if err := replayAsyncLexicalScopes(ctx, logger, notifications, lexical, graphs, consumer, scopes); err != nil {
 		t.Fatalf("replayAsyncLexicalScopes() error = %v", err)
 	}
 	secondNodeID := writeLexicalTestNode(t, userCtx, transactionAPI, graphAPI, contentSessionID, "Marmalade async indexing")

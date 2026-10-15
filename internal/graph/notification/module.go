@@ -93,6 +93,7 @@ type LeaderGate func(context.Context, graphchange.CommittedEvent) error
 
 type Module struct {
 	mu             sync.Mutex
+	publishMu      sync.Mutex
 	dataDir        string
 	retentionCount int
 	retentionAge   time.Duration
@@ -335,6 +336,10 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 		}
 		defer release()
 	}
+	// Persist and enqueue one commit at a time so every registration observes
+	// the same order as the durable notification history.
+	m.publishMu.Lock()
+	defer m.publishMu.Unlock()
 	if event.ID == uuid.Nil {
 		event.ID = uuid.New()
 	}
@@ -538,30 +543,21 @@ func (r *registration) offer(event graphchange.CommittedEvent) {
 		return
 	default:
 		if r.spec.Lossless {
-			r.goDeliver(event)
-			return
+			// Apply backpressure rather than spawning concurrent deliveries. The
+			// lexical cursor is a contiguous high-water mark, so lossless events
+			// must reach each consumer in publication order.
+			select {
+			case <-r.done:
+				return
+			case r.ch <- event:
+				return
+			}
 		}
 		r.module.mu.Lock()
 		r.module.diagnostics.EventsDropped++
 		r.module.mu.Unlock()
 		r.goDeliverGap(graphchange.Gap{SpaceID: event.SpaceID.String(), DomainID: event.DomainID.String(), CurrentRevision: eventRevision(event)})
 	}
-}
-
-func (r *registration) goDeliver(event graphchange.CommittedEvent) {
-	r.wgMu.Lock()
-	select {
-	case <-r.done:
-		r.wgMu.Unlock()
-		return
-	default:
-	}
-	r.wg.Add(1)
-	r.wgMu.Unlock()
-	go func() {
-		defer r.wg.Done()
-		r.deliver(event)
-	}()
 }
 
 func (r *registration) goDeliverGap(gap graphchange.Gap) {

@@ -119,6 +119,15 @@ func (m *Module) RebuildFromSnapshot(ctx context.Context, spaceID string, domain
 	return m.serviceFor(spaceID, domainID).RebuildFromSnapshot(snapshot)
 }
 
+func (m *Module) Reset(ctx context.Context, spaceID string, domainID string) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return m.serviceFor(spaceID, domainID).Reset()
+}
+
 func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.CommittedEvent) error {
 	release, err := m.enterMutation(ctx)
 	if err != nil {
