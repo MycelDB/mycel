@@ -315,6 +315,9 @@ func TestAsyncLexicalTerminalMismatchPendingWakeupIsNotLost(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("scope worker did not reach graph revision read")
 	}
+	if err := registration.Close(); err != nil {
+		t.Fatalf("close lexical registration before isolated wake-up: %v", err)
+	}
 	if err := notifications.OnGraphCommitted(ctx, second); err != nil {
 		t.Fatalf("OnGraphCommitted(second) error = %v", err)
 	}
