@@ -11,6 +11,7 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	hybridsearch "github.com/myceldb/mycel/internal/search/hybrid"
 	lexicalindex "github.com/myceldb/mycel/internal/search/lexical/index"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
@@ -209,7 +210,7 @@ func TestFilteredLexicalSearchBoundsHydrationAndReturnsContinuation(t *testing.T
 	fixture := newSearchPaginationFixture(1500)
 	response, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
 		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL,
-		Query: "raft", PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"missing"}},
+		Query: "raft", PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"missing"}}, Lexical: &clientv1.LexicalSearchOptions{CandidateCount: 1},
 	})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -219,6 +220,9 @@ func TestFilteredLexicalSearchBoundsHydrationAndReturnsContinuation(t *testing.T
 	}
 	if fixture.graphs.getNodeCalls != lexicalMaxFilterCandidatesPerPage {
 		t.Fatalf("GetNode calls = %d, want bounded maximum %d", fixture.graphs.getNodeCalls, lexicalMaxFilterCandidatesPerPage)
+	}
+	if want := lexicalMaxFilterCandidatesPerPage / hybridsearch.DefaultMinCandidates; fixture.lexical.searchCalls != want {
+		t.Fatalf("lexical Search calls = %d, want bounded count %d for candidate_count=1", fixture.lexical.searchCalls, want)
 	}
 	fixture.graphs.getNodeCalls = 0
 	response, err = fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
@@ -265,6 +269,7 @@ type paginationLexicalManager struct {
 	analyzerVersion    string
 	indexFormatVersion string
 	results            []lexicalindex.Result
+	searchCalls        int
 }
 
 func (m *paginationLexicalManager) Status(_ context.Context, spaceID, domainID string, latest uint64) lexicalservice.Status {
@@ -278,6 +283,7 @@ func (m *paginationLexicalManager) Status(_ context.Context, spaceID, domainID s
 }
 
 func (m *paginationLexicalManager) Search(_ context.Context, _, _, _ string, opts lexicalindex.SearchOptions) (lexicalindex.SearchResponse, error) {
+	m.searchCalls++
 	start := min(opts.Offset, len(m.results))
 	end := min(start+opts.PageSize, len(m.results))
 	response := lexicalindex.SearchResponse{Results: append([]lexicalindex.Result(nil), m.results[start:end]...), Diagnostics: lexicalindex.Diagnostics{CandidateCount: len(m.results), Truncated: end < len(m.results)}}

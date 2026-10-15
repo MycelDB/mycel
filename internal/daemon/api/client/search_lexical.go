@@ -51,8 +51,9 @@ func (s *SearchService) lexicalSearch(ctx context.Context, principal principalUs
 
 func (s *SearchService) filteredLexicalPage(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, query string, pageSize, offset int, filters hybridsearch.Filters, opts *clientv1.LexicalSearchOptions) (lexicalindex.SearchResponse, int, []string, error) {
 	batchSize := hybridsearch.CandidateCount(pageSize, int(opts.GetCandidateCount()), lexicalMaxFilterCandidatesPerPage)
-	if batchSize <= 0 {
-		batchSize = hybridsearch.DefaultMinCandidates
+	minimumBatchSize := max(pageSize, hybridsearch.DefaultMinCandidates)
+	if batchSize < minimumBatchSize {
+		batchSize = minimumBatchSize
 	}
 	scanOffset := offset
 	examined := 0
