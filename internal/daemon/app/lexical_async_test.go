@@ -92,8 +92,7 @@ func TestAsyncLexicalConsumerAdvancesRevisionForNonDocumentChange(t *testing.T) 
 func TestAsyncLexicalReplayUsesIndexedRevisionCursor(t *testing.T) {
 	ctx := context.Background()
 	lexical := newTestLexicalModule(t)
-	notifications := graphnotification.NewModule()
-	notifications.SetDataDirForTest(t.TempDir())
+	notifications := newTestGraphNotifications(t)
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	firstNode := graph.NodeID(uuid.New())
@@ -128,8 +127,7 @@ func TestAsyncLexicalReplayUsesIndexedRevisionCursor(t *testing.T) {
 func TestAsyncLexicalReplayGapDoesNotAdvanceLaterRevisions(t *testing.T) {
 	ctx := context.Background()
 	lexical := newTestLexicalModule(t)
-	notifications := graphnotification.NewModule()
-	notifications.SetDataDirForTest(t.TempDir())
+	notifications := newTestGraphNotifications(t)
 	notifications.SetRetentionForTest(1, time.Hour)
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
@@ -167,8 +165,7 @@ func TestAsyncLexicalReplayGapDoesNotAdvanceLaterRevisions(t *testing.T) {
 func TestAsyncLexicalReplayStopsAtFailedRevision(t *testing.T) {
 	ctx := context.Background()
 	lexical := newTestLexicalModule(t)
-	notifications := graphnotification.NewModule()
-	notifications.SetDataDirForTest(t.TempDir())
+	notifications := newTestGraphNotifications(t)
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	for revision := uint64(1); revision <= 3; revision++ {
@@ -213,13 +210,7 @@ func TestValidateAsyncLexicalReplayRejectsHolesAndOutOfOrderEvents(t *testing.T)
 func TestAsyncLexicalCatchupPrecedesRegisteredLiveDelivery(t *testing.T) {
 	ctx := context.Background()
 	lexical := newTestLexicalModule(t)
-	notifications := graphnotification.NewModule()
-	notifications.SetDataDirForTest(t.TempDir())
-	t.Cleanup(func() {
-		if err := notifications.Close(); err != nil {
-			t.Errorf("close graph notification module: %v", err)
-		}
-	})
+	notifications := newTestGraphNotifications(t)
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
@@ -270,13 +261,7 @@ func TestAsyncLexicalCatchupPrecedesRegisteredLiveDelivery(t *testing.T) {
 func TestAsyncLexicalTerminalMismatchPendingWakeupIsNotLost(t *testing.T) {
 	ctx := context.Background()
 	lexical := newTestLexicalModule(t)
-	notifications := graphnotification.NewModule()
-	notifications.SetDataDirForTest(t.TempDir())
-	t.Cleanup(func() {
-		if err := notifications.Close(); err != nil {
-			t.Errorf("close graph notification module: %v", err)
-		}
-	})
+	notifications := newTestGraphNotifications(t)
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
@@ -340,8 +325,7 @@ func TestAsyncLexicalTerminalMismatchPendingWakeupIsNotLost(t *testing.T) {
 func TestAsyncLexicalReplayRepairsCursorAheadOfDomainRevision(t *testing.T) {
 	ctx := context.Background()
 	lexical := newTestLexicalModule(t)
-	notifications := graphnotification.NewModule()
-	notifications.SetDataDirForTest(t.TempDir())
+	notifications := newTestGraphNotifications(t)
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
@@ -379,8 +363,7 @@ func TestAsyncLexicalReplayRepairsCursorAheadOfDomainRevision(t *testing.T) {
 func TestAsyncLexicalReplayPreservesInvalidCursorWhenFullHistoryIsUnavailable(t *testing.T) {
 	ctx := context.Background()
 	lexical := newTestLexicalModule(t)
-	notifications := graphnotification.NewModule()
-	notifications.SetDataDirForTest(t.TempDir())
+	notifications := newTestGraphNotifications(t)
 	notifications.SetRetentionForTest(1, time.Hour)
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
@@ -407,13 +390,7 @@ func TestAsyncLexicalReplayPreservesInvalidCursorWhenFullHistoryIsUnavailable(t 
 func TestAsyncLexicalDurableReplayStaysOrderedWithoutWriteBackpressure(t *testing.T) {
 	ctx := context.Background()
 	lexical := newTestLexicalModule(t)
-	notifications := graphnotification.NewModule()
-	notifications.SetDataDirForTest(t.TempDir())
-	t.Cleanup(func() {
-		if err := notifications.Close(); err != nil {
-			t.Errorf("close graph notification module: %v", err)
-		}
-	})
+	notifications := newTestGraphNotifications(t)
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "revision 1 raft")
@@ -732,6 +709,18 @@ func newTestLexicalModule(t *testing.T) *lexicalservice.Module {
 		t.Fatalf("lexical Init() failed: %+v", result)
 	}
 	return lexical
+}
+
+func newTestGraphNotifications(t *testing.T) *graphnotification.Module {
+	t.Helper()
+	notifications := graphnotification.NewModule()
+	notifications.SetDataDirForTest(t.TempDir())
+	t.Cleanup(func() {
+		if err := notifications.Close(); err != nil {
+			t.Errorf("close graph notification module: %v", err)
+		}
+	})
+	return notifications
 }
 
 func lexicalNodeEvent(spaceID domainspace.SpaceID, domainID graph.DomainID, nodeID graph.NodeID, revision uint64, text string) graphchange.CommittedEvent {

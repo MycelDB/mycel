@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	lexicalstatus "github.com/myceldb/mycel/internal/daemon/api/lexicalstatus"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
@@ -442,46 +443,8 @@ type forwardedStatusResponse struct {
 
 func (e forwardedStatusResponse) Error() string { return "forwarded lexical status" }
 
-type lexicalGraphDomainRevisionReader interface {
-	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
-}
-
 func (s *SearchService) lexicalStatus(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (lexicalservice.Status, error) {
-	latest, err := s.latestGraphRevision(ctx, spaceID, domainID)
-	if err != nil {
-		return lexicalservice.Status{}, err
-	}
-	freshness := s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest)
-	if freshness.IndexedGraphRevision <= latest {
-		return freshness, nil
-	}
-	latestAfterCursor, err := s.latestGraphRevision(ctx, spaceID, domainID)
-	if err != nil {
-		return lexicalservice.Status{}, err
-	}
-	return lexicalservice.ReconcileStatusLatest(freshness, latestAfterCursor), nil
-}
-
-func (s *SearchService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (uint64, error) {
-	if s.graphs == nil {
-		return 0, nil
-	}
-	var (
-		rev int64
-		err error
-	)
-	if revisions, ok := s.graphs.(lexicalGraphDomainRevisionReader); ok {
-		rev, err = revisions.CurrentDomainRevision(ctx, spaceID.String(), domainID.String())
-	} else {
-		rev, err = s.graphs.CurrentRevision(ctx, spaceID.String())
-	}
-	if err != nil {
-		return 0, err
-	}
-	if rev < 0 {
-		return 0, fmt.Errorf("graph revision is negative: %d", rev)
-	}
-	return uint64(rev), nil
+	return lexicalstatus.Read(ctx, s.lexical, s.graphs, spaceID.String(), domainID.String())
 }
 
 func validateFreshnessPolicy(freshness lexicalservice.Status, allowStale bool, maxLag int64) error {

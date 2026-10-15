@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	lexicalstatus "github.com/myceldb/mycel/internal/daemon/api/lexicalstatus"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
@@ -139,46 +140,12 @@ func (s *AdminLexicalMaintenanceService) collectDocuments(ctx context.Context, s
 	return out, latest, nil
 }
 
-type lexicalGraphDomainRevisionReader interface {
-	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
-}
-
 func (s *AdminLexicalMaintenanceService) lexicalStatus(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (lexicalservice.Status, error) {
-	latest, err := s.latestGraphRevision(ctx, spaceID, domainID)
-	if err != nil {
-		return lexicalservice.Status{}, err
-	}
-	maintenance := s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest)
-	if maintenance.IndexedGraphRevision <= latest {
-		return maintenance, nil
-	}
-	latestAfterCursor, err := s.latestGraphRevision(ctx, spaceID, domainID)
-	if err != nil {
-		return lexicalservice.Status{}, err
-	}
-	return lexicalservice.ReconcileStatusLatest(maintenance, latestAfterCursor), nil
+	return lexicalstatus.Read(ctx, s.lexical, s.graphs, spaceID.String(), domainID.String())
 }
 
 func (s *AdminLexicalMaintenanceService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (uint64, error) {
-	if s.graphs == nil {
-		return 0, nil
-	}
-	var (
-		rev int64
-		err error
-	)
-	if revisions, ok := s.graphs.(lexicalGraphDomainRevisionReader); ok {
-		rev, err = revisions.CurrentDomainRevision(ctx, spaceID.String(), domainID.String())
-	} else {
-		rev, err = s.graphs.CurrentRevision(ctx, spaceID.String())
-	}
-	if err != nil {
-		return 0, err
-	}
-	if rev < 0 {
-		return 0, fmt.Errorf("graph revision is negative: %d", rev)
-	}
-	return uint64(rev), nil
+	return lexicalstatus.LatestGraphRevision(ctx, s.graphs, spaceID.String(), domainID.String())
 }
 
 func mapAdminLexicalStatus(in lexicalservice.Status) *clientv1.LexicalIndexStatus {
