@@ -9,37 +9,10 @@ import (
 
 	"github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 )
 
-var ErrDenied = errors.New("inference request denied")
-
-type InvokeRequest struct {
-	Resolve             ResolveRequest
-	Input               string
-	Prompt              string
-	Messages            []connectors.Message
-	ImageInputs         []connectors.ImageInput
-	RequestID           string
-	AutomationID        string
-	AutomationRunID     string
-	SemanticRuleID      string
-	EmbeddingBindingKey string
-	SemanticIndexID     string
-	Metadata            map[string]any
-}
-
-type InvokeResponse struct {
-	Allowed           bool
-	Decision          domaininference.PolicyDecision
-	ProviderRequestID string
-	Text              string
-	JSON              map[string]any
-	Embedding         []float64
-	Usage             connectors.Usage
-	Status            domaininference.UsageStatus
-}
-
-func (m *Module) Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse, error) {
+func (m *Module) Invoke(ctx context.Context, req inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
 	started := time.Now().UTC()
 	if req.Resolve.SemanticIndexID == "" {
 		req.Resolve.SemanticIndexID = req.SemanticIndexID
@@ -49,42 +22,42 @@ func (m *Module) Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse,
 	}
 	resolved, err := m.Resolve(ctx, req.Resolve)
 	if err != nil {
-		return InvokeResponse{}, err
+		return inferenceruntime.InvokeResponse{}, err
 	}
 	if !resolved.Allowed {
-		_, appendErr := m.appendUsage(ctx, req, resolved, connectors.Usage{}, "", domaininference.UsageStatusDenied, "inference_denied", resolved.Decision.Reason, started)
-		resp := InvokeResponse{Allowed: false, Decision: resolved.Decision, Status: domaininference.UsageStatusDenied}
+		_, appendErr := m.appendUsage(ctx, req, resolved, domaininference.Usage{}, "", domaininference.UsageStatusDenied, "inference_denied", resolved.Decision.Reason, started)
+		resp := inferenceruntime.InvokeResponse{Allowed: false, Decision: resolved.Decision, Status: domaininference.UsageStatusDenied}
 		if appendErr != nil {
 			return resp, appendErr
 		}
-		return resp, ErrDenied
+		return resp, inferenceruntime.ErrDenied
 	}
 	if err := ctx.Err(); err != nil {
-		_, appendErr := m.appendUsage(context.Background(), req, resolved, connectors.Usage{}, "", domaininference.UsageStatusCanceled, "canceled", err.Error(), started)
+		_, appendErr := m.appendUsage(context.Background(), req, resolved, domaininference.Usage{}, "", domaininference.UsageStatusCanceled, "canceled", err.Error(), started)
 		if appendErr != nil {
-			return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusCanceled}, appendErr
+			return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusCanceled}, appendErr
 		}
-		return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusCanceled}, err
+		return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusCanceled}, err
 	}
 	secretValue := ""
 	if resolved.Credential.AuthType != domaininference.CredentialAuthNone {
 		secretValue, err = m.resolveSecret(ctx, resolved.Secret)
 		if err != nil {
-			_, appendErr := m.appendUsage(ctx, req, resolved, connectors.Usage{}, "", domaininference.UsageStatusFailed, "secret_resolution_failed", err.Error(), started)
+			_, appendErr := m.appendUsage(ctx, req, resolved, domaininference.Usage{}, "", domaininference.UsageStatusFailed, "secret_resolution_failed", err.Error(), started)
 			if appendErr != nil {
-				return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, fmt.Errorf("%w; additionally failed to append usage event: %v", err, appendErr)
+				return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, fmt.Errorf("%w; additionally failed to append usage event: %v", err, appendErr)
 			}
-			return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, err
+			return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, err
 		}
 	}
 	connector := m.connector(resolved.Endpoint.ConnectorType)
 	if connector == nil {
 		err := fmt.Errorf("connector %q is not registered", resolved.Endpoint.ConnectorType)
-		_, appendErr := m.appendUsage(ctx, req, resolved, connectors.Usage{}, "", domaininference.UsageStatusFailed, "connector_unavailable", err.Error(), started)
+		_, appendErr := m.appendUsage(ctx, req, resolved, domaininference.Usage{}, "", domaininference.UsageStatusFailed, "connector_unavailable", err.Error(), started)
 		if appendErr != nil {
-			return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, fmt.Errorf("%w; additionally failed to append usage event: %v", err, appendErr)
+			return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, fmt.Errorf("%w; additionally failed to append usage event: %v", err, appendErr)
 		}
-		return InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, err
+		return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, err
 	}
 	resp, err := m.invokeConnector(ctx, connector, req, resolved, secretValue)
 	status := domaininference.UsageStatusSucceeded
@@ -105,7 +78,7 @@ func (m *Module) Invoke(ctx context.Context, req InvokeRequest) (InvokeResponse,
 		appendCtx = context.Background()
 	}
 	_, appendErr := m.appendUsage(appendCtx, req, resolved, resp.Usage, resp.ProviderRequestID, status, errorCode, errorMessage, started)
-	out := InvokeResponse{Allowed: true, Decision: resolved.Decision, ProviderRequestID: resp.ProviderRequestID, Text: resp.Text, JSON: resp.JSON, Embedding: resp.Embedding, Usage: resp.Usage, Status: status}
+	out := inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, ProviderRequestID: resp.ProviderRequestID, Text: resp.Text, JSON: resp.JSON, Embedding: resp.Embedding, Usage: resp.Usage, Status: status}
 	if appendErr != nil {
 		if err != nil {
 			return out, fmt.Errorf("%w; additionally failed to append usage event: %v", err, appendErr)
@@ -120,10 +93,10 @@ type connectorResponse struct {
 	Text              string
 	JSON              map[string]any
 	Embedding         []float64
-	Usage             connectors.Usage
+	Usage             domaininference.Usage
 }
 
-func (m *Module) invokeConnector(ctx context.Context, connector connectors.Connector, req InvokeRequest, resolved ResolveResult, secretValue string) (connectorResponse, error) {
+func (m *Module) invokeConnector(ctx context.Context, connector connectors.Connector, req inferenceruntime.InvokeRequest, resolved inferenceruntime.ResolveResult, secretValue string) (connectorResponse, error) {
 	switch resolved.Profile.Operation {
 	case domaininference.OperationEmbeddings:
 		resp, err := connector.Embed(ctx, connectors.EmbeddingRequest{Endpoint: resolved.Endpoint, Model: resolved.Model, Capability: resolved.Capability, Credential: resolved.Credential, Secret: secretValue, Input: req.Input})
@@ -137,16 +110,16 @@ func (m *Module) invokeConnector(ctx context.Context, connector connectors.Conne
 	}
 }
 
-func normalizedMessages(req InvokeRequest) []connectors.Message {
+func normalizedMessages(req inferenceruntime.InvokeRequest) []domaininference.Message {
 	if len(req.Messages) > 0 {
-		out := make([]connectors.Message, 0, len(req.Messages)+1)
+		out := make([]domaininference.Message, 0, len(req.Messages)+1)
 		for _, msg := range req.Messages {
 			if strings.TrimSpace(msg.Content) != "" || len(msg.Parts) > 0 {
 				role := strings.TrimSpace(msg.Role)
 				if role == "" {
 					role = "user"
 				}
-				out = append(out, connectors.Message{Role: role, Content: msg.Content, Parts: cloneMessageParts(msg.Parts)})
+				out = append(out, domaininference.Message{Role: role, Content: msg.Content, Parts: cloneMessageParts(msg.Parts)})
 			}
 		}
 		if len(req.ImageInputs) > 0 {
@@ -154,17 +127,17 @@ func normalizedMessages(req InvokeRequest) []connectors.Message {
 		}
 		return out
 	}
-	out := []connectors.Message{}
+	out := []domaininference.Message{}
 	if strings.TrimSpace(req.Prompt) != "" {
-		out = append(out, connectors.Message{Role: "system", Content: req.Prompt})
+		out = append(out, domaininference.Message{Role: "system", Content: req.Prompt})
 	}
 	if strings.TrimSpace(req.Input) != "" || len(req.ImageInputs) > 0 {
-		msg := connectors.Message{Role: "user"}
+		msg := domaininference.Message{Role: "user"}
 		if len(req.ImageInputs) == 0 {
 			msg.Content = req.Input
 		} else {
 			if strings.TrimSpace(req.Input) != "" {
-				msg.Parts = append(msg.Parts, connectors.MessagePart{Type: "text", Text: req.Input})
+				msg.Parts = append(msg.Parts, domaininference.MessagePart{Type: "text", Text: req.Input})
 			}
 			msg.Parts = append(msg.Parts, imageMessageParts(req.ImageInputs)...)
 		}
@@ -173,7 +146,7 @@ func normalizedMessages(req InvokeRequest) []connectors.Message {
 	return out
 }
 
-func appendImagesToUserMessage(messages []connectors.Message, images []connectors.ImageInput) []connectors.Message {
+func appendImagesToUserMessage(messages []domaininference.Message, images []domaininference.ImageInput) []domaininference.Message {
 	parts := imageMessageParts(images)
 	if len(parts) == 0 {
 		return messages
@@ -184,26 +157,26 @@ func appendImagesToUserMessage(messages []connectors.Message, images []connector
 			return messages
 		}
 	}
-	return append(messages, connectors.Message{Role: "user", Parts: parts})
+	return append(messages, domaininference.Message{Role: "user", Parts: parts})
 }
 
-func imageMessageParts(images []connectors.ImageInput) []connectors.MessagePart {
-	parts := make([]connectors.MessagePart, 0, len(images))
+func imageMessageParts(images []domaininference.ImageInput) []domaininference.MessagePart {
+	parts := make([]domaininference.MessagePart, 0, len(images))
 	for _, image := range images {
 		if len(image.Data) == 0 {
 			continue
 		}
 		cloned := image
 		cloned.Data = append([]byte(nil), image.Data...)
-		parts = append(parts, connectors.MessagePart{Type: "image", Image: &cloned})
+		parts = append(parts, domaininference.MessagePart{Type: "image", Image: &cloned})
 	}
 	return parts
 }
 
-func cloneMessageParts(parts []connectors.MessagePart) []connectors.MessagePart {
-	out := make([]connectors.MessagePart, 0, len(parts))
+func cloneMessageParts(parts []domaininference.MessagePart) []domaininference.MessagePart {
+	out := make([]domaininference.MessagePart, 0, len(parts))
 	for _, part := range parts {
-		cloned := connectors.MessagePart{Type: part.Type, Text: part.Text}
+		cloned := domaininference.MessagePart{Type: part.Type, Text: part.Text}
 		if part.Image != nil {
 			image := *part.Image
 			image.Data = append([]byte(nil), part.Image.Data...)
@@ -214,7 +187,7 @@ func cloneMessageParts(parts []connectors.MessagePart) []connectors.MessagePart 
 	return out
 }
 
-func (m *Module) appendUsage(ctx context.Context, req InvokeRequest, resolved ResolveResult, usage connectors.Usage, providerRequestID string, status domaininference.UsageStatus, errorCode string, errorMessage string, started time.Time) (domaininference.UsageEvent, error) {
+func (m *Module) appendUsage(ctx context.Context, req inferenceruntime.InvokeRequest, resolved inferenceruntime.ResolveResult, usage domaininference.Usage, providerRequestID string, status domaininference.UsageStatus, errorCode string, errorMessage string, started time.Time) (domaininference.UsageEvent, error) {
 	completed := time.Now().UTC()
 	metadata := copyMap(req.Metadata)
 	if metadata == nil {

@@ -16,10 +16,11 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,15 +41,15 @@ func TestModuleWALGraphCommitAppendsAndApplies(t *testing.T) {
 		t.Fatalf("init graph module: %v", result.Error)
 	}
 	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	parent, err := m.CreateNode(ctx, tx, NodeInput{Content: "wal parent", Props: map[string]any{}})
+	parent, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "wal parent", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CreateNode(parent) error = %v", err)
 	}
-	child, err := m.CreateNode(ctx, tx, NodeInput{Content: "wal child", Props: map[string]any{}})
+	child, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "wal child", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CreateNode(child) error = %v", err)
 	}
-	edge, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.75}, Payload: map[string]any{"text": "wal edge payload"}, Meta: map[string]any{"source": "test"}})
+	edge, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"REFERENCES"}, Properties: map[string]any{"confidence": 0.75}, Payload: map[string]any{"text": "wal edge payload"}, Meta: map[string]any{"source": "test"}})
 	if err != nil {
 		t.Fatalf("CreateEdge() error = %v", err)
 	}
@@ -110,7 +111,7 @@ func TestModuleGraphCheckpointCreateAndStatus(t *testing.T) {
 		t.Fatalf("init graph module: %v", result.Error)
 	}
 	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "checkpoint me", Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "checkpoint me", Props: map[string]any{}}); err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
 	commit, err := m.CommitTransactionGraph(ctx, tx)
@@ -174,7 +175,7 @@ func TestModuleAutomaticGraphCheckpointPolicy(t *testing.T) {
 	spaceID := uuid.NewString()
 	domainID := uuid.NewString()
 	first := graphTx(spaceID, domainID, 0)
-	if _, err := m.CreateNode(ctx, first, NodeInput{Content: "one", Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, first, domaingraph.NodeInput{Content: "one", Props: map[string]any{}}); err != nil {
 		t.Fatalf("CreateNode(first) error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, first); err != nil {
@@ -189,7 +190,7 @@ func TestModuleAutomaticGraphCheckpointPolicy(t *testing.T) {
 		t.Fatalf("checkpoint created before threshold: %+v", pre)
 	}
 	second := graphTx(spaceID, domainID, 1)
-	if _, err := m.CreateNode(ctx, second, NodeInput{Content: "two", Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, second, domaingraph.NodeInput{Content: "two", Props: map[string]any{}}); err != nil {
 		t.Fatalf("CreateNode(second) error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, second); err != nil {
@@ -230,10 +231,10 @@ func TestModuleAutomaticGraphCheckpointSkippedDuringQuiesce(t *testing.T) {
 	}
 }
 
-func commitCheckpointTestNode(t *testing.T, ctx context.Context, m *Module, content string) daemonsession.GraphTransaction {
+func commitCheckpointTestNode(t *testing.T, ctx context.Context, m *Module, content string) sessionmodel.GraphTransaction {
 	t.Helper()
 	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: content, Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: content, Props: map[string]any{}}); err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
@@ -250,7 +251,7 @@ func TestModuleQuiesceRejectsGraphCommit(t *testing.T) {
 		t.Fatalf("init graph module: %v", result.Error)
 	}
 	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "blocked", Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "blocked", Props: map[string]any{}}); err != nil {
 		t.Fatalf("stage node: %v", err)
 	}
 	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Source: "test"})
@@ -300,7 +301,7 @@ func TestPhase8BackupWaitsForGraphWorkAndReleasesWrites(t *testing.T) {
 		t.Fatalf("quiesce graph gate: %v", err)
 	}
 	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "blocked", Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "blocked", Props: map[string]any{}}); err != nil {
 		t.Fatalf("stage blocked node: %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, tx); status.Code(err) != codes.Unavailable {
@@ -339,7 +340,7 @@ func TestModuleFineGrainedOCC(t *testing.T) {
 	spaceID := uuid.NewString()
 	domainID := uuid.NewString()
 	seedTx := graphTx(spaceID, domainID, 0)
-	seed, err := m.CreateNode(ctx, seedTx, NodeInput{Content: "seed", Props: map[string]any{}})
+	seed, err := m.CreateNode(ctx, seedTx, domaingraph.NodeInput{Content: "seed", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("create seed: %v", err)
 	}
@@ -349,7 +350,7 @@ func TestModuleFineGrainedOCC(t *testing.T) {
 
 	stale := graphTx(spaceID, domainID, 0)
 	content := "stale update"
-	if _, err := m.UpdateNode(ctx, stale, UpdateNodeInput{NodeID: seed.ID.String(), Content: &content, UpdateMask: []string{"content"}}); err != nil {
+	if _, err := m.UpdateNode(ctx, stale, domaingraph.UpdateNodeInput{NodeID: seed.ID.String(), Content: &content, UpdateMask: []string{"content"}}); err != nil {
 		t.Fatalf("stage stale update: %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, stale); err != ErrConflict {
@@ -362,10 +363,10 @@ func TestModuleFineGrainedOCC(t *testing.T) {
 	}
 	disjointA := graphTx(spaceID, domainID, base)
 	disjointB := graphTx(spaceID, domainID, base)
-	if _, err := m.CreateNode(ctx, disjointA, NodeInput{Content: "a", Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, disjointA, domaingraph.NodeInput{Content: "a", Props: map[string]any{}}); err != nil {
 		t.Fatalf("stage disjoint A: %v", err)
 	}
-	if _, err := m.CreateNode(ctx, disjointB, NodeInput{Content: "b", Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, disjointB, domaingraph.NodeInput{Content: "b", Props: map[string]any{}}); err != nil {
 		t.Fatalf("stage disjoint B: %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, disjointA); err != nil {
@@ -383,15 +384,15 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	domainID := uuid.NewString()
 
 	seed := graphTx(spaceID, domainID, 0)
-	parent, err := m.CreateNode(ctx, seed, NodeInput{Labels: []string{"Container"}, Content: "parent", Props: map[string]any{}})
+	parent, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Labels: []string{"Container"}, Content: "parent", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	child, err := m.CreateNode(ctx, seed, NodeInput{Labels: []string{"Note"}, Content: "revision 1", Props: map[string]any{domaingraph.NodePropTags: []string{"stable"}}})
+	child, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Labels: []string{"Note"}, Content: "revision 1", Props: map[string]any{domaingraph.NodePropTags: []string{"stable"}}})
 	if err != nil {
 		t.Fatalf("create child: %v", err)
 	}
-	edge, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 1}})
+	edge, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 1}})
 	if err != nil {
 		t.Fatalf("create edge: %v", err)
 	}
@@ -404,14 +405,14 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	}
 
 	readOnly := graphTx(spaceID, domainID, commit1.CommittedRevision)
-	readOnly.Mode = daemonsession.TransactionModeReadOnly
+	readOnly.Mode = sessionmodel.TransactionModeReadOnly
 
 	mutate := graphTx(spaceID, domainID, commit1.CommittedRevision)
 	newContent := "revision 2"
-	if _, err := m.UpdateNode(ctx, mutate, UpdateNodeInput{NodeID: child.ID.String(), Labels: []string{"Archived"}, Content: &newContent, UpdateMask: []string{"labels", "content"}}); err != nil {
+	if _, err := m.UpdateNode(ctx, mutate, domaingraph.UpdateNodeInput{NodeID: child.ID.String(), Labels: []string{"Archived"}, Content: &newContent, UpdateMask: []string{"labels", "content"}}); err != nil {
 		t.Fatalf("update child: %v", err)
 	}
-	newNode, err := m.CreateNode(ctx, mutate, NodeInput{Labels: []string{"Note"}, Content: "new after snapshot", Props: map[string]any{domaingraph.NodePropTags: []string{"stable"}}})
+	newNode, err := m.CreateNode(ctx, mutate, domaingraph.NodeInput{Labels: []string{"Note"}, Content: "new after snapshot", Props: map[string]any{domaingraph.NodePropTags: []string{"stable"}}})
 	if err != nil {
 		t.Fatalf("create new node: %v", err)
 	}
@@ -450,21 +451,21 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	if parentEdge == nil || parentEdge.ID != edge.ID {
 		t.Fatalf("snapshot parent edge = %+v, want original edge", parentEdge)
 	}
-	notes, _, _, err := m.ScanLabel(ctx, readOnly, LabelScan{Label: "Note"})
+	notes, _, _, err := m.ScanLabel(ctx, readOnly, graphquery.LabelScan{Label: "Note"})
 	if err != nil {
 		t.Fatalf("snapshot ScanLabel: %v", err)
 	}
 	if len(notes) != 1 || notes[0].ID != child.ID {
 		t.Fatalf("snapshot Note scan = %+v, want original child only", notes)
 	}
-	stable, _, _, err := m.ScanTag(ctx, readOnly, TagScan{Tag: "stable"})
+	stable, _, _, err := m.ScanTag(ctx, readOnly, graphquery.TagScan{Tag: "stable"})
 	if err != nil {
 		t.Fatalf("snapshot ScanTag: %v", err)
 	}
 	if len(stable) != 1 || stable[0].ID != child.ID {
 		t.Fatalf("snapshot stable scan = %+v, want original child only", stable)
 	}
-	adjacent, _, _, err := m.ScanAdjacency(ctx, readOnly, AdjacencyScan{NodeID: parent.ID.String(), Label: "contains", Direction: AdjacencyDirectionOut})
+	adjacent, _, _, err := m.ScanAdjacency(ctx, readOnly, graphquery.AdjacencyScan{NodeID: parent.ID.String(), Label: "contains", Direction: graphquery.AdjacencyDirectionOut})
 	if err != nil {
 		t.Fatalf("snapshot ScanAdjacency: %v", err)
 	}
@@ -473,15 +474,15 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	}
 
 	current := graphTx(spaceID, domainID, commit2.CommittedRevision)
-	current.Mode = daemonsession.TransactionModeReadOnly
+	current.Mode = sessionmodel.TransactionModeReadOnly
 	if _, err := m.GetNode(ctx, current, newNode.ID.String()); err != nil {
 		t.Fatalf("current read-only GetNode(new): %v", err)
 	}
 }
 
-func graphTx(spaceID string, domainID string, baseRevision int64) daemonsession.GraphTransaction {
+func graphTx(spaceID string, domainID string, baseRevision int64) sessionmodel.GraphTransaction {
 	now := time.Now().UTC()
-	return daemonsession.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: daemonsession.TransactionModeReadWrite, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
+	return sessionmodel.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
 }
 
 func sameStringSet(got []string, want []string) bool {
@@ -511,7 +512,7 @@ func TestModuleGraphChangeSinkFailureDoesNotFailCommit(t *testing.T) {
 	spaceID := uuid.NewString()
 	domainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "node", Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "node", Props: map[string]any{}}); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
 	commit, err := m.CommitTransactionGraph(ctx, tx)
@@ -552,7 +553,7 @@ func TestModuleGraphChangeSinkReceivesPostCommitEvent(t *testing.T) {
 	spaceID := uuid.NewString()
 	domainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "node", Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "node", Props: map[string]any{}}); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
 	commit, err := m.CommitTransactionGraph(ctx, tx)
@@ -586,7 +587,7 @@ func TestModuleGraphChangeSinkReceivesTransactionOrigin(t *testing.T) {
 	}))
 	tx := graphTx(spaceID, domainID, 0)
 	tx.Origin = origin
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "node"}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "node"}); err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
@@ -604,15 +605,15 @@ func TestModuleGraphChangeEdgeChangesAffectEndpoints(t *testing.T) {
 	domainID := uuid.NewString()
 
 	seed := graphTx(spaceID, domainID, 0)
-	from, err := m.CreateNode(ctx, seed, NodeInput{Content: "from", Props: map[string]any{}})
+	from, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: "from", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("create from: %v", err)
 	}
-	to, err := m.CreateNode(ctx, seed, NodeInput{Content: "to", Props: map[string]any{}})
+	to, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: "to", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("create to: %v", err)
 	}
-	edge, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: from.ID.String(), ToNodeID: to.ID.String(), Labels: []string{"related"}})
+	edge, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: from.ID.String(), ToNodeID: to.ID.String(), Labels: []string{"related"}})
 	if err != nil {
 		t.Fatalf("create edge: %v", err)
 	}
@@ -620,14 +621,14 @@ func TestModuleGraphChangeEdgeChangesAffectEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("commit seed: %v", err)
 	}
-	var edgeChange GraphChange
+	var edgeChange graphchange.Change
 	for _, change := range commit.Changes {
 		if change.EdgeID == edge.ID.String() {
 			edgeChange = change
 			break
 		}
 	}
-	if edgeChange.Type != ChangeTypeEdgeCreated {
+	if edgeChange.Type != graphchange.ChangeTypeEdgeCreated {
 		t.Fatalf("edge change = %+v", edgeChange)
 	}
 	if !sameStringSet(edgeChange.AffectedNodeIDs, []string{from.ID.String(), to.ID.String()}) {
@@ -663,7 +664,7 @@ func TestModuleUsesDomainScopedGraphStoreDirectories(t *testing.T) {
 	domainB := uuid.NewString()
 
 	txA := graphTx(spaceID, domainA, 0)
-	if _, err := m.CreateNode(ctx, txA, NodeInput{Content: "domain A"}); err != nil {
+	if _, err := m.CreateNode(ctx, txA, domaingraph.NodeInput{Content: "domain A"}); err != nil {
 		t.Fatalf("CreateNode(domain A) error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, txA); err != nil {
@@ -671,7 +672,7 @@ func TestModuleUsesDomainScopedGraphStoreDirectories(t *testing.T) {
 	}
 
 	txB := graphTx(spaceID, domainB, 0)
-	if _, err := m.CreateNode(ctx, txB, NodeInput{Content: "domain B"}); err != nil {
+	if _, err := m.CreateNode(ctx, txB, domaingraph.NodeInput{Content: "domain B"}); err != nil {
 		t.Fatalf("CreateNode(domain B) error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, txB); err != nil {
@@ -690,7 +691,7 @@ func TestModuleUsesDomainScopedGraphStoreDirectories(t *testing.T) {
 	}
 
 	readA := graphTx(spaceID, domainA, 1)
-	readA.Mode = daemonsession.TransactionModeReadOnly
+	readA.Mode = sessionmodel.TransactionModeReadOnly
 	nodesA, _, err := m.ListNodes(ctx, readA, 0, "")
 	if err != nil {
 		t.Fatalf("ListNodes(domain A) error = %v", err)
@@ -699,7 +700,7 @@ func TestModuleUsesDomainScopedGraphStoreDirectories(t *testing.T) {
 		t.Fatalf("domain A nodes = %+v", nodesA)
 	}
 	readB := graphTx(spaceID, domainB, 1)
-	readB.Mode = daemonsession.TransactionModeReadOnly
+	readB.Mode = sessionmodel.TransactionModeReadOnly
 	nodesB, _, err := m.ListNodes(ctx, readB, 0, "")
 	if err != nil {
 		t.Fatalf("ListNodes(domain B) error = %v", err)
@@ -737,7 +738,7 @@ func TestModuleGraphChangeSinkNotInvokedForDiscardReadOnlyOrNoop(t *testing.T) {
 	domainID := uuid.NewString()
 
 	discarded := graphTx(spaceID, domainID, 0)
-	if _, err := m.CreateNode(ctx, discarded, NodeInput{Content: "discarded", Props: map[string]any{}}); err != nil {
+	if _, err := m.CreateNode(ctx, discarded, domaingraph.NodeInput{Content: "discarded", Props: map[string]any{}}); err != nil {
 		t.Fatalf("create discarded node: %v", err)
 	}
 	m.DiscardTransactionGraph(ctx, discarded.ID)
@@ -746,7 +747,7 @@ func TestModuleGraphChangeSinkNotInvokedForDiscardReadOnlyOrNoop(t *testing.T) {
 	}
 
 	readOnly := graphTx(spaceID, domainID, 0)
-	readOnly.Mode = daemonsession.TransactionModeReadOnly
+	readOnly.Mode = sessionmodel.TransactionModeReadOnly
 	if _, err := m.CommitTransactionGraph(ctx, readOnly); err != nil {
 		t.Fatalf("read-only commit: %v", err)
 	}
@@ -776,36 +777,36 @@ func TestModuleGraphChangeSinkIncludesMoveReorderAndDeleteContext(t *testing.T) 
 
 	base := int64(0)
 	seed := graphTx(spaceID, domainID, base)
-	root, err := m.CreateNode(ctx, seed, NodeInput{Content: "root", Props: map[string]any{}})
+	root, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: "root", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("create root: %v", err)
 	}
-	oldParent, err := m.CreateNode(ctx, seed, NodeInput{Content: "old", Props: map[string]any{}})
+	oldParent, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: "old", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("create old parent: %v", err)
 	}
-	newParent, err := m.CreateNode(ctx, seed, NodeInput{Content: "new", Props: map[string]any{}})
+	newParent, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: "new", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("create new parent: %v", err)
 	}
-	child, err := m.CreateNode(ctx, seed, NodeInput{Content: "child", Props: map[string]any{}})
+	child, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: "child", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("create child: %v", err)
 	}
-	sibling, err := m.CreateNode(ctx, seed, NodeInput{Content: "sibling", Props: map[string]any{}})
+	sibling, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: "sibling", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("create sibling: %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: root.ID.String(), ToNodeID: oldParent.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
+	if _, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: root.ID.String(), ToNodeID: oldParent.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
 		t.Fatalf("create root/old edge: %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: root.ID.String(), ToNodeID: newParent.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 1}}); err != nil {
+	if _, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: root.ID.String(), ToNodeID: newParent.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 1}}); err != nil {
 		t.Fatalf("create root/new edge: %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: oldParent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
+	if _, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: oldParent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
 		t.Fatalf("create old/child edge: %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, seed, EdgeInput{FromNodeID: newParent.ID.String(), ToNodeID: sibling.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
+	if _, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: newParent.ID.String(), ToNodeID: sibling.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
 		t.Fatalf("create new/sibling edge: %v", err)
 	}
 	commit, err := m.CommitTransactionGraph(ctx, seed)
@@ -873,43 +874,44 @@ func TestModuleReplaceReferencesReconcilesOutgoingReferenceSet(t *testing.T) {
 	ctx := context.Background()
 	m := newTestGraphModule(t, ctx)
 	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	source, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"title": "source"}})
+	source, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"title": "source"}})
 	if err != nil {
 		t.Fatalf("CreateNode(source) error = %v", err)
 	}
-	targetA, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Page"}, Properties: map[string]any{"title": "a"}})
+	targetA, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Page"}, Properties: map[string]any{"title": "a"}})
 	if err != nil {
 		t.Fatalf("CreateNode(targetA) error = %v", err)
 	}
-	targetB, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Page"}, Properties: map[string]any{"title": "b"}})
+	targetB, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Page"}, Properties: map[string]any{"title": "b"}})
 	if err != nil {
 		t.Fatalf("CreateNode(targetB) error = %v", err)
 	}
-	targetC, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Page"}, Properties: map[string]any{"title": "c"}})
+	targetC, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Page"}, Properties: map[string]any{"title": "c"}})
 	if err != nil {
 		t.Fatalf("CreateNode(targetC) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: source.ID.String(), ToNodeID: targetA.ID.String(), Labels: []string{"REFERENCES"}, Properties: map[string]any{"count": 1}}); err != nil {
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: source.ID.String(), ToNodeID: targetA.ID.String(), Labels: []string{"REFERENCES"}, Properties: map[string]any{"count": 1}}); err != nil {
 		t.Fatalf("CreateEdge(source->a) error = %v", err)
 	}
-	edgeB, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: source.ID.String(), ToNodeID: targetB.ID.String(), Labels: []string{"REFERENCES"}, Properties: map[string]any{"count": 1}})
+	edgeB, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: source.ID.String(), ToNodeID: targetB.ID.String(), Labels: []string{"REFERENCES"}, Properties: map[string]any{"count": 1}})
 	if err != nil {
 		t.Fatalf("CreateEdge(source->b) error = %v", err)
 	}
-	other, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: source.ID.String(), ToNodeID: targetC.ID.String(), Labels: []string{"MENTIONS"}, Properties: map[string]any{"kind": "other"}})
+	other, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: source.ID.String(), ToNodeID: targetC.ID.String(), Labels: []string{"MENTIONS"}, Properties: map[string]any{"kind": "other"}})
 	if err != nil {
 		t.Fatalf("CreateEdge(source->c other) error = %v", err)
 	}
 
-	result, err := m.ReplaceReferences(ctx, tx, ReplaceReferencesInput{
+	replacement := domaingraph.ReplaceReferencesInput{
 		SourceNodeID: source.ID.String(),
 		Labels:       []string{"REFERENCES"},
-		Mode:         ReferenceReplacementModeReplace,
-		Targets: []ReferenceTargetInput{
+		Mode:         domaingraph.ReferenceReplacementModeReplace,
+		Targets: []domaingraph.ReferenceTargetInput{
 			{TargetNodeID: targetA.ID.String(), Properties: map[string]any{"count": 2}, HasProps: true},
 			{TargetNodeID: targetC.ID.String(), Properties: map[string]any{"count": 1}, HasProps: true},
 		},
-	})
+	}
+	result, err := m.ReplaceReferences(ctx, tx, replacement)
 	if err != nil {
 		t.Fatalf("ReplaceReferences() error = %v", err)
 	}
@@ -929,15 +931,7 @@ func TestModuleReplaceReferencesReconcilesOutgoingReferenceSet(t *testing.T) {
 		t.Fatalf("non-matching edge should remain: %v", err)
 	}
 
-	noop, err := m.ReplaceReferences(ctx, tx, ReplaceReferencesInput{
-		SourceNodeID: source.ID.String(),
-		Labels:       []string{"REFERENCES"},
-		Mode:         ReferenceReplacementModeReplace,
-		Targets: []ReferenceTargetInput{
-			{TargetNodeID: targetA.ID.String(), Properties: map[string]any{"count": 2}, HasProps: true},
-			{TargetNodeID: targetC.ID.String(), Properties: map[string]any{"count": 1}, HasProps: true},
-		},
-	})
+	noop, err := m.ReplaceReferences(ctx, tx, replacement)
 	if err != nil {
 		t.Fatalf("ReplaceReferences(noop) error = %v", err)
 	}
@@ -950,19 +944,19 @@ func TestModuleReplaceReferencesModesAndAtomicNodeUpdate(t *testing.T) {
 	ctx := context.Background()
 	m := newTestGraphModule(t, ctx)
 	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	source, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"title": "old"}})
+	source, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"title": "old"}})
 	if err != nil {
 		t.Fatalf("CreateNode(source) error = %v", err)
 	}
-	targetA, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Page"}})
+	targetA, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Page"}})
 	if err != nil {
 		t.Fatalf("CreateNode(targetA) error = %v", err)
 	}
-	targetB, err := m.CreateNode(ctx, tx, NodeInput{Labels: []string{"Page"}})
+	targetB, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Page"}})
 	if err != nil {
 		t.Fatalf("CreateNode(targetB) error = %v", err)
 	}
-	updated, err := m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: source.ID.String(), Labels: []string{"Note"}, Properties: map[string]any{"title": "new"}, UpdateMask: []string{"properties"}})
+	updated, err := m.UpdateNode(ctx, tx, domaingraph.UpdateNodeInput{NodeID: source.ID.String(), Labels: []string{"Note"}, Properties: map[string]any{"title": "new"}, UpdateMask: []string{"properties"}})
 	if err != nil {
 		t.Fatalf("UpdateNode() error = %v", err)
 	}
@@ -970,14 +964,14 @@ func TestModuleReplaceReferencesModesAndAtomicNodeUpdate(t *testing.T) {
 		t.Fatalf("updated title = %v, want new", got)
 	}
 
-	add, err := m.ReplaceReferences(ctx, tx, ReplaceReferencesInput{SourceNodeID: source.ID.String(), Labels: []string{"REFERENCES"}, Mode: ReferenceReplacementModeAdd, Targets: []ReferenceTargetInput{{TargetNodeID: targetA.ID.String()}, {TargetNodeID: targetB.ID.String()}}})
+	add, err := m.ReplaceReferences(ctx, tx, domaingraph.ReplaceReferencesInput{SourceNodeID: source.ID.String(), Labels: []string{"REFERENCES"}, Mode: domaingraph.ReferenceReplacementModeAdd, Targets: []domaingraph.ReferenceTargetInput{{TargetNodeID: targetA.ID.String()}, {TargetNodeID: targetB.ID.String()}}})
 	if err != nil {
 		t.Fatalf("ReplaceReferences(add) error = %v", err)
 	}
 	if len(add.AddedEdges) != 2 {
 		t.Fatalf("add result = %+v, want two added edges", add)
 	}
-	remove, err := m.ReplaceReferences(ctx, tx, ReplaceReferencesInput{SourceNodeID: source.ID.String(), Labels: []string{"REFERENCES"}, Mode: ReferenceReplacementModeRemove, Targets: []ReferenceTargetInput{{TargetNodeID: targetA.ID.String()}}})
+	remove, err := m.ReplaceReferences(ctx, tx, domaingraph.ReplaceReferencesInput{SourceNodeID: source.ID.String(), Labels: []string{"REFERENCES"}, Mode: domaingraph.ReferenceReplacementModeRemove, Targets: []domaingraph.ReferenceTargetInput{{TargetNodeID: targetA.ID.String()}}})
 	if err != nil {
 		t.Fatalf("ReplaceReferences(remove) error = %v", err)
 	}

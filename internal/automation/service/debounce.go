@@ -8,7 +8,7 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 const skipReasonCoalesced = "coalesced"
@@ -85,11 +85,11 @@ func (m *AutomationManager) resolveInvocationAliasNodeID(ctx context.Context, do
 	if m.sessions == nil || m.graphs == nil {
 		return inv.ChangedElementID, nil
 	}
-	sess, err := m.sessions.OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: automationActor, SpaceID: inv.SpaceID, DomainID: domainID.String()})
+	sess, err := m.sessions.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: automationActor, SpaceID: inv.SpaceID, DomainID: domainID.String()})
 	if err != nil {
 		return "", err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: automationActor, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite})
+	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: automationActor, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadWrite})
 	if err != nil {
 		return "", err
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	clusterbackend "github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
@@ -103,7 +104,7 @@ func (m *Module) EnsureBlobReference(ctx context.Context, spaceID string, blobID
 	return err
 }
 
-func (m *Module) ensureRaftPayloadWritePolicy(ctx context.Context, desc PayloadDescriptor) error {
+func (m *Module) ensureRaftPayloadWritePolicy(ctx context.Context, desc blobmodel.PayloadDescriptor) error {
 	if err := m.ensureRaftPayloadAvailable(ctx, desc); err != nil {
 		return err
 	}
@@ -132,7 +133,7 @@ func (m *Module) hasRemoteRaftPeerAddress() bool {
 	return false
 }
 
-func (m *Module) ensureRaftPayloadAvailable(ctx context.Context, desc PayloadDescriptor) error {
+func (m *Module) ensureRaftPayloadAvailable(ctx context.Context, desc blobmodel.PayloadDescriptor) error {
 	if strings.TrimSpace(desc.SpaceID) == "" || strings.TrimSpace(desc.BlobID) == "" {
 		return nil
 	}
@@ -148,7 +149,7 @@ func (m *Module) ensureRaftPayloadAvailable(ctx context.Context, desc PayloadDes
 	return m.fetchRaftPayloadFromPeers(ctx, desc)
 }
 
-func (m *Module) ensureRaftPayloadAvailableForApply(ctx context.Context, desc PayloadDescriptor) error {
+func (m *Module) ensureRaftPayloadAvailableForApply(ctx context.Context, desc blobmodel.PayloadDescriptor) error {
 	if strings.TrimSpace(desc.SpaceID) == "" || strings.TrimSpace(desc.BlobID) == "" {
 		return nil
 	}
@@ -176,11 +177,11 @@ func (m *Module) ensureRaftPayloadAvailableForApply(ctx context.Context, desc Pa
 	}
 }
 
-func (m *Module) raftPayloadExists(ctx context.Context, desc PayloadDescriptor) (bool, error) {
+func (m *Module) raftPayloadExists(ctx context.Context, desc blobmodel.PayloadDescriptor) (bool, error) {
 	return m.payloadExists(ctx, desc)
 }
 
-func (m *Module) fetchRaftPayloadFromPeers(ctx context.Context, desc PayloadDescriptor) error {
+func (m *Module) fetchRaftPayloadFromPeers(ctx context.Context, desc blobmodel.PayloadDescriptor) error {
 	client := clusterbackend.Client{AuthToken: m.raftBackendAuthToken}
 	var lastErr error
 	for idx, addr := range m.raftNodeAddrs {

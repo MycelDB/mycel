@@ -50,7 +50,7 @@ func TestOpenAICompatibleChatRequestShape(t *testing.T) {
 	}))
 	defer srv.Close()
 	temp := 0.25
-	resp, err := OpenAICompatible{}.Chat(context.Background(), ChatRequest{Endpoint: endpoint(srv.URL, domaininference.OperationChat), Model: model(domaininference.OperationChat), Capability: capability(domaininference.OperationChat), Credential: credential(domaininference.CredentialAuthBearer), Secret: "secret", Messages: []Message{{Role: "user", Content: "hello"}}, Parameters: domaininference.Parameters{Temperature: &temp, MaxOutputTokens: 32, ResponseFormat: "json"}})
+	resp, err := OpenAICompatible{}.Chat(context.Background(), ChatRequest{Endpoint: endpoint(srv.URL, domaininference.OperationChat), Model: model(domaininference.OperationChat), Capability: capability(domaininference.OperationChat), Credential: credential(domaininference.CredentialAuthBearer), Secret: "secret", Messages: []domaininference.Message{{Role: "user", Content: "hello"}}, Parameters: domaininference.Parameters{Temperature: &temp, MaxOutputTokens: 32, ResponseFormat: "json"}})
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -77,7 +77,7 @@ func TestOpenAICompatibleChatUsesMaxCompletionTokensWhenConfigured(t *testing.T)
 
 	cap := capability(domaininference.OperationImageAnalysis)
 	cap.Metadata = map[string]any{"output_token_parameter": "max_completion_tokens"}
-	_, err := OpenAICompatible{}.Chat(context.Background(), ChatRequest{Endpoint: endpoint(srv.URL, domaininference.OperationImageAnalysis), Model: model(domaininference.OperationImageAnalysis), Capability: cap, Credential: credential(domaininference.CredentialAuthNone), Messages: []Message{{Role: "user", Content: "describe"}}, Parameters: domaininference.Parameters{MaxOutputTokens: 64}})
+	_, err := OpenAICompatible{}.Chat(context.Background(), ChatRequest{Endpoint: endpoint(srv.URL, domaininference.OperationImageAnalysis), Model: model(domaininference.OperationImageAnalysis), Capability: cap, Credential: credential(domaininference.CredentialAuthNone), Messages: []domaininference.Message{{Role: "user", Content: "describe"}}, Parameters: domaininference.Parameters{MaxOutputTokens: 64}})
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -99,7 +99,7 @@ func TestOpenAICompatibleChatSendsImagePartsAsDataURLs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := OpenAICompatible{}.Chat(context.Background(), ChatRequest{Endpoint: endpoint(srv.URL, domaininference.OperationImageAnalysis), Model: model(domaininference.OperationImageAnalysis), Capability: capability(domaininference.OperationImageAnalysis), Credential: credential(domaininference.CredentialAuthNone), Messages: []Message{{Role: "user", Parts: []MessagePart{{Type: "text", Text: "describe"}, {Type: "image", Image: &ImageInput{MimeType: "image/png", Data: []byte{0x89, 0x50, 0x4e, 0x47}, SizeBytes: 4, BlobID: "blob-1"}}}}}})
+	resp, err := OpenAICompatible{}.Chat(context.Background(), ChatRequest{Endpoint: endpoint(srv.URL, domaininference.OperationImageAnalysis), Model: model(domaininference.OperationImageAnalysis), Capability: capability(domaininference.OperationImageAnalysis), Credential: credential(domaininference.CredentialAuthNone), Messages: []domaininference.Message{{Role: "user", Parts: []domaininference.MessagePart{{Type: "text", Text: "describe"}, {Type: "image", Image: &domaininference.ImageInput{MimeType: "image/png", Data: []byte{0x89, 0x50, 0x4e, 0x47}, SizeBytes: 4, BlobID: "blob-1"}}}}}})
 	if err != nil {
 		t.Fatalf("Chat() image error = %v", err)
 	}
@@ -120,7 +120,7 @@ func TestFakeConnectorCountsCalls(t *testing.T) {
 	if _, err := fake.Embed(context.Background(), EmbeddingRequest{Input: "hello"}); err != nil {
 		t.Fatalf("Embed() error = %v", err)
 	}
-	if _, err := fake.Chat(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Content: "hello"}}}); err != nil {
+	if _, err := fake.Chat(context.Background(), ChatRequest{Messages: []domaininference.Message{{Role: "user", Content: "hello"}}}); err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
 	embed, chat := fake.Calls()

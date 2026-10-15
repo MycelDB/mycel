@@ -15,7 +15,7 @@ import (
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -43,7 +43,7 @@ func TestGraphCommitRejectsUnavailableBlobReference(t *testing.T) {
 	spaceID := uuid.NewString()
 	domainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{BlobID: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{BlobID: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, tx); status.Code(err) != codes.FailedPrecondition {
@@ -115,7 +115,7 @@ func TestCommitTransactionGraphUsesRaftWhenEnabled(t *testing.T) {
 	m.EnableExperimentalRaft(groups, 4)
 	domainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
-	node, err := m.CreateNode(ctx, tx, NodeInput{Content: "raft node", Props: map[string]any{}})
+	node, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "raft node", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
@@ -127,7 +127,7 @@ func TestCommitTransactionGraphUsesRaftWhenEnabled(t *testing.T) {
 		t.Fatalf("commit=%#v", commit)
 	}
 	readTx := graphTx(spaceID, domainID, commit.CommittedRevision)
-	readTx.Mode = daemonsession.TransactionModeReadOnly
+	readTx.Mode = sessionmodel.TransactionModeReadOnly
 	got, err := m.GetNode(ctx, readTx, node.ID.String())
 	if err != nil {
 		t.Fatalf("GetNode() error = %v", err)
@@ -187,7 +187,7 @@ func TestReadOnlyTransactionUsesLinearizableHistoricalSnapshot(t *testing.T) {
 	m.EnableExperimentalRaft(groups, 4)
 	domainID := uuid.NewString()
 	firstTx := graphTx(spaceID, domainID, 0)
-	first, err := m.CreateNode(ctx, firstTx, NodeInput{Content: "revision 1", Props: map[string]any{}})
+	first, err := m.CreateNode(ctx, firstTx, domaingraph.NodeInput{Content: "revision 1", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CreateNode(first) error = %v", err)
 	}
@@ -200,13 +200,13 @@ func TestReadOnlyTransactionUsesLinearizableHistoricalSnapshot(t *testing.T) {
 	}
 
 	readOnly := graphTx(spaceID, domainID, firstCommit.CommittedRevision)
-	readOnly.Mode = daemonsession.TransactionModeReadOnly
+	readOnly.Mode = sessionmodel.TransactionModeReadOnly
 	if _, err := m.GetNode(ctx, readOnly, first.ID.String()); err != nil {
 		t.Fatalf("GetNode(first through read-only tx) error = %v", err)
 	}
 
 	secondTx := graphTx(spaceID, domainID, firstCommit.CommittedRevision)
-	second, err := m.CreateNode(ctx, secondTx, NodeInput{Content: "revision 2", Props: map[string]any{}})
+	second, err := m.CreateNode(ctx, secondTx, domaingraph.NodeInput{Content: "revision 2", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CreateNode(second) error = %v", err)
 	}
@@ -249,19 +249,19 @@ func TestExecuteLocalRaftGraphReadChildrenAndParent(t *testing.T) {
 	spaceID := uuid.NewString()
 	domainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
-	parent, err := m.CreateNode(ctx, tx, NodeInput{Content: "parent", Props: map[string]any{}})
+	parent, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "parent", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CreateNode(parent) error = %v", err)
 	}
-	child, err := m.CreateNode(ctx, tx, NodeInput{Content: "child", Props: map[string]any{}})
+	child, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "child", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CreateNode(child) error = %v", err)
 	}
 	blobID := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	if _, err := m.CreateNode(ctx, tx, NodeInput{BlobID: blobID}); err != nil {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{BlobID: blobID}); err != nil {
 		t.Fatalf("CreateNode(blob) error = %v", err)
 	}
-	edge, err := m.CreateEdge(ctx, tx, EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 1000}})
+	edge, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 1000}})
 	if err != nil {
 		t.Fatalf("CreateEdge() error = %v", err)
 	}
@@ -522,7 +522,7 @@ func TestGraphMutationsFailClosedWhenLocalWritesRejected(t *testing.T) {
 		t.Fatalf("init failed: %v", result.Error)
 	}
 	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
-	if _, err := m.CreateNode(ctx, tx, NodeInput{Content: "blocked", Props: map[string]any{}}); status.Code(err) != codes.Unavailable {
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "blocked", Props: map[string]any{}}); status.Code(err) != codes.Unavailable {
 		t.Fatalf("CreateNode() code = %v, err=%v; want Unavailable", status.Code(err), err)
 	}
 }
@@ -536,7 +536,7 @@ func TestGraphRaftOperationsFailClosedWithoutLeader(t *testing.T) {
 	spaceID := uuid.NewString()
 	domainID := uuid.NewString()
 	seedTx := graphTx(spaceID, domainID, 0)
-	seed, err := m.CreateNode(ctx, seedTx, NodeInput{Content: "stale-local", Props: map[string]any{}})
+	seed, err := m.CreateNode(ctx, seedTx, domaingraph.NodeInput{Content: "stale-local", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("seed CreateNode() error = %v", err)
 	}
@@ -560,7 +560,7 @@ func TestGraphRaftOperationsFailClosedWithoutLeader(t *testing.T) {
 	if _, err := m.CurrentRevision(ctx, spaceID); status.Code(err) != codes.Unavailable {
 		t.Fatalf("CurrentRevision() code = %v, err=%v; want Unavailable", status.Code(err), err)
 	}
-	if _, err := m.CreateEdge(ctx, readTx, EdgeInput{FromNodeID: seed.ID.String(), ToNodeID: uuid.NewString(), Labels: []string{"contains"}}); status.Code(err) != codes.Unavailable {
+	if _, err := m.CreateEdge(ctx, readTx, domaingraph.EdgeInput{FromNodeID: seed.ID.String(), ToNodeID: uuid.NewString(), Labels: []string{"contains"}}); status.Code(err) != codes.Unavailable {
 		t.Fatalf("CreateEdge() code = %v, err=%v; want Unavailable", status.Code(err), err)
 	}
 }
@@ -686,7 +686,7 @@ func TestGraphRaftCommitReplicatesAcrossThreeNodes(t *testing.T) {
 		}
 	}
 	tx := graphTx(spaceID, domainID, 0)
-	node, err := modules[writer].CreateNode(ctx, tx, NodeInput{Content: "replicated", Props: map[string]any{}})
+	node, err := modules[writer].CreateNode(ctx, tx, domaingraph.NodeInput{Content: "replicated", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
@@ -800,7 +800,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	}
 	domainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
-	node, err := modules[writer].CreateNode(ctx, tx, NodeInput{Content: "after failover", Props: map[string]any{}})
+	node, err := modules[writer].CreateNode(ctx, tx, domaingraph.NodeInput{Content: "after failover", Props: map[string]any{}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
@@ -838,7 +838,7 @@ func TestGraphRaftStateMachineAppliesCommit(t *testing.T) {
 	if err := (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd); err != nil {
 		t.Fatalf("ApplyCommand() error = %v", err)
 	}
-	tx := daemonsession.GraphTransaction{ID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, BaseRevision: 1}
+	tx := sessionmodel.GraphTransaction{ID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, BaseRevision: 1}
 	got, err := m.GetNode(ctx, tx, nodeID.String())
 	if err != nil {
 		t.Fatalf("GetNode() error = %v", err)

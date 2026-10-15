@@ -163,22 +163,22 @@ func TestModuleLocalGraphConsistencyStatsScansCommittedDomain(t *testing.T) {
 	domainID := uuid.NewString()
 	otherDomainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
-	parent, err := m.CreateNode(ctx, tx, NodeInput{NodeID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Content: "parent", Labels: []string{"Note"}, Properties: map[string]any{"title": "parent"}})
+	parent, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{NodeID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Content: "parent", Labels: []string{"Note"}, Properties: map[string]any{"title": "parent"}})
 	if err != nil {
 		t.Fatalf("CreateNode(parent) error = %v", err)
 	}
-	child, err := m.CreateNode(ctx, tx, NodeInput{NodeID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Content: "child", Labels: []string{"Note"}, Properties: map[string]any{"title": "child"}})
+	child, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{NodeID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Content: "child", Labels: []string{"Note"}, Properties: map[string]any{"title": "child"}})
 	if err != nil {
 		t.Fatalf("CreateNode(child) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{EdgeID: "cccccccc-cccc-cccc-cccc-cccccccccccc", FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{EdgeID: "cccccccc-cccc-cccc-cccc-cccccccccccc", FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
 		t.Fatalf("CreateEdge() error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
 		t.Fatalf("CommitTransactionGraph(domain) error = %v", err)
 	}
 	otherTx := graphTx(spaceID, otherDomainID, 0)
-	if _, err := m.CreateNode(ctx, otherTx, NodeInput{NodeID: "dddddddd-dddd-dddd-dddd-dddddddddddd", Content: "other domain"}); err != nil {
+	if _, err := m.CreateNode(ctx, otherTx, domaingraph.NodeInput{NodeID: "dddddddd-dddd-dddd-dddd-dddddddddddd", Content: "other domain"}); err != nil {
 		t.Fatalf("CreateNode(other domain) error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, otherTx); err != nil {
@@ -210,15 +210,15 @@ func TestModuleLocalGraphForensicExportIsBoundedAndCanonical(t *testing.T) {
 	spaceID := uuid.NewString()
 	domainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
-	parent, err := m.CreateNode(ctx, tx, NodeInput{NodeID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Content: "parent", Labels: []string{"Note", "Task"}, Properties: map[string]any{"title": "parent"}})
+	parent, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{NodeID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Content: "parent", Labels: []string{"Note", "Task"}, Properties: map[string]any{"title": "parent"}})
 	if err != nil {
 		t.Fatalf("CreateNode(parent) error = %v", err)
 	}
-	child, err := m.CreateNode(ctx, tx, NodeInput{NodeID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Content: "child", Labels: []string{"Task"}, Properties: map[string]any{"title": "child"}})
+	child, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{NodeID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Content: "child", Labels: []string{"Task"}, Properties: map[string]any{"title": "child"}})
 	if err != nil {
 		t.Fatalf("CreateNode(child) error = %v", err)
 	}
-	if _, err := m.CreateEdge(ctx, tx, EdgeInput{EdgeID: "cccccccc-cccc-cccc-cccc-cccccccccccc", FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
+	if _, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{EdgeID: "cccccccc-cccc-cccc-cccc-cccccccccccc", FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": 0}}); err != nil {
 		t.Fatalf("CreateEdge() error = %v", err)
 	}
 	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {

@@ -7,14 +7,9 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/automation/storage"
-	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
-	schemaservice "github.com/myceldb/mycel/internal/schema/service"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
 
 const ModuleName = "automation"
@@ -33,11 +28,11 @@ type Module struct {
 	dataDir   string
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
-	sessions  sessionservice.Manager
-	graphs    graphservice.Manager
-	schemas   schemaservice.Manager
-	inference inferenceservice.Manager
-	blobs     blobservice.Manager
+	sessions  SessionRuntime
+	graphs    GraphRuntime
+	schemas   SchemaReader
+	inference InferenceInvoker
+	blobs     BlobReader
 	replayer  GraphChangeReplayer
 	worker    WorkerConfig
 	gate      *quiesce.Gate
@@ -47,23 +42,23 @@ func NewModule(dataDir string) *Module {
 	return &Module{dataDir: dataDir, worker: WorkerConfig{Enabled: true, Interval: time.Second, BatchSize: 25, Concurrency: 1}, gate: quiesce.NewGate(ModuleName)}
 }
 
-func (m *Module) WithGraphRuntime(sessions sessionservice.Manager, graphs graphservice.Manager) *Module {
+func (m *Module) WithGraphRuntime(sessions SessionRuntime, graphs GraphRuntime) *Module {
 	m.sessions = sessions
 	m.graphs = graphs
 	return m
 }
 
-func (m *Module) WithSchemaManager(schemas schemaservice.Manager) *Module {
+func (m *Module) WithSchemaReader(schemas SchemaReader) *Module {
 	m.schemas = schemas
 	return m
 }
 
-func (m *Module) WithInferenceManager(inference inferenceservice.Manager) *Module {
+func (m *Module) WithInferenceInvoker(inference InferenceInvoker) *Module {
 	m.inference = inference
 	return m
 }
 
-func (m *Module) WithBlobManager(blobs blobservice.Manager) *Module {
+func (m *Module) WithBlobReader(blobs BlobReader) *Module {
 	m.blobs = blobs
 	return m
 }
@@ -94,13 +89,6 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 	if dataDir == "" && host != nil {
 		dataDir = filepath.Join(host.DataDir(), "automations")
 	}
-	if lookup, ok := host.(coreruntime.ServiceLookup); ok && m.inference == nil {
-		if svc, ok := lookup.Service(inferenceservice.ModuleName); ok {
-			if manager, ok := svc.(inferenceservice.Manager); ok {
-				m.inference = manager
-			}
-		}
-	}
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)
 	}
@@ -109,7 +97,7 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 			return coreruntime.Abort(ModuleName, "quiesce", "register automation quiesce participant", err)
 		}
 	}
-	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaManager(m.schemas).WithInferenceManager(m.inference).WithBlobManager(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
+	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaReader(m.schemas).WithInferenceInvoker(m.inference).WithBlobReader(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
 	if gate, ok := host.(coreruntime.LocalWriteGate); ok {
 		m.AutomationManager.WithWriteAllowed(gate.RequireLocalWriteAllowed)
 	}

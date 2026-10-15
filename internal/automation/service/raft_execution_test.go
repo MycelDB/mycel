@@ -25,11 +25,10 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
-	inferenceconnectors "github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
-	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
@@ -150,8 +149,8 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 	procedure := automation.Procedure{ID: "page-summary", Version: 1, DomainID: domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"payload.text"}}, Inference: automation.InferenceRef{Operation: "chat", Profile: "summary"}, Prompt: "Summarize this page", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.summary": "$result.text"}}}}}, Safety: automation.Safety{Idempotency: automation.Idempotency{SkipIfOutputUnchanged: true}}}
 	binding := automation.Binding{ID: "page-summary-binding", Version: 1, DomainID: domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: spaceID.String(), DomainID: domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "owner", OnBehalfOfPrincipalID: "owner", InferenceProfile: "summary"}}
 	pageID := graph.NodeID(uuid.New())
-	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionservice.GraphTransaction) error {
-		_, err := cluster.graphs[leaderID].CreateNode(ctx, tx, graphservice.NodeInput{NodeID: pageID.String(), Labels: []string{"Page"}, Payload: map[string]any{"text": "original"}, Properties: map[string]any{}})
+	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
+		_, err := cluster.graphs[leaderID].CreateNode(ctx, tx, graph.NodeInput{NodeID: pageID.String(), Labels: []string{"Page"}, Payload: map[string]any{"text": "original"}, Properties: map[string]any{}})
 		return err
 	})
 	cluster.enableGraphAutomationSinks()
@@ -164,19 +163,19 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 			t.Fatalf("seed binding: %v", err)
 		}
 	}
-	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionservice.GraphTransaction) error {
+	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
 		node, err := cluster.graphs[leaderID].GetNode(ctx, tx, pageID.String())
 		if err != nil {
 			return err
 		}
 		node.Payload["text"] = "updated before automation"
-		_, err = cluster.graphs[leaderID].UpdateNode(ctx, tx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
+		_, err = cluster.graphs[leaderID].UpdateNode(ctx, tx, graph.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
 		return err
 	})
 	cluster.waitForInvocationCount(t, domainID, 1)
 	leaderID = cluster.leaderForSpace(t, spaceID)
 	inference.onFirstInvoke = func(ctx context.Context) error {
-		cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionservice.GraphTransaction) error {
+		cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
 			node, err := cluster.graphs[leaderID].GetNode(ctx, tx, pageID.String())
 			if err != nil {
 				return err
@@ -189,7 +188,7 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 				node.Meta = map[string]any{}
 			}
 			node.Meta["automation"] = map[string]any{"automation_id": binding.ID, "generated": true}
-			_, err = cluster.graphs[leaderID].UpdateNode(ctx, tx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
+			_, err = cluster.graphs[leaderID].UpdateNode(ctx, tx, graph.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
 			return err
 		})
 		return nil
@@ -699,7 +698,7 @@ func TestAutomationOutputIdempotencyKeyDetectsExistingGraphOutput(t *testing.T) 
 		t.Fatalf("output idempotency key must be invocation-stable across runs: %q %q", keyFirst, keySecond)
 	}
 	graphs := &automationE2EGraph{node: graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Meta: map[string]any{"automation": map[string]any{"output_idempotency_key": keyFirst}}}}
-	applied, err := (actions.Engine{Graphs: graphs}).OutputAlreadyApplied(ctx, sessionservice.GraphTransaction{}, keySecond)
+	applied, err := (actions.Engine{Graphs: graphs}).OutputAlreadyApplied(ctx, sessionmodel.GraphTransaction{}, keySecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -942,7 +941,7 @@ func (s automationGraphPartitionStateMachine) ApplyCommand(ctx context.Context, 
 	return fmt.Errorf("unsupported automation graph raft command record type %s", cmd.RecordType)
 }
 
-func newAutomationGraphExecutionRaftCluster(t *testing.T, ctx context.Context, partitionCount uint32, inference inferenceservice.Manager) automationGraphExecutionRaftCluster {
+func newAutomationGraphExecutionRaftCluster(t *testing.T, ctx context.Context, partitionCount uint32, inference InferenceInvoker) automationGraphExecutionRaftCluster {
 	t.Helper()
 	router := consensus.NewLocalMessageRouter()
 	peers := []consensus.NodeID{1, 2, 3}
@@ -962,7 +961,7 @@ func newAutomationGraphExecutionRaftCluster(t *testing.T, ctx context.Context, p
 		if result := graphs[id].Init(ctx, host); !result.OK {
 			t.Fatalf("graph Init(%d): %v", id, result.Error)
 		}
-		modules[id] = NewModule("").WithGraphRuntime(sessions[id], graphs[id]).WithInferenceManager(inference).WithWorkerConfig(WorkerConfig{Enabled: false})
+		modules[id] = NewModule("").WithGraphRuntime(sessions[id], graphs[id]).WithInferenceInvoker(inference).WithWorkerConfig(WorkerConfig{Enabled: false})
 		if result := modules[id].Init(ctx, host); !result.OK {
 			t.Fatalf("automation Init(%d): %v", id, result.Error)
 		}
@@ -1020,29 +1019,29 @@ func (c automationGraphExecutionRaftCluster) enableGraphAutomationSinks() {
 	}
 }
 
-func (c automationGraphExecutionRaftCluster) beginReadOnlyTransaction(t *testing.T, ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID) sessionservice.GraphTransaction {
+func (c automationGraphExecutionRaftCluster) beginReadOnlyTransaction(t *testing.T, ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID) sessionmodel.GraphTransaction {
 	t.Helper()
-	sess, err := c.sessions[nodeID].OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: "reader", SpaceID: spaceID.String(), DomainID: domainID.String()})
+	sess, err := c.sessions[nodeID].OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "reader", SpaceID: spaceID.String(), DomainID: domainID.String()})
 	if err != nil {
 		t.Fatalf("OpenSession(read): %v", err)
 	}
-	tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: "reader", SessionID: sess.ID, Mode: sessionservice.TransactionModeReadOnly})
+	tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "reader", SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly})
 	if err != nil {
 		t.Fatalf("BeginTransaction(read): %v", err)
 	}
 	return tx
 }
 
-func (c automationGraphExecutionRaftCluster) commitGraphMutation(t *testing.T, ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID, mutate func(sessionservice.GraphTransaction) error) {
+func (c automationGraphExecutionRaftCluster) commitGraphMutation(t *testing.T, ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID, mutate func(sessionmodel.GraphTransaction) error) {
 	t.Helper()
 	const maxAttempts = 8
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		sess, err := c.sessions[nodeID].OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: "operator", SpaceID: spaceID.String(), DomainID: domainID.String()})
+		sess, err := c.sessions[nodeID].OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "operator", SpaceID: spaceID.String(), DomainID: domainID.String()})
 		if err != nil {
 			t.Fatalf("OpenSession(write): %v", err)
 		}
-		tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: "operator", SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite})
+		tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "operator", SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadWrite})
 		if err != nil {
 			t.Fatalf("BeginTransaction(write): %v", err)
 		}
@@ -1174,16 +1173,7 @@ type conflictInjectingInference struct {
 	invocations   int
 }
 
-func (f *conflictInjectingInference) GlobalManager() inferencestorage.GlobalManager { return nil }
-func (f *conflictInjectingInference) SpaceManager(context.Context, string) (inferencestorage.SpaceManager, error) {
-	return nil, nil
-}
-func (f *conflictInjectingInference) UsageLedger() inferencestorage.UsageLedger { return nil }
-func (f *conflictInjectingInference) RequireLocalWriteAllowed() error           { return nil }
-func (f *conflictInjectingInference) Resolve(context.Context, inferenceservice.ResolveRequest) (inferenceservice.ResolveResult, error) {
-	return inferenceservice.ResolveResult{Allowed: true}, nil
-}
-func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceservice.InvokeRequest) (inferenceservice.InvokeResponse, error) {
+func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
 	f.mu.Lock()
 	f.invocations++
 	callback := f.onFirstInvoke
@@ -1193,10 +1183,10 @@ func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferencese
 	f.mu.Unlock()
 	if callback != nil {
 		if err := callback(ctx); err != nil {
-			return inferenceservice.InvokeResponse{}, err
+			return inferenceruntime.InvokeResponse{}, err
 		}
 	}
-	return inferenceservice.InvokeResponse{Allowed: true, Text: f.text, Usage: inferenceconnectors.Usage{InputTokens: 4, OutputTokens: 2, TotalTokens: 6, TokenCountSource: "fake"}, Status: domaininference.UsageStatusSucceeded}, nil
+	return inferenceruntime.InvokeResponse{Allowed: true, Text: f.text, Usage: domaininference.Usage{InputTokens: 4, OutputTokens: 2, TotalTokens: 6, TokenCountSource: "fake"}, Status: domaininference.UsageStatusSucceeded}, nil
 }
 
 type automationExecutionRaftCluster struct {

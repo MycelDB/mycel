@@ -14,6 +14,7 @@ import (
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/graph/writetrace"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -181,7 +182,7 @@ func (s *GraphService) CreateBlobNode(stream clientv1.GraphService_CreateBlobNod
 	if err != nil {
 		return err
 	}
-	if tx.Mode != daemonsession.TransactionModeReadWrite {
+	if tx.Mode != sessionmodel.TransactionModeReadWrite {
 		return mapGraphError(daegraph.ErrReadOnly, "create blob node")
 	}
 	blob, err := s.blobs.UploadBlob(ctx, daemonblob.UploadInput{SpaceID: tx.SpaceID, DomainID: tx.DomainID, DeclaredMimeType: meta.GetDeclaredMimeType(), OriginalFilename: meta.GetOriginalFilename(), Reader: bytes.NewReader(buf.Bytes())})
@@ -202,7 +203,7 @@ func (s *GraphService) CreateBlobNode(stream clientv1.GraphService_CreateBlobNod
 	if blob.OriginalFilename != "" {
 		payload["original_filename"] = filepath.Base(blob.OriginalFilename)
 	}
-	node, err := s.graphs.CreateNode(ctx, tx, daegraph.NodeInput{NodeID: meta.GetNodeId(), Labels: meta.GetLabels(), BlobID: blob.BlobID, Properties: properties, Payload: payload})
+	node, err := s.graphs.CreateNode(ctx, tx, domaingraph.NodeInput{NodeID: meta.GetNodeId(), Labels: meta.GetLabels(), BlobID: blob.BlobID, Properties: properties, Payload: payload})
 	if err != nil {
 		return mapGraphError(err, "create blob node")
 	}
@@ -560,7 +561,7 @@ func (s *GraphService) ApplyGraphOperations(ctx context.Context, req *clientv1.A
 	return res, nil
 }
 
-func (s *GraphService) applyOperation(ctx context.Context, tx daemonsession.GraphTransaction, op *clientv1.GraphOperation) (*clientv1.GraphOperationResult, error) {
+func (s *GraphService) applyOperation(ctx context.Context, tx sessionmodel.GraphTransaction, op *clientv1.GraphOperation) (*clientv1.GraphOperationResult, error) {
 	switch value := op.GetOperation().(type) {
 	case *clientv1.GraphOperation_CreateNode:
 		node, err := s.graphs.CreateNode(ctx, tx, nodeInputFromProto(value.CreateNode))
@@ -639,56 +640,56 @@ func (s *GraphService) applyOperation(ctx context.Context, tx daemonsession.Grap
 	}
 }
 
-func (s *GraphService) transaction(ctx context.Context, transactionID string) (daemonsession.GraphTransaction, error) {
+func (s *GraphService) transaction(ctx context.Context, transactionID string) (sessionmodel.GraphTransaction, error) {
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
-		return daemonsession.GraphTransaction{}, err
+		return sessionmodel.GraphTransaction{}, err
 	}
 	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, transactionID)
 	if err != nil {
-		return daemonsession.GraphTransaction{}, mapSessionError(err, "get transaction")
+		return sessionmodel.GraphTransaction{}, mapSessionError(err, "get transaction")
 	}
 	return tx, nil
 }
 
-func nodeInputFromProto(node *clientv1.NodeCreate) daegraph.NodeInput {
+func nodeInputFromProto(node *clientv1.NodeCreate) domaingraph.NodeInput {
 	if node == nil {
-		return daegraph.NodeInput{}
+		return domaingraph.NodeInput{}
 	}
-	return daegraph.NodeInput{NodeID: node.GetNodeId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload())}
+	return domaingraph.NodeInput{NodeID: node.GetNodeId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload())}
 }
 
-func updateNodeInputFromProto(node *clientv1.Node) daegraph.UpdateNodeInput {
+func updateNodeInputFromProto(node *clientv1.Node) domaingraph.UpdateNodeInput {
 	if node == nil {
-		return daegraph.UpdateNodeInput{}
+		return domaingraph.UpdateNodeInput{}
 	}
-	return daegraph.UpdateNodeInput{NodeID: node.GetNodeId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload())}
+	return domaingraph.UpdateNodeInput{NodeID: node.GetNodeId(), Labels: node.GetLabels(), Properties: structMap(node.GetProperties()), Payload: structMap(node.GetPayload())}
 }
 
-func edgeInputFromProto(edge *clientv1.EdgeCreate) daegraph.EdgeInput {
+func edgeInputFromProto(edge *clientv1.EdgeCreate) domaingraph.EdgeInput {
 	if edge == nil {
-		return daegraph.EdgeInput{}
+		return domaingraph.EdgeInput{}
 	}
-	return daegraph.EdgeInput{EdgeID: edge.GetEdgeId(), FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload())}
+	return domaingraph.EdgeInput{EdgeID: edge.GetEdgeId(), FromNodeID: edge.GetFromNodeId(), ToNodeID: edge.GetToNodeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload())}
 }
 
-func updateEdgeInputFromProto(edge *clientv1.Edge) daegraph.UpdateEdgeInput {
+func updateEdgeInputFromProto(edge *clientv1.Edge) domaingraph.UpdateEdgeInput {
 	if edge == nil {
-		return daegraph.UpdateEdgeInput{}
+		return domaingraph.UpdateEdgeInput{}
 	}
-	return daegraph.UpdateEdgeInput{EdgeID: edge.GetEdgeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload())}
+	return domaingraph.UpdateEdgeInput{EdgeID: edge.GetEdgeId(), Labels: edge.GetLabels(), Properties: structMap(edge.GetProperties()), Payload: structMap(edge.GetPayload())}
 }
 
-func replaceReferencesInputFromProto(in *clientv1.ReferencesReplace) daegraph.ReplaceReferencesInput {
+func replaceReferencesInputFromProto(in *clientv1.ReferencesReplace) domaingraph.ReplaceReferencesInput {
 	if in == nil {
-		return daegraph.ReplaceReferencesInput{}
+		return domaingraph.ReplaceReferencesInput{}
 	}
-	out := daegraph.ReplaceReferencesInput{SourceNodeID: in.GetSourceNodeId(), Labels: in.GetLabels(), Mode: replaceReferenceModeFromProto(in.GetMode())}
+	out := domaingraph.ReplaceReferencesInput{SourceNodeID: in.GetSourceNodeId(), Labels: in.GetLabels(), Mode: replaceReferenceModeFromProto(in.GetMode())}
 	for _, target := range in.GetTargets() {
 		if target == nil {
 			continue
 		}
-		out.Targets = append(out.Targets, daegraph.ReferenceTargetInput{
+		out.Targets = append(out.Targets, domaingraph.ReferenceTargetInput{
 			TargetNodeID: target.GetTargetNodeId(),
 			EdgeID:       target.GetEdgeId(),
 			Properties:   structMap(target.GetProperties()),
@@ -700,20 +701,20 @@ func replaceReferencesInputFromProto(in *clientv1.ReferencesReplace) daegraph.Re
 	return out
 }
 
-func replaceReferenceModeFromProto(mode clientv1.ReferenceReplacementMode) daegraph.ReferenceReplacementMode {
+func replaceReferenceModeFromProto(mode clientv1.ReferenceReplacementMode) domaingraph.ReferenceReplacementMode {
 	switch mode {
 	case clientv1.ReferenceReplacementMode_REFERENCE_REPLACEMENT_MODE_ADD:
-		return daegraph.ReferenceReplacementModeAdd
+		return domaingraph.ReferenceReplacementModeAdd
 	case clientv1.ReferenceReplacementMode_REFERENCE_REPLACEMENT_MODE_REMOVE:
-		return daegraph.ReferenceReplacementModeRemove
+		return domaingraph.ReferenceReplacementModeRemove
 	case clientv1.ReferenceReplacementMode_REFERENCE_REPLACEMENT_MODE_REPLACE, clientv1.ReferenceReplacementMode_REFERENCE_REPLACEMENT_MODE_UNSPECIFIED:
-		return daegraph.ReferenceReplacementModeReplace
+		return domaingraph.ReferenceReplacementModeReplace
 	default:
-		return daegraph.ReferenceReplacementMode(mode.String())
+		return domaingraph.ReferenceReplacementMode(mode.String())
 	}
 }
 
-func mapProtoReplaceReferencesResult(result daegraph.ReplaceReferencesResult) *clientv1.ReferencesReplaceResult {
+func mapProtoReplaceReferencesResult(result domaingraph.ReplaceReferencesResult) *clientv1.ReferencesReplaceResult {
 	out := &clientv1.ReferencesReplaceResult{DeletedEdgeIds: append([]string(nil), result.DeletedEdgeIDs...)}
 	for _, edge := range result.AddedEdges {
 		out.AddedEdges = append(out.AddedEdges, mapProtoEdge(edge))

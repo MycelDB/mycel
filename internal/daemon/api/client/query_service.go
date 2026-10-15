@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/query/gql"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
@@ -26,6 +27,7 @@ import (
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -100,7 +102,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, mapSessionError(err, "execute query")
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	if req.GetQuery() == nil || req.GetQuery().GetMatch() == nil || req.GetQuery().GetMatch().GetStart() == nil {
@@ -176,7 +178,7 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if err != nil {
 		return nil, mapSessionError(err, "execute gql")
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	domain, err := s.visibleTransactionDomain(ctx, principal.PrincipalID, tx)
@@ -191,7 +193,7 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if plan.AccessMode == analysis.ReadWrite && tx.Mode != daemonsession.TransactionModeReadWrite {
+	if plan.AccessMode == analysis.ReadWrite && tx.Mode != sessionmodel.TransactionModeReadWrite {
 		return nil, status.Error(codes.FailedPrecondition, "GQL query requires a read-write transaction")
 	}
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
@@ -234,7 +236,7 @@ func (s *QueryService) ExplainQuery(ctx context.Context, req *clientv1.ExplainQu
 	if err != nil {
 		return nil, err
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	if err := validateStructuredGraphQueryWithSchema(req.GetQuery(), schemaCtx); err != nil {
@@ -265,7 +267,7 @@ func (s *QueryService) ExplainGQL(ctx context.Context, req *clientv1.ExplainGQLR
 	if err != nil {
 		return nil, err
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	params := gqlParamsFromProto(req.GetParams())
@@ -302,7 +304,7 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	if err != nil {
 		return nil, mapSessionError(err, "execute gql script")
 	}
-	if tx.State != daemonsession.TransactionStateActive {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	domain, err := s.visibleTransactionDomain(ctx, principal.PrincipalID, tx)
@@ -317,7 +319,7 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if scriptPlan.AccessMode == analysis.ReadWrite && tx.Mode != daemonsession.TransactionModeReadWrite {
+	if scriptPlan.AccessMode == analysis.ReadWrite && tx.Mode != sessionmodel.TransactionModeReadWrite {
 		return nil, status.Error(codes.FailedPrecondition, "GQL script requires a read-write transaction")
 	}
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
@@ -392,7 +394,7 @@ func mapGQLExecutionError(err error) error {
 	return status.Error(codes.InvalidArgument, err.Error())
 }
 
-func (s *QueryService) visibleTransactionDomain(ctx context.Context, principalID string, tx daemonsession.GraphTransaction) (domaingraph.Domain, error) {
+func (s *QueryService) visibleTransactionDomain(ctx context.Context, principalID string, tx sessionmodel.GraphTransaction) (domaingraph.Domain, error) {
 	domain, err := s.spaces.GetVisibleDomain(ctx, principalID, tx.SpaceID, tx.DomainID, "")
 	if err != nil {
 		return domaingraph.Domain{}, mapDomainError(err, "query domain")
@@ -434,14 +436,14 @@ func gqlPlanRequiresBroadFallback(plan planmodel.Plan) bool {
 	return false
 }
 
-func (s *QueryService) explainContext(ctx context.Context, transactionID string) (daemonsession.GraphTransaction, domaingraph.Domain, analysis.SchemaContext, error) {
+func (s *QueryService) explainContext(ctx context.Context, transactionID string) (sessionmodel.GraphTransaction, domaingraph.Domain, analysis.SchemaContext, error) {
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
-		return daemonsession.GraphTransaction{}, domaingraph.Domain{}, analysis.SchemaContext{}, err
+		return sessionmodel.GraphTransaction{}, domaingraph.Domain{}, analysis.SchemaContext{}, err
 	}
 	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, transactionID)
 	if err != nil {
-		return daemonsession.GraphTransaction{}, domaingraph.Domain{}, analysis.SchemaContext{}, mapSessionError(err, "explain query")
+		return sessionmodel.GraphTransaction{}, domaingraph.Domain{}, analysis.SchemaContext{}, mapSessionError(err, "explain query")
 	}
 	domain, err := s.visibleTransactionDomain(ctx, principal.PrincipalID, tx)
 	if err != nil {
@@ -799,7 +801,7 @@ func firstString(values []string) string {
 	return values[0]
 }
 
-func (s *QueryService) schemaContext(ctx context.Context, tx daemonsession.GraphTransaction) (analysis.SchemaContext, error) {
+func (s *QueryService) schemaContext(ctx context.Context, tx sessionmodel.GraphTransaction) (analysis.SchemaContext, error) {
 	if s.schemas == nil || strings.TrimSpace(tx.DomainID) == "" {
 		return analysis.SchemaContext{}, nil
 	}
@@ -808,7 +810,7 @@ func (s *QueryService) schemaContext(ctx context.Context, tx daemonsession.Graph
 		return analysis.SchemaContext{}, status.Error(codes.InvalidArgument, "invalid transaction domain id")
 	}
 	schemaDoc, err := s.schemas.GetDomainSchema(ctx, domaingraph.DomainID(domainID))
-	if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+	if errors.Is(err, schemamodel.ErrNotFound) {
 		return analysis.SchemaContext{}, nil
 	}
 	if err != nil {
@@ -817,7 +819,7 @@ func (s *QueryService) schemaContext(ctx context.Context, tx daemonsession.Graph
 	return analysis.SchemaContext{Schema: &schemaDoc}, nil
 }
 
-func (s *QueryService) allNodes(ctx context.Context, tx daemonsession.GraphTransaction) ([]domaingraph.Node, error) {
+func (s *QueryService) allNodes(ctx context.Context, tx sessionmodel.GraphTransaction) ([]domaingraph.Node, error) {
 	all := []domaingraph.Node{}
 	token := ""
 	for {
@@ -833,7 +835,7 @@ func (s *QueryService) allNodes(ctx context.Context, tx daemonsession.GraphTrans
 	}
 }
 
-func (s *QueryService) allEdges(ctx context.Context, tx daemonsession.GraphTransaction) ([]domaingraph.Edge, error) {
+func (s *QueryService) allEdges(ctx context.Context, tx sessionmodel.GraphTransaction) ([]domaingraph.Edge, error) {
 	all := []domaingraph.Edge{}
 	token := ""
 	for {
@@ -2069,11 +2071,11 @@ func clonePathValue(path *clientv1.PathValue) *clientv1.PathValue {
 
 type gqlDaemonGraph struct {
 	service *QueryService
-	tx      daemonsession.GraphTransaction
+	tx      sessionmodel.GraphTransaction
 }
 
 func (g gqlDaemonGraph) InsertNode(ctx context.Context, node execution.InsertNode) (execmodel.NodeRef, error) {
-	created, err := g.service.graphs.CreateNode(ctx, g.tx, daegraph.NodeInput{Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties)})
+	created, err := g.service.graphs.CreateNode(ctx, g.tx, domaingraph.NodeInput{Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties)})
 	if err != nil {
 		return execmodel.NodeRef{}, err
 	}
@@ -2081,7 +2083,7 @@ func (g gqlDaemonGraph) InsertNode(ctx context.Context, node execution.InsertNod
 }
 
 func (g gqlDaemonGraph) CreateEdge(ctx context.Context, edge execution.CreateEdge) (execmodel.Edge, error) {
-	created, err := g.service.graphs.CreateEdge(ctx, g.tx, daegraph.EdgeInput{FromNodeID: edge.FromNodeID, ToNodeID: edge.ToNodeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload)})
+	created, err := g.service.graphs.CreateEdge(ctx, g.tx, domaingraph.EdgeInput{FromNodeID: edge.FromNodeID, ToNodeID: edge.ToNodeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload)})
 	if err != nil {
 		return execmodel.Edge{}, err
 	}
@@ -2089,7 +2091,7 @@ func (g gqlDaemonGraph) CreateEdge(ctx context.Context, edge execution.CreateEdg
 }
 
 func (g gqlDaemonGraph) UpdateNode(ctx context.Context, node execution.UpdateNode) (execmodel.Node, error) {
-	updated, err := g.service.graphs.UpdateNode(ctx, g.tx, daegraph.UpdateNodeInput{NodeID: node.NodeID, Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties), Payload: copyMapAny(node.Payload), UpdateMask: []string{"labels", "properties", "payload"}})
+	updated, err := g.service.graphs.UpdateNode(ctx, g.tx, domaingraph.UpdateNodeInput{NodeID: node.NodeID, Labels: append([]string(nil), node.Labels...), Properties: copyMapAny(node.Properties), Payload: copyMapAny(node.Payload), UpdateMask: []string{"labels", "properties", "payload"}})
 	if err != nil {
 		return execmodel.Node{}, err
 	}
@@ -2097,7 +2099,7 @@ func (g gqlDaemonGraph) UpdateNode(ctx context.Context, node execution.UpdateNod
 }
 
 func (g gqlDaemonGraph) UpdateEdge(ctx context.Context, edge execution.UpdateEdge) (execmodel.Edge, error) {
-	updated, err := g.service.graphs.UpdateEdge(ctx, g.tx, daegraph.UpdateEdgeInput{EdgeID: edge.EdgeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload), UpdateMask: []string{"labels", "properties", "payload"}})
+	updated, err := g.service.graphs.UpdateEdge(ctx, g.tx, domaingraph.UpdateEdgeInput{EdgeID: edge.EdgeID, Labels: append([]string(nil), edge.Labels...), Properties: copyMapAny(edge.Properties), Payload: copyMapAny(edge.Payload), UpdateMask: []string{"labels", "properties", "payload"}})
 	if err != nil {
 		return execmodel.Edge{}, err
 	}
@@ -2562,7 +2564,7 @@ func protoValue(value any) *structpb.Value {
 	return out
 }
 
-func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil {
 		return false, nil, nil
@@ -2636,7 +2638,7 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 	if direction == clientv1.SortDirection_SORT_DIRECTION_DESC {
 		indexDirection = schemamodel.IndexSortDirectionDesc
 	}
-	nodes, rawNext, stats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, daegraph.OrderedNodePropertyScan{IndexName: idx.Name, Direction: indexDirection, Limit: scanLimit, Cursor: cursor.IndexCursor, HasLow: bounds.hasLow, Low: bounds.low, LowExclusive: bounds.lowExclusive, HasHigh: bounds.hasHigh, High: bounds.high, HighExclusive: bounds.highExclusive})
+	nodes, rawNext, stats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{IndexName: idx.Name, Direction: indexDirection, Limit: scanLimit, Cursor: cursor.IndexCursor, HasLow: bounds.hasLow, Low: bounds.low, LowExclusive: bounds.lowExclusive, HasHigh: bounds.hasHigh, High: bounds.high, HighExclusive: bounds.highExclusive})
 	if err != nil {
 		return true, nil, mapGraphError(err, "execute indexed query")
 	}
@@ -2673,7 +2675,7 @@ func isSemanticPredicateNodeQuery(query *clientv1.GraphQuery) bool {
 	return err == nil && ok && len(terms) == 1
 }
 
-func (s *QueryService) tryExecuteSemanticPredicateQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteSemanticPredicateQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil || len(query.GetOrderBy()) != 0 || len(query.GetMatch().GetSteps()) != 0 || len(query.GetMatch().GetStart().GetLabels()) != 1 {
 		return false, nil, nil
@@ -2872,7 +2874,7 @@ func isIndexedPredicateNodeQuery(query *clientv1.GraphQuery) bool {
 	return err == nil && ok && len(branches) > 0
 }
 
-func (s *QueryService) tryExecuteIndexedPredicateNodeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteIndexedPredicateNodeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	match := query.GetMatch()
 	start := match.GetStart()
@@ -2896,7 +2898,7 @@ func (s *QueryService) tryExecuteIndexedPredicateNodeQuery(ctx context.Context, 
 	label := start.GetLabels()[0]
 	union := map[string]domaingraph.Node{}
 	indexNames := map[string]struct{}{}
-	combined := daegraph.IndexedReadStats{Plan: "OrderedNodePropertyPredicateIndexScan", FullScan: false, NextCursorKind: "offset"}
+	combined := graphquery.IndexedReadStats{Plan: "OrderedNodePropertyPredicateIndexScan", FullScan: false, NextCursorKind: "offset"}
 	for _, branch := range branches {
 		branchNodes, branchIndexes, branchStats, err := s.executeIndexedPredicateBranch(ctx, tx, schemaCtx, label, branch)
 		if err != nil {
@@ -2953,16 +2955,16 @@ func (s *QueryService) tryExecuteIndexedPredicateNodeQuery(ctx context.Context, 
 	return true, &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: diagnostics}, nil
 }
 
-func (s *QueryService) executeIndexedPredicateBranch(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, label string, branch indexedPredicateBranch) ([]domaingraph.Node, []string, daegraph.IndexedReadStats, error) {
+func (s *QueryService) executeIndexedPredicateBranch(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, label string, branch indexedPredicateBranch) ([]domaingraph.Node, []string, graphquery.IndexedReadStats, error) {
 	var current map[string]domaingraph.Node
 	indexes := []string{}
-	combined := daegraph.IndexedReadStats{}
+	combined := graphquery.IndexedReadStats{}
 	for _, scan := range branch.scans {
 		idx, ok := findOrderedNodeIndex(*schemaCtx.Schema, label, scan.field)
 		if !ok {
 			return nil, nil, combined, status.Errorf(codes.FailedPrecondition, "no ordered index for %s.properties.%s", label, scan.field)
 		}
-		nodes, _, stats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, daegraph.OrderedNodePropertyScan{IndexName: idx.Name, Direction: schemamodel.IndexSortDirectionAsc, Limit: 0, HasLow: scan.hasLow, Low: scan.low, LowExclusive: scan.lowExclusive, HasHigh: scan.hasHigh, High: scan.high, HighExclusive: scan.highExclusive})
+		nodes, _, stats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{IndexName: idx.Name, Direction: schemamodel.IndexSortDirectionAsc, Limit: 0, HasLow: scan.hasLow, Low: scan.low, LowExclusive: scan.lowExclusive, HasHigh: scan.hasHigh, High: scan.high, HighExclusive: scan.highExclusive})
 		if err != nil {
 			return nil, nil, combined, mapGraphError(err, "execute indexed predicate query")
 		}
@@ -3110,7 +3112,7 @@ func isIndexedEqualityNodeQuery(query *clientv1.GraphQuery) bool {
 	return err == nil && ok && strings.TrimSpace(field) != ""
 }
 
-func (s *QueryService) tryExecuteIndexedEqualityNodeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteIndexedEqualityNodeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	match := query.GetMatch()
 	start := match.GetStart()
@@ -3145,7 +3147,7 @@ func (s *QueryService) tryExecuteIndexedEqualityNodeQuery(ctx context.Context, r
 	}
 	firstPageOffset := indexedFirstPageOffset(query, hasShapedCursor)
 	scanLimit := pageLimit + int(firstPageOffset)
-	nodes, rawNext, stats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, daegraph.OrderedNodePropertyScan{IndexName: idx.Name, Direction: schemamodel.IndexSortDirectionAsc, Limit: scanLimit, Cursor: cursor.IndexCursor, HasLow: true, Low: value, HasHigh: true, High: value})
+	nodes, rawNext, stats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{IndexName: idx.Name, Direction: schemamodel.IndexSortDirectionAsc, Limit: scanLimit, Cursor: cursor.IndexCursor, HasLow: true, Low: value, HasHigh: true, High: value})
 	if err != nil {
 		return true, nil, mapGraphError(err, "execute indexed equality query")
 	}
@@ -3191,12 +3193,12 @@ func isIndexedRootSubtreeQuery(query *clientv1.GraphQuery) bool {
 type indexedSubtreeExpansion struct {
 	rows      []*clientv1.QueryRow
 	graph     *clientv1.ResultGraph
-	stats     daegraph.IndexedReadStats
+	stats     graphquery.IndexedReadStats
 	truncated bool
 	reason    string
 }
 
-func (s *QueryService) executeIndexedRootSubtreeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, recorder *daegraph.ReadMetadataRecorder, idx schemamodel.IndexDefinition, bounds indexedBounds) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) executeIndexedRootSubtreeQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, recorder *daegraph.ReadMetadataRecorder, idx schemamodel.IndexDefinition, bounds indexedBounds) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	if err := validateIndexedRootSubtreeShape(query); err != nil {
 		return true, nil, err
@@ -3217,7 +3219,7 @@ func (s *QueryService) executeIndexedRootSubtreeQuery(ctx context.Context, req *
 		indexDirection = schemamodel.IndexSortDirectionDesc
 	}
 	rootScanStart := time.Now()
-	roots, rawNext, rootStats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, daegraph.OrderedNodePropertyScan{IndexName: idx.Name, Direction: indexDirection, Limit: scanLimit, Cursor: cursor.IndexCursor, HasLow: bounds.hasLow, Low: bounds.low, LowExclusive: bounds.lowExclusive, HasHigh: bounds.hasHigh, High: bounds.high, HighExclusive: bounds.highExclusive})
+	roots, rawNext, rootStats, err := s.graphs.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{IndexName: idx.Name, Direction: indexDirection, Limit: scanLimit, Cursor: cursor.IndexCursor, HasLow: bounds.hasLow, Low: bounds.low, LowExclusive: bounds.lowExclusive, HasHigh: bounds.hasHigh, High: bounds.high, HighExclusive: bounds.highExclusive})
 	rootScanMillis := time.Since(rootScanStart).Milliseconds()
 	if err != nil {
 		return true, nil, mapGraphError(err, "execute indexed root scan")
@@ -3302,7 +3304,7 @@ func subtreeCaps(query *clientv1.GraphQuery) (int, int) {
 	return maxNodes, maxEdges
 }
 
-func (s *QueryService) expandIndexedSubtrees(ctx context.Context, tx daemonsession.GraphTransaction, query *clientv1.GraphQuery, roots []domaingraph.Node, orderedIndexName string, rootStats daegraph.IndexedReadStats) (indexedSubtreeExpansion, error) {
+func (s *QueryService) expandIndexedSubtrees(ctx context.Context, tx sessionmodel.GraphTransaction, query *clientv1.GraphQuery, roots []domaingraph.Node, orderedIndexName string, rootStats graphquery.IndexedReadStats) (indexedSubtreeExpansion, error) {
 	match := query.GetMatch()
 	start := match.GetStart()
 	step := match.GetSteps()[0]
@@ -3312,19 +3314,19 @@ func (s *QueryService) expandIndexedSubtrees(ctx context.Context, tx daemonsessi
 		return indexedSubtreeExpansion{}, err
 	}
 	maxNodes, maxEdges := subtreeCaps(query)
-	direction := daegraph.AdjacencyDirectionOut
+	direction := graphquery.AdjacencyDirectionOut
 	if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN {
-		direction = daegraph.AdjacencyDirectionIn
+		direction = graphquery.AdjacencyDirectionIn
 	}
 	returns := query.GetReturns()
 	if len(returns) == 0 {
 		returns = []*clientv1.ReturnProjection{{Alias: target.GetAlias(), OutputName: "graph", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_TREE}}
 	}
-	result, subtreeStats, err := s.graphs.ScanSubtree(ctx, tx, daegraph.SubtreeScan{Roots: roots, Label: step.GetEdgeKind(), Direction: direction, MinDepth: minDepth, MaxDepth: maxDepth, MaxNodes: maxNodes, MaxEdges: maxEdges, TargetLabels: append([]string(nil), target.GetLabels()...)})
+	result, subtreeStats, err := s.graphs.ScanSubtree(ctx, tx, graphquery.SubtreeScan{Roots: roots, Label: step.GetEdgeKind(), Direction: direction, MinDepth: minDepth, MaxDepth: maxDepth, MaxNodes: maxNodes, MaxEdges: maxEdges, TargetLabels: append([]string(nil), target.GetLabels()...)})
 	if err != nil {
 		return indexedSubtreeExpansion{}, mapGraphError(err, "execute indexed subtree scan")
 	}
-	combined := daegraph.IndexedReadStats{Plan: indexedSubtreePlanName, IndexName: string(direction) + ":" + step.GetEdgeKind(), IndexEntriesScanned: rootStats.IndexEntriesScanned + subtreeStats.IndexEntriesScanned, NodesLoaded: rootStats.NodesLoaded + subtreeStats.NodesLoaded, EdgesLoaded: rootStats.EdgesLoaded + subtreeStats.EdgesLoaded, FullScan: rootStats.FullScan || subtreeStats.FullScan, NextCursorKind: indexedSubtreeCursorKind, AdjacencyScanCalls: subtreeStats.AdjacencyScanCalls, NodeReadCalls: subtreeStats.NodeReadCalls}
+	combined := graphquery.IndexedReadStats{Plan: indexedSubtreePlanName, IndexName: string(direction) + ":" + step.GetEdgeKind(), IndexEntriesScanned: rootStats.IndexEntriesScanned + subtreeStats.IndexEntriesScanned, NodesLoaded: rootStats.NodesLoaded + subtreeStats.NodesLoaded, EdgesLoaded: rootStats.EdgesLoaded + subtreeStats.EdgesLoaded, FullScan: rootStats.FullScan || subtreeStats.FullScan, NextCursorKind: indexedSubtreeCursorKind, AdjacencyScanCalls: subtreeStats.AdjacencyScanCalls, NodeReadCalls: subtreeStats.NodeReadCalls}
 	exec := newQueryExecution(nil, nil)
 	out := make([]*clientv1.QueryRow, 0, len(result.Roots))
 	for _, root := range result.Roots {
@@ -3373,7 +3375,7 @@ func isIndexedPathQuery(query *clientv1.GraphQuery) bool {
 	return true
 }
 
-func (s *QueryService) tryExecuteIndexedPathQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteIndexedPathQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	if !isIndexedPathQuery(query) {
 		return false, nil, nil
@@ -3386,7 +3388,7 @@ func (s *QueryService) tryExecuteIndexedPathQuery(ctx context.Context, req *clie
 	pathAlias := strings.TrimSpace(query.GetPathAlias())
 	exec := newQueryExecution(nil, nil)
 	rows := []*queryRowState{}
-	stats := daegraph.IndexedReadStats{Plan: "IndexedMultiHopAdjacencyPathScan", FullScan: false, NextCursorKind: "offset"}
+	stats := graphquery.IndexedReadStats{Plan: "IndexedMultiHopAdjacencyPathScan", FullScan: false, NextCursorKind: "offset"}
 	indexes := map[string]struct{}{}
 	starts, startIndexes, startStats, err := s.indexedPathStartNodes(ctx, tx, schemaCtx, query)
 	if err != nil {
@@ -3410,9 +3412,9 @@ func (s *QueryService) tryExecuteIndexedPathQuery(ctx context.Context, req *clie
 		currentAlias := start.GetAlias()
 		for _, step := range match.GetSteps() {
 			nextRows := []*queryRowState{}
-			direction := daegraph.AdjacencyDirectionOut
+			direction := graphquery.AdjacencyDirectionOut
 			if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN {
-				direction = daegraph.AdjacencyDirectionIn
+				direction = graphquery.AdjacencyDirectionIn
 			}
 			indexes[string(direction)+":"+step.GetEdgeKind()] = struct{}{}
 			for _, row := range currentRows {
@@ -3468,7 +3470,7 @@ func (s *QueryService) tryExecuteIndexedPathQuery(ctx context.Context, req *clie
 	return true, &clientv1.ExecuteQueryResponse{Rows: out, NextPageToken: next, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: diagnostics}, nil
 }
 
-func validateIndexedPathResourceCaps(stats daegraph.IndexedReadStats) error {
+func validateIndexedPathResourceCaps(stats graphquery.IndexedReadStats) error {
 	if stats.NodesLoaded > indexedPathMaxNodesLoaded {
 		return status.Errorf(codes.FailedPrecondition, "indexed path query loaded more than %d nodes; add indexed start bounds or lower traversal depth", indexedPathMaxNodesLoaded)
 	}
@@ -3478,9 +3480,9 @@ func validateIndexedPathResourceCaps(stats daegraph.IndexedReadStats) error {
 	return nil
 }
 
-func (s *QueryService) indexedPathStartNodes(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, query *clientv1.GraphQuery) ([]domaingraph.Node, []string, daegraph.IndexedReadStats, error) {
+func (s *QueryService) indexedPathStartNodes(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, query *clientv1.GraphQuery) ([]domaingraph.Node, []string, graphquery.IndexedReadStats, error) {
 	start := query.GetMatch().GetStart()
-	stats := daegraph.IndexedReadStats{}
+	stats := graphquery.IndexedReadStats{}
 	if len(start.GetNodeIds()) > 0 {
 		nodes := make([]domaingraph.Node, 0, len(start.GetNodeIds()))
 		for _, startID := range start.GetNodeIds() {
@@ -3497,7 +3499,7 @@ func (s *QueryService) indexedPathStartNodes(ctx context.Context, tx daemonsessi
 		return nil, nil, stats, status.Error(codes.FailedPrecondition, "indexed path start requires explicit node IDs or one indexed start label")
 	}
 	if query.GetWhere() == nil {
-		nodes, next, labelStats, err := s.graphs.ScanLabel(ctx, tx, daegraph.LabelScan{Label: start.GetLabels()[0], Limit: indexedPathMaxStartNodes + 1})
+		nodes, next, labelStats, err := s.graphs.ScanLabel(ctx, tx, graphquery.LabelScan{Label: start.GetLabels()[0], Limit: indexedPathMaxStartNodes + 1})
 		if err != nil {
 			return nil, nil, stats, mapGraphError(err, "execute indexed path label scan")
 		}
@@ -3616,13 +3618,13 @@ func indexedTagBranchForAnd(expr *clientv1.Expr, alias string) (indexedTagBranch
 	return indexedTagBranch{tags: []string{normalized}}, true, nil
 }
 
-func (s *QueryService) indexedPathTagStartNodes(ctx context.Context, tx daemonsession.GraphTransaction, label string, branches []indexedTagBranch, stats daegraph.IndexedReadStats) ([]domaingraph.Node, []string, daegraph.IndexedReadStats, error) {
+func (s *QueryService) indexedPathTagStartNodes(ctx context.Context, tx sessionmodel.GraphTransaction, label string, branches []indexedTagBranch, stats graphquery.IndexedReadStats) ([]domaingraph.Node, []string, graphquery.IndexedReadStats, error) {
 	union := map[string]domaingraph.Node{}
 	indexNames := map[string]struct{}{}
 	for _, branch := range branches {
 		var current map[string]domaingraph.Node
 		for _, tag := range branch.tags {
-			nodes, next, tagStats, err := s.graphs.ScanTag(ctx, tx, daegraph.TagScan{Tag: tag, Limit: indexedPathMaxStartNodes + 1})
+			nodes, next, tagStats, err := s.graphs.ScanTag(ctx, tx, graphquery.TagScan{Tag: tag, Limit: indexedPathMaxStartNodes + 1})
 			if err != nil {
 				return nil, nil, stats, mapGraphError(err, "execute indexed path tag scan")
 			}
@@ -3673,22 +3675,22 @@ func (s *QueryService) indexedPathTagStartNodes(ctx context.Context, tx daemonse
 	return nodes, indexes, stats, nil
 }
 
-func (s *QueryService) expandIndexedPathStep(ctx context.Context, tx daemonsession.GraphTransaction, exec *queryExecution, row *queryRowState, pathAlias string, start domaingraph.Node, step *clientv1.TraversalStep, direction daegraph.AdjacencyDirection) ([]*queryRowState, daegraph.IndexedReadStats, error) {
+func (s *QueryService) expandIndexedPathStep(ctx context.Context, tx sessionmodel.GraphTransaction, exec *queryExecution, row *queryRowState, pathAlias string, start domaingraph.Node, step *clientv1.TraversalStep, direction graphquery.AdjacencyDirection) ([]*queryRowState, graphquery.IndexedReadStats, error) {
 	minDepth, maxDepth, err := traversalDepthBounds(step.GetDepth())
 	if err != nil {
-		return nil, daegraph.IndexedReadStats{}, err
+		return nil, graphquery.IndexedReadStats{}, err
 	}
 	if maxDepth == -1 || maxDepth > indexedSubtreeMaxDepthCap {
-		return nil, daegraph.IndexedReadStats{}, status.Errorf(codes.InvalidArgument, "indexed path traversal max_depth must be between min_depth and %d", indexedSubtreeMaxDepthCap)
+		return nil, graphquery.IndexedReadStats{}, status.Errorf(codes.InvalidArgument, "indexed path traversal max_depth must be between min_depth and %d", indexedSubtreeMaxDepthCap)
 	}
 	out := []*queryRowState{}
-	stats := daegraph.IndexedReadStats{}
+	stats := graphquery.IndexedReadStats{}
 	var visit func(base *queryRowState, node domaingraph.Node, depth int, seen map[string]struct{}) error
 	visit = func(base *queryRowState, node domaingraph.Node, depth int, seen map[string]struct{}) error {
 		if depth >= maxDepth {
 			return nil
 		}
-		edges, _, scanStats, err := s.graphs.ScanAdjacency(ctx, tx, daegraph.AdjacencyScan{NodeID: node.ID.String(), Label: step.GetEdgeKind(), Direction: direction})
+		edges, _, scanStats, err := s.graphs.ScanAdjacency(ctx, tx, graphquery.AdjacencyScan{NodeID: node.ID.String(), Label: step.GetEdgeKind(), Direction: direction})
 		if err != nil {
 			return mapGraphError(err, "execute indexed path adjacency scan")
 		}
@@ -3740,7 +3742,7 @@ func (s *QueryService) expandIndexedPathStep(ctx context.Context, tx daemonsessi
 		return nil
 	}
 	if err := visit(row, start, 0, map[string]struct{}{start.ID.String(): {}}); err != nil {
-		return nil, daegraph.IndexedReadStats{}, err
+		return nil, graphquery.IndexedReadStats{}, err
 	}
 	return out, stats, nil
 }
@@ -3789,7 +3791,7 @@ func decodeIndexedAdjacencyCursor(token string) (indexedAdjacencyCursor, bool, e
 	return out, true, nil
 }
 
-func (s *QueryService) tryExecuteIndexedAdjacencyQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx daemonsession.GraphTransaction, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
+func (s *QueryService) tryExecuteIndexedAdjacencyQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest, tx sessionmodel.GraphTransaction, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteQueryResponse, error) {
 	query := req.GetQuery()
 	match := query.GetMatch()
 	if len(query.GetOrderBy()) != 0 || len(match.GetSteps()) != 1 {
@@ -3840,9 +3842,9 @@ func (s *QueryService) tryExecuteIndexedAdjacencyQuery(ctx context.Context, req 
 		}
 	}
 	remaining := pageLimit
-	direction := daegraph.AdjacencyDirectionOut
+	direction := graphquery.AdjacencyDirectionOut
 	if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN {
-		direction = daegraph.AdjacencyDirectionIn
+		direction = graphquery.AdjacencyDirectionIn
 	}
 	returns := query.GetReturns()
 	if len(returns) == 0 {
@@ -3851,7 +3853,7 @@ func (s *QueryService) tryExecuteIndexedAdjacencyQuery(ctx context.Context, req 
 	exec := newQueryExecution(nil, nil)
 	out := make([]*clientv1.QueryRow, 0, pageLimit)
 	next := ""
-	combined := daegraph.IndexedReadStats{Plan: "EdgeAdjacencyIndexScan", IndexName: string(direction) + ":" + step.GetEdgeKind(), NextCursorKind: "adjacency_key"}
+	combined := graphquery.IndexedReadStats{Plan: "EdgeAdjacencyIndexScan", IndexName: string(direction) + ":" + step.GetEdgeKind(), NextCursorKind: "adjacency_key"}
 	startIndex := 0
 	initialEdgeCursor := ""
 	if isMultiCursor {
@@ -3881,7 +3883,7 @@ func (s *QueryService) tryExecuteIndexedAdjacencyQuery(ctx context.Context, req 
 			cursor = initialEdgeCursor
 		}
 		for remaining > 0 {
-			edges, edgeNext, stats, err := s.graphs.ScanAdjacency(ctx, tx, daegraph.AdjacencyScan{NodeID: startID, Label: step.GetEdgeKind(), Direction: direction, Limit: remaining, Cursor: cursor})
+			edges, edgeNext, stats, err := s.graphs.ScanAdjacency(ctx, tx, graphquery.AdjacencyScan{NodeID: startID, Label: step.GetEdgeKind(), Direction: direction, Limit: remaining, Cursor: cursor})
 			if err != nil {
 				return true, nil, mapGraphError(err, "execute adjacency query")
 			}
@@ -4053,7 +4055,7 @@ func nextShapedIndexCursor(rawNext string, pageRows int, priorRowsReturned int, 
 	return encodeShapedIndexCursor(shapedIndexCursor{IndexCursor: rawNext, RowsReturned: rowsReturned})
 }
 
-func (s *QueryService) tryExecuteIndexedGQL(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, plan planmodel.Plan, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
+func (s *QueryService) tryExecuteIndexedGQL(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, plan planmodel.Plan, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
 	if len(plan.Operations) != 1 {
 		return false, nil, nil
 	}
@@ -4335,7 +4337,7 @@ func gqlReturnOutputName(ret planmodel.ReturnItem) string {
 	return ret.Variable
 }
 
-func (s *QueryService) tryExecuteIndexedGQLPath(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, op planmodel.QueryPathOperation, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
+func (s *QueryService) tryExecuteIndexedGQLPath(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, op planmodel.QueryPathOperation, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
 	if op.PathVariable != "" && len(op.OrderBy) == 0 {
 		return s.tryExecuteIndexedGQLPathValue(ctx, tx, schemaCtx, op, pageSize, pageToken, recorder)
 	}
@@ -4386,7 +4388,7 @@ func (s *QueryService) tryExecuteIndexedGQLPath(ctx context.Context, tx daemonse
 	return true, &clientv1.ExecuteGQLResponse{Result: res.GetResult(), ReadMetadata: res.GetReadMetadata(), Diagnostics: res.GetDiagnostics()}, nil
 }
 
-func (s *QueryService) tryExecuteIndexedGQLPathValue(ctx context.Context, tx daemonsession.GraphTransaction, schemaCtx analysis.SchemaContext, op planmodel.QueryPathOperation, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
+func (s *QueryService) tryExecuteIndexedGQLPathValue(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, op planmodel.QueryPathOperation, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
 	if len(op.Start.Labels) != 1 || len(op.Segments) == 0 || len(op.OrderBy) != 0 {
 		return false, nil, nil
 	}

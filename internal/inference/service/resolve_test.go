@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
 )
 
@@ -16,7 +17,7 @@ func TestResolveAllowsMatchingProfileGrantAndPolicy(t *testing.T) {
 	ctx := context.Background()
 	module, fixture := newResolverFixture(t, ctx)
 
-	result, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	result, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -56,7 +57,7 @@ func TestResolveAllowsSummarizeCapabilityOnGenerativeModel(t *testing.T) {
 		t.Fatalf("update policy: %v", err)
 	}
 
-	result, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationSummarize, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	result, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationSummarize, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -95,7 +96,7 @@ func TestResolveDeniesWhenGrantMissing(t *testing.T) {
 		t.Fatalf("delete grant: %v", err)
 	}
 
-	result, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	result, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -111,7 +112,7 @@ func TestResolveDenyPolicyWins(t *testing.T) {
 		t.Fatalf("upsert deny policy: %v", err)
 	}
 
-	result, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	result, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -134,7 +135,7 @@ func TestResolveIncludeDescendantsUsesExplicitAncestryAndDeniesFailClosed(t *tes
 		t.Fatalf("update policy: %v", err)
 	}
 
-	allowed, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: childID, NodeAncestorIDs: []string{parentID}, Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	allowed, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: childID, NodeAncestorIDs: []string{parentID}, Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -142,7 +143,7 @@ func TestResolveIncludeDescendantsUsesExplicitAncestryAndDeniesFailClosed(t *tes
 		t.Fatalf("expected descendant with ancestry context to be allowed, got %#v", allowed.Decision)
 	}
 
-	withoutAncestry, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: childID, Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	withoutAncestry, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: childID, Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -157,7 +158,7 @@ func TestResolveIncludeDescendantsUsesExplicitAncestryAndDeniesFailClosed(t *tes
 	if _, err := fixture.spaceMgr.UpsertPolicy(ctx, domaininference.Policy{SpaceID: fixture.spaceID, Scope: domaininference.Scope{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: parentID, IncludeDescendants: true}, Operations: []domaininference.Operation{domaininference.OperationChat}, Action: domaininference.PolicyActionDeny, State: domaininference.PolicyStateActive, Reason: "parent subtree denied"}); err != nil {
 		t.Fatalf("upsert descendant deny: %v", err)
 	}
-	denied, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: childID, Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	denied, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", NodeID: childID, Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -173,7 +174,7 @@ func TestResolveRestrictPolicyEnforcesTokenCeiling(t *testing.T) {
 		t.Fatalf("upsert restrict policy: %v", err)
 	}
 
-	result, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a", Parameters: domaininference.Parameters{MaxOutputTokens: 64}})
+	result, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a", Parameters: domaininference.Parameters{MaxOutputTokens: 64}})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -191,7 +192,7 @@ func TestResolvePrincipalOwnedCredentialRequiresMatchingPrincipal(t *testing.T) 
 		t.Fatalf("update credential owner: %v", err)
 	}
 
-	denied, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	denied, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -199,7 +200,7 @@ func TestResolvePrincipalOwnedCredentialRequiresMatchingPrincipal(t *testing.T) 
 		t.Fatalf("expected principal owner mismatch denial")
 	}
 
-	allowed, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "owner-a"})
+	allowed, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "owner-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -213,7 +214,7 @@ func TestResolveDeniesInactiveActorOrOnBehalfPrincipal(t *testing.T) {
 	module, fixture := newResolverFixture(t, ctx)
 	module.WithPrincipalStatusChecker(fakePrincipalStatus{active: map[string]bool{"actor-a": false, "principal-a": true}})
 
-	denied, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a", OnBehalfOfPrincipalID: "principal-a"})
+	denied, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a", OnBehalfOfPrincipalID: "principal-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -222,7 +223,7 @@ func TestResolveDeniesInactiveActorOrOnBehalfPrincipal(t *testing.T) {
 	}
 
 	module.WithPrincipalStatusChecker(fakePrincipalStatus{active: map[string]bool{"actor-a": true, "principal-a": false}})
-	denied, err = module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a", OnBehalfOfPrincipalID: "principal-a"})
+	denied, err = module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a", OnBehalfOfPrincipalID: "principal-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -240,7 +241,7 @@ func TestResolvePrincipalOwnedCredentialOnBehalfRequiresExplicitGrant(t *testing
 		t.Fatalf("update credential owner: %v", err)
 	}
 
-	denied, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "owner-a"})
+	denied, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "owner-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -252,7 +253,7 @@ func TestResolvePrincipalOwnedCredentialOnBehalfRequiresExplicitGrant(t *testing
 	if _, err := fixture.spaceMgr.UpsertCredentialGrant(ctx, fixture.grant); err != nil {
 		t.Fatalf("update grant: %v", err)
 	}
-	allowed, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "owner-a"})
+	allowed, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "owner-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -264,7 +265,7 @@ func TestResolvePrincipalOwnedCredentialOnBehalfRequiresExplicitGrant(t *testing
 func TestResolveSystemCredentialOnBehalfAllowListIsEnforcedWhenPresent(t *testing.T) {
 	ctx := context.Background()
 	module, fixture := newResolverFixture(t, ctx)
-	deniedWithoutGrant, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a"})
+	deniedWithoutGrant, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -277,7 +278,7 @@ func TestResolveSystemCredentialOnBehalfAllowListIsEnforcedWhenPresent(t *testin
 		t.Fatalf("update grant: %v", err)
 	}
 
-	allowed, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a"})
+	allowed, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -285,7 +286,7 @@ func TestResolveSystemCredentialOnBehalfAllowListIsEnforcedWhenPresent(t *testin
 		t.Fatalf("expected listed on-behalf principal to be allowed, got %#v", allowed.Decision)
 	}
 
-	denied, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-b"})
+	denied, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-b"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -293,7 +294,7 @@ func TestResolveSystemCredentialOnBehalfAllowListIsEnforcedWhenPresent(t *testin
 		t.Fatalf("expected unlisted on-behalf principal to be denied")
 	}
 
-	direct, err := module.Resolve(ctx, ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation"})
+	direct, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "automation"})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}

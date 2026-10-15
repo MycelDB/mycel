@@ -148,7 +148,7 @@ func parseDomainID(value string) (graph.DomainID, error) {
 	}
 	return graph.DomainID(id), nil
 }
-func mapIssues(in []schemaservice.ValidationIssue) []*clientv1.SchemaValidationIssue {
+func mapIssues(in []schemamodel.ValidationIssue) []*clientv1.SchemaValidationIssue {
 	out := make([]*clientv1.SchemaValidationIssue, 0, len(in))
 	for _, issue := range in {
 		out = append(out, &clientv1.SchemaValidationIssue{Severity: string(issue.Severity), Path: issue.Path, Message: issue.Message})
@@ -156,7 +156,7 @@ func mapIssues(in []schemaservice.ValidationIssue) []*clientv1.SchemaValidationI
 	return out
 }
 func mapSchemaError(err error) error {
-	if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+	if errors.Is(err, schemamodel.ErrNotFound) {
 		return status.Error(codes.NotFound, "schema not found")
 	}
 	return status.Error(codes.Internal, err.Error())

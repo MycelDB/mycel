@@ -14,7 +14,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/metadata"
@@ -39,7 +39,7 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 	return s.Module.applyGraphRaftCommand(ctx, apply, cmd, s.PartitionCount)
 }
 
-func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record graphCommitRecord, commandID string) (graphchange.CommittedEvent, []GraphChange, error) {
+func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record graphCommitRecord, commandID string) (graphchange.CommittedEvent, []graphchange.Change, error) {
 	if err := normalizeGraphCommitRecordDomain(&record); err != nil {
 		return graphchange.CommittedEvent{}, nil, err
 	}
@@ -64,7 +64,7 @@ func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record grap
 	if strings.TrimSpace(domainID) == "" {
 		domainID = firstRecordDomainID(record)
 	}
-	tx := daemonsession.GraphTransaction{ID: commandID, SpaceID: record.SpaceID, DomainID: domainID, Origin: record.Origin}
+	tx := sessionmodel.GraphTransaction{ID: commandID, SpaceID: record.SpaceID, DomainID: domainID, Origin: record.Origin}
 	event, err := m.graphChangeEvent(ctx, tx, store, snapshot)
 	if err != nil {
 		return graphchange.CommittedEvent{}, nil, err

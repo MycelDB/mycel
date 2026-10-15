@@ -7,14 +7,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/identity/model"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
+	semanticconnectors "github.com/myceldb/mycel/internal/semantic/connectors"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -40,26 +40,31 @@ type MaintenanceConfig struct {
 	CredentialDefaults         ThrottleConfig
 }
 
-type SchemaManager interface {
+// SchemaReader provides the schema capability required by semantic maintenance.
+type SchemaReader interface {
 	GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schemamodel.DomainSchema, error)
 }
 
-type GraphReadManager interface {
-	GetNode(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string) (graph.Node, error)
-	ListNodes(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
-	ListEdges(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
-	GetParent(ctx context.Context, tx daemonsession.GraphTransaction, childNodeID string) (*graph.Edge, error)
+// GraphReader provides graph reads without coupling semantic to graph services.
+type GraphReader interface {
+	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error)
+	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
+	ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
+	GetParent(ctx context.Context, tx sessionmodel.GraphTransaction, childNodeID string) (*graph.Edge, error)
 }
 
+// GraphRevisionReader pins semantic reads to the current domain revision.
 type GraphRevisionReader interface {
 	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
 }
 
 type Config struct {
-	MaintenanceConfig MaintenanceConfig
-	SchemaManager     SchemaManager
-	GraphReadManager  GraphReadManager
-	InferenceManager  inferenceservice.Manager
+	MaintenanceConfig   MaintenanceConfig
+	SchemaReader        SchemaReader
+	GraphReader         GraphReader
+	GraphRevisionReader GraphRevisionReader
+	InferenceInvoker    semanticconnectors.InferenceInvoker
+	InferenceProjection InferenceProjection
 }
 
 type Manager interface {

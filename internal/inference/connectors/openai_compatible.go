@@ -54,7 +54,7 @@ func (c OpenAICompatible) Embed(ctx context.Context, req EmbeddingRequest) (Embe
 	if len(decoded.Data) == 0 || len(decoded.Data[0].Embedding) == 0 {
 		return EmbeddingResponse{}, ConnectorError{Code: "empty_embedding", Err: fmt.Errorf("embedding provider returned empty vector")}
 	}
-	usage := Usage{InputTokens: decoded.Usage.PromptTokens, TotalTokens: decoded.Usage.TotalTokens, TokenCountSource: "provider_reported"}
+	usage := domaininference.Usage{InputTokens: decoded.Usage.PromptTokens, TotalTokens: decoded.Usage.TotalTokens, TokenCountSource: "provider_reported"}
 	if usage.TotalTokens == 0 && usage.InputTokens > 0 {
 		usage.TotalTokens = usage.InputTokens
 	}
@@ -124,7 +124,7 @@ func (c OpenAICompatible) Chat(ctx context.Context, req ChatRequest) (ChatRespon
 		return ChatResponse{ProviderRequestID: requestID}, ConnectorError{Code: "empty_chat_response", Err: fmt.Errorf("chat provider returned no choices")}
 	}
 	text := decoded.Choices[0].Message.Content
-	usage := Usage{InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens, TotalTokens: decoded.Usage.TotalTokens, TokenCountSource: "provider_reported"}
+	usage := domaininference.Usage{InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens, TotalTokens: decoded.Usage.TotalTokens, TokenCountSource: "provider_reported"}
 	if usage.TotalTokens == 0 && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
 		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	}
@@ -212,7 +212,7 @@ func connectorModalityListContains(values []string, value string) bool {
 	return false
 }
 
-func hasAnyMessageContent(messages []Message) bool {
+func hasAnyMessageContent(messages []domaininference.Message) bool {
 	for _, msg := range messages {
 		if strings.TrimSpace(msg.Content) != "" || len(msg.Parts) > 0 {
 			return true
@@ -221,7 +221,7 @@ func hasAnyMessageContent(messages []Message) bool {
 	return false
 }
 
-func openAICompatibleMessages(messages []Message) []map[string]any {
+func openAICompatibleMessages(messages []domaininference.Message) []map[string]any {
 	out := make([]map[string]any, 0, len(messages))
 	for _, msg := range messages {
 		role := strings.TrimSpace(msg.Role)

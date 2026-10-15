@@ -289,9 +289,10 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
 	graphService := graphservice.NewModule().WithCheckpointPolicy(graphservice.CheckpointPolicyConfig{Enabled: cfg.GraphCheckpoint.AutoEnabled, Interval: cfg.GraphCheckpoint.AutoInterval, RevisionThreshold: uint64(cfg.GraphCheckpoint.AutoRevisions), Timeout: cfg.GraphCheckpoint.AutoTimeout})
+	graphService.SetSchemaValidator(schemaService)
 	graphNotificationService := graphnotification.NewModule()
 	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)
-	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaManager(schemaService).WithInferenceManager(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
+	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaReader(schemaService).WithInferenceInvoker(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
 	blobService := blobservice.NewModule(graphService, blobservice.Config{
 		Backend:             cfg.Blob.Backend,
 		ObjectStoreProvider: cfg.Blob.ObjectStoreProvider,
@@ -302,13 +303,15 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		S3EndpointURL:       cfg.Blob.S3EndpointURL,
 		S3ForcePathStyle:    cfg.Blob.S3ForcePathStyle,
 	})
-	automationService.WithBlobManager(blobService)
+	automationService.WithBlobReader(blobService)
 	inferenceService.SetSecretResolver(inferenceservice.NewEnvelopeSecretResolver(enc))
 	lexicalService := lexicalservice.NewModule()
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
-		SchemaManager:    schemaService,
-		GraphReadManager: graphService,
-		InferenceManager: inferenceService,
+		SchemaReader:        schemaService,
+		GraphReader:         graphService,
+		GraphRevisionReader: graphService,
+		InferenceInvoker:    inferenceService,
+		InferenceProjection: inferenceService,
 		MaintenanceConfig: daemonsemantic.MaintenanceConfig{
 			Enabled:                    cfg.SemanticMaintenance.Enabled,
 			DirtyCooldown:              cfg.SemanticMaintenance.DirtyCooldown,

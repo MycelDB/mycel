@@ -29,7 +29,7 @@ func (s *FileStore) GetDomainSchema(ctx context.Context, domainID graph.DomainID
 	}
 	data, err := os.ReadFile(s.path(domainID))
 	if errors.Is(err, os.ErrNotExist) {
-		return schema.DomainSchema{}, ErrNotFound
+		return schema.DomainSchema{}, schema.ErrNotFound
 	}
 	if err != nil {
 		return schema.DomainSchema{}, err
@@ -111,7 +111,7 @@ func (s *FileStore) DeleteDomainSchema(ctx context.Context, domainID graph.Domai
 		return err
 	}
 	if err := os.Remove(s.path(domainID)); errors.Is(err, os.ErrNotExist) {
-		return ErrNotFound
+		return schema.ErrNotFound
 	} else if err != nil {
 		return err
 	}

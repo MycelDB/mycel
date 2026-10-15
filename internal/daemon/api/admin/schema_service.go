@@ -72,7 +72,7 @@ func (s *AdminSchemaService) ValidateSchema(ctx context.Context, req *adminv1.Va
 }
 
 func mapAdminSchemaError(err error) error {
-	if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+	if errors.Is(err, schemamodel.ErrNotFound) {
 		return status.Error(codes.NotFound, "schema not found")
 	}
 	return status.Error(codes.Internal, err.Error())

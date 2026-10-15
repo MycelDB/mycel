@@ -26,8 +26,8 @@ node Person {
 	if err := mgr.DeleteDomainSchema(ctx, domainID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.GetDomainSchema(ctx, domainID); err != ErrSchemaNotFound {
-		t.Fatalf("GetDomainSchema() error = %v, want ErrSchemaNotFound", err)
+	if _, err := mgr.GetDomainSchema(ctx, domainID); err != schema.ErrNotFound {
+		t.Fatalf("GetDomainSchema() error = %v, want schema.ErrNotFound", err)
 	}
 	res, err := mgr.ValidateNode(ctx, domainID, graph.Node{Properties: map[string]any{"record_type": "person", "missing": true}})
 	if err != nil {
@@ -58,8 +58,8 @@ node Person {
 	if err := mgr.DeleteDomainSchema(ctx, domainID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.GetDomainSchema(ctx, domainID); err != ErrSchemaNotFound {
-		t.Fatalf("GetDomainSchema() error = %v, want ErrSchemaNotFound", err)
+	if _, err := mgr.GetDomainSchema(ctx, domainID); err != schema.ErrNotFound {
+		t.Fatalf("GetDomainSchema() error = %v, want schema.ErrNotFound", err)
 	}
 	lsn, err := progress.AppliedLSN(ctx)
 	if err != nil {
@@ -88,7 +88,7 @@ node Person {
 	if err := mgr.applySchemaDelete(ctx, wal.Record{Payload: payload}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.GetDomainSchema(ctx, domainID); err != ErrSchemaNotFound {
-		t.Fatalf("GetDomainSchema() error = %v, want ErrSchemaNotFound", err)
+	if _, err := mgr.GetDomainSchema(ctx, domainID); err != schema.ErrNotFound {
+		t.Fatalf("GetDomainSchema() error = %v, want schema.ErrNotFound", err)
 	}
 }
