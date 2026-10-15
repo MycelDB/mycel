@@ -307,8 +307,9 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	inferenceService.SetSecretResolver(inferenceservice.NewEnvelopeSecretResolver(enc))
 	lexicalService := lexicalservice.NewModule()
 	semanticService := daemonsemantic.NewModule(daemonsemantic.Config{
-		SchemaManager:       schemaService,
-		GraphReadManager:    graphService,
+		SchemaReader:        schemaService,
+		GraphReader:         graphService,
+		GraphRevisionReader: graphService,
 		InferenceInvoker:    inferenceService,
 		InferenceProjection: inferenceService,
 		MaintenanceConfig: daemonsemantic.MaintenanceConfig{

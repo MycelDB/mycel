@@ -119,7 +119,7 @@ func TestSchemaDirtyCooldownForTargetUsesSemanticIndexingPolicy(t *testing.T) {
 	domainID := graph.DomainID(uuid.New())
 	nodeID := graph.NodeID(uuid.New())
 	cooldown := 5 * time.Minute
-	m := NewModule(Config{SchemaManager: fakeSchemaManager{schema: schemamodel.DomainSchema{
+	m := NewModule(Config{SchemaReader: fakeSchemaReader{schema: schemamodel.DomainSchema{
 		DomainID: domainID,
 		NodeTypes: []schemamodel.NodeType{{
 			Name:   "Doc",
@@ -392,8 +392,9 @@ func TestSemanticGraphReaderPinsReadOnlyTransactionToCurrentRevision(t *testing.
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
-	mgr := &recordingRevisionGraphManager{revision: 42}
-	reader := semanticGraphReader{manager: mgr, spaceID: spaceID}
+	graphs := &recordingGraphReader{}
+	revisions := fixedGraphRevisionReader{revision: 42}
+	reader := semanticGraphReader{reader: graphs, revisions: revisions, spaceID: spaceID}
 
 	if _, err := reader.GetNode(ctx, domainID, graph.NodeID(uuid.New())); err != nil {
 		t.Fatalf("GetNode() error = %v", err)
@@ -401,10 +402,10 @@ func TestSemanticGraphReaderPinsReadOnlyTransactionToCurrentRevision(t *testing.
 	if _, err := reader.ListNodes(ctx, domainID); err != nil {
 		t.Fatalf("ListNodes() error = %v", err)
 	}
-	if len(mgr.txs) != 2 {
-		t.Fatalf("recorded tx count = %d, want 2", len(mgr.txs))
+	if len(graphs.txs) != 2 {
+		t.Fatalf("recorded tx count = %d, want 2", len(graphs.txs))
 	}
-	for _, tx := range mgr.txs {
+	for _, tx := range graphs.txs {
 		if tx.Mode != sessionmodel.TransactionModeReadOnly {
 			t.Fatalf("tx mode = %s, want read-only", tx.Mode)
 		}
@@ -436,31 +437,34 @@ func waitForStats(t *testing.T, m *Module, ok func(MaintenanceStats) bool) {
 	t.Fatalf("condition not met; stats=%+v", m.MaintenanceStats())
 }
 
-type recordingRevisionGraphManager struct {
+type fixedGraphRevisionReader struct {
 	revision int64
-	txs      []sessionmodel.GraphTransaction
 }
 
-func (m *recordingRevisionGraphManager) CurrentDomainRevision(context.Context, string, string) (int64, error) {
-	return m.revision, nil
+func (r fixedGraphRevisionReader) CurrentDomainRevision(context.Context, string, string) (int64, error) {
+	return r.revision, nil
 }
 
-func (m *recordingRevisionGraphManager) GetNode(_ context.Context, tx sessionmodel.GraphTransaction, _ string) (graph.Node, error) {
+type recordingGraphReader struct {
+	txs []sessionmodel.GraphTransaction
+}
+
+func (m *recordingGraphReader) GetNode(_ context.Context, tx sessionmodel.GraphTransaction, _ string) (graph.Node, error) {
 	m.txs = append(m.txs, tx)
 	return graph.Node{}, nil
 }
 
-func (m *recordingRevisionGraphManager) ListNodes(_ context.Context, tx sessionmodel.GraphTransaction, _ int, _ string) ([]graph.Node, string, error) {
+func (m *recordingGraphReader) ListNodes(_ context.Context, tx sessionmodel.GraphTransaction, _ int, _ string) ([]graph.Node, string, error) {
 	m.txs = append(m.txs, tx)
 	return nil, "", nil
 }
 
-func (m *recordingRevisionGraphManager) ListEdges(_ context.Context, tx sessionmodel.GraphTransaction, _ int, _ string) ([]graph.Edge, string, error) {
+func (m *recordingGraphReader) ListEdges(_ context.Context, tx sessionmodel.GraphTransaction, _ int, _ string) ([]graph.Edge, string, error) {
 	m.txs = append(m.txs, tx)
 	return nil, "", nil
 }
 
-func (m *recordingRevisionGraphManager) GetParent(_ context.Context, tx sessionmodel.GraphTransaction, _ string) (*graph.Edge, error) {
+func (m *recordingGraphReader) GetParent(_ context.Context, tx sessionmodel.GraphTransaction, _ string) (*graph.Edge, error) {
 	m.txs = append(m.txs, tx)
 	return nil, nil
 }
@@ -507,12 +511,12 @@ func TestSyncSemanticDirtyCountsRefreshesRuleAndIndexState(t *testing.T) {
 	}
 }
 
-type fakeSchemaManager struct {
+type fakeSchemaReader struct {
 	schema schemamodel.DomainSchema
 	err    error
 }
 
-func (m fakeSchemaManager) GetDomainSchema(context.Context, graph.DomainID) (schemamodel.DomainSchema, error) {
+func (m fakeSchemaReader) GetDomainSchema(context.Context, graph.DomainID) (schemamodel.DomainSchema, error) {
 	if m.err != nil {
 		return schemamodel.DomainSchema{}, m.err
 	}

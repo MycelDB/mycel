@@ -18,10 +18,7 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-const (
-	ModuleName          = "semantic"
-	inferenceModuleName = "inference"
-)
+const ModuleName = "semantic"
 
 type ThrottleConfig struct {
 	MaxConcurrentCalls   int
@@ -43,25 +40,29 @@ type MaintenanceConfig struct {
 	CredentialDefaults         ThrottleConfig
 }
 
-type SchemaManager interface {
+// SchemaReader provides the schema capability required by semantic maintenance.
+type SchemaReader interface {
 	GetDomainSchema(ctx context.Context, domainID graph.DomainID) (schemamodel.DomainSchema, error)
 }
 
-type GraphReadManager interface {
+// GraphReader provides graph reads without coupling semantic to graph services.
+type GraphReader interface {
 	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error)
 	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
 	ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
 	GetParent(ctx context.Context, tx sessionmodel.GraphTransaction, childNodeID string) (*graph.Edge, error)
 }
 
+// GraphRevisionReader pins semantic reads to the current domain revision.
 type GraphRevisionReader interface {
 	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
 }
 
 type Config struct {
 	MaintenanceConfig   MaintenanceConfig
-	SchemaManager       SchemaManager
-	GraphReadManager    GraphReadManager
+	SchemaReader        SchemaReader
+	GraphReader         GraphReader
+	GraphRevisionReader GraphRevisionReader
 	InferenceInvoker    semanticconnectors.InferenceInvoker
 	InferenceProjection InferenceProjection
 }
