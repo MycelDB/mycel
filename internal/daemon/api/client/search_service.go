@@ -169,7 +169,10 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	nodesByID, loadWarnings := s.loadHybridNodes(ctx, principal.PrincipalID, spaceID, domainID, fused)
+	nodesByID, loadWarnings, err := s.loadHybridNodes(ctx, principal.PrincipalID, spaceID, domainID, fused)
+	if err != nil {
+		return nil, mapGraphError(err, "hydrate hybrid search candidates")
+	}
 	warnings = append(warnings, loadWarnings...)
 	eligible := make([]hybridsearch.Result, 0, len(fused))
 	for _, item := range fused {
@@ -291,15 +294,18 @@ func (s *SearchService) semanticSearchEnabled(ctx context.Context, principal pri
 	return graph.DomainExplicitSemanticSearchable(domain), nil
 }
 
-func (s *SearchService) loadHybridNodes(ctx context.Context, principalID string, spaceID domainspace.SpaceID, domainID graph.DomainID, results []hybridsearch.Result) (map[string]graph.Node, []string) {
+func (s *SearchService) loadHybridNodes(ctx context.Context, principalID string, spaceID domainspace.SpaceID, domainID graph.DomainID, results []hybridsearch.Result) (map[string]graph.Node, []string, error) {
 	out := map[string]graph.Node{}
-	if s.graphs == nil || len(results) == 0 {
-		return out, nil
+	if len(results) == 0 {
+		return out, nil, nil
+	}
+	if s.graphs == nil {
+		return nil, nil, fmt.Errorf("graph service is not configured")
 	}
 	warnings := []string{}
 	tx, err := readOnlySearchGraphTransaction(ctx, s.graphs, "hybrid-search-", principalID, spaceID, domainID)
 	if err != nil {
-		return out, []string{fmt.Sprintf("graph revision snapshot unavailable: %v", err)}
+		return nil, nil, fmt.Errorf("open graph read snapshot: %w", err)
 	}
 	attempted := 0
 	seen := map[string]struct{}{}
@@ -315,12 +321,15 @@ func (s *SearchService) loadHybridNodes(ctx context.Context, principalID string,
 		attempted++
 		node, err := s.graphs.GetNode(ctx, tx, result.NodeID)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("node %s skipped: %v", result.NodeID, err))
-			continue
+			if errors.Is(err, daegraph.ErrNotFound) || status.Code(err) == codes.NotFound {
+				warnings = append(warnings, fmt.Sprintf("node %s skipped because it is no longer present", result.NodeID))
+				continue
+			}
+			return nil, warnings, fmt.Errorf("read candidate node %s: %w", result.NodeID, err)
 		}
 		out[result.NodeID] = node
 	}
-	return out, warnings
+	return out, warnings, nil
 }
 
 func hybridOptionsFromProto(in *clientv1.HybridSearchOptions, rankConstant float64) (hybridsearch.Options, error) {

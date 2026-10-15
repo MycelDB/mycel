@@ -77,7 +77,10 @@ func (s *SearchService) filteredLexicalPage(ctx context.Context, principal princ
 		for _, item := range batch.Results {
 			hydrationInput = append(hydrationInput, hybridsearch.Result{NodeID: item.NodeID})
 		}
-		nodes, loadWarnings := s.loadHybridNodes(ctx, principal.PrincipalID, spaceID, domainID, hydrationInput)
+		nodes, loadWarnings, err := s.loadHybridNodes(ctx, principal.PrincipalID, spaceID, domainID, hydrationInput)
+		if err != nil {
+			return lexicalindex.SearchResponse{}, scanOffset, warnings, mapGraphError(err, "hydrate filtered lexical candidates")
+		}
 		warnings = append(warnings, loadWarnings...)
 		for i, item := range batch.Results {
 			scanOffset++
@@ -118,8 +121,8 @@ func (s *SearchService) verifySearchSnapshot(ctx context.Context, spaceID domain
 	if err != nil {
 		return lexicalservice.Status{}, mapGraphError(err, "read graph revision after search")
 	}
-	if current.IndexedGraphRevision != captured.IndexedGraphRevision || current.LatestKnownGraphRevision != captured.LatestKnownGraphRevision {
-		return lexicalservice.Status{}, status.Error(codes.Aborted, "graph or search index revision changed during search; retry")
+	if current.IndexedGraphRevision != captured.IndexedGraphRevision || current.LatestKnownGraphRevision != captured.LatestKnownGraphRevision || current.AnalyzerVersion != captured.AnalyzerVersion || current.IndexFormatVersion != captured.IndexFormatVersion {
+		return lexicalservice.Status{}, status.Error(codes.Aborted, "graph revision, search index, analyzer, or index format changed during search; retry")
 	}
 	return current, nil
 }

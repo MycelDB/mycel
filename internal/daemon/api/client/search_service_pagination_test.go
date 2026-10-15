@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -119,6 +120,11 @@ func TestHybridSearchPaginationIsStableAndBoundToRequestAndRevision(t *testing.T
 		t.Fatalf("candidate-changed cursor error = %v, want InvalidArgument", err)
 	}
 	fixture.lexical.results[0], fixture.lexical.results[1] = fixture.lexical.results[1], fixture.lexical.results[0]
+	fixture.lexical.analyzerVersion = "analyzer-v2"
+	if _, err := fixture.service.Search(fixture.ctx, &mismatch); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("analyzer-invalidated cursor error = %v, want InvalidArgument", err)
+	}
+	fixture.lexical.analyzerVersion = "analyzer-v1"
 	mismatch = *request
 	mismatch.PageToken = firstToken
 	mismatch.Query = "different"
@@ -175,6 +181,30 @@ func TestFilteredLexicalPaginationResumesAfterExaminedCandidate(t *testing.T) {
 	}
 }
 
+func TestFilteredSearchFailsClosedOnHydrationErrors(t *testing.T) {
+	fixture := newSearchPaginationFixture(10)
+	fixture.graphs.revisionErrorAt = 2
+	fixture.graphs.revisionErr = errors.New("snapshot unavailable")
+	_, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
+		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL,
+		Query: "raft", PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Note"}},
+	})
+	if err == nil {
+		t.Fatal("filtered lexical search returned nil error for snapshot failure")
+	}
+
+	fixture = newSearchPaginationFixture(10)
+	fixture.graphs.getNodeErr = errors.New("node read unavailable")
+	_, err = fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
+		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_HYBRID,
+		Query: "raft", PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Note"}},
+		Hybrid: &clientv1.HybridSearchOptions{LexicalWeight: 1, SemanticWeight: 0},
+	})
+	if err == nil {
+		t.Fatal("hybrid search returned nil error for candidate node read failure")
+	}
+}
+
 func TestFilteredLexicalSearchBoundsHydrationAndReturnsContinuation(t *testing.T) {
 	fixture := newSearchPaginationFixture(1500)
 	response, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
@@ -216,7 +246,7 @@ type searchPaginationFixture struct {
 func newSearchPaginationFixture(count int) searchPaginationFixture {
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
-	lexical := &paginationLexicalManager{revision: 10}
+	lexical := &paginationLexicalManager{revision: 10, analyzerVersion: "analyzer-v1", indexFormatVersion: "index-v1"}
 	graphs := &paginationGraphManager{revision: 10, nodes: map[string]graph.Node{}}
 	for i := 0; i < count; i++ {
 		nodeID := graph.NodeID(uuid.New())
@@ -231,8 +261,10 @@ func newSearchPaginationFixture(count int) searchPaginationFixture {
 
 type paginationLexicalManager struct {
 	lexicalservice.Manager
-	revision uint64
-	results  []lexicalindex.Result
+	revision           uint64
+	analyzerVersion    string
+	indexFormatVersion string
+	results            []lexicalindex.Result
 }
 
 func (m *paginationLexicalManager) Status(_ context.Context, spaceID, domainID string, latest uint64) lexicalservice.Status {
@@ -242,7 +274,7 @@ func (m *paginationLexicalManager) Status(_ context.Context, spaceID, domainID s
 		state = lexicalservice.StateStale
 		lag = latest - m.revision
 	}
-	return lexicalservice.Status{SpaceID: spaceID, DomainID: domainID, State: state, IndexedGraphRevision: m.revision, LatestKnownGraphRevision: latest, RevisionLag: lag}
+	return lexicalservice.Status{SpaceID: spaceID, DomainID: domainID, State: state, IndexedGraphRevision: m.revision, LatestKnownGraphRevision: latest, RevisionLag: lag, AnalyzerVersion: m.analyzerVersion, IndexFormatVersion: m.indexFormatVersion}
 }
 
 func (m *paginationLexicalManager) Search(_ context.Context, _, _, _ string, opts lexicalindex.SearchOptions) (lexicalindex.SearchResponse, error) {
@@ -257,17 +289,28 @@ func (m *paginationLexicalManager) Search(_ context.Context, _, _, _ string, opt
 
 type paginationGraphManager struct {
 	daegraph.Manager
-	revision     int64
-	nodes        map[string]graph.Node
-	getNodeCalls int
+	revision        int64
+	revisionCalls   int
+	revisionErrorAt int
+	revisionErr     error
+	nodes           map[string]graph.Node
+	getNodeCalls    int
+	getNodeErr      error
 }
 
 func (m *paginationGraphManager) CurrentDomainRevision(context.Context, string, string) (int64, error) {
+	m.revisionCalls++
+	if m.revisionErrorAt > 0 && m.revisionCalls == m.revisionErrorAt {
+		return 0, m.revisionErr
+	}
 	return m.revision, nil
 }
 
 func (m *paginationGraphManager) GetNode(_ context.Context, _ sessionmodel.GraphTransaction, nodeID string) (graph.Node, error) {
 	m.getNodeCalls++
+	if m.getNodeErr != nil {
+		return graph.Node{}, m.getNodeErr
+	}
 	node, ok := m.nodes[nodeID]
 	if !ok {
 		return graph.Node{}, daegraph.ErrNotFound
