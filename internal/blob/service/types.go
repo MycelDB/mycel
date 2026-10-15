@@ -12,7 +12,7 @@ const ModuleName = "blob"
 
 var (
 	ErrInvalidInput = errors.New("invalid blob input")
-	ErrNotFound     = errors.New("blob not found")
+	ErrNotFound     = blobmodel.ErrNotFound
 	ErrReferenced   = errors.New("blob is referenced")
 )
 

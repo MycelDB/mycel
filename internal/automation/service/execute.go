@@ -13,8 +13,8 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	autooutput "github.com/myceldb/mycel/internal/automation/output"
 	"github.com/myceldb/mycel/internal/automation/render"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
@@ -236,7 +236,7 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 		run.MutationID = commit.ID
 		return true, nil
 	}
-	return false, graphservice.ErrConflict
+	return false, graphchange.ErrConflict
 }
 
 func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Context, executionPrincipal string, sess sessionmodel.GraphSession, def automation.Definition, inv automation.Invocation, run *automation.Run) (sessionmodel.GraphTransaction, graph.Node, map[string]any, error) {
@@ -296,7 +296,7 @@ func (m *AutomationManager) rollbackAutomationOutputTransaction(ctx context.Cont
 }
 
 func isGraphConflict(err error) bool {
-	return errors.Is(err, graphservice.ErrConflict) || strings.Contains(strings.ToLower(err.Error()), "graph conflict")
+	return errors.Is(err, graphchange.ErrConflict) || strings.Contains(strings.ToLower(err.Error()), "graph conflict")
 }
 
 func newRunID() string { return uuid.NewString() }

@@ -12,10 +12,7 @@ import (
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
-const (
-	ModuleName          = "automation"
-	inferenceModuleName = "inference"
-)
+const ModuleName = "automation"
 
 type WorkerConfig struct {
 	Enabled         bool
@@ -91,13 +88,6 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 	dataDir := m.dataDir
 	if dataDir == "" && host != nil {
 		dataDir = filepath.Join(host.DataDir(), "automations")
-	}
-	if lookup, ok := host.(coreruntime.ServiceLookup); ok && m.inference == nil {
-		if svc, ok := lookup.Service(inferenceModuleName); ok {
-			if invoker, ok := svc.(InferenceInvoker); ok {
-				m.inference = invoker
-			}
-		}
 	}
 	if m.gate == nil {
 		m.gate = quiesce.NewGate(ModuleName)

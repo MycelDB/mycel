@@ -14,7 +14,6 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
 	blobmodel "github.com/myceldb/mycel/internal/blob/model"
-	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
@@ -150,7 +149,7 @@ func (f fakeAutomationBlobReader) OpenBlobInDomain(ctx context.Context, spaceID 
 	}
 	blob, ok := f.blobs[blobID]
 	if !ok {
-		return blobmodel.BlobMeta{}, nil, blobservice.ErrNotFound
+		return blobmodel.BlobMeta{}, nil, blobmodel.ErrNotFound
 	}
 	meta := blob.meta
 	if meta.BlobID == "" {

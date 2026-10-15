@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	automation "github.com/myceldb/mycel/internal/automation/model"
-	blobservice "github.com/myceldb/mycel/internal/blob/service"
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
@@ -113,7 +113,7 @@ func imageCandidateNodes(targetAlias string, changed graph.Node, aliases map[str
 func (m *AutomationManager) loadImageBlobInput(ctx context.Context, spaceID string, domainID string, blobID string, node graph.Node) (domaininference.ImageInput, error) {
 	meta, reader, err := m.blobs.OpenBlobInDomain(ctx, spaceID, domainID, blobID)
 	if err != nil {
-		if errors.Is(err, blobservice.ErrNotFound) {
+		if errors.Is(err, blobmodel.ErrNotFound) {
 			return domaininference.ImageInput{}, fmt.Errorf("image_analysis blob %q was not found", blobID)
 		}
 		return domaininference.ImageInput{}, fmt.Errorf("open image_analysis blob %q: %w", blobID, err)
