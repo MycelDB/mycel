@@ -95,7 +95,7 @@ func (s *SearchService) Search(ctx context.Context, req *clientv1.SearchRequest)
 	if pageSize > lexicalMaxPageSize {
 		return nil, status.Errorf(codes.ResourceExhausted, "page_size must be <= %d", lexicalMaxPageSize)
 	}
-	latest := s.latestGraphRevision(ctx, spaceID)
+	latest := s.latestGraphRevision(ctx, spaceID, domainID)
 	freshness := s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest)
 	if err := validateFreshnessPolicy(freshness, req.GetAllowStale(), req.GetMaxRevisionLag()); err != nil {
 		return nil, err
@@ -369,7 +369,7 @@ func (s *SearchService) GetLexicalIndexStatus(ctx context.Context, req *clientv1
 	if s.lexical == nil {
 		return nil, status.Error(codes.FailedPrecondition, "lexical search service is not configured")
 	}
-	latest := s.latestGraphRevision(ctx, spaceID)
+	latest := s.latestGraphRevision(ctx, spaceID, domainID)
 	return &clientv1.GetLexicalIndexStatusResponse{Status: mapLexicalIndexStatus(s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest))}, nil
 }
 
@@ -434,11 +434,23 @@ type forwardedStatusResponse struct {
 
 func (e forwardedStatusResponse) Error() string { return "forwarded lexical status" }
 
-func (s *SearchService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID) uint64 {
+type lexicalGraphDomainRevisionReader interface {
+	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
+}
+
+func (s *SearchService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) uint64 {
 	if s.graphs == nil {
 		return 0
 	}
-	rev, err := s.graphs.CurrentRevision(ctx, spaceID.String())
+	var (
+		rev int64
+		err error
+	)
+	if revisions, ok := s.graphs.(lexicalGraphDomainRevisionReader); ok {
+		rev, err = revisions.CurrentDomainRevision(ctx, spaceID.String(), domainID.String())
+	} else {
+		rev, err = s.graphs.CurrentRevision(ctx, spaceID.String())
+	}
 	if err != nil || rev < 0 {
 		return 0
 	}

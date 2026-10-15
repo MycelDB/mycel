@@ -124,7 +124,7 @@ func (s *Service) Search(input string, opts index.SearchOptions) (index.SearchRe
 func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	status := Status{SpaceID: s.spaceID, DomainID: s.domainID, AnalyzerVersion: s.analyzer.Version(), IndexFormatVersion: storage.IndexFormatVersion}
+	status := Status{SpaceID: s.spaceID, DomainID: s.domainID, LatestKnownGraphRevision: latestKnownGraphRevision, RevisionLag: latestKnownGraphRevision, AnalyzerVersion: s.analyzer.Version(), IndexFormatVersion: storage.IndexFormatVersion}
 	manifest, err := s.store.ReadManifest()
 	if err != nil {
 		status.State = StateUnavailable
@@ -145,7 +145,7 @@ func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 		return status
 	}
 	status.IndexedGraphRevision = cursor.IndexedGraphRevision
-	status.LatestKnownGraphRevision = latestKnownGraphRevision
+	status.RevisionLag = 0
 	if latestKnownGraphRevision > cursor.IndexedGraphRevision {
 		status.RevisionLag = latestKnownGraphRevision - cursor.IndexedGraphRevision
 		status.State = StateStale

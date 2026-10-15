@@ -39,7 +39,7 @@ func (s *AdminLexicalMaintenanceService) GetLexicalMaintenanceStatus(ctx context
 	if err != nil {
 		return nil, err
 	}
-	latest := s.latestGraphRevision(ctx, spaceID)
+	latest := s.latestGraphRevision(ctx, spaceID, domainID)
 	st := s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest)
 	return &adminv1.GetLexicalMaintenanceStatusResponse{Status: mapAdminLexicalStatus(st), Owner: true, CursorSource: "local", Warnings: maintenanceWarnings(st)}, nil
 }
@@ -104,7 +104,8 @@ func (s *AdminLexicalMaintenanceService) collectDocuments(ctx context.Context, s
 		return nil, 0, status.Error(codes.FailedPrecondition, "graph service is not configured")
 	}
 	principal, _ := principalFromContext(ctx)
-	tx := sessionmodel.GraphTransaction{ID: "lexical-rebuild-" + uuid.NewString(), PrincipalID: principal.PrincipalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
+	latest := s.latestGraphRevision(ctx, spaceID, domainID)
+	tx := sessionmodel.GraphTransaction{ID: "lexical-rebuild-" + uuid.NewString(), PrincipalID: principal.PrincipalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, BaseRevision: int64(latest), CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
 	var out []lexicalindex.IndexedDocument
 	pageToken := ""
 	for {
@@ -113,21 +114,33 @@ func (s *AdminLexicalMaintenanceService) collectDocuments(ctx context.Context, s
 			return nil, 0, mapAdminLexicalError(err, "list graph nodes for lexical rebuild")
 		}
 		for _, node := range nodes {
-			out = append(out, lexicalindex.IndexedDocument{Document: analyzer.ExtractNodeDocument(node), GraphRevision: uint64(s.latestGraphRevision(ctx, spaceID))})
+			out = append(out, lexicalindex.IndexedDocument{Document: analyzer.ExtractNodeDocument(node), GraphRevision: latest})
 		}
 		if next == "" {
 			break
 		}
 		pageToken = next
 	}
-	return out, uint64(s.latestGraphRevision(ctx, spaceID)), nil
+	return out, latest, nil
 }
 
-func (s *AdminLexicalMaintenanceService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID) uint64 {
+type lexicalGraphDomainRevisionReader interface {
+	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
+}
+
+func (s *AdminLexicalMaintenanceService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) uint64 {
 	if s.graphs == nil {
 		return 0
 	}
-	rev, err := s.graphs.CurrentRevision(ctx, spaceID.String())
+	var (
+		rev int64
+		err error
+	)
+	if revisions, ok := s.graphs.(lexicalGraphDomainRevisionReader); ok {
+		rev, err = revisions.CurrentDomainRevision(ctx, spaceID.String(), domainID.String())
+	} else {
+		rev, err = s.graphs.CurrentRevision(ctx, spaceID.String())
+	}
 	if err != nil || rev < 0 {
 		return 0
 	}

@@ -76,6 +76,9 @@ func TestServiceUnavailableForMissingOrCorruptIndex(t *testing.T) {
 	if _, err := svc.Search("raft", index.SearchOptions{}); !errors.Is(err, ErrIndexUnavailable) {
 		t.Fatalf("missing search err = %v, want ErrIndexUnavailable", err)
 	}
+	if status := svc.Status(3); status.State != StateUnavailable || status.LatestKnownGraphRevision != 3 || status.RevisionLag != 3 {
+		t.Fatalf("missing index status = %#v", status)
+	}
 	if err := svc.UpsertDocument(testDoc("node-a", "raft"), 1); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
