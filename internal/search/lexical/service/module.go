@@ -107,6 +107,18 @@ func (m *Module) Rebuild(ctx context.Context, spaceID string, domainID string, d
 	return m.serviceFor(spaceID, domainID).Rebuild(docs, latestRevision)
 }
 
+// RebuildFromSnapshot serializes snapshot capture and publication with graph
+// change application for the same lexical scope. Events that arrive while the
+// snapshot is being collected apply after the snapshot is published.
+func (m *Module) RebuildFromSnapshot(ctx context.Context, spaceID string, domainID string, snapshot RebuildSnapshot) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return m.serviceFor(spaceID, domainID).RebuildFromSnapshot(snapshot)
+}
+
 func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.CommittedEvent) error {
 	release, err := m.enterMutation(ctx)
 	if err != nil {
@@ -118,6 +130,14 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 		return nil
 	}
 	byDomain := map[string][]index.IndexedDocument{}
+	for _, domainID := range event.DomainIDs {
+		if domainID != uuid.Nil {
+			byDomain[domainID.String()] = nil
+		}
+	}
+	if event.DomainID != uuid.Nil {
+		byDomain[event.DomainID.String()] = nil
+	}
 	for _, change := range event.Changes {
 		change.Type = graphchange.NormalizeChangeType(string(change.Type))
 		switch change.Type {
@@ -140,9 +160,6 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 		}
 	}
 	for domainID, docs := range byDomain {
-		if len(docs) == 0 {
-			continue
-		}
 		if err := m.serviceFor(event.SpaceID.String(), domainID).ApplyDocuments(docs, event.GraphRevision); err != nil {
 			m.recordError(err)
 			return err

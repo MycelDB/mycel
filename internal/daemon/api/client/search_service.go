@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	lexicalstatus "github.com/myceldb/mycel/internal/daemon/api/lexicalstatus"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
@@ -95,8 +96,10 @@ func (s *SearchService) Search(ctx context.Context, req *clientv1.SearchRequest)
 	if pageSize > lexicalMaxPageSize {
 		return nil, status.Errorf(codes.ResourceExhausted, "page_size must be <= %d", lexicalMaxPageSize)
 	}
-	latest := s.latestGraphRevision(ctx, spaceID)
-	freshness := s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest)
+	freshness, err := s.lexicalStatus(ctx, spaceID, domainID)
+	if err != nil {
+		return nil, mapGraphError(err, "read graph revision for lexical search")
+	}
 	if err := validateFreshnessPolicy(freshness, req.GetAllowStale(), req.GetMaxRevisionLag()); err != nil {
 		return nil, err
 	}
@@ -107,7 +110,10 @@ func (s *SearchService) Search(ctx context.Context, req *clientv1.SearchRequest)
 	if err != nil {
 		return nil, mapLexicalError(err, "lexical search")
 	}
-	freshness = s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest)
+	freshness, err = s.lexicalStatus(ctx, spaceID, domainID)
+	if err != nil {
+		return nil, mapGraphError(err, "read graph revision after lexical search")
+	}
 	return mapSearchResponse(result, freshness, req.GetIncludeDiagnostics()), nil
 }
 
@@ -369,8 +375,11 @@ func (s *SearchService) GetLexicalIndexStatus(ctx context.Context, req *clientv1
 	if s.lexical == nil {
 		return nil, status.Error(codes.FailedPrecondition, "lexical search service is not configured")
 	}
-	latest := s.latestGraphRevision(ctx, spaceID)
-	return &clientv1.GetLexicalIndexStatusResponse{Status: mapLexicalIndexStatus(s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest))}, nil
+	freshness, err := s.lexicalStatus(ctx, spaceID, domainID)
+	if err != nil {
+		return nil, mapGraphError(err, "read graph revision for lexical status")
+	}
+	return &clientv1.GetLexicalIndexStatusResponse{Status: mapLexicalIndexStatus(freshness)}, nil
 }
 
 func (s *SearchService) authorizeLexicalSearch(ctx context.Context, spaceIDText, domainIDText string) (principalUser, domainspace.SpaceID, graph.DomainID, error) {
@@ -434,15 +443,8 @@ type forwardedStatusResponse struct {
 
 func (e forwardedStatusResponse) Error() string { return "forwarded lexical status" }
 
-func (s *SearchService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID) uint64 {
-	if s.graphs == nil {
-		return 0
-	}
-	rev, err := s.graphs.CurrentRevision(ctx, spaceID.String())
-	if err != nil || rev < 0 {
-		return 0
-	}
-	return uint64(rev)
+func (s *SearchService) lexicalStatus(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (lexicalservice.Status, error) {
+	return lexicalstatus.Read(ctx, s.lexical, s.graphs, spaceID.String(), domainID.String())
 }
 
 func validateFreshnessPolicy(freshness lexicalservice.Status, allowStale bool, maxLag int64) error {

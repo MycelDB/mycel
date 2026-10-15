@@ -471,9 +471,17 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		}
 		return err
 	})
-	if err := startAsyncLexicalConsumer(ctx, logger, graphNotificationService, lexicalService); err != nil {
+	asyncLexicalService, err := startAsyncLexicalConsumer(ctx, logger, graphNotificationService, lexicalService, graphService)
+	if err != nil {
 		_ = rt.Close()
 		return nil, err
+	}
+	if asyncLexicalService != nil {
+		if err := rt.InitServices(ctx, []daemonruntime.Service{asyncLexicalService}); err != nil {
+			_ = asyncLexicalService.Close()
+			_ = rt.Close()
+			return nil, err
+		}
 	}
 	sinkPolicy := graphCommitSinkPolicyForConfig(cfg)
 	if sinkPolicy.Clustered {

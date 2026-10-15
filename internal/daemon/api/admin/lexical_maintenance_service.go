@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	lexicalstatus "github.com/myceldb/mycel/internal/daemon/api/lexicalstatus"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
@@ -30,6 +31,10 @@ type AdminLexicalMaintenanceService struct {
 	authorizer OperatorAuthorizer
 }
 
+type lexicalSnapshotRebuilder interface {
+	RebuildFromSnapshot(ctx context.Context, spaceID string, domainID string, snapshot lexicalservice.RebuildSnapshot) error
+}
+
 func NewAdminLexicalMaintenanceService(lexical lexicalservice.Manager, graphs daegraph.Manager, spaces daemonspace.Manager, authorizer OperatorAuthorizer) *AdminLexicalMaintenanceService {
 	return &AdminLexicalMaintenanceService{lexical: lexical, graphs: graphs, spaces: spaces, authorizer: authorizer}
 }
@@ -39,8 +44,10 @@ func (s *AdminLexicalMaintenanceService) GetLexicalMaintenanceStatus(ctx context
 	if err != nil {
 		return nil, err
 	}
-	latest := s.latestGraphRevision(ctx, spaceID)
-	st := s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest)
+	st, err := s.lexicalStatus(ctx, spaceID, domainID)
+	if err != nil {
+		return nil, mapAdminLexicalError(err, "read graph revision for lexical status")
+	}
 	return &adminv1.GetLexicalMaintenanceStatusResponse{Status: mapAdminLexicalStatus(st), Owner: true, CursorSource: "local", Warnings: maintenanceWarnings(st)}, nil
 }
 
@@ -52,12 +59,18 @@ func (s *AdminLexicalMaintenanceService) RebuildLexicalIndex(ctx context.Context
 	if req.GetDryRun() {
 		return &adminv1.RebuildLexicalIndexResponse{SpaceId: spaceID.String(), DomainId: domainID.String(), State: adminv1.LexicalRebuildState_LEXICAL_REBUILD_STATE_QUEUED, Accepted: true, DryRun: true, Warnings: []string{"dry run; rebuild not started"}}, nil
 	}
-	docs, latest, err := s.collectDocuments(ctx, spaceID, domainID)
-	if err != nil {
-		return nil, err
+	rebuilder, ok := s.lexical.(lexicalSnapshotRebuilder)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "serialized lexical rebuild is not configured")
 	}
-	lexicalservice.SortDocumentsByNodeID(docs)
-	if err := s.lexical.Rebuild(ctx, spaceID.String(), domainID.String(), docs, latest); err != nil {
+	if err := rebuilder.RebuildFromSnapshot(ctx, spaceID.String(), domainID.String(), func() ([]lexicalindex.IndexedDocument, uint64, error) {
+		docs, latest, err := s.collectDocuments(ctx, spaceID, domainID)
+		if err != nil {
+			return nil, 0, err
+		}
+		lexicalservice.SortDocumentsByNodeID(docs)
+		return docs, latest, nil
+	}); err != nil {
 		return nil, mapAdminLexicalError(err, "rebuild lexical index")
 	}
 	return &adminv1.RebuildLexicalIndexResponse{SpaceId: spaceID.String(), DomainId: domainID.String(), State: adminv1.LexicalRebuildState_LEXICAL_REBUILD_STATE_RUNNING, Accepted: true, RebuildId: uuid.NewString()}, nil
@@ -104,7 +117,11 @@ func (s *AdminLexicalMaintenanceService) collectDocuments(ctx context.Context, s
 		return nil, 0, status.Error(codes.FailedPrecondition, "graph service is not configured")
 	}
 	principal, _ := principalFromContext(ctx)
-	tx := sessionmodel.GraphTransaction{ID: "lexical-rebuild-" + uuid.NewString(), PrincipalID: principal.PrincipalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
+	latest, err := s.latestGraphRevision(ctx, spaceID, domainID)
+	if err != nil {
+		return nil, 0, mapAdminLexicalError(err, "read graph revision for lexical rebuild")
+	}
+	tx := sessionmodel.GraphTransaction{ID: "lexical-rebuild-" + uuid.NewString(), PrincipalID: principal.PrincipalID, SpaceID: spaceID.String(), DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, BaseRevision: int64(latest), CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
 	var out []lexicalindex.IndexedDocument
 	pageToken := ""
 	for {
@@ -113,25 +130,22 @@ func (s *AdminLexicalMaintenanceService) collectDocuments(ctx context.Context, s
 			return nil, 0, mapAdminLexicalError(err, "list graph nodes for lexical rebuild")
 		}
 		for _, node := range nodes {
-			out = append(out, lexicalindex.IndexedDocument{Document: analyzer.ExtractNodeDocument(node), GraphRevision: uint64(s.latestGraphRevision(ctx, spaceID))})
+			out = append(out, lexicalindex.IndexedDocument{Document: analyzer.ExtractNodeDocument(node), GraphRevision: latest})
 		}
 		if next == "" {
 			break
 		}
 		pageToken = next
 	}
-	return out, uint64(s.latestGraphRevision(ctx, spaceID)), nil
+	return out, latest, nil
 }
 
-func (s *AdminLexicalMaintenanceService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID) uint64 {
-	if s.graphs == nil {
-		return 0
-	}
-	rev, err := s.graphs.CurrentRevision(ctx, spaceID.String())
-	if err != nil || rev < 0 {
-		return 0
-	}
-	return uint64(rev)
+func (s *AdminLexicalMaintenanceService) lexicalStatus(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (lexicalservice.Status, error) {
+	return lexicalstatus.Read(ctx, s.lexical, s.graphs, spaceID.String(), domainID.String())
+}
+
+func (s *AdminLexicalMaintenanceService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (uint64, error) {
+	return lexicalstatus.LatestGraphRevision(ctx, s.graphs, spaceID.String(), domainID.String())
 }
 
 func mapAdminLexicalStatus(in lexicalservice.Status) *clientv1.LexicalIndexStatus {
