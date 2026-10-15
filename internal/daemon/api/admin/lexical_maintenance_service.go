@@ -43,11 +43,10 @@ func (s *AdminLexicalMaintenanceService) GetLexicalMaintenanceStatus(ctx context
 	if err != nil {
 		return nil, err
 	}
-	latest, err := s.latestGraphRevision(ctx, spaceID, domainID)
+	st, err := s.lexicalStatus(ctx, spaceID, domainID)
 	if err != nil {
 		return nil, mapAdminLexicalError(err, "read graph revision for lexical status")
 	}
-	st := s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest)
 	return &adminv1.GetLexicalMaintenanceStatusResponse{Status: mapAdminLexicalStatus(st), Owner: true, CursorSource: "local", Warnings: maintenanceWarnings(st)}, nil
 }
 
@@ -142,6 +141,22 @@ func (s *AdminLexicalMaintenanceService) collectDocuments(ctx context.Context, s
 
 type lexicalGraphDomainRevisionReader interface {
 	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
+}
+
+func (s *AdminLexicalMaintenanceService) lexicalStatus(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (lexicalservice.Status, error) {
+	latest, err := s.latestGraphRevision(ctx, spaceID, domainID)
+	if err != nil {
+		return lexicalservice.Status{}, err
+	}
+	maintenance := s.lexical.Status(ctx, spaceID.String(), domainID.String(), latest)
+	if maintenance.IndexedGraphRevision <= latest {
+		return maintenance, nil
+	}
+	latestAfterCursor, err := s.latestGraphRevision(ctx, spaceID, domainID)
+	if err != nil {
+		return lexicalservice.Status{}, err
+	}
+	return lexicalservice.ReconcileStatusLatest(maintenance, latestAfterCursor), nil
 }
 
 func (s *AdminLexicalMaintenanceService) latestGraphRevision(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) (uint64, error) {

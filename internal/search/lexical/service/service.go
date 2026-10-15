@@ -174,7 +174,7 @@ func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 	switch {
 	case cursor.IndexedGraphRevision > latestKnownGraphRevision:
 		status.State = StateError
-		status.LastError = fmt.Sprintf("indexed graph revision %d is ahead of latest domain revision %d; rebuild required", cursor.IndexedGraphRevision, latestKnownGraphRevision)
+		status.LastError = cursorAheadError(cursor.IndexedGraphRevision, latestKnownGraphRevision)
 	case latestKnownGraphRevision > cursor.IndexedGraphRevision:
 		status.RevisionLag = latestKnownGraphRevision - cursor.IndexedGraphRevision
 		status.State = StateStale
@@ -197,6 +197,33 @@ func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 		}
 	}
 	return status
+}
+
+// ReconcileStatusLatest updates a cursor-ahead status using a graph revision
+// observed after the lexical cursor was captured. Other error states are left
+// unchanged.
+func ReconcileStatusLatest(in Status, latestKnownGraphRevision uint64) Status {
+	if in.State != StateError || in.LastError != cursorAheadError(in.IndexedGraphRevision, in.LatestKnownGraphRevision) {
+		return in
+	}
+	in.LatestKnownGraphRevision = latestKnownGraphRevision
+	in.RevisionLag = 0
+	in.LastError = ""
+	switch {
+	case in.IndexedGraphRevision > latestKnownGraphRevision:
+		in.State = StateError
+		in.LastError = cursorAheadError(in.IndexedGraphRevision, latestKnownGraphRevision)
+	case latestKnownGraphRevision > in.IndexedGraphRevision:
+		in.State = StateStale
+		in.RevisionLag = latestKnownGraphRevision - in.IndexedGraphRevision
+	default:
+		in.State = StateFresh
+	}
+	return in
+}
+
+func cursorAheadError(indexed uint64, latest uint64) string {
+	return fmt.Sprintf("indexed graph revision %d is ahead of latest domain revision %d; rebuild required", indexed, latest)
 }
 
 func (s *Service) apply(docs []index.IndexedDocument, revision uint64) error {

@@ -267,7 +267,7 @@ func TestAsyncLexicalCatchupPrecedesRegisteredLiveDelivery(t *testing.T) {
 	}
 }
 
-func TestAsyncLexicalRevisionMismatchWakeupIsNotLost(t *testing.T) {
+func TestAsyncLexicalTerminalMismatchPendingWakeupIsNotLost(t *testing.T) {
 	ctx := context.Background()
 	lexical := newTestLexicalModule(t)
 	notifications := graphnotification.NewModule()
@@ -288,7 +288,10 @@ func TestAsyncLexicalRevisionMismatchWakeupIsNotLost(t *testing.T) {
 	if err := consumer.HandleGraphChange(ctx, first); err != nil {
 		t.Fatalf("HandleGraphChange(first) error = %v", err)
 	}
-	revisions := &blockingAsyncLexicalRevisionReader{revision: 2, started: make(chan struct{}), release: make(chan struct{})}
+	// Block the mismatch confirmation read after it captures notification
+	// revision 1. Publishing revision 2 while blocked makes the current attempt
+	// return terminal ErrOutOfRange with a pending wake-up.
+	revisions := &blockingAsyncLexicalRevisionReader{revision: 2, blockCall: 2, started: make(chan struct{}), release: make(chan struct{})}
 	registration, coordinator, err := registerAsyncLexicalConsumer(ctx, consumer.logger, notifications, lexical, revisions)
 	if err != nil {
 		t.Fatalf("registerAsyncLexicalConsumer() error = %v", err)
@@ -609,19 +612,20 @@ func TestUserOwnedDomainGraphWritesAreIndexedRebuiltAndPreserved(t *testing.T) {
 }
 
 type blockingAsyncLexicalRevisionReader struct {
-	mu       sync.Mutex
-	revision int64
-	started  chan struct{}
-	release  chan struct{}
-	calls    int
+	mu        sync.Mutex
+	revision  int64
+	started   chan struct{}
+	release   chan struct{}
+	calls     int
+	blockCall int
 }
 
 func (r *blockingAsyncLexicalRevisionReader) CurrentDomainRevision(context.Context, string, string) (int64, error) {
 	r.mu.Lock()
 	r.calls++
-	first := r.calls == 1
+	shouldBlock := r.calls == r.blockCall
 	r.mu.Unlock()
-	if first {
+	if shouldBlock {
 		close(r.started)
 		<-r.release
 	}

@@ -79,6 +79,12 @@ func TestServiceStatusRejectsCursorAheadOfDomainRevision(t *testing.T) {
 	if status.State != StateError || status.IndexedGraphRevision != 9 || status.LatestKnownGraphRevision != 2 || status.LastError == "" {
 		t.Fatalf("status with invalid cursor = %#v", status)
 	}
+	if reconciled := ReconcileStatusLatest(status, 9); reconciled.State != StateFresh || reconciled.LatestKnownGraphRevision != 9 || reconciled.LastError != "" {
+		t.Fatalf("reconciled concurrent status = %#v", reconciled)
+	}
+	if reconciled := ReconcileStatusLatest(status, 10); reconciled.State != StateStale || reconciled.RevisionLag != 1 {
+		t.Fatalf("reconciled advanced graph status = %#v", reconciled)
+	}
 }
 
 func TestServiceRebuildFromSnapshotFailurePreservesIndex(t *testing.T) {
