@@ -92,6 +92,16 @@ func TestSearchPaginationStableTieOrdering(t *testing.T) {
 	if second.NextPageToken != "" || second.Diagnostics.Truncated {
 		t.Fatalf("second page token/truncated = %q/%v", second.NextPageToken, second.Diagnostics.Truncated)
 	}
+	offsetPage, err := searcher.Search(expr, SearchOptions{PageSize: 2, Offset: 1})
+	if err != nil {
+		t.Fatalf("Search offset page returned error: %v", err)
+	}
+	if got := resultIDs(offsetPage.Results); len(got) != 2 || got[0] != "node-b" || got[1] != "node-c" {
+		t.Fatalf("offset page = %#v", got)
+	}
+	if _, err := searcher.Search(expr, SearchOptions{PageSize: 1, Offset: 1, PageToken: first.NextPageToken}); err == nil {
+		t.Fatal("Search with offset and page token returned nil error")
+	}
 }
 
 func doc(nodeID string, revision uint64, text string) IndexedDocument {

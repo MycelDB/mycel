@@ -49,6 +49,38 @@ func HasFilters(filters Filters) bool {
 	return len(filters.NodeLabels) > 0 || len(filters.NodeIDs) > 0 || len(filters.Properties) > 0
 }
 
+func ValidateFilters(filters Filters) error {
+	for _, filter := range filters.Properties {
+		if strings.TrimSpace(filter.Path) == "" {
+			return fmt.Errorf("property filter path is required")
+		}
+		switch filter.Operator {
+		case FilterExists:
+		case FilterEquals:
+			if len(filter.Values) != 1 {
+				return fmt.Errorf("EQUALS requires exactly one value")
+			}
+		case FilterNotEquals:
+			if len(filter.Values) != 1 {
+				return fmt.Errorf("NOT_EQUALS requires exactly one value")
+			}
+		case FilterIn:
+			if len(filter.Values) == 0 {
+				return fmt.Errorf("IN requires at least one value")
+			}
+		case FilterContains:
+			if len(filter.Values) != 1 {
+				return fmt.Errorf("CONTAINS requires exactly one value")
+			}
+		case "":
+			return fmt.Errorf("property filter operator is required")
+		default:
+			return fmt.Errorf("unsupported property filter operator %q", filter.Operator)
+		}
+	}
+	return nil
+}
+
 func matchesPropertyFilter(node graph.Node, filter PropertyFilter) (bool, error) {
 	path := strings.TrimSpace(filter.Path)
 	if path == "" {

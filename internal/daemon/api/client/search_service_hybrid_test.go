@@ -57,6 +57,12 @@ func TestSearchFiltersFromProtoRejectsUnsupportedOperator(t *testing.T) {
 	if err == nil {
 		t.Fatalf("searchFiltersFromProto unsupported operator returned nil error")
 	}
+	if _, err := searchFiltersFromProto(&clientv1.SearchFilters{Properties: []*clientv1.PropertyFilter{{Path: "", Operator: clientv1.FilterOperator_FILTER_OPERATOR_EXISTS}}}); err == nil {
+		t.Fatal("searchFiltersFromProto empty property path returned nil error")
+	}
+	if _, err := searchFiltersFromProto(&clientv1.SearchFilters{Properties: []*clientv1.PropertyFilter{{Path: "status", Operator: clientv1.FilterOperator_FILTER_OPERATOR_EQUALS, Values: []string{"open", "closed"}}}}); err == nil {
+		t.Fatal("searchFiltersFromProto invalid EQUALS values returned nil error")
+	}
 }
 
 func TestSemanticHybridCandidatesAppliesMinScoreBeforeFusion(t *testing.T) {
