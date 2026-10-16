@@ -170,6 +170,32 @@ func TestFromGQLPlanRejectsMutationAsReadQuery(t *testing.T) {
 	}
 }
 
+func TestCombinePredicateFlattensAssociativeTermsAndDeduplicatesExactly(t *testing.T) {
+	fieldA, valueA := FieldValue("n", "a"), NativeValue(1)
+	fieldB, valueB := FieldValue("n", "b"), NativeValue(2)
+	leafA := *LeafPredicate(Leaf{Kind: LeafComparison, Left: &fieldA, Right: &valueA, Operator: "="})
+	leafB := *LeafPredicate(Leaf{Kind: LeafComparison, Left: &fieldB, Right: &valueB, Operator: "="})
+	nestedAnd := CombinePredicate(PredicateAndOp, []Predicate{leafA, leafB})
+	orTerm := CombinePredicate(PredicateOrOp, []Predicate{leafA, leafB})
+	combined := CombinePredicate(PredicateAndOp, []Predicate{leafA, *nestedAnd, *orTerm})
+	if combined == nil || combined.Op != PredicateAndOp || len(combined.Terms) != 3 {
+		t.Fatalf("combined predicate = %+v, want flat AND with two leaves and one OR", combined)
+	}
+	orCount := 0
+	leafCount := 0
+	for _, term := range combined.Terms {
+		if term.Op == PredicateOrOp {
+			orCount++
+		}
+		if term.Op == PredicateLeafOp {
+			leafCount++
+		}
+	}
+	if orCount != 1 || leafCount != 2 {
+		t.Fatalf("combined predicate = %+v, want exact de-duplication without flattening OR", combined)
+	}
+}
+
 func TestClassifyPredicatesSeparatesCandidatesAndResiduals(t *testing.T) {
 	statusField := ParseFieldRef("n", "status")
 	statusValue := NativeValue("active")

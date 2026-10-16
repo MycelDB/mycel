@@ -410,10 +410,21 @@ func LeafPredicate(leaf Leaf) *Predicate {
 // CombinePredicate creates a normalized boolean predicate.
 func CombinePredicate(op PredicateOp, terms []Predicate) *Predicate {
 	filtered := make([]Predicate, 0, len(terms))
-	for _, term := range terms {
-		if term.Op != "" || term.Leaf != nil || len(term.Terms) > 0 {
-			filtered = append(filtered, term)
+	var appendTerm func(Predicate)
+	appendTerm = func(term Predicate) {
+		if term.Op == "" && term.Leaf == nil && len(term.Terms) == 0 {
+			return
 		}
+		if (op == PredicateAndOp || op == PredicateOrOp) && term.Op == op && term.Leaf == nil {
+			for _, child := range term.Terms {
+				appendTerm(child)
+			}
+			return
+		}
+		filtered = append(filtered, term)
+	}
+	for _, term := range terms {
+		appendTerm(term)
 	}
 	if len(filtered) == 0 {
 		return nil

@@ -113,12 +113,13 @@ Additional tests cover:
 - node, edge, scalar, tree, and path projection kinds;
 - node IDs, labels, edge aliases, directions, and depth bounds;
 - nested object/list/bool/number literals;
-- property, payload, and meta namespaces, including comparisons, ranges, and same-name cross-namespace equality collisions;
+- property, payload, and meta namespaces, including comparisons, ranges, same-name cross-namespace equality collisions, and inline-pattern duplicates;
 - string, text, semantic, tag, exists, less-than, and between predicates;
 - field, literal, date, and current-date string-predicate operands;
 - semantic rule/binding metadata;
 - cursor and safety-limit capture;
 - read-write access mode;
+- associative boolean-tree flattening with exact predicate de-duplication;
 - default-versus-unknown structured aggregate functions;
 - all neutral result cells, counters, diagnostics, and typed errors;
 - lossless integers above the JSON-safe range.
