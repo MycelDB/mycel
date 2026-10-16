@@ -1,0 +1,391 @@
+package client
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"slices"
+	"sort"
+	"testing"
+
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	graphmodel "github.com/myceldb/mycel/internal/graph/model"
+	schemaservice "github.com/myceldb/mycel/internal/schema/service"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"google.golang.org/protobuf/types/known/structpb"
+)
+
+func TestQRX0StructuredAndGQLReadConformance(t *testing.T) {
+	fixture, manager, readTx := newQRX0JournalFixture(t)
+	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+
+	countStar := &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Star{Star: true}}
+	tests := []struct {
+		name           string
+		structured     *clientv1.GraphQuery
+		gql            string
+		field          string
+		sortValues     bool
+		want           []string
+		structuredPlan string
+		gqlPlan        string
+		wantPlanKind   string
+	}{
+		{
+			name: "broad label scan",
+			structured: &clientv1.GraphQuery{
+				Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+				Returns: []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+			},
+			gql:            "MATCH (j:JournalEntry) RETURN j.title AS title",
+			field:          "title",
+			sortValues:     true,
+			want:           []string{"latest", "middle", "oldest"},
+			structuredPlan: "BroadGraphFallback",
+			gqlPlan:        "BroadGQLFallback",
+			wantPlanKind:   "fallback",
+		},
+		{
+			name: "indexed equality",
+			structured: &clientv1.GraphQuery{
+				Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+				Where: &clientv1.Expr{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{
+					Alias: "j", Name: "date", Value: structpb.NewStringValue("2026-07-20"),
+				}}},
+				Returns: []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+			},
+			gql:            "MATCH (j:JournalEntry {date: '2026-07-20'}) RETURN j.title AS title",
+			field:          "title",
+			want:           []string{"latest"},
+			structuredPlan: "OrderedNodePropertyEqualityIndexScan",
+			gqlPlan:        "OrderedNodePropertyEqualityIndexScan",
+			wantPlanKind:   "indexed",
+		},
+		{
+			name: "indexed order",
+			structured: &clientv1.GraphQuery{
+				Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+				Returns: []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+				OrderBy: []*clientv1.OrderSpec{{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: "j", Name: "date"}}}, Direction: clientv1.SortDirection_SORT_DIRECTION_ASC}},
+			},
+			gql:            "MATCH (j:JournalEntry) RETURN j.title AS title ORDER BY j.date",
+			field:          "title",
+			want:           []string{"oldest", "middle", "latest"},
+			structuredPlan: "OrderedNodePropertyIndexScan",
+			gqlPlan:        "OrderedNodePropertyIndexScan",
+			wantPlanKind:   "indexed",
+		},
+		{
+			name: "aggregate count",
+			structured: &clientv1.GraphQuery{
+				Match:            &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+				AggregateReturns: []*clientv1.AggregateProjection{{OutputName: "total", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_COUNT, Argument: countStar}},
+			},
+			gql:            "MATCH (j:JournalEntry) RETURN COUNT(*) AS total",
+			field:          "total",
+			want:           []string{"3"},
+			structuredPlan: "BroadGraphFallback",
+			gqlPlan:        "BroadGQLFallback",
+			wantPlanKind:   "fallback",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			structured, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: tt.structured, PageSize: 10})
+			if err != nil {
+				t.Fatalf("ExecuteQuery() error = %v", err)
+			}
+			gql, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: tt.gql, PageSize: 10})
+			if err != nil {
+				t.Fatalf("ExecuteGQL() error = %v", err)
+			}
+
+			structuredValues := qrx0ScalarValues(structured.GetRows(), tt.field)
+			gqlValues := qrx0ScalarValues(gql.GetResult().GetRows(), tt.field)
+			if tt.sortValues {
+				sort.Strings(structuredValues)
+				sort.Strings(gqlValues)
+			}
+			if !reflect.DeepEqual(structuredValues, gqlValues) {
+				t.Fatalf("structured values = %v, GQL values = %v", structuredValues, gqlValues)
+			}
+			if !reflect.DeepEqual(structuredValues, tt.want) {
+				t.Fatalf("values = %v, want %v", structuredValues, tt.want)
+			}
+			assertQRX0ResponseMetadataParity(t, structured, gql)
+			if got := structured.GetDiagnostics().GetPlan(); got != tt.structuredPlan {
+				t.Fatalf("structured plan = %q, want %q", got, tt.structuredPlan)
+			}
+			if got := gql.GetDiagnostics().GetPlan(); got != tt.gqlPlan {
+				t.Fatalf("GQL plan = %q, want %q", got, tt.gqlPlan)
+			}
+			if got := structured.GetDiagnostics().GetPlanKind(); got != tt.wantPlanKind {
+				t.Fatalf("structured plan kind = %q, want %q", got, tt.wantPlanKind)
+			}
+			if got := gql.GetDiagnostics().GetPlanKind(); got != tt.wantPlanKind {
+				t.Fatalf("GQL plan kind = %q, want %q", got, tt.wantPlanKind)
+			}
+		})
+	}
+}
+
+func TestQRX0StructuredAndGQLPreserveReadOnlySnapshot(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+
+	seedTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	created, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: seedTx, Node: &clientv1.NodeCreate{Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "revision 1"})}})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: seedTx}); err != nil {
+		t.Fatalf("CommitTransaction(seed) error = %v", err)
+	}
+
+	snapshotTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	mutateTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	if _, err := graphSvc.UpdateNode(fixture.ctx, &clientv1.UpdateNodeRequest{
+		TransactionId: mutateTx,
+		Node:          &clientv1.Node{NodeId: created.GetNode().GetNodeId(), Properties: mustStruct(t, map[string]any{"title": "revision 2"})},
+		UpdateMask:    &fieldmaskpb.FieldMask{Paths: []string{"properties"}},
+	}); err != nil {
+		t.Fatalf("UpdateNode() error = %v", err)
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: mutateTx}); err != nil {
+		t.Fatalf("CommitTransaction(mutate) error = %v", err)
+	}
+
+	assertQRX0NoteTitles(t, fixture, querySvc, snapshotTx, []string{"revision 1"})
+	currentTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	assertQRX0NoteTitles(t, fixture, querySvc, currentTx, []string{"revision 2"})
+}
+
+func TestQRX0StructuredAndGQLPreserveReadWriteOverlay(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "staged"})}}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+
+	structured, gql := executeQRX0NoteTitlePair(t, fixture, querySvc, writeTx)
+	if got := qrx0ScalarValues(structured.GetRows(), "title"); !reflect.DeepEqual(got, []string{"staged"}) {
+		t.Fatalf("structured overlay titles = %v, want [staged]", got)
+	}
+	if got := qrx0ScalarValues(gql.GetResult().GetRows(), "title"); !reflect.DeepEqual(got, []string{"staged"}) {
+		t.Fatalf("GQL overlay titles = %v, want [staged]", got)
+	}
+	if structured.GetReadMetadata().GetConsistency() != "overlay" || gql.GetReadMetadata().GetConsistency() != "overlay" {
+		t.Fatalf("overlay metadata: structured=%+v GQL=%+v", structured.GetReadMetadata(), gql.GetReadMetadata())
+	}
+}
+
+func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
+	fixture, manager, readTx := newQRX0JournalFixture(t)
+
+	t.Run("ordered index uses finite property scan", func(t *testing.T) {
+		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager)
+		res, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC), PageSize: 1})
+		if err != nil {
+			t.Fatalf("ExecuteQuery() error = %v", err)
+		}
+		if res.GetDiagnostics().GetFullScan() || profile.callCount("ScanNodePropertyOrdered") == 0 {
+			t.Fatalf("diagnostics=%+v profile=%+v", res.GetDiagnostics(), profile.callsSnapshot())
+		}
+		if profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {
+			t.Fatalf("indexed query used broad reads: calls=%+v", profile.callsSnapshot())
+		}
+		limits := profile.requestedLimits("ScanNodePropertyOrdered")
+		if len(limits) == 0 || limits[0] <= 0 {
+			t.Fatalf("ordered scan limits = %v, want finite positive limit", limits)
+		}
+	})
+
+	t.Run("structured broad page materializes nodes and edges", func(t *testing.T) {
+		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager)
+		query := &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}}}
+		res, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 1})
+		if err != nil {
+			t.Fatalf("ExecuteQuery() error = %v", err)
+		}
+		if !res.GetDiagnostics().GetFullScan() || profile.callCount("ListNodes") == 0 || profile.callCount("ListEdges") == 0 {
+			t.Fatalf("legacy structured fallback baseline changed: diagnostics=%+v calls=%+v", res.GetDiagnostics(), profile.callsSnapshot())
+		}
+		if profile.returnedCount("ListNodes") != 3 {
+			t.Fatalf("ListNodes returned %d entities for a one-row page, want baseline 3", profile.returnedCount("ListNodes"))
+		}
+	})
+
+	t.Run("GQL broad node page materializes nodes but not edges", func(t *testing.T) {
+		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager)
+		res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (j:JournalEntry) RETURN j", PageSize: 1})
+		if err != nil {
+			t.Fatalf("ExecuteGQL() error = %v", err)
+		}
+		if !res.GetDiagnostics().GetFullScan() || profile.callCount("ListNodes") == 0 || profile.callCount("ListEdges") != 0 {
+			t.Fatalf("legacy GQL fallback baseline changed: diagnostics=%+v calls=%+v", res.GetDiagnostics(), profile.callsSnapshot())
+		}
+		if profile.returnedCount("ListNodes") != 3 {
+			t.Fatalf("ListNodes returned %d entities for a one-row page, want baseline 3", profile.returnedCount("ListNodes"))
+		}
+	})
+
+	t.Run("Explain performs no graph data reads", func(t *testing.T) {
+		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager)
+		res, err := querySvc.ExplainQuery(fixture.ctx, &clientv1.ExplainQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)})
+		if err != nil {
+			t.Fatalf("ExplainQuery() error = %v", err)
+		}
+		if !res.GetDiagnostics().GetExplainOnly() || profile.dataReadCalls() != 0 {
+			t.Fatalf("Explain diagnostics=%+v data_read_calls=%d", res.GetDiagnostics(), profile.dataReadCalls())
+		}
+	})
+}
+
+func TestQRX0CanceledRequestsStopBeforeGraphAccess(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+	querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces)
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	ctx, cancel := context.WithCancel(fixture.ctx)
+	cancel()
+
+	query := &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}}}
+	if _, err := querySvc.ExecuteQuery(ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query}); err == nil {
+		t.Fatal("ExecuteQuery() error = nil, want cancellation failure")
+	}
+	if _, err := querySvc.ExecuteGQL(ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (n) RETURN n"}); err == nil {
+		t.Fatal("ExecuteGQL() error = nil, want cancellation failure")
+	}
+	if got := profile.dataReadCalls(); got != 0 {
+		t.Fatalf("canceled requests performed %d graph data reads", got)
+	}
+}
+
+func TestQRX0AdjacencyAccessProfile(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	source := createQueryTestNode(t, fixture, graphSvc, writeTx, []string{"Note"}, map[string]any{"title": "source"})
+	target := createQueryTestNode(t, fixture, graphSvc, writeTx, []string{"Page"}, map[string]any{"title": "target"})
+	createQueryTestEdge(t, fixture, graphSvc, writeTx, source, target, []string{"references"}, nil)
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+
+	instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+	querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces)
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	query := referenceQuery(source, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, "")
+	if _, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 1}); err != nil {
+		t.Fatalf("ExecuteQuery() error = %v", err)
+	}
+	if profile.callCount("ScanAdjacency") == 0 || profile.callCount("GetNode") < 2 {
+		t.Fatalf("adjacency profile calls = %+v", profile.callsSnapshot())
+	}
+	if profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {
+		t.Fatalf("adjacency query used broad reads: %+v", profile.callsSnapshot())
+	}
+	limits := profile.requestedLimits("ScanAdjacency")
+	if len(limits) == 0 || limits[0] != 1 {
+		t.Fatalf("adjacency scan limits = %v, want first limit 1", limits)
+	}
+}
+
+func newQRX0JournalFixture(t *testing.T) (domainPolicyClientAPIFixture, schemaservice.Manager, string) {
+	t.Helper()
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	manager := journalSchemaManagerForQueryTest(t, fixture.domainID, true)
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	for _, item := range []struct {
+		title string
+		date  string
+	}{
+		{title: "oldest", date: "2026-07-18"},
+		{title: "middle", date: "2026-07-19"},
+		{title: "latest", date: "2026-07-20"},
+	} {
+		if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{Labels: []string{"JournalEntry"}, Properties: mustStruct(t, map[string]any{"title": item.title, "date": item.date})}}); err != nil {
+			t.Fatalf("CreateNode(%s) error = %v", item.title, err)
+		}
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction() error = %v", err)
+	}
+	return fixture, manager, fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+}
+
+func assertQRX0NoteTitles(t *testing.T, fixture domainPolicyClientAPIFixture, querySvc *QueryService, txID string, want []string) {
+	t.Helper()
+	structured, gql := executeQRX0NoteTitlePair(t, fixture, querySvc, txID)
+	structuredTitles := qrx0ScalarValues(structured.GetRows(), "title")
+	gqlTitles := qrx0ScalarValues(gql.GetResult().GetRows(), "title")
+	if !reflect.DeepEqual(structuredTitles, want) || !reflect.DeepEqual(gqlTitles, want) {
+		t.Fatalf("snapshot titles: structured=%v GQL=%v want=%v", structuredTitles, gqlTitles, want)
+	}
+}
+
+func executeQRX0NoteTitlePair(t *testing.T, fixture domainPolicyClientAPIFixture, querySvc *QueryService, txID string) (*clientv1.ExecuteQueryResponse, *clientv1.ExecuteGQLResponse) {
+	t.Helper()
+	structured, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+		TransactionId: txID,
+		Query: &clientv1.GraphQuery{
+			Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
+			Returns: []*clientv1.ReturnProjection{{Alias: "n.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteQuery() error = %v", err)
+	}
+	gql, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: txID, Query: "MATCH (n:Note) RETURN n.title AS title"})
+	if err != nil {
+		t.Fatalf("ExecuteGQL() error = %v", err)
+	}
+	return structured, gql
+}
+
+func assertQRX0ResponseMetadataParity(t *testing.T, structured *clientv1.ExecuteQueryResponse, gql *clientv1.ExecuteGQLResponse) {
+	t.Helper()
+	structuredResult, gqlResult := structured.GetResult(), gql.GetResult()
+	if !proto.Equal(structured.GetReadMetadata(), gql.GetReadMetadata()) {
+		t.Fatalf("read metadata differs: structured=%+v GQL=%+v", structured.GetReadMetadata(), gql.GetReadMetadata())
+	}
+	if !proto.Equal(structuredResult.GetCounters(), gqlResult.GetCounters()) {
+		t.Fatalf("counters differ: structured=%+v GQL=%+v", structuredResult.GetCounters(), gqlResult.GetCounters())
+	}
+	if structuredResult.GetNextPageToken() != gqlResult.GetNextPageToken() {
+		t.Fatalf("next tokens differ: structured=%q GQL=%q", structuredResult.GetNextPageToken(), gqlResult.GetNextPageToken())
+	}
+	if len(structuredResult.GetGraph().GetNodes()) != len(gqlResult.GetGraph().GetNodes()) || len(structuredResult.GetGraph().GetEdges()) != len(gqlResult.GetGraph().GetEdges()) {
+		t.Fatalf("graph envelope counts differ: structured=%d/%d GQL=%d/%d", len(structuredResult.GetGraph().GetNodes()), len(structuredResult.GetGraph().GetEdges()), len(gqlResult.GetGraph().GetNodes()), len(gqlResult.GetGraph().GetEdges()))
+	}
+	structuredDiagnostics, gqlDiagnostics := structured.GetDiagnostics(), gql.GetDiagnostics()
+	if structuredDiagnostics.GetFullScan() != gqlDiagnostics.GetFullScan() || !slices.Equal(structuredDiagnostics.GetIndexes(), gqlDiagnostics.GetIndexes()) {
+		t.Fatalf("access diagnostics differ: structured=%+v GQL=%+v", structuredDiagnostics, gqlDiagnostics)
+	}
+}
+
+func qrx0ScalarValues(rows []*clientv1.QueryRow, field string) []string {
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		value := row.GetFields()[field].GetScalar()
+		if value == nil {
+			out = append(out, "<nil>")
+			continue
+		}
+		out = append(out, fmt.Sprint(value.AsInterface()))
+	}
+	return out
+}
