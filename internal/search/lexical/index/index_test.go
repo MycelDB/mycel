@@ -3,6 +3,7 @@ package index
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/myceldb/mycel/internal/search/lexical/analyzer"
@@ -114,6 +115,33 @@ func TestSearchPaginationStableTieOrdering(t *testing.T) {
 	}
 	if got := resultIDs(compatiblePage.Results); len(got) != 1 || got[0] != "node-b" {
 		t.Fatalf("compatible envelope page = %#v, want [node-b]", got)
+	}
+}
+
+func BenchmarkSearcherSearchBroadTerm10K(b *testing.B) {
+	docs := make([]IndexedDocument, 10_000)
+	for i := range docs {
+		docs[i] = doc(fmt.Sprintf("node-%05d", i), 1, "latencyprobe broad term retrieval validation")
+	}
+	segment, err := BuildSegment("benchmark", docs, BuildOptions{Analyzer: analyzer.New()})
+	if err != nil {
+		b.Fatalf("BuildSegment returned error: %v", err)
+	}
+	searcher := NewSearcher([]storage.SegmentData{segment})
+	parsed, err := parser.Parse("latencyprobe")
+	if err != nil {
+		b.Fatalf("Parse returned error: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		response, err := searcher.Search(parsed.Expr, SearchOptions{PageSize: 20})
+		if err != nil {
+			b.Fatalf("Search returned error: %v", err)
+		}
+		if len(response.Results) != 20 || response.Diagnostics.CandidateCount != len(docs) {
+			b.Fatalf("results/diagnostics = %d/%+v", len(response.Results), response.Diagnostics)
+		}
 	}
 }
 
