@@ -850,7 +850,7 @@ func buildPropertyBetween(ctx generated.IPropertyBetweenContext) (model.Property
 	if err != nil {
 		return model.PropertyComparison{}, model.PropertyComparison{}, err
 	}
-	return model.PropertyComparison{Variable: field.Variable, Property: field.Property, Operator: model.ComparisonGreaterThanOrEqual, Value: lowValue}, model.PropertyComparison{Variable: field.Variable, Property: field.Property, Operator: model.ComparisonLessThanOrEqual, Value: highValue}, nil
+	return model.PropertyComparison{Variable: field.Variable, Namespace: field.Namespace, Property: field.Property, Operator: model.ComparisonGreaterThanOrEqual, Value: lowValue}, model.PropertyComparison{Variable: field.Variable, Namespace: field.Namespace, Property: field.Property, Operator: model.ComparisonLessThanOrEqual, Value: highValue}, nil
 }
 
 func buildPropertyComparison(ctx generated.IPropertyComparisonContext) (model.PropertyComparison, error) {
@@ -870,7 +870,7 @@ func buildPropertyComparison(ctx generated.IPropertyComparisonContext) (model.Pr
 	if err != nil {
 		return model.PropertyComparison{}, err
 	}
-	return model.PropertyComparison{Variable: field.Variable, Property: field.Property, Operator: operator, Value: value}, nil
+	return model.PropertyComparison{Variable: field.Variable, Namespace: field.Namespace, Property: field.Property, Operator: operator, Value: value}, nil
 }
 
 func buildPropertyNullPredicate(ctx generated.IPropertyNullPredicateContext) (model.NullPredicate, error) {
