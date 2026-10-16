@@ -24,64 +24,73 @@ type InsertNodeOperation struct {
 func (InsertNodeOperation) operation() {}
 
 // QueryNodesOperation returns nodes matching optional labels/properties.
+// SourceComparisons and SourcePatternProperties on read operations preserve
+// namespaced equality and inline-pattern distinctions that legacy property
+// folding cannot encode. Legacy execution ignores this normalization metadata.
 type QueryNodesOperation struct {
-	Variable             string
-	Labels               []string
-	Properties           map[string]any
-	Returns              []ReturnItem
-	Aggregates           []AggregateItem
-	Distinct             bool
-	Offset               int64
-	Limit                int64
-	Predicate            *PredicateExpr
-	ComparisonPredicates []ComparisonPredicate
-	NullPredicates       []NullPredicate
-	StringPredicates     []StringPredicate
-	TextPredicates       []TextContainsPredicate
-	SemanticPredicates   []SemanticSimilarPredicate
-	OrderBy              []OrderItem
+	Variable                string
+	Labels                  []string
+	Properties              map[string]any
+	Returns                 []ReturnItem
+	Aggregates              []AggregateItem
+	Distinct                bool
+	Offset                  int64
+	Limit                   int64
+	Predicate               *PredicateExpr
+	ComparisonPredicates    []ComparisonPredicate
+	SourceComparisons       []ComparisonPredicate
+	SourcePatternProperties map[string]map[string]any
+	NullPredicates          []NullPredicate
+	StringPredicates        []StringPredicate
+	TextPredicates          []TextContainsPredicate
+	SemanticPredicates      []SemanticSimilarPredicate
+	OrderBy                 []OrderItem
 }
 
 func (QueryNodesOperation) operation() {}
 
 // QueryPatternOperation returns rows matching a node-edge-node pattern.
 type QueryPatternOperation struct {
-	Start                NodePattern
-	Relationship         RelationshipPattern
-	End                  NodePattern
-	Returns              []ReturnItem
-	Aggregates           []AggregateItem
-	Distinct             bool
-	Offset               int64
-	Limit                int64
-	Predicate            *PredicateExpr
-	ComparisonPredicates []ComparisonPredicate
-	NullPredicates       []NullPredicate
-	StringPredicates     []StringPredicate
-	TextPredicates       []TextContainsPredicate
-	SemanticPredicates   []SemanticSimilarPredicate
-	OrderBy              []OrderItem
+	Start                   NodePattern
+	Relationship            RelationshipPattern
+	End                     NodePattern
+	Returns                 []ReturnItem
+	Aggregates              []AggregateItem
+	Distinct                bool
+	Offset                  int64
+	Limit                   int64
+	Predicate               *PredicateExpr
+	ComparisonPredicates    []ComparisonPredicate
+	SourceComparisons       []ComparisonPredicate
+	SourcePatternProperties map[string]map[string]any
+	NullPredicates          []NullPredicate
+	StringPredicates        []StringPredicate
+	TextPredicates          []TextContainsPredicate
+	SemanticPredicates      []SemanticSimilarPredicate
+	OrderBy                 []OrderItem
 }
 
 func (QueryPatternOperation) operation() {}
 
 type QueryPathOperation struct {
-	PathVariable         string
-	Start                NodePattern
-	Segments             []PathSegment
-	Returns              []ReturnItem
-	Aggregates           []AggregateItem
-	ReturnGraph          bool
-	Distinct             bool
-	Offset               int64
-	Limit                int64
-	Predicate            *PredicateExpr
-	ComparisonPredicates []ComparisonPredicate
-	NullPredicates       []NullPredicate
-	StringPredicates     []StringPredicate
-	TextPredicates       []TextContainsPredicate
-	SemanticPredicates   []SemanticSimilarPredicate
-	OrderBy              []OrderItem
+	PathVariable            string
+	Start                   NodePattern
+	Segments                []PathSegment
+	Returns                 []ReturnItem
+	Aggregates              []AggregateItem
+	ReturnGraph             bool
+	Distinct                bool
+	Offset                  int64
+	Limit                   int64
+	Predicate               *PredicateExpr
+	ComparisonPredicates    []ComparisonPredicate
+	SourceComparisons       []ComparisonPredicate
+	SourcePatternProperties map[string]map[string]any
+	NullPredicates          []NullPredicate
+	StringPredicates        []StringPredicate
+	TextPredicates          []TextContainsPredicate
+	SemanticPredicates      []SemanticSimilarPredicate
+	OrderBy                 []OrderItem
 }
 
 func (QueryPathOperation) operation() {}
@@ -232,10 +241,11 @@ type AggregateItem struct {
 }
 
 type ComparisonPredicate struct {
-	Variable string
-	Property string
-	Operator ComparisonOperator
-	Value    any
+	Variable  string
+	Namespace string
+	Property  string
+	Operator  ComparisonOperator
+	Value     any
 }
 
 type ComparisonOperator string

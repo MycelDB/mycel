@@ -5,17 +5,18 @@ import (
 
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
-	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // logicalQueryFromStructured is the API-owned transport adapter from generated
-// protobuf messages to the neutral query vocabulary. Legacy execution remains
-// authoritative while planner/executor tranches are migrated.
-func logicalQueryFromStructured(query *clientv1.GraphQuery, mode sessionmodel.TransactionMode, pageSize int32, pageToken string) querylogical.Query {
+// protobuf messages to the neutral query vocabulary. GraphQuery is a read
+// statement even when it executes inside a read-write transaction; ambient
+// transaction capability belongs to execution context rather than this model.
+// Legacy execution remains authoritative while planner/executor tranches move.
+func logicalQueryFromStructured(query *clientv1.GraphQuery, pageSize int32, pageToken string) querylogical.Query {
 	out := querylogical.Query{
 		Source:     querylogical.SourceStructured,
-		AccessMode: logicalAccessMode(mode),
+		AccessMode: querylogical.AccessModeReadOnly,
 		Page:       querylogical.PageSpec{Size: pageSize, Cursor: pageToken},
 	}
 	if query == nil || query.GetMatch() == nil {
@@ -36,16 +37,6 @@ func logicalQueryFromStructured(query *clientv1.GraphQuery, mode sessionmodel.Tr
 	out.Predicate = logicalStructuredPredicate(query.GetWhere())
 	out.PredicatePlan = querylogical.ClassifyPredicates(out.Predicate)
 	return out
-}
-
-func logicalAccessMode(mode sessionmodel.TransactionMode) querylogical.AccessMode {
-	if mode == sessionmodel.TransactionModeReadWrite {
-		return querylogical.AccessModeReadWrite
-	}
-	if mode == sessionmodel.TransactionModeReadOnly {
-		return querylogical.AccessModeReadOnly
-	}
-	return querylogical.AccessModeUnspecified
 }
 
 func logicalStructuredNode(node *clientv1.NodePattern) querylogical.NodePattern {
@@ -149,7 +140,7 @@ func logicalStructuredAggregates(aggregates []*clientv1.AggregateProjection) []q
 		}
 		item := querylogical.Aggregate{
 			Function:   logicalStructuredAggregateFunction(aggregate.GetFunction()),
-			OutputName: aggregate.GetOutputName(),
+			OutputName: aggregateOutputName(aggregate),
 		}
 		argument := aggregate.GetArgument()
 		switch {
@@ -169,7 +160,7 @@ func logicalStructuredAggregates(aggregates []*clientv1.AggregateProjection) []q
 
 func logicalStructuredAggregateFunction(function clientv1.AggregateFunction) querylogical.AggregateFunction {
 	switch function {
-	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_COUNT:
+	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_UNSPECIFIED, clientv1.AggregateFunction_AGGREGATE_FUNCTION_COUNT:
 		return querylogical.AggregateCount
 	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_SUM:
 		return querylogical.AggregateSum
@@ -223,7 +214,7 @@ func logicalStructuredPredicate(expression *clientv1.Expr) *querylogical.Predica
 		return querylogical.LeafPredicate(logicalClassifiedLeaf(querylogical.Leaf{Kind: querylogical.LeafNull, Field: &field, IsNull: value.Null.GetIsNull()}))
 	case *clientv1.Expr_StringPredicate:
 		operand := logicalStructuredValue(value.StringPredicate.GetValue())
-		return querylogical.LeafPredicate(logicalClassifiedLeaf(querylogical.Leaf{Kind: querylogical.LeafString, Field: operand.Field, Operator: logicalStructuredStringMode(value.StringPredicate.GetMode()), Query: value.StringPredicate.GetQuery()}))
+		return querylogical.LeafPredicate(logicalClassifiedLeaf(querylogical.Leaf{Kind: querylogical.LeafString, Operand: &operand, Operator: logicalStructuredStringMode(value.StringPredicate.GetMode()), Query: value.StringPredicate.GetQuery()}))
 	case *clientv1.Expr_Text:
 		field := querylogical.ParseFieldRef(value.Text.GetAlias(), value.Text.GetField())
 		return querylogical.LeafPredicate(logicalClassifiedLeaf(querylogical.Leaf{Kind: querylogical.LeafText, Field: &field, Query: value.Text.GetQuery()}))
@@ -242,10 +233,16 @@ func logicalStructuredPredicate(expression *clientv1.Expr) *querylogical.Predica
 		right := logicalStructuredValue(value.LessThan.GetRight())
 		return querylogical.LeafPredicate(logicalClassifiedLeaf(querylogical.Leaf{Kind: querylogical.LeafComparison, Left: &left, Right: &right, Operator: "<"}))
 	case *clientv1.Expr_Between:
-		left := logicalStructuredValue(value.Between.GetValue())
+		lowLeft := logicalStructuredValue(value.Between.GetValue())
+		highLeft := lowLeft
 		low := logicalStructuredValue(value.Between.GetLow())
 		high := logicalStructuredValue(value.Between.GetHigh())
-		return querylogical.LeafPredicate(logicalClassifiedLeaf(querylogical.Leaf{Kind: querylogical.LeafBetween, Left: &left, Low: &low, High: &high}))
+		lowLeaf := logicalClassifiedLeaf(querylogical.Leaf{Kind: querylogical.LeafComparison, Left: &lowLeft, Right: &low, Operator: ">="})
+		highLeaf := logicalClassifiedLeaf(querylogical.Leaf{Kind: querylogical.LeafComparison, Left: &highLeft, Right: &high, Operator: "<="})
+		return querylogical.CombinePredicate(querylogical.PredicateAndOp, []querylogical.Predicate{
+			*querylogical.LeafPredicate(lowLeaf),
+			*querylogical.LeafPredicate(highLeaf),
+		})
 	default:
 		return nil
 	}

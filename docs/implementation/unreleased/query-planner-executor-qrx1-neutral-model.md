@@ -16,13 +16,13 @@ QRX1 introduces model and normalization seams only. Legacy query validation, pla
 | Existing public request/response messages | Generated client API; unchanged |
 | Existing physical planning and execution | `internal/daemon/api/client/query_service.go`; unchanged and still authoritative |
 
-The structured converter is intentionally owned by the daemon API adapter so the neutral query package does not depend on generated protobuf or daemon packages. GQL conversion remains inside `internal/query`, beside the parser/analyzer/planner vocabulary it consumes.
+The structured converter is intentionally owned by the daemon API adapter so the neutral query package does not depend on generated protobuf or daemon packages. A structured `GraphQuery` always requires read access, including when its ambient transaction is read-write; transaction capability remains execution context rather than statement semantics. GQL conversion remains inside `internal/query`, beside the parser/analyzer/planner vocabulary it consumes. GQL read operations retain normalization-only source comparisons before legacy equality folding, allowing namespaces and range syntax to reach the neutral model without changing the operational fields consumed by legacy execution.
 
 ## Neutral statement vocabulary
 
 `logical.Query` now represents:
 
-- source provenance and read-only/read-write access mode;
+- source provenance and statement-required read-only/read-write access mode;
 - explicit node IDs, labels, node and edge patterns;
 - directed and undirected relationship patterns;
 - inclusive traversal depth bounds;
@@ -101,7 +101,7 @@ This ensures production request shapes exercise both converters while preserving
 
 QRX1 tests require equivalent structured and GQL reads to produce equal `Query.Comparable()` values for:
 
-- typed equality and null predicates;
+- typed equality, range, and null predicates;
 - all aggregate functions;
 - distinct, offset, and limit;
 - scalar projections and output names;
@@ -113,11 +113,13 @@ Additional tests cover:
 - node, edge, scalar, tree, and path projection kinds;
 - node IDs, labels, edge aliases, directions, and depth bounds;
 - nested object/list/bool/number literals;
-- property, payload, and meta namespaces;
+- property, payload, and meta namespaces, including comparisons and ranges;
 - string, text, semantic, tag, exists, less-than, and between predicates;
+- field, literal, date, and current-date string-predicate operands;
 - semantic rule/binding metadata;
 - cursor and safety-limit capture;
 - read-write access mode;
+- default-versus-unknown structured aggregate functions;
 - all neutral result cells, counters, diagnostics, and typed errors;
 - lossless integers above the JSON-safe range.
 

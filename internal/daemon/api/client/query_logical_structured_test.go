@@ -8,7 +8,6 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/query/gql"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
-	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -39,7 +38,7 @@ func TestQRX1EquivalentStructuredAndGQLNodeQueriesNormalizeEqually(t *testing.T)
 		Distinct: true,
 		Offset:   1,
 		Limit:    5,
-	}, sessionmodel.TransactionModeReadOnly, 0, "")
+	}, 0, "")
 
 	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
 }
@@ -67,7 +66,7 @@ func TestQRX1EquivalentStructuredAndGQLPathQueriesNormalizeEqually(t *testing.T)
 		PathAlias: "path",
 		Returns:   []*clientv1.ReturnProjection{{Alias: "path", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_PATH}},
 		Limit:     10,
-	}, sessionmodel.TransactionModeReadOnly, 0, "")
+	}, 0, "")
 
 	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
 }
@@ -99,8 +98,115 @@ func TestQRX1EquivalentBoundPatternPropertiesNormalizeAsPredicates(t *testing.T)
 			{Alias: "r", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_EDGE},
 			{Alias: "b", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE},
 		},
-	}, sessionmodel.TransactionModeReadOnly, 0, "")
+	}, 0, "")
 
+	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
+}
+
+func TestQRX1EquivalentStructuredAndGQLStringQueriesNormalizeEqually(t *testing.T) {
+	plan, err := gql.Compile("MATCH (n:Note) WHERE n.title STARTS WITH 'Al' RETURN n")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	gqlQuery, ok := querylogical.FromGQLPlan(plan)
+	if !ok {
+		t.Fatal("GQL plan did not normalize")
+	}
+	structuredQuery := logicalQueryFromStructured(&clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
+		Where: &clientv1.Expr{Expr: &clientv1.Expr_StringPredicate{StringPredicate: &clientv1.StringPredicateExpr{
+			Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: "n", Name: "title"}}},
+			Query: "Al",
+			Mode:  clientv1.StringPredicateMode_STRING_PREDICATE_MODE_STARTS_WITH,
+		}}},
+		Returns: []*clientv1.ReturnProjection{{Alias: "n", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}},
+	}, 0, "")
+	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
+}
+
+func TestQRX1EquivalentStructuredAndGQLBetweenQueriesNormalizeEqually(t *testing.T) {
+	plan, err := gql.Compile("MATCH (n:Note) WHERE n.score BETWEEN 1 AND 10 RETURN n")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	gqlQuery, ok := querylogical.FromGQLPlan(plan)
+	if !ok {
+		t.Fatal("GQL plan did not normalize")
+	}
+	property := &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: "n", Name: "score"}}}
+	literal := func(number float64) *clientv1.ValueExpr {
+		return &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Literal{Literal: &clientv1.LiteralExpr{Value: structpb.NewNumberValue(number)}}}
+	}
+	structuredQuery := logicalQueryFromStructured(&clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
+		Where: &clientv1.Expr{Expr: &clientv1.Expr_Between{Between: &clientv1.BetweenExpr{
+			Value: property,
+			Low:   literal(1),
+			High:  literal(10),
+		}}},
+		Returns: []*clientv1.ReturnProjection{{Alias: "n", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}},
+	}, 0, "")
+
+	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
+}
+
+func TestQRX1StructuredStringPredicatePreservesEveryOperandKind(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *clientv1.ValueExpr
+		want querylogical.Value
+	}{
+		{name: "field", in: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: "n", Name: "payload.text"}}}, want: querylogical.FieldValue("n", "payload.text")},
+		{name: "literal", in: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Literal{Literal: &clientv1.LiteralExpr{Value: structpb.NewStringValue("Alpha")}}}, want: querylogical.NativeValue("Alpha")},
+		{name: "date", in: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Date{Date: &clientv1.DateExpr{Value: "2026-10-16", OffsetDays: -2}}}, want: querylogical.Value{Kind: querylogical.ValueDate, String: "2026-10-16", OffsetDays: -2}},
+		{name: "current date", in: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_CurrentDate{CurrentDate: &clientv1.CurrentDateExpr{OffsetDays: 3}}}, want: querylogical.Value{Kind: querylogical.ValueCurrentDate, OffsetDays: 3}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			predicate := logicalStructuredPredicate(&clientv1.Expr{Expr: &clientv1.Expr_StringPredicate{StringPredicate: &clientv1.StringPredicateExpr{
+				Value: test.in,
+				Query: "a",
+				Mode:  clientv1.StringPredicateMode_STRING_PREDICATE_MODE_CONTAINS,
+			}}})
+			if predicate == nil || predicate.Leaf == nil || predicate.Leaf.Operand == nil || !reflect.DeepEqual(*predicate.Leaf.Operand, test.want) {
+				t.Fatalf("operand = %+v, want %+v", predicate, test.want)
+			}
+		})
+	}
+}
+
+func TestQRX1StructuredAggregateDefaultAndUnknownRemainDistinct(t *testing.T) {
+	query := func(function clientv1.AggregateFunction) querylogical.Aggregate {
+		normalized := logicalQueryFromStructured(&clientv1.GraphQuery{
+			Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}},
+			AggregateReturns: []*clientv1.AggregateProjection{{
+				Function: function,
+				Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Star{Star: true}},
+			}},
+		}, 0, "")
+		return normalized.Aggregates[0]
+	}
+	if got := query(clientv1.AggregateFunction_AGGREGATE_FUNCTION_UNSPECIFIED); got.Function != querylogical.AggregateCount || got.OutputName != "count" {
+		t.Fatalf("unspecified aggregate = %+v, want count with default output", got)
+	}
+	if got := query(clientv1.AggregateFunction(999)); got.Function != querylogical.AggregateUnspecified {
+		t.Fatalf("unknown aggregate = %+v, want unspecified", got)
+	}
+
+	plan, err := gql.Compile("MATCH (n) RETURN COUNT(*)")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	gqlQuery, ok := querylogical.FromGQLPlan(plan)
+	if !ok {
+		t.Fatal("GQL plan did not normalize")
+	}
+	structuredQuery := logicalQueryFromStructured(&clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}},
+		AggregateReturns: []*clientv1.AggregateProjection{{
+			Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Star{Star: true}},
+		}},
+	}, 0, "")
 	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
 }
 
@@ -160,8 +266,8 @@ func TestQRX1StructuredAdapterPreservesCompleteTypedReadVocabulary(t *testing.T)
 		MaxEdges: 200,
 	}
 
-	got := logicalQueryFromStructured(query, sessionmodel.TransactionModeReadWrite, 25, "cursor-1")
-	if got.AccessMode != querylogical.AccessModeReadWrite || got.Page != (querylogical.PageSpec{Offset: 2, Limit: 5, Size: 25, Cursor: "cursor-1"}) || got.Safety != (querylogical.SafetyLimits{MaxNodes: 100, MaxEdges: 200}) {
+	got := logicalQueryFromStructured(query, 25, "cursor-1")
+	if got.AccessMode != querylogical.AccessModeReadOnly || got.Page != (querylogical.PageSpec{Offset: 2, Limit: 5, Size: 25, Cursor: "cursor-1"}) || got.Safety != (querylogical.SafetyLimits{MaxNodes: 100, MaxEdges: 200}) {
 		t.Fatalf("query context = %+v", got)
 	}
 	if len(got.Steps) != 1 || got.Steps[0].Edge.Direction != querylogical.DirectionIncoming || got.Steps[0].Depth != (querylogical.DepthBounds{Min: 0, Max: 2}) {
@@ -208,7 +314,7 @@ func TestQRX1StructuredNumericLiteralMatchesGQLNumericLiteral(t *testing.T) {
 		Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
 		Where:   &clientv1.Expr{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "n", Name: "rank", Value: structpb.NewNumberValue(2)}}},
 		Returns: []*clientv1.ReturnProjection{{Alias: "n", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}},
-	}, sessionmodel.TransactionModeReadOnly, 0, "")
+	}, 0, "")
 	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
 }
 

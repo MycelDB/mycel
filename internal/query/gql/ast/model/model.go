@@ -161,10 +161,11 @@ type PredicateLeafExpr struct {
 
 // PropertyComparison represents a variable.property = value predicate.
 type PropertyComparison struct {
-	Variable string
-	Property string
-	Operator ComparisonOperator
-	Value    Value
+	Variable  string
+	Namespace string
+	Property  string
+	Operator  ComparisonOperator
+	Value     Value
 }
 
 type ComparisonOperator string

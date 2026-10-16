@@ -118,6 +118,44 @@ func TestFromGQLPlanPreservesNamespacedTextAndSemanticPredicates(t *testing.T) {
 	}
 }
 
+func TestFromGQLPlanPreservesNamespacedComparisonsAndRanges(t *testing.T) {
+	plan, err := gql.Compile("MATCH (n:Note {score: 10}) WHERE n.payload.score = 10 AND n.meta.rank < 5 AND n.payload.weight BETWEEN 1 AND 3 AND n.meta.level BETWEEN 2 AND 4 RETURN n")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	query, ok := FromGQLPlan(plan)
+	if !ok {
+		t.Fatal("FromGQLPlan() ok = false")
+	}
+	leaves := append(append([]Leaf(nil), query.PredicatePlan.PushdownEligible...), query.PredicatePlan.Residual...)
+	got := map[string]map[string]bool{}
+	for _, leaf := range leaves {
+		if leaf.Kind != LeafComparison || leaf.Left == nil || leaf.Left.Field == nil {
+			continue
+		}
+		field := leaf.Left.Field
+		key := string(field.Namespace) + "." + field.Name
+		if got[key] == nil {
+			got[key] = map[string]bool{}
+		}
+		got[key][leaf.Operator] = true
+	}
+	want := map[string][]string{
+		"properties.score": {"="},
+		"payload.score":    {"="},
+		"meta.rank":        {"<"},
+		"payload.weight":   {">=", "<="},
+		"meta.level":       {">=", "<="},
+	}
+	for field, operators := range want {
+		for _, operator := range operators {
+			if !got[field][operator] {
+				t.Fatalf("missing %s %s in comparisons: %+v", field, operator, leaves)
+			}
+		}
+	}
+}
+
 func TestFromGQLPlanRejectsMutationAsReadQuery(t *testing.T) {
 	plan, err := gql.Compile("INSERT (:Note {title: 'new'})")
 	if err != nil {

@@ -38,9 +38,9 @@ func FromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Query, bool)
 		q := base
 		q.Start = gqlNodePattern(op.Variable, op.Labels, nil)
 		q.Predicate = combineGQLPredicates(
-			propertiesPredicate(op.Variable, op.Properties),
+			propertiesPredicate(op.Variable, gqlPatternProperties(op.Variable, op.Properties, op.SourceComparisons, op.SourcePatternProperties)),
 			fromGQLPredicate(op.Predicate),
-			legacyGQLPredicate(op.Predicate, op.ComparisonPredicates, op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
+			legacyGQLPredicate(op.Predicate, gqlSourceComparisons(op.SourceComparisons, op.ComparisonPredicates), op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
 		)
 		q.Returns = fromGQLReturns(op.Returns, map[string]ProjectionKind{op.Variable: ProjectionNode})
 		q.Aggregates = fromGQLAggregates(op.Aggregates)
@@ -56,16 +56,16 @@ func FromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Query, bool)
 		q.Start = gqlNodePattern(op.Start.Variable, op.Start.Labels, nil)
 		q.PathAlias = op.PathVariable
 		predicates := []*Predicate{
-			propertiesPredicate(op.Start.Variable, op.Start.Properties),
+			propertiesPredicate(op.Start.Variable, gqlPatternProperties(op.Start.Variable, op.Start.Properties, op.SourceComparisons, op.SourcePatternProperties)),
 			fromGQLPredicate(op.Predicate),
-			legacyGQLPredicate(op.Predicate, op.ComparisonPredicates, op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
+			legacyGQLPredicate(op.Predicate, gqlSourceComparisons(op.SourceComparisons, op.ComparisonPredicates), op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
 		}
 		projectionKinds := map[string]ProjectionKind{op.Start.Variable: ProjectionNode}
 		if op.PathVariable != "" {
 			projectionKinds[op.PathVariable] = ProjectionPath
 		}
 		for _, segment := range op.Segments {
-			step, patternPredicates := fromGQLSegment(segment)
+			step, patternPredicates := fromGQLSegment(segment, op.SourceComparisons, op.SourcePatternProperties)
 			q.Steps = append(q.Steps, step)
 			predicates = append(predicates, patternPredicates...)
 			projectionKinds[segment.Relationship.Variable] = ProjectionEdge
@@ -85,11 +85,11 @@ func FromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Query, bool)
 	case planmodel.QueryPatternOperation:
 		q := base
 		q.Start = gqlNodePattern(op.Start.Variable, op.Start.Labels, nil)
-		step, patternPredicates := fromGQLSegment(planmodel.PathSegment{Relationship: op.Relationship, Node: op.End})
+		step, patternPredicates := fromGQLSegment(planmodel.PathSegment{Relationship: op.Relationship, Node: op.End}, op.SourceComparisons, op.SourcePatternProperties)
 		q.Predicate = combineGQLPredicates(append([]*Predicate{
-			propertiesPredicate(op.Start.Variable, op.Start.Properties),
+			propertiesPredicate(op.Start.Variable, gqlPatternProperties(op.Start.Variable, op.Start.Properties, op.SourceComparisons, op.SourcePatternProperties)),
 			fromGQLPredicate(op.Predicate),
-			legacyGQLPredicate(op.Predicate, op.ComparisonPredicates, op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
+			legacyGQLPredicate(op.Predicate, gqlSourceComparisons(op.SourceComparisons, op.ComparisonPredicates), op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
 		}, patternPredicates...)...)
 		q.Steps = []Step{step}
 		q.Returns = fromGQLReturns(op.Returns, map[string]ProjectionKind{
@@ -127,6 +127,40 @@ func gqlEdgePattern(pattern planmodel.RelationshipPattern) EdgePattern {
 	}
 }
 
+func gqlSourceComparisons(source []planmodel.ComparisonPredicate, legacy []planmodel.ComparisonPredicate) []planmodel.ComparisonPredicate {
+	if len(source) == 0 {
+		return legacy
+	}
+	comparisons := make([]planmodel.ComparisonPredicate, 0, len(source)+len(legacy))
+	comparisons = append(comparisons, source...)
+	comparisons = append(comparisons, legacy...)
+	return comparisons
+}
+
+func gqlPatternProperties(alias string, properties map[string]any, source []planmodel.ComparisonPredicate, sourcePatterns map[string]map[string]any) map[string]any {
+	if len(properties) == 0 || len(source) == 0 {
+		return properties
+	}
+	filtered := make(map[string]any, len(properties))
+	for key, value := range properties {
+		filtered[key] = value
+	}
+	for _, comparison := range source {
+		if comparison.Variable != alias || (comparison.Operator != "" && comparison.Operator != planmodel.ComparisonEqual) {
+			continue
+		}
+		if original, ok := sourcePatterns[alias][comparison.Property]; ok {
+			filtered[comparison.Property] = original
+		} else {
+			delete(filtered, comparison.Property)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
 func typedPropertyMap(properties map[string]any) map[string]Value {
 	if len(properties) == 0 {
 		return nil
@@ -138,16 +172,21 @@ func typedPropertyMap(properties map[string]any) map[string]Value {
 	return out
 }
 
-func fromGQLSegment(segment planmodel.PathSegment) (Step, []*Predicate) {
-	edge := gqlEdgePattern(segment.Relationship)
-	target := gqlNodePattern(segment.Node.Variable, segment.Node.Labels, segment.Node.Properties)
+func fromGQLSegment(segment planmodel.PathSegment, sourceComparisons []planmodel.ComparisonPredicate, sourcePatterns map[string]map[string]any) (Step, []*Predicate) {
+	edgeProperties := gqlPatternProperties(segment.Relationship.Variable, segment.Relationship.Properties, sourceComparisons, sourcePatterns)
+	targetProperties := gqlPatternProperties(segment.Node.Variable, segment.Node.Properties, sourceComparisons, sourcePatterns)
+	edge := gqlEdgePattern(planmodel.RelationshipPattern{
+		Variable: segment.Relationship.Variable, Labels: segment.Relationship.Labels, Properties: edgeProperties,
+		Direction: segment.Relationship.Direction, Quantifier: segment.Relationship.Quantifier,
+	})
+	target := gqlNodePattern(segment.Node.Variable, segment.Node.Labels, targetProperties)
 	predicates := make([]*Predicate, 0, 2)
 	if edge.Alias != "" && len(edge.Properties) > 0 {
-		predicates = append(predicates, propertiesPredicate(edge.Alias, segment.Relationship.Properties))
+		predicates = append(predicates, propertiesPredicate(edge.Alias, edgeProperties))
 		edge.Properties = nil
 	}
 	if target.Alias != "" && len(target.Properties) > 0 {
-		predicates = append(predicates, propertiesPredicate(target.Alias, segment.Node.Properties))
+		predicates = append(predicates, propertiesPredicate(target.Alias, targetProperties))
 		target.Properties = nil
 	}
 	return Step{Edge: edge, Depth: gqlDepth(segment.Relationship.Quantifier), Target: target}, predicates
@@ -241,16 +280,16 @@ func legacyGQLPredicate(tree *planmodel.PredicateExpr, comparisons []planmodel.C
 	}
 	terms := make([]Predicate, 0, len(comparisons)+len(nulls)+len(stringsPred)+len(texts)+len(semantics))
 	for _, predicate := range comparisons {
-		left, right := FieldValue(predicate.Variable, predicate.Property), NativeValue(predicate.Value)
-		terms = append(terms, *LeafPredicate(classifyLeaf(Leaf{Kind: LeafComparison, Left: &left, Right: &right, Operator: string(predicate.Operator)})))
+		left, right := gqlFieldValue(predicate.Variable, predicate.Namespace, predicate.Property), NativeValue(predicate.Value)
+		terms = append(terms, *LeafPredicate(classifyLeaf(Leaf{Kind: LeafComparison, Left: &left, Right: &right, Operator: gqlComparisonOperator(predicate.Operator)})))
 	}
 	for _, predicate := range nulls {
 		field := FieldRef{Alias: predicate.Variable, Namespace: namespaceOrDefault(predicate.Namespace), Name: predicate.Property}
 		terms = append(terms, *LeafPredicate(classifyLeaf(Leaf{Kind: LeafNull, Field: &field, IsNull: predicate.IsNull})))
 	}
 	for _, predicate := range stringsPred {
-		field := FieldRef{Alias: predicate.Variable, Namespace: namespaceOrDefault(predicate.Namespace), Name: predicate.Property}
-		terms = append(terms, *LeafPredicate(classifyLeaf(Leaf{Kind: LeafString, Field: &field, Operator: string(predicate.Operator), Query: predicate.Query})))
+		operand := gqlFieldValue(predicate.Variable, predicate.Namespace, predicate.Property)
+		terms = append(terms, *LeafPredicate(classifyLeaf(Leaf{Kind: LeafString, Operand: &operand, Operator: string(predicate.Operator), Query: predicate.Query})))
 	}
 	for _, predicate := range texts {
 		field := FieldRef{Alias: predicate.Variable, Namespace: namespaceOrDefault(predicate.Namespace), Name: predicate.Property}
@@ -325,8 +364,8 @@ func fromGQLLeaf(leaf planmodel.PredicateLeafExpr) Leaf {
 		if leaf.Comparison == nil {
 			return Leaf{}
 		}
-		left, right := FieldValue(leaf.Comparison.Variable, leaf.Comparison.Property), NativeValue(leaf.Comparison.Value)
-		return Leaf{Kind: LeafComparison, Left: &left, Right: &right, Operator: string(leaf.Comparison.Operator)}
+		left, right := gqlFieldValue(leaf.Comparison.Variable, leaf.Comparison.Namespace, leaf.Comparison.Property), NativeValue(leaf.Comparison.Value)
+		return Leaf{Kind: LeafComparison, Left: &left, Right: &right, Operator: gqlComparisonOperator(leaf.Comparison.Operator)}
 	case planmodel.PredicateLeafNull:
 		if leaf.Null == nil {
 			return Leaf{}
@@ -337,8 +376,8 @@ func fromGQLLeaf(leaf planmodel.PredicateLeafExpr) Leaf {
 		if leaf.String == nil {
 			return Leaf{}
 		}
-		field := FieldRef{Alias: leaf.String.Variable, Namespace: namespaceOrDefault(leaf.String.Namespace), Name: leaf.String.Property}
-		return Leaf{Kind: LeafString, Field: &field, Operator: string(leaf.String.Operator), Query: leaf.String.Query}
+		operand := gqlFieldValue(leaf.String.Variable, leaf.String.Namespace, leaf.String.Property)
+		return Leaf{Kind: LeafString, Operand: &operand, Operator: string(leaf.String.Operator), Query: leaf.String.Query}
 	case planmodel.PredicateLeafText:
 		if leaf.Text == nil {
 			return Leaf{}
@@ -354,6 +393,20 @@ func fromGQLLeaf(leaf planmodel.PredicateLeafExpr) Leaf {
 	default:
 		return Leaf{}
 	}
+}
+
+func gqlComparisonOperator(operator planmodel.ComparisonOperator) string {
+	if operator == "" {
+		return "="
+	}
+	return string(operator)
+}
+
+func gqlFieldValue(alias string, namespace string, name string) Value {
+	if typed := namespaceOrDefault(namespace); typed != NamespaceProperties {
+		name = string(typed) + "." + name
+	}
+	return FieldValue(alias, name)
 }
 
 func namespaceOrDefault(namespace string) FieldNamespace {
@@ -397,6 +450,9 @@ func ClassifyPredicates(predicate *Predicate) PredicatePlan {
 
 func classifyLeaf(leaf Leaf) Leaf {
 	field := leaf.Field
+	if field == nil && leaf.Operand != nil && leaf.Operand.Kind == ValueField {
+		field = leaf.Operand.Field
+	}
 	if field == nil && leaf.Left != nil && leaf.Left.Kind == ValueField {
 		field = leaf.Left.Field
 	}
@@ -452,6 +508,9 @@ func sortLeaves(leaves []Leaf) {
 
 func leafSortKey(leaf Leaf) string {
 	field := leaf.Field
+	if field == nil && leaf.Operand != nil {
+		field = leaf.Operand.Field
+	}
 	if field == nil && leaf.Left != nil {
 		field = leaf.Left.Field
 	}

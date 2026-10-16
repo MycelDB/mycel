@@ -369,10 +369,12 @@ const (
 )
 
 // Leaf represents one typed predicate. Left/Right are used for comparisons,
-// Left/Low/High for ranges, and Field for field-specific predicates.
+// Left/Low/High for ranges, Operand for string predicates, and Field for
+// field-specific predicates.
 type Leaf struct {
 	Kind                LeafKind  `json:"kind"`
 	Field               *FieldRef `json:"field,omitempty"`
+	Operand             *Value    `json:"operand,omitempty"`
 	Left                *Value    `json:"left,omitempty"`
 	Right               *Value    `json:"right,omitempty"`
 	Low                 *Value    `json:"low,omitempty"`

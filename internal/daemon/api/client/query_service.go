@@ -112,7 +112,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err := validateStructuredQuerySafety(req.GetQuery()); err != nil {
 		return nil, err
 	}
-	_ = logicalQueryFromStructured(req.GetQuery(), tx.Mode, req.GetPageSize(), req.GetPageToken())
+	_ = logicalQueryFromStructured(req.GetQuery(), req.GetPageSize(), req.GetPageToken())
 	domain, err := s.visibleTransactionDomain(ctx, principal.PrincipalID, tx)
 	if err != nil {
 		return nil, err
@@ -245,7 +245,7 @@ func (s *QueryService) ExplainQuery(ctx context.Context, req *clientv1.ExplainQu
 	if err := validateStructuredGraphQueryWithSchema(req.GetQuery(), schemaCtx); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	_ = logicalQueryFromStructured(req.GetQuery(), tx.Mode, 0, "")
+	_ = logicalQueryFromStructured(req.GetQuery(), 0, "")
 	diag := s.explainStructuredGraphQuery(req.GetQuery(), schemaCtx, domain)
 	diag.ExplainOnly = true
 	diag.PlanningMillis = time.Since(start).Milliseconds()

@@ -124,6 +124,35 @@ func TestPlannerPlansMatchWhereAnalysis(t *testing.T) {
 	}
 }
 
+func TestPlannerPreservesNamespacedSourceComparisonWithoutChangingLegacyFields(t *testing.T) {
+	a := analysis.Analysis{
+		AccessMode: analysis.ReadOnly,
+		Query: ast.Query{Statement: ast.MatchStatement{
+			Pattern: ast.NodePattern{Variable: "n", Labels: []string{"Note"}, Properties: []ast.Property{{Key: "score", Value: ast.Value{Kind: ast.IntValue, Value: int64(10)}}}},
+			Where: &ast.WhereClause{Predicates: []ast.PropertyComparison{{
+				Variable: "n", Namespace: "payload", Property: "score", Value: ast.Value{Kind: ast.IntValue, Value: int64(10)},
+			}}},
+			Returns: []ast.ReturnItem{{Kind: ast.ReturnVariable, Variable: "n"}},
+		}},
+	}
+	plan, err := Plan(a)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	op := plan.Operations[0].(planmodel.QueryNodesOperation)
+	if !reflect.DeepEqual(op.Properties, map[string]any{"score": int64(10)}) || len(op.ComparisonPredicates) != 0 {
+		t.Fatalf("legacy operational fields changed: properties=%#v comparisons=%#v", op.Properties, op.ComparisonPredicates)
+	}
+	wantSource := []planmodel.ComparisonPredicate{{Variable: "n", Namespace: "payload", Property: "score", Value: int64(10)}}
+	if !reflect.DeepEqual(op.SourceComparisons, wantSource) {
+		t.Fatalf("SourceComparisons = %#v, want %#v", op.SourceComparisons, wantSource)
+	}
+	wantPatternProperties := map[string]map[string]any{"n": {"score": int64(10)}}
+	if !reflect.DeepEqual(op.SourcePatternProperties, wantPatternProperties) {
+		t.Fatalf("SourcePatternProperties = %#v, want %#v", op.SourcePatternProperties, wantPatternProperties)
+	}
+}
+
 func TestPlannerRejectsConflictingInlineAndWhereProperty(t *testing.T) {
 	a := analysis.Analysis{
 		AccessMode: analysis.ReadOnly,
