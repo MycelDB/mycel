@@ -19,23 +19,27 @@ The baseline has four parts:
 
 ## Query surface map
 
-| Capability | Structured Query API | GQL | Baseline coverage |
+| Capability | Structured Query API | GQL | Parity expectation and baseline coverage |
 | --- | --- | --- | --- |
-| Broad label/node read | Supported through broad fallback | Supported through GQL fallback | `TestQRX0StructuredAndGQLReadConformance/broad_label_scan` |
-| Indexed equality read | Ordered property equality scan | GQL is translated through structured indexed execution | `TestQRX0StructuredAndGQLReadConformance/indexed_equality` |
-| Indexed ordered read | Ordered property scan | GQL is translated through structured indexed execution | `TestQRX0StructuredAndGQLReadConformance/indexed_order` |
-| Aggregation | Structured aggregate projections | GQL aggregate returns | `TestQRX0StructuredAndGQLReadConformance/aggregate_count` and existing aggregate suites |
-| Compound indexed predicates | `AND` intersection and `OR` union | Accepted indexed predicate subset | Existing `TestQueryServiceExecuteQueryIndexedPredicate*` and `TestQueryServiceExecuteGQLUsesIndexedPredicateInSearchDisabledDomain` |
-| Property existence/string/text | Indexed/residual accepted subsets | Indexed/residual accepted subsets | Existing indexed property/string/text tests |
-| Semantic predicate | Semantic candidate source with graph hydration | Accepted GQL semantic subset | Existing semantic vector and fail-closed tests |
-| Adjacency read | Explicit-node adjacency index | Accepted GQL/structured path subsets | Existing adjacency tests plus `TestQRX0AdjacencyAccessProfile` |
-| Bounded path | Explicit-ID, label, tag, and ordered-index starts | Accepted indexed GQL path subset | Existing indexed path tests |
-| Subtree/tree result | Indexed root/subtree execution | Accepted indexed GQL root/subtree subset | Existing root subtree tests |
-| Path value and graph envelope | Supported accepted structured shape | Supported | Existing structured/GQL path value tests |
-| Order/distinct/offset/limit | Supported accepted indexed and broad shapes | Supported accepted indexed and broad shapes | Existing shaping and aggregate tests |
-| GQL mutation/script | Not part of structured read API | Insert, set, delete, merge, relationships, scripts | GQL layer tests and `graph_service_edge_test.go` |
+| Broad label/scalar read | Supported through broad fallback | Supported through GQL fallback | Typed result parity: `TestQRX0StructuredAndGQLReadConformance/broad_label_scan` and `TestQRX0StructuredAndGQLPredicateShapingEquivalence/label_and_scalar_projection` |
+| Indexed equality read | Ordered property equality scan | GQL is translated through structured indexed execution | Typed result and access-class parity: `TestQRX0StructuredAndGQLReadConformance/indexed_equality` |
+| Equality, range, null, string, and text predicates | Structured expressions | Equivalent GQL expressions | Typed row/counter/graph parity: `TestQRX0StructuredAndGQLPredicateShapingEquivalence` |
+| Indexed ordered read | Ordered property scan | GQL is translated through structured indexed execution | Typed result, ordering, and access-class parity: `TestQRX0StructuredAndGQLReadConformance/indexed_order` |
+| Distinct, grouping, and aggregation | Structured projections | GQL return shaping | Typed result parity: `TestQRX0StructuredAndGQLPredicateShapingEquivalence` and `TestQRX0StructuredAndGQLReadConformance/aggregate_count` |
+| Response pagination | Structured page size/token | GQL page size/token | Exact typed page and token parity over all three indexed pages: `TestQRX0IndexedPaginationEquivalence` |
+| Query offset/limit | Structured offset/limit | GQL `OFFSET`/`FETCH` | Known indexed mismatch frozen in `TestQRX0IndexedPaginationEquivalence`; see below |
+| Compound indexed predicates | `AND` intersection and `OR` union | Accepted indexed predicate subset | Same indexed translation path; individual behavior is covered by `TestQueryServiceExecuteQueryIndexedPredicate*` and `TestQueryServiceExecuteGQLUsesIndexedPredicateInSearchDisabledDomain` |
+| Semantic predicate | Semantic candidate source with graph hydration | Equivalent `SEMANTIC_SIMILAR` | Typed result parity and search work profile: `TestQRX0SemanticPredicateEquivalenceAndSearchProfile` |
+| Adjacency read and edge projection | Explicit-node adjacency index | Relationship pattern | Typed identity/content parity after the classified temporal-metadata normalization: `TestQRX0TraversalAndProjectionEquivalence` |
+| Bounded path and path projection | Explicit-ID, label, tag, and ordered-index starts | Accepted indexed GQL path subset | Exact typed path and graph-envelope parity: `TestQRX0TraversalAndProjectionEquivalence` |
+| Subtree/tree/graph projection | Indexed root/subtree execution | Indexed `RETURN GRAPH` path | Exact typed row, tree, graph-envelope, counter, and ordering parity after aligning output names: `TestQRX0SubtreeTreeAndGraphProjectionEquivalence` |
+| Explicit node-ID selector | Supported in `NodePattern.node_ids` | No textual node-ID selector exists in the current grammar | Intentional surface mismatch; structured behavior remains covered by adjacency/path tests |
+| Tag selector | Structured `HasTagExpr` and tag-index path starts | No equivalent GQL tag predicate exists in the current grammar | Intentional surface mismatch; structured behavior remains covered by indexed tag-path tests |
+| Node/edge/scalar/tree/path/graph values | Supported | Supported accepted subsets | Typed protobuf comparisons cover every value family across the predicate, traversal, and subtree equivalence tests |
+| Schema and domain-policy errors | Supported | Supported | Equivalent validation policy; surface-specific cases remain covered by `query_service_schema_test.go`, `direct_only_test.go`, and indexed fail-closed tests |
+| GQL mutation/script | Not part of the structured read API | Insert, set, delete, merge, relationships, scripts | Intentional surface difference; GQL behavior is covered by GQL layer tests and `graph_service_edge_test.go` |
 
-The QRX0 conformance table intentionally compares neutral observable values and plan classifications rather than requiring byte-identical structured and GQL responses. Field names are aligned explicitly in each pair. Unordered broad results are normalized before comparison.
+Parity checks clone the complete protobuf `QueryResult`, preserve scalar types, compare counters and page tokens, sort only semantically unordered rows and graph entity sets, and then use protobuf equality. Ordered rows and path/tree ordering are never sorted. This detects string-versus-number differences and graph identity/content differences rather than comparing rendered scalar strings or graph counts. Read metadata and the stable access classification are checked separately.
 
 ## Transaction and consistency matrix
 
@@ -51,10 +55,11 @@ The QRX0 conformance table intentionally compares neutral observable values and 
 | Strict schema | Unknown labels/fields and invalid endpoint shapes are rejected | `query_service_schema_test.go` and indexed strict-schema tests |
 | Domain policy | Disabled/broad-search/semantic policies fail closed where required | `direct_only_test.go` and indexed semantic tests |
 | Cancellation | A canceled structured or GQL request fails before graph data access | `TestQRX0CanceledRequestsStopBeforeGraphAccess` |
+| Graph/search errors | Both surfaces fail closed; semantic error status agrees, while the graph error status mismatch is explicitly frozen | `TestQRX0StructuredAndGQLGraphAndSearchErrorsFailClosed` |
 
 ## Graph access instrumentation
 
-`query_service_qrx0_instrumentation_test.go` provides a test-only graph manager wrapper. It embeds the production graph manager and records calls, requested limits, and returned entity counts for query-facing operations:
+`query_service_qrx0_instrumentation_test.go` provides test-only graph and semantic wrappers. The graph wrapper embeds the production graph manager and records calls, requested limits, returned entity counts, and the `IndexedReadStats` reported by query-facing operations:
 
 ```text
 GetNode
@@ -68,7 +73,9 @@ ScanAdjacency
 ScanSubtree
 ```
 
-The wrapper avoids duplicating the complete graph manager interface and can be reused by later tranches to compare legacy and extracted physical execution.
+The consolidated work profile records index entries/candidates examined, nodes and edges loaded, node reads, adjacency calls, intermediate rows, and returned rows. Response diagnostics supply row counts. The semantic wrapper records search calls, requested limits, and candidates returned to the query layer. At this interface boundary the returned candidate set is the set examined by query execution; vector-backend candidates discarded inside the semantic subsystem are not observable here.
+
+The wrappers avoid duplicating the complete graph manager and semantic search interfaces and can be reused by later tranches to compare legacy and extracted physical execution.
 
 ### Recorded indexed baseline
 
@@ -77,7 +84,8 @@ An ordered property query with a one-row response page:
 - configures schema indexes through the existing request path;
 - calls `ScanNodePropertyOrdered` with a finite positive limit;
 - does not call `ListNodes` or `ListEdges`;
-- reports a non-full-scan indexed plan.
+- reports a non-full-scan indexed plan;
+- records index entries/candidates, loaded nodes, intermediate rows, and returned rows.
 
 Coverage:
 
@@ -92,7 +100,8 @@ A one-hop explicit-node traversal:
 - loads the explicit start node;
 - calls `ScanAdjacency` with the requested page limit;
 - hydrates the endpoint node;
-- does not call `ListNodes` or `ListEdges`.
+- does not call `ListNodes` or `ListEdges`;
+- records candidate, node, edge, adjacency-call, and returned-row work.
 
 Coverage:
 
@@ -145,6 +154,15 @@ TestQRX0LegacyGraphAccessProfiles/GQL_broad_node_page_materializes_nodes_but_not
 
 The returned rows are conformant, but the execution work is not. QRX9 is expected to replace both paths with one bounded node scan.
 
+### Classified structured/GQL mismatches
+
+QRX0 records four existing surface differences rather than silently declaring them conformant:
+
+1. **Indexed GQL offset is ignored.** For `ORDER BY ... OFFSET 1 FETCH FIRST 1 ROW ONLY`, the structured request returns the second ordered row while the indexed GQL bridge returns the first. `TestQRX0IndexedPaginationEquivalence` freezes both outcomes. This is a bug to correct when the shared logical model owns shaping; it is not a behavior that the extracted executor should preserve indefinitely.
+2. **Broad GQL entity projections omit temporal metadata.** Broad GQL nodes/edges omit `create_time` and `update_time` that structured graph projections include. `TestQRX0TraversalAndProjectionEquivalence` first requires that the mismatch still exists, then clears only those temporal fields and requires exact typed identity/content parity. A fix must remove that explicit normalization and update this inventory.
+3. **Injected graph read errors have different status mappings.** The structured fallback maps a `ListNodes` failure to `Internal`; broad GQL currently maps the same failure to `InvalidArgument`. `TestQRX0StructuredAndGQLGraphAndSearchErrorsFailClosed` freezes this difference while requiring both surfaces to fail closed. The shared engine should converge on one typed error mapping rather than preserve the mismatch.
+4. **Explicit node-ID and tag selectors have no textual GQL equivalent.** These are intentional current surface differences, not parity failures. The neutral model must represent them without inventing unsupported GQL syntax.
+
 ### Indexed GQL is translated back to structured protobuf
 
 Accepted indexed GQL plans are currently converted into generated protobuf `GraphQuery` values and sent through the structured indexed dispatcher. This preserves useful parity but reverses the desired dependency direction. QRX7 removes the round trip after both surfaces compile to one neutral logical plan.
@@ -181,9 +199,17 @@ multi-start adjacency:
 multi:eyJzdGFydF9pbmRleCI6MSwiZWRnZV9jdXJzb3IiOiJlZGdlLWtleSIsInJvd3NfcmV0dXJuZWQiOjN9
 ```
 
-The fixture test also records compatibility behavior for raw single-source index and adjacency tokens that do not carry an envelope prefix.
+The decoder fixture also records compatibility behavior for raw single-source index and adjacency tokens that do not carry an envelope prefix. Two deterministic service-level tests use fixed entity IDs and literal historical raw tokens to resume real ordered-index and single-start adjacency queries:
 
-These fixtures freeze decoding compatibility, not the long-term encoding design.
+```text
+ordered index raw token:
+czoyMDI2LTA3LTE4ADAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMQ
+
+single-start adjacency raw token:
+dTowOTIyMzM3MjAzNjg1NDc3NTgwOAAwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMjE
+```
+
+Coverage is `TestQRX0LegacyRawOrderedIndexCursorResumesQuery` and `TestQRX0LegacyRawAdjacencyCursorResumesQuery`. These fixtures freeze decoding and service-resumption compatibility, not the long-term encoding design.
 
 ## Compatibility classifications
 
@@ -192,7 +218,7 @@ These fixtures freeze decoding compatibility, not the long-term encoding design.
 - authorization, transaction, domain, and routing decisions;
 - snapshot and overlay visibility;
 - schema and domain-policy validation;
-- result values, graph envelopes, counters, and explicit ordering;
+- typed result values, graph identities/content, counters, and explicit ordering, except for the classified temporal-metadata and indexed-offset bugs;
 - strong-read metadata and fail-closed cluster behavior;
 - current accepted indexed shapes until an explicit behavior change is reviewed;
 - compatible legacy page-token decoding where practical;

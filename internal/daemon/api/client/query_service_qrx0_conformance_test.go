@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -11,6 +12,8 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -114,7 +117,7 @@ func TestQRX0StructuredAndGQLReadConformance(t *testing.T) {
 			if !reflect.DeepEqual(structuredValues, tt.want) {
 				t.Fatalf("values = %v, want %v", structuredValues, tt.want)
 			}
-			assertQRX0ResponseMetadataParity(t, structured, gql)
+			assertQRX0ResponseMetadataParity(t, structured, gql, tt.sortValues)
 			if got := structured.GetDiagnostics().GetPlan(); got != tt.structuredPlan {
 				t.Fatalf("structured plan = %q, want %q", got, tt.structuredPlan)
 			}
@@ -195,6 +198,7 @@ func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExecuteQuery() error = %v", err)
 		}
+		profile.recordDiagnostics(res.GetDiagnostics())
 		if res.GetDiagnostics().GetFullScan() || profile.callCount("ScanNodePropertyOrdered") == 0 {
 			t.Fatalf("diagnostics=%+v profile=%+v", res.GetDiagnostics(), profile.callsSnapshot())
 		}
@@ -204,6 +208,10 @@ func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
 		limits := profile.requestedLimits("ScanNodePropertyOrdered")
 		if len(limits) == 0 || limits[0] <= 0 {
 			t.Fatalf("ordered scan limits = %v, want finite positive limit", limits)
+		}
+		work := profile.workSnapshot()
+		if work.IndexEntriesScanned == 0 || work.CandidatesExamined == 0 || work.NodesLoaded == 0 || work.ReturnedRows != 1 {
+			t.Fatalf("ordered scan work = %+v, want index/candidate/node work and one returned row", work)
 		}
 	})
 
@@ -215,6 +223,7 @@ func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExecuteQuery() error = %v", err)
 		}
+		profile.recordDiagnostics(res.GetDiagnostics())
 		if !res.GetDiagnostics().GetFullScan() || profile.callCount("ListNodes") == 0 || profile.callCount("ListEdges") == 0 {
 			t.Fatalf("legacy structured fallback baseline changed: diagnostics=%+v calls=%+v", res.GetDiagnostics(), profile.callsSnapshot())
 		}
@@ -230,6 +239,7 @@ func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExecuteGQL() error = %v", err)
 		}
+		profile.recordDiagnostics(res.GetDiagnostics())
 		if !res.GetDiagnostics().GetFullScan() || profile.callCount("ListNodes") == 0 || profile.callCount("ListEdges") != 0 {
 			t.Fatalf("legacy GQL fallback baseline changed: diagnostics=%+v calls=%+v", res.GetDiagnostics(), profile.callsSnapshot())
 		}
@@ -247,6 +257,36 @@ func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
 		}
 		if !res.GetDiagnostics().GetExplainOnly() || profile.dataReadCalls() != 0 {
 			t.Fatalf("Explain diagnostics=%+v data_read_calls=%d", res.GetDiagnostics(), profile.dataReadCalls())
+		}
+	})
+}
+
+func TestQRX0StructuredAndGQLGraphAndSearchErrorsFailClosed(t *testing.T) {
+	t.Run("graph read error", func(t *testing.T) {
+		fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+		failingGraph := &qrx0ListNodesErrorGraph{Manager: fixture.graphs, err: errors.New("injected graph read failure")}
+		querySvc := NewQueryService(fixture.sessions, failingGraph, fixture.spaces)
+		readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+		structuredQuery := &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}}}
+		_, structuredErr := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: structuredQuery})
+		_, gqlErr := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (n:Note) RETURN n"})
+		if status.Code(structuredErr) != codes.Internal || status.Code(gqlErr) != codes.InvalidArgument {
+			t.Fatalf("legacy graph error mismatch changed: structured=%v (%v) GQL=%v (%v)", status.Code(structuredErr), structuredErr, status.Code(gqlErr), gqlErr)
+		}
+	})
+
+	t.Run("semantic search error", func(t *testing.T) {
+		fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
+		querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSemanticManager(&qrx0SemanticErrorSearcher{err: errors.New("injected semantic failure")})
+		readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+		structuredQuery := &clientv1.GraphQuery{
+			Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
+			Where: &clientv1.Expr{Expr: &clientv1.Expr_Semantic{Semantic: &clientv1.SemanticSearchExpr{Alias: "n", Query: "needle", Limit: 5}}},
+		}
+		_, structuredErr := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: structuredQuery})
+		_, gqlErr := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (n:Note) WHERE SEMANTIC_SIMILAR(n, 'needle', TOP 5) RETURN n"})
+		if status.Code(structuredErr) == codes.OK || status.Code(structuredErr) != status.Code(gqlErr) {
+			t.Fatalf("semantic error codes: structured=%v (%v) GQL=%v (%v)", status.Code(structuredErr), structuredErr, status.Code(gqlErr), gqlErr)
 		}
 	})
 }
@@ -287,9 +327,11 @@ func TestQRX0AdjacencyAccessProfile(t *testing.T) {
 	querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces)
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	query := referenceQuery(source, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, "")
-	if _, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 1}); err != nil {
+	res, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 1})
+	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
+	profile.recordDiagnostics(res.GetDiagnostics())
 	if profile.callCount("ScanAdjacency") == 0 || profile.callCount("GetNode") < 2 {
 		t.Fatalf("adjacency profile calls = %+v", profile.callsSnapshot())
 	}
@@ -299,6 +341,10 @@ func TestQRX0AdjacencyAccessProfile(t *testing.T) {
 	limits := profile.requestedLimits("ScanAdjacency")
 	if len(limits) == 0 || limits[0] != 1 {
 		t.Fatalf("adjacency scan limits = %v, want first limit 1", limits)
+	}
+	work := profile.workSnapshot()
+	if work.IndexEntriesScanned == 0 || work.CandidatesExamined == 0 || work.NodesLoaded < 2 || work.EdgesLoaded == 0 || work.ReturnedRows != 1 {
+		t.Fatalf("adjacency work = %+v, want candidate/node/edge work and one returned row", work)
 	}
 }
 
@@ -356,9 +402,10 @@ func executeQRX0NoteTitlePair(t *testing.T, fixture domainPolicyClientAPIFixture
 	return structured, gql
 }
 
-func assertQRX0ResponseMetadataParity(t *testing.T, structured *clientv1.ExecuteQueryResponse, gql *clientv1.ExecuteGQLResponse) {
+func assertQRX0ResponseMetadataParity(t *testing.T, structured *clientv1.ExecuteQueryResponse, gql *clientv1.ExecuteGQLResponse, unorderedRows bool) {
 	t.Helper()
 	structuredResult, gqlResult := structured.GetResult(), gql.GetResult()
+	assertQRX0TypedResultParity(t, structuredResult, gqlResult, unorderedRows, false)
 	if !proto.Equal(structured.GetReadMetadata(), gql.GetReadMetadata()) {
 		t.Fatalf("read metadata differs: structured=%+v GQL=%+v", structured.GetReadMetadata(), gql.GetReadMetadata())
 	}
@@ -367,9 +414,6 @@ func assertQRX0ResponseMetadataParity(t *testing.T, structured *clientv1.Execute
 	}
 	if structuredResult.GetNextPageToken() != gqlResult.GetNextPageToken() {
 		t.Fatalf("next tokens differ: structured=%q GQL=%q", structuredResult.GetNextPageToken(), gqlResult.GetNextPageToken())
-	}
-	if len(structuredResult.GetGraph().GetNodes()) != len(gqlResult.GetGraph().GetNodes()) || len(structuredResult.GetGraph().GetEdges()) != len(gqlResult.GetGraph().GetEdges()) {
-		t.Fatalf("graph envelope counts differ: structured=%d/%d GQL=%d/%d", len(structuredResult.GetGraph().GetNodes()), len(structuredResult.GetGraph().GetEdges()), len(gqlResult.GetGraph().GetNodes()), len(gqlResult.GetGraph().GetEdges()))
 	}
 	structuredDiagnostics, gqlDiagnostics := structured.GetDiagnostics(), gql.GetDiagnostics()
 	if structuredDiagnostics.GetFullScan() != gqlDiagnostics.GetFullScan() || !slices.Equal(structuredDiagnostics.GetIndexes(), gqlDiagnostics.GetIndexes()) {
