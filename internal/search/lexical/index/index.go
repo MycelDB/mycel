@@ -227,6 +227,10 @@ func (s *Searcher) Search(expr *query.Node, opts SearchOptions) (SearchResponse,
 	eval := evaluator{s: s}
 	matches := eval.eval(expr)
 	positiveTerms := uniqueTerms(collectPositiveTerms(expr, false))
+	documentFrequencyByTerm := make(map[string]int, len(positiveTerms))
+	for _, term := range positiveTerms {
+		documentFrequencyByTerm[term] = s.liveDocumentFrequency(term)
+	}
 	phraseCountByDoc := eval.phraseCounts(expr)
 	rows := make([]Result, 0, len(matches))
 	for key, match := range matches {
@@ -234,7 +238,7 @@ func (s *Searcher) Search(expr *query.Node, opts SearchOptions) (SearchResponse,
 		if entry.deleted || !s.isLatestLive(key) {
 			continue
 		}
-		score, components := s.score(key, positiveTerms, phraseCountByDoc[key], opts)
+		score, components := s.score(key, positiveTerms, documentFrequencyByTerm, phraseCountByDoc[key], opts)
 		if score == 0 {
 			continue
 		}
@@ -275,7 +279,7 @@ func (s *Searcher) Search(expr *query.Node, opts SearchOptions) (SearchResponse,
 	return resp, nil
 }
 
-func (s *Searcher) score(key docKey, terms []string, phraseCount int, opts SearchOptions) (float64, []ScoreComponent) {
+func (s *Searcher) score(key docKey, terms []string, documentFrequencyByTerm map[string]int, phraseCount int, opts SearchOptions) (float64, []ScoreComponent) {
 	entry := s.docs[key]
 	if s.docCount == 0 || entry.length == 0 {
 		return 0, nil
@@ -287,7 +291,7 @@ func (s *Searcher) score(key docKey, terms []string, phraseCount int, opts Searc
 		if !ok || posting.tf == 0 {
 			continue
 		}
-		df := s.liveDocumentFrequency(term)
+		df := documentFrequencyByTerm[term]
 		if df == 0 {
 			continue
 		}
