@@ -1,0 +1,223 @@
+package client
+
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	"github.com/myceldb/mycel/internal/query/gql"
+	querylogical "github.com/myceldb/mycel/internal/query/logical"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
+	"google.golang.org/protobuf/types/known/structpb"
+)
+
+func TestQRX1EquivalentStructuredAndGQLNodeQueriesNormalizeEqually(t *testing.T) {
+	plan, err := gql.Compile("MATCH (n:Note) WHERE n.title = 'Alpha' AND n.status IS NOT NULL RETURN DISTINCT n.title AS title, COUNT(*) AS total, SUM(n.score) AS sum, AVG(n.score) AS avg, MIN(n.score) AS min, MAX(n.score) AS max OFFSET 1 FETCH FIRST 5 ROWS ONLY")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	gqlQuery, ok := querylogical.FromGQLPlan(plan)
+	if !ok {
+		t.Fatal("GQL plan did not normalize")
+	}
+
+	structuredQuery := logicalQueryFromStructured(&clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
+		Where: &clientv1.Expr{Expr: &clientv1.Expr_And{And: &clientv1.AndExpr{Exprs: []*clientv1.Expr{
+			{Expr: &clientv1.Expr_Null{Null: &clientv1.NullExpr{Alias: "n", Name: "status", IsNull: false}}},
+			{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "n", Name: "title", Value: structpb.NewStringValue("Alpha")}}},
+		}}}},
+		Returns: []*clientv1.ReturnProjection{{Alias: "n.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+		AggregateReturns: []*clientv1.AggregateProjection{
+			{OutputName: "total", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_COUNT, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Star{Star: true}}},
+			{OutputName: "sum", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_SUM, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Value{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: "n", Name: "score"}}}}}},
+			{OutputName: "avg", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_AVG, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Value{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: "n", Name: "score"}}}}}},
+			{OutputName: "min", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_MIN, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Value{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: "n", Name: "score"}}}}}},
+			{OutputName: "max", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_MAX, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Value{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: "n", Name: "score"}}}}}},
+		},
+		Distinct: true,
+		Offset:   1,
+		Limit:    5,
+	}, sessionmodel.TransactionModeReadOnly, 0, "")
+
+	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
+}
+
+func TestQRX1EquivalentStructuredAndGQLPathQueriesNormalizeEqually(t *testing.T) {
+	plan, err := gql.Compile("MATCH path = (a:Note)-[:REFERENCES*1..3]->(b:Note) RETURN path FETCH FIRST 10 ROWS ONLY")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	gqlQuery, ok := querylogical.FromGQLPlan(plan)
+	if !ok {
+		t.Fatal("GQL plan did not normalize")
+	}
+
+	structuredQuery := logicalQueryFromStructured(&clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{
+			Start: &clientv1.NodePattern{Alias: "a", Labels: []string{"Note"}},
+			Steps: []*clientv1.TraversalStep{{
+				Direction: clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT,
+				EdgeKind:  "REFERENCES",
+				Depth:     &clientv1.DepthSpec{MinDepth: 1, MaxDepth: 3},
+				Target:    &clientv1.NodePattern{Alias: "b", Labels: []string{"Note"}},
+			}},
+		},
+		PathAlias: "path",
+		Returns:   []*clientv1.ReturnProjection{{Alias: "path", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_PATH}},
+		Limit:     10,
+	}, sessionmodel.TransactionModeReadOnly, 0, "")
+
+	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
+}
+
+func TestQRX1EquivalentBoundPatternPropertiesNormalizeAsPredicates(t *testing.T) {
+	plan, err := gql.Compile("MATCH (a:Note)-[r:REFERENCES {weight: 0.5}]->(b:Note {active: true}) RETURN r, b")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	gqlQuery, ok := querylogical.FromGQLPlan(plan)
+	if !ok {
+		t.Fatal("GQL plan did not normalize")
+	}
+	structuredQuery := logicalQueryFromStructured(&clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{
+			Start: &clientv1.NodePattern{Alias: "a", Labels: []string{"Note"}},
+			Steps: []*clientv1.TraversalStep{{
+				Direction: clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT,
+				EdgeKind:  "REFERENCES",
+				EdgeAlias: "r",
+				Target:    &clientv1.NodePattern{Alias: "b", Labels: []string{"Note"}},
+			}},
+		},
+		Where: &clientv1.Expr{Expr: &clientv1.Expr_And{And: &clientv1.AndExpr{Exprs: []*clientv1.Expr{
+			{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "r", Name: "weight", Value: structpb.NewNumberValue(0.5)}}},
+			{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "b", Name: "active", Value: structpb.NewBoolValue(true)}}},
+		}}}},
+		Returns: []*clientv1.ReturnProjection{
+			{Alias: "r", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_EDGE},
+			{Alias: "b", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE},
+		},
+	}, sessionmodel.TransactionModeReadOnly, 0, "")
+
+	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
+}
+
+func TestQRX1StructuredAdapterPreservesCompleteTypedReadVocabulary(t *testing.T) {
+	objectValue, err := structpb.NewValue(map[string]any{"enabled": true, "weights": []any{1, 2.5}})
+	if err != nil {
+		t.Fatalf("NewValue() error = %v", err)
+	}
+	property := func(alias string, name string) *clientv1.ValueExpr {
+		return &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: alias, Name: name}}}
+	}
+	literal := func(value *structpb.Value) *clientv1.ValueExpr {
+		return &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Literal{Literal: &clientv1.LiteralExpr{Value: value}}}
+	}
+	query := &clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{
+			Start: &clientv1.NodePattern{Alias: "a", NodeIds: []string{"node-a"}, Labels: []string{"Document"}},
+			Steps: []*clientv1.TraversalStep{{
+				Direction: clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN,
+				EdgeKind:  "contains",
+				EdgeAlias: "edge",
+				Depth:     &clientv1.DepthSpec{MinDepth: 0, MaxDepth: 2},
+				Target:    &clientv1.NodePattern{Alias: "b", Labels: []string{"Section"}},
+			}},
+		},
+		PathAlias: "path",
+		Where: &clientv1.Expr{Expr: &clientv1.Expr_And{And: &clientv1.AndExpr{Exprs: []*clientv1.Expr{
+			{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "a", Name: "settings", Value: objectValue}}},
+			{Expr: &clientv1.Expr_PropertyExists{PropertyExists: &clientv1.PropertyExistsExpr{Alias: "a", Name: "meta.owner"}}},
+			{Expr: &clientv1.Expr_HasTag{HasTag: &clientv1.HasTagExpr{Alias: "a", Tag: "project"}}},
+			{Expr: &clientv1.Expr_Null{Null: &clientv1.NullExpr{Alias: "a", Name: "payload.summary", IsNull: true}}},
+			{Expr: &clientv1.Expr_StringPredicate{StringPredicate: &clientv1.StringPredicateExpr{Value: property("a", "title"), Query: "graph", Mode: clientv1.StringPredicateMode_STRING_PREDICATE_MODE_CONTAINS}}},
+			{Expr: &clientv1.Expr_Text{Text: &clientv1.TextSearchExpr{Alias: "a", Field: "payload.text", Query: "memory"}}},
+			{Expr: &clientv1.Expr_Semantic{Semantic: &clientv1.SemanticSearchExpr{Alias: "a", Field: "payload.text", Query: "related", RuleRef: "rule-1", EmbeddingBindingKey: "body", Limit: 7}}},
+			{Expr: &clientv1.Expr_LessThan{LessThan: &clientv1.LessThanExpr{Left: property("a", "rank"), Right: literal(structpb.NewNumberValue(20))}}},
+			{Expr: &clientv1.Expr_Between{Between: &clientv1.BetweenExpr{Value: property("a", "rank"), Low: literal(structpb.NewNumberValue(1)), High: literal(structpb.NewNumberValue(10))}}},
+		}}}},
+		Returns: []*clientv1.ReturnProjection{
+			{Alias: "a", OutputName: "node", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE},
+			{Alias: "edge", OutputName: "edge", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_EDGE},
+			{Alias: "b", OutputName: "tree", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_TREE},
+			{Alias: "a.payload.text", OutputName: "text", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "path", OutputName: "path", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_PATH},
+		},
+		AggregateReturns: []*clientv1.AggregateProjection{
+			{OutputName: "count", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_COUNT, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Star{Star: true}}},
+			{OutputName: "sum", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_SUM, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Value{Value: property("a", "rank")}}},
+			{OutputName: "avg", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_AVG, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Value{Value: property("a", "rank")}}},
+			{OutputName: "min", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_MIN, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Value{Value: property("a", "rank")}}},
+			{OutputName: "max", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_MAX, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Alias{Alias: "a"}}},
+		},
+		OrderBy:  []*clientv1.OrderSpec{{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Date{Date: &clientv1.DateExpr{Value: "2026-10-16", OffsetDays: -1}}}, Direction: clientv1.SortDirection_SORT_DIRECTION_DESC}},
+		Distinct: true,
+		Offset:   2,
+		Limit:    5,
+		MaxNodes: 100,
+		MaxEdges: 200,
+	}
+
+	got := logicalQueryFromStructured(query, sessionmodel.TransactionModeReadWrite, 25, "cursor-1")
+	if got.AccessMode != querylogical.AccessModeReadWrite || got.Page != (querylogical.PageSpec{Offset: 2, Limit: 5, Size: 25, Cursor: "cursor-1"}) || got.Safety != (querylogical.SafetyLimits{MaxNodes: 100, MaxEdges: 200}) {
+		t.Fatalf("query context = %+v", got)
+	}
+	if len(got.Steps) != 1 || got.Steps[0].Edge.Direction != querylogical.DirectionIncoming || got.Steps[0].Depth != (querylogical.DepthBounds{Min: 0, Max: 2}) {
+		t.Fatalf("steps = %+v", got.Steps)
+	}
+	if len(got.Returns) != 5 || got.Returns[3].Field == nil || got.Returns[3].Field.Namespace != querylogical.NamespacePayload || got.Returns[3].Field.Name != "text" {
+		t.Fatalf("returns = %+v", got.Returns)
+	}
+	if len(got.Aggregates) != 5 || got.Aggregates[4].Function != querylogical.AggregateMax || got.Aggregates[4].Argument == nil || got.Aggregates[4].Argument.Kind != querylogical.ValueBinding {
+		t.Fatalf("aggregates = %+v", got.Aggregates)
+	}
+	if len(got.OrderBy) != 1 || got.OrderBy[0].Value.Kind != querylogical.ValueDate || got.OrderBy[0].Value.OffsetDays != -1 {
+		t.Fatalf("order = %+v", got.OrderBy)
+	}
+	leaves := append(append([]querylogical.Leaf(nil), got.PredicatePlan.PushdownEligible...), got.PredicatePlan.Residual...)
+	var semantic *querylogical.Leaf
+	var settings *querylogical.Value
+	for i := range leaves {
+		if leaves[i].Kind == querylogical.LeafSemantic {
+			semantic = &leaves[i]
+		}
+		if leaves[i].Kind == querylogical.LeafComparison && leaves[i].Left != nil && leaves[i].Left.Field != nil && leaves[i].Left.Field.Name == "settings" {
+			settings = leaves[i].Right
+		}
+	}
+	if semantic == nil || semantic.RuleRef != "rule-1" || semantic.EmbeddingBindingKey != "body" || semantic.Limit != 7 {
+		t.Fatalf("semantic leaf = %+v", semantic)
+	}
+	if settings == nil || settings.Kind != querylogical.ValueObject || !settings.Object["enabled"].Bool || settings.Object["weights"].List[1].Number != 2.5 {
+		t.Fatalf("settings value = %+v", settings)
+	}
+}
+
+func TestQRX1StructuredNumericLiteralMatchesGQLNumericLiteral(t *testing.T) {
+	plan, err := gql.Compile("MATCH (n:Note {rank: 2}) RETURN n")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	gqlQuery, ok := querylogical.FromGQLPlan(plan)
+	if !ok {
+		t.Fatal("GQL plan did not normalize")
+	}
+	structuredQuery := logicalQueryFromStructured(&clientv1.GraphQuery{
+		Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
+		Where:   &clientv1.Expr{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "n", Name: "rank", Value: structpb.NewNumberValue(2)}}},
+		Returns: []*clientv1.ReturnProjection{{Alias: "n", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}},
+	}, sessionmodel.TransactionModeReadOnly, 0, "")
+	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
+}
+
+func assertQRX1LogicalEqual(t *testing.T, got querylogical.Query, want querylogical.Query) {
+	t.Helper()
+	if reflect.DeepEqual(got, want) {
+		return
+	}
+	gotJSON, _ := json.MarshalIndent(got, "", "  ")
+	wantJSON, _ := json.MarshalIndent(want, "", "  ")
+	t.Fatalf("logical queries differ\ngot:\n%s\nwant:\n%s", gotJSON, wantJSON)
+}

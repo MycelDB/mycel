@@ -21,6 +21,7 @@ import (
 	"github.com/myceldb/mycel/internal/query/gql/execution"
 	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
 	planmodel "github.com/myceldb/mycel/internal/query/gql/planning/model"
+	querylogical "github.com/myceldb/mycel/internal/query/logical"
 	schemacompile "github.com/myceldb/mycel/internal/schema/compile"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
@@ -111,6 +112,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err := validateStructuredQuerySafety(req.GetQuery()); err != nil {
 		return nil, err
 	}
+	_ = logicalQueryFromStructured(req.GetQuery(), tx.Mode, req.GetPageSize(), req.GetPageToken())
 	domain, err := s.visibleTransactionDomain(ctx, principal.PrincipalID, tx)
 	if err != nil {
 		return nil, err
@@ -196,6 +198,7 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if plan.AccessMode == analysis.ReadWrite && tx.Mode != sessionmodel.TransactionModeReadWrite {
 		return nil, status.Error(codes.FailedPrecondition, "GQL query requires a read-write transaction")
 	}
+	_, _ = querylogical.FromGQLPlan(plan, querylogical.NormalizeOptions{PageSize: req.GetPageSize(), Cursor: req.GetPageToken()})
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
 	if indexed, res, err := s.tryExecuteIndexedGQL(readCtx, tx, schemaCtx, plan, int(req.GetPageSize()), req.GetPageToken(), recorder); indexed || err != nil {
 		if err == nil || status.Code(err) != codes.FailedPrecondition || !domaingraph.DomainBroadSearchable(domain) {
@@ -242,6 +245,7 @@ func (s *QueryService) ExplainQuery(ctx context.Context, req *clientv1.ExplainQu
 	if err := validateStructuredGraphQueryWithSchema(req.GetQuery(), schemaCtx); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	_ = logicalQueryFromStructured(req.GetQuery(), tx.Mode, 0, "")
 	diag := s.explainStructuredGraphQuery(req.GetQuery(), schemaCtx, domain)
 	diag.ExplainOnly = true
 	diag.PlanningMillis = time.Since(start).Milliseconds()
@@ -275,6 +279,7 @@ func (s *QueryService) ExplainGQL(ctx context.Context, req *clientv1.ExplainGQLR
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	_, _ = querylogical.FromGQLPlan(plan)
 	diag := s.explainGQLPlan(plan, schemaCtx, domain)
 	diag.ExplainOnly = true
 	diag.PlanningMillis = time.Since(start).Milliseconds()

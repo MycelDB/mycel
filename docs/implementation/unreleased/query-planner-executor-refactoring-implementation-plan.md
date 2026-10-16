@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 is implemented on the feature branch with a structured/GQL conformance matrix, transaction-visibility coverage, graph access instrumentation, legacy cursor fixtures, and a [QRX0 conformance inventory](query-planner-executor-qrx0-conformance-inventory.md). QRX1 and later tranches remain planned.
+In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 is merged into the `improved_querying` integration branch with a structured/GQL conformance matrix, transaction-visibility coverage, graph access instrumentation, legacy cursor fixtures, and a [QRX0 conformance inventory](query-planner-executor-qrx0-conformance-inventory.md). QRX1 is implemented on its feature branch with the typed model, adapter-owned structured conversion, internal GQL conversion, shadow normalization, and [QRX1 neutral-model notes](query-planner-executor-qrx1-neutral-model.md). QRX2 and later tranches remain planned.
 
 The work must be delivered as independently reviewable tranches. Every tranche must leave mycel buildable, tested, and usable. The migration must not use a big-bang replacement of query execution.
 
@@ -563,6 +563,8 @@ Freeze existing observable behavior before moving ownership.
 - Focused query, graph service, and GQL suites pass.
 
 ## QRX1: Neutral query and result model
+
+Status: implemented on the feature branch. See the [QRX1 neutral-model notes](query-planner-executor-qrx1-neutral-model.md).
 
 ### Objective
 
