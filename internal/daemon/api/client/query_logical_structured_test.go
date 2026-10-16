@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -101,6 +102,30 @@ func TestQRX1EquivalentBoundPatternPropertiesNormalizeAsPredicates(t *testing.T)
 	}, 0, "")
 
 	assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
+}
+
+func TestQRX1EquivalentCollidingNamespacedEqualitiesNormalizeEqually(t *testing.T) {
+	for _, namespace := range []string{"payload", "meta"} {
+		t.Run(namespace, func(t *testing.T) {
+			plan, err := gql.Compile(fmt.Sprintf("MATCH (n:Note) WHERE n.score = 10 AND n.%s.score = 10 RETURN n", namespace))
+			if err != nil {
+				t.Fatalf("Compile() error = %v", err)
+			}
+			gqlQuery, ok := querylogical.FromGQLPlan(plan)
+			if !ok {
+				t.Fatal("GQL plan did not normalize")
+			}
+			structuredQuery := logicalQueryFromStructured(&clientv1.GraphQuery{
+				Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
+				Where: &clientv1.Expr{Expr: &clientv1.Expr_And{And: &clientv1.AndExpr{Exprs: []*clientv1.Expr{
+					{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "n", Name: "score", Value: structpb.NewNumberValue(10)}}},
+					{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "n", Name: namespace + ".score", Value: structpb.NewNumberValue(10)}}},
+				}}}},
+				Returns: []*clientv1.ReturnProjection{{Alias: "n", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}},
+			}, 0, "")
+			assertQRX1LogicalEqual(t, structuredQuery.Comparable(), gqlQuery.Comparable())
+		})
+	}
 }
 
 func TestQRX1EquivalentStructuredAndGQLStringQueriesNormalizeEqually(t *testing.T) {

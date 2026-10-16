@@ -113,7 +113,7 @@ Additional tests cover:
 - node, edge, scalar, tree, and path projection kinds;
 - node IDs, labels, edge aliases, directions, and depth bounds;
 - nested object/list/bool/number literals;
-- property, payload, and meta namespaces, including comparisons and ranges;
+- property, payload, and meta namespaces, including comparisons, ranges, and same-name cross-namespace equality collisions;
 - string, text, semantic, tag, exists, less-than, and between predicates;
 - field, literal, date, and current-date string-predicate operands;
 - semantic rule/binding metadata;

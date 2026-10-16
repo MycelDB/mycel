@@ -425,6 +425,19 @@ func CombinePredicate(op PredicateOp, terms []Predicate) *Predicate {
 		sort.SliceStable(filtered, func(i, j int) bool {
 			return predicateCanonicalKey(filtered[i]) < predicateCanonicalKey(filtered[j])
 		})
+		unique := filtered[:0]
+		lastKey := ""
+		for i, term := range filtered {
+			key := predicateCanonicalKey(term)
+			if i == 0 || key != lastKey {
+				unique = append(unique, term)
+				lastKey = key
+			}
+		}
+		filtered = unique
+	}
+	if len(filtered) == 1 {
+		return &filtered[0]
 	}
 	return &Predicate{Op: op, Terms: filtered}
 }

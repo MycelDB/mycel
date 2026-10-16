@@ -402,9 +402,21 @@ func planSourceComparisons(where *ast.WhereClause, params map[string]any) []plan
 	if where == nil || len(where.Predicates) == 0 {
 		return nil
 	}
-	var comparisons []planmodel.ComparisonPredicate
+	namespacedKeys := map[string]struct{}{}
 	for _, predicate := range where.Predicates {
 		if isEqualityOperator(predicate.Operator) && predicate.Namespace != "" && predicate.Namespace != "properties" {
+			namespacedKeys[predicate.Variable+"\x00"+predicate.Property] = struct{}{}
+		}
+	}
+	if len(namespacedKeys) == 0 {
+		return nil
+	}
+	var comparisons []planmodel.ComparisonPredicate
+	for _, predicate := range where.Predicates {
+		if !isEqualityOperator(predicate.Operator) {
+			continue
+		}
+		if _, ok := namespacedKeys[predicate.Variable+"\x00"+predicate.Property]; ok {
 			comparisons = append(comparisons, planComparisonPredicate(predicate, params))
 		}
 	}

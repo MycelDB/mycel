@@ -25,8 +25,9 @@ func (InsertNodeOperation) operation() {}
 
 // QueryNodesOperation returns nodes matching optional labels/properties.
 // SourceComparisons and SourcePatternProperties on read operations preserve
-// namespaced equality and inline-pattern distinctions that legacy property
-// folding cannot encode. Legacy execution ignores this normalization metadata.
+// namespaced equality, colliding property equality, and inline-pattern
+// distinctions that legacy property folding cannot encode. Legacy execution
+// ignores this normalization metadata.
 type QueryNodesOperation struct {
 	Variable                string
 	Labels                  []string
