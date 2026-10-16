@@ -14,3 +14,5 @@ patch-version directories.
 ## Future / unassigned plans
 
 - [AdminTemplateService and Mycel Console template UI implementation plan](admin-template-service-and-ui-implementation-plan.md) — future operator/admin template API and Console Templates tab work. Retained here because the audit found no generated or daemon `AdminTemplateService` implementation.
+- [Query planner and executor refactoring implementation plan](query-planner-executor-refactoring-implementation-plan.md) — incremental migration for [mycel#213](https://github.com/MycelDB/mycel/issues/213) from daemon API-owned planning/execution to a neutral logical planner, physical planner, and bounded operator executor.
+  - [QRX0 conformance inventory](query-planner-executor-qrx0-conformance-inventory.md) — frozen structured/GQL behavior, transaction visibility, graph access profiles, legacy cursor fixtures, and known baseline debt.
