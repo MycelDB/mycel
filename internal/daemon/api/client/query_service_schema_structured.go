@@ -6,13 +6,12 @@ import (
 
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
+	queryschema "github.com/myceldb/mycel/internal/query/schema"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 )
 
 type structuredQuerySchemaState struct {
-	strict      bool
-	nodeTypes   map[string][]schemamodel.NodeType
-	edgeTypes   map[string][]schemamodel.EdgeType
+	catalog     queryschema.Catalog
 	aliases     map[string][]schemamodel.NodeType
 	edgeAliases map[string][]schemamodel.EdgeType
 }
@@ -41,20 +40,10 @@ func validateStructuredGraphQueryWithSchema(query *clientv1.GraphQuery, schemaCt
 }
 
 func newStructuredQuerySchemaState(doc schemamodel.DomainSchema) structuredQuerySchemaState {
-	state := structuredQuerySchemaState{strict: doc.Mode == schemamodel.SchemaModeStrict, nodeTypes: map[string][]schemamodel.NodeType{}, edgeTypes: map[string][]schemamodel.EdgeType{}, aliases: map[string][]schemamodel.NodeType{}, edgeAliases: map[string][]schemamodel.EdgeType{}}
-	for _, typ := range doc.NodeTypes {
-		state.nodeTypes[typ.Name] = append(state.nodeTypes[typ.Name], typ)
-		for _, label := range typ.Labels {
-			state.nodeTypes[label] = append(state.nodeTypes[label], typ)
-		}
+	return structuredQuerySchemaState{
+		catalog: queryschema.NewCatalog(&doc),
+		aliases: map[string][]schemamodel.NodeType{}, edgeAliases: map[string][]schemamodel.EdgeType{},
 	}
-	for _, typ := range doc.EdgeTypes {
-		state.edgeTypes[typ.Name] = append(state.edgeTypes[typ.Name], typ)
-		for _, label := range typ.Labels {
-			state.edgeTypes[label] = append(state.edgeTypes[label], typ)
-		}
-	}
-	return state
 }
 
 func (s structuredQuerySchemaState) validatePattern(pattern *clientv1.GraphPattern) error {
@@ -92,13 +81,9 @@ func (s structuredQuerySchemaState) validateNodePattern(pattern *clientv1.NodePa
 	if pattern == nil {
 		return nil
 	}
-	var matched []schemamodel.NodeType
-	for _, label := range pattern.GetLabels() {
-		types := s.nodeTypes[label]
-		if len(types) == 0 {
-			return fmt.Errorf("unknown node label %q", label)
-		}
-		matched = appendStructuredNodeTypes(matched, types...)
+	matched, unknown := s.catalog.ResolveNodeLabels(pattern.GetLabels())
+	if unknown != "" {
+		return fmt.Errorf("unknown node label %q", unknown)
 	}
 	if alias := strings.TrimSpace(pattern.GetAlias()); alias != "" {
 		s.aliases[alias] = matched
@@ -111,26 +96,16 @@ func (s structuredQuerySchemaState) validateEdgeLabel(label string) ([]schemamod
 	if label == "" {
 		return nil, nil
 	}
-	types := s.edgeTypes[label]
-	if len(types) == 0 {
-		return nil, fmt.Errorf("unknown edge label %q", label)
+	types, unknown := s.catalog.ResolveEdgeLabels([]string{label})
+	if unknown != "" {
+		return nil, fmt.Errorf("unknown edge label %q", unknown)
 	}
 	return types, nil
 }
 
 func (s structuredQuerySchemaState) validateTraversalEndpoints(edgeTypes []schemamodel.EdgeType, fromAlias string, toAlias string) error {
-	if len(edgeTypes) == 0 {
+	if s.catalog.EndpointsAllowed(edgeTypes, s.aliases[fromAlias], s.aliases[toAlias]) {
 		return nil
-	}
-	fromTypes := s.aliases[fromAlias]
-	toTypes := s.aliases[toAlias]
-	if len(fromTypes) == 0 || len(toTypes) == 0 {
-		return nil
-	}
-	for _, edgeType := range edgeTypes {
-		if structuredEndpointAllows(edgeType.From, fromTypes) && structuredEndpointAllows(edgeType.To, toTypes) {
-			return nil
-		}
 	}
 	return fmt.Errorf("edge endpoint constraints do not allow %q -> %q", fromAlias, toAlias)
 }
@@ -179,96 +154,13 @@ func (s structuredQuerySchemaState) validateValueExpr(value *clientv1.ValueExpr)
 
 func (s structuredQuerySchemaState) validateNodeField(alias string, namespace string, field string) error {
 	if edgeTypes := s.edgeAliases[alias]; len(edgeTypes) > 0 {
-		for _, typ := range edgeTypes {
-			if structuredEdgeTypeHasField(typ, namespace, field) {
-				return nil
-			}
+		if s.catalog.EdgeFieldKnown(edgeTypes, namespace, field) {
+			return nil
 		}
 		return fmt.Errorf("unknown edge %s field %q", namespace, field)
 	}
-	types := s.aliases[alias]
-	if len(types) == 0 {
+	if s.catalog.NodeFieldKnown(s.aliases[alias], namespace, field) {
 		return nil
 	}
-	for _, typ := range types {
-		if structuredNodeTypeHasField(typ, namespace, field) {
-			return nil
-		}
-	}
 	return fmt.Errorf("unknown %s field %q", namespace, field)
-}
-
-func structuredNodeTypeHasField(typ schemamodel.NodeType, namespace string, field string) bool {
-	switch namespace {
-	case "", "properties":
-		return structuredFieldExists(typ.Properties, field)
-	case "payload":
-		return structuredFieldExists(typ.Payload, field)
-	case "meta":
-		return structuredFieldExists(typ.Meta, field)
-	default:
-		return false
-	}
-}
-
-func structuredEdgeTypeHasField(typ schemamodel.EdgeType, namespace string, field string) bool {
-	switch namespace {
-	case "", "properties":
-		return structuredFieldExists(typ.Properties, field)
-	case "payload":
-		return structuredFieldExists(typ.Payload, field)
-	case "meta":
-		return structuredFieldExists(typ.Meta, field)
-	default:
-		return false
-	}
-}
-
-func structuredFieldExists(fields []schemamodel.FieldSpec, name string) bool {
-	for _, field := range fields {
-		if field.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func structuredEndpointAllows(endpoint schemamodel.EndpointSpec, nodeTypes []schemamodel.NodeType) bool {
-	if len(endpoint.NodeTypes) == 0 && len(endpoint.Labels) == 0 {
-		return true
-	}
-	for _, typ := range nodeTypes {
-		if structuredContains(endpoint.NodeTypes, typ.Name) {
-			return true
-		}
-		for _, label := range typ.Labels {
-			if structuredContains(endpoint.Labels, label) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func appendStructuredNodeTypes(out []schemamodel.NodeType, values ...schemamodel.NodeType) []schemamodel.NodeType {
-	seen := map[string]struct{}{}
-	for _, typ := range out {
-		seen[typ.Name] = struct{}{}
-	}
-	for _, typ := range values {
-		if _, ok := seen[typ.Name]; !ok {
-			seen[typ.Name] = struct{}{}
-			out = append(out, typ)
-		}
-	}
-	return out
-}
-
-func structuredContains(values []string, needle string) bool {
-	for _, value := range values {
-		if value == needle {
-			return true
-		}
-	}
-	return false
 }

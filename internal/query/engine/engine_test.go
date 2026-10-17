@@ -9,6 +9,7 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
@@ -41,9 +42,15 @@ func (r *recordingEntityReader) ListEdges(_ context.Context, tx sessionmodel.Gra
 	return nil, "", nil
 }
 
+type panicCatalog struct{}
+
+func (panicCatalog) GetDomainSchema(context.Context, graph.DomainID) (schemamodel.DomainSchema, error) {
+	panic("binding must not load schema through the catalog")
+}
+
 func TestEnginePrepareUsesExplicitLegacyBridgeWithoutAccess(t *testing.T) {
 	entities := &recordingEntityReader{}
-	engine := queryengine.New(queryengine.Ports{Entities: entities})
+	engine := queryengine.New(queryengine.Ports{Entities: entities, Catalog: panicCatalog{}})
 	tx := sessionmodel.GraphTransaction{
 		ID:           "tx-1",
 		SessionID:    "session-1",
@@ -54,13 +61,9 @@ func TestEnginePrepareUsesExplicitLegacyBridgeWithoutAccess(t *testing.T) {
 		State:        sessionmodel.TransactionStateActive,
 		BaseRevision: 42,
 	}
-	query := querylogical.Query{
-		Source:     querylogical.SourceStructured,
-		AccessMode: querylogical.AccessModeReadOnly,
-		Start:      querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}},
-	}
+	statement := validReadStatement()
 
-	prepared, err := engine.Prepare(context.Background(), queryengine.PlanningContext{Transaction: tx}, query)
+	prepared, err := engine.Prepare(context.Background(), queryengine.PlanningContext{Transaction: tx}, statement)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -70,14 +73,17 @@ func TestEnginePrepareUsesExplicitLegacyBridgeWithoutAccess(t *testing.T) {
 	if !reflect.DeepEqual(prepared.Planning.Transaction, tx) {
 		t.Fatalf("planning transaction = %#v, want %#v", prepared.Planning.Transaction, tx)
 	}
-	if !reflect.DeepEqual(prepared.Logical, query) {
-		t.Fatalf("prepared logical query = %#v, want %#v", prepared.Logical, query)
+	if !reflect.DeepEqual(prepared.Statement, statement) {
+		t.Fatalf("prepared statement = %#v, want %#v", prepared.Statement, statement)
+	}
+	if len(prepared.Binding.Variables) != 1 || prepared.Binding.Variables[0].Name != "n" {
+		t.Fatalf("bound variables = %#v", prepared.Binding.Variables)
 	}
 	if entities.calls != 0 {
 		t.Fatalf("entity reads during prepare = %d, want 0", entities.calls)
 	}
 	capabilities := engine.Capabilities()
-	if !capabilities.EntityReads || capabilities.Indexes || capabilities.Mutations {
+	if !capabilities.EntityReads || !capabilities.Catalog || capabilities.Indexes || capabilities.Mutations {
 		t.Fatalf("capabilities = %#v", capabilities)
 	}
 }
@@ -86,14 +92,14 @@ func TestEngineExplainDescribesLegacyBridgeWithoutExecuting(t *testing.T) {
 	entities := &recordingEntityReader{}
 	engine := queryengine.New(queryengine.Ports{Entities: entities})
 
-	diagnostics, err := engine.Explain(context.Background(), queryengine.PlanningContext{}, querylogical.Query{})
+	diagnostics, err := engine.Explain(context.Background(), queryengine.PlanningContext{}, validReadStatement())
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
 	if diagnostics.Plan != "LegacyBridge" || diagnostics.PlanKind != string(queryengine.PlanLegacyBridge) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
-	if diagnostics.PlannerVersion != "qrx2" || !diagnostics.ExplainOnly {
+	if diagnostics.PlannerVersion != "qrx3" || !diagnostics.ExplainOnly {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
 	if entities.calls != 0 {
@@ -101,10 +107,23 @@ func TestEngineExplainDescribesLegacyBridgeWithoutExecuting(t *testing.T) {
 	}
 }
 
+func TestEnginePrepareReturnsTypedBindingErrorsBeforeAccess(t *testing.T) {
+	entities := &recordingEntityReader{}
+	engine := queryengine.New(queryengine.Ports{Entities: entities})
+	statement := validReadStatement()
+	statement.Read.Start.Alias = ""
+
+	_, err := engine.Prepare(context.Background(), queryengine.PlanningContext{}, statement)
+	assertQueryErrorCode(t, err, querylogical.ErrorInvalidQuery)
+	if entities.calls != 0 {
+		t.Fatalf("entity reads during rejected prepare = %d, want 0", entities.calls)
+	}
+}
+
 func TestEngineExecuteReturnsTypedUnsupportedPlanBeforeAccess(t *testing.T) {
 	entities := &recordingEntityReader{}
 	engine := queryengine.New(queryengine.Ports{Entities: entities})
-	prepared, err := engine.Prepare(context.Background(), queryengine.PlanningContext{}, querylogical.Query{})
+	prepared, err := engine.Prepare(context.Background(), queryengine.PlanningContext{}, validReadStatement())
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -130,12 +149,20 @@ func TestEngineFacadeMapsCanceledContextsToTypedErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := engine.Prepare(ctx, queryengine.PlanningContext{}, querylogical.Query{})
+	_, err := engine.Prepare(ctx, queryengine.PlanningContext{}, validReadStatement())
 	assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
-	_, err = engine.Explain(ctx, queryengine.PlanningContext{}, querylogical.Query{})
+	_, err = engine.Explain(ctx, queryengine.PlanningContext{}, validReadStatement())
 	assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
 	_, err = engine.Execute(ctx, queryengine.ExecutionContext{}, queryengine.PreparedQuery{})
 	assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
+}
+
+func validReadStatement() querylogical.Statement {
+	return querylogical.ReadStatement(querylogical.Query{
+		Source:     querylogical.SourceStructured,
+		AccessMode: querylogical.AccessModeReadOnly,
+		Start:      querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}},
+	})
 }
 
 func assertQueryErrorCode(t *testing.T, err error, code querylogical.ErrorCode) {

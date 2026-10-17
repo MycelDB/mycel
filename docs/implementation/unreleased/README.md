@@ -18,3 +18,4 @@ patch-version directories.
   - [QRX0 conformance inventory](query-planner-executor-qrx0-conformance-inventory.md) — frozen structured/GQL behavior, transaction visibility, graph access profiles, legacy cursor fixtures, and known baseline debt.
   - [QRX1 neutral model](query-planner-executor-qrx1-neutral-model.md) — typed transport-neutral query/result vocabulary, adapter ownership, shadow normalization, and structured/GQL equivalence coverage.
   - [QRX2 engine façade and access ports](query-planner-executor-qrx2-engine-facade.md) — daemon-independent prepare/explain/execute boundaries, consumer-owned graph/catalog/semantic/mutation ports, composition wiring, and the explicit legacy-plan bridge.
+  - [QRX3 shared binding and semantic analysis](query-planner-executor-qrx3-binding.md) — neutral read/mutation statements, common alias/schema/expression/access/safety binding, observational daemon wiring, and structured/GQL parity coverage.
